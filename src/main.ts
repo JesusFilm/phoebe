@@ -15,7 +15,7 @@
 
 import { execFileSync, execSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { config } from "../phoebe.config.ts";
 import { PROVIDER_NAMES, type ProviderName } from "./config-schema.ts";
@@ -120,8 +120,14 @@ function resolvePackageFile(relativePath: string): string {
       return candidate;
     }
     const parent = dirname(dir);
-    if (parent === dir) {
-      throw new Error(`Could not find ${relativePath} in any directory above ${moduleDir}`);
+    // Stop at the package boundary. When Phoebe is installed as a dependency,
+    // its package sits directly inside a `node_modules` directory; walking past
+    // it would escape into the consuming repo, where an unrelated resource of
+    // the same relative path could shadow a genuinely-missing packaged one.
+    if (parent === dir || basename(parent) === "node_modules") {
+      throw new Error(
+        `Could not find ${relativePath} within the Phoebe package (searched from ${moduleDir})`,
+      );
     }
     dir = parent;
   }
@@ -902,8 +908,12 @@ async function runReviewsResolutionAgent(pr: ReviewsCandidate, phoebeLogin: stri
 
     const hasSummary = hasNewReviewSummaryComment(pr.prNumber, phoebeLogin, runStartedAt);
     const pushed = localCommitCount > 0 || originShaAfter !== originShaBefore;
-    const threadsAfter = fetchReviewThreads(pr.prNumber);
-    const latestActivityAt = newestReviewThreadCommentCreatedAt(threadsAfter);
+    // Watermark only the activity captured before the agent ran (pr.threads is
+    // the pre-run snapshot from fetchReviewsWorkData). Re-fetching here could
+    // absorb feedback posted concurrently with the run — marking it handled
+    // even though the agent never observed it, so it would never trigger another
+    // cycle. Any activity newer than this snapshot correctly re-selects the PR.
+    const latestActivityAt = newestReviewThreadCommentCreatedAt(pr.threads);
 
     if (hasSummary) {
       console.log(`[phoebe] Review summary posted for PR #${pr.prNumber}.`);
