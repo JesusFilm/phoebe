@@ -42,7 +42,7 @@ export function parseBlockedBy(...texts: string[]): number[] {
 export function classifyPriority(issue: Issue): Priority {
   const text = `${issue.title} ${issue.body}`.toLowerCase();
   if (/\b(bug|broken|crash|regression|fix)\b/.test(text)) return "bug";
-  if (/\b(tracer|wire\b|poc\b)/.test(text)) return "tracer";
+  if (/\b(tracer|wire|poc)\b/.test(text)) return "tracer";
   if (/\brefactor\b/.test(text)) return "refactor";
   return "polish";
 }

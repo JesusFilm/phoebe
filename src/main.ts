@@ -14,7 +14,7 @@
 // is refused outside the container marker (src/execution-gate.ts).
 
 import { execFileSync, execSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { config } from "../phoebe.config.ts";
@@ -92,6 +92,11 @@ import {
 } from "./orchestrator.ts";
 
 const DEFAULT_POLL_INTERVAL_MS = 300_000;
+// Never let a gh/git child process block the persistent loop forever (rate-limit
+// backoff, credential prompt, network partition). Configured toolchain commands
+// (install/test) get a longer leash.
+const CHILD_PROCESS_TIMEOUT_MS = 120_000;
+const SHELL_COMMAND_TIMEOUT_MS = 600_000;
 const MERGEABLE_RETRY_MS = 5_000;
 const MERGEABLE_RETRY_COUNT = 3;
 
@@ -101,7 +106,26 @@ const PR_BASE = config.defaultBranch;
 // branch can run itself end-to-end. PRs and worktree bases still use
 // config.defaultBranch.
 const trackedBranch = process.env["PHOEBE_DEFAULT_BRANCH"] ?? config.defaultBranch;
-const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+const moduleDir = dirname(fileURLToPath(import.meta.url));
+
+// Resolve a package-root-relative resource by walking up from this module's
+// directory: the build emits dist/src/main.js while prompts/ and templates/
+// ship at the package root, so the depth back to the root differs between the
+// source layout (src/) and the built layout (dist/src/).
+function resolvePackageFile(relativePath: string): string {
+  let dir = moduleDir;
+  while (true) {
+    const candidate = join(dir, relativePath);
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) {
+      throw new Error(`Could not find ${relativePath} in any directory above ${moduleDir}`);
+    }
+    dir = parent;
+  }
+}
 
 const inContainer = isInsideContainer();
 // On the host only selection/--dry-run runs, against the local checkout; in
@@ -131,17 +155,26 @@ const workOrder = validateWorkOrder(config.workOrder);
 
 function ghJson<T>(args: string[]): T {
   return JSON.parse(
-    execFileSync("gh", [...args, "-R", config.repoSlug], { encoding: "utf8" }),
+    execFileSync("gh", [...args, "-R", config.repoSlug], {
+      encoding: "utf8",
+      timeout: CHILD_PROCESS_TIMEOUT_MS,
+    }),
   ) as T;
 }
 
 function ghApiJson<T>(endpoint: string): T {
-  return JSON.parse(execFileSync("gh", ["api", endpoint], { encoding: "utf8" })) as T;
+  return JSON.parse(
+    execFileSync("gh", ["api", endpoint], {
+      encoding: "utf8",
+      timeout: CHILD_PROCESS_TIMEOUT_MS,
+    }),
+  ) as T;
 }
 
 function gh(args: string[], opts?: { input?: string }): void {
   execFileSync("gh", [...args, "-R", config.repoSlug], {
     stdio: opts?.input !== undefined ? ["pipe", "inherit", "inherit"] : "inherit",
+    timeout: CHILD_PROCESS_TIMEOUT_MS,
     ...(opts?.input !== undefined ? { input: opts.input } : {}),
   });
 }
@@ -213,7 +246,14 @@ function buildBlockerStates(issues: readonly Issue[]): Map<number, BlockerPrStat
   }
   const states = new Map<number, BlockerPrState>();
   for (const n of blockerNumbers) {
-    states.set(n, blockerPrState(n));
+    try {
+      states.set(n, blockerPrState(n));
+    } catch (error) {
+      // Absent entries are treated as unmerged blockers — safe to retry next cycle.
+      console.warn(
+        `[phoebe] Skipping blocker state for #${n} this cycle — ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
   return states;
 }
@@ -365,22 +405,24 @@ function gitInWorktree(
 ): string {
   return execFileSync("git", ["-C", worktreeDir, ...args], {
     encoding: "utf8",
+    timeout: CHILD_PROCESS_TIMEOUT_MS,
     ...(opts?.stdio ? { stdio: opts.stdio } : {}),
   }) as unknown as string;
 }
 
 /** Run a configured toolchain command (a shell string) inside a worktree. */
 function runShellCommand(command: string, cwd: string): void {
-  execSync(command, { cwd, stdio: "inherit" });
+  execSync(command, { cwd, stdio: "inherit", timeout: SHELL_COMMAND_TIMEOUT_MS });
 }
 
 /** Shell executor for prompt !`...` expansion — captures stdout. */
 function promptShell(cwd: string): (command: string) => string {
-  return (command) => execSync(command, { cwd, encoding: "utf8" });
+  return (command) =>
+    execSync(command, { cwd, encoding: "utf8", timeout: SHELL_COMMAND_TIMEOUT_MS });
 }
 
 function loadPromptTemplate(relativePath: string): string {
-  return readFileSync(join(packageRoot, relativePath), "utf8");
+  return readFileSync(resolvePackageFile(relativePath), "utf8");
 }
 
 /**
@@ -534,54 +576,57 @@ async function runConflictResolutionAgent(
   const originShaBefore = originBranchSha(branch);
 
   const worktreeDir = prepareWorktree({ branch });
-  runShellCommand(config.installCommand, worktreeDir);
-  attemptBlockerFirstMerges(worktreeDir, mergedBlockerPrNumbers);
+  try {
+    runShellCommand(config.installCommand, worktreeDir);
+    attemptBlockerFirstMerges(worktreeDir, mergedBlockerPrNumbers);
 
-  await runAgentInWorktree({
-    worktreeDir,
-    promptFile: config.promptFiles.conflict,
-    promptArgs: {
-      PR_NUMBER: String(pr.prNumber),
-      PR_BRANCH: branch,
-      BLOCKER_PR_NUMBERS: mergedBlockerPrNumbers.join(","),
-    },
-  });
+    await runAgentInWorktree({
+      worktreeDir,
+      promptFile: config.promptFiles.conflict,
+      promptArgs: {
+        PR_NUMBER: String(pr.prNumber),
+        PR_BRANCH: branch,
+        BLOCKER_PR_NUMBERS: mergedBlockerPrNumbers.join(","),
+      },
+    });
 
-  fetchOrigin();
-  const originShaAfter = originBranchSha(branch);
-  const prInfo = viewPrMergeInfo(pr.prNumber);
-  const localCommitCount = commitCount(worktreeDir, `origin/${branch}..HEAD`);
+    fetchOrigin();
+    const originShaAfter = originBranchSha(branch);
+    const prInfo = viewPrMergeInfo(pr.prNumber);
+    const localCommitCount = commitCount(worktreeDir, `origin/${branch}..HEAD`);
 
-  let pushed = false;
-  if (
-    shouldPostConflictFixFailure({
-      hostCommitCount: localCommitCount,
-      originShaBefore,
-      originShaAfter,
-      mergeable: prInfo.mergeable,
-      mergeStateStatus: prInfo.mergeStateStatus,
-    })
-  ) {
-    console.log(
-      `[phoebe] Conflict fix for PR #${pr.prNumber} produced no commits — leaving PR unchanged.`,
-    );
-    postPrComment(
-      pr.prNumber,
-      conflictFixFailureComment(pr.prNumber, currentConflictFailureWatermark(pr.headRefName)),
-    );
-  } else {
-    if (localCommitCount > 0) {
-      pushBranch(worktreeDir, branch);
-      pushed = true;
-      console.log(`[phoebe] Conflict resolved for PR #${pr.prNumber} — pushed.`);
+    let pushed = false;
+    if (
+      shouldPostConflictFixFailure({
+        hostCommitCount: localCommitCount,
+        originShaBefore,
+        originShaAfter,
+        mergeable: prInfo.mergeable,
+        mergeStateStatus: prInfo.mergeStateStatus,
+      })
+    ) {
+      console.log(
+        `[phoebe] Conflict fix for PR #${pr.prNumber} produced no commits — leaving PR unchanged.`,
+      );
+      postPrComment(
+        pr.prNumber,
+        conflictFixFailureComment(pr.prNumber, currentConflictFailureWatermark(pr.headRefName)),
+      );
     } else {
-      pushed = true;
-      console.log(`[phoebe] Conflict resolved for PR #${pr.prNumber} — already pushed by agent.`);
+      if (localCommitCount > 0) {
+        pushBranch(worktreeDir, branch);
+        pushed = true;
+        console.log(`[phoebe] Conflict resolved for PR #${pr.prNumber} — pushed.`);
+      } else {
+        pushed = true;
+        console.log(`[phoebe] Conflict resolved for PR #${pr.prNumber} — already pushed by agent.`);
+      }
     }
-  }
 
-  removeWorktree(repoDir, worktreeDir);
-  return pushed;
+    return pushed;
+  } finally {
+    removeWorktree(repoDir, worktreeDir);
+  }
 }
 
 async function fixOnePrConflict(
@@ -628,50 +673,53 @@ async function runChecksResolutionAgent(pr: ChecksCandidate): Promise<boolean> {
   const originShaBefore = originBranchSha(branch);
 
   const worktreeDir = prepareWorktree({ branch });
-  runShellCommand(config.installCommand, worktreeDir);
+  try {
+    runShellCommand(config.installCommand, worktreeDir);
 
-  await runAgentInWorktree({
-    worktreeDir,
-    promptFile: config.promptFiles.checks,
-    promptArgs: {
-      PR_NUMBER: String(pr.prNumber),
-      PR_BRANCH: branch,
-      FAILING_CHECKS: formatFailingChecksForPrompt(pr.failingChecks),
-    },
-  });
+    await runAgentInWorktree({
+      worktreeDir,
+      promptFile: config.promptFiles.checks,
+      promptArgs: {
+        PR_NUMBER: String(pr.prNumber),
+        PR_BRANCH: branch,
+        FAILING_CHECKS: formatFailingChecksForPrompt(pr.failingChecks),
+      },
+    });
 
-  fetchOrigin();
-  const originShaAfter = originBranchSha(branch);
-  const localCommitCount = commitCount(worktreeDir, `origin/${branch}..HEAD`);
+    fetchOrigin();
+    const originShaAfter = originBranchSha(branch);
+    const localCommitCount = commitCount(worktreeDir, `origin/${branch}..HEAD`);
 
-  let pushed = false;
-  if (
-    shouldPostChecksFixFailure({
-      hostCommitCount: localCommitCount,
-      originShaBefore,
-      originShaAfter,
-    })
-  ) {
-    console.log(
-      `[phoebe] Checks fix for PR #${pr.prNumber} produced no commits — leaving PR unchanged.`,
-    );
-    postPrComment(
-      pr.prNumber,
-      checksFixFailureComment(pr.prNumber, currentChecksFailureWatermark(pr.headRefName)),
-    );
-  } else {
-    if (localCommitCount > 0) {
-      pushBranch(worktreeDir, branch);
-      pushed = true;
-      console.log(`[phoebe] Checks fixed for PR #${pr.prNumber} — pushed.`);
+    let pushed = false;
+    if (
+      shouldPostChecksFixFailure({
+        hostCommitCount: localCommitCount,
+        originShaBefore,
+        originShaAfter,
+      })
+    ) {
+      console.log(
+        `[phoebe] Checks fix for PR #${pr.prNumber} produced no commits — leaving PR unchanged.`,
+      );
+      postPrComment(
+        pr.prNumber,
+        checksFixFailureComment(pr.prNumber, currentChecksFailureWatermark(pr.headRefName)),
+      );
     } else {
-      pushed = true;
-      console.log(`[phoebe] Checks fixed for PR #${pr.prNumber} — already pushed by agent.`);
+      if (localCommitCount > 0) {
+        pushBranch(worktreeDir, branch);
+        pushed = true;
+        console.log(`[phoebe] Checks fixed for PR #${pr.prNumber} — pushed.`);
+      } else {
+        pushed = true;
+        console.log(`[phoebe] Checks fixed for PR #${pr.prNumber} — already pushed by agent.`);
+      }
     }
-  }
 
-  removeWorktree(repoDir, worktreeDir);
-  return pushed;
+    return pushed;
+  } finally {
+    removeWorktree(repoDir, worktreeDir);
+  }
 }
 
 async function fixOnePrChecks(
@@ -782,7 +830,7 @@ function fetchReviewThreads(prNumber: number): ReviewThread[] {
           "-F",
           `pr=${prNumber}`,
         ],
-        { encoding: "utf8" },
+        { encoding: "utf8", timeout: CHILD_PROCESS_TIMEOUT_MS },
       ),
     ) as GraphQLReviewThreadsPage;
 
@@ -827,50 +875,52 @@ async function runReviewsResolutionAgent(pr: ReviewsCandidate, phoebeLogin: stri
   const originShaBefore = originBranchSha(branch);
 
   const worktreeDir = prepareWorktree({ branch });
-  runShellCommand(config.installCommand, worktreeDir);
+  try {
+    runShellCommand(config.installCommand, worktreeDir);
 
-  await runAgentInWorktree({
-    worktreeDir,
-    promptFile: config.promptFiles.reviews,
-    promptArgs: {
-      PR_NUMBER: String(pr.prNumber),
-      PR_BRANCH: branch,
-    },
-  });
+    await runAgentInWorktree({
+      worktreeDir,
+      promptFile: config.promptFiles.reviews,
+      promptArgs: {
+        PR_NUMBER: String(pr.prNumber),
+        PR_BRANCH: branch,
+      },
+    });
 
-  fetchOrigin();
-  const originShaAfter = originBranchSha(branch);
-  const localCommitCount = commitCount(worktreeDir, `origin/${branch}..HEAD`);
+    fetchOrigin();
+    const originShaAfter = originBranchSha(branch);
+    const localCommitCount = commitCount(worktreeDir, `origin/${branch}..HEAD`);
 
-  if (localCommitCount > 0) {
-    pushBranch(worktreeDir, branch);
-    console.log(`[phoebe] Review feedback handled for PR #${pr.prNumber} — pushed.`);
-  } else if (originShaAfter !== originShaBefore) {
-    console.log(
-      `[phoebe] Review feedback handled for PR #${pr.prNumber} — already pushed by agent.`,
+    if (localCommitCount > 0) {
+      pushBranch(worktreeDir, branch);
+      console.log(`[phoebe] Review feedback handled for PR #${pr.prNumber} — pushed.`);
+    } else if (originShaAfter !== originShaBefore) {
+      console.log(
+        `[phoebe] Review feedback handled for PR #${pr.prNumber} — already pushed by agent.`,
+      );
+    }
+
+    const hasSummary = hasNewReviewSummaryComment(pr.prNumber, phoebeLogin, runStartedAt);
+    const pushed = localCommitCount > 0 || originShaAfter !== originShaBefore;
+    const threadsAfter = fetchReviewThreads(pr.prNumber);
+    const latestActivityAt = newestReviewThreadCommentCreatedAt(threadsAfter);
+
+    if (hasSummary) {
+      console.log(`[phoebe] Review summary posted for PR #${pr.prNumber}.`);
+    } else if (!pushed) {
+      console.log(`[phoebe] Review handling for PR #${pr.prNumber} produced no summary or push.`);
+    }
+
+    postPrComment(
+      pr.prNumber,
+      buildReviewsHandledComment({
+        latestActivityAt,
+        failed: !hasSummary && !pushed,
+      }),
     );
+  } finally {
+    removeWorktree(repoDir, worktreeDir);
   }
-
-  const hasSummary = hasNewReviewSummaryComment(pr.prNumber, phoebeLogin, runStartedAt);
-  const pushed = localCommitCount > 0 || originShaAfter !== originShaBefore;
-  const threadsAfter = fetchReviewThreads(pr.prNumber);
-  const latestActivityAt = newestReviewThreadCommentCreatedAt(threadsAfter);
-
-  if (hasSummary) {
-    console.log(`[phoebe] Review summary posted for PR #${pr.prNumber}.`);
-  } else if (!pushed) {
-    console.log(`[phoebe] Review handling for PR #${pr.prNumber} produced no summary or push.`);
-  }
-
-  postPrComment(
-    pr.prNumber,
-    buildReviewsHandledComment({
-      latestActivityAt,
-      failed: !hasSummary && !pushed,
-    }),
-  );
-
-  removeWorktree(repoDir, worktreeDir);
 }
 
 async function fixOnePrReviews(pr: ReviewsCandidate, phoebeLogin: string): Promise<void> {
@@ -891,65 +941,63 @@ async function runOneIssue(
 
   fetchOrigin();
   const worktreeDir = prepareWorktree({ branch: agentBranch, baseRef: worktreeBase });
-  runShellCommand(config.installCommand, worktreeDir);
+  try {
+    runShellCommand(config.installCommand, worktreeDir);
 
-  await runAgentInWorktree({
-    worktreeDir,
-    promptFile: config.promptFiles.issue,
-    promptArgs: { ISSUE_NUMBER: String(issueNumber) },
-  });
+    await runAgentInWorktree({
+      worktreeDir,
+      promptFile: config.promptFiles.issue,
+      promptArgs: { ISSUE_NUMBER: String(issueNumber) },
+    });
 
-  const newCommitCount = commitCount(worktreeDir, `${worktreeBase}..HEAD`);
+    const newCommitCount = commitCount(worktreeDir, `${worktreeBase}..HEAD`);
 
-  let prCreated = false;
-  if (newCommitCount > 0) {
-    pushBranch(worktreeDir, agentBranch);
-    const existingPr = ghJson<Array<{ number: number }>>([
-      "pr",
-      "list",
-      "--head",
-      agentBranch,
-      "--state",
-      "open",
-      "--json",
-      "number",
-    ])[0]?.number;
-    if (existingPr === undefined) {
-      const prTitle = `Phoebe: ${issueTitle} (#${issueNumber})`;
-      const prBody = buildInitialPrBody({
-        issueNumber,
-        commitCount: newCommitCount,
-        ...(stacked && blockerIssueNumber !== undefined && blockerPrNumber !== undefined
-          ? { stacked: { blockerIssueNumber, blockerPrNumber } }
-          : {}),
-      });
-      gh(
-        [
-          "pr",
-          "create",
-          "--head",
-          agentBranch,
-          "--base",
-          PR_BASE,
-          "--title",
-          prTitle,
-          "--body-file",
-          "-",
-        ],
-        { input: prBody },
-      );
+    if (newCommitCount > 0) {
+      pushBranch(worktreeDir, agentBranch);
+      const existingPr = ghJson<Array<{ number: number }>>([
+        "pr",
+        "list",
+        "--head",
+        agentBranch,
+        "--state",
+        "open",
+        "--json",
+        "number",
+      ])[0]?.number;
+      if (existingPr === undefined) {
+        const prTitle = `Phoebe: ${issueTitle} (#${issueNumber})`;
+        const prBody = buildInitialPrBody({
+          issueNumber,
+          commitCount: newCommitCount,
+          ...(stacked && blockerIssueNumber !== undefined && blockerPrNumber !== undefined
+            ? { stacked: { blockerIssueNumber, blockerPrNumber } }
+            : {}),
+        });
+        gh(
+          [
+            "pr",
+            "create",
+            "--head",
+            agentBranch,
+            "--base",
+            PR_BASE,
+            "--title",
+            prTitle,
+            "--body-file",
+            "-",
+          ],
+          { input: prBody },
+        );
+      } else {
+        console.log(
+          `[phoebe] PR #${existingPr} already exists for ${agentBranch} — posting follow-up note.`,
+        );
+        postPrComment(existingPr, followUpPrComment(issueNumber, newCommitCount));
+      }
     } else {
-      console.log(
-        `[phoebe] PR #${existingPr} already exists for ${agentBranch} — posting follow-up note.`,
-      );
-      postPrComment(existingPr, followUpPrComment(issueNumber, newCommitCount));
+      console.log("[phoebe] No commits — skipping PR creation.");
     }
-    prCreated = true;
-  } else {
-    console.log("[phoebe] No commits — skipping PR creation.");
-  }
-
-  if (prCreated || newCommitCount === 0) {
+  } finally {
     removeWorktree(repoDir, worktreeDir);
   }
 }
@@ -1010,9 +1058,15 @@ async function fetchConflictingPrs(): Promise<ConflictingPrCandidate[]> {
   const openPrs = listOpenPhoebePrs();
   const conflicting: ConflictingPrCandidate[] = [];
   for (const pr of openPrs) {
-    const candidate = await conflictingPrCandidate(pr);
-    if (candidate) {
-      conflicting.push(candidate);
+    try {
+      const candidate = await conflictingPrCandidate(pr);
+      if (candidate) {
+        conflicting.push(candidate);
+      }
+    } catch (error) {
+      console.warn(
+        `[phoebe] Skipping PR #${pr.number} for conflicts this cycle — ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   }
   return conflicting;
@@ -1093,22 +1147,28 @@ async function fetchReviewsWorkData(): Promise<{
   const reviewActivityPrs: ReviewsCandidate[] = [];
 
   for (const pr of openPrs) {
-    const info = viewPrMergeInfo(pr.number);
-    if (isPrMergeConflicting(info.mergeable, info.mergeStateStatus)) {
-      continue;
+    try {
+      const info = viewPrMergeInfo(pr.number);
+      if (isPrMergeConflicting(info.mergeable, info.mergeStateStatus)) {
+        continue;
+      }
+      const threads = fetchReviewThreads(pr.number);
+      const issueNumber = parseIssueNumberFromBranch(info.headRefName);
+      reviewActivityPrs.push({
+        prNumber: info.number,
+        headRefName: info.headRefName,
+        authorLogin: pr.authorLogin,
+        mergeable: info.mergeable,
+        mergeStateStatus: info.mergeStateStatus,
+        threads,
+        handledWatermark: prReviewsHandledWatermark(pr.number),
+        ...(issueNumber !== null ? { issueNumber } : {}),
+      });
+    } catch (error) {
+      console.warn(
+        `[phoebe] Skipping PR #${pr.number} for reviews this cycle — ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
-    const threads = fetchReviewThreads(pr.number);
-    const issueNumber = parseIssueNumberFromBranch(info.headRefName);
-    reviewActivityPrs.push({
-      prNumber: info.number,
-      headRefName: info.headRefName,
-      authorLogin: pr.authorLogin,
-      mergeable: info.mergeable,
-      mergeStateStatus: info.mergeStateStatus,
-      threads,
-      handledWatermark: prReviewsHandledWatermark(pr.number),
-      ...(issueNumber !== null ? { issueNumber } : {}),
-    });
   }
 
   const issueNumbers = [
@@ -1456,7 +1516,11 @@ function describeUnit(picked: WorkUnit): string {
 const argv = process.argv.slice(2);
 const runOnce = argv.includes("--run-once");
 const dryRun = argv.includes("--dry-run");
-const pollIntervalMs = Number(process.env["PHOEBE_POLL_INTERVAL_MS"] ?? DEFAULT_POLL_INTERVAL_MS);
+const rawPollIntervalMs = Number(process.env["PHOEBE_POLL_INTERVAL_MS"]);
+const pollIntervalMs =
+  Number.isFinite(rawPollIntervalMs) && rawPollIntervalMs > 0
+    ? rawPollIntervalMs
+    : DEFAULT_POLL_INTERVAL_MS;
 
 console.log(
   runOnce
