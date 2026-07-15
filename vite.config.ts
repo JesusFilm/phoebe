@@ -10,5 +10,8 @@ export default defineConfig({
       typeCheck: true,
     },
   },
-  fmt: {},
+  fmt: {
+    // Vendored agent skill docs keep their upstream formatting.
+    ignorePatterns: [".agents/skills/**/*.md"],
+  },
 });
