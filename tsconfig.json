@@ -6,12 +6,12 @@
     "lib": ["ES2023"],
     "types": ["node"],
     "strict": true,
-    "declaration": true,
-    "outDir": "dist",
-    "rootDir": "src",
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
     "verbatimModuleSyntax": true
   },
-  "include": ["src"]
+  "include": ["src", "phoebe.config.ts", "vite.config.ts"]
 }
