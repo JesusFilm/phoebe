@@ -4,7 +4,29 @@
 // template are marked *before* argument substitution, so `!`...`` patterns
 // arriving via substituted values are treated as data, never executed.
 
+import type { PhoebeConfig } from "./config-schema.ts";
+
 export type PromptArgs = Record<string, string>;
+
+/**
+ * The standard placeholder set every default prompt template can reference —
+ * derived once per run from the resolved config so callers can retarget the
+ * toolchain by editing `phoebe.config.ts` alone. Per-callsite args
+ * (`ISSUE_NUMBER`, `PR_NUMBER`, …) are merged on top by `runAgentInWorktree`.
+ */
+export function buildDefaultPromptArgs(config: PhoebeConfig): PromptArgs {
+  return {
+    INSTALL_COMMAND: config.installCommand,
+    CHECK_COMMAND: config.checkCommand,
+    TEST_COMMAND: config.testCommand,
+    READY_COMMAND: config.readyCommand,
+    DEFAULT_BRANCH: config.defaultBranch,
+    BRANCH_PREFIX: config.branchPrefix,
+    READY_LABEL: config.readyLabel,
+    PROCESSING_LABEL: config.processingLabel,
+    REVIEWS_SUCCESS_HEADING: config.reviewsSuccessHeading,
+  };
+}
 
 /**
  * Marker inserted between `!` and the opening backtick for shell blocks that

@@ -1,5 +1,20 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
-import { renderPrompt, substitutePromptArgs } from "./prompt.ts";
+import { resolveConfig, type PhoebeUserConfig } from "./config-schema.ts";
+import { buildDefaultPromptArgs, renderPrompt, substitutePromptArgs } from "./prompt.ts";
+
+function fixtureConfig(): ReturnType<typeof resolveConfig> {
+  const user: PhoebeUserConfig = {
+    repoSlug: "acme/widget",
+    repoUrl: "https://github.com/acme/widget.git",
+    installCommand: "npm ci",
+    checkCommand: "npm run check",
+    testCommand: "npm test",
+    readyCommand: "npm run ready",
+  };
+  return resolveConfig(user);
+}
 
 describe("substitutePromptArgs", () => {
   test("replaces {{KEY}} placeholders, with or without inner spaces", () => {
@@ -33,5 +48,72 @@ describe("renderPrompt", () => {
     });
     expect(executed).toEqual([]);
     expect(out).toBe("Body: try !`rm -rf /` ok");
+  });
+});
+
+describe("buildDefaultPromptArgs", () => {
+  test("derives every toolchain/label placeholder from the resolved config", () => {
+    const args = buildDefaultPromptArgs(fixtureConfig());
+    expect(args).toMatchObject({
+      INSTALL_COMMAND: "npm ci",
+      CHECK_COMMAND: "npm run check",
+      TEST_COMMAND: "npm test",
+      READY_COMMAND: "npm run ready",
+      DEFAULT_BRANCH: "main",
+      BRANCH_PREFIX: "phoebe/",
+      READY_LABEL: "ready-for-agent",
+      PROCESSING_LABEL: "processing",
+      REVIEWS_SUCCESS_HEADING: "## Review feedback addressed",
+    });
+  });
+});
+
+describe("shipped default prompts", () => {
+  const promptsDir = join(import.meta.dirname, "..", "prompts");
+
+  const cases = [
+    { file: "prompt.md", extra: { ISSUE_NUMBER: "42" } },
+    {
+      file: "conflict-prompt.md",
+      extra: { PR_NUMBER: "12", PR_BRANCH: "phoebe/issue-42", BLOCKER_PR_NUMBERS: "" },
+    },
+    {
+      file: "checks-prompt.md",
+      extra: { PR_NUMBER: "12", PR_BRANCH: "phoebe/issue-42", FAILING_CHECKS: "- ci: FAILURE" },
+    },
+    { file: "reviews-prompt.md", extra: { PR_NUMBER: "12", PR_BRANCH: "phoebe/issue-42" } },
+  ] as const;
+
+  test.each(cases)(
+    "$file renders end-to-end with default args + per-callsite args",
+    ({ file, extra }) => {
+      const template = readFileSync(join(promptsDir, file), "utf8");
+      const args = { ...buildDefaultPromptArgs(fixtureConfig()), ...extra };
+      // execShell is a stub — no shell blocks should reach the real shell during
+      // this render, so returning empty text is fine.
+      const out = renderPrompt(template, args, () => "");
+      expect(out, `${file} left an unsubstituted placeholder`).not.toMatch(/\{\{[A-Za-z_]/);
+    },
+  );
+
+  test("prompt.md references the toolchain via placeholders, not literals", () => {
+    const template = readFileSync(join(promptsDir, "prompt.md"), "utf8");
+    expect(template).toContain("{{READY_COMMAND}}");
+    expect(template).toContain("{{CHECK_COMMAND}}");
+    expect(template).toContain("{{TEST_COMMAND}}");
+    expect(template).toContain("{{PROCESSING_LABEL}}");
+    expect(template).toContain("{{READY_LABEL}}");
+    expect(template).toContain("{{DEFAULT_BRANCH}}");
+  });
+
+  test("reviews prompt is self-contained (no external skill dependency)", () => {
+    const template = readFileSync(join(promptsDir, "reviews-prompt.md"), "utf8");
+    expect(template).not.toMatch(/handle-pr-review/);
+    expect(template).not.toMatch(/\.claude\/skills\//);
+    // The prompt should carry its own workflow, so a few landmark steps live
+    // inline rather than being delegated.
+    expect(template).toMatch(/reviewThreads/);
+    expect(template).toMatch(/resolveReviewThread/);
+    expect(template).toContain("{{REVIEWS_SUCCESS_HEADING}}");
   });
 });

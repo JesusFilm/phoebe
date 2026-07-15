@@ -17,7 +17,7 @@ import { execFileSync, execSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { config } from "../phoebe.config.ts";
+import { config } from "./resolved-config.ts";
 import { PROVIDER_NAMES, type ProviderName } from "./config-schema.ts";
 import { buildAgentEnv } from "./agent-env.ts";
 import {
@@ -38,7 +38,7 @@ import {
 import { PROVIDERS } from "./providers/providers.ts";
 import { runAgent } from "./providers/run-agent.ts";
 import type { Provider } from "./providers/types.ts";
-import { renderPrompt } from "./prompt.ts";
+import { buildDefaultPromptArgs, renderPrompt } from "./prompt.ts";
 import { SELF_UPDATE_EXIT_CODE, shouldExitForSelfUpdate } from "./supervisor-decision.ts";
 import {
   buildInitialPrBody,
@@ -489,9 +489,11 @@ async function runAgentInWorktree(opts: {
   promptArgs: Record<string, string>;
 }): Promise<void> {
   const { provider, model } = selectProvider();
+  // Caller-supplied per-callsite args (ISSUE_NUMBER, PR_NUMBER, …) override
+  // the standard config-derived set by key.
   const prompt = renderPrompt(
     loadPromptTemplate(opts.promptFile),
-    opts.promptArgs,
+    { ...buildDefaultPromptArgs(config), ...opts.promptArgs },
     promptShell(opts.worktreeDir),
   );
   const env = buildAgentEnv({
