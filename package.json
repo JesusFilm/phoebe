@@ -22,7 +22,10 @@
   "scripts": {
     "ready": "vp check && vp run -r lint && vp run -r typecheck && vp run -r test && vp run -r build",
     "check": "vp check",
-    "test": "vp test"
+    "lint": "vp lint",
+    "typecheck": "vp exec tsc --noEmit",
+    "test": "vp test",
+    "build": "vp exec tsc -p tsconfig.build.json"
   },
   "devDependencies": {
     "@types/node": "^22.13.0",
