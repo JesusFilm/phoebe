@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.env
+.phoebe/
+*.log
+.DS_Store
+.vite/

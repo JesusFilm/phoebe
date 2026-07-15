@@ -1,0 +1,36 @@
+{
+  "name": "phoebe-agent",
+  "version": "0.0.0",
+  "private": false,
+  "description": "Phoebe — an AFK coding agent: a configurable engine that works a GitHub issue tracker one ticket at a time, distributed as a pinned CLI.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JesusFilm/phoebe.git"
+  },
+  "homepage": "https://github.com/JesusFilm/phoebe#readme",
+  "bugs": "https://github.com/JesusFilm/phoebe/issues",
+  "bin": {
+    "phoebe": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "prompts",
+    "templates"
+  ],
+  "scripts": {
+    "ready": "vp check && vp run -r lint && vp run -r typecheck && vp run -r test && vp run -r build",
+    "check": "vp check",
+    "test": "vp test"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "packageManager": "pnpm@11.2.2",
+  "devDependencies": {
+    "@types/node": "^22.13.0",
+    "typescript": "^5.7.0",
+    "vite-plus": "^0.2.0"
+  }
+}
