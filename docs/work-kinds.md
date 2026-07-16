@@ -9,8 +9,8 @@ runtime plumbing is `src/orchestrator.ts` and `src/main.ts`.
 
 ## The poll loop and `workOrder`
 
-```
-workOrder: ["conflicts", "checks", "reviews", "issues"]   # default
+```yaml
+workOrder: ["conflicts", "checks", "reviews", "issues"] # default
 ```
 
 Each cycle the engine gathers work data for every kind, then
@@ -22,7 +22,7 @@ piling up new branches.
 
 - **Persistent mode** (no flags) runs all kinds and sleeps
   `PHOEBE_POLL_INTERVAL_MS` (default 300000) between empty cycles.
-- **`--run-once`** works at most one unit of the first *one-shot-eligible* kind
+- **`--run-once`** works at most one unit of the first _one-shot-eligible_ kind
   and exits. Only `issues` is one-shot-eligible; the three janitor kinds are
   **persistent-mode only**. Under `--run-once` with no issue to work, Phoebe
   prints "Nothing to do" and exits.
@@ -90,7 +90,7 @@ Selection (`selectConflictUnit` → oldest eligible PR number):
    still be computing mergeability — the engine retries a few times).
 2. Skip PRs whose issue is **stacked on an open blocker** — divergence from the
    base is expected there, not a real conflict.
-3. Skip PRs whose latest **failure watermark** matches the current PR head *and*
+3. Skip PRs whose latest **failure watermark** matches the current PR head _and_
    base head — a prior fix attempt already failed against this exact pair, so
    retrying would loop until either side moves.
 
@@ -150,7 +150,7 @@ bot's own GitHub login (`phoebeLogin`), fetched once per cycle:
    `reviewsSuccessHeading`.
 2. Push new commits (or detect the agent already pushed).
 3. Post a `handled` watermark comment stamped with the newest activity time from
-   the **pre-run** snapshot — so feedback posted *during* the run is not marked
+   the **pre-run** snapshot — so feedback posted _during_ the run is not marked
    handled and correctly re-selects the PR next cycle. If the agent produced no
    summary and no push, the comment notes the failure and Phoebe retries on new
    activity.
@@ -159,13 +159,17 @@ bot's own GitHub login (`phoebeLogin`), fetched once per cycle:
 
 Janitors record their progress as **hidden HTML-comment markers** on the PR so
 state survives across daemon restarts (nothing is kept in memory between
-cycles). Latest marker wins when several exist. See
-[`operating.md`](operating.md#watermark-comments) for reading and resetting
-them.
+cycles). The parser reads comments newest-first and takes the first marker it
+finds, so **the latest matching marker wins** when several exist — deleting the
+newest one falls back to the next-newest, not to a clean slate. To reset state,
+move whatever the marker is keyed on (see the table below) or remove the newest
+matching comment. See [`operating.md`](operating.md#watermark-comments) for the
+operator's view.
 
-| Kind        | Marker                              | Keyed on                    | Effect                                                    |
-| ----------- | ----------------------------------- | --------------------------- | -------------------------------------------------------- |
-| `conflicts` | `phoebe-conflict-fail`              | `prHead` + `mainHead`       | Skip re-fixing until either the PR or the base moves.    |
-| `checks`    | `phoebe-checks-fail`                | `prHead`                    | Skip re-fixing until the PR head moves.                  |
-| `reviews`   | `phoebe-reviews-handled`            | `latest` activity timestamp | Only re-run on review activity newer than this.          |
+| Kind        | Marker                   | Keyed on                    | Effect                                                |
+| ----------- | ------------------------ | --------------------------- | ----------------------------------------------------- |
+| `conflicts` | `phoebe-conflict-fail`   | `prHead` + `mainHead`       | Skip re-fixing until either the PR or the base moves. |
+| `checks`    | `phoebe-checks-fail`     | `prHead`                    | Skip re-fixing until the PR head moves.               |
+| `reviews`   | `phoebe-reviews-handled` | `latest` activity timestamp | Only re-run on review activity newer than this.       |
+
 </content>

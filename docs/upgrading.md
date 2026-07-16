@@ -25,16 +25,16 @@ npx --yes phoebe-agent init ./phoebe   # into a subdirectory
 
 It writes these files (all **consumer-owned** — commit them):
 
-| File                            | Purpose                                                             |
-| ------------------------------- | ------------------------------------------------------------------ |
-| `phoebe.config.ts`              | Consumer config starter — edit the five required fields.           |
-| `prompts/`                      | Copies of the shipped agent prompts. Edit to override; leave as-is to use defaults. |
-| `.env.example`                  | Documented env vars — copy to `.env` and fill secrets.             |
-| `.gitignore`                    | Phoebe entries **appended additively** (existing content untouched).|
-| `container/Dockerfile`          | Runtime image: Node + git + `gh` + the pinned `phoebe-agent`.      |
-| `container/compose.yml`         | Base one-shot compose config + named volumes.                      |
-| `container/compose.daemon.yml`  | Overlay to run Phoebe as a persistent daemon.                      |
-| `container/supervisor.sh`       | Warm-install + engine-restart/self-update loop.                    |
+| File                           | Purpose                                                                             |
+| ------------------------------ | ----------------------------------------------------------------------------------- |
+| `phoebe.config.ts`             | Consumer config starter — edit the five required fields.                            |
+| `prompts/`                     | Copies of the shipped agent prompts. Edit to override; leave as-is to use defaults. |
+| `.env.example`                 | Documented env vars — copy to `.env` and fill secrets.                              |
+| `.gitignore`                   | Phoebe entries **appended additively** (existing content untouched).                |
+| `container/Dockerfile`         | Runtime image: Node + git + `gh` + the pinned `phoebe-agent`.                       |
+| `container/compose.yml`        | Base one-shot compose config + named volumes.                                       |
+| `container/compose.daemon.yml` | Overlay to run Phoebe as a persistent daemon.                                       |
+| `container/supervisor.sh`      | Warm-install + engine-restart/self-update loop.                                     |
 
 **Existing files are left untouched**, so re-running `init` is safe and only
 fills gaps. To regenerate one scaffolded file, delete it and re-run. Placeholder
@@ -59,8 +59,14 @@ explicit released version** in a real deployment.
 To move to a new release:
 
 1. Bump `PHOEBE_VERSION` in `.env`.
-2. Rebuild the image: `docker compose build` (from the `container/` directory).
-3. Restart the service (`docker compose up -d` with the daemon overlay).
+2. Rebuild the image: `docker compose --env-file ../.env build` (from the
+   `container/` directory).
+3. Restart the service: `docker compose --env-file ../.env up -d` with the
+   daemon overlay.
+
+The `--env-file ../.env` is needed because the scaffolded `.env` lives at the
+repo root while the compose files live in `container/`; Compose otherwise only
+auto-loads a `.env` sitting next to the compose file.
 
 New engine defaults land automatically — because your `phoebe.config.ts` only
 names fields you deliberately override, any field you left to the default picks
@@ -69,14 +75,26 @@ split in [`configuration.md`](configuration.md): a minimal config stays current.
 
 ## Self-driven upgrade (supervisor)
 
-Inside the container the supervisor also upgrades **without an operator** when
-Phoebe's own code moves on the tracked branch. After each cycle's fetch, if a
-changed path matches `config.selfUpdatePaths` (default `package.json`,
-`package-lock.json`), the engine exits with a dedicated self-update code; the
-supervisor reinstalls the pinned CLI and re-execs. A freshly pulled commit that
-crash-loops on startup is quarantined and the supervisor falls back to the last
-healthy SHA until a fix lands. Full mechanics — exit codes, crash-loop
-thresholds, the TypeScript-spec/shell-mirror split — are in
+Inside the container the supervisor is _designed_ to upgrade **without an
+operator** when Phoebe's own code moves on the tracked branch. After each
+cycle's fetch, if a changed path matches `config.selfUpdatePaths` (default
+`package.json`, `package-lock.json`), the engine exits with a dedicated
+self-update code; the supervisor is meant to catch that code, reinstall the
+pinned CLI, and re-exec. A freshly pulled commit that crash-loops on startup is
+quarantined and the supervisor falls back to the last healthy SHA until a fix
+lands.
+
+> **Known limitation:** the self-update exit code is currently **mismatched**
+> between the engine and the scaffolded supervisor — the engine exits `42`
+> (`SELF_UPDATE_EXIT_CODE` in `src/supervisor-decision.ts`) but
+> `templates/container/supervisor.sh` watches for `75`. Until these are aligned,
+> a self-update exit is treated as an ordinary crash (restart after backoff)
+> rather than triggering a reinstall + re-exec, so **do not rely on automatic
+> self-update yet** — use the operator-driven upgrade above. Operator-driven
+> upgrades and the crash-loop fallback are unaffected.
+
+Full mechanics — exit codes, crash-loop thresholds, the
+TypeScript-spec/shell-mirror split — are in
 [`architecture.md`](architecture.md#supervisor-self-update-and-crash-loop-fallback).
 
 ## Scaffolded-file invariants

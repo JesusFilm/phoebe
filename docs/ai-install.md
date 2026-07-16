@@ -66,10 +66,15 @@ installs the pinned engine.
 
 ## 4. Build the image and one-shot the engine
 
-```
+The scaffolded `.env` lives at the repo root while the compose files live in
+`container/`, so pass `--env-file ../.env` on every Compose command run from
+there — otherwise Compose only auto-loads a `.env` sitting beside the compose
+file and misses `GH_TOKEN`, `PHOEBE_VERSION`, and the provider keys.
+
+```bash
 cd container
-docker compose build
-docker compose run --rm phoebe --dry-run --run-once
+docker compose --env-file ../.env build
+docker compose --env-file ../.env run --rm phoebe --dry-run --run-once
 ```
 
 The `--dry-run` prints the unit the engine would pick without executing it.
@@ -77,15 +82,18 @@ Remove `--dry-run` to actually work a unit.
 
 ## 5. Start the persistent daemon
 
-```
-docker compose -f compose.yml -f compose.daemon.yml up -d
+```bash
+docker compose --env-file ../.env -f compose.yml -f compose.daemon.yml up -d
 ```
 
-The supervisor restarts the engine on crash and re-execs on self-update.
+The supervisor restarts the engine on crash. (Automatic in-place self-update is
+not yet reliable — the engine and scaffolded supervisor use mismatched exit
+codes; see the known limitation in
+[`upgrading.md`](upgrading.md#self-driven-upgrade-supervisor). Use the
+operator-driven upgrade below to move versions.)
 
 ## 6. Upgrade later
 
 Bump `PHOEBE_VERSION` in `.env`, rebuild the image
-(`docker compose build`), and restart the service. The supervisor also
-auto-upgrades in-place when the container's compose environment changes at
-next tick.
+(`docker compose --env-file ../.env build`), and restart the service
+(`docker compose --env-file ../.env up -d` with the daemon overlay).

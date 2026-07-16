@@ -25,12 +25,12 @@ sets, or of telling Phoebe "a human has this now."
 ## Starting a unit of work: `readyLabel`
 
 Add `readyLabel` (default `ready-for-agent`) to an issue and Phoebe will pick it
-up when it reaches the front of the queue. To influence *which* ready issue goes
+up when it reaches the front of the queue. To influence _which_ ready issue goes
 first:
 
-- **Priority** is inferred from the title/body text: wording like *bug, broken,
-  crash, regression, fix* sorts first; *tracer, wire, poc* next; then ordinary
-  *polish*; then *refactor* last.
+- **Priority** is inferred from the title/body text: wording like _bug, broken,
+  crash, regression, fix_ sorts first; _tracer, wire, poc_ next; then ordinary
+  _polish_; then _refactor_ last.
 - Within a priority, **older issues win** (oldest created, then lowest number).
 
 To pause an issue without deleting it, just remove `readyLabel`. Phoebe never
@@ -66,11 +66,11 @@ This is the "I've got this one" switch. Remove the label to hand it back.
 
 Draft state is a second, lighter opt-out governed by `draftPrs`:
 
-| `draftPrs`                   | Effect on drafts                                             |
-| ---------------------------- | ----------------------------------------------------------- |
-| `skip-non-phoebe` (default)  | Drafts on non-Phoebe branches are off-limits; Phoebe's own drafts are still worked. |
-| `skip-all`                   | Phoebe never touches any draft.                             |
-| `include`                    | Drafts are fair game like any other PR.                     |
+| `draftPrs`                  | Effect on drafts                                                                    |
+| --------------------------- | ----------------------------------------------------------------------------------- |
+| `skip-non-phoebe` (default) | Drafts on non-Phoebe branches are off-limits; Phoebe's own drafts are still worked. |
+| `skip-all`                  | Phoebe never touches any draft.                                                     |
+| `include`                   | Drafts are fair game like any other PR.                                             |
 
 With the default, **marking someone else's PR a draft takes it off Phoebe's
 plate** without needing the opt-out label. Mark it ready-for-review to hand it
@@ -80,7 +80,7 @@ back.
 
 - `prScope: "phoebe"` (default) — Phoebe only maintains its own
   `branchPrefix` (default `phoebe/`) branches.
-- `prScope: "all"` — Phoebe maintains *every* same-repo PR (still honouring
+- `prScope: "all"` — Phoebe maintains _every_ same-repo PR (still honouring
   `prOptOutLabel`, `draftPrs`, and the fork exclusion).
 
 Cross-repository PRs from forks are **always** excluded.
@@ -91,25 +91,27 @@ Phoebe keeps no memory between cycles; it records janitor progress as hidden
 HTML-comment markers on the PR. You normally never see them, but they explain
 "why isn't Phoebe re-fixing this?":
 
-| Marker                    | Meaning                                                                                             |
-| ------------------------- | -------------------------------------------------------------------------------------------------- |
-| `phoebe-conflict-fail`    | A conflict fix already failed against this exact PR-head + base-head pair; Phoebe waits for either side to move before retrying. |
-| `phoebe-checks-fail`      | A CI fix already failed at this PR head; Phoebe waits for a new push before retrying.               |
-| `phoebe-reviews-handled`  | Review feedback up to a timestamp was handled; Phoebe only re-runs on newer review activity.        |
+| Marker                   | Meaning                                                                                                                          |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| `phoebe-conflict-fail`   | A conflict fix already failed against this exact PR-head + base-head pair; Phoebe waits for either side to move before retrying. |
+| `phoebe-checks-fail`     | A CI fix already failed at this PR head; Phoebe waits for a new push before retrying.                                            |
+| `phoebe-reviews-handled` | Review feedback up to a timestamp was handled; Phoebe only re-runs on newer review activity.                                     |
 
 **To force a retry**, move the thing the watermark is keyed on: push a commit
 (new PR head), merge/advance the base branch, or post fresh review activity.
-Because the marker lives in a PR comment, you can also delete the failure
-comment to clear a stuck conflict/checks watermark. When a janitor gives up it
-posts a **visible** failure comment too, so a human knows to step in.
+Because the marker lives in a PR comment, you can also delete it — but the
+parser takes the **newest** matching marker, so deleting a failure comment only
+resets state when it removes that newest one; an older matching marker still
+underneath it will keep applying. When a janitor gives up it posts a **visible**
+failure comment too, so a human knows to step in.
 
 ## Running modes
 
-| Invocation                          | Behaviour                                                                   |
-| ----------------------------------- | -------------------------------------------------------------------------- |
-| daemon (`compose.daemon.yml`)       | Persistent poll loop; all kinds; idles `PHOEBE_POLL_INTERVAL_MS` (300000). |
-| `--run-once`                        | One `issues` unit then exit. Janitor kinds are persistent-mode only.       |
-| `--dry-run --run-once`              | Print the unit that *would* be picked (host-safe, nothing executes).       |
+| Invocation                    | Behaviour                                                                  |
+| ----------------------------- | -------------------------------------------------------------------------- |
+| daemon (`compose.daemon.yml`) | Persistent poll loop; all kinds; idles `PHOEBE_POLL_INTERVAL_MS` (300000). |
+| `--run-once`                  | One `issues` unit then exit. Janitor kinds are persistent-mode only.       |
+| `--dry-run --run-once`        | Print the unit that _would_ be picked (host-safe, nothing executes).       |
 
 `--dry-run` is the safe way to preview selection on your host without booting
 the container. See [`upgrading.md`](upgrading.md) for start/stop/upgrade
@@ -123,14 +125,15 @@ See the [environment overlay table](configuration.md#environment-overlay-phoebe_
 
 ## Quick reference
 
-| I want to…                                  | Do this                                                         |
-| ------------------------------------------- | -------------------------------------------------------------- |
-| Queue an issue for Phoebe                   | Add `readyLabel` (`ready-for-agent`).                          |
-| Pause a queued issue                        | Remove `readyLabel`.                                           |
-| Bump an issue up the queue                  | Word it as a bug/fix, or it waits its turn by age.            |
-| Sequence dependent issues                   | `Blocked by #N` in the body.                                  |
-| Take a PR away from Phoebe                  | Add `prOptOutLabel` (`ready-for-human`) or mark it draft.     |
-| Hand a PR back                              | Remove the label / mark ready-for-review.                    |
-| Force a janitor to retry                    | Push, advance the base, post new review feedback, or delete the failure comment. |
-| Let Phoebe maintain all PRs, not just its own | `prScope: "all"`.                                            |
+| I want to…                                    | Do this                                                                                                                                       |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| Queue an issue for Phoebe                     | Add `readyLabel` (`ready-for-agent`).                                                                                                         |
+| Pause a queued issue                          | Remove `readyLabel`.                                                                                                                          |
+| Bump an issue up the queue                    | Word it as a bug/fix, or it waits its turn by age.                                                                                            |
+| Sequence-dependent issues                     | `Blocked by #N` in the body.                                                                                                                  |
+| Take a PR away from Phoebe                    | Add `prOptOutLabel` (`ready-for-human`) — works for any PR. Under the default `draftPrs`, marking a **non-Phoebe** PR draft also opts it out. |
+| Hand a PR back                                | Remove the label / mark ready-for-review.                                                                                                     |
+| Force a janitor to retry                      | Push, advance the base, post new review feedback, or delete the newest failure comment.                                                       |
+| Let Phoebe maintain all PRs, not just its own | `prScope: "all"`.                                                                                                                             |
+
 </content>

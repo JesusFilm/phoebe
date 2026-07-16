@@ -42,18 +42,18 @@ load-bearing:
   private clone on the named volume.
 
 Keeping selection logic host-runnable makes it fast to preview what Phoebe
-*would* do (`phoebe --dry-run --run-once`) without booting the container.
+_would_ do (`phoebe --dry-run --run-once`) without booting the container.
 
 ## Named volumes
 
 Three named volumes hold all persistent state (declared in `compose.yml`,
 defaulted in `config.paths`):
 
-| Volume              | Mount             | Config field        | Holds                                    |
-| ------------------- | ----------------- | ------------------- | ---------------------------------------- |
-| `phoebe-repo`       | `/data/repo`      | `paths.repoDir`     | The private clone (the origin hub).      |
-| `phoebe-worktrees`  | `/data/worktrees` | `paths.worktreesDir`| Per-work-unit git worktrees.             |
-| `phoebe-state`      | `/data/state`     | `paths.stateDir`    | Lock, watermarks, crash-loop state, logs.|
+| Volume             | Mount             | Config field         | Holds                                     |
+| ------------------ | ----------------- | -------------------- | ----------------------------------------- |
+| `phoebe-repo`      | `/data/repo`      | `paths.repoDir`      | The private clone (the origin hub).       |
+| `phoebe-worktrees` | `/data/worktrees` | `paths.worktreesDir` | Per-work-unit git worktrees.              |
+| `phoebe-state`     | `/data/state`     | `paths.stateDir`     | Lock, watermarks, crash-loop state, logs. |
 
 The consumer's `phoebe.config.ts` and `prompts/` are mounted **read-only** into
 `/etc/phoebe` so a `docker compose restart` picks up edits without a rebuild.
@@ -98,7 +98,7 @@ prompt-injected agent cannot exfiltrate the whole keyring.
 
 Prompts are rendered from templates (`src/prompt.ts`): `{{KEY}}` placeholders
 are substituted from config-derived args plus per-callsite args, and `` !`cmd` ``
-shell blocks that appear in the *raw* template are executed in the worktree and
+shell blocks that appear in the _raw_ template are executed in the worktree and
 spliced in. Shell blocks arriving via substituted values are treated as data,
 never executed — a marker pass runs before substitution to guarantee it.
 
@@ -114,11 +114,11 @@ guards against — a bad pull that makes the TypeScript itself fail to boot.
 branch>`. If any changed path matches `config.selfUpdatePaths` (default
 `package.json`, `package-lock.json` — i.e. Phoebe's own code or its dependency
 lockfile moved), the orchestrator exits with `SELF_UPDATE_EXIT_CODE`. The
-supervisor catches that exit code, reinstalls the pinned CLI, and re-execs.
-Only the container path self-updates; the host never does.
+supervisor is meant to catch that exit code, reinstall the pinned CLI, and
+re-exec. Only the container path self-updates; the host never does.
 
 **Crash-loop fallback.** A freshly pulled SHA that keeps dying on startup is
-quarantined: after `CRASH_LOOP_THRESHOLD` (3) consecutive *fast* crashes — a run
+quarantined: after `CRASH_LOOP_THRESHOLD` (3) consecutive _fast_ crashes — a run
 that exits non-zero before `HEALTHY_RUN_SECONDS` (60s) — the supervisor pins to
 the **last SHA that ran healthily** and passes the quarantined SHA in
 `PHOEBE_QUARANTINED_SHA`. While `origin/<branch>` still points at the bad commit,
@@ -127,9 +127,17 @@ the branch advances past it (a fix landed), self-updating resumes. A run counts
 as healthy if it self-updated, exited cleanly, or survived the healthy window.
 
 The self-update exit code is defined once as the tested spec
-(`SELF_UPDATE_EXIT_CODE` in `src/supervisor-decision.ts`, value `42`) and the
-scaffolded `supervisor.sh` must watch for the same value. Keep the two in sync
-whenever you touch either.
+(`SELF_UPDATE_EXIT_CODE` in `src/supervisor-decision.ts`, value `42`); the
+scaffolded `supervisor.sh` must watch for the same value.
+
+> **Known limitation:** the two are currently **out of sync** — the engine exits
+> `42`, but `templates/container/supervisor.sh` watches for `75`. As a result a
+> self-update exit is presently treated as an ordinary crash (the persistent
+> supervisor restarts after a backoff) rather than triggering a reinstall +
+> re-exec, so automatic self-update does not take effect until the codes are
+> aligned. Operator-driven upgrades (rebuild + restart) and the crash-loop
+> fallback are unaffected. Fixing this is tracked as a follow-up to the docs
+> work; when you touch either value, keep the two in sync.
 
 ## One cycle, end to end
 
