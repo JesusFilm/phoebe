@@ -61,8 +61,8 @@ To move to a new release:
 1. Bump `PHOEBE_VERSION` in `.env`.
 2. Rebuild the image: `docker compose --env-file ../.env build` (from the
    `container/` directory).
-3. Restart the service: `docker compose --env-file ../.env up -d` with the
-   daemon overlay.
+3. Restart the service with the daemon overlay:
+   `docker compose --env-file ../.env -f compose.yml -f compose.daemon.yml up -d`.
 
 The `--env-file ../.env` is needed because the scaffolded `.env` lives at the
 repo root while the compose files live in `container/`; Compose otherwise only

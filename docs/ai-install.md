@@ -95,5 +95,6 @@ operator-driven upgrade below to move versions.)
 ## 6. Upgrade later
 
 Bump `PHOEBE_VERSION` in `.env`, rebuild the image
-(`docker compose --env-file ../.env build`), and restart the service
-(`docker compose --env-file ../.env up -d` with the daemon overlay).
+(`docker compose --env-file ../.env build`), and restart the service with the
+daemon overlay
+(`docker compose --env-file ../.env -f compose.yml -f compose.daemon.yml up -d`).
