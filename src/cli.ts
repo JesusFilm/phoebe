@@ -1,9 +1,15 @@
 #!/usr/bin/env node
 
 // `phoebe` bin — the packaged CLI consumers invoke via
-// `npx phoebe-agent [flags]` (or a pinned `phoebe` script). Loads the
-// consumer's `phoebe.config.ts`, overlays `PHOEBE_*` env vars, installs the
-// resolved config into `src/resolved-config.ts`, and hands off to the engine.
+// `npx phoebe-agent [flags]` (or a pinned `phoebe` script). Recognises two
+// modes:
+//
+//   phoebe init [dir]   Scaffold a consumer-owned runtime (config, prompts,
+//                       .env.example, container templates, gitignore).
+//                       Skips existing files — safe to re-run.
+//   phoebe [flags]      Run the engine. Loads the consumer's
+//                       `phoebe.config.ts`, overlays `PHOEBE_*` env vars,
+//                       installs the resolved config, then hands off to main.
 //
 // This is the only supported v1 programmatic surface: there is no exported
 // `run(config)` — CLI-only. That keeps every consumer on the same load/resolve/
@@ -12,6 +18,7 @@
 
 import { pathToFileURL } from "node:url";
 import { resolveConfig } from "./config-schema.ts";
+import { formatInitReport, runInit } from "./init.ts";
 import { applyEnvOverlay, loadUserConfig, resolveConfigPath } from "./load-config.ts";
 import { setResolvedConfig } from "./resolved-config.ts";
 
@@ -53,12 +60,42 @@ export function parseCliArgs(argv: readonly string[]): ParsedArgs {
   return { configPath, help, forward };
 }
 
+export type ParsedInitArgs = { targetDir: string; help: boolean };
+
+/**
+ * Parse argv left after the leading `init` token has been consumed. Supports
+ * an optional positional target directory (`phoebe init ./my-agent`) and
+ * `--help`. Extra flags are rejected loudly so a typo like `--forcee` fails
+ * fast instead of being silently ignored.
+ */
+export function parseInitArgs(argv: readonly string[]): ParsedInitArgs {
+  let targetDir: string | undefined;
+  let help = false;
+  for (const arg of argv) {
+    if (arg === "--help" || arg === "-h") {
+      help = true;
+      continue;
+    }
+    if (arg.startsWith("-")) {
+      throw new Error(`Unknown flag \`${arg}\` for \`phoebe init\`. See \`phoebe init --help\`.`);
+    }
+    if (targetDir !== undefined) {
+      throw new Error(
+        `\`phoebe init\` takes at most one target directory (got \`${targetDir}\` and \`${arg}\`).`,
+      );
+    }
+    targetDir = arg;
+  }
+  return { targetDir: targetDir ?? ".", help };
+}
+
 const HELP_TEXT = `phoebe — AFK coding agent
 
 Usage:
-  phoebe [--config <path>] [--run-once] [--dry-run]
+  phoebe init [dir]                Scaffold a consumer-owned runtime
+  phoebe [--config <path>] [flags] Run the engine
 
-Options:
+Options (engine mode):
   --config, -c <path>   Path to phoebe.config.ts (default: ./phoebe.config.ts)
   --run-once            Work one unit of the first one-shot-eligible kind, then exit
   --dry-run             Print the selected unit without executing it
@@ -78,8 +115,40 @@ Runtime toggles (read directly by the engine, not overlaid onto the config):
   PHOEBE_DEFAULT_BRANCH  Branch the supervisor keeps the clone on (overrides tracked branch only)
 `;
 
+const INIT_HELP_TEXT = `phoebe init — scaffold a consumer-owned runtime
+
+Usage:
+  phoebe init [dir]
+
+Writes into [dir] (default: current directory):
+  phoebe.config.ts             Consumer config starter (edit the five required fields)
+  prompts/                     Copies of the shipped agent prompts (edit to override)
+  .env.example                 Documented environment variables to copy to .env
+  .gitignore                   Additive — appends Phoebe entries only
+  container/Dockerfile         Runtime image (Node + git + gh + pinned phoebe-agent)
+  container/compose.yml        Base one-shot compose config
+  container/compose.daemon.yml Overlay to run Phoebe as a persistent daemon
+  container/supervisor.sh      Warm-install + engine-restart loop (chmod +x)
+
+Existing files are left untouched, so re-running is safe. To regenerate a
+scaffolded file, delete it first and re-run \`phoebe init\`.
+`;
+
 async function main(): Promise<void> {
-  const parsed = parseCliArgs(process.argv.slice(2));
+  const args = process.argv.slice(2);
+
+  if (args[0] === "init") {
+    const parsed = parseInitArgs(args.slice(1));
+    if (parsed.help) {
+      process.stdout.write(INIT_HELP_TEXT);
+      return;
+    }
+    const report = runInit({ targetDir: parsed.targetDir });
+    process.stdout.write(formatInitReport(report, parsed.targetDir));
+    return;
+  }
+
+  const parsed = parseCliArgs(args);
   if (parsed.help) {
     process.stdout.write(HELP_TEXT);
     return;

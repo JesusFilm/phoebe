@@ -1,0 +1,16 @@
+# Persistent-daemon overlay — scaffolded by `phoebe init`, consumer-owned.
+#
+# Layer on top of compose.yml to run Phoebe as a long-lived poller:
+#
+#   docker compose -f compose.yml -f compose.daemon.yml up -d
+#
+# Drops the `--run-once` flag so the engine enters its polling loop, and
+# adds a restart policy so the container comes back after a crash or host
+# reboot. The engine's own self-update path uses `SELF_UPDATE_EXIT_CODE`
+# (75), which the supervisor handles inside the container without needing
+# a restart.
+
+services:
+  phoebe:
+    command: []
+    restart: unless-stopped

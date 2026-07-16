@@ -1,0 +1,46 @@
+# Phoebe compose file — scaffolded by `phoebe init`, consumer-owned.
+#
+# Base configuration: builds the runtime image, mounts the three named volumes
+# the engine expects (`/data/repo`, `/data/worktrees`, `/data/state`), and
+# runs the CLI once with `--run-once`. For the persistent daemon topology,
+# stack the daemon overlay:
+#
+#   docker compose -f compose.yml -f compose.daemon.yml up -d
+#
+# The image ships a pinned {{CLI_BIN}} — bump PHOEBE_VERSION here (not in the
+# Dockerfile) to upgrade the engine.
+
+services:
+  phoebe:
+    build:
+      context: .
+      args:
+        PHOEBE_VERSION: "${PHOEBE_VERSION:-latest}"
+        PHOEBE_INSTALL_COMMAND: "{{INSTALL_COMMAND}}"
+    image: phoebe-runtime:${PHOEBE_VERSION:-latest}
+    command: ["--run-once"]
+    environment:
+      PHOEBE_VERSION: "${PHOEBE_VERSION:-latest}"
+      # Secrets — populate via `.env` (see `.env.example`).
+      GH_TOKEN: "${GH_TOKEN:?GH_TOKEN is required}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      CURSOR_API_KEY: "${CURSOR_API_KEY:-}"
+      OPENAI_KEY: "${OPENAI_KEY:-}"
+      # Optional runtime toggles.
+      PHOEBE_AGENT: "${PHOEBE_AGENT:-}"
+      PHOEBE_MODEL: "${PHOEBE_MODEL:-}"
+      PHOEBE_POLL_INTERVAL_MS: "${PHOEBE_POLL_INTERVAL_MS:-}"
+    volumes:
+      - phoebe-repo:/data/repo
+      - phoebe-worktrees:/data/worktrees
+      - phoebe-state:/data/state
+      # Consumer config + prompt overrides live in-repo; mount them read-only
+      # so a `docker compose restart` picks up edits without a rebuild.
+      - ../phoebe.config.ts:/etc/phoebe/phoebe.config.ts:ro
+      - ../prompts:/etc/phoebe/prompts:ro
+    working_dir: /etc/phoebe
+
+volumes:
+  phoebe-repo:
+  phoebe-worktrees:
+  phoebe-state:
