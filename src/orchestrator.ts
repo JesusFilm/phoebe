@@ -1,7 +1,7 @@
 // Pure selection + base-resolution logic for Phoebe's orchestrator.
 // Kept separate from main.ts so it can be unit-tested without Docker/gh.
 
-import { config } from "../phoebe.config.ts";
+import { config } from "./resolved-config.ts";
 
 export type Issue = {
   number: number;
@@ -28,11 +28,16 @@ export type BaseResolution = {
 const PRIORITY_ORDER = ["bug", "tracer", "polish", "refactor"] as const;
 export type Priority = (typeof PRIORITY_ORDER)[number];
 
-/** Parse `Blocked by #N` lines from issue body text (and optional comments). */
+/**
+ * Parse blocker references from issue body text (and optional comments).
+ * The pattern is configurable via `config.blockedByPattern`; capture group 1
+ * must yield the blocker issue number.
+ */
 export function parseBlockedBy(...texts: string[]): number[] {
   const blockers: number[] = [];
+  const pattern = new RegExp(config.blockedByPattern, "gi");
   for (const text of texts) {
-    for (const match of text.matchAll(/Blocked by\s+#(\d+)/gi)) {
+    for (const match of text.matchAll(pattern)) {
       blockers.push(Number(match[1]));
     }
   }
@@ -549,8 +554,6 @@ export type ReviewsHandledWatermark = {
 
 const REVIEWS_HANDLED_WATERMARK_RE = /<!--\s*phoebe-reviews-handled:\s*latest=([^\s>]+)\s*-->/i;
 
-export const REVIEW_SUMMARY_HEADING = "## Review feedback addressed";
-
 export function buildReviewsHandledMarker(watermark: ReviewsHandledWatermark): string {
   return `<!-- phoebe-reviews-handled: latest=${watermark.latest} -->`;
 }
@@ -576,7 +579,7 @@ export function parseReviewsHandledWatermarkFromComments(
 }
 
 export function isReviewSummaryComment(body: string): boolean {
-  return body.includes(REVIEW_SUMMARY_HEADING);
+  return body.includes(config.reviewsSuccessHeading);
 }
 
 export function isActivityNewerThanWatermark(
