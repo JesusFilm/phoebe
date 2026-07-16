@@ -45,5 +45,10 @@ LABEL phoebe.install-command="${PHOEBE_INSTALL_COMMAND}"
 COPY supervisor.sh /usr/local/bin/phoebe-supervisor
 RUN chmod +x /usr/local/bin/phoebe-supervisor
 
-ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["/usr/local/bin/phoebe-supervisor"]
+# Compose's `command:` fully replaces `CMD` (it does not append to
+# `ENTRYPOINT`), so the supervisor path must live in `ENTRYPOINT` — otherwise
+# compose.yml's `command: ["--run-once"]` (or the daemon overlay's `command: []`)
+# strips the supervisor away and tini exits with no child to exec. Keeping
+# `CMD []` here means the compose files only ever contribute engine flags.
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/phoebe-supervisor"]
+CMD []

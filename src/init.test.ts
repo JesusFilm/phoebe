@@ -119,6 +119,20 @@ describe("runInit", () => {
     expect(mode & 0o100).toBe(0o100); // owner-executable
   });
 
+  test("Dockerfile pins the supervisor into ENTRYPOINT so compose command: overrides append flags", () => {
+    // Compose's `command:` replaces `CMD` outright. If the Dockerfile split
+    // the supervisor across ENTRYPOINT + CMD, `command: ["--run-once"]` in
+    // compose.yml would exec `tini -- --run-once` (no valid child program)
+    // and the container would fail to boot. Lock the invariant.
+    const target = makeTempDir();
+    runInit({ targetDir: target });
+    const dockerfile = readFileSync(join(target, "container/Dockerfile"), "utf8");
+    expect(dockerfile).toContain(
+      'ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/phoebe-supervisor"]',
+    );
+    expect(dockerfile).toContain("CMD []");
+  });
+
   test("renders {{INSTALL_COMMAND}} and {{CLI_BIN}} into scaffolded files", () => {
     const target = makeTempDir();
     runInit({
