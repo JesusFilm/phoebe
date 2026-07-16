@@ -4,7 +4,7 @@
 // dev; here we just pin the surface.
 
 import { describe, expect, test } from "vite-plus/test";
-import { parseCliArgs } from "./cli.ts";
+import { parseCliArgs, parseInitArgs } from "./cli.ts";
 
 describe("parseCliArgs", () => {
   test("returns empty parsed state for empty argv", () => {
@@ -61,5 +61,28 @@ describe("parseCliArgs", () => {
       help: false,
       forward: ["--run-once", "--dry-run"],
     });
+  });
+});
+
+describe("parseInitArgs", () => {
+  test("defaults to current directory when no positional given", () => {
+    expect(parseInitArgs([])).toEqual({ targetDir: ".", help: false });
+  });
+
+  test("accepts a positional target directory", () => {
+    expect(parseInitArgs(["./my-agent"])).toEqual({ targetDir: "./my-agent", help: false });
+  });
+
+  test("--help / -h set help without requiring a directory", () => {
+    expect(parseInitArgs(["--help"])).toEqual({ targetDir: ".", help: true });
+    expect(parseInitArgs(["-h"]).help).toBe(true);
+  });
+
+  test("rejects unknown flags", () => {
+    expect(() => parseInitArgs(["--forcee"])).toThrow(/Unknown flag/);
+  });
+
+  test("rejects a second positional argument", () => {
+    expect(() => parseInitArgs(["a", "b"])).toThrow(/at most one target directory/);
   });
 });
