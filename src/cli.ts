@@ -16,6 +16,7 @@
 // install pipeline and leaves the door open to CLI-only concerns (init/pin
 // scaffolding, log formatting) without breaking a library API.
 
+import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { resolveConfig } from "./config-schema.ts";
 import { formatInitReport, runInit } from "./init.ts";
@@ -166,8 +167,10 @@ async function main(): Promise<void> {
 }
 
 // Only run when invoked as the entry point — tests import `parseCliArgs` from
-// this module without triggering the whole CLI pipeline.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// this module without triggering the whole CLI pipeline. `argv[1]` is realpath'd
+// so a bin symlink (`node_modules/.bin/phoebe -> ../phoebe-agent/dist/src/cli.js`)
+// still matches `import.meta.url`, which Node resolves through symlinks.
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   main().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[phoebe] ${message}`);

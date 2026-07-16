@@ -1,0 +1,137 @@
+name: ready
+
+# Merge gate for `phoebe-agent`. Two jobs run in parallel on every PR (and on
+# main after merge):
+#
+#   ready           — static checks + tests + build against the source tree
+#                     (mirrors the cloned gate from JesusFilm/youtube-studio).
+#   pack-and-smoke  — packs the CLI with `npm pack` and smoke-runs the packed
+#                     artifact from a scratch project. This catches packaging
+#                     bugs a source-tree test misses: missing entries in
+#                     package.json `files`, wrong `bin`/`exports`, or an
+#                     entry-point check that trips over the bin symlink.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Least privilege: this gate only reads the repo.
+permissions:
+  contents: read
+
+# A new push to a branch cancels its in-flight run.
+concurrency:
+  group: ready-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ready:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Installs the `vp` CLI and the Node version pinned in .node-version,
+      # and caches the pnpm store across runs.
+      - uses: voidzero-dev/setup-vp@v1
+        with:
+          cache: true
+
+      # --ignore-scripts skips optional postinstalls that aren't needed for
+      # check/test/build; --frozen-lockfile fails on a stale lockfile.
+      - run: vp install --frozen-lockfile --ignore-scripts
+
+      # Format + lint + type-check via vp check. `-r lint`/`typecheck`/`test`/
+      # `build` recurse over every package script that defines the target — in
+      # this single-package repo that's just phoebe-agent, but the pattern
+      # tracks the youtube-studio gate this was cloned from. `!cancelled()`
+      # keeps subsequent steps running after a failure so authors see every
+      # broken check in one report.
+      - run: vp check
+
+      - run: vp run -r lint
+        if: ${{ !cancelled() }}
+
+      - run: vp run -r typecheck
+        if: ${{ !cancelled() }}
+
+      - run: vp run -r test
+        if: ${{ !cancelled() }}
+
+      # Build the tsc output the packed bin runs from. Also guards the smoke
+      # job from importing a build that the source tree doesn't type-check.
+      - run: vp run -r build
+        if: ${{ !cancelled() }}
+
+  pack-and-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: voidzero-dev/setup-vp@v1
+        with:
+          cache: true
+
+      - run: vp install --frozen-lockfile --ignore-scripts
+
+      # Build dist/ before packing — `npm pack` honors the `files` field but
+      # doesn't run any build script itself.
+      - run: vp run build
+
+      # `npm pack` writes phoebe-agent-<version>.tgz into the current dir and
+      # includes only what package.json `files` lists: dist/, prompts/,
+      # templates/. If a resource the bin needs at runtime isn't listed there,
+      # the smoke below fails loudly.
+      - name: Pack
+        id: pack
+        run: |
+          set -euo pipefail
+          tarball=$(npm pack --silent)
+          echo "tarball=$PWD/$tarball" >> "$GITHUB_OUTPUT"
+
+      # Install into a scratch project the CI runner owns — no source tree in
+      # the resolver path, so we exercise the packed artifact the same way a
+      # consumer running `npm i phoebe-agent` would.
+      - name: Install packed tarball into scratch project
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          mkdir -p smoke && cd smoke
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund "${{ steps.pack.outputs.tarball }}"
+
+      # Both bin aliases point at the same script; assert both resolve and the
+      # help text prints. `--no-install` refuses to reach for the registry —
+      # if the local install didn't land the bin, npx would silently fetch it.
+      - name: phoebe --help
+        working-directory: ${{ runner.temp }}/smoke
+        run: |
+          set -euo pipefail
+          npx --no-install phoebe --help | tee help.out
+          grep -q "phoebe — AFK coding agent" help.out
+
+      - name: phoebe-agent --help
+        working-directory: ${{ runner.temp }}/smoke
+        run: |
+          set -euo pipefail
+          npx --no-install phoebe-agent --help | tee help.out
+          grep -q "phoebe — AFK coding agent" help.out
+
+      # Exercise the scaffolder against the packed artifact: it reads templates/
+      # and prompts/ out of the installed package, so a missing `files` entry
+      # or a broken resource walk-up would blow up here.
+      - name: phoebe init scaffold
+        working-directory: ${{ runner.temp }}/smoke
+        run: |
+          set -euo pipefail
+          npx --no-install phoebe init scaffold
+          test -f scaffold/phoebe.config.ts
+          test -f scaffold/.env.example
+          test -f scaffold/prompts/prompt.md
+          test -f scaffold/prompts/checks-prompt.md
+          test -f scaffold/prompts/conflict-prompt.md
+          test -f scaffold/prompts/reviews-prompt.md
+          test -f scaffold/container/Dockerfile
+          test -f scaffold/container/compose.yml
+          test -f scaffold/container/compose.daemon.yml
+          test -x scaffold/container/supervisor.sh
