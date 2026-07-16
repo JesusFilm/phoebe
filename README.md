@@ -90,6 +90,7 @@ Docs live under [`docs/`](docs/):
 - [`docs/operating.md`](docs/operating.md) — controlling Phoebe as a human (labels, drafts, watermarks).
 - [`docs/upgrading.md`](docs/upgrading.md) — the init / pin / upgrade contract.
 - [`docs/ai-install.md`](docs/ai-install.md) — a deterministic, agent-followable install runbook.
+- [`docs/phoebe-core-onboarding.md`](docs/phoebe-core-onboarding.md) — worked onboarding for `JesusFilm/core` (Nx + pnpm, no vp).
 
 Agents landing in this repo should start at [`AGENTS.md`](AGENTS.md).
 
