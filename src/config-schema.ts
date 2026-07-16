@@ -172,9 +172,31 @@ const REQUIRED_USER_FIELDS = [
 ] as const satisfies readonly (keyof PhoebeUserConfig)[];
 
 /**
+ * Count the numbered capture groups defined by a regex source. We compile it
+ * with an added empty alternative (`|`) so the resulting regex always matches
+ * the empty string; the match array's length minus one then equals the number
+ * of capture groups, regardless of whether the original pattern would have
+ * matched anything on its own. Escaped parens, non-capturing groups (`(?:…)`),
+ * lookarounds, and named groups are handled correctly because we're asking
+ * the engine's own group count, not parsing the source ourselves.
+ */
+function countCaptureGroups(source: string): number {
+  const compiled = new RegExp(`${source}|`);
+  const match = compiled.exec("");
+  // The extra `|` guarantees a match against ""; TS still narrows to nullable.
+  if (!match) {
+    return 0;
+  }
+  return match.length - 1;
+}
+
+/**
  * Throw when a required field is missing or blank, or when `blockedByPattern`
- * is not a valid regex. Kept separate from `resolveConfig` so consumers or
- * tests can validate a config independent of the defaults merge.
+ * is not a valid regex or fails to expose the blocker issue number as capture
+ * group 1. `parseBlockedBy` reads `match[1]`, so a pattern without a capture
+ * group would silently break the entire blocker-detection path — reject it up
+ * front. Kept separate from `resolveConfig` so consumers or tests can validate
+ * a config independent of the defaults merge.
  */
 export function validateUserConfig(user: PhoebeUserConfig): void {
   const missing = REQUIRED_USER_FIELDS.filter((key) => {
@@ -193,6 +215,13 @@ export function validateUserConfig(user: PhoebeUserConfig): void {
     } catch (err) {
       throw new Error(
         `phoebe.config.ts blockedByPattern is not a valid regex: ${(err as Error).message}`,
+      );
+    }
+    if (countCaptureGroups(user.blockedByPattern) < 1) {
+      throw new Error(
+        `phoebe.config.ts blockedByPattern must define capture group 1 for the ` +
+          `blocker issue number (parseBlockedBy reads match[1]). Wrap the number ` +
+          `portion in parentheses, e.g. String.raw\`Blocked by\\s+#(\\d+)\`.`,
       );
     }
   }

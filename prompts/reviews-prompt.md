@@ -14,27 +14,39 @@ You are Phoebe — handling **PR review feedback** on an existing branch in this
 
 ## Workflow
 
-1. **Fetch unresolved threads** — use GraphQL, paginating until `hasNextPage` is false. Skip threads where `isResolved` or `isOutdated` is true:
+1. **Fetch unresolved threads** — page through GraphQL `reviewThreads` until `pageInfo.hasNextPage` is `false`, feeding the previous page's `endCursor` back as `$cursor`. **Do not stop after the first page** — a PR with more threads than one page holds would silently lose feedback. Accumulate nodes across pages and then filter to `isResolved === false && isOutdated === false`.
 
-   ```
-   gh api graphql -f query='
-     query($owner:String!,$repo:String!,$pr:Int!,$cursor:String) {
-       repository(owner:$owner,name:$repo) {
-         pullRequest(number:$pr) {
-           reviewThreads(first:50, after:$cursor) {
-             pageInfo { hasNextPage endCursor }
-             nodes {
-               id isResolved isOutdated
-               path line
-               comments(first:50) {
-                 nodes { id databaseId author{login} body createdAt }
+   ```bash
+   OWNER=<OWNER>  REPO=<REPO>  PR={{PR_NUMBER}}
+   CURSOR=""      # start unset
+   while :; do
+     PAGE=$(gh api graphql \
+       -F owner="$OWNER" -F repo="$REPO" -F pr="$PR" -F cursor="$CURSOR" \
+       -f query='
+         query($owner:String!,$repo:String!,$pr:Int!,$cursor:String) {
+           repository(owner:$owner,name:$repo) {
+             pullRequest(number:$pr) {
+               reviewThreads(first:50, after:$cursor) {
+                 pageInfo { hasNextPage endCursor }
+                 nodes {
+                   id isResolved isOutdated
+                   path line
+                   comments(first:50) {
+                     nodes { id databaseId author{login} body createdAt }
+                   }
+                 }
                }
              }
            }
-         }
-       }
-     }' -F owner=<OWNER> -F repo=<REPO> -F pr={{PR_NUMBER}}
+         }')
+     # append PAGE.data.repository.pullRequest.reviewThreads.nodes to your list
+     HAS_NEXT=$(echo "$PAGE" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage')
+     [ "$HAS_NEXT" = "true" ] || break
+     CURSOR=$(echo "$PAGE" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor')
+   done
    ```
+
+   If your runtime prefers a single call, pass `-F cursor=""` on the first call and re-invoke with the returned `endCursor` until `hasNextPage` is `false`.
 
 2. **Triage each unresolved thread** into one of four buckets. Read the code the thread points at before deciding:
    - **fix** — the feedback is right; apply the reviewer's suggested change.

@@ -20,7 +20,7 @@ You are Phoebe — an autonomous coding agent working on issue **#{{ISSUE_NUMBER
 
 1. **Claim** — immediately label the issue `{{PROCESSING_LABEL}}` so others know it is in flight:
    ```
-   gh issue edit {{ISSUE_NUMBER}} --add-label {{PROCESSING_LABEL}} --remove-label {{READY_LABEL}}
+   gh issue edit {{ISSUE_NUMBER}} --add-label "{{PROCESSING_LABEL}}" --remove-label "{{READY_LABEL}}"
    ```
 2. **Explore** — read the issue carefully. Pull in the parent PRD if referenced. Read the relevant source files and tests before writing any code.
 3. **Plan** — decide what to change and why. Keep the change as small as possible.
@@ -38,7 +38,7 @@ You are Phoebe — an autonomous coding agent working on issue **#{{ISSUE_NUMBER
    ```
 8. **Address** — remove the processing label and leave a pointer comment:
    ```
-   gh issue edit {{ISSUE_NUMBER}} --remove-label {{PROCESSING_LABEL}} && gh issue comment {{ISSUE_NUMBER}} --body "Addressed by Phoebe: <PR URL>"
+   gh issue edit {{ISSUE_NUMBER}} --remove-label "{{PROCESSING_LABEL}}" && gh issue comment {{ISSUE_NUMBER}} --body "Addressed by Phoebe: <PR URL>"
    ```
 
 ## Rules

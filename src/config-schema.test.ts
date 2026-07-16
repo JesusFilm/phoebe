@@ -59,6 +59,28 @@ describe("validateUserConfig", () => {
       validateUserConfig(minimalUserConfig({ blockedByPattern: "Blocked by [" })),
     ).toThrow(/blockedByPattern/);
   });
+
+  test("rejects a blockedByPattern that is valid but has no capture group", () => {
+    // parseBlockedBy reads match[1]; a pattern without a group would silently
+    // yield NaN blocker numbers.
+    expect(() =>
+      validateUserConfig(minimalUserConfig({ blockedByPattern: String.raw`Blocked by #\d+` })),
+    ).toThrow(/capture group 1/);
+  });
+
+  test("rejects a blockedByPattern whose only groups are non-capturing", () => {
+    expect(() =>
+      validateUserConfig(minimalUserConfig({ blockedByPattern: String.raw`(?:Blocked by )#\d+` })),
+    ).toThrow(/capture group 1/);
+  });
+
+  test("accepts a pattern that uses non-capturing groups plus a real capture group", () => {
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({ blockedByPattern: String.raw`(?:Blocked by|Depends on)\s+#(\d+)` }),
+      ),
+    ).not.toThrow();
+  });
 });
 
 describe("resolveConfig", () => {
