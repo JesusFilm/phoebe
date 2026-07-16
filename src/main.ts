@@ -1,4 +1,4 @@
-// Phoebe orchestration entry point — an away-from-keyboard (AFK) worker loop.
+// Phoebe orchestration engine — an away-from-keyboard (AFK) worker loop.
 //
 // Picks ready-labelled issues off the configured repo one at a time and
 // works each in a git worktree off the container's private clone, on its own
@@ -6,12 +6,16 @@
 // orchestrator and execution environment; agent CLIs run as direct children
 // with an allowlisted env. See docs/architecture.md for the full design.
 //
-//   src/main.ts                        # attached container run (persistent loop)
-//   src/main.ts --run-once             # one unit of the first one-shot-eligible kind
-//   src/main.ts --dry-run --run-once   # host-side selection preview
+// The `runEngine(argv)` export is the loop entry point invoked by src/cli.ts
+// after it loads the consumer's phoebe.config.ts and installs the resolved
+// config into src/resolved-config.ts. Recognised argv flags:
 //
-// Everything repo-specific comes from ../phoebe.config.ts; work-unit execution
-// is refused outside the container marker (src/execution-gate.ts).
+//   (no flags)              # persistent poll loop
+//   --run-once              # one unit of the first one-shot-eligible kind
+//   --dry-run --run-once    # host-side selection preview
+//
+// Work-unit execution is refused outside the container marker
+// (src/execution-gate.ts).
 
 import { execFileSync, execSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -1525,80 +1529,87 @@ function describeUnit(picked: WorkUnit): string {
 // Main loop
 // ---------------------------------------------------------------------------
 
-const argv = process.argv.slice(2);
-const runOnce = argv.includes("--run-once");
-const dryRun = argv.includes("--dry-run");
-const rawPollIntervalMs = Number(process.env["PHOEBE_POLL_INTERVAL_MS"]);
-const pollIntervalMs =
-  Number.isFinite(rawPollIntervalMs) && rawPollIntervalMs > 0
-    ? rawPollIntervalMs
-    : DEFAULT_POLL_INTERVAL_MS;
+/**
+ * Drive the Phoebe worker loop until it exits (persistent mode) or completes
+ * one unit (`--run-once`). Called by src/cli.ts after the resolved config is
+ * installed; the CLI passes its argv with `--config <path>` already stripped
+ * so this only sees engine-level flags.
+ */
+export async function runEngine(argv: readonly string[] = process.argv.slice(2)): Promise<void> {
+  const runOnce = argv.includes("--run-once");
+  const dryRun = argv.includes("--dry-run");
+  const rawPollIntervalMs = Number(process.env["PHOEBE_POLL_INTERVAL_MS"]);
+  const pollIntervalMs =
+    Number.isFinite(rawPollIntervalMs) && rawPollIntervalMs > 0
+      ? rawPollIntervalMs
+      : DEFAULT_POLL_INTERVAL_MS;
 
-console.log(
-  runOnce
-    ? "[phoebe] Run-once mode — will work at most one unit of the first one-shot-eligible kind in WORK_ORDER, then exit."
-    : `[phoebe] Persistent mode — idle poll every ${pollIntervalMs}ms.`,
-);
-if (dryRun) {
-  console.log("[phoebe] Dry-run — selection only, nothing executes.");
-}
-
-while (true) {
-  exitForSelfUpdateIfNeeded();
-
-  const fetchKinds = runOnce ? oneShotWorkKinds(workOrder) : workOrder;
-  const data = await fetchCycleWorkData(fetchKinds);
-  const picked = selectFirstWorkUnit(
-    workOrder,
-    {
-      issues: data.issues,
-      blockerStates: data.blockerStates,
-      conflictingPrs: data.conflictingPrs,
-      failingCheckPrs: data.failingCheckPrs,
-      reviewActivityPrs: data.reviewActivityPrs,
-      issueBodies: data.issueBodies,
-      phoebeBase: process.env["PHOEBE_BASE"],
-      phoebeLogin: data.phoebeLogin,
-      currentMainHead: data.currentMainHead,
-    },
-    { oneShotOnly: runOnce },
+  console.log(
+    runOnce
+      ? "[phoebe] Run-once mode — will work at most one unit of the first one-shot-eligible kind in WORK_ORDER, then exit."
+      : `[phoebe] Persistent mode — idle poll every ${pollIntervalMs}ms.`,
   );
-
-  if (!picked) {
-    if (runOnce) {
-      console.log(RUN_ONCE_NOTHING_MESSAGE);
-    } else {
-      logIdleCycle(data);
-    }
-    if (runOnce || dryRun) break;
-    await sleep(pollIntervalMs);
-    continue;
+  if (dryRun) {
+    console.log("[phoebe] Dry-run — selection only, nothing executes.");
   }
 
-  const decision = executionDecision({ dryRun, inContainer });
-  if (decision === "dry-run") {
-    console.log(`[phoebe] Would execute: ${describeUnit(picked)}.`);
-    break;
-  }
-  if (decision === "refuse") {
-    console.error(EXECUTION_REFUSED_MESSAGE);
-    process.exit(1);
-  }
+  while (true) {
+    exitForSelfUpdateIfNeeded();
 
-  try {
-    await KINDS[picked.kind].runUnit(picked.unit);
-  } catch (error) {
-    if (runOnce) {
-      throw error;
-    }
-    // A failed unit must not kill the daemon — prepareWorktree clears any
-    // stale worktree on the next attempt.
-    console.error(
-      `[phoebe] Failed executing ${describeUnit(picked)} — ${error instanceof Error ? error.message : String(error)}`,
+    const fetchKinds = runOnce ? oneShotWorkKinds(workOrder) : workOrder;
+    const data = await fetchCycleWorkData(fetchKinds);
+    const picked = selectFirstWorkUnit(
+      workOrder,
+      {
+        issues: data.issues,
+        blockerStates: data.blockerStates,
+        conflictingPrs: data.conflictingPrs,
+        failingCheckPrs: data.failingCheckPrs,
+        reviewActivityPrs: data.reviewActivityPrs,
+        issueBodies: data.issueBodies,
+        phoebeBase: process.env["PHOEBE_BASE"],
+        phoebeLogin: data.phoebeLogin,
+        currentMainHead: data.currentMainHead,
+      },
+      { oneShotOnly: runOnce },
     );
-    await sleep(pollIntervalMs);
-    continue;
-  }
 
-  if (runOnce) break;
+    if (!picked) {
+      if (runOnce) {
+        console.log(RUN_ONCE_NOTHING_MESSAGE);
+      } else {
+        logIdleCycle(data);
+      }
+      if (runOnce || dryRun) break;
+      await sleep(pollIntervalMs);
+      continue;
+    }
+
+    const decision = executionDecision({ dryRun, inContainer });
+    if (decision === "dry-run") {
+      console.log(`[phoebe] Would execute: ${describeUnit(picked)}.`);
+      break;
+    }
+    if (decision === "refuse") {
+      console.error(EXECUTION_REFUSED_MESSAGE);
+      process.exit(1);
+    }
+
+    try {
+      await KINDS[picked.kind].runUnit(picked.unit);
+    } catch (error) {
+      if (runOnce) {
+        throw error;
+      }
+      // A failed unit must not kill the daemon — prepareWorktree clears any
+      // stale worktree on the next attempt.
+      console.error(
+        `[phoebe] Failed executing ${describeUnit(picked)} — ${error instanceof Error ? error.message : String(error)}`,
+      );
+      await sleep(pollIntervalMs);
+      continue;
+    }
+
+    if (runOnce) break;
+  }
 }

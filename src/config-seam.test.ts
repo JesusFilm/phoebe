@@ -16,9 +16,16 @@ import { config } from "./resolved-config.ts";
 const srcDir = join(import.meta.dirname, ".");
 const promptsDir = join(import.meta.dirname, "..", "prompts");
 
-// Files that legitimately define or resolve the shipped defaults. They are
-// excluded from the "engine body" that must not repeat config literals.
-const CONFIG_LAYER_FILES = new Set(["config-schema.ts", "resolved-config.ts"]);
+// Files that legitimately define, resolve, load, or fixture the shipped
+// defaults. Excluded from the "engine body" that must not repeat config
+// literals — the config layer, the loader/env-overlay, and the test-time
+// installer all touch the config values by design.
+const CONFIG_LAYER_FILES = new Set([
+  "config-schema.ts",
+  "resolved-config.ts",
+  "load-config.ts",
+  "test-setup.ts",
+]);
 
 function walkSourceFiles(dir: string): string[] {
   const files: string[] = [];

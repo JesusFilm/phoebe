@@ -1,16 +1,55 @@
-// Engine entry point for the resolved, defaults-filled config.
+// Runtime handle to the resolved, defaults-filled config the engine reads.
 //
-// The consumer edits `../phoebe.config.ts` — a `PhoebeUserConfig` whose only
-// required fields are the repo/toolchain identifiers. This module runs it
-// through `resolveConfig` once at load time and re-exports the fully-populated
-// `PhoebeConfig` that every engine module imports as `config`. Keeping the
-// resolution in one place means:
+// The engine (everything else under src/) imports `config` from here and stays
+// repo-agnostic; the CLI (src/cli.ts) loads the consumer's `phoebe.config.ts`,
+// applies the `PHOEBE_*` env overlay, resolves defaults, and installs the
+// result via `setResolvedConfig` before importing the engine entry point.
+// Tests install a sample config via the setup file wired in `vite.config.ts`.
 //
-//   - engine code stays repo-agnostic and never has to `?? default` inline,
-//   - `validateUserConfig` fires at startup (or the first import in tests), and
-//   - swapping the shipped defaults is a one-file edit in `config-schema.ts`.
+// A `Proxy` gates every field read: reading before install throws with a
+// pointer at the CLI/setup path, so an accidentally repo-coupled engine import
+// fails loudly at the callsite instead of silently reading `undefined`.
 
-import { config as userConfig } from "../phoebe.config.ts";
-import { resolveConfig } from "./config-schema.ts";
+import type { PhoebeConfig } from "./config-schema.ts";
 
-export const config = resolveConfig(userConfig);
+let resolved: PhoebeConfig | null = null;
+
+/** Install the resolved config. Idempotent — later calls replace the prior value. */
+export function setResolvedConfig(next: PhoebeConfig): void {
+  resolved = next;
+}
+
+/** For test isolation: clear the installed config back to the "not installed" state. */
+export function clearResolvedConfig(): void {
+  resolved = null;
+}
+
+/** Whether a resolved config has been installed. */
+export function hasResolvedConfig(): boolean {
+  return resolved !== null;
+}
+
+export const config: PhoebeConfig = new Proxy({} as PhoebeConfig, {
+  get(_target, prop) {
+    if (resolved === null) {
+      throw new Error(
+        `Attempted to read config.${String(prop)} before the resolved config was installed. ` +
+          `The Phoebe CLI (src/cli.ts) installs it after loading phoebe.config.ts; ` +
+          `tests install a sample via src/test-setup.ts (wired from vite.config.ts).`,
+      );
+    }
+    return resolved[prop as keyof PhoebeConfig];
+  },
+  ownKeys() {
+    if (resolved === null) return [];
+    return Reflect.ownKeys(resolved);
+  },
+  getOwnPropertyDescriptor(_target, prop) {
+    if (resolved === null) return undefined;
+    return Reflect.getOwnPropertyDescriptor(resolved, prop);
+  },
+  has(_target, prop) {
+    if (resolved === null) return false;
+    return prop in resolved;
+  },
+});

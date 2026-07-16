@@ -6,6 +6,6 @@
     "outDir": "dist",
     "rootDir": "."
   },
-  "include": ["src", "phoebe.config.ts"],
-  "exclude": ["src/**/*.test.ts"]
+  "include": ["src"],
+  "exclude": ["src/**/*.test.ts", "src/test-setup.ts"]
 }
