@@ -35,9 +35,13 @@
     "lint": "vp lint",
     "typecheck": "vp exec tsc --noEmit",
     "test": "vp test",
-    "build": "vp exec tsc -p tsconfig.build.json"
+    "build": "vp exec tsc -p tsconfig.build.json",
+    "changeset": "changeset",
+    "version-packages": "changeset version",
+    "release": "vp run build && changeset publish"
   },
   "devDependencies": {
+    "@changesets/cli": "^2.31.1",
     "@types/node": "^22.13.0",
     "typescript": "^5.7.0",
     "vite-plus": "^0.2.0"
