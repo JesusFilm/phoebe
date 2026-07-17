@@ -57,8 +57,12 @@ jobs:
       # `changeset publish` step shells out to. Changesets always publishes via
       # `npm publish` (not `pnpm publish`), so this is the binary that matters —
       # and it sidesteps the pnpm 11.x OIDC regression (pnpm/pnpm#11513).
+      #
+      # Pin to the 11.x line, not @latest: npm 12 requires Node >= 22.22.2, but
+      # .node-version pins 22.13.0, so `npm@latest` fails with EBADENGINE. npm 11
+      # supports Node >= 22.9.0 and already includes trusted publishing.
       - name: Upgrade npm for trusted publishing
-        run: npm install -g npm@latest
+        run: npm install -g npm@11
 
       - name: Create Version Packages PR or publish
         uses: changesets/action@v1
