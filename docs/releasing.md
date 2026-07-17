@@ -44,11 +44,14 @@ bootstrap:
 
    ```sh
    vp run build
-   npm publish --access public --provenance
+   npm publish --access public
    ```
 
-   (Provenance from a local machine is optional; `--access public` is required
-   for the first publish of an unscoped package.)
+   `--access public` is required for the first publish of an unscoped package.
+   Do **not** pass `--provenance` here: provenance can only be generated inside a
+   supported CI provider (it needs an OIDC token), so a local run fails with
+   `Automatic provenance generation not supported for provider: null`. Provenance
+   isn't lost — CI attaches it automatically on every release after this seed.
 
 2. **Add the trusted publisher.** On the package's **Settings → Publishing access
    → Trusted publishers** page on npmjs.com, add a GitHub Actions publisher:
