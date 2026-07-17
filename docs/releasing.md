@@ -34,24 +34,28 @@ npm straight from a feature branch.
 
 ## One-time npm setup (trusted publisher)
 
-Trusted publishing has to be configured once on npmjs.com before the first
-publish can succeed. Because the package doesn't exist yet, this is a two-step
-bootstrap:
+A trusted publisher can only be attached to a package that already exists on
+npm, so the very first publish can't come from CI. Break the chicken-and-egg with
+a one-time manual seed whose only job is to **register the package name** — the
+real `0.1.0` is then published by CI through the normal changesets flow:
 
-1. **Seed `phoebe-agent@0.1.0` once, manually,** from a maintainer machine with
-   an npm account that has publish rights, so the package name exists and the
+1. **Seed the package name once, manually,** from a maintainer machine with an npm
+   account that has publish rights. This publishes whatever version is in
+   `package.json` on your checkout (currently `0.0.0`) — the version doesn't
+   matter; the point is only that `phoebe-agent` starts existing so the
    trusted-publisher form has something to attach to:
 
    ```sh
    vp run build
-   npm publish --access public
+   npm publish
    ```
 
-   `--access public` is required for the first publish of an unscoped package.
-   Do **not** pass `--provenance` here: provenance can only be generated inside a
-   supported CI provider (it needs an OIDC token), so a local run fails with
-   `Automatic provenance generation not supported for provider: null`. Provenance
-   isn't lost — CI attaches it automatically on every release after this seed.
+   `phoebe-agent` is unscoped, so it's public by default — no `--access` flag is
+   needed (that flag is only required when first publishing a _scoped_ package as
+   public). Don't pass `--provenance` either: provenance can only be generated
+   inside a supported CI provider (it needs an OIDC token), so a local run fails
+   with `Automatic provenance generation not supported for provider: null`.
+   Provenance isn't lost — CI attaches it automatically on every real release.
 
 2. **Add the trusted publisher.** On the package's **Settings → Publishing access
    → Trusted publishers** page on npmjs.com, add a GitHub Actions publisher:
@@ -60,14 +64,14 @@ bootstrap:
    - **Workflow filename:** `release.yml` (filename only — not the full path)
    - **Environment:** leave blank (this workflow uses none)
 
-Once the trusted publisher is registered, every later release publishes tokenless
-via OIDC from the `release` workflow — the manual publish above is never needed
-again.
+3. **Let CI publish `0.1.0`.** Merge this PR, then merge the "version packages" PR
+   the release workflow opens — that bumps `package.json` to `0.1.0` and publishes
+   it tokenless via OIDC, with provenance, moving `latest` off the `0.0.0` seed.
+   From here on the manual seed is never needed again; every release flows through
+   the workflow.
 
-> If you prefer not to hand-publish `0.1.0`, you can instead create the package by
-> publishing an empty placeholder, or publish `0.1.0` from CI after wiring a
-> short-lived automation token — but the trusted-publisher path above is the
-> supported one and leaves no token behind.
+> Optional tidy-up: `npm deprecate phoebe-agent@0.0.0 "placeholder — use >=0.1.0"`
+> so the seed version isn't installed by accident.
 
 ## Requirements baked into the workflow
 
