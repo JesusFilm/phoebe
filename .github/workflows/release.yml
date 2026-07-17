@@ -22,7 +22,10 @@ on:
   push:
     branches: [main]
 
-# A new push to main supersedes an in-flight release run.
+# Serialize release runs on main: a push that lands mid-release queues behind
+# the in-flight run rather than cancelling it. Never `cancel-in-progress: true`
+# here — interrupting a `changeset publish` risks a half-done release (a git tag
+# pushed without the matching npm publish, or vice versa).
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
