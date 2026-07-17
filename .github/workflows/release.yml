@@ -1,0 +1,73 @@
+name: release
+
+# Release automation for `phoebe-agent`, driven by Changesets and published to
+# npm with trusted publishing (OIDC) — no long-lived NPM_TOKEN.
+#
+# The flow, on every push to main:
+#
+#   1. If unreleased changesets exist under .changeset/, changesets/action opens
+#      (or updates) a "Version Packages" PR that consumes them: it bumps the
+#      version in package.json and writes CHANGELOG.md. Merging that PR is the
+#      human release trigger.
+#   2. When main already has no pending changesets (i.e. the Version Packages PR
+#      just merged), the same action runs the `release` script, which builds
+#      dist/ and runs `changeset publish` — publishing any package whose version
+#      isn't yet on the registry and pushing the matching git tag.
+#
+# npm trusted publishing must be configured once on npmjs.com for the
+# `phoebe-agent` package, pointing at this repo and this workflow file
+# (`release.yml`). See docs/releasing.md for that one-time setup.
+
+on:
+  push:
+    branches: [main]
+
+# Serialize release runs on main: a push that lands mid-release queues behind
+# the in-flight run rather than cancelling it. Never `cancel-in-progress: true`
+# here — interrupting a `changeset publish` risks a half-done release (a git tag
+# pushed without the matching npm publish, or vice versa).
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write # push the version bump / CHANGELOG commit + git tags
+  pull-requests: write # open and update the Version Packages PR
+  id-token: write # mint the OIDC token npm exchanges for trusted publishing
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      # Full history so changesets can read tags and compute changelogs.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Same toolchain the ready gate uses: installs `vp` and the Node version
+      # pinned in .node-version, and caches the pnpm store.
+      - uses: voidzero-dev/setup-vp@v1
+        with:
+          cache: true
+
+      - run: vp install --frozen-lockfile --ignore-scripts
+
+      # Trusted publishing (OIDC + automatic provenance) requires npm >= 11.5.1;
+      # the Node pinned here ships an older npm, so upgrade the global npm the
+      # `changeset publish` step shells out to. Changesets always publishes via
+      # `npm publish` (not `pnpm publish`), so this is the binary that matters —
+      # and it sidesteps the pnpm 11.x OIDC regression (pnpm/pnpm#11513).
+      - name: Upgrade npm for trusted publishing
+        run: npm install -g npm@latest
+
+      - name: Create Version Packages PR or publish
+        uses: changesets/action@v1
+        with:
+          version: vp run version-packages
+          publish: vp run release
+          commit: "chore: version packages"
+          title: "chore: version packages"
+        env:
+          # Only the GitHub token is needed. Publish auth comes from the OIDC
+          # token minted via `id-token: write` above — no NPM_TOKEN.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
