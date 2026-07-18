@@ -23,6 +23,14 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { config } from "./resolved-config.ts";
 import { PROVIDER_NAMES, type ProviderName } from "./config-schema.ts";
+import {
+  asBranchRef,
+  asPrNumber,
+  asSha,
+  type BranchRef,
+  type PrNumber,
+  type Sha,
+} from "./branded.ts";
 import { buildAgentEnv } from "./agent-env.ts";
 import {
   EXECUTION_REFUSED_MESSAGE,
@@ -107,7 +115,8 @@ const PR_BASE = config.defaultBranch;
 // overridable (matching container/supervisor.sh) so a not-yet-merged Phoebe
 // branch can run itself end-to-end. PRs and worktree bases still use
 // config.defaultBranch.
-const trackedBranch = process.env["PHOEBE_DEFAULT_BRANCH"] ?? config.defaultBranch;
+const trackedBranch = asBranchRef(process.env["PHOEBE_DEFAULT_BRANCH"] ?? config.defaultBranch);
+const defaultBranchRef = asBranchRef(config.defaultBranch);
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 
 // Resolve a package-root-relative resource by walking up from this module's
@@ -212,7 +221,7 @@ function listReadyIssues(): Issue[] {
 }
 
 function blockerPrState(blockerIssueNumber: number): BlockerPrState {
-  const branch = issueBranch(blockerIssueNumber);
+  const branch: BranchRef = issueBranch(blockerIssueNumber);
   const open = ghJson<Array<{ number: number }>>([
     "pr",
     "list",
@@ -239,9 +248,9 @@ function blockerPrState(blockerIssueNumber: number): BlockerPrState {
   ]);
   return {
     hasOpenPr: open.length > 0,
-    openPrNumber: open[0]?.number,
+    openPrNumber: open[0] ? asPrNumber(open[0].number) : undefined,
     hasMergedPr: merged.length > 0,
-    mergedPrNumber: merged[0]?.number,
+    mergedPrNumber: merged[0] ? asPrNumber(merged[0].number) : undefined,
   };
 }
 
@@ -280,11 +289,11 @@ function buildBlockerStatesFromBodies(
   );
 }
 
-function postPrComment(prNumber: number, body: string): void {
+function postPrComment(prNumber: PrNumber, body: string): void {
   gh(["pr", "comment", String(prNumber), "--body", body]);
 }
 
-type OpenPhoebePr = { number: number; headRefName: string; authorLogin: string };
+type OpenPhoebePr = { number: PrNumber; headRefName: BranchRef; authorLogin: string };
 
 function listOpenPhoebePrs(): OpenPhoebePr[] {
   type GhOpenPr = {
@@ -309,39 +318,52 @@ function listOpenPhoebePrs(): OpenPhoebePr[] {
   ])
     .filter((pr) =>
       isPrInScope({
-        headRefName: pr.headRefName,
+        headRefName: asBranchRef(pr.headRefName),
         isDraft: pr.isDraft,
         isCrossRepository: pr.isCrossRepository,
         labels: pr.labels.map((label) => label.name),
       }),
     )
     .map((pr) => ({
-      number: pr.number,
-      headRefName: pr.headRefName,
+      number: asPrNumber(pr.number),
+      headRefName: asBranchRef(pr.headRefName),
       authorLogin: pr.author.login,
     }));
 }
 
 type PrMergeInfo = {
-  number: number;
-  headRefName: string;
-  headRefOid: string;
+  number: PrNumber;
+  headRefName: BranchRef;
+  headRefOid: Sha;
   mergeable: string;
   mergeStateStatus: string;
 };
 
-function viewPrMergeInfo(prNumber: number): PrMergeInfo {
-  return ghJson<PrMergeInfo>([
+function viewPrMergeInfo(prNumber: PrNumber): PrMergeInfo {
+  const raw = ghJson<{
+    number: number;
+    headRefName: string;
+    headRefOid: string;
+    mergeable: string;
+    mergeStateStatus: string;
+  }>([
     "pr",
     "view",
     String(prNumber),
     "--json",
     "number,headRefName,headRefOid,mergeable,mergeStateStatus",
   ]);
+  return {
+    number: asPrNumber(raw.number),
+    headRefName: asBranchRef(raw.headRefName),
+    headRefOid: asSha(raw.headRefOid),
+    mergeable: raw.mergeable,
+    mergeStateStatus: raw.mergeStateStatus,
+  };
 }
 
 /** All comment bodies on a PR, oldest first — the raw input to every watermark parse. */
-function fetchPrCommentBodies(prNumber: number): string[] {
+function fetchPrCommentBodies(prNumber: PrNumber): string[] {
   const { comments } = ghJson<{ comments: Array<{ body: string }> }>([
     "pr",
     "view",
@@ -368,19 +390,19 @@ function fetchOrigin(): void {
   gitFetchOrigin(repoDir);
 }
 
-function originBranchSha(branch: string): string {
+function originBranchSha(branch: BranchRef): Sha {
   return gitOriginBranchSha(repoDir, branch);
 }
 
-function currentConflictFailureWatermark(branch: string): ConflictFailWatermark {
+function currentConflictFailureWatermark(branch: BranchRef): ConflictFailWatermark {
   fetchOrigin();
   return {
     prHead: originBranchSha(branch),
-    mainHead: originBranchSha(config.defaultBranch),
+    mainHead: originBranchSha(defaultBranchRef),
   };
 }
 
-function currentChecksFailureWatermark(branch: string): ChecksFailWatermark {
+function currentChecksFailureWatermark(branch: BranchRef): ChecksFailWatermark {
   fetchOrigin();
   return { prHead: originBranchSha(branch) };
 }
@@ -448,7 +470,7 @@ function exitForSelfUpdateIfNeeded(): void {
 // Work-unit execution
 // ---------------------------------------------------------------------------
 
-function prepareWorktree(opts: { branch: string; baseRef?: string }): string {
+function prepareWorktree(opts: { branch: BranchRef; baseRef?: string }): string {
   const worktreeDir = worktreeDirForBranch(worktreesDir, opts.branch);
   removeWorktree(repoDir, worktreeDir);
   if (opts.baseRef) {
@@ -502,8 +524,8 @@ async function runAgentInWorktree(opts: {
 type CleanMergeOutcome = "pushed" | "conflicted" | "failed";
 
 function tryCleanMerge(
-  branch: string,
-  mergedBlockerPrNumbers: readonly number[] = [],
+  branch: BranchRef,
+  mergedBlockerPrNumbers: readonly PrNumber[] = [],
 ): CleanMergeOutcome {
   let worktreeDir: string;
   try {
@@ -548,7 +570,7 @@ function tryCleanMerge(
 /** Blocker-first merge attempt, mirroring `cmd && … || true` hook semantics. */
 function attemptBlockerFirstMerges(
   worktreeDir: string,
-  mergedBlockerPrNumbers: readonly number[],
+  mergedBlockerPrNumbers: readonly PrNumber[],
 ): void {
   try {
     for (const n of mergedBlockerPrNumbers) {
@@ -564,9 +586,9 @@ function attemptBlockerFirstMerges(
 
 type AgentWorkflowResult = {
   worktreeDir: string;
-  branch: string;
-  originShaBefore: string;
-  originShaAfter: string;
+  branch: BranchRef;
+  originShaBefore: Sha;
+  originShaAfter: Sha;
   localCommitCount: number;
 };
 
@@ -577,7 +599,7 @@ type AgentWorkflowResult = {
  * (push vs. failure comment vs. watermark); the worktree is always removed.
  */
 async function runAgentWorkflow(opts: {
-  pr: { prNumber: number; headRefName: string };
+  pr: { prNumber: PrNumber; headRefName: BranchRef };
   promptFile: string;
   promptArgs: Record<string, string>;
   beforeAgent?: (worktreeDir: string) => void;
@@ -611,7 +633,7 @@ async function runAgentWorkflow(opts: {
 
 async function runConflictResolutionAgent(
   pr: ConflictingPrCandidate,
-  mergedBlockerPrNumbers: readonly number[],
+  mergedBlockerPrNumbers: readonly PrNumber[],
 ): Promise<void> {
   await runAgentWorkflow({
     pr,
@@ -779,7 +801,7 @@ type GraphQLReviewThreadsPage = {
   };
 };
 
-function fetchReviewThreads(prNumber: number): ReviewThread[] {
+function fetchReviewThreads(prNumber: PrNumber): ReviewThread[] {
   const [owner, repo] = config.repoSlug.split("/");
   const threads: ReviewThread[] = [];
   let cursor: string | null = null;
@@ -846,7 +868,11 @@ function fetchReviewThreads(prNumber: number): ReviewThread[] {
   return threads;
 }
 
-function hasNewReviewSummaryComment(prNumber: number, phoebeLogin: string, since: string): boolean {
+function hasNewReviewSummaryComment(
+  prNumber: PrNumber,
+  phoebeLogin: string,
+  since: string,
+): boolean {
   const { comments } = ghJson<{
     comments: Array<{ body: string; createdAt: string; author: { login: string } }>;
   }>(["pr", "view", String(prNumber), "--json", "comments"]);
@@ -915,7 +941,7 @@ async function runOneIssue(
   worktreeBase: string,
   stacked: boolean,
   blockerIssueNumber?: number,
-  blockerPrNumber?: number,
+  blockerPrNumber?: PrNumber,
 ): Promise<void> {
   const agentBranch = issueBranch(issueNumber);
 
@@ -934,7 +960,7 @@ async function runOneIssue(
 
     if (newCommitCount > 0) {
       pushBranch(worktreeDir, agentBranch);
-      const existingPr = ghJson<Array<{ number: number }>>([
+      const existingPrRow = ghJson<Array<{ number: number }>>([
         "pr",
         "list",
         "--head",
@@ -943,7 +969,8 @@ async function runOneIssue(
         "open",
         "--json",
         "number",
-      ])[0]?.number;
+      ])[0];
+      const existingPr = existingPrRow ? asPrNumber(existingPrRow.number) : undefined;
       if (existingPr === undefined) {
         const prTitle = `Phoebe: ${issueTitle} (#${issueNumber})`;
         const prBody = buildInitialPrBody({
@@ -1007,7 +1034,7 @@ type WorkKindFetch =
       kind: "conflicts";
       conflictingPrs: ConflictingPrCandidate[];
       issueBodies: Map<number, string>;
-      currentMainHead: string;
+      currentMainHead: Sha;
     }
   | {
       kind: "checks";
@@ -1064,7 +1091,7 @@ async function fetchConflictingPrs(): Promise<ConflictingPrCandidate[]> {
 
 // GraphQL statusCheckRollup is not readable by fine-grained PATs (GitHub-App/
 // OAuth only), so check state comes from the REST Actions API instead.
-function listCommitCheckItems(headSha: string): StatusCheckItem[] {
+function listCommitCheckItems(headSha: Sha): StatusCheckItem[] {
   return workflowRunsToCheckItems(
     ghJson<WorkflowRunItem[]>([
       "run",
@@ -1133,7 +1160,7 @@ async function fetchFailingCheckPrs(): Promise<ChecksCandidate[]> {
  * share it. The stack selectors read these bodies for `blocked by` references.
  */
 function harvestIssueBodies(
-  prs: ReadonlyArray<{ issueNumber?: number; headRefName: string }>,
+  prs: ReadonlyArray<{ issueNumber?: number; headRefName: BranchRef }>,
 ): Map<number, string> {
   const issueNumbers = [
     ...new Set(
@@ -1189,11 +1216,11 @@ async function fetchReviewsWorkData(): Promise<{
 async function fetchConflictWorkData(): Promise<{
   conflictingPrs: ConflictingPrCandidate[];
   issueBodies: Map<number, string>;
-  currentMainHead: string;
+  currentMainHead: Sha;
 }> {
   const rawConflictingPrs = await fetchConflictingPrs();
   fetchOrigin();
-  const currentMainHead = originBranchSha(config.defaultBranch);
+  const currentMainHead = originBranchSha(defaultBranchRef);
   const conflictingPrs = rawConflictingPrs.map((pr) => ({
     ...pr,
     failureWatermark: parseLatestMarker(
@@ -1294,7 +1321,7 @@ type CycleWorkData = {
   reviewActivityPrs: ReviewsCandidate[];
   issueBodies: Map<number, string>;
   phoebeLogin?: string;
-  currentMainHead?: string;
+  currentMainHead?: Sha;
 };
 
 async function fetchCycleWorkData(kinds: readonly WorkKindName[]): Promise<CycleWorkData> {
@@ -1305,7 +1332,7 @@ async function fetchCycleWorkData(kinds: readonly WorkKindName[]): Promise<Cycle
   let reviewActivityPrs: ReviewsCandidate[] = [];
   let issueBodies = new Map<number, string>();
   let phoebeLogin: string | undefined;
-  let currentMainHead: string | undefined;
+  let currentMainHead: Sha | undefined;
 
   for (const kind of kinds) {
     const fetched = await KINDS[kind].fetch();

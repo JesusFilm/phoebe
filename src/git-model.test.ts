@@ -13,6 +13,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "vite-plus/test";
+import { asBranchRef } from "./branded.ts";
 import {
   addWorktreeForExistingBranch,
   addWorktreeForNewBranch,
@@ -82,18 +83,18 @@ afterAll(() => {
 
 describe("git model", () => {
   test("worktreeDirForBranch produces a filesystem-safe dir under worktreesDir", () => {
-    const dir = worktreeDirForBranch(worktreesDir, "agent/issue-12");
+    const dir = worktreeDirForBranch(worktreesDir, asBranchRef("agent/issue-12"));
     expect(dir).toBe(join(worktreesDir, "agent-issue-12"));
   });
 
   test("new-branch worktree bases on the requested ref and counts commits", () => {
-    const branch = "agent/issue-12";
+    const branch = asBranchRef("agent/issue-12");
     const worktreeDir = worktreeDirForBranch(worktreesDir, branch);
     addWorktreeForNewBranch({ repoDir, worktreeDir, branch, baseRef: "origin/main" }, testGit);
 
     expect(git(worktreeDir, "rev-parse", "--abbrev-ref", "HEAD").trim()).toBe(branch);
     expect(git(worktreeDir, "rev-parse", "HEAD").trim()).toBe(
-      originBranchSha(repoDir, "main", testGit),
+      originBranchSha(repoDir, asBranchRef("main"), testGit),
     );
     expect(commitCount(worktreeDir, "origin/main..HEAD", testGit)).toBe(0);
 
@@ -107,7 +108,7 @@ describe("git model", () => {
   });
 
   test("existing-branch worktree reuses the local branch left by a prior unit", () => {
-    const branch = "agent/issue-12";
+    const branch = asBranchRef("agent/issue-12");
     const worktreeDir = worktreeDirForBranch(worktreesDir, branch);
     addWorktreeForExistingBranch({ repoDir, worktreeDir, branch }, testGit);
     expect(git(worktreeDir, "rev-parse", "--abbrev-ref", "HEAD").trim()).toBe(branch);
@@ -124,7 +125,11 @@ describe("git model", () => {
       return runner(args, opts);
     };
     addWorktreeForExistingBranch(
-      { repoDir: "/data/repo", worktreeDir: "/data/worktrees/x", branch: "agent/issue-9" },
+      {
+        repoDir: "/data/repo",
+        worktreeDir: "/data/worktrees/x",
+        branch: asBranchRef("agent/issue-9"),
+      },
       failPlainAdd,
     );
     expect(calls[1]?.args).toEqual([
@@ -153,7 +158,7 @@ describe("git model", () => {
 
   test("pushBranch pushes the branch to origin from the worktree", () => {
     const { runner, calls } = spyGit();
-    pushBranch("/data/worktrees/x", "agent/issue-12", runner);
+    pushBranch("/data/worktrees/x", asBranchRef("agent/issue-12"), runner);
     expect(calls).toEqual([
       { args: ["push", "origin", "agent/issue-12"], cwd: "/data/worktrees/x" },
     ]);
