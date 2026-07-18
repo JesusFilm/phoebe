@@ -25,6 +25,17 @@ export type BaseResolution = {
   blockerPrNumber?: number;
 };
 
+/**
+ * The stack-aware context every candidate selector needs: issue bodies (to read
+ * `blocked by` references) keyed by issue number, and the open/merged PR state of
+ * each referenced blocker. Bundled so the three work-kind flows thread one value
+ * instead of the same `(issueBodies, blockerStates)` pair.
+ */
+export type StackContext = {
+  issueBodies: ReadonlyMap<number, string>;
+  blockerStates: ReadonlyMap<number, BlockerPrState>;
+};
+
 const PRIORITY_ORDER = ["bug", "tracer", "polish", "refactor"] as const;
 export type Priority = (typeof PRIORITY_ORDER)[number];
 
@@ -160,14 +171,19 @@ export function parseConflictFailWatermark(text: string): ConflictFailWatermark 
   return { prHead: match[1]!, mainHead: match[2]! };
 }
 
-/** Latest marker wins when several failure comments exist on one PR. */
-export function parseConflictFailWatermarkFromComments(
-  comments: readonly string[],
-): ConflictFailWatermark | null {
-  for (let i = comments.length - 1; i >= 0; i--) {
-    const watermark = parseConflictFailWatermark(comments[i]!);
-    if (watermark) {
-      return watermark;
+/**
+ * Scan comment bodies newest-first and return the first marker `parse` extracts,
+ * or `null` when none match. Shared by every work kind's watermark lookup — the
+ * latest marker wins when several exist on one PR.
+ */
+export function parseLatestMarker<T>(
+  bodies: readonly string[],
+  parse: (text: string) => T | null,
+): T | null {
+  for (let i = bodies.length - 1; i >= 0; i--) {
+    const parsed = parse(bodies[i]!);
+    if (parsed) {
+      return parsed;
     }
   }
   return null;
@@ -299,17 +315,24 @@ export function stackedCatchUpRetractionComment(blockerPrNumbers: readonly numbe
   );
 }
 
+/** Oldest PR (lowest number) among candidates, or `null` when the list is empty. */
+function pickOldestPr<T extends { prNumber: number }>(candidates: readonly T[]): T | null {
+  if (candidates.length === 0) {
+    return null;
+  }
+  return candidates.reduce((oldest, pr) => (pr.prNumber < oldest.prNumber ? pr : oldest));
+}
+
 export function selectConflictFixCandidates(
   prs: readonly ConflictingPrCandidate[],
-  issueBodies: ReadonlyMap<number, string>,
-  blockerStates: ReadonlyMap<number, BlockerPrState>,
+  ctx: StackContext,
   opts?: { currentMainHead: string },
 ): ConflictingPrCandidate[] {
   return prs.filter((pr) => {
     const issueNumber = pr.issueNumber ?? parseIssueNumberFromBranch(pr.headRefName);
     if (issueNumber !== null) {
-      const body = issueBodies.get(issueNumber) ?? "";
-      if (shouldSkipStackedConflictFix(body, blockerStates)) {
+      const body = ctx.issueBodies.get(issueNumber) ?? "";
+      if (shouldSkipStackedConflictFix(body, ctx.blockerStates)) {
         return false;
       }
     }
@@ -458,18 +481,6 @@ export function parseChecksFailWatermark(text: string): ChecksFailWatermark | nu
   return { prHead: match[1]! };
 }
 
-export function parseChecksFailWatermarkFromComments(
-  comments: readonly string[],
-): ChecksFailWatermark | null {
-  for (let i = comments.length - 1; i >= 0; i--) {
-    const watermark = parseChecksFailWatermark(comments[i]!);
-    if (watermark) {
-      return watermark;
-    }
-  }
-  return null;
-}
-
 export function shouldSkipWatermarkChecksFix(opts: {
   watermark: ChecksFailWatermark | null;
   currentPrHead: string;
@@ -485,8 +496,7 @@ export const shouldSkipStackedChecksFix = shouldSkipStackedConflictFix;
 
 export function selectChecksCandidates(
   prs: readonly ChecksCandidate[],
-  issueBodies: ReadonlyMap<number, string>,
-  blockerStates: ReadonlyMap<number, BlockerPrState>,
+  ctx: StackContext,
 ): ChecksCandidate[] {
   return prs.filter((pr) => {
     if (isPrMergeConflicting(pr.mergeable, pr.mergeStateStatus)) {
@@ -494,8 +504,8 @@ export function selectChecksCandidates(
     }
     const issueNumber = pr.issueNumber ?? parseIssueNumberFromBranch(pr.headRefName);
     if (issueNumber !== null) {
-      const body = issueBodies.get(issueNumber) ?? "";
-      if (shouldSkipStackedChecksFix(body, blockerStates)) {
+      const body = ctx.issueBodies.get(issueNumber) ?? "";
+      if (shouldSkipStackedChecksFix(body, ctx.blockerStates)) {
         return false;
       }
     }
@@ -516,14 +526,9 @@ export function selectChecksCandidates(
 /** Pick the single checks unit — oldest PR number among eligible failing-CI candidates. */
 export function selectChecksUnit(
   prs: readonly ChecksCandidate[],
-  issueBodies: ReadonlyMap<number, string>,
-  blockerStates: ReadonlyMap<number, BlockerPrState>,
+  ctx: StackContext,
 ): ChecksCandidate | null {
-  const candidates = selectChecksCandidates(prs, issueBodies, blockerStates);
-  if (candidates.length === 0) {
-    return null;
-  }
-  return candidates.reduce((oldest, pr) => (pr.prNumber < oldest.prNumber ? pr : oldest));
+  return pickOldestPr(selectChecksCandidates(prs, ctx));
 }
 
 export type ReviewThreadComment = {
@@ -564,18 +569,6 @@ export function parseReviewsHandledWatermark(text: string): ReviewsHandledWaterm
     return null;
   }
   return { latest: match[1]! };
-}
-
-export function parseReviewsHandledWatermarkFromComments(
-  comments: readonly string[],
-): ReviewsHandledWatermark | null {
-  for (let i = comments.length - 1; i >= 0; i--) {
-    const watermark = parseReviewsHandledWatermark(comments[i]!);
-    if (watermark) {
-      return watermark;
-    }
-  }
-  return null;
 }
 
 export function isReviewSummaryComment(body: string): boolean {
@@ -636,8 +629,7 @@ export const shouldSkipStackedReviewsFix = shouldSkipStackedConflictFix;
 
 export function selectReviewsCandidates(
   prs: readonly ReviewsCandidate[],
-  issueBodies: ReadonlyMap<number, string>,
-  blockerStates: ReadonlyMap<number, BlockerPrState>,
+  ctx: StackContext,
   phoebeLogin: string,
 ): ReviewsCandidate[] {
   return prs.filter((pr) => {
@@ -646,8 +638,8 @@ export function selectReviewsCandidates(
     }
     const issueNumber = pr.issueNumber ?? parseIssueNumberFromBranch(pr.headRefName);
     if (issueNumber !== null) {
-      const body = issueBodies.get(issueNumber) ?? "";
-      if (shouldSkipStackedReviewsFix(body, blockerStates)) {
+      const body = ctx.issueBodies.get(issueNumber) ?? "";
+      if (shouldSkipStackedReviewsFix(body, ctx.blockerStates)) {
         return false;
       }
     }
@@ -663,15 +655,10 @@ export function selectReviewsCandidates(
 /** Pick the single reviews unit — oldest PR number among eligible review-feedback candidates. */
 export function selectReviewsUnit(
   prs: readonly ReviewsCandidate[],
-  issueBodies: ReadonlyMap<number, string>,
-  blockerStates: ReadonlyMap<number, BlockerPrState>,
+  ctx: StackContext,
   phoebeLogin: string,
 ): ReviewsCandidate | null {
-  const candidates = selectReviewsCandidates(prs, issueBodies, blockerStates, phoebeLogin);
-  if (candidates.length === 0) {
-    return null;
-  }
-  return candidates.reduce((oldest, pr) => (pr.prNumber < oldest.prNumber ? pr : oldest));
+  return pickOldestPr(selectReviewsCandidates(prs, ctx, phoebeLogin));
 }
 
 export function buildReviewsHandledComment(opts: {
@@ -729,25 +716,10 @@ export function validateWorkOrder(order: readonly string[]): readonly WorkKindNa
 /** Pick the single conflict unit — oldest PR number among unblocked candidates. */
 export function selectConflictUnit(
   prs: readonly ConflictingPrCandidate[],
-  issueBodies: ReadonlyMap<number, string>,
-  blockerStates: ReadonlyMap<number, BlockerPrState>,
+  ctx: StackContext,
   opts?: { currentMainHead: string },
 ): ConflictingPrCandidate | null {
-  const candidates = selectConflictFixCandidates(prs, issueBodies, blockerStates, opts);
-  if (candidates.length === 0) {
-    return null;
-  }
-  return candidates.reduce((oldest, pr) => (pr.prNumber < oldest.prNumber ? pr : oldest));
-}
-
-/** Oldest conflicting PR by number that is eligible for an idle conflict fix. */
-export function selectConflictFixUnit(
-  prs: readonly ConflictingPrCandidate[],
-  issueBodies: ReadonlyMap<number, string>,
-  blockerStates: ReadonlyMap<number, BlockerPrState>,
-  opts?: { currentMainHead: string },
-): ConflictingPrCandidate | null {
-  return selectConflictUnit(prs, issueBodies, blockerStates, opts);
+  return pickOldestPr(selectConflictFixCandidates(prs, ctx, opts));
 }
 
 export type IssueWorkUnit = { issue: Issue; resolution: BaseResolution };
@@ -785,6 +757,10 @@ export function selectFirstWorkUnit(
   data: WorkSelectionData,
   opts?: WorkSelectionOptions,
 ): WorkUnit | null {
+  const ctx: StackContext = {
+    issueBodies: data.issueBodies,
+    blockerStates: data.blockerStates,
+  };
   for (const kind of workOrder) {
     if (opts?.oneShotOnly && !WORK_KIND_ONE_SHOT_ELIGIBLE[kind]) {
       continue;
@@ -792,15 +768,14 @@ export function selectFirstWorkUnit(
     if (kind === "conflicts") {
       const unit = selectConflictUnit(
         data.conflictingPrs,
-        data.issueBodies,
-        data.blockerStates,
+        ctx,
         conflictSelectionOpts(data.currentMainHead),
       );
       if (unit) {
         return { kind: "conflicts", unit };
       }
     } else if (kind === "checks") {
-      const unit = selectChecksUnit(data.failingCheckPrs, data.issueBodies, data.blockerStates);
+      const unit = selectChecksUnit(data.failingCheckPrs, ctx);
       if (unit) {
         return { kind: "checks", unit };
       }
@@ -808,12 +783,7 @@ export function selectFirstWorkUnit(
       if (!data.phoebeLogin) {
         continue;
       }
-      const unit = selectReviewsUnit(
-        data.reviewActivityPrs,
-        data.issueBodies,
-        data.blockerStates,
-        data.phoebeLogin,
-      );
+      const unit = selectReviewsUnit(data.reviewActivityPrs, ctx, data.phoebeLogin);
       if (unit) {
         return { kind: "reviews", unit };
       }
@@ -825,6 +795,62 @@ export function selectFirstWorkUnit(
     }
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Idle-cycle selection summaries
+//
+// These sit beside the selectors so main's idle logging asks "what did you skip,
+// and why?" instead of rebuilding blocker maps and re-running every selector. The
+// `unit` field is the same pick the live loop would make; the skip counts explain
+// an idle cycle to the operator.
+// ---------------------------------------------------------------------------
+
+export type ConflictSelectionSummary = {
+  unit: ConflictingPrCandidate | null;
+  skippedStacked: number;
+  skippedWatermark: number;
+};
+
+export function summarizeConflictSelection(
+  prs: readonly ConflictingPrCandidate[],
+  ctx: StackContext,
+  opts?: { currentMainHead: string },
+): ConflictSelectionSummary {
+  const withoutWatermark = selectConflictFixCandidates(prs, ctx);
+  const candidates = selectConflictFixCandidates(prs, ctx, opts);
+  return {
+    unit: pickOldestPr(candidates),
+    skippedStacked: prs.length - withoutWatermark.length,
+    skippedWatermark: withoutWatermark.length - candidates.length,
+  };
+}
+
+export type ChecksSelectionSummary = {
+  unit: ChecksCandidate | null;
+  skipped: number;
+};
+
+export function summarizeChecksSelection(
+  prs: readonly ChecksCandidate[],
+  ctx: StackContext,
+): ChecksSelectionSummary {
+  const candidates = selectChecksCandidates(prs, ctx);
+  return { unit: pickOldestPr(candidates), skipped: prs.length - candidates.length };
+}
+
+export type ReviewsSelectionSummary = {
+  unit: ReviewsCandidate | null;
+  skipped: number;
+};
+
+export function summarizeReviewsSelection(
+  prs: readonly ReviewsCandidate[],
+  ctx: StackContext,
+  phoebeLogin: string,
+): ReviewsSelectionSummary {
+  const candidates = selectReviewsCandidates(prs, ctx, phoebeLogin);
+  return { unit: pickOldestPr(candidates), skipped: prs.length - candidates.length };
 }
 
 export function conflictFixFailureComment(

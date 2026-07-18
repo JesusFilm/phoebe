@@ -21,22 +21,22 @@ import {
   newestReviewThreadCommentCreatedAt,
   parseBlockedBy,
   parseChecksFailWatermark,
-  parseChecksFailWatermarkFromComments,
   parseConflictFailWatermark,
-  parseConflictFailWatermarkFromComments,
+  parseLatestMarker,
   parseReviewsHandledWatermark,
-  parseReviewsHandledWatermarkFromComments,
   parseIssueNumberFromBranch,
   resolveWorktreeBase,
   getMergedBlockerPrNumbers,
   oneShotWorkKinds,
   selectChecksUnit,
   selectConflictFixCandidates,
-  selectConflictFixUnit,
   selectConflictUnit,
   selectFirstWorkUnit,
   selectIssue,
   selectReviewsUnit,
+  summarizeChecksSelection,
+  summarizeConflictSelection,
+  summarizeReviewsSelection,
   shouldPostChecksFixFailure,
   statusCheckRollupState,
   validateWorkOrder,
@@ -433,7 +433,9 @@ describe("selectConflictUnit", () => {
     const prs = [pr({ prNumber: 120 }), pr({ prNumber: 115 }), pr({ prNumber: 118 })];
     const bodies = new Map<number, string>();
     const states = new Map<number, BlockerPrState>();
-    expect(selectConflictUnit(prs, bodies, states)?.prNumber).toBe(115);
+    expect(selectConflictUnit(prs, { issueBodies: bodies, blockerStates: states })?.prNumber).toBe(
+      115,
+    );
   });
 
   test("selects stacked follow-up when blocker merged (catch-up eligible)", () => {
@@ -442,7 +444,9 @@ describe("selectConflictUnit", () => {
     const states = new Map<number, BlockerPrState>([
       [108, { hasOpenPr: false, hasMergedPr: true, mergedPrNumber: 112 }],
     ]);
-    expect(selectConflictUnit(prs, bodies, states)?.prNumber).toBe(115);
+    expect(selectConflictUnit(prs, { issueBodies: bodies, blockerStates: states })?.prNumber).toBe(
+      115,
+    );
   });
 
   test("returns null when every conflict is stacked on open blocker", () => {
@@ -451,7 +455,7 @@ describe("selectConflictUnit", () => {
     const states = new Map<number, BlockerPrState>([
       [108, { hasOpenPr: true, openPrNumber: 112, hasMergedPr: false }],
     ]);
-    expect(selectConflictUnit(prs, bodies, states)).toBeNull();
+    expect(selectConflictUnit(prs, { issueBodies: bodies, blockerStates: states })).toBeNull();
   });
 });
 
@@ -592,7 +596,11 @@ describe("selectConflictFixCandidates", () => {
     const states = new Map<number, BlockerPrState>([
       [108, { hasOpenPr: true, openPrNumber: 112, hasMergedPr: false }],
     ]);
-    expect(selectConflictFixCandidates(prs, bodies, states).map((p) => p.prNumber)).toEqual([109]);
+    expect(
+      selectConflictFixCandidates(prs, { issueBodies: bodies, blockerStates: states }).map(
+        (p) => p.prNumber,
+      ),
+    ).toEqual([109]);
   });
 
   test("skips PRs whose failure watermark matches current SHAs", () => {
@@ -609,9 +617,13 @@ describe("selectConflictFixCandidates", () => {
       }),
     ];
     expect(
-      selectConflictFixCandidates(prs, emptyBodies, emptyStates, {
-        currentMainHead: "main1",
-      }).map((p) => p.prNumber),
+      selectConflictFixCandidates(
+        prs,
+        { issueBodies: emptyBodies, blockerStates: emptyStates },
+        {
+          currentMainHead: "main1",
+        },
+      ).map((p) => p.prNumber),
     ).toEqual([101]);
   });
 
@@ -624,9 +636,13 @@ describe("selectConflictFixCandidates", () => {
       }),
     ];
     expect(
-      selectConflictFixCandidates(prs, emptyBodies, emptyStates, {
-        currentMainHead: "main1",
-      }).map((p) => p.prNumber),
+      selectConflictFixCandidates(
+        prs,
+        { issueBodies: emptyBodies, blockerStates: emptyStates },
+        {
+          currentMainHead: "main1",
+        },
+      ).map((p) => p.prNumber),
     ).toEqual([100]);
   });
 
@@ -639,9 +655,13 @@ describe("selectConflictFixCandidates", () => {
       }),
     ];
     expect(
-      selectConflictFixCandidates(prs, emptyBodies, emptyStates, {
-        currentMainHead: "main2",
-      }).map((p) => p.prNumber),
+      selectConflictFixCandidates(
+        prs,
+        { issueBodies: emptyBodies, blockerStates: emptyStates },
+        {
+          currentMainHead: "main2",
+        },
+      ).map((p) => p.prNumber),
     ).toEqual([100]);
   });
 
@@ -658,13 +678,17 @@ describe("selectConflictFixCandidates", () => {
     const states = new Map<number, BlockerPrState>([
       [108, { hasOpenPr: false, hasMergedPr: true, mergedPrNumber: 112 }],
     ]);
-    expect(selectConflictFixCandidates(prs, bodies, states, { currentMainHead: "main1" })).toEqual(
-      [],
-    );
+    expect(
+      selectConflictFixCandidates(
+        prs,
+        { issueBodies: bodies, blockerStates: states },
+        { currentMainHead: "main1" },
+      ),
+    ).toEqual([]);
   });
 });
 
-describe("selectConflictFixUnit", () => {
+describe("selectConflictUnit watermark skip", () => {
   const pr = (
     overrides: Partial<ConflictingPrCandidate> & Pick<ConflictingPrCandidate, "prNumber">,
   ) =>
@@ -683,7 +707,11 @@ describe("selectConflictFixUnit", () => {
       }),
       pr({ prNumber: 101, headSha: "pr101", failureWatermark: null }),
     ];
-    const unit = selectConflictFixUnit(prs, new Map(), new Map(), { currentMainHead: "main1" });
+    const unit = selectConflictUnit(
+      prs,
+      { issueBodies: new Map(), blockerStates: new Map() },
+      { currentMainHead: "main1" },
+    );
     expect(unit?.prNumber).toBe(101);
   });
 });
@@ -701,11 +729,14 @@ describe("conflict fail watermark", () => {
     expect(parseConflictFailWatermark("no marker here")).toBeNull();
   });
 
-  test("parseConflictFailWatermarkFromComments returns latest marker", () => {
+  test("parseLatestMarker returns latest conflict marker", () => {
     const older = buildConflictFailWatermarkMarker({ prHead: "old", mainHead: "oldmain" });
     const newer = buildConflictFailWatermarkMarker(watermark);
     expect(
-      parseConflictFailWatermarkFromComments([`failure\n${older}`, "unrelated", `retry\n${newer}`]),
+      parseLatestMarker(
+        [`failure\n${older}`, "unrelated", `retry\n${newer}`],
+        parseConflictFailWatermark,
+      ),
     ).toEqual(watermark);
   });
 });
@@ -982,7 +1013,9 @@ describe("selectChecksUnit", () => {
       checksPr({ prNumber: 115 }),
       checksPr({ prNumber: 118 }),
     ];
-    expect(selectChecksUnit(prs, new Map(), new Map())?.prNumber).toBe(115);
+    expect(
+      selectChecksUnit(prs, { issueBodies: new Map(), blockerStates: new Map() })?.prNumber,
+    ).toBe(115);
   });
 
   test("skips conflicting PRs", () => {
@@ -990,7 +1023,9 @@ describe("selectChecksUnit", () => {
       checksPr({ prNumber: 110, mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" }),
       checksPr({ prNumber: 111 }),
     ];
-    expect(selectChecksUnit(prs, new Map(), new Map())?.prNumber).toBe(111);
+    expect(
+      selectChecksUnit(prs, { issueBodies: new Map(), blockerStates: new Map() })?.prNumber,
+    ).toBe(111);
   });
 
   test("skips stacked PRs with open blocker", () => {
@@ -999,7 +1034,7 @@ describe("selectChecksUnit", () => {
     const states = new Map<number, BlockerPrState>([
       [108, { hasOpenPr: true, openPrNumber: 112, hasMergedPr: false }],
     ]);
-    expect(selectChecksUnit(prs, bodies, states)).toBeNull();
+    expect(selectChecksUnit(prs, { issueBodies: bodies, blockerStates: states })).toBeNull();
   });
 
   test("skips PRs with unchanged failure watermark", () => {
@@ -1011,7 +1046,9 @@ describe("selectChecksUnit", () => {
       }),
       checksPr({ prNumber: 101, headSha: "pr101", failureWatermark: null }),
     ];
-    expect(selectChecksUnit(prs, new Map(), new Map())?.prNumber).toBe(101);
+    expect(
+      selectChecksUnit(prs, { issueBodies: new Map(), blockerStates: new Map() })?.prNumber,
+    ).toBe(101);
   });
 });
 
@@ -1082,11 +1119,14 @@ describe("checks fail watermark", () => {
     expect(parseChecksFailWatermark(marker)).toEqual(watermark);
   });
 
-  test("parseChecksFailWatermarkFromComments returns latest marker", () => {
+  test("parseLatestMarker returns latest checks marker", () => {
     const older = buildChecksFailWatermarkMarker({ prHead: "old" });
     const newer = buildChecksFailWatermarkMarker(watermark);
     expect(
-      parseChecksFailWatermarkFromComments([`failure\n${older}`, "unrelated", `retry\n${newer}`]),
+      parseLatestMarker(
+        [`failure\n${older}`, "unrelated", `retry\n${newer}`],
+        parseChecksFailWatermark,
+      ),
     ).toEqual(watermark);
   });
 });
@@ -1289,11 +1329,14 @@ describe("reviews handled watermark", () => {
     expect(parseReviewsHandledWatermark(marker)).toEqual({ latest: "2026-06-03T09:00:00Z" });
   });
 
-  test("parseReviewsHandledWatermarkFromComments returns latest marker", () => {
+  test("parseLatestMarker returns latest reviews marker", () => {
     const older = buildReviewsHandledMarker({ latest: "2026-06-01T00:00:00Z" });
     const newer = buildReviewsHandledMarker({ latest: "2026-06-03T00:00:00Z" });
     expect(
-      parseReviewsHandledWatermarkFromComments([`done\n${older}`, "unrelated", `retry\n${newer}`]),
+      parseLatestMarker(
+        [`done\n${older}`, "unrelated", `retry\n${newer}`],
+        parseReviewsHandledWatermark,
+      ),
     ).toEqual({ latest: "2026-06-03T00:00:00Z" });
   });
 });
@@ -1337,7 +1380,10 @@ describe("selectReviewsUnit", () => {
       reviewsPr({ prNumber: 120, threads: [thread] }),
       reviewsPr({ prNumber: 115, threads: [thread] }),
     ];
-    expect(selectReviewsUnit(prs, new Map(), new Map(), phoebeLogin)?.prNumber).toBe(115);
+    expect(
+      selectReviewsUnit(prs, { issueBodies: new Map(), blockerStates: new Map() }, phoebeLogin)
+        ?.prNumber,
+    ).toBe(115);
   });
 
   test("skips conflicting PRs", () => {
@@ -1353,7 +1399,10 @@ describe("selectReviewsUnit", () => {
       }),
       reviewsPr({ prNumber: 111, threads: [thread] }),
     ];
-    expect(selectReviewsUnit(prs, new Map(), new Map(), phoebeLogin)?.prNumber).toBe(111);
+    expect(
+      selectReviewsUnit(prs, { issueBodies: new Map(), blockerStates: new Map() }, phoebeLogin)
+        ?.prNumber,
+    ).toBe(111);
   });
 
   test("skips stacked PRs with open blocker", () => {
@@ -1365,7 +1414,9 @@ describe("selectReviewsUnit", () => {
     const states = new Map<number, BlockerPrState>([
       [108, { hasOpenPr: true, openPrNumber: 112, hasMergedPr: false }],
     ]);
-    expect(selectReviewsUnit(prs, bodies, states, phoebeLogin)).toBeNull();
+    expect(
+      selectReviewsUnit(prs, { issueBodies: bodies, blockerStates: states }, phoebeLogin),
+    ).toBeNull();
   });
 
   test("skips when watermark covers all activity", () => {
@@ -1379,7 +1430,9 @@ describe("selectReviewsUnit", () => {
         handledWatermark: { latest: "2026-06-03T12:00:00Z" },
       }),
     ];
-    expect(selectReviewsUnit(prs, new Map(), new Map(), phoebeLogin)).toBeNull();
+    expect(
+      selectReviewsUnit(prs, { issueBodies: new Map(), blockerStates: new Map() }, phoebeLogin),
+    ).toBeNull();
   });
 
   test("human PR with null issue number and reviewer activity is eligible", () => {
@@ -1394,7 +1447,10 @@ describe("selectReviewsUnit", () => {
         threads: [thread],
       }),
     ];
-    expect(selectReviewsUnit(prs, new Map(), new Map(), phoebeLogin)?.prNumber).toBe(130);
+    expect(
+      selectReviewsUnit(prs, { issueBodies: new Map(), blockerStates: new Map() }, phoebeLogin)
+        ?.prNumber,
+    ).toBe(130);
   });
 });
 
@@ -1464,5 +1520,95 @@ describe("selectFirstWorkUnit reviews ordering", () => {
 describe("shouldSkipStackedReviewsFix", () => {
   test("aliases stacked conflict skip logic", () => {
     expect(shouldSkipStackedReviewsFix).toBe(shouldSkipStackedConflictFix);
+  });
+});
+
+describe("selection summaries", () => {
+  const conflictPr = (
+    overrides: Partial<ConflictingPrCandidate> & Pick<ConflictingPrCandidate, "prNumber">,
+  ) =>
+    ({
+      headRefName: `phoebe/issue-${overrides.prNumber}`,
+      headSha: `sha${overrides.prNumber}`,
+      ...overrides,
+    }) satisfies ConflictingPrCandidate;
+
+  test("summarizeConflictSelection reports stacked and watermark skips with the picked unit", () => {
+    const prs = [
+      // Stacked on an open blocker → skipped as stacked.
+      conflictPr({ prNumber: 100, issueNumber: 100 }),
+      // Watermark unchanged (prHead + mainHead match) → skipped as watermark.
+      conflictPr({
+        prNumber: 101,
+        headSha: "pr101",
+        failureWatermark: { prHead: "pr101", mainHead: "main1" },
+      }),
+      // Fixable.
+      conflictPr({ prNumber: 102, headSha: "pr102", failureWatermark: null }),
+    ];
+    const ctx = {
+      issueBodies: new Map([[100, "Blocked by #98"]]),
+      blockerStates: new Map([[98, { hasOpenPr: true, openPrNumber: 200, hasMergedPr: false }]]),
+    };
+    const summary = summarizeConflictSelection(prs, ctx, { currentMainHead: "main1" });
+    expect(summary.skippedStacked).toBe(1);
+    expect(summary.skippedWatermark).toBe(1);
+    expect(summary.unit?.prNumber).toBe(102);
+  });
+
+  test("summarizeChecksSelection counts skips and picks the oldest fixable PR", () => {
+    const prs: ChecksCandidate[] = [
+      { prNumber: 110, headRefName: "phoebe/issue-110", mergeable: "MERGEABLE", failingChecks: [] },
+      {
+        prNumber: 111,
+        headRefName: "phoebe/issue-111",
+        mergeable: "CONFLICTING",
+        mergeStateStatus: "DIRTY",
+        failingChecks: [],
+      },
+    ];
+    const summary = summarizeChecksSelection(prs, {
+      issueBodies: new Map(),
+      blockerStates: new Map(),
+    });
+    expect(summary.skipped).toBe(1);
+    expect(summary.unit?.prNumber).toBe(110);
+  });
+
+  test("summarizeReviewsSelection counts PRs with no new activity as skipped", () => {
+    const phoebeLogin = "phoebe-bot";
+    const prs: ReviewsCandidate[] = [
+      {
+        prNumber: 120,
+        headRefName: "phoebe/issue-120",
+        mergeable: "MERGEABLE",
+        threads: [
+          {
+            isResolved: false,
+            isOutdated: false,
+            comments: [{ createdAt: "2026-06-01T00:00:00Z", authorLogin: "human" }],
+          },
+        ],
+      },
+      {
+        prNumber: 121,
+        headRefName: "phoebe/issue-121",
+        mergeable: "MERGEABLE",
+        threads: [
+          {
+            isResolved: false,
+            isOutdated: false,
+            comments: [{ createdAt: "2026-06-01T00:00:00Z", authorLogin: phoebeLogin }],
+          },
+        ],
+      },
+    ];
+    const summary = summarizeReviewsSelection(
+      prs,
+      { issueBodies: new Map(), blockerStates: new Map() },
+      phoebeLogin,
+    );
+    expect(summary.skipped).toBe(1);
+    expect(summary.unit?.prNumber).toBe(120);
   });
 });
