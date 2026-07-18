@@ -182,7 +182,7 @@ export function parseLatestMarker<T>(
 ): T | null {
   for (let i = bodies.length - 1; i >= 0; i--) {
     const parsed = parse(bodies[i]!);
-    if (parsed) {
+    if (parsed !== null) {
       return parsed;
     }
   }

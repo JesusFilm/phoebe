@@ -1388,7 +1388,9 @@ function logIdleCycle(data: CycleWorkData): void {
   if (data.failingCheckPrs.length > 0) {
     const { unit, skipped } = summarizeChecksSelection(data.failingCheckPrs, stack);
     if (skipped > 0) {
-      console.log(`[phoebe] ${skipped} failing-CI PR(s) skipped (stacked or watermarked).`);
+      console.log(
+        `[phoebe] ${skipped} failing-CI PR(s) skipped (conflicting, stacked, or watermarked).`,
+      );
     }
     if (!unit) {
       console.log(
