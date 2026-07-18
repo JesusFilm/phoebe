@@ -58,22 +58,20 @@ import {
   listFailingChecks,
   newestReviewThreadCommentCreatedAt,
   parseBlockedBy,
-  parseChecksFailWatermarkFromComments,
-  parseConflictFailWatermarkFromComments,
-  parseReviewsHandledWatermarkFromComments,
+  parseLatestMarker,
+  parseChecksFailWatermark,
+  parseConflictFailWatermark,
+  parseReviewsHandledWatermark,
   parseIssueNumberFromBranch,
   getMergedBlockerPrNumbers,
   oneShotWorkKinds,
-  selectChecksCandidates,
-  selectChecksUnit,
-  selectReviewsCandidates,
-  selectReviewsUnit,
   stackedCatchUpRetractionComment,
   RUN_ONCE_NOTHING_MESSAGE,
-  selectConflictFixCandidates,
   selectFirstWorkUnit,
-  selectConflictUnit,
   selectIssue,
+  summarizeChecksSelection,
+  summarizeConflictSelection,
+  summarizeReviewsSelection,
   shouldPostChecksFixFailure,
   shouldPostConflictFixFailure,
   statusCheckRollupState,
@@ -88,7 +86,7 @@ import {
   type IssueWorkUnit,
   type ReviewThread,
   type ReviewsCandidate,
-  type ReviewsHandledWatermark,
+  type StackContext,
   type StatusCheckItem,
   type WorkflowRunItem,
   type WorkKindName,
@@ -342,7 +340,8 @@ function viewPrMergeInfo(prNumber: number): PrMergeInfo {
   ]);
 }
 
-function prConflictFailWatermark(prNumber: number): ConflictFailWatermark | null {
+/** All comment bodies on a PR, oldest first — the raw input to every watermark parse. */
+function fetchPrCommentBodies(prNumber: number): string[] {
   const { comments } = ghJson<{ comments: Array<{ body: string }> }>([
     "pr",
     "view",
@@ -350,29 +349,7 @@ function prConflictFailWatermark(prNumber: number): ConflictFailWatermark | null
     "--json",
     "comments",
   ]);
-  return parseConflictFailWatermarkFromComments(comments.map((comment) => comment.body));
-}
-
-function prChecksFailWatermark(prNumber: number): ChecksFailWatermark | null {
-  const { comments } = ghJson<{ comments: Array<{ body: string }> }>([
-    "pr",
-    "view",
-    String(prNumber),
-    "--json",
-    "comments",
-  ]);
-  return parseChecksFailWatermarkFromComments(comments.map((comment) => comment.body));
-}
-
-function prReviewsHandledWatermark(prNumber: number): ReviewsHandledWatermark | null {
-  const { comments } = ghJson<{ comments: Array<{ body: string }> }>([
-    "pr",
-    "view",
-    String(prNumber),
-    "--json",
-    "comments",
-  ]);
-  return parseReviewsHandledWatermarkFromComments(comments.map((comment) => comment.body));
+  return comments.map((comment) => comment.body);
 }
 
 function phoebeGhLogin(): string {
@@ -517,10 +494,17 @@ async function runAgentInWorktree(opts: {
   }
 }
 
+// The observed outcome of an automatic (no-agent) merge attempt:
+//   "pushed"     — merged cleanly and pushed; the PR is caught up.
+//   "conflicted" — real merge conflicts in the tree; an agent must resolve them.
+//   "failed"     — could not even start/finish the merge (e.g. worktree setup);
+//                  no conflicts were observed.
+type CleanMergeOutcome = "pushed" | "conflicted" | "failed";
+
 function tryCleanMerge(
   branch: string,
   mergedBlockerPrNumbers: readonly number[] = [],
-): "pushed" | "needs_agent" | "failed" {
+): CleanMergeOutcome {
   let worktreeDir: string;
   try {
     worktreeDir = prepareWorktree({ branch });
@@ -546,7 +530,7 @@ function tryCleanMerge(
       if (unmerged.trim()) {
         gitInWorktree(worktreeDir, ["merge", "--abort"], { stdio: "ignore" });
         removeWorktree(repoDir, worktreeDir);
-        return "needs_agent";
+        return "conflicted";
       }
     } catch {
       // Fall through to failed.
@@ -578,11 +562,28 @@ function attemptBlockerFirstMerges(
   }
 }
 
-async function runConflictResolutionAgent(
-  pr: ConflictingPrCandidate,
-  mergedBlockerPrNumbers: readonly number[],
-): Promise<boolean> {
-  const branch = pr.headRefName;
+type AgentWorkflowResult = {
+  worktreeDir: string;
+  branch: string;
+  originShaBefore: string;
+  originShaAfter: string;
+  localCommitCount: number;
+};
+
+/**
+ * The shared skeleton behind every PR-fix agent: snapshot origin, prepare a
+ * worktree, install, optionally prime the tree, run the agent, then re-snapshot
+ * origin and count the host-side commits. Only `onResult` differs per work kind
+ * (push vs. failure comment vs. watermark); the worktree is always removed.
+ */
+async function runAgentWorkflow(opts: {
+  pr: { prNumber: number; headRefName: string };
+  promptFile: string;
+  promptArgs: Record<string, string>;
+  beforeAgent?: (worktreeDir: string) => void;
+  onResult: (result: AgentWorkflowResult) => void | Promise<void>;
+}): Promise<void> {
+  const branch = opts.pr.headRefName;
 
   fetchOrigin();
   const originShaBefore = originBranchSha(branch);
@@ -590,68 +591,72 @@ async function runConflictResolutionAgent(
   const worktreeDir = prepareWorktree({ branch });
   try {
     runShellCommand(config.installCommand, worktreeDir);
-    attemptBlockerFirstMerges(worktreeDir, mergedBlockerPrNumbers);
+    opts.beforeAgent?.(worktreeDir);
 
     await runAgentInWorktree({
       worktreeDir,
-      promptFile: config.promptFiles.conflict,
-      promptArgs: {
-        PR_NUMBER: String(pr.prNumber),
-        PR_BRANCH: branch,
-        BLOCKER_PR_NUMBERS: mergedBlockerPrNumbers.join(","),
-      },
+      promptFile: opts.promptFile,
+      promptArgs: opts.promptArgs,
     });
 
     fetchOrigin();
     const originShaAfter = originBranchSha(branch);
-    const prInfo = viewPrMergeInfo(pr.prNumber);
     const localCommitCount = commitCount(worktreeDir, `origin/${branch}..HEAD`);
 
-    let pushed = false;
-    if (
-      shouldPostConflictFixFailure({
-        hostCommitCount: localCommitCount,
-        originShaBefore,
-        originShaAfter,
-        mergeable: prInfo.mergeable,
-        mergeStateStatus: prInfo.mergeStateStatus,
-      })
-    ) {
-      console.log(
-        `[phoebe] Conflict fix for PR #${pr.prNumber} produced no commits — leaving PR unchanged.`,
-      );
-      postPrComment(
-        pr.prNumber,
-        conflictFixFailureComment(pr.prNumber, currentConflictFailureWatermark(pr.headRefName)),
-      );
-    } else {
-      if (localCommitCount > 0) {
-        pushBranch(worktreeDir, branch);
-        pushed = true;
-        console.log(`[phoebe] Conflict resolved for PR #${pr.prNumber} — pushed.`);
-      } else {
-        pushed = true;
-        console.log(`[phoebe] Conflict resolved for PR #${pr.prNumber} — already pushed by agent.`);
-      }
-    }
-
-    return pushed;
+    await opts.onResult({ worktreeDir, branch, originShaBefore, originShaAfter, localCommitCount });
   } finally {
     removeWorktree(repoDir, worktreeDir);
   }
 }
 
-async function fixOnePrConflict(
+async function runConflictResolutionAgent(
   pr: ConflictingPrCandidate,
-  issueBodies: Map<number, string>,
-  blockerStates: Map<number, BlockerPrState>,
+  mergedBlockerPrNumbers: readonly number[],
 ): Promise<void> {
+  await runAgentWorkflow({
+    pr,
+    promptFile: config.promptFiles.conflict,
+    promptArgs: {
+      PR_NUMBER: String(pr.prNumber),
+      PR_BRANCH: pr.headRefName,
+      BLOCKER_PR_NUMBERS: mergedBlockerPrNumbers.join(","),
+    },
+    beforeAgent: (worktreeDir) => attemptBlockerFirstMerges(worktreeDir, mergedBlockerPrNumbers),
+    onResult: ({ worktreeDir, branch, originShaBefore, originShaAfter, localCommitCount }) => {
+      const prInfo = viewPrMergeInfo(pr.prNumber);
+      if (
+        shouldPostConflictFixFailure({
+          hostCommitCount: localCommitCount,
+          originShaBefore,
+          originShaAfter,
+          mergeable: prInfo.mergeable,
+          mergeStateStatus: prInfo.mergeStateStatus,
+        })
+      ) {
+        console.log(
+          `[phoebe] Conflict fix for PR #${pr.prNumber} produced no commits — leaving PR unchanged.`,
+        );
+        postPrComment(
+          pr.prNumber,
+          conflictFixFailureComment(pr.prNumber, currentConflictFailureWatermark(pr.headRefName)),
+        );
+      } else if (localCommitCount > 0) {
+        pushBranch(worktreeDir, branch);
+        console.log(`[phoebe] Conflict resolved for PR #${pr.prNumber} — pushed.`);
+      } else {
+        console.log(`[phoebe] Conflict resolved for PR #${pr.prNumber} — already pushed by agent.`);
+      }
+    },
+  });
+}
+
+async function fixOnePrConflict(pr: ConflictingPrCandidate, ctx: StackContext): Promise<void> {
   console.log(`[phoebe] Conflict fix: PR #${pr.prNumber} (${pr.headRefName}).`);
   fetchOrigin();
 
   const issueNumber = pr.issueNumber ?? parseIssueNumberFromBranch(pr.headRefName);
-  const body = issueNumber !== null ? (issueBodies.get(issueNumber) ?? "") : "";
-  const mergedBlockerPrNumbers = getMergedBlockerPrNumbers(body, blockerStates);
+  const body = issueNumber !== null ? (ctx.issueBodies.get(issueNumber) ?? "") : "";
+  const mergedBlockerPrNumbers = getMergedBlockerPrNumbers(body, ctx.blockerStates);
   if (mergedBlockerPrNumbers.length > 0) {
     console.log(
       `[phoebe] Stacked catch-up: merging blocker PR(s) ${mergedBlockerPrNumbers.map((n) => `#${n}`).join(", ")} before ${config.defaultBranch}.`,
@@ -678,67 +683,41 @@ async function fixOnePrConflict(
   await runConflictResolutionAgent(pr, mergedBlockerPrNumbers);
 }
 
-async function runChecksResolutionAgent(pr: ChecksCandidate): Promise<boolean> {
-  const branch = pr.headRefName;
-
-  fetchOrigin();
-  const originShaBefore = originBranchSha(branch);
-
-  const worktreeDir = prepareWorktree({ branch });
-  try {
-    runShellCommand(config.installCommand, worktreeDir);
-
-    await runAgentInWorktree({
-      worktreeDir,
-      promptFile: config.promptFiles.checks,
-      promptArgs: {
-        PR_NUMBER: String(pr.prNumber),
-        PR_BRANCH: branch,
-        FAILING_CHECKS: formatFailingChecksForPrompt(pr.failingChecks),
-      },
-    });
-
-    fetchOrigin();
-    const originShaAfter = originBranchSha(branch);
-    const localCommitCount = commitCount(worktreeDir, `origin/${branch}..HEAD`);
-
-    let pushed = false;
-    if (
-      shouldPostChecksFixFailure({
-        hostCommitCount: localCommitCount,
-        originShaBefore,
-        originShaAfter,
-      })
-    ) {
-      console.log(
-        `[phoebe] Checks fix for PR #${pr.prNumber} produced no commits — leaving PR unchanged.`,
-      );
-      postPrComment(
-        pr.prNumber,
-        checksFixFailureComment(pr.prNumber, currentChecksFailureWatermark(pr.headRefName)),
-      );
-    } else {
-      if (localCommitCount > 0) {
+async function runChecksResolutionAgent(pr: ChecksCandidate): Promise<void> {
+  await runAgentWorkflow({
+    pr,
+    promptFile: config.promptFiles.checks,
+    promptArgs: {
+      PR_NUMBER: String(pr.prNumber),
+      PR_BRANCH: pr.headRefName,
+      FAILING_CHECKS: formatFailingChecksForPrompt(pr.failingChecks),
+    },
+    onResult: ({ worktreeDir, branch, originShaBefore, originShaAfter, localCommitCount }) => {
+      if (
+        shouldPostChecksFixFailure({
+          hostCommitCount: localCommitCount,
+          originShaBefore,
+          originShaAfter,
+        })
+      ) {
+        console.log(
+          `[phoebe] Checks fix for PR #${pr.prNumber} produced no commits — leaving PR unchanged.`,
+        );
+        postPrComment(
+          pr.prNumber,
+          checksFixFailureComment(pr.prNumber, currentChecksFailureWatermark(pr.headRefName)),
+        );
+      } else if (localCommitCount > 0) {
         pushBranch(worktreeDir, branch);
-        pushed = true;
         console.log(`[phoebe] Checks fixed for PR #${pr.prNumber} — pushed.`);
       } else {
-        pushed = true;
         console.log(`[phoebe] Checks fixed for PR #${pr.prNumber} — already pushed by agent.`);
       }
-    }
-
-    return pushed;
-  } finally {
-    removeWorktree(repoDir, worktreeDir);
-  }
+    },
+  });
 }
 
-async function fixOnePrChecks(
-  pr: ChecksCandidate,
-  issueBodies: Map<number, string>,
-  blockerStates: Map<number, BlockerPrState>,
-): Promise<void> {
+async function fixOnePrChecks(pr: ChecksCandidate, ctx: StackContext): Promise<void> {
   console.log(
     `[phoebe] Checks fix: PR #${pr.prNumber} (${pr.headRefName}) — ` +
       `${pr.failingChecks.map((c) => c.name).join(", ")}.`,
@@ -747,8 +726,8 @@ async function fixOnePrChecks(
 
   if (pr.mergeStateStatus === "BEHIND") {
     const issueNumber = pr.issueNumber ?? parseIssueNumberFromBranch(pr.headRefName);
-    const body = issueNumber !== null ? (issueBodies.get(issueNumber) ?? "") : "";
-    const mergedBlockerPrNumbers = getMergedBlockerPrNumbers(body, blockerStates);
+    const body = issueNumber !== null ? (ctx.issueBodies.get(issueNumber) ?? "") : "";
+    const mergedBlockerPrNumbers = getMergedBlockerPrNumbers(body, ctx.blockerStates);
     if (mergedBlockerPrNumbers.length > 0) {
       console.log(
         `[phoebe] Behind main — catch-up merging blocker PR(s) ${mergedBlockerPrNumbers.map((n) => `#${n}`).join(", ")} before ${config.defaultBranch}.`,
@@ -767,7 +746,7 @@ async function fixOnePrChecks(
       }
       return;
     }
-    if (cleanResult === "needs_agent" || cleanResult === "failed") {
+    if (cleanResult === "conflicted" || cleanResult === "failed") {
       console.log(
         `[phoebe] Catch-up merge conflicted for PR #${pr.prNumber} — deferring to conflicts mode.`,
       );
@@ -880,63 +859,48 @@ function hasNewReviewSummaryComment(prNumber: number, phoebeLogin: string, since
 }
 
 async function runReviewsResolutionAgent(pr: ReviewsCandidate, phoebeLogin: string): Promise<void> {
-  const branch = pr.headRefName;
   const runStartedAt = new Date().toISOString();
+  await runAgentWorkflow({
+    pr,
+    promptFile: config.promptFiles.reviews,
+    promptArgs: {
+      PR_NUMBER: String(pr.prNumber),
+      PR_BRANCH: pr.headRefName,
+    },
+    onResult: ({ worktreeDir, branch, originShaBefore, originShaAfter, localCommitCount }) => {
+      if (localCommitCount > 0) {
+        pushBranch(worktreeDir, branch);
+        console.log(`[phoebe] Review feedback handled for PR #${pr.prNumber} — pushed.`);
+      } else if (originShaAfter !== originShaBefore) {
+        console.log(
+          `[phoebe] Review feedback handled for PR #${pr.prNumber} — already pushed by agent.`,
+        );
+      }
 
-  fetchOrigin();
-  const originShaBefore = originBranchSha(branch);
+      const hasSummary = hasNewReviewSummaryComment(pr.prNumber, phoebeLogin, runStartedAt);
+      const pushed = localCommitCount > 0 || originShaAfter !== originShaBefore;
+      // Watermark only the activity captured before the agent ran (pr.threads is
+      // the pre-run snapshot from fetchReviewsWorkData). Re-fetching here could
+      // absorb feedback posted concurrently with the run — marking it handled
+      // even though the agent never observed it, so it would never trigger another
+      // cycle. Any activity newer than this snapshot correctly re-selects the PR.
+      const latestActivityAt = newestReviewThreadCommentCreatedAt(pr.threads);
 
-  const worktreeDir = prepareWorktree({ branch });
-  try {
-    runShellCommand(config.installCommand, worktreeDir);
+      if (hasSummary) {
+        console.log(`[phoebe] Review summary posted for PR #${pr.prNumber}.`);
+      } else if (!pushed) {
+        console.log(`[phoebe] Review handling for PR #${pr.prNumber} produced no summary or push.`);
+      }
 
-    await runAgentInWorktree({
-      worktreeDir,
-      promptFile: config.promptFiles.reviews,
-      promptArgs: {
-        PR_NUMBER: String(pr.prNumber),
-        PR_BRANCH: branch,
-      },
-    });
-
-    fetchOrigin();
-    const originShaAfter = originBranchSha(branch);
-    const localCommitCount = commitCount(worktreeDir, `origin/${branch}..HEAD`);
-
-    if (localCommitCount > 0) {
-      pushBranch(worktreeDir, branch);
-      console.log(`[phoebe] Review feedback handled for PR #${pr.prNumber} — pushed.`);
-    } else if (originShaAfter !== originShaBefore) {
-      console.log(
-        `[phoebe] Review feedback handled for PR #${pr.prNumber} — already pushed by agent.`,
+      postPrComment(
+        pr.prNumber,
+        buildReviewsHandledComment({
+          latestActivityAt,
+          failed: !hasSummary && !pushed,
+        }),
       );
-    }
-
-    const hasSummary = hasNewReviewSummaryComment(pr.prNumber, phoebeLogin, runStartedAt);
-    const pushed = localCommitCount > 0 || originShaAfter !== originShaBefore;
-    // Watermark only the activity captured before the agent ran (pr.threads is
-    // the pre-run snapshot from fetchReviewsWorkData). Re-fetching here could
-    // absorb feedback posted concurrently with the run — marking it handled
-    // even though the agent never observed it, so it would never trigger another
-    // cycle. Any activity newer than this snapshot correctly re-selects the PR.
-    const latestActivityAt = newestReviewThreadCommentCreatedAt(pr.threads);
-
-    if (hasSummary) {
-      console.log(`[phoebe] Review summary posted for PR #${pr.prNumber}.`);
-    } else if (!pushed) {
-      console.log(`[phoebe] Review handling for PR #${pr.prNumber} produced no summary or push.`);
-    }
-
-    postPrComment(
-      pr.prNumber,
-      buildReviewsHandledComment({
-        latestActivityAt,
-        failed: !hasSummary && !pushed,
-      }),
-    );
-  } finally {
-    removeWorktree(repoDir, worktreeDir);
-  }
+    },
+  });
 }
 
 async function fixOnePrReviews(pr: ReviewsCandidate, phoebeLogin: string): Promise<void> {
@@ -1022,10 +986,20 @@ async function runOneIssue(
 // Work kinds + cycle data
 // ---------------------------------------------------------------------------
 
+/**
+ * Everything a work-unit runner needs beyond the unit itself, assembled from the
+ * cycle's fetch results and passed into `runUnit` — so the runners hold no
+ * module-level state between selection and execution.
+ */
+type RunContext = {
+  stack: StackContext;
+  phoebeLogin: string;
+};
+
 type WorkKind = {
   name: WorkKindName;
   fetch: () => Promise<WorkKindFetch>;
-  runUnit: (unit: WorkUnit["unit"]) => Promise<void>;
+  runUnit: (unit: WorkUnit["unit"], context: RunContext) => Promise<void>;
 };
 
 type WorkKindFetch =
@@ -1153,6 +1127,24 @@ async function fetchFailingCheckPrs(): Promise<ChecksCandidate[]> {
   return failing;
 }
 
+/**
+ * Fetch the issue body behind every PR that maps to a Phoebe issue branch, keyed
+ * by issue number. Dedupes so each issue is fetched once even when several PRs
+ * share it. The stack selectors read these bodies for `blocked by` references.
+ */
+function harvestIssueBodies(
+  prs: ReadonlyArray<{ issueNumber?: number; headRefName: string }>,
+): Map<number, string> {
+  const issueNumbers = [
+    ...new Set(
+      prs
+        .map((pr) => pr.issueNumber ?? parseIssueNumberFromBranch(pr.headRefName))
+        .filter((n): n is number => n !== null),
+    ),
+  ];
+  return new Map(issueNumbers.map((number) => [number, issueBody(number)] as const));
+}
+
 async function fetchReviewsWorkData(): Promise<{
   reviewActivityPrs: ReviewsCandidate[];
   issueBodies: Map<number, string>;
@@ -1177,7 +1169,10 @@ async function fetchReviewsWorkData(): Promise<{
         mergeable: info.mergeable,
         mergeStateStatus: info.mergeStateStatus,
         threads,
-        handledWatermark: prReviewsHandledWatermark(pr.number),
+        handledWatermark: parseLatestMarker(
+          fetchPrCommentBodies(pr.number),
+          parseReviewsHandledWatermark,
+        ),
         ...(issueNumber !== null ? { issueNumber } : {}),
       });
     } catch (error) {
@@ -1187,14 +1182,7 @@ async function fetchReviewsWorkData(): Promise<{
     }
   }
 
-  const issueNumbers = [
-    ...new Set(
-      reviewActivityPrs
-        .map((pr) => pr.issueNumber ?? parseIssueNumberFromBranch(pr.headRefName))
-        .filter((n): n is number => n !== null),
-    ),
-  ];
-  const issueBodies = new Map(issueNumbers.map((number) => [number, issueBody(number)] as const));
+  const issueBodies = harvestIssueBodies(reviewActivityPrs);
   return { reviewActivityPrs, issueBodies, phoebeLogin };
 }
 
@@ -1208,16 +1196,12 @@ async function fetchConflictWorkData(): Promise<{
   const currentMainHead = originBranchSha(config.defaultBranch);
   const conflictingPrs = rawConflictingPrs.map((pr) => ({
     ...pr,
-    failureWatermark: prConflictFailWatermark(pr.prNumber),
-  }));
-  const issueNumbers = [
-    ...new Set(
-      conflictingPrs
-        .map((pr) => pr.issueNumber ?? parseIssueNumberFromBranch(pr.headRefName))
-        .filter((n): n is number => n !== null),
+    failureWatermark: parseLatestMarker(
+      fetchPrCommentBodies(pr.prNumber),
+      parseConflictFailWatermark,
     ),
-  ];
-  const issueBodies = new Map(issueNumbers.map((number) => [number, issueBody(number)] as const));
+  }));
+  const issueBodies = harvestIssueBodies(conflictingPrs);
   return { conflictingPrs, issueBodies, currentMainHead };
 }
 
@@ -1228,16 +1212,12 @@ async function fetchChecksWorkData(): Promise<{
   const rawFailingPrs = await fetchFailingCheckPrs();
   const failingCheckPrs = rawFailingPrs.map((pr) => ({
     ...pr,
-    failureWatermark: prChecksFailWatermark(pr.prNumber),
-  }));
-  const issueNumbers = [
-    ...new Set(
-      failingCheckPrs
-        .map((pr) => pr.issueNumber ?? parseIssueNumberFromBranch(pr.headRefName))
-        .filter((n): n is number => n !== null),
+    failureWatermark: parseLatestMarker(
+      fetchPrCommentBodies(pr.prNumber),
+      parseChecksFailWatermark,
     ),
-  ];
-  const issueBodies = new Map(issueNumbers.map((number) => [number, issueBody(number)] as const));
+  }));
+  const issueBodies = harvestIssueBodies(failingCheckPrs);
   return { failingCheckPrs, issueBodies };
 }
 
@@ -1263,23 +1243,6 @@ async function runIssueUnit(unit: IssueWorkUnit): Promise<void> {
   );
 }
 
-type ConflictRunContext = {
-  issueBodies: Map<number, string>;
-  blockerStates: Map<number, BlockerPrState>;
-};
-
-let conflictRunContext: ConflictRunContext = {
-  issueBodies: new Map(),
-  blockerStates: new Map(),
-};
-
-let checksRunContext: ConflictRunContext = {
-  issueBodies: new Map(),
-  blockerStates: new Map(),
-};
-
-let reviewsRunContext: { phoebeLogin: string } = { phoebeLogin: "" };
-
 const KINDS: Record<WorkKindName, WorkKind> = {
   conflicts: {
     name: "conflicts",
@@ -1287,12 +1250,8 @@ const KINDS: Record<WorkKindName, WorkKind> = {
       const { conflictingPrs, issueBodies, currentMainHead } = await fetchConflictWorkData();
       return { kind: "conflicts", conflictingPrs, issueBodies, currentMainHead };
     },
-    runUnit: async (unit) => {
-      await fixOnePrConflict(
-        unit as ConflictingPrCandidate,
-        conflictRunContext.issueBodies,
-        conflictRunContext.blockerStates,
-      );
+    runUnit: async (unit, context) => {
+      await fixOnePrConflict(unit as ConflictingPrCandidate, context.stack);
     },
   },
   checks: {
@@ -1301,12 +1260,8 @@ const KINDS: Record<WorkKindName, WorkKind> = {
       const { failingCheckPrs, issueBodies } = await fetchChecksWorkData();
       return { kind: "checks", failingCheckPrs, issueBodies };
     },
-    runUnit: async (unit) => {
-      await fixOnePrChecks(
-        unit as ChecksCandidate,
-        checksRunContext.issueBodies,
-        checksRunContext.blockerStates,
-      );
+    runUnit: async (unit, context) => {
+      await fixOnePrChecks(unit as ChecksCandidate, context.stack);
     },
   },
   reviews: {
@@ -1315,8 +1270,8 @@ const KINDS: Record<WorkKindName, WorkKind> = {
       const { reviewActivityPrs, issueBodies, phoebeLogin } = await fetchReviewsWorkData();
       return { kind: "reviews", reviewActivityPrs, issueBodies, phoebeLogin };
     },
-    runUnit: async (unit) => {
-      await fixOnePrReviews(unit as ReviewsCandidate, reviewsRunContext.phoebeLogin);
+    runUnit: async (unit, context) => {
+      await fixOnePrReviews(unit as ReviewsCandidate, context.phoebeLogin);
     },
   },
   issues: {
@@ -1383,11 +1338,6 @@ async function fetchCycleWorkData(kinds: readonly WorkKindName[]): Promise<Cycle
     }
   }
 
-  conflictRunContext = { issueBodies, blockerStates };
-  checksRunContext = { issueBodies, blockerStates };
-  if (phoebeLogin) {
-    reviewsRunContext = { phoebeLogin };
-  }
   return {
     issues,
     blockerStates,
@@ -1408,32 +1358,16 @@ function logIdleCycle(data: CycleWorkData): void {
     );
     return;
   }
+  const stack: StackContext = { issueBodies: data.issueBodies, blockerStates: data.blockerStates };
   if (data.conflictingPrs.length > 0) {
-    const conflictBlockerStates = buildBlockerStatesFromBodies(
-      [...data.issueBodies.entries()].map(([number, body]) => ({ number, body })),
-    );
     const conflictOpts = data.currentMainHead
       ? { currentMainHead: data.currentMainHead }
       : undefined;
-    const candidatesWithoutWatermark = selectConflictFixCandidates(
+    const { unit, skippedStacked, skippedWatermark } = summarizeConflictSelection(
       data.conflictingPrs,
-      data.issueBodies,
-      conflictBlockerStates,
-    );
-    const candidates = selectConflictFixCandidates(
-      data.conflictingPrs,
-      data.issueBodies,
-      conflictBlockerStates,
+      stack,
       conflictOpts,
     );
-    const unit = selectConflictUnit(
-      data.conflictingPrs,
-      data.issueBodies,
-      conflictBlockerStates,
-      conflictOpts,
-    );
-    const skippedStacked = data.conflictingPrs.length - candidatesWithoutWatermark.length;
-    const skippedWatermark = candidatesWithoutWatermark.length - candidates.length;
     if (skippedStacked > 0) {
       console.log(
         `[phoebe] ${skippedStacked} conflicting PR(s) skipped (stacked on open blocker).`,
@@ -1452,18 +1386,11 @@ function logIdleCycle(data: CycleWorkData): void {
     }
   }
   if (data.failingCheckPrs.length > 0) {
-    const checksBlockerStates = buildBlockerStatesFromBodies(
-      [...data.issueBodies.entries()].map(([number, body]) => ({ number, body })),
-    );
-    const candidatesWithoutWatermark = selectChecksCandidates(
-      data.failingCheckPrs,
-      data.issueBodies,
-      checksBlockerStates,
-    );
-    const unit = selectChecksUnit(data.failingCheckPrs, data.issueBodies, checksBlockerStates);
-    const skippedStacked = data.failingCheckPrs.length - candidatesWithoutWatermark.length;
-    if (skippedStacked > 0) {
-      console.log(`[phoebe] ${skippedStacked} failing-CI PR(s) skipped (stacked or watermarked).`);
+    const { unit, skipped } = summarizeChecksSelection(data.failingCheckPrs, stack);
+    if (skipped > 0) {
+      console.log(
+        `[phoebe] ${skipped} failing-CI PR(s) skipped (conflicting, stacked, or watermarked).`,
+      );
     }
     if (!unit) {
       console.log(
@@ -1473,22 +1400,11 @@ function logIdleCycle(data: CycleWorkData): void {
     }
   }
   if (data.reviewActivityPrs.length > 0 && data.phoebeLogin) {
-    const reviewsBlockerStates = buildBlockerStatesFromBodies(
-      [...data.issueBodies.entries()].map(([number, body]) => ({ number, body })),
-    );
-    const candidates = selectReviewsCandidates(
+    const { unit, skipped } = summarizeReviewsSelection(
       data.reviewActivityPrs,
-      data.issueBodies,
-      reviewsBlockerStates,
+      stack,
       data.phoebeLogin,
     );
-    const unit = selectReviewsUnit(
-      data.reviewActivityPrs,
-      data.issueBodies,
-      reviewsBlockerStates,
-      data.phoebeLogin,
-    );
-    const skipped = data.reviewActivityPrs.length - candidates.length;
     if (skipped > 0) {
       console.log(
         `[phoebe] ${skipped} review-feedback PR(s) skipped (stacked, watermarked, or no new activity).`,
@@ -1596,7 +1512,10 @@ export async function runEngine(argv: readonly string[] = process.argv.slice(2))
     }
 
     try {
-      await KINDS[picked.kind].runUnit(picked.unit);
+      await KINDS[picked.kind].runUnit(picked.unit, {
+        stack: { issueBodies: data.issueBodies, blockerStates: data.blockerStates },
+        phoebeLogin: data.phoebeLogin ?? "",
+      });
     } catch (error) {
       if (runOnce) {
         throw error;
