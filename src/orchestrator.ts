@@ -1,6 +1,7 @@
 // Pure selection + base-resolution logic for Phoebe's orchestrator.
 // Kept separate from main.ts so it can be unit-tested without Docker/gh.
 
+import { asBranchRef, asSha, type BranchRef, type PrNumber, type Sha } from "./branded.ts";
 import { config } from "./resolved-config.ts";
 
 export type Issue = {
@@ -13,16 +14,16 @@ export type Issue = {
 
 export type BlockerPrState = {
   hasOpenPr: boolean;
-  openPrNumber?: number;
+  openPrNumber?: PrNumber;
   hasMergedPr: boolean;
-  mergedPrNumber?: number;
+  mergedPrNumber?: PrNumber;
 };
 
 export type BaseResolution = {
   worktreeBase: string;
   stacked: boolean;
   blockerIssueNumber?: number;
-  blockerPrNumber?: number;
+  blockerPrNumber?: PrNumber;
 };
 
 /**
@@ -73,8 +74,8 @@ export function compareIssues(a: Issue, b: Issue): number {
   return a.number - b.number;
 }
 
-export function issueBranch(issueNumber: number): string {
-  return `${config.branchPrefix}issue-${issueNumber}`;
+export function issueBranch(issueNumber: number): BranchRef {
+  return asBranchRef(`${config.branchPrefix}issue-${issueNumber}`);
 }
 
 /**
@@ -134,7 +135,7 @@ export function selectIssue(
   return null;
 }
 
-export function stackedPrComment(blockerIssueNumber: number, blockerPrNumber: number): string {
+export function stackedPrComment(blockerIssueNumber: number, blockerPrNumber: PrNumber): string {
   return (
     `⛓️ Blocked by #${blockerIssueNumber} (PR #${blockerPrNumber}). ` +
     `Its commits appear in this diff until #${blockerPrNumber} merges. ` +
@@ -144,16 +145,16 @@ export function stackedPrComment(blockerIssueNumber: number, blockerPrNumber: nu
 }
 
 export type ConflictingPrCandidate = {
-  prNumber: number;
-  headRefName: string;
+  prNumber: PrNumber;
+  headRefName: BranchRef;
   issueNumber?: number;
-  headSha?: string;
+  headSha?: Sha;
   failureWatermark?: ConflictFailWatermark | null;
 };
 
 export type ConflictFailWatermark = {
-  prHead: string;
-  mainHead: string;
+  prHead: Sha;
+  mainHead: Sha;
 };
 
 const CONFLICT_FAIL_WATERMARK_RE =
@@ -168,7 +169,7 @@ export function parseConflictFailWatermark(text: string): ConflictFailWatermark 
   if (!match) {
     return null;
   }
-  return { prHead: match[1]!, mainHead: match[2]! };
+  return { prHead: asSha(match[1]!), mainHead: asSha(match[2]!) };
 }
 
 /**
@@ -191,8 +192,8 @@ export function parseLatestMarker<T>(
 
 export function shouldSkipWatermarkConflictFix(opts: {
   watermark: ConflictFailWatermark | null;
-  currentPrHead: string;
-  currentMainHead: string;
+  currentPrHead: Sha;
+  currentMainHead: Sha;
 }): boolean {
   if (!opts.watermark) {
     return false;
@@ -206,7 +207,7 @@ const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\
 
 const ISSUE_BRANCH_RE = new RegExp(`^${escapeRegExp(config.branchPrefix)}issue-(\\d+)$`);
 
-export function isPhoebeHeadBranch(branch: string): boolean {
+export function isPhoebeHeadBranch(branch: BranchRef): boolean {
   return branch.startsWith(config.branchPrefix);
 }
 
@@ -218,7 +219,7 @@ export type PrScopeConfig = {
 };
 
 export type PrScanFields = {
-  headRefName: string;
+  headRefName: BranchRef;
   isDraft: boolean;
   isCrossRepository: boolean;
   labels: readonly string[];
@@ -257,7 +258,7 @@ export function isPrInScope(
   return true;
 }
 
-export function parseIssueNumberFromBranch(branch: string): number | null {
+export function parseIssueNumberFromBranch(branch: BranchRef): number | null {
   const match = ISSUE_BRANCH_RE.exec(branch);
   return match ? Number(match[1]) : null;
 }
@@ -290,8 +291,8 @@ export function shouldSkipStackedConflictFix(
 export function getMergedBlockerPrNumbers(
   issueBody: string,
   blockerStates: ReadonlyMap<number, BlockerPrState>,
-): number[] {
-  const merged: number[] = [];
+): PrNumber[] {
+  const merged: PrNumber[] = [];
   for (const blockerIssueNumber of parseBlockedBy(issueBody)) {
     const state = blockerStates.get(blockerIssueNumber);
     if (state?.hasMergedPr && state.mergedPrNumber !== undefined) {
@@ -301,7 +302,7 @@ export function getMergedBlockerPrNumbers(
   return merged;
 }
 
-export function stackedCatchUpRetractionComment(blockerPrNumbers: readonly number[]): string {
+export function stackedCatchUpRetractionComment(blockerPrNumbers: readonly PrNumber[]): string {
   if (blockerPrNumbers.length === 1) {
     return (
       `Blocker #${blockerPrNumbers[0]} merged; this branch has been caught up to \`main\` ` +
@@ -326,7 +327,7 @@ function pickOldestPr<T extends { prNumber: number }>(candidates: readonly T[]):
 export function selectConflictFixCandidates(
   prs: readonly ConflictingPrCandidate[],
   ctx: StackContext,
-  opts?: { currentMainHead: string },
+  opts?: { currentMainHead: Sha },
 ): ConflictingPrCandidate[] {
   return prs.filter((pr) => {
     const issueNumber = pr.issueNumber ?? parseIssueNumberFromBranch(pr.headRefName);
@@ -453,10 +454,10 @@ export function listFailingChecks(checks: readonly StatusCheckItem[]): FailingCh
 }
 
 export type ChecksCandidate = {
-  prNumber: number;
-  headRefName: string;
+  prNumber: PrNumber;
+  headRefName: BranchRef;
   issueNumber?: number;
-  headSha?: string;
+  headSha?: Sha;
   mergeable: string;
   mergeStateStatus?: string;
   failingChecks: FailingCheck[];
@@ -464,7 +465,7 @@ export type ChecksCandidate = {
 };
 
 export type ChecksFailWatermark = {
-  prHead: string;
+  prHead: Sha;
 };
 
 const CHECKS_FAIL_WATERMARK_RE = /<!--\s*phoebe-checks-fail:\s*prHead=([0-9a-f]+)\s*-->/i;
@@ -478,12 +479,12 @@ export function parseChecksFailWatermark(text: string): ChecksFailWatermark | nu
   if (!match) {
     return null;
   }
-  return { prHead: match[1]! };
+  return { prHead: asSha(match[1]!) };
 }
 
 export function shouldSkipWatermarkChecksFix(opts: {
   watermark: ChecksFailWatermark | null;
-  currentPrHead: string;
+  currentPrHead: Sha;
 }): boolean {
   if (!opts.watermark) {
     return false;
@@ -543,8 +544,8 @@ export type ReviewThread = {
 };
 
 export type ReviewsCandidate = {
-  prNumber: number;
-  headRefName: string;
+  prNumber: PrNumber;
+  headRefName: BranchRef;
   issueNumber?: number;
   authorLogin?: string;
   mergeable: string;
@@ -717,7 +718,7 @@ export function validateWorkOrder(order: readonly string[]): readonly WorkKindNa
 export function selectConflictUnit(
   prs: readonly ConflictingPrCandidate[],
   ctx: StackContext,
-  opts?: { currentMainHead: string },
+  opts?: { currentMainHead: Sha },
 ): ConflictingPrCandidate | null {
   return pickOldestPr(selectConflictFixCandidates(prs, ctx, opts));
 }
@@ -739,7 +740,7 @@ export type WorkSelectionData = {
   issueBodies: ReadonlyMap<number, string>;
   phoebeBase?: string;
   phoebeLogin?: string;
-  currentMainHead?: string;
+  currentMainHead?: Sha;
 };
 
 export type WorkSelectionOptions = {
@@ -747,7 +748,7 @@ export type WorkSelectionOptions = {
   oneShotOnly?: boolean;
 };
 
-function conflictSelectionOpts(currentMainHead?: string): { currentMainHead: string } | undefined {
+function conflictSelectionOpts(currentMainHead?: Sha): { currentMainHead: Sha } | undefined {
   return currentMainHead ? { currentMainHead } : undefined;
 }
 
@@ -815,7 +816,7 @@ export type ConflictSelectionSummary = {
 export function summarizeConflictSelection(
   prs: readonly ConflictingPrCandidate[],
   ctx: StackContext,
-  opts?: { currentMainHead: string },
+  opts?: { currentMainHead: Sha },
 ): ConflictSelectionSummary {
   const withoutWatermark = selectConflictFixCandidates(prs, ctx);
   const candidates = selectConflictFixCandidates(prs, ctx, opts);
@@ -854,7 +855,7 @@ export function summarizeReviewsSelection(
 }
 
 export function conflictFixFailureComment(
-  prNumber: number,
+  prNumber: PrNumber,
   watermark?: ConflictFailWatermark,
 ): string {
   const parts = [
@@ -875,8 +876,8 @@ export function conflictFixFailureComment(
  */
 export function shouldPostConflictFixFailure(opts: {
   hostCommitCount: number;
-  originShaBefore: string;
-  originShaAfter: string;
+  originShaBefore: Sha;
+  originShaAfter: Sha;
   mergeable: string;
   mergeStateStatus?: string;
 }): boolean {
@@ -889,7 +890,10 @@ export function shouldPostConflictFixFailure(opts: {
   return isPrMergeConflicting(opts.mergeable, opts.mergeStateStatus);
 }
 
-export function checksFixFailureComment(prNumber: number, watermark?: ChecksFailWatermark): string {
+export function checksFixFailureComment(
+  prNumber: PrNumber,
+  watermark?: ChecksFailWatermark,
+): string {
   const parts = [
     `Phoebe attempted an idle CI fix for PR #${prNumber} but could not resolve the failing ` +
       `checks. The branch was left unchanged. A human should investigate the CI failures.`,
@@ -906,8 +910,8 @@ export function checksFixFailureComment(prNumber: number, watermark?: ChecksFail
  */
 export function shouldPostChecksFixFailure(opts: {
   hostCommitCount: number;
-  originShaBefore: string;
-  originShaAfter: string;
+  originShaBefore: Sha;
+  originShaAfter: Sha;
 }): boolean {
   if (opts.hostCommitCount > 0) {
     return false;
@@ -922,7 +926,7 @@ export function formatFailingChecksForPrompt(checks: readonly FailingCheck[]): s
 export function buildInitialPrBody(opts: {
   issueNumber: number;
   commitCount: number;
-  stacked?: { blockerIssueNumber: number; blockerPrNumber: number };
+  stacked?: { blockerIssueNumber: number; blockerPrNumber: PrNumber };
 }): string {
   const parts = [`Closes #${opts.issueNumber}`, "", "Automated PR from Phoebe.", ""];
   if (opts.stacked) {

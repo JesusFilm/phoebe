@@ -6,6 +6,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { asSha, type BranchRef, type Sha } from "./branded.ts";
 
 export type GitRunner = (
   args: string[],
@@ -35,20 +36,20 @@ export function fetchOrigin(repoDir: string, git: GitRunner = defaultGit): void 
 
 export function originBranchSha(
   repoDir: string,
-  branch: string,
+  branch: BranchRef,
   git: GitRunner = defaultGit,
-): string {
-  return git(["rev-parse", `origin/${branch}`], { cwd: repoDir }).trim();
+): Sha {
+  return asSha(git(["rev-parse", `origin/${branch}`], { cwd: repoDir }).trim());
 }
 
 /** Filesystem-safe worktree directory name for a branch. */
-export function worktreeDirForBranch(worktreesDir: string, branch: string): string {
+export function worktreeDirForBranch(worktreesDir: string, branch: BranchRef): string {
   return join(worktreesDir, branch.toLowerCase().replace(/[^a-z0-9]/g, "-"));
 }
 
 /** Create a worktree on a (possibly new) branch reset to `baseRef`. */
 export function addWorktreeForNewBranch(
-  opts: { repoDir: string; worktreeDir: string; branch: string; baseRef: string },
+  opts: { repoDir: string; worktreeDir: string; branch: BranchRef; baseRef: string },
   git: GitRunner = defaultGit,
 ): void {
   git(["worktree", "add", "-B", opts.branch, opts.worktreeDir, opts.baseRef], {
@@ -59,7 +60,7 @@ export function addWorktreeForNewBranch(
 
 /** Create a worktree on an existing branch (local first, then origin/<branch>). */
 export function addWorktreeForExistingBranch(
-  opts: { repoDir: string; worktreeDir: string; branch: string },
+  opts: { repoDir: string; worktreeDir: string; branch: BranchRef },
   git: GitRunner = defaultGit,
 ): void {
   try {
@@ -100,6 +101,10 @@ export function commitCount(
   return Number(git(["rev-list", "--count", range], { cwd: worktreeDir }).trim());
 }
 
-export function pushBranch(worktreeDir: string, branch: string, git: GitRunner = defaultGit): void {
+export function pushBranch(
+  worktreeDir: string,
+  branch: BranchRef,
+  git: GitRunner = defaultGit,
+): void {
   git(["push", "origin", branch], { cwd: worktreeDir, stdio: "inherit" });
 }

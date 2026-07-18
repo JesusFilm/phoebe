@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vite-plus/test";
+import { asBranchRef, asPrNumber, asSha } from "./branded.ts";
 import {
   buildChecksFailWatermarkMarker,
   buildConflictFailWatermarkMarker,
@@ -137,7 +138,7 @@ describe("resolveWorktreeBase", () => {
   test("stacks on blocker remote tip when blocker PR is open", () => {
     const blocked = issue({ number: 102, body: "Blocked by #98" });
     const states = new Map<number, BlockerPrState>([
-      [98, { hasOpenPr: true, openPrNumber: 104, hasMergedPr: false }],
+      [98, { hasOpenPr: true, openPrNumber: asPrNumber(104), hasMergedPr: false }],
     ]);
     expect(resolveWorktreeBase(blocked, states)).toEqual({
       worktreeBase: `origin/${issueBranch(98)}`,
@@ -207,7 +208,7 @@ describe("selectIssue", () => {
 
 describe("stackedPrComment", () => {
   test("names blocker issue and PR with do-not-merge warning", () => {
-    const comment = stackedPrComment(98, 104);
+    const comment = stackedPrComment(98, asPrNumber(104));
     expect(comment).toContain("#98");
     expect(comment).toContain("PR #104");
     expect(comment).toContain("Do not merge");
@@ -216,8 +217,8 @@ describe("stackedPrComment", () => {
 
 describe("isPhoebeHeadBranch", () => {
   test("matches phoebe/ prefix", () => {
-    expect(isPhoebeHeadBranch("phoebe/issue-109")).toBe(true);
-    expect(isPhoebeHeadBranch("feature/foo")).toBe(false);
+    expect(isPhoebeHeadBranch(asBranchRef("phoebe/issue-109"))).toBe(true);
+    expect(isPhoebeHeadBranch(asBranchRef("feature/foo"))).toBe(false);
   });
 });
 
@@ -237,11 +238,11 @@ function prScanFields(
   }> = {},
 ) {
   return {
-    headRefName: "phoebe/issue-1",
     isDraft: false,
     isCrossRepository: false,
     labels: [] as string[],
     ...overrides,
+    headRefName: asBranchRef(overrides.headRefName ?? "phoebe/issue-1"),
   };
 }
 
@@ -329,11 +330,11 @@ describe("isPrInScope", () => {
 
 describe("parseIssueNumberFromBranch", () => {
   test("parses phoebe/issue-N branches", () => {
-    expect(parseIssueNumberFromBranch("phoebe/issue-109")).toBe(109);
+    expect(parseIssueNumberFromBranch(asBranchRef("phoebe/issue-109"))).toBe(109);
   });
 
   test("returns null for non-issue branches", () => {
-    expect(parseIssueNumberFromBranch("phoebe/custom")).toBeNull();
+    expect(parseIssueNumberFromBranch(asBranchRef("phoebe/custom"))).toBeNull();
   });
 });
 
@@ -352,14 +353,14 @@ describe("isPrMergeConflicting", () => {
 describe("shouldSkipStackedConflictFix", () => {
   test("skips when blocker PR is still open", () => {
     const states = new Map<number, BlockerPrState>([
-      [108, { hasOpenPr: true, openPrNumber: 112, hasMergedPr: false }],
+      [108, { hasOpenPr: true, openPrNumber: asPrNumber(112), hasMergedPr: false }],
     ]);
     expect(shouldSkipStackedConflictFix("Blocked by #108", states)).toBe(true);
   });
 
   test("does not skip when blocker PR merged", () => {
     const states = new Map<number, BlockerPrState>([
-      [108, { hasOpenPr: false, hasMergedPr: true, mergedPrNumber: 112 }],
+      [108, { hasOpenPr: false, hasMergedPr: true, mergedPrNumber: asPrNumber(112) }],
     ]);
     expect(shouldSkipStackedConflictFix("Blocked by #108", states)).toBe(false);
   });
@@ -368,9 +369,9 @@ describe("shouldSkipStackedConflictFix", () => {
 describe("getMergedBlockerPrNumbers", () => {
   test("returns every merged blocker PR number in stack order", () => {
     const states = new Map<number, BlockerPrState>([
-      [100, { hasOpenPr: false, hasMergedPr: true, mergedPrNumber: 110 }],
-      [101, { hasOpenPr: false, hasMergedPr: true, mergedPrNumber: 111 }],
-      [102, { hasOpenPr: true, openPrNumber: 112, hasMergedPr: false }],
+      [100, { hasOpenPr: false, hasMergedPr: true, mergedPrNumber: asPrNumber(110) }],
+      [101, { hasOpenPr: false, hasMergedPr: true, mergedPrNumber: asPrNumber(111) }],
+      [102, { hasOpenPr: true, openPrNumber: asPrNumber(112), hasMergedPr: false }],
     ]);
     expect(
       getMergedBlockerPrNumbers("Blocked by #100\nBlocked by #101\nBlocked by #102", states),
@@ -379,7 +380,7 @@ describe("getMergedBlockerPrNumbers", () => {
 
   test("returns empty when no blockers merged", () => {
     const states = new Map<number, BlockerPrState>([
-      [108, { hasOpenPr: true, openPrNumber: 112, hasMergedPr: false }],
+      [108, { hasOpenPr: true, openPrNumber: asPrNumber(112), hasMergedPr: false }],
     ]);
     expect(getMergedBlockerPrNumbers("Blocked by #108", states)).toEqual([]);
   });
@@ -387,13 +388,13 @@ describe("getMergedBlockerPrNumbers", () => {
 
 describe("stackedCatchUpRetractionComment", () => {
   test("retracts single-blocker banner", () => {
-    const comment = stackedCatchUpRetractionComment([112]);
+    const comment = stackedCatchUpRetractionComment([asPrNumber(112)]);
     expect(comment).toContain("#112");
     expect(comment).toContain("independently mergeable");
   });
 
   test("names all blockers for multi-blocker stacks", () => {
-    const comment = stackedCatchUpRetractionComment([110, 111]);
+    const comment = stackedCatchUpRetractionComment([asPrNumber(110), asPrNumber(111)]);
     expect(comment).toContain("#110");
     expect(comment).toContain("#111");
   });
@@ -422,11 +423,12 @@ describe("validateWorkOrder", () => {
 
 describe("selectConflictUnit", () => {
   const pr = (
-    overrides: Partial<ConflictingPrCandidate> & Pick<ConflictingPrCandidate, "prNumber">,
+    overrides: Omit<Partial<ConflictingPrCandidate>, "prNumber"> & { prNumber: number },
   ) =>
     ({
-      headRefName: `phoebe/issue-${overrides.prNumber}`,
       ...overrides,
+      prNumber: asPrNumber(overrides.prNumber),
+      headRefName: overrides.headRefName ?? asBranchRef(`phoebe/issue-${overrides.prNumber}`),
     }) satisfies ConflictingPrCandidate;
 
   test("picks oldest PR number among eligible conflicts", () => {
@@ -442,7 +444,7 @@ describe("selectConflictUnit", () => {
     const prs = [pr({ prNumber: 115, issueNumber: 115 })];
     const bodies = new Map<number, string>([[115, "Blocked by #108"]]);
     const states = new Map<number, BlockerPrState>([
-      [108, { hasOpenPr: false, hasMergedPr: true, mergedPrNumber: 112 }],
+      [108, { hasOpenPr: false, hasMergedPr: true, mergedPrNumber: asPrNumber(112) }],
     ]);
     expect(selectConflictUnit(prs, { issueBodies: bodies, blockerStates: states })?.prNumber).toBe(
       115,
@@ -453,7 +455,7 @@ describe("selectConflictUnit", () => {
     const prs = [pr({ prNumber: 110 })];
     const bodies = new Map<number, string>([[110, "Blocked by #108"]]);
     const states = new Map<number, BlockerPrState>([
-      [108, { hasOpenPr: true, openPrNumber: 112, hasMergedPr: false }],
+      [108, { hasOpenPr: true, openPrNumber: asPrNumber(112), hasMergedPr: false }],
     ]);
     expect(selectConflictUnit(prs, { issueBodies: bodies, blockerStates: states })).toBeNull();
   });
@@ -461,8 +463,8 @@ describe("selectConflictUnit", () => {
 
 describe("selectFirstWorkUnit", () => {
   const pr = (prNumber: number): ConflictingPrCandidate => ({
-    prNumber,
-    headRefName: `phoebe/issue-${prNumber}`,
+    prNumber: asPrNumber(prNumber),
+    headRefName: asBranchRef(`phoebe/issue-${prNumber}`),
   });
 
   test("prefers conflicts before issues when both have work", () => {
@@ -576,12 +578,13 @@ describe("oneShotWorkKinds", () => {
 
 describe("selectConflictFixCandidates", () => {
   const pr = (
-    overrides: Partial<ConflictingPrCandidate> & Pick<ConflictingPrCandidate, "prNumber">,
+    overrides: Omit<Partial<ConflictingPrCandidate>, "prNumber"> & { prNumber: number },
   ) =>
     ({
-      headRefName: `phoebe/issue-${overrides.prNumber}`,
-      headSha: "aaa111",
+      headSha: asSha("aaa111"),
       ...overrides,
+      prNumber: asPrNumber(overrides.prNumber),
+      headRefName: overrides.headRefName ?? asBranchRef(`phoebe/issue-${overrides.prNumber}`),
     }) satisfies ConflictingPrCandidate;
 
   const emptyBodies = new Map<number, string>();
@@ -594,7 +597,7 @@ describe("selectConflictFixCandidates", () => {
       [110, "Blocked by #108"],
     ]);
     const states = new Map<number, BlockerPrState>([
-      [108, { hasOpenPr: true, openPrNumber: 112, hasMergedPr: false }],
+      [108, { hasOpenPr: true, openPrNumber: asPrNumber(112), hasMergedPr: false }],
     ]);
     expect(
       selectConflictFixCandidates(prs, { issueBodies: bodies, blockerStates: states }).map(
@@ -607,12 +610,12 @@ describe("selectConflictFixCandidates", () => {
     const prs = [
       pr({
         prNumber: 100,
-        headSha: "pr100",
-        failureWatermark: { prHead: "pr100", mainHead: "main1" },
+        headSha: asSha("pr100"),
+        failureWatermark: { prHead: asSha("pr100"), mainHead: asSha("main1") },
       }),
       pr({
         prNumber: 101,
-        headSha: "pr101",
+        headSha: asSha("pr101"),
         failureWatermark: null,
       }),
     ];
@@ -621,7 +624,7 @@ describe("selectConflictFixCandidates", () => {
         prs,
         { issueBodies: emptyBodies, blockerStates: emptyStates },
         {
-          currentMainHead: "main1",
+          currentMainHead: asSha("main1"),
         },
       ).map((p) => p.prNumber),
     ).toEqual([101]);
@@ -631,8 +634,8 @@ describe("selectConflictFixCandidates", () => {
     const prs = [
       pr({
         prNumber: 100,
-        headSha: "pr100v2",
-        failureWatermark: { prHead: "pr100v1", mainHead: "main1" },
+        headSha: asSha("pr100v2"),
+        failureWatermark: { prHead: asSha("pr100v1"), mainHead: asSha("main1") },
       }),
     ];
     expect(
@@ -640,7 +643,7 @@ describe("selectConflictFixCandidates", () => {
         prs,
         { issueBodies: emptyBodies, blockerStates: emptyStates },
         {
-          currentMainHead: "main1",
+          currentMainHead: asSha("main1"),
         },
       ).map((p) => p.prNumber),
     ).toEqual([100]);
@@ -650,8 +653,8 @@ describe("selectConflictFixCandidates", () => {
     const prs = [
       pr({
         prNumber: 100,
-        headSha: "pr100",
-        failureWatermark: { prHead: "pr100", mainHead: "main1" },
+        headSha: asSha("pr100"),
+        failureWatermark: { prHead: asSha("pr100"), mainHead: asSha("main1") },
       }),
     ];
     expect(
@@ -659,7 +662,7 @@ describe("selectConflictFixCandidates", () => {
         prs,
         { issueBodies: emptyBodies, blockerStates: emptyStates },
         {
-          currentMainHead: "main2",
+          currentMainHead: asSha("main2"),
         },
       ).map((p) => p.prNumber),
     ).toEqual([100]);
@@ -670,19 +673,19 @@ describe("selectConflictFixCandidates", () => {
       pr({
         prNumber: 115,
         issueNumber: 115,
-        headSha: "pr115",
-        failureWatermark: { prHead: "pr115", mainHead: "main1" },
+        headSha: asSha("pr115"),
+        failureWatermark: { prHead: asSha("pr115"), mainHead: asSha("main1") },
       }),
     ];
     const bodies = new Map<number, string>([[115, "Blocked by #108"]]);
     const states = new Map<number, BlockerPrState>([
-      [108, { hasOpenPr: false, hasMergedPr: true, mergedPrNumber: 112 }],
+      [108, { hasOpenPr: false, hasMergedPr: true, mergedPrNumber: asPrNumber(112) }],
     ]);
     expect(
       selectConflictFixCandidates(
         prs,
         { issueBodies: bodies, blockerStates: states },
-        { currentMainHead: "main1" },
+        { currentMainHead: asSha("main1") },
       ),
     ).toEqual([]);
   });
@@ -690,34 +693,35 @@ describe("selectConflictFixCandidates", () => {
 
 describe("selectConflictUnit watermark skip", () => {
   const pr = (
-    overrides: Partial<ConflictingPrCandidate> & Pick<ConflictingPrCandidate, "prNumber">,
+    overrides: Omit<Partial<ConflictingPrCandidate>, "prNumber"> & { prNumber: number },
   ) =>
     ({
-      headRefName: `phoebe/issue-${overrides.prNumber}`,
-      headSha: "aaa111",
+      headSha: asSha("aaa111"),
       ...overrides,
+      prNumber: asPrNumber(overrides.prNumber),
+      headRefName: overrides.headRefName ?? asBranchRef(`phoebe/issue-${overrides.prNumber}`),
     }) satisfies ConflictingPrCandidate;
 
   test("picks oldest non-skipped conflicting PR", () => {
     const prs = [
       pr({
         prNumber: 100,
-        headSha: "pr100",
-        failureWatermark: { prHead: "pr100", mainHead: "main1" },
+        headSha: asSha("pr100"),
+        failureWatermark: { prHead: asSha("pr100"), mainHead: asSha("main1") },
       }),
-      pr({ prNumber: 101, headSha: "pr101", failureWatermark: null }),
+      pr({ prNumber: 101, headSha: asSha("pr101"), failureWatermark: null }),
     ];
     const unit = selectConflictUnit(
       prs,
       { issueBodies: new Map(), blockerStates: new Map() },
-      { currentMainHead: "main1" },
+      { currentMainHead: asSha("main1") },
     );
     expect(unit?.prNumber).toBe(101);
   });
 });
 
 describe("conflict fail watermark", () => {
-  const watermark = { prHead: "abc123def", mainHead: "9876543210ab" };
+  const watermark = { prHead: asSha("abc123def"), mainHead: asSha("9876543210ab") };
 
   test("builds a parseable HTML comment marker", () => {
     const marker = buildConflictFailWatermarkMarker(watermark);
@@ -730,7 +734,10 @@ describe("conflict fail watermark", () => {
   });
 
   test("parseLatestMarker returns latest conflict marker", () => {
-    const older = buildConflictFailWatermarkMarker({ prHead: "old", mainHead: "oldmain" });
+    const older = buildConflictFailWatermarkMarker({
+      prHead: asSha("old"),
+      mainHead: asSha("oldmain"),
+    });
     const newer = buildConflictFailWatermarkMarker(watermark);
     expect(
       parseLatestMarker(
@@ -742,14 +749,14 @@ describe("conflict fail watermark", () => {
 });
 
 describe("shouldSkipWatermarkConflictFix", () => {
-  const watermark = { prHead: "pr1", mainHead: "main1" };
+  const watermark = { prHead: asSha("pr1"), mainHead: asSha("main1") };
 
   test("skips when both SHAs match watermark", () => {
     expect(
       shouldSkipWatermarkConflictFix({
         watermark,
-        currentPrHead: "pr1",
-        currentMainHead: "main1",
+        currentPrHead: asSha("pr1"),
+        currentMainHead: asSha("main1"),
       }),
     ).toBe(true);
   });
@@ -758,8 +765,8 @@ describe("shouldSkipWatermarkConflictFix", () => {
     expect(
       shouldSkipWatermarkConflictFix({
         watermark: null,
-        currentPrHead: "pr1",
-        currentMainHead: "main1",
+        currentPrHead: asSha("pr1"),
+        currentMainHead: asSha("main1"),
       }),
     ).toBe(false);
   });
@@ -768,15 +775,15 @@ describe("shouldSkipWatermarkConflictFix", () => {
     expect(
       shouldSkipWatermarkConflictFix({
         watermark,
-        currentPrHead: "pr2",
-        currentMainHead: "main1",
+        currentPrHead: asSha("pr2"),
+        currentMainHead: asSha("main1"),
       }),
     ).toBe(false);
     expect(
       shouldSkipWatermarkConflictFix({
         watermark,
-        currentPrHead: "pr1",
-        currentMainHead: "main2",
+        currentPrHead: asSha("pr1"),
+        currentMainHead: asSha("main2"),
       }),
     ).toBe(false);
   });
@@ -784,15 +791,15 @@ describe("shouldSkipWatermarkConflictFix", () => {
 
 describe("conflictFixFailureComment", () => {
   test("names the PR and explains merge was aborted", () => {
-    const comment = conflictFixFailureComment(42);
+    const comment = conflictFixFailureComment(asPrNumber(42));
     expect(comment).toContain("PR #42");
     expect(comment).toContain("merge --abort");
   });
 
   test("embeds SHA watermark marker when provided", () => {
-    const comment = conflictFixFailureComment(42, {
-      prHead: "deadbeef",
-      mainHead: "cafebabe",
+    const comment = conflictFixFailureComment(asPrNumber(42), {
+      prHead: asSha("deadbeef"),
+      mainHead: asSha("cafebabe"),
     });
     expect(comment).toContain("<!-- phoebe-conflict-fail: prHead=deadbeef mainHead=cafebabe -->");
     expect(parseConflictFailWatermark(comment)).toEqual({
@@ -804,8 +811,8 @@ describe("conflictFixFailureComment", () => {
 
 describe("shouldPostConflictFixFailure", () => {
   const base = {
-    originShaBefore: "abc123",
-    originShaAfter: "abc123",
+    originShaBefore: asSha("abc123"),
+    originShaAfter: asSha("abc123"),
     mergeable: "CONFLICTING" as const,
     mergeStateStatus: "DIRTY",
   };
@@ -815,7 +822,7 @@ describe("shouldPostConflictFixFailure", () => {
       shouldPostConflictFixFailure({
         ...base,
         hostCommitCount: 0,
-        originShaAfter: "def456",
+        originShaAfter: asSha("def456"),
         mergeable: "MERGEABLE",
         mergeStateStatus: "CLEAN",
       }),
@@ -857,7 +864,7 @@ describe("buildInitialPrBody", () => {
     const body = buildInitialPrBody({
       issueNumber: 103,
       commitCount: 2,
-      stacked: { blockerIssueNumber: 98, blockerPrNumber: 104 },
+      stacked: { blockerIssueNumber: 98, blockerPrNumber: asPrNumber(104) },
     });
     expect(body).toContain("Closes #103");
     expect(body).toContain("Blocked by #98");
@@ -998,13 +1005,14 @@ describe("listFailingChecks", () => {
 
 describe("selectChecksUnit", () => {
   const checksPr = (
-    overrides: Partial<ChecksCandidate> & Pick<ChecksCandidate, "prNumber">,
+    overrides: Omit<Partial<ChecksCandidate>, "prNumber"> & { prNumber: number },
   ): ChecksCandidate => ({
-    headRefName: `phoebe/issue-${overrides.prNumber}`,
     mergeable: "MERGEABLE",
     mergeStateStatus: "CLEAN",
     failingChecks: [{ name: "test", conclusion: "FAILURE" }],
     ...overrides,
+    prNumber: asPrNumber(overrides.prNumber),
+    headRefName: overrides.headRefName ?? asBranchRef(`phoebe/issue-${overrides.prNumber}`),
   });
 
   test("picks oldest PR number among eligible failing-CI candidates", () => {
@@ -1032,7 +1040,7 @@ describe("selectChecksUnit", () => {
     const prs = [checksPr({ prNumber: 110 })];
     const bodies = new Map<number, string>([[110, "Blocked by #108"]]);
     const states = new Map<number, BlockerPrState>([
-      [108, { hasOpenPr: true, openPrNumber: 112, hasMergedPr: false }],
+      [108, { hasOpenPr: true, openPrNumber: asPrNumber(112), hasMergedPr: false }],
     ]);
     expect(selectChecksUnit(prs, { issueBodies: bodies, blockerStates: states })).toBeNull();
   });
@@ -1041,10 +1049,10 @@ describe("selectChecksUnit", () => {
     const prs = [
       checksPr({
         prNumber: 100,
-        headSha: "pr100",
-        failureWatermark: { prHead: "pr100" },
+        headSha: asSha("pr100"),
+        failureWatermark: { prHead: asSha("pr100") },
       }),
-      checksPr({ prNumber: 101, headSha: "pr101", failureWatermark: null }),
+      checksPr({ prNumber: 101, headSha: asSha("pr101"), failureWatermark: null }),
     ];
     expect(
       selectChecksUnit(prs, { issueBodies: new Map(), blockerStates: new Map() })?.prNumber,
@@ -1054,13 +1062,13 @@ describe("selectChecksUnit", () => {
 
 describe("selectFirstWorkUnit checks ordering", () => {
   const conflictPr = (prNumber: number): ConflictingPrCandidate => ({
-    prNumber,
-    headRefName: `phoebe/issue-${prNumber}`,
+    prNumber: asPrNumber(prNumber),
+    headRefName: asBranchRef(`phoebe/issue-${prNumber}`),
   });
 
   const checksPr = (prNumber: number): ChecksCandidate => ({
-    prNumber,
-    headRefName: `phoebe/issue-${prNumber}`,
+    prNumber: asPrNumber(prNumber),
+    headRefName: asBranchRef(`phoebe/issue-${prNumber}`),
     mergeable: "MERGEABLE",
     failingChecks: [{ name: "test", conclusion: "FAILURE" }],
   });
@@ -1111,7 +1119,7 @@ describe("selectFirstWorkUnit checks ordering", () => {
 });
 
 describe("checks fail watermark", () => {
-  const watermark = { prHead: "abc123def" };
+  const watermark = { prHead: asSha("abc123def") };
 
   test("builds a parseable HTML comment marker", () => {
     const marker = buildChecksFailWatermarkMarker(watermark);
@@ -1120,7 +1128,7 @@ describe("checks fail watermark", () => {
   });
 
   test("parseLatestMarker returns latest checks marker", () => {
-    const older = buildChecksFailWatermarkMarker({ prHead: "old" });
+    const older = buildChecksFailWatermarkMarker({ prHead: asSha("old") });
     const newer = buildChecksFailWatermarkMarker(watermark);
     expect(
       parseLatestMarker(
@@ -1135,8 +1143,8 @@ describe("shouldSkipWatermarkChecksFix", () => {
   test("skips when prHead matches watermark", () => {
     expect(
       shouldSkipWatermarkChecksFix({
-        watermark: { prHead: "pr1" },
-        currentPrHead: "pr1",
+        watermark: { prHead: asSha("pr1") },
+        currentPrHead: asSha("pr1"),
       }),
     ).toBe(true);
   });
@@ -1144,8 +1152,8 @@ describe("shouldSkipWatermarkChecksFix", () => {
   test("re-attempts when prHead moved", () => {
     expect(
       shouldSkipWatermarkChecksFix({
-        watermark: { prHead: "pr1" },
-        currentPrHead: "pr2",
+        watermark: { prHead: asSha("pr1") },
+        currentPrHead: asSha("pr2"),
       }),
     ).toBe(false);
   });
@@ -1159,14 +1167,14 @@ describe("shouldSkipStackedChecksFix", () => {
 
 describe("checksFixFailureComment", () => {
   test("embeds prHead-only watermark when provided", () => {
-    const comment = checksFixFailureComment(42, { prHead: "deadbeef" });
+    const comment = checksFixFailureComment(asPrNumber(42), { prHead: asSha("deadbeef") });
     expect(comment).toContain("PR #42");
     expect(comment).toContain("<!-- phoebe-checks-fail: prHead=deadbeef -->");
   });
 });
 
 describe("shouldPostChecksFixFailure", () => {
-  const base = { originShaBefore: "abc123", originShaAfter: "abc123" };
+  const base = { originShaBefore: asSha("abc123"), originShaAfter: asSha("abc123") };
 
   test("genuine no-op — origin unchanged and no local commits", () => {
     expect(shouldPostChecksFixFailure({ ...base, hostCommitCount: 0 })).toBe(true);
@@ -1174,7 +1182,7 @@ describe("shouldPostChecksFixFailure", () => {
 
   test("agent pushed — no failure comment", () => {
     expect(
-      shouldPostChecksFixFailure({ ...base, hostCommitCount: 0, originShaAfter: "def456" }),
+      shouldPostChecksFixFailure({ ...base, hostCommitCount: 0, originShaAfter: asSha("def456") }),
     ).toBe(false);
   });
 
@@ -1205,14 +1213,15 @@ function reviewThread(
 }
 
 function reviewsPr(
-  overrides: Partial<ReviewsCandidate> & Pick<ReviewsCandidate, "prNumber">,
+  overrides: Omit<Partial<ReviewsCandidate>, "prNumber"> & { prNumber: number },
 ): ReviewsCandidate {
   return {
-    headRefName: `phoebe/issue-${overrides.prNumber}`,
     mergeable: "MERGEABLE",
     mergeStateStatus: "CLEAN",
     threads: [],
     ...overrides,
+    prNumber: asPrNumber(overrides.prNumber),
+    headRefName: overrides.headRefName ?? asBranchRef(`phoebe/issue-${overrides.prNumber}`),
   };
 }
 
@@ -1412,7 +1421,7 @@ describe("selectReviewsUnit", () => {
     const prs = [reviewsPr({ prNumber: 110, threads: [thread] })];
     const bodies = new Map<number, string>([[110, "Blocked by #108"]]);
     const states = new Map<number, BlockerPrState>([
-      [108, { hasOpenPr: true, openPrNumber: 112, hasMergedPr: false }],
+      [108, { hasOpenPr: true, openPrNumber: asPrNumber(112), hasMergedPr: false }],
     ]);
     expect(
       selectReviewsUnit(prs, { issueBodies: bodies, blockerStates: states }, phoebeLogin),
@@ -1442,7 +1451,7 @@ describe("selectReviewsUnit", () => {
     const prs = [
       reviewsPr({
         prNumber: 130,
-        headRefName: "feature/human-pr",
+        headRefName: asBranchRef("feature/human-pr"),
         authorLogin: "human-dev",
         threads: [thread],
       }),
@@ -1463,8 +1472,8 @@ describe("selectFirstWorkUnit reviews ordering", () => {
   const reviewsCandidate = reviewsPr({ prNumber: 202, threads: [thread] });
 
   const checksPr = (prNumber: number): ChecksCandidate => ({
-    prNumber,
-    headRefName: `phoebe/issue-${prNumber}`,
+    prNumber: asPrNumber(prNumber),
+    headRefName: asBranchRef(`phoebe/issue-${prNumber}`),
     mergeable: "MERGEABLE",
     failingChecks: [{ name: "test", conclusion: "FAILURE" }],
   });
@@ -1525,12 +1534,13 @@ describe("shouldSkipStackedReviewsFix", () => {
 
 describe("selection summaries", () => {
   const conflictPr = (
-    overrides: Partial<ConflictingPrCandidate> & Pick<ConflictingPrCandidate, "prNumber">,
+    overrides: Omit<Partial<ConflictingPrCandidate>, "prNumber"> & { prNumber: number },
   ) =>
     ({
-      headRefName: `phoebe/issue-${overrides.prNumber}`,
-      headSha: `sha${overrides.prNumber}`,
+      headSha: asSha(`sha${overrides.prNumber}`),
       ...overrides,
+      prNumber: asPrNumber(overrides.prNumber),
+      headRefName: overrides.headRefName ?? asBranchRef(`phoebe/issue-${overrides.prNumber}`),
     }) satisfies ConflictingPrCandidate;
 
   test("summarizeConflictSelection reports stacked and watermark skips with the picked unit", () => {
@@ -1540,17 +1550,19 @@ describe("selection summaries", () => {
       // Watermark unchanged (prHead + mainHead match) → skipped as watermark.
       conflictPr({
         prNumber: 101,
-        headSha: "pr101",
-        failureWatermark: { prHead: "pr101", mainHead: "main1" },
+        headSha: asSha("pr101"),
+        failureWatermark: { prHead: asSha("pr101"), mainHead: asSha("main1") },
       }),
       // Fixable.
-      conflictPr({ prNumber: 102, headSha: "pr102", failureWatermark: null }),
+      conflictPr({ prNumber: 102, headSha: asSha("pr102"), failureWatermark: null }),
     ];
     const ctx = {
       issueBodies: new Map([[100, "Blocked by #98"]]),
-      blockerStates: new Map([[98, { hasOpenPr: true, openPrNumber: 200, hasMergedPr: false }]]),
+      blockerStates: new Map([
+        [98, { hasOpenPr: true, openPrNumber: asPrNumber(200), hasMergedPr: false }],
+      ]),
     };
-    const summary = summarizeConflictSelection(prs, ctx, { currentMainHead: "main1" });
+    const summary = summarizeConflictSelection(prs, ctx, { currentMainHead: asSha("main1") });
     expect(summary.skippedStacked).toBe(1);
     expect(summary.skippedWatermark).toBe(1);
     expect(summary.unit?.prNumber).toBe(102);
@@ -1558,10 +1570,15 @@ describe("selection summaries", () => {
 
   test("summarizeChecksSelection counts skips and picks the oldest fixable PR", () => {
     const prs: ChecksCandidate[] = [
-      { prNumber: 110, headRefName: "phoebe/issue-110", mergeable: "MERGEABLE", failingChecks: [] },
       {
-        prNumber: 111,
-        headRefName: "phoebe/issue-111",
+        prNumber: asPrNumber(110),
+        headRefName: asBranchRef("phoebe/issue-110"),
+        mergeable: "MERGEABLE",
+        failingChecks: [],
+      },
+      {
+        prNumber: asPrNumber(111),
+        headRefName: asBranchRef("phoebe/issue-111"),
         mergeable: "CONFLICTING",
         mergeStateStatus: "DIRTY",
         failingChecks: [],
@@ -1579,8 +1596,8 @@ describe("selection summaries", () => {
     const phoebeLogin = "phoebe-bot";
     const prs: ReviewsCandidate[] = [
       {
-        prNumber: 120,
-        headRefName: "phoebe/issue-120",
+        prNumber: asPrNumber(120),
+        headRefName: asBranchRef("phoebe/issue-120"),
         mergeable: "MERGEABLE",
         threads: [
           {
@@ -1591,8 +1608,8 @@ describe("selection summaries", () => {
         ],
       },
       {
-        prNumber: 121,
-        headRefName: "phoebe/issue-121",
+        prNumber: asPrNumber(121),
+        headRefName: asBranchRef("phoebe/issue-121"),
         mergeable: "MERGEABLE",
         threads: [
           {
