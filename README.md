@@ -63,19 +63,20 @@ export default defineConfig({
 });
 ```
 
-| Field             | Default                         | What it controls                                |
-| ----------------- | ------------------------------- | ----------------------------------------------- |
-| `repoSlug`        | _required_                      | GitHub `owner/repo` for every `gh` call.        |
-| `repoUrl`         | _required_                      | Clone URL for the container's private clone.    |
-| `installCommand`  | _required_                      | Dependency install run in each worktree.        |
-| `checkCommand`    | _required_                      | Lint/type gate.                                 |
-| `testCommand`     | _required_                      | Test gate.                                      |
-| `defaultBranch`   | `main`                          | Branch PRs target and worktrees base off.       |
-| `branchPrefix`    | `phoebe/`                       | Prefix for agent branches.                      |
-| `readyLabel`      | `ready-for-agent`               | Label marking issues Phoebe may pick up.        |
-| `prOptOutLabel`   | `ready-for-human`               | Label that hands a PR back to a human.          |
-| `workOrder`       | conflicts→checks→reviews→issues | Order the work kinds are tried.                 |
-| `defaultProvider` | `cursor`                        | Agent CLI to drive (`cursor`/`claude`/`codex`). |
+| Field             | Default                                  | What it controls                                |
+| ----------------- | ---------------------------------------- | ----------------------------------------------- |
+| `repoSlug`        | _required_                               | GitHub `owner/repo` for every `gh` call.        |
+| `repoUrl`         | _required_                               | Clone URL for the container's private clone.    |
+| `installCommand`  | _required_                               | Dependency install run in each worktree.        |
+| `checkCommand`    | _required_                               | Lint/type gate.                                 |
+| `testCommand`     | _required_                               | Test gate.                                      |
+| `defaultBranch`   | `main`                                   | Branch PRs target and worktrees base off.       |
+| `branchPrefix`    | `phoebe/`                                | Prefix for agent branches.                      |
+| `readyLabel`      | `ready-for-agent`                        | Label marking issues Phoebe may pick up.        |
+| `researchLabel`   | `wayfinder:research`                     | Label marking wayfinder research tickets.       |
+| `prOptOutLabel`   | `ready-for-human`                        | Label that hands a PR back to a human.          |
+| `workOrder`       | conflicts→checks→reviews→issues→research | Order the work kinds are tried.                 |
+| `defaultProvider` | `cursor`                                 | Agent CLI to drive (`cursor`/`claude`/`codex`). |
 
 See [`docs/configuration.md`](docs/configuration.md) for the complete field
 reference and the `PHOEBE_*` environment overlay.
@@ -86,7 +87,7 @@ Docs live under [`docs/`](docs/):
 
 - [`docs/architecture.md`](docs/architecture.md) — topology, worktree isolation, supervisor self-update, named volumes.
 - [`docs/configuration.md`](docs/configuration.md) — full config-field reference and env overlay.
-- [`docs/work-kinds.md`](docs/work-kinds.md) — issues / conflicts / checks / reviews mechanics, PR-scan scope, poll loop.
+- [`docs/work-kinds.md`](docs/work-kinds.md) — issues / conflicts / checks / reviews / research mechanics, PR-scan scope, poll loop.
 - [`docs/operating.md`](docs/operating.md) — controlling Phoebe as a human (labels, drafts, watermarks).
 - [`docs/upgrading.md`](docs/upgrading.md) — the init / pin / upgrade contract.
 - [`docs/ai-install.md`](docs/ai-install.md) — a deterministic, agent-followable install runbook.

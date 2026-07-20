@@ -57,11 +57,12 @@ does not force you to supply the rest.
 
 ## Labels
 
-| Field             | Default             | Meaning                                              |
-| ----------------- | ------------------- | ---------------------------------------------------- |
-| `readyLabel`      | `"ready-for-agent"` | Only issues carrying this label are picked up.       |
-| `processingLabel` | `"processing"`      | The agent applies this to an issue it has claimed.   |
-| `prOptOutLabel`   | `"ready-for-human"` | PRs with this label are excluded from every PR scan. |
+| Field             | Default                | Meaning                                                             |
+| ----------------- | ---------------------- | ------------------------------------------------------------------- |
+| `readyLabel`      | `"ready-for-agent"`    | Only issues carrying this label are picked up by the `issues` kind. |
+| `researchLabel`   | `"wayfinder:research"` | Open issues with this label are picked up by the `research` kind.   |
+| `processingLabel` | `"processing"`         | The agent applies this to an issue it has claimed.                  |
+| `prOptOutLabel`   | `"ready-for-human"`    | PRs with this label are excluded from every PR scan.                |
 
 See [`operating.md`](operating.md) for how a human drives Phoebe with these.
 
@@ -95,12 +96,14 @@ inside a worktree (`checkCommand`/`testCommand` are required, above).
 
 ## Work order
 
-| Field       | Default                                        | Meaning                                                                                                                                         |
-| ----------- | ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `workOrder` | `["conflicts", "checks", "reviews", "issues"]` | Ordered work kinds; the first kind with a workable unit each cycle wins. Validated at startup — must be non-empty and contain only known kinds. |
+| Field       | Default                                                    | Meaning                                                                                                                                                                                                  |
+| ----------- | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `workOrder` | `["conflicts", "checks", "reviews", "issues", "research"]` | Ordered work kinds; the first kind with a workable unit each cycle wins. Validated at startup — must be non-empty and contain only known kinds (`conflicts`, `checks`, `reviews`, `issues`, `research`). |
 
 Order is priority: put janitor kinds first so open PRs are unblocked before new
-issues are started. See [`work-kinds.md`](work-kinds.md).
+issues are started, and `research` last so net-new code advances before research
+tickets. Omit `research` to disable it for a repo. See
+[`work-kinds.md`](work-kinds.md).
 
 ## Providers & models
 
@@ -112,9 +115,9 @@ issues are started. See [`work-kinds.md`](work-kinds.md).
 
 ## Prompt files
 
-| Field         | Default keys                                                                                                                                       | Meaning                                                                                                                                                                   |
-| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `promptFiles` | `{ issue: "prompts/prompt.md", conflict: "prompts/conflict-prompt.md", checks: "prompts/checks-prompt.md", reviews: "prompts/reviews-prompt.md" }` | Prompt template paths, relative to the runtime root. `phoebe init` copies the shipped defaults into `prompts/`; edit them to override, or leave them to use the defaults. |
+| Field         | Default keys                                                                                                                                                                               | Meaning                                                                                                                                                                   |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `promptFiles` | `{ issue: "prompts/prompt.md", conflict: "prompts/conflict-prompt.md", checks: "prompts/checks-prompt.md", reviews: "prompts/reviews-prompt.md", research: "prompts/research-prompt.md" }` | Prompt template paths, relative to the runtime root. `phoebe init` copies the shipped defaults into `prompts/`; edit them to override, or leave them to use the defaults. |
 
 ## Self-update paths
 
@@ -151,6 +154,7 @@ config-file territory.
 | `PHOEBE_DEFAULT_BRANCH`          | `defaultBranch`         | Also read directly as the branch the supervisor keeps the clone on. |
 | `PHOEBE_BRANCH_PREFIX`           | `branchPrefix`          |                                                                     |
 | `PHOEBE_READY_LABEL`             | `readyLabel`            |                                                                     |
+| `PHOEBE_RESEARCH_LABEL`          | `researchLabel`         |                                                                     |
 | `PHOEBE_PROCESSING_LABEL`        | `processingLabel`       |                                                                     |
 | `PHOEBE_PR_OPT_OUT_LABEL`        | `prOptOutLabel`         |                                                                     |
 | `PHOEBE_INSTALL_COMMAND`         | `installCommand`        |                                                                     |

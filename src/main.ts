@@ -196,7 +196,8 @@ function gh(args: string[], opts?: { input?: string }): void {
   });
 }
 
-function listReadyIssues(): Issue[] {
+/** Open issues carrying `label`, oldest-created first. Shared by `issues` and `research`. */
+function listIssuesWithLabel(label: string): Issue[] {
   type GhIssue = Omit<Issue, "labels"> & { labels: Array<{ name: string }> };
   return ghJson<GhIssue[]>([
     "issue",
@@ -204,7 +205,7 @@ function listReadyIssues(): Issue[] {
     "--state",
     "open",
     "--label",
-    config.readyLabel,
+    label,
     "--limit",
     "100",
     "--search",
@@ -218,6 +219,14 @@ function listReadyIssues(): Issue[] {
     createdAt: row.createdAt,
     labels: row.labels.map((l) => l.name),
   }));
+}
+
+function listReadyIssues(): Issue[] {
+  return listIssuesWithLabel(config.readyLabel);
+}
+
+function listResearchIssues(): Issue[] {
+  return listIssuesWithLabel(config.researchLabel);
 }
 
 function blockerPrState(blockerIssueNumber: number): BlockerPrState {
@@ -935,14 +944,25 @@ async function fixOnePrReviews(pr: ReviewsCandidate, phoebeLogin: string): Promi
   await runReviewsResolutionAgent(pr, phoebeLogin);
 }
 
-async function runOneIssue(
-  issueNumber: number,
-  issueTitle: string,
-  worktreeBase: string,
-  stacked: boolean,
-  blockerIssueNumber?: number,
-  blockerPrNumber?: PrNumber,
-): Promise<void> {
+/**
+ * Work a single issue-shaped ticket: branch off the resolved base, run the
+ * given prompt, and — only when the agent left commits — push and open (or
+ * update) a PR. Shared by the `issues` and `research` kinds; the two differ
+ * only in `promptFile`. A research ticket that resolves as an issue-level
+ * artifact (comment + close + map update, done by the prompt) leaves no
+ * commits, so no PR is opened; one that produces a committed doc does.
+ */
+async function runOneIssue(opts: {
+  issueNumber: number;
+  issueTitle: string;
+  worktreeBase: string;
+  stacked: boolean;
+  promptFile: string;
+  blockerIssueNumber?: number;
+  blockerPrNumber?: PrNumber;
+}): Promise<void> {
+  const { issueNumber, issueTitle, worktreeBase, stacked, promptFile } = opts;
+  const { blockerIssueNumber, blockerPrNumber } = opts;
   const agentBranch = issueBranch(issueNumber);
 
   fetchOrigin();
@@ -952,7 +972,7 @@ async function runOneIssue(
 
     await runAgentInWorktree({
       worktreeDir,
-      promptFile: config.promptFiles.issue,
+      promptFile,
       promptArgs: { ISSUE_NUMBER: String(issueNumber) },
     });
 
@@ -1047,7 +1067,12 @@ type WorkKindFetch =
       issueBodies: Map<number, string>;
       phoebeLogin: string;
     }
-  | { kind: "issues"; issues: Issue[]; blockerStates: Map<number, BlockerPrState> };
+  | { kind: "issues"; issues: Issue[]; blockerStates: Map<number, BlockerPrState> }
+  | {
+      kind: "research";
+      researchIssues: Issue[];
+      blockerStates: Map<number, BlockerPrState>;
+    };
 
 async function conflictingPrCandidate(pr: OpenPhoebePr): Promise<ConflictingPrCandidate | null> {
   for (let attempt = 0; attempt < MERGEABLE_RETRY_COUNT; attempt++) {
@@ -1253,6 +1278,14 @@ function fetchIssueWorkData(): { issues: Issue[]; blockerStates: Map<number, Blo
   return { issues, blockerStates: buildBlockerStates(issues) };
 }
 
+function fetchResearchWorkData(): {
+  researchIssues: Issue[];
+  blockerStates: Map<number, BlockerPrState>;
+} {
+  const researchIssues = listResearchIssues();
+  return { researchIssues, blockerStates: buildBlockerStates(researchIssues) };
+}
+
 async function runIssueUnit(unit: IssueWorkUnit): Promise<void> {
   const { issue: target, resolution } = unit;
   console.log(
@@ -1260,14 +1293,33 @@ async function runIssueUnit(unit: IssueWorkUnit): Promise<void> {
       (resolution.stacked ? ` (stacked on #${resolution.blockerIssueNumber})` : "") +
       ".",
   );
-  await runOneIssue(
-    target.number,
-    target.title,
-    resolution.worktreeBase,
-    resolution.stacked,
-    resolution.blockerIssueNumber,
-    resolution.blockerPrNumber,
+  await runOneIssue({
+    issueNumber: target.number,
+    issueTitle: target.title,
+    worktreeBase: resolution.worktreeBase,
+    stacked: resolution.stacked,
+    promptFile: config.promptFiles.issue,
+    blockerIssueNumber: resolution.blockerIssueNumber,
+    blockerPrNumber: resolution.blockerPrNumber,
+  });
+}
+
+async function runResearchUnit(unit: IssueWorkUnit): Promise<void> {
+  const { issue: target, resolution } = unit;
+  console.log(
+    `[phoebe] Researching #${target.number} — base ${resolution.worktreeBase}` +
+      (resolution.stacked ? ` (stacked on #${resolution.blockerIssueNumber})` : "") +
+      ".",
   );
+  await runOneIssue({
+    issueNumber: target.number,
+    issueTitle: target.title,
+    worktreeBase: resolution.worktreeBase,
+    stacked: resolution.stacked,
+    promptFile: config.promptFiles.research,
+    blockerIssueNumber: resolution.blockerIssueNumber,
+    blockerPrNumber: resolution.blockerPrNumber,
+  });
 }
 
 const KINDS: Record<WorkKindName, WorkKind> = {
@@ -1311,10 +1363,21 @@ const KINDS: Record<WorkKindName, WorkKind> = {
       await runIssueUnit(unit as IssueWorkUnit);
     },
   },
+  research: {
+    name: "research",
+    fetch: async () => {
+      const { researchIssues, blockerStates } = fetchResearchWorkData();
+      return { kind: "research", researchIssues, blockerStates };
+    },
+    runUnit: async (unit) => {
+      await runResearchUnit(unit as IssueWorkUnit);
+    },
+  },
 };
 
 type CycleWorkData = {
   issues: Issue[];
+  researchIssues: Issue[];
   blockerStates: Map<number, BlockerPrState>;
   conflictingPrs: ConflictingPrCandidate[];
   failingCheckPrs: ChecksCandidate[];
@@ -1326,6 +1389,7 @@ type CycleWorkData = {
 
 async function fetchCycleWorkData(kinds: readonly WorkKindName[]): Promise<CycleWorkData> {
   let issues: Issue[] = [];
+  let researchIssues: Issue[] = [];
   let blockerStates = new Map<number, BlockerPrState>();
   let conflictingPrs: ConflictingPrCandidate[] = [];
   let failingCheckPrs: ChecksCandidate[] = [];
@@ -1338,7 +1402,14 @@ async function fetchCycleWorkData(kinds: readonly WorkKindName[]): Promise<Cycle
     const fetched = await KINDS[kind].fetch();
     if (fetched.kind === "issues") {
       issues = fetched.issues;
-      blockerStates = fetched.blockerStates;
+      for (const [number, state] of fetched.blockerStates) {
+        blockerStates.set(number, state);
+      }
+    } else if (fetched.kind === "research") {
+      researchIssues = fetched.researchIssues;
+      for (const [number, state] of fetched.blockerStates) {
+        blockerStates.set(number, state);
+      }
     } else if (fetched.kind === "conflicts") {
       conflictingPrs = fetched.conflictingPrs;
       issueBodies = fetched.issueBodies;
@@ -1367,6 +1438,7 @@ async function fetchCycleWorkData(kinds: readonly WorkKindName[]): Promise<Cycle
 
   return {
     issues,
+    researchIssues,
     blockerStates,
     conflictingPrs,
     failingCheckPrs,
@@ -1382,6 +1454,15 @@ function logIdleCycle(data: CycleWorkData): void {
   if (data.issues.length > 0 && !selectIssue(data.issues, data.blockerStates, phoebeBase)) {
     console.log(
       `[phoebe] ${data.issues.length} ${config.readyLabel} issue(s) but none workable this cycle (blocked or waiting on blocker PR).`,
+    );
+    return;
+  }
+  if (
+    data.researchIssues.length > 0 &&
+    !selectIssue(data.researchIssues, data.blockerStates, phoebeBase)
+  ) {
+    console.log(
+      `[phoebe] ${data.researchIssues.length} ${config.researchLabel} ticket(s) but none workable this cycle (blocked or waiting on blocker PR).`,
     );
     return;
   }
@@ -1464,6 +1545,10 @@ function describeUnit(picked: WorkUnit): string {
     const unit = picked.unit;
     return `review feedback for PR #${unit.prNumber} (${unit.headRefName})`;
   }
+  if (picked.kind === "research") {
+    const unit = picked.unit;
+    return `research ticket #${unit.issue.number} — base ${unit.resolution.worktreeBase}`;
+  }
   const unit = picked.unit;
   return `issue #${unit.issue.number} — base ${unit.resolution.worktreeBase}`;
 }
@@ -1505,6 +1590,7 @@ export async function runEngine(argv: readonly string[] = process.argv.slice(2))
       workOrder,
       {
         issues: data.issues,
+        researchIssues: data.researchIssues,
         blockerStates: data.blockerStates,
         conflictingPrs: data.conflictingPrs,
         failingCheckPrs: data.failingCheckPrs,

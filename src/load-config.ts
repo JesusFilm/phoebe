@@ -48,6 +48,7 @@ export const ENV_OVERLAY_KEYS = [
   { env: "PHOEBE_DEFAULT_BRANCH", key: "defaultBranch" },
   { env: "PHOEBE_BRANCH_PREFIX", key: "branchPrefix" },
   { env: "PHOEBE_READY_LABEL", key: "readyLabel" },
+  { env: "PHOEBE_RESEARCH_LABEL", key: "researchLabel" },
   { env: "PHOEBE_PROCESSING_LABEL", key: "processingLabel" },
   { env: "PHOEBE_PR_OPT_OUT_LABEL", key: "prOptOutLabel" },
   { env: "PHOEBE_INSTALL_COMMAND", key: "installCommand" },

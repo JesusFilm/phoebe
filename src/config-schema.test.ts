@@ -89,6 +89,7 @@ describe("resolveConfig", () => {
     expect(resolved.defaultBranch).toBe(CONFIG_DEFAULTS.defaultBranch);
     expect(resolved.branchPrefix).toBe(CONFIG_DEFAULTS.branchPrefix);
     expect(resolved.readyLabel).toBe(CONFIG_DEFAULTS.readyLabel);
+    expect(resolved.researchLabel).toBe(CONFIG_DEFAULTS.researchLabel);
     expect(resolved.processingLabel).toBe(CONFIG_DEFAULTS.processingLabel);
     expect(resolved.readyCommand).toBe(CONFIG_DEFAULTS.readyCommand);
     expect(resolved.blockedByPattern).toBe(CONFIG_DEFAULTS.blockedByPattern);
@@ -131,6 +132,7 @@ describe("resolveConfig", () => {
     expect(resolved.promptFiles.reviews).toBe(CONFIG_DEFAULTS.promptFiles.reviews);
     expect(resolved.promptFiles.conflict).toBe(CONFIG_DEFAULTS.promptFiles.conflict);
     expect(resolved.promptFiles.checks).toBe(CONFIG_DEFAULTS.promptFiles.checks);
+    expect(resolved.promptFiles.research).toBe(CONFIG_DEFAULTS.promptFiles.research);
   });
 
   test("shallow-merges provider defaults: one model override leaves the others", () => {

@@ -16,11 +16,15 @@ defaults are shown in parentheses throughout.
 Phoebe polls the repo and, each cycle, works one unit of the first workable kind
 in `workOrder`. It only ever acts on:
 
-- **Issues** labelled `readyLabel`, and
+- **Issues** labelled `readyLabel`,
+- **Wayfinder research tickets** labelled `researchLabel` (default
+  `wayfinder:research`), when `research` is in `workOrder`, and
 - **Open PRs in scope** (see `prScope` / `draftPrs` / `prOptOutLabel`).
 
 So every lever below is just a way of adding or removing an issue/PR from those
-sets, or of telling Phoebe "a human has this now."
+sets, or of telling Phoebe "a human has this now." Research tickets are selected
+the same way as ready issues (priority, age, `Blocked by #N`); see
+[`work-kinds.md`](work-kinds.md#research--resolve-wayfinder-research-tickets).
 
 ## Starting a unit of work: `readyLabel`
 
