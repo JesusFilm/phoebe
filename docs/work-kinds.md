@@ -84,9 +84,11 @@ The issue prompt has the agent **claim** the issue first — swap `readyLabel` f
 
 ## `research` — resolve wayfinder research tickets
 
-The second producer. It picks up **wayfinder research tickets** — child issues of
-a `wayfinder:map` labelled `researchLabel` (default `wayfinder:research`) — and
-follows [wayfinder's](../.agents/skills/wayfinder/SKILL.md) resolution protocol:
+The second producer. It picks up **wayfinder research tickets** — open issues
+labelled `researchLabel` (default `wayfinder:research`), which in wayfinder are
+child issues of a `wayfinder:map` (the engine keys off the label alone, not the
+parent-map relationship) — and follows
+[wayfinder's](../.agents/skills/wayfinder/SKILL.md) resolution protocol:
 investigate primary sources, produce a Markdown summary, post a resolution
 comment, close the ticket, and append a pointer to the map's _Decisions so far_.
 

@@ -32,6 +32,7 @@ the field reference.
 | Work order                          | `workOrder`                                        | **default** `["conflicts","checks","reviews","issues","research"]`                  |
 | PR-scan scope                       | `prScope`                                          | **default** `"phoebe"` — Phoebe maintains only its own branches                     |
 | Ready / processing / opt-out labels | `readyLabel` / `processingLabel` / `prOptOutLabel` | **defaults** `ready-for-agent` / `processing` / `ready-for-human`, created verbatim |
+| Research label                      | `researchLabel`                                    | **default** `wayfinder:research` — the `research` kind's ticket label               |
 | Provider + model                    | `defaultProvider` / `defaultModels`                | operator-chosen at runtime via `.env` (see below) — config left at defaults         |
 | Prompts                             | `promptFiles`                                      | **defaults** — the scaffolded `prompts/` are left unedited                          |
 
