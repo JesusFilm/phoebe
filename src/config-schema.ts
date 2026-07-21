@@ -17,6 +17,7 @@ export type PromptFilesConfig = {
   conflict: string;
   checks: string;
   reviews: string;
+  research: string;
 };
 
 export type PathsConfig = {
@@ -39,6 +40,8 @@ export type PhoebeConfig = {
   branchPrefix: string;
   /** Label marking issues Phoebe may pick up. */
   readyLabel: string;
+  /** Label marking wayfinder research tickets the `research` work kind picks up. */
+  researchLabel: string;
   /** Label the agent applies to an issue it has claimed and is working. */
   processingLabel: string;
   /** Which open PRs the conflicts/checks/reviews work-kinds scan.
@@ -105,6 +108,7 @@ export type PhoebeUserConfig = {
   defaultBranch?: string;
   branchPrefix?: string;
   readyLabel?: string;
+  researchLabel?: string;
   processingLabel?: string;
   prScope?: PhoebeConfig["prScope"];
   draftPrs?: PhoebeConfig["draftPrs"];
@@ -130,6 +134,7 @@ export const CONFIG_DEFAULTS = {
   defaultBranch: "main",
   branchPrefix: "phoebe/",
   readyLabel: "ready-for-agent",
+  researchLabel: "wayfinder:research",
   processingLabel: "processing",
   prScope: "phoebe" as const,
   draftPrs: "skip-non-phoebe" as const,
@@ -142,8 +147,9 @@ export const CONFIG_DEFAULTS = {
     conflict: "prompts/conflict-prompt.md",
     checks: "prompts/checks-prompt.md",
     reviews: "prompts/reviews-prompt.md",
+    research: "prompts/research-prompt.md",
   } satisfies PromptFilesConfig,
-  workOrder: ["conflicts", "checks", "reviews", "issues"] as readonly string[],
+  workOrder: ["conflicts", "checks", "reviews", "issues", "research"] as readonly string[],
   defaultProvider: "cursor" as ProviderName,
   defaultModels: {
     cursor: "composer-2.5",
@@ -243,6 +249,7 @@ export function resolveConfig(user: PhoebeUserConfig): PhoebeConfig {
     defaultBranch: user.defaultBranch ?? CONFIG_DEFAULTS.defaultBranch,
     branchPrefix: user.branchPrefix ?? CONFIG_DEFAULTS.branchPrefix,
     readyLabel: user.readyLabel ?? CONFIG_DEFAULTS.readyLabel,
+    researchLabel: user.researchLabel ?? CONFIG_DEFAULTS.researchLabel,
     processingLabel: user.processingLabel ?? CONFIG_DEFAULTS.processingLabel,
     prScope: user.prScope ?? CONFIG_DEFAULTS.prScope,
     draftPrs: user.draftPrs ?? CONFIG_DEFAULTS.draftPrs,

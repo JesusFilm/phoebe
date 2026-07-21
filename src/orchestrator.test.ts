@@ -412,6 +412,17 @@ describe("validateWorkOrder", () => {
     expect(validateWorkOrder(["issues"])).toEqual(["issues"]);
   });
 
+  test("accepts research", () => {
+    expect(validateWorkOrder(["conflicts", "checks", "reviews", "issues", "research"])).toEqual([
+      "conflicts",
+      "checks",
+      "reviews",
+      "issues",
+      "research",
+    ]);
+    expect(validateWorkOrder(["research"])).toEqual(["research"]);
+  });
+
   test("throws on empty order", () => {
     expect(() => validateWorkOrder([])).toThrow(/must not be empty/);
   });
@@ -558,12 +569,93 @@ describe("selectFirstWorkUnit", () => {
   });
 });
 
+describe("selectFirstWorkUnit research ordering", () => {
+  const researchIssue = (number: number, overrides: Partial<Issue> = {}): Issue =>
+    issue({ number, title: `Research ${number}`, labels: ["wayfinder:research"], ...overrides });
+
+  test("selects a research ticket via the reused issues path", () => {
+    const picked = selectFirstWorkUnit(["research"], {
+      issues: [],
+      researchIssues: [researchIssue(140)],
+      blockerStates: new Map(),
+      conflictingPrs: [],
+      failingCheckPrs: [],
+      reviewActivityPrs: [],
+      issueBodies: new Map(),
+    });
+    expect(picked?.kind).toBe("research");
+    expect(picked?.kind === "research" && picked.unit.issue.number).toBe(140);
+  });
+
+  test("prefers issues before research when both have work", () => {
+    const picked = selectFirstWorkUnit(["issues", "research"], {
+      issues: [issue({ number: 150, title: "New feature" })],
+      researchIssues: [researchIssue(140)],
+      blockerStates: new Map(),
+      conflictingPrs: [],
+      failingCheckPrs: [],
+      reviewActivityPrs: [],
+      issueBodies: new Map(),
+    });
+    expect(picked?.kind).toBe("issues");
+    expect(picked?.kind === "issues" && picked.unit.issue.number).toBe(150);
+  });
+
+  test("skips a research ticket blocked by an issue with no blocker PR", () => {
+    const picked = selectFirstWorkUnit(["research"], {
+      issues: [],
+      researchIssues: [researchIssue(141, { body: "Blocked by #108" })],
+      blockerStates: new Map<number, BlockerPrState>([
+        [108, { hasOpenPr: false, hasMergedPr: false }],
+      ]),
+      conflictingPrs: [],
+      failingCheckPrs: [],
+      reviewActivityPrs: [],
+      issueBodies: new Map(),
+    });
+    expect(picked).toBeNull();
+  });
+
+  test("under oneShotOnly selects research when it is the eligible kind", () => {
+    const picked = selectFirstWorkUnit(
+      ["conflicts", "research"],
+      {
+        issues: [],
+        researchIssues: [researchIssue(142)],
+        blockerStates: new Map(),
+        conflictingPrs: [],
+        failingCheckPrs: [],
+        reviewActivityPrs: [],
+        issueBodies: new Map(),
+      },
+      { oneShotOnly: true },
+    );
+    expect(picked?.kind).toBe("research");
+  });
+
+  test("selects nothing for research when researchIssues is absent", () => {
+    const picked = selectFirstWorkUnit(["research"], {
+      issues: [issue({ number: 150 })],
+      blockerStates: new Map(),
+      conflictingPrs: [],
+      failingCheckPrs: [],
+      reviewActivityPrs: [],
+      issueBodies: new Map(),
+    });
+    expect(picked).toBeNull();
+  });
+});
+
 describe("WORK_KIND_ONE_SHOT_ELIGIBLE", () => {
   test("janitor kinds are persistent-mode only", () => {
     expect(WORK_KIND_ONE_SHOT_ELIGIBLE.conflicts).toBe(false);
     expect(WORK_KIND_ONE_SHOT_ELIGIBLE.checks).toBe(false);
     expect(WORK_KIND_ONE_SHOT_ELIGIBLE.reviews).toBe(false);
     expect(WORK_KIND_ONE_SHOT_ELIGIBLE.issues).toBe(true);
+  });
+
+  test("research is one-shot-eligible like issues", () => {
+    expect(WORK_KIND_ONE_SHOT_ELIGIBLE.research).toBe(true);
   });
 });
 
@@ -573,6 +665,14 @@ describe("oneShotWorkKinds", () => {
     expect(oneShotWorkKinds(["conflicts", "issues"])).toEqual(["issues"]);
     expect(oneShotWorkKinds(["conflicts"])).toEqual([]);
     expect(oneShotWorkKinds(["issues"])).toEqual(["issues"]);
+  });
+
+  test("keeps research alongside issues", () => {
+    expect(oneShotWorkKinds(["conflicts", "checks", "reviews", "issues", "research"])).toEqual([
+      "issues",
+      "research",
+    ]);
+    expect(oneShotWorkKinds(["conflicts", "research"])).toEqual(["research"]);
   });
 });
 

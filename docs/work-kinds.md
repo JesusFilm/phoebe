@@ -1,31 +1,32 @@
 # Work kinds
 
 Every cycle Phoebe walks `config.workOrder` and runs **one** unit of the first
-kind that has workable work. There are four kinds: three **janitors** that keep
-open PRs moving (`conflicts`, `checks`, `reviews`) and one **producer** that
-starts new work (`issues`). This file documents how each selects and executes a
-unit. Field references point at [`configuration.md`](configuration.md); the
-runtime plumbing is `src/orchestrator.ts` and `src/main.ts`.
+kind that has workable work. There are five kinds: three **janitors** that keep
+open PRs moving (`conflicts`, `checks`, `reviews`) and two **producers** that
+start new work (`issues`, and `research` for wayfinder research tickets). This
+file documents how each selects and executes a unit. Field references point at
+[`configuration.md`](configuration.md); the runtime plumbing is
+`src/orchestrator.ts` and `src/main.ts`.
 
 ## The poll loop and `workOrder`
 
 ```yaml
-workOrder: ["conflicts", "checks", "reviews", "issues"] # default
+workOrder: ["conflicts", "checks", "reviews", "issues", "research"] # default
 ```
 
 Each cycle the engine gathers work data for every kind, then
 `selectFirstWorkUnit` returns the first kind (in `workOrder` order) that yields a
 unit. Order is priority: with the default, a conflicting PR is reconciled before
 a red-CI PR, which is handled before review feedback, which is handled before a
-brand-new issue is picked up. That keeps already-open work flowing rather than
-piling up new branches.
+brand-new issue is picked up, which is handled before a research ticket. That
+keeps already-open work flowing rather than piling up new branches.
 
 - **Persistent mode** (no flags) runs all kinds and sleeps
   `PHOEBE_POLL_INTERVAL_MS` (default 300000) between empty cycles.
 - **`--run-once`** works at most one unit of the first _one-shot-eligible_ kind
-  and exits. Only `issues` is one-shot-eligible; the three janitor kinds are
-  **persistent-mode only**. Under `--run-once` with no issue to work, Phoebe
-  prints "Nothing to do" and exits.
+  and exits. `issues` and `research` are one-shot-eligible; the three janitor
+  kinds are **persistent-mode only**. Under `--run-once` with nothing to work,
+  Phoebe prints "Nothing to do" and exits.
 - **`--dry-run`** prints the unit it would pick without executing (host-safe).
 
 A failed unit in persistent mode is logged and skipped; the daemon continues to
@@ -80,6 +81,40 @@ issue number).
 
 The issue prompt has the agent **claim** the issue first — swap `readyLabel` for
 `processingLabel` — so parallel operators and humans see it is in flight.
+
+## `research` — resolve wayfinder research tickets
+
+The second producer. It picks up **wayfinder research tickets** — open issues
+labelled `researchLabel` (default `wayfinder:research`), which in wayfinder are
+child issues of a `wayfinder:map` (the engine keys off the label alone, not the
+parent-map relationship) — and follows
+[wayfinder's](../.agents/skills/wayfinder/SKILL.md) resolution protocol:
+investigate primary sources, produce a Markdown summary, post a resolution
+comment, close the ticket, and append a pointer to the map's _Decisions so far_.
+
+Selection **reuses the `issues` path** (`selectIssue`) against the
+`researchLabel`-tagged open issues rather than the `readyLabel` set: same
+priority/age ordering, same `Blocked by #N` handling and base resolution
+(blocked tickets with no blocker PR are skipped this cycle). It is _not_ full
+wayfinder-native selection — no querying of map children, no GitHub native
+`blocked-by`, no assignment-as-claim; those are follow-ups. Double-work
+avoidance relies on branch/PR existence, same as `issues`.
+
+**Execution** reuses `runOneIssue` with the `research` prompt: branch off the
+resolved base, run the agent, and — **only when the agent left commits** — push
+and open a PR. The output shape is adaptive, decided by the prompt rather than
+the engine:
+
+- **Issue-level artifact (default):** the prompt posts the summary/answer as a
+  comment, closes the ticket, and updates the map. No commits → no PR.
+- **Committed doc (PR):** when the finding naturally belongs in the repo, the
+  prompt writes and commits the doc; the engine pushes and opens a PR whose body
+  closes the ticket on merge.
+
+The engine stays **map-agnostic** — it only selects the ticket, allocates the
+worktree, and runs the prompt; the resolution comment, close, and map update all
+happen inside the prompt. Disable the kind for a repo by omitting `research` from
+`workOrder`.
 
 ## `conflicts` — reconcile PRs that conflict with the base
 

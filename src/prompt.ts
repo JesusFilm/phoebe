@@ -23,6 +23,7 @@ export function buildDefaultPromptArgs(config: PhoebeConfig): PromptArgs {
     DEFAULT_BRANCH: config.defaultBranch,
     BRANCH_PREFIX: config.branchPrefix,
     READY_LABEL: config.readyLabel,
+    RESEARCH_LABEL: config.researchLabel,
     PROCESSING_LABEL: config.processingLabel,
     REVIEWS_SUCCESS_HEADING: config.reviewsSuccessHeading,
   };

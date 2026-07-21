@@ -29,9 +29,10 @@ the field reference.
 | Check gate (prettier-fix)           | `checkCommand`                                     | Nx-affected lint + typecheck, prettier in **write** mode (override — required)      |
 | Test gate                           | `testCommand`                                      | Nx-affected test (override — required)                                              |
 | Ready gate                          | `readyCommand`                                     | check + test (override — default is npm-shaped)                                     |
-| Work order                          | `workOrder`                                        | **default** `["conflicts","checks","reviews","issues"]`                             |
+| Work order                          | `workOrder`                                        | **default** `["conflicts","checks","reviews","issues","research"]`                  |
 | PR-scan scope                       | `prScope`                                          | **default** `"phoebe"` — Phoebe maintains only its own branches                     |
 | Ready / processing / opt-out labels | `readyLabel` / `processingLabel` / `prOptOutLabel` | **defaults** `ready-for-agent` / `processing` / `ready-for-human`, created verbatim |
+| Research label                      | `researchLabel`                                    | **default** `wayfinder:research` — the `research` kind's ticket label               |
 | Provider + model                    | `defaultProvider` / `defaultModels`                | operator-chosen at runtime via `.env` (see below) — config left at defaults         |
 | Prompts                             | `promptFiles`                                      | **defaults** — the scaffolded `prompts/` are left unedited                          |
 

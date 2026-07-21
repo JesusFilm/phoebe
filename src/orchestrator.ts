@@ -677,7 +677,7 @@ export function buildReviewsHandledComment(opts: {
   return marker;
 }
 
-export const WORK_KIND_NAMES = ["conflicts", "checks", "reviews", "issues"] as const;
+export const WORK_KIND_NAMES = ["conflicts", "checks", "reviews", "issues", "research"] as const;
 export type WorkKindName = (typeof WORK_KIND_NAMES)[number];
 
 /** Whether a work-kind may run under `--run-once`. Janitor kinds are persistent-mode only. */
@@ -686,6 +686,7 @@ export const WORK_KIND_ONE_SHOT_ELIGIBLE: Record<WorkKindName, boolean> = {
   checks: false,
   reviews: false,
   issues: true,
+  research: true,
 };
 
 export const RUN_ONCE_NOTHING_MESSAGE =
@@ -699,7 +700,7 @@ export function oneShotWorkKinds(workOrder: readonly WorkKindName[]): readonly W
 export function validateWorkOrder(order: readonly string[]): readonly WorkKindName[] {
   if (order.length === 0) {
     throw new Error(
-      "WORK_ORDER must not be empty. Include at least one of: conflicts, checks, reviews, issues.",
+      `WORK_ORDER must not be empty. Include at least one of: ${WORK_KIND_NAMES.join(", ")}.`,
     );
   }
   const validated: WorkKindName[] = [];
@@ -729,10 +730,13 @@ export type WorkUnit =
   | { kind: "conflicts"; unit: ConflictingPrCandidate }
   | { kind: "checks"; unit: ChecksCandidate }
   | { kind: "reviews"; unit: ReviewsCandidate }
-  | { kind: "issues"; unit: IssueWorkUnit };
+  | { kind: "issues"; unit: IssueWorkUnit }
+  | { kind: "research"; unit: IssueWorkUnit };
 
 export type WorkSelectionData = {
   issues: readonly Issue[];
+  /** Wayfinder research tickets selected by the `research` kind (reuses the issues path). */
+  researchIssues?: readonly Issue[];
   blockerStates: ReadonlyMap<number, BlockerPrState>;
   conflictingPrs: readonly ConflictingPrCandidate[];
   failingCheckPrs: readonly ChecksCandidate[];
@@ -792,6 +796,13 @@ export function selectFirstWorkUnit(
       const unit = selectIssue(data.issues, data.blockerStates, data.phoebeBase);
       if (unit) {
         return { kind: "issues", unit };
+      }
+    } else if (kind === "research") {
+      // Research reuses the issues selection path (blocker + priority ordering)
+      // against the researchLabel-tagged tickets gathered separately this cycle.
+      const unit = selectIssue(data.researchIssues ?? [], data.blockerStates, data.phoebeBase);
+      if (unit) {
+        return { kind: "research", unit };
       }
     }
   }
