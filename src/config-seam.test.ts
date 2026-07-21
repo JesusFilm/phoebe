@@ -56,12 +56,18 @@ function shippedDefaultFiles(): string[] {
 
 describe("config seam", () => {
   // Strings that would bake the reference consumer's repo or toolchain into
-  // the shipped defaults.
+  // the shipped defaults. Word-bounded so in-word substrings (youtuber,
+  // jesusfilmxyz, viewport) do not trip the guard.
   const repoSpecificPatterns = [
-    { name: "youtube", pattern: /youtube/i },
-    { name: "JesusFilm", pattern: /jesusfilm/i },
-    { name: "vp CLI", pattern: /(^|[^A-Za-z])vp([^A-Za-z]|$)/ },
-  ];
+    {
+      name: "youtube",
+      pattern: /\byoutube\b/i,
+      bare: "see youtube docs",
+      inWord: "youtuber channel",
+    },
+    { name: "JesusFilm", pattern: /\bjesusfilm\b/i, bare: "jesusfilm org", inWord: "jesusfilmxyz" },
+    { name: "vp CLI", pattern: /\bvp\b/i, bare: "run vp check", inWord: "viewport meta" },
+  ] as const;
 
   test("shipped defaults (engine source + default prompts) are repo-agnostic", () => {
     for (const file of shippedDefaultFiles()) {
@@ -74,6 +80,14 @@ describe("config seam", () => {
       }
     }
   });
+
+  test.each(repoSpecificPatterns)(
+    "$name: bare word trips the guard, in-word occurrence does not",
+    ({ pattern, bare, inWord }) => {
+      expect(pattern.test(bare)).toBe(true);
+      expect(pattern.test(inWord)).toBe(false);
+    },
+  );
 
   const repoLiterals = [
     config.repoSlug,

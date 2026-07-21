@@ -147,7 +147,7 @@ export const CONFIG_DEFAULTS = {
   blockedByPattern: String.raw`Blocked by\s+#(\d+)`,
   reviewsSuccessHeading: "## Review feedback addressed",
   promptFiles: {
-    issue: "prompts/prompt.md",
+    issue: "prompts/issues-prompt.md",
     conflict: "prompts/conflict-prompt.md",
     checks: "prompts/checks-prompt.md",
     reviews: "prompts/reviews-prompt.md",

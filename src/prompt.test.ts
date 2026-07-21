@@ -79,7 +79,7 @@ describe("shipped default prompts", () => {
   const promptsDir = join(import.meta.dirname, "..", "prompts");
 
   const cases = [
-    { file: "prompt.md", extra: { ISSUE_NUMBER: "42" } },
+    { file: "issues-prompt.md", extra: { ISSUE_NUMBER: "42" } },
     {
       file: "conflict-prompt.md",
       extra: { PR_NUMBER: "12", PR_BRANCH: "phoebe/issue-42", BLOCKER_PR_NUMBERS: "" },
@@ -103,8 +103,8 @@ describe("shipped default prompts", () => {
     },
   );
 
-  test("prompt.md references the toolchain via placeholders, not literals", () => {
-    const template = readFileSync(join(promptsDir, "prompt.md"), "utf8");
+  test("issues-prompt.md references the toolchain via placeholders, not literals", () => {
+    const template = readFileSync(join(promptsDir, "issues-prompt.md"), "utf8");
     expect(template).toContain("{{READY_COMMAND}}");
     expect(template).toContain("{{CHECK_COMMAND}}");
     expect(template).toContain("{{TEST_COMMAND}}");
@@ -135,15 +135,17 @@ describe("resolvePromptFile / loadPromptTemplate", () => {
     const packageRoot = mkdtempSync(join(tmpdir(), "phoebe-prompt-pkg-"));
     mkdirSync(join(runtimeRoot, "prompts"), { recursive: true });
     mkdirSync(join(packageRoot, "node_modules", "phoebe-agent", "prompts"), { recursive: true });
-    writeFileSync(join(runtimeRoot, "prompts", "prompt.md"), "runtime-root override\n");
+    writeFileSync(join(runtimeRoot, "prompts", "issues-prompt.md"), "runtime-root override\n");
     writeFileSync(
-      join(packageRoot, "node_modules", "phoebe-agent", "prompts", "prompt.md"),
+      join(packageRoot, "node_modules", "phoebe-agent", "prompts", "issues-prompt.md"),
       "packaged default — must not win\n",
     );
 
-    const resolved = resolvePromptFile("prompts/prompt.md", runtimeRoot);
-    expect(resolved).toBe(resolve(runtimeRoot, "prompts/prompt.md"));
-    expect(loadPromptTemplate("prompts/prompt.md", runtimeRoot)).toBe("runtime-root override\n");
+    const resolved = resolvePromptFile("prompts/issues-prompt.md", runtimeRoot);
+    expect(resolved).toBe(resolve(runtimeRoot, "prompts/issues-prompt.md"));
+    expect(loadPromptTemplate("prompts/issues-prompt.md", runtimeRoot)).toBe(
+      "runtime-root override\n",
+    );
   });
 
   test("loads a custom promptFiles override path under the runtime root", () => {
