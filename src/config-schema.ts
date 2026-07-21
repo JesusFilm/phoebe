@@ -73,7 +73,11 @@ export type PhoebeConfig = {
    * `{{REVIEWS_SUCCESS_HEADING}}`.
    */
   reviewsSuccessHeading: string;
-  /** Prompt template paths, relative to the package root (apps/phoebe). */
+  /**
+   * Prompt template paths, relative to the runtime root (process cwd —
+   * consumer checkout on the host; `/etc/phoebe` in the container where
+   * compose mounts config + `prompts/`). Absolute paths are accepted as-is.
+   */
   promptFiles: PromptFilesConfig;
   /** Ordered work kinds, validated by the orchestrator at startup. */
   workOrder: readonly string[];

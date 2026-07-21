@@ -18,9 +18,6 @@
 // (src/execution-gate.ts).
 
 import { execFileSync, execSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { config } from "./resolved-config.ts";
 import { PROVIDER_NAMES, type ProviderName } from "./config-schema.ts";
 import {
@@ -51,7 +48,11 @@ import {
 import { PROVIDERS } from "./providers/providers.ts";
 import { runAgent } from "./providers/run-agent.ts";
 import type { Provider } from "./providers/types.ts";
-import { buildDefaultPromptArgs, renderPrompt } from "./prompt.ts";
+import {
+  buildDefaultPromptArgs,
+  loadPromptTemplate as loadPromptTemplateFromRoot,
+  renderPrompt,
+} from "./prompt.ts";
 import { SELF_UPDATE_EXIT_CODE, shouldExitForSelfUpdate } from "./supervisor-decision.ts";
 import {
   buildInitialPrBody,
@@ -118,32 +119,6 @@ const PR_BASE = config.defaultBranch;
 // config.defaultBranch.
 const trackedBranch = asBranchRef(process.env["PHOEBE_DEFAULT_BRANCH"] ?? config.defaultBranch);
 const defaultBranchRef = asBranchRef(config.defaultBranch);
-const moduleDir = dirname(fileURLToPath(import.meta.url));
-
-// Resolve a package-root-relative resource by walking up from this module's
-// directory: the build emits dist/src/main.js while prompts/ and templates/
-// ship at the package root, so the depth back to the root differs between the
-// source layout (src/) and the built layout (dist/src/).
-function resolvePackageFile(relativePath: string): string {
-  let dir = moduleDir;
-  while (true) {
-    const candidate = join(dir, relativePath);
-    if (existsSync(candidate)) {
-      return candidate;
-    }
-    const parent = dirname(dir);
-    // Stop at the package boundary. When Phoebe is installed as a dependency,
-    // its package sits directly inside a `node_modules` directory; walking past
-    // it would escape into the consuming repo, where an unrelated resource of
-    // the same relative path could shadow a genuinely-missing packaged one.
-    if (parent === dir || basename(parent) === "node_modules") {
-      throw new Error(
-        `Could not find ${relativePath} within the Phoebe package (searched from ${moduleDir})`,
-      );
-    }
-    dir = parent;
-  }
-}
 
 const inContainer = isInsideContainer();
 // On the host only selection/--dry-run runs, against the local checkout; in
@@ -440,8 +415,9 @@ function promptShell(cwd: string): (command: string) => string {
     execSync(command, { cwd, encoding: "utf8", timeout: SHELL_COMMAND_TIMEOUT_MS });
 }
 
+/** Load a `promptFiles.*` template from the runtime root (process cwd). */
 function loadPromptTemplate(relativePath: string): string {
-  return readFileSync(resolvePackageFile(relativePath), "utf8");
+  return loadPromptTemplateFromRoot(relativePath, process.cwd());
 }
 
 /**
