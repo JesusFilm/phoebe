@@ -154,9 +154,10 @@ export type InitReport = {
 /**
  * Walk up from this module's directory to find the shipped resource root. We
  * emit to `dist/src/init.js` and read `templates/…` + `prompts/…` from the
- * package root, so the walk-up mirrors `resolvePackageFile` in main.ts. Stops
- * at a `node_modules` boundary so an installed dep never resolves resources
- * from the consuming repo.
+ * package root. Stops at a `node_modules` boundary so an installed dep never
+ * resolves scaffold sources from the consuming repo. (Runtime `promptFiles`
+ * loading is separate — see `resolvePromptFile` in `prompt.ts`, which reads
+ * from the consumer runtime root.)
  */
 function resolvePackageResource(relativePath: string, moduleDir: string): string {
   let dir = moduleDir;
