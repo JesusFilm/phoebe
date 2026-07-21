@@ -188,7 +188,7 @@ describe("runInit", () => {
     runInit({ targetDir: target });
     // If this test needs a fixture package root someday, plumb `packageRoot`.
     // For now the walk-up finds the repo's own prompts/ from src/.
-    const scaffolded = readFileSync(join(target, "prompts/prompt.md"), "utf8");
+    const scaffolded = readFileSync(join(target, "prompts/issues-prompt.md"), "utf8");
     expect(scaffolded).toContain("{{ISSUE_NUMBER}}");
     expect(scaffolded).toContain("Phoebe");
   });

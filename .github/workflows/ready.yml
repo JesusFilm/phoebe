@@ -127,10 +127,11 @@ jobs:
           npx --no-install phoebe init scaffold
           test -f scaffold/phoebe.config.ts
           test -f scaffold/.env.example
-          test -f scaffold/prompts/prompt.md
+          test -f scaffold/prompts/issues-prompt.md
           test -f scaffold/prompts/checks-prompt.md
           test -f scaffold/prompts/conflict-prompt.md
           test -f scaffold/prompts/reviews-prompt.md
+          test -f scaffold/prompts/research-prompt.md
           test -f scaffold/container/Dockerfile
           test -f scaffold/container/compose.yml
           test -f scaffold/container/compose.daemon.yml
