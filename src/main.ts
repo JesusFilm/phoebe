@@ -41,6 +41,7 @@ import {
   addWorktreeForExistingBranch,
   addWorktreeForNewBranch,
   commitCount,
+  ensureClone,
   fetchOrigin as gitFetchOrigin,
   originBranchSha as gitOriginBranchSha,
   pushBranch,
@@ -1579,6 +1580,14 @@ export async function runEngine(argv: readonly string[] = process.argv.slice(2))
   );
   if (dryRun) {
     console.log("[phoebe] Dry-run — selection only, nothing executes.");
+  }
+
+  // Bootstrap the private clone every work unit fetches/worktrees against. Only
+  // in the container (on the host repoDir is the cwd, already a repo) and never
+  // for --dry-run (selection uses the GitHub API, not a local clone). No-op once
+  // the clone exists, so it's safe on every daemon restart.
+  if (inContainer && !dryRun) {
+    ensureClone({ repoUrl: config.repoUrl, repoDir });
   }
 
   while (true) {
