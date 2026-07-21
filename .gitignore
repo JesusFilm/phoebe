@@ -4,3 +4,8 @@ dist/
 *.log
 .DS_Store
 .vite/
+
+# Claude Code's per-user local settings (permissions, etc.). Untracked and
+# machine-generated, so it may not be prettier-clean — keep it out of `vp check`'s
+# format/lint scan, which honors .gitignore. See #18.
+.claude/settings.local.json
