@@ -35,6 +35,14 @@ RUN apt-get update \
 # target repo is a pnpm + vite-plus toolchain, not npm.
 RUN corepack enable
 
+# Install the Cursor agent CLI. The shipped template installs NO provider CLI,
+# so the engine's `spawn("agent", …)` dies with ENOENT — another gap this
+# dogfood surfaced. Cursor's installer symlinks its executable as `agent` (the
+# exact name the engine spawns) into ~/.local/bin; put that on PATH so both the
+# engine and the locked-down agent child (which inherits PATH) can find it.
+RUN curl -fsSL https://cursor.com/install | bash
+ENV PATH="/root/.local/bin:${PATH}"
+
 # DOGFOOD DEVIATION FROM THE SHIPPED TEMPLATE:
 # The scaffold installs `phoebe-agent@${PHOEBE_VERSION}` from npm, but npm only
 # publishes the 0.0.0 stub today — that would dogfood old/empty code, not this
@@ -52,6 +60,12 @@ RUN npm install -g /tmp/phoebe-agent.tgz && rm /tmp/phoebe-agent.tgz
 # command inside each worktree; this is just documentation for operators.
 ARG PHOEBE_INSTALL_COMMAND="pnpm install --frozen-lockfile"
 LABEL phoebe.install-command="${PHOEBE_INSTALL_COMMAND}"
+
+# Execution-gate marker: the engine refuses to mutate a clone / launch an agent
+# / push unless `/.phoebe-container` exists (src/execution-gate.ts). The shipped
+# template Dockerfile omits this — a bug that makes the stock container refuse
+# every non-dry-run unit. Create it here so the dogfood can actually work units.
+RUN touch /.phoebe-container
 
 COPY supervisor.sh /usr/local/bin/phoebe-supervisor
 RUN chmod +x /usr/local/bin/phoebe-supervisor
