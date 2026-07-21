@@ -45,7 +45,10 @@ tarball from the working tree, rebuilds the image, then runs the engine — so
 every invocation exercises the code you have checked out:
 
 ```bash
-vp run phoebe                # work one real unit (--run-once): may open a PR
+vp run phoebe                # FULL persistent loop — works unit after unit
+                             # across every work kind (may open many PRs).
+                             # Foreground; Ctrl-C to stop.
+vp run phoebe --run-once     # work exactly one unit, then exit
 vp run phoebe --dry-run      # selection preview only, nothing executes
 ```
 
