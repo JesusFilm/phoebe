@@ -36,6 +36,7 @@
     "typecheck": "vp exec tsc --noEmit",
     "test": "vp test",
     "build": "vp exec tsc -p tsconfig.build.json",
+    "phoebe": "bash .phoebe/run.sh",
     "changeset": "changeset",
     "version-packages": "changeset version",
     "release": "vp run build && changeset publish"

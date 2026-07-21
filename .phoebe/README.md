@@ -37,27 +37,39 @@ is the test fixture, and `phoebe init` won't overwrite it.
 
 ## Run it
 
-```bash
-# 1. Secrets: edit .phoebe/.env and fill in GH_TOKEN and CURSOR_API_KEY.
-#    (.env is gitignored — never commit it.)
+First set secrets: edit `.phoebe/.env` and fill in `GH_TOKEN` and
+`CURSOR_API_KEY` (`.env` is gitignored — never commit it).
 
-# 2. Build the engine tarball from this working tree.
+The quick path is `run.sh`, wired to `vp run phoebe`. It rebuilds the engine
+tarball from the working tree, rebuilds the image, then runs the engine — so
+every invocation exercises the code you have checked out:
+
+```bash
+vp run phoebe                # work one real unit (--run-once): may open a PR
+vp run phoebe --dry-run      # selection preview only, nothing executes
+```
+
+Or drive the steps by hand:
+
+```bash
+# 1. Build the engine tarball from this working tree.
 ./.phoebe/build-engine.sh
 
-# 3. Build the image and see what the engine WOULD pick (no changes made).
+# 2. Build the image and see what the engine WOULD pick (no changes made).
 cd .phoebe/container
 docker compose --env-file ../.env build
 docker compose --env-file ../.env run --rm phoebe --dry-run --run-once
 
-# 4. Work a single unit for real (drop --dry-run).
+# 3. Work a single unit for real (drop --dry-run).
 docker compose --env-file ../.env run --rm phoebe --run-once
 
-# 5. Run as a persistent daemon.
+# 4. Run as a persistent daemon.
 docker compose --env-file ../.env -f compose.yml -f compose.daemon.yml up -d
 ```
 
-Re-run `./.phoebe/build-engine.sh` and `docker compose ... build` whenever you
-want the container to pick up new local engine changes.
+Re-run `./.phoebe/build-engine.sh` and `docker compose ... build` — or just
+`vp run phoebe` — whenever you want the container to pick up local engine
+changes.
 
 ## Not yet verified end-to-end
 
