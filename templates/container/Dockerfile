@@ -36,11 +36,27 @@ RUN apt-get update \
 ARG PHOEBE_VERSION=latest
 RUN npm install -g {{CLI_BIN}}@${PHOEBE_VERSION}
 
+# Provider agent CLI. The engine spawns the selected provider's CLI as a child
+# (`agent` for cursor, `claude`, or `codex`), so the one matching your
+# `defaultProvider` / `PHOEBE_AGENT` must be on PATH — otherwise the run dies
+# with `spawn <cli> ENOENT`. Default below installs Cursor: its executable is
+# symlinked as `agent` into ~/.local/bin, which we add to PATH. Swap or add the
+# commented lines for the provider you actually run.
+RUN curl -fsSL https://cursor.com/install | bash
+ENV PATH="/root/.local/bin:${PATH}"
+# Claude Code:  RUN npm install -g @anthropic-ai/claude-code
+# Codex:        RUN npm install -g @openai/codex
+
 # Consumer install command, kept as an ARG so it lands in the image metadata
 # and can be inspected with `docker image inspect`. The engine re-runs the
 # command inside each worktree; this is just documentation for operators.
 ARG PHOEBE_INSTALL_COMMAND="{{INSTALL_COMMAND}}"
 LABEL phoebe.install-command="${PHOEBE_INSTALL_COMMAND}"
+
+# Execution-gate marker: the engine refuses to mutate a clone, launch an agent,
+# or push unless `/.phoebe-container` exists (src/execution-gate.ts). Without it
+# the container refuses every non-dry-run unit.
+RUN touch /.phoebe-container
 
 COPY supervisor.sh /usr/local/bin/phoebe-supervisor
 RUN chmod +x /usr/local/bin/phoebe-supervisor
