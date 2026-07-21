@@ -113,6 +113,22 @@ describe("shipped default prompts", () => {
     expect(template).toContain("{{DEFAULT_BRANCH}}");
   });
 
+  test("checks + conflict prompts document the baseline-breakage branch", () => {
+    for (const file of ["checks-prompt.md", "conflict-prompt.md"]) {
+      const template = readFileSync(join(promptsDir, file), "utf8");
+      // A baseline check against a clean default-branch checkout.
+      expect(template, `${file} should describe a baseline check`).toMatch(/baseline/i);
+      expect(template).toContain("{{DEFAULT_BRANCH}}");
+      // The reconciliation rule: a green check gate does not clear a red test
+      // suite unless every red test is baseline-only.
+      expect(template).toContain("{{CHECK_COMMAND}}");
+      expect(template).toContain("{{TEST_COMMAND}}");
+      expect(template, `${file} should carry the reconciliation rule`).toMatch(/baseline-only/);
+      // Guidance to open/link a tracking issue rather than silently proceeding.
+      expect(template, `${file} should point at a tracking issue`).toMatch(/gh issue create/);
+    }
+  });
+
   test("reviews prompt is self-contained (no external skill dependency)", () => {
     const template = readFileSync(join(promptsDir, "reviews-prompt.md"), "utf8");
     expect(template).not.toMatch(/handle-pr-review/);
