@@ -3,10 +3,38 @@
 // ported from Sandcastle's PromptPreprocessor: shell blocks present in the raw
 // template are marked *before* argument substitution, so `!`...`` patterns
 // arriving via substituted values are treated as data, never executed.
+//
+// Prompt file paths (`config.promptFiles.*`) resolve against the runtime root
+// (process cwd) — the consumer checkout on the host, `/etc/phoebe` in the
+// container where compose mounts `phoebe.config.ts` and `prompts/`. They do
+// not walk the installed package; `phoebe init` copies shipped prompts into
+// the runtime root for that reason.
 
+import { existsSync, readFileSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
 import type { PhoebeConfig } from "./config-schema.ts";
 
 export type PromptArgs = Record<string, string>;
+
+/**
+ * Resolve a `promptFiles.*` path against the runtime root. Absolute paths are
+ * used as-is; relative paths join to `runtimeRoot`. Throws when the file is
+ * missing — never falls back into the installed package tree.
+ */
+export function resolvePromptFile(promptPath: string, runtimeRoot: string): string {
+  const absolute = isAbsolute(promptPath) ? promptPath : resolve(runtimeRoot, promptPath);
+  if (!existsSync(absolute)) {
+    throw new Error(
+      `Could not find prompt file ${promptPath} (resolved to ${absolute} from runtime root ${runtimeRoot})`,
+    );
+  }
+  return absolute;
+}
+
+/** Read a prompt template from a path relative to (or absolute under) the runtime root. */
+export function loadPromptTemplate(promptPath: string, runtimeRoot: string): string {
+  return readFileSync(resolvePromptFile(promptPath, runtimeRoot), "utf8");
+}
 
 /**
  * The standard placeholder set every default prompt template can reference —

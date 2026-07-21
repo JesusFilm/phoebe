@@ -1,8 +1,15 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
 import { resolveConfig, type PhoebeUserConfig } from "./config-schema.ts";
-import { buildDefaultPromptArgs, renderPrompt, substitutePromptArgs } from "./prompt.ts";
+import {
+  buildDefaultPromptArgs,
+  loadPromptTemplate,
+  renderPrompt,
+  resolvePromptFile,
+  substitutePromptArgs,
+} from "./prompt.ts";
 
 function fixtureConfig(): ReturnType<typeof resolveConfig> {
   const user: PhoebeUserConfig = {
@@ -115,5 +122,42 @@ describe("shipped default prompts", () => {
     expect(template).toMatch(/reviewThreads/);
     expect(template).toMatch(/resolveReviewThread/);
     expect(template).toContain("{{REVIEWS_SUCCESS_HEADING}}");
+  });
+});
+
+describe("resolvePromptFile / loadPromptTemplate", () => {
+  test("resolves a consumer override from the runtime root, not the installed package", () => {
+    // Consumer-style layout: runtime root has an override path; a same-named
+    // file also exists under a fake node_modules package tree. Resolution must
+    // use the runtime-root copy (compose mounts prompts at /etc/phoebe, while
+    // the engine package lives elsewhere under node_modules).
+    const runtimeRoot = mkdtempSync(join(tmpdir(), "phoebe-prompt-runtime-"));
+    const packageRoot = mkdtempSync(join(tmpdir(), "phoebe-prompt-pkg-"));
+    mkdirSync(join(runtimeRoot, "prompts"), { recursive: true });
+    mkdirSync(join(packageRoot, "node_modules", "phoebe-agent", "prompts"), { recursive: true });
+    writeFileSync(join(runtimeRoot, "prompts", "prompt.md"), "runtime-root override\n");
+    writeFileSync(
+      join(packageRoot, "node_modules", "phoebe-agent", "prompts", "prompt.md"),
+      "packaged default — must not win\n",
+    );
+
+    const resolved = resolvePromptFile("prompts/prompt.md", runtimeRoot);
+    expect(resolved).toBe(resolve(runtimeRoot, "prompts/prompt.md"));
+    expect(loadPromptTemplate("prompts/prompt.md", runtimeRoot)).toBe("runtime-root override\n");
+  });
+
+  test("loads a custom promptFiles override path under the runtime root", () => {
+    const runtimeRoot = mkdtempSync(join(tmpdir(), "phoebe-prompt-override-"));
+    mkdirSync(join(runtimeRoot, "custom"), { recursive: true });
+    writeFileSync(join(runtimeRoot, "custom", "issue.md"), "custom issue prompt\n");
+
+    expect(loadPromptTemplate("custom/issue.md", runtimeRoot)).toBe("custom issue prompt\n");
+  });
+
+  test("throws when the path is missing from the runtime root", () => {
+    const runtimeRoot = mkdtempSync(join(tmpdir(), "phoebe-prompt-missing-"));
+    expect(() => resolvePromptFile("prompts/missing.md", runtimeRoot)).toThrow(
+      /Could not find prompt file prompts\/missing\.md/,
+    );
   });
 });
