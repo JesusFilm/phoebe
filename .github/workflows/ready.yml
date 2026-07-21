@@ -131,6 +131,7 @@ jobs:
           test -f scaffold/prompts/checks-prompt.md
           test -f scaffold/prompts/conflict-prompt.md
           test -f scaffold/prompts/reviews-prompt.md
+          test -f scaffold/prompts/research-prompt.md
           test -f scaffold/container/Dockerfile
           test -f scaffold/container/compose.yml
           test -f scaffold/container/compose.daemon.yml
