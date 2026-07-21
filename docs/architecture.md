@@ -166,5 +166,30 @@ The persistent daemon repeats this forever, idling `PHOEBE_POLL_INTERVAL_MS`
 (default 300000) between empty cycles. `--run-once` works at most one unit of
 the first one-shot-eligible kind (only `issues`) and exits — the janitor kinds
 (`conflicts`, `checks`, `reviews`) are persistent-mode only.
-</content>
-</invoke>
+
+## Provenance: the port and its hardening commits
+
+The engine in `src/` was ported into this repo from
+`JesusFilm/youtube-studio` (`apps/phoebe`) under issue #1 / PR #9. Issue #1's
+acceptance criterion, echoed in the PR #9 description, was that "`src/` [be]
+ported verbatim (behaviour-preserving)".
+
+That "verbatim" framing is not literally true, and this note records why so the
+history reads honestly. Two commits landed on the port branch during review as
+responses to CodeRabbit findings — legitimate fixes, but genuine behaviour
+changes on top of the verbatim copy:
+
+- **`3b7951b`** — _fix: harden daemon against hangs, leaks, and bad input (PR #9
+  review)_ — child-process timeouts, prompt-template resolution, and other
+  hang/leak fixes rewriting ~470 lines of `src/main.ts`.
+- **`86f2fce`** — _fix: bound resource resolution and watermark only observed
+  review activity (PR #9 review)_ — bounds `resolvePackageFile`'s ancestor walk
+  at the `node_modules` package boundary, and watermarks the pre-run thread
+  snapshot so review feedback posted concurrently with a run is not silently
+  marked handled.
+
+PR #9 was squash-merged as `7a97fb2`, so these two commits are not individually
+reachable from `main`; they survive only on the merged `phoebe/issue-1` branch.
+The takeaway for anyone reading the port's history: the engine was ported
+faithfully, but `src/main.ts` in particular was hardened at review and is not a
+byte-for-byte copy of the youtube-studio original.
