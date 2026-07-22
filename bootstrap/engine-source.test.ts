@@ -91,4 +91,24 @@ describe("readEngineSource", () => {
   test("returns a local source verbatim when the config selects it", () => {
     expect(readEngineSource({ engine: { source: "local" } })).toEqual({ source: "local" });
   });
+
+  test("rejects an unknown source rather than silently resolving to local", () => {
+    expect(() => readEngineSource({ engine: { source: "other" } })).toThrow(/`engine` must be/);
+  });
+
+  test("rejects a non-string ref", () => {
+    expect(() => readEngineSource({ engine: { source: "github", ref: 123 } })).toThrow(
+      /`engine` must be/,
+    );
+  });
+
+  test("rejects a non-string repo", () => {
+    expect(() => readEngineSource({ engine: { source: "github", repo: 7 } })).toThrow(
+      /`engine` must be/,
+    );
+  });
+
+  test("rejects a non-object engine value", () => {
+    expect(() => readEngineSource({ engine: "github" })).toThrow(/`engine` must be/);
+  });
 });

@@ -45,12 +45,39 @@ export function resolveEngineSource(field: EngineSourceField | undefined): Resol
 }
 
 /**
+ * Whether an arbitrary value is a well-formed `engine` field. The bootstrapper
+ * is the only reader of `engine` — the engine drops it (`resolveConfig`) rather
+ * than validating it — so a malformed value has to be rejected here or it never
+ * is. An unknown `source` must not fall through to `local`, and a non-string
+ * `ref`/`repo` must not escape into a `ResolvedEngineSource` typed as strings.
+ */
+function isEngineSourceField(value: unknown): value is EngineSourceField {
+  if (value === null || typeof value !== "object") return false;
+  const field = value as Record<string, unknown>;
+  if (field["source"] === "local") return true;
+  return (
+    field["source"] === "github" &&
+    (field["ref"] === undefined || typeof field["ref"] === "string") &&
+    (field["repo"] === undefined || typeof field["repo"] === "string")
+  );
+}
+
+/**
  * Extract the resolved engine source from a loaded consumer config, ignoring
  * every other field. This is the whole of the bootstrapper's interest in the
  * config; the engine reads (and validates) the rest once it is materialized and
  * run. The config arrives as a dynamically-imported module value, so the param
- * is an arbitrary record and only `engine` is narrowed here.
+ * is an arbitrary record — `engine`, if present, is validated before use so a
+ * typo (bad `source`, numeric `ref`/`repo`) fails loudly instead of silently
+ * resolving to the wrong source.
  */
 export function readEngineSource(config: Record<string, unknown>): ResolvedEngineSource {
-  return resolveEngineSource(config["engine"] as EngineSourceField | undefined);
+  const field = config["engine"];
+  if (field !== undefined && !isEngineSourceField(field)) {
+    throw new Error(
+      `phoebe.config.ts \`engine\` must be { source: "github", ref?, repo? } or ` +
+        `{ source: "local" } with string ref/repo (got ${JSON.stringify(field)}).`,
+    );
+  }
+  return resolveEngineSource(field);
 }
