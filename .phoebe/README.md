@@ -30,7 +30,7 @@ is the test fixture, and `phoebe init` won't overwrite it.
 
 ## Prerequisites
 
-- Docker + Docker Compose, Node ≥ 22.13, pnpm (via corepack) on the host.
+- Docker + Docker Compose, Node ≥ 24, pnpm (via corepack) on the host.
 - A GitHub token with `repo` + `read:org` on `JesusFilm/phoebe`.
 - A `CURSOR_API_KEY`.
 - At least one issue on `JesusFilm/phoebe` labeled `ready-for-agent`.
@@ -40,7 +40,7 @@ is the test fixture, and `phoebe init` won't overwrite it.
 First set secrets: edit `.phoebe/.env` and fill in `GH_TOKEN` and
 `CURSOR_API_KEY` (`.env` is gitignored — never commit it).
 
-The quick path is `run.sh`, wired to `vp run phoebe`. It rebuilds the engine
+The quick path is `run.sh`, wired to `vp run phoebe`. It repacks the engine
 tarball from the working tree, rebuilds the image, then runs the engine — so
 every invocation exercises the code you have checked out:
 

@@ -11,7 +11,7 @@ export default defineConfig({
     // Consumer-owned template files are not real project sources — they
     // contain unresolved {{PLACEHOLDER}} tokens that only become valid code
     // after `phoebe init` renders them into a consumer's repo.
-    ignorePatterns: ["dist/**", "templates/**"],
+    ignorePatterns: ["templates/**"],
     options: {
       typeAware: true,
       typeCheck: true,

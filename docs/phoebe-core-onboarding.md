@@ -47,7 +47,7 @@ so a `phoebe-agent` upgrade picks up any new defaults automatically
 Same as [`ai-install.md`](ai-install.md#prerequisites) — on the host that will run
 the container:
 
-- Node.js ≥ 22.13 and `git`, `gh`, Docker + Docker Compose.
+- Node.js ≥ 24 and `git`, `gh`, Docker + Docker Compose.
 - A GitHub token in `GH_TOKEN` (the fine-grained PAT below).
 - The API key for the provider you choose (§4).
 

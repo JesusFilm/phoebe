@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Base dogfood runner — invoked via `vp run phoebe` (the package.json `phoebe`
-# script). Builds the engine from the current working tree, builds the runtime
+# script). Packs the engine from the current working tree, builds the runtime
 # image, and runs it against JesusFilm/phoebe.
 #
 # With no args it runs the FULL engine — the persistent poll loop that works

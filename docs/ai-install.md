@@ -5,7 +5,7 @@ top to bottom — no `vp` is assumed on the target side.
 
 ## Prerequisites
 
-- Node.js ≥ 22.13, `npm` on `PATH`.
+- Node.js ≥ 24, `npm` on `PATH`.
 - `git`, `gh` (GitHub CLI), Docker + Docker Compose on the host that will run
   the container.
 - A GitHub token with `repo` + `read:org` scope in `GH_TOKEN`.

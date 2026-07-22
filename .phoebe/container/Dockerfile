@@ -14,7 +14,7 @@
 #   * /data/worktrees  — Per-work-unit git worktrees.
 #   * /data/state      — Lock, watermarks, logs.
 
-FROM node:22-bookworm-slim
+FROM node:24-bookworm-slim
 
 # gh CLI + git + tini for signal handling; keep the layer small.
 RUN apt-get update \

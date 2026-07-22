@@ -8,8 +8,9 @@
     "strict": true,
     "noEmit": true,
     "allowImportingTsExtensions": true,
-    "rewriteRelativeImportExtensions": true,
     "skipLibCheck": true,
+    "allowJs": true,
+    "checkJs": false,
     "esModuleInterop": true,
     "verbatimModuleSyntax": true
   },
