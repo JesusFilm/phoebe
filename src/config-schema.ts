@@ -12,6 +12,18 @@
 export const PROVIDER_NAMES = ["cursor", "claude", "codex"] as const;
 export type ProviderName = (typeof PROVIDER_NAMES)[number];
 
+/**
+ * Selects where the thin `phoebe boot` bootstrapper materializes the engine
+ * from — a GitHub ref (branch/tag/SHA, defaulting to `main` on the shipped
+ * engine repo) or a local mount. The engine itself never reads this: it is a
+ * bootstrapper concern, resolved by `bootstrap/engine-source.ts`. It lives on
+ * `PhoebeUserConfig` only so a consumer config that sets it still type-checks,
+ * and `resolveConfig` deliberately drops it — it never reaches `PhoebeConfig`.
+ */
+export type EngineSourceField =
+  | { source: "github"; ref?: string; repo?: string }
+  | { source: "local" };
+
 export type PromptFilesConfig = {
   issue: string;
   conflict: string;
@@ -109,6 +121,9 @@ export type PhoebeUserConfig = {
   installCommand: string;
   checkCommand: string;
   testCommand: string;
+  /** Bootstrapper-only engine source (see {@link EngineSourceField}). The
+   *  engine ignores it; `resolveConfig` drops it. Omitted ⇒ github/main. */
+  engine?: EngineSourceField;
   defaultBranch?: string;
   branchPrefix?: string;
   readyLabel?: string;

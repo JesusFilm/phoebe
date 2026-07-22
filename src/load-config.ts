@@ -1,34 +1,18 @@
-// Consumer-facing config plumbing: `defineConfig` (identity typing helper),
-// `loadUserConfig` (dynamic TS import via native Node type-stripping), and
-// `applyEnvOverlay` (`PHOEBE_*` overrides for scalar fields).
+// Consumer-facing config plumbing: `loadUserConfig` (dynamic TS import via
+// native Node type-stripping) and `applyEnvOverlay` (`PHOEBE_*` overrides for
+// scalar fields). The `defineConfig` typing helper lives in the bootstrapper
+// (bootstrap/define-config.ts), the published package surface.
 //
-// The Phoebe CLI (src/cli.ts) chains these three: load the user's config,
-// overlay env vars, then `resolveConfig` fills the shipped defaults. Kept
-// separate from `config-schema.ts` so the schema stays a pure data contract
-// and only the CLI path pulls in Node's fs/url runtime.
+// The Phoebe CLI (src/cli.ts) chains these: load the user's config, overlay
+// env vars, then `resolveConfig` fills the shipped defaults. Kept separate from
+// `config-schema.ts` so the schema stays a pure data contract and only the CLI
+// path pulls in Node's fs/url runtime.
 
 import { pathToFileURL } from "node:url";
 import { existsSync } from "node:fs";
 import { isAbsolute, resolve as resolvePath } from "node:path";
 import type { PhoebeUserConfig, ProviderName } from "./config-schema.ts";
 import { PROVIDER_NAMES } from "./config-schema.ts";
-
-/**
- * Identity function that types a consumer's `phoebe.config.ts` export as
- * `PhoebeUserConfig`. Consumers write:
- *
- * ```ts
- * import { defineConfig } from "phoebe-agent";
- * export default defineConfig({ repoSlug: "...", ... });
- * ```
- *
- * The engine never reads this at runtime beyond forwarding the value; the
- * whole benefit is editor autocomplete and a compile-time check that only
- * known fields appear.
- */
-export function defineConfig(config: PhoebeUserConfig): PhoebeUserConfig {
-  return config;
-}
 
 /**
  * Scalar-only overlay: each `PHOEBE_*` env var, when set to a non-empty

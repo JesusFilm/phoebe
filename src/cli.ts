@@ -135,7 +135,14 @@ Existing files are left untouched, so re-running is safe. To regenerate a
 scaffolded file, delete it first and re-run \`phoebe init\`.
 `;
 
-async function main(): Promise<void> {
+/**
+ * Engine-CLI entry point. Loads the consumer's config, overlays env, installs
+ * the resolved config, then runs the engine (or scaffolds via `init`). The
+ * published `phoebe` bin lives in the bootstrapper (bootstrap/cli.ts), which
+ * delegates here so the engine keeps a single load/resolve/install pipeline and
+ * remains directly runnable (`node src/cli.ts …`) for the bootstrapper to exec.
+ */
+export async function runCli(): Promise<void> {
   const args = process.argv.slice(2);
 
   if (args[0] === "init") {
@@ -166,12 +173,14 @@ async function main(): Promise<void> {
   await runEngine(parsed.forward);
 }
 
-// Only run when invoked as the entry point — tests import `parseCliArgs` from
-// this module without triggering the whole CLI pipeline. `argv[1]` is realpath'd
-// so a bin symlink (`node_modules/.bin/phoebe -> ../phoebe-agent/dist/src/cli.js`)
+// Run the engine only when this module is invoked directly (`node …/src/cli.js`)
+// — how the engine runs standalone, and the path the bootstrapper execs. The
+// published `phoebe` bin is bootstrap/cli.ts, which imports `runCli` instead, so
+// this guard stays dormant there; tests import `parseCliArgs` without triggering
+// the pipeline for the same reason. `argv[1]` is realpath'd so a symlinked entry
 // still matches `import.meta.url`, which Node resolves through symlinks.
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
-  main().catch((error: unknown) => {
+  runCli().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[phoebe] ${message}`);
     process.exit(1);

@@ -13,5 +13,5 @@
     "esModuleInterop": true,
     "verbatimModuleSyntax": true
   },
-  "include": ["src", "phoebe.config.ts", "vite.config.ts"]
+  "include": ["src", "bootstrap", "phoebe.config.ts", "vite.config.ts"]
 }

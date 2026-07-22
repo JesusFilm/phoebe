@@ -1,12 +1,13 @@
 // Tests for the consumer-facing config plumbing in ./load-config.ts:
 //
-//   - `defineConfig` is a strict identity function (typing helper only).
 //   - `applyEnvOverlay` overlays scalar `PHOEBE_*` keys, validates the enum
 //     ones, and leaves the input object untouched.
 //   - `resolveConfigPath` returns absolute paths and rejects missing files
 //     with a message that distinguishes an explicit --config from the default.
 //   - `loadUserConfig` accepts both `export default` and named `export const
 //     config` shapes and quotes the underlying error on failure.
+//
+// `defineConfig` moved to the bootstrapper — see bootstrap/define-config.test.ts.
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,7 +16,6 @@ import { afterAll, beforeAll, describe, expect, test } from "vite-plus/test";
 import {
   ENV_OVERLAY_KEYS,
   applyEnvOverlay,
-  defineConfig,
   loadUserConfig,
   resolveConfigPath,
 } from "./load-config.ts";
@@ -31,13 +31,6 @@ function baseUser(overrides: Partial<PhoebeUserConfig> = {}): PhoebeUserConfig {
     ...overrides,
   };
 }
-
-describe("defineConfig", () => {
-  test("returns the input by reference (identity)", () => {
-    const input = baseUser();
-    expect(defineConfig(input)).toBe(input);
-  });
-});
 
 describe("applyEnvOverlay", () => {
   test("returns a new object — does not mutate the input", () => {

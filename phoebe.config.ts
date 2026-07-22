@@ -20,7 +20,7 @@
 // overriding a shipped default; `PHOEBE_*` env vars provide one-off overrides
 // for a subset of scalar fields (see src/load-config.ts).
 
-import { defineConfig } from "./src/load-config.ts";
+import { defineConfig } from "./bootstrap/define-config.ts";
 
 export const config = defineConfig({
   repoSlug: "your-org/your-repo",
