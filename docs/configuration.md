@@ -23,8 +23,8 @@ export default defineConfig({
 
 `defineConfig` is an identity helper — it exists only for editor autocomplete
 and a compile-time check that no unknown field slips in. The file is loaded via
-native Node type-stripping (Node ≥ 22.7 with `--experimental-strip-types`, or
-≥ 23 by default), so **no bundler is needed on the consumer side**. Either a
+native Node type-stripping (unflagged on Node ≥ 24, the version Phoebe requires),
+so **no bundler is needed on the consumer side**. Either a
 default export or a named `export const config` is accepted.
 
 Load order (`src/cli.ts`): load the file → apply the `PHOEBE_*` env overlay →

@@ -3,7 +3,7 @@ name: ready
 # Merge gate for `phoebe-agent`. Two jobs run in parallel on every PR (and on
 # main after merge):
 #
-#   ready           — static checks + tests + build against the source tree
+#   ready           — static checks + tests against the source tree
 #                     (mirrors the cloned gate from JesusFilm/youtube-studio).
 #   pack-and-smoke  — packs the CLI with `npm pack` and smoke-runs the packed
 #                     artifact from a scratch project. This catches packaging
@@ -41,12 +41,13 @@ jobs:
       # check/test/build; --frozen-lockfile fails on a stale lockfile.
       - run: vp install --frozen-lockfile --ignore-scripts
 
-      # Format + lint + type-check via vp check. `-r lint`/`typecheck`/`test`/
-      # `build` recurse over every package script that defines the target — in
-      # this single-package repo that's just phoebe-agent, but the pattern
-      # tracks the youtube-studio gate this was cloned from. `!cancelled()`
-      # keeps subsequent steps running after a failure so authors see every
-      # broken check in one report.
+      # Format + lint + type-check via vp check. `-r lint`/`typecheck`/`test`
+      # recurse over every package script that defines the target — in this
+      # single-package repo that's just phoebe-agent, but the pattern tracks the
+      # youtube-studio gate this was cloned from. `!cancelled()` keeps subsequent
+      # steps running after a failure so authors see every broken check in one
+      # report. There is no build step: the engine and bootstrapper run from raw
+      # `.ts` via Node 24 type-stripping, so `tsc` here is typecheck-only.
       - run: vp check
 
       - run: vp run -r lint
@@ -56,11 +57,6 @@ jobs:
         if: ${{ !cancelled() }}
 
       - run: vp run -r test
-        if: ${{ !cancelled() }}
-
-      # Build the tsc output the packed bin runs from. Also guards the smoke
-      # job from importing a build that the source tree doesn't type-check.
-      - run: vp run -r build
         if: ${{ !cancelled() }}
 
   pack-and-smoke:
@@ -74,14 +70,11 @@ jobs:
 
       - run: vp install --frozen-lockfile --ignore-scripts
 
-      # Build dist/ before packing — `npm pack` honors the `files` field but
-      # doesn't run any build script itself.
-      - run: vp run build
-
-      # `npm pack` writes phoebe-agent-<version>.tgz into the current dir and
-      # includes only what package.json `files` lists: dist/, prompts/,
-      # templates/. If a resource the bin needs at runtime isn't listed there,
-      # the smoke below fails loudly.
+      # No build step: the package ships raw `.ts` and runs under Node 24
+      # type-stripping. `npm pack` writes phoebe-agent-<version>.tgz into the
+      # current dir and includes only what package.json `files` lists:
+      # bootstrap/, src/, prompts/, templates/. If a resource the bin needs at
+      # runtime isn't listed there, the smoke below fails loudly.
       - name: Pack
         id: pack
         run: |

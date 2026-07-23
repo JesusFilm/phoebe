@@ -11,44 +11,46 @@
     "url": "git+https://github.com/JesusFilm/phoebe.git"
   },
   "bin": {
-    "phoebe": "./dist/bootstrap/cli.js",
-    "phoebe-agent": "./dist/bootstrap/cli.js"
+    "phoebe": "./bootstrap/bin.mjs",
+    "phoebe-agent": "./bootstrap/bin.mjs"
   },
   "files": [
-    "dist",
+    "bootstrap",
+    "src",
     "prompts",
-    "templates"
+    "templates",
+    "!**/*.test.ts",
+    "!src/test-setup.ts"
   ],
   "type": "module",
-  "main": "./dist/bootstrap/index.js",
-  "types": "./dist/bootstrap/index.d.ts",
+  "main": "./bootstrap/index.mjs",
+  "types": "./bootstrap/index.ts",
   "exports": {
     ".": {
-      "types": "./dist/bootstrap/index.d.ts",
-      "import": "./dist/bootstrap/index.js"
+      "types": "./bootstrap/index.ts",
+      "import": "./bootstrap/index.mjs"
     },
     "./package.json": "./package.json"
   },
   "scripts": {
-    "ready": "vp check && vp run -r lint && vp run -r typecheck && vp run -r test && vp run -r build",
+    "ready": "vp check && vp run -r lint && vp run -r typecheck && vp run -r test",
     "check": "vp check",
     "lint": "vp lint",
     "typecheck": "vp exec tsc --noEmit",
     "test": "vp test",
-    "build": "vp exec tsc -p tsconfig.build.json",
     "phoebe": "bash .phoebe/run.sh",
     "changeset": "changeset",
     "version-packages": "changeset version",
-    "release": "vp run build && changeset publish"
+    "release": "changeset publish"
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.1",
-    "@types/node": "^22.13.0",
+    "@types/node": "^24.0.0",
     "typescript": "^5.7.0",
     "vite-plus": "^0.2.0"
   },
   "engines": {
-    "node": ">=22.13.0"
+    "node": ">=24"
   },
   "packageManager": "pnpm@11.2.2"
 }

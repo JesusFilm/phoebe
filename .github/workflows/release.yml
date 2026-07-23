@@ -10,9 +10,10 @@ name: release
 #      version in package.json and writes CHANGELOG.md. Merging that PR is the
 #      human release trigger.
 #   2. When main already has no pending changesets (i.e. the Version Packages PR
-#      just merged), the same action runs the `release` script, which builds
-#      dist/ and runs `changeset publish` — publishing any package whose version
-#      isn't yet on the registry and pushing the matching git tag.
+#      just merged), the same action runs the `release` script, which runs
+#      `changeset publish` — publishing any package whose version isn't yet on
+#      the registry and pushing the matching git tag. There is no build: the
+#      package ships raw `.ts` and runs under Node 24 type-stripping.
 #
 # npm trusted publishing must be configured once on npmjs.com for the
 # `phoebe-agent` package, pointing at this repo and this workflow file
@@ -52,15 +53,13 @@ jobs:
 
       - run: vp install --frozen-lockfile --ignore-scripts
 
-      # Trusted publishing (OIDC + automatic provenance) requires npm >= 11.5.1;
-      # the Node pinned here ships an older npm, so upgrade the global npm the
-      # `changeset publish` step shells out to. Changesets always publishes via
-      # `npm publish` (not `pnpm publish`), so this is the binary that matters —
-      # and it sidesteps the pnpm 11.x OIDC regression (pnpm/pnpm#11513).
-      #
-      # Pin to the 11.x line, not @latest: npm 12 requires Node >= 22.22.2, but
-      # .node-version pins 22.13.0, so `npm@latest` fails with EBADENGINE. npm 11
-      # supports Node >= 22.9.0 and already includes trusted publishing.
+      # Trusted publishing (OIDC + automatic provenance) requires npm >= 11.5.1.
+      # Node 24 already bundles npm 11, but pin it explicitly so a base-image npm
+      # bump can't silently move the binary the `changeset publish` step shells
+      # out to. Changesets always publishes via `npm publish` (not `pnpm
+      # publish`), so this is the binary that matters — and it sidesteps the pnpm
+      # 11.x OIDC regression (pnpm/pnpm#11513). npm 11 already includes trusted
+      # publishing, so there's no reason to jump to @latest.
       - name: Upgrade npm for trusted publishing
         run: npm install -g npm@11
 

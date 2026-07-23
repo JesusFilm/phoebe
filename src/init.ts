@@ -152,10 +152,10 @@ export type InitReport = {
 };
 
 /**
- * Walk up from this module's directory to find the shipped resource root. We
- * emit to `dist/src/init.js` and read `templates/…` + `prompts/…` from the
- * package root. Stops at a `node_modules` boundary so an installed dep never
- * resolves scaffold sources from the consuming repo. (Runtime `promptFiles`
+ * Walk up from this module's directory to find the shipped resource root. This
+ * runs from `src/init.ts` (no build step) and reads `templates/…` + `prompts/…`
+ * from the package root. Stops at a `node_modules` boundary so an installed dep
+ * never resolves scaffold sources from the consuming repo. (Runtime `promptFiles`
  * loading is separate — see `resolvePromptFile` in `prompt.ts`, which reads
  * from the consumer runtime root.)
  */

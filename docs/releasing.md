@@ -26,8 +26,9 @@ automatically.
 
 3. **Merge the version PR.** That is the release trigger. On that merge the
    workflow finds no pending changesets, runs the `release` script
-   (`vp run build && changeset publish`), publishes the new version to npm, and
-   pushes the matching `phoebe-agent@x.y.z` git tag.
+   (`changeset publish` — the package ships raw `.ts`, there is no build step),
+   publishes the new version to npm, and pushes the matching `phoebe-agent@x.y.z`
+   git tag.
 
 So publishing is always gated on a human merging the version PR — nothing reaches
 npm straight from a feature branch.
@@ -46,7 +47,6 @@ real `0.1.0` is then published by CI through the normal changesets flow:
    trusted-publisher form has something to attach to:
 
    ```sh
-   vp run build
    npm publish
    ```
 

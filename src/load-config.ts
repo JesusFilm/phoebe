@@ -121,10 +121,10 @@ export function resolveConfigPath(argPath: string | undefined, cwd: string): str
 
 /**
  * Dynamically import a `phoebe.config.ts` and return the user shape. Native
- * Node type-stripping (Node ≥ 22.7 with `--experimental-strip-types`, or
- * ≥ 23 by default) handles the TS syntax — no bundler needed on the consumer
- * side. Accepts either a default export or a named `config` export so the
- * pre-`defineConfig` scaffold still loads.
+ * Node type-stripping (unflagged on Node ≥ 24, the version Phoebe requires)
+ * handles the TS syntax — no bundler needed on the consumer side. Accepts
+ * either a default export or a named `config` export so the pre-`defineConfig`
+ * scaffold still loads.
  */
 export async function loadUserConfig(configPath: string): Promise<PhoebeUserConfig> {
   const url = pathToFileURL(configPath).href;
