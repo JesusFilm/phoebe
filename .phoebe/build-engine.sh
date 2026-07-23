@@ -14,8 +14,8 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 dest="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/container/phoebe-agent.tgz"
 
 cd "${repo_root}"
-echo "[build-engine] pnpm install in ${repo_root}"
-pnpm install --frozen-lockfile
+echo "[build-engine] vp install in ${repo_root}"
+vp install --frozen-lockfile
 
 echo "[build-engine] npm pack"
 tarball="$(npm pack --silent)"

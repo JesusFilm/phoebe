@@ -41,14 +41,20 @@ const child = spawn(process.execPath, [entry, ...process.argv.slice(2)], {
 
 // Forward the signals the supervisor/daemon uses to stop the engine so a future
 // SIGTERM drain reaches the real process, not just this shim.
+const forwarders = new Map();
 for (const signal of ["SIGINT", "SIGTERM"]) {
-  process.on(signal, () => child.kill(signal));
+  const forward = () => child.kill(signal);
+  forwarders.set(signal, forward);
+  process.on(signal, forward);
 }
 
 child.on("error", (error) => fail(error.message));
 child.on("exit", (code, signal) => {
   if (signal) {
-    // Re-raise so the parent's exit reflects the child's terminating signal.
+    // Remove our forwarder first, otherwise re-raising the signal just re-runs
+    // it (a no-op on the dead child) instead of terminating — the shim would
+    // then drain and exit 0, hiding the child's signal death from the parent.
+    process.off(signal, forwarders.get(signal));
     process.kill(process.pid, signal);
     return;
   }
