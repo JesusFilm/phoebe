@@ -10,12 +10,12 @@
 // argument is forwarded untouched, so behavior is the bootstrapper's, not this
 // shim's.
 
-import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureEngine } from "./materialize.mjs";
+import { spawnEngine } from "./spawn-engine.mjs";
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -35,28 +35,8 @@ try {
   fail(error instanceof Error ? error.message : String(error));
 }
 
-const child = spawn(process.execPath, [entry, ...process.argv.slice(2)], {
-  stdio: "inherit",
-});
-
-// Forward the signals the supervisor/daemon uses to stop the engine so a future
-// SIGTERM drain reaches the real process, not just this shim.
-const forwarders = new Map();
-for (const signal of ["SIGINT", "SIGTERM"]) {
-  const forward = () => child.kill(signal);
-  forwarders.set(signal, forward);
-  process.on(signal, forward);
-}
-
-child.on("error", (error) => fail(error.message));
-child.on("exit", (code, signal) => {
-  if (signal) {
-    // Remove our forwarder first, otherwise re-raising the signal just re-runs
-    // it (a no-op on the dead child) instead of terminating — the shim would
-    // then drain and exit 0, hiding the child's signal death from the parent.
-    process.off(signal, forwarders.get(signal));
-    process.kill(process.pid, signal);
-    return;
-  }
-  process.exit(code ?? 0);
-});
+// Exec the TypeScript bootstrapper, forwarding the stop signals the
+// supervisor/daemon uses so a SIGTERM drain reaches the real process (the
+// engine), not just this shim, and dying however the child dies. The plumbing
+// lives in spawn-engine.mjs, shared with `phoebe boot`.
+spawnEngine(entry, process.argv.slice(2), { onSpawnError: (error) => fail(error.message) });

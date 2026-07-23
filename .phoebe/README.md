@@ -74,6 +74,31 @@ Re-run `./.phoebe/build-engine.sh` and `docker compose ... build` — or just
 `vp run phoebe` — whenever you want the container to pick up local engine
 changes.
 
+## `phoebe boot` from a local engine mount
+
+`run.sh` above installs the engine from the baked tarball and runs it under the
+supervisor. `run.local.sh` exercises the new bootstrapper path instead
+(issue #40): `phoebe boot` is the container's main process, reads the mounted
+config, sees `engine: { source: "local" }`, and execs the engine straight from
+this working tree mounted at `/opt/phoebe-engine`.
+
+```bash
+./.phoebe/run.local.sh              # FULL persistent loop via `phoebe boot`
+./.phoebe/run.local.sh --dry-run    # forwarded to the engine: selection only
+```
+
+Two things it demonstrates over the supervisor path:
+
+- **No engine rebuild for src/ edits.** The engine is the live mount, not the
+  tarball — only the bootstrapper (`phoebe` = `bin.mjs`) comes from the image, so
+  editing `src/` and relaunching is enough.
+- **SIGTERM drains.** `docker stop` (or Ctrl-C → the compose `run` forwards
+  SIGTERM) makes the engine finish the current work unit, start no new one, and
+  exit 0 — the signal is forwarded tini → `phoebe boot` → engine.
+
+Missing the mount fails loudly: `boot` aborts with "no engine is mounted at
+/opt/phoebe-engine" rather than silently falling back.
+
 ## Not yet verified end-to-end
 
 This scaffold is configured but has **not** been launched here (it needs your

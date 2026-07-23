@@ -29,6 +29,7 @@ import {
   type Sha,
 } from "./branded.ts";
 import { buildAgentEnv } from "./agent-env.ts";
+import { installDrainSignal, type DrainSignal } from "./drain.ts";
 import {
   EXECUTION_REFUSED_MESSAGE,
   executionDecision,
@@ -1552,7 +1553,7 @@ export async function runEngine(argv: readonly string[] = process.argv.slice(2))
   console.log(
     runOnce
       ? "[phoebe] Run-once mode — will work at most one unit of the first one-shot-eligible kind in WORK_ORDER, then exit."
-      : `[phoebe] Persistent mode — idle poll every ${pollIntervalMs}ms.`,
+      : `[phoebe] Persistent mode — idle poll every ${pollIntervalMs}ms. SIGTERM drains: finish the current unit, then exit 0.`,
   );
   if (dryRun) {
     console.log("[phoebe] Dry-run — selection only, nothing executes.");
@@ -1566,7 +1567,34 @@ export async function runEngine(argv: readonly string[] = process.argv.slice(2))
     ensureClone({ repoUrl: config.repoUrl, repoDir });
   }
 
+  // `phoebe boot` stops the engine with SIGTERM (container shutdown, and later a
+  // config/ref change). Drain gracefully rather than dying mid-unit: finish the
+  // unit in flight, start no new one, then return (exit 0). The wait below wakes
+  // early on drain so an idle poll-sleep does not stall shutdown.
+  const drain = installDrainSignal();
+  try {
+    await runLoop({ runOnce, dryRun, pollIntervalMs, drain });
+  } finally {
+    drain.dispose();
+  }
+}
+
+async function runLoop({
+  runOnce,
+  dryRun,
+  pollIntervalMs,
+  drain,
+}: {
+  runOnce: boolean;
+  dryRun: boolean;
+  pollIntervalMs: number;
+  drain: DrainSignal;
+}): Promise<void> {
   while (true) {
+    if (drain.requested) {
+      console.log("[phoebe] Drain requested — starting no new work unit; exiting 0.");
+      break;
+    }
     exitForSelfUpdateIfNeeded();
 
     const fetchKinds = runOnce ? oneShotWorkKinds(workOrder) : workOrder;
@@ -1595,8 +1623,18 @@ export async function runEngine(argv: readonly string[] = process.argv.slice(2))
         logIdleCycle(data);
       }
       if (runOnce || dryRun) break;
-      await sleep(pollIntervalMs);
+      // Interruptible idle poll — a SIGTERM mid-sleep wakes it, the next
+      // iteration's drain check breaks, and shutdown does not wait a full cycle.
+      await drain.wait(pollIntervalMs);
       continue;
+    }
+
+    // A drain that arrived during the fetch/selection above must not let this
+    // freshly-picked unit start — "start no new one". The in-flight unit (if any)
+    // already finished before we looped back here, so exit now.
+    if (drain.requested) {
+      console.log("[phoebe] Drain requested before starting the next unit — exiting 0.");
+      break;
     }
 
     const decision = executionDecision({ dryRun, inContainer });
@@ -1623,10 +1661,16 @@ export async function runEngine(argv: readonly string[] = process.argv.slice(2))
       console.error(
         `[phoebe] Failed executing ${describeUnit(picked)} — ${error instanceof Error ? error.message : String(error)}`,
       );
-      await sleep(pollIntervalMs);
+      await drain.wait(pollIntervalMs);
       continue;
     }
 
     if (runOnce) break;
+    // Drain requested while the unit ran: it is finished, so exit now rather
+    // than picking up another. This is the graceful-drain boundary.
+    if (drain.requested) {
+      console.log("[phoebe] Finished the in-flight unit under drain — exiting 0.");
+      break;
+    }
   }
 }
