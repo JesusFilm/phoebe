@@ -9,11 +9,12 @@
 // runs. So all bootstrapper logic lives here as type-checked TypeScript.
 //
 // `phoebe boot` (bootstrap/boot.ts) is the container's long-lived main process:
-// it resolves the engine source (bootstrap/engine-source.ts) and execs the
-// engine as a long-running child, forwarding SIGTERM so the engine drains. For
-// #40 it wires the local mount; github resolution and the drain-and-respawn loop
-// grow here in later tickets. Every other invocation delegates to the engine
-// CLI's `runCli` — scaffold via `init`, otherwise run the engine directly.
+// it resolves the engine source (bootstrap/engine-source.ts) — a local mount or
+// a github checkout (bootstrap/github-engine.ts) — and execs the engine as a
+// long-running child, forwarding SIGTERM so the engine drains. The
+// drain-and-respawn loop (watch config/ref, respawn) grows here in later
+// tickets. Every other invocation delegates to the engine CLI's `runCli` —
+// scaffold via `init`, otherwise run the engine directly.
 
 import { runCli } from "../src/cli.ts";
 import { runBoot } from "./boot.ts";

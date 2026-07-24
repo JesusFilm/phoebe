@@ -99,6 +99,13 @@ Two things it demonstrates over the supervisor path:
 Missing the mount fails loudly: `boot` aborts with "no engine is mounted at
 /opt/phoebe-engine" rather than silently falling back.
 
+The other engine source is `{ source: "github", ref }` — `boot` clones the
+engine repo (into `PHOEBE_ENGINE_DIR`, `GH_TOKEN`-authenticated) and checks out
+the ref, so you run a pinned/published engine instead of this working tree. The
+dogfood uses `local` because the whole point here is to run the tree you have
+checked out; see [`docs/configuration.md`](../docs/configuration.md#engine-source-engine)
+for the github source.
+
 ## Not yet verified end-to-end
 
 This scaffold is configured but has **not** been launched here (it needs your

@@ -1,8 +1,7 @@
-// The `phoebe boot` engine-entry resolver. `boot` reads the mounted config,
-// resolves the engine source, and turns it into the path it execs. For #40 only
-// the local mount is wired; github resolution lands in #41. The exec itself
-// (spawn + signal forwarding) is a thin shell around this decision, so the
-// decision is what we pin here.
+// The `phoebe boot` local-engine resolver. `boot` reads the mounted config,
+// resolves the engine source, and turns it into the path it execs. This pins the
+// `local` mount decision; the `github` source is materialized separately
+// (github-engine.ts) and tested there.
 
 import { join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
@@ -41,14 +40,5 @@ describe("resolveEngineEntry", () => {
         { localEngineDir: "/opt/phoebe-engine", exists: (path) => path !== entry },
       ),
     ).toThrow(/no engine is mounted at \/opt\/phoebe-engine/);
-  });
-
-  test("a github source is not supported by boot yet (lands in #41)", () => {
-    expect(() =>
-      resolveEngineEntry(
-        { source: "github", ref: "main", repo: "JesusFilm/phoebe" },
-        { exists: () => true },
-      ),
-    ).toThrow(/github/i);
   });
 });

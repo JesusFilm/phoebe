@@ -138,6 +138,24 @@ See supervisor self-update in [`architecture.md`](architecture.md).
 These map to the named volumes in `compose.yml` — see
 [`architecture.md`](architecture.md#named-volumes).
 
+## Engine source (`engine`)
+
+Bootstrapper-only. `phoebe boot` reads this field to decide **where the engine
+runs from**; the engine itself ignores it (`resolveConfig` drops it — it never
+reaches the resolved config). Omitted ⇒ `{ source: "github", ref: "main" }`.
+
+| `engine` value                                | What `phoebe boot` runs                                                                                        |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| _omitted_ / `{ source: "github", ref, repo }` | A git checkout of the engine repo. `ref` is any branch/40-char SHA/tag; `repo` defaults to `JesusFilm/phoebe`. |
+| `{ source: "local" }`                         | The engine mounted at `/opt/phoebe-engine` (dogfood `compose.local.yml`); a missing mount fails loudly.        |
+
+For `github`, first boot clones into `PHOEBE_ENGINE_DIR` (see runtime toggles)
+and every boot fetches `ref` + checks it out — a branch tracks its tip, a SHA/tag
+pins an exact commit. The clone authenticates with `GH_TOKEN`; keep
+`PHOEBE_ENGINE_DIR` on a persistent volume so later boots fetch instead of
+re-cloning. (`engine` is not `PHOEBE_*`-overlayable — it selects the engine
+before the engine's config pipeline runs.)
+
 ## Environment overlay (`PHOEBE_*`)
 
 `PHOEBE_*` env vars provide **one-off run overrides** without editing
@@ -169,13 +187,14 @@ config-file territory.
 
 ### Runtime toggles (read directly, not overlaid onto config)
 
-| Env var                   | Default  | Meaning                                                               |
-| ------------------------- | -------- | --------------------------------------------------------------------- |
-| `PHOEBE_AGENT`            | —        | Provider for this run (`cursor` \| `claude` \| `codex`).              |
-| `PHOEBE_MODEL`            | —        | Model for this run.                                                   |
-| `PHOEBE_POLL_INTERVAL_MS` | `300000` | Persistent-mode idle poll interval.                                   |
-| `PHOEBE_BASE`             | —        | Force the worktree base ref for issues (bypasses blocker resolution). |
-| `PHOEBE_QUARANTINED_SHA`  | —        | Set by the supervisor during crash-loop fallback; not for manual use. |
+| Env var                   | Default              | Meaning                                                                                                                                                                  |
+| ------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `PHOEBE_AGENT`            | —                    | Provider for this run (`cursor` \| `claude` \| `codex`).                                                                                                                 |
+| `PHOEBE_MODEL`            | —                    | Model for this run.                                                                                                                                                      |
+| `PHOEBE_POLL_INTERVAL_MS` | `300000`             | Persistent-mode idle poll interval.                                                                                                                                      |
+| `PHOEBE_ENGINE_DIR`       | `<tmp>/phoebe-agent` | Base dir `phoebe boot` clones a `github` engine source into (and bin.mjs materializes under). Put it on a persistent volume so github boots fetch instead of re-cloning. |
+| `PHOEBE_BASE`             | —                    | Force the worktree base ref for issues (bypasses blocker resolution).                                                                                                    |
+| `PHOEBE_QUARANTINED_SHA`  | —                    | Set by the supervisor during crash-loop fallback; not for manual use.                                                                                                    |
 
 Secrets (`GH_TOKEN` and the active provider's key) are also read from the
 environment — see [`ai-install.md`](ai-install.md) and `.env.example`.
