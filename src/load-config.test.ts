@@ -137,6 +137,20 @@ describe("resolveConfigPath + loadUserConfig", () => {
     expect(cfg.repoSlug).toBe("org/one");
   });
 
+  test("loadUserConfig re-reads an edited config when given a fresh reloadKey", async () => {
+    // The reconcile watch (#42) re-reads the mounted config *in-process* after an
+    // edit. Node's ESM cache is keyed by URL, so without the key the second read
+    // would hand back the first import and boot would relaunch onto stale config.
+    const path = join(workDir, "reloaded.ts");
+    writeFileSync(path, `export default { repoSlug: "org/before" };`, "utf8");
+    expect((await loadUserConfig(path, { reloadKey: "v1" })).repoSlug).toBe("org/before");
+
+    writeFileSync(path, `export default { repoSlug: "org/after" };`, "utf8");
+    expect((await loadUserConfig(path, { reloadKey: "v2" })).repoSlug).toBe("org/after");
+    // Same key ⇒ the cached module, which is what makes a no-change poll free.
+    expect((await loadUserConfig(path, { reloadKey: "v2" })).repoSlug).toBe("org/after");
+  });
+
   test("loadUserConfig loads a named `config` export (pre-defineConfig scaffold)", async () => {
     const path = join(workDir, "named-config.ts");
     writeFileSync(

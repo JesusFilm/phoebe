@@ -13,15 +13,35 @@
 import { spawn } from "node:child_process";
 
 /**
+ * Die however a child process died: re-raise a killing signal so this process
+ * exits the same way, or exit with the child's code.
+ *
+ * The caller must have removed its own listeners for that signal first —
+ * otherwise re-raising just re-runs them and this process falls through and
+ * exits 0, hiding the child's signal death from its parent.
+ */
+export function propagateExit(code, signal) {
+  if (signal) {
+    process.kill(process.pid, signal);
+    return;
+  }
+  process.exit(code ?? 0);
+}
+
+/**
  * Spawn `node <entry> <args...>` with inherited stdio, forwarding SIGINT/SIGTERM
- * to it, and propagate its exit: re-raise a killing signal so this process dies
- * the same way, or exit with the child's code. Returns the child handle.
+ * to it, and propagate its exit (see propagateExit). Returns the child handle.
  *
  * `onSpawnError` overrides the default handling of a spawn failure (print
  * `[phoebe] <message>` and exit 1); callers that want to surface it differently
  * pass their own.
+ *
+ * `onExit` overrides dying with the child. `phoebe boot` passes one because it
+ * *supervises* the engine: a child that exited because boot drained it for a
+ * relaunch must not take the container with it (bootstrap/reconcile.ts). Callers
+ * that pass `onExit` own the propagation — propagateExit is exported for them.
  */
-export function spawnEngine(entry, args, { onSpawnError } = {}) {
+export function spawnEngine(entry, args, { onSpawnError, onExit } = {}) {
   const child = spawn(process.execPath, [entry, ...args], { stdio: "inherit" });
 
   const forwarders = new Map();
@@ -44,16 +64,14 @@ export function spawnEngine(entry, args, { onSpawnError } = {}) {
     process.exit(1);
   });
   child.on("exit", (code, signal) => {
+    // Removed before propagating: a re-raised signal must not just re-run the
+    // forwarder (a no-op kill on the dead child) and leave this process alive.
     clearForwarders();
-    if (signal) {
-      // Re-raise so this process dies of the same signal, not a clean 0. The
-      // forwarder is removed first (above), otherwise re-raising just re-runs it
-      // — a no-op kill on the dead child — and this process would fall through
-      // and exit 0, hiding the child's signal death from its parent.
-      process.kill(process.pid, signal);
+    if (onExit) {
+      onExit(code, signal);
       return;
     }
-    process.exit(code ?? 0);
+    propagateExit(code, signal);
   });
 
   return child;

@@ -8,6 +8,10 @@
 # runs its FULL persistent poll loop; stop it with Ctrl-C or `docker stop` —
 # SIGTERM drains (finish the current unit, start none, exit 0).
 #
+# While it runs, `boot` reconciles: edit .phoebe/phoebe.config.ts and it drains
+# the engine and relaunches it on the new config at the next work-unit boundary
+# (PHOEBE_RECONCILE_INTERVAL_MS, 10s here) without restarting the container.
+#
 # The tarball still supplies the bootstrapper (`phoebe` = bin.mjs), so we build
 # it and the image; the ENGINE that runs comes from the mount, so src/ edits
 # take effect on the next launch without rebuilding.

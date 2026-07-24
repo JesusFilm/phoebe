@@ -87,7 +87,7 @@ this working tree mounted at `/opt/phoebe-engine`.
 ./.phoebe/run.local.sh --dry-run    # forwarded to the engine: selection only
 ```
 
-Two things it demonstrates over the supervisor path:
+Three things it demonstrates over the supervisor path:
 
 - **No engine rebuild for src/ edits.** The engine is the live mount, not the
   tarball — only the bootstrapper (`phoebe` = `bin.mjs`) comes from the image, so
@@ -95,6 +95,11 @@ Two things it demonstrates over the supervisor path:
 - **SIGTERM drains.** `docker stop` (or Ctrl-C → the compose `run` forwards
   SIGTERM) makes the engine finish the current work unit, start no new one, and
   exit 0 — the signal is forwarded tini → `phoebe boot` → engine.
+- **Reconcile relaunches in place.** Edit `.phoebe/phoebe.config.ts` while it
+  runs and `boot` drains the engine and relaunches it on the new config at the
+  next work-unit boundary — same container, no interrupted unit (issue #42).
+  `compose.local.yml` sets `PHOEBE_RECONCILE_INTERVAL_MS=10000` so you see it
+  within ten seconds instead of the default minute.
 
 Missing the mount fails loudly: `boot` aborts with "no engine is mounted at
 /opt/phoebe-engine" rather than silently falling back.

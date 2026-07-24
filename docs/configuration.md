@@ -156,6 +156,30 @@ pins an exact commit. The clone authenticates with `GH_TOKEN`; keep
 re-cloning. (`engine` is not `PHOEBE_*`-overlayable — it selects the engine
 before the engine's config pipeline runs.)
 
+### Reconcile (config + ref watch)
+
+`phoebe boot` does not just launch the engine — it keeps the **right** engine
+running. Every `PHOEBE_RECONCILE_INTERVAL_MS` (default 60s) it samples two
+things and compares them against what the running engine was launched from:
+
+| Watched            | How it is sampled              | Relaunches when                                  |
+| ------------------ | ------------------------------ | ------------------------------------------------ |
+| The mounted config | one `stat` (mtime + size)      | the file changed — the `engine` field is re-read |
+| The tracked ref    | one `git ls-remote` (no fetch) | the branch advanced past the running commit      |
+
+On a change, boot sends the engine `SIGTERM` — a **graceful drain**, not a kill:
+the engine finishes the work unit in flight, starts no new one, and exits 0.
+Only then does boot re-resolve the source (re-read the config, fetch + check out
+the new ref) and spawn the replacement, in the same container. So a reconcile
+never interrupts a work unit and never restarts the container.
+
+The ref-watch is **inert for a pinned `ref`**: a 40-char SHA is never even asked
+about, and a tag is asked but never acted on. Pinning means pinning — only a
+config edit moves a pinned deployment. A `local` source has no ref to watch, so
+only the config watch applies. A poll that finds nothing costs one stat plus at
+most one `ls-remote`; a failed poll (network blip, unreadable mount) is logged
+and treated as no change.
+
 ## Environment overlay (`PHOEBE_*`)
 
 `PHOEBE_*` env vars provide **one-off run overrides** without editing
@@ -187,14 +211,15 @@ config-file territory.
 
 ### Runtime toggles (read directly, not overlaid onto config)
 
-| Env var                   | Default              | Meaning                                                                                                                                                                  |
-| ------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `PHOEBE_AGENT`            | —                    | Provider for this run (`cursor` \| `claude` \| `codex`).                                                                                                                 |
-| `PHOEBE_MODEL`            | —                    | Model for this run.                                                                                                                                                      |
-| `PHOEBE_POLL_INTERVAL_MS` | `300000`             | Persistent-mode idle poll interval.                                                                                                                                      |
-| `PHOEBE_ENGINE_DIR`       | `<tmp>/phoebe-agent` | Base dir `phoebe boot` clones a `github` engine source into (and bin.mjs materializes under). Put it on a persistent volume so github boots fetch instead of re-cloning. |
-| `PHOEBE_BASE`             | —                    | Force the worktree base ref for issues (bypasses blocker resolution).                                                                                                    |
-| `PHOEBE_QUARANTINED_SHA`  | —                    | Set by the supervisor during crash-loop fallback; not for manual use.                                                                                                    |
+| Env var                        | Default              | Meaning                                                                                                                                                                  |
+| ------------------------------ | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `PHOEBE_AGENT`                 | —                    | Provider for this run (`cursor` \| `claude` \| `codex`).                                                                                                                 |
+| `PHOEBE_MODEL`                 | —                    | Model for this run.                                                                                                                                                      |
+| `PHOEBE_POLL_INTERVAL_MS`      | `300000`             | Persistent-mode idle poll interval.                                                                                                                                      |
+| `PHOEBE_ENGINE_DIR`            | `<tmp>/phoebe-agent` | Base dir `phoebe boot` clones a `github` engine source into (and bin.mjs materializes under). Put it on a persistent volume so github boots fetch instead of re-cloning. |
+| `PHOEBE_RECONCILE_INTERVAL_MS` | `60000`              | How often `phoebe boot` polls the mounted config and the tracked ref for a drain-and-relaunch (see Engine source → Reconcile).                                           |
+| `PHOEBE_BASE`                  | —                    | Force the worktree base ref for issues (bypasses blocker resolution).                                                                                                    |
+| `PHOEBE_QUARANTINED_SHA`       | —                    | Set by the supervisor during crash-loop fallback; not for manual use.                                                                                                    |
 
 Secrets (`GH_TOKEN` and the active provider's key) are also read from the
 environment — see [`ai-install.md`](ai-install.md) and `.env.example`.

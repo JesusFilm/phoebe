@@ -12,6 +12,10 @@
 # starts none, and exits 0. The signal is forwarded the whole way down —
 # tini → phoebe boot → engine — so the drain reaches the real process.
 #
+# `boot` also reconciles while it runs (#42): edit the config below and it
+# drains the engine and relaunches it on the new config at the next work-unit
+# boundary, in this same container.
+#
 # The baked tarball (build-engine.sh) still supplies the bootstrapper (`phoebe`
 # = bin.mjs + bootstrap/); only the ENGINE it execs comes from the mount.
 
@@ -22,6 +26,17 @@ services:
     # `command:` replaces CMD, so the boot arg lives in the entrypoint here.
     entrypoint: ["/usr/bin/tini", "--", "phoebe", "boot"]
     command: []
+    # Read the config through the working-tree mount below rather than the base
+    # file's single-file bind mount at /etc/phoebe. A file bind mount pins the
+    # host *inode*, so an editor that saves by writing a new file and renaming it
+    # over the old one is invisible inside the container — and the config watch
+    # would never fire. Under a directory mount the rename is seen normally.
+    # Prompts resolve relative to this cwd too (.phoebe/prompts).
+    working_dir: /opt/phoebe-engine/.phoebe
+    environment:
+      # A minute is a long time to wait when demonstrating a relaunch; the
+      # reconcile poll is one stat + one ls-remote, so 10s is cheap here.
+      PHOEBE_RECONCILE_INTERVAL_MS: "${PHOEBE_RECONCILE_INTERVAL_MS:-10000}"
     volumes:
       # The engine source `boot` execs for `engine.source: "local"`. Read-only:
       # the engine works its target clone under /data, never its own source. The
