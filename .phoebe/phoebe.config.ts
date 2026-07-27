@@ -33,6 +33,13 @@ const config: PhoebeUserConfig = {
   // README). Empty selfUpdatePaths disables the self-update exit so the
   // supervisor never clobbers the local build with the npm stub.
   selfUpdatePaths: [],
+
+  // Run the engine from a host→container mount at /opt/phoebe-engine
+  // (container/compose.local.yml) instead of a cloned github ref, so
+  // `phoebe boot` execs exactly the working tree. The engine ignores this field
+  // (resolveConfig drops it); only the bootstrapper's `boot` reads it. Harmless
+  // to the non-boot flows (supervisor + `phoebe-agent`), which never read it.
+  engine: { source: "local" },
 };
 
 export default config;

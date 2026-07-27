@@ -129,14 +129,107 @@ See supervisor self-update in [`architecture.md`](architecture.md).
 
 ## Container paths
 
-| Field                | Default             | Meaning                         |
-| -------------------- | ------------------- | ------------------------------- |
-| `paths.repoDir`      | `"/data/repo"`      | The private clone (origin hub). |
-| `paths.worktreesDir` | `"/data/worktrees"` | Per-unit git worktrees.         |
-| `paths.stateDir`     | `"/data/state"`     | Lock, watermarks, logs.         |
+| Field                | Default             | Meaning                                                                                      |
+| -------------------- | ------------------- | -------------------------------------------------------------------------------------------- |
+| `paths.repoDir`      | `"/data/repo"`      | The private clone (origin hub).                                                              |
+| `paths.worktreesDir` | `"/data/worktrees"` | Per-unit git worktrees.                                                                      |
+| `paths.stateDir`     | `"/data/state"`     | Lock, watermarks, logs, and the bootstrapper's crash-loop record (`engine-crash-loop.json`). |
 
 These map to the named volumes in `compose.yml` — see
 [`architecture.md`](architecture.md#named-volumes).
+
+## Engine source (`engine`)
+
+Bootstrapper-only. `phoebe boot` reads this field to decide **where the engine
+runs from**; the engine itself ignores it (`resolveConfig` drops it — it never
+reaches the resolved config). Omitted ⇒ `{ source: "github", ref: "main" }`.
+
+| `engine` value                                | What `phoebe boot` runs                                                                                        |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| _omitted_ / `{ source: "github", ref, repo }` | A git checkout of the engine repo. `ref` is any branch/40-char SHA/tag; `repo` defaults to `JesusFilm/phoebe`. |
+| `{ source: "local" }`                         | The engine mounted at `/opt/phoebe-engine` (dogfood `compose.local.yml`); a missing mount fails loudly.        |
+
+For `github`, first boot clones into `PHOEBE_ENGINE_DIR` (see runtime toggles)
+and every boot fetches `ref` + checks it out — a branch tracks its tip, a SHA/tag
+pins an exact commit. The clone authenticates with `GH_TOKEN`; keep
+`PHOEBE_ENGINE_DIR` on a persistent volume so later boots fetch instead of
+re-cloning. (`engine` is not `PHOEBE_*`-overlayable — it selects the engine
+before the engine's config pipeline runs.)
+
+### Reconcile (config + ref watch)
+
+`phoebe boot` does not just launch the engine — it keeps the **right** engine
+running. Every `PHOEBE_RECONCILE_INTERVAL_MS` (default 60s) it samples two
+things and compares them against what the running engine was launched from:
+
+| Watched            | How it is sampled              | Relaunches when                                  |
+| ------------------ | ------------------------------ | ------------------------------------------------ |
+| The mounted config | one `stat` (mtime + size)      | the file changed — the `engine` field is re-read |
+| The tracked ref    | one `git ls-remote` (no fetch) | the branch advanced past the running commit      |
+
+On a change, boot sends the engine `SIGTERM` — a **graceful drain**, not a kill:
+the engine finishes the work unit in flight, starts no new one, and exits 0.
+Only then does boot re-resolve the source (re-read the config, fetch + check out
+the new ref) and spawn the replacement, in the same container. So a reconcile
+never interrupts a work unit and never restarts the container.
+
+The ref-watch is **inert for a pinned `ref`**: a 40-char SHA is never even asked
+about, and a tag is asked but never acted on. Pinning means pinning — only a
+config edit moves a pinned deployment. A `local` source has no ref to watch, so
+only the config watch applies. A poll that finds nothing costs one stat plus at
+most one `ls-remote`; a failed poll (network blip, unreadable mount) is logged
+and treated as no change.
+
+### Crash-loop fallback
+
+Tracking a branch means eventually tracking it onto a commit that will not boot.
+`phoebe boot` guards against that: it remembers which engine commits actually
+ran, and pins back to the last good one rather than crash-looping an unattended
+container.
+
+| Constant               | Value   | Meaning                                                     |
+| ---------------------- | ------- | ----------------------------------------------------------- |
+| `CRASH_LOOP_THRESHOLD` | `3`     | Consecutive fast crashes before boot pins to the last-good. |
+| `HEALTHY_RUN_MS`       | `60000` | How long a run must survive to prove its commit.            |
+| `CRASH_BACKOFF_MS`     | `10000` | Wait before relaunching a crashed engine.                   |
+
+Every finished run gets one of three verdicts:
+
+| Verdict          | When                                                                           | Effect                       |
+| ---------------- | ------------------------------------------------------------------------------ | ---------------------------- |
+| **healthy**      | outlived `HEALTHY_RUN_MS`, exited 0 unprompted, or exited for a self-update    | becomes the last-good commit |
+| **crash**        | exited non-zero, of its own accord, inside the window                          | counts toward the threshold  |
+| **inconclusive** | boot ended it early (reconcile drain or container stop), or a signal killed it | nothing moves                |
+
+The third verdict is load-bearing: a container stop landing seconds into a
+relaunch of a crash-looping commit must not credit that commit, or the fallback
+would be disarmed for good. A commit that outlives the window is also banked as
+last-good **while it is still running**, so an engine up for weeks that is then
+killed outright (host reboot, OOM) still leaves a fallback target behind.
+
+Each crash relaunches the engine after `CRASH_BACKOFF_MS` — deliberately not the
+poll interval, so slowing the reconcile poll down does not also delay a fallback.
+At the threshold boot checks out the **last-good commit** instead of the tip, and
+the ref-watch stops treating the tip as a change while the branch still points at
+the quarantined commit. When the branch advances past it, the quarantine lapses
+and the next launch is an ordinary one. If the fallback crashes too the
+quarantine still holds and the container exits — boot has run out of better
+commits, and says so.
+
+The record lives in `paths.stateDir` as `engine-crash-loop.json` (last-good SHA,
+quarantined SHA, crash count), so a quarantine survives the container restart a
+crash-looping engine causes. An unwritable state dir is a warning, not a failure:
+the guard still works for the life of that container.
+
+The guard is **inert** unless `engine.ref` is a moving branch — a `local` source
+has no commit to pin, and a pinned SHA or tag means the operator chose that exact
+commit, so boot crash-loops visibly rather than quietly serving different code.
+It is also inert with nothing known-good yet: a first boot onto a broken ref
+exits with the engine's status and lets the container's restart policy show the
+failure. (A pinned launch still _records_ what it proved — that costs nothing,
+and gives a deployment later moved onto a branch something to fall back to. It
+simply never causes a fallback.) Every fallback event is logged with both SHAs
+(`[phoebe] boot: …`).
 
 ## Environment overlay (`PHOEBE_*`)
 
@@ -169,13 +262,15 @@ config-file territory.
 
 ### Runtime toggles (read directly, not overlaid onto config)
 
-| Env var                   | Default  | Meaning                                                               |
-| ------------------------- | -------- | --------------------------------------------------------------------- |
-| `PHOEBE_AGENT`            | —        | Provider for this run (`cursor` \| `claude` \| `codex`).              |
-| `PHOEBE_MODEL`            | —        | Model for this run.                                                   |
-| `PHOEBE_POLL_INTERVAL_MS` | `300000` | Persistent-mode idle poll interval.                                   |
-| `PHOEBE_BASE`             | —        | Force the worktree base ref for issues (bypasses blocker resolution). |
-| `PHOEBE_QUARANTINED_SHA`  | —        | Set by the supervisor during crash-loop fallback; not for manual use. |
+| Env var                        | Default              | Meaning                                                                                                                                                                  |
+| ------------------------------ | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `PHOEBE_AGENT`                 | —                    | Provider for this run (`cursor` \| `claude` \| `codex`).                                                                                                                 |
+| `PHOEBE_MODEL`                 | —                    | Model for this run.                                                                                                                                                      |
+| `PHOEBE_POLL_INTERVAL_MS`      | `300000`             | Persistent-mode idle poll interval.                                                                                                                                      |
+| `PHOEBE_ENGINE_DIR`            | `<tmp>/phoebe-agent` | Base dir `phoebe boot` clones a `github` engine source into (and bin.mjs materializes under). Put it on a persistent volume so github boots fetch instead of re-cloning. |
+| `PHOEBE_RECONCILE_INTERVAL_MS` | `60000`              | How often `phoebe boot` polls the mounted config and the tracked ref for a drain-and-relaunch (see Engine source → Reconcile).                                           |
+| `PHOEBE_BASE`                  | —                    | Force the worktree base ref for issues (bypasses blocker resolution).                                                                                                    |
+| `PHOEBE_QUARANTINED_SHA`       | —                    | Set by the supervisor during crash-loop fallback; not for manual use.                                                                                                    |
 
 Secrets (`GH_TOKEN` and the active provider's key) are also read from the
 environment — see [`ai-install.md`](ai-install.md) and `.env.example`.

@@ -105,10 +105,14 @@ never executed — a marker pass runs before substitution to guarantee it.
 ## Supervisor self-update and crash-loop fallback
 
 The container's `supervisor.sh` keeps the engine alive and lets Phoebe upgrade
-its own code without an operator. The decision logic is specified and tested in
+its own code without an operator. Its decision logic is specified and tested in
 TypeScript (`src/supervisor-decision.ts`); the shell supervisor **mirrors** it
-in POSIX sh rather than calling it, so the fallback survives the very failure it
+in POSIX sh rather than calling it, so the decision survives the very failure it
 guards against — a bad pull that makes the TypeScript itself fail to boot.
+
+Under `phoebe boot` (the engine-source redesign, #37) the second half of this —
+guarding against a bad engine commit — moves to the bootstrapper, which is the
+process that chooses the commit in the first place.
 
 **Self-update.** After each cycle's fetch, the engine diffs `HEAD..origin/<tracked
 branch>`. If any changed path matches `config.selfUpdatePaths` (default
@@ -117,14 +121,38 @@ lockfile moved), the orchestrator exits with `SELF_UPDATE_EXIT_CODE`. The
 supervisor is meant to catch that exit code, reinstall the pinned CLI, and
 re-exec. Only the container path self-updates; the host never does.
 
-**Crash-loop fallback.** A freshly pulled SHA that keeps dying on startup is
-quarantined: after `CRASH_LOOP_THRESHOLD` (3) consecutive _fast_ crashes — a run
-that exits non-zero before `HEALTHY_RUN_SECONDS` (60s) — the supervisor pins to
-the **last SHA that ran healthily** and passes the quarantined SHA in
-`PHOEBE_QUARANTINED_SHA`. While `origin/<branch>` still points at the bad commit,
-the engine stays on the good code (no self-update back into the quarantine); once
-the branch advances past it (a fix landed), self-updating resumes. A run counts
-as healthy if it self-updated, exited cleanly, or survived the healthy window.
+**Crash-loop fallback.** Guarding a _moving_ engine ref is `phoebe boot`'s job
+rather than the supervisor's, because boot is what decides which engine commit
+runs (`bootstrap/crash-loop.ts`). After `CRASH_LOOP_THRESHOLD` (3) consecutive
+_fast_ crashes of one engine SHA — a run that exits non-zero inside
+`HEALTHY_RUN_MS` (60s) — boot quarantines that commit and materializes the **last
+SHA that ran healthily** instead; the ref-watch then stops reading the branch tip
+as a change for as long as it still points at the bad commit. Once the branch
+advances past it (a fix landed), the quarantine lapses and reconcile resumes
+normally.
+
+A finished run is judged three ways, not two: **healthy** (it outlived the
+window, exited 0 unprompted, or exited for a self-update), **crash** (a fast
+non-zero exit of its own accord), or **inconclusive** — boot cut it short for a
+reconcile or a container stop, or a signal killed it. An inconclusive run moves
+nothing; treating one as healthy would let a container stop landing mid-crash-loop
+promote the bad commit and disarm the fallback for good. A commit that outlives
+the window is banked as last-good **while it is still running**, so an engine up
+for weeks that is then killed outright still leaves a fallback target behind.
+
+The record — last-good SHA, quarantined SHA, crash count — is JSON in
+`paths.stateDir` (`engine-crash-loop.json`), so it survives the container restart
+a crash-looping engine causes. The guard is inert unless the engine ref is a
+**moving branch** (a local mount has no commit to pin; a pinned SHA or tag means
+the operator chose that exact commit) and inert with nothing known-good yet — a
+first boot straight onto a broken ref exits and lets the container's restart
+policy make the failure visible. See
+[`configuration.md`](configuration.md#crash-loop-fallback).
+
+`src/supervisor-decision.ts` carries an engine-side copy of this policy, written
+for the shell supervisor to mirror but never implemented there. It is superseded
+by the bootstrapper's and goes with the rest of the self-update machinery in the
+engine-source redesign (#37).
 
 The self-update exit code is defined once as the tested spec
 (`SELF_UPDATE_EXIT_CODE` in `src/supervisor-decision.ts`, value `42`); the

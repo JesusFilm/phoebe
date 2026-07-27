@@ -125,9 +125,23 @@ export function resolveConfigPath(argPath: string | undefined, cwd: string): str
  * handles the TS syntax — no bundler needed on the consumer side. Accepts
  * either a default export or a named `config` export so the pre-`defineConfig`
  * scaffold still loads.
+ *
+ * `reloadKey` busts Node's ESM module cache, which is keyed by URL and would
+ * otherwise hand back the first import forever. The engine never needs it (each
+ * run is a fresh process); `phoebe boot` does, because it re-reads the mounted
+ * config in-process when the reconcile watch sees it change (#42). Pass the
+ * config's fingerprint, not a counter: an unchanged config then reuses the
+ * cached module instead of leaking a new registry entry per read.
  */
-export async function loadUserConfig(configPath: string): Promise<PhoebeUserConfig> {
-  const url = pathToFileURL(configPath).href;
+export async function loadUserConfig(
+  configPath: string,
+  opts: { reloadKey?: string } = {},
+): Promise<PhoebeUserConfig> {
+  const fileUrl = pathToFileURL(configPath);
+  if (opts.reloadKey !== undefined) {
+    fileUrl.searchParams.set("phoebe-reload", opts.reloadKey);
+  }
+  const url = fileUrl.href;
   let mod: unknown;
   try {
     mod = await import(url);

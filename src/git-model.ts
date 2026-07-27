@@ -10,7 +10,7 @@ import { asSha, type BranchRef, type Sha } from "./branded.ts";
 
 export type GitRunner = (
   args: string[],
-  opts?: { cwd?: string; stdio?: "inherit" | "ignore" | "pipe" },
+  opts?: { cwd?: string; stdio?: "inherit" | "ignore" | "pipe"; timeout?: number },
 ) => string;
 
 export const defaultGit: GitRunner = (args, opts) =>
@@ -18,6 +18,9 @@ export const defaultGit: GitRunner = (args, opts) =>
     encoding: "utf8",
     ...(opts?.cwd ? { cwd: opts.cwd } : {}),
     ...(opts?.stdio ? { stdio: opts.stdio } : {}),
+    // A network git call on the supervisor's event loop (reconcile's `ls-remote`)
+    // must not block it forever on a hung remote — the caller bounds it.
+    ...(opts?.timeout ? { timeout: opts.timeout } : {}),
   }) as unknown as string;
 
 /** Clone the repo into `repoDir` unless a clone already exists there. */

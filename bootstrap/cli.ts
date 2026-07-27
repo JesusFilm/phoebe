@@ -8,16 +8,21 @@
 // THIS module with plain `node` — from outside `node_modules`, where raw `.ts`
 // runs. So all bootstrapper logic lives here as type-checked TypeScript.
 //
-// For now this delegates the whole command surface to the engine CLI's `runCli`
-// (scaffold via `init`, otherwise run the engine), so behavior is unchanged
-// while the package is restructured around the bootstrapper. Later tickets grow
-// a `boot` subcommand here that resolves the engine source
-// (bootstrap/engine-source.ts), materializes the engine, and execs it as a
-// long-lived, drain-and-respawn daemon.
+// `phoebe boot` (bootstrap/boot.ts) is the container's long-lived main process:
+// it resolves the engine source (bootstrap/engine-source.ts) — a local mount or
+// a github checkout (bootstrap/github-engine.ts) — execs the engine as a
+// long-running child forwarding SIGTERM so the engine drains, and supervises it
+// with the reconcile watch (bootstrap/reconcile.ts): a config or ref change
+// drains and respawns in place. Every other invocation delegates to the engine
+// CLI's `runCli` — scaffold via `init`, otherwise run the engine directly.
 
 import { runCli } from "../src/cli.ts";
+import { runBoot } from "./boot.ts";
 
-runCli().catch((error: unknown) => {
+const argv = process.argv.slice(2);
+const command = argv[0] === "boot" ? runBoot(argv.slice(1)) : runCli();
+
+command.catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
   console.error(`[phoebe] ${message}`);
   process.exit(1);

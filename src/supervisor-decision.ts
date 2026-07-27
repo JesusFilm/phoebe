@@ -12,6 +12,14 @@
 // rather than calling it, so the fallback survives the very failure it guards
 // against — a bad pull that makes this TypeScript itself fail to run. Keep the
 // two in sync; the tests here are the reference semantics.
+//
+// SUPERSEDED, in part: the crash-loop half below now lives in the bootstrapper
+// (bootstrap/crash-loop.ts), which is what actually chooses the engine commit
+// under `phoebe boot`. Its policy is a deliberate fork rather than a shared
+// module — it counts *engine* commits rather than target-repo pulls, and judges
+// a run three ways instead of two. This whole file goes with the self-update
+// machinery in the last ticket of the engine-source redesign (#37); until then,
+// `SELF_UPDATE_EXIT_CODE` is the one symbol the bootstrapper imports from here.
 
 /** Deliberate "I need a reinstall + re-exec" exit code, watched by container/supervisor.sh. */
 export const SELF_UPDATE_EXIT_CODE = 42;
