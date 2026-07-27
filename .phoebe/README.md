@@ -100,6 +100,9 @@ Three things it demonstrates over the supervisor path:
   next work-unit boundary — same container, no interrupted unit (issue #42).
   `compose.local.yml` sets `PHOEBE_RECONCILE_INTERVAL_MS=10000` so you see it
   within ten seconds instead of the default minute.
+- **No crash-loop guard here.** Boot's fallback to a last-good engine commit
+  (issue #43) only covers a moving github ref; a `local` mount has no commit to
+  pin, so a crashing engine exits exactly as it did before.
 
 Missing the mount fails loudly: `boot` aborts with "no engine is mounted at
 /opt/phoebe-engine" rather than silently falling back.

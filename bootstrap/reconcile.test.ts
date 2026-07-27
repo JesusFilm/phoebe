@@ -18,6 +18,7 @@ import {
   detectChange,
   superviseEngine,
   type EngineExit,
+  type EngineRun,
   type LaunchedEngine,
   type SupervisedChild,
   type WatchState,
@@ -25,6 +26,7 @@ import {
 
 const SHA_A = "a".repeat(40);
 const SHA_B = "b".repeat(40);
+const SHA_C = "c".repeat(40);
 
 describe("detectChange", () => {
   test("nothing moved — no relaunch", () => {
@@ -94,6 +96,37 @@ describe("detectChange", () => {
       }),
     ).toBe("config");
   });
+
+  test("a quarantined tip is not a change to chase — the fallback holds", () => {
+    // Mid-fallback: the engine runs the last-good commit (SHA_A) while the
+    // branch still points at the crash-looping one (SHA_B). Reading that as a
+    // ref change would relaunch straight back into the commit boot is avoiding.
+    expect(
+      detectChange({
+        launched: { config: "1:2", sha: SHA_A, quarantinedSha: SHA_B },
+        current: { config: "1:2", remoteSha: SHA_B },
+      }),
+    ).toBeNull();
+  });
+
+  test("the branch moving past the quarantined commit ends the fallback", () => {
+    // A fix landed. The tip is no longer the bad commit, so reconcile resumes.
+    expect(
+      detectChange({
+        launched: { config: "1:2", sha: SHA_A, quarantinedSha: SHA_B },
+        current: { config: "1:2", remoteSha: SHA_C },
+      }),
+    ).toBe("ref");
+  });
+
+  test("a config edit is still honoured while a commit is quarantined", () => {
+    expect(
+      detectChange({
+        launched: { config: "1:2", sha: SHA_A, quarantinedSha: SHA_B },
+        current: { config: "9:9", remoteSha: SHA_B },
+      }),
+    ).toBe("config");
+  });
 });
 
 describe("configFingerprint", () => {
@@ -157,7 +190,12 @@ function fakeChild(): {
   };
 }
 
-/** A poll clock the test advances by hand — no real timers in the loop tests. */
+/**
+ * A poll clock the test advances by hand — no real timers in the loop tests.
+ * A tick releases every wait outstanding at that moment: the loop abandons the
+ * poll wait whenever the child's exit wins the race, so a stale resolver is
+ * always lying around and a one-at-a-time tick would spend itself on that.
+ */
 function gatedClock(): { wait: () => Promise<void>; tick: () => void } {
   const pending: Array<() => void> = [];
   return {
@@ -165,7 +203,9 @@ function gatedClock(): { wait: () => Promise<void>; tick: () => void } {
       new Promise<void>((resolve) => {
         pending.push(resolve);
       }),
-    tick: () => pending.shift()?.(),
+    tick: () => {
+      for (const resolve of pending.splice(0)) resolve();
+    },
   };
 }
 
@@ -181,6 +221,7 @@ async function settle(): Promise<void> {
 function harness(
   options: {
     launch?: (attempt: number) => Promise<LaunchedEngine> | LaunchedEngine;
+    relaunchAfterExit?: (run: EngineRun) => boolean;
   } = {},
 ) {
   const clock = gatedClock();
@@ -192,10 +233,17 @@ function harness(
   const children: Array<ReturnType<typeof fakeChild>> = [];
   const entries: string[] = [];
   const relaunches: string[] = [];
+  const runs: EngineRun[] = [];
+  const ticks: number[] = [];
   let stopRequested = false;
   let attempt = 0;
+  let clockMs = 0;
 
   const result = superviseEngine({
+    now: () => clockMs,
+    onRunEnd: (run) => runs.push(run),
+    onRunTick: (tick) => ticks.push(tick.elapsedMs),
+    relaunchAfterExit: (run) => options.relaunchAfterExit?.(run) ?? false,
     launch: async () => {
       const n = attempt++;
       if (options.launch) return await options.launch(n);
@@ -203,6 +251,8 @@ function harness(
         entry: `/engine/${n}/src/cli.ts`,
         sha: state.sha,
         config: state.config,
+        quarantinedSha: null,
+        guarded: true,
         sample: () => ({ config: state.config, remoteSha: state.remoteSha }),
       };
     },
@@ -227,7 +277,13 @@ function harness(
     children,
     entries,
     relaunches,
+    runs,
+    ticks,
     tick: clock.tick,
+    /** Move the injected clock forward, so run durations are asserted exactly. */
+    advance: (ms: number) => {
+      clockMs += ms;
+    },
     requestStop: () => {
       stopRequested = true;
       clock.tick();
@@ -356,6 +412,8 @@ describe("superviseEngine", () => {
           entry: `/engine/${attempt}/src/cli.ts`,
           sha: SHA_A,
           config: attempt === 0 ? "1:2" : "9:9",
+          quarantinedSha: null,
+          guarded: true,
           sample: () => ({ config: "9:9", remoteSha: SHA_A }),
         };
       },
@@ -389,5 +447,145 @@ describe("superviseEngine", () => {
     });
 
     await expect(h.result).rejects.toThrow(/no engine is mounted/);
+  });
+
+  test("every finished run is reported, with what it exited as and how long it lived", async () => {
+    // The crash-loop guard is only as good as this hook: it is where boot learns
+    // that a commit ran healthily (or died on startup).
+    const h = harness();
+    await settle();
+
+    h.advance(1_500);
+    h.children[0]?.exit({ code: 7, signal: null });
+    await h.result;
+
+    expect(h.runs).toHaveLength(1);
+    expect(h.runs[0]?.exit).toEqual({ code: 7, signal: null });
+    expect(h.runs[0]?.elapsedMs).toBe(1_500);
+    expect(h.runs[0]?.engine.sha).toBe(SHA_A);
+    // The engine went of its own accord — this exit is evidence about the commit.
+    expect(h.runs[0]?.requestedStop).toBe(false);
+  });
+
+  test("a run boot ended is flagged as such, however it ended", async () => {
+    // The guard must be able to tell "this commit died" from "we stopped it":
+    // crediting or blaming a run boot cut short would corrupt the record.
+    const h = harness();
+    await settle();
+
+    h.state.config = "9:9";
+    h.tick();
+    await settle();
+    h.children[0]?.exit();
+    await settle();
+    expect(h.runs[0]?.requestedStop).toBe(true);
+
+    h.requestStop();
+    await settle();
+    h.children[1]?.exit();
+    await h.result;
+    expect(h.runs[1]?.requestedStop).toBe(true);
+  });
+
+  test("each poll reports how long the engine has been up", async () => {
+    // How a commit that never exits still gets banked as last-good.
+    const h = harness();
+    await settle();
+    expect(h.ticks).toEqual([]);
+
+    h.advance(30_000);
+    h.tick();
+    await settle();
+    h.advance(30_000);
+    h.tick();
+    await settle();
+
+    expect(h.ticks).toEqual([30_000, 60_000]);
+
+    h.requestStop();
+    await settle();
+    h.children[0]?.exit();
+    await h.result;
+  });
+
+  test("a run drained for a reconcile is reported too, and the next run times itself", async () => {
+    // A long, healthy run that ends in a config-change drain is exactly what
+    // should be remembered as last-good — so it has to reach the hook as well.
+    const h = harness();
+    await settle();
+
+    h.advance(90_000);
+    h.state.config = "9:9";
+    h.tick();
+    await settle();
+    h.children[0]?.exit();
+    await settle();
+
+    expect(h.runs.map((run) => run.elapsedMs)).toEqual([90_000]);
+
+    h.advance(400);
+    h.requestStop();
+    await settle();
+    h.children[1]?.exit();
+    await h.result;
+
+    expect(h.runs.map((run) => run.elapsedMs)).toEqual([90_000, 400]);
+  });
+
+  test("a crash the guard wants to survive relaunches instead of ending the container", async () => {
+    const seen: EngineRun[] = [];
+    const h = harness({
+      relaunchAfterExit: (run) => {
+        seen.push(run);
+        return true;
+      },
+    });
+    await settle();
+
+    h.advance(300);
+    h.children[0]?.exit({ code: 1, signal: null });
+    await settle();
+
+    // Backed off first — a commit that dies instantly must not spin the loop.
+    expect(h.entries).toHaveLength(1);
+    expect(seen[0]?.elapsedMs).toBe(300);
+
+    h.tick();
+    await settle();
+    expect(h.entries).toEqual(["/engine/0/src/cli.ts", "/engine/1/src/cli.ts"]);
+
+    h.requestStop();
+    await settle();
+    h.children[1]?.exit();
+    await h.result;
+  });
+
+  test("a stop landing during the crash backoff does not respawn into a shutdown", async () => {
+    const h = harness({ relaunchAfterExit: () => true });
+    await settle();
+
+    h.children[0]?.exit({ code: 1, signal: null });
+    await settle();
+    h.requestStop();
+    await settle();
+
+    // The crash is still what the container exits with — a shutdown mid-backoff
+    // should not launder a failing engine into a clean stop.
+    expect(h.entries).toHaveLength(1);
+    expect(await h.result).toEqual({ code: 1, signal: null });
+  });
+
+  test("a stop and a crash arriving together propagates the crash, not a relaunch", async () => {
+    // The container is going down; the engine's exit is the container's exit,
+    // whatever the guard would have preferred.
+    const h = harness({ relaunchAfterExit: () => true });
+    await settle();
+
+    h.requestStop();
+    await settle();
+    h.children[0]?.exit({ code: 1, signal: null });
+
+    expect(await h.result).toEqual({ code: 1, signal: null });
+    expect(h.entries).toHaveLength(1);
   });
 });

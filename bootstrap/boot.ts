@@ -14,22 +14,38 @@
 // Boot then stays in charge for the life of the container: the reconcile watch
 // (reconcile.ts, #42) polls the mounted config and the tracked ref, and when
 // either moves it drains the engine, re-resolves the source, and relaunches —
-// same container, no interrupted work unit. This module is the wiring; the loop
-// and its decisions live in reconcile.ts, and everything impure is passed in
-// from here.
+// same container, no interrupted work unit. Following a branch also means
+// eventually following it onto a commit that will not boot, so every launch
+// passes through the crash-loop guard (crash-loop.ts, #43): a tip that dies fast
+// enough times is quarantined and boot materializes the last commit that ran
+// healthily instead. This module is the wiring; the loop lives in reconcile.ts,
+// the fallback policy in crash-loop.ts, and everything impure is passed in from
+// here.
 
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installDrainSignal } from "../src/drain.ts";
+import { defaultGit, type GitRunner } from "../src/git-model.ts";
 import { loadUserConfig, resolveConfigPath } from "../src/load-config.ts";
+import {
+  crashLoopStatePath,
+  createCrashGuard,
+  readStateDir,
+  DEFAULT_STATE_DIR,
+  type CrashGuard,
+  type CrashGuardEvent,
+  type RunOutcome,
+} from "./crash-loop.ts";
 import { readEngineSource, type ResolvedEngineSource } from "./engine-source.ts";
 import { lsRemoteBranchSha, materializeGithubEngine } from "./github-engine.ts";
 import {
   configFingerprint,
   superviseEngine,
+  CRASH_BACKOFF_MS,
   DEFAULT_RECONCILE_INTERVAL_MS,
   type EngineExit,
+  type EngineRun,
   type LaunchedEngine,
   type SupervisedChild,
 } from "./reconcile.ts";
@@ -87,37 +103,95 @@ function reconcileIntervalMs(): number {
 }
 
 /**
+ * Load the mounted `phoebe.config.ts` as the arbitrary record the bootstrapper
+ * treats it as — it owns only two fields (`engine`, `paths.stateDir`), and the
+ * engine validates the rest once it is materialized and run. The fingerprint
+ * doubles as the ESM cache-bust key, so a re-read after an edit is genuinely a
+ * re-read.
+ */
+async function loadMountedConfig(
+  configPath: string,
+  fingerprint: string | null,
+): Promise<Record<string, unknown>> {
+  const userConfig = await loadUserConfig(configPath, { reloadKey: fingerprint ?? undefined });
+  return userConfig as unknown as Record<string, unknown>;
+}
+
+/**
  * Read the config and turn the engine source it names into something runnable —
  * the whole of a (re)launch. Called once at boot and again for every reconcile,
  * so an edited config is genuinely re-read (hence the fingerprint as the ESM
  * cache-bust key) and a moved ref is genuinely re-fetched.
+ *
+ * The tracked ref's tip is materialized first even when a fallback is in force:
+ * the tip is what the guard's verdict is *about*, so resolving it is how boot
+ * notices both that the quarantine still applies and that the branch has moved
+ * past it. A fallback then checks out the last-good commit in the same clone.
  */
-async function launchTarget(configPath: string): Promise<LaunchedEngine> {
+async function launchTarget(configPath: string, guard: CrashGuard): Promise<LaunchedEngine> {
   const fingerprint = configFingerprint(configPath);
-  const userConfig = await loadUserConfig(configPath, { reloadKey: fingerprint ?? undefined });
-  const source = readEngineSource(userConfig as unknown as Record<string, unknown>);
+  const source = readEngineSource(await loadMountedConfig(configPath, fingerprint));
   const token = process.env["GH_TOKEN"];
+  const sample = () => ({
+    config: configFingerprint(configPath),
+    remoteSha: watchedRefSha(source, token),
+  });
 
-  const { entry, sha } =
-    source.source === "local"
-      ? { entry: resolveEngineEntry(source), sha: null }
-      : materializeGithubEngine(source, { baseDir: engineBaseDir(), token });
+  if (source.source === "local") {
+    const entry = resolveEngineEntry(source);
+    console.log(`[phoebe] boot: engine source "local" — exec ${entry} (long-running).`);
+    return { entry, sha: null, config: fingerprint, guarded: false, quarantinedSha: null, sample };
+  }
 
+  const guarded = isMovingBranch(source, token);
+  const baseDir = engineBaseDir();
+  let { entry, sha } = materializeGithubEngine(source, { baseDir, token });
+
+  let quarantinedSha: string | null = null;
+  const pin = guarded && sha !== null ? guard.fallbackFor(sha) : null;
+  if (pin !== null) {
+    quarantinedSha = sha;
+    ({ entry, sha } = materializeGithubEngine({ ...source, ref: pin }, { baseDir, token }));
+  }
+
+  const provenance =
+    quarantinedSha !== null
+      ? `${source.repo}@${source.ref} → last-good ${sha} (crash-loop fallback from ${quarantinedSha})`
+      : `${source.repo}@${source.ref}${sha ? ` (${sha})` : ""}`;
   console.log(
-    `[phoebe] boot: engine source "${source.source}"` +
-      (source.source === "github" ? ` ${source.repo}@${source.ref}${sha ? ` (${sha})` : ""}` : "") +
-      ` — exec ${entry} (long-running).`,
+    `[phoebe] boot: engine source "github" ${provenance} — exec ${entry} (long-running).`,
   );
 
-  return {
-    entry,
-    sha,
-    config: fingerprint,
-    sample: () => ({
-      config: configFingerprint(configPath),
-      remoteSha: watchedRefSha(source, token),
-    }),
-  };
+  return { entry, sha, config: fingerprint, guarded, quarantinedSha, sample };
+}
+
+/**
+ * Does the crash-loop guard apply to this source? Only a moving branch is
+ * guarded: a local mount has no commit to pin, and a pinned SHA or tag means the
+ * operator chose that exact commit — quietly serving a different one would be
+ * worse than crash-looping visibly. `lsRemoteBranchSha` answers precisely that
+ * question (it yields a tip only for a branch) and short-circuits a pinned SHA
+ * without touching the network.
+ *
+ * A remote that will not answer leaves the guard off for this launch rather than
+ * failing it: materializing is about to make the same call, and its error is the
+ * one worth surfacing.
+ */
+export function isMovingBranch(
+  source: ResolvedEngineSource,
+  token: string | undefined,
+  git: GitRunner = defaultGit,
+): boolean {
+  if (source.source === "local") return false;
+  try {
+    return lsRemoteBranchSha(source, { token, git }) !== null;
+  } catch (error) {
+    console.warn(
+      `[phoebe] boot: could not check whether ${source.repo}@${source.ref} is a moving branch — ` +
+        `${describe(error)}. Crash-loop fallback is off for this launch.`,
+    );
+    return false;
+  }
 }
 
 /**
@@ -154,14 +228,103 @@ function spawnSupervised(entry: string, argv: readonly string[]): SupervisedChil
 }
 
 /**
+ * The crash-loop guard for this container, rooted at the engine's state dir
+ * (`paths.stateDir`, a named volume). Resolved once from the config as it reads
+ * at boot: the record has to be found again after the restart a crash-looping
+ * engine causes, so where it lives must not drift with a mid-flight config edit.
+ * A config that will not load falls back to the shipped default here and fails
+ * properly on the first launch, where the error belongs.
+ */
+async function createBootCrashGuard(configPath: string): Promise<CrashGuard> {
+  let stateDir = DEFAULT_STATE_DIR;
+  try {
+    stateDir = readStateDir(await loadMountedConfig(configPath, configFingerprint(configPath)));
+  } catch {
+    // launchTarget loads the same config a moment later and reports the failure.
+  }
+  return createCrashGuard({
+    statePath: crashLoopStatePath(stateDir),
+    onEvent: logCrashGuardEvent,
+  });
+}
+
+/**
+ * The guard's decisions, in an operator's terms. A container quietly serving
+ * older code than its config asks for is exactly the confusion these lines
+ * exist to prevent, so every fallback event names both commits.
+ */
+function logCrashGuardEvent(event: CrashGuardEvent): void {
+  switch (event.kind) {
+    case "crash":
+      console.error(
+        `[phoebe] boot: engine ${event.sha} exited ${event.exitCode} after ` +
+          `${Math.round(event.elapsedMs / 1000)}s — fast crash ${event.failureCount}/${event.threshold}.`,
+      );
+      return;
+    case "last-good":
+      console.log(
+        `[phoebe] boot: engine ${event.sha} ran healthily — recorded as the crash-loop fallback target.`,
+      );
+      return;
+    case "fallback":
+      console.error(
+        `[phoebe] boot: engine ${event.quarantinedSha} crash-looped ${event.failureCount}× — ` +
+          `falling back to last-good ${event.lastGoodSha}, and staying there until the tracked ` +
+          `ref moves past the bad commit.`,
+      );
+      return;
+    case "fallback-crashed":
+      console.error(
+        `[phoebe] boot: the last-good engine ${event.sha} crashed too ` +
+          `(exit ${event.exitCode} after ${Math.round(event.elapsedMs / 1000)}s) — ` +
+          `${event.quarantinedSha} stays quarantined and the container will exit.`,
+      );
+      return;
+    case "recovered":
+      console.log(
+        `[phoebe] boot: tracked ref advanced to ${event.sha}, past quarantined ` +
+          `${event.quarantinedSha} — crash-loop fallback lifted.`,
+      );
+      return;
+    case "persist-failed":
+      console.warn(
+        `[phoebe] boot: could not write crash-loop state to ${event.path} — ` +
+          `${describe(event.error)}. The fallback will not survive a container restart.`,
+      );
+      return;
+  }
+}
+
+/**
+ * A finished run as the crash-loop guard sees it, or null when there is no
+ * commit to say anything about (a local mount). Note this is *not* gated on
+ * `guarded`: what a pinned launch proved is still worth remembering — it only
+ * must not cause a fallback — and recording it means an operator who later moves
+ * that deployment onto a branch already has a target to fall back to.
+ */
+function runOutcome(run: EngineRun): RunOutcome | null {
+  if (run.engine.sha === null) return null;
+  return {
+    sha: run.engine.sha,
+    exitCode: run.exit.code,
+    elapsedMs: run.elapsedMs,
+    requestedStop: run.requestedStop,
+  };
+}
+
+/**
  * `phoebe boot` entry. Loads the mounted config, resolves the engine source to a
  * runnable `src/cli.ts` — a local mount or a github checkout — execs the engine
  * as a long-lived child, and supervises it: reconcile relaunches on a config or
- * ref change, and a container stop drains it and exits with its status. Extra
- * args after `boot` are forwarded to the engine (none ⇒ the persistent loop).
+ * ref change, the crash-loop guard pins back to the last-good commit when the
+ * tracked ref will not boot, and a container stop drains it and exits with its
+ * status. Extra args after `boot` are forwarded to the engine (none ⇒ the
+ * persistent loop).
  */
 export async function runBoot(argv: readonly string[]): Promise<void> {
   const configPath = resolveConfigPath(undefined, process.cwd());
+  const guard = await createBootCrashGuard(configPath);
+  const intervalMs = reconcileIntervalMs();
 
   // The container's stop request. A one-way latch, and the poll clock: a
   // SIGTERM mid-poll wakes the watch immediately instead of sleeping out the
@@ -172,10 +335,28 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   let exit: EngineExit;
   try {
     exit = await superviseEngine({
-      launch: () => launchTarget(configPath),
+      launch: () => launchTarget(configPath, guard),
       spawn: (entry) => spawnSupervised(entry, argv),
       stop,
-      intervalMs: reconcileIntervalMs(),
+      intervalMs,
+      onRunEnd: (run) => {
+        const outcome = runOutcome(run);
+        if (outcome !== null) guard.record(outcome);
+      },
+      onRunTick: ({ engine, elapsedMs }) => {
+        if (engine.sha !== null) guard.noteAlive(engine.sha, elapsedMs);
+      },
+      relaunchAfterExit: (run) => {
+        // Only a guarded launch retries: a pinned ref that crashes takes the
+        // container down, exactly as it did before there was a guard.
+        const outcome = run.engine.guarded ? runOutcome(run) : null;
+        if (outcome === null || !guard.shouldRetry(outcome)) return false;
+        console.log(
+          `[phoebe] boot: relaunching the engine in ${Math.round(CRASH_BACKOFF_MS / 1000)}s — ` +
+            `a last-good engine commit is available to fall back to.`,
+        );
+        return true;
+      },
       onRelaunch: (reason) =>
         console.log(
           reason === "config"
