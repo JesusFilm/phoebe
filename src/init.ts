@@ -1,9 +1,9 @@
 // `phoebe init` scaffolder. Given a target directory, drops the consumer-owned
 // runtime into place: `phoebe.config.ts`, a `prompts/` dir with copies of the
 // shipped defaults (edit-and-commit), `.env.example`, `.gitignore` entries,
-// and the `container/` templates (Dockerfile, base compose, daemon overlay,
-// supervisor script). Re-runs are guarded — an existing file is skipped, not
-// silently overwritten, so consumer edits are safe.
+// and the `container/` templates (Dockerfile, compose, and a dev-only overlay
+// for running a local engine checkout). Re-runs are guarded — an existing file
+// is skipped, not silently overwritten, so consumer edits are safe.
 //
 // The plan/render split keeps the pure logic (what files, what placeholders)
 // separately testable from the fs I/O in `runInit`.
@@ -39,7 +39,7 @@ export const DEFAULT_TEMPLATE_PARAMS: TemplateParams = {
 export type PlannedOutput = {
   destRelPath: string;
   source:
-    | { kind: "template"; templateRelPath: string; executable?: boolean }
+    | { kind: "template"; templateRelPath: string }
     | { kind: "shipped-prompt"; promptRelPath: string }
     | { kind: "gitignore"; entries: readonly string[] };
 };
@@ -76,12 +76,8 @@ export function planInitOutputs(): PlannedOutput[] {
       source: { kind: "template", templateRelPath: "container/compose.yml" },
     },
     {
-      destRelPath: "container/compose.daemon.yml",
-      source: { kind: "template", templateRelPath: "container/compose.daemon.yml" },
-    },
-    {
-      destRelPath: "container/supervisor.sh",
-      source: { kind: "template", templateRelPath: "container/supervisor.sh", executable: true },
+      destRelPath: "container/compose.local.yml",
+      source: { kind: "template", templateRelPath: "container/compose.local.yml" },
     },
     ...promptOutputs,
     {
@@ -247,9 +243,7 @@ export function runInit(opts: RunInitOptions): InitReport {
         moduleDir,
       );
       const rendered = renderTemplate(rawTemplate, params);
-      writeFileSync(destAbs, rendered, {
-        mode: output.source.executable ? 0o755 : 0o644,
-      });
+      writeFileSync(destAbs, rendered);
     } else {
       // Shipped prompts ship verbatim — the engine's own render step handles
       // their `{{PLACEHOLDER}}` tokens at run time.

@@ -97,12 +97,6 @@ export type PhoebeConfig = {
   defaultModels: Record<ProviderName, string>;
   /** Env var holding each provider's API key — the only key the agent child inherits. */
   providerEnv: Record<ProviderName, string>;
-  /**
-   * Repo paths that mean "Phoebe's own code changed" — a fetch of the default
-   * branch touching these makes the orchestrator exit for a supervisor
-   * reinstall + re-exec. Directory entries must end with `/`.
-   */
-  selfUpdatePaths: readonly string[];
   /** Container filesystem layout (named volumes). */
   paths: PathsConfig;
 };
@@ -140,7 +134,6 @@ export type PhoebeUserConfig = {
   defaultProvider?: ProviderName;
   defaultModels?: Partial<Record<ProviderName, string>>;
   providerEnv?: Partial<Record<ProviderName, string>>;
-  selfUpdatePaths?: readonly string[];
   paths?: Partial<PathsConfig>;
 };
 
@@ -180,7 +173,6 @@ export const CONFIG_DEFAULTS = {
     claude: "ANTHROPIC_API_KEY",
     codex: "OPENAI_KEY",
   } satisfies Record<ProviderName, string>,
-  selfUpdatePaths: ["package.json", "package-lock.json"] as readonly string[],
   paths: {
     repoDir: "/data/repo",
     worktreesDir: "/data/worktrees",
@@ -281,7 +273,6 @@ export function resolveConfig(user: PhoebeUserConfig): PhoebeConfig {
     defaultProvider: user.defaultProvider ?? CONFIG_DEFAULTS.defaultProvider,
     defaultModels: { ...CONFIG_DEFAULTS.defaultModels, ...user.defaultModels },
     providerEnv: { ...CONFIG_DEFAULTS.providerEnv, ...user.providerEnv },
-    selfUpdatePaths: user.selfUpdatePaths ?? CONFIG_DEFAULTS.selfUpdatePaths,
     paths: { ...CONFIG_DEFAULTS.paths, ...user.paths },
   };
 }

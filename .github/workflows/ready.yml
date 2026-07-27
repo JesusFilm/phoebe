@@ -127,5 +127,10 @@ jobs:
           test -f scaffold/prompts/research-prompt.md
           test -f scaffold/container/Dockerfile
           test -f scaffold/container/compose.yml
-          test -f scaffold/container/compose.daemon.yml
-          test -x scaffold/container/supervisor.sh
+          test -f scaffold/container/compose.local.yml
+          # The two invariants that break a consumer silently rather than
+          # loudly, asserted here against the *packed* templates as well as in
+          # src/init.test.ts against the repo's: `phoebe boot` is the whole
+          # ENTRYPOINT, and the config imports nothing at runtime.
+          grep -q 'ENTRYPOINT \["/usr/bin/tini", "--", "phoebe", "boot"\]' scaffold/container/Dockerfile
+          ! grep -qP '^import (?!type )' scaffold/phoebe.config.ts

@@ -113,7 +113,6 @@ Runtime toggles (read directly by the engine, not overlaid onto the config):
   PHOEBE_AGENT           Provider name to use for this run (cursor|claude|codex)
   PHOEBE_MODEL           Model to use for this run
   PHOEBE_POLL_INTERVAL_MS Persistent-mode poll interval (default 300000)
-  PHOEBE_DEFAULT_BRANCH  Branch the supervisor keeps the clone on (overrides tracked branch only)
 `;
 
 const INIT_HELP_TEXT = `phoebe init — scaffold a consumer-owned runtime
@@ -126,10 +125,9 @@ Writes into [dir] (default: current directory):
   prompts/                     Copies of the shipped agent prompts (edit to override)
   .env.example                 Documented environment variables to copy to .env
   .gitignore                   Additive — appends Phoebe entries only
-  container/Dockerfile         Runtime image (Node + git + gh + pinned phoebe-agent)
-  container/compose.yml        Base one-shot compose config
-  container/compose.daemon.yml Overlay to run Phoebe as a persistent daemon
-  container/supervisor.sh      Warm-install + engine-restart loop (chmod +x)
+  container/Dockerfile         Runtime image (Node 24 + git + gh, entrypoint: phoebe boot)
+  container/compose.yml        Compose config for the long-lived boot container
+  container/compose.local.yml  Dev overlay to run an engine checkout from your host
 
 Existing files are left untouched, so re-running is safe. To regenerate a
 scaffolded file, delete it first and re-run \`phoebe init\`.

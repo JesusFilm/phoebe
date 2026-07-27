@@ -21,10 +21,12 @@
 // Only a github source with a moving branch is guarded. A local mount has no
 // commit to pin, and a pinned ref means pinning — boot must not silently serve
 // different code than the operator asked for (see boot.ts's eligibility check).
+//
+// This is the only crash-loop policy there is: the engine's own self-update and
+// the shell supervisor that mirrored a copy of these decisions are gone (#44).
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { SELF_UPDATE_EXIT_CODE } from "../src/supervisor-decision.ts";
 
 /**
  * Consecutive fast crashes of one engine SHA before boot pins back to the
@@ -98,10 +100,6 @@ export type RunVerdict =
 export function judgeRun(run: RunOutcome, healthyMs: number = HEALTHY_RUN_MS): RunVerdict {
   // Living past the window proves the commit boots, however the run then ended.
   if (run.elapsedMs >= healthyMs) return "healthy";
-  // A deliberate "reinstall and re-exec me" exit is a decision the engine
-  // reached, not a failure to boot. (The engine's self-update machinery — and
-  // this line with it — goes with the #37 redesign's last ticket.)
-  if (run.exitCode === SELF_UPDATE_EXIT_CODE) return "healthy";
   // Boot pulled the plug before the window was up: no verdict either way.
   if (run.requestedStop) return "inconclusive";
   // Exiting 0 unprompted means the engine finished what it was asked to do

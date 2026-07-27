@@ -99,7 +99,6 @@ describe("resolveConfig", () => {
     expect(resolved.prOptOutLabel).toBe(CONFIG_DEFAULTS.prOptOutLabel);
     expect(resolved.workOrder).toEqual(CONFIG_DEFAULTS.workOrder);
     expect(resolved.defaultProvider).toBe(CONFIG_DEFAULTS.defaultProvider);
-    expect(resolved.selfUpdatePaths).toEqual(CONFIG_DEFAULTS.selfUpdatePaths);
   });
 
   test("preserves the caller's required-field values verbatim", () => {

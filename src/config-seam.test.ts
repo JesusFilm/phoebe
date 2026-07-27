@@ -89,13 +89,7 @@ describe("config seam", () => {
     },
   );
 
-  const repoLiterals = [
-    config.repoSlug,
-    config.repoUrl,
-    config.readyLabel,
-    config.branchPrefix,
-    ...config.selfUpdatePaths,
-  ];
+  const repoLiterals = [config.repoSlug, config.repoUrl, config.readyLabel, config.branchPrefix];
 
   test("engine body never mentions the config's repo-specific literals", () => {
     for (const file of engineBodyFiles()) {

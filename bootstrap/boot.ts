@@ -8,8 +8,8 @@
 // with the engine's status.
 //
 // Two engine sources are wired: `local` — a host→container mount at
-// `/opt/phoebe-engine` (dogfood `compose.local.yml`, #40) — and `github` — a git
-// checkout of the engine repo at a ref (github-engine.ts, #41).
+// `/opt/phoebe-engine` (the dev-only `compose.local.yml` overlay, #40) — and
+// `github` — a git checkout of the engine repo at a ref (github-engine.ts, #41).
 //
 // Boot then stays in charge for the life of the container: the reconcile watch
 // (reconcile.ts, #42) polls the mounted config and the tracked ref, and when
@@ -53,7 +53,7 @@ import {
 // bootstrapper's child-process plumbing can't be TypeScript).
 import { propagateExit, spawnEngine } from "./spawn-engine.mjs";
 
-/** Where the dogfood compose overlay mounts the engine source for `source: "local"`. */
+/** Where the local-engine compose overlay mounts the engine for `source: "local"`. */
 export const LOCAL_ENGINE_DIR = "/opt/phoebe-engine";
 
 /**
@@ -76,7 +76,7 @@ export function resolveEngineEntry(
   if (!exists(entry)) {
     throw new Error(
       `engine.source is "local" but no engine is mounted at ${dir} (missing ${entry}). ` +
-        `Mount the engine there (dogfood: container/compose.local.yml) before \`phoebe boot\`.`,
+        `Mount the engine there (container/compose.local.yml) before \`phoebe boot\`.`,
     );
   }
   return entry;

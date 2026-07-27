@@ -1,46 +1,72 @@
-# Phoebe compose file — scaffolded by `phoebe init`, consumer-owned.
+# Dogfood compose file — Phoebe working its own repo.
 #
-# Base configuration: builds the runtime image, mounts the three named volumes
-# the engine expects (`/data/repo`, `/data/worktrees`, `/data/state`), and
-# runs the CLI once with `--run-once`. For the persistent daemon topology,
-# stack the daemon overlay:
+# Adapted from the `phoebe init` scaffold (templates/container/compose.yml).
+# Same shape — one long-lived container whose main process is `phoebe boot` —
+# but both the bootstrapper and the engine come from the host working tree
+# mounted at /opt/phoebe-engine, not from npm and not from a GitHub checkout.
+# That is the whole point here: run exactly what is checked out, with no
+# publish, no rebuild, and no push in the loop. The README lists every
+# deviation from the shipped scaffold and what they cost in coverage.
 #
-#   docker compose -f compose.yml -f compose.daemon.yml up -d
+#   ./.phoebe/run.sh                      # persistent loop (foreground)
+#   ./.phoebe/run.sh --run-once           # work exactly one unit, then exit
+#   ./.phoebe/run.sh --dry-run --run-once # selection preview, nothing executes
 #
-# The image ships a pinned phoebe-agent — bump PHOEBE_VERSION here (not in the
-# Dockerfile) to upgrade the engine.
+# Ctrl-C or `docker stop` sends SIGTERM, which drains: the engine finishes its
+# current work unit, starts no new one, and exits 0. The signal is forwarded the
+# whole way down — tini → `boot` → engine.
 
 services:
   phoebe:
     build:
       context: .
       args:
-        PHOEBE_VERSION: "${PHOEBE_VERSION:-latest}"
         PHOEBE_INSTALL_COMMAND: "pnpm install --frozen-lockfile"
-    image: phoebe-runtime:${PHOEBE_VERSION:-latest}
-    command: ["--run-once"]
+    image: phoebe-runtime:dogfood
+    # Keep tini as PID 1 (reaps zombies, forwards signals), but run the
+    # bootstrapper from the mount instead of a globally installed `phoebe`.
+    # bootstrap/cli.ts is TypeScript and lives outside node_modules here, so
+    # Node 24 type-strips it directly. `command:` replaces CMD, so engine flags
+    # passed on the command line append to this and `boot` forwards them on.
+    entrypoint: ["/usr/bin/tini", "--", "node", "/opt/phoebe-engine/bootstrap/cli.ts", "boot"]
+    command: []
+    # Read the config through the working-tree mount rather than a single-file
+    # bind mount. A file bind mount pins the host *inode*, so an editor that
+    # saves by writing a new file and renaming it over the old one is invisible
+    # inside the container — and `boot`'s config watch would never fire. Under a
+    # directory mount the rename is seen normally. Prompts resolve relative to
+    # this cwd too (.phoebe/prompts).
+    working_dir: /opt/phoebe-engine/.phoebe
     environment:
-      PHOEBE_VERSION: "${PHOEBE_VERSION:-latest}"
       # Secrets — populate via `.env` (see `.env.example`).
       GH_TOKEN: "${GH_TOKEN:?GH_TOKEN is required}"
-      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       CURSOR_API_KEY: "${CURSOR_API_KEY:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       OPENAI_KEY: "${OPENAI_KEY:-}"
-      # Optional runtime toggles.
+      PHOEBE_ENGINE_DIR: /data/engine
       PHOEBE_AGENT: "${PHOEBE_AGENT:-}"
       PHOEBE_MODEL: "${PHOEBE_MODEL:-}"
       PHOEBE_POLL_INTERVAL_MS: "${PHOEBE_POLL_INTERVAL_MS:-}"
+      # A minute is a long time to wait when demonstrating a relaunch; the
+      # reconcile poll is one stat (plus one ls-remote for a github source), so
+      # ten seconds is cheap here.
+      PHOEBE_RECONCILE_INTERVAL_MS: "${PHOEBE_RECONCILE_INTERVAL_MS:-10000}"
     volumes:
       - phoebe-repo:/data/repo
       - phoebe-worktrees:/data/worktrees
       - phoebe-state:/data/state
-      # Consumer config + prompt overrides live in-repo; mount them read-only
-      # so a `docker compose restart` picks up edits without a rebuild.
-      - ../phoebe.config.ts:/etc/phoebe/phoebe.config.ts:ro
-      - ../prompts:/etc/phoebe/prompts:ro
-    working_dir: /etc/phoebe
+      # Unused while `engine.source` is "local"; here so flipping the config to
+      # a github ref does not also need a compose edit.
+      - phoebe-engine:/data/engine
+      # The working tree: the bootstrapper above, the engine `boot` execs for
+      # `engine: { source: "local" }`, and the config + prompts under .phoebe.
+      # Read-only — the engine works its target clone under /data, never its own
+      # source. The repo *root* is mounted so package.json (`"type": "module"`)
+      # sits alongside the `.ts` that Node type-strips.
+      - ../..:/opt/phoebe-engine:ro
 
 volumes:
   phoebe-repo:
   phoebe-worktrees:
   phoebe-state:
+  phoebe-engine:

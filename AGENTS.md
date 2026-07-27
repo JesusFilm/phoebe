@@ -5,9 +5,13 @@ coding agent. This file orients any agent that lands here.
 
 ## What this repo is
 
-A single npm package, **`phoebe-agent`**, published as a pinned CLI. Consumers do
-not vendor this source; they install the package, keep one config file plus prompt
-overrides, and run the container files that `phoebe init` scaffolds for them.
+A single npm package, **`phoebe-agent`**, published as a thin **bootstrapper**
+(`bootstrap/`) around the **engine** (`src/`). Consumers do not vendor this
+source: they install the package, keep one config file plus prompt overrides, and
+run the container files that `phoebe init` scaffolds for them. In the container
+`phoebe boot` is the long-lived main process — it checks the engine out at the
+git ref the consumer's `engine` config field names, runs it, and relaunches it
+when that ref or the config moves.
 `JesusFilm/youtube-studio` is the reference consumer and where the design record
 lives.
 

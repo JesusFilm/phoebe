@@ -10,22 +10,32 @@ optional field has been filled from the shipped defaults.
 Consumers write a `phoebe.config.ts` at the runtime root:
 
 ```ts
-import { defineConfig } from "phoebe-agent";
+import type { PhoebeUserConfig } from "phoebe-agent";
 
-export default defineConfig({
+const config: PhoebeUserConfig = {
   repoSlug: "your-org/your-repo",
   repoUrl: "https://github.com/your-org/your-repo.git",
   installCommand: "npm ci",
   checkCommand: "npm run check",
   testCommand: "npm test",
-});
+  engine: { source: "github", ref: "v0.1.0" },
+};
+
+export default config;
 ```
 
-`defineConfig` is an identity helper — it exists only for editor autocomplete
-and a compile-time check that no unknown field slips in. The file is loaded via
-native Node type-stripping (unflagged on Node ≥ 24, the version Phoebe requires),
-so **no bundler is needed on the consumer side**. Either a
-default export or a named `export const config` is accepted.
+**Keep every import in this file type-only.** In the container the file is
+mounted into `/etc/phoebe` and read by `phoebe boot`, from a directory with no
+reachable `node_modules` — a _value_ import of `phoebe-agent` cannot resolve
+there and boot dies on module resolution. `import type` is erased before the
+file ever runs, so it costs nothing and still type-checks in your editor. (The
+package does export a `defineConfig` identity helper for the same
+autocomplete-plus-unknown-field check; it is only usable in a config that is
+loaded where `phoebe-agent` resolves — the host, not the container mount.)
+
+The file is loaded via native Node type-stripping (unflagged on Node ≥ 24, the
+version Phoebe requires), so **no bundler is needed on the consumer side**.
+Either a default export or a named `export const config` is accepted.
 
 Load order (`src/cli.ts`): load the file → apply the `PHOEBE_*` env overlay →
 merge shipped defaults (`resolveConfig`) → install the resolved config → run.
@@ -119,14 +129,6 @@ tickets. Omit `research` to disable it for a repo. See
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `promptFiles` | `{ issue: "prompts/issues-prompt.md", conflict: "prompts/conflict-prompt.md", checks: "prompts/checks-prompt.md", reviews: "prompts/reviews-prompt.md", research: "prompts/research-prompt.md" }` | Prompt template paths, relative to the **runtime root** (process working directory — the consumer checkout on the host, or `/etc/phoebe` in the container where compose mounts `phoebe.config.ts` and `prompts/`). Resolved only from that base, never from the installed package. `phoebe init` copies the shipped defaults into `prompts/`; edit them to override, or point a key at another runtime-root-relative path. |
 
-## Self-update paths
-
-| Field             | Default                                 | Meaning                                                                                                                                                                                                    |
-| ----------------- | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `selfUpdatePaths` | `["package.json", "package-lock.json"]` | A default-branch fetch touching any of these means "Phoebe's own code changed" → exit for supervisor reinstall + re-exec. Directory entries must end with `/` (matched as a prefix); others match exactly. |
-
-See supervisor self-update in [`architecture.md`](architecture.md).
-
 ## Container paths
 
 | Field                | Default             | Meaning                                                                                      |
@@ -147,14 +149,18 @@ reaches the resolved config). Omitted ⇒ `{ source: "github", ref: "main" }`.
 | `engine` value                                | What `phoebe boot` runs                                                                                        |
 | --------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
 | _omitted_ / `{ source: "github", ref, repo }` | A git checkout of the engine repo. `ref` is any branch/40-char SHA/tag; `repo` defaults to `JesusFilm/phoebe`. |
-| `{ source: "local" }`                         | The engine mounted at `/opt/phoebe-engine` (dogfood `compose.local.yml`); a missing mount fails loudly.        |
+| `{ source: "local" }`                         | The engine mounted at `/opt/phoebe-engine` (dev-only `compose.local.yml`); a missing mount fails loudly.       |
 
 For `github`, first boot clones into `PHOEBE_ENGINE_DIR` (see runtime toggles)
 and every boot fetches `ref` + checks it out — a branch tracks its tip, a SHA/tag
-pins an exact commit. The clone authenticates with `GH_TOKEN`; keep
-`PHOEBE_ENGINE_DIR` on a persistent volume so later boots fetch instead of
-re-cloning. (`engine` is not `PHOEBE_*`-overlayable — it selects the engine
-before the engine's config pipeline runs.)
+pins an exact commit. The clone authenticates with `GH_TOKEN`; the scaffolded
+`compose.yml` points `PHOEBE_ENGINE_DIR` at the `phoebe-engine` named volume so
+later boots fetch instead of re-cloning. (`engine` is not `PHOEBE_*`-overlayable
+— it selects the engine before the engine's config pipeline runs.)
+
+This field is the **upgrade knob**: editing `ref` is how a deployment moves to a
+new engine, and the running container picks it up without a rebuild or a restart
+(see Reconcile below, and [`upgrading.md`](upgrading.md#upgrading)).
 
 ### Reconcile (config + ref watch)
 
@@ -197,7 +203,7 @@ Every finished run gets one of three verdicts:
 
 | Verdict          | When                                                                           | Effect                       |
 | ---------------- | ------------------------------------------------------------------------------ | ---------------------------- |
-| **healthy**      | outlived `HEALTHY_RUN_MS`, exited 0 unprompted, or exited for a self-update    | becomes the last-good commit |
+| **healthy**      | outlived `HEALTHY_RUN_MS`, or exited 0 unprompted                              | becomes the last-good commit |
 | **crash**        | exited non-zero, of its own accord, inside the window                          | counts toward the threshold  |
 | **inconclusive** | boot ended it early (reconcile drain or container stop), or a signal killed it | nothing moves                |
 
@@ -240,25 +246,25 @@ default. Only **scalar** fields are overlayable — nested records
 (`promptFiles`, `paths`, `defaultModels`, `providerEnv`, `workOrder`) stay
 config-file territory.
 
-| Env var                          | Config field            | Notes                                                               |
-| -------------------------------- | ----------------------- | ------------------------------------------------------------------- |
-| `PHOEBE_REPO_SLUG`               | `repoSlug`              |                                                                     |
-| `PHOEBE_REPO_URL`                | `repoUrl`               |                                                                     |
-| `PHOEBE_DEFAULT_BRANCH`          | `defaultBranch`         | Also read directly as the branch the supervisor keeps the clone on. |
-| `PHOEBE_BRANCH_PREFIX`           | `branchPrefix`          |                                                                     |
-| `PHOEBE_READY_LABEL`             | `readyLabel`            |                                                                     |
-| `PHOEBE_RESEARCH_LABEL`          | `researchLabel`         |                                                                     |
-| `PHOEBE_PROCESSING_LABEL`        | `processingLabel`       |                                                                     |
-| `PHOEBE_PR_OPT_OUT_LABEL`        | `prOptOutLabel`         |                                                                     |
-| `PHOEBE_INSTALL_COMMAND`         | `installCommand`        |                                                                     |
-| `PHOEBE_CHECK_COMMAND`           | `checkCommand`          |                                                                     |
-| `PHOEBE_TEST_COMMAND`            | `testCommand`           |                                                                     |
-| `PHOEBE_READY_COMMAND`           | `readyCommand`          |                                                                     |
-| `PHOEBE_BLOCKED_BY_PATTERN`      | `blockedByPattern`      |                                                                     |
-| `PHOEBE_REVIEWS_SUCCESS_HEADING` | `reviewsSuccessHeading` |                                                                     |
-| `PHOEBE_PR_SCOPE`                | `prScope`               | Validated: must be `phoebe` or `all`.                               |
-| `PHOEBE_DRAFT_PRS`               | `draftPrs`              | Validated: `skip-non-phoebe`, `skip-all`, or `include`.             |
-| `PHOEBE_DEFAULT_PROVIDER`        | `defaultProvider`       | Validated: `cursor`, `claude`, or `codex`.                          |
+| Env var                          | Config field            | Notes                                                   |
+| -------------------------------- | ----------------------- | ------------------------------------------------------- |
+| `PHOEBE_REPO_SLUG`               | `repoSlug`              |                                                         |
+| `PHOEBE_REPO_URL`                | `repoUrl`               |                                                         |
+| `PHOEBE_DEFAULT_BRANCH`          | `defaultBranch`         |                                                         |
+| `PHOEBE_BRANCH_PREFIX`           | `branchPrefix`          |                                                         |
+| `PHOEBE_READY_LABEL`             | `readyLabel`            |                                                         |
+| `PHOEBE_RESEARCH_LABEL`          | `researchLabel`         |                                                         |
+| `PHOEBE_PROCESSING_LABEL`        | `processingLabel`       |                                                         |
+| `PHOEBE_PR_OPT_OUT_LABEL`        | `prOptOutLabel`         |                                                         |
+| `PHOEBE_INSTALL_COMMAND`         | `installCommand`        |                                                         |
+| `PHOEBE_CHECK_COMMAND`           | `checkCommand`          |                                                         |
+| `PHOEBE_TEST_COMMAND`            | `testCommand`           |                                                         |
+| `PHOEBE_READY_COMMAND`           | `readyCommand`          |                                                         |
+| `PHOEBE_BLOCKED_BY_PATTERN`      | `blockedByPattern`      |                                                         |
+| `PHOEBE_REVIEWS_SUCCESS_HEADING` | `reviewsSuccessHeading` |                                                         |
+| `PHOEBE_PR_SCOPE`                | `prScope`               | Validated: must be `phoebe` or `all`.                   |
+| `PHOEBE_DRAFT_PRS`               | `draftPrs`              | Validated: `skip-non-phoebe`, `skip-all`, or `include`. |
+| `PHOEBE_DEFAULT_PROVIDER`        | `defaultProvider`       | Validated: `cursor`, `claude`, or `codex`.              |
 
 ### Runtime toggles (read directly, not overlaid onto config)
 
@@ -270,7 +276,6 @@ config-file territory.
 | `PHOEBE_ENGINE_DIR`            | `<tmp>/phoebe-agent` | Base dir `phoebe boot` clones a `github` engine source into (and bin.mjs materializes under). Put it on a persistent volume so github boots fetch instead of re-cloning. |
 | `PHOEBE_RECONCILE_INTERVAL_MS` | `60000`              | How often `phoebe boot` polls the mounted config and the tracked ref for a drain-and-relaunch (see Engine source → Reconcile).                                           |
 | `PHOEBE_BASE`                  | —                    | Force the worktree base ref for issues (bypasses blocker resolution).                                                                                                    |
-| `PHOEBE_QUARANTINED_SHA`       | —                    | Set by the supervisor during crash-loop fallback; not for manual use.                                                                                                    |
 
 Secrets (`GH_TOKEN` and the active provider's key) are also read from the
 environment — see [`ai-install.md`](ai-install.md) and `.env.example`.

@@ -54,7 +54,6 @@ import {
   loadPromptTemplate as loadPromptTemplateFromRoot,
   renderPrompt,
 } from "./prompt.ts";
-import { SELF_UPDATE_EXIT_CODE, shouldExitForSelfUpdate } from "./supervisor-decision.ts";
 import {
   buildInitialPrBody,
   buildReviewsHandledComment,
@@ -114,11 +113,6 @@ const MERGEABLE_RETRY_MS = 5_000;
 const MERGEABLE_RETRY_COUNT = 3;
 
 const PR_BASE = config.defaultBranch;
-// The branch the supervisor keeps the clone on — normally the default branch,
-// overridable (matching container/supervisor.sh) so a not-yet-merged Phoebe
-// branch can run itself end-to-end. PRs and worktree bases still use
-// config.defaultBranch.
-const trackedBranch = asBranchRef(process.env["PHOEBE_DEFAULT_BRANCH"] ?? config.defaultBranch);
 const defaultBranchRef = asBranchRef(config.defaultBranch);
 
 const inContainer = isInsideContainer();
@@ -419,38 +413,6 @@ function promptShell(cwd: string): (command: string) => string {
 /** Load a `promptFiles.*` template from the runtime root (process cwd). */
 function loadPromptTemplate(relativePath: string): string {
   return loadPromptTemplateFromRoot(relativePath, process.cwd());
-}
-
-/**
- * After each cycle's fetch, exit deliberately when Phoebe's own code changed
- * on the default branch — the container supervisor reinstalls and re-execs.
- *
- * When the supervisor has pinned us to the last-good SHA because a freshly
- * pulled commit was crash-looping, it passes that quarantined SHA in
- * `PHOEBE_QUARANTINED_SHA`; we stay on the good code (no self-update) while
- * `origin/<branch>` still points at it, and resume self-updating only once the
- * branch advances past it (a fix landed).
- */
-function exitForSelfUpdateIfNeeded(): void {
-  if (!inContainer) return;
-  fetchOrigin();
-  const originSha = originBranchSha(trackedBranch);
-  const changed = gitInWorktree(repoDir, ["diff", "--name-only", `HEAD..origin/${trackedBranch}`])
-    .split("\n")
-    .filter(Boolean);
-  if (
-    shouldExitForSelfUpdate({
-      changedFiles: changed,
-      selfUpdatePaths: config.selfUpdatePaths,
-      originSha,
-      quarantinedSha: process.env["PHOEBE_QUARANTINED_SHA"] || null,
-    })
-  ) {
-    console.log(
-      `[phoebe] Own code changed on origin/${trackedBranch} — exiting for supervisor re-exec.`,
-    );
-    process.exit(SELF_UPDATE_EXIT_CODE);
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1595,8 +1557,6 @@ async function runLoop({
       console.log("[phoebe] Drain requested — starting no new work unit; exiting 0.");
       break;
     }
-    exitForSelfUpdateIfNeeded();
-
     const fetchKinds = runOnce ? oneShotWorkKinds(workOrder) : workOrder;
     const data = await fetchCycleWorkData(fetchKinds);
     const picked = selectFirstWorkUnit(
