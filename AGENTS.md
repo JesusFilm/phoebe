@@ -26,6 +26,14 @@ If you are here to install Phoebe into another repository, follow the determinis
 runbook: [`docs/ai-install.md`](docs/ai-install.md). It is written to be executed
 top to bottom, with no `vp` assumed on the target side.
 
+## Contributing from outside
+
+This repo is public and Phoebe works it autonomously, so issue and PR authors
+carry an advisory `vouch:*` label from `.github/VOUCHED.td`. It gates nothing —
+the lever on Phoebe picking work up is still the `ready-for-agent` label, which
+only a maintainer can apply. See [`docs/trust.md`](docs/trust.md) to add or
+denounce a handle.
+
 ## Status
 
 Early scaffold. The engine port, CLI packaging, `phoebe init`, CI, and the first
