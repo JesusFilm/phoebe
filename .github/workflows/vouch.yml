@@ -58,14 +58,24 @@ jobs:
             const MAX_TARGETS = 256;
 
             // Sets the job's `targets` output, truncating to the matrix limit
-            // first and saying so in the log — the cap is never silent.
+            // first and naming everything it dropped.
+            //
+            // `listForRepo` returns newest-first, so truncation keeps the newest
+            // and the *same* older threads fall off every sweep — re-running does
+            // not drain them. That is why the skipped threads are listed by
+            // number rather than counted: they will not reconcile themselves, and
+            // `/recheck-vouch` on each is how an operator clears them. There is
+            // no continuation state here on purpose; the cap exists so that
+            // >256 open threads degrades to "most of them" instead of failing the
+            // matrix and reconciling none.
             const emitCappedTargets = (targets) => {
               if (targets.length > MAX_TARGETS) {
+                const skipped = targets.slice(MAX_TARGETS);
                 core.warning(
-                  `${targets.length} targets exceeds the ${MAX_TARGETS}-job matrix limit; ` +
-                    `labelling the first ${MAX_TARGETS} and skipping ` +
-                    `${targets.length - MAX_TARGETS}. Re-run after they drain, or ` +
-                    `comment /recheck-vouch on the ones that were skipped.`,
+                  `${targets.length} targets exceeds the ${MAX_TARGETS}-job matrix limit. ` +
+                    `Labelling the newest ${MAX_TARGETS}; a re-run would select the same ` +
+                    `batch, so comment /recheck-vouch on each of these ${skipped.length} ` +
+                    `to reconcile them: ${skipped.map((t) => `#${t.number}`).join(", ")}`,
                 );
                 targets = targets.slice(0, MAX_TARGETS);
               }

@@ -56,9 +56,16 @@ reason for the denouncement). There is no trailing-comment syntax.
 - Trust is case-insensitive — vouch lowercases handles before matching.
 - The `github:` platform prefix is optional but is what the existing entries use.
 
-When the edit lands on `main`, the workflow re-labels **every open issue and PR**,
-so a newly-vouched contributor's existing threads update without anyone touching
-them.
+When the edit lands on `main`, the workflow sweeps open threads and re-labels
+them, so a newly-vouched contributor's existing tickets update without anyone
+touching them.
+
+The sweep fans out one job per thread, and GitHub caps a matrix at 256 jobs — so
+it covers every open issue and PR **up to that ceiling**. Past it, the run labels
+the newest 256 and logs the numbers it skipped; because the listing is
+newest-first, a re-run selects the same batch, so the skipped ones are cleared
+with `/recheck-vouch` rather than by waiting. At this repo's volume the cap is
+theoretical, and every other trigger is unbounded.
 
 ## What the workflow does
 
