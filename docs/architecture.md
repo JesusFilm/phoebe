@@ -62,6 +62,12 @@ first three are defaulted in `config.paths`):
 The consumer's `phoebe.config.ts` and `prompts/` are mounted **read-only** into
 `/etc/phoebe`, so `phoebe boot` re-reads config edits without a rebuild.
 
+All four mount points are created and chowned to the unprivileged `phoebe` user
+**in the image**, because Docker seeds a fresh named volume from the image's
+contents at that path — ownership included. A mount point the image does not
+declare is created `root:root` and is unwritable to the workload. See the
+scaffolded-file invariants in [`upgrading.md`](upgrading.md#scaffolded-file-invariants).
+
 ## The origin-hub git model
 
 All local git state lives in the private clone; work units never operate on it

@@ -88,6 +88,16 @@ docker compose --env-file ../.env run --rm phoebe --dry-run --run-once
 The `--dry-run` prints the unit the engine would pick without executing it.
 Remove `--dry-run` to actually work a unit.
 
+The container runs as the unprivileged `phoebe` user, which adds one thing to
+check if the build succeeds but the run cannot read its config: the mounted
+`phoebe.config.ts` and `prompts/` must be readable by _other_. A git checkout's
+default `0644` is; a file you created with a restrictive umask, or copied from
+somewhere with `0600`, is not.
+
+```bash
+chmod o+r ../phoebe.config.ts && chmod -R o+rX ../prompts
+```
+
 ## 5. Start the persistent daemon
 
 ```bash

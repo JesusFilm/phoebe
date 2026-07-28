@@ -26,15 +26,15 @@ npx --yes phoebe-agent init ./phoebe   # into a subdirectory
 
 It writes these files (all **consumer-owned** — commit them):
 
-| File                          | Purpose                                                                             |
-| ----------------------------- | ----------------------------------------------------------------------------------- |
-| `phoebe.config.ts`            | Consumer config starter — edit the five required fields.                            |
-| `prompts/`                    | Copies of the shipped agent prompts. Edit to override; leave as-is to use defaults. |
-| `.env.example`                | Documented env vars — copy to `.env` and fill secrets.                              |
-| `.gitignore`                  | Phoebe entries **appended additively** (existing content untouched).                |
-| `container/Dockerfile`        | Runtime image: Node 24 + git + `gh` + the `phoebe-agent` bootstrapper.              |
-| `container/compose.yml`       | The long-lived `phoebe boot` container + named volumes.                             |
-| `container/compose.local.yml` | Dev-only overlay: run an engine checkout from your own machine.                     |
+| File                          | Purpose                                                                                                       |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `phoebe.config.ts`            | Consumer config starter — edit the five required fields.                                                      |
+| `prompts/`                    | Copies of the shipped agent prompts. Edit to override; leave as-is to use defaults.                           |
+| `.env.example`                | Documented env vars — copy to `.env` and fill secrets.                                                        |
+| `.gitignore`                  | Phoebe entries **appended additively** (existing content untouched).                                          |
+| `container/Dockerfile`        | Runtime image: Node 24 + git + `gh` + the `phoebe-agent` bootstrapper, run as the unprivileged `phoebe` user. |
+| `container/compose.yml`       | The long-lived `phoebe boot` container + named volumes.                                                       |
+| `container/compose.local.yml` | Dev-only overlay: run an engine checkout from your own machine.                                               |
 
 **Existing files are left untouched**, so re-running `init` is safe and only
 fills gaps. To regenerate one scaffolded file, delete it and re-run. Placeholder
@@ -96,6 +96,38 @@ The `--env-file ../.env` is needed because the scaffolded `.env` lives at the
 scaffold root while the compose files live in `container/`; Compose otherwise
 only auto-loads a `.env` sitting next to the compose file.
 
+### One-time: chown the volumes when moving to the unprivileged image
+
+**This applies once, to deployments that ran an image built before the container
+ran as a non-root user.** Skip it for a fresh install.
+
+Docker seeds a named volume's ownership from the image **only when it creates
+that volume**. Volumes your old root container already created keep their
+`root:root` ownership through any number of rebuilds, so the new unprivileged
+container starts and then fails on the first write — a `git clone` or lock
+acquisition dying with `EACCES`, not an obvious permissions message at startup.
+
+Fix it in place, without losing the clone, watermarks, or logs:
+
+```bash
+docker compose --env-file ../.env down
+docker compose --env-file ../.env run --rm --user root \
+  --entrypoint chown phoebe -R phoebe:phoebe /data
+docker compose --env-file ../.env up -d
+```
+
+`--entrypoint chown` is needed because the image's `ENTRYPOINT` is `phoebe boot`;
+everything after the service name is the argument list. To confirm it took:
+
+```bash
+docker compose --env-file ../.env run --rm --entrypoint stat phoebe -c '%U' /data/repo
+# phoebe
+```
+
+Deleting the volumes (`down -v`) also works and is simpler, at the cost of
+re-cloning the repo and losing the watermarks that stop already-handled work
+from being reconsidered.
+
 New engine defaults land automatically — because your `phoebe.config.ts` only
 names fields you deliberately override, any field you left to the default picks
 up the new default on upgrade. That is the point of the required-vs-optional
@@ -127,6 +159,37 @@ A few properties the templates rely on — keep them intact when you customise:
   the host inode: an editor that saves by renaming a new file over the old one
   is invisible inside the container, so edit in place or
   `docker compose up -d --force-recreate` afterwards.
+- **The workload runs unprivileged.** The image creates a `phoebe` user
+  (uid 10001) and ends with `USER phoebe`, so `boot`, the engine, the agent
+  child, and your repo's install/check/test commands all run as it. Two things
+  follow, and both bite quietly if you customise around them:
+  - The four `/data` mount points are created **and chowned in the image**,
+    before any volume exists. Docker seeds a fresh named volume from the image's
+    contents at that path, ownership included — add a fifth volume without
+    adding its directory to that `mkdir`/`chown` and Docker will create the
+    mount point as `root:root`, leaving it unwritable.
+  - Anything the workload writes must be under `/data` or `$HOME`
+    (`/home/phoebe`, set explicitly because the engine forwards `HOME` to the
+    agent child). Bind-mounted files must be readable by _other_ — a git
+    checkout's default `0644` is; a `0600` config is not.
+- **The provider CLI is pinned, not piped.** The scaffold installs Cursor's
+  agent from a pinned, `sha256`-verified tarball rather than the
+  `curl https://cursor.com/install | bash` one-liner Cursor documents, and
+  symlinks it to `/usr/local/bin/agent` — on `PATH` for every user, so it still
+  resolves after the privilege drop.
+
+  The trade-off, since this is your file to change: piping the vendor installer
+  into a shell means two builds of the same Dockerfile can produce different
+  images, and neither records which agent version it got. Pinning costs you a
+  version that goes stale until you bump it deliberately. Cursor publishes no
+  checksums and no `latest` indirection, so the digests in the Dockerfile are
+  **ours** — recorded from the artifact its installer fetched — and pin the
+  build rather than attesting anything about the vendor. To bump: run the vendor
+  installer once, read the version out of the download URL it prints, and
+  `sha256sum` the `linux/x64` and `linux/arm64` tarballs. If you switch to Claude
+  Code or Codex (the commented lines), both are npm packages — pin with
+  `@version` there instead.
+
 - **`.gitignore` edits are additive.** `init` only appends; it never rewrites
   your existing ignore rules.
 
