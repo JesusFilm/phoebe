@@ -47,7 +47,9 @@ docker compose --env-file ../.env up -d                                  # start
 
 The container's main process is `phoebe boot`: it checks the engine out at the
 ref your config names, runs it, and keeps supervising it. Upgrading is an edit to
-`engine.ref` — no rebuild, no restart.
+`engine.ref` — no rebuild, no restart, provided you edit the file in place (the
+config is bind-mounted as a single file, so a save-by-rename needs a
+`docker compose up -d --force-recreate` to be seen).
 
 The full, execute-top-to-bottom version — prerequisites, secrets, verification —
 is [`docs/ai-install.md`](docs/ai-install.md).

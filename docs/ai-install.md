@@ -105,4 +105,11 @@ engine gracefully on `docker compose stop`.
 Edit `engine.ref` in `phoebe.config.ts`. The running container picks it up within
 a reconcile interval (default 60s) and relaunches the engine at the next
 work-unit boundary — no rebuild and no restart. Rebuild only when the _image_
-changes. See [`upgrading.md`](upgrading.md#upgrading).
+changes.
+
+Edit the file **in place**. `compose.yml` bind-mounts it as a single file, which
+pins the host inode, so a write that replaces the file — most editors' atomic
+save, and what `git pull` does — is invisible inside the container and the watch
+never fires. After that kind of write, run
+`docker compose --env-file ../.env up -d --force-recreate`. See
+[`upgrading.md`](upgrading.md#upgrading).

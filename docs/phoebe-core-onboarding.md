@@ -190,9 +190,12 @@ Notes:
 - **Adjust target names to `core`'s real Nx targets.** `lint`, `typecheck`, and
   `test` are the conventional names; confirm them against `core`'s project
   configuration and swap in whatever the repo actually defines.
-- **No other fields.** `workOrder`, `prScope`, the three labels, providers/models,
-  paths, and `promptFiles` are all omitted, so they resolve to the engine defaults
-  shown in the [shape table](#the-shape-of-this-deployment).
+- **Toolchain fields plus `engine`, nothing else.** `engine` is not a toolchain
+  setting — it is the deployment's lifecycle knob (which engine commit runs, and
+  how you upgrade), so it is named deliberately. Everything else — `workOrder`,
+  `prScope`, the three labels, providers/models, paths, `promptFiles` — is
+  omitted and resolves to the engine defaults shown in the
+  [shape table](#the-shape-of-this-deployment).
 
 ## 6. Provider selection and secrets (`.env`)
 
@@ -258,5 +261,8 @@ in the **persistent daemon**; `--run-once` handles at most one `issues` unit
   draft) to take a PR back. Full operator manual: [`operating.md`](operating.md).
 - **Upgrade** by editing `engine.ref` in `phoebe.config.ts` — the running
   container drains the engine and relaunches on the new ref within a reconcile
-  interval, no rebuild and no restart. The minimal config means new engine
-  defaults land automatically ([upgrading.md](upgrading.md#upgrading)).
+  interval, no rebuild and no restart. Edit it **in place**: the config is
+  bind-mounted as a single file, so a save-by-rename (or a `git pull`) needs
+  `docker compose --env-file ../.env up -d --force-recreate` to be picked up. The
+  minimal config means new engine defaults land automatically
+  ([upgrading.md](upgrading.md#upgrading)).

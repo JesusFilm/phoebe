@@ -87,7 +87,7 @@ Tracking a branch upgrades the same way with no edit at all: boot polls
 Rebuild the image only when the image itself changes — a new provider CLI, a
 different base image, a new system package:
 
-```
+```bash
 docker compose --env-file ../.env build
 docker compose --env-file ../.env up -d
 ```
