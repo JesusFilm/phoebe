@@ -14,7 +14,9 @@ is the test fixture, and `phoebe init` won't overwrite it.
 - **pnpm, not npm.** This repo uses pnpm + `vite-plus` (`vp`). The config's
   install/check/test/ready commands are pnpm, and the Dockerfile runs
   `corepack enable` so `pnpm` (pinned by `package.json`'s `packageManager`) is
-  on PATH.
+  on PATH. `COREPACK_HOME` is pointed at `/opt/corepack` (owned by the
+  unprivileged user) because corepack downloads that pinned pnpm on first use
+  and can no longer write to root's cache.
 - **Bootstrapper _and_ engine from the working tree.** The scaffold installs the
   bootstrapper from npm and lets `boot` check the engine out from GitHub. Here
   both are read from this repo mounted read-only at `/opt/phoebe-engine`:
@@ -31,6 +33,12 @@ is the test fixture, and `phoebe init` won't overwrite it.
   mount of `phoebe.config.ts`. A file bind mount pins the host _inode_, so an
   editor that saves by rename would be invisible to `boot`'s config watch.
 - **Cursor provider.** `defaultProvider: "cursor"` + `CURSOR_API_KEY`.
+
+**What is _not_ different:** the image hardening. The unprivileged `phoebe`
+user, the pre-owned `/data` mount points, and the pinned + checksum-verified
+provider CLI are identical to the shipped scaffold, and
+`src/container-image.test.ts` fails if the two Dockerfiles drift on any of them
+— a security fix that lands in only one of these files is not a fix.
 
 **What that costs in coverage.** Because the image installs no `phoebe-agent`
 and compose supplies the entrypoint, the dogfood does **not** exercise two things

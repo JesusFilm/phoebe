@@ -2,7 +2,10 @@
 #
 # Adapted from the `phoebe init` scaffold (templates/container/Dockerfile).
 # The deviations from the shipped template are marked below; everything else
-# is the same image the scaffold produces.
+# is the same image the scaffold produces. In particular the hardening — the
+# unprivileged user, the pre-owned /data mount points, and the pinned provider
+# CLI — is NOT a permitted deviation, and `src/container-image.test.ts` asserts
+# the two files stay in step on all three.
 
 FROM node:24-bookworm-slim
 
@@ -20,16 +23,52 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends gh \
  && rm -rf /var/lib/apt/lists/*
 
+# The unprivileged user everything below the privilege drop runs as, and the
+# four volume mount points, created *now* while we are still root. Docker seeds
+# a fresh named volume from the image's contents at that path, ownership
+# included — so a mount point that does not exist here is created root-owned
+# and unwritable after the drop.
+RUN useradd --create-home --shell /bin/bash --uid 10001 --user-group phoebe \
+ && mkdir -p /data/repo /data/worktrees /data/state /data/engine \
+ && chown -R phoebe:phoebe /data
+
 # DOGFOOD DEVIATION: enable corepack so `pnpm` (pinned via package.json's
 # `packageManager`) is on PATH for the engine's installCommand and the agent's
 # check/test gates. This repo is a pnpm + vite-plus toolchain, not npm.
-RUN corepack enable
+#
+# corepack downloads the pinned pnpm on first use, which as root landed in
+# /root/.cache. Point it somewhere the unprivileged user owns instead — an
+# explicit path rather than $HOME/.cache so the failure mode (a read-only
+# COREPACK_HOME) is one named path to check, not a home-directory guess.
+ENV COREPACK_HOME=/opt/corepack
+RUN corepack enable \
+ && mkdir -p /opt/corepack \
+ && chown phoebe:phoebe /opt/corepack
 
-# Install the Cursor agent CLI. Its installer symlinks the executable as
-# `agent` — the exact name the engine spawns — into ~/.local/bin, so put that on
-# PATH for both the engine and the locked-down agent child (which inherits it).
-RUN curl -fsSL https://cursor.com/install | bash
-ENV PATH="/root/.local/bin:${PATH}"
+# Provider agent CLI, pinned and checksum-verified rather than installed by
+# piping `https://cursor.com/install` into a shell — see the long note in
+# templates/container/Dockerfile for why, and for how to bump the pin. The pins
+# and the install block below must both match that file byte for byte
+# (asserted in src/container-image.test.ts).
+ARG CURSOR_AGENT_VERSION=2026.07.23-e383d2b
+ARG CURSOR_AGENT_SHA256_X64=702ad595213bee5df0268be9f80a19f29fcceaa2a42fc55e39f2b5199051f0c4
+ARG CURSOR_AGENT_SHA256_ARM64=f40b99647cb24e0da885e97620a2048034f1fe8961910d573d827d77c4d26dcb
+# Set by BuildKit; the fallback keeps the classic builder working.
+ARG TARGETARCH
+RUN set -eux; \
+    case "${TARGETARCH:-$(dpkg --print-architecture)}" in \
+      amd64) cursor_arch=x64;   cursor_sha="${CURSOR_AGENT_SHA256_X64}" ;; \
+      arm64) cursor_arch=arm64; cursor_sha="${CURSOR_AGENT_SHA256_ARM64}" ;; \
+      *) echo "cursor-agent publishes no build for ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/cursor-agent.tar.gz \
+      "https://downloads.cursor.com/lab/${CURSOR_AGENT_VERSION}/linux/${cursor_arch}/agent-cli-package.tar.gz"; \
+    echo "${cursor_sha}  /tmp/cursor-agent.tar.gz" | sha256sum -c -; \
+    mkdir -p /opt/cursor-agent; \
+    tar --strip-components=1 -xzf /tmp/cursor-agent.tar.gz -C /opt/cursor-agent; \
+    rm /tmp/cursor-agent.tar.gz; \
+    ln -s /opt/cursor-agent/cursor-agent /usr/local/bin/agent; \
+    ln -s /opt/cursor-agent/cursor-agent /usr/local/bin/cursor-agent
 
 # DOGFOOD DEVIATION: no `npm install -g phoebe-agent`.
 #
@@ -53,6 +92,16 @@ LABEL phoebe.install-command="${PHOEBE_INSTALL_COMMAND}"
 # or push unless `/.phoebe-container` exists (src/execution-gate.ts). Without it
 # the container refuses every non-dry-run unit.
 RUN touch /.phoebe-container
+
+# The privilege drop. Everything past this line runs unprivileged. Identical to
+# the shipped template, and asserted so.
+#
+# DOGFOOD DEVIATION (consequence, not a difference in these lines): the working
+# tree is mounted read-only at /opt/phoebe-engine and has to stay readable by
+# *other* for this user to run the bootstrapper off it — a git checkout's
+# default 0644/0755 is, so this costs nothing in practice.
+ENV HOME=/home/phoebe
+USER phoebe
 
 # No ENTRYPOINT here: compose supplies it, because the bootstrapper this image
 # runs lives on the mount rather than in the image (see the deviation above).

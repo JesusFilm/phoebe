@@ -137,6 +137,19 @@ describe("runInit", () => {
     );
   });
 
+  test("the scaffolded image runs the workload unprivileged, with writable volumes", () => {
+    // The template's own hardening invariants are asserted in
+    // container-image.test.ts; this covers the seam that matters to a consumer
+    // — that they survive rendering into the file `init` actually writes. A
+    // placeholder substitution that mangled the USER line or the /data chown
+    // would hand every consumer a root container.
+    const target = makeTempDir();
+    runInit({ targetDir: target });
+    const dockerfile = readFileSync(join(target, "container/Dockerfile"), "utf8");
+    expect(dockerfile).toMatch(/^USER phoebe$/m);
+    expect(dockerfile).toContain("chown -R phoebe:phoebe /data");
+  });
+
   test("the scaffolded config declares an engine source the bootstrapper can read", () => {
     // `phoebe boot` resolves the engine from this field before the engine
     // exists, and loads the config from the container mount — where a *value*
