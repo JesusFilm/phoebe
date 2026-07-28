@@ -103,6 +103,7 @@ Docs live under [`docs/`](docs/):
 - [`docs/ai-install.md`](docs/ai-install.md) — a deterministic, agent-followable install runbook.
 - [`docs/releasing.md`](docs/releasing.md) — the Changesets + npm trusted-publishing release flow.
 - [`docs/phoebe-core-onboarding.md`](docs/phoebe-core-onboarding.md) — worked onboarding for `JesusFilm/core` (Nx + pnpm, no vp).
+- [`docs/trust.md`](docs/trust.md) — contributor trust list (`vouch`) for this repo, and how it relates to `ready-for-agent`. Governance for this repository, not a package feature.
 
 Agents landing in this repo should start at [`AGENTS.md`](AGENTS.md).
 
