@@ -1,18 +1,27 @@
 # Phoebe runtime image — scaffolded by `phoebe init`.
 #
 # Consumer-owned: commit this file, tweak it as you need. Phoebe treats the
-# resulting image as both orchestrator and execution environment. The engine
-# itself is installed from npm (`{{CLI_BIN}}`) — the source is not vendored.
+# resulting image as both orchestrator and execution environment.
+#
+# The image carries the *bootstrapper* (`{{CLI_BIN}}` from npm), not the engine.
+# `phoebe boot` is the container's long-lived main process: it reads the mounted
+# `phoebe.config.ts`, materializes the engine from the source named there
+# (`engine: { source: "github", ref }` by default), execs it, and keeps
+# supervising it — relaunching on a config or ref change, falling back to the
+# last engine commit that ran healthily if a new one will not boot, and draining
+# it gracefully on `SIGTERM`. So changing engine version is a config edit, not
+# an image rebuild; this image only changes when the toolchain around it does.
 #
 # What ships in this image:
-#   * Node.js (LTS) + git + GitHub CLI (`gh`) — the runtime the engine drives.
-#   * A globally installed `{{CLI_BIN}}` pinned by the compose file.
-#   * A `supervisor.sh` that keeps the engine restarted and self-updating.
+#   * Node.js 24 + git + GitHub CLI (`gh`) — the runtime the engine drives.
+#   * A globally installed `{{CLI_BIN}}` (the bootstrapper).
+#   * Your agent provider's CLI.
 #
 # What lives on named volumes (see compose.yml):
 #   * /data/repo       — Phoebe's private clone of the target repo.
 #   * /data/worktrees  — Per-work-unit git worktrees.
-#   * /data/state      — Lock, watermarks, logs.
+#   * /data/state      — Lock, watermarks, logs, crash-loop record.
+#   * /data/engine     — Engine checkouts, so a restart fetches instead of cloning.
 
 FROM node:24-bookworm-slim
 
@@ -30,11 +39,10 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends gh \
  && rm -rf /var/lib/apt/lists/*
 
-# PHOEBE_VERSION is set by the compose file so consumers can pin the engine
-# without editing the Dockerfile. `latest` is only a build-time default; the
-# compose files should always pass an explicit version.
-ARG PHOEBE_VERSION=latest
-RUN npm install -g {{CLI_BIN}}@${PHOEBE_VERSION}
+# The bootstrapper. Unpinned on purpose: which *engine* you run is `engine.ref`
+# in phoebe.config.ts, and this package is only the thin launcher around it.
+# Pin it (`{{CLI_BIN}}@<version>`) if you want the launcher itself frozen too.
+RUN npm install -g {{CLI_BIN}}
 
 # Provider agent CLI. The engine spawns the selected provider's CLI as a child
 # (`agent` for cursor, `claude`, or `codex`), so the one matching your
@@ -58,13 +66,11 @@ LABEL phoebe.install-command="${PHOEBE_INSTALL_COMMAND}"
 # the container refuses every non-dry-run unit.
 RUN touch /.phoebe-container
 
-COPY supervisor.sh /usr/local/bin/phoebe-supervisor
-RUN chmod +x /usr/local/bin/phoebe-supervisor
-
 # Compose's `command:` fully replaces `CMD` (it does not append to
-# `ENTRYPOINT`), so the supervisor path must live in `ENTRYPOINT` — otherwise
-# compose.yml's `command: ["--run-once"]` (or the daemon overlay's `command: []`)
-# strips the supervisor away and tini exits with no child to exec. Keeping
-# `CMD []` here means the compose files only ever contribute engine flags.
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/phoebe-supervisor"]
+# `ENTRYPOINT`), so the whole `phoebe boot` invocation must live in
+# `ENTRYPOINT` — otherwise a compose `command: ["--run-once"]` would strip the
+# bootstrapper away and tini would try to exec `--run-once` as a program.
+# Keeping `CMD []` here means the compose files only ever contribute engine
+# flags, which `boot` forwards to the engine it launches.
+ENTRYPOINT ["/usr/bin/tini", "--", "phoebe", "boot"]
 CMD []

@@ -2,7 +2,7 @@
 
 How Phoebe is put together: one container that is both orchestrator and
 execution environment, an origin-hub git model with per-unit worktrees, a
-locked-down agent child, and a supervisor that keeps the engine self-updating.
+locked-down agent child, and a bootstrapper that keeps the engine up to date.
 
 For the day-to-day mechanics of each work kind, see
 [`work-kinds.md`](work-kinds.md); for every config field, see
@@ -24,10 +24,13 @@ repo-specific value lives behind one config file
 ([`configuration.md`](configuration.md)).
 
 The container is built from consumer-owned templates that `phoebe init`
-scaffolds (`templates/container/`): a `Dockerfile` (Node + git + `gh` + the
-pinned `phoebe-agent` CLI), a base `compose.yml`, a `compose.daemon.yml`
-overlay, and a `supervisor.sh`. The engine itself is installed from npm — its
-source is never vendored into the consumer repo.
+scaffolds (`templates/container/`): a `Dockerfile` (Node 24 + git + `gh` + the
+`phoebe-agent` bootstrapper), a `compose.yml`, and a dev-only `compose.local.yml`
+overlay. The image carries the **bootstrapper**, not the engine: `phoebe boot` is
+the container's long-lived main process, and it materializes the engine from the
+source named by `engine` in `phoebe.config.ts`. Engine source is never vendored
+into the consumer repo, and changing engine version is a config edit rather than
+an image rebuild.
 
 ### Host vs. container
 
@@ -46,17 +49,18 @@ _would_ do (`phoebe --dry-run --run-once`) without booting the container.
 
 ## Named volumes
 
-Three named volumes hold all persistent state (declared in `compose.yml`,
-defaulted in `config.paths`):
+Four named volumes hold all persistent state (declared in `compose.yml`; the
+first three are defaulted in `config.paths`):
 
-| Volume             | Mount             | Config field         | Holds                                     |
-| ------------------ | ----------------- | -------------------- | ----------------------------------------- |
-| `phoebe-repo`      | `/data/repo`      | `paths.repoDir`      | The private clone (the origin hub).       |
-| `phoebe-worktrees` | `/data/worktrees` | `paths.worktreesDir` | Per-work-unit git worktrees.              |
-| `phoebe-state`     | `/data/state`     | `paths.stateDir`     | Lock, watermarks, crash-loop state, logs. |
+| Volume             | Mount             | Config field         | Holds                                                            |
+| ------------------ | ----------------- | -------------------- | ---------------------------------------------------------------- |
+| `phoebe-repo`      | `/data/repo`      | `paths.repoDir`      | The private clone (the origin hub).                              |
+| `phoebe-worktrees` | `/data/worktrees` | `paths.worktreesDir` | Per-work-unit git worktrees.                                     |
+| `phoebe-state`     | `/data/state`     | `paths.stateDir`     | Lock, watermarks, crash-loop state, logs.                        |
+| `phoebe-engine`    | `/data/engine`    | `PHOEBE_ENGINE_DIR`  | Engine checkouts, so a restart re-fetches instead of re-cloning. |
 
 The consumer's `phoebe.config.ts` and `prompts/` are mounted **read-only** into
-`/etc/phoebe` so a `docker compose restart` picks up edits without a rebuild.
+`/etc/phoebe`, so `phoebe boot` re-reads config edits without a rebuild.
 
 ## The origin-hub git model
 
@@ -102,77 +106,54 @@ shell blocks that appear in the _raw_ template are executed in the worktree and
 spliced in. Shell blocks arriving via substituted values are treated as data,
 never executed — a marker pass runs before substitution to guarantee it.
 
-## Supervisor self-update and crash-loop fallback
+## Engine updates and crash-loop fallback
 
-The container's `supervisor.sh` keeps the engine alive and lets Phoebe upgrade
-its own code without an operator. Its decision logic is specified and tested in
-TypeScript (`src/supervisor-decision.ts`); the shell supervisor **mirrors** it
-in POSIX sh rather than calling it, so the decision survives the very failure it
-guards against — a bad pull that makes the TypeScript itself fail to boot.
+`phoebe boot` (`bootstrap/boot.ts`) is the container's long-lived main process,
+and it stays in charge for the life of the container. There is no shell
+supervisor and no engine self-update: the process that _chooses_ which engine
+commit runs is the one that watches for a better one, so both live in the
+bootstrapper.
 
-Under `phoebe boot` (the engine-source redesign, #37) the second half of this —
-guarding against a bad engine commit — moves to the bootstrapper, which is the
-process that chooses the commit in the first place.
+**Reconcile.** Every `PHOEBE_RECONCILE_INTERVAL_MS` (default 60s) boot samples
+two things: the mounted config's fingerprint, and — for a `github` source
+tracking a branch — where that branch points now (`git ls-remote`). When either
+has moved away from what the running engine was launched from, boot `SIGTERM`s
+the engine, which drains (finishes the current work unit, starts no new one,
+exits 0), then re-resolves the source and relaunches. Same container, no
+interrupted unit. Comparing against the _launch_ rather than the previous sample
+means a missed poll still converges and one change never relaunches twice.
 
-**Self-update.** After each cycle's fetch, the engine diffs `HEAD..origin/<tracked
-branch>`. If any changed path matches `config.selfUpdatePaths` (default
-`package.json`, `package-lock.json` — i.e. Phoebe's own code or its dependency
-lockfile moved), the orchestrator exits with `SELF_UPDATE_EXIT_CODE`. The
-supervisor is meant to catch that exit code, reinstall the pinned CLI, and
-re-exec. Only the container path self-updates; the host never does.
-
-**Crash-loop fallback.** Guarding a _moving_ engine ref is `phoebe boot`'s job
-rather than the supervisor's, because boot is what decides which engine commit
-runs (`bootstrap/crash-loop.ts`). After `CRASH_LOOP_THRESHOLD` (3) consecutive
-_fast_ crashes of one engine SHA — a run that exits non-zero inside
-`HEALTHY_RUN_MS` (60s) — boot quarantines that commit and materializes the **last
-SHA that ran healthily** instead; the ref-watch then stops reading the branch tip
-as a change for as long as it still points at the bad commit. Once the branch
-advances past it (a fix landed), the quarantine lapses and reconcile resumes
-normally.
+**Crash-loop fallback.** Following a branch means eventually following it onto a
+commit that will not boot, so every launch passes the crash-loop guard
+(`bootstrap/crash-loop.ts`). After `CRASH_LOOP_THRESHOLD` (3) consecutive _fast_
+crashes of one engine SHA — a run that exits non-zero inside `HEALTHY_RUN_MS`
+(60s) — boot quarantines that commit and materializes the **last SHA that ran
+healthily** instead; the ref-watch then stops reading the branch tip as a change
+for as long as it still points at the bad commit. Once the branch advances past
+it (a fix landed), the quarantine lapses and reconcile resumes normally.
 
 A finished run is judged three ways, not two: **healthy** (it outlived the
-window, exited 0 unprompted, or exited for a self-update), **crash** (a fast
-non-zero exit of its own accord), or **inconclusive** — boot cut it short for a
-reconcile or a container stop, or a signal killed it. An inconclusive run moves
-nothing; treating one as healthy would let a container stop landing mid-crash-loop
-promote the bad commit and disarm the fallback for good. A commit that outlives
-the window is banked as last-good **while it is still running**, so an engine up
-for weeks that is then killed outright still leaves a fallback target behind.
+window, or exited 0 unprompted), **crash** (a fast non-zero exit of its own
+accord), or **inconclusive** — boot cut it short for a reconcile or a container
+stop, or a signal killed it. An inconclusive run moves nothing; treating one as
+healthy would let a container stop landing mid-crash-loop promote the bad commit
+and disarm the fallback for good. A commit that outlives the window is banked as
+last-good **while it is still running**, so an engine up for weeks that is then
+killed outright still leaves a fallback target behind.
 
 The record — last-good SHA, quarantined SHA, crash count — is JSON in
 `paths.stateDir` (`engine-crash-loop.json`), so it survives the container restart
 a crash-looping engine causes. The guard is inert unless the engine ref is a
 **moving branch** (a local mount has no commit to pin; a pinned SHA or tag means
-the operator chose that exact commit) and inert with nothing known-good yet — a
+the operator chose that exact commit, and quietly serving a different one would
+be worse than crash-looping visibly) and inert with nothing known-good yet — a
 first boot straight onto a broken ref exits and lets the container's restart
 policy make the failure visible. See
 [`configuration.md`](configuration.md#crash-loop-fallback).
 
-`src/supervisor-decision.ts` carries an engine-side copy of this policy, written
-for the shell supervisor to mirror but never implemented there. It is superseded
-by the bootstrapper's and goes with the rest of the self-update machinery in the
-engine-source redesign (#37).
-
-The self-update exit code is defined once as the tested spec
-(`SELF_UPDATE_EXIT_CODE` in `src/supervisor-decision.ts`, value `42`); the
-scaffolded `supervisor.sh` must watch for the same value.
-
-> **Known limitation:** the two are currently **out of sync** — the engine exits
-> `42`, but `templates/container/supervisor.sh` watches for `75`. As a result a
-> self-update exit is presently treated as an ordinary crash (the persistent
-> supervisor restarts after a backoff) rather than triggering a reinstall +
-> re-exec, so automatic self-update does not take effect until the codes are
-> aligned. Operator-driven upgrades (rebuild + restart) and the crash-loop
-> fallback are unaffected. Fixing this is tracked as a follow-up to the docs
-> work; when you touch either value, keep the two in sync.
-
 ## One cycle, end to end
 
 ```
-fetch origin ──► self-update? ──exit 42──► supervisor reinstalls + re-execs
-      │
-      ▼
 gather work data for each kind in workOrder
       │
       ▼

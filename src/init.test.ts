@@ -25,27 +25,28 @@ function makeTempDir(): string {
 }
 
 describe("planInitOutputs", () => {
-  test("scaffolds config, env example, four container files, four prompts, gitignore", () => {
+  test("scaffolds config, env example, three container files, every prompt, gitignore", () => {
     const plan = planInitOutputs();
     const dests = plan.map((p) => p.destRelPath);
     expect(dests).toContain("phoebe.config.ts");
     expect(dests).toContain(".env.example");
     expect(dests).toContain("container/Dockerfile");
     expect(dests).toContain("container/compose.yml");
-    expect(dests).toContain("container/compose.daemon.yml");
-    expect(dests).toContain("container/supervisor.sh");
+    expect(dests).toContain("container/compose.local.yml");
     expect(dests).toContain(".gitignore");
     for (const promptPath of Object.values(CONFIG_DEFAULTS.promptFiles)) {
       expect(dests).toContain(promptPath);
     }
   });
 
-  test("supervisor.sh is marked executable", () => {
-    const supervisor = planInitOutputs().find((p) => p.destRelPath === "container/supervisor.sh");
-    expect(supervisor?.source.kind).toBe("template");
-    if (supervisor?.source.kind === "template") {
-      expect(supervisor.source.executable).toBe(true);
-    }
+  test("the retired supervisor + daemon-overlay scaffolding is gone", () => {
+    // `phoebe boot` is the container's long-lived main process now: it owns
+    // restarts, engine updates, and the crash-loop fallback, so there is no
+    // shell supervisor to scaffold and nothing for a daemon overlay to switch
+    // on — the base compose file is already the daemon.
+    const dests = planInitOutputs().map((p) => p.destRelPath);
+    expect(dests).not.toContain("container/supervisor.sh");
+    expect(dests).not.toContain("container/compose.daemon.yml");
   });
 });
 
@@ -112,25 +113,43 @@ describe("runInit", () => {
     expect(report.updated).toEqual([]);
   });
 
-  test("supervisor.sh is written with the executable bit set", () => {
-    const target = makeTempDir();
-    runInit({ targetDir: target });
-    const mode = statSync(join(target, "container/supervisor.sh")).mode & 0o777;
-    expect(mode & 0o100).toBe(0o100); // owner-executable
-  });
-
-  test("Dockerfile pins the supervisor into ENTRYPOINT so compose command: overrides append flags", () => {
+  test("Dockerfile pins `phoebe boot` into ENTRYPOINT so compose command: overrides append flags", () => {
     // Compose's `command:` replaces `CMD` outright. If the Dockerfile split
-    // the supervisor across ENTRYPOINT + CMD, `command: ["--run-once"]` in
-    // compose.yml would exec `tini -- --run-once` (no valid child program)
-    // and the container would fail to boot. Lock the invariant.
+    // `phoebe boot` across ENTRYPOINT + CMD, `command: ["--run-once"]` would
+    // exec `tini -- --run-once` (no valid child program) and the container
+    // would fail to boot. Keeping the whole invocation in ENTRYPOINT means a
+    // compose `command:` only ever contributes engine flags. Lock it.
     const target = makeTempDir();
     runInit({ targetDir: target });
     const dockerfile = readFileSync(join(target, "container/Dockerfile"), "utf8");
-    expect(dockerfile).toContain(
-      'ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/phoebe-supervisor"]',
-    );
+    expect(dockerfile).toContain('ENTRYPOINT ["/usr/bin/tini", "--", "phoebe", "boot"]');
     expect(dockerfile).toContain("CMD []");
+  });
+
+  test("the scaffolded container marker satisfies the engine's execution gate", () => {
+    // Without /.phoebe-container the engine refuses every non-dry-run unit
+    // (src/execution-gate.ts), so a stock scaffold that omits it produces a
+    // container that silently does nothing.
+    const target = makeTempDir();
+    runInit({ targetDir: target });
+    expect(readFileSync(join(target, "container/Dockerfile"), "utf8")).toContain(
+      "touch /.phoebe-container",
+    );
+  });
+
+  test("the scaffolded config declares an engine source the bootstrapper can read", () => {
+    // `phoebe boot` resolves the engine from this field before the engine
+    // exists, and loads the config from the container mount — where a *value*
+    // import of `phoebe-agent` cannot resolve. The template must therefore
+    // stay type-only.
+    const target = makeTempDir();
+    runInit({ targetDir: target });
+    const config = readFileSync(join(target, "phoebe.config.ts"), "utf8");
+    expect(config).toContain("engine:");
+    expect(config).toContain('import type { PhoebeUserConfig } from "phoebe-agent"');
+    // No *runtime* import of any kind: every import in this file must be
+    // type-only, or loading the mounted config dies on module resolution.
+    expect(config).not.toMatch(/^import (?!type )/m);
   });
 
   test("renders {{INSTALL_COMMAND}} and {{CLI_BIN}} into scaffolded files", () => {
@@ -153,15 +172,15 @@ describe("runInit", () => {
     // Simulate consumer edits to two scaffolded files.
     const editedConfigContents = "// EDITED BY CONSUMER\nexport default {};\n";
     writeFileSync(join(target, "phoebe.config.ts"), editedConfigContents);
-    const editedSupervisor = "#!/usr/bin/env bash\necho hi\n";
-    writeFileSync(join(target, "container/supervisor.sh"), editedSupervisor);
+    const editedCompose = "services:\n  phoebe:\n    image: edited\n";
+    writeFileSync(join(target, "container/compose.yml"), editedCompose);
 
     const report = runInit({ targetDir: target });
 
     expect(readFileSync(join(target, "phoebe.config.ts"), "utf8")).toBe(editedConfigContents);
-    expect(readFileSync(join(target, "container/supervisor.sh"), "utf8")).toBe(editedSupervisor);
+    expect(readFileSync(join(target, "container/compose.yml"), "utf8")).toBe(editedCompose);
     expect(report.skipped).toContain("phoebe.config.ts");
-    expect(report.skipped).toContain("container/supervisor.sh");
+    expect(report.skipped).toContain("container/compose.yml");
     expect(report.created).toEqual([]);
   });
 

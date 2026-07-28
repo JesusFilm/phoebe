@@ -30,8 +30,8 @@ skipped):
 - `.env.example` — copy to `.env` and fill in secrets.
 - `.gitignore` — Phoebe entries appended additively.
 - `container/Dockerfile`, `container/compose.yml`,
-  `container/compose.daemon.yml`, `container/supervisor.sh` — the runtime
-  image and its supervisor. Consumer-owned; commit them.
+  `container/compose.local.yml` — the runtime image and its compose files.
+  Consumer-owned; commit them.
 
 Point `phoebe init` at a subdirectory when you want the runtime out of the
 repo root:
@@ -42,34 +42,42 @@ npx --yes phoebe-agent init ./phoebe
 
 ## 2. Edit `phoebe.config.ts`
 
-Fill in the five required fields:
+Fill in the five required fields, and pin the engine:
 
 ```ts
-import { defineConfig } from "phoebe-agent";
+import type { PhoebeUserConfig } from "phoebe-agent";
 
-export default defineConfig({
+const config: PhoebeUserConfig = {
   repoSlug: "your-org/your-repo",
   repoUrl: "https://github.com/your-org/your-repo.git",
   installCommand: "npm ci",
   checkCommand: "npm run check",
   testCommand: "npm test",
-});
+  engine: { source: "github", ref: "v0.1.0" },
+};
+
+export default config;
 ```
 
 Everything else is optional and pulled from the shipped defaults.
 
+Keep the import **type-only**. The container mounts this file into `/etc/phoebe`
+and `phoebe boot` loads it from there, where a value import of `phoebe-agent`
+cannot resolve.
+
 ## 3. Pin the engine version
 
-Edit `.env` and set `PHOEBE_VERSION` to a released `phoebe-agent` version
-(e.g. `0.1.0`). The compose file feeds this to the Dockerfile so a rebuild
-installs the pinned engine.
+`engine.ref` above is the pin, and it is the only one — the image carries the
+bootstrapper, not the engine. Use a released tag (or a full SHA) in a real
+deployment; `main` follows the tip and relies on the crash-loop fallback as its
+safety net. See [`upgrading.md`](upgrading.md#pinning-the-engine-version).
 
 ## 4. Build the image and one-shot the engine
 
 The scaffolded `.env` lives at the repo root while the compose files live in
 `container/`, so pass `--env-file ../.env` on every Compose command run from
 there — otherwise Compose only auto-loads a `.env` sitting beside the compose
-file and misses `GH_TOKEN`, `PHOEBE_VERSION`, and the provider keys.
+file and misses `GH_TOKEN` and the provider keys.
 
 ```bash
 cd container
@@ -83,18 +91,25 @@ Remove `--dry-run` to actually work a unit.
 ## 5. Start the persistent daemon
 
 ```bash
-docker compose --env-file ../.env -f compose.yml -f compose.daemon.yml up -d
+docker compose --env-file ../.env up -d
+docker compose --env-file ../.env logs -f
 ```
 
-The supervisor restarts the engine on crash. (Automatic in-place self-update is
-not yet reliable — the engine and scaffolded supervisor use mismatched exit
-codes; see the known limitation in
-[`upgrading.md`](upgrading.md#self-driven-upgrade-supervisor). Use the
-operator-driven upgrade below to move versions.)
+The container's main process is `phoebe boot`, which runs the engine and keeps
+supervising it: it relaunches on a config or ref change, falls back to the last
+engine commit that ran healthily if a new one will not boot, and drains the
+engine gracefully on `docker compose stop`.
 
 ## 6. Upgrade later
 
-Bump `PHOEBE_VERSION` in `.env`, rebuild the image
-(`docker compose --env-file ../.env build`), and restart the service with the
-daemon overlay
-(`docker compose --env-file ../.env -f compose.yml -f compose.daemon.yml up -d`).
+Edit `engine.ref` in `phoebe.config.ts`. The running container picks it up within
+a reconcile interval (default 60s) and relaunches the engine at the next
+work-unit boundary — no rebuild and no restart. Rebuild only when the _image_
+changes.
+
+Edit the file **in place**. `compose.yml` bind-mounts it as a single file, which
+pins the host inode, so a write that replaces the file — most editors' atomic
+save, and what `git pull` does — is invisible inside the container and the watch
+never fires. After that kind of write, run
+`docker compose --env-file ../.env up -d --force-recreate`. See
+[`upgrading.md`](upgrading.md#upgrading).

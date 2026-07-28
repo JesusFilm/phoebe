@@ -26,8 +26,8 @@ export function engineDir(baseDir, version) {
 /**
  * Ensure a runnable copy of the package exists outside node_modules and return
  * the path to the bootstrapper entry (`<dir>/bootstrap/cli.ts`). Idempotent: a
- * version-keyed marker means repeated invocations (the supervisor loop runs the
- * bin over and over) skip the copy after the first. Callers key `baseDir` per
+ * version-keyed marker means repeated invocations (anything that runs the bin
+ * over and over) skip the copy after the first. Callers key `baseDir` per
  * install and the package version changes on release, so a stale copy is never
  * reused.
  */

@@ -13,7 +13,6 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
-import { SELF_UPDATE_EXIT_CODE } from "../src/supervisor-decision.ts";
 import {
   CRASH_LOOP_THRESHOLD,
   DEFAULT_STATE_DIR,
@@ -79,12 +78,6 @@ describe("judgeRun", () => {
     expect(judgeRun({ sha: BAD, exitCode: null, elapsedMs: 5, requestedStop: false })).toBe(
       "inconclusive",
     );
-  });
-
-  test("a self-update exit is a decision the engine reached, not a failure to boot", () => {
-    expect(
-      judgeRun({ sha: GOOD, exitCode: SELF_UPDATE_EXIT_CODE, elapsedMs: 5, requestedStop: false }),
-    ).toBe("healthy");
   });
 });
 

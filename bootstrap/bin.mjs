@@ -35,8 +35,8 @@ try {
   fail(error instanceof Error ? error.message : String(error));
 }
 
-// Exec the TypeScript bootstrapper, forwarding the stop signals the
-// supervisor/daemon uses so a SIGTERM drain reaches the real process (the
-// engine), not just this shim, and dying however the child dies. The plumbing
+// Exec the TypeScript bootstrapper, forwarding the stop signals a container
+// stop delivers so a SIGTERM drain reaches the real process (the engine), not
+// just this shim, and dying however the child dies. The plumbing
 // lives in spawn-engine.mjs, shared with `phoebe boot`.
 spawnEngine(entry, process.argv.slice(2), { onSpawnError: (error) => fail(error.message) });

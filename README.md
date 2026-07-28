@@ -32,17 +32,24 @@ From the root of the repo you want Phoebe to work:
 npx --yes phoebe-agent init      # scaffold config, prompts, .env.example, container/
 ```
 
-Then edit the five required fields in `phoebe.config.ts`, copy `.env.example` to
-`.env` and fill in your `GH_TOKEN` and provider key, and pin `PHOEBE_VERSION`.
-The scaffolded `.env` lives at the repo root while the compose files live in
-`container/`, so pass `--env-file ../.env` when you run Compose from there:
+Then edit the five required fields in `phoebe.config.ts`, pin the engine with
+`engine: { source: "github", ref: "v0.1.0" }`, and copy `.env.example` to `.env`
+and fill in your `GH_TOKEN` and provider key. The scaffolded `.env` lives at the
+repo root while the compose files live in `container/`, so pass
+`--env-file ../.env` when you run Compose from there:
 
 ```bash
 cd container
 docker compose --env-file ../.env build
-docker compose --env-file ../.env run --rm phoebe --dry-run --run-once          # preview one unit
-docker compose --env-file ../.env -f compose.yml -f compose.daemon.yml up -d    # start the daemon
+docker compose --env-file ../.env run --rm phoebe --dry-run --run-once   # preview one unit
+docker compose --env-file ../.env up -d                                  # start the daemon
 ```
+
+The container's main process is `phoebe boot`: it checks the engine out at the
+ref your config names, runs it, and keeps supervising it. Upgrading is an edit to
+`engine.ref` — no rebuild, no restart, provided you edit the file in place (the
+config is bind-mounted as a single file, so a save-by-rename needs a
+`docker compose up -d --force-recreate` to be seen).
 
 The full, execute-top-to-bottom version — prerequisites, secrets, verification —
 is [`docs/ai-install.md`](docs/ai-install.md).
@@ -52,15 +59,18 @@ is [`docs/ai-install.md`](docs/ai-install.md).
 Only five fields are required; everything else falls back to a shipped default.
 
 ```ts
-import { defineConfig } from "phoebe-agent";
+import type { PhoebeUserConfig } from "phoebe-agent";
 
-export default defineConfig({
+const config: PhoebeUserConfig = {
   repoSlug: "your-org/your-repo",
   repoUrl: "https://github.com/your-org/your-repo.git",
   installCommand: "npm ci",
   checkCommand: "npm run check",
   testCommand: "npm test",
-});
+  engine: { source: "github", ref: "v0.1.0" },
+};
+
+export default config;
 ```
 
 | Field             | Default                                  | What it controls                                |
@@ -85,7 +95,7 @@ reference and the `PHOEBE_*` environment overlay.
 
 Docs live under [`docs/`](docs/):
 
-- [`docs/architecture.md`](docs/architecture.md) — topology, worktree isolation, supervisor self-update, named volumes.
+- [`docs/architecture.md`](docs/architecture.md) — topology, worktree isolation, engine updates and crash-loop fallback, named volumes.
 - [`docs/configuration.md`](docs/configuration.md) — full config-field reference and env overlay.
 - [`docs/work-kinds.md`](docs/work-kinds.md) — issues / conflicts / checks / reviews / research mechanics, PR-scan scope, poll loop.
 - [`docs/operating.md`](docs/operating.md) — controlling Phoebe as a human (labels, drafts, watermarks).

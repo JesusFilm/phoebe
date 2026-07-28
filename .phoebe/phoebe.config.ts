@@ -1,14 +1,9 @@
 // Dogfood config — Phoebe working its own repo (JesusFilm/phoebe).
 //
-// This is a *runtime-mounted* config (compose mounts it at
-// /etc/phoebe/phoebe.config.ts), so it must load under Node's native ESM
-// type-stripping with no reachable node_modules. That rules out the usual
-// `import { defineConfig } from "phoebe-agent"` the scaffold ships — a bare
-// specifier can't resolve from /etc/phoebe and ESM ignores NODE_PATH, so the
-// engine would fail to import the config. `defineConfig` is only an identity
-// helper anyway; a plain default-exported object is validated identically by
-// the engine's resolveConfig(). We keep editor type-safety via a *type-only*
-// import (erased at runtime) that resolves against this repo's own source.
+// Type-only import, same as the shipped scaffold: this config is loaded from a
+// container mount with no reachable `node_modules`, so a value import could not
+// resolve under ESM. The scaffold's import resolves the published package; here
+// it resolves this repo's own source, since that is what the container runs.
 import type { PhoebeUserConfig } from "../src/config-schema.ts";
 
 const config: PhoebeUserConfig = {
@@ -28,17 +23,10 @@ const config: PhoebeUserConfig = {
   // CURSOR_API_KEY in the container env (see .env).
   defaultProvider: "cursor",
 
-  // Self-update reinstalls the engine from npm on exit code 75, but we run a
-  // locally-built engine tarball (npm only publishes the 0.0.0 stub — see
-  // README). Empty selfUpdatePaths disables the self-update exit so the
-  // supervisor never clobbers the local build with the npm stub.
-  selfUpdatePaths: [],
-
-  // Run the engine from a host→container mount at /opt/phoebe-engine
-  // (container/compose.local.yml) instead of a cloned github ref, so
-  // `phoebe boot` execs exactly the working tree. The engine ignores this field
-  // (resolveConfig drops it); only the bootstrapper's `boot` reads it. Harmless
-  // to the non-boot flows (supervisor + `phoebe-agent`), which never read it.
+  // Run the engine from the host working tree mounted at /opt/phoebe-engine
+  // (container/compose.yml) rather than a github checkout, so `boot` execs
+  // exactly what is checked out. Only the bootstrapper reads this field; the
+  // engine drops it in resolveConfig.
   engine: { source: "local" },
 };
 

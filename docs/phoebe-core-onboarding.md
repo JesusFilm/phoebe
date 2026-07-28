@@ -40,7 +40,7 @@ Net effect: the committed `phoebe.config.ts` names **only the toolchain fields**
 Everything that governs _what Phoebe does_ — order of work kinds, which PRs it
 touches, the labels it reads, the prompts it runs — stays on the engine defaults,
 so a `phoebe-agent` upgrade picks up any new defaults automatically
-([why a minimal config stays current](upgrading.md#operator-driven-upgrade)).
+([why a minimal config stays current](upgrading.md#upgrading)).
 
 ## 1. Prerequisites
 
@@ -130,8 +130,7 @@ core/
     container/
       Dockerfile
       compose.yml
-      compose.daemon.yml
-      supervisor.sh
+      compose.local.yml
 ```
 
 Commit `phoebe.config.ts`, the untouched `prompts/`, `container/`, and the
@@ -149,9 +148,9 @@ check step runs prettier in **write** mode so formatting drift is auto-fixed and
 committed rather than failing the gate:
 
 ```ts
-import { defineConfig } from "phoebe-agent";
+import type { PhoebeUserConfig } from "phoebe-agent";
 
-export default defineConfig({
+const config: PhoebeUserConfig = {
   repoSlug: "JesusFilm/core",
   repoUrl: "https://github.com/JesusFilm/core.git",
 
@@ -171,10 +170,19 @@ export default defineConfig({
   // `npm run ready`, which core does not have, so point it at check + test.
   readyCommand:
     "pnpm nx format:write --base=origin/main && pnpm nx affected -t lint typecheck test --base=origin/main",
-});
+
+  // Which engine `phoebe boot` checks out and runs. Pin a released tag.
+  engine: { source: "github", ref: "v0.1.0" },
+};
+
+export default config;
 ```
 
 Notes:
+
+- **Type-only import.** The container mounts this file into `/etc/phoebe`, where
+  a value import of `phoebe-agent` cannot resolve; `import type` is erased before
+  the file runs. See [configuration.md](configuration.md#the-config-file).
 
 - **`--base=origin/main`.** Nx-affected diffs against a base ref; issue worktrees
   are branched off `origin/main` (the `defaultBranch`), so that is the correct
@@ -182,9 +190,12 @@ Notes:
 - **Adjust target names to `core`'s real Nx targets.** `lint`, `typecheck`, and
   `test` are the conventional names; confirm them against `core`'s project
   configuration and swap in whatever the repo actually defines.
-- **No other fields.** `workOrder`, `prScope`, the three labels, providers/models,
-  paths, and `promptFiles` are all omitted, so they resolve to the engine defaults
-  shown in the [shape table](#the-shape-of-this-deployment).
+- **Toolchain fields plus `engine`, nothing else.** `engine` is not a toolchain
+  setting — it is the deployment's lifecycle knob (which engine commit runs, and
+  how you upgrade), so it is named deliberately. Everything else — `workOrder`,
+  `prScope`, the three labels, providers/models, paths, `promptFiles` — is
+  omitted and resolves to the engine defaults shown in the
+  [shape table](#the-shape-of-this-deployment).
 
 ## 6. Provider selection and secrets (`.env`)
 
@@ -215,9 +226,9 @@ Set:
   it in `.env` keeps the choice local to this operator's box — a different operator
   can run the same committed runtime under a different provider.
 
-- **`PHOEBE_VERSION`** — pin an explicit released `phoebe-agent` version (e.g.
-  `0.1.0`), not `latest`, for a real deployment
-  ([upgrading.md](upgrading.md#pinning-the-engine-version)).
+The engine version is **not** an env var: it is `engine.ref` in
+`phoebe.config.ts`. Pin an explicit released tag for a real deployment
+([upgrading.md](upgrading.md#pinning-the-engine-version)).
 
 `.env` is gitignored by the scaffolded `.gitignore` — keep it that way.
 
@@ -225,7 +236,7 @@ Set:
 
 The `.env` sits at `core/phoebe/.env` while the compose files live in
 `core/phoebe/container/`, so pass `--env-file ../.env` on every Compose command
-(otherwise Compose misses `GH_TOKEN`, the provider key, and `PHOEBE_VERSION`):
+(otherwise Compose misses `GH_TOKEN` and the provider key):
 
 ```bash
 cd core/phoebe/container
@@ -235,7 +246,7 @@ docker compose --env-file ../.env build
 docker compose --env-file ../.env run --rm phoebe --dry-run --run-once
 
 # Start the persistent daemon (all work kinds, poll loop):
-docker compose --env-file ../.env -f compose.yml -f compose.daemon.yml up -d
+docker compose --env-file ../.env up -d
 ```
 
 `--dry-run --run-once` is the safe first step: it prints the selected unit without
@@ -248,8 +259,10 @@ in the **persistent daemon**; `--run-once` handles at most one `issues` unit
 - **Drive it from GitHub.** Add `ready-for-agent` to queue an issue; `Blocked by
 #N` in a body to sequence dependents; `ready-for-human` (or mark a non-Phoebe PR
   draft) to take a PR back. Full operator manual: [`operating.md`](operating.md).
-- **Upgrade** by bumping `PHOEBE_VERSION` in `.env`, rebuilding, and restarting
-  with the daemon overlay — the minimal config means new engine defaults land
-  automatically ([upgrading.md](upgrading.md#operator-driven-upgrade)). Automatic
-  self-update is not yet reliable; use the operator-driven path
-  ([known limitation](upgrading.md#self-driven-upgrade-supervisor)).
+- **Upgrade** by editing `engine.ref` in `phoebe.config.ts` — the running
+  container drains the engine and relaunches on the new ref within a reconcile
+  interval, no rebuild and no restart. Edit it **in place**: the config is
+  bind-mounted as a single file, so a save-by-rename (or a `git pull`) needs
+  `docker compose --env-file ../.env up -d --force-recreate` to be picked up. The
+  minimal config means new engine defaults land automatically
+  ([upgrading.md](upgrading.md#upgrading)).
