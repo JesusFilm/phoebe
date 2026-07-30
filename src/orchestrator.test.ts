@@ -225,6 +225,7 @@ describe("isPhoebeHeadBranch", () => {
 const defaultPrScopeConfig = {
   branchPrefix: "phoebe/",
   prScope: "phoebe" as const,
+  prAuthors: [] as readonly string[],
   draftPrs: "skip-non-phoebe" as const,
   prOptOutLabel: "ready-for-human",
 };
@@ -232,6 +233,7 @@ const defaultPrScopeConfig = {
 function prScanFields(
   overrides: Partial<{
     headRefName: string;
+    authorLogin: string;
     isDraft: boolean;
     isCrossRepository: boolean;
     labels: string[];
@@ -239,6 +241,7 @@ function prScanFields(
 ) {
   return {
     isDraft: false,
+    authorLogin: "octocat",
     isCrossRepository: false,
     labels: [] as string[],
     ...overrides,
@@ -266,6 +269,12 @@ describe("isPrInScope", () => {
         prScope: "all",
       }),
     ).toBe(true);
+  });
+
+  test("author scope includes only configured GitHub logins, case-insensitively", () => {
+    const scoped = { ...defaultPrScopeConfig, prScope: "all" as const, prAuthors: ["TanFlem"] };
+    expect(isPrInScope(prScanFields({ authorLogin: "tanflem" }), scoped)).toBe(true);
+    expect(isPrInScope(prScanFields({ authorLogin: "coworker" }), scoped)).toBe(false);
   });
 
   test("cross-repo PRs are always excluded", () => {
