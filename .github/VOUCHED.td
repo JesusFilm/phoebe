@@ -24,5 +24,5 @@
 # Format, ordering, and duplicates are asserted by src/vouched-file.test.ts.
 github:csiyang
 github:mikeallisonJS
-github:tataihono
 github:tanflem
+github:tataihono
