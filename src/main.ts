@@ -273,32 +273,41 @@ function postPrComment(prNumber: PrNumber, body: string): void {
   gh(["pr", "comment", String(prNumber), "--body", body]);
 }
 
-type OpenPhoebePr = { number: PrNumber; headRefName: BranchRef; authorLogin: string };
+type OpenPhoebePr = {
+  number: PrNumber;
+  headRefName: BranchRef;
+  baseRefName: BranchRef;
+  authorLogin: string;
+};
 
 function listOpenPhoebePrs(): OpenPhoebePr[] {
   type GhOpenPr = {
     number: number;
     headRefName: string;
+    baseRefName: string;
     isDraft: boolean;
     isCrossRepository: boolean;
     labels: Array<{ name: string }>;
     author: { login: string };
   };
-  return ghJson<GhOpenPr[]>([
+  const args = [
     "pr",
     "list",
-    "--base",
-    PR_BASE,
     "--state",
     "open",
     "--json",
-    "number,headRefName,isDraft,isCrossRepository,labels,author",
+    "number,headRefName,baseRefName,isDraft,isCrossRepository,labels,author",
     "--limit",
     "100",
-  ])
+  ];
+  if (config.prBaseScope === "default") {
+    args.splice(2, 0, "--base", PR_BASE);
+  }
+  return ghJson<GhOpenPr[]>(args)
     .filter((pr) =>
       isPrInScope({
         headRefName: asBranchRef(pr.headRefName),
+        authorLogin: pr.author.login,
         isDraft: pr.isDraft,
         isCrossRepository: pr.isCrossRepository,
         labels: pr.labels.map((label) => label.name),
@@ -307,6 +316,7 @@ function listOpenPhoebePrs(): OpenPhoebePr[] {
     .map((pr) => ({
       number: asPrNumber(pr.number),
       headRefName: asBranchRef(pr.headRefName),
+      baseRefName: asBranchRef(pr.baseRefName),
       authorLogin: pr.author.login,
     }));
 }
@@ -314,7 +324,9 @@ function listOpenPhoebePrs(): OpenPhoebePr[] {
 type PrMergeInfo = {
   number: PrNumber;
   headRefName: BranchRef;
+  baseRefName: BranchRef;
   headRefOid: Sha;
+  baseRefOid: Sha;
   mergeable: string;
   mergeStateStatus: string;
 };
@@ -323,7 +335,9 @@ function viewPrMergeInfo(prNumber: PrNumber): PrMergeInfo {
   const raw = ghJson<{
     number: number;
     headRefName: string;
+    baseRefName: string;
     headRefOid: string;
+    baseRefOid: string;
     mergeable: string;
     mergeStateStatus: string;
   }>([
@@ -331,12 +345,14 @@ function viewPrMergeInfo(prNumber: PrNumber): PrMergeInfo {
     "view",
     String(prNumber),
     "--json",
-    "number,headRefName,headRefOid,mergeable,mergeStateStatus",
+    "number,headRefName,baseRefName,headRefOid,baseRefOid,mergeable,mergeStateStatus",
   ]);
   return {
     number: asPrNumber(raw.number),
     headRefName: asBranchRef(raw.headRefName),
+    baseRefName: asBranchRef(raw.baseRefName),
     headRefOid: asSha(raw.headRefOid),
+    baseRefOid: asSha(raw.baseRefOid),
     mergeable: raw.mergeable,
     mergeStateStatus: raw.mergeStateStatus,
   };
@@ -374,11 +390,14 @@ function originBranchSha(branch: BranchRef): Sha {
   return gitOriginBranchSha(repoDir, branch);
 }
 
-function currentConflictFailureWatermark(branch: BranchRef): ConflictFailWatermark {
+function currentConflictFailureWatermark(
+  branch: BranchRef,
+  baseBranch: BranchRef,
+): ConflictFailWatermark {
   fetchOrigin();
   return {
     prHead: originBranchSha(branch),
-    mainHead: originBranchSha(defaultBranchRef),
+    mainHead: originBranchSha(baseBranch),
   };
 }
 
@@ -475,6 +494,7 @@ type CleanMergeOutcome = "pushed" | "conflicted" | "failed";
 function tryCleanMerge(
   branch: BranchRef,
   mergedBlockerPrNumbers: readonly PrNumber[] = [],
+  baseBranch: BranchRef = defaultBranchRef,
 ): CleanMergeOutcome {
   let worktreeDir: string;
   try {
@@ -490,8 +510,8 @@ function tryCleanMerge(
       });
       gitInWorktree(worktreeDir, ["merge", "FETCH_HEAD"], { stdio: "pipe" });
     }
-    gitInWorktree(worktreeDir, ["fetch", "origin", config.defaultBranch], { stdio: "inherit" });
-    gitInWorktree(worktreeDir, ["merge", `origin/${config.defaultBranch}`], { stdio: "pipe" });
+    gitInWorktree(worktreeDir, ["fetch", "origin", baseBranch], { stdio: "inherit" });
+    gitInWorktree(worktreeDir, ["merge", `origin/${baseBranch}`], { stdio: "pipe" });
     pushBranch(worktreeDir, branch);
     removeWorktree(repoDir, worktreeDir);
     return "pushed";
@@ -520,14 +540,15 @@ function tryCleanMerge(
 function attemptBlockerFirstMerges(
   worktreeDir: string,
   mergedBlockerPrNumbers: readonly PrNumber[],
+  baseBranch: BranchRef,
 ): void {
   try {
     for (const n of mergedBlockerPrNumbers) {
       gitInWorktree(worktreeDir, ["fetch", "origin", `pull/${n}/head`], { stdio: "inherit" });
       gitInWorktree(worktreeDir, ["merge", "FETCH_HEAD"], { stdio: "pipe" });
     }
-    gitInWorktree(worktreeDir, ["fetch", "origin", config.defaultBranch], { stdio: "inherit" });
-    gitInWorktree(worktreeDir, ["merge", `origin/${config.defaultBranch}`], { stdio: "pipe" });
+    gitInWorktree(worktreeDir, ["fetch", "origin", baseBranch], { stdio: "inherit" });
+    gitInWorktree(worktreeDir, ["merge", `origin/${baseBranch}`], { stdio: "pipe" });
   } catch {
     // Conflicts stay in the tree for the agent to resolve.
   }
@@ -584,6 +605,7 @@ async function runConflictResolutionAgent(
   pr: ConflictingPrCandidate,
   mergedBlockerPrNumbers: readonly PrNumber[],
 ): Promise<void> {
+  const baseBranch = pr.baseRefName ?? defaultBranchRef;
   await runAgentWorkflow({
     pr,
     promptFile: config.promptFiles.conflict,
@@ -592,7 +614,8 @@ async function runConflictResolutionAgent(
       PR_BRANCH: pr.headRefName,
       BLOCKER_PR_NUMBERS: mergedBlockerPrNumbers.join(","),
     },
-    beforeAgent: (worktreeDir) => attemptBlockerFirstMerges(worktreeDir, mergedBlockerPrNumbers),
+    beforeAgent: (worktreeDir) =>
+      attemptBlockerFirstMerges(worktreeDir, mergedBlockerPrNumbers, baseBranch),
     onResult: ({ worktreeDir, branch, originShaBefore, originShaAfter, localCommitCount }) => {
       const prInfo = viewPrMergeInfo(pr.prNumber);
       if (
@@ -609,7 +632,10 @@ async function runConflictResolutionAgent(
         );
         postPrComment(
           pr.prNumber,
-          conflictFixFailureComment(pr.prNumber, currentConflictFailureWatermark(pr.headRefName)),
+          conflictFixFailureComment(
+            pr.prNumber,
+            currentConflictFailureWatermark(pr.headRefName, baseBranch),
+          ),
         );
       } else if (localCommitCount > 0) {
         pushBranch(worktreeDir, branch);
@@ -622,6 +648,7 @@ async function runConflictResolutionAgent(
 }
 
 async function fixOnePrConflict(pr: ConflictingPrCandidate, ctx: StackContext): Promise<void> {
+  const baseBranch = pr.baseRefName ?? defaultBranchRef;
   console.log(`[phoebe] Conflict fix: PR #${pr.prNumber} (${pr.headRefName}).`);
   fetchOrigin();
 
@@ -634,7 +661,7 @@ async function fixOnePrConflict(pr: ConflictingPrCandidate, ctx: StackContext): 
     );
   }
 
-  const cleanResult = tryCleanMerge(pr.headRefName, mergedBlockerPrNumbers);
+  const cleanResult = tryCleanMerge(pr.headRefName, mergedBlockerPrNumbers, baseBranch);
   if (cleanResult === "pushed") {
     console.log(`[phoebe] Clean merge for PR #${pr.prNumber} — pushed.`);
     if (mergedBlockerPrNumbers.length > 0) {
@@ -646,7 +673,10 @@ async function fixOnePrConflict(pr: ConflictingPrCandidate, ctx: StackContext): 
     console.log(`[phoebe] Could not start merge for PR #${pr.prNumber} — skipping.`);
     postPrComment(
       pr.prNumber,
-      conflictFixFailureComment(pr.prNumber, currentConflictFailureWatermark(pr.headRefName)),
+      conflictFixFailureComment(
+        pr.prNumber,
+        currentConflictFailureWatermark(pr.headRefName, baseBranch),
+      ),
     );
     return;
   }
@@ -689,6 +719,7 @@ async function runChecksResolutionAgent(pr: ChecksCandidate): Promise<void> {
 }
 
 async function fixOnePrChecks(pr: ChecksCandidate, ctx: StackContext): Promise<void> {
+  const baseBranch = pr.baseRefName ?? defaultBranchRef;
   console.log(
     `[phoebe] Checks fix: PR #${pr.prNumber} (${pr.headRefName}) — ` +
       `${pr.failingChecks.map((c) => c.name).join(", ")}.`,
@@ -701,13 +732,13 @@ async function fixOnePrChecks(pr: ChecksCandidate, ctx: StackContext): Promise<v
     const mergedBlockerPrNumbers = getMergedBlockerPrNumbers(body, ctx.blockerStates);
     if (mergedBlockerPrNumbers.length > 0) {
       console.log(
-        `[phoebe] Behind main — catch-up merging blocker PR(s) ${mergedBlockerPrNumbers.map((n) => `#${n}`).join(", ")} before ${config.defaultBranch}.`,
+        `[phoebe] Behind ${baseBranch} — catch-up merging blocker PR(s) ${mergedBlockerPrNumbers.map((n) => `#${n}`).join(", ")} before ${baseBranch}.`,
       );
     } else {
-      console.log(`[phoebe] Behind main — catch-up merge for PR #${pr.prNumber}.`);
+      console.log(`[phoebe] Behind ${baseBranch} — catch-up merge for PR #${pr.prNumber}.`);
     }
 
-    const cleanResult = tryCleanMerge(pr.headRefName, mergedBlockerPrNumbers);
+    const cleanResult = tryCleanMerge(pr.headRefName, mergedBlockerPrNumbers, baseBranch);
     if (cleanResult === "pushed") {
       console.log(
         `[phoebe] Catch-up merge for PR #${pr.prNumber} — pushed; waiting for CI on next cycle.`,
@@ -1022,7 +1053,9 @@ async function conflictingPrCandidate(pr: OpenPhoebePr): Promise<ConflictingPrCa
       return {
         prNumber: info.number,
         headRefName: info.headRefName,
+        baseRefName: info.baseRefName,
         headSha: info.headRefOid,
+        baseSha: info.baseRefOid,
         ...(issueNumber !== null ? { issueNumber } : {}),
       };
     }
@@ -1084,6 +1117,7 @@ async function failingChecksCandidate(pr: OpenPhoebePr): Promise<ChecksCandidate
       return {
         prNumber: info.number,
         headRefName: info.headRefName,
+        baseRefName: info.baseRefName,
         headSha: info.headRefOid,
         mergeable: info.mergeable,
         mergeStateStatus: info.mergeStateStatus,
@@ -1157,6 +1191,7 @@ async function fetchReviewsWorkData(): Promise<{
       reviewActivityPrs.push({
         prNumber: info.number,
         headRefName: info.headRefName,
+        baseRefName: info.baseRefName,
         authorLogin: pr.authorLogin,
         mergeable: info.mergeable,
         mergeStateStatus: info.mergeStateStatus,

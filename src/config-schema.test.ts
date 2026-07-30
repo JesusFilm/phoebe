@@ -95,6 +95,8 @@ describe("resolveConfig", () => {
     expect(resolved.blockedByPattern).toBe(CONFIG_DEFAULTS.blockedByPattern);
     expect(resolved.reviewsSuccessHeading).toBe(CONFIG_DEFAULTS.reviewsSuccessHeading);
     expect(resolved.prScope).toBe(CONFIG_DEFAULTS.prScope);
+    expect(resolved.prAuthors).toEqual(CONFIG_DEFAULTS.prAuthors);
+    expect(resolved.prBaseScope).toBe(CONFIG_DEFAULTS.prBaseScope);
     expect(resolved.draftPrs).toBe(CONFIG_DEFAULTS.draftPrs);
     expect(resolved.prOptOutLabel).toBe(CONFIG_DEFAULTS.prOptOutLabel);
     expect(resolved.workOrder).toEqual(CONFIG_DEFAULTS.workOrder);
@@ -116,11 +118,15 @@ describe("resolveConfig", () => {
         defaultBranch: "trunk",
         readyLabel: "green-light",
         readyCommand: "pnpm ready",
+        prAuthors: ["tanflem"],
+        prBaseScope: "all",
       }),
     );
     expect(resolved.defaultBranch).toBe("trunk");
     expect(resolved.readyLabel).toBe("green-light");
     expect(resolved.readyCommand).toBe("pnpm ready");
+    expect(resolved.prAuthors).toEqual(["tanflem"]);
+    expect(resolved.prBaseScope).toBe("all");
   });
 
   test("shallow-merges nested records: promptFiles overrides one at a time", () => {
