@@ -108,7 +108,8 @@ docker compose --env-file ../.env logs -f
 The container's main process is `phoebe boot`, which runs the engine and keeps
 supervising it: it relaunches on a config or ref change, falls back to the last
 engine commit that ran healthily if a new one will not boot, and drains the
-engine gracefully on `docker compose stop`.
+engine gracefully on `docker compose stop`. At boot it configures git
+credentials from `GH_TOKEN` so private-repo clones and pushes authenticate.
 
 ## 6. Upgrade later
 

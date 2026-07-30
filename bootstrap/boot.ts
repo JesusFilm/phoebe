@@ -22,6 +22,7 @@
 // the fallback policy in crash-loop.ts, and everything impure is passed in from
 // here.
 
+import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -55,6 +56,48 @@ import { propagateExit, spawnEngine } from "./spawn-engine.mjs";
 
 /** Where the local-engine compose overlay mounts the engine for `source: "local"`. */
 export const LOCAL_ENGINE_DIR = "/opt/phoebe-engine";
+
+/**
+ * Runs `gh` with the given argv. Injectable so boot's credential-helper setup is
+ * unit-tested without a real `gh` binary or a writable `~/.gitconfig`.
+ */
+export type GhRunner = (args: readonly string[]) => void;
+
+export const defaultGh: GhRunner = (args) => {
+  execFileSync("gh", args, { stdio: "inherit" });
+};
+
+/**
+ * Configure a global git credential helper from `GH_TOKEN` so every later git
+ * call against github.com authenticates — the engine's `ensureClone` /
+ * `fetchOrigin` / `pushBranch`, and the agent child's own `git push`/`fetch`.
+ *
+ * Uses `gh auth setup-git --hostname github.com`, which writes a
+ * `!gh auth git-credential` helper into `~/.gitconfig`. That helper reads
+ * `GH_TOKEN` live per call, so no secret is written to disk and token rotation
+ * keeps working. Only `github.com` is configured (Phoebe is github-only).
+ *
+ * Skipped when no token is present (public/anonymous path unchanged). A failed
+ * setup warns and continues — a missing helper is better diagnosed at the first
+ * private-repo clone than by aborting the container here.
+ */
+export function setupGitCredentials(deps: {
+  token: string | undefined;
+  gh?: GhRunner;
+  warn?: (message: string) => void;
+}): void {
+  if (!deps.token) return;
+  const gh = deps.gh ?? defaultGh;
+  const warn = deps.warn ?? ((message) => console.warn(message));
+  try {
+    gh(["auth", "setup-git", "--hostname", "github.com"]);
+  } catch (error) {
+    warn(
+      `[phoebe] boot: could not configure git credentials — ${describe(error)}. ` +
+        `Continuing without a credential helper.`,
+    );
+  }
+}
 
 /**
  * Resolve a `local` engine source to the mounted engine's `src/cli.ts`, failing
@@ -322,6 +365,11 @@ function runOutcome(run: EngineRun): RunOutcome | null {
  * persistent loop).
  */
 export async function runBoot(argv: readonly string[]): Promise<void> {
+  // Before any engine git call (ensureClone, fetch/push, agent child): one
+  // global github.com credential helper from GH_TOKEN. Survives reconcile
+  // relaunches via ~/.gitconfig + the agent-env HOME/GH_TOKEN allowlist.
+  setupGitCredentials({ token: process.env["GH_TOKEN"] });
+
   const configPath = resolveConfigPath(undefined, process.cwd());
   const guard = await createBootCrashGuard(configPath);
   const intervalMs = reconcileIntervalMs();

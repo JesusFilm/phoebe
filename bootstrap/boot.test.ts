@@ -6,7 +6,12 @@
 
 import { join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
-import { isMovingBranch, LOCAL_ENGINE_DIR, resolveEngineEntry } from "./boot.ts";
+import {
+  isMovingBranch,
+  LOCAL_ENGINE_DIR,
+  resolveEngineEntry,
+  setupGitCredentials,
+} from "./boot.ts";
 
 describe("resolveEngineEntry", () => {
   test("a local source execs the engine CLI under the mounted dir", () => {
@@ -92,5 +97,44 @@ describe("isMovingBranch", () => {
         throw new Error("could not resolve host github.com");
       }),
     ).toBe(false);
+  });
+});
+
+// --- GH_TOKEN → git credential helper at boot --------------------------------
+
+describe("setupGitCredentials", () => {
+  test("runs when token present", () => {
+    const calls: string[][] = [];
+    setupGitCredentials({
+      token: "ghs_test",
+      gh: (args) => {
+        calls.push([...args]);
+      },
+    });
+    expect(calls).toEqual([["auth", "setup-git", "--hostname", "github.com"]]);
+  });
+
+  test("skips when absent", () => {
+    const calls: string[][] = [];
+    setupGitCredentials({
+      token: undefined,
+      gh: (args) => {
+        calls.push([...args]);
+      },
+    });
+    expect(calls).toEqual([]);
+  });
+
+  test("warns on failure", () => {
+    const warnings: string[] = [];
+    setupGitCredentials({
+      token: "ghs_test",
+      gh: () => {
+        throw new Error("gh not found");
+      },
+      warn: (message) => warnings.push(message),
+    });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/could not configure git credentials.*gh not found/);
   });
 });
