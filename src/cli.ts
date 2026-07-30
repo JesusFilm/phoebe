@@ -7,6 +7,8 @@
 //   phoebe init [dir]   Scaffold a consumer-owned runtime (config, prompts,
 //                       .env.example, container templates, gitignore).
 //                       Skips existing files — safe to re-run.
+//   phoebe config resolve --json
+//                       Print the canonical effective configuration and exit.
 //   phoebe [flags]      Run the engine. Loads the consumer's
 //                       `phoebe.config.ts`, overlays `PHOEBE_*` env vars,
 //                       installs the resolved config, then hands off to main.
@@ -18,12 +20,20 @@
 
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { resolveConfig } from "./config-schema.ts";
+import {
+  BOOTSTRAP_RESOLVED_CONFIG_ENV,
+  formatResolvedConfiguration,
+  loadResolvedConfiguration,
+  parseResolvedConfigurationSnapshot,
+  type ResolvedConfiguration,
+} from "./config-resolution.ts";
 import { formatInitReport, runInit } from "./init.ts";
-import { applyEnvOverlay, loadUserConfig, resolveConfigPath } from "./load-config.ts";
+import { resolveConfigPath } from "./load-config.ts";
 import { setResolvedConfig } from "./resolved-config.ts";
 
 type ParsedArgs = { configPath: string | undefined; help: boolean; forward: string[] };
+
+export { BOOTSTRAP_RESOLVED_CONFIG_ENV };
 
 /**
  * Extract `--config <path>` / `--config=<path>` / `-c <path>` and `--help`/`-h`
@@ -90,10 +100,85 @@ export function parseInitArgs(argv: readonly string[]): ParsedInitArgs {
   return { targetDir: targetDir ?? ".", help };
 }
 
+export type ParsedConfigResolveArgs = { configPath: string | undefined };
+
+/**
+ * Parse the deliberately narrow inspection command. JSON is required so the
+ * output remains machine-readable and stable; no engine flag is meaningful on
+ * this read-only path.
+ */
+export function parseConfigResolveArgs(argv: readonly string[]): ParsedConfigResolveArgs {
+  if (argv[0] !== "resolve") {
+    throw new Error("Usage: phoebe config resolve --json [--config <path>].");
+  }
+
+  let json = false;
+  let configPath: string | undefined;
+  for (let i = 1; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--json") {
+      json = true;
+      continue;
+    }
+    if (arg === "--config" || arg === "-c") {
+      const next = argv[i + 1];
+      if (next === undefined) {
+        throw new Error(`${arg} requires a path argument.`);
+      }
+      configPath = next;
+      i += 1;
+      continue;
+    }
+    if (arg?.startsWith("--config=")) {
+      configPath = arg.slice("--config=".length);
+      continue;
+    }
+    throw new Error(
+      `Unknown flag \`${String(arg)}\` for \`phoebe config resolve\`. ` +
+        "Usage: phoebe config resolve --json [--config <path>].",
+    );
+  }
+  if (!json) {
+    throw new Error("`phoebe config resolve` requires --json.");
+  }
+  return { configPath };
+}
+
+/**
+ * Resolve the same layers used by boot and the engine, without importing or
+ * starting the engine. Returning the text keeps stdout behavior testable.
+ */
+export async function runConfigResolve(
+  argv: readonly string[],
+  runtime: { cwd?: string; env?: NodeJS.ProcessEnv } = {},
+): Promise<string> {
+  const parsed = parseConfigResolveArgs(argv);
+  const configPath = resolveConfigPath(parsed.configPath, runtime.cwd ?? process.cwd());
+  const resolved = await loadResolvedConfiguration(configPath, {
+    env: runtime.env ?? process.env,
+  });
+  return formatResolvedConfiguration(resolved);
+}
+
+/**
+ * Engine-mode resolution. A boot-supervised child consumes boot's immutable
+ * snapshot; a directly-invoked engine resolves the authored files itself.
+ */
+export function loadEngineConfiguration(
+  configPath: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<ResolvedConfiguration> {
+  const snapshot = env[BOOTSTRAP_RESOLVED_CONFIG_ENV];
+  return snapshot === undefined
+    ? loadResolvedConfiguration(configPath, { env })
+    : Promise.resolve(parseResolvedConfigurationSnapshot(snapshot));
+}
+
 const HELP_TEXT = `phoebe — AFK coding agent
 
 Usage:
   phoebe init [dir]                Scaffold a consumer-owned runtime
+  phoebe config resolve --json     Print the canonical effective configuration
   phoebe [--config <path>] [flags] Run the engine
 
 Options (engine mode):
@@ -110,6 +195,7 @@ Environment overlays (each replaces the corresponding config field):
   PHOEBE_PR_SCOPE, PHOEBE_DRAFT_PRS, PHOEBE_DEFAULT_PROVIDER
 
 Runtime toggles (read directly by the engine, not overlaid onto the config):
+  PHOEBE_BASE_CONFIG     Absolute path to a versioned generated base config
   PHOEBE_AGENT           Provider name to use for this run (cursor|claude|codex)
   PHOEBE_MODEL           Model to use for this run
   PHOEBE_POLL_INTERVAL_MS Persistent-mode poll interval (default 300000)
@@ -155,16 +241,23 @@ export async function runCli(): Promise<void> {
     return;
   }
 
+  if (args[0] === "config") {
+    process.stdout.write(await runConfigResolve(args.slice(1)));
+    return;
+  }
+
   const parsed = parseCliArgs(args);
   if (parsed.help) {
     process.stdout.write(HELP_TEXT);
     return;
   }
 
-  const configPath = resolveConfigPath(parsed.configPath, process.cwd());
-  const userConfig = await loadUserConfig(configPath);
-  const overlaid = applyEnvOverlay(userConfig, process.env);
-  setResolvedConfig(resolveConfig(overlaid));
+  const configPath =
+    process.env[BOOTSTRAP_RESOLVED_CONFIG_ENV] === undefined
+      ? resolveConfigPath(parsed.configPath, process.cwd())
+      : (parsed.configPath ?? "phoebe.config.ts");
+  const resolved = await loadEngineConfiguration(configPath);
+  setResolvedConfig(resolved.config);
 
   // Import after the config is installed — main.ts's module-level constants
   // read `config` at import time via the Proxy in resolved-config.ts.

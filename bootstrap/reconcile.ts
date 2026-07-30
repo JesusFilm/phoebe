@@ -79,6 +79,11 @@ export type LaunchedEngine = {
    * exit hooks; boot.ts is what decides with it.
    */
   guarded: boolean;
+  /**
+   * Canonical resolved config handed to the child so it cannot re-read a
+   * different authored state than the one that selected this engine source.
+   */
+  resolvedConfiguration?: string;
 };
 
 export type EngineExit = { code: number | null; signal: NodeJS.Signals | null };
@@ -117,7 +122,7 @@ export type SuperviseDeps = {
   /** Re-read the config, resolve + materialize the engine source. */
   launch: () => Promise<LaunchedEngine> | LaunchedEngine;
   /** Spawn the engine as a long-running child. */
-  spawn: (entry: string) => SupervisedChild;
+  spawn: (entry: string, engine: LaunchedEngine) => SupervisedChild;
   stop: StopLatch;
   intervalMs?: number;
   /** Reads the clock for run durations; injectable so the loop is tested without waiting. */
@@ -163,6 +168,24 @@ export function configFingerprint(
   } catch {
     return null;
   }
+}
+
+/**
+ * Fingerprint every authored layer that decides what deployment should run.
+ * With no generated base this is exactly the legacy repository fingerprint.
+ * Once a base path is configured, its missing/unreadable state is itself a
+ * fingerprint: losing a required generated document must drain the old engine
+ * and keep a replacement from starting, not silently continue new work.
+ */
+export function deploymentConfigFingerprint(
+  repositoryPath: string,
+  basePath: string | undefined,
+  stat: (path: string) => { mtimeMs: number; size: number } = statSync,
+): string | null {
+  const repository = configFingerprint(repositoryPath, stat);
+  if (basePath === undefined || repository === null) return repository;
+  const base = configFingerprint(basePath, stat);
+  return `${repository}|base:${base ?? "unreadable"}`;
 }
 
 /**
@@ -283,7 +306,7 @@ export async function superviseEngine(deps: SuperviseDeps): Promise<EngineExit> 
     everLaunched = true;
 
     const startedAt = now();
-    const child = deps.spawn(engine.entry);
+    const child = deps.spawn(engine.entry, engine);
     const outcome = await watchEngine(engine, child, deps, { intervalMs, startedAt, now });
 
     if (outcome.kind === "exit") {

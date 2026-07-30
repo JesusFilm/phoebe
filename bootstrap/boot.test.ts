@@ -4,9 +4,18 @@
 // source is materialized separately (github-engine.ts) and tested there, and the
 // fallback policy itself lives in crash-loop.ts.
 
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
-import { isMovingBranch, LOCAL_ENGINE_DIR, resolveEngineEntry } from "./boot.ts";
+import {
+  assertBaseConfigProtocol,
+  isMovingBranch,
+  loadBootConfiguration,
+  LOCAL_ENGINE_DIR,
+  resolveEngineEntry,
+} from "./boot.ts";
+import { deploymentConfigFingerprint } from "./reconcile.ts";
 
 describe("resolveEngineEntry", () => {
   test("a local source execs the engine CLI under the mounted dir", () => {
@@ -41,6 +50,87 @@ describe("resolveEngineEntry", () => {
         { localEngineDir: "/opt/phoebe-engine", exists: (path) => path !== entry },
       ),
     ).toThrow(/no engine is mounted at \/opt\/phoebe-engine/);
+  });
+});
+
+describe("bootstrapper/engine configuration parity", () => {
+  test("requires snapshot-protocol support before a base-configured engine can start", () => {
+    const entry = "/engine/src/cli.ts";
+    expect(() =>
+      assertBaseConfigProtocol(entry, "/etc/phoebe/generated-base.json", () => {
+        throw new Error("ENOENT");
+      }),
+    ).toThrow(/does not support PHOEBE_BASE_CONFIG.*generated-base\.json/i);
+
+    expect(() =>
+      assertBaseConfigProtocol(
+        entry,
+        "/etc/phoebe/generated-base.json",
+        () => `{"schemaVersion":1}`,
+      ),
+    ).not.toThrow();
+  });
+
+  test("keeps older engine refs compatible when no generated base is configured", () => {
+    expect(() =>
+      assertBaseConfigProtocol("/old-engine/src/cli.ts", undefined, () => {
+        throw new Error("old engine has no marker");
+      }),
+    ).not.toThrow();
+  });
+
+  test("boot resolves the generated engine source and runtime fields through the shared contract", async () => {
+    const root = mkdtempSync(join(tmpdir(), "phoebe-boot-config-"));
+    const repositoryPath = join(root, "phoebe.config.ts");
+    const basePath = join(root, "generated-base.json");
+    try {
+      writeFileSync(
+        repositoryPath,
+        `export default {
+          repoSlug: "acme/widget",
+          repoUrl: "https://github.com/acme/widget.git",
+          installCommand: "npm ci",
+          checkCommand: "npm run check",
+          testCommand: "npm test",
+          paths: { repoDir: "/repository/clone" },
+          engine: { source: "github", ref: "repository-ref" }
+        };\n`,
+      );
+      writeFileSync(
+        basePath,
+        `${JSON.stringify({
+          schemaVersion: 1,
+          config: {
+            branchPrefix: "managed/",
+            paths: { stateDir: "/managed/state" },
+            engine: { source: "github", repo: "acme/phoebe", ref: "base-ref" },
+          },
+        })}\n`,
+      );
+      const env = {
+        PHOEBE_BASE_CONFIG: basePath,
+        PHOEBE_BRANCH_PREFIX: "environment/",
+      };
+      const resolved = await loadBootConfiguration(
+        repositoryPath,
+        env,
+        deploymentConfigFingerprint(repositoryPath, basePath),
+      );
+
+      expect(resolved.engine).toEqual({
+        source: "github",
+        repo: "acme/phoebe",
+        ref: "repository-ref",
+      });
+      expect(resolved.config.branchPrefix).toBe("environment/");
+      expect(resolved.config.paths).toEqual({
+        repoDir: "/repository/clone",
+        worktreesDir: "/data/worktrees",
+        stateDir: "/managed/state",
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

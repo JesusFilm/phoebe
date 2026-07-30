@@ -2,7 +2,10 @@
 // Kept separate from main.ts so it can be unit-tested without Docker/gh.
 
 import { asBranchRef, asSha, type BranchRef, type PrNumber, type Sha } from "./branded.ts";
+import type { WorkKindName } from "./config-schema.ts";
 import { config } from "./resolved-config.ts";
+
+export { validateWorkOrder, WORK_KIND_NAMES, type WorkKindName } from "./config-schema.ts";
 
 export type Issue = {
   number: number;
@@ -677,9 +680,6 @@ export function buildReviewsHandledComment(opts: {
   return marker;
 }
 
-export const WORK_KIND_NAMES = ["conflicts", "checks", "reviews", "issues", "research"] as const;
-export type WorkKindName = (typeof WORK_KIND_NAMES)[number];
-
 /** Whether a work-kind may run under `--run-once`. Janitor kinds are persistent-mode only. */
 export const WORK_KIND_ONE_SHOT_ELIGIBLE: Record<WorkKindName, boolean> = {
   conflicts: false,
@@ -694,25 +694,6 @@ export const RUN_ONCE_NOTHING_MESSAGE =
 
 export function oneShotWorkKinds(workOrder: readonly WorkKindName[]): readonly WorkKindName[] {
   return workOrder.filter((kind) => WORK_KIND_ONE_SHOT_ELIGIBLE[kind]);
-}
-
-/** Fail fast when `WORK_ORDER` is empty or names an unknown kind. */
-export function validateWorkOrder(order: readonly string[]): readonly WorkKindName[] {
-  if (order.length === 0) {
-    throw new Error(
-      `WORK_ORDER must not be empty. Include at least one of: ${WORK_KIND_NAMES.join(", ")}.`,
-    );
-  }
-  const validated: WorkKindName[] = [];
-  for (const kind of order) {
-    if (!WORK_KIND_NAMES.includes(kind as WorkKindName)) {
-      throw new Error(
-        `Unknown work kind "${kind}" in WORK_ORDER. Use one of: ${WORK_KIND_NAMES.join(", ")}.`,
-      );
-    }
-    validated.push(kind as WorkKindName);
-  }
-  return validated;
 }
 
 /** Pick the single conflict unit — oldest PR number among unblocked candidates. */

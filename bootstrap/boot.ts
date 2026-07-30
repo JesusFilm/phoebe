@@ -22,25 +22,31 @@
 // the fallback policy in crash-loop.ts, and everything impure is passed in from
 // here.
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { installDrainSignal } from "../src/drain.ts";
 import { defaultGit, type GitRunner } from "../src/git-model.ts";
-import { loadUserConfig, resolveConfigPath } from "../src/load-config.ts";
+import {
+  BOOTSTRAP_RESOLVED_CONFIG_ENV,
+  formatResolvedConfiguration,
+  loadResolvedConfiguration,
+  resolveBaseConfigPath,
+  type ResolvedConfiguration,
+} from "../src/config-resolution.ts";
+import { resolveConfigPath } from "../src/load-config.ts";
 import {
   crashLoopStatePath,
   createCrashGuard,
-  readStateDir,
   DEFAULT_STATE_DIR,
   type CrashGuard,
   type CrashGuardEvent,
   type RunOutcome,
 } from "./crash-loop.ts";
-import { readEngineSource, type ResolvedEngineSource } from "./engine-source.ts";
+import type { ResolvedEngineSource } from "./engine-source.ts";
 import { lsRemoteBranchSha, materializeGithubEngine } from "./github-engine.ts";
 import {
-  configFingerprint,
+  deploymentConfigFingerprint,
   superviseEngine,
   CRASH_BACKOFF_MS,
   DEFAULT_RECONCILE_INTERVAL_MS,
@@ -55,6 +61,36 @@ import { propagateExit, spawnEngine } from "./spawn-engine.mjs";
 
 /** Where the local-engine compose overlay mounts the engine for `source: "local"`. */
 export const LOCAL_ENGINE_DIR = "/opt/phoebe-engine";
+export const BASE_CONFIG_PROTOCOL_MARKER = "bootstrap-config-protocol.json";
+
+/**
+ * A base-configured bootstrapper must not start an engine too old to consume
+ * its immutable resolution snapshot. The marker travels with capable engine
+ * source trees and makes incompatibility a pre-spawn error instead of silently
+ * running different bootstrapper and engine configurations.
+ */
+export function assertBaseConfigProtocol(
+  engineEntry: string,
+  baseConfigPath: string | undefined,
+  read: (path: string) => string = (path) => readFileSync(path, "utf8"),
+): void {
+  if (baseConfigPath === undefined) return;
+  const markerPath = join(dirname(engineEntry), BASE_CONFIG_PROTOCOL_MARKER);
+  let supported = false;
+  try {
+    const marker = JSON.parse(read(markerPath)) as { schemaVersion?: unknown };
+    supported = marker.schemaVersion === 1;
+  } catch {
+    // The common case is a pre-feature engine tree with no marker. All marker
+    // failures mean the same thing operationally: do not start this engine.
+  }
+  if (!supported) {
+    throw new Error(
+      `Engine at ${engineEntry} does not support PHOEBE_BASE_CONFIG ${baseConfigPath}. ` +
+        `Select an engine ref with ${BASE_CONFIG_PROTOCOL_MARKER} schemaVersion 1.`,
+    );
+  }
+}
 
 /**
  * Resolve a `local` engine source to the mounted engine's `src/cli.ts`, failing
@@ -102,19 +138,16 @@ function reconcileIntervalMs(): number {
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_RECONCILE_INTERVAL_MS;
 }
 
-/**
- * Load the mounted `phoebe.config.ts` as the arbitrary record the bootstrapper
- * treats it as — it owns only two fields (`engine`, `paths.stateDir`), and the
- * engine validates the rest once it is materialized and run. The fingerprint
- * doubles as the ESM cache-bust key, so a re-read after an edit is genuinely a
- * re-read.
- */
-async function loadMountedConfig(
+/** Shared bootstrapper entry into the same resolver used by the engine CLI. */
+export function loadBootConfiguration(
   configPath: string,
+  env: NodeJS.ProcessEnv,
   fingerprint: string | null,
-): Promise<Record<string, unknown>> {
-  const userConfig = await loadUserConfig(configPath, { reloadKey: fingerprint ?? undefined });
-  return userConfig as unknown as Record<string, unknown>;
+): Promise<ResolvedConfiguration> {
+  return loadResolvedConfiguration(configPath, {
+    env,
+    reloadKey: fingerprint ?? undefined,
+  });
 }
 
 /**
@@ -129,18 +162,30 @@ async function loadMountedConfig(
  * past it. A fallback then checks out the last-good commit in the same clone.
  */
 async function launchTarget(configPath: string, guard: CrashGuard): Promise<LaunchedEngine> {
-  const fingerprint = configFingerprint(configPath);
-  const source = readEngineSource(await loadMountedConfig(configPath, fingerprint));
+  const baseConfigPath = resolveBaseConfigPath(process.env);
+  const fingerprint = deploymentConfigFingerprint(configPath, baseConfigPath);
+  const resolved = await loadBootConfiguration(configPath, process.env, fingerprint);
+  const source = resolved.engine;
+  const resolvedConfiguration = formatResolvedConfiguration(resolved);
   const token = process.env["GH_TOKEN"];
   const sample = () => ({
-    config: configFingerprint(configPath),
+    config: deploymentConfigFingerprint(configPath, baseConfigPath),
     remoteSha: watchedRefSha(source, token),
   });
 
   if (source.source === "local") {
     const entry = resolveEngineEntry(source);
+    assertBaseConfigProtocol(entry, baseConfigPath);
     console.log(`[phoebe] boot: engine source "local" — exec ${entry} (long-running).`);
-    return { entry, sha: null, config: fingerprint, guarded: false, quarantinedSha: null, sample };
+    return {
+      entry,
+      sha: null,
+      config: fingerprint,
+      guarded: false,
+      quarantinedSha: null,
+      sample,
+      resolvedConfiguration,
+    };
   }
 
   const guarded = isMovingBranch(source, token);
@@ -153,6 +198,7 @@ async function launchTarget(configPath: string, guard: CrashGuard): Promise<Laun
     quarantinedSha = sha;
     ({ entry, sha } = materializeGithubEngine({ ...source, ref: pin }, { baseDir, token }));
   }
+  assertBaseConfigProtocol(entry, baseConfigPath);
 
   const provenance =
     quarantinedSha !== null
@@ -162,7 +208,15 @@ async function launchTarget(configPath: string, guard: CrashGuard): Promise<Laun
     `[phoebe] boot: engine source "github" ${provenance} — exec ${entry} (long-running).`,
   );
 
-  return { entry, sha, config: fingerprint, guarded, quarantinedSha, sample };
+  return {
+    entry,
+    sha,
+    config: fingerprint,
+    guarded,
+    quarantinedSha,
+    sample,
+    resolvedConfiguration,
+  };
 }
 
 /**
@@ -212,12 +266,20 @@ function watchedRefSha(source: ResolvedEngineSource, token: string | undefined):
  * `onSpawnError` override, spawn-engine.mjs's default would `process.exit(1)`
  * here, bypassing boot's drain-latch teardown and leaving `exited` pending.
  */
-function spawnSupervised(entry: string, argv: readonly string[]): SupervisedChild {
+function spawnSupervised(
+  entry: string,
+  argv: readonly string[],
+  resolvedConfiguration: string | undefined,
+): SupervisedChild {
   let settle!: (exit: EngineExit) => void;
   const exited = new Promise<EngineExit>((resolve) => {
     settle = resolve;
   });
   const child = spawnEngine(entry, argv, {
+    env:
+      resolvedConfiguration === undefined
+        ? undefined
+        : { [BOOTSTRAP_RESOLVED_CONFIG_ENV]: resolvedConfiguration },
     onExit: (code: number | null, signal: NodeJS.Signals | null) => settle({ code, signal }),
     onSpawnError: (error: Error) => {
       console.error(`[phoebe] boot: engine failed to spawn — ${error.message}`);
@@ -238,7 +300,10 @@ function spawnSupervised(entry: string, argv: readonly string[]): SupervisedChil
 async function createBootCrashGuard(configPath: string): Promise<CrashGuard> {
   let stateDir = DEFAULT_STATE_DIR;
   try {
-    stateDir = readStateDir(await loadMountedConfig(configPath, configFingerprint(configPath)));
+    const baseConfigPath = resolveBaseConfigPath(process.env);
+    const fingerprint = deploymentConfigFingerprint(configPath, baseConfigPath);
+    stateDir = (await loadBootConfiguration(configPath, process.env, fingerprint)).config.paths
+      .stateDir;
   } catch {
     // launchTarget loads the same config a moment later and reports the failure.
   }
@@ -336,7 +401,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   try {
     exit = await superviseEngine({
       launch: () => launchTarget(configPath, guard),
-      spawn: (entry) => spawnSupervised(entry, argv),
+      spawn: (entry, engine) => spawnSupervised(entry, argv, engine.resolvedConfiguration),
       stop,
       intervalMs,
       onRunEnd: (run) => {
