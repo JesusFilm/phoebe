@@ -1,0 +1,24 @@
+{
+  "schemaVersion": "events-v1",
+  "runtimeId": "runtime-1",
+  "eventId": "event-3",
+  "sequence": 3,
+  "work": { "workId": "reviews:9", "kind": "reviews", "pullRequestNumber": 9 },
+  "provider": { "name": "cursor", "model": "cursor-test", "digest": "sha256:provider-model" },
+  "digests": { "config": "sha256:config", "policy": "sha256:policy", "prompts": "sha256:prompts" },
+  "startedAt": "2026-07-30T12:04:00.000Z",
+  "endedAt": "2026-07-30T12:05:00.000Z",
+  "outcome": "agent-failure",
+  "failure": { "category": "agent", "summary": "Agent exited with code 1.", "retryable": true },
+  "verification": [
+    {
+      "command": "vp run ready",
+      "status": "not-run",
+      "summary": "Agent exited before verification."
+    }
+  ],
+  "retries": 2,
+  "escalations": 1,
+  "resources": { "durationMs": 60000, "agentExitCode": 1, "summary": "No commit produced." },
+  "links": { "pullRequest": "https://github.com/owner/repo/pull/9" }
+}

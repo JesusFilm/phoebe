@@ -1,0 +1,215 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://phoebe.dev/contracts/status-v1.schema.json",
+  "title": "Phoebe runtime status v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schemaVersion",
+    "updatedAt",
+    "runtime",
+    "repository",
+    "digests",
+    "capabilities",
+    "lifecycle",
+    "activeWork",
+    "lastSuccess",
+    "lastFailure",
+    "control",
+    "health",
+    "journal",
+    "links"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "status-v1" },
+    "updatedAt": { "type": "string", "format": "date-time" },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["runtimeId", "instanceId", "startedAt"],
+      "properties": {
+        "runtimeId": { "type": "string", "minLength": 1 },
+        "instanceId": { "type": "string", "minLength": 1 },
+        "startedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["slug", "url", "defaultBranch"],
+      "properties": {
+        "slug": { "type": "string", "minLength": 1 },
+        "url": { "type": "string", "format": "uri" },
+        "defaultBranch": { "type": "string", "minLength": 1 }
+      }
+    },
+    "digests": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["engine", "bootstrap", "config", "policy", "prompts", "providerModel"],
+      "properties": {
+        "engine": { "type": "string" },
+        "bootstrap": { "type": "string" },
+        "config": { "type": "string" },
+        "policy": { "type": "string" },
+        "prompts": { "type": "string" },
+        "providerModel": { "type": "string" }
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "items": { "type": "string" },
+      "contains": { "const": "status-v1" }
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["state"],
+      "properties": {
+        "state": {
+          "enum": ["starting", "selecting", "idle", "running", "draining", "stopped", "failed"]
+        },
+        "reason": { "type": "string" }
+      }
+    },
+    "activeWork": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["workId", "kind", "startedAt"],
+          "properties": {
+            "workId": { "type": "string" },
+            "kind": { "enum": ["conflicts", "checks", "reviews", "issues", "research"] },
+            "issueNumber": { "type": "integer", "minimum": 1 },
+            "pullRequestNumber": { "type": "integer", "minimum": 1 },
+            "branch": { "type": "string" },
+            "startedAt": { "type": "string", "format": "date-time" }
+          }
+        }
+      ]
+    },
+    "lastSuccess": { "$ref": "#/$defs/nullableOutcome" },
+    "lastFailure": { "$ref": "#/$defs/nullableOutcome" },
+    "control": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["retry", "backoff", "quarantine", "drain"],
+      "properties": {
+        "retry": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["attempt"],
+          "properties": {
+            "attempt": { "type": "integer", "minimum": 0 },
+            "nextAt": { "type": "string", "format": "date-time" }
+          }
+        },
+        "backoff": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["active"],
+          "properties": {
+            "active": { "type": "boolean" },
+            "until": { "type": "string", "format": "date-time" },
+            "reason": { "type": "string" }
+          }
+        },
+        "quarantine": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["active"],
+          "properties": {
+            "active": { "type": "boolean" },
+            "engineSha": { "type": "string" },
+            "reason": { "type": "string" }
+          }
+        },
+        "drain": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["requested"],
+          "properties": {
+            "requested": { "type": "boolean" },
+            "requestedAt": { "type": "string", "format": "date-time" }
+          }
+        }
+      }
+    },
+    "health": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["state", "telemetry"],
+      "properties": {
+        "state": { "enum": ["healthy", "degraded", "unhealthy"] },
+        "telemetry": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["writable", "lastError", "lastErrorAt"],
+          "properties": {
+            "writable": { "type": "boolean" },
+            "lastError": { "type": ["string", "null"] },
+            "lastErrorAt": { "type": ["string", "null"], "format": "date-time" }
+          }
+        }
+      }
+    },
+    "journal": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "earliestSequence",
+        "latestSequence",
+        "retainedSegments",
+        "quarantinedTailCount"
+      ],
+      "properties": {
+        "earliestSequence": { "type": ["integer", "null"], "minimum": 1 },
+        "latestSequence": { "type": ["integer", "null"], "minimum": 1 },
+        "retainedSegments": { "type": "integer", "minimum": 0 },
+        "quarantinedTailCount": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "links": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["repository"],
+      "properties": {
+        "repository": { "type": "string", "format": "uri" },
+        "issue": { "type": "string", "format": "uri" },
+        "pullRequest": { "type": "string", "format": "uri" },
+        "branch": { "type": "string", "format": "uri" }
+      }
+    }
+  },
+  "$defs": {
+    "nullableOutcome": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["eventId", "sequence", "workId", "outcome", "endedAt"],
+          "properties": {
+            "eventId": { "type": "string" },
+            "sequence": { "type": "integer", "minimum": 1 },
+            "workId": { "type": "string" },
+            "outcome": {
+              "enum": [
+                "success",
+                "verification-failure",
+                "agent-failure",
+                "quota-backoff",
+                "infrastructure-failure",
+                "cancelled"
+              ]
+            },
+            "endedAt": { "type": "string", "format": "date-time" },
+            "failureCategory": { "type": "string" }
+          }
+        }
+      ]
+    }
+  }
+}

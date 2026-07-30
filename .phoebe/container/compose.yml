@@ -46,6 +46,7 @@ services:
       PHOEBE_ENGINE_DIR: /data/engine
       PHOEBE_AGENT: "${PHOEBE_AGENT:-}"
       PHOEBE_MODEL: "${PHOEBE_MODEL:-}"
+      PHOEBE_RUNTIME_ID: "${PHOEBE_RUNTIME_ID:-}"
       PHOEBE_POLL_INTERVAL_MS: "${PHOEBE_POLL_INTERVAL_MS:-}"
       # A minute is a long time to wait when demonstrating a relaunch; the
       # reconcile poll is one stat (plus one ls-remote for a github source), so

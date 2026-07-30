@@ -30,6 +30,7 @@
 // without processes or timers.
 
 import { statSync } from "node:fs";
+import type { ResolvedEngineSource } from "./engine-source.ts";
 
 /** How often the watch samples the config and the tracked ref. */
 export const DEFAULT_RECONCILE_INTERVAL_MS = 60_000;
@@ -61,6 +62,8 @@ export type WatchState = {
 export type LaunchedEngine = {
   /** The engine CLI path that was spawned. */
   entry: string;
+  /** Source provenance passed to the runtime status contract. */
+  source?: ResolvedEngineSource;
   /** The commit it is running; null for a local mount (nothing to compare). */
   sha: string | null;
   /** The config fingerprint at launch. */

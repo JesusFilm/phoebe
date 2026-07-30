@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "events-v1",
+  "runtimeId": "runtime-1",
+  "eventId": "event-2",
+  "sequence": 2,
+  "work": { "workId": "checks:9", "kind": "checks", "pullRequestNumber": 9 },
+  "provider": { "name": "claude", "model": "claude-test", "digest": "sha256:provider-model" },
+  "digests": { "config": "sha256:config", "policy": "sha256:policy", "prompts": "sha256:prompts" },
+  "startedAt": "2026-07-30T12:02:00.000Z",
+  "endedAt": "2026-07-30T12:03:00.000Z",
+  "outcome": "verification-failure",
+  "failure": { "category": "verification", "summary": "vp test failed.", "retryable": true },
+  "verification": [{ "command": "vp test", "status": "failed", "summary": "1 test failed." }],
+  "retries": 1,
+  "escalations": 0,
+  "resources": { "durationMs": 60000, "agentExitCode": 0, "summary": "Verification failed." },
+  "links": { "pullRequest": "https://github.com/owner/repo/pull/9" }
+}
