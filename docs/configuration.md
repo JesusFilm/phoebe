@@ -142,10 +142,12 @@ See [`operating.md`](operating.md) for how a human drives Phoebe with these.
 The `conflicts` / `checks` / `reviews` work kinds scan open PRs. Two fields
 bound what they touch:
 
-| Field      | Default             | Values / meaning                                                                                                                           |
-| ---------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `prScope`  | `"phoebe"`          | `"phoebe"` = only `branchPrefix` branches; `"all"` = any same-repo PR.                                                                     |
-| `draftPrs` | `"skip-non-phoebe"` | `"skip-non-phoebe"` = drafts on non-Phoebe branches are off-limits; `"skip-all"` = never touch drafts; `"include"` = drafts are fair game. |
+| Field         | Default             | Values / meaning                                                                                                                           |
+| ------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `prScope`     | `"phoebe"`          | `"phoebe"` = only `branchPrefix` branches; `"all"` = any same-repo PR.                                                                     |
+| `prAuthors`   | `[]`                | Optional GitHub-login allowlist for PR janitors. Empty means every author. Matching is case-insensitive.                                   |
+| `prBaseScope` | `"default"`         | `"default"` = only PRs targeting `defaultBranch`; `"all"` = PRs targeting any branch, including stacked PRs.                               |
+| `draftPrs`    | `"skip-non-phoebe"` | `"skip-non-phoebe"` = drafts on non-Phoebe branches are off-limits; `"skip-all"` = never touch drafts; `"include"` = drafts are fair game. |
 
 Cross-repository PRs (from forks) are always excluded, regardless of scope.
 
