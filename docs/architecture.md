@@ -121,13 +121,24 @@ commit runs is the one that watches for a better one, so both live in the
 bootstrapper.
 
 **Reconcile.** Every `PHOEBE_RECONCILE_INTERVAL_MS` (default 60s) boot samples
-two things: the mounted config's fingerprint, and — for a `github` source
-tracking a branch — where that branch points now (`git ls-remote`). When either
-has moved away from what the running engine was launched from, boot `SIGTERM`s
-the engine, which drains (finishes the current work unit, starts no new one,
-exits 0), then re-resolves the source and relaunches. Same container, no
-interrupted unit. Comparing against the _launch_ rather than the previous sample
-means a missed poll still converges and one change never relaunches twice.
+the repository declaration, the generated base when `PHOEBE_BASE_CONFIG` is
+set, and — for a `github` source tracking a branch — where that branch points
+now (`git ls-remote`). When any input has moved away from what the running
+engine was launched from, boot `SIGTERM`s the engine, which drains (finishes the
+current work unit, starts no new one, exits 0), then re-resolves every config
+layer and relaunches. An invalid changed base leaves the engine stopped while
+boot reports the resolution error and retries; it never starts a partially
+resolved replacement. The resolved non-secret configuration is handed to the
+child as an immutable launch snapshot, preventing an edit between boot's source
+selection and the engine's startup from mixing two authored states. Same
+container, no interrupted unit. Comparing against the _launch_ rather than the
+previous sample means a missed poll still converges and one change never
+relaunches twice.
+
+When a generated base is active, boot verifies the materialized engine carries
+the version-1 `src/bootstrap-config-protocol.json` marker before spawning it.
+This makes an older pinned engine an explicit compatibility error; without a
+generated base, older refs remain runnable as before.
 
 **Crash-loop fallback.** Following a branch means eventually following it onto a
 commit that will not boot, so every launch passes the crash-loop guard

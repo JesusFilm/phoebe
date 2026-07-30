@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
 import {
   configFingerprint,
+  deploymentConfigFingerprint,
   detectChange,
   superviseEngine,
   type EngineExit,
@@ -132,9 +133,11 @@ describe("detectChange", () => {
 describe("configFingerprint", () => {
   let dir: string;
   let path: string;
+  let basePath: string;
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "reconcile-test-"));
     path = join(dir, "phoebe.config.ts");
+    basePath = join(dir, "generated-base.json");
   });
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
@@ -162,6 +165,26 @@ describe("configFingerprint", () => {
 
   test("a missing file fingerprints as null rather than throwing", () => {
     expect(configFingerprint(join(dir, "gone.ts"))).toBeNull();
+  });
+
+  test("preserves the existing fingerprint when no generated base is configured", () => {
+    writeFileSync(path, "export default {}");
+    expect(deploymentConfigFingerprint(path, undefined)).toBe(configFingerprint(path));
+  });
+
+  test("includes generated-base edits and missing state in the deployment fingerprint", () => {
+    writeFileSync(path, "export default {}");
+    writeFileSync(basePath, `{"schemaVersion":1,"config":{"readyLabel":"before"}}`);
+    const before = deploymentConfigFingerprint(path, basePath);
+
+    writeFileSync(basePath, `{"schemaVersion":1,"config":{"readyLabel":"after-longer"}}`);
+    const after = deploymentConfigFingerprint(path, basePath);
+    expect(after).not.toBe(before);
+
+    rmSync(basePath);
+    const missing = deploymentConfigFingerprint(path, basePath);
+    expect(missing).not.toBeNull();
+    expect(missing).not.toBe(after);
   });
 });
 
@@ -220,18 +243,20 @@ async function settle(): Promise<void> {
  */
 function harness(
   options: {
+    initialConfig?: string | null;
     launch?: (attempt: number) => Promise<LaunchedEngine> | LaunchedEngine;
     relaunchAfterExit?: (run: EngineRun) => boolean;
   } = {},
 ) {
   const clock = gatedClock();
   const state: WatchState & { sha: string | null } = {
-    config: "1:2",
+    config: options.initialConfig ?? "1:2",
     remoteSha: SHA_A,
     sha: SHA_A,
   };
   const children: Array<ReturnType<typeof fakeChild>> = [];
   const entries: string[] = [];
+  const resolvedConfigurations: Array<string | undefined> = [];
   const relaunches: string[] = [];
   const runs: EngineRun[] = [];
   const ticks: number[] = [];
@@ -253,11 +278,13 @@ function harness(
         config: state.config,
         quarantinedSha: null,
         guarded: true,
+        resolvedConfiguration: `snapshot-${n}`,
         sample: () => ({ config: state.config, remoteSha: state.remoteSha }),
       };
     },
-    spawn: (entry) => {
+    spawn: (entry, engine) => {
       entries.push(entry);
+      resolvedConfigurations.push(engine.resolvedConfiguration);
       const next = fakeChild();
       children.push(next);
       return next.child;
@@ -276,6 +303,7 @@ function harness(
     state,
     children,
     entries,
+    resolvedConfigurations,
     relaunches,
     runs,
     ticks,
@@ -296,6 +324,7 @@ describe("superviseEngine", () => {
     const h = harness();
     await settle();
     expect(h.entries).toEqual(["/engine/0/src/cli.ts"]);
+    expect(h.resolvedConfigurations).toEqual(["snapshot-0"]);
 
     for (let i = 0; i < 5; i++) {
       h.tick();
@@ -343,6 +372,41 @@ describe("superviseEngine", () => {
     await settle();
     h.children[1]?.exit();
     await h.result;
+  });
+
+  test("editing the generated base drains before relaunching on its new fingerprint", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "reconcile-base-integration-"));
+    const repositoryPath = join(dir, "phoebe.config.ts");
+    const generatedPath = join(dir, "generated-base.json");
+    writeFileSync(repositoryPath, "export default {}");
+    writeFileSync(generatedPath, `{"schemaVersion":1,"config":{"readyLabel":"before"}}`);
+
+    try {
+      const h = harness({
+        initialConfig: deploymentConfigFingerprint(repositoryPath, generatedPath),
+      });
+      await settle();
+
+      writeFileSync(generatedPath, `{"schemaVersion":1,"config":{"readyLabel":"after-longer"}}`);
+      h.state.config = deploymentConfigFingerprint(repositoryPath, generatedPath);
+      h.tick();
+      await settle();
+
+      expect(h.relaunches).toEqual(["config"]);
+      expect(h.children[0]?.kills).toEqual(["SIGTERM"]);
+      expect(h.entries).toHaveLength(1);
+
+      h.children[0]?.exit();
+      await settle();
+      expect(h.entries).toHaveLength(2);
+
+      h.requestStop();
+      await settle();
+      h.children[1]?.exit();
+      await h.result;
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("the tracked ref advancing relaunches the engine on the new commit", async () => {

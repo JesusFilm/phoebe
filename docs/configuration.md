@@ -37,8 +37,69 @@ The file is loaded via native Node type-stripping (unflagged on Node ≥ 24, the
 version Phoebe requires), so **no bundler is needed on the consumer side**.
 Either a default export or a named `export const config` is accepted.
 
-Load order (`src/cli.ts`): load the file → apply the `PHOEBE_*` env overlay →
-merge shipped defaults (`resolveConfig`) → install the resolved config → run.
+Resolution order is deterministic:
+
+1. shipped Phoebe defaults
+2. the optional generated base document named by `PHOEBE_BASE_CONFIG`
+3. the repository's `phoebe.config.ts`
+4. existing `PHOEBE_*` field overrides
+
+Scalars replace lower-layer values, nested records merge key by key, arrays
+replace the lower array as a whole, and absent fields do not override lower
+layers. The engine, `phoebe boot`, and `phoebe config resolve --json` all use
+this same resolver. Boot passes its canonical non-secret resolution to the child
+engine as an immutable launch snapshot, so an edit between source selection and
+child startup cannot mix one engine source with another runtime configuration.
+
+### Generated base configuration
+
+`PHOEBE_BASE_CONFIG` may name an absolute path to a UTF-8 JSON document:
+
+```json
+{
+  "schemaVersion": 1,
+  "config": {
+    "branchPrefix": "managed/",
+    "paths": {
+      "stateDir": "/data/managed-state"
+    },
+    "engine": {
+      "source": "github",
+      "repo": "JesusFilm/phoebe",
+      "ref": "v0.2.0"
+    }
+  }
+}
+```
+
+The base can supply any optional configuration field, including `engine`, but
+must not define the five required repository-owned fields (`repoSlug`,
+`repoUrl`, `installCommand`, `checkCommand`, `testCommand`). Those must remain
+present and non-empty in `phoebe.config.ts`.
+
+The document is strict: unknown fields, unsupported schema versions, invalid
+JSON, invalid field shapes, a relative path, or a missing/unreadable file fail
+with an error naming the configured path before a new engine starts. When no
+base path is set, resolution is identical to the original defaults → repository
+→ environment behavior.
+
+An engine selected while the generated base is active must carry the
+`src/bootstrap-config-protocol.json` version-1 marker, which declares support
+for boot's resolved snapshot handoff. Older pinned refs fail clearly before
+spawn instead of silently ignoring the generated layer. The marker check is not
+required when `PHOEBE_BASE_CONFIG` is unset, preserving older-engine
+compatibility for existing deployments.
+
+Use the read-only command below to validate a deployment and inspect the
+canonical non-secret effective configuration:
+
+```bash
+PHOEBE_BASE_CONFIG=/etc/phoebe/generated-base.json \
+  phoebe config resolve --json
+```
+
+The output is a versioned JSON document. It includes resolved configuration and
+the canonical engine source, but never serializes environment values or secrets.
 
 ## Required fields
 
@@ -165,19 +226,23 @@ new engine, and the running container picks it up without a rebuild or a restart
 ### Reconcile (config + ref watch)
 
 `phoebe boot` does not just launch the engine — it keeps the **right** engine
-running. Every `PHOEBE_RECONCILE_INTERVAL_MS` (default 60s) it samples two
-things and compares them against what the running engine was launched from:
+running. Every `PHOEBE_RECONCILE_INTERVAL_MS` (default 60s) it samples the
+following inputs and compares them against what the running engine was launched
+from:
 
-| Watched            | How it is sampled              | Relaunches when                                  |
-| ------------------ | ------------------------------ | ------------------------------------------------ |
-| The mounted config | one `stat` (mtime + size)      | the file changed — the `engine` field is re-read |
-| The tracked ref    | one `git ls-remote` (no fetch) | the branch advanced past the running commit      |
+| Watched                    | How it is sampled              | Relaunches when                                      |
+| -------------------------- | ------------------------------ | ---------------------------------------------------- |
+| The repository declaration | one `stat` (mtime + size)      | `phoebe.config.ts` changed                           |
+| The generated base         | one `stat` (mtime + size)      | its contents or readable/missing state changed       |
+| The tracked ref            | one `git ls-remote` (no fetch) | the branch advanced past the running engine's commit |
 
-On a change, boot sends the engine `SIGTERM` — a **graceful drain**, not a kill:
+The generated-base watch is active only when `PHOEBE_BASE_CONFIG` is set. On a
+change, boot sends the engine `SIGTERM` — a **graceful drain**, not a kill:
 the engine finishes the work unit in flight, starts no new one, and exits 0.
-Only then does boot re-resolve the source (re-read the config, fetch + check out
-the new ref) and spawn the replacement, in the same container. So a reconcile
-never interrupts a work unit and never restarts the container.
+Only then does boot re-resolve every layer, fetch and check out the new ref if
+needed, and spawn the replacement in the same container. If the changed base is
+invalid, resolution fails and boot retries without starting a partially
+configured engine.
 
 The ref-watch is **inert for a pinned `ref`**: a 40-char SHA is never even asked
 about, and a tag is asked but never acted on. Pinning means pinning — only a
@@ -275,6 +340,7 @@ config-file territory.
 | `PHOEBE_POLL_INTERVAL_MS`      | `300000`             | Persistent-mode idle poll interval.                                                                                                                                      |
 | `PHOEBE_ENGINE_DIR`            | `<tmp>/phoebe-agent` | Base dir `phoebe boot` clones a `github` engine source into (and bin.mjs materializes under). Put it on a persistent volume so github boots fetch instead of re-cloning. |
 | `PHOEBE_RECONCILE_INTERVAL_MS` | `60000`              | How often `phoebe boot` polls the mounted config and the tracked ref for a drain-and-relaunch (see Engine source → Reconcile).                                           |
+| `PHOEBE_BASE_CONFIG`           | —                    | Absolute path to the optional versioned generated base configuration. Resolved below the repository declaration and watched by `phoebe boot`.                            |
 | `PHOEBE_BASE`                  | —                    | Force the worktree base ref for issues (bypasses blocker resolution).                                                                                                    |
 
 Secrets (`GH_TOKEN` and the active provider's key) are also read from the

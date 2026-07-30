@@ -57,6 +57,10 @@ is [`docs/ai-install.md`](docs/ai-install.md).
 ## Configuration at a glance
 
 Only five fields are required; everything else falls back to a shipped default.
+Deployments may also set `PHOEBE_BASE_CONFIG` to an absolute path containing a
+strict, versioned JSON base layer. The repository declaration remains
+authoritative, and existing `PHOEBE_*` field overrides remain highest
+precedence.
 
 ```ts
 import type { PhoebeUserConfig } from "phoebe-agent";
@@ -89,7 +93,9 @@ export default config;
 | `defaultProvider` | `cursor`                                 | Agent CLI to drive (`cursor`/`claude`/`codex`). |
 
 See [`docs/configuration.md`](docs/configuration.md) for the complete field
-reference and the `PHOEBE_*` environment overlay.
+reference, generated-base contract, merge rules, and `PHOEBE_*` environment
+overlay. Run `phoebe config resolve --json` to print the canonical non-secret
+effective configuration without starting the engine.
 
 ## Documentation
 

@@ -24,6 +24,42 @@ export type EngineSourceField =
   | { source: "github"; ref?: string; repo?: string }
   | { source: "local" };
 
+/** Canonical engine source shared by the bootstrapper and config inspection CLI. */
+export type ResolvedEngineSource =
+  | { source: "github"; ref: string; repo: string }
+  | { source: "local" };
+
+/** Runtime validation shared by repository and generated engine-source fields. */
+export function validateEngineSourceField(
+  value: unknown,
+  context = "phoebe.config.ts `engine`",
+): asserts value is EngineSourceField {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(
+      `${context} must be { source: "github", ref?, repo? } or { source: "local" } ` +
+        `with string ref/repo (got ${JSON.stringify(value)}).`,
+    );
+  }
+  const field = value as Record<string, unknown>;
+  const unknown = Object.keys(field).filter((key) => !["source", "ref", "repo"].includes(key));
+  const validLocal =
+    field["source"] === "local" && field["ref"] === undefined && field["repo"] === undefined;
+  const validGithub =
+    field["source"] === "github" &&
+    (field["ref"] === undefined || typeof field["ref"] === "string") &&
+    (field["repo"] === undefined || typeof field["repo"] === "string");
+  if (unknown.length > 0 || (!validLocal && !validGithub)) {
+    const unknownDetail =
+      unknown.length > 0
+        ? ` Unknown field(s): ${unknown.map((key) => `${context}.${key}`).join(", ")}.`
+        : "";
+    throw new Error(
+      `${context} must be { source: "github", ref?, repo? } or { source: "local" } ` +
+        `with string ref/repo (got ${JSON.stringify(value)}).${unknownDetail}`,
+    );
+  }
+}
+
 export type PromptFilesConfig = {
   issue: string;
   conflict: string;
@@ -179,6 +215,28 @@ export const CONFIG_DEFAULTS = {
     stateDir: "/data/state",
   } satisfies PathsConfig,
 } as const;
+
+export const WORK_KIND_NAMES = ["conflicts", "checks", "reviews", "issues", "research"] as const;
+export type WorkKindName = (typeof WORK_KIND_NAMES)[number];
+
+/** Fail fast when the configured work order is empty or names an unknown kind. */
+export function validateWorkOrder(order: readonly string[]): readonly WorkKindName[] {
+  if (order.length === 0) {
+    throw new Error(
+      `WORK_ORDER must not be empty. Include at least one of: ${WORK_KIND_NAMES.join(", ")}.`,
+    );
+  }
+  const validated: WorkKindName[] = [];
+  for (const kind of order) {
+    if (!WORK_KIND_NAMES.includes(kind as WorkKindName)) {
+      throw new Error(
+        `Unknown work kind "${kind}" in WORK_ORDER. Use one of: ${WORK_KIND_NAMES.join(", ")}.`,
+      );
+    }
+    validated.push(kind as WorkKindName);
+  }
+  return validated;
+}
 
 const REQUIRED_USER_FIELDS = [
   "repoSlug",
