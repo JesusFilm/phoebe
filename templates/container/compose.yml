@@ -20,6 +20,15 @@
 # within a poll interval and relaunches at the next work-unit boundary. No
 # rebuild and no restart; rebuild only when this image's toolchain changes.
 
+# Project name — namespaces this instance's containers and named volumes. It
+# defaults to `phoebe`, but if you run Phoebe for more than one repo on the same
+# host you MUST make it unique per repo (set COMPOSE_PROJECT_NAME in `.env`).
+# Compose otherwise derives the project from this file's parent directory —
+# `container` — which is identical for every consumer, so the "private"
+# /data/repo, /data/state, … volumes would be shared across repos. Set it and
+# each repo gets its own `phoebe-<repo>_phoebe-repo` volume set.
+name: ${COMPOSE_PROJECT_NAME:-phoebe}
+
 services:
   phoebe:
     build:

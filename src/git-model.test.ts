@@ -143,10 +143,22 @@ describe("git model", () => {
     expect(calls[1]?.cwd).toBe("/data/repo");
   });
 
-  test("ensureClone is a no-op when a clone already exists", () => {
-    const { runner, calls } = spyGit();
+  test("ensureClone is a no-op when the existing clone's origin matches", () => {
+    const calls: Array<{ args: string[]; cwd?: string }> = [];
+    const runner: GitRunner = (args, opts) => {
+      calls.push({ args, ...(opts?.cwd ? { cwd: opts.cwd } : {}) });
+      return "https://example.com/repo.git\n";
+    };
     ensureClone({ repoUrl: "https://example.com/repo.git", repoDir }, runner);
-    expect(calls).toEqual([]);
+    // Only the origin check runs — no clone, no fetch.
+    expect(calls).toEqual([{ args: ["config", "--get", "remote.origin.url"], cwd: repoDir }]);
+  });
+
+  test("ensureClone refuses an existing clone whose origin is a different repo", () => {
+    const runner: GitRunner = () => "https://example.com/OTHER.git\n";
+    expect(() => ensureClone({ repoUrl: "https://example.com/repo.git", repoDir }, runner)).toThrow(
+      /Refusing to work a foreign clone/,
+    );
   });
 
   test("ensureClone clones the configured URL into the repo dir when missing", () => {

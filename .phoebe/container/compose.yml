@@ -16,6 +16,15 @@
 # current work unit, starts no new one, and exits 0. The signal is forwarded the
 # whole way down — tini → `boot` → engine.
 
+# Explicit project name — do NOT let it default to the compose file's parent
+# directory (`container`). Every scaffolded consumer's compose file also lives in
+# a dir named `container`, so the default would namespace this instance's
+# "private" volumes (phoebe-repo/-state/…) identically to every other Phoebe on
+# the host — they would share one /data/repo clone, and `ensureClone` would then
+# work whichever repo cloned first. A fixed, repo-specific name keeps the dogfood
+# volumes (`phoebe-dogfood_phoebe-repo`, …) to itself. (#67)
+name: phoebe-dogfood
+
 services:
   phoebe:
     build:
