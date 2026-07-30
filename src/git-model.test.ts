@@ -161,6 +161,16 @@ describe("git model", () => {
     );
   });
 
+  test("ensureClone refuses an existing clone with no configured origin", () => {
+    // `repoDir` has `.git` but no `remote.origin.url` (beforeAll only writes the
+    // tracking ref). The real runner's `git config --get` exits non-zero here, so
+    // this proves the missing-origin lookup routes through the refusal path
+    // instead of surfacing a raw `Command failed`.
+    expect(() =>
+      ensureClone({ repoUrl: "https://example.com/repo.git", repoDir }, testGit),
+    ).toThrow(/Refusing to work a foreign clone/);
+  });
+
   test("ensureClone clones the configured URL into the repo dir when missing", () => {
     const { runner, calls } = spyGit();
     const freshDir = join(root, "fresh");

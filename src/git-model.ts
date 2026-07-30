@@ -41,7 +41,16 @@ export function ensureClone(
   git: GitRunner = defaultGit,
 ): void {
   if (existsSync(join(opts.repoDir, ".git"))) {
-    const origin = git(["config", "--get", "remote.origin.url"], { cwd: opts.repoDir }).trim();
+    // `git config --get` exits non-zero when the key is unset, which `defaultGit`
+    // surfaces as a throw. An unreadable origin is not the configured `repoUrl`,
+    // so treat it as an absent origin and fall through to the refusal below —
+    // reaching the explicit `<none>` message rather than a raw `Command failed`.
+    let origin = "";
+    try {
+      origin = git(["config", "--get", "remote.origin.url"], { cwd: opts.repoDir }).trim();
+    } catch {
+      origin = "";
+    }
     if (origin !== opts.repoUrl) {
       throw new Error(
         `Existing clone at ${opts.repoDir} has origin \`${origin || "<none>"}\`, but this ` +
