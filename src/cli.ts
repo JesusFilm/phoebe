@@ -9,6 +9,9 @@
 //                       Skips existing files — safe to re-run.
 //   phoebe config resolve --json
 //                       Print the canonical effective configuration and exit.
+//   phoebe status --json
+//                       Read the local status-v1 projection without starting
+//                       work or contacting GitHub.
 //   phoebe [flags]      Run the engine. Loads the consumer's
 //                       `phoebe.config.ts`, overlays `PHOEBE_*` env vars,
 //                       installs the resolved config, then hands off to main.
@@ -30,6 +33,8 @@ import {
 import { formatInitReport, runInit } from "./init.ts";
 import { resolveConfigPath } from "./load-config.ts";
 import { setResolvedConfig } from "./resolved-config.ts";
+import { ContractCapabilityError, STATUS_SCHEMA_VERSION } from "./status-contract.ts";
+import { readStatusSnapshot } from "./status-store.ts";
 
 type ParsedArgs = { configPath: string | undefined; help: boolean; forward: string[] };
 
@@ -72,6 +77,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedArgs {
 }
 
 export type ParsedInitArgs = { targetDir: string; help: boolean };
+export type ParsedStatusArgs = { configPath: string | undefined; help: boolean };
 
 /**
  * Parse argv left after the leading `init` token has been consumed. Supports
@@ -174,11 +180,26 @@ export function loadEngineConfiguration(
     : Promise.resolve(parseResolvedConfigurationSnapshot(snapshot));
 }
 
+export function parseStatusArgs(argv: readonly string[]): ParsedStatusArgs {
+  const parsed = parseCliArgs(argv);
+  const unknown = parsed.forward.filter((arg) => arg !== "--json");
+  if (unknown.length > 0) {
+    throw new Error(
+      `Unknown status argument(s): ${unknown.join(", ")}. See \`phoebe status --help\`.`,
+    );
+  }
+  if (!parsed.help && !parsed.forward.includes("--json")) {
+    throw new Error("`phoebe status` requires --json.");
+  }
+  return { configPath: parsed.configPath, help: parsed.help };
+}
+
 const HELP_TEXT = `phoebe — AFK coding agent
 
 Usage:
   phoebe init [dir]                Scaffold a consumer-owned runtime
   phoebe config resolve --json     Print the canonical effective configuration
+  phoebe status --json             Read the local status-v1 projection
   phoebe [--config <path>] [flags] Run the engine
 
 Options (engine mode):
@@ -198,6 +219,7 @@ Runtime toggles (read directly by the engine, not overlaid onto the config):
   PHOEBE_BASE_CONFIG     Absolute path to a versioned generated base config
   PHOEBE_AGENT           Provider name to use for this run (cursor|claude|codex)
   PHOEBE_MODEL           Model to use for this run
+  PHOEBE_RUNTIME_ID      Stable identity for a new state volume
   PHOEBE_POLL_INTERVAL_MS Persistent-mode poll interval (default 300000)
 `;
 
@@ -217,6 +239,16 @@ Writes into [dir] (default: current directory):
 
 Existing files are left untouched, so re-running is safe. To regenerate a
 scaffolded file, delete it first and re-run \`phoebe init\`.
+`;
+
+const STATUS_HELP_TEXT = `phoebe status — read the local runtime projection
+
+Usage:
+  phoebe status --json [--config <path>]
+
+Reads paths.stateDir/status-v1.json without starting work or contacting GitHub.
+On success, stdout is the exact snapshot. Missing or corrupt data is represented
+as a stable JSON error object; unsupported major versions are explicit.
 `;
 
 /**
@@ -243,6 +275,55 @@ export async function runCli(): Promise<void> {
 
   if (args[0] === "config") {
     process.stdout.write(await runConfigResolve(args.slice(1)));
+    return;
+  }
+
+  if (args[0] === "status") {
+    const parsed = parseStatusArgs(args.slice(1));
+    if (parsed.help) {
+      process.stdout.write(STATUS_HELP_TEXT);
+      return;
+    }
+    const configPath = resolveConfigPath(parsed.configPath, process.cwd());
+    const resolved = await loadResolvedConfiguration(configPath, { env: process.env });
+    try {
+      const result = readStatusSnapshot(resolved.config.paths.stateDir);
+      process.stdout.write(
+        `${JSON.stringify(
+          result.available
+            ? result.status
+            : {
+                schemaVersion: STATUS_SCHEMA_VERSION,
+                available: false,
+                error: {
+                  code: result.reason,
+                  message: result.message,
+                },
+              },
+          null,
+          2,
+        )}\n`,
+      );
+    } catch (error) {
+      if (!(error instanceof ContractCapabilityError)) throw error;
+      process.stdout.write(
+        `${JSON.stringify(
+          {
+            schemaVersion: STATUS_SCHEMA_VERSION,
+            available: false,
+            error: {
+              code: "unsupported-schema-major",
+              supportedVersion: error.supportedVersion,
+              receivedVersion: error.receivedVersion,
+              message: error.message,
+            },
+          },
+          null,
+          2,
+        )}\n`,
+      );
+      process.exitCode = 2;
+    }
     return;
   }
 

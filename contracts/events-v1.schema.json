@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://phoebe.dev/contracts/events-v1.schema.json",
+  "title": "Phoebe normalized work outcome v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schemaVersion",
+    "runtimeId",
+    "eventId",
+    "sequence",
+    "work",
+    "provider",
+    "digests",
+    "startedAt",
+    "endedAt",
+    "outcome",
+    "failure",
+    "verification",
+    "retries",
+    "escalations",
+    "resources",
+    "links"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "events-v1" },
+    "runtimeId": { "type": "string", "minLength": 1 },
+    "eventId": { "type": "string", "minLength": 1 },
+    "sequence": { "type": "integer", "minimum": 1 },
+    "work": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["workId", "kind"],
+      "properties": {
+        "workId": { "type": "string" },
+        "kind": { "enum": ["conflicts", "checks", "reviews", "issues", "research"] },
+        "issueNumber": { "type": "integer", "minimum": 1 },
+        "pullRequestNumber": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "provider": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["name", "model", "digest"],
+      "properties": {
+        "name": { "type": "string" },
+        "model": { "type": "string" },
+        "digest": { "type": "string" }
+      }
+    },
+    "digests": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["config", "policy", "prompts"],
+      "properties": {
+        "config": { "type": "string" },
+        "policy": { "type": "string" },
+        "prompts": { "type": "string" }
+      }
+    },
+    "startedAt": { "type": "string", "format": "date-time" },
+    "endedAt": { "type": "string", "format": "date-time" },
+    "outcome": {
+      "enum": [
+        "success",
+        "verification-failure",
+        "agent-failure",
+        "quota-backoff",
+        "infrastructure-failure",
+        "cancelled"
+      ]
+    },
+    "failure": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["category", "summary", "retryable"],
+          "properties": {
+            "category": {
+              "enum": [
+                "verification",
+                "agent",
+                "quota",
+                "provider",
+                "state-volume",
+                "git",
+                "github",
+                "internal"
+              ]
+            },
+            "summary": { "type": "string", "maxLength": 2000 },
+            "retryable": { "type": "boolean" }
+          }
+        }
+      ]
+    },
+    "verification": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["command", "status", "summary"],
+        "properties": {
+          "command": { "type": "string" },
+          "status": { "enum": ["passed", "failed", "unknown", "not-run"] },
+          "summary": { "type": "string", "maxLength": 2000 }
+        }
+      }
+    },
+    "retries": { "type": "integer", "minimum": 0 },
+    "escalations": { "type": "integer", "minimum": 0 },
+    "resources": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["durationMs", "summary"],
+      "properties": {
+        "durationMs": { "type": "integer", "minimum": 0 },
+        "agentExitCode": { "type": "integer" },
+        "summary": { "type": "string", "maxLength": 2000 }
+      }
+    },
+    "links": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "issue": { "type": "string", "format": "uri" },
+        "pullRequest": { "type": "string", "format": "uri" },
+        "branch": { "type": "string", "format": "uri" }
+      }
+    }
+  }
+}

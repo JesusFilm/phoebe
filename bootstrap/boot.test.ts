@@ -13,6 +13,7 @@ import {
   isMovingBranch,
   loadBootConfiguration,
   LOCAL_ENGINE_DIR,
+  observerEngineEnv,
   resolveEngineEntry,
 } from "./boot.ts";
 import { deploymentConfigFingerprint } from "./reconcile.ts";
@@ -131,6 +132,25 @@ describe("bootstrapper/engine configuration parity", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("observerEngineEnv", () => {
+  test("passes engine, bootstrap, and crash-loop provenance to the runtime", () => {
+    expect(
+      observerEngineEnv({
+        source: { source: "github", repo: "JesusFilm/phoebe", ref: "main" },
+        sha: "last-good-sha",
+        quarantinedSha: "bad-sha",
+      }),
+    ).toMatchObject({
+      PHOEBE_RUNNING_ENGINE_SOURCE: "github",
+      PHOEBE_RUNNING_ENGINE_REPO: "JesusFilm/phoebe",
+      PHOEBE_RUNNING_ENGINE_REF: "main",
+      PHOEBE_RUNNING_ENGINE_SHA: "last-good-sha",
+      PHOEBE_QUARANTINED_ENGINE_SHA: "bad-sha",
+      PHOEBE_BOOTSTRAP_VERSION: "0.1.0",
+    });
   });
 });
 

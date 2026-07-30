@@ -54,6 +54,8 @@ import {
   loadPromptTemplate as loadPromptTemplateFromRoot,
   renderPrompt,
 } from "./prompt.ts";
+import { buildRuntimeContractContext } from "./runtime-contract-context.ts";
+import { createRuntimeStatusReporter, type RuntimeStatusTransition } from "./runtime-status.ts";
 import {
   buildInitialPrBody,
   buildReviewsHandledComment,
@@ -439,7 +441,7 @@ async function runAgentInWorktree(opts: {
   worktreeDir: string;
   promptFile: string;
   promptArgs: Record<string, string>;
-}): Promise<void> {
+}): Promise<number> {
   const { provider, model } = selectProvider();
   // Caller-supplied per-callsite args (ISSUE_NUMBER, PR_NUMBER, …) override
   // the standard config-derived set by key.
@@ -463,6 +465,7 @@ async function runAgentInWorktree(opts: {
   if (exitCode !== 0) {
     console.log(`[phoebe] Agent exited with code ${exitCode}.`);
   }
+  return exitCode;
 }
 
 // The observed outcome of an automatic (no-agent) merge attempt:
@@ -553,7 +556,7 @@ async function runAgentWorkflow(opts: {
   promptArgs: Record<string, string>;
   beforeAgent?: (worktreeDir: string) => void;
   onResult: (result: AgentWorkflowResult) => void | Promise<void>;
-}): Promise<void> {
+}): Promise<number> {
   const branch = opts.pr.headRefName;
 
   fetchOrigin();
@@ -564,7 +567,7 @@ async function runAgentWorkflow(opts: {
     runShellCommand(config.installCommand, worktreeDir);
     opts.beforeAgent?.(worktreeDir);
 
-    await runAgentInWorktree({
+    const agentExitCode = await runAgentInWorktree({
       worktreeDir,
       promptFile: opts.promptFile,
       promptArgs: opts.promptArgs,
@@ -575,6 +578,7 @@ async function runAgentWorkflow(opts: {
     const localCommitCount = commitCount(worktreeDir, `origin/${branch}..HEAD`);
 
     await opts.onResult({ worktreeDir, branch, originShaBefore, originShaAfter, localCommitCount });
+    return agentExitCode;
   } finally {
     removeWorktree(repoDir, worktreeDir);
   }
@@ -583,8 +587,8 @@ async function runAgentWorkflow(opts: {
 async function runConflictResolutionAgent(
   pr: ConflictingPrCandidate,
   mergedBlockerPrNumbers: readonly PrNumber[],
-): Promise<void> {
-  await runAgentWorkflow({
+): Promise<number> {
+  return runAgentWorkflow({
     pr,
     promptFile: config.promptFiles.conflict,
     promptArgs: {
@@ -621,7 +625,10 @@ async function runConflictResolutionAgent(
   });
 }
 
-async function fixOnePrConflict(pr: ConflictingPrCandidate, ctx: StackContext): Promise<void> {
+async function fixOnePrConflict(
+  pr: ConflictingPrCandidate,
+  ctx: StackContext,
+): Promise<number | null> {
   console.log(`[phoebe] Conflict fix: PR #${pr.prNumber} (${pr.headRefName}).`);
   fetchOrigin();
 
@@ -640,7 +647,7 @@ async function fixOnePrConflict(pr: ConflictingPrCandidate, ctx: StackContext): 
     if (mergedBlockerPrNumbers.length > 0) {
       postPrComment(pr.prNumber, stackedCatchUpRetractionComment(mergedBlockerPrNumbers));
     }
-    return;
+    return null;
   }
   if (cleanResult === "failed") {
     console.log(`[phoebe] Could not start merge for PR #${pr.prNumber} — skipping.`);
@@ -648,14 +655,14 @@ async function fixOnePrConflict(pr: ConflictingPrCandidate, ctx: StackContext): 
       pr.prNumber,
       conflictFixFailureComment(pr.prNumber, currentConflictFailureWatermark(pr.headRefName)),
     );
-    return;
+    return null;
   }
 
-  await runConflictResolutionAgent(pr, mergedBlockerPrNumbers);
+  return runConflictResolutionAgent(pr, mergedBlockerPrNumbers);
 }
 
-async function runChecksResolutionAgent(pr: ChecksCandidate): Promise<void> {
-  await runAgentWorkflow({
+async function runChecksResolutionAgent(pr: ChecksCandidate): Promise<number> {
+  return runAgentWorkflow({
     pr,
     promptFile: config.promptFiles.checks,
     promptArgs: {
@@ -688,7 +695,7 @@ async function runChecksResolutionAgent(pr: ChecksCandidate): Promise<void> {
   });
 }
 
-async function fixOnePrChecks(pr: ChecksCandidate, ctx: StackContext): Promise<void> {
+async function fixOnePrChecks(pr: ChecksCandidate, ctx: StackContext): Promise<number | null> {
   console.log(
     `[phoebe] Checks fix: PR #${pr.prNumber} (${pr.headRefName}) — ` +
       `${pr.failingChecks.map((c) => c.name).join(", ")}.`,
@@ -715,17 +722,17 @@ async function fixOnePrChecks(pr: ChecksCandidate, ctx: StackContext): Promise<v
       if (mergedBlockerPrNumbers.length > 0) {
         postPrComment(pr.prNumber, stackedCatchUpRetractionComment(mergedBlockerPrNumbers));
       }
-      return;
+      return null;
     }
     if (cleanResult === "conflicted" || cleanResult === "failed") {
       console.log(
         `[phoebe] Catch-up merge conflicted for PR #${pr.prNumber} — deferring to conflicts mode.`,
       );
-      return;
+      return null;
     }
   }
 
-  await runChecksResolutionAgent(pr);
+  return runChecksResolutionAgent(pr);
 }
 
 type GraphQLReviewThreadsPage = {
@@ -833,9 +840,12 @@ function hasNewReviewSummaryComment(
   );
 }
 
-async function runReviewsResolutionAgent(pr: ReviewsCandidate, phoebeLogin: string): Promise<void> {
+async function runReviewsResolutionAgent(
+  pr: ReviewsCandidate,
+  phoebeLogin: string,
+): Promise<number> {
   const runStartedAt = new Date().toISOString();
-  await runAgentWorkflow({
+  return runAgentWorkflow({
     pr,
     promptFile: config.promptFiles.reviews,
     promptArgs: {
@@ -878,10 +888,10 @@ async function runReviewsResolutionAgent(pr: ReviewsCandidate, phoebeLogin: stri
   });
 }
 
-async function fixOnePrReviews(pr: ReviewsCandidate, phoebeLogin: string): Promise<void> {
+async function fixOnePrReviews(pr: ReviewsCandidate, phoebeLogin: string): Promise<number> {
   console.log(`[phoebe] Reviews fix: PR #${pr.prNumber} (${pr.headRefName}).`);
   fetchOrigin();
-  await runReviewsResolutionAgent(pr, phoebeLogin);
+  return runReviewsResolutionAgent(pr, phoebeLogin);
 }
 
 /**
@@ -900,7 +910,7 @@ async function runOneIssue(opts: {
   promptFile: string;
   blockerIssueNumber?: number;
   blockerPrNumber?: PrNumber;
-}): Promise<void> {
+}): Promise<number> {
   const { issueNumber, issueTitle, worktreeBase, stacked, promptFile } = opts;
   const { blockerIssueNumber, blockerPrNumber } = opts;
   const agentBranch = issueBranch(issueNumber);
@@ -910,7 +920,7 @@ async function runOneIssue(opts: {
   try {
     runShellCommand(config.installCommand, worktreeDir);
 
-    await runAgentInWorktree({
+    const agentExitCode = await runAgentInWorktree({
       worktreeDir,
       promptFile,
       promptArgs: { ISSUE_NUMBER: String(issueNumber) },
@@ -964,6 +974,7 @@ async function runOneIssue(opts: {
     } else {
       console.log("[phoebe] No commits — skipping PR creation.");
     }
+    return agentExitCode;
   } finally {
     removeWorktree(repoDir, worktreeDir);
   }
@@ -986,7 +997,7 @@ type RunContext = {
 type WorkKind = {
   name: WorkKindName;
   fetch: () => Promise<WorkKindFetch>;
-  runUnit: (unit: WorkUnit["unit"], context: RunContext) => Promise<void>;
+  runUnit: (unit: WorkUnit["unit"], context: RunContext) => Promise<number | null>;
 };
 
 type WorkKindFetch =
@@ -1226,14 +1237,14 @@ function fetchResearchWorkData(): {
   return { researchIssues, blockerStates: buildBlockerStates(researchIssues) };
 }
 
-async function runIssueUnit(unit: IssueWorkUnit): Promise<void> {
+async function runIssueUnit(unit: IssueWorkUnit): Promise<number> {
   const { issue: target, resolution } = unit;
   console.log(
     `[phoebe] Working #${target.number} — base ${resolution.worktreeBase}` +
       (resolution.stacked ? ` (stacked on #${resolution.blockerIssueNumber})` : "") +
       ".",
   );
-  await runOneIssue({
+  return runOneIssue({
     issueNumber: target.number,
     issueTitle: target.title,
     worktreeBase: resolution.worktreeBase,
@@ -1244,14 +1255,14 @@ async function runIssueUnit(unit: IssueWorkUnit): Promise<void> {
   });
 }
 
-async function runResearchUnit(unit: IssueWorkUnit): Promise<void> {
+async function runResearchUnit(unit: IssueWorkUnit): Promise<number> {
   const { issue: target, resolution } = unit;
   console.log(
     `[phoebe] Researching #${target.number} — base ${resolution.worktreeBase}` +
       (resolution.stacked ? ` (stacked on #${resolution.blockerIssueNumber})` : "") +
       ".",
   );
-  await runOneIssue({
+  return runOneIssue({
     issueNumber: target.number,
     issueTitle: target.title,
     worktreeBase: resolution.worktreeBase,
@@ -1270,7 +1281,7 @@ const KINDS: Record<WorkKindName, WorkKind> = {
       return { kind: "conflicts", conflictingPrs, issueBodies, currentMainHead };
     },
     runUnit: async (unit, context) => {
-      await fixOnePrConflict(unit as ConflictingPrCandidate, context.stack);
+      return fixOnePrConflict(unit as ConflictingPrCandidate, context.stack);
     },
   },
   checks: {
@@ -1280,7 +1291,7 @@ const KINDS: Record<WorkKindName, WorkKind> = {
       return { kind: "checks", failingCheckPrs, issueBodies };
     },
     runUnit: async (unit, context) => {
-      await fixOnePrChecks(unit as ChecksCandidate, context.stack);
+      return fixOnePrChecks(unit as ChecksCandidate, context.stack);
     },
   },
   reviews: {
@@ -1290,7 +1301,7 @@ const KINDS: Record<WorkKindName, WorkKind> = {
       return { kind: "reviews", reviewActivityPrs, issueBodies, phoebeLogin };
     },
     runUnit: async (unit, context) => {
-      await fixOnePrReviews(unit as ReviewsCandidate, context.phoebeLogin);
+      return fixOnePrReviews(unit as ReviewsCandidate, context.phoebeLogin);
     },
   },
   issues: {
@@ -1300,7 +1311,7 @@ const KINDS: Record<WorkKindName, WorkKind> = {
       return { kind: "issues", issues, blockerStates };
     },
     runUnit: async (unit) => {
-      await runIssueUnit(unit as IssueWorkUnit);
+      return runIssueUnit(unit as IssueWorkUnit);
     },
   },
   research: {
@@ -1310,7 +1321,7 @@ const KINDS: Record<WorkKindName, WorkKind> = {
       return { kind: "research", researchIssues, blockerStates };
     },
     runUnit: async (unit) => {
-      await runResearchUnit(unit as IssueWorkUnit);
+      return runResearchUnit(unit as IssueWorkUnit);
     },
   },
 };
@@ -1389,22 +1400,20 @@ async function fetchCycleWorkData(kinds: readonly WorkKindName[]): Promise<Cycle
   };
 }
 
-function logIdleCycle(data: CycleWorkData): void {
+function logIdleCycle(data: CycleWorkData): string {
   const phoebeBase = process.env["PHOEBE_BASE"];
   if (data.issues.length > 0 && !selectIssue(data.issues, data.blockerStates, phoebeBase)) {
-    console.log(
-      `[phoebe] ${data.issues.length} ${config.readyLabel} issue(s) but none workable this cycle (blocked or waiting on blocker PR).`,
-    );
-    return;
+    const reason = `${data.issues.length} ${config.readyLabel} issue(s) but none workable this cycle (blocked or waiting on blocker PR).`;
+    console.log(`[phoebe] ${reason}`);
+    return reason;
   }
   if (
     data.researchIssues.length > 0 &&
     !selectIssue(data.researchIssues, data.blockerStates, phoebeBase)
   ) {
-    console.log(
-      `[phoebe] ${data.researchIssues.length} ${config.researchLabel} ticket(s) but none workable this cycle (blocked or waiting on blocker PR).`,
-    );
-    return;
+    const reason = `${data.researchIssues.length} ${config.researchLabel} ticket(s) but none workable this cycle (blocked or waiting on blocker PR).`;
+    console.log(`[phoebe] ${reason}`);
+    return reason;
   }
   const stack: StackContext = { issueBodies: data.issueBodies, blockerStates: data.blockerStates };
   if (data.conflictingPrs.length > 0) {
@@ -1427,10 +1436,9 @@ function logIdleCycle(data: CycleWorkData): void {
       );
     }
     if (!unit) {
-      console.log(
-        `[phoebe] ${data.conflictingPrs.length} conflicting PR(s) but none fixable this cycle.`,
-      );
-      return;
+      const reason = `${data.conflictingPrs.length} conflicting PR(s) but none fixable this cycle.`;
+      console.log(`[phoebe] ${reason}`);
+      return reason;
     }
   }
   if (data.failingCheckPrs.length > 0) {
@@ -1441,10 +1449,9 @@ function logIdleCycle(data: CycleWorkData): void {
       );
     }
     if (!unit) {
-      console.log(
-        `[phoebe] ${data.failingCheckPrs.length} failing-CI PR(s) but none fixable this cycle.`,
-      );
-      return;
+      const reason = `${data.failingCheckPrs.length} failing-CI PR(s) but none fixable this cycle.`;
+      console.log(`[phoebe] ${reason}`);
+      return reason;
     }
   }
   if (data.reviewActivityPrs.length > 0 && data.phoebeLogin) {
@@ -1459,13 +1466,14 @@ function logIdleCycle(data: CycleWorkData): void {
       );
     }
     if (!unit) {
-      console.log(
-        `[phoebe] ${data.reviewActivityPrs.length} review-feedback PR(s) but none fixable this cycle.`,
-      );
-      return;
+      const reason = `${data.reviewActivityPrs.length} review-feedback PR(s) but none fixable this cycle.`;
+      console.log(`[phoebe] ${reason}`);
+      return reason;
     }
   }
-  console.log("[phoebe] No work this cycle — idle.");
+  const reason = "No work this cycle — idle.";
+  console.log(`[phoebe] ${reason}`);
+  return reason;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -1493,6 +1501,53 @@ function describeUnit(picked: WorkUnit): string {
   return `issue #${unit.issue.number} — base ${unit.resolution.worktreeBase}`;
 }
 
+function statusWork(
+  picked: WorkUnit,
+): Extract<RuntimeStatusTransition, { kind: "work-started" }>["work"] {
+  if (picked.kind === "conflicts" || picked.kind === "checks" || picked.kind === "reviews") {
+    return {
+      kind: picked.kind,
+      pullRequestNumber: picked.unit.prNumber,
+      branch: picked.unit.headRefName,
+      ...(picked.unit.issueNumber !== undefined ? { issueNumber: picked.unit.issueNumber } : {}),
+    };
+  }
+  return {
+    kind: picked.kind,
+    issueNumber: picked.unit.issue.number,
+    branch: issueBranch(picked.unit.issue.number),
+  };
+}
+
+function pullRequestNumberAfterWork(picked: WorkUnit): number | undefined {
+  if (picked.kind === "conflicts" || picked.kind === "checks" || picked.kind === "reviews") {
+    return picked.unit.prNumber;
+  }
+  const branch = issueBranch(picked.unit.issue.number);
+  try {
+    const rows = ghJson<Array<{ number: number }>>([
+      "pr",
+      "list",
+      "--head",
+      branch,
+      "--state",
+      "open",
+      "--json",
+      "number",
+      "--limit",
+      "1",
+    ]);
+    return rows[0] ? asPrNumber(rows[0].number) : undefined;
+  } catch (error) {
+    console.warn(
+      `[phoebe] Could not resolve the PR link for ${branch} — ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    return undefined;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Main loop
 // ---------------------------------------------------------------------------
@@ -1511,6 +1566,29 @@ export async function runEngine(argv: readonly string[] = process.argv.slice(2))
     Number.isFinite(rawPollIntervalMs) && rawPollIntervalMs > 0
       ? rawPollIntervalMs
       : DEFAULT_POLL_INTERVAL_MS;
+  const selectedProvider = selectProvider();
+  const contractContext = buildRuntimeContractContext({
+    config,
+    providerName: selectedProvider.provider.name,
+    model: selectedProvider.model,
+    runtimeRoot: process.cwd(),
+    env: process.env,
+  });
+  const status = createRuntimeStatusReporter({
+    ...(inContainer ? { stateDir: config.paths.stateDir } : {}),
+    ...(process.env["PHOEBE_RUNTIME_ID"] ? { runtimeId: process.env["PHOEBE_RUNTIME_ID"] } : {}),
+    ...contractContext,
+    secrets: [
+      process.env["GH_TOKEN"] ?? "",
+      ...Object.values(config.providerEnv).map((name) => process.env[name] ?? ""),
+    ],
+    onWriteError: (error) =>
+      console.warn(
+        `[phoebe] Runtime telemetry write failed — ${
+          error instanceof Error ? error.message : String(error)
+        }. Work will continue.`,
+      ),
+  });
 
   console.log(
     runOnce
@@ -1534,9 +1612,15 @@ export async function runEngine(argv: readonly string[] = process.argv.slice(2))
   // unit in flight, start no new one, then return (exit 0). The wait below wakes
   // early on drain so an idle poll-sleep does not stall shutdown.
   const drain = installDrainSignal();
+  let failed = false;
   try {
-    await runLoop({ runOnce, dryRun, pollIntervalMs, drain });
+    await runLoop({ runOnce, dryRun, pollIntervalMs, drain, status });
+  } catch (error) {
+    failed = true;
+    status.record({ kind: "engine-failed", error });
+    throw error;
   } finally {
+    if (!failed) status.record({ kind: "stopped" });
     drain.dispose();
   }
 }
@@ -1546,17 +1630,24 @@ async function runLoop({
   dryRun,
   pollIntervalMs,
   drain,
+  status,
 }: {
   runOnce: boolean;
   dryRun: boolean;
   pollIntervalMs: number;
   drain: DrainSignal;
+  status: ReturnType<typeof createRuntimeStatusReporter>;
 }): Promise<void> {
   while (true) {
     if (drain.requested) {
       console.log("[phoebe] Drain requested — starting no new work unit; exiting 0.");
+      status.record({
+        kind: "draining",
+        reason: "Drain requested — starting no new work unit.",
+      });
       break;
     }
+    status.record({ kind: "selecting" });
     const fetchKinds = runOnce ? oneShotWorkKinds(workOrder) : workOrder;
     const data = await fetchCycleWorkData(fetchKinds);
     const picked = selectFirstWorkUnit(
@@ -1579,8 +1670,9 @@ async function runLoop({
     if (!picked) {
       if (runOnce) {
         console.log(RUN_ONCE_NOTHING_MESSAGE);
+        status.record({ kind: "idle", reason: RUN_ONCE_NOTHING_MESSAGE });
       } else {
-        logIdleCycle(data);
+        status.record({ kind: "idle", reason: logIdleCycle(data) });
       }
       if (runOnce || dryRun) break;
       // Interruptible idle poll — a SIGTERM mid-sleep wakes it, the next
@@ -1594,25 +1686,59 @@ async function runLoop({
     // already finished before we looped back here, so exit now.
     if (drain.requested) {
       console.log("[phoebe] Drain requested before starting the next unit — exiting 0.");
+      status.record({
+        kind: "draining",
+        reason: "Drain requested before starting the next unit.",
+      });
       break;
     }
 
     const decision = executionDecision({ dryRun, inContainer });
     if (decision === "dry-run") {
-      console.log(`[phoebe] Would execute: ${describeUnit(picked)}.`);
+      const reason = `Would execute: ${describeUnit(picked)}.`;
+      console.log(`[phoebe] ${reason}`);
+      status.record({ kind: "idle", reason });
       break;
     }
     if (decision === "refuse") {
       console.error(EXECUTION_REFUSED_MESSAGE);
+      status.record({ kind: "engine-failed", error: EXECUTION_REFUSED_MESSAGE });
       process.exit(1);
     }
 
+    status.record({ kind: "work-started", work: statusWork(picked) });
     try {
-      await KINDS[picked.kind].runUnit(picked.unit, {
+      const agentExitCode = await KINDS[picked.kind].runUnit(picked.unit, {
         stack: { issueBodies: data.issueBodies, blockerStates: data.blockerStates },
         phoebeLogin: data.phoebeLogin ?? "",
       });
+      const pullRequestNumber = pullRequestNumberAfterWork(picked);
+      if (agentExitCode !== null && agentExitCode !== 0) {
+        status.record({
+          kind: "work-failed",
+          error: new Error(`Agent exited with code ${agentExitCode}.`),
+          ...(pullRequestNumber !== undefined ? { pullRequestNumber } : {}),
+          resources: {
+            agentExitCode,
+            summary: "The work unit completed its cleanup after a nonzero agent exit.",
+          },
+        });
+      } else {
+        status.record({
+          kind: "work-completed",
+          ...(pullRequestNumber !== undefined ? { pullRequestNumber } : {}),
+          ...(agentExitCode === null
+            ? {}
+            : {
+                resources: {
+                  agentExitCode,
+                  summary: "The work unit completed after a successful agent run.",
+                },
+              }),
+        });
+      }
     } catch (error) {
+      status.record({ kind: "work-failed", error });
       if (runOnce) {
         throw error;
       }
@@ -1630,6 +1756,10 @@ async function runLoop({
     // than picking up another. This is the graceful-drain boundary.
     if (drain.requested) {
       console.log("[phoebe] Finished the in-flight unit under drain — exiting 0.");
+      status.record({
+        kind: "draining",
+        reason: "Finished the in-flight unit under drain.",
+      });
       break;
     }
   }
