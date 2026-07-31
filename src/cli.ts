@@ -21,6 +21,7 @@ import { pathToFileURL } from "node:url";
 import { resolveConfig } from "./config-schema.ts";
 import { formatInitReport, runInit } from "./init.ts";
 import { applyEnvOverlay, loadUserConfig, resolveConfigPath } from "./load-config.ts";
+import { resolveDataBase } from "./paths.ts";
 import { setResolvedConfig } from "./resolved-config.ts";
 
 type ParsedArgs = { configPath: string | undefined; help: boolean; forward: string[] };
@@ -164,7 +165,7 @@ export async function runCli(): Promise<void> {
   const configPath = resolveConfigPath(parsed.configPath, process.cwd());
   const userConfig = await loadUserConfig(configPath);
   const overlaid = applyEnvOverlay(userConfig, process.env);
-  setResolvedConfig(resolveConfig(overlaid));
+  setResolvedConfig(resolveConfig(overlaid, { dataBase: resolveDataBase(process.env) }));
 
   // Import after the config is installed — main.ts's module-level constants
   // read `config` at import time via the Proxy in resolved-config.ts.

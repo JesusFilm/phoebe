@@ -32,8 +32,6 @@ import { loadUserConfig, resolveConfigPath } from "../src/load-config.ts";
 import {
   crashLoopStatePath,
   createCrashGuard,
-  readStateDir,
-  DEFAULT_STATE_DIR,
   type CrashGuard,
   type CrashGuardEvent,
   type RunOutcome,
@@ -147,10 +145,9 @@ function reconcileIntervalMs(): number {
 
 /**
  * Load the mounted `phoebe.config.ts` as the arbitrary record the bootstrapper
- * treats it as — it owns only two fields (`engine`, `paths.stateDir`), and the
- * engine validates the rest once it is materialized and run. The fingerprint
- * doubles as the ESM cache-bust key, so a re-read after an edit is genuinely a
- * re-read.
+ * treats it as — it owns only one field (`engine`), and the engine validates the
+ * rest once it is materialized and run. The fingerprint doubles as the ESM
+ * cache-bust key, so a re-read after an edit is genuinely a re-read.
  */
 async function loadMountedConfig(
   configPath: string,
@@ -271,22 +268,15 @@ function spawnSupervised(entry: string, argv: readonly string[]): SupervisedChil
 }
 
 /**
- * The crash-loop guard for this container, rooted at the engine's state dir
- * (`paths.stateDir`, a named volume). Resolved once from the config as it reads
- * at boot: the record has to be found again after the restart a crash-looping
- * engine causes, so where it lives must not drift with a mid-flight config edit.
- * A config that will not load falls back to the shipped default here and fails
- * properly on the first launch, where the error belongs.
+ * The crash-loop guard for this container, rooted at the deployment-global
+ * engine dir (`/data/engine`, the shared `phoebe-engine` volume — #60/#62). One
+ * guard about one engine SHA for the whole fleet; its home is a container
+ * constant (the engine checkout base), not a per-tenant path, so it no longer
+ * depends on loading any config and cannot drift with a mid-flight config edit.
  */
-async function createBootCrashGuard(configPath: string): Promise<CrashGuard> {
-  let stateDir = DEFAULT_STATE_DIR;
-  try {
-    stateDir = readStateDir(await loadMountedConfig(configPath, configFingerprint(configPath)));
-  } catch {
-    // launchTarget loads the same config a moment later and reports the failure.
-  }
+function createBootCrashGuard(): CrashGuard {
   return createCrashGuard({
-    statePath: crashLoopStatePath(stateDir),
+    statePath: crashLoopStatePath(engineBaseDir()),
     onEvent: logCrashGuardEvent,
   });
 }
@@ -371,7 +361,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   setupGitCredentials({ token: process.env["GH_TOKEN"] });
 
   const configPath = resolveConfigPath(undefined, process.cwd());
-  const guard = await createBootCrashGuard(configPath);
+  const guard = createBootCrashGuard();
   const intervalMs = reconcileIntervalMs();
 
   // The container's stop request. A one-way latch, and the poll clock: a
