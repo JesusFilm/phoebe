@@ -129,3 +129,35 @@ The interaction to remember:
 - The vouch label on a **PR** is a review signal only. Phoebe's PR janitors scan
   by branch prefix and skip cross-repository PRs entirely (`isPrInScope` in
   `src/orchestrator.ts`), so a fork PR is already outside its reach.
+
+## One container = one trust domain
+
+A single Phoebe container can serve **many repos** as tenants (`phoebe add-repo`).
+Every tenant's engine child runs as the same unprivileged user (uid 10001), and
+that is a deliberate isolation boundary with one sharp edge.
+
+**What is isolated (by mechanism).** The supervisor hands each engine child a
+**deny-by-default, tenant-only environment** (`buildEngineChildEnv`): it holds
+that tenant's `GH_TOKEN` and provider key and nothing else — never another
+tenant's secrets, never the deployment's engine-clone credential. And the
+vendored agent binary is shipped non-readable (mode `0711`), so the kernel makes
+it **non-dumpable**: a prompt-injected agent in one tenant cannot read a
+sibling's `/proc/<pid>/environ` to lift its secrets from memory. Runtime blast
+radius is the same as a single-repo deployment.
+
+**What is _not_ isolated (the accepted residual).** Because all tenants share one
+uid, filesystem permissions cannot distinguish them at rest: a prompt-injected
+agent in tenant A **can read `/etc/phoebe/repos/B/.env` off disk**. Delivering
+real at-rest separation would need per-tenant OS users (rootless user
+namespaces — the documented "model B" upgrade), which an unprivileged container
+cannot set up.
+
+**So the constraint is a policy, and it is first-class:**
+
+> **Co-locate in one container only repos whose mutual compromise is already
+> acceptable** — the same org, the same token scope, the same trust domain.
+
+`phoebe add-repo` prints this on every run, precisely when adding tenant #2+
+makes it relevant. The moment you need to co-locate **mutually-untrusted**
+tenants, one container is no longer enough — give them separate containers (or
+adopt model B). This is the named trigger for that upgrade.

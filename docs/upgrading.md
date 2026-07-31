@@ -193,6 +193,31 @@ A few properties the templates rely on — keep them intact when you customise:
 - **`.gitignore` edits are additive.** `init` only appends; it never rewrites
   your existing ignore rules.
 
+## Upgrading a pre-multi-tenant deployment (clean break)
+
+Multi-tenant Phoebe changed the on-disk layout: state now nests per repo under
+two named volumes (`phoebe-data` → `/data/repos/<owner>/<repo>/{repo,worktrees,state}`,
+`phoebe-engine` → `/data/engine`) instead of the old four (`phoebe-repo`,
+`phoebe-worktrees`, `phoebe-state`, `phoebe-engine`). There is **no in-place
+migration** — it is a clean break:
+
+1. `phoebe init` a fresh deployment (or pull the new `container/` templates) so
+   `compose.yml` declares the two volumes and mounts the deployment dir at
+   `/etc/phoebe`. Your `phoebe.config.ts` is unchanged (a `paths` field, if you
+   ever set one, is gone — paths are now derived from `repoSlug`).
+2. `docker compose up -d`. The new volumes start **empty**; the engine re-clones
+   its target lazily on the first work unit (a fresh clone, not a migration of
+   the old volume). Nothing is copied across.
+3. **Rollback** is `git revert` of the compose commit: the old differently-named
+   volumes were never touched and persist until you `docker volume prune` them,
+   so reverting brings the previous deployment straight back.
+
+Going from **one repo to many** needs no re-init: `phoebe add-repo <owner/repo>`
+per repo drops a tenant under `repos/` and the running supervisor picks it up on
+the next poll (see [`configuration.md`](configuration.md) and
+[`operating.md`](operating.md)). Read [`trust.md`](trust.md) first — co-locating
+repos in one container means co-locating them in **one trust domain**.
+
 ## First install
 
 For the full, execute-top-to-bottom install runbook — prerequisites, secrets,

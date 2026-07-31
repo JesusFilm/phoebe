@@ -144,4 +144,38 @@ See the [environment overlay table](configuration.md#environment-overlay-phoebe_
 | Force a janitor to retry                      | Push, advance the base, post new review feedback, or delete the newest failure comment.                                                       |
 | Let Phoebe maintain all PRs, not just its own | `prScope: "all"`.                                                                                                                             |
 
+## Running many repos in one container
+
+One container can serve several repos as **tenants**. Each is a directory under
+`repos/<owner>/<repo>/` in the deployment; the supervisor runs one engine child
+per tenant and reconciles the set on every poll — **no restart** to add or remove
+one. Read [`trust.md`](trust.md) first: co-locating repos means co-locating them
+in one trust domain.
+
+| Action | How |
+| --- | --- |
+| Add a repo | `phoebe add-repo <owner/repo>` (host-side, in the deployment dir). Creates `repos/<owner>/<repo>/`; the supervisor discovers it next poll. Fill in its `.env`. |
+| Migrate a flat deployment's fields down | `phoebe add-repo <owner/repo> --from-config` copies the top config's install/check/test commands into the new tenant. |
+| Remove a repo | `phoebe remove-repo <owner/repo>` (host-side). Reversible — the tenant's `/data` is retained; re-adding re-uses it. |
+| Reclaim a removed repo's disk | `phoebe purge <owner/repo> --yes` (in-container). Destructive; refuses while a live config still exists. |
+| See every tenant + its health | `phoebe list` (in-container): config present? `.env` present? retained data? current unit (read from each tenant's `status.json`). |
+
+**Concurrency across tenants.** Only `PHOEBE_MAX_CONCURRENT_AGENTS` work units
+(default **1**) execute at once across the whole fleet — a supervisor-brokered,
+FIFO round-robin cap so N repos don't thrash the host. Idle polling stays
+per-repo and parallel.
+
+**Reading the logs.** Every line is tagged `[phoebe:<owner>/<repo>]` (the
+supervisor tags its own `[phoebe:supervisor]`), so a host log collector can
+attribute each line to its tenant. Agent output nests: `[phoebe:<slug>] [cursor] …`.
+The container writes no log files — stdout is the whole story.
+
+**When a unit hangs.** A work unit that exceeds its wall-clock budget
+(`PHOEBE_RUN_TIMEOUT_MS`, default 45 min) is aborted so it can't starve the
+fleet, and the engine moves on. A unit that hangs **every** time is quarantined
+after `PHOEBE_MAX_UNIT_TIMEOUTS` (default 3) consecutive timeouts: Phoebe applies
+a `phoebe:quarantined` label and posts one escalation comment asking for a human.
+Remove the label to retry, or push a fix / edit the issue — Phoebe auto-clears
+the label when the content advances.
+
 </content>
