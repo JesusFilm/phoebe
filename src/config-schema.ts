@@ -95,6 +95,11 @@ export type PhoebeConfig = {
   /** Which open PRs the conflicts/checks/reviews work-kinds scan.
    *  "phoebe" = only branchPrefix branches. "all" = any same-repo PR. */
   prScope: "phoebe" | "all";
+  /** Optional GitHub logins allowed into PR scans. Empty means every author. */
+  prAuthors: readonly string[];
+  /** Which PR base branches janitors scan.
+   *  "default" = only defaultBranch. "all" = every base branch. */
+  prBaseScope: "default" | "all";
   /** Draft PR handling: "skip-non-phoebe" = drafts on non-Phoebe branches are
    *  off-limits; "skip-all" = never touch drafts; "include" = drafts are fair game. */
   draftPrs: "skip-non-phoebe" | "skip-all" | "include";
@@ -160,6 +165,8 @@ export type PhoebeUserConfig = {
   researchLabel?: string;
   processingLabel?: string;
   prScope?: PhoebeConfig["prScope"];
+  prAuthors?: readonly string[];
+  prBaseScope?: PhoebeConfig["prBaseScope"];
   draftPrs?: PhoebeConfig["draftPrs"];
   prOptOutLabel?: string;
   readyCommand?: string;
@@ -185,6 +192,8 @@ export const CONFIG_DEFAULTS = {
   researchLabel: "wayfinder:research",
   processingLabel: "processing",
   prScope: "phoebe" as const,
+  prAuthors: [] as readonly string[],
+  prBaseScope: "default" as const,
   draftPrs: "skip-non-phoebe" as const,
   prOptOutLabel: "ready-for-human",
   readyCommand: "npm run ready",
@@ -321,6 +330,8 @@ export function resolveConfig(user: PhoebeUserConfig): PhoebeConfig {
     researchLabel: user.researchLabel ?? CONFIG_DEFAULTS.researchLabel,
     processingLabel: user.processingLabel ?? CONFIG_DEFAULTS.processingLabel,
     prScope: user.prScope ?? CONFIG_DEFAULTS.prScope,
+    prAuthors: user.prAuthors ?? CONFIG_DEFAULTS.prAuthors,
+    prBaseScope: user.prBaseScope ?? CONFIG_DEFAULTS.prBaseScope,
     draftPrs: user.draftPrs ?? CONFIG_DEFAULTS.draftPrs,
     prOptOutLabel: user.prOptOutLabel ?? CONFIG_DEFAULTS.prOptOutLabel,
     readyCommand: user.readyCommand ?? CONFIG_DEFAULTS.readyCommand,

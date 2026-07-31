@@ -40,10 +40,15 @@ All three janitors scan open PRs based on the same scope rules (`isPrInScope`):
 2. PRs carrying `prOptOutLabel` (default `ready-for-human`) are excluded.
 3. If `prScope` is `"phoebe"`, only `branchPrefix` branches qualify; `"all"`
    admits any same-repo PR.
-4. Drafts are filtered by `draftPrs`: `skip-all` drops every draft;
+4. If `prAuthors` is non-empty, only PRs authored by one of those GitHub logins
+   qualify.
+5. If `prBaseScope` is `"default"`, only PRs targeting `defaultBranch` qualify;
+   `"all"` also admits stacked PRs targeting another same-repo branch.
+6. Drafts are filtered by `draftPrs`: `skip-all` drops every draft;
    `skip-non-phoebe` drops drafts on non-Phoebe branches; `include` keeps them.
 
-Only PRs whose base is `defaultBranch` are listed.
+For stacked PRs, conflict and behind-branch catch-up merges use that PR's actual
+base branch rather than `defaultBranch`.
 
 ## `issues` — start new work
 

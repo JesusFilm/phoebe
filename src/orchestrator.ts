@@ -150,8 +150,10 @@ export function stackedPrComment(blockerIssueNumber: number, blockerPrNumber: Pr
 export type ConflictingPrCandidate = {
   prNumber: PrNumber;
   headRefName: BranchRef;
+  baseRefName?: BranchRef;
   issueNumber?: number;
   headSha?: Sha;
+  baseSha?: Sha;
   failureWatermark?: ConflictFailWatermark | null;
 };
 
@@ -217,12 +219,14 @@ export function isPhoebeHeadBranch(branch: BranchRef): boolean {
 export type PrScopeConfig = {
   branchPrefix: string;
   prScope: "phoebe" | "all";
+  prAuthors: readonly string[];
   draftPrs: "skip-non-phoebe" | "skip-all" | "include";
   prOptOutLabel: string;
 };
 
 export type PrScanFields = {
   headRefName: BranchRef;
+  authorLogin: string;
   isDraft: boolean;
   isCrossRepository: boolean;
   labels: readonly string[];
@@ -231,6 +235,7 @@ export type PrScanFields = {
 const defaultPrScopeConfig = (): PrScopeConfig => ({
   branchPrefix: config.branchPrefix,
   prScope: config.prScope,
+  prAuthors: config.prAuthors,
   draftPrs: config.draftPrs,
   prOptOutLabel: config.prOptOutLabel,
 });
@@ -244,6 +249,12 @@ export function isPrInScope(
     return false;
   }
   if (pr.labels.includes(scopeConfig.prOptOutLabel)) {
+    return false;
+  }
+  if (
+    scopeConfig.prAuthors.length > 0 &&
+    !scopeConfig.prAuthors.some((author) => author.toLowerCase() === pr.authorLogin.toLowerCase())
+  ) {
     return false;
   }
   const isPhoebe = pr.headRefName.startsWith(scopeConfig.branchPrefix);
@@ -340,12 +351,13 @@ export function selectConflictFixCandidates(
         return false;
       }
     }
-    if (opts?.currentMainHead && pr.headSha) {
+    const currentBaseHead = pr.baseSha ?? opts?.currentMainHead;
+    if (currentBaseHead && pr.headSha) {
       if (
         shouldSkipWatermarkConflictFix({
           watermark: pr.failureWatermark ?? null,
           currentPrHead: pr.headSha,
-          currentMainHead: opts.currentMainHead,
+          currentMainHead: currentBaseHead,
         })
       ) {
         return false;
@@ -459,6 +471,7 @@ export function listFailingChecks(checks: readonly StatusCheckItem[]): FailingCh
 export type ChecksCandidate = {
   prNumber: PrNumber;
   headRefName: BranchRef;
+  baseRefName?: BranchRef;
   issueNumber?: number;
   headSha?: Sha;
   mergeable: string;
@@ -549,6 +562,7 @@ export type ReviewThread = {
 export type ReviewsCandidate = {
   prNumber: PrNumber;
   headRefName: BranchRef;
+  baseRefName?: BranchRef;
   issueNumber?: number;
   authorLogin?: string;
   mergeable: string;
