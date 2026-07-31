@@ -17,7 +17,9 @@
 // scaffolding, log formatting) without breaking a library API.
 
 import { realpathSync } from "node:fs";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { REPOS_DIR } from "../bootstrap/tenants.ts";
 import { resolveConfig } from "./config-schema.ts";
 import { copyShippedPromptsInto, formatInitReport, runInit } from "./init.ts";
 import { applyEnvOverlay, loadUserConfig, resolveConfigPath } from "./load-config.ts";
@@ -25,7 +27,9 @@ import { resolveDataBase } from "./paths.ts";
 import { setResolvedConfig } from "./resolved-config.ts";
 import {
   addRepo,
+  isNested,
   listTenants,
+  parseSlug,
   purgeTenant,
   readFlatRepoFields,
   removeRepo,
@@ -291,7 +295,13 @@ export async function runCli(): Promise<void> {
     return;
   }
 
-  const configPath = resolveConfigPath(parsed.configPath, process.cwd());
+  // A direct engine run (`--run-once` / `--dry-run`) selects its tenant (#63):
+  // flat has no selector; nested requires `--repo <owner/repo>`, loading only
+  // that tenant's config. A boot-spawned child runs with cwd = its tenant dir
+  // (flat from there), so this only fires for a manual invocation from the
+  // deployment root. `phoebe boot` (the supervisor) never reaches here.
+  const { slug: repoSlug, forward } = extractRepoFlag(parsed.forward);
+  const configPath = resolveEngineConfigPath(parsed.configPath, repoSlug);
   const userConfig = await loadUserConfig(configPath);
   const overlaid = applyEnvOverlay(userConfig, process.env);
   setResolvedConfig(resolveConfig(overlaid, { dataBase: resolveDataBase(process.env) }));
@@ -299,7 +309,47 @@ export async function runCli(): Promise<void> {
   // Import after the config is installed — main.ts's module-level constants
   // read `config` at import time via the Proxy in resolved-config.ts.
   const { runEngine } = await import("./main.ts");
-  await runEngine(parsed.forward);
+  await runEngine(forward);
+}
+
+/** Pull an optional `--repo <owner/repo>` (or `--repo=…`) out of the engine argv. */
+function extractRepoFlag(argv: readonly string[]): { slug: string | undefined; forward: string[] } {
+  const forward: string[] = [];
+  let slug: string | undefined;
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!;
+    if (arg === "--repo") {
+      slug = argv[i + 1];
+      i += 1;
+    } else if (arg.startsWith("--repo=")) {
+      slug = arg.slice("--repo=".length);
+    } else {
+      forward.push(arg);
+    }
+  }
+  return { slug, forward };
+}
+
+/**
+ * Resolve which `phoebe.config.ts` a direct engine run loads. An explicit
+ * `--config` always wins. Otherwise: nested (a `repos/` dir under cwd) requires
+ * `--repo <owner/repo>` and loads `repos/<owner>/<repo>/phoebe.config.ts`; flat
+ * loads the top config and ignores `--repo`.
+ */
+function resolveEngineConfigPath(configArg: string | undefined, repoSlug: string | undefined): string {
+  const cwd = process.cwd();
+  if (configArg !== undefined) return resolveConfigPath(configArg, cwd);
+  if (isNested(cwd)) {
+    if (repoSlug === undefined) {
+      throw new Error(
+        "This is a nested (multi-tenant) deployment — specify --repo <owner/repo> " +
+          "(see `phoebe list`), or run `phoebe boot` to supervise every tenant.",
+      );
+    }
+    const { owner, repo } = parseSlug(repoSlug);
+    return resolveConfigPath(join(REPOS_DIR, owner, repo, "phoebe.config.ts"), cwd);
+  }
+  return resolveConfigPath(undefined, cwd);
 }
 
 // Run the engine only when this module is invoked directly (`node …/src/cli.ts`)
