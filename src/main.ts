@@ -31,7 +31,14 @@ import {
 import { buildAgentEnv } from "./agent-env.ts";
 import { installDrainSignal, type DrainSignal } from "./drain.ts";
 import { createSlotClient, type SlotClient } from "./slot-client.ts";
-import { resolveRunTimeoutMs, runWithDeadline } from "./run-timeout.ts";
+import { RunTimeoutError, resolveRunTimeoutMs, runWithDeadline } from "./run-timeout.ts";
+import {
+  createEmitUnitEvent,
+  STATUS_FILE,
+  type EmitUnitEvent,
+  type UnitRef,
+} from "./unit-event.ts";
+import { join } from "node:path";
 import {
   EXECUTION_REFUSED_MESSAGE,
   executionDecision,
@@ -1488,6 +1495,14 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** The observability identity of a picked unit: (kind, id) (#73/#75). */
+function unitRef(picked: WorkUnit): UnitRef {
+  if (picked.kind === "issues" || picked.kind === "research") {
+    return { kind: picked.kind, id: String(picked.unit.issue.number) };
+  }
+  return { kind: picked.kind, id: String(picked.unit.prNumber) };
+}
+
 function describeUnit(picked: WorkUnit): string {
   if (picked.kind === "conflicts") {
     const unit = picked.unit;
@@ -1564,9 +1579,18 @@ export async function runEngine(argv: readonly string[] = process.argv.slice(2))
     connected: process.connected,
   });
 
+  // Per-repo observability (#73): one tagged `[phoebe:<slug>]` line per unit
+  // event + a `status.json` snapshot in this tenant's state dir, which
+  // `phoebe list` reads. The emitter swallows snapshot-write failures, so it is
+  // harmless on the host (where the derived state dir may be unwritable).
+  const emitUnitEvent = createEmitUnitEvent({
+    tenant: config.repoSlug,
+    statusPath: join(config.paths.stateDir, STATUS_FILE),
+  });
+
   const drain = installDrainSignal();
   try {
-    await runLoop({ runOnce, dryRun, pollIntervalMs, drain, slotClient });
+    await runLoop({ runOnce, dryRun, pollIntervalMs, drain, slotClient, emitUnitEvent });
   } finally {
     drain.dispose();
   }
@@ -1578,12 +1602,14 @@ async function runLoop({
   pollIntervalMs,
   drain,
   slotClient,
+  emitUnitEvent,
 }: {
   runOnce: boolean;
   dryRun: boolean;
   pollIntervalMs: number;
   drain: DrainSignal;
   slotClient: SlotClient | null;
+  emitUnitEvent: EmitUnitEvent;
 }): Promise<void> {
   while (true) {
     if (drain.requested) {
@@ -1646,12 +1672,29 @@ async function runLoop({
     // so timeout, error, and normal completion share one leak-free release
     // path (#72). Standalone (unbrokered) engines skip this entirely.
     if (slotClient) await slotClient.acquire();
+    const ref = unitRef(picked);
+    emitUnitEvent({ unit: ref, event: "started" });
     try {
       await KINDS[picked.kind].runUnit(picked.unit, {
         stack: { issueBodies: data.issueBodies, blockerStates: data.blockerStates },
         phoebeLogin: data.phoebeLogin ?? "",
       });
+      emitUnitEvent({ unit: ref, event: "completed" });
     } catch (error) {
+      if (error instanceof RunTimeoutError) {
+        // A whole-unit timeout (#72): the agent was killed, the slot releases in
+        // `finally`, and the engine survives (never told to the supervisor, #60
+        // orthogonality). #75 layers the poison-unit quarantine on this event.
+        emitUnitEvent({
+          unit: ref,
+          event: "timed-out",
+          detail: `${Math.round(error.elapsedMs / 1000)}s budget exceeded`,
+        });
+      } else {
+        // A non-timeout failure clears the current unit but is not a timeout —
+        // handled by the existing watermarks/failure-comments per work kind.
+        emitUnitEvent({ unit: ref, event: "completed" });
+      }
       if (runOnce) {
         throw error;
       }
