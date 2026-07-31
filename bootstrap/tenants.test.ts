@@ -6,10 +6,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
 import {
+  diffFleet,
   discoverTenants,
   isNestedDeployment,
   TENANT_CONFIG_FILE,
   TENANT_ENV_FILE,
+  type DiscoveredTenant,
 } from "./tenants.ts";
 
 let dir: string;
@@ -75,5 +77,51 @@ describe("nested mode", () => {
     expect(discovery.mode).toBe("nested");
     expect(discovery.tenants).toEqual([]);
     expect(isNestedDeployment(dir)).toBe(true);
+  });
+});
+
+describe("diffFleet", () => {
+  const tenant = (id: string): DiscoveredTenant => ({
+    id,
+    slug: id,
+    dir: id,
+    configPath: `${id}/phoebe.config.ts`,
+    envPath: `${id}/.env`,
+  });
+
+  test("classifies added, removed, changed, and unchanged", () => {
+    const previous = new Map<string, string | null>([
+      ["a", "fp1"],
+      ["b", "fp1"],
+      ["c", "fp1"],
+    ]);
+    const diff = diffFleet(previous, [
+      { tenant: tenant("a"), fingerprint: "fp1" }, // unchanged
+      { tenant: tenant("b"), fingerprint: "fp2" }, // changed
+      { tenant: tenant("d"), fingerprint: "fp1" }, // added
+      // c removed
+    ]);
+    expect(diff.added.map((t) => t.id)).toEqual(["d"]);
+    expect(diff.changed.map((t) => t.id)).toEqual(["b"]);
+    expect(diff.removed).toEqual(["c"]);
+  });
+
+  test("a null fingerprint on either side is never a change", () => {
+    const previous = new Map<string, string | null>([
+      ["a", null],
+      ["b", "fp1"],
+    ]);
+    const diff = diffFleet(previous, [
+      { tenant: tenant("a"), fingerprint: "fp2" }, // prev null → not changed
+      { tenant: tenant("b"), fingerprint: null }, // now null → not changed
+    ]);
+    expect(diff.changed).toEqual([]);
+    expect(diff.added).toEqual([]);
+    expect(diff.removed).toEqual([]);
+  });
+
+  test("empty previous → everything is added", () => {
+    const diff = diffFleet(new Map(), [{ tenant: tenant("a"), fingerprint: "fp1" }]);
+    expect(diff.added.map((t) => t.id)).toEqual(["a"]);
   });
 });

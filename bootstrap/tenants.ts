@@ -57,6 +57,49 @@ function tenantAt(dir: string, slug: string | null): DiscoveredTenant {
   };
 }
 
+/** A tenant paired with its config fingerprint (mtime:size) at one poll. */
+export type TenantSample = { tenant: DiscoveredTenant; fingerprint: string | null };
+
+/**
+ * The per-tenant reconcile decision (#58): what changed between the last poll's
+ * fingerprint map and the current discovered set.
+ * - `added`: a tenant dir that appeared → the supervisor spawns a child.
+ * - `removed`: a tenant id that vanished → the supervisor drains + reaps it.
+ * - `changed`: a tenant whose config/`.env` fingerprint moved → relaunch it.
+ * A null fingerprint on either side is "unknown" and never counts as a change,
+ * mirroring the single-engine `detectChange` (a mid-rewrite/unreadable config
+ * must not churn the child).
+ */
+export type FleetDiff = {
+  added: DiscoveredTenant[];
+  removed: string[];
+  changed: DiscoveredTenant[];
+};
+
+export function diffFleet(
+  previous: ReadonlyMap<string, string | null>,
+  current: readonly TenantSample[],
+): FleetDiff {
+  const added: DiscoveredTenant[] = [];
+  const changed: DiscoveredTenant[] = [];
+  const seen = new Set<string>();
+
+  for (const { tenant, fingerprint } of current) {
+    seen.add(tenant.id);
+    if (!previous.has(tenant.id)) {
+      added.push(tenant);
+      continue;
+    }
+    const before = previous.get(tenant.id) ?? null;
+    if (before !== null && fingerprint !== null && before !== fingerprint) {
+      changed.push(tenant);
+    }
+  }
+
+  const removed = [...previous.keys()].filter((id) => !seen.has(id));
+  return { added, removed, changed };
+}
+
 /** Directory names (only) directly under `parent`; empty if it cannot be read. */
 function listDirs(parent: string): string[] {
   try {

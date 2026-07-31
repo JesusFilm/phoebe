@@ -30,6 +30,7 @@ import {
 } from "./branded.ts";
 import { buildAgentEnv } from "./agent-env.ts";
 import { installDrainSignal, type DrainSignal } from "./drain.ts";
+import { createSlotClient, type SlotClient } from "./slot-client.ts";
 import {
   EXECUTION_REFUSED_MESSAGE,
   executionDecision,
@@ -1533,9 +1534,24 @@ export async function runEngine(argv: readonly string[] = process.argv.slice(2))
   // config/ref change). Drain gracefully rather than dying mid-unit: finish the
   // unit in flight, start no new one, then return (exit 0). The wait below wakes
   // early on drain so an idle poll-sleep does not stall shutdown.
+  // The supervisor's concurrency broker (#59): when this engine was forked with
+  // an IPC channel, `slotClient` requests a slot per work unit and blocks until
+  // the supervisor grants one. A standalone engine (no channel) gets null here
+  // and runs unbrokered — it is already serialized to one unit.
+  const slotClient = createSlotClient({
+    send: process.send?.bind(process),
+    on: (event, listener) => {
+      process.on(event, listener);
+    },
+    off: (event, listener) => {
+      process.off(event, listener);
+    },
+    connected: process.connected,
+  });
+
   const drain = installDrainSignal();
   try {
-    await runLoop({ runOnce, dryRun, pollIntervalMs, drain });
+    await runLoop({ runOnce, dryRun, pollIntervalMs, drain, slotClient });
   } finally {
     drain.dispose();
   }
@@ -1546,11 +1562,13 @@ async function runLoop({
   dryRun,
   pollIntervalMs,
   drain,
+  slotClient,
 }: {
   runOnce: boolean;
   dryRun: boolean;
   pollIntervalMs: number;
   drain: DrainSignal;
+  slotClient: SlotClient | null;
 }): Promise<void> {
   while (true) {
     if (drain.requested) {
@@ -1607,6 +1625,12 @@ async function runLoop({
       process.exit(1);
     }
 
+    // Acquire a concurrency slot for the whole unit execution (#59): the
+    // supervisor's global cap bounds how many repos run a unit at once. Held
+    // through worktree + install + agent + test + push, released in `finally`
+    // so timeout, error, and normal completion share one leak-free release
+    // path (#72). Standalone (unbrokered) engines skip this entirely.
+    if (slotClient) await slotClient.acquire();
     try {
       await KINDS[picked.kind].runUnit(picked.unit, {
         stack: { issueBodies: data.issueBodies, blockerStates: data.blockerStates },
@@ -1623,6 +1647,8 @@ async function runLoop({
       );
       await drain.wait(pollIntervalMs);
       continue;
+    } finally {
+      slotClient?.release();
     }
 
     if (runOnce) break;
