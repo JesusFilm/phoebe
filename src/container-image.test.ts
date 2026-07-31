@@ -129,6 +129,17 @@ describe.each(Object.entries(DOCKERFILES))("%s", (_label, relPath) => {
     }
   });
 
+  test("ships the vendored agent binary 0711 (secureexec → non-dumpable, #61)", () => {
+    // The agent runs as the same uid 10001 as every tenant's engine child. A
+    // process that execs a binary it cannot *read* becomes a secureexec, so the
+    // kernel sets it non-dumpable — a same-uid sibling can't read its
+    // /proc/<pid>/environ and lift another tenant's secrets. Enforced by shipping
+    // the binary root:root mode 0711 (executable, not readable by others), inside
+    // the pinned install block so it can't drift.
+    const block = providerInstallBlock(read(relPath));
+    expect(block).toMatch(/chmod 0711 \/opt\/cursor-agent\/cursor-agent/);
+  });
+
   test("keeps the provider CLI on PATH as `agent` after the privilege drop", () => {
     // The engine spawns the provider CLI by bare name and the agent child
     // inherits only the allowlisted PATH (src/agent-env.ts), so an install
