@@ -38,6 +38,12 @@ import {
 } from "./crash-loop.ts";
 import { readEngineSource, type ResolvedEngineSource } from "./engine-source.ts";
 import { lsRemoteBranchSha, materializeGithubEngine } from "./github-engine.ts";
+import { buildEngineChildEnv, parseDotenv } from "./engine-child-env.ts";
+import { attachBroker } from "./broker-ipc.ts";
+import { createSlotBroker, resolveMaxConcurrent } from "./slot-broker.ts";
+import { discoverTenants, type DiscoveredTenant } from "./tenants.ts";
+import { superviseFleet, type FleetChild } from "./supervise-fleet.ts";
+import { readFileSync } from "node:fs";
 import {
   configFingerprint,
   superviseEngine,
@@ -50,7 +56,7 @@ import {
 } from "./reconcile.ts";
 // Untyped plain-JS import (see spawn-engine.mjs / materialize.mjs for why the
 // bootstrapper's child-process plumbing can't be TypeScript).
-import { propagateExit, spawnEngine } from "./spawn-engine.mjs";
+import { propagateExit, spawnEngine, spawnEngineChild } from "./spawn-engine.mjs";
 
 /** Where the local-engine compose overlay mounts the engine for `source: "local"`. */
 export const LOCAL_ENGINE_DIR = "/opt/phoebe-engine";
@@ -346,6 +352,96 @@ function runOutcome(run: EngineRun): RunOutcome | null {
 }
 
 /**
+ * Read a tenant's co-located `.env` into a plain record for the #61 env scrub.
+ * A missing/unreadable file is an empty record — the child then holds only the
+ * allowlisted base + deployment knobs (fail-closed), which boot surfaces at the
+ * first private-repo git call rather than here.
+ */
+function readTenantEnv(envPath: string): Record<string, string> {
+  try {
+    return parseDotenv(readFileSync(envPath, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Supervise a nested/multi-tenant deployment (#58/#59/#61): a shared engine
+ * (#60, materialized once by `launchTarget` from the top config's `engine`
+ * field) with one child per tenant, a global concurrency broker across them, and
+ * hot add/remove/change via `superviseFleet`.
+ *
+ * Each child is spawned with an IPC channel + the tenant's scrubbed env (#61)
+ * and cwd (its config dir), and wired to the broker (#59). The crash-loop guard
+ * still applies any existing engine fallback on each (re)launch; feeding the
+ * guard fleet-aggregated crash verdicts (#60 §6) is a follow-up — nested live
+ * validation is deferred to #77.
+ */
+function runNestedFleet(opts: {
+  configDir: string;
+  configPath: string;
+  guard: CrashGuard;
+  stop: ReturnType<typeof installDrainSignal>;
+  intervalMs: number;
+  argv: readonly string[];
+}): Promise<EngineExit> {
+  const broker = createSlotBroker(resolveMaxConcurrent(process.env));
+
+  const spawnFleetChild = (tenant: DiscoveredTenant, engine: LaunchedEngine): FleetChild => {
+    const env = buildEngineChildEnv({
+      base: process.env,
+      tenantEnv: readTenantEnv(tenant.envPath),
+    });
+    let settle!: (exit: EngineExit) => void;
+    const exited = new Promise<EngineExit>((resolve) => {
+      settle = resolve;
+    });
+    const label = tenant.slug ?? tenant.id;
+    const child = spawnEngineChild(engine.entry, opts.argv, {
+      env,
+      cwd: tenant.dir,
+      onExit: (code: number | null, signal: NodeJS.Signals | null) => settle({ code, signal }),
+      onSpawnError: (error: Error) => {
+        console.error(`[phoebe] boot: tenant ${label} failed to spawn — ${error.message}`);
+        settle({ code: 1, signal: null });
+      },
+    });
+    attachBroker({ owner: tenant.id, broker, child });
+    return { kill: (signal) => child.kill(signal), exited };
+  };
+
+  return superviseFleet({
+    launch: () => launchTarget(opts.configPath, opts.guard),
+    discover: () =>
+      discoverTenants(opts.configDir).tenants.map((tenant) => ({
+        tenant,
+        fingerprint: configFingerprint(tenant.configPath),
+      })),
+    spawn: spawnFleetChild,
+    stop: opts.stop,
+    intervalMs: opts.intervalMs,
+    onEngineChange: (reason) =>
+      console.log(
+        reason === "config"
+          ? "[phoebe] boot: shared config changed — draining the fleet and relaunching every tenant."
+          : "[phoebe] boot: tracked engine ref advanced — draining the fleet and relaunching every tenant.",
+      ),
+    onTenantChange: ({ added, removed, changed }) =>
+      console.log(
+        `[phoebe] boot: tenant reconcile — +${added.length} added, -${removed.length} removed, ` +
+          `~${changed.length} relaunched (no container restart).`,
+      ),
+    onChildExit: ({ tenantId, exit }) =>
+      console.error(
+        `[phoebe] boot: tenant ${tenantId} exited (${exit.code ?? exit.signal}) — ` +
+          `respawning with backoff (per-tenant supervision; the shared engine is untouched).`,
+      ),
+    onLaunchError: (error) =>
+      console.error(`[phoebe] boot: fleet (re)launch failed — ${describe(error)}. Retrying.`),
+  });
+}
+
+/**
  * `phoebe boot` entry. Loads the mounted config, resolves the engine source to a
  * runnable `src/cli.ts` — a local mount or a github checkout — execs the engine
  * as a long-lived child, and supervises it: reconcile relaunches on a config or
@@ -360,7 +456,8 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   // relaunches via ~/.gitconfig + the agent-env HOME/GH_TOKEN allowlist.
   setupGitCredentials({ token: process.env["GH_TOKEN"] });
 
-  const configPath = resolveConfigPath(undefined, process.cwd());
+  const configDir = process.cwd();
+  const configPath = resolveConfigPath(undefined, configDir);
   const guard = createBootCrashGuard();
   const intervalMs = reconcileIntervalMs();
 
@@ -370,6 +467,26 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   // between an engine exiting and its replacement spawning, where the child's
   // own forwarders are not installed.
   const stop = installDrainSignal(process, ["SIGTERM", "SIGINT"]);
+
+  // A `repos/` dir beside the top config selects nested/multi-tenant mode (#63):
+  // supervise a shared engine with one child per tenant. Absent → the flat
+  // single-tenant fast-path below, unchanged: one engine child, no scanning.
+  const discovery = discoverTenants(configDir);
+  if (discovery.mode === "nested") {
+    console.log(
+      `[phoebe] boot: nested deployment — supervising ${discovery.tenants.length} tenant(s) ` +
+        `on one shared engine.`,
+    );
+    let fleetExit: EngineExit;
+    try {
+      fleetExit = await runNestedFleet({ configDir, configPath, guard, stop, intervalMs, argv });
+    } finally {
+      stop.dispose();
+    }
+    propagateExit(fleetExit.code, fleetExit.signal);
+    return;
+  }
+
   let exit: EngineExit;
   try {
     exit = await superviseEngine({

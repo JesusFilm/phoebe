@@ -76,3 +76,37 @@ export function spawnEngine(entry, args, { onSpawnError, onExit } = {}) {
 
   return child;
 }
+
+/**
+ * Spawn one nested-mode tenant engine child (bootstrap/supervise-fleet.ts).
+ * Differs from `spawnEngine` in two ways the fleet needs:
+ *
+ *   * An **IPC channel** (4th stdio slot), so the child's `createSlotClient`
+ *     (src/slot-client.ts) can request concurrency slots from the supervisor's
+ *     broker (bootstrap/broker-ipc.ts). stdout/stderr stay inherited, so a
+ *     child's self-tagged `[phoebe:<slug>]` lines interleave at the kernel.
+ *   * An explicit `env` (the #61 per-tenant scrub) and `cwd` (the tenant dir, so
+ *     the engine loads that tenant's config + prompts), and **no process-level
+ *     signal forwarding** — the supervisor owns draining (SIGTERM via `kill`),
+ *     and per-child forwarders would fight its orderly fleet drain.
+ *
+ * Returns the child so the caller can wire the broker and build a drain handle.
+ */
+export function spawnEngineChild(entry, args, { env, cwd, onExit, onSpawnError } = {}) {
+  const child = spawn(process.execPath, [entry, ...args], {
+    stdio: ["inherit", "inherit", "inherit", "ipc"],
+    ...(env ? { env } : {}),
+    ...(cwd ? { cwd } : {}),
+  });
+  child.on("error", (error) => {
+    if (onSpawnError) {
+      onSpawnError(error);
+      return;
+    }
+    console.error(`[phoebe] ${error.message}`);
+  });
+  child.on("exit", (code, signal) => {
+    if (onExit) onExit(code, signal);
+  });
+  return child;
+}
