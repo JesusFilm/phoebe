@@ -15,7 +15,7 @@
 // The marker/comment builders here mirror the `*FailWatermark` family in
 // orchestrator.ts (`build*`/`parse*`, read via `parseLatestMarker`).
 
-import { asSha, type Sha } from "./branded.ts";
+import type { Sha } from "./branded.ts";
 
 /** Phoebe-owned skip label — distinct from the user-supplied `prOptOutLabel`. */
 export const PHOEBE_QUARANTINE_LABEL = "phoebe:quarantined";
@@ -119,7 +119,7 @@ export function shouldAutoUnstick(opts: {
   currentIssueEditedAt?: string;
 }): boolean {
   if (opts.currentHeadSha !== undefined) {
-    return asSha(opts.currentHeadSha) !== asSha(opts.baseline);
+    return opts.currentHeadSha !== opts.baseline;
   }
   if (opts.currentIssueEditedAt !== undefined) {
     return opts.currentIssueEditedAt > opts.baseline;
