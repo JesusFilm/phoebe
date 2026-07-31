@@ -100,6 +100,18 @@ export type PhoebeConfig = {
   /** Env var holding each provider's API key — the only key the agent child inherits. */
   providerEnv: Record<ProviderName, string>;
   /**
+   * Whole-unit wall-clock budget in ms (#72). A fleet-protection backstop: a
+   * hung unit that exceeds this has its agent subprocess killed so it cannot
+   * hold the #59 concurrency slot forever. Env-overridable via
+   * `PHOEBE_RUN_TIMEOUT_MS`. Default 45 min.
+   */
+  runTimeoutMs: number;
+  /**
+   * Consecutive per-unit timeouts before a unit is quarantined and escalated to
+   * a human (#75). Env-overridable via `PHOEBE_MAX_UNIT_TIMEOUTS`. Default 3.
+   */
+  maxUnitTimeouts: number;
+  /**
    * Per-tenant filesystem layout. Not user-supplied: derived from `repoSlug`
    * and the deployment data base by `resolveConfig` (see src/paths.ts, #58/#62).
    */
@@ -139,6 +151,10 @@ export type PhoebeUserConfig = {
   defaultProvider?: ProviderName;
   defaultModels?: Partial<Record<ProviderName, string>>;
   providerEnv?: Partial<Record<ProviderName, string>>;
+  /** Whole-unit wall-clock timeout in ms (#72); default 45 min. */
+  runTimeoutMs?: number;
+  /** Consecutive timeouts before a unit is quarantined (#75); default 3. */
+  maxUnitTimeouts?: number;
 };
 
 /**
@@ -177,6 +193,11 @@ export const CONFIG_DEFAULTS = {
     claude: "ANTHROPIC_API_KEY",
     codex: "OPENAI_KEY",
   } satisfies Record<ProviderName, string>,
+  // 45 min: comfortably fits install(≤10) + a long agent run + test(≤10) + push,
+  // so hitting it means "actually stuck", not "slow" (#72).
+  runTimeoutMs: 2_700_000,
+  // Matches the house number for consecutive-failures-before-escalation (#75).
+  maxUnitTimeouts: 3,
 } as const;
 
 const REQUIRED_USER_FIELDS = [
@@ -280,6 +301,8 @@ export function resolveConfig(
     defaultProvider: user.defaultProvider ?? CONFIG_DEFAULTS.defaultProvider,
     defaultModels: { ...CONFIG_DEFAULTS.defaultModels, ...user.defaultModels },
     providerEnv: { ...CONFIG_DEFAULTS.providerEnv, ...user.providerEnv },
+    runTimeoutMs: user.runTimeoutMs ?? CONFIG_DEFAULTS.runTimeoutMs,
+    maxUnitTimeouts: user.maxUnitTimeouts ?? CONFIG_DEFAULTS.maxUnitTimeouts,
     paths: derivePaths(user.repoSlug, opts.dataBase),
   };
 }

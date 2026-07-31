@@ -18,7 +18,12 @@ export type AgentChild = {
   stdin: { write(data: string): unknown; end(): unknown };
   on(event: "error", listener: (err: Error) => void): unknown;
   on(event: "close", listener: (code: number | null) => void): unknown;
+  /** Terminate the child (SIGTERM → escalated SIGKILL by the run-timeout, #72). */
+  kill?(signal?: NodeJS.Signals): boolean;
 };
+
+/** Grace between SIGTERM and SIGKILL when a run deadline aborts the agent (#72). */
+export const AGENT_KILL_GRACE_MS = 5_000;
 
 export type SpawnAgent = (
   file: string,
@@ -37,6 +42,13 @@ export async function runAgent(opts: {
   env: Record<string, string>;
   spawn?: SpawnAgent;
   log?: (line: string) => void;
+  /**
+   * Abort the run — kills the agent child (SIGTERM, escalated to SIGKILL after a
+   * short grace since the vendored `cursor-agent` has no cooperative-drain
+   * handshake). The run-timeout (#72) fires this when the whole-unit budget
+   * expires; the `close` handler then settles the promise as usual.
+   */
+  signal?: AbortSignal;
 }): Promise<AgentRunResult> {
   const { provider, model, prompt, cwd, env } = opts;
   const spawn = opts.spawn ?? defaultSpawn;
@@ -52,6 +64,18 @@ export async function runAgent(opts: {
     const child = spawn(file, args, { cwd, env });
     let resultText = "";
     let stdoutBuffer = "";
+
+    const onAbort = (): void => {
+      if (!child.kill) return;
+      child.kill("SIGTERM");
+      const grace = setTimeout(() => child.kill?.("SIGKILL"), AGENT_KILL_GRACE_MS);
+      // Don't let the escalation timer keep the loop alive past the child's exit.
+      (grace as unknown as { unref?: () => void }).unref?.();
+    };
+    if (opts.signal) {
+      if (opts.signal.aborted) onAbort();
+      else opts.signal.addEventListener("abort", onAbort, { once: true });
+    }
 
     const handleLine = (line: string): void => {
       for (const event of provider.parseStreamLine(line)) {

@@ -31,6 +31,7 @@ import {
 import { buildAgentEnv } from "./agent-env.ts";
 import { installDrainSignal, type DrainSignal } from "./drain.ts";
 import { createSlotClient, type SlotClient } from "./slot-client.ts";
+import { resolveRunTimeoutMs, runWithDeadline } from "./run-timeout.ts";
 import {
   EXECUTION_REFUSED_MESSAGE,
   executionDecision,
@@ -105,6 +106,11 @@ import {
 } from "./orchestrator.ts";
 
 const DEFAULT_POLL_INTERVAL_MS = 300_000;
+// Whole-unit wall-clock budget (#72): the agent phase — the async, hang-prone
+// step — runs under this deadline, so a hung unit releases its #59 slot within
+// a known ceiling instead of starving the fleet. Env (`PHOEBE_RUN_TIMEOUT_MS`)
+// overrides the config field.
+const RUN_TIMEOUT_MS = resolveRunTimeoutMs(process.env, config.runTimeoutMs);
 // Never let a gh/git child process block the persistent loop forever (rate-limit
 // backoff, credential prompt, network partition). Configured toolchain commands
 // (install/test) get a longer leash.
@@ -454,12 +460,21 @@ async function runAgentInWorktree(opts: {
     provider: provider.name,
     providerEnv: config.providerEnv,
   });
-  const { exitCode } = await runAgent({
-    provider,
-    model,
-    prompt,
-    cwd: opts.worktreeDir,
-    env,
+  // Bound the agent run by the whole-unit budget (#72). On expiry the deadline
+  // aborts the signal, `runAgent` kills the child, and a `RunTimeoutError`
+  // propagates — caught at the unit boundary (the daemon logs it, releases the
+  // #59 slot in `finally`, and continues; #75 counts it toward quarantine).
+  const { exitCode } = await runWithDeadline({
+    ms: RUN_TIMEOUT_MS,
+    work: (signal) =>
+      runAgent({
+        provider,
+        model,
+        prompt,
+        cwd: opts.worktreeDir,
+        env,
+        signal,
+      }),
   });
   if (exitCode !== 0) {
     console.log(`[phoebe] Agent exited with code ${exitCode}.`);
