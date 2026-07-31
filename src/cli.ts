@@ -33,6 +33,7 @@ import {
 import { formatInitReport, runInit } from "./init.ts";
 import { resolveConfigPath } from "./load-config.ts";
 import { setResolvedConfig } from "./resolved-config.ts";
+import { parseSetupArgs, runSetup, SETUP_HELP_TEXT } from "./setup.ts";
 import { ContractCapabilityError, STATUS_SCHEMA_VERSION } from "./status-contract.ts";
 import { readStatusSnapshot } from "./status-store.ts";
 
@@ -197,6 +198,7 @@ export function parseStatusArgs(argv: readonly string[]): ParsedStatusArgs {
 const HELP_TEXT = `phoebe — AFK coding agent
 
 Usage:
+  phoebe setup [dir]               Interactive wizard: scaffold + fill config & .env
   phoebe init [dir]                Scaffold a consumer-owned runtime
   phoebe config resolve --json     Print the canonical effective configuration
   phoebe status --json             Read the local status-v1 projection
@@ -261,6 +263,16 @@ as a stable JSON error object; unsupported major versions are explicit.
  */
 export async function runCli(): Promise<void> {
   const args = process.argv.slice(2);
+
+  if (args[0] === "setup") {
+    const parsed = parseSetupArgs(args.slice(1));
+    if (parsed.help) {
+      process.stdout.write(SETUP_HELP_TEXT);
+      return;
+    }
+    await runSetup({ targetDir: parsed.targetDir });
+    return;
+  }
 
   if (args[0] === "init") {
     const parsed = parseInitArgs(args.slice(1));
