@@ -44,7 +44,9 @@ export type PlannedOutput = {
     | { kind: "gitignore"; entries: readonly string[] };
 };
 
-const GITIGNORE_ENTRIES = [".env", "node_modules/"] as const;
+// `.env` (flat/deployment secrets) and every per-tenant `repos/<owner>/<repo>/.env`
+// (#63) must never be committed; `node_modules/` for the scaffolded toolchain.
+const GITIGNORE_ENTRIES = [".env", "repos/**/.env", "node_modules/"] as const;
 
 /**
  * Enumerate every file init will produce. The prompt list is derived from

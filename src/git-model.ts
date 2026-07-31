@@ -27,9 +27,10 @@ export const defaultGit: GitRunner = (args, opts) =>
  * Clone the repo into `repoDir` unless a clone already exists there.
  *
  * An existing clone is only adopted if its `origin` actually points at
- * `repoUrl`. A `/data/repo` volume is supposed to be this instance's private
- * clone, but two Phoebe instances on one host can end up sharing it (a compose
- * project-name collision namespaces the "private" volumes identically). Adopting
+ * `repoUrl`. Each tenant's `/data/repos/<owner>/<repo>/repo` dir is supposed to
+ * be that tenant's private clone, but two Phoebe containers on one host can end
+ * up sharing the `phoebe-data` volume (a compose project-name collision
+ * namespaces the "private" volumes identically). Adopting
  * a foreign clone by mere presence of `.git` would silently run every worktree,
  * branch, and push against the wrong repo while `gh` calls still used this
  * instance's `repoSlug` — reading one repo's issues and doing the work on
