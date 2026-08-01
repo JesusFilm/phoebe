@@ -69,6 +69,7 @@ import {
   isPrMergeConflicting,
   listFailingChecks,
   newestReviewThreadCommentCreatedAt,
+  mergeBlockerNumbers,
   parseBlockedBy,
   parseLatestMarker,
   parseChecksFailWatermark,
@@ -96,6 +97,7 @@ import {
   type ConflictFailWatermark,
   type Issue,
   type IssueWorkUnit,
+  type NativeBlockerMap,
   type ReviewThread,
   type ReviewsCandidate,
   type StackContext,
@@ -236,10 +238,58 @@ function blockerPrState(blockerIssueNumber: number): BlockerPrState {
   };
 }
 
-function buildBlockerStates(issues: readonly Issue[]): Map<number, BlockerPrState> {
+/**
+ * Native blocker issue numbers from GitHub's issue-dependencies API. Returns
+ * `[]` for the no-dependencies case and on any `gh` failure — a native read must
+ * never crash the poll loop; in `both` mode the caller still falls through to
+ * the body regex. Parses each dependency to `{ number, state }`; only `number`
+ * feeds the stacking machinery (blocker PR state, not issue state, drives the
+ * base decision), matching the body-regex path exactly.
+ */
+function fetchNativeBlockers(issueNumber: number): Array<{ number: number; state: string }> {
+  try {
+    const rows = ghApiJson<Array<{ number: number; state: string }>>(
+      `repos/${config.repoSlug}/issues/${issueNumber}/dependencies/blocked_by`,
+    );
+    return Array.isArray(rows) ? rows.map((row) => ({ number: row.number, state: row.state })) : [];
+  } catch (error) {
+    console.warn(
+      `[phoebe] Native blocker lookup failed for #${issueNumber} — treating as no native blockers this cycle (${error instanceof Error ? error.message : String(error)}).`,
+    );
+    return [];
+  }
+}
+
+/**
+ * Native blockers keyed by issue number for the given issues. Empty (and makes
+ * zero `gh` calls) under `blockerSource: "body"` so the default costs nothing;
+ * `native`/`both` do one API read per issue.
+ */
+function buildNativeBlockersByIssue(issues: readonly Issue[]): Map<number, number[]> {
+  const map = new Map<number, number[]>();
+  if (config.blockerSource === "body") {
+    return map;
+  }
+  for (const issue of issues) {
+    const native = fetchNativeBlockers(issue.number).map((row) => row.number);
+    if (native.length > 0) {
+      map.set(issue.number, native);
+    }
+  }
+  return map;
+}
+
+function buildBlockerStates(
+  issues: readonly Issue[],
+  nativeBlockersByIssue: NativeBlockerMap = new Map(),
+): Map<number, BlockerPrState> {
   const blockerNumbers = new Set<number>();
   for (const issue of issues) {
-    for (const n of parseBlockedBy(issue.body)) {
+    const merged = mergeBlockerNumbers(
+      parseBlockedBy(issue.body),
+      nativeBlockersByIssue.get(issue.number) ?? [],
+    );
+    for (const n of merged) {
       blockerNumbers.add(n);
     }
   }
@@ -1049,11 +1099,17 @@ type WorkKindFetch =
       issueBodies: Map<number, string>;
       phoebeLogin: string;
     }
-  | { kind: "issues"; issues: Issue[]; blockerStates: Map<number, BlockerPrState> }
+  | {
+      kind: "issues";
+      issues: Issue[];
+      blockerStates: Map<number, BlockerPrState>;
+      nativeBlockersByIssue: Map<number, number[]>;
+    }
   | {
       kind: "research";
       researchIssues: Issue[];
       blockerStates: Map<number, BlockerPrState>;
+      nativeBlockersByIssue: Map<number, number[]>;
     };
 
 async function conflictingPrCandidate(pr: OpenPhoebePr): Promise<ConflictingPrCandidate | null> {
@@ -1259,17 +1315,32 @@ async function fetchChecksWorkData(): Promise<{
   return { failingCheckPrs, issueBodies };
 }
 
-function fetchIssueWorkData(): { issues: Issue[]; blockerStates: Map<number, BlockerPrState> } {
+function fetchIssueWorkData(): {
+  issues: Issue[];
+  blockerStates: Map<number, BlockerPrState>;
+  nativeBlockersByIssue: Map<number, number[]>;
+} {
   const issues = listReadyIssues();
-  return { issues, blockerStates: buildBlockerStates(issues) };
+  const nativeBlockersByIssue = buildNativeBlockersByIssue(issues);
+  return {
+    issues,
+    blockerStates: buildBlockerStates(issues, nativeBlockersByIssue),
+    nativeBlockersByIssue,
+  };
 }
 
 function fetchResearchWorkData(): {
   researchIssues: Issue[];
   blockerStates: Map<number, BlockerPrState>;
+  nativeBlockersByIssue: Map<number, number[]>;
 } {
   const researchIssues = listResearchIssues();
-  return { researchIssues, blockerStates: buildBlockerStates(researchIssues) };
+  const nativeBlockersByIssue = buildNativeBlockersByIssue(researchIssues);
+  return {
+    researchIssues,
+    blockerStates: buildBlockerStates(researchIssues, nativeBlockersByIssue),
+    nativeBlockersByIssue,
+  };
 }
 
 async function runIssueUnit(unit: IssueWorkUnit): Promise<number> {
@@ -1342,8 +1413,8 @@ const KINDS: Record<WorkKindName, WorkKind> = {
   issues: {
     name: "issues",
     fetch: async () => {
-      const { issues, blockerStates } = fetchIssueWorkData();
-      return { kind: "issues", issues, blockerStates };
+      const { issues, blockerStates, nativeBlockersByIssue } = fetchIssueWorkData();
+      return { kind: "issues", issues, blockerStates, nativeBlockersByIssue };
     },
     runUnit: async (unit) => {
       return runIssueUnit(unit as IssueWorkUnit);
@@ -1352,8 +1423,8 @@ const KINDS: Record<WorkKindName, WorkKind> = {
   research: {
     name: "research",
     fetch: async () => {
-      const { researchIssues, blockerStates } = fetchResearchWorkData();
-      return { kind: "research", researchIssues, blockerStates };
+      const { researchIssues, blockerStates, nativeBlockersByIssue } = fetchResearchWorkData();
+      return { kind: "research", researchIssues, blockerStates, nativeBlockersByIssue };
     },
     runUnit: async (unit) => {
       return runResearchUnit(unit as IssueWorkUnit);
@@ -1365,6 +1436,7 @@ type CycleWorkData = {
   issues: Issue[];
   researchIssues: Issue[];
   blockerStates: Map<number, BlockerPrState>;
+  nativeBlockersByIssue: Map<number, number[]>;
   conflictingPrs: ConflictingPrCandidate[];
   failingCheckPrs: ChecksCandidate[];
   reviewActivityPrs: ReviewsCandidate[];
@@ -1377,6 +1449,7 @@ async function fetchCycleWorkData(kinds: readonly WorkKindName[]): Promise<Cycle
   let issues: Issue[] = [];
   let researchIssues: Issue[] = [];
   let blockerStates = new Map<number, BlockerPrState>();
+  const nativeBlockersByIssue = new Map<number, number[]>();
   let conflictingPrs: ConflictingPrCandidate[] = [];
   let failingCheckPrs: ChecksCandidate[] = [];
   let reviewActivityPrs: ReviewsCandidate[] = [];
@@ -1391,10 +1464,16 @@ async function fetchCycleWorkData(kinds: readonly WorkKindName[]): Promise<Cycle
       for (const [number, state] of fetched.blockerStates) {
         blockerStates.set(number, state);
       }
+      for (const [number, native] of fetched.nativeBlockersByIssue) {
+        nativeBlockersByIssue.set(number, native);
+      }
     } else if (fetched.kind === "research") {
       researchIssues = fetched.researchIssues;
       for (const [number, state] of fetched.blockerStates) {
         blockerStates.set(number, state);
+      }
+      for (const [number, native] of fetched.nativeBlockersByIssue) {
+        nativeBlockersByIssue.set(number, native);
       }
     } else if (fetched.kind === "conflicts") {
       conflictingPrs = fetched.conflictingPrs;
@@ -1426,6 +1505,7 @@ async function fetchCycleWorkData(kinds: readonly WorkKindName[]): Promise<Cycle
     issues,
     researchIssues,
     blockerStates,
+    nativeBlockersByIssue,
     conflictingPrs,
     failingCheckPrs,
     reviewActivityPrs,
@@ -1437,14 +1517,17 @@ async function fetchCycleWorkData(kinds: readonly WorkKindName[]): Promise<Cycle
 
 function logIdleCycle(data: CycleWorkData): string {
   const phoebeBase = process.env["PHOEBE_BASE"];
-  if (data.issues.length > 0 && !selectIssue(data.issues, data.blockerStates, phoebeBase)) {
+  if (
+    data.issues.length > 0 &&
+    !selectIssue(data.issues, data.blockerStates, phoebeBase, data.nativeBlockersByIssue)
+  ) {
     const reason = `${data.issues.length} ${config.readyLabel} issue(s) but none workable this cycle (blocked or waiting on blocker PR).`;
     console.log(`[phoebe] ${reason}`);
     return reason;
   }
   if (
     data.researchIssues.length > 0 &&
-    !selectIssue(data.researchIssues, data.blockerStates, phoebeBase)
+    !selectIssue(data.researchIssues, data.blockerStates, phoebeBase, data.nativeBlockersByIssue)
   ) {
     const reason = `${data.researchIssues.length} ${config.researchLabel} ticket(s) but none workable this cycle (blocked or waiting on blocker PR).`;
     console.log(`[phoebe] ${reason}`);
@@ -1691,6 +1774,7 @@ async function runLoop({
         issues: data.issues,
         researchIssues: data.researchIssues,
         blockerStates: data.blockerStates,
+        nativeBlockersByIssue: data.nativeBlockersByIssue,
         conflictingPrs: data.conflictingPrs,
         failingCheckPrs: data.failingCheckPrs,
         reviewActivityPrs: data.reviewActivityPrs,

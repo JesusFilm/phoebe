@@ -1,5 +1,9 @@
-import { describe, expect, test } from "vite-plus/test";
+import { afterEach, describe, expect, test } from "vite-plus/test";
 import { asBranchRef, asPrNumber, asSha } from "./branded.ts";
+import { resolveConfig } from "./config-schema.ts";
+import { setResolvedConfig } from "./resolved-config.ts";
+import { config as sampleUserConfig } from "../phoebe.config.ts";
+import type { BlockerSource } from "./config-schema.ts";
 import {
   buildChecksFailWatermarkMarker,
   buildConflictFailWatermarkMarker,
@@ -18,7 +22,9 @@ import {
   isPrMergeConflicting,
   isReviewSummaryComment,
   issueBranch,
+  issueBlockers,
   listFailingChecks,
+  mergeBlockerNumbers,
   newestReviewThreadCommentCreatedAt,
   parseBlockedBy,
   parseChecksFailWatermark,
@@ -81,6 +87,51 @@ describe("parseBlockedBy", () => {
 
   test("returns empty when no blockers", () => {
     expect(parseBlockedBy("No blockers here")).toEqual([]);
+  });
+});
+
+describe("mergeBlockerNumbers", () => {
+  test("body mode ignores native blockers (reproduces today's behavior)", () => {
+    expect(mergeBlockerNumbers([98], [42], "body")).toEqual([98]);
+    expect(mergeBlockerNumbers([], [42], "body")).toEqual([]);
+  });
+
+  test("native mode ignores body blockers", () => {
+    expect(mergeBlockerNumbers([98], [42], "native")).toEqual([42]);
+  });
+
+  test("both mode unions and deduplicates, body refs first", () => {
+    expect(mergeBlockerNumbers([98, 7], [7, 42], "both")).toEqual([98, 7, 42]);
+  });
+
+  test("empty native result leaves body blockers untouched under both", () => {
+    expect(mergeBlockerNumbers([98], [], "both")).toEqual([98]);
+  });
+
+  test("empty native result yields nothing under native", () => {
+    expect(mergeBlockerNumbers([98], [], "native")).toEqual([]);
+  });
+});
+
+describe("issueBlockers", () => {
+  const withBlockerSource = (source: BlockerSource) =>
+    setResolvedConfig(resolveConfig({ ...sampleUserConfig, blockerSource: source }));
+
+  afterEach(() => setResolvedConfig(resolveConfig(sampleUserConfig)));
+
+  test("defaults to config.blockerSource — body ignores native", () => {
+    withBlockerSource("body");
+    expect(issueBlockers(issue({ number: 1, body: "Blocked by #98" }), [42])).toEqual([98]);
+  });
+
+  test("native source uses native blockers, not the body regex", () => {
+    withBlockerSource("native");
+    expect(issueBlockers(issue({ number: 1, body: "Blocked by #98" }), [42])).toEqual([42]);
+  });
+
+  test("both source unions body and native, deduplicated", () => {
+    withBlockerSource("both");
+    expect(issueBlockers(issue({ number: 1, body: "Blocked by #98" }), [98, 42])).toEqual([98, 42]);
   });
 });
 
@@ -169,6 +220,33 @@ describe("resolveWorktreeBase", () => {
     const blocked = issue({ number: 102, body: "Blocked by #98" });
     expect(resolveWorktreeBase(blocked, emptyStates)).toBeNull();
   });
+
+  test("stacks on a native blocker (no body ref) under native source", () => {
+    setResolvedConfig(resolveConfig({ ...sampleUserConfig, blockerSource: "native" }));
+    const blocked = issue({ number: 102, body: "## Blocked by\n\n- #98" });
+    const states = new Map<number, BlockerPrState>([
+      [98, { hasOpenPr: true, openPrNumber: asPrNumber(104), hasMergedPr: false }],
+    ]);
+    expect(resolveWorktreeBase(blocked, states, undefined, [98])).toEqual({
+      worktreeBase: `origin/${issueBranch(98)}`,
+      stacked: true,
+      blockerIssueNumber: 98,
+      blockerPrNumber: 104,
+    });
+    setResolvedConfig(resolveConfig(sampleUserConfig));
+  });
+
+  test("native blockers are ignored under the default body source", () => {
+    // Body has no ref, so a native-only blocker must not gate the base in body mode.
+    const blocked = issue({ number: 102, body: "no body ref here" });
+    const states = new Map<number, BlockerPrState>([
+      [98, { hasOpenPr: false, hasMergedPr: false }],
+    ]);
+    expect(resolveWorktreeBase(blocked, states, undefined, [98])).toEqual({
+      worktreeBase: "origin/main",
+      stacked: false,
+    });
+  });
 });
 
 describe("selectIssue", () => {
@@ -203,6 +281,21 @@ describe("selectIssue", () => {
       [98, { hasOpenPr: false, hasMergedPr: false }],
     ]);
     expect(selectIssue(issues, states)).toBeNull();
+  });
+
+  test("threads per-issue native blockers into base resolution under native source", () => {
+    setResolvedConfig(resolveConfig({ ...sampleUserConfig, blockerSource: "native" }));
+    // No body ref; the blocker is known only via the native dependencies map.
+    const issues = [issue({ number: 102, body: "## Blocked by\n\n- #98" })];
+    const states = new Map<number, BlockerPrState>([
+      [98, { hasOpenPr: true, openPrNumber: asPrNumber(104), hasMergedPr: false }],
+    ]);
+    const nativeBlockersByIssue = new Map<number, readonly number[]>([[102, [98]]]);
+    const picked = selectIssue(issues, states, undefined, nativeBlockersByIssue);
+    expect(picked?.issue.number).toBe(102);
+    expect(picked?.resolution.stacked).toBe(true);
+    expect(picked?.resolution.blockerIssueNumber).toBe(98);
+    setResolvedConfig(resolveConfig(sampleUserConfig));
   });
 });
 
