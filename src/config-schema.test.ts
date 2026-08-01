@@ -94,6 +94,7 @@ describe("resolveConfig", () => {
     expect(resolved.readyCommand).toBe(CONFIG_DEFAULTS.readyCommand);
     expect(resolved.blockedByPattern).toBe(CONFIG_DEFAULTS.blockedByPattern);
     expect(resolved.blockerSource).toBe(CONFIG_DEFAULTS.blockerSource);
+    expect(resolved.stackMode).toBe(CONFIG_DEFAULTS.stackMode);
     expect(resolved.reviewsSuccessHeading).toBe(CONFIG_DEFAULTS.reviewsSuccessHeading);
     expect(resolved.prScope).toBe(CONFIG_DEFAULTS.prScope);
     expect(resolved.prAuthors).toEqual(CONFIG_DEFAULTS.prAuthors);
@@ -177,6 +178,12 @@ describe("resolveConfig", () => {
     expect(resolveConfig(minimalUserConfig({ blockerSource: "native" })).blockerSource).toBe(
       "native",
     );
+  });
+
+  test("stackMode defaults to banner and honors an override", () => {
+    expect(resolveConfig(minimalUserConfig()).stackMode).toBe("banner");
+    expect(resolveConfig(minimalUserConfig({ stackMode: "native" })).stackMode).toBe("native");
+    expect(resolveConfig(minimalUserConfig({ stackMode: "off" })).stackMode).toBe("off");
   });
 
   test("default blockedByPattern compiles and captures the issue number", () => {

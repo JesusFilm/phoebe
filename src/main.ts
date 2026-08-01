@@ -77,7 +77,10 @@ import {
   parseReviewsHandledWatermark,
   parseIssueNumberFromBranch,
   getMergedBlockerPrNumbers,
+  ghStackExtensionInstallArgs,
+  nativeStackGitConfig,
   oneShotWorkKinds,
+  resolveStackedPrPlan,
   stackedCatchUpRetractionComment,
   RUN_ONCE_NOTHING_MESSAGE,
   selectFirstWorkUnit,
@@ -169,6 +172,60 @@ function gh(args: string[], opts?: { input?: string }): void {
     timeout: CHILD_PROCESS_TIMEOUT_MS,
     ...(opts?.input !== undefined ? { input: opts.input } : {}),
   });
+}
+
+/**
+ * Register a native GitHub stack for a freshly-created stacked PR (native mode
+ * only). The argv is built purely by `resolveStackedPrPlan`; this only runs it.
+ * `gh stack link` ships in the `github/gh-stack` extension that
+ * `prepareNativeStackTooling` installs. Non-fatal by design: the PR already
+ * bases off the blocker branch, so a link failure leaves a functioning stack
+ * that merely is not registered — we warn and let the completed run stand
+ * rather than abort it.
+ *
+ * LIVE-VERIFY: this goes through the `gh` wrapper, which appends `-R <slug>`.
+ * gh-stack is a two-day-old public-preview extension; confirm it tolerates the
+ * trailing `-R` (and that `link` over two branches that already have PRs never
+ * rewrites their titles).
+ */
+function registerNativeStack(stackLinkArgs: string[]): void {
+  try {
+    gh(stackLinkArgs);
+  } catch (error) {
+    console.warn(
+      `[phoebe] gh stack link failed — the PR bases off the blocker branch but is not ` +
+        `registered as a native stack. Register it manually with \`gh ${stackLinkArgs.join(" ")}\`. ` +
+        `(${error instanceof Error ? error.message : String(error)})`,
+    );
+  }
+}
+
+/**
+ * One-time, native-mode-only setup on the private clone: pre-set the
+ * non-interactive git config gh-stack and cascade-rebase expect, then install
+ * the gh-stack extension. Idempotent and best-effort — `gh extension install`
+ * errors when the extension is already present, which we swallow. Run at boot
+ * (guarded by `stackMode === 'native'`) rather than baked into the image, so the
+ * default banner/off image carries no gh-stack dependency and needs no
+ * build-time network or auth to install it.
+ */
+function prepareNativeStackTooling(): void {
+  for (const args of nativeStackGitConfig()) {
+    gitInWorktree(repoDir, [...args]);
+  }
+  try {
+    // No `-R`: extension install is not repo-scoped, so bypass the `gh` wrapper.
+    execFileSync("gh", [...ghStackExtensionInstallArgs()], {
+      stdio: "inherit",
+      timeout: CHILD_PROCESS_TIMEOUT_MS,
+    });
+  } catch (error) {
+    console.warn(
+      `[phoebe] gh-stack extension not installed (already present, or offline at boot). ` +
+        `Native stacking needs it — install with \`gh ${ghStackExtensionInstallArgs().join(" ")}\`. ` +
+        `(${error instanceof Error ? error.message : String(error)})`,
+    );
+  }
 }
 
 /** Open issues carrying `label`, oldest-created first. Shared by `issues` and `research`. */
@@ -1023,14 +1080,28 @@ async function runOneIssue(opts: {
       ])[0];
       const existingPr = existingPrRow ? asPrNumber(existingPrRow.number) : undefined;
       if (existingPr === undefined) {
+        // Which base branch, whether to add the stacked banner, and whether to
+        // register a native GitHub stack — all decided purely from stackMode +
+        // the resolved base (see resolveStackedPrPlan). In `banner`/`off` this
+        // yields exactly the historical base=defaultBranch + banner-when-stacked.
+        const plan = resolveStackedPrPlan({
+          issueNumber,
+          resolution: { stacked, blockerIssueNumber },
+        });
         const prTitle = `Phoebe: ${issueTitle} (#${issueNumber})`;
         const prBody = buildInitialPrBody({
           issueNumber,
           commitCount: newCommitCount,
-          ...(stacked && blockerIssueNumber !== undefined && blockerPrNumber !== undefined
+          ...(plan.includeBanner &&
+          blockerIssueNumber !== undefined &&
+          blockerPrNumber !== undefined
             ? { stacked: { blockerIssueNumber, blockerPrNumber } }
             : {}),
         });
+        // Create the PR *first* with Phoebe's own title/body (base = the blocker
+        // branch in native mode), then register the stack — so `gh stack link`
+        // only corrects the base chain and never auto-generates a title over
+        // ours (auto-titles only happen for branches that have no PR yet).
         gh(
           [
             "pr",
@@ -1038,7 +1109,7 @@ async function runOneIssue(opts: {
             "--head",
             agentBranch,
             "--base",
-            PR_BASE,
+            plan.prBase,
             "--title",
             prTitle,
             "--body-file",
@@ -1046,6 +1117,9 @@ async function runOneIssue(opts: {
           ],
           { input: prBody },
         );
+        if (plan.stackLinkArgs) {
+          registerNativeStack(plan.stackLinkArgs);
+        }
       } else {
         console.log(
           `[phoebe] PR #${existingPr} already exists for ${agentBranch} — posting follow-up note.`,
@@ -1723,6 +1797,11 @@ export async function runEngine(argv: readonly string[] = process.argv.slice(2))
   // the clone exists, so it's safe on every daemon restart.
   if (inContainer && !dryRun) {
     ensureClone({ repoUrl: config.repoUrl, repoDir });
+    // Native stacking needs the gh-stack extension + non-interactive git config
+    // on the clone. Guarded so banner/off runs pull in no gh-stack dependency.
+    if (config.stackMode === "native") {
+      prepareNativeStackTooling();
+    }
   }
 
   // `phoebe boot` stops the engine with SIGTERM (container shutdown, and later a

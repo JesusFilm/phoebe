@@ -23,6 +23,12 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends gh \
  && rm -rf /var/lib/apt/lists/*
 
+# Native stacked PRs (`stackMode: "native"`) need the `github/gh-stack` gh
+# extension + `remote.pushDefault`/`rerere.enabled` git config. The engine
+# installs both on first boot, guarded so the default image carries no gh-stack
+# dependency. See the longer note in templates/container/Dockerfile for baking
+# the extension in instead (must be installed as the `phoebe` user).
+
 # The unprivileged user everything below the privilege drop runs as, and the
 # four volume mount points, created *now* while we are still root. Docker seeds
 # a fresh named volume from the image's contents at that path, ownership

@@ -8,6 +8,7 @@ import { isAbsolute } from "node:path";
 import { resolveEngineSource, type ResolvedEngineSource } from "../bootstrap/engine-source.ts";
 import {
   BLOCKER_SOURCES,
+  STACK_MODES,
   PROVIDER_NAMES,
   resolveConfig,
   validateEngineSourceField,
@@ -41,6 +42,7 @@ const CONFIG_FIELDS = [
   "readyCommand",
   "blockedByPattern",
   "blockerSource",
+  "stackMode",
   "reviewsSuccessHeading",
   "promptFiles",
   "workOrder",
@@ -185,6 +187,14 @@ function validateBaseConfig(config: JsonRecord, path: string): asserts config is
   ) {
     throw new Error(
       describePath(path, `config.blockerSource must be one of ${BLOCKER_SOURCES.join(", ")}.`),
+    );
+  }
+  if (
+    config["stackMode"] !== undefined &&
+    !(STACK_MODES as readonly unknown[]).includes(config["stackMode"])
+  ) {
+    throw new Error(
+      describePath(path, `config.stackMode must be one of ${STACK_MODES.join(", ")}.`),
     );
   }
 

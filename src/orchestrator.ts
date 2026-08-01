@@ -2,14 +2,16 @@
 // Kept separate from main.ts so it can be unit-tested without Docker/gh.
 
 import { asBranchRef, asSha, type BranchRef, type PrNumber, type Sha } from "./branded.ts";
-import type { BlockerSource, WorkKindName } from "./config-schema.ts";
+import type { BlockerSource, StackMode, WorkKindName } from "./config-schema.ts";
 import { config } from "./resolved-config.ts";
 
 export {
   validateWorkOrder,
   BLOCKER_SOURCES,
+  STACK_MODES,
   WORK_KIND_NAMES,
   type BlockerSource,
+  type StackMode,
   type WorkKindName,
 } from "./config-schema.ts";
 
@@ -127,6 +129,7 @@ export function resolveWorktreeBase(
   blockerStates: ReadonlyMap<number, BlockerPrState>,
   phoebeBase?: string,
   nativeBlockers: readonly number[] = [],
+  stackMode: StackMode = config.stackMode,
 ): BaseResolution | null {
   if (phoebeBase) {
     return { worktreeBase: phoebeBase, stacked: false };
@@ -144,6 +147,13 @@ export function resolveWorktreeBase(
   }
 
   if (state.hasOpenPr) {
+    // `off` still honors the blocker for the skip decision above, but never
+    // stacks: the branch is cut off main and no banner is added downstream.
+    if (stackMode === "off") {
+      return { worktreeBase: "origin/main", stacked: false };
+    }
+    // `banner` and `native` both cut the branch off the blocker's tip; they
+    // diverge only in the PR base + banner, decided by `resolveStackedPrPlan`.
     return {
       worktreeBase: `origin/${issueBranch(blockerIssueNumber)}`,
       stacked: true,
@@ -188,6 +198,90 @@ export function stackedPrComment(blockerIssueNumber: number, blockerPrNumber: Pr
     `**Do not merge this PR before #${blockerPrNumber}** — doing so would pull ` +
     `#${blockerIssueNumber}'s work into \`main\` ahead of its own review.`
   );
+}
+
+/**
+ * Pure PR-shape decision for a freshly-pushed issue branch, given the resolved
+ * base and the configured {@link StackMode}. Everything the impure PR-open step
+ * needs — the `--base` branch, whether to add the stacked banner to the body,
+ * and the `gh stack link` argv (or `null`) — is decided here so it can be unit
+ * tested without shelling out to `gh`.
+ *
+ * The three modes:
+ *  - not stacked (unblocked / merged blocker / `PHOEBE_BASE` / `off`): base is
+ *    `defaultBranch`, no banner, no stack link. Byte-for-byte the historical
+ *    behavior.
+ *  - `banner`: base is `defaultBranch`, banner added, no stack link — today's
+ *    behavior exactly.
+ *  - `native`: base is the blocker's branch (`<branchPrefix>issue-<blocker>`),
+ *    no banner, and a `gh stack link <predecessor> <successor>` argv registers
+ *    the native GitHub stack (bottom-to-top). The PR is created first with
+ *    Phoebe's own title/body, so `link` only corrects the base chain and never
+ *    auto-generates a title over ours.
+ */
+export type StackedPrPlan = {
+  /** The branch the PR is opened against (`gh pr create --base`). */
+  prBase: string;
+  /** Whether the stacked "do not merge before the blocker" banner is added. */
+  includeBanner: boolean;
+  /** `gh` argv (sans the `gh` program) that registers the native stack, or `null`. */
+  stackLinkArgs: string[] | null;
+};
+
+export function resolveStackedPrPlan(opts: {
+  issueNumber: number;
+  resolution: Pick<BaseResolution, "stacked" | "blockerIssueNumber">;
+  stackMode?: StackMode;
+  defaultBranch?: string;
+}): StackedPrPlan {
+  const stackMode = opts.stackMode ?? config.stackMode;
+  const defaultBranch = opts.defaultBranch ?? config.defaultBranch;
+  const notStacked: StackedPrPlan = {
+    prBase: defaultBranch,
+    includeBanner: false,
+    stackLinkArgs: null,
+  };
+
+  // `off` never reaches here stacked (resolveWorktreeBase collapses it), so an
+  // unstacked resolution — or any non-native mode below — falls through to a
+  // main-based, unbannered PR.
+  if (!opts.resolution.stacked || opts.resolution.blockerIssueNumber === undefined) {
+    return notStacked;
+  }
+
+  if (stackMode === "native") {
+    const predecessor = issueBranch(opts.resolution.blockerIssueNumber);
+    const successor = issueBranch(opts.issueNumber);
+    return {
+      prBase: predecessor,
+      includeBanner: false,
+      // Bottom-to-top: the lower (blocker) branch first, then this run's branch.
+      stackLinkArgs: ["stack", "link", predecessor, successor],
+    };
+  }
+
+  // `banner` (the only remaining stacked mode): base on main + add the banner.
+  return { prBase: defaultBranch, includeBanner: true, stackLinkArgs: null };
+}
+
+/**
+ * Local git config the native-stack path pre-sets on the private clone so
+ * `gh stack` / rebase operations run non-interactively — `remote.pushDefault`
+ * removes the "which remote?" prompt when more than one exists, and
+ * `rerere.enabled` lets cascade-rebases reuse recorded conflict resolutions.
+ * Returned as `git` argv (sans the `git` program) so the impure caller runs
+ * them against the clone directory. Only applied when `stackMode === 'native'`.
+ */
+export function nativeStackGitConfig(): readonly (readonly string[])[] {
+  return [
+    ["config", "remote.pushDefault", "origin"],
+    ["config", "rerere.enabled", "true"],
+  ];
+}
+
+/** `gh` argv (sans the `gh` program) that installs the gh-stack extension. */
+export function ghStackExtensionInstallArgs(): readonly string[] {
+  return ["extension", "install", "github/gh-stack"];
 }
 
 export type ConflictingPrCandidate = {

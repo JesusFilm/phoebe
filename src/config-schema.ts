@@ -24,6 +24,33 @@ export const BLOCKER_SOURCES = ["body", "native", "both"] as const;
 export type BlockerSource = (typeof BLOCKER_SOURCES)[number];
 
 /**
+ * How the engine stacks a PR whose issue is blocked by another issue with an
+ * open PR (see `resolveWorktreeBase`). All three modes share the same *skip*
+ * decision — a blocker with no open/merged PR still parks the issue — they
+ * differ only in how the resulting PR relates to its blocker:
+ *
+ *  - `banner` (default): today's behavior, unchanged. The run's branch is cut
+ *    off the blocker's branch (`origin/phoebe/issue-<blocker>`) so the blocker's
+ *    commits ride along, but the PR is opened against `defaultBranch`; a
+ *    ⛓️ "do not merge before the blocker" banner is added to the body and the
+ *    maintenance flows lazily catch the branch up to `main` as blockers merge.
+ *  - `native`: true GitHub stacked PRs. The branch is cut off the blocker's
+ *    branch exactly as in `banner`, but the PR is opened *against the blocker's
+ *    branch* and registered into a native GitHub stack via `gh stack link`, so
+ *    the PR diff shows only this issue's commits and GitHub owns
+ *    retarget-on-merge. The banner and catch-up-merge steps are skipped.
+ *  - `off`: no stacking at all. Even with an open blocker PR the branch is cut
+ *    off `origin/main` and the PR opened against `defaultBranch` with no banner.
+ *    Blockers are still honored for the skip decision.
+ *
+ * `PHOEBE_BASE` overrides all of this: an explicit base forces that base and
+ * disables stacking regardless of `stackMode` (see `resolveWorktreeBase`).
+ * Defaults to `banner` so existing consumers keep their exact behavior.
+ */
+export const STACK_MODES = ["banner", "native", "off"] as const;
+export type StackMode = (typeof STACK_MODES)[number];
+
+/**
  * Selects where the thin `phoebe boot` bootstrapper materializes the engine
  * from — a GitHub ref (branch/tag/SHA, defaulting to `main` on the shipped
  * engine repo) or a local mount. The engine itself never reads this: it is a
@@ -136,6 +163,14 @@ export type PhoebeConfig = {
    */
   blockerSource: BlockerSource;
   /**
+   * How a blocked issue's PR is stacked on its blocker — see {@link StackMode}.
+   * `banner` (default) keeps the historical branch-off-blocker + banner +
+   * catch-up behavior with the PR based on `defaultBranch`; `native` opens the
+   * PR against the blocker's branch and registers a GitHub-native stack; `off`
+   * disables stacking entirely.
+   */
+  stackMode: StackMode;
+  /**
    * Markdown heading the reviews agent must include when it posts its summary
    * comment. The orchestrator detects the summary by substring match on this
    * exact string, so it must be unique enough not to collide with other
@@ -189,6 +224,7 @@ export type PhoebeUserConfig = {
   readyCommand?: string;
   blockedByPattern?: string;
   blockerSource?: BlockerSource;
+  stackMode?: StackMode;
   reviewsSuccessHeading?: string;
   promptFiles?: Partial<PromptFilesConfig>;
   workOrder?: readonly string[];
@@ -217,6 +253,7 @@ export const CONFIG_DEFAULTS = {
   readyCommand: "npm run ready",
   blockedByPattern: String.raw`Blocked by\s+#(\d+)`,
   blockerSource: "body" as BlockerSource,
+  stackMode: "banner" as StackMode,
   reviewsSuccessHeading: "## Review feedback addressed",
   promptFiles: {
     issue: "prompts/issues-prompt.md",
@@ -356,6 +393,7 @@ export function resolveConfig(user: PhoebeUserConfig): PhoebeConfig {
     readyCommand: user.readyCommand ?? CONFIG_DEFAULTS.readyCommand,
     blockedByPattern: user.blockedByPattern ?? CONFIG_DEFAULTS.blockedByPattern,
     blockerSource: user.blockerSource ?? CONFIG_DEFAULTS.blockerSource,
+    stackMode: user.stackMode ?? CONFIG_DEFAULTS.stackMode,
     reviewsSuccessHeading: user.reviewsSuccessHeading ?? CONFIG_DEFAULTS.reviewsSuccessHeading,
     promptFiles: { ...CONFIG_DEFAULTS.promptFiles, ...user.promptFiles },
     workOrder: user.workOrder ?? CONFIG_DEFAULTS.workOrder,
