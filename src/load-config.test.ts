@@ -83,6 +83,15 @@ describe("applyEnvOverlay", () => {
       /PHOEBE_DEFAULT_PROVIDER/,
     );
   });
+
+  test("PHOEBE_BLOCKER_SOURCE overlays and validates the enum", () => {
+    expect(applyEnvOverlay(baseUser(), { PHOEBE_BLOCKER_SOURCE: "both" }).blockerSource).toBe(
+      "both",
+    );
+    expect(() => applyEnvOverlay(baseUser(), { PHOEBE_BLOCKER_SOURCE: "bogus" })).toThrow(
+      /PHOEBE_BLOCKER_SOURCE/,
+    );
+  });
 });
 
 describe("resolveConfigPath + loadUserConfig", () => {

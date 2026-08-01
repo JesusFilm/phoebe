@@ -45,6 +45,7 @@ export function buildRuntimeContractContext(options: {
     draftPrs: options.config.draftPrs,
     prOptOutLabel: options.config.prOptOutLabel,
     blockedByPattern: options.config.blockedByPattern,
+    blockerSource: options.config.blockerSource,
     workOrder: options.config.workOrder,
   };
   const providerModel = {

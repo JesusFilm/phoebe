@@ -2,10 +2,19 @@
 // Kept separate from main.ts so it can be unit-tested without Docker/gh.
 
 import { asBranchRef, asSha, type BranchRef, type PrNumber, type Sha } from "./branded.ts";
-import type { WorkKindName } from "./config-schema.ts";
+import type { BlockerSource, WorkKindName } from "./config-schema.ts";
 import { config } from "./resolved-config.ts";
 
-export { validateWorkOrder, WORK_KIND_NAMES, type WorkKindName } from "./config-schema.ts";
+export {
+  validateWorkOrder,
+  BLOCKER_SOURCES,
+  WORK_KIND_NAMES,
+  type BlockerSource,
+  type WorkKindName,
+} from "./config-schema.ts";
+
+/** Native blocker issue numbers keyed by the blocked issue's number. */
+export type NativeBlockerMap = ReadonlyMap<number, readonly number[]>;
 
 export type Issue = {
   number: number;
@@ -59,6 +68,33 @@ export function parseBlockedBy(...texts: string[]): number[] {
   return [...new Set(blockers)];
 }
 
+/**
+ * Combine body-regex and native (issue-dependencies API) blocker numbers per
+ * `config.blockerSource`, deduplicating while preserving first-seen order
+ * (body refs before native ones under `both`). This is the single seam the
+ * native-blocker source feeds through: every downstream stacking decision keeps
+ * consuming a plain `number[]`, so only *where* the numbers come from changes.
+ */
+export function mergeBlockerNumbers(
+  bodyBlockers: readonly number[],
+  nativeBlockers: readonly number[],
+  source: BlockerSource = config.blockerSource,
+): number[] {
+  const combined: number[] = [];
+  if (source === "body" || source === "both") {
+    combined.push(...bodyBlockers);
+  }
+  if (source === "native" || source === "both") {
+    combined.push(...nativeBlockers);
+  }
+  return [...new Set(combined)];
+}
+
+/** An issue's effective blockers: body refs merged with its native blockers. */
+export function issueBlockers(issue: Issue, nativeBlockers: readonly number[] = []): number[] {
+  return mergeBlockerNumbers(parseBlockedBy(issue.body), nativeBlockers);
+}
+
 export function classifyPriority(issue: Issue): Priority {
   const text = `${issue.title} ${issue.body}`.toLowerCase();
   if (/\b(bug|broken|crash|regression|fix)\b/.test(text)) return "bug";
@@ -90,12 +126,13 @@ export function resolveWorktreeBase(
   issue: Issue,
   blockerStates: ReadonlyMap<number, BlockerPrState>,
   phoebeBase?: string,
+  nativeBlockers: readonly number[] = [],
 ): BaseResolution | null {
   if (phoebeBase) {
     return { worktreeBase: phoebeBase, stacked: false };
   }
 
-  const blockers = parseBlockedBy(issue.body);
+  const blockers = issueBlockers(issue, nativeBlockers);
   if (blockers.length === 0) {
     return { worktreeBase: "origin/main", stacked: false };
   }
@@ -127,10 +164,16 @@ export function selectIssue(
   issues: readonly Issue[],
   blockerStates: ReadonlyMap<number, BlockerPrState>,
   phoebeBase?: string,
+  nativeBlockersByIssue: NativeBlockerMap = new Map(),
 ): { issue: Issue; resolution: BaseResolution } | null {
   const sorted = [...issues].sort(compareIssues);
   for (const issue of sorted) {
-    const resolution = resolveWorktreeBase(issue, blockerStates, phoebeBase);
+    const resolution = resolveWorktreeBase(
+      issue,
+      blockerStates,
+      phoebeBase,
+      nativeBlockersByIssue.get(issue.number) ?? [],
+    );
     if (resolution) {
       return { issue, resolution };
     }
@@ -733,6 +776,8 @@ export type WorkSelectionData = {
   /** Wayfinder research tickets selected by the `research` kind (reuses the issues path). */
   researchIssues?: readonly Issue[];
   blockerStates: ReadonlyMap<number, BlockerPrState>;
+  /** Native (issue-dependencies API) blockers per issue number; empty in body-only mode. */
+  nativeBlockersByIssue?: NativeBlockerMap;
   conflictingPrs: readonly ConflictingPrCandidate[];
   failingCheckPrs: readonly ChecksCandidate[];
   reviewActivityPrs: readonly ReviewsCandidate[];
@@ -788,14 +833,24 @@ export function selectFirstWorkUnit(
         return { kind: "reviews", unit };
       }
     } else if (kind === "issues") {
-      const unit = selectIssue(data.issues, data.blockerStates, data.phoebeBase);
+      const unit = selectIssue(
+        data.issues,
+        data.blockerStates,
+        data.phoebeBase,
+        data.nativeBlockersByIssue,
+      );
       if (unit) {
         return { kind: "issues", unit };
       }
     } else if (kind === "research") {
       // Research reuses the issues selection path (blocker + priority ordering)
       // against the researchLabel-tagged tickets gathered separately this cycle.
-      const unit = selectIssue(data.researchIssues ?? [], data.blockerStates, data.phoebeBase);
+      const unit = selectIssue(
+        data.researchIssues ?? [],
+        data.blockerStates,
+        data.phoebeBase,
+        data.nativeBlockersByIssue,
+      );
       if (unit) {
         return { kind: "research", unit };
       }

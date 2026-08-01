@@ -13,6 +13,17 @@ export const PROVIDER_NAMES = ["cursor", "claude", "codex"] as const;
 export type ProviderName = (typeof PROVIDER_NAMES)[number];
 
 /**
+ * Where the engine discovers an issue's blockers. `body` reads
+ * `blockedByPattern` over the issue body text (the original, repo-agnostic but
+ * fragile source); `native` reads GitHub's issue-dependencies API
+ * (`repos/{owner}/{repo}/issues/{n}/dependencies/blocked_by`); `both` unions the
+ * two and deduplicates. Defaults to `body` so existing consumers keep their
+ * exact behavior until they opt in.
+ */
+export const BLOCKER_SOURCES = ["body", "native", "both"] as const;
+export type BlockerSource = (typeof BLOCKER_SOURCES)[number];
+
+/**
  * Selects where the thin `phoebe boot` bootstrapper materializes the engine
  * from — a GitHub ref (branch/tag/SHA, defaulting to `main` on the shipped
  * engine repo) or a local mount. The engine itself never reads this: it is a
@@ -119,6 +130,12 @@ export type PhoebeConfig = {
    */
   blockedByPattern: string;
   /**
+   * Where issue blockers are discovered — see {@link BlockerSource}. `body`
+   * reads `blockedByPattern` over the issue body; `native` reads GitHub's
+   * issue-dependencies API; `both` unions and deduplicates the two.
+   */
+  blockerSource: BlockerSource;
+  /**
    * Markdown heading the reviews agent must include when it posts its summary
    * comment. The orchestrator detects the summary by substring match on this
    * exact string, so it must be unique enough not to collide with other
@@ -171,6 +188,7 @@ export type PhoebeUserConfig = {
   prOptOutLabel?: string;
   readyCommand?: string;
   blockedByPattern?: string;
+  blockerSource?: BlockerSource;
   reviewsSuccessHeading?: string;
   promptFiles?: Partial<PromptFilesConfig>;
   workOrder?: readonly string[];
@@ -198,6 +216,7 @@ export const CONFIG_DEFAULTS = {
   prOptOutLabel: "ready-for-human",
   readyCommand: "npm run ready",
   blockedByPattern: String.raw`Blocked by\s+#(\d+)`,
+  blockerSource: "body" as BlockerSource,
   reviewsSuccessHeading: "## Review feedback addressed",
   promptFiles: {
     issue: "prompts/issues-prompt.md",
@@ -336,6 +355,7 @@ export function resolveConfig(user: PhoebeUserConfig): PhoebeConfig {
     prOptOutLabel: user.prOptOutLabel ?? CONFIG_DEFAULTS.prOptOutLabel,
     readyCommand: user.readyCommand ?? CONFIG_DEFAULTS.readyCommand,
     blockedByPattern: user.blockedByPattern ?? CONFIG_DEFAULTS.blockedByPattern,
+    blockerSource: user.blockerSource ?? CONFIG_DEFAULTS.blockerSource,
     reviewsSuccessHeading: user.reviewsSuccessHeading ?? CONFIG_DEFAULTS.reviewsSuccessHeading,
     promptFiles: { ...CONFIG_DEFAULTS.promptFiles, ...user.promptFiles },
     workOrder: user.workOrder ?? CONFIG_DEFAULTS.workOrder,
