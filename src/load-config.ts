@@ -12,7 +12,7 @@ import { pathToFileURL } from "node:url";
 import { existsSync } from "node:fs";
 import { isAbsolute, resolve as resolvePath } from "node:path";
 import type { PhoebeUserConfig, ProviderName } from "./config-schema.ts";
-import { PROVIDER_NAMES } from "./config-schema.ts";
+import { BLOCKER_SOURCES, PROVIDER_NAMES } from "./config-schema.ts";
 
 /**
  * Scalar-only overlay: each `PHOEBE_*` env var, when set to a non-empty
@@ -85,6 +85,16 @@ export function applyEnvOverlay(user: PhoebeUserConfig, env: NodeJS.ProcessEnv):
       );
     }
     overlaid.draftPrs = draftPrs as PhoebeUserConfig["draftPrs"];
+  }
+
+  const blockerSource = readNonEmpty(env, "PHOEBE_BLOCKER_SOURCE");
+  if (blockerSource !== undefined) {
+    if (!(BLOCKER_SOURCES as readonly string[]).includes(blockerSource)) {
+      throw new Error(
+        `PHOEBE_BLOCKER_SOURCE must be one of ${BLOCKER_SOURCES.join(", ")} (got "${blockerSource}").`,
+      );
+    }
+    overlaid.blockerSource = blockerSource as PhoebeUserConfig["blockerSource"];
   }
 
   const defaultProvider = readNonEmpty(env, "PHOEBE_DEFAULT_PROVIDER");

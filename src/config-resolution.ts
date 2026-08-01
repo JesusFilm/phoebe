@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { resolveEngineSource, type ResolvedEngineSource } from "../bootstrap/engine-source.ts";
 import {
+  BLOCKER_SOURCES,
   PROVIDER_NAMES,
   resolveConfig,
   validateEngineSourceField,
@@ -39,6 +40,7 @@ const CONFIG_FIELDS = [
   "prOptOutLabel",
   "readyCommand",
   "blockedByPattern",
+  "blockerSource",
   "reviewsSuccessHeading",
   "promptFiles",
   "workOrder",
@@ -175,6 +177,14 @@ function validateBaseConfig(config: JsonRecord, path: string): asserts config is
   ) {
     throw new Error(
       describePath(path, `config.defaultProvider must be one of ${PROVIDER_NAMES.join(", ")}.`),
+    );
+  }
+  if (
+    config["blockerSource"] !== undefined &&
+    !(BLOCKER_SOURCES as readonly unknown[]).includes(config["blockerSource"])
+  ) {
+    throw new Error(
+      describePath(path, `config.blockerSource must be one of ${BLOCKER_SOURCES.join(", ")}.`),
     );
   }
 

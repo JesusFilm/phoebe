@@ -93,6 +93,7 @@ describe("resolveConfig", () => {
     expect(resolved.processingLabel).toBe(CONFIG_DEFAULTS.processingLabel);
     expect(resolved.readyCommand).toBe(CONFIG_DEFAULTS.readyCommand);
     expect(resolved.blockedByPattern).toBe(CONFIG_DEFAULTS.blockedByPattern);
+    expect(resolved.blockerSource).toBe(CONFIG_DEFAULTS.blockerSource);
     expect(resolved.reviewsSuccessHeading).toBe(CONFIG_DEFAULTS.reviewsSuccessHeading);
     expect(resolved.prScope).toBe(CONFIG_DEFAULTS.prScope);
     expect(resolved.prAuthors).toEqual(CONFIG_DEFAULTS.prAuthors);
@@ -168,6 +169,14 @@ describe("resolveConfig", () => {
       expect(CONFIG_DEFAULTS.defaultModels[provider]).toBeTruthy();
       expect(CONFIG_DEFAULTS.providerEnv[provider]).toBeTruthy();
     }
+  });
+
+  test("blockerSource defaults to body and honors an override", () => {
+    expect(resolveConfig(minimalUserConfig()).blockerSource).toBe("body");
+    expect(resolveConfig(minimalUserConfig({ blockerSource: "both" })).blockerSource).toBe("both");
+    expect(resolveConfig(minimalUserConfig({ blockerSource: "native" })).blockerSource).toBe(
+      "native",
+    );
   });
 
   test("default blockedByPattern compiles and captures the issue number", () => {
