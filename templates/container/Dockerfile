@@ -42,6 +42,16 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends gh \
  && rm -rf /var/lib/apt/lists/*
 
+# Native stacked PRs (config `stackMode: "native"` / `PHOEBE_STACK_MODE=native`)
+# additionally need the `github/gh-stack` gh extension plus `remote.pushDefault`
+# and `rerere.enabled` git config. The engine installs the extension and sets
+# that config on first boot, guarded so the default (`banner`) image pulls in no
+# gh-stack dependency and needs no build-time network/auth. If you run native
+# mode and prefer the extension baked in (offline-boot repos, air-gapped CI),
+# add it here as the `phoebe` user AFTER the privilege drop below — extensions
+# live in the user's gh config dir, so installing it as root here would hide it
+# from the workload — e.g. `RUN gh extension install github/gh-stack`.
+
 # The unprivileged user everything below the privilege drop runs as, and the
 # four volume mount points, created *now* while we are still root.
 #

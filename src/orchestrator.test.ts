@@ -33,7 +33,10 @@ import {
   parseReviewsHandledWatermark,
   parseIssueNumberFromBranch,
   resolveWorktreeBase,
+  resolveStackedPrPlan,
   getMergedBlockerPrNumbers,
+  ghStackExtensionInstallArgs,
+  nativeStackGitConfig,
   oneShotWorkKinds,
   selectChecksUnit,
   selectConflictFixCandidates,
@@ -246,6 +249,102 @@ describe("resolveWorktreeBase", () => {
       worktreeBase: "origin/main",
       stacked: false,
     });
+  });
+
+  test("stackMode 'off' honors the blocker for the skip decision but never stacks", () => {
+    const blocked = issue({ number: 102, body: "Blocked by #98" });
+    const open = new Map<number, BlockerPrState>([
+      [98, { hasOpenPr: true, openPrNumber: asPrNumber(104), hasMergedPr: false }],
+    ]);
+    // Open blocker PR: base off main, not the blocker branch — and not skipped.
+    expect(resolveWorktreeBase(blocked, open, undefined, [], "off")).toEqual({
+      worktreeBase: "origin/main",
+      stacked: false,
+    });
+    // No blocker PR at all: still skipped, exactly as the other modes.
+    const none = new Map<number, BlockerPrState>([[98, { hasOpenPr: false, hasMergedPr: false }]]);
+    expect(resolveWorktreeBase(blocked, none, undefined, [], "off")).toBeNull();
+  });
+
+  test("stackMode 'native' cuts the branch off the blocker tip, same as banner", () => {
+    const blocked = issue({ number: 102, body: "Blocked by #98" });
+    const states = new Map<number, BlockerPrState>([
+      [98, { hasOpenPr: true, openPrNumber: asPrNumber(104), hasMergedPr: false }],
+    ]);
+    expect(resolveWorktreeBase(blocked, states, undefined, [], "native")).toEqual({
+      worktreeBase: `origin/${issueBranch(98)}`,
+      stacked: true,
+      blockerIssueNumber: 98,
+      blockerPrNumber: 104,
+    });
+  });
+});
+
+describe("resolveStackedPrPlan", () => {
+  const stacked = { stacked: true as const, blockerIssueNumber: 98 };
+  const unstacked = { stacked: false as const };
+
+  test("banner: base=main, banner on, no stack link (today's behavior)", () => {
+    expect(
+      resolveStackedPrPlan({
+        issueNumber: 102,
+        resolution: stacked,
+        stackMode: "banner",
+        defaultBranch: "main",
+      }),
+    ).toEqual({ prBase: "main", includeBanner: true, stackLinkArgs: null });
+  });
+
+  test("native: base=blocker branch, no banner, bottom-to-top stack link argv", () => {
+    expect(
+      resolveStackedPrPlan({
+        issueNumber: 102,
+        resolution: stacked,
+        stackMode: "native",
+        defaultBranch: "main",
+      }),
+    ).toEqual({
+      prBase: issueBranch(98),
+      includeBanner: false,
+      stackLinkArgs: ["stack", "link", issueBranch(98), issueBranch(102)],
+    });
+  });
+
+  test("unstacked resolution (off / unblocked / PHOEBE_BASE): base=main, no banner, no link", () => {
+    for (const stackMode of ["banner", "native", "off"] as const) {
+      expect(
+        resolveStackedPrPlan({
+          issueNumber: 102,
+          resolution: unstacked,
+          stackMode,
+          defaultBranch: "main",
+        }),
+      ).toEqual({ prBase: "main", includeBanner: false, stackLinkArgs: null });
+    }
+  });
+
+  test("honors a non-default defaultBranch for the base", () => {
+    expect(
+      resolveStackedPrPlan({
+        issueNumber: 102,
+        resolution: unstacked,
+        stackMode: "banner",
+        defaultBranch: "trunk",
+      }).prBase,
+    ).toBe("trunk");
+  });
+});
+
+describe("native-stack tooling argv builders", () => {
+  test("git config presets remote.pushDefault and rerere.enabled", () => {
+    expect(nativeStackGitConfig()).toEqual([
+      ["config", "remote.pushDefault", "origin"],
+      ["config", "rerere.enabled", "true"],
+    ]);
+  });
+
+  test("extension install targets github/gh-stack", () => {
+    expect(ghStackExtensionInstallArgs()).toEqual(["extension", "install", "github/gh-stack"]);
   });
 });
 
