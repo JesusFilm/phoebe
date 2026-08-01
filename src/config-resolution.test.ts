@@ -167,6 +167,11 @@ describe("parseBaseConfigDocument", () => {
       JSON.stringify({ schemaVersion: 1, config: { blockerSource: "bogus" } }),
       /(?=.*config\.blockerSource must be one of)(?=.*generated-base\.json)/i,
     ],
+    [
+      "invalid stackMode",
+      JSON.stringify({ schemaVersion: 1, config: { stackMode: "bogus" } }),
+      /(?=.*config\.stackMode must be one of)(?=.*generated-base\.json)/i,
+    ],
   ])("rejects %s with a path-specific error", (_name, json, expected) => {
     expect(() => parseBaseConfigDocument(json, path)).toThrow(expected);
   });

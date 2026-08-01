@@ -92,6 +92,14 @@ describe("applyEnvOverlay", () => {
       /PHOEBE_BLOCKER_SOURCE/,
     );
   });
+
+  test("PHOEBE_STACK_MODE overlays and validates the enum", () => {
+    expect(applyEnvOverlay(baseUser(), { PHOEBE_STACK_MODE: "native" }).stackMode).toBe("native");
+    expect(applyEnvOverlay(baseUser(), { PHOEBE_STACK_MODE: "off" }).stackMode).toBe("off");
+    expect(() => applyEnvOverlay(baseUser(), { PHOEBE_STACK_MODE: "bogus" })).toThrow(
+      /PHOEBE_STACK_MODE/,
+    );
+  });
 });
 
 describe("resolveConfigPath + loadUserConfig", () => {
