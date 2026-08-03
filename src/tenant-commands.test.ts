@@ -38,6 +38,15 @@ describe("parseSlug / defaultRepoUrl", () => {
       expect(() => parseSlug(bad)).toThrow(/Invalid repo slug/);
     }
   });
+  test("rejects `.`/`..` path segments (no traversal into add/remove/purge)", () => {
+    // These match the char class but would escape the tenant tree / data base
+    // once joined into a path (purgeTenant → rmSync). Must be refused.
+    for (const bad of ["../x", "x/..", "../..", "./x", "x/.", "."]) {
+      expect(() => parseSlug(bad)).toThrow(/Invalid repo slug/);
+    }
+    // A dot *inside* a segment is still fine — real repo names have them.
+    expect(parseSlug("acme/foo.js")).toEqual({ owner: "acme", repo: "foo.js" });
+  });
   test("derives the GitHub HTTPS url", () => {
     expect(defaultRepoUrl("acme/widget")).toBe("https://github.com/acme/widget.git");
   });
@@ -162,23 +171,23 @@ describe("purgeTenant", () => {
   });
 
   test("refuses without confirm", () => {
-    expect(() =>
-      purgeTenant({ configDir, dataBase, slug: "acme/widget", confirm: false }),
-    ).toThrow(/without --yes/);
+    expect(() => purgeTenant({ configDir, dataBase, slug: "acme/widget", confirm: false })).toThrow(
+      /without --yes/,
+    );
   });
 
   test("refuses while a live config still exists", () => {
     addRepo({ configDir, slug: "acme/widget" });
     mkdirSync(join(dataBase, "acme", "widget"), { recursive: true });
-    expect(() =>
-      purgeTenant({ configDir, dataBase, slug: "acme/widget", confirm: true }),
-    ).toThrow(/still has a live config/);
+    expect(() => purgeTenant({ configDir, dataBase, slug: "acme/widget", confirm: true })).toThrow(
+      /still has a live config/,
+    );
   });
 
   test("throws when there is no retained data", () => {
-    expect(() =>
-      purgeTenant({ configDir, dataBase, slug: "acme/ghost", confirm: true }),
-    ).toThrow(/No retained data/);
+    expect(() => purgeTenant({ configDir, dataBase, slug: "acme/ghost", confirm: true })).toThrow(
+      /No retained data/,
+    );
   });
 });
 

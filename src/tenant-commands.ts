@@ -41,13 +41,26 @@ export const TRUST_DOMAIN_NOTE =
   "Only co-locate repos whose mutual compromise is already acceptable (same " +
   "org / token scope). Mutually-untrusted repos need separate containers.";
 
-/** Validate and split an `owner/repo` slug. Throws on anything malformed. */
+/**
+ * Validate and split an `owner/repo` slug. Throws on anything malformed.
+ *
+ * The character class allows `.` (real repo names contain it, e.g. `foo.js`),
+ * so a segment could be exactly `.` or `..` — which every consumer joins into a
+ * filesystem path (`addRepo`/`removeRepo`/`purgeTenant`, the last an `rmSync`).
+ * A traversing segment would escape the tenant tree / data base, so reject `.`
+ * and `..` as whole segments explicitly (the regex alone cannot, since it must
+ * still admit dots inside a name).
+ */
 export function parseSlug(slug: string): { owner: string; repo: string } {
   const match = /^([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)$/.exec(slug);
   if (!match) {
     throw new Error(`Invalid repo slug "${slug}". Expected "owner/repo" (e.g. acme/widget).`);
   }
-  return { owner: match[1]!, repo: match[2]! };
+  const [owner, repo] = [match[1]!, match[2]!];
+  if (owner === "." || owner === ".." || repo === "." || repo === "..") {
+    throw new Error(`Invalid repo slug "${slug}": "." and ".." are not allowed path segments.`);
+  }
+  return { owner, repo };
 }
 
 /** Derive the default HTTPS clone URL for a GitHub slug. */
