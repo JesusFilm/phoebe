@@ -28,6 +28,11 @@ When `{{BLOCKER_PR_NUMBERS}}` is empty, merge `origin/{{DEFAULT_BRANCH}}` only (
 
 1. **Assess** — run `git status`. If no merge is in progress, run the merge order above from scratch.
 2. **Resolve** — fix every conflicted file. Prefer preserving both sides' intent; do not drop unrelated changes from `{{DEFAULT_BRANCH}}` or this branch.
+   - **Relocated / superseded code is not a blocker.** A conflict often looks unresolvable because this PR *deletes* code that `{{DEFAULT_BRANCH}}` added (or vice versa). That is legitimate when the PR **moved or superseded** that code elsewhere — a refactor that lifts logic into a new module, hook, or store keeps the behaviour while removing it from the conflict site. Before assuming you must keep both sides, check whether the code you'd drop still lives somewhere in the merged tree:
+     ```
+     git grep -n "<a distinctive symbol/string from the hunk you'd drop>"
+     ```
+     If the behaviour is present elsewhere (the PR relocated it), dropping it here loses nothing — take this branch's side and move on. If it exists on **neither** side after your resolution, you dropped it by mistake — restore it. The "don't drop `{{DEFAULT_BRANCH}}`'s changes" rule protects against *losing* behaviour, not against *relocating* it; the `{{CHECK_COMMAND}}`/`{{TEST_COMMAND}}` gate in step 3 is your safety net either way.
 3. **Verify** — run `{{CHECK_COMMAND}}` and `{{TEST_COMMAND}}` (or `{{READY_COMMAND}}` if the project ships an all-in-one gate). Fix any failures the merge introduced before proceeding.
    - **Baseline breakage:** if `{{TEST_COMMAND}}` fails, confirm whether the same failures already exist on a clean `{{DEFAULT_BRANCH}}` checkout before assuming the merge caused them:
      ```
