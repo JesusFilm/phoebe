@@ -3,6 +3,7 @@
 
 import { describe, expect, test } from "vite-plus/test";
 import {
+  BrokerDisconnectedError,
   createSlotClient,
   SLOT_ACQUIRE,
   SLOT_GRANTED,
@@ -70,17 +71,12 @@ describe("createSlotClient", () => {
     expect(channel.listenerCount()).toBe(0);
   });
 
-  test("settles (unbrokered) if the channel disconnects before a grant", async () => {
+  test("rejects (does not proceed unbrokered) if the channel disconnects before a grant", async () => {
     const channel = mockChannel();
     const client = createSlotClient(channel)!;
-    let resolved = false;
-    const pending = client.acquire().then(() => {
-      resolved = true;
-    });
-    expect(resolved).toBe(false);
+    const pending = client.acquire();
     channel.emitDisconnect();
-    await pending;
-    expect(resolved).toBe(true);
+    await expect(pending).rejects.toBeInstanceOf(BrokerDisconnectedError);
     // And it cleaned up after itself — no leaked listeners.
     expect(channel.listenerCount()).toBe(0);
   });

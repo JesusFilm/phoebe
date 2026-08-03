@@ -29,11 +29,29 @@ export type ParentChannel = {
 };
 
 export type SlotClient = {
-  /** Request a slot; resolves when the supervisor grants one. */
+  /**
+   * Request a slot; resolves when the supervisor grants one, and **rejects**
+   * with `BrokerDisconnectedError` if the IPC channel closes first.
+   */
   acquire(): Promise<void>;
   /** Release the held slot back to the supervisor. */
   release(): void;
 };
+
+/**
+ * The supervisor's IPC channel closed while an `acquire` was outstanding. The
+ * engine must not proceed to run the unit — with the broker gone it would run
+ * *unbrokered* and, in a fleet, every child would do the same at once and blow
+ * past `PHOEBE_MAX_CONCURRENT_AGENTS`. The engine loop treats this as a clean
+ * stop (the supervisor either died — the container is going down — or will
+ * respawn the child, which re-establishes the channel).
+ */
+export class BrokerDisconnectedError extends Error {
+  constructor() {
+    super("supervisor IPC channel disconnected before a slot was granted");
+    this.name = "BrokerDisconnectedError";
+  }
+}
 
 function isGrant(message: unknown): boolean {
   return (
@@ -49,19 +67,21 @@ function isGrant(message: unknown): boolean {
  * a time, so at most one acquire is ever outstanding per child: a single grant
  * message settles it, and the listener is removed as soon as it fires.
  *
- * `acquire` also settles on channel `disconnect`. Without it, a supervisor that
- * dies (or is torn down) between the request and the grant would leave the
- * promise pending forever — and the loop `await`s it *before* the whole-unit
- * deadline is armed (src/main.ts), so the engine would stall with no log and no
- * exit. On disconnect it resolves and proceeds unbrokered, which is safe: a lone
- * child with no supervisor is already serialized to one unit.
+ * `acquire` also settles on channel `disconnect` — by **rejecting** with
+ * `BrokerDisconnectedError`. Without settling at all, a supervisor that dies (or
+ * is torn down) between the request and the grant would leave the promise
+ * pending forever, and the loop `await`s it *before* the run deadline is armed
+ * (src/main.ts) — a silent stall. Rejecting (rather than resolving) means the
+ * engine stops instead of running the unit unbrokered: with the broker gone, a
+ * fleet of children would otherwise all proceed at once and bypass the global
+ * concurrency cap. The caller catches it and exits cleanly.
  */
 export function createSlotClient(proc: ParentChannel): SlotClient | null {
   if (typeof proc.send !== "function" || proc.connected === false) return null;
   const send = proc.send.bind(proc);
   return {
     acquire(): Promise<void> {
-      return new Promise<void>((resolve) => {
+      return new Promise<void>((resolve, reject) => {
         const onMessage = (message: unknown): void => {
           if (!isGrant(message)) return;
           cleanup();
@@ -69,11 +89,7 @@ export function createSlotClient(proc: ParentChannel): SlotClient | null {
         };
         const onDisconnect = (): void => {
           cleanup();
-          console.warn(
-            "[phoebe] slot: IPC channel disconnected while awaiting a slot grant — " +
-              "proceeding unbrokered.",
-          );
-          resolve();
+          reject(new BrokerDisconnectedError());
         };
         const cleanup = (): void => {
           proc.off?.("message", onMessage);

@@ -27,13 +27,18 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 reposdir="${here}/repos"
 tenants=("JesusFilm/phoebe" "JesusFilm/youtube-studio")
 
-# --- Dummy secrets, created only if absent and cleaned up on exit ------------
+# --- Dummy secrets, cleaned up on exit ---------------------------------------
 # The token is intentionally invalid: every tenant child should fail at its first
-# gh call, which is exactly the boundary we are asserting reached.
+# gh call, which is exactly the boundary we are asserting reached. Every tenant
+# runs with the dummy — a real repos/<slug>/.env is moved aside for the duration
+# (and restored in cleanup) so the run stays deterministic and honours the
+# no-real-secrets contract, never authenticating with a live token.
 DUMMY_TOKEN="phoebe-nested-smoke-invalid-token"
-created=()
+created=()   # temp/dummy files to delete on exit
+backedup=()  # real .env files moved to <path>.smoke-bak, restored on exit
 cleanup() {
   for f in "${created[@]:-}"; do [ -n "${f}" ] && rm -f "${f}"; done
+  for f in "${backedup[@]:-}"; do [ -n "${f}" ] && mv -f "${f}.smoke-bak" "${f}"; done
 }
 trap cleanup EXIT
 
@@ -43,12 +48,12 @@ printf 'GH_TOKEN=%s\n' "${DUMMY_TOKEN}" > "${rootenv}"
 
 for slug in "${tenants[@]}"; do
   envfile="${reposdir}/${slug}/.env"
-  if [ ! -f "${envfile}" ]; then
-    printf 'GH_TOKEN=%s\n' "${DUMMY_TOKEN}" > "${envfile}"
-    created+=("${envfile}")
-  else
-    echo "[smoke] note: reusing your existing repos/${slug}/.env (its real token, not the dummy)." >&2
+  if [ -f "${envfile}" ]; then
+    mv "${envfile}" "${envfile}.smoke-bak"
+    backedup+=("${envfile}")
   fi
+  printf 'GH_TOKEN=%s\n' "${DUMMY_TOKEN}" > "${envfile}"
+  created+=("${envfile}")
 done
 
 compose=(docker compose --env-file "${rootenv}")

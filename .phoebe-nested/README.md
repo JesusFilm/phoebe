@@ -18,7 +18,7 @@ project names and volumes.
 
 ## Layout
 
-```
+```text
 .phoebe-nested/
 ├─ phoebe.config.ts          # deployment root — the SHARED engine source only (#60)
 ├─ .env.example              # supervisor token (installs the git credential helper)

@@ -30,7 +30,7 @@ import {
 } from "./branded.ts";
 import { buildAgentEnv } from "./agent-env.ts";
 import { installDrainSignal, type DrainSignal } from "./drain.ts";
-import { createSlotClient, type SlotClient } from "./slot-client.ts";
+import { BrokerDisconnectedError, createSlotClient, type SlotClient } from "./slot-client.ts";
 import { RunTimeoutError, resolveRunTimeoutMs, runWithDeadline } from "./run-timeout.ts";
 import {
   createEmitUnitEvent,
@@ -1673,7 +1673,20 @@ async function runLoop({
     // through worktree + install + agent + test + push, released in `finally`
     // so timeout, error, and normal completion share one leak-free release
     // path (#72). Standalone (unbrokered) engines skip this entirely.
-    if (slotClient) await slotClient.acquire();
+    if (slotClient) {
+      try {
+        await slotClient.acquire();
+      } catch (error) {
+        if (error instanceof BrokerDisconnectedError) {
+          // The supervisor's channel closed while we waited for a slot. Stop
+          // rather than run unbrokered (which, across a fleet, would bypass the
+          // global cap); the supervisor is gone or will respawn us afresh.
+          console.error(`[phoebe] ${error.message} — stopping this engine.`);
+          break;
+        }
+        throw error;
+      }
+    }
     const ref = unitRef(picked);
     emitUnitEvent({ unit: ref, event: "started" });
     try {
