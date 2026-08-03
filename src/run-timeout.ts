@@ -1,19 +1,21 @@
-// Per-run execution timeout (#72) — a whole-unit wall-clock budget.
+// Per-run execution timeout (#72) — a wall-clock budget on the agent phase.
 //
 // Under the #59 concurrency broker (default cap 1) a single hung work unit holds
-// its slot forever and starves every other repo. This module bounds it: the
-// engine races its unit against a deadline and, on expiry, aborts — killing the
-// agent subprocess (`runAgent` respects the `AbortSignal`) so the `finally` that
-// owns worktree cleanup and slot release runs within a known ceiling, no matter
-// which phase hangs. The engine stays alive and continues its loop; the
-// supervisor is never told (Decision 3), so a unit timeout is not an engine exit
-// and never trips the crash-loop guard (#60 orthogonality).
+// its slot forever and starves every other repo. This module bounds the phase
+// where a hang is both likely and actionable — the agent run: the engine races
+// `runAgent` against a deadline and, on expiry, aborts, killing the agent
+// subprocess (`runAgent` respects the `AbortSignal`) so the `finally` that owns
+// worktree cleanup and slot release runs within a known ceiling. The engine
+// stays alive and continues its loop; the supervisor is never told (Decision 3),
+// so a unit timeout is not an engine exit and never trips the crash-loop guard
+// (#60 orthogonality).
 //
-// The existing inner sub-timeouts (gh/git `CHILD_PROCESS_TIMEOUT_MS`, shell
-// `SHELL_COMMAND_TIMEOUT_MS`) stay as fast-fail bounds; this is the outer
-// guarantee. Synchronous phases (install/test via `execSync`) can only observe
-// the abort at the next async boundary — the agent phase, where hangs actually
-// happen and the `AbortSignal` is actionable.
+// Scope, precisely: this deadline wraps the agent call only. The synchronous
+// install/test/push phases (`execSync`) run outside it — an `AbortSignal` cannot
+// interrupt a blocked `execSync` anyway, so they rely on their own fast-fail
+// sub-timeouts (gh/git `CHILD_PROCESS_TIMEOUT_MS`, shell `SHELL_COMMAND_TIMEOUT_MS`).
+// Extending one budget across the *whole* unit (install→push) is a tracked #72
+// follow-up; today the budget covers the agent phase, where real hangs happen.
 
 /** 45 minutes — the shipped default whole-unit budget (config `runTimeoutMs`). */
 export const DEFAULT_RUN_TIMEOUT_MS = 2_700_000;

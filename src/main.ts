@@ -467,10 +467,12 @@ async function runAgentInWorktree(opts: {
     provider: provider.name,
     providerEnv: config.providerEnv,
   });
-  // Bound the agent run by the whole-unit budget (#72). On expiry the deadline
-  // aborts the signal, `runAgent` kills the child, and a `RunTimeoutError`
-  // propagates — caught at the unit boundary (the daemon logs it, releases the
-  // #59 slot in `finally`, and continues; #75 counts it toward quarantine).
+  // Bound the *agent phase* by the run budget (#72) — the one phase where a hang
+  // is abortable (the agent respects the `AbortSignal`); install/test run via
+  // `execSync` outside this deadline. On expiry the deadline aborts the signal,
+  // `runAgent` kills the child, and a `RunTimeoutError` propagates — caught at
+  // the unit boundary (the daemon logs it, releases the #59 slot in `finally`,
+  // and continues; #75 counts it toward quarantine).
   const { exitCode } = await runWithDeadline({
     ms: RUN_TIMEOUT_MS,
     work: (signal) =>
@@ -1691,9 +1693,14 @@ async function runLoop({
           detail: `${Math.round(error.elapsedMs / 1000)}s budget exceeded`,
         });
       } else {
-        // A non-timeout failure clears the current unit but is not a timeout —
-        // handled by the existing watermarks/failure-comments per work kind.
-        emitUnitEvent({ unit: ref, event: "completed" });
+        // A non-timeout failure: clear the current unit and record the error so
+        // `phoebe list` shows it (the durable record is still the per-work-kind
+        // watermark/failure-comment on GitHub; this is the at-a-glance snapshot).
+        emitUnitEvent({
+          unit: ref,
+          event: "failed",
+          detail: error instanceof Error ? error.message : String(error),
+        });
       }
       if (runOnce) {
         throw error;

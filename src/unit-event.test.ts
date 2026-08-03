@@ -1,13 +1,18 @@
 // Observability tests (#73): tagged line grammar, the fixed-size status
 // snapshot fold, and the emit chokepoint (log + snapshot refresh).
 
-import { describe, expect, test } from "vite-plus/test";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
 import {
   applyUnitEvent,
   createEmitUnitEvent,
   emptyStatus,
   formatUnitEventLine,
+  readStatus,
   unitTag,
+  writeStatus,
   type StatusSnapshot,
   type UnitEvent,
 } from "./unit-event.ts";
@@ -46,6 +51,13 @@ describe("applyUnitEvent", () => {
     expect(applyUnitEvent(started, event({ event: "completed" })).currentUnit).toBeNull();
   });
 
+  test("failed clears the unit and records the error as lastError", () => {
+    const started = applyUnitEvent(base, event({ event: "started" }));
+    const s = applyUnitEvent(started, event({ event: "failed", detail: "push rejected" }));
+    expect(s.currentUnit).toBeNull();
+    expect(s.lastError).toBe("push rejected");
+  });
+
   test("timed-out clears the unit and stamps lastTimeoutAt", () => {
     const s = applyUnitEvent(base, event({ event: "timed-out", ts: "2026-07-31T13:00:00.000Z" }));
     expect(s.currentUnit).toBeNull();
@@ -55,6 +67,30 @@ describe("applyUnitEvent", () => {
   test("quarantined records the reason as lastError", () => {
     const s = applyUnitEvent(base, event({ event: "quarantined", detail: "3 timeouts" }));
     expect(s.lastError).toBe("3 timeouts");
+  });
+});
+
+describe("writeStatus (atomic)", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "phoebe-status-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("round-trips a snapshot and leaves no temp file behind", () => {
+    const path = join(dir, "state", "status.json");
+    const snapshot = applyUnitEvent(
+      emptyStatus("acme/widget"),
+      event({ event: "failed", detail: "boom" }),
+    );
+    writeStatus(path, snapshot);
+
+    expect(readStatus(path)).toEqual(snapshot);
+    // The temp file was renamed over the target, not left as debris — a reader
+    // never sees a half-written file (the whole point of the temp+rename).
+    expect(readdirSync(join(dir, "state"))).toEqual(["status.json"]);
   });
 });
 

@@ -14,8 +14,8 @@
 // emit through (no new channel). The durable record of a timeout/quarantine is a
 // GitHub marker on the unit itself (src/orchestrator.ts), not anything on disk.
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 /** Snapshot filename inside a tenant's reserved `state/` dir (#62/#63). */
 export const STATUS_FILE = "status.json";
@@ -23,7 +23,7 @@ export const STATUS_FILE = "status.json";
 export type UnitRef = { kind: string; id: string };
 
 /** What happened to a work unit — the event vocabulary on the rail. */
-export type UnitEventName = "started" | "completed" | "timed-out" | "quarantined";
+export type UnitEventName = "started" | "completed" | "failed" | "timed-out" | "quarantined";
 
 /** One structured unit event (#73 Decision 5). */
 export type UnitEvent = {
@@ -52,7 +52,6 @@ export function formatUnitEventLine(event: UnitEvent): string {
  */
 export type StatusSnapshot = {
   tenant: string;
-  lastPollAt: string | null;
   currentUnit: UnitRef | null;
   lastError: string | null;
   lastTimeoutAt: string | null;
@@ -62,7 +61,6 @@ export type StatusSnapshot = {
 export function emptyStatus(tenant: string): StatusSnapshot {
   return {
     tenant,
-    lastPollAt: null,
     currentUnit: null,
     lastError: null,
     lastTimeoutAt: null,
@@ -72,9 +70,11 @@ export function emptyStatus(tenant: string): StatusSnapshot {
 
 /**
  * Fold a unit event into the snapshot (pure). `started` sets the current unit;
- * `completed` clears it; `timed-out` clears it and stamps `lastTimeoutAt`;
- * `quarantined` records the reason as `lastError`. Every event refreshes
- * `updatedAt` so a wedged supervisor is visible as a stale timestamp (#63).
+ * `completed` clears it; `failed` clears it and records the error as `lastError`
+ * so `phoebe list` can tell a repo that keeps failing from one that succeeds;
+ * `timed-out` clears it and stamps `lastTimeoutAt`; `quarantined` records the
+ * reason as `lastError`. Every event refreshes `updatedAt` so a wedged
+ * supervisor is visible as a stale timestamp (#63).
  */
 export function applyUnitEvent(prev: StatusSnapshot, event: UnitEvent): StatusSnapshot {
   const next: StatusSnapshot = { ...prev, updatedAt: event.ts };
@@ -84,6 +84,10 @@ export function applyUnitEvent(prev: StatusSnapshot, event: UnitEvent): StatusSn
       break;
     case "completed":
       next.currentUnit = null;
+      break;
+    case "failed":
+      next.currentUnit = null;
+      next.lastError = event.detail ?? "failed";
       break;
     case "timed-out":
       next.currentUnit = null;
@@ -105,9 +109,21 @@ export function readStatus(path: string): StatusSnapshot | null {
   }
 }
 
+/**
+ * Persist the snapshot atomically: write a sibling temp file, then `rename` it
+ * over `path`. `rename` is atomic within a filesystem, so a concurrent reader
+ * (`phoebe list`, or the next emit's `readStatus`) only ever sees the complete
+ * old file or the complete new one — never a half-written one, which would parse
+ * as invalid JSON and silently fold the event onto `emptyStatus`, discarding
+ * `lastError`/`lastTimeoutAt`. The temp name carries the pid so two processes
+ * writing the same dir cannot clobber each other's partial file.
+ */
 export function writeStatus(path: string, snapshot: StatusSnapshot): void {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(snapshot, null, 2)}\n`);
+  const dir = dirname(path);
+  mkdirSync(dir, { recursive: true });
+  const tmp = join(dir, `.${process.pid}.status.json.tmp`);
+  writeFileSync(tmp, `${JSON.stringify(snapshot, null, 2)}\n`);
+  renameSync(tmp, path);
 }
 
 export type EmitUnitEvent = (event: Omit<UnitEvent, "tenant" | "ts">) => void;
