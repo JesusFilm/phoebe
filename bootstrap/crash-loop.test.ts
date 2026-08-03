@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
 import {
   CRASH_LOOP_THRESHOLD,
-  DEFAULT_STATE_DIR,
+  ENGINE_STATE_DIR,
   HEALTHY_RUN_MS,
   INITIAL_CRASH_LOOP_STATE,
   crashLoopStatePath,
@@ -24,7 +24,6 @@ import {
   hasFallbackTarget,
   judgeRun,
   readCrashLoopState,
-  readStateDir,
   recordRun,
   writeCrashLoopState,
   type CrashGuardEvent,
@@ -221,20 +220,15 @@ describe("the ladder, end to end", () => {
   });
 });
 
-describe("readStateDir", () => {
-  test("an omitted paths block falls back to the shipped state dir", () => {
-    expect(readStateDir({})).toBe(DEFAULT_STATE_DIR);
+describe("crashLoopStatePath", () => {
+  test("defaults to the deployment-global engine dir when given no arg", () => {
+    // The guard is fleet-wide (#60/#62): its state lives beside the shared
+    // engine checkout at /data/engine, not under any tenant's state dir.
+    expect(crashLoopStatePath()).toBe(join(ENGINE_STATE_DIR, "engine-crash-loop.json"));
   });
 
-  test("the config's paths.stateDir wins", () => {
-    expect(readStateDir({ paths: { stateDir: "/srv/phoebe-state" } })).toBe("/srv/phoebe-state");
-  });
-
-  test("a non-string stateDir is ignored rather than trusted", () => {
-    // The bootstrapper reads the config before the engine validates it, so a
-    // typo must not become a path.
-    expect(readStateDir({ paths: { stateDir: 7 } })).toBe(DEFAULT_STATE_DIR);
-    expect(readStateDir({ paths: "nope" })).toBe(DEFAULT_STATE_DIR);
+  test("joins the record filename under an explicit engine dir", () => {
+    expect(crashLoopStatePath("/srv/engine")).toBe("/srv/engine/engine-crash-loop.json");
   });
 });
 

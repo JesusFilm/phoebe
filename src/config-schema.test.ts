@@ -99,6 +99,16 @@ describe("resolveConfig", () => {
     expect(resolved.prOptOutLabel).toBe(CONFIG_DEFAULTS.prOptOutLabel);
     expect(resolved.workOrder).toEqual(CONFIG_DEFAULTS.workOrder);
     expect(resolved.defaultProvider).toBe(CONFIG_DEFAULTS.defaultProvider);
+    expect(resolved.runTimeoutMs).toBe(CONFIG_DEFAULTS.runTimeoutMs);
+    expect(resolved.maxUnitTimeouts).toBe(CONFIG_DEFAULTS.maxUnitTimeouts);
+  });
+
+  test("run-protection knobs carry sane shipped defaults", () => {
+    expect(CONFIG_DEFAULTS.runTimeoutMs).toBe(2_700_000);
+    expect(CONFIG_DEFAULTS.maxUnitTimeouts).toBe(3);
+    const resolved = resolveConfig(minimalUserConfig({ runTimeoutMs: 60_000, maxUnitTimeouts: 5 }));
+    expect(resolved.runTimeoutMs).toBe(60_000);
+    expect(resolved.maxUnitTimeouts).toBe(5);
   });
 
   test("preserves the caller's required-field values verbatim", () => {
@@ -149,11 +159,18 @@ describe("resolveConfig", () => {
     expect(resolved.providerEnv.claude).toBe(CONFIG_DEFAULTS.providerEnv.claude);
   });
 
-  test("shallow-merges paths", () => {
-    const resolved = resolveConfig(minimalUserConfig({ paths: { repoDir: "/srv/repo" } }));
-    expect(resolved.paths.repoDir).toBe("/srv/repo");
-    expect(resolved.paths.worktreesDir).toBe(CONFIG_DEFAULTS.paths.worktreesDir);
-    expect(resolved.paths.stateDir).toBe(CONFIG_DEFAULTS.paths.stateDir);
+  test("derives per-tenant paths from the slug under the default data base", () => {
+    const resolved = resolveConfig(minimalUserConfig());
+    expect(resolved.paths.repoDir).toBe("/data/repos/acme/widget/repo");
+    expect(resolved.paths.worktreesDir).toBe("/data/repos/acme/widget/worktrees");
+    expect(resolved.paths.stateDir).toBe("/data/repos/acme/widget/state");
+  });
+
+  test("threads a custom data base into the derived paths", () => {
+    const resolved = resolveConfig(minimalUserConfig(), { dataBase: "/srv/phoebe" });
+    expect(resolved.paths.repoDir).toBe("/srv/phoebe/acme/widget/repo");
+    expect(resolved.paths.worktreesDir).toBe("/srv/phoebe/acme/widget/worktrees");
+    expect(resolved.paths.stateDir).toBe("/srv/phoebe/acme/widget/state");
   });
 
   test("defaults name a model and env var for every declared provider", () => {

@@ -1,0 +1,106 @@
+// The supervisor's per-tenant env scrub — isolation model A, §1 (#61).
+//
+// In a nested/multi-tenant deployment the supervisor (boot.ts) spawns one engine
+// child per tenant. Left as today's `stdio: "inherit"` with no `env`, every
+// child would inherit the supervisor's full `process.env` — which holds the
+// deployment engine-clone credential (#60) and, once several tenants' `.env`
+// files are loaded, every tenant's secrets. That is exactly the cross-tenant
+// exposure model A must prevent.
+//
+// So the supervisor builds each child's env here, **deny-by-default from an
+// explicit allowlist**: a hardcoded base (PATH/HOME/git identity), the
+// deployment-global `PHOEBE_*` knobs the engine reads, plus *only* tenant T's
+// freshly-parsed `.env`. The supervisor's own `process.env` is never spread in,
+// so the #60 clone credential — and any future secret dropped there — is
+// fail-closed invisible to children (simply never on the list). Isolation is
+// structural, not disciplinary: a child can only ever hold its own tenant's
+// secrets. `buildAgentEnv` (src/agent-env.ts) then narrows correctly at the
+// agent hop, unchanged, because the child's env already holds only tenant T's.
+//
+// Flat single-tenant mode does NOT use this: one tenant is one trust domain
+// (the whole container), Docker injects exactly that tenant's secrets, and the
+// child inherits the supervisor env as it does today.
+
+/**
+ * Hardcoded base allowlist: process essentials plus the deployment-global git
+ * identity every tenant shares. Not secrets, and not per-tenant.
+ */
+export const ENGINE_CHILD_BASE_KEYS = [
+  "PATH",
+  "HOME",
+  "LANG",
+  "LC_ALL",
+  "TZ",
+  "GIT_AUTHOR_NAME",
+  "GIT_AUTHOR_EMAIL",
+  "GIT_COMMITTER_NAME",
+  "GIT_COMMITTER_EMAIL",
+] as const;
+
+/**
+ * Deployment-global `PHOEBE_*` knobs the engine reads that are safe to share
+ * across every tenant. Deliberately excludes the per-tenant config-overlay keys
+ * (`PHOEBE_REPO_SLUG`, `PHOEBE_INSTALL_COMMAND`, …): each tenant loads its own
+ * `phoebe.config.ts`, so a global overlay would corrupt every tenant identically.
+ */
+export const ENGINE_CHILD_DEPLOYMENT_KNOBS = [
+  "PHOEBE_POLL_INTERVAL_MS",
+  "PHOEBE_RUN_TIMEOUT_MS",
+  "PHOEBE_MAX_UNIT_TIMEOUTS",
+  "PHOEBE_DATA_DIR",
+  "PHOEBE_BASE",
+  "PHOEBE_AGENT",
+  "PHOEBE_MODEL",
+] as const;
+
+/**
+ * Parse a `.env` file's contents into a plain record. Minimal by design — the
+ * supervisor only needs `KEY=VALUE` for a tenant's `GH_TOKEN` + provider key:
+ * blank lines and `#` comments are skipped, an optional `export ` prefix and
+ * surrounding single/double quotes are stripped, and `=` inside a value is
+ * preserved. No interpolation, no multiline values.
+ */
+export function parseDotenv(contents: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const raw of contents.split("\n")) {
+    const line = raw.trim();
+    if (line.length === 0 || line.startsWith("#")) continue;
+    const withoutExport = line.startsWith("export ") ? line.slice("export ".length) : line;
+    const eq = withoutExport.indexOf("=");
+    if (eq === -1) continue;
+    const key = withoutExport.slice(0, eq).trim();
+    if (key.length === 0) continue;
+    let value = withoutExport.slice(eq + 1).trim();
+    if (value.length >= 2 && (value[0] === '"' || value[0] === "'") && value.at(-1) === value[0]) {
+      value = value.slice(1, -1);
+    }
+    out[key] = value;
+  }
+  return out;
+}
+
+/**
+ * Build a scrubbed, tenant-only env for one engine child. Deny-by-default: start
+ * empty, copy the allowlisted base + deployment knobs from `base` (the
+ * supervisor's `process.env`), then overlay tenant T's parsed `.env`. Because
+ * `base`'s `GH_TOKEN` is not on either allowlist, the only `GH_TOKEN` a child
+ * can hold is its own tenant's — the deployment clone credential never leaks.
+ */
+export function buildEngineChildEnv(opts: {
+  base: Record<string, string | undefined>;
+  tenantEnv: Record<string, string>;
+}): Record<string, string> {
+  const { base, tenantEnv } = opts;
+  const env: Record<string, string> = {};
+  for (const key of [...ENGINE_CHILD_BASE_KEYS, ...ENGINE_CHILD_DEPLOYMENT_KNOBS]) {
+    const value = base[key];
+    if (value !== undefined && value !== "") {
+      env[key] = value;
+    }
+  }
+  // Tenant secrets last: they are the tenant's own, and win over any collision.
+  for (const [key, value] of Object.entries(tenantEnv)) {
+    if (value !== "") env[key] = value;
+  }
+  return env;
+}

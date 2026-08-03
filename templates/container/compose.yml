@@ -20,13 +20,13 @@
 # within a poll interval and relaunches at the next work-unit boundary. No
 # rebuild and no restart; rebuild only when this image's toolchain changes.
 
-# Project name — namespaces this instance's containers and named volumes. It
-# defaults to `phoebe`, but if you run Phoebe for more than one repo on the same
-# host you MUST make it unique per repo (set COMPOSE_PROJECT_NAME in `.env`).
-# Compose otherwise derives the project from this file's parent directory —
-# `container` — which is identical for every consumer, so the "private"
-# /data/repo, /data/state, … volumes would be shared across repos. Set it and
-# each repo gets its own `phoebe-<repo>_phoebe-repo` volume set.
+# Project name — namespaces this instance's containers and named volumes.
+# Defaults to `phoebe`. One Phoebe container now serves *many* repos as tenants
+# (drop each under `repos/<owner>/<repo>/`), so you no longer need one instance
+# per repo — but if you *do* run more than one Phoebe container on the same host,
+# set COMPOSE_PROJECT_NAME uniquely per instance in `.env`, or Compose derives
+# the project from this file's parent dir (`container`, identical for everyone)
+# and the two `phoebe-data`/`phoebe-engine` volumes would be shared across them.
 name: ${COMPOSE_PROJECT_NAME:-phoebe}
 
 services:
@@ -53,24 +53,20 @@ services:
       PHOEBE_POLL_INTERVAL_MS: "${PHOEBE_POLL_INTERVAL_MS:-}"
       PHOEBE_RECONCILE_INTERVAL_MS: "${PHOEBE_RECONCILE_INTERVAL_MS:-}"
     volumes:
-      - phoebe-repo:/data/repo
-      - phoebe-worktrees:/data/worktrees
-      - phoebe-state:/data/state
+      # Two named volumes (#62). All tenant data nests under /data/repos as
+      # /data/repos/<owner>/<repo>/{repo,worktrees,state}; the shared engine
+      # checkout + crash-loop record live on their own volume at /data/engine.
+      - phoebe-data:/data/repos
       - phoebe-engine:/data/engine
-      # Consumer config + prompt overrides live in-repo; mount them read-only
-      # so `boot` can re-read the config without a rebuild.
-      #
-      # Caveat worth knowing: a single-file bind mount pins the host *inode*, so
-      # a save that writes a new file and renames it over the old one — most
-      # editors' atomic save, and what `git pull` does — is invisible in here,
-      # and `boot`'s config watch will never fire for it. Either edit in place,
-      # or follow the write with `docker compose up -d --force-recreate`.
-      - ../phoebe.config.ts:/etc/phoebe/phoebe.config.ts:ro
-      - ../prompts:/etc/phoebe/prompts:ro
+      # The whole deployment dir, mounted read-only so `boot` reads the top
+      # `phoebe.config.ts` (flat) and — once you add tenants — the whole
+      # `repos/<owner>/<repo>/` tree (their configs, `.env` files, prompt
+      # overrides). A *directory* mount (unlike the old single-file one) sees
+      # added/removed tenant dirs and atomic-save/`git pull` renames, so `boot`'s
+      # reconcile watch notices them without a `--force-recreate`.
+      - ..:/etc/phoebe:ro
     working_dir: /etc/phoebe
 
 volumes:
-  phoebe-repo:
-  phoebe-worktrees:
-  phoebe-state:
+  phoebe-data:
   phoebe-engine:

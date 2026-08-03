@@ -24,12 +24,13 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # The unprivileged user everything below the privilege drop runs as, and the
-# four volume mount points, created *now* while we are still root. Docker seeds
+# two volume mount points, created *now* while we are still root. Docker seeds
 # a fresh named volume from the image's contents at that path, ownership
 # included — so a mount point that does not exist here is created root-owned
-# and unwritable after the drop.
+# and unwritable after the drop. The engine nests
+# /data/repos/<owner>/<repo>/{repo,worktrees,state} under the phoebe-owned root.
 RUN useradd --create-home --shell /bin/bash --uid 10001 --user-group phoebe \
- && mkdir -p /data/repo /data/worktrees /data/state /data/engine \
+ && mkdir -p /data/repos /data/engine \
  && chown -R phoebe:phoebe /data
 
 # DOGFOOD DEVIATION: enable corepack so `pnpm` (pinned via package.json's
@@ -66,6 +67,7 @@ RUN set -eux; \
     echo "${cursor_sha}  /tmp/cursor-agent.tar.gz" | sha256sum -c -; \
     mkdir -p /opt/cursor-agent; \
     tar --strip-components=1 -xzf /tmp/cursor-agent.tar.gz -C /opt/cursor-agent; \
+    chmod 0711 /opt/cursor-agent/cursor-agent; \
     rm /tmp/cursor-agent.tar.gz; \
     ln -s /opt/cursor-agent/cursor-agent /usr/local/bin/agent; \
     ln -s /opt/cursor-agent/cursor-agent /usr/local/bin/cursor-agent

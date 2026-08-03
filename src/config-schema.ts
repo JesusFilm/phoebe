@@ -9,6 +9,8 @@
 // and filled from `CONFIG_DEFAULTS` by `resolveConfig()`. `PhoebeConfig` is the
 // fully-resolved shape the engine sees at runtime — every field populated.
 
+import { derivePaths } from "./paths.ts";
+
 export const PROVIDER_NAMES = ["cursor", "claude", "codex"] as const;
 export type ProviderName = (typeof PROVIDER_NAMES)[number];
 
@@ -37,7 +39,7 @@ export type PathsConfig = {
   repoDir: string;
   /** Per-unit git worktrees. */
   worktreesDir: string;
-  /** Lock, markers, logs. */
+  /** Reserved per-tenant state (supervisor status.json, #73). */
   stateDir: string;
 };
 
@@ -97,7 +99,22 @@ export type PhoebeConfig = {
   defaultModels: Record<ProviderName, string>;
   /** Env var holding each provider's API key — the only key the agent child inherits. */
   providerEnv: Record<ProviderName, string>;
-  /** Container filesystem layout (named volumes). */
+  /**
+   * Whole-unit wall-clock budget in ms (#72). A fleet-protection backstop: a
+   * hung unit that exceeds this has its agent subprocess killed so it cannot
+   * hold the #59 concurrency slot forever. Env-overridable via
+   * `PHOEBE_RUN_TIMEOUT_MS`. Default 45 min.
+   */
+  runTimeoutMs: number;
+  /**
+   * Consecutive per-unit timeouts before a unit is quarantined and escalated to
+   * a human (#75). Env-overridable via `PHOEBE_MAX_UNIT_TIMEOUTS`. Default 3.
+   */
+  maxUnitTimeouts: number;
+  /**
+   * Per-tenant filesystem layout. Not user-supplied: derived from `repoSlug`
+   * and the deployment data base by `resolveConfig` (see src/paths.ts, #58/#62).
+   */
   paths: PathsConfig;
 };
 
@@ -105,9 +122,9 @@ export type PhoebeConfig = {
  * User-facing shape of `phoebe.config.ts`. Only the five fields with no sane
  * cross-repo default are required; everything else is optional and filled from
  * `CONFIG_DEFAULTS` by `resolveConfig()`. Nested objects (`promptFiles`,
- * `paths`, `defaultModels`, `providerEnv`) are merged key-by-key, so overriding
- * one provider's model or one prompt file does not force the caller to supply
- * the rest.
+ * `defaultModels`, `providerEnv`) are merged key-by-key, so overriding one
+ * provider's model or one prompt file does not force the caller to supply the
+ * rest. `paths` is *not* here: it is derived from `repoSlug` (src/paths.ts).
  */
 export type PhoebeUserConfig = {
   repoSlug: string;
@@ -134,7 +151,10 @@ export type PhoebeUserConfig = {
   defaultProvider?: ProviderName;
   defaultModels?: Partial<Record<ProviderName, string>>;
   providerEnv?: Partial<Record<ProviderName, string>>;
-  paths?: Partial<PathsConfig>;
+  /** Whole-unit wall-clock timeout in ms (#72); default 45 min. */
+  runTimeoutMs?: number;
+  /** Consecutive timeouts before a unit is quarantined (#75); default 3. */
+  maxUnitTimeouts?: number;
 };
 
 /**
@@ -173,11 +193,11 @@ export const CONFIG_DEFAULTS = {
     claude: "ANTHROPIC_API_KEY",
     codex: "OPENAI_KEY",
   } satisfies Record<ProviderName, string>,
-  paths: {
-    repoDir: "/data/repo",
-    worktreesDir: "/data/worktrees",
-    stateDir: "/data/state",
-  } satisfies PathsConfig,
+  // 45 min: comfortably fits install(≤10) + a long agent run + test(≤10) + push,
+  // so hitting it means "actually stuck", not "slow" (#72).
+  runTimeoutMs: 2_700_000,
+  // Matches the house number for consecutive-failures-before-escalation (#75).
+  maxUnitTimeouts: 3,
 } as const;
 
 const REQUIRED_USER_FIELDS = [
@@ -248,8 +268,16 @@ export function validateUserConfig(user: PhoebeUserConfig): void {
  * Merge a user config with `CONFIG_DEFAULTS` and return the fully-populated
  * shape the engine runs against. Nested records are shallow-merged so partial
  * overrides (one prompt file, one provider's env var, etc.) work as expected.
+ *
+ * `paths` is *derived*, not merged: it comes from `repoSlug` and the deployment
+ * data base (`opts.dataBase`, default `/data/repos`; the CLI threads
+ * `PHOEBE_DATA_DIR` through — see src/paths.ts, #58/#62), so a tenant's on-disk
+ * layout is a function of its slug and can never drift from it.
  */
-export function resolveConfig(user: PhoebeUserConfig): PhoebeConfig {
+export function resolveConfig(
+  user: PhoebeUserConfig,
+  opts: { dataBase?: string } = {},
+): PhoebeConfig {
   validateUserConfig(user);
   return {
     repoSlug: user.repoSlug,
@@ -273,6 +301,8 @@ export function resolveConfig(user: PhoebeUserConfig): PhoebeConfig {
     defaultProvider: user.defaultProvider ?? CONFIG_DEFAULTS.defaultProvider,
     defaultModels: { ...CONFIG_DEFAULTS.defaultModels, ...user.defaultModels },
     providerEnv: { ...CONFIG_DEFAULTS.providerEnv, ...user.providerEnv },
-    paths: { ...CONFIG_DEFAULTS.paths, ...user.paths },
+    runTimeoutMs: user.runTimeoutMs ?? CONFIG_DEFAULTS.runTimeoutMs,
+    maxUnitTimeouts: user.maxUnitTimeouts ?? CONFIG_DEFAULTS.maxUnitTimeouts,
+    paths: derivePaths(user.repoSlug, opts.dataBase),
   };
 }

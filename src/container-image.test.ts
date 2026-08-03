@@ -32,8 +32,8 @@ const DOCKERFILES = {
   ".phoebe/container/Dockerfile (dogfood)": DOGFOOD_DOCKERFILE,
 } as const;
 
-/** The four named-volume mount points from compose.yml. */
-const DATA_DIRS = ["/data/repo", "/data/worktrees", "/data/state", "/data/engine"] as const;
+/** The two named-volume mount points from compose.yml (#62 two-volume layout). */
+const DATA_DIRS = ["/data/repos", "/data/engine"] as const;
 
 function read(relPath: string): string {
   return readFileSync(join(repoRoot, relPath), "utf8");
@@ -87,7 +87,7 @@ describe.each(Object.entries(DOCKERFILES))("%s", (_label, relPath) => {
     // cannot write its clone, worktrees, state, or engine checkouts. So these
     // have to be made and chowned while still root.
     //
-    // Asserted against the `mkdir` instruction specifically: all four paths are
+    // Asserted against the `mkdir` instruction specifically: both paths are
     // also listed in the header comment of the shipped template, so a check for
     // the bare strings would survive deleting the line that does the work.
     const dockerfile = read(relPath);
@@ -127,6 +127,17 @@ describe.each(Object.entries(DOCKERFILES))("%s", (_label, relPath) => {
       );
       expect(block).toContain(`CURSOR_AGENT_SHA256_${arch}`);
     }
+  });
+
+  test("ships the vendored agent binary 0711 (secureexec → non-dumpable, #61)", () => {
+    // The agent runs as the same uid 10001 as every tenant's engine child. A
+    // process that execs a binary it cannot *read* becomes a secureexec, so the
+    // kernel sets it non-dumpable — a same-uid sibling can't read its
+    // /proc/<pid>/environ and lift another tenant's secrets. Enforced by shipping
+    // the binary root:root mode 0711 (executable, not readable by others), inside
+    // the pinned install block so it can't drift.
+    const block = providerInstallBlock(read(relPath));
+    expect(block).toMatch(/chmod 0711 \/opt\/cursor-agent\/cursor-agent/);
   });
 
   test("keeps the provider CLI on PATH as `agent` after the privilege drop", () => {

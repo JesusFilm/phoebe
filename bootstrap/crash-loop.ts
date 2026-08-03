@@ -13,10 +13,12 @@
 // materialize, what to log) lives in boot.ts; the loop that calls it is
 // reconcile.ts.
 //
-// The record lives in the engine's state dir (`paths.stateDir`, default
-// `/data/state` — a named volume) rather than beside the engine clone, so a
-// quarantine survives a container restart *and* a wiped engine volume: the whole
-// point is to remember across the restart the crash itself causes.
+// The record is deployment-global: one guard about one engine SHA for the whole
+// fleet (#60). It lives beside the shared engine checkout on the `phoebe-engine`
+// volume (`/data/engine`, default), *outside* the per-tenant `/data/repos/<owner>/<repo>`
+// namespace (#62) — the crash-loop guard judges the engine, not any tenant. It
+// survives the container restart the crash itself causes, which is its whole
+// point.
 //
 // Only a github source with a moving branch is guarded. A local mount has no
 // commit to pin, and a pinned ref means pinning — boot must not silently serve
@@ -42,10 +44,15 @@ export const CRASH_LOOP_THRESHOLD = 3;
  */
 export const HEALTHY_RUN_MS = 60_000;
 
-/** State dir used when the mounted config names none (matches the engine's default). */
-export const DEFAULT_STATE_DIR = "/data/state";
+/**
+ * Deployment-global home for the shared engine checkout and this record (#60/#62).
+ * The `phoebe-engine` volume mounts here; `PHOEBE_ENGINE_DIR` overrides it for
+ * host/dev (see boot.ts `engineBaseDir`). It sits outside the per-tenant
+ * `/data/repos/<owner>/<repo>` namespace — one guard, one engine SHA, all tenants.
+ */
+export const ENGINE_STATE_DIR = "/data/engine";
 
-/** Filename of the crash-loop record inside the state dir. */
+/** Filename of the crash-loop record inside the engine dir. */
 export const CRASH_LOOP_STATE_FILE = "engine-crash-loop.json";
 
 /** Crash-loop bookkeeping, persisted across container restarts on the state volume. */
@@ -175,22 +182,14 @@ export function fallbackSha(
 }
 
 /**
- * Where the engine keeps its persistent state, read straight from the mounted
- * config. The bootstrapper resolves this itself — it writes the record before
- * the engine (which owns the config schema) has even been materialized — so a
- * missing or malformed `paths.stateDir` falls back to the engine's own default
- * rather than being trusted or rejected.
+ * The crash-loop record's path inside the deployment-global engine dir. No
+ * longer takes a tenant `stateDir` (#60/#62): the guard is fleet-wide, so its
+ * state co-locates with the shared engine checkout at `/data/engine`, not under
+ * any tenant's `/data/repos/<owner>/<repo>/state`. `engineDir` is the engine
+ * checkout base (boot.ts `engineBaseDir`), defaulting to `ENGINE_STATE_DIR`.
  */
-export function readStateDir(config: Record<string, unknown>): string {
-  const paths = config["paths"];
-  if (paths === null || typeof paths !== "object") return DEFAULT_STATE_DIR;
-  const stateDir = (paths as Record<string, unknown>)["stateDir"];
-  return typeof stateDir === "string" && stateDir.length > 0 ? stateDir : DEFAULT_STATE_DIR;
-}
-
-/** The crash-loop record's path inside a state dir. */
-export function crashLoopStatePath(stateDir: string): string {
-  return join(stateDir, CRASH_LOOP_STATE_FILE);
+export function crashLoopStatePath(engineDir: string = ENGINE_STATE_DIR): string {
+  return join(engineDir, CRASH_LOOP_STATE_FILE);
 }
 
 function isCrashLoopState(value: unknown): value is CrashLoopState {
