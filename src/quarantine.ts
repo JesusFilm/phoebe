@@ -34,7 +34,9 @@ export function resolveMaxUnitTimeouts(
 ): number {
   const raw = Number(env["PHOEBE_MAX_UNIT_TIMEOUTS"]);
   if (Number.isInteger(raw) && raw >= 1) return raw;
-  return Number.isInteger(configValue) && configValue >= 1 ? configValue : DEFAULT_MAX_UNIT_TIMEOUTS;
+  return Number.isInteger(configValue) && configValue >= 1
+    ? configValue
+    : DEFAULT_MAX_UNIT_TIMEOUTS;
 }
 
 // --- Timeout counter marker (posted on every timeout; embeds n) --------------

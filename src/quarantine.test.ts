@@ -68,7 +68,9 @@ describe("shouldAutoUnstick", () => {
   });
   test("issue unit clears when lastEditedAt is newer than baseline", () => {
     const baseline = "2026-07-31T12:00:00Z";
-    expect(shouldAutoUnstick({ baseline, currentIssueEditedAt: "2026-07-31T13:00:00Z" })).toBe(true);
+    expect(shouldAutoUnstick({ baseline, currentIssueEditedAt: "2026-07-31T13:00:00Z" })).toBe(
+      true,
+    );
     expect(shouldAutoUnstick({ baseline, currentIssueEditedAt: "2026-07-31T11:00:00Z" })).toBe(
       false,
     );

@@ -152,13 +152,13 @@ per tenant and reconciles the set on every poll — **no restart** to add or rem
 one. Read [`trust.md`](trust.md) first: co-locating repos means co-locating them
 in one trust domain.
 
-| Action | How |
-| --- | --- |
-| Add a repo | `phoebe add-repo <owner/repo>` (host-side, in the deployment dir). Creates `repos/<owner>/<repo>/`; the supervisor discovers it next poll. Fill in its `.env`. |
-| Migrate a flat deployment's fields down | `phoebe add-repo <owner/repo> --from-config` copies the top config's install/check/test commands into the new tenant. |
-| Remove a repo | `phoebe remove-repo <owner/repo>` (host-side). Reversible — the tenant's `/data` is retained; re-adding re-uses it. |
-| Reclaim a removed repo's disk | `phoebe purge <owner/repo> --yes` (in-container). Destructive; refuses while a live config still exists. |
-| See every tenant + its health | `phoebe list` (in-container): config present? `.env` present? retained data? current unit (read from each tenant's `status.json`). |
+| Action                                  | How                                                                                                                                                            |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Add a repo                              | `phoebe add-repo <owner/repo>` (host-side, in the deployment dir). Creates `repos/<owner>/<repo>/`; the supervisor discovers it next poll. Fill in its `.env`. |
+| Migrate a flat deployment's fields down | `phoebe add-repo <owner/repo> --from-config` copies the top config's install/check/test commands into the new tenant.                                          |
+| Remove a repo                           | `phoebe remove-repo <owner/repo>` (host-side). Reversible — the tenant's `/data` is retained; re-adding re-uses it.                                            |
+| Reclaim a removed repo's disk           | `phoebe purge <owner/repo> --yes` (in-container). Destructive; refuses while a live config still exists.                                                       |
+| See every tenant + its health           | `phoebe list` (in-container): config present? `.env` present? retained data? current unit (read from each tenant's `status.json`).                             |
 
 **Concurrency across tenants.** Only `PHOEBE_MAX_CONCURRENT_AGENTS` work units
 (default **1**) execute at once across the whole fleet — a supervisor-brokered,
