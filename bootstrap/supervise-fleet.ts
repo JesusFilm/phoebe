@@ -47,6 +47,8 @@ export type SuperviseFleetDeps = {
   onTenantChange?: (change: { added: string[]; removed: string[]; changed: string[] }) => void;
   onChildExit?: (info: { tenantId: string; exit: EngineExit; expected: boolean }) => void;
   onLaunchError?: (error: unknown) => void;
+  /** A tenant-discovery poll threw (unknown state) — the axis was skipped, not drained. */
+  onDiscoverError?: (error: unknown) => void;
   /** Reap a child we intentionally drained (relaunch/remove); the broker owner id. */
   onReap?: (tenantId: string) => void;
   crashBackoffMs?: number;
@@ -172,10 +174,19 @@ export async function superviseFleet(deps: SuperviseFleetDeps): Promise<EngineEx
     }
 
     // 3. Tenant axis: add / remove / relaunch individual children.
+    // A discovery that throws is *unknown* state, not "every tenant removed":
+    // skip the tenant axis this poll rather than draining the whole fleet on a
+    // transient `repos/` read error (tenants.ts already re-throws non-ENOENT).
     const previous = new Map<string, string | null>(
       [...children.values()].map((r) => [r.tenant.id, r.fingerprint] as const),
     );
-    const samples = deps.discover();
+    let samples: TenantSample[];
+    try {
+      samples = deps.discover();
+    } catch (error) {
+      deps.onDiscoverError?.(error);
+      continue;
+    }
     const diff = diffFleet(previous, samples);
     if (diff.added.length || diff.removed.length || diff.changed.length) {
       deps.onTenantChange?.({

@@ -16,7 +16,14 @@ import type { SlotBroker } from "./slot-broker.ts";
 export type BrokerChild = {
   on(event: "message", listener: (message: unknown) => void): unknown;
   on(event: "exit", listener: (...args: unknown[]) => void): unknown;
-  send?(message: unknown): void;
+  /**
+   * Node's real `ChildProcess.send` accepts an optional error-first callback.
+   * We always pass one (see `grant`): a child can exit while its slot grant is
+   * still in flight, and on Node ≥ 24 a callback-less `send` over a closed
+   * channel emits an unhandled `'error'` (`ERR_IPC_CHANNEL_CLOSED`) that would
+   * crash the *shared* supervisor and take every co-tenant down with it.
+   */
+  send?(message: unknown, callback?: (error: Error | null) => void): void;
 };
 
 function messageType(message: unknown): unknown {
@@ -31,12 +38,27 @@ function messageType(message: unknown): unknown {
  * broker actually hands out a slot, so a child blocked behind the cap simply
  * waits — no busy-poll.
  */
-export function attachBroker(opts: { owner: string; broker: SlotBroker; child: BrokerChild }): void {
+export function attachBroker(opts: {
+  owner: string;
+  broker: SlotBroker;
+  child: BrokerChild;
+}): void {
   const { owner, broker, child } = opts;
+
+  // Send the grant with an error-first callback so a child that exited while the
+  // grant was queued fails here as a handled no-op instead of an unhandled
+  // channel-closed `'error'` that would crash the supervisor. The child's `exit`
+  // handler (below) has already — or will shortly — `reclaim` its slot, so a
+  // dropped grant leaks nothing.
+  const grant = (): void =>
+    child.send?.({ type: SLOT_GRANTED }, (error) => {
+      if (error) broker.reclaim(owner);
+    });
+
   child.on("message", (message) => {
     switch (messageType(message)) {
       case SLOT_ACQUIRE:
-        void broker.acquire(owner).then(() => child.send?.({ type: SLOT_GRANTED }));
+        void broker.acquire(owner).then(grant);
         break;
       case SLOT_RELEASE:
         broker.release(owner);

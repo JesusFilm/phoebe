@@ -100,14 +100,22 @@ export function diffFleet(
   return { added, removed, changed };
 }
 
-/** Directory names (only) directly under `parent`; empty if it cannot be read. */
+/**
+ * Directory names (only) directly under `parent`. A missing `parent` (`ENOENT`)
+ * is a real empty set; any *other* error (`EACCES` after a remount, `EMFILE`, …)
+ * is unknown state and is re-thrown, never flattened to "no dirs". Flattening it
+ * would make `discoverTenants` report zero tenants and the supervisor would drain
+ * the entire fleet on a transient blip — the same conservatism `detectChange`
+ * applies to an unreadable config.
+ */
 function listDirs(parent: string): string[] {
   try {
     return readdirSync(parent, { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
       .map((entry) => entry.name);
-  } catch {
-    return [];
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
   }
 }
 

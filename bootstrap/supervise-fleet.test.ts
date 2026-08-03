@@ -64,6 +64,8 @@ function harness(initial: TenantSample[]) {
   const spawned: Array<{ slug: string | null; fake: ReturnType<typeof fakeChild> }> = [];
   let stopRequested = false;
   let launches = 0;
+  let throwOnDiscover = false;
+  const discoverErrors: unknown[] = [];
 
   // A (re)materialized engine is checked out at the *current* tracked ref, so
   // its sha matches the ref at launch time — exactly what real materialization
@@ -85,7 +87,11 @@ function harness(initial: TenantSample[]) {
       launches += 1;
       return engine();
     },
-    discover: () => tenants,
+    discover: () => {
+      if (throwOnDiscover) throw new Error("EACCES: repos/ momentarily unreadable");
+      return tenants;
+    },
+    onDiscoverError: (e) => discoverErrors.push(e),
     spawn: (t) => {
       const fake = fakeChild();
       spawned.push({ slug: t.slug, fake });
@@ -107,6 +113,12 @@ function harness(initial: TenantSample[]) {
     },
     setTenants: (next: TenantSample[]) => {
       tenants = next;
+    },
+    setThrowOnDiscover: (v: boolean) => {
+      throwOnDiscover = v;
+    },
+    get discoverErrors() {
+      return discoverErrors;
     },
     moveEngineRef: (sha: string) => {
       engineState.remoteSha = sha;
@@ -175,6 +187,26 @@ describe("superviseFleet", () => {
     for (const s of initial) expect(s.fake.kills).toContain("SIGTERM");
     expect(h.launches).toBe(2); // re-materialized once
     expect(h.spawned).toHaveLength(4); // 2 initial + 2 respawned
+  });
+
+  test("a throwing discovery skips the tenant axis instead of draining the fleet", async () => {
+    const h = harness([sample("acme/widget", "fp1"), sample("acme/gadget", "fp1")]);
+    await settle();
+    const initial = [...h.spawned];
+
+    // A transient `repos/` read error (EACCES/EMFILE) → discover throws. The
+    // supervisor must treat it as unknown state, not "every tenant removed".
+    h.setThrowOnDiscover(true);
+    h.tick();
+    await settle();
+    for (const s of initial) expect(s.fake.kills).toEqual([]); // nobody drained
+    expect(h.discoverErrors).toHaveLength(1);
+
+    // Recovers on the next good poll — no respawn churn (fleet was never torn down).
+    h.setThrowOnDiscover(false);
+    h.tick();
+    await settle();
+    expect(h.spawned).toHaveLength(2);
   });
 
   test("respawns a child that died on its own (per-tenant supervision)", async () => {

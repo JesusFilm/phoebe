@@ -83,4 +83,26 @@ describe("attachBroker", () => {
     await tick();
     expect(b.sent).toEqual([{ type: SLOT_GRANTED }]);
   });
+
+  test("a grant onto a closed channel reclaims the slot instead of leaking it", async () => {
+    // The child exited while its grant was in flight: `send` reports the closed
+    // channel via its error-first callback (Node's ERR_IPC_CHANNEL_CLOSED),
+    // which must free the slot for the next waiter — and never throw.
+    const broker = createSlotBroker(1);
+    const gone = fakeChild();
+    // Override send to simulate a closed IPC channel: invoke the callback with
+    // an error (and record nothing sent).
+    (gone as { send: BrokerChild["send"] }).send = (_message, callback) =>
+      callback?.(new Error("channel closed"));
+    const b = fakeChild();
+    attachBroker({ owner: "gone", broker, child: gone });
+    attachBroker({ owner: "b", broker, child: b });
+
+    gone.emitMessage({ type: SLOT_ACQUIRE }); // acquires slot 1, grant fails closed
+    b.emitMessage({ type: SLOT_ACQUIRE }); // queued behind it
+    await tick();
+
+    // The failed grant reclaimed the slot, so b was granted rather than starved.
+    expect(b.sent).toEqual([{ type: SLOT_GRANTED }]);
+  });
 });

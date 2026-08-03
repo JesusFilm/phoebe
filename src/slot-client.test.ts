@@ -13,18 +13,25 @@ import {
 function mockChannel(): ParentChannel & {
   sent: unknown[];
   emit: (message: unknown) => void;
+  emitDisconnect: () => void;
   listenerCount: () => number;
 } {
   const sent: unknown[] = [];
-  const listeners = new Set<(message: unknown) => void>();
+  // Event-aware, like the real IPC channel: `message` and `disconnect` are
+  // distinct, so a `disconnect` handler never fires on an inbound message.
+  const byEvent: Record<string, Set<(message: unknown) => void>> = {
+    message: new Set(),
+    disconnect: new Set(),
+  };
   return {
     connected: true,
     send: (message) => sent.push(message),
-    on: (_event, listener) => listeners.add(listener),
-    off: (_event, listener) => listeners.delete(listener),
+    on: (event, listener) => byEvent[event]?.add(listener),
+    off: (event, listener) => byEvent[event]?.delete(listener),
     sent,
-    emit: (message) => listeners.forEach((l) => l(message)),
-    listenerCount: () => listeners.size,
+    emit: (message) => byEvent.message!.forEach((l) => l(message)),
+    emitDisconnect: () => byEvent.disconnect!.forEach((l) => l(undefined)),
+    listenerCount: () => byEvent.message!.size + byEvent.disconnect!.size,
   };
 }
 
@@ -51,13 +58,30 @@ describe("createSlotClient", () => {
     expect(resolved).toBe(true);
   });
 
-  test("removes its message listener once granted (no accumulation)", async () => {
+  test("removes both its listeners once granted (no accumulation)", async () => {
     const channel = mockChannel();
     const client = createSlotClient(channel)!;
     const pending = client.acquire();
-    expect(channel.listenerCount()).toBe(1);
+    // One `message` listener (the grant) + one `disconnect` listener (the
+    // supervisor-died settle path).
+    expect(channel.listenerCount()).toBe(2);
     channel.emit({ type: SLOT_GRANTED });
     await pending;
+    expect(channel.listenerCount()).toBe(0);
+  });
+
+  test("settles (unbrokered) if the channel disconnects before a grant", async () => {
+    const channel = mockChannel();
+    const client = createSlotClient(channel)!;
+    let resolved = false;
+    const pending = client.acquire().then(() => {
+      resolved = true;
+    });
+    expect(resolved).toBe(false);
+    channel.emitDisconnect();
+    await pending;
+    expect(resolved).toBe(true);
+    // And it cleaned up after itself — no leaked listeners.
     expect(channel.listenerCount()).toBe(0);
   });
 

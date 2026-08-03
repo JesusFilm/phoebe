@@ -23,8 +23,8 @@ export const SLOT_RELEASE = "phoebe:slot:release";
 /** The subset of `process` the client needs — injectable so it is unit-tested. */
 export type ParentChannel = {
   send?: (message: unknown) => void;
-  on?: (event: "message", listener: (message: unknown) => void) => void;
-  off?: (event: "message", listener: (message: unknown) => void) => void;
+  on?: (event: "message" | "disconnect", listener: (message: unknown) => void) => void;
+  off?: (event: "message" | "disconnect", listener: (message: unknown) => void) => void;
   connected?: boolean;
 };
 
@@ -48,6 +48,13 @@ function isGrant(message: unknown): boolean {
  * channel (a standalone engine — run unbrokered). The engine works one unit at
  * a time, so at most one acquire is ever outstanding per child: a single grant
  * message settles it, and the listener is removed as soon as it fires.
+ *
+ * `acquire` also settles on channel `disconnect`. Without it, a supervisor that
+ * dies (or is torn down) between the request and the grant would leave the
+ * promise pending forever — and the loop `await`s it *before* the whole-unit
+ * deadline is armed (src/main.ts), so the engine would stall with no log and no
+ * exit. On disconnect it resolves and proceeds unbrokered, which is safe: a lone
+ * child with no supervisor is already serialized to one unit.
  */
 export function createSlotClient(proc: ParentChannel): SlotClient | null {
   if (typeof proc.send !== "function" || proc.connected === false) return null;
@@ -57,10 +64,23 @@ export function createSlotClient(proc: ParentChannel): SlotClient | null {
       return new Promise<void>((resolve) => {
         const onMessage = (message: unknown): void => {
           if (!isGrant(message)) return;
-          proc.off?.("message", onMessage);
+          cleanup();
           resolve();
         };
+        const onDisconnect = (): void => {
+          cleanup();
+          console.warn(
+            "[phoebe] slot: IPC channel disconnected while awaiting a slot grant — " +
+              "proceeding unbrokered.",
+          );
+          resolve();
+        };
+        const cleanup = (): void => {
+          proc.off?.("message", onMessage);
+          proc.off?.("disconnect", onDisconnect);
+        };
         proc.on?.("message", onMessage);
+        proc.on?.("disconnect", onDisconnect);
         send({ type: SLOT_ACQUIRE });
       });
     },

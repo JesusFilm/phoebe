@@ -415,7 +415,7 @@ function runNestedFleet(opts: {
     discover: () =>
       discoverTenants(opts.configDir).tenants.map((tenant) => ({
         tenant,
-        fingerprint: configFingerprint(tenant.configPath),
+        fingerprint: tenantFingerprint(tenant.configPath, tenant.envPath),
       })),
     spawn: spawnFleetChild,
     stop: opts.stop,
@@ -438,7 +438,25 @@ function runNestedFleet(opts: {
       ),
     onLaunchError: (error) =>
       console.error(`[phoebe] boot: fleet (re)launch failed — ${describe(error)}. Retrying.`),
+    onDiscoverError: (error) =>
+      console.warn(
+        `[phoebe] boot: tenant discovery failed — ${describe(error)}. ` +
+          `Skipping the tenant axis this poll (the running fleet is left intact).`,
+      ),
   });
+}
+
+/**
+ * One tenant's reconcile fingerprint: its config *and* its co-located `.env`,
+ * so a secrets-only edit relaunches the child (the env scrub reads `.env` at
+ * spawn, #61). A null config fingerprint stays null — "unknown", never a change
+ * (`diffFleet`) — so a mid-rewrite config does not churn the child; a present
+ * config with an absent `.env` is a stable `"<config>:"`.
+ */
+function tenantFingerprint(configPath: string, envPath: string): string | null {
+  const config = configFingerprint(configPath);
+  if (config === null) return null;
+  return `${config}:${configFingerprint(envPath) ?? ""}`;
 }
 
 /**
