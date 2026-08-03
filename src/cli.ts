@@ -187,7 +187,9 @@ function runAddRepoCli(argv: readonly string[]): void {
   const { positionals, flags } = parseCommandArgs(argv);
   const slug = positionals[0];
   if (slug === undefined) {
-    throw new Error("Usage: phoebe add-repo <owner/repo> [--url <git-url>] [--with-prompts] [--from-config]");
+    throw new Error(
+      "Usage: phoebe add-repo <owner/repo> [--url <git-url>] [--with-prompts] [--from-config]",
+    );
   }
   const configDir = process.cwd();
   const fromConfig = flags["from-config"] === true ? readFlatRepoFields(configDir) : {};
@@ -225,7 +227,7 @@ function runRemoveRepoCli(argv: readonly string[]): void {
 function formatTenantListing(listing: TenantListing): string {
   const flag = (label: string, on: boolean): string => `${on ? "✓" : "✗"} ${label}`;
   const unit = listing.status?.currentUnit;
-  const state = unit ? `working ${unit.kind} #${unit.id}` : (listing.status ? "idle" : "no status");
+  const state = unit ? `working ${unit.kind} #${unit.id}` : listing.status ? "idle" : "no status";
   return (
     `  ${listing.slug}\n` +
     `      ${flag("config", listing.configValid)}  ${flag("env", listing.envPresent)}  ` +
@@ -235,9 +237,14 @@ function formatTenantListing(listing: TenantListing): string {
 
 /** `phoebe list` — enumerate tenants + health (reads status.json). */
 function runListCli(): void {
-  const listings = listTenants({ configDir: process.cwd(), dataBase: resolveDataBase(process.env) });
+  const listings = listTenants({
+    configDir: process.cwd(),
+    dataBase: resolveDataBase(process.env),
+  });
   if (listings.length === 0) {
-    process.stdout.write("[phoebe] No tenants (flat single-tenant deployment, or none added yet).\n");
+    process.stdout.write(
+      "[phoebe] No tenants (flat single-tenant deployment, or none added yet).\n",
+    );
     return;
   }
   process.stdout.write(
@@ -319,8 +326,15 @@ function extractRepoFlag(argv: readonly string[]): { slug: string | undefined; f
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === "--repo") {
-      slug = argv[i + 1];
-      i += 1;
+      // Only consume the next token as the slug if it is a value, not another
+      // flag (mirrors the `--url` guard in parseCommandArgs). Otherwise a
+      // malformed `--repo --dry-run` would swallow `--dry-run` as the slug and
+      // silently execute instead of doing a dry run.
+      const next = argv[i + 1];
+      if (next !== undefined && !next.startsWith("--")) {
+        slug = next;
+        i += 1;
+      }
     } else if (arg.startsWith("--repo=")) {
       slug = arg.slice("--repo=".length);
     } else {
@@ -336,7 +350,10 @@ function extractRepoFlag(argv: readonly string[]): { slug: string | undefined; f
  * `--repo <owner/repo>` and loads `repos/<owner>/<repo>/phoebe.config.ts`; flat
  * loads the top config and ignores `--repo`.
  */
-function resolveEngineConfigPath(configArg: string | undefined, repoSlug: string | undefined): string {
+function resolveEngineConfigPath(
+  configArg: string | undefined,
+  repoSlug: string | undefined,
+): string {
   const cwd = process.cwd();
   if (configArg !== undefined) return resolveConfigPath(configArg, cwd);
   if (isNested(cwd)) {

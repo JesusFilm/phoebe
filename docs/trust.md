@@ -147,7 +147,8 @@ radius is the same as a single-repo deployment.
 
 **What is _not_ isolated (the accepted residual).** Because all tenants share one
 uid, filesystem permissions cannot distinguish them at rest: a prompt-injected
-agent in tenant A **can read `/etc/phoebe/repos/B/.env` off disk**. Delivering
+agent in tenant A **can read tenant B's `/etc/phoebe/repos/<owner>/<repo>/.env`
+off disk**. Delivering
 real at-rest separation would need per-tenant OS users (rootless user
 namespaces — the documented "model B" upgrade), which an unprivileged container
 cannot set up.

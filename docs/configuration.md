@@ -135,11 +135,11 @@ tickets. Omit `research` to disable it for a repo. See
 tenant's on-disk layout can never drift from its identity. Every tenant nests
 under one slug-keyed root on the `phoebe-data` volume:
 
-| Derived path | Holds |
-| --- | --- |
-| `/data/repos/<owner>/<repo>/repo`      | The private clone (origin hub). |
-| `/data/repos/<owner>/<repo>/worktrees` | Per-unit git worktrees. |
-| `/data/repos/<owner>/<repo>/state`     | Per-tenant state — the supervisor's `status.json`. |
+| Derived path                           | Holds                                                                                                                                    |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `/data/repos/<owner>/<repo>/repo`      | The private clone (origin hub).                                                                                                          |
+| `/data/repos/<owner>/<repo>/worktrees` | Per-unit git worktrees.                                                                                                                  |
+| `/data/repos/<owner>/<repo>/state`     | Per-tenant state — the supervisor's `status.json`.                                                                                       |
 | `/data/engine`                         | The **shared** engine checkout + the crash-loop record (`engine-crash-loop.json`), deployment-global, on its own `phoebe-engine` volume. |
 
 The base is `/data/repos` in the container; `PHOEBE_DATA_DIR` overrides it for
@@ -151,7 +151,7 @@ host/dev. These map to the two named volumes in `compose.yml` — see
 A deployment is **flat** (one repo, config in place) or **nested** (many repos),
 selected by the presence of a `repos/` directory beside the top config:
 
-```
+```text
 # Flat (phoebe init):            # Nested (after phoebe add-repo):
 .phoebe/                         .phoebe/
   phoebe.config.ts   ← the repo    phoebe.config.ts   ← SHARED ONLY: engine source + global knobs
@@ -310,7 +310,7 @@ config-file territory.
 | `PHOEBE_ENGINE_DIR`            | `<tmp>/phoebe-agent` | Base dir `phoebe boot` clones a `github` engine source into (and bin.mjs materializes under). Put it on a persistent volume so github boots fetch instead of re-cloning. |
 | `PHOEBE_RECONCILE_INTERVAL_MS` | `60000`              | How often `phoebe boot` polls the mounted config and the tracked ref for a drain-and-relaunch (see Engine source → Reconcile).                                           |
 | `PHOEBE_BASE`                  | —                    | Force the worktree base ref for issues (bypasses blocker resolution).                                                                                                    |
-| `PHOEBE_DATA_DIR`              | `/data/repos`        | Base dir for derived tenant paths (host/dev override). Each tenant nests under `<base>/<owner>/<repo>/`.                                                                  |
+| `PHOEBE_DATA_DIR`              | `/data/repos`        | Base dir for derived tenant paths (host/dev override). Each tenant nests under `<base>/<owner>/<repo>/`.                                                                 |
 | `PHOEBE_MAX_CONCURRENT_AGENTS` | `1`                  | Fleet-wide cap on concurrently-executing work units across all tenants (the supervisor's FIFO broker). Raise deliberately.                                               |
 | `PHOEBE_RUN_TIMEOUT_MS`        | `2700000` (45 min)   | Whole-unit wall-clock budget; a unit that exceeds it is aborted so it can't hold the concurrency slot forever. Also settable as the `runTimeoutMs` config field.         |
 | `PHOEBE_MAX_UNIT_TIMEOUTS`     | `3`                  | Consecutive per-unit timeouts before the unit is quarantined (`phoebe:quarantined` label + escalation comment). Also the `maxUnitTimeouts` config field.                 |
