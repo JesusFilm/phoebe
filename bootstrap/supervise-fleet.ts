@@ -20,7 +20,13 @@
 // real timers (mirroring reconcile.ts's superviseEngine harness).
 
 import { detectChange, type EngineExit, type LaunchedEngine, type StopLatch } from "./reconcile.ts";
-import { diffFleet, type DiscoveredTenant, type TenantSample } from "./tenants.ts";
+import {
+  diffFleet,
+  DuplicateTenantSlugError,
+  type DiscoveredTenant,
+  type FleetDiscoverResult,
+  type TenantSample,
+} from "./tenants.ts";
 
 /** How long to wait before respawning a tenant child that died on its own. */
 export const CHILD_RESPAWN_BACKOFF_MS = 10_000;
@@ -33,11 +39,26 @@ export type FleetChild = {
   exited: Promise<EngineExit>;
 };
 
+/** Discover may be sync or async; samples alone, or samples + hold ids (#86/#91). */
+export type FleetDiscoverInput =
+  | TenantSample[]
+  | FleetDiscoverResult
+  | Promise<TenantSample[] | FleetDiscoverResult>;
+
+function normalizeDiscover(raw: TenantSample[] | FleetDiscoverResult): FleetDiscoverResult {
+  if (Array.isArray(raw)) return { samples: raw };
+  return raw;
+}
+
 export type SuperviseFleetDeps = {
   /** Materialize the shared engine (entry + sha + engine-axis `sample`). */
   launch: () => Promise<LaunchedEngine> | LaunchedEngine;
-  /** The tenants that should be running now, with their config fingerprints. */
-  discover: () => TenantSample[];
+  /**
+   * The tenants that should be running now, with their config fingerprints.
+   * May include `hold` ids for still-present dirs with a transiently unusable
+   * config so those children are not drained (#86).
+   */
+  discover: () => FleetDiscoverInput;
   /** Spawn one engine child for a tenant, running the shared engine's entry. */
   spawn: (tenant: DiscoveredTenant, engine: LaunchedEngine) => FleetChild;
   stop: StopLatch;
@@ -107,7 +128,7 @@ export async function superviseFleet(deps: SuperviseFleetDeps): Promise<EngineEx
   };
 
   // Initial fleet: one child per discovered tenant.
-  for (const { tenant, fingerprint } of deps.discover()) {
+  for (const { tenant, fingerprint } of normalizeDiscover(await deps.discover()).samples) {
     spawnFor(tenant, fingerprint);
   }
 
@@ -177,17 +198,22 @@ export async function superviseFleet(deps: SuperviseFleetDeps): Promise<EngineEx
     // A discovery that throws is *unknown* state, not "every tenant removed":
     // skip the tenant axis this poll rather than draining the whole fleet on a
     // transient `repos/` read error (tenants.ts already re-throws non-ENOENT).
+    // A fatal discovery error (duplicate workspace slug) aborts the supervisor.
     const previous = new Map<string, string | null>(
       [...children.values()].map((r) => [r.tenant.id, r.fingerprint] as const),
     );
     let samples: TenantSample[];
+    let hold = new Set<string>();
     try {
-      samples = deps.discover();
+      const discovered = normalizeDiscover(await deps.discover());
+      samples = discovered.samples;
+      hold = new Set(discovered.hold ?? []);
     } catch (error) {
+      if (error instanceof DuplicateTenantSlugError) throw error;
       deps.onDiscoverError?.(error);
       continue;
     }
-    const diff = diffFleet(previous, samples);
+    const diff = diffFleet(previous, samples, hold);
     if (diff.added.length || diff.removed.length || diff.changed.length) {
       deps.onTenantChange?.({
         added: diff.added.map((t) => t.id),
