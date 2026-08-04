@@ -73,6 +73,9 @@ export function defaultRepoUrl(slug: string): string {
  * flat scaffold) so it loads from the container mount with no `node_modules`;
  * deliberately carries NO `engine` field — engine source is shared, set in the
  * deployment-root config (#60/#63).
+ *
+ * Used by `add-repo` (nested path tenants) and `init --tenant` (workspace
+ * child in-tree installs, #94).
  */
 export function renderTenantConfig(fields: {
   repoSlug: string;
@@ -81,10 +84,11 @@ export function renderTenantConfig(fields: {
   checkCommand: string;
   testCommand: string;
 }): string {
-  return `// Per-tenant Phoebe config — scaffolded by \`phoebe add-repo\`.
+  return `// Per-tenant Phoebe config — scaffolded by \`phoebe add-repo\` or \`phoebe init --tenant\`.
 //
 // One tenant of a multi-tenant deployment. The shared engine source and
 // fleet-global knobs live in the deployment-root phoebe.config.ts, not here.
+// The written repoSlug is authoritative for workspace discovery (#85).
 import type { PhoebeUserConfig } from "phoebe-agent";
 
 const config: PhoebeUserConfig = {
@@ -99,7 +103,8 @@ export default config;
 `;
 }
 
-const TENANT_ENV_EXAMPLE = `# Per-tenant secrets — copy to \`.env\`. Read ONLY by this tenant's engine child
+/** Per-tenant secrets template — copy to `.env`. Shared by add-repo + init --tenant. */
+export const TENANT_ENV_EXAMPLE = `# Per-tenant secrets — copy to \`.env\`. Read ONLY by this tenant's engine child
 # (the supervisor scrubs every other tenant's secrets, #61).
 
 # --- Required ---
@@ -110,6 +115,47 @@ CURSOR_API_KEY=
 ANTHROPIC_API_KEY=
 OPENAI_KEY=
 `;
+
+/**
+ * Placeholder when a child has no `origin` (or an unparseable one) at scaffold
+ * time — the operator fills real values before boot.
+ */
+export const TENANT_PLACEHOLDER_SLUG = "org/repo";
+export const TENANT_PLACEHOLDER_URL = defaultRepoUrl(TENANT_PLACEHOLDER_SLUG);
+
+/**
+ * Derive `owner/repo` from a git remote URL (HTTPS, SSH scp-like, or ssh://).
+ * Returns null when the URL does not yield a well-formed slug.
+ */
+export function slugFromRemoteUrl(url: string): string | null {
+  const raw = url.trim();
+  if (raw.length === 0) return null;
+
+  let path: string | undefined;
+  const scp = /^git@[^:]+:(.+)$/.exec(raw);
+  if (scp) {
+    path = scp[1];
+  } else {
+    // https://host/owner/repo[.git], ssh://git@host/owner/repo, with optional userinfo
+    const m = /^(?:[a-zA-Z][a-zA-Z0-9+.-]*:\/\/)?(?:[^@/\s]+@)?[^/\s]+[/:](.+)$/.exec(raw);
+    path = m?.[1];
+  }
+  if (path === undefined) return null;
+
+  path = path.replace(/\.git$/i, "").replace(/\/+$/, "");
+  const parts = path.split("/").filter((p) => p.length > 0);
+  if (parts.length < 2) return null;
+
+  // Last two path segments → owner/repo (GitHub; also last-two for deeper hosts).
+  const owner = parts[parts.length - 2]!;
+  const repo = parts[parts.length - 1]!;
+  try {
+    parseSlug(`${owner}/${repo}`);
+    return `${owner}/${repo}`;
+  } catch {
+    return null;
+  }
+}
 
 export type AddRepoResult = { tenantDir: string; created: string[] };
 

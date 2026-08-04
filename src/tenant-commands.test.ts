@@ -16,6 +16,7 @@ import {
   readFlatRepoFields,
   removeRepo,
   renderTenantConfig,
+  slugFromRemoteUrl,
 } from "./tenant-commands.ts";
 
 let configDir: string;
@@ -29,7 +30,7 @@ afterEach(() => {
   rmSync(dataBase, { recursive: true, force: true });
 });
 
-describe("parseSlug / defaultRepoUrl", () => {
+describe("parseSlug / defaultRepoUrl / slugFromRemoteUrl", () => {
   test("splits a valid slug", () => {
     expect(parseSlug("acme/widget")).toEqual({ owner: "acme", repo: "widget" });
   });
@@ -49,6 +50,10 @@ describe("parseSlug / defaultRepoUrl", () => {
   });
   test("derives the GitHub HTTPS url", () => {
     expect(defaultRepoUrl("acme/widget")).toBe("https://github.com/acme/widget.git");
+  });
+  test("slugFromRemoteUrl extracts owner/repo from common remote forms", () => {
+    expect(slugFromRemoteUrl("https://github.com/acme/widget.git")).toBe("acme/widget");
+    expect(slugFromRemoteUrl("git@github.com:acme/widget.git")).toBe("acme/widget");
   });
 });
 

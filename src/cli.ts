@@ -21,7 +21,13 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { REPOS_DIR } from "../bootstrap/tenants.ts";
 import { resolveConfig } from "./config-schema.ts";
-import { copyShippedPromptsInto, formatInitReport, runInit, type InitProfile } from "./init.ts";
+import {
+  copyShippedPromptsInto,
+  formatInitReport,
+  initTenant,
+  runInit,
+  type InitProfile,
+} from "./init.ts";
 import { applyEnvOverlay, loadUserConfig, resolveConfigPath } from "./load-config.ts";
 import { resolveDataBase } from "./paths.ts";
 import { setResolvedConfig } from "./resolved-config.ts";
@@ -83,21 +89,33 @@ export type ParsedInitArgs = {
    * `--workspace` and `--tenant` are mutually exclusive (#93/#94).
    */
   profile: InitProfile;
+  /** Tenant profile: explicit slug override (wins over origin prefill). */
+  repoSlug?: string;
+  /** Tenant profile: explicit url override (wins over origin prefill). */
+  repoUrl?: string;
+  /** Tenant profile: opt-in seed of shipped prompts. */
+  withPrompts: boolean;
 };
 
 /**
  * Parse argv left after the leading `init` token has been consumed. Supports
  * an optional positional target directory (`phoebe init ./my-agent`), the
- * mutually exclusive profile flags `--workspace` / `--tenant`, and `--help`.
- * Extra flags are rejected loudly so a typo like `--forcee` fails fast
- * instead of being silently ignored.
+ * mutually exclusive profile flags `--workspace` / `--tenant`, tenant-only
+ * overrides (`--slug`, `--url`, `--with-prompts`), and `--help`. Extra flags
+ * are rejected loudly so a typo like `--forcee` fails fast instead of being
+ * silently ignored.
  */
 export function parseInitArgs(argv: readonly string[]): ParsedInitArgs {
   let targetDir: string | undefined;
   let help = false;
   let profile: InitProfile = "flat";
   let profileFlag: string | undefined;
-  for (const arg of argv) {
+  let repoSlug: string | undefined;
+  let repoUrl: string | undefined;
+  let withPrompts = false;
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!;
     if (arg === "--help" || arg === "-h") {
       help = true;
       continue;
@@ -113,6 +131,26 @@ export function parseInitArgs(argv: readonly string[]): ParsedInitArgs {
       profile = arg === "--workspace" ? "workspace" : "tenant";
       continue;
     }
+    if (arg === "--with-prompts") {
+      withPrompts = true;
+      continue;
+    }
+    if (arg === "--slug" || arg.startsWith("--slug=")) {
+      const value = arg === "--slug" ? argv[++i] : arg.slice("--slug=".length);
+      if (value === undefined || value.length === 0 || value.startsWith("-")) {
+        throw new Error("`--slug` requires an `owner/repo` value.");
+      }
+      repoSlug = value;
+      continue;
+    }
+    if (arg === "--url" || arg.startsWith("--url=")) {
+      const value = arg === "--url" ? argv[++i] : arg.slice("--url=".length);
+      if (value === undefined || value.length === 0 || value.startsWith("-")) {
+        throw new Error("`--url` requires a git remote URL value.");
+      }
+      repoUrl = value;
+      continue;
+    }
     if (arg.startsWith("-")) {
       throw new Error(`Unknown flag \`${arg}\` for \`phoebe init\`. See \`phoebe init --help\`.`);
     }
@@ -123,7 +161,21 @@ export function parseInitArgs(argv: readonly string[]): ParsedInitArgs {
     }
     targetDir = arg;
   }
-  return { targetDir: targetDir ?? ".", help, profile };
+
+  if ((repoSlug !== undefined || repoUrl !== undefined || withPrompts) && profile !== "tenant") {
+    throw new Error(
+      `\`--slug\`, \`--url\`, and \`--with-prompts\` are only valid with \`phoebe init --tenant\`.`,
+    );
+  }
+
+  return {
+    targetDir: targetDir ?? ".",
+    help,
+    profile,
+    ...(repoSlug !== undefined ? { repoSlug } : {}),
+    ...(repoUrl !== undefined ? { repoUrl } : {}),
+    withPrompts,
+  };
 }
 
 const HELP_TEXT = `phoebe — AFK coding agent
@@ -163,6 +215,7 @@ Usage:
   phoebe init [dir]                 Flat single-tenant deployment (default)
   phoebe init --workspace [dir]     Workspace root (engine + workspace block)
   phoebe init --tenant [dir]        Workspace child in-tree install
+                                    [--slug owner/repo] [--url <git-url>] [--with-prompts]
 
 Profiles (mutually exclusive; default is flat):
 
@@ -182,10 +235,17 @@ Profiles (mutually exclusive; default is flat):
     container/                   Same #57 templates as flat, plus README.md mount docs
     (no prompts/, no child files — link children then run init --tenant)
 
-  --tenant writes a child's in-tree install (config + .env.example + .gitignore).
+  --tenant writes a child's in-tree install (after \`git submodule add\`):
+    phoebe.config.ts             Per-tenant config (no engine; repoSlug authoritative)
+    .env.example                 Per-tenant secrets template (copy to .env)
+    .gitignore                   Additive — .env
+    prompts/                     Only with --with-prompts
+    (no container/ — deployment-level, owned by the workspace root)
 
-Existing files are left untouched, so re-running is safe. To regenerate a
-scaffolded file, delete it first and re-run \`phoebe init\`.
+    Prefills repoSlug/repoUrl from the child's \`origin\` remote; --slug/--url win.
+    Absent origin → placeholder slug/url the operator fills. Re-run refuses if config exists.
+
+Flat/workspace: existing files are left untouched. Tenant: refuses to overwrite.
 `;
 
 /** Pull `--flag value` / `--flag=value` / bare `--flag` and positionals apart. */
@@ -318,6 +378,23 @@ export async function runCli(): Promise<void> {
     const parsed = parseInitArgs(args.slice(1));
     if (parsed.help) {
       process.stdout.write(INIT_HELP_TEXT);
+      return;
+    }
+    if (parsed.profile === "tenant") {
+      const result = initTenant({
+        targetDir: parsed.targetDir,
+        ...(parsed.repoSlug !== undefined ? { repoSlug: parsed.repoSlug } : {}),
+        ...(parsed.repoUrl !== undefined ? { repoUrl: parsed.repoUrl } : {}),
+        withPrompts: parsed.withPrompts,
+        ...(parsed.withPrompts ? { seedPrompt: (dir: string) => copyShippedPromptsInto(dir) } : {}),
+      });
+      process.stdout.write(
+        formatInitReport(result, parsed.targetDir) +
+          `  repoSlug: ${result.repoSlug}\n` +
+          `  repoUrl:  ${result.repoUrl}\n` +
+          `\nFill in ${result.tenantDir}/.env (copy .env.example). ` +
+          `Workspace discovery picks this child up on the next boot poll.\n`,
+      );
       return;
     }
     const report = runInit({ targetDir: parsed.targetDir, profile: parsed.profile });
