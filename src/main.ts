@@ -66,6 +66,11 @@ import {
 import { buildRuntimeContractContext } from "./runtime-contract-context.ts";
 import { createRuntimeStatusReporter, type RuntimeStatusTransition } from "./runtime-status.ts";
 import {
+  readVerificationReport,
+  removeVerificationReport,
+  type VerificationResult,
+} from "./verification.ts";
+import {
   buildInitialPrBody,
   buildReviewsHandledComment,
   checksFixFailureComment,
@@ -577,6 +582,16 @@ function prepareWorktree(opts: { branch: BranchRef; baseRef?: string }): string 
   return worktreeDir;
 }
 
+/**
+ * Where the agent is told to write its post-verify report (#17). Kept as a
+ * sibling of the worktree, not inside it — so nothing the agent does inside
+ * the worktree (a stray `git add -A`, a clean/reset) can sweep it into a
+ * commit or delete it as untracked cruft.
+ */
+function verificationReportPath(worktreeDir: string): string {
+  return `${worktreeDir}.verification.json`;
+}
+
 async function runAgentInWorktree(opts: {
   worktreeDir: string;
   promptFile: string;
@@ -697,11 +712,19 @@ type AgentWorkflowResult = {
   localCommitCount: number;
 };
 
+/** What every `runUnit` reports back to the main loop for telemetry. */
+type UnitResult = { exitCode: number | null; verification?: readonly VerificationResult[] };
+
 /**
  * The shared skeleton behind every PR-fix agent: snapshot origin, prepare a
  * worktree, install, optionally prime the tree, run the agent, then re-snapshot
  * origin and count the host-side commits. Only `onResult` differs per work kind
  * (push vs. failure comment vs. watermark); the worktree is always removed.
+ *
+ * The agent is prompted to write a verification report as part of its own
+ * verify step (#17); this reads it back after the agent exits. A missing or
+ * malformed report just means `verification` comes back undefined — the
+ * engine never re-runs the gate itself.
  */
 async function runAgentWorkflow(opts: {
   pr: { prNumber: PrNumber; headRefName: BranchRef };
@@ -709,13 +732,15 @@ async function runAgentWorkflow(opts: {
   promptArgs: Record<string, string>;
   beforeAgent?: (worktreeDir: string) => void;
   onResult: (result: AgentWorkflowResult) => void | Promise<void>;
-}): Promise<number> {
+}): Promise<UnitResult> {
   const branch = opts.pr.headRefName;
 
   fetchOrigin();
   const originShaBefore = originBranchSha(branch);
 
   const worktreeDir = prepareWorktree({ branch });
+  const reportPath = verificationReportPath(worktreeDir);
+  removeVerificationReport(reportPath);
   try {
     runShellCommand(config.installCommand, worktreeDir);
     opts.beforeAgent?.(worktreeDir);
@@ -723,16 +748,18 @@ async function runAgentWorkflow(opts: {
     const agentExitCode = await runAgentInWorktree({
       worktreeDir,
       promptFile: opts.promptFile,
-      promptArgs: opts.promptArgs,
+      promptArgs: { ...opts.promptArgs, VERIFICATION_RESULT_FILE: reportPath },
     });
+    const verification = readVerificationReport(reportPath);
 
     fetchOrigin();
     const originShaAfter = originBranchSha(branch);
     const localCommitCount = commitCount(worktreeDir, `origin/${branch}..HEAD`);
 
     await opts.onResult({ worktreeDir, branch, originShaBefore, originShaAfter, localCommitCount });
-    return agentExitCode;
+    return { exitCode: agentExitCode, verification };
   } finally {
+    removeVerificationReport(reportPath);
     removeWorktree(repoDir, worktreeDir);
   }
 }
@@ -740,7 +767,7 @@ async function runAgentWorkflow(opts: {
 async function runConflictResolutionAgent(
   pr: ConflictingPrCandidate,
   mergedBlockerPrNumbers: readonly PrNumber[],
-): Promise<number> {
+): Promise<UnitResult> {
   const baseBranch = pr.baseRefName ?? defaultBranchRef;
   return runAgentWorkflow({
     pr,
@@ -786,7 +813,7 @@ async function runConflictResolutionAgent(
 async function fixOnePrConflict(
   pr: ConflictingPrCandidate,
   ctx: StackContext,
-): Promise<number | null> {
+): Promise<UnitResult> {
   const baseBranch = pr.baseRefName ?? defaultBranchRef;
   console.log(`[phoebe] Conflict fix: PR #${pr.prNumber} (${pr.headRefName}).`);
   fetchOrigin();
@@ -806,7 +833,7 @@ async function fixOnePrConflict(
     if (mergedBlockerPrNumbers.length > 0) {
       postPrComment(pr.prNumber, stackedCatchUpRetractionComment(mergedBlockerPrNumbers));
     }
-    return null;
+    return { exitCode: null };
   }
   if (cleanResult === "failed") {
     console.log(`[phoebe] Could not start merge for PR #${pr.prNumber} — skipping.`);
@@ -817,13 +844,13 @@ async function fixOnePrConflict(
         currentConflictFailureWatermark(pr.headRefName, baseBranch),
       ),
     );
-    return null;
+    return { exitCode: null };
   }
 
   return runConflictResolutionAgent(pr, mergedBlockerPrNumbers);
 }
 
-async function runChecksResolutionAgent(pr: ChecksCandidate): Promise<number> {
+async function runChecksResolutionAgent(pr: ChecksCandidate): Promise<UnitResult> {
   return runAgentWorkflow({
     pr,
     promptFile: config.promptFiles.checks,
@@ -857,7 +884,7 @@ async function runChecksResolutionAgent(pr: ChecksCandidate): Promise<number> {
   });
 }
 
-async function fixOnePrChecks(pr: ChecksCandidate, ctx: StackContext): Promise<number | null> {
+async function fixOnePrChecks(pr: ChecksCandidate, ctx: StackContext): Promise<UnitResult> {
   const baseBranch = pr.baseRefName ?? defaultBranchRef;
   console.log(
     `[phoebe] Checks fix: PR #${pr.prNumber} (${pr.headRefName}) — ` +
@@ -885,13 +912,13 @@ async function fixOnePrChecks(pr: ChecksCandidate, ctx: StackContext): Promise<n
       if (mergedBlockerPrNumbers.length > 0) {
         postPrComment(pr.prNumber, stackedCatchUpRetractionComment(mergedBlockerPrNumbers));
       }
-      return null;
+      return { exitCode: null };
     }
     if (cleanResult === "conflicted" || cleanResult === "failed") {
       console.log(
         `[phoebe] Catch-up merge conflicted for PR #${pr.prNumber} — deferring to conflicts mode.`,
       );
-      return null;
+      return { exitCode: null };
     }
   }
 
@@ -1006,7 +1033,7 @@ function hasNewReviewSummaryComment(
 async function runReviewsResolutionAgent(
   pr: ReviewsCandidate,
   phoebeLogin: string,
-): Promise<number> {
+): Promise<UnitResult> {
   const runStartedAt = new Date().toISOString();
   return runAgentWorkflow({
     pr,
@@ -1051,7 +1078,7 @@ async function runReviewsResolutionAgent(
   });
 }
 
-async function fixOnePrReviews(pr: ReviewsCandidate, phoebeLogin: string): Promise<number> {
+async function fixOnePrReviews(pr: ReviewsCandidate, phoebeLogin: string): Promise<UnitResult> {
   console.log(`[phoebe] Reviews fix: PR #${pr.prNumber} (${pr.headRefName}).`);
   fetchOrigin();
   return runReviewsResolutionAgent(pr, phoebeLogin);
@@ -1073,21 +1100,24 @@ async function runOneIssue(opts: {
   promptFile: string;
   blockerIssueNumber?: number;
   blockerPrNumber?: PrNumber;
-}): Promise<number> {
+}): Promise<UnitResult> {
   const { issueNumber, issueTitle, worktreeBase, stacked, promptFile } = opts;
   const { blockerIssueNumber, blockerPrNumber } = opts;
   const agentBranch = issueBranch(issueNumber);
 
   fetchOrigin();
   const worktreeDir = prepareWorktree({ branch: agentBranch, baseRef: worktreeBase });
+  const reportPath = verificationReportPath(worktreeDir);
+  removeVerificationReport(reportPath);
   try {
     runShellCommand(config.installCommand, worktreeDir);
 
     const agentExitCode = await runAgentInWorktree({
       worktreeDir,
       promptFile,
-      promptArgs: { ISSUE_NUMBER: String(issueNumber) },
+      promptArgs: { ISSUE_NUMBER: String(issueNumber), VERIFICATION_RESULT_FILE: reportPath },
     });
+    const verification = readVerificationReport(reportPath);
 
     const newCommitCount = commitCount(worktreeDir, `${worktreeBase}..HEAD`);
 
@@ -1154,8 +1184,9 @@ async function runOneIssue(opts: {
     } else {
       console.log("[phoebe] No commits — skipping PR creation.");
     }
-    return agentExitCode;
+    return { exitCode: agentExitCode, verification };
   } finally {
+    removeVerificationReport(reportPath);
     removeWorktree(repoDir, worktreeDir);
   }
 }
@@ -1177,7 +1208,7 @@ type RunContext = {
 type WorkKind = {
   name: WorkKindName;
   fetch: () => Promise<WorkKindFetch>;
-  runUnit: (unit: WorkUnit["unit"], context: RunContext) => Promise<number | null>;
+  runUnit: (unit: WorkUnit["unit"], context: RunContext) => Promise<UnitResult>;
 };
 
 type WorkKindFetch =
@@ -1442,7 +1473,7 @@ function fetchResearchWorkData(): {
   };
 }
 
-async function runIssueUnit(unit: IssueWorkUnit): Promise<number> {
+async function runIssueUnit(unit: IssueWorkUnit): Promise<UnitResult> {
   const { issue: target, resolution } = unit;
   console.log(
     `[phoebe] Working #${target.number} — base ${resolution.worktreeBase}` +
@@ -1460,7 +1491,7 @@ async function runIssueUnit(unit: IssueWorkUnit): Promise<number> {
   });
 }
 
-async function runResearchUnit(unit: IssueWorkUnit): Promise<number> {
+async function runResearchUnit(unit: IssueWorkUnit): Promise<UnitResult> {
   const { issue: target, resolution } = unit;
   console.log(
     `[phoebe] Researching #${target.number} — base ${resolution.worktreeBase}` +
@@ -1988,16 +2019,20 @@ async function runLoop({
     status.record({ kind: "work-started", work: statusWork(picked) });
     emitUnitEvent({ unit: ref, event: "started" });
     try {
-      const agentExitCode = await KINDS[picked.kind].runUnit(picked.unit, {
-        stack: { issueBodies: data.issueBodies, blockerStates: data.blockerStates },
-        phoebeLogin: data.phoebeLogin ?? "",
-      });
+      const { exitCode: agentExitCode, verification } = await KINDS[picked.kind].runUnit(
+        picked.unit,
+        {
+          stack: { issueBodies: data.issueBodies, blockerStates: data.blockerStates },
+          phoebeLogin: data.phoebeLogin ?? "",
+        },
+      );
       const pullRequestNumber = pullRequestNumberAfterWork(picked);
       if (agentExitCode !== null && agentExitCode !== 0) {
         status.record({
           kind: "work-failed",
           error: new Error(`Agent exited with code ${agentExitCode}.`),
           ...(pullRequestNumber !== undefined ? { pullRequestNumber } : {}),
+          ...(verification ? { verification } : {}),
           resources: {
             agentExitCode,
             summary: "The work unit completed its cleanup after a nonzero agent exit.",
@@ -2007,6 +2042,7 @@ async function runLoop({
         status.record({
           kind: "work-completed",
           ...(pullRequestNumber !== undefined ? { pullRequestNumber } : {}),
+          ...(verification ? { verification } : {}),
           ...(agentExitCode === null
             ? {}
             : {

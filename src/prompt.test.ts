@@ -79,16 +79,36 @@ describe("shipped default prompts", () => {
   const promptsDir = join(import.meta.dirname, "..", "prompts");
 
   const cases = [
-    { file: "issues-prompt.md", extra: { ISSUE_NUMBER: "42" } },
+    {
+      file: "issues-prompt.md",
+      extra: { ISSUE_NUMBER: "42", VERIFICATION_RESULT_FILE: "/tmp/report.json" },
+    },
     {
       file: "conflict-prompt.md",
-      extra: { PR_NUMBER: "12", PR_BRANCH: "phoebe/issue-42", BLOCKER_PR_NUMBERS: "" },
+      extra: {
+        PR_NUMBER: "12",
+        PR_BRANCH: "phoebe/issue-42",
+        BLOCKER_PR_NUMBERS: "",
+        VERIFICATION_RESULT_FILE: "/tmp/report.json",
+      },
     },
     {
       file: "checks-prompt.md",
-      extra: { PR_NUMBER: "12", PR_BRANCH: "phoebe/issue-42", FAILING_CHECKS: "- ci: FAILURE" },
+      extra: {
+        PR_NUMBER: "12",
+        PR_BRANCH: "phoebe/issue-42",
+        FAILING_CHECKS: "- ci: FAILURE",
+        VERIFICATION_RESULT_FILE: "/tmp/report.json",
+      },
     },
-    { file: "reviews-prompt.md", extra: { PR_NUMBER: "12", PR_BRANCH: "phoebe/issue-42" } },
+    {
+      file: "reviews-prompt.md",
+      extra: {
+        PR_NUMBER: "12",
+        PR_BRANCH: "phoebe/issue-42",
+        VERIFICATION_RESULT_FILE: "/tmp/report.json",
+      },
+    },
   ] as const;
 
   test.each(cases)(

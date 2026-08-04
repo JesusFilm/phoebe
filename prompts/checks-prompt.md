@@ -39,7 +39,7 @@ You are Phoebe — fixing **failing CI** on an existing PR branch in this reposi
    - **Failures absent from the baseline → attributable to this change.** These are yours; fix them in the next step.
    - **Reconciling disagreeing gates:** a green `{{CHECK_COMMAND}}` with a red `{{TEST_COMMAND}}` clears you to proceed **only** when every red test is baseline-only. If any failing test is _not_ present on the baseline, `{{CHECK_COMMAND}}` passing does not excuse it — fix that test.
 4. **Fix** — make the smallest correct change that resolves the failures **attributable to this change** (those not present on the baseline).
-5. **Verify** — re-run `{{CHECK_COMMAND}}` and `{{TEST_COMMAND}}` and fix any remaining failures that are not baseline-only.
+5. **Verify** — re-run `{{CHECK_COMMAND}}` and `{{TEST_COMMAND}}` and fix any remaining failures that are not baseline-only. After your final run of each, write its result to `{{VERIFICATION_RESULT_FILE}}` as a JSON array, one entry per command you ran: `[{"command": "<command>", "exitCode": <its exit code>, "output": "<tail of combined stdout/stderr, if useful>"}, ...]`. Do this whether the gate passed or failed.
 6. **Commit** — one or more commits with the `Phoebe:` prefix. Do **not** force-push.
 7. **Push** — `git push origin {{PR_BRANCH}}`.
 8. **Flaky escape hatch** — if the failure does not reproduce locally and looks environmental or flaky, you may instead:
