@@ -205,6 +205,12 @@ export type PhoebeConfig = {
    */
   maxUnitTimeouts: number;
   /**
+   * Consecutive attempts that produce no commit before a PR-keyed unit
+   * (conflicts/checks) is quarantined (#25) — the fails-fast sibling of
+   * `maxUnitTimeouts`. Env-overridable via `PHOEBE_MAX_UNIT_ATTEMPTS`. Default 3.
+   */
+  maxUnitAttempts: number;
+  /**
    * Per-tenant filesystem layout. Not user-supplied: derived from `repoSlug`
    * and the deployment data base by `resolveConfig` (see src/paths.ts, #58/#62).
    */
@@ -252,6 +258,8 @@ export type PhoebeUserConfig = {
   runTimeoutMs?: number;
   /** Consecutive timeouts before a unit is quarantined (#75); default 3. */
   maxUnitTimeouts?: number;
+  /** Consecutive no-commit attempts before a PR-keyed unit is quarantined (#25); default 3. */
+  maxUnitAttempts?: number;
 };
 
 /**
@@ -299,6 +307,8 @@ export const CONFIG_DEFAULTS = {
   runTimeoutMs: 2_700_000,
   // Matches the house number for consecutive-failures-before-escalation (#75).
   maxUnitTimeouts: 3,
+  // Matches the house number for consecutive-no-commit-attempts (#25).
+  maxUnitAttempts: 3,
 } as const;
 
 export const WORK_KIND_NAMES = ["conflicts", "checks", "reviews", "issues", "research"] as const;
@@ -430,6 +440,7 @@ export function resolveConfig(
     providerEnv: { ...CONFIG_DEFAULTS.providerEnv, ...user.providerEnv },
     runTimeoutMs: user.runTimeoutMs ?? CONFIG_DEFAULTS.runTimeoutMs,
     maxUnitTimeouts: user.maxUnitTimeouts ?? CONFIG_DEFAULTS.maxUnitTimeouts,
+    maxUnitAttempts: user.maxUnitAttempts ?? CONFIG_DEFAULTS.maxUnitAttempts,
     paths: derivePaths(user.repoSlug, opts.dataBase),
   };
 }
