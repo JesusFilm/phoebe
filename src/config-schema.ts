@@ -205,6 +205,12 @@ export type PhoebeConfig = {
    */
   maxUnitTimeouts: number;
   /**
+   * How long a `processingLabel` claim's lease may go without a heartbeat
+   * before Phoebe reclaims it back to `readyLabel` (#15). Env-overridable via
+   * `PHOEBE_LEASE_TTL_MS`. Default 30 min.
+   */
+  leaseTtlMs: number;
+  /**
    * Per-tenant filesystem layout. Not user-supplied: derived from `repoSlug`
    * and the deployment data base by `resolveConfig` (see src/paths.ts, #58/#62).
    */
@@ -252,6 +258,8 @@ export type PhoebeUserConfig = {
   runTimeoutMs?: number;
   /** Consecutive timeouts before a unit is quarantined (#75); default 3. */
   maxUnitTimeouts?: number;
+  /** Claim-lease TTL in ms before an orphaned claim is reclaimed (#15); default 30 min. */
+  leaseTtlMs?: number;
 };
 
 /**
@@ -299,6 +307,9 @@ export const CONFIG_DEFAULTS = {
   runTimeoutMs: 2_700_000,
   // Matches the house number for consecutive-failures-before-escalation (#75).
   maxUnitTimeouts: 3,
+  // Comfortably outlasts a single heartbeat interval miss (#15's heartbeat
+  // ticks every ttl/3) while still self-healing an orphaned claim promptly.
+  leaseTtlMs: 1_800_000,
 } as const;
 
 export const WORK_KIND_NAMES = ["conflicts", "checks", "reviews", "issues", "research"] as const;
@@ -430,6 +441,7 @@ export function resolveConfig(
     providerEnv: { ...CONFIG_DEFAULTS.providerEnv, ...user.providerEnv },
     runTimeoutMs: user.runTimeoutMs ?? CONFIG_DEFAULTS.runTimeoutMs,
     maxUnitTimeouts: user.maxUnitTimeouts ?? CONFIG_DEFAULTS.maxUnitTimeouts,
+    leaseTtlMs: user.leaseTtlMs ?? CONFIG_DEFAULTS.leaseTtlMs,
     paths: derivePaths(user.repoSlug, opts.dataBase),
   };
 }

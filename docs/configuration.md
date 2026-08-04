@@ -383,6 +383,7 @@ config-file territory.
 | `PHOEBE_MAX_CONCURRENT_AGENTS` | `1`                  | Fleet-wide cap on concurrently-executing work units across all tenants (the supervisor's FIFO broker). Raise deliberately.                                               |
 | `PHOEBE_RUN_TIMEOUT_MS`        | `2700000` (45 min)   | Whole-unit wall-clock budget; a unit that exceeds it is aborted so it can't hold the concurrency slot forever. Also settable as the `runTimeoutMs` config field.         |
 | `PHOEBE_MAX_UNIT_TIMEOUTS`     | `3`                  | Consecutive per-unit timeouts before the unit is quarantined (`phoebe:quarantined` label + escalation comment). Also the `maxUnitTimeouts` config field.                 |
+| `PHOEBE_LEASE_TTL_MS`          | `1800000` (30 min)   | How long a `processingLabel` claim's lease may go without a heartbeat before it is reclaimed back to `readyLabel`. Also the `leaseTtlMs` config field.                   |
 
 Secrets (`GH_TOKEN` and the active provider's key) are also read from the
 environment — see [`ai-install.md`](ai-install.md) and `.env.example`. In a
