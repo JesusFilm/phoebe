@@ -30,6 +30,15 @@ import {
 } from "./branded.ts";
 import { buildAgentEnv } from "./agent-env.ts";
 import { installDrainSignal, type DrainSignal } from "./drain.ts";
+import { BrokerDisconnectedError, createSlotClient, type SlotClient } from "./slot-client.ts";
+import { RunTimeoutError, resolveRunTimeoutMs, runWithDeadline } from "./run-timeout.ts";
+import {
+  createEmitUnitEvent,
+  STATUS_FILE,
+  type EmitUnitEvent,
+  type UnitRef,
+} from "./unit-event.ts";
+import { join } from "node:path";
 import {
   EXECUTION_REFUSED_MESSAGE,
   executionDecision,
@@ -111,6 +120,11 @@ import {
 } from "./orchestrator.ts";
 
 const DEFAULT_POLL_INTERVAL_MS = 300_000;
+// Whole-unit wall-clock budget (#72): the agent phase — the async, hang-prone
+// step — runs under this deadline, so a hung unit releases its #59 slot within
+// a known ceiling instead of starving the fleet. Env (`PHOEBE_RUN_TIMEOUT_MS`)
+// overrides the config field.
+const RUN_TIMEOUT_MS = resolveRunTimeoutMs(process.env, config.runTimeoutMs);
 // Never let a gh/git child process block the persistent loop forever (rate-limit
 // backoff, credential prompt, network partition). Configured toolchain commands
 // (install/test) get a longer leash.
@@ -581,12 +595,23 @@ async function runAgentInWorktree(opts: {
     provider: provider.name,
     providerEnv: config.providerEnv,
   });
-  const { exitCode } = await runAgent({
-    provider,
-    model,
-    prompt,
-    cwd: opts.worktreeDir,
-    env,
+  // Bound the *agent phase* by the run budget (#72) — the one phase where a hang
+  // is abortable (the agent respects the `AbortSignal`); install/test run via
+  // `execSync` outside this deadline. On expiry the deadline aborts the signal,
+  // `runAgent` kills the child, and a `RunTimeoutError` propagates — caught at
+  // the unit boundary (the daemon logs it, releases the #59 slot in `finally`,
+  // and continues; #75 counts it toward quarantine).
+  const { exitCode } = await runWithDeadline({
+    ms: RUN_TIMEOUT_MS,
+    work: (signal) =>
+      runAgent({
+        provider,
+        model,
+        prompt,
+        cwd: opts.worktreeDir,
+        env,
+        signal,
+      }),
   });
   if (exitCode !== 0) {
     console.log(`[phoebe] Agent exited with code ${exitCode}.`);
@@ -1672,6 +1697,14 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** The observability identity of a picked unit: (kind, id) (#73/#75). */
+function unitRef(picked: WorkUnit): UnitRef {
+  if (picked.kind === "issues" || picked.kind === "research") {
+    return { kind: picked.kind, id: String(picked.unit.issue.number) };
+  }
+  return { kind: picked.kind, id: String(picked.unit.prNumber) };
+}
+
 function describeUnit(picked: WorkUnit): string {
   if (picked.kind === "conflicts") {
     const unit = picked.unit;
@@ -1808,10 +1841,34 @@ export async function runEngine(argv: readonly string[] = process.argv.slice(2))
   // config/ref change). Drain gracefully rather than dying mid-unit: finish the
   // unit in flight, start no new one, then return (exit 0). The wait below wakes
   // early on drain so an idle poll-sleep does not stall shutdown.
+  // The supervisor's concurrency broker (#59): when this engine was forked with
+  // an IPC channel, `slotClient` requests a slot per work unit and blocks until
+  // the supervisor grants one. A standalone engine (no channel) gets null here
+  // and runs unbrokered — it is already serialized to one unit.
+  const slotClient = createSlotClient({
+    send: process.send?.bind(process),
+    on: (event, listener) => {
+      process.on(event, listener);
+    },
+    off: (event, listener) => {
+      process.off(event, listener);
+    },
+    connected: process.connected,
+  });
+
+  // Per-repo observability (#73): one tagged `[phoebe:<slug>]` line per unit
+  // event + a `status.json` snapshot in this tenant's state dir, which
+  // `phoebe list` reads. The emitter swallows snapshot-write failures, so it is
+  // harmless on the host (where the derived state dir may be unwritable).
+  const emitUnitEvent = createEmitUnitEvent({
+    tenant: config.repoSlug,
+    statusPath: join(config.paths.stateDir, STATUS_FILE),
+  });
+
   const drain = installDrainSignal();
   let failed = false;
   try {
-    await runLoop({ runOnce, dryRun, pollIntervalMs, drain, status });
+    await runLoop({ runOnce, dryRun, pollIntervalMs, drain, status, slotClient, emitUnitEvent });
   } catch (error) {
     failed = true;
     status.record({ kind: "engine-failed", error });
@@ -1828,12 +1885,16 @@ async function runLoop({
   pollIntervalMs,
   drain,
   status,
+  slotClient,
+  emitUnitEvent,
 }: {
   runOnce: boolean;
   dryRun: boolean;
   pollIntervalMs: number;
   drain: DrainSignal;
   status: ReturnType<typeof createRuntimeStatusReporter>;
+  slotClient: SlotClient | null;
+  emitUnitEvent: EmitUnitEvent;
 }): Promise<void> {
   while (true) {
     if (drain.requested) {
@@ -1904,7 +1965,28 @@ async function runLoop({
       process.exit(1);
     }
 
+    // Acquire a concurrency slot for the whole unit execution (#59): the
+    // supervisor's global cap bounds how many repos run a unit at once. Held
+    // through worktree + install + agent + test + push, released in `finally`
+    // so timeout, error, and normal completion share one leak-free release
+    // path (#72). Standalone (unbrokered) engines skip this entirely.
+    if (slotClient) {
+      try {
+        await slotClient.acquire();
+      } catch (error) {
+        if (error instanceof BrokerDisconnectedError) {
+          // The supervisor's channel closed while we waited for a slot. Stop
+          // rather than run unbrokered (which, across a fleet, would bypass the
+          // global cap); the supervisor is gone or will respawn us afresh.
+          console.error(`[phoebe] ${error.message} — stopping this engine.`);
+          break;
+        }
+        throw error;
+      }
+    }
+    const ref = unitRef(picked);
     status.record({ kind: "work-started", work: statusWork(picked) });
+    emitUnitEvent({ unit: ref, event: "started" });
     try {
       const agentExitCode = await KINDS[picked.kind].runUnit(picked.unit, {
         stack: { issueBodies: data.issueBodies, blockerStates: data.blockerStates },
@@ -1935,8 +2017,28 @@ async function runLoop({
               }),
         });
       }
+      emitUnitEvent({ unit: ref, event: "completed" });
     } catch (error) {
       status.record({ kind: "work-failed", error });
+      if (error instanceof RunTimeoutError) {
+        // A whole-unit timeout (#72): the agent was killed, the slot releases in
+        // `finally`, and the engine survives (never told to the supervisor, #60
+        // orthogonality). #75 layers the poison-unit quarantine on this event.
+        emitUnitEvent({
+          unit: ref,
+          event: "timed-out",
+          detail: `${Math.round(error.elapsedMs / 1000)}s budget exceeded`,
+        });
+      } else {
+        // A non-timeout failure: clear the current unit and record the error so
+        // `phoebe list` shows it (the durable record is still the per-work-kind
+        // watermark/failure-comment on GitHub; this is the at-a-glance snapshot).
+        emitUnitEvent({
+          unit: ref,
+          event: "failed",
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      }
       if (runOnce) {
         throw error;
       }
@@ -1947,6 +2049,8 @@ async function runLoop({
       );
       await drain.wait(pollIntervalMs);
       continue;
+    } finally {
+      slotClient?.release();
     }
 
     if (runOnce) break;

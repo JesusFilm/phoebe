@@ -18,10 +18,10 @@
 #   * Your agent provider's CLI.
 #
 # What lives on named volumes (see compose.yml):
-#   * /data/repo       — Phoebe's private clone of the target repo.
-#   * /data/worktrees  — Per-work-unit git worktrees.
-#   * /data/state      — Lock, watermarks, logs, crash-loop record.
-#   * /data/engine     — Engine checkouts, so a restart fetches instead of cloning.
+#   * /data/repos   — All tenant data, nested per repo as
+#                     /data/repos/<owner>/<repo>/{repo,worktrees,state}.
+#   * /data/engine  — The shared engine checkout + crash-loop record, so a
+#                     restart fetches instead of cloning.
 #
 # The workload runs as the unprivileged `phoebe` user, not root — see the
 # privilege-drop block below for the two things that constrains.
@@ -53,13 +53,15 @@ RUN apt-get update \
 # from the workload — e.g. `RUN gh extension install github/gh-stack`.
 
 # The unprivileged user everything below the privilege drop runs as, and the
-# four volume mount points, created *now* while we are still root.
+# two volume mount points, created *now* while we are still root.
 #
 # The ordering matters and is not cosmetic: Docker seeds a **fresh named volume
-# from the image's contents at that path, ownership included**. If /data/repo
+# from the image's contents at that path, ownership included**. If /data/repos
 # does not exist in the image, Docker creates the mount point as root:root and
 # the first `git clone` fails with EACCES. Creating and chowning them here is
-# what makes the volumes writable after the drop.
+# what makes the volumes writable after the drop — and because the whole
+# /data/repos tree is then phoebe-owned, the engine's runtime
+# `mkdir -p /data/repos/<owner>/<repo>/{repo,worktrees,state}` nests freely.
 #
 # (`node:24` already ships a uid-1000 `node` user. We add our own so the name
 # in `ps`, in log output, and on the volumes says what it is, and so the uid is
@@ -68,7 +70,7 @@ RUN apt-get update \
 # lives on named volumes, which take their ownership from this image, not from
 # any host uid. Change it here if you have a reason to.)
 RUN useradd --create-home --shell /bin/bash --uid 10001 --user-group phoebe \
- && mkdir -p /data/repo /data/worktrees /data/state /data/engine \
+ && mkdir -p /data/repos /data/engine \
  && chown -R phoebe:phoebe /data
 
 # The bootstrapper. Unpinned on purpose: which *engine* you run is `engine.ref`
@@ -116,6 +118,7 @@ RUN set -eux; \
     echo "${cursor_sha}  /tmp/cursor-agent.tar.gz" | sha256sum -c -; \
     mkdir -p /opt/cursor-agent; \
     tar --strip-components=1 -xzf /tmp/cursor-agent.tar.gz -C /opt/cursor-agent; \
+    chmod 0711 /opt/cursor-agent/cursor-agent; \
     rm /tmp/cursor-agent.tar.gz; \
     ln -s /opt/cursor-agent/cursor-agent /usr/local/bin/agent; \
     ln -s /opt/cursor-agent/cursor-agent /usr/local/bin/cursor-agent

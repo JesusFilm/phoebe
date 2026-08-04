@@ -49,7 +49,6 @@ const CONFIG_FIELDS = [
   "defaultProvider",
   "defaultModels",
   "providerEnv",
-  "paths",
 ] as const satisfies readonly (keyof PhoebeUserConfig)[];
 
 const BASE_CONFIG_FIELDS = CONFIG_FIELDS.filter(
@@ -72,7 +71,6 @@ const NESTED_STRING_FIELDS = {
   promptFiles: ["issue", "conflict", "checks", "reviews", "research"],
   defaultModels: [...PROVIDER_NAMES],
   providerEnv: [...PROVIDER_NAMES],
-  paths: ["repoDir", "worktreesDir", "stateDir"],
 } as const;
 
 export type PhoebeBaseConfig = Partial<
@@ -342,6 +340,7 @@ export function resolveLayeredConfiguration(input: {
   repository: PhoebeUserConfig;
   base?: PhoebeBaseConfig;
   env?: NodeJS.ProcessEnv;
+  dataBase?: string;
 }): ResolvedConfiguration {
   try {
     validateUserConfig(input.repository);
@@ -359,7 +358,7 @@ export function resolveLayeredConfiguration(input: {
     input.repository as unknown as JsonRecord,
   ) as PhoebeUserConfig;
   const overlaid = applyEnvOverlay(merged, input.env ?? {});
-  const config = resolveConfig(overlaid);
+  const config = resolveConfig(overlaid, { dataBase: input.dataBase });
   validateWorkOrder(config.workOrder);
   return {
     config,
@@ -370,12 +369,12 @@ export function resolveLayeredConfiguration(input: {
 /** Load both authored layers and resolve them through the shared contract. */
 export async function loadResolvedConfiguration(
   repositoryPath: string,
-  options: { env?: NodeJS.ProcessEnv; reloadKey?: string } = {},
+  options: { env?: NodeJS.ProcessEnv; reloadKey?: string; dataBase?: string } = {},
 ): Promise<ResolvedConfiguration> {
   const env = options.env ?? process.env;
   const repository = await loadUserConfig(repositoryPath, { reloadKey: options.reloadKey });
   const base = loadBaseConfig(env);
-  return resolveLayeredConfiguration({ repository, base, env });
+  return resolveLayeredConfiguration({ repository, base, env, dataBase: options.dataBase });
 }
 
 /**

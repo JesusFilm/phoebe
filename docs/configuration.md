@@ -115,7 +115,7 @@ and non-empty; the engine throws at startup otherwise.
 | `testCommand`    | string | Test gate; surfaced to prompts as `{{TEST_COMMAND}}`.         |
 
 Everything below is optional — override a field only when the default does not
-fit. Nested objects (`promptFiles`, `paths`, `defaultModels`, `providerEnv`)
+fit. Nested objects (`promptFiles`, `defaultModels`, `providerEnv`)
 are **merged key-by-key**, so overriding one provider's model or one prompt file
 does not force you to supply the rest.
 
@@ -192,16 +192,48 @@ tickets. Omit `research` to disable it for a repo. See
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `promptFiles` | `{ issue: "prompts/issues-prompt.md", conflict: "prompts/conflict-prompt.md", checks: "prompts/checks-prompt.md", reviews: "prompts/reviews-prompt.md", research: "prompts/research-prompt.md" }` | Prompt template paths, relative to the **runtime root** (process working directory — the consumer checkout on the host, or `/etc/phoebe` in the container where compose mounts `phoebe.config.ts` and `prompts/`). Resolved only from that base, never from the installed package. `phoebe init` copies the shipped defaults into `prompts/`; edit them to override, or point a key at another runtime-root-relative path. |
 
-## Container paths
+## Container paths (derived, not configured)
 
-| Field                | Default             | Meaning                                                                                      |
-| -------------------- | ------------------- | -------------------------------------------------------------------------------------------- |
-| `paths.repoDir`      | `"/data/repo"`      | The private clone (origin hub).                                                              |
-| `paths.worktreesDir` | `"/data/worktrees"` | Per-unit git worktrees.                                                                      |
-| `paths.stateDir`     | `"/data/state"`     | Lock, watermarks, logs, and the bootstrapper's crash-loop record (`engine-crash-loop.json`). |
+`paths` is **no longer a config field** — it is derived from `repoSlug`, so a
+tenant's on-disk layout can never drift from its identity. Every tenant nests
+under one slug-keyed root on the `phoebe-data` volume:
 
-These map to the named volumes in `compose.yml` — see
+| Derived path                           | Holds                                                                                                                                    |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `/data/repos/<owner>/<repo>/repo`      | The private clone (origin hub).                                                                                                          |
+| `/data/repos/<owner>/<repo>/worktrees` | Per-unit git worktrees.                                                                                                                  |
+| `/data/repos/<owner>/<repo>/state`     | Per-tenant state — the supervisor's `status.json`.                                                                                       |
+| `/data/engine`                         | The **shared** engine checkout + the crash-loop record (`engine-crash-loop.json`), deployment-global, on its own `phoebe-engine` volume. |
+
+The base is `/data/repos` in the container; `PHOEBE_DATA_DIR` overrides it for
+host/dev. These map to the two named volumes in `compose.yml` — see
 [`architecture.md`](architecture.md#named-volumes).
+
+## Multiple repos (nested tenants)
+
+A deployment is **flat** (one repo, config in place) or **nested** (many repos),
+selected by the presence of a `repos/` directory beside the top config:
+
+```text
+# Flat (phoebe init):            # Nested (after phoebe add-repo):
+.phoebe/                         .phoebe/
+  phoebe.config.ts   ← the repo    phoebe.config.ts   ← SHARED ONLY: engine source + global knobs
+  .env                             repos/<owner>/<repo>/
+  prompts/?                          phoebe.config.ts ← per-tenant (no engine field)
+  container/                         .env             ← per-tenant secrets (co-located, 1:1)
+                                     prompts/?        ← optional per-tenant overrides
+                                   container/
+```
+
+- **Config↔env binding is 1:1 by co-location** — each tenant dir has exactly one
+  `phoebe.config.ts` and one `.env`; the supervisor reads that `.env` and hands
+  the tenant's engine child **only** its own secrets (`buildEngineChildEnv`).
+- **Engine source is shared** across the fleet — set `engine` in the top
+  `phoebe.config.ts` only; a tenant config carrying `engine` is ignored with a
+  warning (one engine version for everyone).
+- **`paths` still derives from each tenant's `repoSlug`**, identically in both
+  modes. Use `phoebe add-repo` / `remove-repo` / `list` / `purge` to manage
+  tenants (see [`operating.md`](operating.md)).
 
 ## Engine source (`engine`)
 
@@ -289,9 +321,11 @@ and the next launch is an ordinary one. If the fallback crashes too the
 quarantine still holds and the container exits — boot has run out of better
 commits, and says so.
 
-The record lives in `paths.stateDir` as `engine-crash-loop.json` (last-good SHA,
-quarantined SHA, crash count), so a quarantine survives the container restart a
-crash-looping engine causes. An unwritable state dir is a warning, not a failure:
+The record lives at `/data/engine/engine-crash-loop.json` (last-good SHA,
+quarantined SHA, crash count) — deployment-global, beside the shared engine
+checkout, since it is about the engine, not any tenant. A quarantine survives the
+container restart a crash-looping engine causes. An unwritable dir is a warning,
+not a failure:
 the guard still works for the life of that container.
 
 The guard is **inert** unless `engine.ref` is a moving branch — a `local` source
@@ -310,7 +344,7 @@ simply never causes a fallback.) Every fallback event is logged with both SHAs
 `phoebe.config.ts` (`src/load-config.ts`). The overlay is additive: an unset
 var leaves the field untouched, so `resolveConfig` can still fall back to a
 default. Only **scalar** fields are overlayable — nested records
-(`promptFiles`, `paths`, `defaultModels`, `providerEnv`, `workOrder`) stay
+(`promptFiles`, `defaultModels`, `providerEnv`, `workOrder`) stay
 config-file territory.
 
 | Env var                          | Config field            | Notes                                                   |
@@ -345,7 +379,13 @@ config-file territory.
 | `PHOEBE_RECONCILE_INTERVAL_MS` | `60000`              | How often `phoebe boot` polls the mounted config and the tracked ref for a drain-and-relaunch (see Engine source → Reconcile).                                           |
 | `PHOEBE_BASE_CONFIG`           | —                    | Absolute path to the optional versioned generated base configuration. Resolved below the repository declaration and watched by `phoebe boot`.                            |
 | `PHOEBE_BASE`                  | —                    | Force the worktree base ref for issues (bypasses blocker resolution).                                                                                                    |
+| `PHOEBE_DATA_DIR`              | `/data/repos`        | Base dir for derived tenant paths (host/dev override). Each tenant nests under `<base>/<owner>/<repo>/`.                                                                 |
+| `PHOEBE_MAX_CONCURRENT_AGENTS` | `1`                  | Fleet-wide cap on concurrently-executing work units across all tenants (the supervisor's FIFO broker). Raise deliberately.                                               |
+| `PHOEBE_RUN_TIMEOUT_MS`        | `2700000` (45 min)   | Whole-unit wall-clock budget; a unit that exceeds it is aborted so it can't hold the concurrency slot forever. Also settable as the `runTimeoutMs` config field.         |
+| `PHOEBE_MAX_UNIT_TIMEOUTS`     | `3`                  | Consecutive per-unit timeouts before the unit is quarantined (`phoebe:quarantined` label + escalation comment). Also the `maxUnitTimeouts` config field.                 |
 
 Secrets (`GH_TOKEN` and the active provider's key) are also read from the
-environment — see [`ai-install.md`](ai-install.md) and `.env.example`.
+environment — see [`ai-install.md`](ai-install.md) and `.env.example`. In a
+nested deployment each tenant's secrets live in its own co-located `.env`, read
+by the supervisor and scrubbed so a tenant's engine child sees only its own.
 </content>

@@ -15,8 +15,10 @@ import {
   LOCAL_ENGINE_DIR,
   observerEngineEnv,
   resolveEngineEntry,
+  setupGitCredentials,
 } from "./boot.ts";
 import { deploymentConfigFingerprint } from "./reconcile.ts";
+import { derivePaths } from "../src/paths.ts";
 
 describe("resolveEngineEntry", () => {
   test("a local source execs the engine CLI under the mounted dir", () => {
@@ -93,7 +95,6 @@ describe("bootstrapper/engine configuration parity", () => {
           installCommand: "npm ci",
           checkCommand: "npm run check",
           testCommand: "npm test",
-          paths: { repoDir: "/repository/clone" },
           engine: { source: "github", ref: "repository-ref" }
         };\n`,
       );
@@ -103,7 +104,6 @@ describe("bootstrapper/engine configuration parity", () => {
           schemaVersion: 1,
           config: {
             branchPrefix: "managed/",
-            paths: { stateDir: "/managed/state" },
             engine: { source: "github", repo: "acme/phoebe", ref: "base-ref" },
           },
         })}\n`,
@@ -124,11 +124,9 @@ describe("bootstrapper/engine configuration parity", () => {
         ref: "repository-ref",
       });
       expect(resolved.config.branchPrefix).toBe("environment/");
-      expect(resolved.config.paths).toEqual({
-        repoDir: "/repository/clone",
-        worktreesDir: "/data/worktrees",
-        stateDir: "/managed/state",
-      });
+      // paths is never layerable (#58): it is always derived from repoSlug +
+      // the deployment data base, so tenant paths can never collide.
+      expect(resolved.config.paths).toEqual(derivePaths("acme/widget"));
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -149,7 +147,7 @@ describe("observerEngineEnv", () => {
       PHOEBE_RUNNING_ENGINE_REF: "main",
       PHOEBE_RUNNING_ENGINE_SHA: "last-good-sha",
       PHOEBE_QUARANTINED_ENGINE_SHA: "bad-sha",
-      PHOEBE_BOOTSTRAP_VERSION: "0.1.0",
+      PHOEBE_BOOTSTRAP_VERSION: "0.1.1",
     });
   });
 });
@@ -202,5 +200,44 @@ describe("isMovingBranch", () => {
         throw new Error("could not resolve host github.com");
       }),
     ).toBe(false);
+  });
+});
+
+// --- GH_TOKEN → git credential helper at boot --------------------------------
+
+describe("setupGitCredentials", () => {
+  test("runs when token present", () => {
+    const calls: string[][] = [];
+    setupGitCredentials({
+      token: "ghs_test",
+      gh: (args) => {
+        calls.push([...args]);
+      },
+    });
+    expect(calls).toEqual([["auth", "setup-git", "--hostname", "github.com"]]);
+  });
+
+  test("skips when absent", () => {
+    const calls: string[][] = [];
+    setupGitCredentials({
+      token: undefined,
+      gh: (args) => {
+        calls.push([...args]);
+      },
+    });
+    expect(calls).toEqual([]);
+  });
+
+  test("warns on failure", () => {
+    const warnings: string[] = [];
+    setupGitCredentials({
+      token: "ghs_test",
+      gh: () => {
+        throw new Error("gh not found");
+      },
+      warn: (message) => warnings.push(message),
+    });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/could not configure git credentials.*gh not found/);
   });
 });

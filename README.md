@@ -61,9 +61,15 @@ docker compose --env-file ../.env up -d                                  # start
 
 The container's main process is `phoebe boot`: it checks the engine out at the
 ref your config names, runs it, and keeps supervising it. Upgrading is an edit to
-`engine.ref` — no rebuild, no restart, provided you edit the file in place (the
-config is bind-mounted as a single file, so a save-by-rename needs a
-`docker compose up -d --force-recreate` to be seen).
+`engine.ref` — no rebuild, no restart. (The deployment dir is bind-mounted as a
+directory, so an in-place edit or a `git pull` is picked up on the next poll.)
+
+**Multiple repos in one container.** You don't need one Phoebe per repo — run
+`phoebe add-repo <owner/repo>` per repo and the same container supervises each as
+a tenant (`repos/<owner>/<repo>/`), with a fleet-wide concurrency cap. Read
+[`docs/trust.md`](docs/trust.md) first: co-locating repos means co-locating them
+in one trust domain. See [`docs/configuration.md`](docs/configuration.md) and
+[`docs/operating.md`](docs/operating.md).
 
 The full, execute-top-to-bottom version — prerequisites, secrets, verification —
 is [`docs/ai-install.md`](docs/ai-install.md).

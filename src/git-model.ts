@@ -23,12 +23,45 @@ export const defaultGit: GitRunner = (args, opts) =>
     ...(opts?.timeout ? { timeout: opts.timeout } : {}),
   }) as unknown as string;
 
-/** Clone the repo into `repoDir` unless a clone already exists there. */
+/**
+ * Clone the repo into `repoDir` unless a clone already exists there.
+ *
+ * An existing clone is only adopted if its `origin` actually points at
+ * `repoUrl`. Each tenant's `/data/repos/<owner>/<repo>/repo` dir is supposed to
+ * be that tenant's private clone, but two Phoebe containers on one host can end
+ * up sharing the `phoebe-data` volume (a compose project-name collision
+ * namespaces the "private" volumes identically). Adopting
+ * a foreign clone by mere presence of `.git` would silently run every worktree,
+ * branch, and push against the wrong repo while `gh` calls still used this
+ * instance's `repoSlug` — reading one repo's issues and doing the work on
+ * another's tree. So a mismatch fails loudly instead: isolate the instances (see
+ * `COMPOSE_PROJECT_NAME`) or wipe the shared volume.
+ */
 export function ensureClone(
   opts: { repoUrl: string; repoDir: string },
   git: GitRunner = defaultGit,
 ): void {
-  if (existsSync(join(opts.repoDir, ".git"))) return;
+  if (existsSync(join(opts.repoDir, ".git"))) {
+    // `git config --get` exits non-zero when the key is unset, which `defaultGit`
+    // surfaces as a throw. An unreadable origin is not the configured `repoUrl`,
+    // so treat it as an absent origin and fall through to the refusal below —
+    // reaching the explicit `<none>` message rather than a raw `Command failed`.
+    let origin = "";
+    try {
+      origin = git(["config", "--get", "remote.origin.url"], { cwd: opts.repoDir }).trim();
+    } catch {
+      origin = "";
+    }
+    if (origin !== opts.repoUrl) {
+      throw new Error(
+        `Existing clone at ${opts.repoDir} has origin \`${origin || "<none>"}\`, but this ` +
+          `Phoebe is configured for \`${opts.repoUrl}\`. Refusing to work a foreign clone — the ` +
+          `state volume is shared with another instance. Give each instance a distinct compose ` +
+          `project (COMPOSE_PROJECT_NAME), or wipe this volume, then retry.`,
+      );
+    }
+    return;
+  }
   mkdirSync(opts.repoDir, { recursive: true });
   git(["clone", opts.repoUrl, opts.repoDir], { stdio: "inherit" });
 }

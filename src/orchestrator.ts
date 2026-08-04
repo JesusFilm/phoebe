@@ -4,6 +4,7 @@
 import { asBranchRef, asSha, type BranchRef, type PrNumber, type Sha } from "./branded.ts";
 import type { BlockerSource, StackMode, WorkKindName } from "./config-schema.ts";
 import { config } from "./resolved-config.ts";
+import { PHOEBE_QUARANTINE_LABEL } from "./quarantine.ts";
 
 export {
   validateWorkOrder,
@@ -176,7 +177,10 @@ export function selectIssue(
   phoebeBase?: string,
   nativeBlockersByIssue: NativeBlockerMap = new Map(),
 ): { issue: Issue; resolution: BaseResolution } | null {
-  const sorted = [...issues].sort(compareIssues);
+  // Quarantined issues/research tickets (#75) are skipped for work until a human
+  // clears the label or the issue is edited (the auto-un-stick sweep).
+  const eligible = issues.filter((issue) => !issue.labels.includes(PHOEBE_QUARANTINE_LABEL));
+  const sorted = [...eligible].sort(compareIssues);
   for (const issue of sorted) {
     const resolution = resolveWorktreeBase(
       issue,
@@ -386,6 +390,12 @@ export function isPrInScope(
     return false;
   }
   if (pr.labels.includes(scopeConfig.prOptOutLabel)) {
+    return false;
+  }
+  // Poison-unit quarantine (#75): a unit that timed out K times is labelled and
+  // skipped for *work* (still inspected for auto-un-stick elsewhere). Reuses the
+  // existing opt-out filter mechanism; the label is a Phoebe-owned constant.
+  if (pr.labels.includes(PHOEBE_QUARANTINE_LABEL)) {
     return false;
   }
   if (

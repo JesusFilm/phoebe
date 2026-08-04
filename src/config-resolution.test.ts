@@ -10,6 +10,7 @@ import {
   resolveLayeredConfiguration,
 } from "./config-resolution.ts";
 import { applyEnvOverlay } from "./load-config.ts";
+import { derivePaths } from "./paths.ts";
 
 function repositoryConfig(overrides: Partial<PhoebeUserConfig> = {}): PhoebeUserConfig {
   return {
@@ -52,14 +53,12 @@ describe("resolveLayeredConfiguration", () => {
           issue: "base/issue.md",
           checks: "base/checks.md",
         },
-        paths: { stateDir: "/base/state" },
         workOrder: ["research", "issues"],
         engine: { source: "github", repo: "acme/engine", ref: "base" },
       },
       repository: repositoryConfig({
         branchPrefix: "repo/",
         promptFiles: { issue: "repo/issue.md" },
-        paths: { repoDir: "/repo/clone" },
         workOrder: ["checks"],
         engine: { source: "github", ref: "repo" },
       }),
@@ -73,11 +72,9 @@ describe("resolveLayeredConfiguration", () => {
       issue: "repo/issue.md",
       checks: "base/checks.md",
     });
-    expect(resolved.config.paths).toEqual({
-      ...CONFIG_DEFAULTS.paths,
-      repoDir: "/repo/clone",
-      stateDir: "/base/state",
-    });
+    // paths is never a layerable field (#58): it is always derived from
+    // repoSlug + the deployment data base, so tenant paths can never collide.
+    expect(resolved.config.paths).toEqual(derivePaths("acme/widget"));
     expect(resolved.config.workOrder).toEqual(["checks"]);
     expect(resolved.engine).toEqual({
       source: "github",
@@ -144,8 +141,15 @@ describe("parseBaseConfigDocument", () => {
     ],
     [
       "unknown nested field",
-      JSON.stringify({ schemaVersion: 1, config: { paths: { surprise: "/tmp" } } }),
-      /(?=.*unknown field)(?=.*config\.paths\.surprise)(?=.*generated-base\.json)/i,
+      JSON.stringify({ schemaVersion: 1, config: { promptFiles: { surprise: "/tmp" } } }),
+      /(?=.*unknown field)(?=.*config\.promptFiles\.surprise)(?=.*generated-base\.json)/i,
+    ],
+    [
+      // paths is never layerable (#58): it is always derived from repoSlug +
+      // the deployment data base, so tenant paths can never collide.
+      "paths field",
+      JSON.stringify({ schemaVersion: 1, config: { paths: { stateDir: "/managed/state" } } }),
+      /(?=.*unknown field)(?=.*config\.paths)(?=.*generated-base\.json)/i,
     ],
     [
       "invalid array",

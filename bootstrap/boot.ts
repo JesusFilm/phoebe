@@ -22,7 +22,8 @@
 // the fallback policy in crash-loop.ts, and everything impure is passed in from
 // here.
 
-import { existsSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { installDrainSignal } from "../src/drain.ts";
@@ -38,14 +39,20 @@ import { resolveConfigPath } from "../src/load-config.ts";
 import {
   crashLoopStatePath,
   createCrashGuard,
-  DEFAULT_STATE_DIR,
   type CrashGuard,
   type CrashGuardEvent,
   type RunOutcome,
 } from "./crash-loop.ts";
 import type { ResolvedEngineSource } from "./engine-source.ts";
 import { lsRemoteBranchSha, materializeGithubEngine } from "./github-engine.ts";
+import { buildEngineChildEnv, parseDotenv } from "./engine-child-env.ts";
+import { attachBroker } from "./broker-ipc.ts";
+import { createSlotBroker, resolveMaxConcurrent } from "./slot-broker.ts";
+import { discoverTenants, type DiscoveredTenant } from "./tenants.ts";
+import { superviseFleet, type FleetChild } from "./supervise-fleet.ts";
+import { readFileSync } from "node:fs";
 import {
+  configFingerprint,
   deploymentConfigFingerprint,
   superviseEngine,
   CRASH_BACKOFF_MS,
@@ -57,7 +64,7 @@ import {
 } from "./reconcile.ts";
 // Untyped plain-JS import (see spawn-engine.mjs / materialize.mjs for why the
 // bootstrapper's child-process plumbing can't be TypeScript).
-import { propagateExit, spawnEngine } from "./spawn-engine.mjs";
+import { propagateExit, spawnEngine, spawnEngineChild } from "./spawn-engine.mjs";
 
 /** Where the local-engine compose overlay mounts the engine for `source: "local"`. */
 export const LOCAL_ENGINE_DIR = "/opt/phoebe-engine";
@@ -88,6 +95,48 @@ export function assertBaseConfigProtocol(
     throw new Error(
       `Engine at ${engineEntry} does not support PHOEBE_BASE_CONFIG ${baseConfigPath}. ` +
         `Select an engine ref with ${BASE_CONFIG_PROTOCOL_MARKER} schemaVersion 1.`,
+    );
+  }
+}
+
+/**
+ * Runs `gh` with the given argv. Injectable so boot's credential-helper setup is
+ * unit-tested without a real `gh` binary or a writable `~/.gitconfig`.
+ */
+export type GhRunner = (args: readonly string[]) => void;
+
+export const defaultGh: GhRunner = (args) => {
+  execFileSync("gh", args, { stdio: "inherit" });
+};
+
+/**
+ * Configure a global git credential helper from `GH_TOKEN` so every later git
+ * call against github.com authenticates — the engine's `ensureClone` /
+ * `fetchOrigin` / `pushBranch`, and the agent child's own `git push`/`fetch`.
+ *
+ * Uses `gh auth setup-git --hostname github.com`, which writes a
+ * `!gh auth git-credential` helper into `~/.gitconfig`. That helper reads
+ * `GH_TOKEN` live per call, so no secret is written to disk and token rotation
+ * keeps working. Only `github.com` is configured (Phoebe is github-only).
+ *
+ * Skipped when no token is present (public/anonymous path unchanged). A failed
+ * setup warns and continues — a missing helper is better diagnosed at the first
+ * private-repo clone than by aborting the container here.
+ */
+export function setupGitCredentials(deps: {
+  token: string | undefined;
+  gh?: GhRunner;
+  warn?: (message: string) => void;
+}): void {
+  if (!deps.token) return;
+  const gh = deps.gh ?? defaultGh;
+  const warn = deps.warn ?? ((message) => console.warn(message));
+  try {
+    gh(["auth", "setup-git", "--hostname", "github.com"]);
+  } catch (error) {
+    warn(
+      `[phoebe] boot: could not configure git credentials — ${describe(error)}. ` +
+        `Continuing without a credential helper.`,
     );
   }
 }
@@ -138,7 +187,15 @@ function reconcileIntervalMs(): number {
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_RECONCILE_INTERVAL_MS;
 }
 
-/** Shared bootstrapper entry into the same resolver used by the engine CLI. */
+/**
+ * Load the mounted `phoebe.config.ts` as the arbitrary record the bootstrapper
+ * treats it as — it owns only one field (`engine`), and the engine validates the
+ * rest once it is materialized and run. The fingerprint doubles as the ESM
+ * cache-bust key, so a re-read after an edit is genuinely a re-read.
+ *
+ * Exported (not file-private) so the base-config/runtime contract test can
+ * resolve through the same entry point boot itself uses.
+ */
 export function loadBootConfiguration(
   configPath: string,
   env: NodeJS.ProcessEnv,
@@ -326,25 +383,15 @@ function spawnSupervised(
 }
 
 /**
- * The crash-loop guard for this container, rooted at the engine's state dir
- * (`paths.stateDir`, a named volume). Resolved once from the config as it reads
- * at boot: the record has to be found again after the restart a crash-looping
- * engine causes, so where it lives must not drift with a mid-flight config edit.
- * A config that will not load falls back to the shipped default here and fails
- * properly on the first launch, where the error belongs.
+ * The crash-loop guard for this container, rooted at the deployment-global
+ * engine dir (`/data/engine`, the shared `phoebe-engine` volume — #60/#62). One
+ * guard about one engine SHA for the whole fleet; its home is a container
+ * constant (the engine checkout base), not a per-tenant path, so it no longer
+ * depends on loading any config and cannot drift with a mid-flight config edit.
  */
-async function createBootCrashGuard(configPath: string): Promise<CrashGuard> {
-  let stateDir = DEFAULT_STATE_DIR;
-  try {
-    const baseConfigPath = resolveBaseConfigPath(process.env);
-    const fingerprint = deploymentConfigFingerprint(configPath, baseConfigPath);
-    stateDir = (await loadBootConfiguration(configPath, process.env, fingerprint)).config.paths
-      .stateDir;
-  } catch {
-    // launchTarget loads the same config a moment later and reports the failure.
-  }
+function createBootCrashGuard(): CrashGuard {
   return createCrashGuard({
-    statePath: crashLoopStatePath(stateDir),
+    statePath: crashLoopStatePath(engineBaseDir()),
     onEvent: logCrashGuardEvent,
   });
 }
@@ -414,6 +461,114 @@ function runOutcome(run: EngineRun): RunOutcome | null {
 }
 
 /**
+ * Read a tenant's co-located `.env` into a plain record for the #61 env scrub.
+ * A missing/unreadable file is an empty record — the child then holds only the
+ * allowlisted base + deployment knobs (fail-closed), which boot surfaces at the
+ * first private-repo git call rather than here.
+ */
+function readTenantEnv(envPath: string): Record<string, string> {
+  try {
+    return parseDotenv(readFileSync(envPath, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Supervise a nested/multi-tenant deployment (#58/#59/#61): a shared engine
+ * (#60, materialized once by `launchTarget` from the top config's `engine`
+ * field) with one child per tenant, a global concurrency broker across them, and
+ * hot add/remove/change via `superviseFleet`.
+ *
+ * Each child is spawned with an IPC channel + the tenant's scrubbed env (#61)
+ * and cwd (its config dir), and wired to the broker (#59). The crash-loop guard
+ * still applies any existing engine fallback on each (re)launch; feeding the
+ * guard fleet-aggregated crash verdicts (#60 §6) is a follow-up — nested live
+ * validation is deferred to #77.
+ */
+function runNestedFleet(opts: {
+  configDir: string;
+  configPath: string;
+  guard: CrashGuard;
+  stop: ReturnType<typeof installDrainSignal>;
+  intervalMs: number;
+  argv: readonly string[];
+}): Promise<EngineExit> {
+  const broker = createSlotBroker(resolveMaxConcurrent(process.env));
+
+  const spawnFleetChild = (tenant: DiscoveredTenant, engine: LaunchedEngine): FleetChild => {
+    const env = buildEngineChildEnv({
+      base: process.env,
+      tenantEnv: readTenantEnv(tenant.envPath),
+    });
+    let settle!: (exit: EngineExit) => void;
+    const exited = new Promise<EngineExit>((resolve) => {
+      settle = resolve;
+    });
+    const label = tenant.slug ?? tenant.id;
+    const child = spawnEngineChild(engine.entry, opts.argv, {
+      env,
+      cwd: tenant.dir,
+      onExit: (code: number | null, signal: NodeJS.Signals | null) => settle({ code, signal }),
+      onSpawnError: (error: Error) => {
+        console.error(`[phoebe] boot: tenant ${label} failed to spawn — ${error.message}`);
+        settle({ code: 1, signal: null });
+      },
+    });
+    attachBroker({ owner: tenant.id, broker, child });
+    return { kill: (signal) => child.kill(signal), exited };
+  };
+
+  return superviseFleet({
+    launch: () => launchTarget(opts.configPath, opts.guard),
+    discover: () =>
+      discoverTenants(opts.configDir).tenants.map((tenant) => ({
+        tenant,
+        fingerprint: tenantFingerprint(tenant.configPath, tenant.envPath),
+      })),
+    spawn: spawnFleetChild,
+    stop: opts.stop,
+    intervalMs: opts.intervalMs,
+    onEngineChange: (reason) =>
+      console.log(
+        reason === "config"
+          ? "[phoebe] boot: shared config changed — draining the fleet and relaunching every tenant."
+          : "[phoebe] boot: tracked engine ref advanced — draining the fleet and relaunching every tenant.",
+      ),
+    onTenantChange: ({ added, removed, changed }) =>
+      console.log(
+        `[phoebe] boot: tenant reconcile — +${added.length} added, -${removed.length} removed, ` +
+          `~${changed.length} relaunched (no container restart).`,
+      ),
+    onChildExit: ({ tenantId, exit }) =>
+      console.error(
+        `[phoebe] boot: tenant ${tenantId} exited (${exit.code ?? exit.signal}) — ` +
+          `respawning with backoff (per-tenant supervision; the shared engine is untouched).`,
+      ),
+    onLaunchError: (error) =>
+      console.error(`[phoebe] boot: fleet (re)launch failed — ${describe(error)}. Retrying.`),
+    onDiscoverError: (error) =>
+      console.warn(
+        `[phoebe] boot: tenant discovery failed — ${describe(error)}. ` +
+          `Skipping the tenant axis this poll (the running fleet is left intact).`,
+      ),
+  });
+}
+
+/**
+ * One tenant's reconcile fingerprint: its config *and* its co-located `.env`,
+ * so a secrets-only edit relaunches the child (the env scrub reads `.env` at
+ * spawn, #61). A null config fingerprint stays null — "unknown", never a change
+ * (`diffFleet`) — so a mid-rewrite config does not churn the child; a present
+ * config with an absent `.env` is a stable `"<config>:"`.
+ */
+function tenantFingerprint(configPath: string, envPath: string): string | null {
+  const config = configFingerprint(configPath);
+  if (config === null) return null;
+  return `${config}:${configFingerprint(envPath) ?? ""}`;
+}
+
+/**
  * `phoebe boot` entry. Loads the mounted config, resolves the engine source to a
  * runnable `src/cli.ts` — a local mount or a github checkout — execs the engine
  * as a long-lived child, and supervises it: reconcile relaunches on a config or
@@ -423,8 +578,14 @@ function runOutcome(run: EngineRun): RunOutcome | null {
  * persistent loop).
  */
 export async function runBoot(argv: readonly string[]): Promise<void> {
-  const configPath = resolveConfigPath(undefined, process.cwd());
-  const guard = await createBootCrashGuard(configPath);
+  // Before any engine git call (ensureClone, fetch/push, agent child): one
+  // global github.com credential helper from GH_TOKEN. Survives reconcile
+  // relaunches via ~/.gitconfig + the agent-env HOME/GH_TOKEN allowlist.
+  setupGitCredentials({ token: process.env["GH_TOKEN"] });
+
+  const configDir = process.cwd();
+  const configPath = resolveConfigPath(undefined, configDir);
+  const guard = createBootCrashGuard();
   const intervalMs = reconcileIntervalMs();
 
   // The container's stop request. A one-way latch, and the poll clock: a
@@ -433,6 +594,26 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   // between an engine exiting and its replacement spawning, where the child's
   // own forwarders are not installed.
   const stop = installDrainSignal(process, ["SIGTERM", "SIGINT"]);
+
+  // A `repos/` dir beside the top config selects nested/multi-tenant mode (#63):
+  // supervise a shared engine with one child per tenant. Absent → the flat
+  // single-tenant fast-path below, unchanged: one engine child, no scanning.
+  const discovery = discoverTenants(configDir);
+  if (discovery.mode === "nested") {
+    console.log(
+      `[phoebe] boot: nested deployment — supervising ${discovery.tenants.length} tenant(s) ` +
+        `on one shared engine.`,
+    );
+    let fleetExit: EngineExit;
+    try {
+      fleetExit = await runNestedFleet({ configDir, configPath, guard, stop, intervalMs, argv });
+    } finally {
+      stop.dispose();
+    }
+    propagateExit(fleetExit.code, fleetExit.signal);
+    return;
+  }
+
   let exit: EngineExit;
   try {
     exit = await superviseEngine({

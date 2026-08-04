@@ -64,7 +64,9 @@ export type PlannedOutput = {
     | { kind: "gitignore"; entries: readonly string[] };
 };
 
-const GITIGNORE_ENTRIES = [".env", "node_modules/"] as const;
+// `.env` (flat/deployment secrets) and every per-tenant `repos/<owner>/<repo>/.env`
+// (#63) must never be committed; `node_modules/` for the scaffolded toolchain.
+const GITIGNORE_ENTRIES = [".env", "repos/**/.env", "node_modules/"] as const;
 
 /**
  * Enumerate every file init will produce. The prompt list is derived from
@@ -285,6 +287,29 @@ export function runInit(opts: RunInitOptions): InitReport {
   }
 
   return report;
+}
+
+/**
+ * Copy the shipped default prompts into a `prompts/` dir (for
+ * `add-repo --with-prompts`, #63). Each shipped `prompts/<name>.md` lands as
+ * `<promptsDir>/<name>.md`, where the engine resolves a tenant's override from
+ * its cwd. Returns the written paths. Reuses the same package-resource resolver
+ * as `runInit`, so an installed dep still finds the shipped prompts.
+ */
+export function copyShippedPromptsInto(
+  promptsDir: string,
+  opts: { packageRoot?: string; moduleDir?: string } = {},
+): string[] {
+  const moduleDir = opts.moduleDir ?? dirname(fileURLToPath(import.meta.url));
+  mkdirSync(promptsDir, { recursive: true });
+  const written: string[] = [];
+  for (const relPath of Object.values(CONFIG_DEFAULTS.promptFiles)) {
+    const content = readShippedFile(relPath, opts.packageRoot, moduleDir);
+    const dest = join(promptsDir, basename(relPath));
+    writeFileSync(dest, content);
+    written.push(dest);
+  }
+  return written;
 }
 
 /** Human-readable summary suitable for the CLI to stdout after init runs. */
