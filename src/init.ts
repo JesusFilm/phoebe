@@ -1,10 +1,14 @@
 // `phoebe init` scaffolder. Given a target directory, drops the consumer-owned
-// runtime into place: `phoebe.config.ts`, a `prompts/` dir with copies of the
-// shipped defaults (edit-and-commit), `.env.example`, `.gitignore` entries,
-// and the `container/` templates (Dockerfile, compose, and a dev-only overlay
-// for running a local engine checkout). Re-runs are guarded — an existing file
-// is skipped, not silently overwritten, so consumer edits are safe.
+// runtime into place. Three profiles share this module:
 //
+//   flat (default)   Full single-tenant runtime: config (five required fields
+//                    + engine), prompts/, .env.example, container/, gitignore.
+//   workspace (#93)  Bootable workspace *root*: engine + workspace block,
+//                    deployment .env.example, container/ (incl. mount docs),
+//                    gitignore. No child files, no prompts/.
+//   tenant (#94)     In-tree child install — implemented on that ticket.
+//
+// Re-runs are guarded — an existing file is skipped, not silently overwritten.
 // The plan/render split keeps the pure logic (what files, what placeholders)
 // separately testable from the fs I/O in `runInit`.
 
@@ -12,6 +16,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CONFIG_DEFAULTS } from "./config-schema.ts";
+
+/** Init scaffold profile — which file set lands under the target dir. */
+export type InitProfile = "flat" | "workspace" | "tenant";
 
 /** Placeholder tokens rendered into every scaffolded file. */
 export type TemplateParams = {
@@ -44,16 +51,68 @@ export type PlannedOutput = {
     | { kind: "gitignore"; entries: readonly string[] };
 };
 
-// `.env` (flat/deployment secrets) and every per-tenant `repos/<owner>/<repo>/.env`
+// Flat gitignore: deployment `.env`, every per-tenant `repos/<owner>/<repo>/.env`
 // (#63) must never be committed; `node_modules/` for the scaffolded toolchain.
-const GITIGNORE_ENTRIES = [".env", "repos/**/.env", "node_modules/"] as const;
+const FLAT_GITIGNORE_ENTRIES = [".env", "repos/**/.env", "node_modules/"] as const;
+
+// Workspace root: only deployment `.env` (children carry their own `.env` and
+// `.gitignore` when scaffolded with `init --tenant`).
+const WORKSPACE_GITIGNORE_ENTRIES = [".env", "node_modules/"] as const;
+
+/** Shared container files scaffolded for flat and workspace roots. */
+function planContainerOutputs(): PlannedOutput[] {
+  return [
+    {
+      destRelPath: "container/Dockerfile",
+      source: { kind: "template", templateRelPath: "container/Dockerfile" },
+    },
+    {
+      destRelPath: "container/compose.yml",
+      source: { kind: "template", templateRelPath: "container/compose.yml" },
+    },
+    {
+      destRelPath: "container/compose.local.yml",
+      source: { kind: "template", templateRelPath: "container/compose.local.yml" },
+    },
+  ];
+}
 
 /**
- * Enumerate every file init will produce. The prompt list is derived from
- * `CONFIG_DEFAULTS.promptFiles` so adding a new prompt kind to the engine
- * automatically gets scaffolded — no drift between the two lists.
+ * Enumerate every file init will produce for a profile. Flat prompts are
+ * derived from `CONFIG_DEFAULTS.promptFiles` so adding a new prompt kind to
+ * the engine automatically gets scaffolded — no drift between the two lists.
  */
-export function planInitOutputs(): PlannedOutput[] {
+export function planInitOutputs(profile: InitProfile = "flat"): PlannedOutput[] {
+  if (profile === "tenant") {
+    throw new Error("`phoebe init --tenant` is not implemented yet (see issue #94).");
+  }
+
+  if (profile === "workspace") {
+    return [
+      {
+        destRelPath: "phoebe.config.ts",
+        source: { kind: "template", templateRelPath: "phoebe.config.workspace.ts" },
+      },
+      {
+        destRelPath: ".env.example",
+        source: { kind: "template", templateRelPath: ".env.example" },
+      },
+      ...planContainerOutputs(),
+      // Mount docs (#87/#93): workspace operators need `.git` on the mount and
+      // materialised submodules before boot. Lives beside the #57 container
+      // templates; not rendered (no placeholders).
+      {
+        destRelPath: "container/README.md",
+        source: { kind: "template", templateRelPath: "container/README.md" },
+      },
+      {
+        destRelPath: ".gitignore",
+        source: { kind: "gitignore", entries: WORKSPACE_GITIGNORE_ENTRIES },
+      },
+    ];
+  }
+
+  // flat — today's single-tenant deployment scaffold
   const promptOutputs: PlannedOutput[] = Object.values(CONFIG_DEFAULTS.promptFiles).map(
     (relPath) => ({
       destRelPath: relPath,
@@ -69,22 +128,11 @@ export function planInitOutputs(): PlannedOutput[] {
       destRelPath: ".env.example",
       source: { kind: "template", templateRelPath: ".env.example" },
     },
-    {
-      destRelPath: "container/Dockerfile",
-      source: { kind: "template", templateRelPath: "container/Dockerfile" },
-    },
-    {
-      destRelPath: "container/compose.yml",
-      source: { kind: "template", templateRelPath: "container/compose.yml" },
-    },
-    {
-      destRelPath: "container/compose.local.yml",
-      source: { kind: "template", templateRelPath: "container/compose.local.yml" },
-    },
+    ...planContainerOutputs(),
     ...promptOutputs,
     {
       destRelPath: ".gitignore",
-      source: { kind: "gitignore", entries: GITIGNORE_ENTRIES },
+      source: { kind: "gitignore", entries: FLAT_GITIGNORE_ENTRIES },
     },
   ];
 }
@@ -177,6 +225,8 @@ function resolvePackageResource(relativePath: string, moduleDir: string): string
 export type RunInitOptions = {
   /** Directory the scaffolded files land under. Created if missing. */
   targetDir: string;
+  /** Scaffold profile (flat | workspace | tenant). Default: flat. */
+  profile?: InitProfile;
   /** Override template params (`installCommand`, `cliBin`). */
   params?: Partial<TemplateParams>;
   /** Root for shipped `templates/` and `prompts/` (test seam). Defaults to
@@ -207,6 +257,7 @@ function readShippedFile(
  */
 export function runInit(opts: RunInitOptions): InitReport {
   const targetDir = resolvePath(opts.targetDir);
+  const profile = opts.profile ?? "flat";
   const params: TemplateParams = { ...DEFAULT_TEMPLATE_PARAMS, ...opts.params };
   const moduleDir = dirname(fileURLToPath(import.meta.url));
 
@@ -214,7 +265,7 @@ export function runInit(opts: RunInitOptions): InitReport {
 
   const report: InitReport = { created: [], updated: [], skipped: [] };
 
-  for (const output of planInitOutputs()) {
+  for (const output of planInitOutputs(profile)) {
     const destAbs = join(targetDir, output.destRelPath);
     mkdirSync(dirname(destAbs), { recursive: true });
 
