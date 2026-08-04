@@ -1,5 +1,5 @@
-// Multi-tenant lifecycle commands (#63) — the CLI surface for a deployment that
-// owns many repos rather than a single scaffold.
+// Multi-tenant lifecycle commands (#63/#95) — the CLI surface for a deployment
+// that owns many repos rather than a single scaffold.
 //
 // Host-side (operate on the bind-mounted config tree):
 //   - `add-repo <owner/repo>`  scaffold repos/<owner>/<repo>/ → transitions the
@@ -9,7 +9,8 @@
 //                              /data/repos/<slug> is retained, #62).
 // In-container (act on the data volume):
 //   - `list`   enumerate tenants + health (config valid? env present? engine
-//              state from status.json? retained /data?).
+//              state from status.json? retained /data?). Nested scans `repos/`;
+//              workspace mode reuses the #91 discover walk over child trees.
 //   - `purge <owner/repo> --yes`  destructive wipe of a *removed* tenant's
 //              retained /data/repos/<slug>; refuses while a live config exists.
 //
@@ -26,8 +27,15 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
-import { REPOS_DIR, TENANT_CONFIG_FILE, TENANT_ENV_FILE } from "../bootstrap/tenants.ts";
+import { join, relative } from "node:path";
+import {
+  discoverWorkspaceTenants,
+  REPOS_DIR,
+  TENANT_CONFIG_FILE,
+  TENANT_ENV_FILE,
+} from "../bootstrap/tenants.ts";
+import { readWorkspaceField } from "../bootstrap/workspace-source.ts";
+import { loadUserConfig } from "./load-config.ts";
 import { readStatus, STATUS_FILE, type StatusSnapshot } from "./unit-event.ts";
 
 /**
@@ -192,9 +200,93 @@ function envPresent(dir: string): boolean {
   return existsSync(join(dir, TENANT_ENV_FILE));
 }
 
-/** Enumerate every nested tenant with its health signals for `phoebe list`. */
-export function listTenants(opts: { configDir: string; dataBase: string }): TenantListing[] {
-  const reposRoot = join(opts.configDir, REPOS_DIR);
+/** Health columns for one tenant dir keyed by its authoritative slug. */
+function listingFor(
+  slug: string,
+  dir: string,
+  dataBase: string,
+  configValid: boolean,
+): TenantListing {
+  const dataDir = join(dataBase, slug);
+  return {
+    slug,
+    configValid,
+    envPresent: envPresent(dir),
+    retainedData: existsSync(dataDir),
+    status: readStatus(join(dataDir, "state", STATUS_FILE)),
+  };
+}
+
+/**
+ * Load a workspace child's authoritative `repoSlug` (same contract boot uses).
+ * Throws when the file will not load or the slug is missing — the discovery
+ * walk then skip-and-warns and holds the dir.
+ */
+async function defaultLoadRepoSlug(configPath: string): Promise<string> {
+  const user = await loadUserConfig(configPath);
+  const slug = user.repoSlug;
+  if (typeof slug !== "string" || slug.trim().length === 0) {
+    throw new Error(`missing or empty repoSlug in ${configPath}`);
+  }
+  return slug.trim();
+}
+
+/**
+ * Resolve the root `workspace: { depth? }` block, if any. A missing / unreadable
+ * root config is not workspace mode (detection ladder falls through to nested /
+ * flat). A present but *malformed* `workspace` field throws — same as boot.
+ */
+async function resolveWorkspaceDepth(configDir: string): Promise<number | null> {
+  const rootConfigPath = join(configDir, TENANT_CONFIG_FILE);
+  if (!existsSync(rootConfigPath)) return null;
+  let root: Record<string, unknown>;
+  try {
+    root = (await loadUserConfig(rootConfigPath)) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  const workspace = readWorkspaceField(root);
+  return workspace?.depth ?? null;
+}
+
+/**
+ * Enumerate workspace-mode children via the same walk ticket 1 / #91 uses
+ * (`discoverWorkspaceTenants`). Valid children surface full health columns;
+ * broken (hold) dirs appear with `configValid: false` so `phoebe list` still
+ * flags them. Nested/flat scanning is unchanged (#95).
+ */
+async function listWorkspaceTenants(opts: {
+  configDir: string;
+  dataBase: string;
+  depth: number;
+  loadRepoSlug?: (configPath: string) => string | Promise<string>;
+}): Promise<TenantListing[]> {
+  const discovery = await discoverWorkspaceTenants(opts.configDir, opts.depth, {
+    loadRepoSlug: opts.loadRepoSlug ?? defaultLoadRepoSlug,
+  });
+  const listings: TenantListing[] = [];
+  for (const tenant of discovery.tenants) {
+    if (tenant.slug === null) continue;
+    listings.push(listingFor(tenant.slug, tenant.dir, opts.dataBase, true));
+  }
+  for (const holdDir of discovery.holdIds) {
+    // No authoritative slug when load/parse failed — show a path-relative id so
+    // the operator can find the broken child; data/status stay dark without a slug.
+    const rel = relative(opts.configDir, holdDir).replace(/\\/g, "/");
+    listings.push({
+      slug: rel.length > 0 ? rel : holdDir,
+      configValid: false,
+      envPresent: envPresent(holdDir),
+      retainedData: false,
+      status: null,
+    });
+  }
+  return listings.sort((a, b) => a.slug.localeCompare(b.slug));
+}
+
+/** Nested-mode scan: every `repos/<owner>/<repo>/` dir with its health signals. */
+function listNestedTenants(configDir: string, dataBase: string): TenantListing[] {
+  const reposRoot = join(configDir, REPOS_DIR);
   const listings: TenantListing[] = [];
   let owners: string[];
   try {
@@ -216,17 +308,35 @@ export function listTenants(opts: { configDir: string; dataBase: string }): Tena
     for (const repo of repos) {
       const slug = `${owner}/${repo}`;
       const dir = join(reposRoot, owner, repo);
-      const dataDir = join(opts.dataBase, slug);
-      listings.push({
-        slug,
-        configValid: existsSync(join(dir, TENANT_CONFIG_FILE)),
-        envPresent: envPresent(dir),
-        retainedData: existsSync(dataDir),
-        status: readStatus(join(dataDir, "state", STATUS_FILE)),
-      });
+      listings.push(listingFor(slug, dir, dataBase, existsSync(join(dir, TENANT_CONFIG_FILE))));
     }
   }
   return listings.sort((a, b) => a.slug.localeCompare(b.slug));
+}
+
+/**
+ * Enumerate tenants with health signals for `phoebe list` (#63/#95).
+ *
+ * Detection ladder matches boot (#83): root config has a `workspace` block →
+ * walk the workspace tree (same walk as #91); else scan `repos/` (nested);
+ * else empty (flat has nothing to list beyond "no tenants").
+ */
+export async function listTenants(opts: {
+  configDir: string;
+  dataBase: string;
+  /** Injectable workspace slug loader (tests); defaults to `loadUserConfig`. */
+  loadRepoSlug?: (configPath: string) => string | Promise<string>;
+}): Promise<TenantListing[]> {
+  const depth = await resolveWorkspaceDepth(opts.configDir);
+  if (depth !== null) {
+    return listWorkspaceTenants({
+      configDir: opts.configDir,
+      dataBase: opts.dataBase,
+      depth,
+      loadRepoSlug: opts.loadRepoSlug,
+    });
+  }
+  return listNestedTenants(opts.configDir, opts.dataBase);
 }
 
 /**
