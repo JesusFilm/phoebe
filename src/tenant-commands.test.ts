@@ -4,7 +4,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
 import {
   addRepo,
@@ -127,14 +127,14 @@ describe("removeRepo", () => {
 });
 
 describe("listTenants", () => {
-  test("reports config/env/retained-data per tenant, sorted", () => {
+  test("reports config/env/retained-data per tenant, sorted", async () => {
     addRepo({ configDir, slug: "acme/widget" });
     addRepo({ configDir, slug: "acme/gadget" });
     // widget has a real .env and retained /data; gadget has neither.
     writeFileSync(join(configDir, "repos", "acme", "widget", ".env"), "GH_TOKEN=x");
     mkdirSync(join(dataBase, "acme", "widget"), { recursive: true });
 
-    const listings = listTenants({ configDir, dataBase });
+    const listings = await listTenants({ configDir, dataBase });
     expect(listings.map((l) => l.slug)).toEqual(["acme/gadget", "acme/widget"]);
     const widget = listings.find((l) => l.slug === "acme/widget")!;
     expect(widget).toMatchObject({ configValid: true, envPresent: true, retainedData: true });
@@ -142,7 +142,7 @@ describe("listTenants", () => {
     expect(gadget).toMatchObject({ envPresent: false, retainedData: false });
   });
 
-  test("reads status.json when present", () => {
+  test("reads status.json when present", async () => {
     addRepo({ configDir, slug: "acme/widget" });
     const stateDir = join(dataBase, "acme", "widget", "state");
     mkdirSync(stateDir, { recursive: true });
@@ -150,12 +150,84 @@ describe("listTenants", () => {
       join(stateDir, "status.json"),
       JSON.stringify({ tenant: "acme/widget", currentUnit: { kind: "issues", id: "5" } }),
     );
-    const [widget] = listTenants({ configDir, dataBase });
+    const [widget] = await listTenants({ configDir, dataBase });
     expect(widget?.status?.currentUnit).toEqual({ kind: "issues", id: "5" });
   });
 
-  test("empty when there is no repos/ dir", () => {
-    expect(listTenants({ configDir, dataBase })).toEqual([]);
+  test("empty when there is no repos/ dir", async () => {
+    expect(await listTenants({ configDir, dataBase })).toEqual([]);
+  });
+
+  test("workspace mode lists valid + broken + env-less children with health columns", async () => {
+    // Root declares workspace mode (#83); children live as siblings of the root
+    // config (not under repos/). Valid child has status + .env; env-less is
+    // config-ok without secrets; broken fails loadRepoSlug → configValid false.
+    writeFileSync(
+      join(configDir, "phoebe.config.ts"),
+      `export default { workspace: { depth: 1 }, engine: { source: "local" } };\n`,
+    );
+    mkdirSync(join(configDir, "valid"), { recursive: true });
+    mkdirSync(join(configDir, "envless"), { recursive: true });
+    mkdirSync(join(configDir, "broken"), { recursive: true });
+    writeFileSync(join(configDir, "valid", "phoebe.config.ts"), "export default {};\n");
+    writeFileSync(join(configDir, "envless", "phoebe.config.ts"), "export default {};\n");
+    writeFileSync(join(configDir, "broken", "phoebe.config.ts"), "export default {};\n");
+    writeFileSync(join(configDir, "valid", ".env"), "GH_TOKEN=x\n");
+    const stateDir = join(dataBase, "acme", "valid", "state");
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(
+      join(stateDir, "status.json"),
+      JSON.stringify({ tenant: "acme/valid", currentUnit: { kind: "issues", id: "9" } }),
+    );
+
+    const listings = await listTenants({
+      configDir,
+      dataBase,
+      loadRepoSlug: (path) => {
+        const child = basename(dirname(path));
+        if (child === "broken") throw new Error("parse failure");
+        if (child === "valid") return "acme/valid";
+        if (child === "envless") return "acme/envless";
+        throw new Error(`unexpected path ${path}`);
+      },
+    });
+
+    expect(listings.map((l) => l.slug)).toEqual(["acme/envless", "acme/valid", "broken"]);
+    expect(listings.find((l) => l.slug === "acme/valid")).toMatchObject({
+      configValid: true,
+      envPresent: true,
+      retainedData: true,
+    });
+    expect(listings.find((l) => l.slug === "acme/valid")?.status?.currentUnit).toEqual({
+      kind: "issues",
+      id: "9",
+    });
+    expect(listings.find((l) => l.slug === "acme/envless")).toMatchObject({
+      configValid: true,
+      envPresent: false,
+      retainedData: false,
+      status: null,
+    });
+    expect(listings.find((l) => l.slug === "broken")).toMatchObject({
+      configValid: false,
+      envPresent: false,
+      retainedData: false,
+      status: null,
+    });
+  });
+
+  test("workspace block wins over a co-present repos/ tree (list ignores nested)", async () => {
+    writeFileSync(join(configDir, "phoebe.config.ts"), `export default { workspace: {} };\n`);
+    addRepo({ configDir, slug: "acme/nested-only" });
+    mkdirSync(join(configDir, "child"), { recursive: true });
+    writeFileSync(join(configDir, "child", "phoebe.config.ts"), "export default {};\n");
+
+    const listings = await listTenants({
+      configDir,
+      dataBase,
+      loadRepoSlug: () => "acme/child",
+    });
+    expect(listings.map((l) => l.slug)).toEqual(["acme/child"]);
   });
 });
 
