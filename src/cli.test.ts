@@ -67,7 +67,12 @@ describe("parseCliArgs", () => {
 
 describe("parseInitArgs", () => {
   test("defaults to current directory and flat profile when no args given", () => {
-    expect(parseInitArgs([])).toEqual({ targetDir: ".", help: false, profile: "flat" });
+    expect(parseInitArgs([])).toEqual({
+      targetDir: ".",
+      help: false,
+      profile: "flat",
+      withPrompts: false,
+    });
   });
 
   test("accepts a positional target directory (flat)", () => {
@@ -75,6 +80,7 @@ describe("parseInitArgs", () => {
       targetDir: "./my-agent",
       help: false,
       profile: "flat",
+      withPrompts: false,
     });
   });
 
@@ -83,16 +89,19 @@ describe("parseInitArgs", () => {
       targetDir: ".",
       help: false,
       profile: "workspace",
+      withPrompts: false,
     });
     expect(parseInitArgs(["--workspace", "./ws"])).toEqual({
       targetDir: "./ws",
       help: false,
       profile: "workspace",
+      withPrompts: false,
     });
     expect(parseInitArgs(["./ws", "--workspace"])).toEqual({
       targetDir: "./ws",
       help: false,
       profile: "workspace",
+      withPrompts: false,
     });
   });
 
@@ -101,7 +110,42 @@ describe("parseInitArgs", () => {
       targetDir: "./child",
       help: false,
       profile: "tenant",
+      withPrompts: false,
     });
+  });
+
+  test("accepts tenant overrides --slug / --url / --with-prompts", () => {
+    expect(
+      parseInitArgs([
+        "--tenant",
+        "./child",
+        "--slug",
+        "acme/widget",
+        "--url",
+        "git@example.com:acme/widget.git",
+        "--with-prompts",
+      ]),
+    ).toEqual({
+      targetDir: "./child",
+      help: false,
+      profile: "tenant",
+      repoSlug: "acme/widget",
+      repoUrl: "git@example.com:acme/widget.git",
+      withPrompts: true,
+    });
+    expect(parseInitArgs(["--tenant", "--slug=acme/x", "--url=https://e/x.git"])).toEqual({
+      targetDir: ".",
+      help: false,
+      profile: "tenant",
+      repoSlug: "acme/x",
+      repoUrl: "https://e/x.git",
+      withPrompts: false,
+    });
+  });
+
+  test("rejects tenant-only flags without --tenant", () => {
+    expect(() => parseInitArgs(["--slug", "a/b"])).toThrow(/only valid with/);
+    expect(() => parseInitArgs(["--workspace", "--with-prompts"])).toThrow(/only valid with/);
   });
 
   test("--workspace and --tenant are mutually exclusive", () => {
@@ -110,7 +154,12 @@ describe("parseInitArgs", () => {
   });
 
   test("--help / -h set help without requiring a directory", () => {
-    expect(parseInitArgs(["--help"])).toEqual({ targetDir: ".", help: true, profile: "flat" });
+    expect(parseInitArgs(["--help"])).toEqual({
+      targetDir: ".",
+      help: true,
+      profile: "flat",
+      withPrompts: false,
+    });
     expect(parseInitArgs(["-h"]).help).toBe(true);
   });
 

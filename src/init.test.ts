@@ -7,7 +7,7 @@
 //     acceptance criterion),
 //   * workspace profile (#93) writes engine + workspace block, no child files.
 
-import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
@@ -15,11 +15,19 @@ import { CONFIG_DEFAULTS } from "./config-schema.ts";
 import {
   DEFAULT_TEMPLATE_PARAMS,
   formatInitReport,
+  initTenant,
   mergeGitignore,
   planInitOutputs,
+  readOriginRemoteUrl,
   renderTemplate,
   runInit,
 } from "./init.ts";
+import {
+  slugFromRemoteUrl,
+  TENANT_ENV_EXAMPLE,
+  TENANT_PLACEHOLDER_SLUG,
+  TENANT_PLACEHOLDER_URL,
+} from "./tenant-commands.ts";
 
 function makeTempDir(): string {
   return mkdtempSync(join(tmpdir(), "phoebe-init-test-"));
@@ -58,8 +66,9 @@ describe("planInitOutputs", () => {
     }
   });
 
-  test("tenant profile is reserved for #94", () => {
-    expect(() => planInitOutputs("tenant")).toThrow(/not implemented yet/);
+  test("tenant profile uses initTenant (dynamic origin prefill), not the static plan", () => {
+    expect(() => planInitOutputs("tenant")).toThrow(/initTenant/);
+    expect(() => runInit({ targetDir: makeTempDir(), profile: "tenant" })).toThrow(/initTenant/);
   });
 
   test("the retired supervisor + daemon-overlay scaffolding is gone", () => {
@@ -333,6 +342,159 @@ describe("runInit — workspace profile (#93)", () => {
     const compose = readFileSync(join(target, "container/compose.yml"), "utf8");
     expect(compose).toContain("- ..:/etc/phoebe:ro");
     expect(compose).toContain("working_dir: /etc/phoebe");
+  });
+});
+
+describe("slugFromRemoteUrl / initTenant (#94)", () => {
+  test("slugFromRemoteUrl parses HTTPS, scp-like SSH, and ssh:// forms", () => {
+    expect(slugFromRemoteUrl("https://github.com/acme/widget.git")).toBe("acme/widget");
+    expect(slugFromRemoteUrl("https://github.com/acme/widget")).toBe("acme/widget");
+    expect(slugFromRemoteUrl("git@github.com:acme/widget.git")).toBe("acme/widget");
+    expect(slugFromRemoteUrl("ssh://git@github.com/acme/widget.git")).toBe("acme/widget");
+    expect(slugFromRemoteUrl("https://x-access-token:tok@github.com/acme/widget.git")).toBe(
+      "acme/widget",
+    );
+    expect(slugFromRemoteUrl("not-a-url")).toBeNull();
+    expect(slugFromRemoteUrl("")).toBeNull();
+  });
+
+  test("readOriginRemoteUrl uses git remote get-url origin", () => {
+    const calls: string[][] = [];
+    const url = readOriginRemoteUrl("/tmp/child", (args, opts) => {
+      calls.push(args);
+      expect(opts?.cwd).toBe("/tmp/child");
+      return "https://github.com/acme/widget.git\n";
+    });
+    expect(url).toBe("https://github.com/acme/widget.git");
+    expect(calls).toEqual([["remote", "get-url", "origin"]]);
+  });
+
+  test("writes in-tree layout with no container/; config + env.example + .gitignore", () => {
+    const target = makeTempDir();
+    const result = initTenant({
+      targetDir: target,
+      git: () => {
+        throw new Error("no remote");
+      },
+    });
+
+    expect(existsSync(join(target, "phoebe.config.ts"))).toBe(true);
+    expect(existsSync(join(target, ".env.example"))).toBe(true);
+    expect(existsSync(join(target, ".gitignore"))).toBe(true);
+    expect(existsSync(join(target, "container"))).toBe(false);
+    expect(existsSync(join(target, "prompts"))).toBe(false);
+    expect(result.created).toContain("phoebe.config.ts");
+    expect(result.created).toContain(".env.example");
+    expect(result.created).toContain(".gitignore");
+    expect(readFileSync(join(target, ".env.example"), "utf8")).toBe(TENANT_ENV_EXAMPLE);
+    expect(readFileSync(join(target, ".gitignore"), "utf8")).toContain(".env");
+  });
+
+  test("prefills repoSlug/repoUrl from child origin", () => {
+    const target = makeTempDir();
+    const origin = "git@github.com:acme/widget.git";
+    const result = initTenant({
+      targetDir: target,
+      git: () => `${origin}\n`,
+    });
+    expect(result.repoSlug).toBe("acme/widget");
+    expect(result.repoUrl).toBe(origin);
+    const config = readFileSync(join(target, "phoebe.config.ts"), "utf8");
+    expect(config).toContain('repoSlug: "acme/widget"');
+    expect(config).toContain(`repoUrl: ${JSON.stringify(origin)}`);
+    expect(config).not.toMatch(/\bengine\s*:/);
+  });
+
+  test("explicit --slug/--url overrides win over origin", () => {
+    const target = makeTempDir();
+    const result = initTenant({
+      targetDir: target,
+      repoSlug: "other/repo",
+      repoUrl: "https://example.com/other/repo.git",
+      git: () => "https://github.com/acme/widget.git\n",
+    });
+    expect(result.repoSlug).toBe("other/repo");
+    expect(result.repoUrl).toBe("https://example.com/other/repo.git");
+  });
+
+  test("strips credentials from a tokenised origin before writing/printing repoUrl", () => {
+    const target = makeTempDir();
+    const result = initTenant({
+      targetDir: target,
+      git: () => "https://x-access-token:ghs_secret@github.com/acme/widget.git\n",
+    });
+    expect(result.repoSlug).toBe("acme/widget");
+    expect(result.repoUrl).toBe("https://github.com/acme/widget.git");
+    const config = readFileSync(join(target, "phoebe.config.ts"), "utf8");
+    expect(config).not.toContain("ghs_secret");
+    expect(config).not.toContain("x-access-token");
+    expect(config).toContain('repoUrl: "https://github.com/acme/widget.git"');
+  });
+
+  test("absent origin falls back to the operator-fill placeholder", () => {
+    const target = makeTempDir();
+    const result = initTenant({
+      targetDir: target,
+      git: () => {
+        throw new Error("fatal: No such remote 'origin'");
+      },
+    });
+    expect(result.repoSlug).toBe(TENANT_PLACEHOLDER_SLUG);
+    expect(result.repoUrl).toBe(TENANT_PLACEHOLDER_URL);
+  });
+
+  test("refuses to overwrite an existing phoebe.config.ts", () => {
+    const target = makeTempDir();
+    writeFileSync(join(target, "phoebe.config.ts"), "// existing\n");
+    expect(() =>
+      initTenant({
+        targetDir: target,
+        git: () => "https://github.com/acme/widget.git\n",
+      }),
+    ).toThrow(/already exists/);
+  });
+
+  test("opt-in --with-prompts seeds prompts/", () => {
+    const target = makeTempDir();
+    const result = initTenant({
+      targetDir: target,
+      withPrompts: true,
+      seedPrompt: (dir) => {
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "issues-prompt.md"), "prompt");
+        return [join(dir, "issues-prompt.md")];
+      },
+      git: () => {
+        throw new Error("no remote");
+      },
+    });
+    expect(result.created.some((p) => p.includes("prompts"))).toBe(true);
+    expect(readFileSync(join(target, "prompts/issues-prompt.md"), "utf8")).toBe("prompt");
+  });
+
+  test("a scaffolded child is discovered as a workspace tenant (ticket 1)", async () => {
+    // Ticket 1 (#91) discovery: any dir under the workspace root with a root
+    // `phoebe.config.ts` is a tenant, keyed by that config's repoSlug.
+    const { discoverWorkspaceTenants } = await import("../bootstrap/tenants.ts");
+    const workspace = makeTempDir();
+    const child = join(workspace, "widget");
+    initTenant({
+      targetDir: child,
+      git: () => "https://github.com/acme/widget.git\n",
+    });
+
+    const discovery = await discoverWorkspaceTenants(workspace, 1, {
+      loadRepoSlug: async (configPath) => {
+        const src = readFileSync(configPath, "utf8");
+        const m = /repoSlug:\s*"([^"]+)"/.exec(src);
+        if (!m) throw new Error(`no repoSlug in ${configPath}`);
+        return m[1]!;
+      },
+    });
+    expect(discovery.mode).toBe("workspace");
+    expect(discovery.tenants).toHaveLength(1);
+    expect(discovery.tenants[0]!.slug).toBe("acme/widget");
+    expect(discovery.tenants[0]!.dir).toBe(child);
   });
 });
 
