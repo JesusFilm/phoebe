@@ -13,17 +13,17 @@ fast-forwarded past that point (onto `fork/main`, which is a strict superset of
 
 ## TL;DR — ranked levers
 
-| # | Lever | Status | Effort |
-|---|---|---|---|
-| 1 | Run multiple repos under nested/multi-tenant layout + raise `PHOEBE_MAX_CONCURRENT_AGENTS` | **Already shipped**, just needs adoption + config | Low (config/layout only) |
-| 2 | Lower `PHOEBE_RUN_TIMEOUT_MS` if a hung unit is the pain point | **Already shipped** knob | Trivial, has a real tradeoff |
-| 3 | Give `$HOME` (package-manager cache) a named volume so installs stay warm across container recreations | **Not implemented** — genuine gap | Small |
-| 4 | Lower `PHOEBE_POLL_INTERVAL_MS` if idle-to-pickup latency is the complaint | **Already shipped** knob | Trivial |
-| 5 | Cache/condition the per-cycle GitHub API fetch (`fetchCycleWorkData`) | **Not implemented** — minor, API-latency bound | Medium, low payoff |
+| #   | Lever                                                                                                  | Status                                            | Effort                       |
+| --- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------- | ---------------------------- |
+| 1   | Run multiple repos under nested/multi-tenant layout + raise `PHOEBE_MAX_CONCURRENT_AGENTS`             | **Already shipped**, just needs adoption + config | Low (config/layout only)     |
+| 2   | Lower `PHOEBE_RUN_TIMEOUT_MS` if a hung unit is the pain point                                         | **Already shipped** knob                          | Trivial, has a real tradeoff |
+| 3   | Give `$HOME` (package-manager cache) a named volume so installs stay warm across container recreations | **Not implemented** — genuine gap                 | Small                        |
+| 4   | Lower `PHOEBE_POLL_INTERVAL_MS` if idle-to-pickup latency is the complaint                             | **Already shipped** knob                          | Trivial                      |
+| 5   | Cache/condition the per-cycle GitHub API fetch (`fetchCycleWorkData`)                                  | **Not implemented** — minor, API-latency bound    | Medium, low payoff           |
 
 The single biggest thing to understand first: **for a single-repo deployment, Phoebe
 still executes exactly one work unit at a time, always** (`src/main.ts` `runLoop`, the
-main loop is unchanged and strictly serial). Concurrency only exists *across tenants*
+main loop is unchanged and strictly serial). Concurrency only exists _across tenants_
 in a nested multi-repo deployment. If you're running one repo, most "speed" comes from
 your own `installCommand`/`checkCommand`/`testCommand`, not from Phoebe's own
 orchestration overhead, which is small next to those.
@@ -83,7 +83,7 @@ fully implemented in `src/run-timeout.ts`:
   `AbortSignal` on expiry.
 - Wired into `src/main.ts`: `RUN_TIMEOUT_MS = resolveRunTimeoutMs(...)` (line 120),
   and `runAgentInWorktree` wraps `runAgent(...)` in `runWithDeadline({ ms:
-  RUN_TIMEOUT_MS, ... })` (lines ~473-486).
+RUN_TIMEOUT_MS, ... })` (lines ~473-486).
 
 **Important scope limit, stated directly in `src/run-timeout.ts`'s header comment:**
 the deadline wraps **only the agent phase**. The install/test/push phases run via
@@ -116,7 +116,7 @@ Every work unit gets a brand-new ephemeral `git worktree`
 `finally` (`removeWorktree`) — so there's no persisted `node_modules` between units by
 design.
 
-What *does* persist across units, and is directly documented, is `$HOME`. The
+What _does_ persist across units, and is directly documented, is `$HOME`. The
 Dockerfile sets `ENV HOME=/home/phoebe` and states outright (lines ~155-159):
 
 > Anything the workload writes must be under `/data` (the volumes) or `$HOME`. That
@@ -152,7 +152,7 @@ between an issue becoming ready and Phoebe picking it up" rather than per-unit
 execution speed, this is the relevant knob, and it's a trivial env var change.
 
 Don't conflate it with `PHOEBE_RECONCILE_INTERVAL_MS` (default `60_000`,
-`docs/configuration.md:311`) — that's the *bootstrapper's* separate supervision loop
+`docs/configuration.md:311`) — that's the _bootstrapper's_ separate supervision loop
 (config/ref-change watch, `bootstrap/reconcile.ts`), unrelated to work-unit selection
 cadence. The dev-only `templates/container/compose.local.yml` already tightens this to
 10s locally with an explicit rationale comment ("the reconcile poll is one stat plus
@@ -175,16 +175,16 @@ someone is running an unusually long `workOrder` against an unusually short
 
 ## Already in flight / already shipped (don't duplicate)
 
-| Issue/PR | Title | State | Relevance |
-|---|---|---|---|
-| #78 (`996666d4`) | Multi-tenant Phoebe: one container, many repos | Merged 2026-08-03 | Implements concurrency (lever 1) end-to-end |
-| #59 | Scheduling & resource bounding of work across N repos | CLOSED | Design doc for the slot broker; fully implemented |
-| #72 | Per-run execution timeout | CLOSED | Fully implemented, `src/run-timeout.ts` (lever 2) |
-| #75 (referenced pervasively, not directly opened by number in this search) | Poison-unit repeat protection | Implemented | `src/quarantine.ts`, prevents a hung unit from burning the timeout budget forever |
-| #90 | Crash-safe issue claims: lease + heartbeat + startup self-recovery | CLOSED | Prevents orphaned `phoebe-processing` claims stalling an issue indefinitely — reliability, tangential to speed |
-| #79 | Bound `superviseFleet.drain` with a SIGKILL escalation | **OPEN** | `drain()` in `bootstrap/supervise-fleet.ts` awaits child exit with no timeout; could make an engine-axis relaunch (shared engine ref/config change, which drains+respawns the whole fleet) hang indefinitely. Edge-case relevant to relaunch/upgrade latency, not per-unit speed. Not something to duplicate — pick it up if unbounded-drain-hang is your actual symptom. |
-| #57 | Multi-tenant Phoebe (tracking issue) | **OPEN** | Kept open as a tracking/parent issue even though the core implementation (#78) merged — likely residual follow-up scope, not a duplicate target |
-| #81 / #88 | "Workspace Phoebe" — submodule-based multi-repo layout | **OPEN** | A different, alternate multi-repo architecture track (in-tree child-repo submodules vs. today's clone-per-tenant `repos/` layout). Not obviously a speed lever either way; flagged as exploratory/tangential, not something this doc's recommendations conflict with. |
+| Issue/PR                                                                   | Title                                                              | State             | Relevance                                                                                                                                                                                                                                                                                                                                                                 |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------------ | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| #78 (`996666d4`)                                                           | Multi-tenant Phoebe: one container, many repos                     | Merged 2026-08-03 | Implements concurrency (lever 1) end-to-end                                                                                                                                                                                                                                                                                                                               |
+| #59                                                                        | Scheduling & resource bounding of work across N repos              | CLOSED            | Design doc for the slot broker; fully implemented                                                                                                                                                                                                                                                                                                                         |
+| #72                                                                        | Per-run execution timeout                                          | CLOSED            | Fully implemented, `src/run-timeout.ts` (lever 2)                                                                                                                                                                                                                                                                                                                         |
+| #75 (referenced pervasively, not directly opened by number in this search) | Poison-unit repeat protection                                      | Implemented       | `src/quarantine.ts`, prevents a hung unit from burning the timeout budget forever                                                                                                                                                                                                                                                                                         |
+| #90                                                                        | Crash-safe issue claims: lease + heartbeat + startup self-recovery | CLOSED            | Prevents orphaned `phoebe-processing` claims stalling an issue indefinitely — reliability, tangential to speed                                                                                                                                                                                                                                                            |
+| #79                                                                        | Bound `superviseFleet.drain` with a SIGKILL escalation             | **OPEN**          | `drain()` in `bootstrap/supervise-fleet.ts` awaits child exit with no timeout; could make an engine-axis relaunch (shared engine ref/config change, which drains+respawns the whole fleet) hang indefinitely. Edge-case relevant to relaunch/upgrade latency, not per-unit speed. Not something to duplicate — pick it up if unbounded-drain-hang is your actual symptom. |
+| #57                                                                        | Multi-tenant Phoebe (tracking issue)                               | **OPEN**          | Kept open as a tracking/parent issue even though the core implementation (#78) merged — likely residual follow-up scope, not a duplicate target                                                                                                                                                                                                                           |
+| #81 / #88                                                                  | "Workspace Phoebe" — submodule-based multi-repo layout             | **OPEN**          | A different, alternate multi-repo architecture track (in-tree child-repo submodules vs. today's clone-per-tenant `repos/` layout). Not obviously a speed lever either way; flagged as exploratory/tangential, not something this doc's recommendations conflict with.                                                                                                     |
 
 ## What was NOT verifiable / had to be inferred
 
