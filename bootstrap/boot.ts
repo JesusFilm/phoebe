@@ -41,8 +41,14 @@ import { lsRemoteBranchSha, materializeGithubEngine } from "./github-engine.ts";
 import { buildEngineChildEnv, parseDotenv } from "./engine-child-env.ts";
 import { attachBroker } from "./broker-ipc.ts";
 import { createSlotBroker, resolveMaxConcurrent } from "./slot-broker.ts";
-import { discoverTenants, type DiscoveredTenant } from "./tenants.ts";
-import { superviseFleet, type FleetChild } from "./supervise-fleet.ts";
+import {
+  discoverTenants,
+  discoverWorkspaceTenants,
+  isNestedDeployment,
+  type DiscoveredTenant,
+} from "./tenants.ts";
+import { superviseFleet, type FleetChild, type FleetDiscoverInput } from "./supervise-fleet.ts";
+import { readWorkspaceField, type ResolvedWorkspace } from "./workspace-source.ts";
 import { readFileSync } from "node:fs";
 import {
   configFingerprint,
@@ -366,24 +372,27 @@ function readTenantEnv(envPath: string): Record<string, string> {
 }
 
 /**
- * Supervise a nested/multi-tenant deployment (#58/#59/#61): a shared engine
- * (#60, materialized once by `launchTarget` from the top config's `engine`
- * field) with one child per tenant, a global concurrency broker across them, and
- * hot add/remove/change via `superviseFleet`.
+ * Supervise a nested or workspace multi-tenant deployment (#58/#59/#61/#91): a
+ * shared engine (#60, materialized once by `launchTarget` from the top config's
+ * `engine` field) with one child per tenant, a global concurrency broker across
+ * them, and hot add/remove/change via `superviseFleet`.
  *
  * Each child is spawned with an IPC channel + the tenant's scrubbed env (#61)
  * and cwd (its config dir), and wired to the broker (#59). The crash-loop guard
  * still applies any existing engine fallback on each (re)launch; feeding the
  * guard fleet-aggregated crash verdicts (#60 §6) is a follow-up — nested live
  * validation is deferred to #77.
+ *
+ * `discover` is injected so nested mode can stay a pure filesystem scan while
+ * workspace mode re-walks the tree and reloads each child's `repoSlug` (#91).
  */
-function runNestedFleet(opts: {
-  configDir: string;
+function runFleet(opts: {
   configPath: string;
   guard: CrashGuard;
   stop: ReturnType<typeof installDrainSignal>;
   intervalMs: number;
   argv: readonly string[];
+  discover: () => FleetDiscoverInput;
 }): Promise<EngineExit> {
   const broker = createSlotBroker(resolveMaxConcurrent(process.env));
 
@@ -412,11 +421,7 @@ function runNestedFleet(opts: {
 
   return superviseFleet({
     launch: () => launchTarget(opts.configPath, opts.guard),
-    discover: () =>
-      discoverTenants(opts.configDir).tenants.map((tenant) => ({
-        tenant,
-        fingerprint: tenantFingerprint(tenant.configPath, tenant.envPath),
-      })),
+    discover: opts.discover,
     spawn: spawnFleetChild,
     stop: opts.stop,
     intervalMs: opts.intervalMs,
@@ -444,6 +449,58 @@ function runNestedFleet(opts: {
           `Skipping the tenant axis this poll (the running fleet is left intact).`,
       ),
   });
+}
+
+/**
+ * Nested-mode discover callback: filesystem scan + per-tenant fingerprints.
+ */
+function nestedDiscover(configDir: string): () => FleetDiscoverInput {
+  return () =>
+    discoverTenants(configDir).tenants.map((tenant) => ({
+      tenant,
+      fingerprint: tenantFingerprint(tenant.configPath, tenant.envPath),
+    }));
+}
+
+/**
+ * Workspace-mode discover callback (#91): re-walk the tree every poll, load each
+ * child's `repoSlug`, and report hold ids for mid-rewrite configs (#86).
+ */
+function workspaceDiscover(
+  configDir: string,
+  workspace: ResolvedWorkspace,
+): () => FleetDiscoverInput {
+  return async () => {
+    const result = await discoverWorkspaceTenants(configDir, workspace.depth, {
+      loadRepoSlug: loadTenantRepoSlug,
+      warn: (message) => console.warn(message),
+    });
+    return {
+      samples: result.tenants.map((tenant) => ({
+        tenant,
+        fingerprint: tenantFingerprint(tenant.configPath, tenant.envPath),
+      })),
+      hold: result.holdIds,
+    };
+  };
+}
+
+/**
+ * Load a workspace child config and return its authoritative `repoSlug`.
+ * Throws when the file will not load or the slug is missing — the walker
+ * treats that as skip-and-warn + hold.
+ */
+async function loadTenantRepoSlug(configPath: string): Promise<string> {
+  const fingerprint = configFingerprint(configPath);
+  if (fingerprint === null) {
+    throw new Error(`config unreadable at ${configPath}`);
+  }
+  const user = await loadUserConfig(configPath, { reloadKey: fingerprint });
+  const slug = user.repoSlug;
+  if (typeof slug !== "string" || slug.trim().length === 0) {
+    throw new Error(`missing or empty repoSlug in ${configPath}`);
+  }
+  return slug.trim();
 }
 
 /**
@@ -486,6 +543,47 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   // own forwarders are not installed.
   const stop = installDrainSignal(process, ["SIGTERM", "SIGINT"]);
 
+  // Detection ladder (#83/#91): loaded root config has a `workspace` block →
+  // workspace mode (warn + ignore any `repos/`); else `repos/` → nested; else flat.
+  // The root config is loaded here for the mode decision; `launchTarget` still
+  // re-reads on each (re)launch for the engine source + cache bust.
+  const rootFingerprint = configFingerprint(configPath);
+  const rootConfig = await loadMountedConfig(configPath, rootFingerprint);
+  const workspace = readWorkspaceField(rootConfig);
+
+  if (workspace !== null) {
+    if (isNestedDeployment(configDir)) {
+      console.warn(
+        "[phoebe] boot: workspace block present — ignoring `repos/` " +
+          "(nested central layout is off for this deployment).",
+      );
+    }
+    // Count tenants for the startup log (same walk the fleet will use).
+    const initial = await discoverWorkspaceTenants(configDir, workspace.depth, {
+      loadRepoSlug: loadTenantRepoSlug,
+      warn: (message) => console.warn(message),
+    });
+    console.log(
+      `[phoebe] boot: workspace mode — supervising ${initial.tenants.length} tenant(s) ` +
+        `on one shared engine (depth ${workspace.depth}).`,
+    );
+    let fleetExit: EngineExit;
+    try {
+      fleetExit = await runFleet({
+        configPath,
+        guard,
+        stop,
+        intervalMs,
+        argv,
+        discover: workspaceDiscover(configDir, workspace),
+      });
+    } finally {
+      stop.dispose();
+    }
+    propagateExit(fleetExit.code, fleetExit.signal);
+    return;
+  }
+
   // A `repos/` dir beside the top config selects nested/multi-tenant mode (#63):
   // supervise a shared engine with one child per tenant. Absent → the flat
   // single-tenant fast-path below, unchanged: one engine child, no scanning.
@@ -497,7 +595,14 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     );
     let fleetExit: EngineExit;
     try {
-      fleetExit = await runNestedFleet({ configDir, configPath, guard, stop, intervalMs, argv });
+      fleetExit = await runFleet({
+        configPath,
+        guard,
+        stop,
+        intervalMs,
+        argv,
+        discover: nestedDiscover(configDir),
+      });
     } finally {
       stop.dispose();
     }
