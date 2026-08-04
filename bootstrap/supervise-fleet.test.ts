@@ -209,6 +209,63 @@ describe("superviseFleet", () => {
     expect(h.spawned).toHaveLength(2);
   });
 
+  test("a hold id keeps a missing sample from draining (#86/#91)", async () => {
+    const clock = gatedClock();
+    const engineState = { config: "1:1", remoteSha: "a".repeat(40) };
+    let samples: TenantSample[] = [sample("acme/widget", "fp1"), sample("acme/gadget", "fp1")];
+    let hold: string[] = [];
+    const spawned: Array<{ slug: string | null; fake: ReturnType<typeof fakeChild> }> = [];
+    let stopRequested = false;
+
+    const result = superviseFleet({
+      intervalMs: 1000,
+      crashBackoffMs: 500,
+      launch: () => ({
+        entry: "/data/engine/src/cli.ts",
+        sha: engineState.remoteSha,
+        config: engineState.config,
+        quarantinedSha: null,
+        guarded: true,
+        sample: () => ({ config: engineState.config, remoteSha: engineState.remoteSha }),
+      }),
+      discover: () => ({ samples, hold }),
+      spawn: (t) => {
+        const fake = fakeChild();
+        spawned.push({ slug: t.slug, fake });
+        return fake.child;
+      },
+      stop: {
+        get requested() {
+          return stopRequested;
+        },
+        wait: clock.wait,
+      },
+    });
+
+    await settle();
+    expect(spawned).toHaveLength(2);
+    const gadgetDir = tenant("acme/gadget").id;
+
+    // Mid-rewrite: gadget disappears from samples but is marked held.
+    samples = [sample("acme/widget", "fp1")];
+    hold = [gadgetDir];
+    clock.tick();
+    await settle();
+    const gadget = spawned.find((s) => s.slug === "acme/gadget")!;
+    expect(gadget.fake.kills).toEqual([]);
+
+    // Dir genuinely gone → drain.
+    hold = [];
+    clock.tick();
+    await settle();
+    expect(gadget.fake.kills).toContain("SIGTERM");
+
+    stopRequested = true;
+    clock.tick();
+    for (const s of spawned) s.fake.exit();
+    await result;
+  });
+
   test("respawns a child that died on its own (per-tenant supervision)", async () => {
     const h = harness([sample("acme/widget", "fp1")]);
     await settle();
