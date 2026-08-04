@@ -333,8 +333,8 @@ function formatTenantListing(listing: TenantListing): string {
 }
 
 /** `phoebe list` — enumerate tenants + health (reads status.json). */
-function runListCli(): void {
-  const listings = listTenants({
+async function runListCli(): Promise<void> {
+  const listings = await listTenants({
     configDir: process.cwd(),
     dataBase: resolveDataBase(process.env),
   });
@@ -407,7 +407,7 @@ export async function runCli(): Promise<void> {
   // data volume. None load the engine config.
   if (args[0] === "add-repo") return runAddRepoCli(args.slice(1));
   if (args[0] === "remove-repo") return runRemoveRepoCli(args.slice(1));
-  if (args[0] === "list") return runListCli();
+  if (args[0] === "list") return await runListCli();
   if (args[0] === "purge") return runPurgeCli(args.slice(1));
 
   const parsed = parseCliArgs(args);

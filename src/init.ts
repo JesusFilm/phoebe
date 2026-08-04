@@ -12,6 +12,8 @@
 //
 // Flat/workspace re-runs skip existing files. Tenant re-runs refuse loudly
 // when a root `phoebe.config.ts` already exists (mirror add-repo).
+// The plan/render split keeps the pure logic (what files, what placeholders)
+// separately testable from the fs I/O in `runInit`.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve as resolvePath } from "node:path";
