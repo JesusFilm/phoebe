@@ -17,6 +17,7 @@ import {
   removeRepo,
   renderTenantConfig,
   slugFromRemoteUrl,
+  stripUrlCredentials,
 } from "./tenant-commands.ts";
 
 let configDir: string;
@@ -54,6 +55,32 @@ describe("parseSlug / defaultRepoUrl / slugFromRemoteUrl", () => {
   test("slugFromRemoteUrl extracts owner/repo from common remote forms", () => {
     expect(slugFromRemoteUrl("https://github.com/acme/widget.git")).toBe("acme/widget");
     expect(slugFromRemoteUrl("git@github.com:acme/widget.git")).toBe("acme/widget");
+  });
+  test("slugFromRemoteUrl accepts scp remotes with a non-`git` username", () => {
+    expect(slugFromRemoteUrl("deploy@git.example.com:acme/widget.git")).toBe("acme/widget");
+  });
+  test("slugFromRemoteUrl tolerates a terminal slash after `.git`", () => {
+    expect(slugFromRemoteUrl("https://github.com/acme/widget.git/")).toBe("acme/widget");
+    expect(slugFromRemoteUrl("git@github.com:acme/widget.git/")).toBe("acme/widget");
+  });
+});
+
+describe("stripUrlCredentials", () => {
+  test("removes userinfo from http(s) URLs so tokens never persist", () => {
+    expect(stripUrlCredentials("https://x-access-token:ghs_tok@github.com/acme/widget.git")).toBe(
+      "https://github.com/acme/widget.git",
+    );
+    expect(stripUrlCredentials("https://user:pw@github.com/acme/widget.git")).toBe(
+      "https://github.com/acme/widget.git",
+    );
+  });
+  test("leaves credential-free https and ssh remotes unchanged", () => {
+    expect(stripUrlCredentials("https://github.com/acme/widget.git")).toBe(
+      "https://github.com/acme/widget.git",
+    );
+    expect(stripUrlCredentials("git@github.com:acme/widget.git")).toBe(
+      "git@github.com:acme/widget.git",
+    );
   });
 });
 

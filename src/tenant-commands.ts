@@ -77,6 +77,24 @@ export function defaultRepoUrl(slug: string): string {
 }
 
 /**
+ * Strip `user[:password]@` userinfo from an http(s) URL so a tokenised origin
+ * (e.g. `https://x-access-token:ghs_…@github.com/owner/repo.git`) never lands in
+ * a committed `phoebe.config.ts` or a printed init report. SSH scp-like remotes
+ * carry no secret and are returned unchanged; unparseable input is returned as-is.
+ */
+export function stripUrlCredentials(url: string): string {
+  if (!/^https?:\/\//i.test(url)) return url;
+  try {
+    const parsed = new URL(url);
+    parsed.username = "";
+    parsed.password = "";
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
+/**
  * Render a per-tenant `phoebe.config.ts`. Type-only import (like the shipped
  * flat scaffold) so it loads from the container mount with no `node_modules`;
  * deliberately carries NO `engine` field — engine source is shared, set in the
@@ -140,7 +158,8 @@ export function slugFromRemoteUrl(url: string): string | null {
   if (raw.length === 0) return null;
 
   let path: string | undefined;
-  const scp = /^git@[^:]+:(.+)$/.exec(raw);
+  // scp-like `user@host:owner/repo` — any username, host without `:`/`/`.
+  const scp = /^[^@/\s]+@[^:/\s]+:(.+)$/.exec(raw);
   if (scp) {
     path = scp[1];
   } else {
@@ -150,7 +169,8 @@ export function slugFromRemoteUrl(url: string): string | null {
   }
   if (path === undefined) return null;
 
-  path = path.replace(/\.git$/i, "").replace(/\/+$/, "");
+  // Strip terminal slashes before the `.git` suffix so `…/repo.git/` → `repo`.
+  path = path.replace(/\/+$/, "").replace(/\.git$/i, "");
   const parts = path.split("/").filter((p) => p.length > 0);
   if (parts.length < 2) return null;
 

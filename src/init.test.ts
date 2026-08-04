@@ -417,6 +417,20 @@ describe("slugFromRemoteUrl / initTenant (#94)", () => {
     expect(result.repoUrl).toBe("https://example.com/other/repo.git");
   });
 
+  test("strips credentials from a tokenised origin before writing/printing repoUrl", () => {
+    const target = makeTempDir();
+    const result = initTenant({
+      targetDir: target,
+      git: () => "https://x-access-token:ghs_secret@github.com/acme/widget.git\n",
+    });
+    expect(result.repoSlug).toBe("acme/widget");
+    expect(result.repoUrl).toBe("https://github.com/acme/widget.git");
+    const config = readFileSync(join(target, "phoebe.config.ts"), "utf8");
+    expect(config).not.toContain("ghs_secret");
+    expect(config).not.toContain("x-access-token");
+    expect(config).toContain('repoUrl: "https://github.com/acme/widget.git"');
+  });
+
   test("absent origin falls back to the operator-fill placeholder", () => {
     const target = makeTempDir();
     const result = initTenant({

@@ -26,6 +26,7 @@ import {
   parseSlug,
   renderTenantConfig,
   slugFromRemoteUrl,
+  stripUrlCredentials,
   TENANT_ENV_EXAMPLE,
   TENANT_PLACEHOLDER_SLUG,
   TENANT_PLACEHOLDER_URL,
@@ -423,6 +424,9 @@ export function initTenant(opts: InitTenantOptions): InitTenantResult {
   } else {
     repoUrl = TENANT_PLACEHOLDER_URL;
   }
+  // Never persist or print credential-bearing URLs (#94): a tokenised origin or
+  // `--url` would otherwise leak into the committed config and the init report.
+  repoUrl = stripUrlCredentials(repoUrl);
 
   const report: InitReport = { created: [], updated: [], skipped: [] };
 
