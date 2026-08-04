@@ -21,7 +21,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { REPOS_DIR } from "../bootstrap/tenants.ts";
 import { resolveConfig } from "./config-schema.ts";
-import { copyShippedPromptsInto, formatInitReport, runInit } from "./init.ts";
+import { copyShippedPromptsInto, formatInitReport, runInit, type InitProfile } from "./init.ts";
 import { applyEnvOverlay, loadUserConfig, resolveConfigPath } from "./load-config.ts";
 import { resolveDataBase } from "./paths.ts";
 import { setResolvedConfig } from "./resolved-config.ts";
@@ -75,20 +75,42 @@ export function parseCliArgs(argv: readonly string[]): ParsedArgs {
   return { configPath, help, forward };
 }
 
-export type ParsedInitArgs = { targetDir: string; help: boolean };
+export type ParsedInitArgs = {
+  targetDir: string;
+  help: boolean;
+  /**
+   * Scaffold profile. Default `flat` (today's single-tenant layout).
+   * `--workspace` and `--tenant` are mutually exclusive (#93/#94).
+   */
+  profile: InitProfile;
+};
 
 /**
  * Parse argv left after the leading `init` token has been consumed. Supports
- * an optional positional target directory (`phoebe init ./my-agent`) and
- * `--help`. Extra flags are rejected loudly so a typo like `--forcee` fails
- * fast instead of being silently ignored.
+ * an optional positional target directory (`phoebe init ./my-agent`), the
+ * mutually exclusive profile flags `--workspace` / `--tenant`, and `--help`.
+ * Extra flags are rejected loudly so a typo like `--forcee` fails fast
+ * instead of being silently ignored.
  */
 export function parseInitArgs(argv: readonly string[]): ParsedInitArgs {
   let targetDir: string | undefined;
   let help = false;
+  let profile: InitProfile = "flat";
+  let profileFlag: string | undefined;
   for (const arg of argv) {
     if (arg === "--help" || arg === "-h") {
       help = true;
+      continue;
+    }
+    if (arg === "--workspace" || arg === "--tenant") {
+      if (profileFlag !== undefined) {
+        throw new Error(
+          `\`phoebe init\` flags \`--workspace\` and \`--tenant\` are mutually exclusive ` +
+            `(got both \`${profileFlag}\` and \`${arg}\`).`,
+        );
+      }
+      profileFlag = arg;
+      profile = arg === "--workspace" ? "workspace" : "tenant";
       continue;
     }
     if (arg.startsWith("-")) {
@@ -101,13 +123,15 @@ export function parseInitArgs(argv: readonly string[]): ParsedInitArgs {
     }
     targetDir = arg;
   }
-  return { targetDir: targetDir ?? ".", help };
+  return { targetDir: targetDir ?? ".", help, profile };
 }
 
 const HELP_TEXT = `phoebe — AFK coding agent
 
 Usage:
-  phoebe init [dir]                Scaffold a deployment (flat single-tenant)
+  phoebe init [dir]                Scaffold a flat single-tenant deployment
+  phoebe init --workspace [dir]    Scaffold a workspace root (multi-child)
+  phoebe init --tenant [dir]       Scaffold a workspace child in-tree install
   phoebe add-repo <owner/repo>     Add a tenant (→ nested multi-tenant)
   phoebe remove-repo <owner/repo>  Remove a tenant's config (data retained)
   phoebe list                      List tenants + health (in-container)
@@ -136,16 +160,29 @@ Runtime toggles (read directly by the engine, not overlaid onto the config):
 const INIT_HELP_TEXT = `phoebe init — scaffold a consumer-owned runtime
 
 Usage:
-  phoebe init [dir]
+  phoebe init [dir]                 Flat single-tenant deployment (default)
+  phoebe init --workspace [dir]     Workspace root (engine + workspace block)
+  phoebe init --tenant [dir]        Workspace child in-tree install
 
-Writes into [dir] (default: current directory):
-  phoebe.config.ts             Consumer config starter (edit the five required fields)
-  prompts/                     Copies of the shipped agent prompts (edit to override)
-  .env.example                 Documented environment variables to copy to .env
-  .gitignore                   Additive — appends Phoebe entries only
-  container/Dockerfile         Runtime image (Node 24 + git + gh, entrypoint: phoebe boot)
-  container/compose.yml        Compose config for the long-lived boot container
-  container/compose.local.yml  Dev overlay to run an engine checkout from your host
+Profiles (mutually exclusive; default is flat):
+
+  flat (default) writes into [dir]:
+    phoebe.config.ts             Consumer config starter (five required fields + engine)
+    prompts/                     Copies of the shipped agent prompts (edit to override)
+    .env.example                 Documented environment variables to copy to .env
+    .gitignore                   Additive — .env, repos/**/.env, node_modules/
+    container/Dockerfile         Runtime image (Node 24 + git + gh, entrypoint: phoebe boot)
+    container/compose.yml        Compose config for the long-lived boot container
+    container/compose.local.yml  Dev overlay to run an engine checkout from your host
+
+  --workspace writes into [dir]:
+    phoebe.config.ts             engine + workspace: { depth: 1 } only (no per-repo fields)
+    .env.example                 Deployment secrets (GH_TOKEN, provider keys) — no tenant secrets
+    .gitignore                   Additive — .env, node_modules/
+    container/                   Same #57 templates as flat, plus README.md mount docs
+    (no prompts/, no child files — link children then run init --tenant)
+
+  --tenant writes a child's in-tree install (config + .env.example + .gitignore).
 
 Existing files are left untouched, so re-running is safe. To regenerate a
 scaffolded file, delete it first and re-run \`phoebe init\`.
@@ -283,7 +320,7 @@ export async function runCli(): Promise<void> {
       process.stdout.write(INIT_HELP_TEXT);
       return;
     }
-    const report = runInit({ targetDir: parsed.targetDir });
+    const report = runInit({ targetDir: parsed.targetDir, profile: parsed.profile });
     process.stdout.write(formatInitReport(report, parsed.targetDir));
     return;
   }

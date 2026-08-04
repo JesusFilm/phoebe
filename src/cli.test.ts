@@ -1,7 +1,8 @@
 // Argv parsing contract for the `phoebe` bin: `--config`/`-c` (with space or
 // `=`), `--help`/`-h`, and everything else forwarded to `runEngine` for the
-// engine to interpret. The full CLI is exercised at the smoke-test level in
-// dev; here we just pin the surface.
+// engine to interpret. Init flags (`--workspace` / `--tenant`) are mutually
+// exclusive profile selectors. The full CLI is exercised at the smoke-test
+// level in dev; here we just pin the surface.
 
 import { describe, expect, test } from "vite-plus/test";
 import { parseCliArgs, parseInitArgs } from "./cli.ts";
@@ -65,16 +66,51 @@ describe("parseCliArgs", () => {
 });
 
 describe("parseInitArgs", () => {
-  test("defaults to current directory when no positional given", () => {
-    expect(parseInitArgs([])).toEqual({ targetDir: ".", help: false });
+  test("defaults to current directory and flat profile when no args given", () => {
+    expect(parseInitArgs([])).toEqual({ targetDir: ".", help: false, profile: "flat" });
   });
 
-  test("accepts a positional target directory", () => {
-    expect(parseInitArgs(["./my-agent"])).toEqual({ targetDir: "./my-agent", help: false });
+  test("accepts a positional target directory (flat)", () => {
+    expect(parseInitArgs(["./my-agent"])).toEqual({
+      targetDir: "./my-agent",
+      help: false,
+      profile: "flat",
+    });
+  });
+
+  test("accepts --workspace with an optional directory", () => {
+    expect(parseInitArgs(["--workspace"])).toEqual({
+      targetDir: ".",
+      help: false,
+      profile: "workspace",
+    });
+    expect(parseInitArgs(["--workspace", "./ws"])).toEqual({
+      targetDir: "./ws",
+      help: false,
+      profile: "workspace",
+    });
+    expect(parseInitArgs(["./ws", "--workspace"])).toEqual({
+      targetDir: "./ws",
+      help: false,
+      profile: "workspace",
+    });
+  });
+
+  test("accepts --tenant with an optional directory", () => {
+    expect(parseInitArgs(["--tenant", "./child"])).toEqual({
+      targetDir: "./child",
+      help: false,
+      profile: "tenant",
+    });
+  });
+
+  test("--workspace and --tenant are mutually exclusive", () => {
+    expect(() => parseInitArgs(["--workspace", "--tenant"])).toThrow(/mutually exclusive/);
+    expect(() => parseInitArgs(["--tenant", "--workspace", "./x"])).toThrow(/mutually exclusive/);
   });
 
   test("--help / -h set help without requiring a directory", () => {
-    expect(parseInitArgs(["--help"])).toEqual({ targetDir: ".", help: true });
+    expect(parseInitArgs(["--help"])).toEqual({ targetDir: ".", help: true, profile: "flat" });
     expect(parseInitArgs(["-h"]).help).toBe(true);
   });
 

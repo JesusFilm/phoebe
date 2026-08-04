@@ -135,6 +135,13 @@ export type PhoebeUserConfig = {
   /** Bootstrapper-only engine source (see {@link EngineSourceField}). The
    *  engine ignores it; `resolveConfig` drops it. Omitted ⇒ github/main. */
   engine?: EngineSourceField;
+  /**
+   * Bootstrapper-only: presence of this block selects workspace discovery mode
+   * (#83/#91). `depth` is how many directory levels under the root to scan for
+   * child configs (default 1 when omitted). The engine never reads it;
+   * `resolveConfig` drops it the same way it drops `engine`.
+   */
+  workspace?: { depth?: number };
   defaultBranch?: string;
   branchPrefix?: string;
   readyLabel?: string;

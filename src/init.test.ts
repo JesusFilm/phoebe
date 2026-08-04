@@ -4,9 +4,10 @@
 //   * template rendering substitutes every `{{TOKEN}}` and throws on unknowns,
 //   * `.gitignore` merges are additive (no dedup gap, no clobber),
 //   * `runInit` never overwrites an existing file (the guarded-re-run
-//     acceptance criterion).
+//     acceptance criterion),
+//   * workspace profile (#93) writes engine + workspace block, no child files.
 
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
@@ -25,8 +26,8 @@ function makeTempDir(): string {
 }
 
 describe("planInitOutputs", () => {
-  test("scaffolds config, env example, three container files, every prompt, gitignore", () => {
-    const plan = planInitOutputs();
+  test("flat: scaffolds config, env example, three container files, every prompt, gitignore", () => {
+    const plan = planInitOutputs("flat");
     const dests = plan.map((p) => p.destRelPath);
     expect(dests).toContain("phoebe.config.ts");
     expect(dests).toContain(".env.example");
@@ -34,9 +35,31 @@ describe("planInitOutputs", () => {
     expect(dests).toContain("container/compose.yml");
     expect(dests).toContain("container/compose.local.yml");
     expect(dests).toContain(".gitignore");
+    expect(dests).not.toContain("container/README.md");
     for (const promptPath of Object.values(CONFIG_DEFAULTS.promptFiles)) {
       expect(dests).toContain(promptPath);
     }
+  });
+
+  test("workspace: engine-root files + mount docs, no prompts or child dirs", () => {
+    const plan = planInitOutputs("workspace");
+    const dests = plan.map((p) => p.destRelPath);
+    expect(dests).toEqual([
+      "phoebe.config.ts",
+      ".env.example",
+      "container/Dockerfile",
+      "container/compose.yml",
+      "container/compose.local.yml",
+      "container/README.md",
+      ".gitignore",
+    ]);
+    for (const promptPath of Object.values(CONFIG_DEFAULTS.promptFiles)) {
+      expect(dests).not.toContain(promptPath);
+    }
+  });
+
+  test("tenant profile is reserved for #94", () => {
+    expect(() => planInitOutputs("tenant")).toThrow(/not implemented yet/);
   });
 
   test("the retired supervisor + daemon-overlay scaffolding is gone", () => {
@@ -223,6 +246,93 @@ describe("runInit", () => {
     const scaffolded = readFileSync(join(target, "prompts/issues-prompt.md"), "utf8");
     expect(scaffolded).toContain("{{ISSUE_NUMBER}}");
     expect(scaffolded).toContain("Phoebe");
+  });
+});
+
+describe("runInit — workspace profile (#93)", () => {
+  test("writes the workspace-root manifest into an empty directory", () => {
+    const target = makeTempDir();
+    const report = runInit({ targetDir: target, profile: "workspace" });
+
+    for (const output of planInitOutputs("workspace")) {
+      expect(statSync(join(target, output.destRelPath)).isFile()).toBe(true);
+    }
+    // No flat-only artefacts.
+    expect(existsSync(join(target, "prompts"))).toBe(false);
+    expect(existsSync(join(target, "repos"))).toBe(false);
+    expect(report.skipped).toEqual([]);
+    expect(report.created).toContain("phoebe.config.ts");
+    expect(report.created).toContain("container/README.md");
+  });
+
+  test("root config carries engine + workspace: { depth: 1 }", () => {
+    const target = makeTempDir();
+    runInit({ targetDir: target, profile: "workspace" });
+    const config = readFileSync(join(target, "phoebe.config.ts"), "utf8");
+    expect(config).toContain("engine:");
+    expect(config).toMatch(/workspace:\s*\{\s*depth:\s*1\s*\}/);
+    // No per-repo required fields on the workspace root.
+    expect(config).not.toContain("repoSlug:");
+    expect(config).not.toContain("repoUrl:");
+    expect(config).toContain('import type { PhoebeUserConfig } from "phoebe-agent"');
+    expect(config).not.toMatch(/^import (?!type )/m);
+  });
+
+  test("container templates match #57 flat scaffolding byte-for-byte (compose files)", () => {
+    const flat = makeTempDir();
+    const workspace = makeTempDir();
+    runInit({ targetDir: flat, profile: "flat" });
+    runInit({ targetDir: workspace, profile: "workspace" });
+    for (const rel of [
+      "container/Dockerfile",
+      "container/compose.yml",
+      "container/compose.local.yml",
+    ] as const) {
+      expect(readFileSync(join(workspace, rel), "utf8")).toBe(
+        readFileSync(join(flat, rel), "utf8"),
+      );
+    }
+  });
+
+  test(".env.example is deployment-level (GH_TOKEN + providers + toggles)", () => {
+    const target = makeTempDir();
+    runInit({ targetDir: target, profile: "workspace" });
+    const envExample = readFileSync(join(target, ".env.example"), "utf8");
+    // Deployment secrets only — no per-child TENANT_* / REPO_* key template.
+    expect(envExample).toContain("GH_TOKEN=");
+    expect(envExample).toContain("ANTHROPIC_API_KEY=");
+    expect(envExample).toContain("CURSOR_API_KEY=");
+    expect(envExample).toContain("OPENAI_KEY=");
+    expect(envExample).toContain("PHOEBE_AGENT");
+    expect(envExample).not.toMatch(/^TENANT_/m);
+    expect(envExample).not.toMatch(/^REPO_/m);
+  });
+
+  test(".gitignore covers .env and node_modules only (no repos/**/.env)", () => {
+    const target = makeTempDir();
+    runInit({ targetDir: target, profile: "workspace" });
+    const gitignore = readFileSync(join(target, ".gitignore"), "utf8");
+    expect(gitignore).toContain(".env");
+    expect(gitignore).toContain("node_modules/");
+    expect(gitignore).not.toContain("repos/**/.env");
+  });
+
+  test("mount docs require :ro mount, .git, and materialize-before-boot", () => {
+    const target = makeTempDir();
+    runInit({ targetDir: target, profile: "workspace" });
+    const readme = readFileSync(join(target, "container/README.md"), "utf8");
+    expect(readme).toContain(":/etc/phoebe:ro");
+    expect(readme).toMatch(/\.git/);
+    expect(readme).toContain("git submodule update --init");
+    expect(readme).toMatch(/skip-and-warn/i);
+  });
+
+  test("compose still bind-mounts the whole root :ro at /etc/phoebe", () => {
+    const target = makeTempDir();
+    runInit({ targetDir: target, profile: "workspace" });
+    const compose = readFileSync(join(target, "container/compose.yml"), "utf8");
+    expect(compose).toContain("- ..:/etc/phoebe:ro");
+    expect(compose).toContain("working_dir: /etc/phoebe");
   });
 });
 
