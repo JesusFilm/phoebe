@@ -44,6 +44,7 @@ When `{{BLOCKER_PR_NUMBERS}}` is empty, merge `origin/{{DEFAULT_BRANCH}}` only (
      gh issue create --title "<baseline test failure>" --body "<what fails on {{DEFAULT_BRANCH}}, and where you saw it>"
      ```
    - A green `{{CHECK_COMMAND}}` with a red `{{TEST_COMMAND}}` clears you only when every red test is baseline-only. Any failure the **merge** introduced must be fixed before you push.
+   - After your final run of each gate command, write its result to `{{VERIFICATION_RESULT_FILE}}` as a JSON array, one entry per command you ran: `[{"command": "<command>", "exitCode": <its exit code>, "output": "<tail of combined stdout/stderr, if useful>"}, ...]`. Do this whether the gate passed or failed.
 4. **Commit** — stage the resolution and commit each merge (e.g. `Phoebe: merge blocker PR #N into {{PR_BRANCH}}`, then `Phoebe: merge {{DEFAULT_BRANCH}} into {{PR_BRANCH}}`). Do **not** force-push.
 5. **Push** — `git push origin {{PR_BRANCH}}`.
 6. **Comment** — only if you **cannot** resolve cleanly or tests still fail after resolving:

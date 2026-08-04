@@ -156,9 +156,9 @@ Cross-repository PRs (from forks) are always excluded, regardless of scope.
 Toolchains differ per repo, so these are plain shell strings the engine runs
 inside a worktree (`checkCommand`/`testCommand` are required, above).
 
-| Field          | Default           | Meaning                                                                            |
-| -------------- | ----------------- | ---------------------------------------------------------------------------------- |
-| `readyCommand` | `"npm run ready"` | The all-in-one gate the agent runs before pushing. Prompt arg `{{READY_COMMAND}}`. |
+| Field          | Default           | Meaning                                                                                                                                                                                                                                          |
+| -------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `readyCommand` | `"npm run ready"` | The all-in-one gate the agent runs before pushing. Prompt arg `{{READY_COMMAND}}`. The agent also writes a `VERIFICATION_RESULT_FILE` report after running its gate(s), which the engine reads back to populate `WorkOutcomeEvent.verification`. |
 
 ## Blocker detection & review summary
 
