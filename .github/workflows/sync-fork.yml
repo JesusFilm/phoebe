@@ -1,0 +1,132 @@
+name: sync-fork
+
+# Keeps this fork's `main` current with upstream `JesusFilm/phoebe` `main`
+# automatically, so repos pinned to a *floating* `tanflem/phoebe@main` ref
+# (see each deployment's phoebe.config.ts) pick up upstream fixes without a
+# human bumping a SHA everywhere.
+#
+# Safety gate: a merge is only pushed when it is BOTH textually conflict-free
+# AND passes the same checks CI runs on every PR (`vp check`, lint, typecheck,
+# test). A textually clean merge is not proof the result is correct — see the
+# origin/main <-> fork/main merge that landed the #58 multi-tenant paths
+# refactor: it merged without conflict markers but silently broke config
+# resolution (a `paths` field the type system had removed) until the test
+# suite caught it. Every runner floating on `main` inherits whatever lands
+# here, unattended, so a merge that is clean but broken must never reach them
+# silently.
+#
+# On conflict or failure: no push to main. The (possibly uncommitted, if
+# conflicted) merge attempt is discarded; a merge that committed but failed
+# checks is pushed to fork-sync/pending-review instead so a human can pick up
+# exactly where the bot left off. One tracking issue (label
+# fork-sync-blocked) is kept open and updated in place rather than
+# re-opened/spammed daily.
+
+on:
+  schedule:
+    - cron: "17 8 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: sync-fork
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Configure git identity
+        run: |
+          git config user.name "phoebe-fork-sync[bot]"
+          git config user.email "phoebe-fork-sync@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: git fetch https://github.com/JesusFilm/phoebe.git main:refs/remotes/upstream/main
+
+      - name: Check for new upstream commits
+        id: diff
+        run: |
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "new=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Attempt merge
+        id: merge
+        if: steps.diff.outputs.new == 'true'
+        run: |
+          if git merge upstream/main -m "Merge upstream JesusFilm/phoebe main (automated fork sync)"; then
+            echo "status=merged" >> "$GITHUB_OUTPUT"
+          else
+            git merge --abort
+            echo "status=conflict" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: voidzero-dev/setup-vp@v1
+        if: steps.merge.outputs.status == 'merged'
+        with:
+          cache: true
+
+      - run: vp install --frozen-lockfile --ignore-scripts
+        if: steps.merge.outputs.status == 'merged'
+
+      - name: Verify merged tree
+        id: verify
+        if: steps.merge.outputs.status == 'merged'
+        run: |
+          if vp check && vp run -r lint && vp run -r typecheck && vp run -r test; then
+            echo "status=pass" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=fail" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Push clean sync, close any open tracking issue
+        if: steps.merge.outputs.status == 'merged' && steps.verify.outputs.status == 'pass'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git push origin HEAD:main
+          for n in $(gh issue list --repo "$GITHUB_REPOSITORY" --label fork-sync-blocked --state open --json number --jq '.[].number'); do
+            gh issue close "$n" --repo "$GITHUB_REPOSITORY" \
+              --comment "Resolved: a later automated sync merged and verified cleanly ($(git rev-parse --short HEAD))."
+          done
+
+      - name: Escalate a merge conflict or a failing merge
+        if: steps.merge.outputs.status == 'conflict' || steps.verify.outputs.status == 'fail'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create fork-sync-blocked --repo "$GITHUB_REPOSITORY" \
+            --color B60205 --description "Automated upstream sync needs a human" 2>/dev/null || true
+
+          if [ "${{ steps.merge.outputs.status }}" = "conflict" ]; then
+            body=$(printf '%s\n\n%s\n\n%s\n' \
+              "Merging upstream/main into main produced conflicts." \
+              "Resolve by hand: check out \`main\`, \`git fetch https://github.com/JesusFilm/phoebe.git main:upstream-main\`, \`git merge upstream-main\`, resolve, run \`vp check && vp run -r lint && vp run -r typecheck && vp run -r test\`, then push to \`main\`. See the resolving-merge-conflicts approach used for the #58/#78 multi-tenant merge for the pattern (preserve both intents; consult commit history/PRs for original intent)." \
+              "This issue stays open and gets a new comment each day the sync is still blocked, and closes automatically once a sync merges and verifies cleanly.")
+          else
+            branch="fork-sync/pending-review"
+            git push --force origin HEAD:"$branch"
+            body=$(printf '%s\n\n%s\n' \
+              "Merging upstream/main into main was textually clean but failed \`vp check\`/lint/typecheck/test." \
+              "The merge commit is pushed to \`$branch\` (force-updated on every attempt, so it always reflects the latest upstream) — check it out, fix it up, and push the fix to \`main\` yourself. Do not fast-forward \`main\` to \`$branch\` without fixing the failure first.")
+          fi
+
+          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --label fork-sync-blocked --state open --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body "Still blocked as of $(date -u +%Y-%m-%d): $body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --label fork-sync-blocked \
+              --title "Automated fork sync is blocked" --body "$body"
+          fi
+          exit 1
