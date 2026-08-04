@@ -1,5 +1,6 @@
-// Discovery tests (#58/#63/#91): flat vs nested selection by `repos/` presence,
-// the nested scan over `repos/<owner>/<repo>/`, and workspace tree walk.
+// Discovery tests (#58/#63/#91/#92): flat vs nested selection by `repos/`
+// presence, the nested scan over `repos/<owner>/<repo>/`, workspace tree walk,
+// origin cross-check, and fleet-level slug uniqueness.
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,8 +10,10 @@ import {
   diffFleet,
   discoverTenants,
   discoverWorkspaceTenants,
+  DuplicateOriginSlugError,
   DuplicateTenantSlugError,
   isNestedDeployment,
+  slugFromUrl,
   TENANT_CONFIG_FILE,
   TENANT_ENV_FILE,
   type DiscoveredTenant,
@@ -36,6 +39,36 @@ function writeSlugConfig(at: string, slug: string): void {
     `export default { repoSlug: ${JSON.stringify(slug)} }`,
   );
 }
+
+/** Injected origin map so tests never need a real git checkout. */
+function origins(map: Record<string, string | null>): (tenantDir: string) => string | null {
+  return (tenantDir) => (Object.hasOwn(map, tenantDir) ? map[tenantDir]! : null);
+}
+
+describe("slugFromUrl", () => {
+  test("returns the same slug for SSH and HTTPS forms of one repo", () => {
+    expect(slugFromUrl("git@github.com:acme/widget.git")).toBe("acme/widget");
+    expect(slugFromUrl("https://github.com/acme/widget.git")).toBe("acme/widget");
+    expect(slugFromUrl("https://github.com/acme/widget")).toBe("acme/widget");
+    expect(slugFromUrl("git@github.com:acme/widget")).toBe("acme/widget");
+  });
+
+  test("strips .git and tolerates https credentials", () => {
+    expect(slugFromUrl("https://x-access-token:ghs_x@github.com/acme/widget.git")).toBe(
+      "acme/widget",
+    );
+  });
+
+  test("returns null for empty, malformed, and non-GitHub URLs", () => {
+    expect(slugFromUrl("")).toBeNull();
+    expect(slugFromUrl("   ")).toBeNull();
+    expect(slugFromUrl("not-a-url")).toBeNull();
+    expect(slugFromUrl("git@gitlab.com:acme/widget.git")).toBeNull();
+    expect(slugFromUrl("https://gitlab.com/acme/widget.git")).toBeNull();
+    expect(slugFromUrl("https://github.com/only-owner")).toBeNull();
+    expect(slugFromUrl("git@github.com:acme")).toBeNull();
+  });
+});
 
 describe("flat mode", () => {
   test("no repos/ dir → one in-place tenant", () => {
@@ -108,6 +141,7 @@ describe("workspace mode", () => {
         if (!slug) throw new Error(`unexpected path ${path}`);
         return slug;
       },
+      readOriginUrl: () => null,
     });
     expect(discovery.mode).toBe("workspace");
     expect(discovery.tenants.map((t) => t.slug)).toEqual(["acme/gadget", "acme/widget"]);
@@ -129,6 +163,7 @@ describe("workspace mode", () => {
         if (path.includes("gadget")) return "acme/gadget";
         throw new Error(path);
       },
+      readOriginUrl: () => null,
     });
     // depth 2: root→apps (no config)→widget (config, prune); root→apps→lib has no config
     // at depth budget remaining 0 under lib when depth is 2...
@@ -144,6 +179,7 @@ describe("workspace mode", () => {
         if (path.includes("gadget")) return "acme/gadget";
         throw new Error(path);
       },
+      readOriginUrl: () => null,
     });
     expect(deep.tenants.map((t) => t.slug)).toEqual(["acme/gadget", "acme/widget"]);
   });
@@ -158,6 +194,7 @@ describe("workspace mode", () => {
         if (path.includes("broken")) throw new Error("parse failure");
         return "acme/good";
       },
+      readOriginUrl: () => null,
       warn: (m) => warnings.push(m),
     });
     expect(discovery.tenants.map((t) => t.slug)).toEqual(["acme/good"]);
@@ -172,11 +209,15 @@ describe("workspace mode", () => {
     await expect(
       discoverWorkspaceTenants(dir, 1, {
         loadRepoSlug: () => "acme/same",
+        readOriginUrl: () => null,
       }),
     ).rejects.toBeInstanceOf(DuplicateTenantSlugError);
 
     try {
-      await discoverWorkspaceTenants(dir, 1, { loadRepoSlug: () => "acme/same" });
+      await discoverWorkspaceTenants(dir, 1, {
+        loadRepoSlug: () => "acme/same",
+        readOriginUrl: () => null,
+      });
     } catch (error) {
       expect(error).toBeInstanceOf(DuplicateTenantSlugError);
       const dup = error as DuplicateTenantSlugError;
@@ -184,6 +225,109 @@ describe("workspace mode", () => {
       expect(dup.paths).toContain(join(dir, "a"));
       expect(dup.paths).toContain(join(dir, "b"));
       expect(dup.message).toMatch(/duplicate repoSlug "acme\/same"/);
+    }
+  });
+
+  test("origin mismatch with config repoSlug is skip-and-warn (config authoritative)", async () => {
+    const good = join(dir, "good");
+    const mismatch = join(dir, "mismatch");
+    writeSlugConfig(good, "acme/good");
+    writeSlugConfig(mismatch, "acme/configured");
+    const warnings: string[] = [];
+
+    const discovery = await discoverWorkspaceTenants(dir, 1, {
+      loadRepoSlug: (path) => {
+        if (path.includes("mismatch")) return "acme/configured";
+        return "acme/good";
+      },
+      readOriginUrl: origins({
+        [good]: "git@github.com:acme/good.git",
+        [mismatch]: "https://github.com/acme/other.git",
+      }),
+      warn: (m) => warnings.push(m),
+    });
+    expect(discovery.tenants.map((t) => t.slug)).toEqual(["acme/good"]);
+    expect(discovery.holdIds).toEqual([mismatch]);
+    expect(
+      warnings.some(
+        (w) => w.includes("mismatch") && w.includes("acme/other") && w.includes("acme/configured"),
+      ),
+    ).toBe(true);
+  });
+
+  test("absent origin admits the child on config repoSlug authority", async () => {
+    writeSlugConfig(join(dir, "orphan"), "acme/orphan");
+    const warnings: string[] = [];
+
+    const discovery = await discoverWorkspaceTenants(dir, 1, {
+      loadRepoSlug: () => "acme/orphan",
+      readOriginUrl: () => null,
+      warn: (m) => warnings.push(m),
+    });
+    expect(discovery.tenants.map((t) => t.slug)).toEqual(["acme/orphan"]);
+    expect(discovery.holdIds).toEqual([]);
+    expect(warnings).toEqual([]);
+  });
+
+  test("malformed / non-GitHub origin is treated as absent and admits", async () => {
+    writeSlugConfig(join(dir, "child"), "acme/child");
+    const discovery = await discoverWorkspaceTenants(dir, 1, {
+      loadRepoSlug: () => "acme/child",
+      readOriginUrl: () => "https://gitlab.com/acme/child.git",
+    });
+    expect(discovery.tenants.map((t) => t.slug)).toEqual(["acme/child"]);
+  });
+
+  test("matching origin slug (SSH or HTTPS) admits the child", async () => {
+    const a = join(dir, "a");
+    const b = join(dir, "b");
+    writeSlugConfig(a, "acme/widget");
+    writeSlugConfig(b, "acme/gadget");
+
+    const discovery = await discoverWorkspaceTenants(dir, 1, {
+      loadRepoSlug: (path) =>
+        path === join(a, TENANT_CONFIG_FILE) ? "acme/widget" : "acme/gadget",
+      readOriginUrl: origins({
+        [a]: "git@github.com:acme/widget.git",
+        [b]: "https://github.com/acme/gadget",
+      }),
+    });
+    expect(discovery.tenants.map((t) => t.slug)).toEqual(["acme/gadget", "acme/widget"]);
+  });
+
+  test("duplicate origin-slug across the fleet is a fatal discovery error", async () => {
+    const a = join(dir, "a");
+    const b = join(dir, "b");
+    writeSlugConfig(a, "acme/one");
+    writeSlugConfig(b, "acme/two");
+
+    const loadSlug = (path: string): string =>
+      path === join(a, TENANT_CONFIG_FILE) ? "acme/one" : "acme/two";
+    const sameRemote = origins({
+      // Same remote under different config slugs (SSH vs HTTPS normalises equal)
+      [a]: "git@github.com:acme/shared.git",
+      [b]: "https://github.com/acme/shared.git",
+    });
+
+    await expect(
+      discoverWorkspaceTenants(dir, 1, {
+        loadRepoSlug: loadSlug,
+        readOriginUrl: sameRemote,
+      }),
+    ).rejects.toBeInstanceOf(DuplicateOriginSlugError);
+
+    try {
+      await discoverWorkspaceTenants(dir, 1, {
+        loadRepoSlug: loadSlug,
+        readOriginUrl: sameRemote,
+      });
+    } catch (error) {
+      expect(error).toBeInstanceOf(DuplicateOriginSlugError);
+      const dup = error as DuplicateOriginSlugError;
+      expect(dup.originSlug).toBe("acme/shared");
+      expect(dup.paths).toContain(a);
+      expect(dup.paths).toContain(b);
+      expect(dup.message).toMatch(/duplicate origin slug "acme\/shared"/);
     }
   });
 
@@ -198,6 +342,7 @@ describe("workspace mode", () => {
         if (path.includes("real")) return "acme/real";
         throw new Error(`should not load ${path}`);
       },
+      readOriginUrl: () => null,
     });
     expect(discovery.tenants.map((t) => t.slug)).toEqual(["acme/real"]);
   });

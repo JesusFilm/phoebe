@@ -1,4 +1,4 @@
-// Tenant discovery — how `phoebe boot` finds what to supervise (#58/#63/#91).
+// Tenant discovery — how `phoebe boot` finds what to supervise (#58/#63/#91/#92).
 //
 // A deployment is workspace XOR nested XOR flat, selected by the detection
 // ladder (#83): a root config with a `workspace` block → workspace mode (warns
@@ -12,6 +12,8 @@
 //   workspace           children under the root that carry a root-level
 //                       `phoebe.config.ts`; slug from that config's `repoSlug`.
 //                       The root declaring `workspace` is never itself a tenant.
+//                       Path is *not* owner/repo layout (#58 path↔slug validation
+//                       does not apply). Origin is a best-effort cross-check (#92).
 //
 // Nested `<owner>/<repo>` path is the authoritative tenant identity (#58); in
 // workspace mode the authoritative slug is the child's in-tree config (#85).
@@ -21,6 +23,7 @@
 // removed / changed / held since last poll) and the child lifecycle live in
 // the supervisor (bootstrap/supervise-fleet.ts).
 
+import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
@@ -67,6 +70,95 @@ export class DuplicateTenantSlugError extends Error {
     this.name = "DuplicateTenantSlugError";
     this.slug = slug;
     this.paths = [firstDir, secondDir];
+  }
+}
+
+/**
+ * Fatal discovery error: two workspace children resolve to the same remote
+ * origin slug (transport-normalised). Config `repoSlug` may still differ, but
+ * both would clone/work the same GitHub repo — boot aborts (#92).
+ */
+export class DuplicateOriginSlugError extends Error {
+  readonly originSlug: string;
+  readonly paths: readonly [string, string];
+
+  constructor(originSlug: string, firstDir: string, secondDir: string) {
+    super(
+      `workspace discovery: duplicate origin slug "${originSlug}" at ${firstDir} and ${secondDir} — ` +
+        `boot cannot supervise two children whose checkouts point at the same remote.`,
+    );
+    this.name = "DuplicateOriginSlugError";
+    this.originSlug = originSlug;
+    this.paths = [firstDir, secondDir];
+  }
+}
+
+/** Whether an error is a fatal workspace identity clash (boot must abort). */
+export function isFatalWorkspaceDiscoveryError(
+  error: unknown,
+): error is DuplicateTenantSlugError | DuplicateOriginSlugError {
+  return error instanceof DuplicateTenantSlugError || error instanceof DuplicateOriginSlugError;
+}
+
+/**
+ * Parse a git remote URL to a normalised `owner/repo` slug when it points at
+ * GitHub. SSH and HTTPS forms of the same repo return the same slug so the
+ * origin↔config compare is transport-tolerant (#92/#85).
+ *
+ * Returns `null` for empty, malformed, or non-GitHub URLs — callers treat that
+ * as an absent origin (admit on config authority).
+ */
+export function slugFromUrl(url: string): string | null {
+  const raw = url.trim();
+  if (raw.length === 0) return null;
+
+  // git@github.com:owner/repo.git  (also without .git)
+  const scp = /^git@github\.com:([^/\s]+)\/([^/\s]+?)$/i.exec(raw);
+  if (scp) {
+    return normalizeGithubSlug(scp[1]!, scp[2]!);
+  }
+
+  // https://github.com/owner/repo(.git) — credentials/port allowed via URL parse
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      const parsed = new URL(raw);
+      if (!/^github\.com$/i.test(parsed.hostname)) return null;
+      const segments = parsed.pathname
+        .replace(/^\//, "")
+        .split("/")
+        .filter((s) => s.length > 0);
+      if (segments.length < 2) return null;
+      return normalizeGithubSlug(segments[0]!, segments[1]!);
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+function normalizeGithubSlug(owner: string, repoWithOptionalGit: string): string | null {
+  const ownerClean = owner.trim();
+  const repoClean = repoWithOptionalGit.trim().replace(/\.git$/i, "");
+  if (ownerClean.length === 0 || repoClean.length === 0) return null;
+  if (ownerClean.includes("..") || repoClean.includes("..")) return null;
+  if (ownerClean.includes("/") || repoClean.includes("/")) return null;
+  return `${ownerClean}/${repoClean}`;
+}
+
+/**
+ * Read `remote.origin.url` from a child checkout (never `.gitmodules`). An
+ * unset or unreadable origin is `null` — admitted on config `repoSlug` (#92).
+ */
+export function readTenantOriginUrl(tenantDir: string): string | null {
+  try {
+    const out = execFileSync("git", ["-C", tenantDir, "config", "--get", "remote.origin.url"], {
+      encoding: "utf8",
+      timeout: 5_000,
+    }).trim();
+    return out.length > 0 ? out : null;
+  } catch {
+    return null;
   }
 }
 
@@ -211,19 +303,33 @@ export type DiscoverWorkspaceDeps = {
    * then skip-and-warns and records the dir as a hold candidate.
    */
   loadRepoSlug: (configPath: string) => string | Promise<string>;
+  /**
+   * Read the child checkout's `remote.origin.url` for a best-effort cross-check
+   * against config `repoSlug` (#92). Never reads `.gitmodules`. Defaults to
+   * {@link readTenantOriginUrl}. Return `null` when origin is absent/unreadable.
+   */
+  readOriginUrl?: (tenantDir: string) => string | null | Promise<string | null>;
   warn?: (message: string) => void;
 };
 
 /**
- * Walk a workspace tree and discover tenants (#82/#91).
+ * Walk a workspace tree and discover tenants (#82/#91/#92).
  *
  * - Scan under `configDir` to `depth` (default applied by the caller via
  *   `readWorkspaceField`); the root itself is never a tenant.
  * - Any dir with a root-level `phoebe.config.ts` is a tenant candidate; the
  *   walk prunes there (no tenants inside a found tenant).
+ * - Config `repoSlug` is authoritative; path layout is not validated (#58's
+ *   owner/repo path rule does not apply to the flat workspace tree).
+ * - Fleet uniqueness: duplicate `repoSlug` → {@link DuplicateTenantSlugError};
+ *   duplicate origin-slug (any parseable GitHub origin) →
+ *   {@link DuplicateOriginSlugError}. Both abort boot.
+ * - Origin cross-check after uniqueness claims: `slugFromUrl(origin) ===
+ *   repoSlug` when origin parses as GitHub; absent/malformed → admit; present +
+ *   mismatch → skip-and-warn (config stays authoritative; does not touch
+ *   `ensureClone`'s exact-URL guard).
  * - A child that cannot be read/parsed is skip-and-warned and listed in
  *   `holdIds` (reconcile holds a still-running child rather than draining).
- * - Two children with the same `repoSlug` throw {@link DuplicateTenantSlugError}.
  */
 export async function discoverWorkspaceTenants(
   configDir: string,
@@ -231,9 +337,13 @@ export async function discoverWorkspaceTenants(
   deps: DiscoverWorkspaceDeps,
 ): Promise<{ mode: "workspace"; tenants: DiscoveredTenant[]; holdIds: string[] }> {
   const warn = deps.warn ?? (() => {});
+  const readOrigin = deps.readOriginUrl ?? readTenantOriginUrl;
   const tenants: DiscoveredTenant[] = [];
   const holdIds: string[] = [];
+  /** Fleet uniqueness: config `repoSlug` → first tenant dir. */
   const bySlug = new Map<string, string>();
+  /** Fleet uniqueness: transport-normalised origin slug → first tenant dir. */
+  const byOriginSlug = new Map<string, string>();
 
   const consider = async (dir: string): Promise<void> => {
     const configPath = join(dir, TENANT_CONFIG_FILE);
@@ -244,14 +354,43 @@ export async function discoverWorkspaceTenants(
         holdIds.push(dir);
         return;
       }
-      const prior = bySlug.get(slug);
-      if (prior !== undefined) {
-        throw new DuplicateTenantSlugError(slug, prior, dir);
+
+      // Fleet uniqueness maps first (#92): every successfully loaded child claims
+      // its config repoSlug, and every parseable GitHub origin claims that origin
+      // slug — even if the next step skip-and-warns a mismatch. Two checkouts of
+      // the same remote would race on one private clone target and must abort boot.
+      const priorSlug = bySlug.get(slug);
+      if (priorSlug !== undefined) {
+        throw new DuplicateTenantSlugError(slug, priorSlug, dir);
       }
       bySlug.set(slug, dir);
+
+      const originUrl = await readOrigin(dir);
+      const originSlug =
+        originUrl === null || originUrl.trim().length === 0 ? null : slugFromUrl(originUrl);
+      if (originSlug !== null) {
+        const priorOrigin = byOriginSlug.get(originSlug);
+        if (priorOrigin !== undefined) {
+          throw new DuplicateOriginSlugError(originSlug, priorOrigin, dir);
+        }
+        byOriginSlug.set(originSlug, dir);
+      }
+
+      // Best-effort origin cross-check: null / unparseable / non-GitHub → absent
+      // (admit on config authority). Present + mismatch → skip-and-warn.
+      if (originSlug !== null && originSlug !== slug) {
+        warn(
+          `[phoebe] boot: workspace: skipping ${dir} — origin slug "${originSlug}" ` +
+            `does not match config repoSlug "${slug}" (config is authoritative; ` +
+            `fix the checkout origin or the child's repoSlug).`,
+        );
+        holdIds.push(dir);
+        return;
+      }
+
       tenants.push(tenantAt(dir, slug));
     } catch (error) {
-      if (error instanceof DuplicateTenantSlugError) throw error;
+      if (isFatalWorkspaceDiscoveryError(error)) throw error;
       warn(
         `[phoebe] boot: workspace: skipping ${dir} — ${
           error instanceof Error ? error.message : String(error)
