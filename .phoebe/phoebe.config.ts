@@ -1,4 +1,4 @@
-// Dogfood config — Phoebe working its own repo (JesusFilm/phoebe).
+// Fleet config — Phoebe working the tanflem/phoebe fork.
 //
 // Type-only import, same as the shipped scaffold: this config is loaded from a
 // container mount with no reachable `node_modules`, so a value import could not
@@ -7,8 +7,8 @@
 import type { PhoebeUserConfig } from "../src/config-schema.ts";
 
 const config: PhoebeUserConfig = {
-  repoSlug: "JesusFilm/phoebe",
-  repoUrl: "https://github.com/JesusFilm/phoebe.git",
+  repoSlug: "tanflem/phoebe",
+  repoUrl: "https://github.com/tanflem/phoebe.git",
 
   // This repo is pnpm + vite-plus (`vp`). The container enables corepack, so
   // `pnpm` resolves to the version pinned in package.json's `packageManager`.
@@ -19,7 +19,7 @@ const config: PhoebeUserConfig = {
   testCommand: "pnpm run test",
   readyCommand: "pnpm run ready",
 
-  // Dogfood with the Cursor provider (composer-2.5 default). Requires
+  // Fleet test with the Cursor provider (composer-2.5 default). Requires
   // CURSOR_API_KEY in the container env (see .env).
   defaultProvider: "cursor",
 
