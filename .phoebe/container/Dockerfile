@@ -75,7 +75,7 @@ RUN set -eux; \
     echo "${cursor_sha}  /tmp/cursor-agent.tar.gz" | sha256sum -c -; \
     mkdir -p /opt/cursor-agent; \
     tar --strip-components=1 -xzf /tmp/cursor-agent.tar.gz -C /opt/cursor-agent; \
-    chmod 0711 /opt/cursor-agent/cursor-agent; \
+    chmod 0711 /opt/cursor-agent/node; \
     rm /tmp/cursor-agent.tar.gz; \
     ln -s /opt/cursor-agent/cursor-agent /usr/local/bin/agent; \
     ln -s /opt/cursor-agent/cursor-agent /usr/local/bin/cursor-agent
