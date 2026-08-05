@@ -86,12 +86,16 @@ describe("newestForeignCommentAt", () => {
   const phoebe = "phoebe-bot";
   test("null when there are no foreign comments", () => {
     expect(
-      newestForeignCommentAt(
-        [{ createdAt: "2026-01-01T00:00:00Z", authorLogin: phoebe }],
-        phoebe,
-      ),
+      newestForeignCommentAt([{ createdAt: "2026-01-01T00:00:00Z", authorLogin: phoebe }], phoebe),
     ).toBeNull();
     expect(newestForeignCommentAt([], phoebe)).toBeNull();
+  });
+  test("a deleted author (empty login) still counts as foreign activity", () => {
+    // main.ts coerces a null GitHub author to "" — never Phoebe (whose login is
+    // always non-empty here), so such a comment must count toward the reset.
+    expect(
+      newestForeignCommentAt([{ createdAt: "2026-01-03T00:00:00Z", authorLogin: "" }], phoebe),
+    ).toBe("2026-01-03T00:00:00Z");
   });
   test("ignores Phoebe's own comments and returns the newest foreign instant", () => {
     expect(
@@ -126,7 +130,11 @@ describe("decideTimeoutRecord (engine write-path core)", () => {
       decideTimeoutRecord({
         comments: [
           { body: "human note", createdAt: "2026-01-02T00:00:00Z", authorLogin: "human" },
-          { body: buildUnitTimeoutMarker(1), createdAt: "2026-01-03T00:00:00Z", authorLogin: phoebe },
+          {
+            body: buildUnitTimeoutMarker(1),
+            createdAt: "2026-01-03T00:00:00Z",
+            authorLogin: phoebe,
+          },
         ],
         phoebeLogin: phoebe,
         k,
@@ -140,7 +148,11 @@ describe("decideTimeoutRecord (engine write-path core)", () => {
     expect(
       decideTimeoutRecord({
         comments: [
-          { body: buildUnitTimeoutMarker(2), createdAt: "2026-01-03T00:00:00Z", authorLogin: phoebe },
+          {
+            body: buildUnitTimeoutMarker(2),
+            createdAt: "2026-01-03T00:00:00Z",
+            authorLogin: phoebe,
+          },
         ],
         phoebeLogin: phoebe,
         k,
@@ -152,7 +164,11 @@ describe("decideTimeoutRecord (engine write-path core)", () => {
     expect(
       decideTimeoutRecord({
         comments: [
-          { body: buildUnitTimeoutMarker(2), createdAt: "2026-01-03T00:00:00Z", authorLogin: phoebe },
+          {
+            body: buildUnitTimeoutMarker(2),
+            createdAt: "2026-01-03T00:00:00Z",
+            authorLogin: phoebe,
+          },
           { body: "a human pushed a fix", createdAt: "2026-01-04T00:00:00Z", authorLogin: "human" },
         ],
         phoebeLogin: phoebe,
@@ -165,7 +181,11 @@ describe("decideTimeoutRecord (engine write-path core)", () => {
     expect(
       decideTimeoutRecord({
         comments: [
-          { body: buildUnitTimeoutMarker(2), createdAt: "2026-01-03T00:00:00Z", authorLogin: phoebe },
+          {
+            body: buildUnitTimeoutMarker(2),
+            createdAt: "2026-01-03T00:00:00Z",
+            authorLogin: phoebe,
+          },
         ],
         phoebeLogin: phoebe,
         extraActivityAt: "2026-01-04T00:00:00Z",

@@ -313,10 +313,16 @@ type UnitTimeoutInputs = {
   baseline: string;
 };
 
-type GhTimeoutComment = { body: string; createdAt: string; author: { login: string } };
+type GhTimeoutComment = { body: string; createdAt: string; author: { login: string } | null };
 
 function toTimeoutComments(comments: readonly GhTimeoutComment[]): TimeoutComment[] {
-  return comments.map((c) => ({ body: c.body, createdAt: c.createdAt, authorLogin: c.author.login }));
+  // `author` is null for a deleted account; coerce to "" (a foreign author, never
+  // Phoebe) rather than letting the deref throw and skip the whole timeout record.
+  return comments.map((c) => ({
+    body: c.body,
+    createdAt: c.createdAt,
+    authorLogin: c.author?.login ?? "",
+  }));
 }
 
 function fetchIssueTimeoutInputs(issueNumber: number): UnitTimeoutInputs {
@@ -329,7 +335,11 @@ function fetchIssueTimeoutInputs(issueNumber: number): UnitTimeoutInputs {
   ]);
   // Issues have no commits and `gh` does not expose body-edit times, so a new
   // human comment is the only reset signal; `updatedAt` is the un-stick baseline.
-  return { comments: toTimeoutComments(raw.comments), extraActivityAt: null, baseline: raw.updatedAt };
+  return {
+    comments: toTimeoutComments(raw.comments),
+    extraActivityAt: null,
+    baseline: raw.updatedAt,
+  };
 }
 
 function fetchPrTimeoutInputs(prNumber: PrNumber): UnitTimeoutInputs {
@@ -389,7 +399,12 @@ function recordUnitTimeout(picked: WorkUnit, phoebeLogin: string, emit: EmitUnit
       postUnitComment(
         isIssueKind,
         ref.id,
-        buildQuarantineComment({ kind: ref.kind, id: Number(ref.id), k: count, baseline: inputs.baseline }),
+        buildQuarantineComment({
+          kind: ref.kind,
+          id: Number(ref.id),
+          k: count,
+          baseline: inputs.baseline,
+        }),
       );
       emit({
         unit: ref,
