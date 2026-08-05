@@ -106,18 +106,26 @@ describe("resolveConfig", () => {
     expect(resolved.runTimeoutMs).toBe(CONFIG_DEFAULTS.runTimeoutMs);
     expect(resolved.maxUnitTimeouts).toBe(CONFIG_DEFAULTS.maxUnitTimeouts);
     expect(resolved.maxUnitAttempts).toBe(CONFIG_DEFAULTS.maxUnitAttempts);
+    expect(resolved.leaseTtlMs).toBe(CONFIG_DEFAULTS.leaseTtlMs);
   });
 
   test("run-protection knobs carry sane shipped defaults", () => {
     expect(CONFIG_DEFAULTS.runTimeoutMs).toBe(2_700_000);
     expect(CONFIG_DEFAULTS.maxUnitTimeouts).toBe(3);
     expect(CONFIG_DEFAULTS.maxUnitAttempts).toBe(3);
+    expect(CONFIG_DEFAULTS.leaseTtlMs).toBe(1_800_000);
     const resolved = resolveConfig(
-      minimalUserConfig({ runTimeoutMs: 60_000, maxUnitTimeouts: 5, maxUnitAttempts: 4 }),
+      minimalUserConfig({
+        runTimeoutMs: 60_000,
+        maxUnitTimeouts: 5,
+        maxUnitAttempts: 4,
+        leaseTtlMs: 120_000,
+      }),
     );
     expect(resolved.runTimeoutMs).toBe(60_000);
     expect(resolved.maxUnitTimeouts).toBe(5);
     expect(resolved.maxUnitAttempts).toBe(4);
+    expect(resolved.leaseTtlMs).toBe(120_000);
   });
 
   test("preserves the caller's required-field values verbatim", () => {
