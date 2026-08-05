@@ -33,6 +33,15 @@ import { installDrainSignal, type DrainSignal } from "./drain.ts";
 import { BrokerDisconnectedError, createSlotClient, type SlotClient } from "./slot-client.ts";
 import { RunTimeoutError, resolveRunTimeoutMs, runWithDeadline } from "./run-timeout.ts";
 import {
+  buildLeaseComment,
+  buildReclaimComment,
+  leaseHeartbeatIntervalMs,
+  parseLeaseMarker,
+  reclaimDecision,
+  resolveLeaseTtlMs,
+} from "./claim-lease.ts";
+import { PHOEBE_QUARANTINE_LABEL } from "./quarantine.ts";
+import {
   createEmitUnitEvent,
   STATUS_FILE,
   type EmitUnitEvent,
@@ -130,6 +139,10 @@ const DEFAULT_POLL_INTERVAL_MS = 300_000;
 // a known ceiling instead of starving the fleet. Env (`PHOEBE_RUN_TIMEOUT_MS`)
 // overrides the config field.
 const RUN_TIMEOUT_MS = resolveRunTimeoutMs(process.env, config.runTimeoutMs);
+// Crash-safe claims (#15): how long a `processingLabel` lease may go without a
+// heartbeat before the reclaim sweep flips it back to `readyLabel`. Env
+// (`PHOEBE_LEASE_TTL_MS`) overrides the config field.
+const LEASE_TTL_MS = resolveLeaseTtlMs(process.env, config.leaseTtlMs);
 // Never let a gh/git child process block the persistent loop forever (rate-limit
 // backoff, credential prompt, network partition). Configured toolchain commands
 // (install/test) get a longer leash.
@@ -280,6 +293,41 @@ function listResearchIssues(): Issue[] {
   return listIssuesWithLabel(config.researchLabel);
 }
 
+/**
+ * Self-recovery sweep for orphaned `processingLabel` claims (#15). Every
+ * `processingLabel` issue's lease marker (its latest matching comment) is
+ * read back and, per `reclaimDecision`, flipped back to `readyLabel` when it
+ * has no marker, is this runtime's own claim from before a restart
+ * (`forceOwnReclaim`, boot only), or its heartbeat has gone stale past the
+ * TTL. A quarantined issue (#75) is left alone — that label already means a
+ * human needs to look at it.
+ */
+function reclaimStaleClaims(runtimeId: string, opts: { forceOwnReclaim: boolean }): void {
+  const nowMs = Date.now();
+  for (const issue of listIssuesWithLabel(config.processingLabel)) {
+    if (issue.labels.includes(PHOEBE_QUARANTINE_LABEL)) continue;
+    const lease = parseLatestMarker(fetchIssueCommentBodies(issue.number), parseLeaseMarker);
+    const reason = reclaimDecision(lease, {
+      ownRuntimeId: runtimeId,
+      nowMs,
+      ttlMs: LEASE_TTL_MS,
+      forceOwnReclaim: opts.forceOwnReclaim,
+    });
+    if (reason === null) continue;
+    console.log(`[phoebe] Reclaiming #${issue.number} (${reason}) back to ${config.readyLabel}.`);
+    gh([
+      "issue",
+      "edit",
+      String(issue.number),
+      "--add-label",
+      config.readyLabel,
+      "--remove-label",
+      config.processingLabel,
+    ]);
+    postIssueComment(issue.number, buildReclaimComment(reason));
+  }
+}
+
 function blockerPrState(blockerIssueNumber: number): BlockerPrState {
   const branch: BranchRef = issueBranch(blockerIssueNumber);
   const open = ghJson<Array<{ number: number }>>([
@@ -401,6 +449,10 @@ function postPrComment(prNumber: PrNumber, body: string): void {
   gh(["pr", "comment", String(prNumber), "--body", body]);
 }
 
+function postIssueComment(issueNumber: number, body: string): void {
+  gh(["issue", "comment", String(issueNumber), "--body", body]);
+}
+
 type OpenPhoebePr = {
   number: PrNumber;
   headRefName: BranchRef;
@@ -506,6 +558,18 @@ function issueBody(issueNumber: number): string {
   return ghJson<{ body: string }>(["issue", "view", String(issueNumber), "--json", "body"]).body;
 }
 
+/** All comment bodies on an issue, oldest first — the raw input to the #15 lease-marker lookup. */
+function fetchIssueCommentBodies(issueNumber: number): string[] {
+  const { comments } = ghJson<{ comments: Array<{ body: string }> }>([
+    "issue",
+    "view",
+    String(issueNumber),
+    "--json",
+    "comments",
+  ]);
+  return comments.map((comment) => comment.body);
+}
+
 // ---------------------------------------------------------------------------
 // git helpers bound to the clone
 // ---------------------------------------------------------------------------
@@ -590,6 +654,74 @@ function prepareWorktree(opts: { branch: BranchRef; baseRef?: string }): string 
  */
 function verificationReportPath(worktreeDir: string): string {
   return `${worktreeDir}.verification.json`;
+}
+
+/**
+ * Claim an issue (#15): post the lease marker comment *before* flipping the
+ * label, so `processingLabel` present always implies a durable claim marker
+ * exists — never the reverse race (a label with no marker to reclaim by).
+ */
+function claimIssueLease(opts: {
+  issueNumber: number;
+  branch: BranchRef;
+  runtimeId: string;
+  claimedAt: string;
+}): void {
+  postIssueComment(
+    opts.issueNumber,
+    buildLeaseComment({
+      runtimeId: opts.runtimeId,
+      claimedAt: opts.claimedAt,
+      heartbeatAt: opts.claimedAt,
+      branch: opts.branch,
+    }),
+  );
+  gh([
+    "issue",
+    "edit",
+    String(opts.issueNumber),
+    "--add-label",
+    config.processingLabel,
+    "--remove-label",
+    config.readyLabel,
+  ]);
+}
+
+/**
+ * Refresh the lease's heartbeat while a claim is held, so the reclaim sweep
+ * never yanks a slow-but-alive run. Returns a disposer that stops the timer;
+ * callers must invoke it once the run ends, success or failure alike. A
+ * failed heartbeat post is logged and swallowed — the run keeps going, and it
+ * only risks reclaim once the full TTL elapses without ever landing one.
+ */
+function startLeaseHeartbeat(opts: {
+  issueNumber: number;
+  branch: BranchRef;
+  runtimeId: string;
+  claimedAt: string;
+  ttlMs: number;
+}): () => void {
+  const timer = setInterval(() => {
+    try {
+      postIssueComment(
+        opts.issueNumber,
+        buildLeaseComment({
+          runtimeId: opts.runtimeId,
+          claimedAt: opts.claimedAt,
+          heartbeatAt: new Date().toISOString(),
+          branch: opts.branch,
+        }),
+      );
+    } catch (error) {
+      console.warn(
+        `[phoebe] Lease heartbeat failed for #${opts.issueNumber} — ${
+          error instanceof Error ? error.message : String(error)
+        }.`,
+      );
+    }
+  }, leaseHeartbeatIntervalMs(opts.ttlMs));
+  timer.unref();
+  return () => clearInterval(timer);
 }
 
 async function runAgentInWorktree(opts: {
@@ -1203,6 +1335,7 @@ async function runOneIssue(opts: {
 type RunContext = {
   stack: StackContext;
   phoebeLogin: string;
+  runtimeId: string;
 };
 
 type WorkKind = {
@@ -1473,22 +1606,40 @@ function fetchResearchWorkData(): {
   };
 }
 
-async function runIssueUnit(unit: IssueWorkUnit): Promise<UnitResult> {
+async function runIssueUnit(unit: IssueWorkUnit, runtimeId: string): Promise<UnitResult> {
   const { issue: target, resolution } = unit;
   console.log(
     `[phoebe] Working #${target.number} — base ${resolution.worktreeBase}` +
       (resolution.stacked ? ` (stacked on #${resolution.blockerIssueNumber})` : "") +
       ".",
   );
-  return runOneIssue({
+  // #15: the engine claims the lease itself (marker comment, then the label
+  // flip) before the agent ever starts, and refreshes the heartbeat while it
+  // runs — so a crash mid-run leaves a claim the next boot/cycle can reclaim,
+  // rather than a bare label flip nothing ever re-examines.
+  const branch = issueBranch(target.number);
+  const claimedAt = new Date().toISOString();
+  claimIssueLease({ issueNumber: target.number, branch, runtimeId, claimedAt });
+  const stopHeartbeat = startLeaseHeartbeat({
     issueNumber: target.number,
-    issueTitle: target.title,
-    worktreeBase: resolution.worktreeBase,
-    stacked: resolution.stacked,
-    promptFile: config.promptFiles.issue,
-    blockerIssueNumber: resolution.blockerIssueNumber,
-    blockerPrNumber: resolution.blockerPrNumber,
+    branch,
+    runtimeId,
+    claimedAt,
+    ttlMs: LEASE_TTL_MS,
   });
+  try {
+    return await runOneIssue({
+      issueNumber: target.number,
+      issueTitle: target.title,
+      worktreeBase: resolution.worktreeBase,
+      stacked: resolution.stacked,
+      promptFile: config.promptFiles.issue,
+      blockerIssueNumber: resolution.blockerIssueNumber,
+      blockerPrNumber: resolution.blockerPrNumber,
+    });
+  } finally {
+    stopHeartbeat();
+  }
 }
 
 async function runResearchUnit(unit: IssueWorkUnit): Promise<UnitResult> {
@@ -1546,8 +1697,8 @@ const KINDS: Record<WorkKindName, WorkKind> = {
       const { issues, blockerStates, nativeBlockersByIssue } = fetchIssueWorkData();
       return { kind: "issues", issues, blockerStates, nativeBlockersByIssue };
     },
-    runUnit: async (unit) => {
-      return runIssueUnit(unit as IssueWorkUnit);
+    runUnit: async (unit, context) => {
+      return runIssueUnit(unit as IssueWorkUnit, context.runtimeId);
     },
   },
   research: {
@@ -1866,6 +2017,10 @@ export async function runEngine(argv: readonly string[] = process.argv.slice(2))
     if (config.stackMode === "native") {
       prepareNativeStackTooling();
     }
+    // #15 startup self-recovery: a fresh process start is proof any claim this
+    // persisted runtime id still holds is dead (it cannot still be mid-run),
+    // so reclaim those unconditionally rather than waiting out the lease TTL.
+    reclaimStaleClaims(status.snapshot().runtime.runtimeId, { forceOwnReclaim: true });
   }
 
   // `phoebe boot` stops the engine with SIGTERM (container shutdown, and later a
@@ -1935,6 +2090,15 @@ async function runLoop({
         reason: "Drain requested — starting no new work unit.",
       });
       break;
+    }
+    // #15 per-cycle self-recovery: reclaim any `processingLabel` issue whose
+    // lease has no marker or a heartbeat older than the TTL. Not
+    // `forceOwnReclaim` — a claim this same long-lived process still holds
+    // between cycles is between units, not orphaned; it backs off for the TTL
+    // like any other claim rather than instantly re-reclaiming (and
+    // thrash-retrying) its own just-failed unit.
+    if (inContainer && !dryRun) {
+      reclaimStaleClaims(status.snapshot().runtime.runtimeId, { forceOwnReclaim: false });
     }
     status.record({ kind: "selecting" });
     const fetchKinds = runOnce ? oneShotWorkKinds(workOrder) : workOrder;
@@ -2024,6 +2188,7 @@ async function runLoop({
         {
           stack: { issueBodies: data.issueBodies, blockerStates: data.blockerStates },
           phoebeLogin: data.phoebeLogin ?? "",
+          runtimeId: status.snapshot().runtime.runtimeId,
         },
       );
       const pullRequestNumber = pullRequestNumberAfterWork(picked);

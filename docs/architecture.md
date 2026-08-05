@@ -171,6 +171,9 @@ policy make the failure visible. See
 ## One cycle, end to end
 
 ```
+reclaim stale `processingLabel` leases (#15; container + non-dry-run only)
+      │
+      ▼
 gather work data for each kind in workOrder
       │
       ▼
@@ -192,6 +195,14 @@ The persistent daemon repeats this forever, idling `PHOEBE_POLL_INTERVAL_MS`
 (default 300000) between empty cycles. `--run-once` works at most one unit of
 the first one-shot-eligible kind (only `issues`) and exits — the janitor kinds
 (`conflicts`, `checks`, `reviews`) are persistent-mode only.
+
+For the `issues` kind specifically, "run agent" is bracketed by a claim: the
+engine posts a lease marker comment and flips `readyLabel` → `processingLabel`
+before the worktree is even prepared, and refreshes the marker's heartbeat
+while the agent runs. If the runtime dies mid-run, the lease's heartbeat goes
+stale and the next boot/cycle's reclaim step (above) flips the label back to
+`readyLabel` — see [`configuration.md`](configuration.md) for the
+`leaseTtlMs`/`PHOEBE_LEASE_TTL_MS` TTL and issue #15 for the full design.
 
 ## Provenance: the port and its hardening commits
 
