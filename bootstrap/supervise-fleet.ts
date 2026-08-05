@@ -33,10 +33,42 @@ export const CHILD_RESPAWN_BACKOFF_MS = 10_000;
 /** Default fleet poll cadence (shared with the single-engine watch). */
 export const DEFAULT_FLEET_INTERVAL_MS = 60_000;
 
+/**
+ * How long a drain waits for a child to exit after `SIGTERM` before escalating
+ * to `SIGKILL` (#79). The engine treats `SIGTERM` as a graceful drain — finish
+ * the work unit in flight, start no new one, exit (src/drain.ts) — and that unit
+ * is itself bounded by the engine's per-unit run timeout (#72, default 45 min).
+ * This grace sits comfortably above that so a legitimately draining unit is never
+ * force-killed; it exists only for a child that ignores `SIGTERM` (or whose unit
+ * timeout also fails), guaranteeing `drain` — and therefore `drainAll`, which
+ * gates both the container-stop path and the in-process engine-relaunch path —
+ * always completes rather than hanging on the container's stop grace alone.
+ */
+export const DEFAULT_DRAIN_TIMEOUT_MS = 3_600_000;
+
 /** A supervised tenant child — enough to drain it and await its exit. */
 export type FleetChild = {
   kill: (signal: NodeJS.Signals) => void;
   exited: Promise<EngineExit>;
+};
+
+/**
+ * A cancelable one-shot timer backing the drain escalation. Injected — like the
+ * poll clock — so the `SIGKILL` path is unit-tested without real timers. `cancel`
+ * runs when the child exits within the grace, so a graceful drain leaves no
+ * pending timer behind.
+ */
+export type DrainTimer = (ms: number) => { expired: Promise<void>; cancel: () => void };
+
+const defaultDrainTimer: DrainTimer = (ms) => {
+  let cancel = (): void => {};
+  const expired = new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    // The drain grace must never keep an otherwise-idle container alive.
+    timer.unref?.();
+    cancel = () => clearTimeout(timer);
+  });
+  return { expired, cancel };
 };
 
 /** Discover may be sync or async; samples alone, or samples + hold ids (#86/#91). */
@@ -73,6 +105,10 @@ export type SuperviseFleetDeps = {
   /** Reap a child we intentionally drained (relaunch/remove); the broker owner id. */
   onReap?: (tenantId: string) => void;
   crashBackoffMs?: number;
+  /** Grace after `SIGTERM` before a drain escalates to `SIGKILL` (#79). */
+  drainTimeoutMs?: number;
+  /** Cancelable timer backing the drain escalation; injected for tests (#79). */
+  drainTimer?: DrainTimer;
 };
 
 type ChildRecord = {
@@ -93,6 +129,8 @@ type ChildRecord = {
 export async function superviseFleet(deps: SuperviseFleetDeps): Promise<EngineExit> {
   const intervalMs = deps.intervalMs ?? DEFAULT_FLEET_INTERVAL_MS;
   const backoffMs = deps.crashBackoffMs ?? CHILD_RESPAWN_BACKOFF_MS;
+  const drainTimeoutMs = deps.drainTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS;
+  const drainTimer = deps.drainTimer ?? defaultDrainTimer;
   const children = new Map<string, ChildRecord>();
 
   // A re-armable wake signal so a child death breaks the poll wait immediately.
@@ -118,7 +156,20 @@ export async function superviseFleet(deps: SuperviseFleetDeps): Promise<EngineEx
   const drain = async (record: ChildRecord): Promise<void> => {
     record.draining = true;
     record.child.kill("SIGTERM");
-    await record.child.exited;
+    // Bound the graceful drain: a child that ignores `SIGTERM`, or whose work
+    // unit never finishes, must not block `drain` — and so `drainAll`, which
+    // gates the container-stop and in-process engine-relaunch paths — forever.
+    const timer = drainTimer(drainTimeoutMs);
+    const outcome = await Promise.race([
+      record.child.exited.then(() => "exited" as const),
+      timer.expired.then(() => "timeout" as const),
+    ]);
+    if (outcome === "timeout") {
+      record.child.kill("SIGKILL");
+      await record.child.exited;
+    } else {
+      timer.cancel();
+    }
     deps.onReap?.(record.tenant.id);
   };
 
