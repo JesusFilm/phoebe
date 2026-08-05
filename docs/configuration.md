@@ -185,14 +185,18 @@ and `prompts/` at the repo root:
 
 ```ts
 // <repo>/phoebe.config.ts — stays at the repo root (see below)
-export default defineConfig({
+import type { PhoebeUserConfig } from "phoebe-agent";
+
+const config: PhoebeUserConfig = {
   repoSlug: "acme/widget",
   repoUrl: "https://github.com/acme/widget.git",
   installCommand: "pnpm install --frozen-lockfile",
   checkCommand: "pnpm run check",
   testCommand: "pnpm run test",
   configDir: ".phoebe", // read .env + prompts from <repo>/.phoebe/
-});
+};
+
+export default config;
 ```
 
 - The supervisor reads the tenant `.env` from `<dir>/<configDir>/.env` and runs

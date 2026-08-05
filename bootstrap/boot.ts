@@ -47,6 +47,7 @@ import {
   isNestedDeployment,
   withTenantConfigDir,
   type DiscoveredTenant,
+  type TenantSample,
 } from "./tenants.ts";
 import { readConfigDir } from "./config-dir.ts";
 import { superviseFleet, type FleetChild, type FleetDiscoverInput } from "./supervise-fleet.ts";
@@ -466,28 +467,30 @@ function runFleet(opts: {
  * Nested-mode discover callback: filesystem scan + per-tenant fingerprints.
  * The sync scan builds tenants co-located; a second pass reads each tenant's
  * bootstrapper-only `configDir` (#98) and relocates its `.env` accordingly. A
- * config that will not load / a malformed `configDir` warns and falls back to
- * co-location (the env read then surfaces at the first private-repo git call).
+ * config that will not load / a malformed `configDir` is **held**, not started —
+ * the same skip-and-hold workspace discovery uses (#86), so a misconfigured
+ * tenant surfaces loudly rather than silently running against the wrong `.env`.
  */
 function nestedDiscover(configDir: string): () => FleetDiscoverInput {
   return async () => {
-    const tenants = await Promise.all(
-      discoverTenants(configDir).tenants.map(async (tenant) => {
-        try {
-          return withTenantConfigDir(tenant, await loadTenantConfigDir(tenant.configPath));
-        } catch (error) {
-          console.warn(
-            `[phoebe] boot: nested: ${tenant.id} — ignoring configDir (${describe(error)}); ` +
-              `reading .env co-located.`,
-          );
-          return tenant;
-        }
-      }),
-    );
-    return tenants.map((tenant) => ({
-      tenant,
-      fingerprint: tenantFingerprint(tenant.configPath, tenant.envPath),
-    }));
+    const samples: TenantSample[] = [];
+    const hold: string[] = [];
+    for (const tenant of discoverTenants(configDir).tenants) {
+      try {
+        const resolved = withTenantConfigDir(tenant, await loadTenantConfigDir(tenant.configPath));
+        samples.push({
+          tenant: resolved,
+          fingerprint: tenantFingerprint(resolved.configPath, resolved.envPath),
+        });
+      } catch (error) {
+        console.warn(
+          `[phoebe] boot: nested: holding ${tenant.id} — ${describe(error)} ` +
+            `(not started until its configDir resolves).`,
+        );
+        hold.push(tenant.id);
+      }
+    }
+    return { samples, hold };
   };
 }
 
