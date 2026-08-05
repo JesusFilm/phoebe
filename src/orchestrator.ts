@@ -4,7 +4,11 @@
 import { asBranchRef, asSha, type BranchRef, type PrNumber, type Sha } from "./branded.ts";
 import type { BlockerSource, StackMode, WorkKindName } from "./config-schema.ts";
 import { config } from "./resolved-config.ts";
-import { PHOEBE_QUARANTINE_LABEL } from "./quarantine.ts";
+import {
+  PHOEBE_QUARANTINE_LABEL,
+  shouldBackoffUnitRetry,
+  type UnitAttemptMarker,
+} from "./quarantine.ts";
 
 export {
   validateWorkOrder,
@@ -296,6 +300,8 @@ export type ConflictingPrCandidate = {
   headSha?: Sha;
   baseSha?: Sha;
   failureWatermark?: ConflictFailWatermark | null;
+  /** No-commit-attempt counter (#25) — read from the unit's tracking comment. */
+  attemptMarker?: UnitAttemptMarker | null;
 };
 
 export type ConflictFailWatermark = {
@@ -514,6 +520,26 @@ export function selectConflictFixCandidates(
   });
 }
 
+/**
+ * Drop PR-keyed candidates that are inside their no-commit-attempt backoff
+ * window (#25) — a transient failure (rate limit, 504) then recovers on its
+ * own instead of burning a full agent cycle every poll while it's within the
+ * growing gap between retries. A quarantined unit never reaches this filter:
+ * it's already excluded upstream by the `PHOEBE_QUARANTINE_LABEL` scope check.
+ */
+export function filterBackoffEligible<T extends { attemptMarker?: UnitAttemptMarker | null }>(
+  candidates: readonly T[],
+  now: string,
+): T[] {
+  return candidates.filter((c) => {
+    const marker = c.attemptMarker;
+    if (!marker) {
+      return true;
+    }
+    return !shouldBackoffUnitRetry({ attemptCount: marker.n, lastAttemptAt: marker.at, now });
+  });
+}
+
 export type StatusCheckItem = {
   __typename?: string;
   name?: string;
@@ -625,6 +651,8 @@ export type ChecksCandidate = {
   mergeStateStatus?: string;
   failingChecks: FailingCheck[];
   failureWatermark?: ChecksFailWatermark | null;
+  /** No-commit-attempt counter (#25) — read from the unit's tracking comment. */
+  attemptMarker?: UnitAttemptMarker | null;
 };
 
 export type ChecksFailWatermark = {
@@ -1017,6 +1045,36 @@ export function summarizeReviewsSelection(
 ): ReviewsSelectionSummary {
   const candidates = selectReviewsCandidates(prs, ctx, phoebeLogin);
   return { unit: pickOldestPr(candidates), skipped: prs.length - candidates.length };
+}
+
+/** Bound, marker-safe slug for a `UnitAttemptMarker.signature` (#25). */
+export function slugifyFailureSignature(input: string, maxLen = 80): string {
+  const slug = input
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug.slice(0, maxLen) || "unknown";
+}
+
+/** Failure signature for a conflict unit that produced no commit (#25). */
+export function conflictFailureSignature(opts: {
+  mergeable?: string;
+  mergeStateStatus?: string;
+}): string {
+  if (!opts.mergeable) {
+    return "merge-setup-failed";
+  }
+  return slugifyFailureSignature(
+    `mergeable-${opts.mergeable}${opts.mergeStateStatus ? `-${opts.mergeStateStatus}` : ""}`,
+  );
+}
+
+/** Failure signature for a checks unit that produced no commit (#25). */
+export function checksFailureSignature(failingChecks: readonly FailingCheck[]): string {
+  if (failingChecks.length === 0) {
+    return "checks-failed";
+  }
+  return slugifyFailureSignature(`checks-failed-${failingChecks.map((c) => c.name).join("-")}`);
 }
 
 export function conflictFixFailureComment(

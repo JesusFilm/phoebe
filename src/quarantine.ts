@@ -14,11 +14,35 @@
 //
 // The marker/comment builders here mirror the `*FailWatermark` family in
 // orchestrator.ts (`build*`/`parse*`, read via `parseLatestMarker`).
+//
+// #25 generalises the same label/comment/baseline machinery to a second
+// trigger: K consecutive attempts that produce no commit, on the PR-keyed work
+// kinds (conflicts/checks) the #75 timeout counter above never covers, since
+// those runs fail fast at verification rather than hanging. `UnitAttemptMarker`
+// below is that counter — kind-scoped (a PR can be failing conflicts *and*
+// checks at once, each with its own count) and reset-on-commit via `ref`
+// (the PR head SHA at last count), the PR-unit analogue of #75's
+// activity-staleness check. It shares `PHOEBE_QUARANTINE_LABEL` and
+// `buildQuarantineComment` with the timeout trigger — same mechanism, a new
+// counting rule — but is a distinct counter/config knob (`maxUnitAttempts`),
+// since "hung" and "fails fast with no commit" are different failure shapes
+// worth tuning independently.
 
 import type { Sha } from "./branded.ts";
 
 /** Phoebe-owned skip label — distinct from the user-supplied `prOptOutLabel`. */
 export const PHOEBE_QUARANTINE_LABEL = "phoebe:quarantined";
+
+/** Positive-integer env override wins, else the config field, else `fallback`. */
+function resolveThreshold(
+  envValue: string | undefined,
+  configValue: number,
+  fallback: number,
+): number {
+  const raw = Number(envValue);
+  if (Number.isInteger(raw) && raw >= 1) return raw;
+  return Number.isInteger(configValue) && configValue >= 1 ? configValue : fallback;
+}
 
 /** Consecutive timeouts before quarantine; the #75 house number. */
 export const DEFAULT_MAX_UNIT_TIMEOUTS = 3;
@@ -32,11 +56,21 @@ export function resolveMaxUnitTimeouts(
   env: NodeJS.ProcessEnv,
   configValue: number = DEFAULT_MAX_UNIT_TIMEOUTS,
 ): number {
-  const raw = Number(env["PHOEBE_MAX_UNIT_TIMEOUTS"]);
-  if (Number.isInteger(raw) && raw >= 1) return raw;
-  return Number.isInteger(configValue) && configValue >= 1
-    ? configValue
-    : DEFAULT_MAX_UNIT_TIMEOUTS;
+  return resolveThreshold(env["PHOEBE_MAX_UNIT_TIMEOUTS"], configValue, DEFAULT_MAX_UNIT_TIMEOUTS);
+}
+
+/** Consecutive no-commit attempts before quarantine (#25); the house number. */
+export const DEFAULT_MAX_UNIT_ATTEMPTS = 3;
+
+/**
+ * Resolve K for the no-commit-attempt trigger: `PHOEBE_MAX_UNIT_ATTEMPTS` wins,
+ * else the config field, else the default 3.
+ */
+export function resolveMaxUnitAttempts(
+  env: NodeJS.ProcessEnv,
+  configValue: number = DEFAULT_MAX_UNIT_ATTEMPTS,
+): number {
+  return resolveThreshold(env["PHOEBE_MAX_UNIT_ATTEMPTS"], configValue, DEFAULT_MAX_UNIT_ATTEMPTS);
 }
 
 // --- Timeout counter marker (posted on every timeout; embeds n) --------------
@@ -76,10 +110,15 @@ export function buildQuarantineComment(opts: {
   id: number;
   k: number;
   baseline: string;
+  /** What kept happening, e.g. "timed out" (#75) or "produced no commit" (#25). */
+  reason: string;
+  /** Last observed failure detail (#25) — carried so the cause is visible without container logs. */
+  signature?: string;
 }): string {
+  const detail = opts.signature ? ` Last failure: \`${opts.signature}\`.` : "";
   return [
-    `⚠️ Phoebe quarantined this unit: the \`${opts.kind}\` work on #${opts.id} timed out ` +
-      `${opts.k} times in a row without completing. It has been labelled ` +
+    `⚠️ Phoebe quarantined this unit: the \`${opts.kind}\` work on #${opts.id} ${opts.reason} ` +
+      `${opts.k} times in a row without completing.${detail} It has been labelled ` +
       `\`${PHOEBE_QUARANTINE_LABEL}\` and skipped so it stops burning the run budget. ` +
       `A human should take a look.`,
     "",
@@ -127,4 +166,129 @@ export function shouldAutoUnstick(opts: {
     return opts.currentIssueEditedAt > opts.baseline;
   }
   return false;
+}
+
+// --- No-commit attempt counter (#25) -----------------------------------------
+//
+// One tracking comment per `(kind, id)`, created on the first failed attempt
+// and *edited* (never reposted) on every attempt after — the fix for "a fresh
+// comment every cycle". The marker embeds `ref` (the PR head SHA at the time of
+// that attempt) so a later read can tell a stale count (the unit produced a
+// commit since) from a live one, without a separate watermark: `nextAttemptCount`
+// resets to 0 whenever `ref` no longer matches the unit's current head.
+
+export type UnitAttemptMarker = {
+  n: number;
+  /** Short slug of what went wrong, e.g. `mergeable-conflicting`. */
+  signature: string;
+  /** The unit's identity reference at this attempt (PR head SHA today). */
+  ref: string;
+  /** ISO timestamp of this attempt — the backoff clock. */
+  at: string;
+};
+
+function unitAttemptMarkerRe(kind: string): RegExp {
+  return new RegExp(
+    `<!--\\s*phoebe-unit-attempt:${kind}\\s+n=(\\d+)\\s+sig=([a-z0-9-]+)\\s+ref=([A-Za-z0-9._:-]+)\\s+at=([0-9TZ:.+-]+)\\s*-->`,
+    "i",
+  );
+}
+
+/** `kind` is embedded in the marker tag itself, so each kind gets its own counter on the same unit. */
+export function buildUnitAttemptMarker(kind: string, marker: UnitAttemptMarker): string {
+  return `<!-- phoebe-unit-attempt:${kind} n=${marker.n} sig=${marker.signature} ref=${marker.ref} at=${marker.at} -->`;
+}
+
+export function parseUnitAttemptMarker(kind: string, text: string): UnitAttemptMarker | null {
+  const match = unitAttemptMarkerRe(kind).exec(text);
+  if (!match) {
+    return null;
+  }
+  return { n: Number(match[1]), signature: match[2]!, ref: match[3]!, at: match[4]! };
+}
+
+/**
+ * Scan comment bodies newest-first for the latest `kind`-scoped attempt marker,
+ * returning it along with the id of the comment that carries it (so the caller
+ * can edit that comment in place instead of posting a new one).
+ */
+export function findLatestUnitAttemptComment(
+  comments: readonly { id: string; body: string }[],
+  kind: string,
+): { marker: UnitAttemptMarker; commentId: string } | null {
+  for (let i = comments.length - 1; i >= 0; i--) {
+    const marker = parseUnitAttemptMarker(kind, comments[i]!.body);
+    if (marker) {
+      return { marker, commentId: comments[i]!.id };
+    }
+  }
+  return null;
+}
+
+/**
+ * The next attempt count for a unit. Reset-on-commit: if `currentRef` (the PR
+ * head SHA now) doesn't match the marker's recorded `ref`, the unit has moved
+ * since — a commit landed — so the prior count is stale and treated as 0.
+ */
+export function nextAttemptCount(previous: UnitAttemptMarker | null, currentRef: string): number {
+  const stale = previous === null || previous.ref !== currentRef;
+  const base = stale ? 0 : previous.n;
+  return base + 1;
+}
+
+export type UnitAttemptPlan = {
+  marker: UnitAttemptMarker;
+  quarantined: boolean;
+};
+
+/** Fold one failed attempt into the next marker + whether it crosses the quarantine threshold. */
+export function planUnitAttempt(opts: {
+  previous: UnitAttemptMarker | null;
+  ref: string;
+  signature: string;
+  now: string;
+  k: number;
+}): UnitAttemptPlan {
+  const n = nextAttemptCount(opts.previous, opts.ref);
+  return {
+    marker: { n, signature: opts.signature, ref: opts.ref, at: opts.now },
+    quarantined: shouldQuarantine(n, opts.k),
+  };
+}
+
+/** Exponential backoff between retries below the quarantine threshold, capped. */
+export const DEFAULT_UNIT_BACKOFF_BASE_MS = 5 * 60_000;
+export const DEFAULT_UNIT_BACKOFF_CAP_MS = 60 * 60_000;
+
+export function unitBackoffMs(
+  attemptCount: number,
+  baseMs: number = DEFAULT_UNIT_BACKOFF_BASE_MS,
+  capMs: number = DEFAULT_UNIT_BACKOFF_CAP_MS,
+): number {
+  if (attemptCount <= 0) {
+    return 0;
+  }
+  return Math.min(baseMs * 2 ** (attemptCount - 1), capMs);
+}
+
+/**
+ * Whether a unit that has already failed `attemptCount` times in a row should
+ * skip dispatch this cycle — a transient failure (rate limit, 504) then gets a
+ * growing gap before the next try instead of burning a full cycle every poll.
+ */
+export function shouldBackoffUnitRetry(opts: {
+  attemptCount: number;
+  lastAttemptAt: string;
+  now: string;
+  baseMs?: number;
+  capMs?: number;
+}): boolean {
+  if (opts.attemptCount <= 0) {
+    return false;
+  }
+  const elapsedMs = Date.parse(opts.now) - Date.parse(opts.lastAttemptAt);
+  if (!Number.isFinite(elapsedMs) || elapsedMs < 0) {
+    return false;
+  }
+  return elapsedMs < unitBackoffMs(opts.attemptCount, opts.baseMs, opts.capMs);
 }

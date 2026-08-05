@@ -40,7 +40,6 @@ import {
   reclaimDecision,
   resolveLeaseTtlMs,
 } from "./claim-lease.ts";
-import { PHOEBE_QUARANTINE_LABEL } from "./quarantine.ts";
 import {
   createEmitUnitEvent,
   STATUS_FILE,
@@ -82,8 +81,11 @@ import {
 import {
   buildInitialPrBody,
   buildReviewsHandledComment,
+  checksFailureSignature,
   checksFixFailureComment,
+  conflictFailureSignature,
   conflictFixFailureComment,
+  filterBackoffEligible,
   followUpPrComment,
   formatFailingChecksForPrompt,
   isReviewSummaryComment,
@@ -132,6 +134,14 @@ import {
   type WorkKindName,
   type WorkUnit,
 } from "./orchestrator.ts";
+import {
+  buildQuarantineComment,
+  buildUnitAttemptMarker,
+  findLatestUnitAttemptComment,
+  PHOEBE_QUARANTINE_LABEL,
+  planUnitAttempt,
+  resolveMaxUnitAttempts,
+} from "./quarantine.ts";
 
 const DEFAULT_POLL_INTERVAL_MS = 300_000;
 // Whole-unit wall-clock budget (#72): the agent phase — the async, hang-prone
@@ -449,6 +459,43 @@ function postPrComment(prNumber: PrNumber, body: string): void {
   gh(["pr", "comment", String(prNumber), "--body", body]);
 }
 
+/**
+ * Edit an existing PR comment in place — no new comment, no new notification.
+ * The #25 no-commit-attempt tracker relies on this: it silently updates one
+ * comment across retries instead of posting a fresh one every attempt. Uses
+ * the GraphQL `id` (not the REST numeric id), so it goes through `gh api
+ * graphql` rather than the repo-scoped `gh` wrapper.
+ */
+function updateComment(commentId: string, body: string): void {
+  execFileSync(
+    "gh",
+    [
+      "api",
+      "graphql",
+      "-f",
+      "query=mutation($id:ID!,$body:String!){updateIssueComment(input:{id:$id, body:$body}){issueComment{id}}}",
+      "-f",
+      `id=${commentId}`,
+      "-f",
+      `body=${body}`,
+    ],
+    { stdio: "inherit", timeout: CHILD_PROCESS_TIMEOUT_MS },
+  );
+}
+
+/** Post `body` as a new comment, or edit `existingCommentId` in place if one is given. */
+function postOrUpdateComment(
+  prNumber: PrNumber,
+  body: string,
+  existingCommentId: string | undefined,
+): void {
+  if (existingCommentId) {
+    updateComment(existingCommentId, body);
+  } else {
+    postPrComment(prNumber, body);
+  }
+}
+
 function postIssueComment(issueNumber: number, body: string): void {
   gh(["issue", "comment", String(issueNumber), "--body", body]);
 }
@@ -538,16 +585,23 @@ function viewPrMergeInfo(prNumber: PrNumber): PrMergeInfo {
   };
 }
 
-/** All comment bodies on a PR, oldest first — the raw input to every watermark parse. */
-function fetchPrCommentBodies(prNumber: PrNumber): string[] {
-  const { comments } = ghJson<{ comments: Array<{ body: string }> }>([
+type PrComment = { id: string; body: string };
+
+/** Every comment on a PR (id + body), oldest first — the raw input to every marker parse. */
+function fetchPrComments(prNumber: PrNumber): PrComment[] {
+  const { comments } = ghJson<{ comments: PrComment[] }>([
     "pr",
     "view",
     String(prNumber),
     "--json",
     "comments",
   ]);
-  return comments.map((comment) => comment.body);
+  return comments;
+}
+
+/** All comment bodies on a PR, oldest first — the raw input to every watermark parse. */
+function fetchPrCommentBodies(prNumber: PrNumber): string[] {
+  return fetchPrComments(prNumber).map((comment) => comment.body);
 }
 
 function phoebeGhLogin(): string {
@@ -596,6 +650,57 @@ function currentConflictFailureWatermark(
 function currentChecksFailureWatermark(branch: BranchRef): ChecksFailWatermark {
   fetchOrigin();
   return { prHead: originBranchSha(branch) };
+}
+
+/**
+ * Record one failed (no-commit) attempt on a PR-keyed unit (#25): find the
+ * unit's tracking comment (if any), fold this attempt into its counter, and
+ * either edit that comment in place (below threshold — no new comment, no new
+ * notification) or escalate it into the quarantine comment and apply the
+ * label (at threshold). Never posts more than the one tracking comment per
+ * unit, so identical repeated failures add no new comments — only the fix for
+ * "76 comments, 0 progress" (#25).
+ */
+function recordFailedAttempt(opts: {
+  kind: "conflict" | "checks";
+  prNumber: PrNumber;
+  currentPrHead: Sha;
+  signature: string;
+  failureComment: string;
+}): void {
+  const comments = fetchPrComments(opts.prNumber);
+  const found = findLatestUnitAttemptComment(comments, opts.kind);
+  const k = resolveMaxUnitAttempts(process.env, config.maxUnitAttempts);
+  const plan = planUnitAttempt({
+    previous: found?.marker ?? null,
+    ref: opts.currentPrHead,
+    signature: opts.signature,
+    now: new Date().toISOString(),
+    k,
+  });
+
+  const body = plan.quarantined
+    ? buildQuarantineComment({
+        kind: opts.kind,
+        id: opts.prNumber,
+        k,
+        baseline: opts.currentPrHead,
+        reason: "produced no commit",
+        signature: opts.signature,
+      })
+    : opts.failureComment;
+  postOrUpdateComment(
+    opts.prNumber,
+    `${body}\n\n${buildUnitAttemptMarker(opts.kind, plan.marker)}`,
+    found?.commentId,
+  );
+
+  if (plan.quarantined) {
+    gh(["pr", "edit", String(opts.prNumber), "--add-label", PHOEBE_QUARANTINE_LABEL]);
+    console.log(
+      `[phoebe] Quarantined ${opts.kind} unit for PR #${opts.prNumber} after ${plan.marker.n} attempts with no commit (${opts.signature}).`,
+    );
+  }
 }
 
 function gitInWorktree(
@@ -925,13 +1030,17 @@ async function runConflictResolutionAgent(
         console.log(
           `[phoebe] Conflict fix for PR #${pr.prNumber} produced no commits — leaving PR unchanged.`,
         );
-        postPrComment(
-          pr.prNumber,
-          conflictFixFailureComment(
-            pr.prNumber,
-            currentConflictFailureWatermark(pr.headRefName, baseBranch),
-          ),
-        );
+        const watermark = currentConflictFailureWatermark(pr.headRefName, baseBranch);
+        recordFailedAttempt({
+          kind: "conflict",
+          prNumber: pr.prNumber,
+          currentPrHead: watermark.prHead,
+          signature: conflictFailureSignature({
+            mergeable: prInfo.mergeable,
+            mergeStateStatus: prInfo.mergeStateStatus,
+          }),
+          failureComment: conflictFixFailureComment(pr.prNumber, watermark),
+        });
       } else if (localCommitCount > 0) {
         pushBranch(worktreeDir, branch);
         console.log(`[phoebe] Conflict resolved for PR #${pr.prNumber} — pushed.`);
@@ -969,13 +1078,14 @@ async function fixOnePrConflict(
   }
   if (cleanResult === "failed") {
     console.log(`[phoebe] Could not start merge for PR #${pr.prNumber} — skipping.`);
-    postPrComment(
-      pr.prNumber,
-      conflictFixFailureComment(
-        pr.prNumber,
-        currentConflictFailureWatermark(pr.headRefName, baseBranch),
-      ),
-    );
+    const watermark = currentConflictFailureWatermark(pr.headRefName, baseBranch);
+    recordFailedAttempt({
+      kind: "conflict",
+      prNumber: pr.prNumber,
+      currentPrHead: watermark.prHead,
+      signature: conflictFailureSignature({}),
+      failureComment: conflictFixFailureComment(pr.prNumber, watermark),
+    });
     return { exitCode: null };
   }
 
@@ -1002,10 +1112,14 @@ async function runChecksResolutionAgent(pr: ChecksCandidate): Promise<UnitResult
         console.log(
           `[phoebe] Checks fix for PR #${pr.prNumber} produced no commits — leaving PR unchanged.`,
         );
-        postPrComment(
-          pr.prNumber,
-          checksFixFailureComment(pr.prNumber, currentChecksFailureWatermark(pr.headRefName)),
-        );
+        const watermark = currentChecksFailureWatermark(pr.headRefName);
+        recordFailedAttempt({
+          kind: "checks",
+          prNumber: pr.prNumber,
+          currentPrHead: watermark.prHead,
+          signature: checksFailureSignature(pr.failingChecks),
+          failureComment: checksFixFailureComment(pr.prNumber, watermark),
+        });
       } else if (localCommitCount > 0) {
         pushBranch(worktreeDir, branch);
         console.log(`[phoebe] Checks fixed for PR #${pr.prNumber} — pushed.`);
@@ -1551,13 +1665,20 @@ async function fetchConflictWorkData(): Promise<{
   const rawConflictingPrs = await fetchConflictingPrs();
   fetchOrigin();
   const currentMainHead = originBranchSha(defaultBranchRef);
-  const conflictingPrs = rawConflictingPrs.map((pr) => ({
-    ...pr,
-    failureWatermark: parseLatestMarker(
-      fetchPrCommentBodies(pr.prNumber),
-      parseConflictFailWatermark,
-    ),
-  }));
+  const nowIso = new Date().toISOString();
+  const withMarkers = rawConflictingPrs.map((pr) => {
+    const comments = fetchPrComments(pr.prNumber);
+    return {
+      ...pr,
+      failureWatermark: parseLatestMarker(
+        comments.map((c) => c.body),
+        parseConflictFailWatermark,
+      ),
+      attemptMarker: findLatestUnitAttemptComment(comments, "conflict")?.marker ?? null,
+    };
+  });
+  // #25: a unit still inside its no-commit-attempt backoff window sits this cycle out.
+  const conflictingPrs = filterBackoffEligible(withMarkers, nowIso);
   const issueBodies = harvestIssueBodies(conflictingPrs);
   return { conflictingPrs, issueBodies, currentMainHead };
 }
@@ -1567,13 +1688,20 @@ async function fetchChecksWorkData(): Promise<{
   issueBodies: Map<number, string>;
 }> {
   const rawFailingPrs = await fetchFailingCheckPrs();
-  const failingCheckPrs = rawFailingPrs.map((pr) => ({
-    ...pr,
-    failureWatermark: parseLatestMarker(
-      fetchPrCommentBodies(pr.prNumber),
-      parseChecksFailWatermark,
-    ),
-  }));
+  const nowIso = new Date().toISOString();
+  const withMarkers = rawFailingPrs.map((pr) => {
+    const comments = fetchPrComments(pr.prNumber);
+    return {
+      ...pr,
+      failureWatermark: parseLatestMarker(
+        comments.map((c) => c.body),
+        parseChecksFailWatermark,
+      ),
+      attemptMarker: findLatestUnitAttemptComment(comments, "checks")?.marker ?? null,
+    };
+  });
+  // #25: a unit still inside its no-commit-attempt backoff window sits this cycle out.
+  const failingCheckPrs = filterBackoffEligible(withMarkers, nowIso);
   const issueBodies = harvestIssueBodies(failingCheckPrs);
   return { failingCheckPrs, issueBodies };
 }

@@ -6,15 +6,25 @@ import { describe, expect, test } from "vite-plus/test";
 import { asSha } from "./branded.ts";
 import {
   buildQuarantineComment,
+  buildUnitAttemptMarker,
   buildUnitTimeoutMarker,
+  DEFAULT_MAX_UNIT_ATTEMPTS,
   DEFAULT_MAX_UNIT_TIMEOUTS,
+  findLatestUnitAttemptComment,
+  nextAttemptCount,
   nextTimeoutCount,
   parseQuarantineBaseline,
+  parseUnitAttemptMarker,
   parseUnitTimeoutMarker,
   PHOEBE_QUARANTINE_LABEL,
+  planUnitAttempt,
+  resolveMaxUnitAttempts,
   resolveMaxUnitTimeouts,
   shouldAutoUnstick,
+  shouldBackoffUnitRetry,
   shouldQuarantine,
+  unitBackoffMs,
+  type UnitAttemptMarker,
 } from "./quarantine.ts";
 import { isPrInScope, selectIssue, type Issue } from "./orchestrator.ts";
 import { asBranchRef } from "./branded.ts";
@@ -38,10 +48,29 @@ describe("markers", () => {
   });
 
   test("escalation comment embeds the baseline marker and names the label", () => {
-    const comment = buildQuarantineComment({ kind: "issues", id: 42, k: 3, baseline: "abc123" });
+    const comment = buildQuarantineComment({
+      kind: "issues",
+      id: 42,
+      k: 3,
+      baseline: "abc123",
+      reason: "timed out",
+    });
     expect(comment).toContain(PHOEBE_QUARANTINE_LABEL);
     expect(comment).toContain("timed out 3 times");
     expect(parseQuarantineBaseline(comment)).toBe("abc123");
+  });
+
+  test("escalation comment carries the last failure signature for a no-commit trigger (#25)", () => {
+    const comment = buildQuarantineComment({
+      kind: "conflicts",
+      id: 1043,
+      k: 3,
+      baseline: "deadbeef",
+      reason: "produced no commit",
+      signature: "mergeable-conflicting",
+    });
+    expect(comment).toContain("produced no commit 3 times");
+    expect(comment).toContain("mergeable-conflicting");
   });
 });
 
@@ -107,5 +136,177 @@ describe("selection excludes quarantined units", () => {
     ];
     const picked = selectIssue(issues, new Map());
     expect(picked?.issue.number).toBe(2);
+  });
+});
+
+describe("resolveMaxUnitAttempts", () => {
+  test("defaults to 3", () => {
+    expect(resolveMaxUnitAttempts({})).toBe(DEFAULT_MAX_UNIT_ATTEMPTS);
+    expect(DEFAULT_MAX_UNIT_ATTEMPTS).toBe(3);
+  });
+  test("env overrides config overrides default", () => {
+    expect(resolveMaxUnitAttempts({}, 5)).toBe(5);
+    expect(resolveMaxUnitAttempts({ PHOEBE_MAX_UNIT_ATTEMPTS: "2" }, 5)).toBe(2);
+    expect(resolveMaxUnitAttempts({ PHOEBE_MAX_UNIT_ATTEMPTS: "0" }, 5)).toBe(5);
+  });
+});
+
+describe("unit attempt marker (#25)", () => {
+  const marker: UnitAttemptMarker = {
+    n: 2,
+    signature: "mergeable-conflicting",
+    ref: "abc1234",
+    at: "2026-08-04T12:00:00.000Z",
+  };
+
+  test("round-trips through build/parse, scoped by kind", () => {
+    const text = buildUnitAttemptMarker("conflicts", marker);
+    expect(parseUnitAttemptMarker("conflicts", text)).toEqual(marker);
+  });
+
+  test("a checks marker is invisible to a conflicts parse — independent per-kind counters", () => {
+    const text = buildUnitAttemptMarker("checks", marker);
+    expect(parseUnitAttemptMarker("conflicts", text)).toBeNull();
+    expect(parseUnitAttemptMarker("checks", text)).toEqual(marker);
+  });
+
+  test("parse returns null when no marker is present", () => {
+    expect(parseUnitAttemptMarker("conflicts", "just a normal comment")).toBeNull();
+  });
+});
+
+describe("findLatestUnitAttemptComment", () => {
+  test("finds the newest kind-matching marker and its comment id", () => {
+    const older = buildUnitAttemptMarker("conflicts", {
+      n: 1,
+      signature: "sig-a",
+      ref: "sha1",
+      at: "2026-08-04T10:00:00.000Z",
+    });
+    const newer = buildUnitAttemptMarker("conflicts", {
+      n: 2,
+      signature: "sig-b",
+      ref: "sha1",
+      at: "2026-08-04T11:00:00.000Z",
+    });
+    const comments = [
+      { id: "IC_1", body: older },
+      { id: "IC_2", body: "unrelated human comment" },
+      { id: "IC_3", body: newer },
+    ];
+    const found = findLatestUnitAttemptComment(comments, "conflicts");
+    expect(found?.commentId).toBe("IC_3");
+    expect(found?.marker.n).toBe(2);
+  });
+
+  test("ignores markers for a different kind", () => {
+    const checksMarker = buildUnitAttemptMarker("checks", {
+      n: 1,
+      signature: "sig-a",
+      ref: "sha1",
+      at: "2026-08-04T10:00:00.000Z",
+    });
+    expect(findLatestUnitAttemptComment([{ id: "IC_1", body: checksMarker }], "conflicts")).toBe(
+      null,
+    );
+  });
+
+  test("returns null with no comments", () => {
+    expect(findLatestUnitAttemptComment([], "conflicts")).toBeNull();
+  });
+});
+
+describe("nextAttemptCount (#25)", () => {
+  test("first attempt with no prior marker records 1", () => {
+    expect(nextAttemptCount(null, "sha1")).toBe(1);
+  });
+  test("carries the prior count when the ref (PR head) is unchanged", () => {
+    const previous: UnitAttemptMarker = { n: 2, signature: "s", ref: "sha1", at: "t" };
+    expect(nextAttemptCount(previous, "sha1")).toBe(3);
+  });
+  test("resets to 0 (then +1) once the ref advances — a commit landed", () => {
+    const previous: UnitAttemptMarker = { n: 2, signature: "s", ref: "sha1", at: "t" };
+    expect(nextAttemptCount(previous, "sha2")).toBe(1);
+  });
+});
+
+describe("planUnitAttempt", () => {
+  test("below threshold: increments and does not quarantine", () => {
+    const plan = planUnitAttempt({
+      previous: { n: 1, signature: "s", ref: "sha1", at: "t" },
+      ref: "sha1",
+      signature: "s2",
+      now: "2026-08-04T12:00:00.000Z",
+      k: 3,
+    });
+    expect(plan.marker.n).toBe(2);
+    expect(plan.marker.signature).toBe("s2");
+    expect(plan.quarantined).toBe(false);
+  });
+
+  test("at threshold: quarantines", () => {
+    const plan = planUnitAttempt({
+      previous: { n: 2, signature: "s", ref: "sha1", at: "t" },
+      ref: "sha1",
+      signature: "s",
+      now: "2026-08-04T12:00:00.000Z",
+      k: 3,
+    });
+    expect(plan.marker.n).toBe(3);
+    expect(plan.quarantined).toBe(true);
+  });
+
+  test("a produced commit (ref advanced) never quarantines even past K in the old run", () => {
+    const plan = planUnitAttempt({
+      previous: { n: 5, signature: "s", ref: "sha1", at: "t" },
+      ref: "sha2",
+      signature: "s",
+      now: "2026-08-04T12:00:00.000Z",
+      k: 3,
+    });
+    expect(plan.marker.n).toBe(1);
+    expect(plan.quarantined).toBe(false);
+  });
+});
+
+describe("unit backoff (#25)", () => {
+  test("no backoff before any attempt", () => {
+    expect(unitBackoffMs(0)).toBe(0);
+  });
+  test("doubles per attempt, capped", () => {
+    expect(unitBackoffMs(1)).toBe(5 * 60_000);
+    expect(unitBackoffMs(2)).toBe(10 * 60_000);
+    expect(unitBackoffMs(3)).toBe(20 * 60_000);
+    expect(unitBackoffMs(10)).toBe(60 * 60_000);
+  });
+
+  test("shouldBackoffUnitRetry holds off a retry inside the backoff window", () => {
+    expect(
+      shouldBackoffUnitRetry({
+        attemptCount: 1,
+        lastAttemptAt: "2026-08-04T12:00:00.000Z",
+        now: "2026-08-04T12:01:00.000Z",
+      }),
+    ).toBe(true);
+  });
+
+  test("shouldBackoffUnitRetry allows retry once the window has elapsed — a transient failure recovers", () => {
+    expect(
+      shouldBackoffUnitRetry({
+        attemptCount: 1,
+        lastAttemptAt: "2026-08-04T12:00:00.000Z",
+        now: "2026-08-04T12:06:00.000Z",
+      }),
+    ).toBe(false);
+  });
+
+  test("first attempt (count 0) is never backed off", () => {
+    expect(
+      shouldBackoffUnitRetry({
+        attemptCount: 0,
+        lastAttemptAt: "2026-08-04T12:00:00.000Z",
+        now: "2026-08-04T12:00:00.000Z",
+      }),
+    ).toBe(false);
   });
 });

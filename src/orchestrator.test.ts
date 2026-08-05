@@ -10,10 +10,13 @@ import {
   buildInitialPrBody,
   buildReviewsHandledComment,
   buildReviewsHandledMarker,
+  checksFailureSignature,
   checksFixFailureComment,
   classifyPriority,
   compareIssues,
+  conflictFailureSignature,
   conflictFixFailureComment,
+  filterBackoffEligible,
   followUpPrComment,
   formatFailingChecksForPrompt,
   hasNewNonPhoebeReviewActivity,
@@ -58,6 +61,7 @@ import {
   shouldSkipStackedReviewsFix,
   shouldSkipWatermarkChecksFix,
   shouldSkipWatermarkConflictFix,
+  slugifyFailureSignature,
   stackedCatchUpRetractionComment,
   stackedPrComment,
   type BlockerPrState,
@@ -1928,5 +1932,68 @@ describe("selection summaries", () => {
     );
     expect(summary.skipped).toBe(1);
     expect(summary.unit?.prNumber).toBe(120);
+  });
+});
+
+describe("slugifyFailureSignature", () => {
+  test("lowercases and hyphenates", () => {
+    expect(slugifyFailureSignature("Mergeable CONFLICTING")).toBe("mergeable-conflicting");
+  });
+  test("falls back to unknown for empty input", () => {
+    expect(slugifyFailureSignature("")).toBe("unknown");
+  });
+  test("truncates to maxLen", () => {
+    expect(slugifyFailureSignature("a".repeat(200), 10)).toBe("a".repeat(10));
+  });
+});
+
+describe("conflictFailureSignature", () => {
+  test("no mergeable info — clean-merge setup failed before an agent ran", () => {
+    expect(conflictFailureSignature({})).toBe("merge-setup-failed");
+  });
+  test("embeds mergeable + mergeStateStatus", () => {
+    expect(conflictFailureSignature({ mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" })).toBe(
+      "mergeable-conflicting-dirty",
+    );
+  });
+});
+
+describe("checksFailureSignature", () => {
+  test("no failing checks recorded", () => {
+    expect(checksFailureSignature([])).toBe("checks-failed");
+  });
+  test("embeds failing check names", () => {
+    expect(checksFailureSignature([{ name: "lint", conclusion: "failure" }])).toBe(
+      "checks-failed-lint",
+    );
+  });
+});
+
+describe("filterBackoffEligible", () => {
+  const now = "2026-08-04T12:00:00.000Z";
+
+  test("a candidate with no attempt marker is always eligible", () => {
+    const candidates = [{ attemptMarker: null }];
+    expect(filterBackoffEligible(candidates, now)).toEqual(candidates);
+  });
+
+  test("drops a candidate still inside its backoff window", () => {
+    const candidates = [
+      {
+        prNumber: 1,
+        attemptMarker: { n: 1, signature: "s", ref: "sha1", at: "2026-08-04T11:59:00.000Z" },
+      },
+    ];
+    expect(filterBackoffEligible(candidates, now)).toEqual([]);
+  });
+
+  test("keeps a candidate once its backoff window has elapsed", () => {
+    const candidates = [
+      {
+        prNumber: 1,
+        attemptMarker: { n: 1, signature: "s", ref: "sha1", at: "2026-08-04T11:00:00.000Z" },
+      },
+    ];
+    expect(filterBackoffEligible(candidates, now)).toEqual(candidates);
   });
 });
