@@ -39,10 +39,10 @@ workspace-root/                         # bind-mounted :ro → /etc/phoebe
     …
 ```
 
-| Layer              | Who owns it            | What it holds                                                                                                      |
-| ------------------ | ---------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| **Root**           | deployment / workspace | Shared `engine` + `workspace: { depth }`; deployment-level `.env`; `container/`                                    |
-| **Child (tenant)** | each linked repo       | In-tree `phoebe.config.ts` + gitignored `.env` (+ optional `prompts/`); **no** `container/`                        |
+| Layer              | Who owns it            | What it holds                                                                                                     |
+| ------------------ | ---------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| **Root**           | deployment / workspace | Shared `engine` + `workspace: { depth }`; deployment-level `.env`; `container/`                                   |
+| **Child (tenant)** | each linked repo       | In-tree `phoebe.config.ts` + gitignored `.env` (+ optional `prompts/`); **no** `container/`                       |
 | **Private clone**  | container volumes      | `/data/repos/<owner>/<repo>/` — each tenant still clones privately; the host checkout is **not** the working copy |
 
 **One supervised engine child per tenant.** The bootstrapper walks the tree to
@@ -101,15 +101,15 @@ filesystem ACL. Co-locate only repos in the same trust domain — see
 
 Two ways to put many repos under one container; same fleet underneath.
 
-| Concern                  | Nested (`repos/`)                                              | Workspace                                                                |
-| ------------------------ | -------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| Create deployment root   | `phoebe init` (then add tenants)                               | `phoebe init --workspace [dir]`                                          |
+| Concern                  | Nested (`repos/`)                                              | Workspace                                                                                   |
+| ------------------------ | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| Create deployment root   | `phoebe init` (then add tenants)                               | `phoebe init --workspace [dir]`                                                             |
 | Add a tenant skeleton    | `phoebe add-repo <owner/repo>` (mints `repos/<owner>/<repo>/`) | Operator: `git clone` (or `git submodule add`) `<url> <dir>` → `phoebe init --tenant <dir>` |
-| Authoritative identity   | Path segment `<owner>/<repo>` (must match `repoSlug`)          | Child config `repoSlug` (origin cross-check is best-effort validation)   |
-| Deployment secrets       | Root `.env`                                                    | Root `.env`                                                              |
-| Per-tenant secrets       | `repos/<owner>/<repo>/.env`                                    | `<child>/.env`                                                           |
-| Container templates      | Root `container/`                                              | Root `container/` (children never get `container/`)                      |
-| Who runs git on the tree | Operator (optional clones for host review)                     | **Operator always** — the child checkouts are operator-owned            |
+| Authoritative identity   | Path segment `<owner>/<repo>` (must match `repoSlug`)          | Child config `repoSlug` (origin cross-check is best-effort validation)                      |
+| Deployment secrets       | Root `.env`                                                    | Root `.env`                                                                                 |
+| Per-tenant secrets       | `repos/<owner>/<repo>/.env`                                    | `<child>/.env`                                                                              |
+| Container templates      | Root `container/`                                              | Root `container/` (children never get `container/`)                                         |
+| Who runs git on the tree | Operator (optional clones for host review)                     | **Operator always** — the child checkouts are operator-owned                                |
 
 `add-repo` **mints a directory** under `repos/` from a slug. Workspace
 `init --tenant` scaffolds an **existing** directory you already put on disk (you
