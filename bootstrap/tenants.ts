@@ -27,6 +27,8 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
+import { DEFAULT_TENANT_CONFIG_DIR } from "./config-dir.ts";
+
 /** Canonical in-container deployment config dir (compose bind-mounts here). */
 export const DEFAULT_CONFIG_DIR = "/etc/phoebe";
 /** Per-tenant (and flat-top) config filename. */
@@ -162,14 +164,34 @@ export function readTenantOriginUrl(tenantDir: string): string | null {
   }
 }
 
-function tenantAt(dir: string, slug: string | null): DiscoveredTenant {
+function tenantAt(
+  dir: string,
+  slug: string | null,
+  configDir: string = DEFAULT_TENANT_CONFIG_DIR,
+): DiscoveredTenant {
+  // `configDir` relocates the tenant's asset dir (its `.env` + prompts) to a
+  // subdir of `dir` (#98). The config itself always stays at `dir`; only the
+  // `.env` — and thus the engine child's cwd, `dirname(envPath)` — moves.
+  const assetsDir = configDir === DEFAULT_TENANT_CONFIG_DIR ? dir : join(dir, configDir);
   return {
     id: dir,
     slug,
     dir,
     configPath: join(dir, TENANT_CONFIG_FILE),
-    envPath: join(dir, TENANT_ENV_FILE),
+    envPath: join(assetsDir, TENANT_ENV_FILE),
   };
+}
+
+/**
+ * Return a copy of `tenant` with its `.env` (and thus its engine child's cwd,
+ * `dirname(envPath)`) relocated under `configDir`, a subdirectory of the tenant
+ * dir (#98). `"."` is a no-op. Nested discovery uses this because its sync scan
+ * builds tenants before any config is loaded; workspace discovery instead
+ * threads `configDir` straight through {@link tenantAt}.
+ */
+export function withTenantConfigDir(tenant: DiscoveredTenant, configDir: string): DiscoveredTenant {
+  if (configDir === DEFAULT_TENANT_CONFIG_DIR) return tenant;
+  return { ...tenant, envPath: join(tenant.dir, configDir, TENANT_ENV_FILE) };
 }
 
 /** A tenant paired with its config fingerprint (mtime:size) at one poll. */
@@ -304,6 +326,14 @@ export type DiscoverWorkspaceDeps = {
    */
   loadRepoSlug: (configPath: string) => string | Promise<string>;
   /**
+   * Load a child `phoebe.config.ts` and return its bootstrapper-only `configDir`
+   * (asset subdir), or `"."` when unset (#98). Throws/rejects on an unreadable
+   * config or a malformed value — the walker then skip-and-warns the dir, the
+   * same as a bad `repoSlug`. Defaults to `() => "."` (co-located), so existing
+   * callers and tests need no change.
+   */
+  loadConfigDir?: (configPath: string) => string | Promise<string>;
+  /**
    * Read the child checkout's `remote.origin.url` for a best-effort cross-check
    * against config `repoSlug` (#92). Never reads `.gitmodules`. Defaults to
    * {@link readTenantOriginUrl}. Return `null` when origin is absent/unreadable.
@@ -388,7 +418,13 @@ export async function discoverWorkspaceTenants(
         return;
       }
 
-      tenants.push(tenantAt(dir, slug));
+      // Asset-dir relocation (#98): read the child's `configDir` (default ".")
+      // from the same config. A malformed value throws here and is caught below
+      // as skip-and-warn, exactly like a bad `repoSlug`.
+      const configDir = deps.loadConfigDir
+        ? (await deps.loadConfigDir(configPath)).trim()
+        : DEFAULT_TENANT_CONFIG_DIR;
+      tenants.push(tenantAt(dir, slug, configDir));
     } catch (error) {
       if (isFatalWorkspaceDiscoveryError(error)) throw error;
       warn(

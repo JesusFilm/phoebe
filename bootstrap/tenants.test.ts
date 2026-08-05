@@ -16,6 +16,7 @@ import {
   slugFromUrl,
   TENANT_CONFIG_FILE,
   TENANT_ENV_FILE,
+  withTenantConfigDir,
   type DiscoveredTenant,
 } from "./tenants.ts";
 
@@ -345,6 +346,72 @@ describe("workspace mode", () => {
       readOriginUrl: () => null,
     });
     expect(discovery.tenants.map((t) => t.slug)).toEqual(["acme/real"]);
+  });
+});
+
+describe("configDir asset relocation (#98)", () => {
+  test("workspace discovery relocates a tenant's .env under configDir; config stays at root", async () => {
+    writeSlugConfig(join(dir, "widget"), "acme/widget");
+    writeSlugConfig(join(dir, "gadget"), "acme/gadget");
+
+    const discovery = await discoverWorkspaceTenants(dir, 1, {
+      loadRepoSlug: (path) => (path.includes("widget") ? "acme/widget" : "acme/gadget"),
+      loadConfigDir: (path) => (path.includes("widget") ? ".phoebe" : "."),
+      readOriginUrl: () => null,
+    });
+
+    const widget = discovery.tenants.find((t) => t.slug === "acme/widget");
+    const gadget = discovery.tenants.find((t) => t.slug === "acme/gadget");
+    // widget: `.env` relocated into `.phoebe/`, but the config path is unchanged.
+    expect(widget?.configPath).toBe(join(dir, "widget", TENANT_CONFIG_FILE));
+    expect(widget?.envPath).toBe(join(dir, "widget", ".phoebe", TENANT_ENV_FILE));
+    // gadget: configDir "." → co-located, byte-for-byte unchanged.
+    expect(gadget?.envPath).toBe(join(dir, "gadget", TENANT_ENV_FILE));
+  });
+
+  test("a malformed configDir skip-and-warns the child, like a bad repoSlug", async () => {
+    writeSlugConfig(join(dir, "good"), "acme/good");
+    writeSlugConfig(join(dir, "bad"), "acme/bad");
+    const warnings: string[] = [];
+
+    const discovery = await discoverWorkspaceTenants(dir, 1, {
+      loadRepoSlug: (path) => (path.includes("bad") ? "acme/bad" : "acme/good"),
+      loadConfigDir: (path) => {
+        if (path.includes("bad")) throw new Error("`configDir` must be relative");
+        return ".";
+      },
+      readOriginUrl: () => null,
+      warn: (m) => warnings.push(m),
+    });
+
+    expect(discovery.tenants.map((t) => t.slug)).toEqual(["acme/good"]);
+    expect(discovery.holdIds).toEqual([join(dir, "bad")]);
+    expect(warnings.some((w) => /bad/.test(w) && /configDir/.test(w))).toBe(true);
+  });
+
+  test("no loadConfigDir dep keeps .env co-located (back-compat)", async () => {
+    writeSlugConfig(join(dir, "widget"), "acme/widget");
+    const discovery = await discoverWorkspaceTenants(dir, 1, {
+      loadRepoSlug: () => "acme/widget",
+      readOriginUrl: () => null,
+    });
+    expect(discovery.tenants[0]?.envPath).toBe(join(dir, "widget", TENANT_ENV_FILE));
+  });
+
+  test("withTenantConfigDir relocates envPath only; '.' is a no-op", () => {
+    const tenantDir = join(dir, "widget");
+    const base: DiscoveredTenant = {
+      id: tenantDir,
+      slug: "acme/widget",
+      dir: tenantDir,
+      configPath: join(tenantDir, TENANT_CONFIG_FILE),
+      envPath: join(tenantDir, TENANT_ENV_FILE),
+    };
+    expect(withTenantConfigDir(base, ".")).toBe(base);
+    const moved = withTenantConfigDir(base, ".phoebe");
+    expect(moved.envPath).toBe(join(tenantDir, ".phoebe", TENANT_ENV_FILE));
+    expect(moved.configPath).toBe(base.configPath);
+    expect(moved.dir).toBe(base.dir);
   });
 });
 

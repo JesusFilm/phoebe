@@ -9,6 +9,8 @@
 // and filled from `CONFIG_DEFAULTS` by `resolveConfig()`. `PhoebeConfig` is the
 // fully-resolved shape the engine sees at runtime — every field populated.
 
+import { isAbsolute } from "node:path";
+
 import { derivePaths } from "./paths.ts";
 
 export const PROVIDER_NAMES = ["cursor", "claude", "codex"] as const;
@@ -156,6 +158,22 @@ export type PhoebeUserConfig = {
    * it the same way it drops `engine`.
    */
   workspace?: WorkspaceField;
+  /**
+   * Bootstrapper-only asset directory (#98). Relocates where this tenant's
+   * co-located `.env` and prompt/asset files live to a subdirectory of the dir
+   * holding this `phoebe.config.ts` — e.g. `configDir: ".phoebe"` reuses a
+   * standalone deployment's `.phoebe/` folder instead of duplicating `.env` and
+   * `prompts/` at the repo root. Default `"."` (co-located — today's behavior).
+   *
+   * Honored for fleet tenants (workspace children + nested `repos/`): the
+   * supervisor reads the tenant `.env` from `<dir>/<configDir>/.env` and runs
+   * the tenant's engine child with cwd `<dir>/<configDir>` (so relative
+   * `promptFiles` resolve there), while still loading THIS config from `<dir>`.
+   * The `phoebe.config.ts` itself must stay at `<dir>` — workspace discovery
+   * skips dotfolders, so it cannot live inside `.phoebe/`. Must be a relative
+   * path with no `..`. The engine never reads it; `resolveConfig` drops it.
+   */
+  configDir?: string;
   defaultBranch?: string;
   branchPrefix?: string;
   readyLabel?: string;
@@ -285,6 +303,39 @@ export function validateUserConfig(user: PhoebeUserConfig): void {
   }
   if (user.workspace !== undefined) {
     validateWorkspaceField(user.workspace);
+  }
+  if (user.configDir !== undefined) {
+    validateConfigDir(user.configDir);
+  }
+}
+
+/**
+ * Reject a malformed bootstrapper-only `configDir`. It relocates a tenant's
+ * asset directory (`.env`, prompts) to a subdirectory of the config's own dir,
+ * so it must be a non-empty *relative* path that stays inside that dir — an
+ * absolute path or a `..` segment would point the supervisor at another
+ * tenant's (or the host's) secrets. Validated here so a mistyped consumer
+ * config fails at `resolveConfig` like `workspace`/`blockedByPattern` do, even
+ * though only the bootstrapper reads the value.
+ */
+function validateConfigDir(configDir: NonNullable<PhoebeUserConfig["configDir"]>): void {
+  if (typeof configDir !== "string" || configDir.trim().length === 0) {
+    throw new Error(
+      `phoebe.config.ts \`configDir\` must be a non-empty relative path ` +
+        `(got ${JSON.stringify(configDir)}).`,
+    );
+  }
+  if (isAbsolute(configDir)) {
+    throw new Error(
+      `phoebe.config.ts \`configDir\` must be relative to the config's directory, ` +
+        `not absolute (got ${JSON.stringify(configDir)}).`,
+    );
+  }
+  if (configDir.split(/[/\\]/).some((segment) => segment === "..")) {
+    throw new Error(
+      `phoebe.config.ts \`configDir\` must stay within the tenant directory — ` +
+        `no ".." segments (got ${JSON.stringify(configDir)}).`,
+    );
   }
 }
 

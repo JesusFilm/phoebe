@@ -175,6 +175,43 @@ in [`workspace.md`](workspace.md). Nested layout:
   nested tenants (see [`operating.md`](operating.md)); for workspace children
   use `init --tenant` after linking the checkout ([`workspace.md`](workspace.md)).
 
+## Asset directory (`configDir`)
+
+Bootstrapper-only, per tenant. By default a tenant's `.env` (and any relative
+`promptFiles`) sit **co-located** with its `phoebe.config.ts`. `configDir`
+relocates them to a subdirectory of that dir — so a workspace child or nested
+tenant can reuse its standalone `.phoebe/` folder instead of duplicating `.env`
+and `prompts/` at the repo root:
+
+```ts
+// <repo>/phoebe.config.ts — stays at the repo root (see below)
+import type { PhoebeUserConfig } from "phoebe-agent";
+
+const config: PhoebeUserConfig = {
+  repoSlug: "acme/widget",
+  repoUrl: "https://github.com/acme/widget.git",
+  installCommand: "pnpm install --frozen-lockfile",
+  checkCommand: "pnpm run check",
+  testCommand: "pnpm run test",
+  configDir: ".phoebe", // read .env + prompts from <repo>/.phoebe/
+};
+
+export default config;
+```
+
+- The supervisor reads the tenant `.env` from `<dir>/<configDir>/.env` and runs
+  the tenant's engine child with cwd `<dir>/<configDir>`, so relative
+  `promptFiles` (and other cwd-relative assets) resolve there.
+- **The `phoebe.config.ts` itself must stay at `<dir>`.** Workspace discovery
+  skips dotfolders, so a config inside `.phoebe/` would never be found — the
+  config is a thin root file pointing at `configDir`, and everything else moves.
+  `container/` is operator-run (never read by the engine), so it can live in
+  `.phoebe/` too; you just point compose at it.
+- Must be a **relative** path with no `..` (it stays inside the tenant dir).
+  Default `"."` (co-located). Honored for fleet tenants — workspace children and
+  nested `repos/`. Like `engine`, it is bootstrapper-only and `resolveConfig`
+  drops it (the engine never sees it).
+
 ## Engine source (`engine`)
 
 Bootstrapper-only. `phoebe boot` reads this field to decide **where the engine
