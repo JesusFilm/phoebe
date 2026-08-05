@@ -150,7 +150,7 @@ host/dev. These map to the two named volumes in `compose.yml` — see
 
 A deployment is **flat**, **nested**, or **workspace**, selected by the boot
 ladder: a root `workspace` block → workspace; else a `repos/` directory →
-nested; else flat. Workspace topology and the submodule operator runbook live
+nested; else flat. Workspace topology and the operator runbook live
 in [`workspace.md`](workspace.md). Nested layout:
 
 ```text

@@ -151,8 +151,8 @@ engine child per tenant and reconciles the set on every poll — **no restart** 
 add or remove one. There are two discovery layouts:
 
 - **Nested** — directories under `repos/<owner>/<repo>/` (this section).
-- **Workspace** — linked child checkouts under a root that declares
-  `workspace: { depth }` (submodules preferred). Full topology + runbook:
+- **Workspace** — child checkouts under a root that declares
+  `workspace: { depth }` (plain clones or submodules). Full topology + runbook:
   [`workspace.md`](workspace.md).
 
 Read [`trust.md`](trust.md) first: co-locating repos means co-locating them in
