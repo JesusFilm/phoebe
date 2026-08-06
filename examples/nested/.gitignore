@@ -1,0 +1,4 @@
+# Secrets — the deployment-root token and every per-tenant secret file. Only the
+# `.env.example` templates are tracked; the real `.env` files never are.
+.env
+repos/**/.env
