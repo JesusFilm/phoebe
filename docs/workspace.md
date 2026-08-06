@@ -17,6 +17,10 @@ nested add-repo path, see
 [configuration.md → Multiple repos](configuration.md#multiple-repos-nested-tenants)
 and [operating.md → Running many repos](operating.md#running-many-repos-in-one-container).
 
+For a complete worked layout — the `engine` + `workspace: { depth }` root config
+plus two placeholder child checkouts — see
+[`examples/workspace/`](../examples/workspace/).
+
 ## Topology
 
 ```text
