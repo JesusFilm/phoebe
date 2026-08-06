@@ -85,18 +85,22 @@ function upsert(file, key, value) {
   }
   const line = `${key}=${value}`;
   let body = exists ? readFileSync(file, "utf8") : "";
-  const re = new RegExp(`^${key}=.*$`, "m");
-  if (re.test(body)) {
-    body = body.replace(re, line);
-  } else {
-    if (body && !body.endsWith("\n")) body += "\n";
-    body += line + "\n";
-  }
+  // Strip *every* existing assignment (a global match, not just the first), so a
+  // duplicate never leaves a stale token on disk after rotation, then append one.
+  body = body.replace(new RegExp(`^${key}=.*(?:\\r?\\n|$)`, "gm"), "");
+  if (body && !body.endsWith("\n")) body += "\n";
+  body += line + "\n";
   writeFileSync(file, body, { mode: 0o600 });
   try { chmodSync(file, 0o600); } catch { /* best-effort on non-POSIX */ }
 }
 
-const token = await resolveToken();
+const token = (await resolveToken()).trim();
+if (!token) {
+  // A whitespace-only --token/env value trims to empty; don't overwrite the
+  // env-file with an unusable credential.
+  console.error("No token supplied.");
+  process.exit(2);
+}
 if (/[\r\n]/.test(token)) {
   // A newline in the token would serialize into the .env as extra assignments.
   console.error("Token must not contain line breaks.");
