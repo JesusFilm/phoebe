@@ -1,9 +1,11 @@
 # Workspace mode: topology and operator runbook
 
-How to run Phoebe at the root of a **workspace** whose child project repos are
-linked as sub-repositories (git submodules preferred). Each child carries its
-own in-tree Phoebe install; one container discovers them, and the multi-tenant
-fleet supervisor (#57) runs one engine child per tenant.
+How to run Phoebe at the root of a **workspace** whose child project repos each
+sit in their own directory with an in-tree Phoebe install. A child directory can
+be a plain clone, a git submodule, a git worktree — any on-disk checkout;
+submodules are supported but **not required**. One container discovers whatever
+is on disk, and the multi-tenant fleet supervisor (#57) runs one engine child
+per tenant.
 
 Workspace mode is a **discovery source** only. The shared engine, per-tenant
 children, fleet concurrency cap, env-scrub isolation, and reconcile loop are
@@ -24,9 +26,9 @@ workspace-root/                         # bind-mounted :ro → /etc/phoebe
   .env.example
   .gitignore
   container/                            # Dockerfile, compose (deployment-owned)
-  .git/                                 # must be on the mount (submodule origin metadata)
-  .gitmodules                           # operator-owned; optional URL source only
-  child-a/                              # submodule (or plain linked checkout)
+  .git/                                 # optional; only submodule children need the root's
+  .gitmodules                           # only if children are submodules
+  child-a/                              # a plain clone, submodule, or any checkout
     phoebe.config.ts                    # authoritative repoSlug, per-repo fields
     .env                                # this tenant's GH_TOKEN + provider key
     .env.example
@@ -37,11 +39,11 @@ workspace-root/                         # bind-mounted :ro → /etc/phoebe
     …
 ```
 
-| Layer              | Who owns it            | What it holds                                                                                                      |
-| ------------------ | ---------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| **Root**           | deployment / workspace | Shared `engine` + `workspace: { depth }`; deployment-level `.env`; `container/`                                    |
-| **Child (tenant)** | each linked repo       | In-tree `phoebe.config.ts` + gitignored `.env` (+ optional `prompts/`); **no** `container/`                        |
-| **Private clone**  | container volumes      | `/data/repos/<owner>/<repo>/` — each tenant still clones privately; the host submodule is **not** the working copy |
+| Layer              | Who owns it            | What it holds                                                                                                     |
+| ------------------ | ---------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| **Root**           | deployment / workspace | Shared `engine` + `workspace: { depth }`; deployment-level `.env`; `container/`                                   |
+| **Child (tenant)** | each linked repo       | In-tree `phoebe.config.ts` + gitignored `.env` (+ optional `prompts/`); **no** `container/`                       |
+| **Private clone**  | container volumes      | `/data/repos/<owner>/<repo>/` — each tenant still clones privately; the host checkout is **not** the working copy |
 
 **One supervised engine child per tenant.** The bootstrapper walks the tree to
 `workspace.depth` (default `1`), treats every directory with a root-level
@@ -55,18 +57,24 @@ config — same isolation invariant as nested multi-tenant.
 
 ## Operator owns all git in the tree
 
-**Phoebe never runs `git` in the workspace tree.** It does not `submodule add`,
-`submodule update`, fetch, or commit there. The operator (or host CI) is
-responsible for:
+**Phoebe never runs `git` in the workspace tree.** It does not clone, fetch,
+`submodule add`, `submodule update`, or commit there. The operator (or host CI)
+puts a materialized checkout of each child on disk and keeps it current. How is
+your choice:
 
-- `git init` the root when using submodules,
-- `git submodule add <url> <dir>` for each child,
-- `git submodule update --init` (and pin/bump submodule SHAs) **before** boot
-  and whenever a child must appear as a real checkout.
+- **Plain clones (simplest):** `git clone <url> <dir>` for each child under the
+  root — no root git repo needed. This is what the
+  [runbook](#operator-runbook) below shows.
+- **Submodules:** `git init` the root, then `git submodule add <url> <dir>` per
+  child and `git submodule update --init` **before** boot — useful when you want
+  the root to be a super-repo that pins each child at a reviewed SHA.
+- **Anything else** that leaves a real checkout on disk (worktrees, a sync tool,
+  a bind of an existing clone) works the same — discovery only reads what is
+  there.
 
-An empty or unmaterialized child directory is skip-and-warned until the
-checkout exists on disk. A `submodule update` that refreshes content moves
-mtime; the fleet treats that as a changed tenant (existing mtime:size
+An empty or unmaterialized child directory is skip-and-warned until the checkout
+exists on disk. Refreshing a child's content (a `git pull` or `submodule
+update`) moves mtime; the fleet treats that as a changed tenant (mtime:size
 fingerprint) and will respawn that child.
 
 ## Two-tier `.env` model
@@ -93,20 +101,21 @@ filesystem ACL. Co-locate only repos in the same trust domain — see
 
 Two ways to put many repos under one container; same fleet underneath.
 
-| Concern                  | Nested (`repos/`)                                              | Workspace                                                                |
-| ------------------------ | -------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| Create deployment root   | `phoebe init` (then add tenants)                               | `phoebe init --workspace [dir]`                                          |
-| Add a tenant skeleton    | `phoebe add-repo <owner/repo>` (mints `repos/<owner>/<repo>/`) | Operator: `git submodule add <url> <dir>` → `phoebe init --tenant <dir>` |
-| Authoritative identity   | Path segment `<owner>/<repo>` (must match `repoSlug`)          | Child config `repoSlug` (origin cross-check is best-effort validation)   |
-| Deployment secrets       | Root `.env`                                                    | Root `.env`                                                              |
-| Per-tenant secrets       | `repos/<owner>/<repo>/.env`                                    | `<child>/.env`                                                           |
-| Container templates      | Root `container/`                                              | Root `container/` (children never get `container/`)                      |
-| Who runs git on the tree | Operator (optional clones for host review)                     | **Operator always** — submodules are operator-owned                      |
+| Concern                  | Nested (`repos/`)                                              | Workspace                                                                                   |
+| ------------------------ | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| Create deployment root   | `phoebe init` (then add tenants)                               | `phoebe init --workspace [dir]`                                                             |
+| Add a tenant skeleton    | `phoebe add-repo <owner/repo>` (mints `repos/<owner>/<repo>/`) | Operator: `git clone` (or `git submodule add`) `<url> <dir>` → `phoebe init --tenant <dir>` |
+| Authoritative identity   | Path segment `<owner>/<repo>` (must match `repoSlug`)          | Child config `repoSlug` (origin cross-check is best-effort validation)                      |
+| Deployment secrets       | Root `.env`                                                    | Root `.env`                                                                                 |
+| Per-tenant secrets       | `repos/<owner>/<repo>/.env`                                    | `<child>/.env`                                                                              |
+| Container templates      | Root `container/`                                              | Root `container/` (children never get `container/`)                                         |
+| Who runs git on the tree | Operator (optional clones for host review)                     | **Operator always** — the child checkouts are operator-owned                                |
 
 `add-repo` **mints a directory** under `repos/` from a slug. Workspace
-`init --tenant` scaffolds an **already-linked** directory (you pass the path).
-There is no `add-child` verb: submodule linking is git's job; Phoebe only
-scaffolds the in-tree install.
+`init --tenant` scaffolds an **existing** directory you already put on disk (you
+pass the path). There is no `add-child` verb: placing the child checkout —
+`git clone`, a submodule, whatever — is your job; Phoebe only scaffolds the
+in-tree install.
 
 ## Mode selection
 
@@ -118,8 +127,8 @@ Detection ladder at boot (`bootstrap/tenants.ts`):
 3. Else → **flat** (single-repo) mode.
 
 Modes are mutually exclusive **per deployment**. Use nested when the deployment
-owns tenant directories under `repos/`; use workspace when children are the
-workspace's linked project checkouts.
+owns tenant directories under `repos/`; use workspace when the children are the
+project checkouts sitting under the workspace root.
 
 ## Operator runbook
 
@@ -159,10 +168,14 @@ The workspace root need **not** be a git repository for discovery itself — onl
 for submodule workflow and so `.git` (including `.git/modules/…`) is present on
 the host path that compose bind-mounts.
 
-### 3. Per child: link, scaffold, secret
+### 3. Per child: place a checkout, scaffold, secret
 
 ```bash
-git submodule add https://github.com/acme/service-a.git service-a
+# Put a checkout on disk. A plain clone is simplest and needs no root git repo:
+git clone https://github.com/acme/service-a.git service-a
+# ...or, if the root is a super-repo, add it as a submodule instead:
+# git submodule add https://github.com/acme/service-a.git service-a
+
 npx --yes phoebe-agent init --tenant ./service-a
 # Edit service-a/phoebe.config.ts if needed (repoSlug/repoUrl are prefilled from origin when present)
 cp service-a/.env.example service-a/.env
@@ -172,20 +185,24 @@ cp service-a/.env.example service-a/.env
 Repeat for each child. `init --tenant` refuses if `phoebe.config.ts` already
 exists (loud no-clobber). It does **not** create `container/` under the child.
 
-### 4. Materialize checkouts before boot
+### 4. Materialize checkouts before boot (submodules only)
+
+Plain clones are already material — skip this step. If your children are
+submodules, populate them first:
 
 ```bash
 git submodule update --init
 # or: git submodule update --init --recursive
 ```
 
-Without this, empty submodule dirs are skipped with a warning and are not
-supervised until a real checkout appears.
+Either way, an empty child dir is skipped with a warning and is not supervised
+until a real checkout appears.
 
 ### 5. Boot
 
 From `container/`, same compose shape as flat/nested — whole parent dir mounted
-`:ro` at `/etc/phoebe`, **including `.git`**:
+`:ro` at `/etc/phoebe` (keep each child's `.git` on the mount so the origin
+cross-check can read it; it is a best-effort check, not required):
 
 ```bash
 cd container
@@ -202,8 +219,9 @@ docker compose --env-file ../.env up -d
    env-scrub, shared concurrency cap, reconcile re-walk every poll).
 
 See the mount notes beside the scaffolded templates
-(`container/README.md` when produced by `init --workspace`) for why `.git` must
-stay on the mount and why submodules must be material before first boot.
+(`container/README.md` when produced by `init --workspace`) for why each child's
+`.git` should stay on the mount (origin cross-check) and why submodule children
+must be material before first boot.
 
 ## What stays the same as nested multi-tenant
 

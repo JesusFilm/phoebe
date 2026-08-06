@@ -52,8 +52,11 @@ import {
   discoverTenants,
   discoverWorkspaceTenants,
   isNestedDeployment,
+  withTenantConfigDir,
   type DiscoveredTenant,
+  type TenantSample,
 } from "./tenants.ts";
+import { readConfigDir } from "./config-dir.ts";
 import { superviseFleet, type FleetChild, type FleetDiscoverInput } from "./supervise-fleet.ts";
 import { readWorkspaceField, type ResolvedWorkspace } from "./workspace-source.ts";
 import { readFileSync } from "node:fs";
@@ -542,9 +545,18 @@ function runFleet(opts: {
       settle = resolve;
     });
     const label = tenant.slug ?? tenant.id;
-    const child = spawnEngineChild(engine.entry, opts.argv, {
+    // The child's cwd is the tenant's asset dir (#98): `dirname(envPath)`, which
+    // is `tenant.dir` unless `configDir` relocated the `.env` (e.g. into
+    // `.phoebe/`). When relocated, cwd is not where the config lives, so pass
+    // `--config` explicitly (the child's CLI resolves config from cwd otherwise
+    // — and `--config` always wins). Relative `promptFiles` then resolve under
+    // the asset dir. The default path (co-located) is byte-for-byte unchanged.
+    const assetsDir = dirname(tenant.envPath);
+    const relocated = assetsDir !== tenant.dir;
+    const argv = relocated ? ["--config", tenant.configPath, ...opts.argv] : opts.argv;
+    const child = spawnEngineChild(engine.entry, argv, {
       env,
-      cwd: tenant.dir,
+      cwd: assetsDir,
       onExit: (code: number | null, signal: NodeJS.Signals | null) => settle({ code, signal }),
       onSpawnError: (error: Error) => {
         console.error(`[phoebe] boot: tenant ${label} failed to spawn — ${error.message}`);
@@ -589,13 +601,33 @@ function runFleet(opts: {
 
 /**
  * Nested-mode discover callback: filesystem scan + per-tenant fingerprints.
+ * The sync scan builds tenants co-located; a second pass reads each tenant's
+ * bootstrapper-only `configDir` (#98) and relocates its `.env` accordingly. A
+ * config that will not load / a malformed `configDir` is **held**, not started —
+ * the same skip-and-hold workspace discovery uses (#86), so a misconfigured
+ * tenant surfaces loudly rather than silently running against the wrong `.env`.
  */
 function nestedDiscover(configDir: string): () => FleetDiscoverInput {
-  return () =>
-    discoverTenants(configDir).tenants.map((tenant) => ({
-      tenant,
-      fingerprint: tenantFingerprint(tenant.configPath, tenant.envPath),
-    }));
+  return async () => {
+    const samples: TenantSample[] = [];
+    const hold: string[] = [];
+    for (const tenant of discoverTenants(configDir).tenants) {
+      try {
+        const resolved = withTenantConfigDir(tenant, await loadTenantConfigDir(tenant.configPath));
+        samples.push({
+          tenant: resolved,
+          fingerprint: tenantFingerprint(resolved.configPath, resolved.envPath),
+        });
+      } catch (error) {
+        console.warn(
+          `[phoebe] boot: nested: holding ${tenant.id} — ${describe(error)} ` +
+            `(not started until its configDir resolves).`,
+        );
+        hold.push(tenant.id);
+      }
+    }
+    return { samples, hold };
+  };
 }
 
 /**
@@ -609,6 +641,7 @@ function workspaceDiscover(
   return async () => {
     const result = await discoverWorkspaceTenants(configDir, workspace.depth, {
       loadRepoSlug: loadTenantRepoSlug,
+      loadConfigDir: loadTenantConfigDir,
       warn: (message) => console.warn(message),
     });
     return {
@@ -637,6 +670,22 @@ async function loadTenantRepoSlug(configPath: string): Promise<string> {
     throw new Error(`missing or empty repoSlug in ${configPath}`);
   }
   return slug.trim();
+}
+
+/**
+ * Load a tenant config and return its bootstrapper-only `configDir` (#98), or
+ * "." when unset. Throws when the config will not load or the value is
+ * malformed — the workspace walker treats that as skip-and-warn, nested falls
+ * back to co-location. Reuses `loadUserConfig`'s fingerprint cache, so this does
+ * not re-read a config the slug load already parsed this poll.
+ */
+async function loadTenantConfigDir(configPath: string): Promise<string> {
+  const fingerprint = configFingerprint(configPath);
+  if (fingerprint === null) {
+    throw new Error(`config unreadable at ${configPath}`);
+  }
+  const user = await loadUserConfig(configPath, { reloadKey: fingerprint });
+  return readConfigDir(user as unknown as Record<string, unknown>);
 }
 
 /**

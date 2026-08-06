@@ -164,6 +164,26 @@ describe("validateUserConfig", () => {
       /workspace\.depth/i,
     );
   });
+
+  test("accepts a relative configDir", () => {
+    expect(() => validateUserConfig(minimalUserConfig({ configDir: ".phoebe" }))).not.toThrow();
+    expect(() =>
+      validateUserConfig(minimalUserConfig({ configDir: "deploy/phoebe" })),
+    ).not.toThrow();
+  });
+
+  test("rejects an absolute configDir", () => {
+    expect(() => validateUserConfig(minimalUserConfig({ configDir: "/etc/phoebe" }))).toThrow(
+      /configDir.*absolute/i,
+    );
+  });
+
+  test("rejects a `..`-escaping or empty configDir", () => {
+    expect(() => validateUserConfig(minimalUserConfig({ configDir: "../sibling" }))).toThrow(
+      /configDir/i,
+    );
+    expect(() => validateUserConfig(minimalUserConfig({ configDir: "" }))).toThrow(/configDir/i);
+  });
 });
 
 describe("resolveConfig", () => {
@@ -359,19 +379,22 @@ describe("resolveConfig", () => {
     expect(resolved.paths.repoDir).toBe("/data/repos/acme/widget/repo");
   });
 
-  test("drops bootstrapper-only engine and workspace from the engine-facing shape", () => {
+  test("drops bootstrapper-only engine, workspace, and configDir from the engine-facing shape", () => {
     // Mirrors how `engine` is never on PhoebeConfig: both fields are accepted
     // on the user config so consumers type-check, then discarded by construction.
     const resolved = resolveConfig(
       minimalUserConfig({
         engine: { source: "local" },
         workspace: { depth: 2 },
+        configDir: ".phoebe",
       }),
     );
     expect(resolved).not.toHaveProperty("engine");
     expect(resolved).not.toHaveProperty("workspace");
+    expect(resolved).not.toHaveProperty("configDir");
     // A spread snapshot of keys must not sneak them back in under any alias.
     expect(Object.keys(resolved).sort()).not.toContain("engine");
     expect(Object.keys(resolved).sort()).not.toContain("workspace");
+    expect(Object.keys(resolved).sort()).not.toContain("configDir");
   });
 });

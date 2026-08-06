@@ -4,7 +4,7 @@
 // source is materialized separately (github-engine.ts) and tested there, and the
 // fallback policy itself lives in crash-loop.ts.
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
@@ -147,7 +147,13 @@ describe("observerEngineEnv", () => {
       PHOEBE_RUNNING_ENGINE_REF: "main",
       PHOEBE_RUNNING_ENGINE_SHA: "last-good-sha",
       PHOEBE_QUARANTINED_ENGINE_SHA: "bad-sha",
-      PHOEBE_BOOTSTRAP_VERSION: "0.2.0",
+      // Matches whatever version is being released — bootstrapVersion() reads
+      // the same file, so the assertion is that the pass-through happens.
+      PHOEBE_BOOTSTRAP_VERSION: (
+        JSON.parse(readFileSync(join(import.meta.dirname, "..", "package.json"), "utf8")) as {
+          version: string;
+        }
+      ).version,
     });
   });
 });
