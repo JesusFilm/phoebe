@@ -32,8 +32,14 @@ function flag(name) {
 const has = (name) => args.includes(name);
 
 if (has("--help") || has("-h")) {
-  console.log(readFileSync(new URL(import.meta.url)).toString().split("\n")
-    .filter((l) => l.startsWith("//")).map((l) => l.slice(3)).join("\n"));
+  console.log(
+    readFileSync(new URL(import.meta.url))
+      .toString()
+      .split("\n")
+      .filter((l) => l.startsWith("//"))
+      .map((l) => l.slice(3))
+      .join("\n"),
+  );
   process.exit(0);
 }
 
@@ -45,7 +51,12 @@ const VAR = "CLAUDE_CODE_OAUTH_TOKEN";
 
 function readLine(prompt) {
   const rl = createInterface({ input: process.stdin, output: process.stderr });
-  return new Promise((res) => rl.question(prompt, (a) => { rl.close(); res(a.trim()); }));
+  return new Promise((res) =>
+    rl.question(prompt, (a) => {
+      rl.close();
+      res(a.trim());
+    }),
+  );
 }
 
 async function resolveToken() {
@@ -61,7 +72,9 @@ async function resolveToken() {
     console.error("Claude Pro/Max account, then copy the token it prints.\n");
     const r = spawnSync("claude", ["setup-token"], { stdio: "inherit" });
     if (r.error?.code === "ENOENT") {
-      console.error("\n`claude` is not on PATH. Install the CLI (npm i -g @anthropic-ai/claude-code)");
+      console.error(
+        "\n`claude` is not on PATH. Install the CLI (npm i -g @anthropic-ai/claude-code)",
+      );
       console.error("or run `claude setup-token` elsewhere and re-run with --token <token>.");
       process.exit(127);
     }
@@ -70,7 +83,10 @@ async function resolveToken() {
   // directly — ask the operator to paste it back. This is the reliable path
   // across TTY/headless setups.
   const pasted = await readLine("\nPaste the token here: ");
-  if (!pasted) { console.error("No token entered."); process.exit(2); }
+  if (!pasted) {
+    console.error("No token entered.");
+    process.exit(2);
+  }
   return pasted;
 }
 
@@ -81,7 +97,11 @@ function upsert(file, key, value) {
   // token is readable at the default umask. Best-effort on non-POSIX.
   const exists = existsSync(file);
   if (exists) {
-    try { chmodSync(file, 0o600); } catch { /* best-effort on non-POSIX */ }
+    try {
+      chmodSync(file, 0o600);
+    } catch {
+      /* best-effort on non-POSIX */
+    }
   }
   const line = `${key}=${value}`;
   let body = exists ? readFileSync(file, "utf8") : "";
@@ -91,7 +111,11 @@ function upsert(file, key, value) {
   if (body && !body.endsWith("\n")) body += "\n";
   body += line + "\n";
   writeFileSync(file, body, { mode: 0o600 });
-  try { chmodSync(file, 0o600); } catch { /* best-effort on non-POSIX */ }
+  try {
+    chmodSync(file, 0o600);
+  } catch {
+    /* best-effort on non-POSIX */
+  }
 }
 
 const token = (await resolveToken()).trim();
@@ -107,7 +131,9 @@ if (/[\r\n]/.test(token)) {
   process.exit(2);
 }
 if (!token.startsWith("sk-ant-")) {
-  console.error(`Warning: token does not look like an OAuth token (expected sk-ant-…). Writing it anyway.`);
+  console.error(
+    `Warning: token does not look like an OAuth token (expected sk-ant-…). Writing it anyway.`,
+  );
 }
 upsert(envFile, VAR, token);
 

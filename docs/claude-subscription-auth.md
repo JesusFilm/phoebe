@@ -52,11 +52,11 @@ The helper launches `claude setup-token`, waits for you to paste the resulting
 token, writes `CLAUDE_CODE_OAUTH_TOKEN=…` into `.phoebe/.env` (mode `0600`), and
 prints the two wiring steps below. Flags:
 
-| Flag | Effect |
-| --- | --- |
-| `--token <sk-ant-…>` | Use a token you already have; skip the interactive flow. |
-| `--envfile <path>` | Write to a different env-file (default `.phoebe/.env`). |
-| `--no-launch` | Never spawn the CLI; require `--token`, `CLAUDE_CODE_OAUTH_TOKEN`, or a paste. |
+| Flag                 | Effect                                                                         |
+| -------------------- | ------------------------------------------------------------------------------ |
+| `--token <sk-ant-…>` | Use a token you already have; skip the interactive flow.                       |
+| `--envfile <path>`   | Write to a different env-file (default `.phoebe/.env`).                        |
+| `--no-launch`        | Never spawn the CLI; require `--token`, `CLAUDE_CODE_OAUTH_TOKEN`, or a paste. |
 
 `CLAUDE_CODE_OAUTH_TOKEN=… node scripts/hoist-claude-login.mjs` also works if the
 token is already in your environment.
@@ -120,7 +120,7 @@ choosing it:
   (`10001`). At mode `0600` the container user then can't read it. You must
   either copy the file into a location the image chowns to `phoebe`, or seed it
   into a named volume with the right ownership — not just `-v
-  ~/.claude:/home/phoebe/.claude`.
+~/.claude:/home/phoebe/.claude`.
 - **Short-lived token + refresh.** The access token in that file expires in
   hours; the CLI refreshes it in place using the refresh token. In a container
   that refresh only survives if `/home/phoebe/.claude` is writable **and
