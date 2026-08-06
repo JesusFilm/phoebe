@@ -53,18 +53,18 @@ async function resolveToken() {
   if (fromArg) return fromArg.trim();
   if (process.env[VAR]) return process.env[VAR].trim();
 
-  if (has("--no-launch")) {
-    console.error(`No token supplied. Pass --token <token>, set ${VAR}, or drop --no-launch.`);
-    process.exit(2);
-  }
-
-  console.error("Launching `claude setup-token` — complete the browser sign-in with your");
-  console.error("Claude Pro/Max account, then copy the token it prints.\n");
-  const r = spawnSync("claude", ["setup-token"], { stdio: "inherit" });
-  if (r.error?.code === "ENOENT") {
-    console.error("\n`claude` is not on PATH. Install the CLI (npm i -g @anthropic-ai/claude-code)");
-    console.error("or run `claude setup-token` elsewhere and re-run with --token <token>.");
-    process.exit(127);
+  // --no-launch means "don't spawn the CLI" — not "don't accept a paste". Fall
+  // straight through to the stdin prompt below so a token minted elsewhere can
+  // still be pasted in (as the usage text and docs promise).
+  if (!has("--no-launch")) {
+    console.error("Launching `claude setup-token` — complete the browser sign-in with your");
+    console.error("Claude Pro/Max account, then copy the token it prints.\n");
+    const r = spawnSync("claude", ["setup-token"], { stdio: "inherit" });
+    if (r.error?.code === "ENOENT") {
+      console.error("\n`claude` is not on PATH. Install the CLI (npm i -g @anthropic-ai/claude-code)");
+      console.error("or run `claude setup-token` elsewhere and re-run with --token <token>.");
+      process.exit(127);
+    }
   }
   // setup-token prints the token to the inherited stdout, so we can't capture it
   // directly — ask the operator to paste it back. This is the reliable path
@@ -76,8 +76,15 @@ async function resolveToken() {
 
 function upsert(file, key, value) {
   mkdirSync(dirname(file), { recursive: true });
+  // Lock the file down *before* the secret touches disk: chmod an existing file
+  // first, and create a new one at 0600 — otherwise there's a window where the
+  // token is readable at the default umask. Best-effort on non-POSIX.
+  const exists = existsSync(file);
+  if (exists) {
+    try { chmodSync(file, 0o600); } catch { /* best-effort on non-POSIX */ }
+  }
   const line = `${key}=${value}`;
-  let body = existsSync(file) ? readFileSync(file, "utf8") : "";
+  let body = exists ? readFileSync(file, "utf8") : "";
   const re = new RegExp(`^${key}=.*$`, "m");
   if (re.test(body)) {
     body = body.replace(re, line);
@@ -85,11 +92,16 @@ function upsert(file, key, value) {
     if (body && !body.endsWith("\n")) body += "\n";
     body += line + "\n";
   }
-  writeFileSync(file, body);
+  writeFileSync(file, body, { mode: 0o600 });
   try { chmodSync(file, 0o600); } catch { /* best-effort on non-POSIX */ }
 }
 
 const token = await resolveToken();
+if (/[\r\n]/.test(token)) {
+  // A newline in the token would serialize into the .env as extra assignments.
+  console.error("Token must not contain line breaks.");
+  process.exit(2);
+}
 if (!token.startsWith("sk-ant-")) {
   console.error(`Warning: token does not look like an OAuth token (expected sk-ant-…). Writing it anyway.`);
 }
