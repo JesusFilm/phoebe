@@ -11,6 +11,10 @@
 
 import { isAbsolute } from "node:path";
 
+// One shared validator for the `workspace` block, owned by the bootstrapper
+// (which must check it before the engine exists) and imported here so the two
+// entry points cannot drift as the discovery arms grow (#128).
+import { validateWorkspaceField } from "../bootstrap/workspace-source.ts";
 import { derivePaths } from "./paths.ts";
 
 export const PROVIDER_NAMES = ["cursor", "claude", "codex"] as const;
@@ -29,17 +33,31 @@ export type EngineSourceField =
   | { source: "local" };
 
 /**
- * Bootstrapper-only workspace discovery knobs (#83/#97). Presence of this
- * block on the deployment-root config selects workspace mode; `depth` is how
- * many directory levels under the root the bootstrapper scans for tenant
- * configs (integer ≥ 1, default 1). The engine never reads this: it lives on
- * `PhoebeUserConfig` so a consumer config that sets it still type-checks, and
- * `resolveConfig` deliberately drops it — it never reaches `PhoebeConfig`.
+ * Bootstrapper-only workspace discovery knobs (#83/#97/#128). Presence of this
+ * block on the deployment-root config selects workspace mode; the block then
+ * declares exactly one of two discovery arms. The engine never reads this: it
+ * lives on `PhoebeUserConfig` so a consumer config that sets it still
+ * type-checks, and `resolveConfig` deliberately drops it — it never reaches
+ * `PhoebeConfig`.
+ *
+ * The union is the arms' mutual exclusion expressed in the type, so a config
+ * declaring both fails to compile as well as failing `validateWorkspaceField`.
  */
-export type WorkspaceField = {
-  /** Scan depth under the workspace root; omit ⇒ 1. */
-  depth?: number;
-};
+export type WorkspaceField =
+  | {
+      /** Scan depth under the workspace root; omit ⇒ 1. */
+      depth?: number;
+      tenants?: never;
+    }
+  | {
+      /**
+       * The fleet, declared. Directory paths resolved against the workspace
+       * root, in the order they should be supervised. Absolute and `..` entries
+       * supervise repos outside the workspace checkout.
+       */
+      tenants: string[];
+      depth?: never;
+    };
 
 export type PromptFilesConfig = {
   issue: string;
@@ -335,30 +353,6 @@ function validateConfigDir(configDir: NonNullable<PhoebeUserConfig["configDir"]>
     throw new Error(
       `phoebe.config.ts \`configDir\` must stay within the tenant directory — ` +
         `no ".." segments (got ${JSON.stringify(configDir)}).`,
-    );
-  }
-}
-
-/**
- * Reject a malformed bootstrapper-only `workspace` block. Presence is enough
- * to select workspace mode later; `depth` must be an integer ≥ 1 when set, and
- * omitted `depth` is fine (bootstrap defaults it to 1). Kept on the schema so
- * a mistyped consumer config fails at `resolveConfig` the same way a bad
- * `blockedByPattern` does — before any engine work unit runs.
- */
-function validateWorkspaceField(field: WorkspaceField): void {
-  if (field === null || typeof field !== "object" || Array.isArray(field)) {
-    throw new Error(
-      `phoebe.config.ts \`workspace\` must be { depth?: integer ≥ 1 } ` +
-        `(got ${JSON.stringify(field)}).`,
-    );
-  }
-  if (field.depth === undefined) return;
-  const { depth } = field;
-  if (typeof depth !== "number" || !Number.isInteger(depth) || depth < 1) {
-    throw new Error(
-      `phoebe.config.ts \`workspace.depth\` must be an integer ≥ 1 ` +
-        `(got ${JSON.stringify(depth)}).`,
     );
   }
 }
