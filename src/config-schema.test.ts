@@ -106,6 +106,37 @@ describe("validateUserConfig", () => {
     );
   });
 
+  test("accepts an explicitly declared fleet", () => {
+    expect(() =>
+      validateUserConfig(minimalUserConfig({ workspace: { tenants: ["widget", "gadget"] } })),
+    ).not.toThrow();
+    expect(() =>
+      validateUserConfig(minimalUserConfig({ workspace: { tenants: [] } })),
+    ).not.toThrow();
+  });
+
+  test("engine-side validation shares the bootstrapper's tenants rules", () => {
+    // Not re-testing every rule here — the point is that one validator backs
+    // both entry points, so a rule added in bootstrap/workspace-source.ts is
+    // enforced at `resolveConfig` too, without a second copy to keep in step.
+    expect(() =>
+      validateUserConfig(minimalUserConfig({ workspace: { tenants: ["apps/*"] } })),
+    ).toThrow(/glob/i);
+    expect(() =>
+      validateUserConfig(minimalUserConfig({ workspace: { tenants: ["apps", "apps/web"] } })),
+    ).toThrow(/nested/i);
+  });
+
+  test("rejects a workspace block declaring both arms", () => {
+    expect(() =>
+      validateUserConfig(
+        // @ts-expect-error the WorkspaceField union rejects both arms at compile
+        // time too — this asserts the runtime guard behind that type.
+        minimalUserConfig({ workspace: { depth: 1, tenants: ["widget"] } }),
+      ),
+    ).toThrow(/exactly one of/i);
+  });
+
   test("accepts a relative configDir", () => {
     expect(() => validateUserConfig(minimalUserConfig({ configDir: ".phoebe" }))).not.toThrow();
     expect(() =>

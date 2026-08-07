@@ -51,7 +51,7 @@ import {
 } from "./tenants.ts";
 import { readConfigDir } from "./config-dir.ts";
 import { superviseFleet, type FleetChild, type FleetDiscoverInput } from "./supervise-fleet.ts";
-import { readWorkspaceField, type ResolvedWorkspace } from "./workspace-source.ts";
+import { readWorkspaceField, requireDepthArm, type ResolvedWorkspace } from "./workspace-source.ts";
 import { readFileSync } from "node:fs";
 import {
   configFingerprint,
@@ -502,8 +502,9 @@ function workspaceDiscover(
   configDir: string,
   workspace: ResolvedWorkspace,
 ): () => FleetDiscoverInput {
+  const depth = requireDepthArm(workspace);
   return async () => {
-    const result = await discoverWorkspaceTenants(configDir, workspace.depth, {
+    const result = await discoverWorkspaceTenants(configDir, depth, {
       loadRepoSlug: loadTenantRepoSlug,
       loadConfigDir: loadTenantConfigDir,
       warn: (message) => console.warn(message),
@@ -598,7 +599,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   // re-reads on each (re)launch for the engine source + cache bust.
   const rootFingerprint = configFingerprint(configPath);
   const rootConfig = await loadMountedConfig(configPath, rootFingerprint);
-  const workspace = readWorkspaceField(rootConfig);
+  const workspace = readWorkspaceField(rootConfig, { root: configDir });
 
   if (workspace !== null) {
     if (isNestedDeployment(configDir)) {
@@ -607,14 +608,17 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
           "(nested central layout is off for this deployment).",
       );
     }
+    // Refused here, at the top of workspace mode, so a declared fleet fails
+    // before any child is spawned rather than after a surprise walk (#128).
+    const depth = requireDepthArm(workspace);
     // Count tenants for the startup log (same walk the fleet will use).
-    const initial = await discoverWorkspaceTenants(configDir, workspace.depth, {
+    const initial = await discoverWorkspaceTenants(configDir, depth, {
       loadRepoSlug: loadTenantRepoSlug,
       warn: (message) => console.warn(message),
     });
     console.log(
       `[phoebe] boot: workspace mode — supervising ${initial.tenants.length} tenant(s) ` +
-        `on one shared engine (depth ${workspace.depth}).`,
+        `on one shared engine (depth ${depth}).`,
     );
     let fleetExit: EngineExit;
     try {

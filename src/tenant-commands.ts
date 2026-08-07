@@ -34,7 +34,11 @@ import {
   TENANT_CONFIG_FILE,
   TENANT_ENV_FILE,
 } from "../bootstrap/tenants.ts";
-import { readWorkspaceField } from "../bootstrap/workspace-source.ts";
+import {
+  readWorkspaceField,
+  requireDepthArm,
+  type ResolvedWorkspace,
+} from "../bootstrap/workspace-source.ts";
 import { loadUserConfig } from "./load-config.ts";
 import { readStatus, STATUS_FILE, type StatusSnapshot } from "./unit-event.ts";
 
@@ -298,11 +302,16 @@ async function defaultLoadRepoSlug(configPath: string): Promise<string> {
 }
 
 /**
- * Resolve the root `workspace: { depth? }` block, if any. A missing / unreadable
- * root config is not workspace mode (detection ladder falls through to nested /
- * flat). A present but *malformed* `workspace` field throws — same as boot.
+ * Resolve the root `workspace` block, if any. A missing / unreadable root config
+ * is not workspace mode (detection ladder falls through to nested / flat). A
+ * present but *malformed* `workspace` field throws — same as boot.
+ *
+ * Returns the whole resolved block rather than a bare depth (#128): on the
+ * explicit arm there is no `depth`, and reading one would yield `undefined`,
+ * drop `phoebe list` out of workspace mode, and report a declared fleet as no
+ * tenants at all.
  */
-async function resolveWorkspaceDepth(configDir: string): Promise<number | null> {
+async function resolveRootWorkspace(configDir: string): Promise<ResolvedWorkspace | null> {
   const rootConfigPath = join(configDir, TENANT_CONFIG_FILE);
   if (!existsSync(rootConfigPath)) return null;
   let root: Record<string, unknown>;
@@ -311,8 +320,7 @@ async function resolveWorkspaceDepth(configDir: string): Promise<number | null> 
   } catch {
     return null;
   }
-  const workspace = readWorkspaceField(root);
-  return workspace?.depth ?? null;
+  return readWorkspaceField(root, { root: configDir });
 }
 
 /**
@@ -393,12 +401,12 @@ export async function listTenants(opts: {
   /** Injectable workspace slug loader (tests); defaults to `loadUserConfig`. */
   loadRepoSlug?: (configPath: string) => string | Promise<string>;
 }): Promise<TenantListing[]> {
-  const depth = await resolveWorkspaceDepth(opts.configDir);
-  if (depth !== null) {
+  const workspace = await resolveRootWorkspace(opts.configDir);
+  if (workspace !== null) {
     return listWorkspaceTenants({
       configDir: opts.configDir,
       dataBase: opts.dataBase,
-      depth,
+      depth: requireDepthArm(workspace),
       loadRepoSlug: opts.loadRepoSlug,
     });
   }

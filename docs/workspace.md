@@ -125,7 +125,7 @@ in-tree install.
 
 Detection ladder at boot (`bootstrap/tenants.ts`):
 
-1. Root config has a `workspace: { depth? }` block → **workspace** mode  
+1. Root config has a `workspace` block → **workspace** mode  
    (if `repos/` also exists → workspace wins, with a warning; `repos/` is ignored).
 2. Else a `repos/` directory is present → **nested** mode.
 3. Else → **flat** (single-repo) mode.
@@ -133,6 +133,24 @@ Detection ladder at boot (`bootstrap/tenants.ts`):
 Modes are mutually exclusive **per deployment**. Use nested when the deployment
 owns tenant directories under `repos/`; use workspace when the children are the
 project checkouts sitting under the workspace root.
+
+### Discovery arms
+
+The `workspace` block declares exactly one of two ways to find the children —
+declaring both is an error:
+
+| Arm                       | Fleet membership                                                                                                                |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `{ depth: 1 }`            | **Walked.** Every child under the root carrying a `phoebe.config.ts`. `depth` is optional — `workspace: {}` defaults it to `1`. |
+| `{ tenants: ["widget"] }` | **Declared.** Exactly the directories listed, in the order listed.                                                              |
+
+Everything below this section describes the **walk** arm, which is the default
+and what `phoebe init --workspace` scaffolds. The declared arm's field shape and
+validation have landed — entries normalize, absolute and `..` paths supervise
+repos outside the workspace checkout, and an entry that is (or contains) the
+root, a duplicate, a nested pair, or a glob is rejected at load — but discovery
+for a declared fleet is not wired yet: `phoebe boot` and `phoebe list` refuse
+such a config rather than falling back to a walk.
 
 ## Operator runbook
 
