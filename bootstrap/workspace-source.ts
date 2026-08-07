@@ -64,11 +64,12 @@ export function isExplicitWorkspace(
  * without complaint (`"./widget/"` → `widget`).
  *
  * `opts.root` is the workspace root the entries resolve against. Callers that
- * know it (the bootstrapper, `phoebe list`) get the full check; the engine-side
- * call from `validateUserConfig` has no config directory to offer, so it omits
- * the root and the resolution-dependent rules — the root spelled absolutely,
- * and a relative-versus-absolute clash between two entries — go unchecked
- * there. Everything expressible lexically is checked either way, including pure
+ * know it (the bootstrapper, `phoebe list`) get the full check, including the
+ * rules that need to know where an entry points: the root spelled absolutely,
+ * and a duplicate or nested pair where one entry is relative and the other
+ * absolute. The engine-side call from `validateUserConfig` has no config
+ * directory to offer, so it omits the root and those go unchecked there —
+ * everything expressible lexically is still checked either way, including pure
  * `..` chains, which contain the root whatever the root turns out to be.
  */
 export function validateWorkspaceField(
@@ -128,6 +129,9 @@ function validateTenantList(value: unknown, root: string | undefined): string[] 
   }
 
   const normalized: string[] = [];
+  // Comparison key → the declared spelling it came from, so a clash can name
+  // the entry the operator actually wrote.
+  const seen = new Map<string, string>();
   for (const entry of value) {
     if (typeof entry !== "string") {
       throw new Error(
@@ -158,26 +162,43 @@ function validateTenantList(value: unknown, root: string | undefined): string[] 
       );
     }
 
-    if (normalized.includes(dir)) {
+    // Compared on where an entry *points*, not on how it was spelled, so a
+    // relative entry and an absolute one naming the same directory still clash.
+    const key = comparisonKey(dir, root);
+    const clash = seen.get(key);
+    if (clash !== undefined) {
       throw new Error(
         `phoebe.config.ts \`workspace.tenants\` has a duplicate entry: ${JSON.stringify(dir)} ` +
-          `is listed twice (${JSON.stringify(entry)} normalizes onto an earlier entry) — ` +
-          `deduplicating silently would make the fleet smaller than the config reads.`,
+          `and ${JSON.stringify(clash)} are the same directory — deduplicating silently would ` +
+          `make the fleet smaller than the config reads.`,
       );
     }
 
-    const nested = normalized.find((seen) => nests(seen, dir) || nests(dir, seen));
+    const nested = [...seen].find(([other]) => nests(other, key) || nests(key, other));
     if (nested !== undefined) {
       throw new Error(
         `phoebe.config.ts \`workspace.tenants\` lists ${JSON.stringify(dir)} nested inside ` +
-          `${JSON.stringify(nested)} (or the reverse) — each tenant directory is its own ` +
+          `${JSON.stringify(nested[1])} (or the reverse) — each tenant directory is its own ` +
           `checkout, so one may not contain another.`,
       );
     }
 
+    seen.set(key, dir);
     normalized.push(dir);
   }
   return normalized;
+}
+
+/**
+ * What two entries are compared on. With a root, that is the directory they
+ * resolve to, which is the only way to see that `widget` and
+ * `/srv/deploy/widget` are one tenant. Without one — the engine-side call from
+ * `validateUserConfig`, which has no config directory — the normalized spelling
+ * is all there is, so two entries anchored differently cannot be compared and a
+ * clash between them goes unseen.
+ */
+function comparisonKey(dir: string, root: string | undefined): string {
+  return root === undefined ? dir : resolve(root, dir);
 }
 
 /**

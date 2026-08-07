@@ -150,6 +150,18 @@ describe("validateWorkspaceField — the tenants list (#128)", () => {
     );
   });
 
+  test("a known root catches a relative entry duplicating an absolute one", () => {
+    // Two spellings of one directory. Comparing the declared strings misses it;
+    // comparing what they resolve to does not.
+    const root = "/srv/deploy";
+    expect(() =>
+      validateWorkspaceField({ tenants: ["widget", "/srv/deploy/widget"] }, { root }),
+    ).toThrow(/duplicate/i);
+    expect(() =>
+      validateWorkspaceField({ tenants: ["apps", "/srv/deploy/apps/web"] }, { root }),
+    ).toThrow(/nested/i);
+  });
+
   test("rejects a tenant nested inside another tenant", () => {
     expect(() => validateWorkspaceField({ tenants: ["apps", "apps/web"] })).toThrow(/nested/i);
     // Order-independent: the outer dir listed second is the same clash.

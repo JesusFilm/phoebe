@@ -139,10 +139,10 @@ project checkouts sitting under the workspace root.
 The `workspace` block declares exactly one of two ways to find the children —
 declaring both is an error:
 
-| Arm                       | Fleet membership                                                      |
-| ------------------------- | --------------------------------------------------------------------- |
-| `{ depth?: 1 }`           | **Walked.** Every child under the root carrying a `phoebe.config.ts`. |
-| `{ tenants: ["widget"] }` | **Declared.** Exactly the directories listed, in the order listed.    |
+| Arm                       | Fleet membership                                                                                                                |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `{ depth: 1 }`            | **Walked.** Every child under the root carrying a `phoebe.config.ts`. `depth` is optional — `workspace: {}` defaults it to `1`. |
+| `{ tenants: ["widget"] }` | **Declared.** Exactly the directories listed, in the order listed.                                                              |
 
 Everything below this section describes the **walk** arm, which is the default
 and what `phoebe init --workspace` scaffolds. The declared arm's field shape and
