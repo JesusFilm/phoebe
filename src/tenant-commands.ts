@@ -320,7 +320,7 @@ async function resolveRootWorkspace(configDir: string): Promise<ResolvedWorkspac
   } catch {
     return null;
   }
-  return readWorkspaceField(root);
+  return readWorkspaceField(root, { root: configDir });
 }
 
 /**

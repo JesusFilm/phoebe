@@ -599,7 +599,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   // re-reads on each (re)launch for the engine source + cache bust.
   const rootFingerprint = configFingerprint(configPath);
   const rootConfig = await loadMountedConfig(configPath, rootFingerprint);
-  const workspace = readWorkspaceField(rootConfig);
+  const workspace = readWorkspaceField(rootConfig, { root: configDir });
 
   if (workspace !== null) {
     if (isNestedDeployment(configDir)) {

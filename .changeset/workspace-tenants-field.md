@@ -11,7 +11,7 @@ list of directory paths). Declared order is authoritative, so it is spawn,
 
 Entries are normalized (`"./widget/"` → `widget`); absolute and `..` paths are
 deliberately supported so a root may supervise repos outside the workspace
-checkout. Fatal at load: an entry that resolves to the workspace root, a
+checkout. Fatal at load: an entry that is or contains the workspace root, a
 duplicate after normalization, a tenant nested inside another tenant, a glob, or
 declaring both arms at once. An empty list is a valid zero-tenant fleet.
 

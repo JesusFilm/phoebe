@@ -15,7 +15,7 @@
 // {@link validateWorkspaceField} from this module rather than keeping a second
 // copy, so the two entry points cannot drift as the arms grow (#128).
 
-import { isAbsolute, normalize, sep } from "node:path";
+import { isAbsolute, normalize, resolve, sep } from "node:path";
 
 /**
  * Resolved workspace block — a structural union, one member per discovery arm,
@@ -49,9 +49,10 @@ export function isExplicitWorkspace(
  *  - **Globs are not supported.** A glob would reintroduce the emergent
  *    membership this arm exists to remove, so it fails loudly here rather than
  *    later as a missing directory.
- *  - **An entry may not resolve to the workspace root.** The root config is the
- *    supervisor; supervising it as a tenant means a child re-reading the fleet
- *    config.
+ *  - **An entry may not be, or contain, the workspace root.** The root config is
+ *    the supervisor; supervising it as a tenant means a child re-reading the
+ *    fleet config, and a tenant dir that *contains* the root is the same hazard
+ *    one level out.
  *  - **No duplicates after normalization.** A silent dedupe would mean the
  *    config diff lied about fleet size.
  *  - **No tenant nested inside another tenant.** Each tenant dir is its own
@@ -62,13 +63,18 @@ export function isExplicitWorkspace(
  * supervise repos outside the workspace checkout. Spelling is normalized
  * without complaint (`"./widget/"` → `widget`).
  *
- * Nesting and duplicate detection here is **lexical**, so it compares two
- * relative entries or two absolute entries but not one of each: this validator
- * also runs engine-side from `validateUserConfig`, which never learns the
- * config's own directory. Discovery resolves every entry against the root and
- * is where a relative-versus-absolute clash surfaces.
+ * `opts.root` is the workspace root the entries resolve against. Callers that
+ * know it (the bootstrapper, `phoebe list`) get the full check; the engine-side
+ * call from `validateUserConfig` has no config directory to offer, so it omits
+ * the root and the resolution-dependent rules — the root spelled absolutely,
+ * and a relative-versus-absolute clash between two entries — go unchecked
+ * there. Everything expressible lexically is checked either way, including pure
+ * `..` chains, which contain the root whatever the root turns out to be.
  */
-export function validateWorkspaceField(field: unknown): ResolvedWorkspace {
+export function validateWorkspaceField(
+  field: unknown,
+  opts: { root?: string } = {},
+): ResolvedWorkspace {
   if (field === null || typeof field !== "object" || Array.isArray(field)) {
     throw new Error(
       `phoebe.config.ts \`workspace\` must be { depth?: integer ≥ 1 } or ` +
@@ -89,7 +95,7 @@ export function validateWorkspaceField(field: unknown): ResolvedWorkspace {
   }
 
   if (hasTenants) {
-    return { tenants: validateTenantList(block.tenants) };
+    return { tenants: validateTenantList(block.tenants, opts.root) };
   }
 
   if (!hasDepth) {
@@ -113,7 +119,7 @@ export function validateWorkspaceField(field: unknown): ResolvedWorkspace {
  * empty-`repos/` precedent); discovery warns so an empty supervisor does not
  * look like a silent failure.
  */
-function validateTenantList(value: unknown): string[] {
+function validateTenantList(value: unknown, root: string | undefined): string[] {
   if (!Array.isArray(value)) {
     throw new Error(
       `phoebe.config.ts \`workspace.tenants\` must be an array of directory paths ` +
@@ -138,15 +144,21 @@ function validateTenantList(value: unknown): string[] {
     }
 
     const dir = stripTrailingSeparators(normalize(entry));
-    if (dir === "." || dir.length === 0) {
+    if (dir === "." || dir.length === 0 || resolvesToRoot(dir, root)) {
       throw new Error(
         `phoebe.config.ts \`workspace.tenants\` entry ${JSON.stringify(entry)} resolves to the ` +
           `workspace root — the root is the supervisor, never one of its own tenants.`,
       );
     }
+    if (containsRoot(dir, root)) {
+      throw new Error(
+        `phoebe.config.ts \`workspace.tenants\` entry ${JSON.stringify(entry)} contains the ` +
+          `workspace root — a tenant whose checkout holds the fleet config would have the ` +
+          `supervisor inside it. List the sibling directory you meant, not its parent.`,
+      );
+    }
 
-    const duplicate = normalized.find((seen) => seen === dir);
-    if (duplicate !== undefined) {
+    if (normalized.includes(dir)) {
       throw new Error(
         `phoebe.config.ts \`workspace.tenants\` has a duplicate entry: ${JSON.stringify(dir)} ` +
           `is listed twice (${JSON.stringify(entry)} normalizes onto an earlier entry) — ` +
@@ -168,23 +180,51 @@ function validateTenantList(value: unknown): string[] {
   return normalized;
 }
 
-/** Trailing separators carry no meaning for a directory entry; `/` survives. */
+/**
+ * Trailing separators carry no meaning for a directory entry. A lone separator
+ * is the filesystem root and survives, so the loop stops at one character —
+ * absurd as a tenant, but it still has to compare correctly in {@link nests}.
+ * `normalize` has already settled which separator is in play for the platform.
+ */
 function stripTrailingSeparators(dir: string): string {
   let end = dir.length;
-  while (end > 1 && (dir[end - 1] === sep || dir[end - 1] === "/")) {
+  while (end > 1 && dir[end - 1] === sep) {
     end -= 1;
   }
   return dir.slice(0, end);
 }
 
 /**
+ * Whether a normalized entry is the workspace root spelled some other way. `.`
+ * is caught lexically by the caller; this catches the root written out in full,
+ * which needs the root path to see.
+ */
+function resolvesToRoot(dir: string, root: string | undefined): boolean {
+  if (root === undefined) return false;
+  return resolve(root, dir) === resolve(root);
+}
+
+/**
+ * Whether a normalized entry contains the workspace root. A pure `..` chain is
+ * an ancestor of any root, so it is rejected even with no root path to resolve
+ * against; anything else needs the root.
+ */
+function containsRoot(dir: string, root: string | undefined): boolean {
+  if (!isAbsolute(dir) && dir.split(sep).every((segment) => segment === "..")) return true;
+  if (root === undefined) return false;
+  return nests(resolve(root, dir), resolve(root));
+}
+
+/**
  * Whether `inner` sits under `outer`, compared segment-wise so `app-web` is not
- * read as nested inside `app`. Only comparable when both entries are anchored
- * the same way — see the lexical caveat on {@link validateWorkspaceField}.
+ * read as nested inside `app`. Only comparable when both paths are anchored the
+ * same way — see the `opts.root` note on {@link validateWorkspaceField}. A path
+ * that already ends in a separator (the filesystem root) is not given a second.
  */
 function nests(outer: string, inner: string): boolean {
   if (isAbsolute(outer) !== isAbsolute(inner)) return false;
-  return inner.startsWith(`${outer}${sep}`) || inner.startsWith(`${outer}/`);
+  const prefix = outer.endsWith(sep) ? outer : `${outer}${sep}`;
+  return inner.startsWith(prefix);
 }
 
 /**
@@ -193,16 +233,13 @@ function nests(outer: string, inner: string): boolean {
  * discovery and reconcile for a declared fleet land with #130.
  */
 export class ExplicitWorkspaceUnsupportedError extends Error {
-  readonly tenants: readonly string[];
-
-  constructor(tenants: readonly string[]) {
+  constructor(declared: number) {
     super(
       "phoebe.config.ts `workspace.tenants` (an explicitly declared fleet) is not supported " +
         "by this version of Phoebe yet — use `workspace: { depth }` to walk the tree for " +
-        `children. Declared: ${tenants.length} tenant(s).`,
+        `children. Declared: ${declared} tenant(s).`,
     );
     this.name = "ExplicitWorkspaceUnsupportedError";
-    this.tenants = tenants;
   }
 }
 
@@ -215,7 +252,7 @@ export class ExplicitWorkspaceUnsupportedError extends Error {
  */
 export function requireDepthArm(workspace: ResolvedWorkspace): number {
   if (isExplicitWorkspace(workspace)) {
-    throw new ExplicitWorkspaceUnsupportedError(workspace.tenants);
+    throw new ExplicitWorkspaceUnsupportedError(workspace.tenants.length);
   }
   return workspace.depth;
 }
@@ -225,8 +262,11 @@ export function requireDepthArm(workspace: ResolvedWorkspace): number {
  * when the block is absent (nested / flat mode ladders take over). A present
  * but malformed block is a hard error — see {@link validateWorkspaceField}.
  */
-export function readWorkspaceField(config: Record<string, unknown>): ResolvedWorkspace | null {
+export function readWorkspaceField(
+  config: Record<string, unknown>,
+  opts: { root?: string } = {},
+): ResolvedWorkspace | null {
   const field = config["workspace"];
   if (field === undefined) return null;
-  return validateWorkspaceField(field);
+  return validateWorkspaceField(field, opts);
 }

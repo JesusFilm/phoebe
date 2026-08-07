@@ -116,6 +116,34 @@ describe("validateWorkspaceField — the tenants list (#128)", () => {
     }
   });
 
+  test("rejects an entry that contains the workspace root", () => {
+    // `../sibling` is a supported out-of-tree tenant; a bare `..` is the root's
+    // own parent, so supervising it means a child whose tree holds the fleet
+    // config — the same hazard as listing the root itself. Pure `..` chains are
+    // ancestors whatever the root turns out to be, so this needs no root path.
+    for (const entry of ["..", "../..", "./.."]) {
+      expect(() => validateWorkspaceField({ tenants: [entry] })).toThrow(/contains the workspace/i);
+    }
+  });
+
+  test("rejects the root spelled as an absolute path when the root is known", () => {
+    const root = "/srv/deploy";
+    expect(() => validateWorkspaceField({ tenants: [root] }, { root })).toThrow(/root/i);
+    expect(() => validateWorkspaceField({ tenants: ["/srv/deploy/"] }, { root })).toThrow(/root/i);
+    expect(() => validateWorkspaceField({ tenants: ["/srv"] }, { root })).toThrow(
+      /contains the workspace/i,
+    );
+    // Same list, no root supplied: engine-side validation cannot see the clash.
+    expect(validateWorkspaceField({ tenants: [root] })).toEqual({ tenants: [root] });
+  });
+
+  test("a known root leaves genuine out-of-tree entries alone", () => {
+    const root = "/srv/deploy";
+    expect(
+      validateWorkspaceField({ tenants: ["widget", "/srv/legacy-api", "../sibling"] }, { root }),
+    ).toEqual({ tenants: ["widget", "/srv/legacy-api", "../sibling"] });
+  });
+
   test("rejects duplicates after normalization", () => {
     expect(() => validateWorkspaceField({ tenants: ["widget", "./widget/"] })).toThrow(
       /duplicate/i,
@@ -126,6 +154,9 @@ describe("validateWorkspaceField — the tenants list (#128)", () => {
     expect(() => validateWorkspaceField({ tenants: ["apps", "apps/web"] })).toThrow(/nested/i);
     // Order-independent: the outer dir listed second is the same clash.
     expect(() => validateWorkspaceField({ tenants: ["apps/web", "apps"] })).toThrow(/nested/i);
+    // A filesystem-root entry is absurd but must still nest-check correctly —
+    // naive `outer + sep` prefixing would compare against "//" and miss it.
+    expect(() => validateWorkspaceField({ tenants: ["/", "/srv/x"] })).toThrow(/nested/i);
   });
 
   test("a shared name prefix is not nesting", () => {
