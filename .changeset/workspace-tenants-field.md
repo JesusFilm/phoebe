@@ -1,5 +1,5 @@
 ---
-"phoebe-agent": minor
+"phoebe-agent": patch
 ---
 
 Add `workspace: { tenants: [...] }` (#128) — the field shape, ordering, and
