@@ -24,12 +24,12 @@
 // the fallback policy in crash-loop.ts, and everything impure is passed in from
 // here.
 
-import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { installDrainSignal } from "../src/drain.ts";
 import { defaultGit, type GitRunner } from "../src/git-model.ts";
+import { defaultGhRun, type GhRun } from "../src/github.ts";
 import {
   BOOTSTRAP_RESOLVED_CONFIG_ENV,
   formatResolvedConfiguration,
@@ -87,16 +87,6 @@ export function assertBaseConfigProtocol(
 }
 
 /**
- * Runs `gh` with the given argv. Injectable so boot's credential-helper setup is
- * unit-tested without a real `gh` binary or a writable `~/.gitconfig`.
- */
-export type GhRunner = (args: readonly string[]) => void;
-
-export const defaultGh: GhRunner = (args) => {
-  execFileSync("gh", args, { stdio: "inherit" });
-};
-
-/**
  * Configure a global git credential helper from `GH_TOKEN` so every later git
  * call against github.com authenticates — the engine's `ensureClone` /
  * `fetchOrigin` / `pushBranch`, and the agent child's own `git push`/`fetch`.
@@ -112,14 +102,14 @@ export const defaultGh: GhRunner = (args) => {
  */
 export function setupGitCredentials(deps: {
   token: string | undefined;
-  gh?: GhRunner;
+  gh?: GhRun;
   warn?: (message: string) => void;
 }): void {
   if (!deps.token) return;
-  const gh = deps.gh ?? defaultGh;
+  const gh = deps.gh ?? defaultGhRun;
   const warn = deps.warn ?? ((message) => console.warn(message));
   try {
-    gh(["auth", "setup-git", "--hostname", "github.com"]);
+    gh(["auth", "setup-git", "--hostname", "github.com"], { stdio: "inherit" });
   } catch (error) {
     warn(
       `[phoebe] boot: could not configure git credentials — ${describe(error)}. ` +

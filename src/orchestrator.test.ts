@@ -364,10 +364,10 @@ describe("resolveStackedPrPlan", () => {
         stackMode: "banner",
         defaultBranch: "main",
       }),
-    ).toEqual({ prBase: "main", includeBanner: true, stackLinkArgs: null });
+    ).toEqual({ prBase: "main", includeBanner: true, stackLink: null });
   });
 
-  test("native: base=blocker branch, no banner, bottom-to-top stack link argv", () => {
+  test("native: base=blocker branch, no banner, bottom-to-top stack link pair", () => {
     expect(
       resolveStackedPrPlan({
         issueNumber: 102,
@@ -378,7 +378,7 @@ describe("resolveStackedPrPlan", () => {
     ).toEqual({
       prBase: issueBranch(98),
       includeBanner: false,
-      stackLinkArgs: ["stack", "link", issueBranch(98), issueBranch(102)],
+      stackLink: { predecessor: issueBranch(98), successor: issueBranch(102) },
     });
   });
 
@@ -391,7 +391,7 @@ describe("resolveStackedPrPlan", () => {
           stackMode,
           defaultBranch: "main",
         }),
-      ).toEqual({ prBase: "main", includeBanner: false, stackLinkArgs: null });
+      ).toEqual({ prBase: "main", includeBanner: false, stackLink: null });
     }
   });
 

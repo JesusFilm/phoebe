@@ -29,6 +29,8 @@ export type Issue = {
   body: string;
   labels: string[];
   createdAt: string;
+  /** Absent from most fixtures — populated by `GitHub#issuesWithLabel` (#51 author scoping). */
+  authorLogin?: string;
 };
 
 export type BlockerPrState = {
@@ -273,8 +275,8 @@ export type StackedPrPlan = {
   prBase: string;
   /** Whether the stacked "do not merge before the blocker" banner is added. */
   includeBanner: boolean;
-  /** `gh` argv (sans the `gh` program) that registers the native stack, or `null`. */
-  stackLinkArgs: string[] | null;
+  /** The bottom-to-top branch pair to register as a native stack, or `null`. Argv-building is `GitHub#linkStack`'s job, not this module's. */
+  stackLink: { predecessor: BranchRef; successor: BranchRef } | null;
 };
 
 export function resolveStackedPrPlan(opts: {
@@ -288,7 +290,7 @@ export function resolveStackedPrPlan(opts: {
   const notStacked: StackedPrPlan = {
     prBase: defaultBranch,
     includeBanner: false,
-    stackLinkArgs: null,
+    stackLink: null,
   };
 
   // `off` never reaches here stacked (resolveWorktreeBase collapses it), so an
@@ -305,12 +307,12 @@ export function resolveStackedPrPlan(opts: {
       prBase: predecessor,
       includeBanner: false,
       // Bottom-to-top: the lower (blocker) branch first, then this run's branch.
-      stackLinkArgs: ["stack", "link", predecessor, successor],
+      stackLink: { predecessor, successor },
     };
   }
 
   // `banner` (the only remaining stacked mode): base on main + add the banner.
-  return { prBase: defaultBranch, includeBanner: true, stackLinkArgs: null };
+  return { prBase: defaultBranch, includeBanner: true, stackLink: null };
 }
 
 /**

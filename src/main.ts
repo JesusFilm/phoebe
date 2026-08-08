@@ -20,14 +20,14 @@
 import { execFileSync, execSync } from "node:child_process";
 import { config } from "./resolved-config.ts";
 import { PROVIDER_NAMES, type ProviderName } from "./config/index.ts";
+import { asBranchRef, asPrNumber, type BranchRef, type PrNumber, type Sha } from "./branded.ts";
 import {
-  asBranchRef,
-  asPrNumber,
-  asSha,
-  type BranchRef,
-  type PrNumber,
-  type Sha,
-} from "./branded.ts";
+  createGitHub,
+  defaultGhRun,
+  type ActivityComment,
+  type GitHub,
+  type PrMergeInfo,
+} from "./github.ts";
 import { buildAgentEnv } from "./agent-env.ts";
 import { installDrainSignal, REF_CHANGE_DRAIN_SIGNAL, type DrainSignal } from "./drain.ts";
 import { BrokerDisconnectedError, createSlotClient, type SlotClient } from "./slot-client.ts";
@@ -136,11 +136,9 @@ import {
   type Issue,
   type IssueWorkUnit,
   type NativeBlockerMap,
-  type ReviewThread,
   type ReviewsCandidate,
   type StackContext,
   type StatusCheckItem,
-  type WorkflowRunItem,
   type WorkKindName,
   type WorkUnit,
 } from "./orchestrator.ts";
@@ -155,9 +153,10 @@ const RUN_TIMEOUT_MS = config.runTimeoutMs;
 // heartbeat before the reclaim sweep flips it back to `readyLabel`.
 // `PHOEBE_LEASE_TTL_MS` is already folded into `config.leaseTtlMs` (#56).
 const LEASE_TTL_MS = config.leaseTtlMs;
-// Never let a gh/git child process block the persistent loop forever (rate-limit
+// Never let a git child process block the persistent loop forever (rate-limit
 // backoff, credential prompt, network partition). Configured toolchain commands
-// (install/test) get a longer leash.
+// (install/test) get a longer leash. `gh` calls carry their own timeout default,
+// set on the `github` client below (src/github.ts).
 const CHILD_PROCESS_TIMEOUT_MS = 120_000;
 const SHELL_COMMAND_TIMEOUT_MS = 600_000;
 const MERGEABLE_RETRY_MS = 5_000;
@@ -177,6 +176,12 @@ const worktreesDir = config.paths.worktreesDir;
 // stdout can attribute each line back to a repo.
 const { phoebeLog, phoebeError } = createPhoebeLog(config.repoSlug);
 
+// Every `gh` call the engine makes goes through this one client (#41/#50).
+const github: GitHub = createGitHub({
+  repoSlug: config.repoSlug,
+  timeoutMs: CHILD_PROCESS_TIMEOUT_MS,
+});
+
 // ---------------------------------------------------------------------------
 // Provider selection (multi-provider ready)
 // ---------------------------------------------------------------------------
@@ -194,56 +199,37 @@ function selectProvider(): { provider: Provider; model: string } {
 const workOrder = validateWorkOrder(config.workOrder);
 
 // ---------------------------------------------------------------------------
-// gh helpers — always pinned to the configured repo
+// gh helpers — every call goes through `github` (src/github.ts). `gh()` is the
+// one raw escape hatch left: ensure-labels.ts and claim-lease.ts are
+// pre-existing, independently-tested modules with their own generic
+// `(args, opts?, repo?) => void` injection point, unrelated to the github.ts
+// domain redesign — this just satisfies that shape on top of the runner seam,
+// the same way bootstrap's `setupGitCredentials` does for its one raw call.
 // ---------------------------------------------------------------------------
 
-function ghJson<T>(args: string[]): T {
-  return JSON.parse(
-    execFileSync("gh", [...args, "-R", config.repoSlug], {
-      encoding: "utf8",
-      timeout: CHILD_PROCESS_TIMEOUT_MS,
-    }),
-  ) as T;
-}
-
-function ghApiJson<T>(endpoint: string): T {
-  return JSON.parse(
-    execFileSync("gh", ["api", endpoint], {
-      encoding: "utf8",
-      timeout: CHILD_PROCESS_TIMEOUT_MS,
-    }),
-  ) as T;
-}
-
 function gh(args: string[], opts?: { input?: string }): void {
-  execFileSync("gh", [...args, "-R", config.repoSlug], {
-    stdio: opts?.input !== undefined ? ["pipe", "inherit", "inherit"] : "inherit",
-    timeout: CHILD_PROCESS_TIMEOUT_MS,
+  defaultGhRun([...args, "-R", config.repoSlug], {
+    stdio: "inherit",
     ...(opts?.input !== undefined ? { input: opts.input } : {}),
   });
 }
 
 /**
  * Register a native GitHub stack for a freshly-created stacked PR (native mode
- * only). The argv is built purely by `resolveStackedPrPlan`; this only runs it.
- * `gh stack link` ships in the `github/gh-stack` extension that
+ * only). The branch pair is resolved purely by `resolveStackedPrPlan`; this
+ * only runs it. `gh stack link` ships in the `github/gh-stack` extension that
  * `prepareNativeStackTooling` installs. Non-fatal by design: the PR already
  * bases off the blocker branch, so a link failure leaves a functioning stack
  * that merely is not registered — we warn and let the completed run stand
  * rather than abort it.
- *
- * LIVE-VERIFY: this goes through the `gh` wrapper, which appends `-R <slug>`.
- * gh-stack is a two-day-old public-preview extension; confirm it tolerates the
- * trailing `-R` (and that `link` over two branches that already have PRs never
- * rewrites their titles).
  */
-function registerNativeStack(stackLinkArgs: string[]): void {
+function registerNativeStack(link: { predecessor: BranchRef; successor: BranchRef }): void {
   try {
-    gh(stackLinkArgs);
+    github.linkStack(link.predecessor, link.successor);
   } catch (error) {
     phoebeError(
       `gh stack link failed — the PR bases off the blocker branch but is not ` +
-        `registered as a native stack. Register it manually with \`gh ${stackLinkArgs.join(" ")}\`. ` +
+        `registered as a native stack. Register it manually with \`gh stack link ${link.predecessor} ${link.successor}\`. ` +
         `(${error instanceof Error ? error.message : String(error)})`,
     );
   }
@@ -263,11 +249,7 @@ function prepareNativeStackTooling(): void {
     gitInWorktree(repoDir, [...args]);
   }
   try {
-    // No `-R`: extension install is not repo-scoped, so bypass the `gh` wrapper.
-    execFileSync("gh", [...ghStackExtensionInstallArgs()], {
-      stdio: "inherit",
-      timeout: CHILD_PROCESS_TIMEOUT_MS,
-    });
+    github.installStackExtension();
   } catch (error) {
     phoebeError(
       `gh-stack extension not installed (already present, or offline at boot). ` +
@@ -282,27 +264,7 @@ function prepareNativeStackTooling(): void {
  * `research`.
  */
 function listIssuesWithLabel(label: string): Issue[] {
-  type GhIssue = Omit<Issue, "labels"> & { labels: Array<{ name: string }> };
-  return ghJson<GhIssue[]>([
-    "issue",
-    "list",
-    "--state",
-    "open",
-    "--label",
-    label,
-    "--limit",
-    "100",
-    "--search",
-    "sort:created-asc",
-    "--json",
-    "number,title,body,labels,createdAt",
-  ]).map((row) => ({
-    number: row.number,
-    title: row.title,
-    body: row.body,
-    createdAt: row.createdAt,
-    labels: row.labels.map((l) => l.name),
-  }));
+  return github.issuesWithLabel(label);
 }
 
 function listReadyIssues(): Issue[] {
@@ -350,64 +312,23 @@ function reclaimStaleClaims(runtimeId: string, opts: { forceOwnReclaim: boolean 
 
 function blockerPrState(blockerIssueNumber: number): BlockerPrState {
   const branch: BranchRef = issueBranch(blockerIssueNumber);
-  const open = ghJson<Array<{ number: number }>>([
-    "pr",
-    "list",
-    "--head",
-    branch,
-    "--state",
-    "open",
-    "--json",
-    "number",
-    "--limit",
-    "1",
-  ]);
-  const merged = ghJson<Array<{ number: number }>>([
-    "pr",
-    "list",
-    "--head",
-    branch,
-    "--state",
-    "merged",
-    "--json",
-    "number",
-    "--limit",
-    "1",
-  ]);
+  const openPrNumber = github.prNumberForHead(branch, "open");
+  const mergedPrNumber = github.prNumberForHead(branch, "merged");
   return {
-    hasOpenPr: open.length > 0,
-    openPrNumber: open[0] ? asPrNumber(open[0].number) : undefined,
-    hasMergedPr: merged.length > 0,
-    mergedPrNumber: merged[0] ? asPrNumber(merged[0].number) : undefined,
+    hasOpenPr: openPrNumber !== undefined,
+    openPrNumber,
+    hasMergedPr: mergedPrNumber !== undefined,
+    mergedPrNumber,
   };
-}
-
-/**
- * Native blocker issue numbers from GitHub's issue-dependencies API. Returns
- * `[]` for the no-dependencies case and on any `gh` failure — a native read must
- * never crash the poll loop; in `both` mode the caller still falls through to
- * the body regex. Parses each dependency to `{ number, state }`; only `number`
- * feeds the stacking machinery (blocker PR state, not issue state, drives the
- * base decision), matching the body-regex path exactly.
- */
-function fetchNativeBlockers(issueNumber: number): Array<{ number: number; state: string }> {
-  try {
-    const rows = ghApiJson<Array<{ number: number; state: string }>>(
-      `repos/${config.repoSlug}/issues/${issueNumber}/dependencies/blocked_by`,
-    );
-    return Array.isArray(rows) ? rows.map((row) => ({ number: row.number, state: row.state })) : [];
-  } catch (error) {
-    phoebeError(
-      `Native blocker lookup failed for #${issueNumber} — treating as no native blockers this cycle (${error instanceof Error ? error.message : String(error)}).`,
-    );
-    return [];
-  }
 }
 
 /**
  * Native blockers keyed by issue number for the given issues. Empty (and makes
  * zero `gh` calls) under `blockerSource: "body"` so the default costs nothing;
- * `native`/`both` do one API read per issue.
+ * `native`/`both` do one API read per issue. A native read must never crash the
+ * poll loop — a failure warns and treats the issue as having no native
+ * blockers this cycle; in `both` mode the caller still falls through to the
+ * body regex.
  */
 function buildNativeBlockersByIssue(issues: readonly Issue[]): Map<number, number[]> {
   const map = new Map<number, number[]>();
@@ -415,7 +336,15 @@ function buildNativeBlockersByIssue(issues: readonly Issue[]): Map<number, numbe
     return map;
   }
   for (const issue of issues) {
-    const native = fetchNativeBlockers(issue.number).map((row) => row.number);
+    let native: number[];
+    try {
+      native = github.nativeBlockers(issue.number).map((row) => row.number);
+    } catch (error) {
+      phoebeError(
+        `Native blocker lookup failed for #${issue.number} — treating as no native blockers this cycle (${error instanceof Error ? error.message : String(error)}).`,
+      );
+      native = [];
+    }
     if (native.length > 0) {
       map.set(issue.number, native);
     }
@@ -466,31 +395,16 @@ function buildBlockerStatesFromBodies(
 }
 
 function postPrComment(prNumber: PrNumber, body: string): void {
-  gh(["pr", "comment", String(prNumber), "--body", body]);
+  github.commentPr(prNumber, body);
 }
 
 /**
  * Edit an existing PR comment in place — no new comment, no new notification.
  * The #25 no-commit-attempt tracker relies on this: it silently updates one
- * comment across retries instead of posting a fresh one every attempt. Uses
- * the GraphQL `id` (not the REST numeric id), so it goes through `gh api
- * graphql` rather than the repo-scoped `gh` wrapper.
+ * comment across retries instead of posting a fresh one every attempt.
  */
 function updateComment(commentId: string, body: string): void {
-  execFileSync(
-    "gh",
-    [
-      "api",
-      "graphql",
-      "-f",
-      "query=mutation($id:ID!,$body:String!){updateIssueComment(input:{id:$id, body:$body}){issueComment{id}}}",
-      "-f",
-      `id=${commentId}`,
-      "-f",
-      `body=${body}`,
-    ],
-    { stdio: "inherit", timeout: CHILD_PROCESS_TIMEOUT_MS },
-  );
+  github.updateComment(commentId, body);
 }
 
 /** Post `body` as a new comment, or edit `existingCommentId` in place if one is given. */
@@ -507,7 +421,7 @@ function postOrUpdateComment(
 }
 
 function postIssueComment(issueNumber: number, body: string): void {
-  gh(["issue", "comment", String(issueNumber), "--body", body]);
+  github.commentIssue(issueNumber, body);
 }
 
 type OpenPhoebePr = {
@@ -536,57 +450,41 @@ type UnitTimeoutInputs = {
   baseline: string;
 };
 
-type GhTimeoutComment = { body: string; createdAt: string; author: { login: string } | null };
-
-function toTimeoutComments(comments: readonly GhTimeoutComment[]): TimeoutComment[] {
-  // `author` is null for a deleted account; coerce to "" (a foreign author, never
-  // Phoebe) rather than letting the deref throw and skip the whole timeout record.
-  return comments.map((c) => ({
-    body: c.body,
-    createdAt: c.createdAt,
-    authorLogin: c.author?.login ?? "",
-  }));
-}
-
 function fetchIssueTimeoutInputs(issueNumber: number): UnitTimeoutInputs {
-  const raw = ghJson<{ updatedAt: string; comments: GhTimeoutComment[] }>([
-    "issue",
-    "view",
-    String(issueNumber),
-    "--json",
-    "comments,updatedAt",
-  ]);
+  const activity = github.issueActivity(issueNumber);
   // Issues have no commits and `gh` does not expose body-edit times, so a new
   // human comment is the only reset signal; `updatedAt` is the un-stick baseline.
   return {
-    comments: toTimeoutComments(raw.comments),
+    comments: activity.comments,
     extraActivityAt: null,
-    baseline: raw.updatedAt,
+    baseline: activity.updatedAt,
   };
 }
 
 function fetchPrTimeoutInputs(prNumber: PrNumber): UnitTimeoutInputs {
-  const raw = ghJson<{
-    headRefOid: string;
-    comments: GhTimeoutComment[];
-    commits: Array<{ committedDate: string }>;
-  }>(["pr", "view", String(prNumber), "--json", "comments,commits,headRefOid"]);
+  const activity = github.prActivity(prNumber);
   // A new push (head commit) or human comment resets; head SHA is the baseline.
-  const headCommitAt =
-    raw.commits.length > 0 ? raw.commits[raw.commits.length - 1]!.committedDate : null;
   return {
-    comments: toTimeoutComments(raw.comments),
-    extraActivityAt: headCommitAt,
-    baseline: raw.headRefOid,
+    comments: activity.comments,
+    extraActivityAt: activity.lastCommitAt,
+    baseline: activity.headRefOid,
   };
 }
 
 function postUnitComment(isIssueKind: boolean, id: string, body: string): void {
-  gh([isIssueKind ? "issue" : "pr", "comment", id, "--body", body]);
+  if (isIssueKind) {
+    github.commentIssue(Number(id), body);
+  } else {
+    github.commentPr(asPrNumber(Number(id)), body);
+  }
 }
 
 function addQuarantineLabel(isIssueKind: boolean, id: string): void {
-  gh([isIssueKind ? "issue" : "pr", "edit", id, "--add-label", PHOEBE_QUARANTINE_LABEL]);
+  if (isIssueKind) {
+    github.labelIssue(Number(id), PHOEBE_QUARANTINE_LABEL);
+  } else {
+    github.labelPr(asPrNumber(Number(id)), PHOEBE_QUARANTINE_LABEL);
+  }
 }
 
 /**
@@ -650,95 +548,27 @@ function recordUnitTimeout(
 }
 
 function listOpenPhoebePrs(): OpenPhoebePr[] {
-  type GhOpenPr = {
-    number: number;
-    headRefName: string;
-    baseRefName: string;
-    isDraft: boolean;
-    isCrossRepository: boolean;
-    labels: Array<{ name: string }>;
-    author: { login: string };
-  };
-  const args = [
-    "pr",
-    "list",
-    "--state",
-    "open",
-    "--json",
-    "number,headRefName,baseRefName,isDraft,isCrossRepository,labels,author",
-    "--limit",
-    "100",
-  ];
-  if (config.prBaseScope === "default") {
-    args.splice(2, 0, "--base", PR_BASE);
-  }
-  return ghJson<GhOpenPr[]>(args)
-    .filter((pr) =>
-      isPrInScope({
-        headRefName: asBranchRef(pr.headRefName),
-        authorLogin: pr.author.login,
-        isDraft: pr.isDraft,
-        isCrossRepository: pr.isCrossRepository,
-        labels: pr.labels.map((label) => label.name),
-      }),
-    )
+  return github
+    .openPrs(config.prBaseScope === "default" ? { base: PR_BASE } : undefined)
+    .filter((pr) => isPrInScope(pr))
     .map((pr) => ({
-      number: asPrNumber(pr.number),
-      headRefName: asBranchRef(pr.headRefName),
-      baseRefName: asBranchRef(pr.baseRefName),
-      authorLogin: pr.author.login,
+      number: pr.number,
+      headRefName: pr.headRefName,
+      baseRefName: pr.baseRefName,
+      authorLogin: pr.authorLogin,
     }));
 }
 
-type PrMergeInfo = {
-  number: PrNumber;
-  headRefName: BranchRef;
-  baseRefName: BranchRef;
-  headRefOid: Sha;
-  baseRefOid: Sha;
-  mergeable: string;
-  mergeStateStatus: string;
-};
-
 function viewPrMergeInfo(prNumber: PrNumber): PrMergeInfo {
-  const raw = ghJson<{
-    number: number;
-    headRefName: string;
-    baseRefName: string;
-    headRefOid: string;
-    baseRefOid: string;
-    mergeable: string;
-    mergeStateStatus: string;
-  }>([
-    "pr",
-    "view",
-    String(prNumber),
-    "--json",
-    "number,headRefName,baseRefName,headRefOid,baseRefOid,mergeable,mergeStateStatus",
-  ]);
-  return {
-    number: asPrNumber(raw.number),
-    headRefName: asBranchRef(raw.headRefName),
-    baseRefName: asBranchRef(raw.baseRefName),
-    headRefOid: asSha(raw.headRefOid),
-    baseRefOid: asSha(raw.baseRefOid),
-    mergeable: raw.mergeable,
-    mergeStateStatus: raw.mergeStateStatus,
-  };
+  return github.prMergeInfo(prNumber);
 }
 
-type PrComment = { id: string; body: string };
+type PrComment = ActivityComment;
+type IssueComment = ActivityComment;
 
 /** Every comment on a PR (id + body), oldest first — the raw input to every marker parse. */
 function fetchPrComments(prNumber: PrNumber): PrComment[] {
-  const { comments } = ghJson<{ comments: PrComment[] }>([
-    "pr",
-    "view",
-    String(prNumber),
-    "--json",
-    "comments",
-  ]);
-  return comments;
+  return github.prActivity(prNumber).comments;
 }
 
 /** All comment bodies on a PR, oldest first — the raw input to every watermark parse. */
@@ -747,36 +577,21 @@ function fetchPrCommentBodies(prNumber: PrNumber): string[] {
 }
 
 function phoebeGhLogin(): string {
-  return ghApiJson<{ login: string }>("user").login;
+  return github.login();
 }
 
 function issueBody(issueNumber: number): string {
-  return ghJson<{ body: string }>(["issue", "view", String(issueNumber), "--json", "body"]).body;
+  return github.issueBody(issueNumber);
 }
 
 /** ISO timestamp of an issue's last edit — the #22/#75 auto-unstick baseline for issue-keyed units. */
 function issueUpdatedAt(issueNumber: number): string {
-  return ghJson<{ updatedAt: string }>([
-    "issue",
-    "view",
-    String(issueNumber),
-    "--json",
-    "updatedAt",
-  ]).updatedAt;
+  return github.issueActivity(issueNumber).updatedAt;
 }
-
-type IssueComment = { id: string; body: string };
 
 /** Every comment on an issue (id + body), oldest first — the raw input to every marker parse. */
 function fetchIssueComments(issueNumber: number): IssueComment[] {
-  const { comments } = ghJson<{ comments: IssueComment[] }>([
-    "issue",
-    "view",
-    String(issueNumber),
-    "--json",
-    "comments",
-  ]);
-  return comments;
+  return github.issueActivity(issueNumber).comments;
 }
 
 /** All comment bodies on an issue, oldest first — the raw input to the #15 lease-marker lookup. */
@@ -1347,7 +1162,7 @@ function retargetMergedStackedPrs(): void {
       `Retargeting PR #${pr.prNumber} from ${pr.baseRefName} to ${config.defaultBranch} — blocker merged.`,
     );
     try {
-      gh(["pr", "edit", String(pr.prNumber), "--base", config.defaultBranch]);
+      github.retargetPr(pr.prNumber, config.defaultBranch);
       postPrComment(pr.prNumber, stackRetargetedComment(config.defaultBranch));
     } catch (error) {
       phoebeError(
@@ -1471,109 +1286,19 @@ async function fixOnePrChecks(pr: ChecksCandidate, ctx: StackContext): Promise<U
   return runChecksResolutionAgent(pr);
 }
 
-type GraphQLReviewThreadsPage = {
-  data: {
-    repository: {
-      pullRequest: {
-        reviewThreads: {
-          pageInfo: { hasNextPage: boolean; endCursor: string | null };
-          nodes: Array<{
-            isResolved: boolean;
-            isOutdated: boolean;
-            comments: {
-              nodes: Array<{
-                createdAt: string;
-                author: { login: string } | null;
-              }>;
-            };
-          }>;
-        };
-      };
-    };
-  };
-};
-
-function fetchReviewThreads(prNumber: PrNumber): ReviewThread[] {
-  const [owner, repo] = config.repoSlug.split("/");
-  const threads: ReviewThread[] = [];
-  let cursor: string | null = null;
-  let hasNextPage = true;
-
-  while (hasNextPage) {
-    const afterArg = cursor ? `, after:"${cursor}"` : "";
-    const query = `query($owner:String!,$repo:String!,$pr:Int!) {
-  repository(owner:$owner,name:$repo) {
-    pullRequest(number:$pr) {
-      reviewThreads(first:100${afterArg}) {
-        pageInfo { hasNextPage endCursor }
-        nodes {
-          isResolved
-          isOutdated
-          comments(first:30) {
-            nodes {
-              createdAt
-              author { login }
-            }
-          }
-        }
-      }
-    }
-  }
-}`;
-    const page = JSON.parse(
-      execFileSync(
-        "gh",
-        [
-          "api",
-          "graphql",
-          "-f",
-          `query=${query}`,
-          "-f",
-          `owner=${owner}`,
-          "-f",
-          `repo=${repo}`,
-          "-F",
-          `pr=${prNumber}`,
-        ],
-        { encoding: "utf8", timeout: CHILD_PROCESS_TIMEOUT_MS },
-      ),
-    ) as GraphQLReviewThreadsPage;
-
-    const reviewThreads = page.data.repository.pullRequest.reviewThreads;
-    for (const node of reviewThreads.nodes) {
-      threads.push({
-        isResolved: node.isResolved,
-        isOutdated: node.isOutdated,
-        comments: node.comments.nodes.map((comment) => ({
-          createdAt: comment.createdAt,
-          authorLogin: comment.author?.login ?? "",
-        })),
-      });
-    }
-    hasNextPage = reviewThreads.pageInfo.hasNextPage;
-    cursor = reviewThreads.pageInfo.endCursor;
-    if (!hasNextPage) {
-      break;
-    }
-  }
-
-  return threads;
-}
-
 function hasNewReviewSummaryComment(
   prNumber: PrNumber,
   phoebeLogin: string,
   since: string,
 ): boolean {
-  const { comments } = ghJson<{
-    comments: Array<{ body: string; createdAt: string; author: { login: string } }>;
-  }>(["pr", "view", String(prNumber), "--json", "comments"]);
-  return comments.some(
-    (comment) =>
-      comment.author.login === phoebeLogin &&
-      comment.createdAt > since &&
-      isReviewSummaryComment(comment.body),
-  );
+  return github
+    .prActivity(prNumber)
+    .comments.some(
+      (comment) =>
+        comment.authorLogin === phoebeLogin &&
+        comment.createdAt > since &&
+        isReviewSummaryComment(comment.body),
+    );
 }
 
 async function runReviewsResolutionAgent(
@@ -1678,17 +1403,7 @@ async function runOneIssue(opts: {
     // Looked up regardless of `newCommitCount` (#22): an issue reclaimed after
     // its PR already opened must read as "has a PR", not as a fresh no-progress
     // attempt, even when this particular run added nothing.
-    const existingPrRow = ghJson<Array<{ number: number }>>([
-      "pr",
-      "list",
-      "--head",
-      agentBranch,
-      "--state",
-      "open",
-      "--json",
-      "number",
-    ])[0];
-    const existingPr = existingPrRow ? asPrNumber(existingPrRow.number) : undefined;
+    const existingPr = github.prNumberForHead(agentBranch, "open");
 
     if (newCommitCount > 0) {
       if (existingPr === undefined) {
@@ -1714,23 +1429,9 @@ async function runOneIssue(opts: {
         // branch in native mode), then register the stack — so `gh stack link`
         // only corrects the base chain and never auto-generates a title over
         // ours (auto-titles only happen for branches that have no PR yet).
-        gh(
-          [
-            "pr",
-            "create",
-            "--head",
-            agentBranch,
-            "--base",
-            plan.prBase,
-            "--title",
-            prTitle,
-            "--body-file",
-            "-",
-          ],
-          { input: prBody },
-        );
-        if (plan.stackLinkArgs) {
-          registerNativeStack(plan.stackLinkArgs);
+        github.createPr({ head: agentBranch, base: plan.prBase, title: prTitle, body: prBody });
+        if (plan.stackLink) {
+          registerNativeStack(plan.stackLink);
         }
       } else {
         phoebeLog(`PR #${existingPr} already exists for ${agentBranch} — posting follow-up note.`);
@@ -1864,18 +1565,7 @@ async function fetchConflictingPrs(): Promise<ConflictingPrCandidate[]> {
 // GraphQL statusCheckRollup is not readable by fine-grained PATs (GitHub-App/
 // OAuth only), so check state comes from the REST Actions API instead.
 function listCommitCheckItems(headSha: Sha): StatusCheckItem[] {
-  return workflowRunsToCheckItems(
-    ghJson<WorkflowRunItem[]>([
-      "run",
-      "list",
-      "--commit",
-      headSha,
-      "--json",
-      "workflowName,status,conclusion",
-      "--limit",
-      "50",
-    ]),
-  );
+  return workflowRunsToCheckItems(github.commitCheckRuns(headSha));
 }
 
 async function failingChecksCandidate(pr: OpenPhoebePr): Promise<ChecksCandidate | null> {
@@ -1960,7 +1650,7 @@ async function fetchReviewsWorkData(): Promise<{
       if (isPrMergeConflicting(info.mergeable, info.mergeStateStatus)) {
         continue;
       }
-      const threads = fetchReviewThreads(pr.number);
+      const threads = github.reviewThreads(pr.number);
       const issueNumber = parseIssueNumberFromBranch(info.headRefName);
       reviewActivityPrs.push({
         prNumber: info.number,
@@ -2384,19 +2074,7 @@ function pullRequestNumberAfterWork(picked: WorkUnit): number | undefined {
   }
   const branch = issueBranch(picked.unit.issue.number);
   try {
-    const rows = ghJson<Array<{ number: number }>>([
-      "pr",
-      "list",
-      "--head",
-      branch,
-      "--state",
-      "open",
-      "--json",
-      "number",
-      "--limit",
-      "1",
-    ]);
-    return rows[0] ? asPrNumber(rows[0].number) : undefined;
+    return github.prNumberForHead(branch, "open");
   } catch (error) {
     phoebeError(
       `Could not resolve the PR link for ${branch} — ${

@@ -329,6 +329,7 @@ describe("setupGitCredentials", () => {
       token: "ghs_test",
       gh: (args) => {
         calls.push([...args]);
+        return "";
       },
     });
     expect(calls).toEqual([["auth", "setup-git", "--hostname", "github.com"]]);
@@ -340,6 +341,7 @@ describe("setupGitCredentials", () => {
       token: undefined,
       gh: (args) => {
         calls.push([...args]);
+        return "";
       },
     });
     expect(calls).toEqual([]);
