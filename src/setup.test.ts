@@ -16,7 +16,6 @@ import { describe, expect, test } from "vite-plus/test";
 import { DEFAULT_RESOLVED_CONFIG } from "./init.ts";
 import {
   createReadlinePrompter,
-  extractConfigValues,
   maskSecret,
   parseGitRemote,
   type Prompter,
@@ -73,30 +72,6 @@ describe("parseGitRemote", () => {
     expect(parseGitRemote("")).toBeUndefined();
     expect(parseGitRemote("not a url")).toBeUndefined();
     expect(parseGitRemote("https://github.com/justowner")).toBeUndefined();
-  });
-});
-
-describe("extractConfigValues", () => {
-  test("pulls the wizard fields out of a config file", () => {
-    const config = `const config = {
-      repoSlug: "acme/widget",
-      repoUrl: "https://github.com/acme/widget.git",
-      installCommand: "pnpm i",
-      checkCommand: "pnpm check",
-      testCommand: "pnpm test",
-      defaultProvider: "claude",
-    };`;
-    expect(extractConfigValues(config)).toEqual({
-      repoSlug: "acme/widget",
-      repoUrl: "https://github.com/acme/widget.git",
-      installCommand: "pnpm i",
-      checkCommand: "pnpm check",
-      testCommand: "pnpm test",
-      defaultProvider: "claude",
-    });
-  });
-  test("omits fields that are absent", () => {
-    expect(extractConfigValues(`{ repoSlug: "a/b" }`)).toEqual({ repoSlug: "a/b" });
   });
 });
 

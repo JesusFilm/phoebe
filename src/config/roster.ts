@@ -39,6 +39,9 @@ export type FieldKind =
   | { type: "derived" }
   | { type: "bootstrapper-only" };
 
+/** A shipped scaffold profile a config-authoring template renders (#72). */
+export type ScaffoldProfile = "flat" | "workspace" | "tenant";
+
 export type FieldDescriptor = {
   kind: FieldKind;
   /** Shipped default for an omitted optional field. Absent for `required`,
@@ -53,6 +56,10 @@ export type FieldDescriptor = {
   /** Extra shape validation beyond `kind`, run against a present value with a
    *  location string to embed in the thrown error. */
   validate?: (value: unknown, location: string) => void;
+  /** Which shipped scaffold profile(s) render this field as a `{{TOKEN}}`
+   *  (`src/config/authoring.ts`, #72). Absent for a field no scaffolded
+   *  config ever writes. */
+  scaffold?: readonly ScaffoldProfile[];
 };
 
 function assertOneOf(values: readonly string[]): (value: unknown, location: string) => void {
@@ -78,11 +85,36 @@ function assertWorkOrderShape(value: unknown, location: string): void {
  * by construction — see the module docstring.
  */
 export const ROSTER = {
-  repoSlug: { kind: { type: "required" }, env: "PHOEBE_REPO_SLUG", baseAllowed: false },
-  repoUrl: { kind: { type: "required" }, env: "PHOEBE_REPO_URL", baseAllowed: false },
-  installCommand: { kind: { type: "required" }, env: "PHOEBE_INSTALL_COMMAND", baseAllowed: false },
-  checkCommand: { kind: { type: "required" }, env: "PHOEBE_CHECK_COMMAND", baseAllowed: false },
-  testCommand: { kind: { type: "required" }, env: "PHOEBE_TEST_COMMAND", baseAllowed: false },
+  repoSlug: {
+    kind: { type: "required" },
+    env: "PHOEBE_REPO_SLUG",
+    baseAllowed: false,
+    scaffold: ["flat", "tenant"],
+  },
+  repoUrl: {
+    kind: { type: "required" },
+    env: "PHOEBE_REPO_URL",
+    baseAllowed: false,
+    scaffold: ["flat", "tenant"],
+  },
+  installCommand: {
+    kind: { type: "required" },
+    env: "PHOEBE_INSTALL_COMMAND",
+    baseAllowed: false,
+    scaffold: ["flat", "tenant"],
+  },
+  checkCommand: {
+    kind: { type: "required" },
+    env: "PHOEBE_CHECK_COMMAND",
+    baseAllowed: false,
+    scaffold: ["flat", "tenant"],
+  },
+  testCommand: {
+    kind: { type: "required" },
+    env: "PHOEBE_TEST_COMMAND",
+    baseAllowed: false,
+    scaffold: ["flat", "tenant"],
+  },
 
   engine: {
     kind: { type: "bootstrapper-only" },
@@ -220,6 +252,7 @@ export const ROSTER = {
     env: "PHOEBE_DEFAULT_PROVIDER",
     baseAllowed: true,
     validate: assertOneOf(PROVIDER_NAMES),
+    scaffold: ["flat"],
   },
   defaultModels: {
     kind: { type: "nested", keys: PROVIDER_NAMES },
@@ -284,3 +317,15 @@ export const REPOSITORY_OWNED_FIELDS = (Object.keys(ROSTER) as RosterField[]).fi
 export const BASE_ALLOWED_FIELDS = (Object.keys(ROSTER) as RosterField[]).filter(
   (field) => ROSTER[field].baseAllowed,
 );
+
+/** Every field at least one scaffold profile renders — the union
+ *  `src/config/authoring.ts`'s `readAuthoredFields` scrapes, since a reader
+ *  doesn't know in advance which profile wrote the file it's reading. */
+export const SCAFFOLD_FIELDS = (Object.keys(ROSTER) as RosterField[]).filter(
+  (field) => (FIELDS[field].scaffold?.length ?? 0) > 0,
+);
+
+/** Fields a given scaffold profile's shipped template renders as a `{{TOKEN}}`. */
+export function scaffoldFieldsFor(profile: ScaffoldProfile): RosterField[] {
+  return SCAFFOLD_FIELDS.filter((field) => FIELDS[field].scaffold!.includes(profile));
+}

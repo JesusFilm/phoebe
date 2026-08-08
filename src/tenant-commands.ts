@@ -19,15 +19,7 @@
 // dir and data base, so they are unit-tested against temp dirs; the CLI layer
 // (src/cli.ts) resolves those roots and prints the reports.
 
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import {
   discoverWorkspaceTenants,
@@ -36,7 +28,7 @@ import {
   TENANT_ENV_FILE,
 } from "../bootstrap/tenants.ts";
 import { readWorkspaceField } from "../bootstrap/workspace-source.ts";
-import { loadUserConfig } from "./config/index.ts";
+import { loadUserConfig, renderAuthoredConfig } from "./config/index.ts";
 import { ContractCapabilityError, type QueueEntry } from "./status-contract.ts";
 import { readStatusSnapshot, type StatusReadResult } from "./status-store.ts";
 
@@ -94,41 +86,6 @@ export function stripUrlCredentials(url: string): string {
   } catch {
     return url;
   }
-}
-
-/**
- * Render a per-tenant `phoebe.config.ts`. Type-only import (like the shipped
- * flat scaffold) so it loads from the container mount with no `node_modules`;
- * deliberately carries NO `engine` field — engine source is shared, set in the
- * deployment-root config (#60/#63).
- *
- * Used by `add-repo` (nested path tenants) and `init --tenant` (workspace
- * child in-tree installs, #94).
- */
-export function renderTenantConfig(fields: {
-  repoSlug: string;
-  repoUrl: string;
-  installCommand: string;
-  checkCommand: string;
-  testCommand: string;
-}): string {
-  return `// Per-tenant Phoebe config — scaffolded by \`phoebe add-repo\` or \`phoebe init --tenant\`.
-//
-// One tenant of a multi-tenant deployment. The shared engine source and
-// fleet-global knobs live in the deployment-root phoebe.config.ts, not here.
-// The written repoSlug is authoritative for workspace discovery (#85).
-import type { PhoebeUserConfig } from "phoebe-agent";
-
-const config: PhoebeUserConfig = {
-  repoSlug: ${JSON.stringify(fields.repoSlug)},
-  repoUrl: ${JSON.stringify(fields.repoUrl)},
-  installCommand: ${JSON.stringify(fields.installCommand)},
-  checkCommand: ${JSON.stringify(fields.checkCommand)},
-  testCommand: ${JSON.stringify(fields.testCommand)},
-};
-
-export default config;
-`;
 }
 
 /** Per-tenant secrets template — copy to `.env`. Shared by add-repo + init --tenant. */
@@ -217,9 +174,11 @@ export function addRepo(opts: {
 
   const created: string[] = [];
   const configPath = join(tenantDir, TENANT_CONFIG_FILE);
+  // The "tenant" scaffold profile deliberately carries no `engine` field —
+  // engine source is shared, set in the deployment-root config (#60/#63).
   writeFileSync(
     configPath,
-    renderTenantConfig({
+    renderAuthoredConfig("tenant", {
       repoSlug: opts.slug,
       repoUrl: opts.repoUrl ?? defaultRepoUrl(opts.slug),
       installCommand: opts.installCommand ?? "npm ci",
@@ -467,29 +426,6 @@ export function purgeTenant(opts: {
   }
   rmSync(dataDir, { recursive: true, force: true });
   return { purged: dataDir };
-}
-
-/** Read a tenant config's fields for `add-repo --from-config` migration. */
-export function readFlatRepoFields(configDir: string): {
-  installCommand?: string;
-  checkCommand?: string;
-  testCommand?: string;
-} {
-  const path = join(configDir, TENANT_CONFIG_FILE);
-  try {
-    const source = readFileSync(path, "utf8");
-    const pick = (key: string): string | undefined => {
-      const m = new RegExp(`${key}\\s*:\\s*(["'\\\`])((?:\\\\.|(?!\\1).)*)\\1`).exec(source);
-      return m?.[2];
-    };
-    return {
-      installCommand: pick("installCommand"),
-      checkCommand: pick("checkCommand"),
-      testCommand: pick("testCommand"),
-    };
-  } catch {
-    return {};
-  }
 }
 
 /** True when the deployment root has a `repos/` dir (nested mode). */

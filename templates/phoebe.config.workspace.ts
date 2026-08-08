@@ -12,7 +12,7 @@
 // no reachable `node_modules` — a value import of `{{CLI_BIN}}` could not
 // resolve there under ESM.
 
-import type { PhoebeUserConfig } from "{{CLI_BIN}}";
+import type { PhoebeUserConfig } from {{CLI_BIN}};
 
 // Only these two fields are read from the deployment root; the five required
 // per-repo fields live on each child. `Pick` says exactly that.

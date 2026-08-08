@@ -3,12 +3,17 @@
 // `parseBaseConfigDocument`, `validateUserConfig`, `resolveConfig`, and the
 // roster's shipped defaults) is implementation.
 //
-// Four verbs carry the whole contract:
+// Six verbs carry the whole contract:
 //   - `resolveConfiguration` — pure; the test surface.
 //   - `loadConfiguration` — the filesystem path (boot, the engine CLI, `phoebe
 //     config resolve`, `phoebe status` all funnel through this).
 //   - `formatResolvedConfiguration` / `parseResolvedConfigurationSnapshot` —
 //     the boot → engine snapshot pair.
+//   - `readAuthoredFields` / `renderAuthoredConfig` — the scaffold-authoring
+//     pair (#72): one scrape and one render over the three shipped
+//     `phoebe.config*.ts` templates, both keyed off the roster's `scaffold`
+//     column so `phoebe init`, `phoebe setup`, and `phoebe add-repo` share a
+//     single field list instead of five drifting dialects.
 //
 // Plus the hand-written types/enum consts every layer of the seam shares, and
 // a handful of filesystem-path helpers (`resolveConfigPath`,
@@ -58,3 +63,6 @@ export {
   resolveBaseConfigPath,
   resolveConfigPath,
 } from "./load.ts";
+
+export type { AuthoredFields, ScaffoldProfile } from "./authoring.ts";
+export { readAuthoredFields, renderAuthoredConfig } from "./authoring.ts";

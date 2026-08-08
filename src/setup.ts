@@ -19,14 +19,17 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve as resolvePath } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { Writable } from "node:stream";
-import { PROVIDER_NAMES, type ProviderName } from "./config/index.ts";
+import {
+  PROVIDER_NAMES,
+  readAuthoredFields,
+  renderAuthoredConfig,
+  type ProviderName,
+} from "./config/index.ts";
 import { parseDotenv } from "./dotenv.ts";
 import {
   DEFAULT_RESOLVED_CONFIG,
   DEFAULT_TEMPLATE_PARAMS,
   formatInitReport,
-  readTemplate,
-  renderTemplate,
   runInit,
 } from "./init.ts";
 
@@ -77,37 +80,6 @@ export function parseGitRemote(raw: string): GitRemote | undefined {
   const proto = /^(?:ssh|https?):\/\/(?:[^@/]+@)?([^/\s]+)\/(.+)$/.exec(url);
   if (proto) return build(proto[1], proto[2]);
   return undefined;
-}
-
-/** Config fields the wizard can pre-fill from an existing `phoebe.config.ts`. */
-export type ConfigValues = Partial<
-  Record<
-    "repoSlug" | "repoUrl" | "installCommand" | "checkCommand" | "testCommand" | "defaultProvider",
-    string
-  >
->;
-
-/**
- * Pull the wizard's fields out of a `phoebe.config.ts` by matching each
- * `field: "value"` string literal. `setup` wrote this file from the shipped
- * template, so the shape is predictable — a regex read avoids importing
- * (and thus executing) a consumer module just to reconfigure.
- */
-export function extractConfigValues(text: string): ConfigValues {
-  const fields = [
-    "repoSlug",
-    "repoUrl",
-    "installCommand",
-    "checkCommand",
-    "testCommand",
-    "defaultProvider",
-  ] as const;
-  const out: ConfigValues = {};
-  for (const field of fields) {
-    const match = new RegExp(`\\b${field}\\s*:\\s*["'\`]([^"'\`]*)["'\`]`).exec(text);
-    if (match) out[field] = match[1];
-  }
-  return out;
 }
 
 /** Repo slug must look like `owner/repo`. Returns an error message or undefined. */
@@ -358,8 +330,7 @@ export async function runSetup(opts: RunSetupOptions): Promise<void> {
   try {
     // Pre-fill context is read *before* init so we prefer a genuinely
     // pre-existing config over the placeholder init is about to (re)write.
-    const configText = readIfExists(join(targetDir, "phoebe.config.ts"));
-    const existing = configText ? extractConfigValues(configText) : {};
+    const existing = readAuthoredFields(join(targetDir, "phoebe.config.ts"));
     const existingEnvText = readIfExists(join(targetDir, ".env"));
     const existingEnv = parseDotenv(existingEnvText ?? "");
 
@@ -466,15 +437,11 @@ export async function runSetup(opts: RunSetupOptions): Promise<void> {
       return;
     }
 
-    const rendered = renderTemplate(readTemplate("phoebe.config.ts", opts.packageRoot), {
-      repoSlug,
-      repoUrl,
-      installCommand,
-      checkCommand,
-      testCommand,
-      defaultProvider: provider,
-      cliBin: DEFAULT_TEMPLATE_PARAMS.cliBin,
-    });
+    const rendered = renderAuthoredConfig(
+      "flat",
+      { repoSlug, repoUrl, installCommand, checkCommand, testCommand, defaultProvider: provider },
+      { packageRoot: opts.packageRoot },
+    );
     writeFileSync(join(targetDir, "phoebe.config.ts"), rendered);
 
     // Reconcile onto the existing `.env` when re-running so a key the user set

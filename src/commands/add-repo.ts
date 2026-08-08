@@ -1,10 +1,13 @@
 // `phoebe add-repo <owner/repo> [--url] [--with-prompts] [--from-config]` —
 // scaffold a tenant under `repos/<owner>/<repo>/` (host-side; #63/#95).
 
+import { join } from "node:path";
+import { TENANT_CONFIG_FILE } from "../../bootstrap/tenants.ts";
 import type { ArgSpec } from "../arg-spec.ts";
 import { parseArgs } from "../arg-spec.ts";
+import { readAuthoredFields } from "../config/index.ts";
 import { copyShippedPromptsInto } from "../init.ts";
-import { addRepo, readFlatRepoFields, TRUST_DOMAIN_NOTE } from "../tenant-commands.ts";
+import { addRepo, TRUST_DOMAIN_NOTE } from "../tenant-commands.ts";
 import type { Command } from "./types.ts";
 
 const ADD_REPO_USAGE =
@@ -38,13 +41,19 @@ ${ADD_REPO_USAGE}
       throw new Error(ADD_REPO_USAGE);
     }
     const configDir = ctx.cwd;
-    const fromConfig = flags["from-config"] === true ? readFlatRepoFields(configDir) : {};
+    // Only the toolchain commands migrate from an existing flat config — the
+    // slug (and thus repoSlug/repoUrl) is the operator's explicit `add-repo`
+    // argument, not whatever the scraped source config happens to name.
+    const { installCommand, checkCommand, testCommand } =
+      flags["from-config"] === true ? readAuthoredFields(join(configDir, TENANT_CONFIG_FILE)) : {};
     const withPrompts = flags["with-prompts"] === true;
     const result = addRepo({
       configDir,
       slug,
       ...(typeof flags["url"] === "string" ? { repoUrl: flags["url"] } : {}),
-      ...fromConfig,
+      ...(installCommand !== undefined ? { installCommand } : {}),
+      ...(checkCommand !== undefined ? { checkCommand } : {}),
+      ...(testCommand !== undefined ? { testCommand } : {}),
       withPrompts,
       ...(withPrompts ? { seedPrompt: (dir: string) => copyShippedPromptsInto(dir) } : {}),
     });

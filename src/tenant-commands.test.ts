@@ -25,9 +25,7 @@ import {
   listTenants,
   parseSlug,
   purgeTenant,
-  readFlatRepoFields,
   removeRepo,
-  renderTenantConfig,
   slugFromRemoteUrl,
   stripUrlCredentials,
 } from "./tenant-commands.ts";
@@ -131,21 +129,6 @@ describe("stripUrlCredentials", () => {
     expect(stripUrlCredentials("git@github.com:acme/widget.git")).toBe(
       "git@github.com:acme/widget.git",
     );
-  });
-});
-
-describe("renderTenantConfig", () => {
-  test("carries the repo fields and NO engine field (engine is shared)", () => {
-    const src = renderTenantConfig({
-      repoSlug: "acme/widget",
-      repoUrl: "https://github.com/acme/widget.git",
-      installCommand: "pnpm i",
-      checkCommand: "pnpm check",
-      testCommand: "pnpm test",
-    });
-    expect(src).toContain('repoSlug: "acme/widget"');
-    expect(src).toContain('installCommand: "pnpm i"');
-    expect(src).not.toMatch(/\bengine\s*:/); // no engine field — engine source is shared
   });
 });
 
@@ -385,28 +368,5 @@ describe("purgeTenant", () => {
     expect(() => purgeTenant({ configDir, dataBase, slug: "acme/ghost", confirm: true })).toThrow(
       /No retained data/,
     );
-  });
-});
-
-describe("readFlatRepoFields", () => {
-  test("extracts install/check/test from a flat top config", () => {
-    writeFileSync(
-      join(configDir, "phoebe.config.ts"),
-      `const config = {
-        repoSlug: "acme/widget",
-        installCommand: "pnpm install --frozen-lockfile",
-        checkCommand: "pnpm run check",
-        testCommand: "pnpm run test",
-      };`,
-    );
-    expect(readFlatRepoFields(configDir)).toEqual({
-      installCommand: "pnpm install --frozen-lockfile",
-      checkCommand: "pnpm run check",
-      testCommand: "pnpm run test",
-    });
-  });
-
-  test("returns empty when the file is missing", () => {
-    expect(readFlatRepoFields(configDir)).toEqual({});
   });
 });

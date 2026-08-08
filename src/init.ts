@@ -19,12 +19,12 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { TENANT_CONFIG_FILE, TENANT_ENV_FILE } from "../bootstrap/tenants.ts";
-import { resolveConfiguration } from "./config/index.ts";
+import { renderAuthoredConfig, resolveConfiguration } from "./config/index.ts";
 import { defaultGit, type GitRunner } from "./git-model.ts";
+import { readShippedFile } from "./package-resource.ts";
 import {
   defaultRepoUrl,
   parseSlug,
-  renderTenantConfig,
   slugFromRemoteUrl,
   stripUrlCredentials,
   TENANT_ENV_EXAMPLE,
@@ -88,6 +88,9 @@ export const DEFAULT_TEMPLATE_PARAMS: TemplateParams = {
  * One consumer-owned output produced by init. Sources are one of:
  *  - `template`: a file under the shipped `templates/` tree, rendered with
  *    placeholder substitution.
+ *  - `authored-config`: one of the three scaffold-authoring profiles (#72),
+ *    rendered by `renderAuthoredConfig` from the roster's `scaffold` column
+ *    rather than a hand-listed field set.
  *  - `shipped-prompt`: a file under the shipped `prompts/` tree, copied
  *    verbatim (prompts already carry their own `{{…}}` markers that the
  *    engine expands at run time — do NOT substitute those here).
@@ -98,6 +101,7 @@ export type PlannedOutput = {
   destRelPath: string;
   source:
     | { kind: "template"; templateRelPath: string }
+    | { kind: "authored-config"; profile: "flat" | "workspace" }
     | { kind: "shipped-prompt"; promptRelPath: string }
     | { kind: "gitignore"; entries: readonly string[] };
 };
@@ -150,7 +154,7 @@ export function planInitOutputs(profile: InitProfile = "flat"): PlannedOutput[] 
     return [
       {
         destRelPath: "phoebe.config.ts",
-        source: { kind: "template", templateRelPath: "phoebe.config.workspace.ts" },
+        source: { kind: "authored-config", profile: "workspace" },
       },
       {
         destRelPath: ".env.example",
@@ -181,7 +185,7 @@ export function planInitOutputs(profile: InitProfile = "flat"): PlannedOutput[] 
   return [
     {
       destRelPath: "phoebe.config.ts",
-      source: { kind: "template", templateRelPath: "phoebe.config.ts" },
+      source: { kind: "authored-config", profile: "flat" },
     },
     {
       destRelPath: ".env.example",
@@ -205,10 +209,13 @@ export function planInitOutputs(profile: InitProfile = "flat"): PlannedOutput[] 
  *
  * Every token in every shipped template sits inside a quoted string literal
  * (a TS string, a Dockerfile `ARG ...="..."`, a YAML `"..."` scalar), so each
- * value is escaped the same way `renderTenantConfig` escapes its fields:
- * `JSON.stringify` minus its outer quotes. That neutralizes a `"`, `\`, or
- * newline in a user-typed value (e.g. `phoebe setup` answers) that would
- * otherwise break out of the surrounding literal (issue #71).
+ * value is escaped with `JSON.stringify` minus its outer quotes. That
+ * neutralizes a `"`, `\`, or newline in a user-typed value (e.g. `phoebe
+ * setup` answers) that would otherwise break out of the surrounding literal
+ * (issue #71). The three `phoebe.config*.ts` templates render through
+ * `renderAuthoredConfig` instead (`src/config/authoring.ts`, #72), which
+ * takes the inverse approach: bare tokens, and the renderer supplies the
+ * quotes via the full `JSON.stringify`d literal.
  */
 export function renderTemplate(source: string, params: TemplateParams): string {
   let rendered = source;
@@ -264,31 +271,6 @@ export type InitReport = {
   skipped: string[];
 };
 
-/**
- * Walk up from this module's directory to find the shipped resource root. This
- * runs from `src/init.ts` (no build step) and reads `templates/…` + `prompts/…`
- * from the package root. Stops at a `node_modules` boundary so an installed dep
- * never resolves scaffold sources from the consuming repo. (Runtime `promptFiles`
- * loading is separate — see `resolvePromptFile` in `prompt.ts`, which reads
- * from the consumer runtime root.)
- */
-function resolvePackageResource(relativePath: string, moduleDir: string): string {
-  let dir = moduleDir;
-  while (true) {
-    const candidate = join(dir, relativePath);
-    if (existsSync(candidate)) {
-      return candidate;
-    }
-    const parent = dirname(dir);
-    if (parent === dir || basename(parent) === "node_modules") {
-      throw new Error(
-        `Could not find ${relativePath} within the Phoebe package (searched from ${moduleDir})`,
-      );
-    }
-    dir = parent;
-  }
-}
-
 export type RunInitOptions = {
   /** Directory the scaffolded files land under. Created if missing. */
   targetDir: string;
@@ -300,28 +282,6 @@ export type RunInitOptions = {
    *  the walk-up from this module. */
   packageRoot?: string;
 };
-
-function readShippedFile(
-  relPath: string,
-  packageRoot: string | undefined,
-  moduleDir: string,
-): string {
-  const absolute = packageRoot
-    ? resolvePath(packageRoot, relPath)
-    : resolvePackageResource(relPath, moduleDir);
-  return readFileSync(absolute, "utf8");
-}
-
-/**
- * Read a shipped `templates/<relPath>` file verbatim (no substitution). Shares
- * the package-resource walk-up with `runInit` so `phoebe setup` renders the
- * exact same config template `init` writes — one template, two callers. Pass
- * `packageRoot` in tests to point at a fixture tree.
- */
-export function readTemplate(templateRelPath: string, packageRoot?: string): string {
-  const moduleDir = dirname(fileURLToPath(import.meta.url));
-  return readShippedFile(join("templates", templateRelPath), packageRoot, moduleDir);
-}
 
 /**
  * Execute the plan: create missing files, additively update `.gitignore`, and
@@ -377,6 +337,20 @@ export function runInit(opts: RunInitOptions): InitReport {
         moduleDir,
       );
       const rendered = renderTemplate(rawTemplate, params);
+      writeFileSync(destAbs, rendered);
+    } else if (output.source.kind === "authored-config") {
+      const rendered = renderAuthoredConfig(
+        output.source.profile,
+        {
+          repoSlug: params.repoSlug,
+          repoUrl: params.repoUrl,
+          installCommand: params.installCommand,
+          checkCommand: params.checkCommand,
+          testCommand: params.testCommand,
+          defaultProvider: params.defaultProvider,
+        },
+        { packageRoot: opts.packageRoot },
+      );
       writeFileSync(destAbs, rendered);
     } else {
       // Shipped prompts ship verbatim — the engine's own render step handles
@@ -487,7 +461,7 @@ export function initTenant(opts: InitTenantOptions): InitTenantResult {
 
   writeFileSync(
     configPath,
-    renderTenantConfig({
+    renderAuthoredConfig("tenant", {
       repoSlug,
       repoUrl,
       installCommand: opts.installCommand ?? "npm ci",
