@@ -291,3 +291,15 @@ export function readWorkspaceField(
   if (field === undefined) return null;
   return validateWorkspaceField(field, opts);
 }
+
+/**
+ * Single entry point for resolving the workspace block from a loaded root
+ * config. Boot and `phoebe list` both call this so they cannot disagree about
+ * which discovery arm is in force (#137).
+ */
+export function resolveWorkspace(
+  config: Record<string, unknown>,
+  opts: { root?: string } = {},
+): ResolvedWorkspace | null {
+  return readWorkspaceField(config, opts);
+}

@@ -35,8 +35,8 @@ import {
   TENANT_ENV_FILE,
 } from "../bootstrap/tenants.ts";
 import {
-  readWorkspaceField,
   requireDepthArm,
+  resolveWorkspace,
   type ResolvedWorkspace,
 } from "../bootstrap/workspace-source.ts";
 import { loadUserConfig } from "./load-config.ts";
@@ -320,11 +320,11 @@ async function resolveRootWorkspace(configDir: string): Promise<ResolvedWorkspac
   } catch {
     return null;
   }
-  return readWorkspaceField(root, { root: configDir });
+  return resolveWorkspace(root, { root: configDir });
 }
 
 /**
- * Enumerate workspace-mode children via the same walk ticket 1 / #91 uses
+ * Enumerate workspace-mode children via the same discovery boot uses
  * (`discoverWorkspaceTenants`). Valid children surface full health columns;
  * broken (hold) dirs appear with `configValid: false` so `phoebe list` still
  * flags them. Nested/flat scanning is unchanged (#95).
@@ -332,10 +332,10 @@ async function resolveRootWorkspace(configDir: string): Promise<ResolvedWorkspac
 async function listWorkspaceTenants(opts: {
   configDir: string;
   dataBase: string;
-  depth: number;
+  workspace: { depth: number };
   loadRepoSlug?: (configPath: string) => string | Promise<string>;
 }): Promise<TenantListing[]> {
-  const discovery = await discoverWorkspaceTenants(opts.configDir, opts.depth, {
+  const discovery = await discoverWorkspaceTenants(opts.configDir, opts.workspace, {
     loadRepoSlug: opts.loadRepoSlug ?? defaultLoadRepoSlug,
   });
   const listings: TenantListing[] = [];
@@ -343,14 +343,14 @@ async function listWorkspaceTenants(opts: {
     if (tenant.slug === null) continue;
     listings.push(listingFor(tenant.slug, tenant.dir, opts.dataBase, true));
   }
-  for (const holdDir of discovery.holdIds) {
+  for (const hold of discovery.holds) {
     // No authoritative slug when load/parse failed — show a path-relative id so
     // the operator can find the broken child; data/status stay dark without a slug.
-    const rel = relative(opts.configDir, holdDir).replace(/\\/g, "/");
+    const rel = relative(opts.configDir, hold.dir).replace(/\\/g, "/");
     listings.push({
-      slug: rel.length > 0 ? rel : holdDir,
+      slug: rel.length > 0 ? rel : hold.dir,
       configValid: false,
-      envPresent: envPresent(holdDir),
+      envPresent: envPresent(hold.dir),
       retainedData: false,
       status: null,
     });
@@ -406,7 +406,7 @@ export async function listTenants(opts: {
     return listWorkspaceTenants({
       configDir: opts.configDir,
       dataBase: opts.dataBase,
-      depth: requireDepthArm(workspace),
+      workspace: { depth: requireDepthArm(workspace) },
       loadRepoSlug: opts.loadRepoSlug,
     });
   }
