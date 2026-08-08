@@ -66,22 +66,6 @@ describe("resolveConfiguration: layering", () => {
     expect(resolved.engine).toEqual({ source: "github", repo: "acme/engine", ref: "repo" });
   });
 
-  test("honors issueSource from the repository declaration (#21)", () => {
-    const resolved = resolveConfiguration({
-      base: { readyLabel: "base-ready" },
-      repository: repositoryConfig({
-        issueSource: { repoSlug: "acme/planning", readyLabel: "triaged" },
-      }),
-    });
-    expect(resolved.config.issueSource).toEqual({
-      repoSlug: "acme/planning",
-      readyLabel: "triaged",
-    });
-    // Unrelated to the work repo's own identity or discovery label.
-    expect(resolved.config.repoSlug).toBe("acme/widget");
-    expect(resolved.config.readyLabel).toBe("base-ready");
-  });
-
   test("requires the five repository-owned fields from the repository declaration", () => {
     const repository = repositoryConfig() as Record<string, unknown>;
     delete repository.repoSlug;
@@ -310,14 +294,6 @@ describe("loadConfiguration", () => {
         /(?=.*capture group 1)(?=.*generated-base\.json)/i,
         false,
       ],
-      [
-        // issueSource names a specific repo (#21), same as repoSlug — out of
-        // place in the deployment-wide generated base.
-        "issueSource field",
-        { schemaVersion: 1, config: { issueSource: { repoSlug: "managed/planning" } } },
-        /(?=.*must not define)(?=.*issueSource)(?=.*generated-base\.json)/i,
-        false,
-      ],
     ] as const)("%s", async (_name, body, expected, invalidJson) => {
       const { repositoryPath, basePath } = fixture();
       writeFileSync(basePath, invalidJson ? "{" : `${JSON.stringify(body)}\n`);
@@ -406,12 +382,11 @@ describe("loadConfiguration", () => {
     "installCommand",
     "checkCommand",
     "testCommand",
-    "issueSource",
     "workspace",
     "configDir",
   ])("rejects the repository-owned field %s in a base document", async (field) => {
     const { repositoryPath, basePath } = fixture();
-    const value = field === "issueSource" ? { repoSlug: "x/y" } : field === "workspace" ? {} : "x";
+    const value = field === "workspace" ? {} : "x";
     writeFileSync(
       basePath,
       `${JSON.stringify({ schemaVersion: 1, config: { [field]: value } })}\n`,

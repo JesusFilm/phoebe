@@ -102,20 +102,6 @@ export function validateEngineSourceField(
 }
 
 /**
- * Where issues are discovered, labeled, and commented on, when it differs
- * from the repo being worked (#21) — e.g. a team whose planning tracker is a
- * separate repo from its codebase. `readyLabel` defaults to the tenant's own
- * `readyLabel` when omitted. Discovery, blocker resolution, label
- * transitions, claim/release comments, and the research queue all address
- * this repo; clone, worktree, branch, PR, and status identity stay on
- * `repoSlug` regardless.
- */
-export type IssueSourceConfig = {
-  repoSlug: string;
-  readyLabel?: string;
-};
-
-/**
  * Bootstrapper-only workspace discovery knobs (#83/#97). Presence of this
  * block on the deployment-root config selects workspace mode; `depth` is how
  * many directory levels under the root the bootstrapper scans for tenant
@@ -156,15 +142,6 @@ export type PhoebeConfig = {
   branchPrefix: string;
   /** Label marking issues Phoebe may pick up. */
   readyLabel: string;
-  /**
-   * Resolved issue-discovery target — always populated, defaulting to
-   * `{ repoSlug, readyLabel }` when the user omits `issueSource` entirely, so
-   * every call site can read `config.issueSource.*` unconditionally (#21).
-   */
-  issueSource: {
-    repoSlug: string;
-    readyLabel: string;
-  };
   /** Label marking wayfinder research tickets the `research` work kind picks up. */
   researchLabel: string;
   /** Label the agent applies to an issue it has claimed and is working. */
@@ -307,8 +284,6 @@ export type PhoebeUserConfig = {
   defaultBranch?: string;
   branchPrefix?: string;
   readyLabel?: string;
-  /** Split issue discovery from the work repo (#21). Omitted ⇒ same repo. */
-  issueSource?: IssueSourceConfig;
   researchLabel?: string;
   processingLabel?: string;
   prScope?: PhoebeConfig["prScope"];
@@ -402,28 +377,6 @@ export function validateWorkspaceField(value: unknown, location: string): void {
   if (depth === undefined) return;
   if (typeof depth !== "number" || !Number.isInteger(depth) || depth < 1) {
     throw new Error(`${location}.depth must be an integer ≥ 1 (got ${JSON.stringify(depth)}).`);
-  }
-}
-
-/**
- * Reject a malformed `issueSource` (#21): an object with a required non-empty
- * `repoSlug`, an optional string `readyLabel`, and no other keys. Wired into
- * the roster (./roster.ts) as `issueSource`'s `validate`.
- */
-export function validateIssueSource(value: unknown, location: string): void {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${location} must be an object of the form { repoSlug, readyLabel? }.`);
-  }
-  const { repoSlug, readyLabel, ...rest } = value as Record<string, unknown>;
-  const unknownKeys = Object.keys(rest);
-  if (unknownKeys.length > 0) {
-    throw new Error(`${location} has unknown field(s): ${unknownKeys.join(", ")}.`);
-  }
-  if (typeof repoSlug !== "string" || repoSlug.trim().length === 0) {
-    throw new Error(`${location}.repoSlug must be a non-empty string.`);
-  }
-  if (readyLabel !== undefined && typeof readyLabel !== "string") {
-    throw new Error(`${location}.readyLabel must be a string.`);
   }
 }
 

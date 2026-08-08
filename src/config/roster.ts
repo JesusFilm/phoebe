@@ -19,7 +19,6 @@ import {
   validateBlockedByPattern,
   validateConfigDir,
   validateEngineSourceField,
-  validateIssueSource,
   validateWorkOrder,
   validateWorkspaceField,
   type PhoebeUserConfig,
@@ -36,7 +35,6 @@ export type FieldKind =
   | { type: "string-array" }
   | { type: "nested"; keys: readonly string[] }
   | { type: "required" }
-  | { type: "derived" }
   | { type: "bootstrapper-only" };
 
 /** A shipped scaffold profile a config-authoring template renders (#72). */
@@ -143,8 +141,6 @@ export const ROSTER = {
     baseAllowed: false,
     validate: validateConfigDir,
   },
-
-  issueSource: { kind: { type: "derived" }, baseAllowed: false, validate: validateIssueSource },
 
   defaultBranch: {
     kind: { type: "string" },

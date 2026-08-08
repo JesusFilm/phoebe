@@ -30,7 +30,6 @@ export type PhoebeBaseConfig = Partial<
     | "installCommand"
     | "checkCommand"
     | "testCommand"
-    | "issueSource"
     | "workspace"
     | "configDir"
   >
@@ -53,8 +52,8 @@ function fieldLocation(field: string): string {
 
 /**
  * Throw when a required field is missing or blank, or when a field with a
- * roster `validate` (`blockedByPattern`, `issueSource`, `workspace`,
- * `configDir`, `engine`) fails its shape check. Kept separate from
+ * roster `validate` (`blockedByPattern`, `workspace`, `configDir`, `engine`)
+ * fails its shape check. Kept separate from
  * `resolveConfig` so consumers or tests can validate a config independent of
  * the defaults merge.
  */
@@ -97,7 +96,6 @@ export function resolveConfig(
   opts: { dataBase?: string } = {},
 ): PhoebeConfig {
   validateUserConfig(user);
-  const readyLabel = user.readyLabel ?? ROSTER.readyLabel.default;
   return {
     repoSlug: user.repoSlug,
     repoUrl: user.repoUrl,
@@ -106,11 +104,7 @@ export function resolveConfig(
     testCommand: user.testCommand,
     defaultBranch: user.defaultBranch ?? ROSTER.defaultBranch.default,
     branchPrefix: user.branchPrefix ?? ROSTER.branchPrefix.default,
-    readyLabel,
-    issueSource: {
-      repoSlug: user.issueSource?.repoSlug ?? user.repoSlug,
-      readyLabel: user.issueSource?.readyLabel ?? readyLabel,
-    },
+    readyLabel: user.readyLabel ?? ROSTER.readyLabel.default,
     researchLabel: user.researchLabel ?? ROSTER.researchLabel.default,
     processingLabel: user.processingLabel ?? ROSTER.processingLabel.default,
     prScope: user.prScope ?? ROSTER.prScope.default,

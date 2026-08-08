@@ -27,7 +27,6 @@
 export type {
   BlockerSource,
   EngineSourceField,
-  IssueSourceConfig,
   PathsConfig,
   PhoebeConfig,
   PhoebeUserConfig,

@@ -1,6 +1,6 @@
-// Boot-time label existence tests (#67): the Phoebe-owned label set is
-// deduplicated by (repo, name), and `ensureLabels` issues one idempotent
-// `gh label create --force` per spec against the right repo.
+// Boot-time label existence tests (#67): the Phoebe-owned label set, and
+// `ensureLabels` issues one idempotent `gh label create --force` per spec
+// against the configured repo.
 
 import { describe, expect, test } from "vite-plus/test";
 import { ensureLabels, phoebeLabelSet, type GhRunner } from "./ensure-labels.ts";
@@ -8,14 +8,14 @@ import { PHOEBE_QUARANTINE_LABEL } from "./quarantine.ts";
 
 const singleRepoConfig = {
   repoSlug: "o/r",
-  issueSource: { repoSlug: "o/r", readyLabel: "ready-for-agent" },
+  readyLabel: "ready-for-agent",
   researchLabel: "wayfinder:research",
   processingLabel: "processing",
   prOptOutLabel: "ready-for-human",
 };
 
 describe("phoebeLabelSet", () => {
-  test("single-repo install: one spec per label, quarantine deduplicated across repos", () => {
+  test("one spec per label, all scoped to the configured repo", () => {
     const specs = phoebeLabelSet(singleRepoConfig);
     expect(specs.map((s) => `${s.repoSlug}#${s.name}`)).toEqual([
       "o/r#ready-for-agent",
@@ -23,22 +23,6 @@ describe("phoebeLabelSet", () => {
       "o/r#wayfinder:research",
       "o/r#ready-for-human",
       `o/r#${PHOEBE_QUARANTINE_LABEL}`,
-    ]);
-  });
-
-  test("split issue source: quarantine ensured on both the issue repo and the work repo", () => {
-    const specs = phoebeLabelSet({
-      ...singleRepoConfig,
-      repoSlug: "o/work",
-      issueSource: { repoSlug: "o/issues", readyLabel: "ready-for-agent" },
-    });
-    expect(specs.map((s) => `${s.repoSlug}#${s.name}`)).toEqual([
-      "o/issues#ready-for-agent",
-      "o/issues#processing",
-      "o/issues#wayfinder:research",
-      "o/work#ready-for-human",
-      `o/issues#${PHOEBE_QUARANTINE_LABEL}`,
-      `o/work#${PHOEBE_QUARANTINE_LABEL}`,
     ]);
   });
 
