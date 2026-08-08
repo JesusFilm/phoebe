@@ -9,6 +9,7 @@ import {
   isExplicitWorkspace,
   readWorkspaceField,
   requireDepthArm,
+  resolveWorkspace,
   validateWorkspaceField,
 } from "./workspace-source.ts";
 
@@ -196,5 +197,15 @@ describe("requireDepthArm — declared fleets validate but do not yet discover",
       ExplicitWorkspaceUnsupportedError,
     );
     expect(() => requireDepthArm({ tenants: ["widget"] })).toThrow(/not supported/i);
+  });
+});
+
+describe("resolveWorkspace", () => {
+  test("is the shared entry point for a loaded root config", () => {
+    expect(resolveWorkspace({ workspace: { depth: 2 } })).toEqual({ depth: 2 });
+    expect(
+      resolveWorkspace({ workspace: { tenants: ["widget"] } }, { root: "/srv/deploy" }),
+    ).toEqual({ tenants: ["widget"] });
+    expect(resolveWorkspace({})).toBeNull();
   });
 });
