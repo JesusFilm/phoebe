@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
 import {
   diffFleet,
   discoverTenants,
+  discoverUndeclaredInTreeTenants,
   discoverWorkspaceTenants,
   DIRECTORY_ABSENT_HOLD_REASON,
   DuplicateOriginSlugError,
@@ -415,6 +416,14 @@ describe("workspace mode", () => {
       },
     );
     expect(discovery.tenants.map((t) => t.slug)).toEqual(["acme/real"]);
+  });
+
+  test("discoverUndeclaredInTreeTenants finds depth-1 config dirs not in the declaration", () => {
+    writeSlugConfig(join(dir, "widget"), "acme/widget");
+    writeSlugConfig(join(dir, "orphan"), "acme/orphan");
+    writeSlugConfig(join(dir, "apps", "nested"), "acme/nested");
+
+    expect(discoverUndeclaredInTreeTenants(dir, ["widget"])).toEqual(["orphan"]);
   });
 });
 

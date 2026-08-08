@@ -35,6 +35,7 @@ import {
   addRepo,
   isNested,
   LIST_HELD_LEGEND,
+  LIST_UNDECLARED_LEGEND,
   listTenants,
   parseSlug,
   purgeTenant,
@@ -366,6 +367,7 @@ async function runListCli(argv: readonly string[]): Promise<void> {
           retainedData: listing.retainedData,
           status: listing.status,
         })),
+        undeclared: result.undeclared,
       })}\n`,
     );
     if (flags["check"] === true && result.explicit && result.listings.some((l) => l.held)) {
@@ -374,19 +376,30 @@ async function runListCli(argv: readonly string[]): Promise<void> {
     return;
   }
 
-  if (result.listings.length === 0) {
+  if (result.listings.length === 0 && result.undeclared.length === 0) {
     process.stdout.write(
       "[phoebe] No tenants (flat single-tenant deployment, or none added yet).\n",
     );
     return;
   }
 
-  const header = result.explicit
-    ? `[phoebe] ${result.live} of ${result.declared} declared tenant(s):`
-    : `[phoebe] ${result.listings.length} tenant(s):`;
+  const header =
+    result.explicit && result.declared > 0
+      ? `[phoebe] ${result.live} of ${result.declared} declared tenant(s):`
+      : result.listings.length > 0
+        ? `[phoebe] ${result.listings.length} tenant(s):`
+        : "[phoebe] 0 declared tenant(s):";
   const body = result.listings.map(formatTenantListing).join("\n");
-  const legend = result.listings.some((listing) => listing.held) ? `\n${LIST_HELD_LEGEND}` : "";
-  process.stdout.write(`${header}\n${body}${legend}\n`);
+  const undeclaredSection =
+    result.undeclared.length > 0
+      ? `\n\nundeclared:\n${result.undeclared.map((path) => `  ${path}`).join("\n")}`
+      : "";
+  const legendParts: string[] = [];
+  if (result.listings.some((listing) => listing.held)) legendParts.push(LIST_HELD_LEGEND);
+  if (result.undeclared.length > 0) legendParts.push(LIST_UNDECLARED_LEGEND);
+  const legend = legendParts.length > 0 ? `\n${legendParts.join("\n")}` : "";
+  const main = body.length > 0 ? `${header}\n${body}` : header;
+  process.stdout.write(`${main}${undeclaredSection}${legend}\n`);
 
   if (flags["check"] === true && result.explicit && result.listings.some((l) => l.held)) {
     process.exitCode = 1;
