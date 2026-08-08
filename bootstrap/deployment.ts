@@ -107,7 +107,9 @@ export type ResolveDeploymentOpts = {
    *  persistent poll loop). */
   argv: readonly string[];
   /** The crash-loop fallback policy every topology's `launch` shares.
-   *  Defaults to a fresh container-rooted guard (boot.ts). */
+   *  Defaults to a fresh container-rooted guard (boot.ts) whose roster is
+   *  topology-dependent: flat's one constant tenant, or empty for a fleet
+   *  (#78 — a fleet's live roster is not wired yet). */
   guard?: CrashGuard;
   /** Defaults to the real `spawn-engine.mjs` launchers; overridable so the
    *  spawn adapters are unit-tested without a real child process. */
@@ -138,11 +140,9 @@ async function loadMountedConfig(
  */
 export async function resolveDeployment(opts: ResolveDeploymentOpts): Promise<Deployment> {
   const { configDir, env, argv } = opts;
-  const guard = opts.guard ?? createBootCrashGuard();
   const spawn = opts.spawnEngine ?? defaultSpawnEngine;
   const spawnChild = opts.spawnEngineChild ?? defaultSpawnEngineChild;
   const configPath = resolveConfigPath(undefined, configDir);
-  const launch = (): Promise<LaunchedEngine> => launchTarget(configPath, guard);
 
   const rootFingerprint = configFingerprint(configPath);
   const rootConfig = await loadMountedConfig(configPath, rootFingerprint);
@@ -164,6 +164,10 @@ export async function resolveDeployment(opts: ResolveDeploymentOpts): Promise<De
       `[phoebe] boot: workspace mode — supervising ${initial.tenants.length} tenant(s) ` +
         `on one shared engine (depth ${workspace.depth}).`,
     );
+    // A fleet's live roster is not wired yet (see buildFleetDeps's doc comment)
+    // — this guard only ever applies an existing pin via `fallbackFor`.
+    const guard = opts.guard ?? createBootCrashGuard(() => []);
+    const launch = (): Promise<LaunchedEngine> => launchTarget(configPath, guard);
     return buildFleetDeps({
       configPath,
       guard,
@@ -184,6 +188,10 @@ export async function resolveDeployment(opts: ResolveDeploymentOpts): Promise<De
       `[phoebe] boot: nested deployment — supervising ${discovery.tenants.length} tenant(s) ` +
         `on one shared engine.`,
     );
+    // A fleet's live roster is not wired yet (see buildFleetDeps's doc comment)
+    // — this guard only ever applies an existing pin via `fallbackFor`.
+    const guard = opts.guard ?? createBootCrashGuard(() => []);
+    const launch = (): Promise<LaunchedEngine> => launchTarget(configPath, guard);
     return buildFleetDeps({
       configPath,
       guard,
@@ -200,6 +208,10 @@ export async function resolveDeployment(opts: ResolveDeploymentOpts): Promise<De
   // engine axis (config/ref) is its only relaunch trigger, one edit is one
   // relaunch, not two.
   const flatTenant = discovery.tenants[0];
+  // Flat is a fleet of one (#65): the roster is always this one tenant, so the
+  // breadth × count rule (#78) reduces exactly to the old count-only one.
+  const guard = opts.guard ?? createBootCrashGuard(() => [flatTenant.id]);
+  const launch = (): Promise<LaunchedEngine> => launchTarget(configPath, guard);
 
   return {
     launch,
@@ -215,7 +227,7 @@ export async function resolveDeployment(opts: ResolveDeploymentOpts): Promise<De
       );
       return "respawn";
     },
-    onChildRun: (run) => guard.record(run),
+    onChildRun: (run) => guard.record(run, run.tenant.id),
     onChildTick: ({ engine, elapsedMs }) => {
       if (engine.sha !== null) guard.noteAlive(engine.sha, elapsedMs);
     },
@@ -303,9 +315,10 @@ function readTenantEnv(envPath: string): Record<string, string> {
  *
  * Each child is spawned with an IPC channel + the tenant's scrubbed env (#61)
  * and cwd (its config dir), and wired to the broker (#59). The crash-loop guard
- * still applies any existing engine fallback on each (re)launch; feeding the
- * guard fleet-aggregated crash verdicts (#60 §6) is a follow-up — nested live
- * validation is deferred to #77.
+ * still applies any existing engine fallback on each (re)launch; wiring a live
+ * tenant roster and calling `record`/`noteAlive`/`shouldRetry` here so a fleet
+ * actually accrues fleet-aggregated crash verdicts (#78's breadth × count rule)
+ * is a follow-up — nested live validation is deferred to #77.
  *
  * `discover` is injected so nested mode can stay a pure filesystem scan while
  * workspace mode re-walks the tree and reloads each child's `repoSlug` (#91).

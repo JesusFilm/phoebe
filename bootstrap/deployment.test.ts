@@ -37,6 +37,7 @@ function fakeGuard(): CrashGuard {
     record: () => {},
     noteAlive: () => {},
     shouldRetry: () => false,
+    condemns: () => false,
   };
 }
 
