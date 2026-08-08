@@ -35,8 +35,8 @@ import {
   TENANT_ENV_FILE,
 } from "../bootstrap/tenants.ts";
 import {
-  readWorkspaceField,
   requireDepthArm,
+  resolveWorkspace,
   type ResolvedWorkspace,
 } from "../bootstrap/workspace-source.ts";
 import { loadUserConfig } from "./load-config.ts";
@@ -320,7 +320,7 @@ async function resolveRootWorkspace(configDir: string): Promise<ResolvedWorkspac
   } catch {
     return null;
   }
-  return readWorkspaceField(root, { root: configDir });
+  return resolveWorkspace(root, { root: configDir });
 }
 
 /**

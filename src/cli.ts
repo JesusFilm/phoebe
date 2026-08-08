@@ -28,6 +28,7 @@ import {
   runInit,
   type InitProfile,
 } from "./init.ts";
+import { formatInitTenantRegistrationAdviceForRoot } from "./init-tenant-advice.ts";
 import { applyEnvOverlay, loadUserConfig, resolveConfigPath } from "./load-config.ts";
 import { resolveDataBase } from "./paths.ts";
 import { setResolvedConfig } from "./resolved-config.ts";
@@ -95,13 +96,15 @@ export type ParsedInitArgs = {
   repoUrl?: string;
   /** Tenant profile: opt-in seed of shipped prompts. */
   withPrompts: boolean;
+  /** Tenant profile: deployment root for workspace registration advice (default cwd). */
+  rootDir?: string;
 };
 
 /**
  * Parse argv left after the leading `init` token has been consumed. Supports
  * an optional positional target directory (`phoebe init ./my-agent`), the
  * mutually exclusive profile flags `--workspace` / `--tenant`, tenant-only
- * overrides (`--slug`, `--url`, `--with-prompts`), and `--help`. Extra flags
+ * overrides (`--slug`, `--url`, `--with-prompts`, `--root`), and `--help`. Extra flags
  * are rejected loudly so a typo like `--forcee` fails fast instead of being
  * silently ignored.
  */
@@ -113,6 +116,7 @@ export function parseInitArgs(argv: readonly string[]): ParsedInitArgs {
   let repoSlug: string | undefined;
   let repoUrl: string | undefined;
   let withPrompts = false;
+  let rootDir: string | undefined;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
@@ -151,6 +155,14 @@ export function parseInitArgs(argv: readonly string[]): ParsedInitArgs {
       repoUrl = value;
       continue;
     }
+    if (arg === "--root" || arg.startsWith("--root=")) {
+      const value = arg === "--root" ? argv[++i] : arg.slice("--root=".length);
+      if (value === undefined || value.length === 0 || value.startsWith("-")) {
+        throw new Error("`--root` requires a directory path.");
+      }
+      rootDir = value;
+      continue;
+    }
     if (arg.startsWith("-")) {
       throw new Error(`Unknown flag \`${arg}\` for \`phoebe init\`. See \`phoebe init --help\`.`);
     }
@@ -162,9 +174,12 @@ export function parseInitArgs(argv: readonly string[]): ParsedInitArgs {
     targetDir = arg;
   }
 
-  if ((repoSlug !== undefined || repoUrl !== undefined || withPrompts) && profile !== "tenant") {
+  if (
+    (repoSlug !== undefined || repoUrl !== undefined || withPrompts || rootDir !== undefined) &&
+    profile !== "tenant"
+  ) {
     throw new Error(
-      `\`--slug\`, \`--url\`, and \`--with-prompts\` are only valid with \`phoebe init --tenant\`.`,
+      `\`--slug\`, \`--url\`, \`--with-prompts\`, and \`--root\` are only valid with \`phoebe init --tenant\`.`,
     );
   }
 
@@ -175,6 +190,7 @@ export function parseInitArgs(argv: readonly string[]): ParsedInitArgs {
     ...(repoSlug !== undefined ? { repoSlug } : {}),
     ...(repoUrl !== undefined ? { repoUrl } : {}),
     withPrompts,
+    ...(rootDir !== undefined ? { rootDir } : {}),
   };
 }
 
@@ -215,7 +231,8 @@ Usage:
   phoebe init [dir]                 Flat single-tenant deployment (default)
   phoebe init --workspace [dir]     Workspace root (engine + workspace block)
   phoebe init --tenant [dir]        Workspace child in-tree install
-                                    [--slug owner/repo] [--url <git-url>] [--with-prompts]
+                                    [--slug owner/repo] [--url <git-url>]
+                                    [--root <workspace-root>] [--with-prompts]
 
 Profiles (mutually exclusive; default is flat):
 
@@ -388,12 +405,17 @@ export async function runCli(): Promise<void> {
         withPrompts: parsed.withPrompts,
         ...(parsed.withPrompts ? { seedPrompt: (dir: string) => copyShippedPromptsInto(dir) } : {}),
       });
+      const rootDir = parsed.rootDir ?? process.cwd();
+      const registrationAdvice = await formatInitTenantRegistrationAdviceForRoot({
+        rootDir,
+        tenantDir: result.tenantDir,
+      });
       process.stdout.write(
         formatInitReport(result, parsed.targetDir) +
           `  repoSlug: ${result.repoSlug}\n` +
           `  repoUrl:  ${result.repoUrl}\n` +
-          `\nFill in ${result.tenantDir}/.env (copy .env.example). ` +
-          `Workspace discovery picks this child up on the next boot poll.\n`,
+          `\nFill in ${result.tenantDir}/.env (copy .env.example).\n` +
+          registrationAdvice,
       );
       return;
     }
