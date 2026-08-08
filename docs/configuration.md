@@ -61,9 +61,6 @@ child startup cannot mix one engine source with another runtime configuration.
   "schemaVersion": 1,
   "config": {
     "branchPrefix": "managed/",
-    "paths": {
-      "stateDir": "/data/managed-state"
-    },
     "engine": {
       "source": "github",
       "repo": "JesusFilm/phoebe",
@@ -73,10 +70,14 @@ child startup cannot mix one engine source with another runtime configuration.
 }
 ```
 
-The base can supply any optional configuration field, including `engine`, but
-must not define the five required repository-owned fields (`repoSlug`,
-`repoUrl`, `installCommand`, `checkCommand`, `testCommand`). Those must remain
-present and non-empty in `phoebe.config.ts`.
+The base can supply any field the roster marks base-allowed (`BASE_ALLOWED_FIELDS`
+in `src/config/roster.ts`) — every optional field, including `engine`, except
+two that stay repository-owned alongside the five required fields: `workspace`
+(selects workspace discovery mode) and `configDir` (relocates a tenant's asset
+directory). The base must not define any of these seven fields — `repoSlug`,
+`repoUrl`, `installCommand`, `checkCommand`, `testCommand`, `workspace`,
+`configDir` — all seven are set only in `phoebe.config.ts`; the five required
+ones must remain present and non-empty there.
 
 The document is strict: unknown fields, unsupported schema versions, invalid
 JSON, invalid field shapes, a relative path, or a missing/unreadable file fail
