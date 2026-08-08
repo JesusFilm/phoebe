@@ -31,11 +31,13 @@ import { join, relative } from "node:path";
 import {
   discoverWorkspaceTenants,
   REPOS_DIR,
+  resolveDeclaredTenantDir,
   TENANT_CONFIG_FILE,
   TENANT_ENV_FILE,
+  type WorkspaceHold,
 } from "../bootstrap/tenants.ts";
 import {
-  requireDepthArm,
+  isExplicitWorkspace,
   resolveWorkspace,
   type ResolvedWorkspace,
 } from "../bootstrap/workspace-source.ts";
@@ -258,20 +260,43 @@ export function removeRepo(opts: { configDir: string; slug: string }): { removed
 }
 
 export type TenantListing = {
-  slug: string;
+  /** Display path: declared entry, walk-relative dir, or nested slug. */
+  path: string;
+  /** Authoritative `repoSlug` when the config was readable; null otherwise. */
+  slug: string | null;
+  /** Discovery would skip this dir now; the child may still be running (#129). */
+  held: boolean;
+  /** Observational hold reason; null when not held. */
+  reason: string | null;
   configValid: boolean;
   envPresent: boolean;
   retainedData: boolean;
   status: StatusSnapshot | null;
 };
 
+export type ListTenantsResult = {
+  listings: TenantListing[];
+  /** Total rows (declared count on the explicit arm). */
+  declared: number;
+  /** Rows discovery would supervise now (non-held). */
+  live: number;
+  /** True when the root config uses `workspace.tenants`. */
+  explicit: boolean;
+};
+
+/** Legend line for held rows (#129). */
+export const LIST_HELD_LEGEND =
+  "held = discovery would skip this dir now; a held tenant may still be running — " +
+  "the supervisor only drops a tenant when you edit the config.";
+
 /** Whether a `.env` (not just the example) is present for a tenant dir. */
 function envPresent(dir: string): boolean {
   return existsSync(join(dir, TENANT_ENV_FILE));
 }
 
-/** Health columns for one tenant dir keyed by its authoritative slug. */
-function listingFor(
+/** Health columns for one live tenant dir. */
+function listingForLive(
+  path: string,
   slug: string,
   dir: string,
   dataBase: string,
@@ -279,12 +304,42 @@ function listingFor(
 ): TenantListing {
   const dataDir = join(dataBase, slug);
   return {
+    path,
     slug,
+    held: false,
+    reason: null,
     configValid,
     envPresent: envPresent(dir),
     retainedData: existsSync(dataDir),
     status: readStatus(join(dataDir, "state", STATUS_FILE)),
   };
+}
+
+/** Health columns for a held row; lit when discovery recovered a slug (#140). */
+function listingForHeld(
+  path: string,
+  dir: string,
+  hold: WorkspaceHold,
+  dataBase: string,
+): TenantListing {
+  const slug = hold.slug;
+  const configReadable = slug !== null;
+  const dataDir = slug !== null ? join(dataBase, slug) : null;
+  return {
+    path,
+    slug,
+    held: true,
+    reason: hold.reason,
+    configValid: configReadable,
+    envPresent: envPresent(dir),
+    retainedData: dataDir !== null && existsSync(dataDir),
+    status: dataDir !== null ? readStatus(join(dataDir, "state", STATUS_FILE)) : null,
+  };
+}
+
+function relativeTenantPath(configDir: string, dir: string): string {
+  const rel = relative(configDir, dir).replace(/\\/g, "/");
+  return rel.length > 0 ? rel : dir;
 }
 
 /**
@@ -325,41 +380,72 @@ async function resolveRootWorkspace(configDir: string): Promise<ResolvedWorkspac
 
 /**
  * Enumerate workspace-mode children via the same discovery boot uses
- * (`discoverWorkspaceTenants`). Valid children surface full health columns;
- * broken (hold) dirs appear with `configValid: false` so `phoebe list` still
- * flags them. Nested/flat scanning is unchanged (#95).
+ * (`discoverWorkspaceTenants`, #91/#140). The explicit arm prints one row per
+ * declared entry in declared order; the walk arm keeps its slug sort. Held dirs
+ * surface a first-class `held — <reason>` row rather than a line of ✗s.
  */
 async function listWorkspaceTenants(opts: {
   configDir: string;
   dataBase: string;
-  workspace: { depth: number };
+  workspace: ResolvedWorkspace;
   loadRepoSlug?: (configPath: string) => string | Promise<string>;
-}): Promise<TenantListing[]> {
+  readOriginUrl?: (tenantDir: string) => string | null | Promise<string | null>;
+}): Promise<ListTenantsResult> {
+  const explicit = isExplicitWorkspace(opts.workspace);
   const discovery = await discoverWorkspaceTenants(opts.configDir, opts.workspace, {
     loadRepoSlug: opts.loadRepoSlug ?? defaultLoadRepoSlug,
+    ...(opts.readOriginUrl !== undefined ? { readOriginUrl: opts.readOriginUrl } : {}),
   });
+
+  // Discovery keys both tenants and holds by normalized absolute dir (#139), so
+  // the declared spelling is resolved the same way before either lookup.
+  const tenantByDir = new Map(discovery.tenants.map((tenant) => [tenant.id, tenant]));
+  const holdByDir = new Map(discovery.holds.map((hold) => [hold.dir, hold]));
   const listings: TenantListing[] = [];
-  for (const tenant of discovery.tenants) {
-    if (tenant.slug === null) continue;
-    listings.push(listingFor(tenant.slug, tenant.dir, opts.dataBase, true));
+
+  if (isExplicitWorkspace(opts.workspace)) {
+    for (const entry of opts.workspace.tenants) {
+      const dir = resolveDeclaredTenantDir(opts.configDir, entry);
+      const tenant = tenantByDir.get(dir);
+      if (tenant !== undefined) {
+        listings.push(listingForLive(entry, tenant.slug!, tenant.dir, opts.dataBase, true));
+        continue;
+      }
+      // Holds are structural (`declared − successful`), so every non-tenant
+      // declared dir has one; fall back rather than assert if that ever slips.
+      const hold: WorkspaceHold = holdByDir.get(dir) ?? {
+        dir,
+        reason: "discovery failed",
+        slug: null,
+      };
+      listings.push(listingForHeld(entry, dir, hold, opts.dataBase));
+    }
+  } else {
+    for (const tenant of discovery.tenants) {
+      listings.push(
+        listingForLive(
+          relativeTenantPath(opts.configDir, tenant.dir),
+          tenant.slug!,
+          tenant.dir,
+          opts.dataBase,
+          true,
+        ),
+      );
+    }
+    for (const hold of discovery.holds) {
+      listings.push(
+        listingForHeld(relativeTenantPath(opts.configDir, hold.dir), hold.dir, hold, opts.dataBase),
+      );
+    }
+    listings.sort((a, b) => (a.slug ?? a.path).localeCompare(b.slug ?? b.path));
   }
-  for (const hold of discovery.holds) {
-    // No authoritative slug when load/parse failed — show a path-relative id so
-    // the operator can find the broken child; data/status stay dark without a slug.
-    const rel = relative(opts.configDir, hold.dir).replace(/\\/g, "/");
-    listings.push({
-      slug: rel.length > 0 ? rel : hold.dir,
-      configValid: false,
-      envPresent: envPresent(hold.dir),
-      retainedData: false,
-      status: null,
-    });
-  }
-  return listings.sort((a, b) => a.slug.localeCompare(b.slug));
+
+  const live = listings.filter((listing) => !listing.held).length;
+  return { listings, declared: listings.length, live, explicit };
 }
 
 /** Nested-mode scan: every `repos/<owner>/<repo>/` dir with its health signals. */
-function listNestedTenants(configDir: string, dataBase: string): TenantListing[] {
+function listNestedTenants(configDir: string, dataBase: string): ListTenantsResult {
   const reposRoot = join(configDir, REPOS_DIR);
   const listings: TenantListing[] = [];
   let owners: string[];
@@ -368,7 +454,7 @@ function listNestedTenants(configDir: string, dataBase: string): TenantListing[]
       .filter((e) => e.isDirectory())
       .map((e) => e.name);
   } catch {
-    return listings;
+    return { listings, declared: 0, live: 0, explicit: false };
   }
   for (const owner of owners) {
     let repos: string[];
@@ -382,10 +468,26 @@ function listNestedTenants(configDir: string, dataBase: string): TenantListing[]
     for (const repo of repos) {
       const slug = `${owner}/${repo}`;
       const dir = join(reposRoot, owner, repo);
-      listings.push(listingFor(slug, dir, dataBase, existsSync(join(dir, TENANT_CONFIG_FILE))));
+      const configValid = existsSync(join(dir, TENANT_CONFIG_FILE));
+      if (configValid) {
+        listings.push(listingForLive(slug, slug, dir, dataBase, true));
+      } else {
+        listings.push({
+          path: slug,
+          slug: null,
+          held: true,
+          reason: "no phoebe.config.ts",
+          configValid: false,
+          envPresent: envPresent(dir),
+          retainedData: false,
+          status: null,
+        });
+      }
     }
   }
-  return listings.sort((a, b) => a.slug.localeCompare(b.slug));
+  listings.sort((a, b) => (a.slug ?? "").localeCompare(b.slug ?? ""));
+  const live = listings.filter((listing) => !listing.held).length;
+  return { listings, declared: listings.length, live, explicit: false };
 }
 
 /**
@@ -400,14 +502,17 @@ export async function listTenants(opts: {
   dataBase: string;
   /** Injectable workspace slug loader (tests); defaults to `loadUserConfig`. */
   loadRepoSlug?: (configPath: string) => string | Promise<string>;
-}): Promise<TenantListing[]> {
+  /** Injectable origin reader (tests); defaults to git `remote.origin.url`. */
+  readOriginUrl?: (tenantDir: string) => string | null | Promise<string | null>;
+}): Promise<ListTenantsResult> {
   const workspace = await resolveRootWorkspace(opts.configDir);
   if (workspace !== null) {
     return listWorkspaceTenants({
       configDir: opts.configDir,
       dataBase: opts.dataBase,
-      workspace: { depth: requireDepthArm(workspace) },
+      workspace,
       loadRepoSlug: opts.loadRepoSlug,
+      readOriginUrl: opts.readOriginUrl,
     });
   }
   return listNestedTenants(opts.configDir, opts.dataBase);

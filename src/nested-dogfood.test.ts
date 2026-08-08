@@ -58,7 +58,7 @@ describe("the nested dogfood deployment (.phoebe-nested/)", () => {
   test("phoebe list enumerates both tenants, each with a valid config", async () => {
     // A data base that does not exist → no retained data / status, but the
     // config enumeration (what #62/#63 `phoebe list` reports) is filesystem-only.
-    const listings = await listTenants({
+    const { listings } = await listTenants({
       configDir: CONFIG_DIR,
       dataBase: join(CONFIG_DIR, "__absent_data_base__"),
     });
