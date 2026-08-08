@@ -556,10 +556,11 @@ function logWorkspaceBootSummary(
   if (isExplicitWorkspace(workspace)) {
     const declared = workspace.tenants.length;
     const suffix = declared === 0 ? " (empty declared fleet)" : "";
-    console.log(
+    const message =
       `[phoebe] boot: workspace mode — supervising ${result.tenants.length} of ${declared} ` +
-        `declared tenant(s) on one shared engine${suffix}.`,
-    );
+      `declared tenant(s) on one shared engine${suffix}.`;
+    if (declared === 0) console.warn(message);
+    else console.log(message);
   } else {
     console.log(
       `[phoebe] boot: workspace mode — supervising ${result.tenants.length} tenant(s) ` +
