@@ -1,8 +1,8 @@
 // Tests for the consumer-facing config plumbing exported from ./config/index.ts:
 //
-//   - the `PHOEBE_*` scalar/enum env overlay, exercised through
+//   - the `PHOEBE_*` scalar/enum/number env overlay, exercised through
 //     `resolveConfiguration`'s `env` option (the overlay itself,
-//     `applyEnvOverlay`, is implementation — #55).
+//     `applyEnvOverlay`, is implementation — #55/#56).
 //   - `resolveConfigPath` returns absolute paths and rejects missing files
 //     with a message that distinguishes an explicit --config from the default.
 //   - `loadUserConfig` accepts both `export default` and named `export const
@@ -86,18 +86,30 @@ describe("PHOEBE_* env overlay (via resolveConfiguration)", () => {
     expect(() => resolveWithEnv({ [envKey]: invalid })).toThrow(new RegExp(envKey));
   });
 
-  test("prAuthors, promptFiles, workOrder, and the run-protection knobs are not env-overridable here", () => {
-    // prAuthors/promptFiles/workOrder are structured shapes — config-file
-    // territory, not this scalar overlay. The four run-protection knobs
-    // (runTimeoutMs etc.) are read directly from `PHOEBE_*` against the
-    // *resolved* value elsewhere (src/run-timeout.ts, src/quarantine.ts,
-    // src/claim-lease.ts), not through this overlay.
-    const resolved = resolveWithEnv({
-      PHOEBE_RUN_TIMEOUT_MS: "1",
-      PHOEBE_MAX_UNIT_TIMEOUTS: "1",
-      PHOEBE_MAX_UNIT_ATTEMPTS: "1",
-      PHOEBE_LEASE_TTL_MS: "1",
-    });
+  // The four run-protection knobs (#56, folded off their own bespoke
+  // point-of-use readers): a number field overlay parses the env string and
+  // rejects anything that isn't a positive number/integer.
+  const NUMERIC_OVERLAYS = [
+    ["PHOEBE_RUN_TIMEOUT_MS", "runTimeoutMs", 60_000],
+    ["PHOEBE_MAX_UNIT_TIMEOUTS", "maxUnitTimeouts", 5],
+    ["PHOEBE_MAX_UNIT_ATTEMPTS", "maxUnitAttempts", 4],
+    ["PHOEBE_LEASE_TTL_MS", "leaseTtlMs", 120_000],
+  ] as const;
+
+  test.each(NUMERIC_OVERLAYS)("%s overlays %s", (envKey, field, value) => {
+    expect(resolveWithEnv({ [envKey]: String(value) })[field]).toBe(value);
+  });
+
+  test.each(NUMERIC_OVERLAYS)("%s rejects a malformed value", (envKey) => {
+    expect(() => resolveWithEnv({ [envKey]: "nope" })).toThrow(new RegExp(envKey));
+  });
+
+  test.each(NUMERIC_OVERLAYS)("%s rejects a non-positive value", (envKey) => {
+    expect(() => resolveWithEnv({ [envKey]: "0" })).toThrow(new RegExp(envKey));
+  });
+
+  test("the four run-protection knobs default when env is unset", () => {
+    const resolved = resolveWithEnv({});
     expect(resolved.runTimeoutMs).toBe(2_700_000);
     expect(resolved.maxUnitTimeouts).toBe(3);
     expect(resolved.maxUnitAttempts).toBe(3);

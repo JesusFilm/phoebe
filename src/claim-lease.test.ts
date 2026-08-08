@@ -1,6 +1,7 @@
-// Crash-safe issue claim tests (#15): TTL resolution, the lease marker
-// round-trip, and the reclaim decision (no marker / own-restart / expired /
-// still-fresh).
+// Crash-safe issue claim tests (#15): the lease marker round-trip, and the
+// reclaim decision (no marker / own-restart / expired / still-fresh). TTL
+// resolution (config default + `PHOEBE_LEASE_TTL_MS` overlay) moved to the
+// config layer (#56) — see src/load-config.test.ts.
 
 import { describe, expect, test } from "vite-plus/test";
 import {
@@ -8,28 +9,12 @@ import {
   buildLeaseMarker,
   buildReclaimComment,
   claimIssueLabels,
-  DEFAULT_LEASE_TTL_MS,
   leaseHeartbeatIntervalMs,
   parseLeaseMarker,
   reclaimDecision,
-  resolveLeaseTtlMs,
   type GhRunner,
   type LeaseMarker,
 } from "./claim-lease.ts";
-
-describe("resolveLeaseTtlMs", () => {
-  test("defaults to 30 minutes", () => {
-    expect(resolveLeaseTtlMs({})).toBe(DEFAULT_LEASE_TTL_MS);
-    expect(DEFAULT_LEASE_TTL_MS).toBe(1_800_000);
-  });
-  test("env overrides config overrides default", () => {
-    expect(resolveLeaseTtlMs({}, 60_000)).toBe(60_000);
-    expect(resolveLeaseTtlMs({ PHOEBE_LEASE_TTL_MS: "120000" }, 60_000)).toBe(120_000);
-    expect(resolveLeaseTtlMs({ PHOEBE_LEASE_TTL_MS: "0" }, 60_000)).toBe(60_000);
-    expect(resolveLeaseTtlMs({ PHOEBE_LEASE_TTL_MS: "-5" }, 60_000)).toBe(60_000);
-    expect(resolveLeaseTtlMs({ PHOEBE_LEASE_TTL_MS: "not-a-number" }, 60_000)).toBe(60_000);
-  });
-});
 
 describe("leaseHeartbeatIntervalMs", () => {
   test("a third of the TTL", () => {

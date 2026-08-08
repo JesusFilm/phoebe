@@ -1,6 +1,8 @@
-// Poison-unit quarantine tests (#75): config resolution, the timeout-counter
-// and baseline markers, the count/quarantine/auto-unstick decisions, and the
-// selection exclusion that reuses the opt-out filter.
+// Poison-unit quarantine tests (#75): the timeout-counter and baseline
+// markers, the count/quarantine/auto-unstick decisions, and the selection
+// exclusion that reuses the opt-out filter. Threshold resolution
+// (`maxUnitTimeouts`/`maxUnitAttempts` config defaults + their `PHOEBE_*`
+// overlay) moved to the config layer (#56) — see src/load-config.test.ts.
 
 import { describe, expect, test } from "vite-plus/test";
 import { asSha } from "./branded.ts";
@@ -9,8 +11,6 @@ import {
   buildUnitAttemptMarker,
   buildUnitTimeoutMarker,
   decideTimeoutRecord,
-  DEFAULT_MAX_UNIT_ATTEMPTS,
-  DEFAULT_MAX_UNIT_TIMEOUTS,
   findLatestUnitAttemptComment,
   latestTimeoutMarker,
   newestForeignCommentAt,
@@ -21,8 +21,6 @@ import {
   parseUnitTimeoutMarker,
   PHOEBE_QUARANTINE_LABEL,
   planUnitAttempt,
-  resolveMaxUnitAttempts,
-  resolveMaxUnitTimeouts,
   shouldAutoUnstick,
   shouldBackoffUnitRetry,
   shouldQuarantine,
@@ -31,18 +29,6 @@ import {
 } from "./quarantine.ts";
 import { isPrInScope, selectIssue, type Issue } from "./orchestrator.ts";
 import { asBranchRef } from "./branded.ts";
-
-describe("resolveMaxUnitTimeouts", () => {
-  test("defaults to 3", () => {
-    expect(resolveMaxUnitTimeouts({})).toBe(DEFAULT_MAX_UNIT_TIMEOUTS);
-    expect(DEFAULT_MAX_UNIT_TIMEOUTS).toBe(3);
-  });
-  test("env overrides config overrides default", () => {
-    expect(resolveMaxUnitTimeouts({}, 5)).toBe(5);
-    expect(resolveMaxUnitTimeouts({ PHOEBE_MAX_UNIT_TIMEOUTS: "2" }, 5)).toBe(2);
-    expect(resolveMaxUnitTimeouts({ PHOEBE_MAX_UNIT_TIMEOUTS: "0" }, 5)).toBe(5);
-  });
-});
 
 describe("markers", () => {
   test("timeout counter marker round-trips", () => {
@@ -299,18 +285,6 @@ describe("selection excludes quarantined units", () => {
     ];
     const picked = selectIssue(issues, new Map());
     expect(picked?.issue.number).toBe(2);
-  });
-});
-
-describe("resolveMaxUnitAttempts", () => {
-  test("defaults to 3", () => {
-    expect(resolveMaxUnitAttempts({})).toBe(DEFAULT_MAX_UNIT_ATTEMPTS);
-    expect(DEFAULT_MAX_UNIT_ATTEMPTS).toBe(3);
-  });
-  test("env overrides config overrides default", () => {
-    expect(resolveMaxUnitAttempts({}, 5)).toBe(5);
-    expect(resolveMaxUnitAttempts({ PHOEBE_MAX_UNIT_ATTEMPTS: "2" }, 5)).toBe(2);
-    expect(resolveMaxUnitAttempts({ PHOEBE_MAX_UNIT_ATTEMPTS: "0" }, 5)).toBe(5);
   });
 });
 

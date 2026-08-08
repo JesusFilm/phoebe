@@ -13,25 +13,6 @@
 // family, read via orchestrator.ts's `parseLatestMarker` (latest wins, since a
 // heartbeat posts a fresh comment each tick rather than editing in place).
 
-/** Default lease TTL: long enough that a normal run's heartbeats never lapse
- *  it, short enough that an orphaned claim self-heals promptly. */
-export const DEFAULT_LEASE_TTL_MS = 30 * 60 * 1000;
-
-/**
- * Resolve the lease TTL: `PHOEBE_LEASE_TTL_MS` (a positive number) wins, else
- * the config field, else the default 30 minutes. Mirrors #75's
- * `resolveMaxUnitTimeouts` — a fleet-protection backstop, not a per-repo
- * tuning knob most consumers need to touch.
- */
-export function resolveLeaseTtlMs(
-  env: NodeJS.ProcessEnv,
-  configValue: number = DEFAULT_LEASE_TTL_MS,
-): number {
-  const raw = Number(env["PHOEBE_LEASE_TTL_MS"]);
-  if (Number.isFinite(raw) && raw > 0) return raw;
-  return Number.isFinite(configValue) && configValue > 0 ? configValue : DEFAULT_LEASE_TTL_MS;
-}
-
 /**
  * How often to refresh the heartbeat while a claim is held. A third of the
  * TTL, so a single missed/delayed heartbeat never lapses the lease — it takes

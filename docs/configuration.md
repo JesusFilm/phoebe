@@ -466,32 +466,40 @@ simply never causes a fallback.) Every fallback event is logged with both SHAs
 `PHOEBE_*` env vars provide **one-off run overrides** without editing
 `phoebe.config.ts` (`src/config/resolve.ts`). The overlay is additive: an unset
 var leaves the field untouched, so `resolveConfig` can still fall back to a
-default. Only **scalar** fields are overlayable — nested records
+default. Only **scalar and number** fields are overlayable — nested records
 (`promptFiles`, `defaultModels`, `providerEnv`, `workOrder`) stay
-config-file territory.
+config-file territory. The overlay is applied once, at resolution — a
+`process.env` mutation after startup never changes a running cycle's config,
+and a malformed override (an enum value outside its allowed set, or a number
+field that doesn't parse) throws at startup rather than silently falling back
+to the default.
 
-| Env var                          | Config field            | Notes                                                   |
-| -------------------------------- | ----------------------- | ------------------------------------------------------- |
-| `PHOEBE_REPO_SLUG`               | `repoSlug`              |                                                         |
-| `PHOEBE_REPO_URL`                | `repoUrl`               |                                                         |
-| `PHOEBE_DEFAULT_BRANCH`          | `defaultBranch`         |                                                         |
-| `PHOEBE_BRANCH_PREFIX`           | `branchPrefix`          |                                                         |
-| `PHOEBE_READY_LABEL`             | `readyLabel`            |                                                         |
-| `PHOEBE_RESEARCH_LABEL`          | `researchLabel`         |                                                         |
-| `PHOEBE_PROCESSING_LABEL`        | `processingLabel`       |                                                         |
-| `PHOEBE_PR_OPT_OUT_LABEL`        | `prOptOutLabel`         |                                                         |
-| `PHOEBE_INSTALL_COMMAND`         | `installCommand`        |                                                         |
-| `PHOEBE_CHECK_COMMAND`           | `checkCommand`          |                                                         |
-| `PHOEBE_TEST_COMMAND`            | `testCommand`           |                                                         |
-| `PHOEBE_READY_COMMAND`           | `readyCommand`          |                                                         |
-| `PHOEBE_BLOCKED_BY_PATTERN`      | `blockedByPattern`      |                                                         |
-| `PHOEBE_BLOCKER_SOURCE`          | `blockerSource`         | Validated: must be `body`, `native`, or `both`.         |
-| `PHOEBE_STACK_MODE`              | `stackMode`             | Validated: must be `banner`, `native`, or `off`.        |
-| `PHOEBE_REVIEWS_SUCCESS_HEADING` | `reviewsSuccessHeading` |                                                         |
-| `PHOEBE_PR_SCOPE`                | `prScope`               | Validated: must be `phoebe` or `all`.                   |
-| `PHOEBE_PR_BASE_SCOPE`           | `prBaseScope`           | Validated: must be `default` or `all`.                  |
-| `PHOEBE_DRAFT_PRS`               | `draftPrs`              | Validated: `skip-non-phoebe`, `skip-all`, or `include`. |
-| `PHOEBE_DEFAULT_PROVIDER`        | `defaultProvider`       | Validated: `cursor`, `claude`, or `codex`.              |
+| Env var                          | Config field            | Notes                                                                                                                                          |
+| -------------------------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PHOEBE_REPO_SLUG`               | `repoSlug`              |                                                                                                                                                |
+| `PHOEBE_REPO_URL`                | `repoUrl`               |                                                                                                                                                |
+| `PHOEBE_DEFAULT_BRANCH`          | `defaultBranch`         |                                                                                                                                                |
+| `PHOEBE_BRANCH_PREFIX`           | `branchPrefix`          |                                                                                                                                                |
+| `PHOEBE_READY_LABEL`             | `readyLabel`            |                                                                                                                                                |
+| `PHOEBE_RESEARCH_LABEL`          | `researchLabel`         |                                                                                                                                                |
+| `PHOEBE_PROCESSING_LABEL`        | `processingLabel`       |                                                                                                                                                |
+| `PHOEBE_PR_OPT_OUT_LABEL`        | `prOptOutLabel`         |                                                                                                                                                |
+| `PHOEBE_INSTALL_COMMAND`         | `installCommand`        |                                                                                                                                                |
+| `PHOEBE_CHECK_COMMAND`           | `checkCommand`          |                                                                                                                                                |
+| `PHOEBE_TEST_COMMAND`            | `testCommand`           |                                                                                                                                                |
+| `PHOEBE_READY_COMMAND`           | `readyCommand`          |                                                                                                                                                |
+| `PHOEBE_BLOCKED_BY_PATTERN`      | `blockedByPattern`      |                                                                                                                                                |
+| `PHOEBE_BLOCKER_SOURCE`          | `blockerSource`         | Validated: must be `body`, `native`, or `both`.                                                                                                |
+| `PHOEBE_STACK_MODE`              | `stackMode`             | Validated: must be `banner`, `native`, or `off`.                                                                                               |
+| `PHOEBE_REVIEWS_SUCCESS_HEADING` | `reviewsSuccessHeading` |                                                                                                                                                |
+| `PHOEBE_PR_SCOPE`                | `prScope`               | Validated: must be `phoebe` or `all`.                                                                                                          |
+| `PHOEBE_PR_BASE_SCOPE`           | `prBaseScope`           | Validated: must be `default` or `all`.                                                                                                         |
+| `PHOEBE_DRAFT_PRS`               | `draftPrs`              | Validated: `skip-non-phoebe`, `skip-all`, or `include`.                                                                                        |
+| `PHOEBE_DEFAULT_PROVIDER`        | `defaultProvider`       | Validated: `cursor`, `claude`, or `codex`.                                                                                                     |
+| `PHOEBE_RUN_TIMEOUT_MS`          | `runTimeoutMs`          | Validated: positive number. Whole-unit wall-clock budget; a unit that exceeds it is aborted so it can't hold the concurrency slot forever.     |
+| `PHOEBE_MAX_UNIT_TIMEOUTS`       | `maxUnitTimeouts`       | Validated: positive integer. Consecutive per-unit timeouts before the unit is quarantined (`phoebe:quarantined` label + escalation comment).   |
+| `PHOEBE_MAX_UNIT_ATTEMPTS`       | `maxUnitAttempts`       | Validated: positive integer. Consecutive no-progress attempts (no commit / no PR) before the unit is quarantined.                              |
+| `PHOEBE_LEASE_TTL_MS`            | `leaseTtlMs`            | Validated: positive number. How long a `processingLabel` claim's lease may go without a heartbeat before it is reclaimed back to `readyLabel`. |
 
 ### Runtime toggles (read directly, not overlaid onto config)
 
@@ -507,9 +515,6 @@ config-file territory.
 | `PHOEBE_BASE`                  | —                    | Force the worktree base ref for issues (bypasses blocker resolution).                                                                                                    |
 | `PHOEBE_DATA_DIR`              | `/data/repos`        | Base dir for derived tenant paths (host/dev override). Each tenant nests under `<base>/<owner>/<repo>/`.                                                                 |
 | `PHOEBE_MAX_CONCURRENT_AGENTS` | `1`                  | Fleet-wide cap on concurrently-executing work units across all tenants (the supervisor's FIFO broker). Raise deliberately.                                               |
-| `PHOEBE_RUN_TIMEOUT_MS`        | `2700000` (45 min)   | Whole-unit wall-clock budget; a unit that exceeds it is aborted so it can't hold the concurrency slot forever. Also settable as the `runTimeoutMs` config field.         |
-| `PHOEBE_MAX_UNIT_TIMEOUTS`     | `3`                  | Consecutive per-unit timeouts before the unit is quarantined (`phoebe:quarantined` label + escalation comment). Also the `maxUnitTimeouts` config field.                 |
-| `PHOEBE_LEASE_TTL_MS`          | `1800000` (30 min)   | How long a `processingLabel` claim's lease may go without a heartbeat before it is reclaimed back to `readyLabel`. Also the `leaseTtlMs` config field.                   |
 
 Secrets (`GH_TOKEN` and the active provider's key) are also read from the
 environment — see [`ai-install.md`](ai-install.md) and `.env.example`. In a

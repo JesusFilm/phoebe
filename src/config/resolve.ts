@@ -144,20 +144,28 @@ function readNonEmpty(env: NodeJS.ProcessEnv, key: string): string | undefined {
 
 /**
  * Apply the `PHOEBE_*` overlay onto a user config and return a new object.
- * Driven entirely by the roster's `env` column: a scalar field is copied
- * straight through, an enum field is validated against its `values` first.
- * The overlay is additive over what the config file declared — an unset env
- * var leaves the field untouched (so `resolveConfig` can still fall back to
- * the roster's default if the field was also absent from the config file).
+ * Driven entirely by the roster's `env` column: a string field is copied
+ * straight through, an enum field is validated against its `values` first, a
+ * number field is parsed and rejected if it isn't finite. The overlay is
+ * additive over what the config file declared — an unset env var leaves the
+ * field untouched (so `resolveConfig` can still fall back to the roster's
+ * default if the field was also absent from the config file).
  */
 export function applyEnvOverlay(user: PhoebeUserConfig, env: NodeJS.ProcessEnv): PhoebeUserConfig {
   const overlaid: PhoebeUserConfig = { ...user };
   for (const field of Object.keys(ROSTER) as RosterField[]) {
     const descriptor = FIELDS[field];
     if (descriptor.env === undefined) continue;
-    const value = readNonEmpty(env, descriptor.env);
-    if (value === undefined) continue;
-    if (descriptor.kind.type === "enum") {
+    const raw = readNonEmpty(env, descriptor.env);
+    if (raw === undefined) continue;
+    let value: unknown = raw;
+    if (descriptor.kind.type === "number") {
+      value = Number(raw);
+      if (!Number.isFinite(value)) {
+        throw new Error(`${descriptor.env} must be a number (got ${JSON.stringify(raw)}).`);
+      }
+    }
+    if (descriptor.kind.type === "enum" || descriptor.kind.type === "number") {
       descriptor.validate?.(value, descriptor.env);
     }
     (overlaid as JsonRecord)[field] = value;

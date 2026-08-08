@@ -31,7 +31,7 @@ import {
 import { buildAgentEnv } from "./agent-env.ts";
 import { installDrainSignal, REF_CHANGE_DRAIN_SIGNAL, type DrainSignal } from "./drain.ts";
 import { BrokerDisconnectedError, createSlotClient, type SlotClient } from "./slot-client.ts";
-import { RunTimeoutError, resolveRunTimeoutMs, runWithDeadline } from "./run-timeout.ts";
+import { RunTimeoutError, runWithDeadline } from "./run-timeout.ts";
 import {
   buildLeaseComment,
   buildReclaimComment,
@@ -39,7 +39,6 @@ import {
   leaseHeartbeatIntervalMs,
   parseLeaseMarker,
   reclaimDecision,
-  resolveLeaseTtlMs,
 } from "./claim-lease.ts";
 import {
   buildQuarantineComment,
@@ -49,8 +48,6 @@ import {
   findLatestUnitAttemptComment,
   PHOEBE_QUARANTINE_LABEL,
   planUnitAttempt,
-  resolveMaxUnitAttempts,
-  resolveMaxUnitTimeouts,
 } from "./quarantine.ts";
 import { ensureLabels, phoebeLabelSet } from "./ensure-labels.ts";
 import {
@@ -152,13 +149,13 @@ import {
 const DEFAULT_POLL_INTERVAL_MS = 300_000;
 // Whole-unit wall-clock budget (#72): the agent phase — the async, hang-prone
 // step — runs under this deadline, so a hung unit releases its #59 slot within
-// a known ceiling instead of starving the fleet. Env (`PHOEBE_RUN_TIMEOUT_MS`)
-// overrides the config field.
-const RUN_TIMEOUT_MS = resolveRunTimeoutMs(process.env, config.runTimeoutMs);
+// a known ceiling instead of starving the fleet. `PHOEBE_RUN_TIMEOUT_MS` is
+// already folded into `config.runTimeoutMs` by the env overlay (#56).
+const RUN_TIMEOUT_MS = config.runTimeoutMs;
 // Crash-safe claims (#15): how long a `processingLabel` lease may go without a
-// heartbeat before the reclaim sweep flips it back to `readyLabel`. Env
-// (`PHOEBE_LEASE_TTL_MS`) overrides the config field.
-const LEASE_TTL_MS = resolveLeaseTtlMs(process.env, config.leaseTtlMs);
+// heartbeat before the reclaim sweep flips it back to `readyLabel`.
+// `PHOEBE_LEASE_TTL_MS` is already folded into `config.leaseTtlMs` (#56).
+const LEASE_TTL_MS = config.leaseTtlMs;
 // Never let a gh/git child process block the persistent loop forever (rate-limit
 // backoff, credential prompt, network partition). Configured toolchain commands
 // (install/test) get a longer leash.
@@ -652,7 +649,7 @@ function recordUnitTimeout(
     // foreign activity (which would reset the count every rotation and never
     // quarantine). Timeouts are rare, so the extra `gh api user` is cheap.
     const login = phoebeLogin || phoebeGhLogin();
-    const k = resolveMaxUnitTimeouts(process.env, config.maxUnitTimeouts);
+    const k = config.maxUnitTimeouts;
     const inputs = isIssueKind
       ? fetchIssueTimeoutInputs(Number(id))
       : fetchPrTimeoutInputs(asPrNumber(Number(id)));
@@ -881,7 +878,7 @@ function recordFailedAttempt(opts: {
 }): void {
   const comments = fetchPrComments(opts.prNumber);
   const found = findLatestUnitAttemptComment(comments, opts.kind);
-  const k = resolveMaxUnitAttempts(process.env, config.maxUnitAttempts);
+  const k = config.maxUnitAttempts;
   const plan = planUnitAttempt({
     previous: found?.marker ?? null,
     ref: opts.currentPrHead,
@@ -932,7 +929,7 @@ function recordFailedIssueAttempt(opts: {
 }): void {
   const comments = fetchIssueComments(opts.issueNumber);
   const found = findLatestUnitAttemptComment(comments, opts.kind);
-  const k = resolveMaxUnitAttempts(process.env, config.maxUnitAttempts);
+  const k = config.maxUnitAttempts;
   const plan = planUnitAttempt({
     previous: found?.marker ?? null,
     ref: String(opts.issueNumber),

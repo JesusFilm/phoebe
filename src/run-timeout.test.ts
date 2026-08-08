@@ -1,12 +1,9 @@
-// Run-timeout tests (#72): env/config resolution and the deadline race.
+// Run-timeout tests (#72): the deadline race. `runTimeoutMs` resolution
+// (config default + `PHOEBE_RUN_TIMEOUT_MS` overlay) moved to the config
+// layer (#56) — see src/load-config.test.ts.
 
 import { describe, expect, test } from "vite-plus/test";
-import {
-  DEFAULT_RUN_TIMEOUT_MS,
-  RunTimeoutError,
-  resolveRunTimeoutMs,
-  runWithDeadline,
-} from "./run-timeout.ts";
+import { RunTimeoutError, runWithDeadline } from "./run-timeout.ts";
 
 /** A manual clock: `setTimer` records the fn; `fire()` runs the armed one. */
 function fakeTimers() {
@@ -26,23 +23,6 @@ function fakeTimers() {
     },
   };
 }
-
-describe("resolveRunTimeoutMs", () => {
-  test("defaults to 45 minutes", () => {
-    expect(resolveRunTimeoutMs({})).toBe(DEFAULT_RUN_TIMEOUT_MS);
-    expect(DEFAULT_RUN_TIMEOUT_MS).toBe(2_700_000);
-  });
-  test("config value is used when env is unset", () => {
-    expect(resolveRunTimeoutMs({}, 60_000)).toBe(60_000);
-  });
-  test("PHOEBE_RUN_TIMEOUT_MS overrides the config value", () => {
-    expect(resolveRunTimeoutMs({ PHOEBE_RUN_TIMEOUT_MS: "90000" }, 60_000)).toBe(90_000);
-  });
-  test("a non-positive or garbage env value falls back to the config value", () => {
-    expect(resolveRunTimeoutMs({ PHOEBE_RUN_TIMEOUT_MS: "0" }, 60_000)).toBe(60_000);
-    expect(resolveRunTimeoutMs({ PHOEBE_RUN_TIMEOUT_MS: "nope" }, 60_000)).toBe(60_000);
-  });
-});
 
 describe("runWithDeadline", () => {
   test("resolves with the work result when it finishes in time", async () => {

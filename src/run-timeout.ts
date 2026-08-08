@@ -17,9 +17,6 @@
 // Extending one budget across the *whole* unit (install→push) is a tracked #72
 // follow-up; today the budget covers the agent phase, where real hangs happen.
 
-/** 45 minutes — the shipped default whole-unit budget (config `runTimeoutMs`). */
-export const DEFAULT_RUN_TIMEOUT_MS = 2_700_000;
-
 /** Thrown when a unit exceeds its wall-clock budget. */
 export class RunTimeoutError extends Error {
   readonly elapsedMs: number;
@@ -28,20 +25,6 @@ export class RunTimeoutError extends Error {
     this.name = "RunTimeoutError";
     this.elapsedMs = elapsedMs;
   }
-}
-
-/**
- * Resolve the run timeout: `PHOEBE_RUN_TIMEOUT_MS` (a positive integer) wins,
- * else the config field, else the shipped default. Mirrors how the engine reads
- * `PHOEBE_POLL_INTERVAL_MS` — a direct env read, not the config overlay.
- */
-export function resolveRunTimeoutMs(
-  env: NodeJS.ProcessEnv,
-  configValue: number = DEFAULT_RUN_TIMEOUT_MS,
-): number {
-  const raw = Number(env["PHOEBE_RUN_TIMEOUT_MS"]);
-  if (Number.isFinite(raw) && raw > 0) return raw;
-  return configValue > 0 ? configValue : DEFAULT_RUN_TIMEOUT_MS;
 }
 
 type Timers = {

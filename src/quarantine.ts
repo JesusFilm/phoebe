@@ -46,47 +46,6 @@ import type { Sha } from "./branded.ts";
 /** Phoebe-owned skip label — distinct from the user-supplied `prOptOutLabel`. */
 export const PHOEBE_QUARANTINE_LABEL = "phoebe:quarantined";
 
-/** Positive-integer env override wins, else the config field, else `fallback`. */
-function resolveThreshold(
-  envValue: string | undefined,
-  configValue: number,
-  fallback: number,
-): number {
-  const raw = Number(envValue);
-  if (Number.isInteger(raw) && raw >= 1) return raw;
-  return Number.isInteger(configValue) && configValue >= 1 ? configValue : fallback;
-}
-
-/** Consecutive timeouts before quarantine; the #75 house number. */
-export const DEFAULT_MAX_UNIT_TIMEOUTS = 3;
-
-/**
- * Resolve K: `PHOEBE_MAX_UNIT_TIMEOUTS` (a positive integer) wins, else the
- * config field, else the default 3. A fleet-protection backstop, not a per-repo
- * tuning knob (mirrors #72's timeout resolution).
- */
-export function resolveMaxUnitTimeouts(
-  env: NodeJS.ProcessEnv,
-  configValue: number = DEFAULT_MAX_UNIT_TIMEOUTS,
-): number {
-  return resolveThreshold(env["PHOEBE_MAX_UNIT_TIMEOUTS"], configValue, DEFAULT_MAX_UNIT_TIMEOUTS);
-}
-
-/** Consecutive no-progress attempts before quarantine (#25, #22); the house number. */
-export const DEFAULT_MAX_UNIT_ATTEMPTS = 3;
-
-/**
- * Resolve K for the no-progress-attempt trigger — no commit for a PR-keyed
- * unit (#25) or no PR for an issue-keyed one (#22): `PHOEBE_MAX_UNIT_ATTEMPTS`
- * wins, else the config field, else the default 3.
- */
-export function resolveMaxUnitAttempts(
-  env: NodeJS.ProcessEnv,
-  configValue: number = DEFAULT_MAX_UNIT_ATTEMPTS,
-): number {
-  return resolveThreshold(env["PHOEBE_MAX_UNIT_ATTEMPTS"], configValue, DEFAULT_MAX_UNIT_ATTEMPTS);
-}
-
 // --- Timeout counter marker (posted on every timeout; embeds n) --------------
 
 const UNIT_TIMEOUT_MARKER_RE = /<!--\s*phoebe-unit-timeout:\s*n=(\d+)\s*-->/i;

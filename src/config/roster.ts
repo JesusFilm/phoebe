@@ -80,6 +80,18 @@ function assertWorkOrderShape(value: unknown, location: string): void {
   }
 }
 
+function assertPositiveNumber(value: unknown, location: string): void {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    throw new Error(`${location} must be a positive number (got ${JSON.stringify(value)}).`);
+  }
+}
+
+function assertPositiveInteger(value: unknown, location: string): void {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    throw new Error(`${location} must be a positive integer (got ${JSON.stringify(value)}).`);
+  }
+}
+
 /**
  * The roster. `Record<keyof PhoebeUserConfig, FieldDescriptor>` makes it total
  * by construction — see the module docstring.
@@ -273,18 +285,39 @@ export const ROSTER = {
     baseAllowed: true,
   },
   // 45 min: comfortably fits install(≤10) + a long agent run + test(≤10) + push,
-  // so hitting it means "actually stuck", not "slow" (#72). Not env-overridable
-  // through this overlay — `PHOEBE_RUN_TIMEOUT_MS` is read directly by
-  // src/run-timeout.ts against the *resolved* config value, same pattern as the
-  // other three run-protection knobs below.
-  runTimeoutMs: { kind: { type: "number" }, default: 2_700_000, baseAllowed: true },
+  // so hitting it means "actually stuck", not "slow" (#72).
+  runTimeoutMs: {
+    kind: { type: "number" },
+    default: 2_700_000,
+    env: "PHOEBE_RUN_TIMEOUT_MS",
+    baseAllowed: true,
+    validate: assertPositiveNumber,
+  },
   // Matches the house number for consecutive-failures-before-escalation (#75).
-  maxUnitTimeouts: { kind: { type: "number" }, default: 3, baseAllowed: true },
+  maxUnitTimeouts: {
+    kind: { type: "number" },
+    default: 3,
+    env: "PHOEBE_MAX_UNIT_TIMEOUTS",
+    baseAllowed: true,
+    validate: assertPositiveInteger,
+  },
   // Matches the house number for consecutive-no-commit-attempts (#25).
-  maxUnitAttempts: { kind: { type: "number" }, default: 3, baseAllowed: true },
+  maxUnitAttempts: {
+    kind: { type: "number" },
+    default: 3,
+    env: "PHOEBE_MAX_UNIT_ATTEMPTS",
+    baseAllowed: true,
+    validate: assertPositiveInteger,
+  },
   // Comfortably outlasts a single heartbeat interval miss (#15's heartbeat
   // ticks every ttl/3) while still self-healing an orphaned claim promptly.
-  leaseTtlMs: { kind: { type: "number" }, default: 1_800_000, baseAllowed: true },
+  leaseTtlMs: {
+    kind: { type: "number" },
+    default: 1_800_000,
+    env: "PHOEBE_LEASE_TTL_MS",
+    baseAllowed: true,
+    validate: assertPositiveNumber,
+  },
 } as const satisfies Record<keyof PhoebeUserConfig, FieldDescriptor>;
 
 export type RosterField = keyof typeof ROSTER;
