@@ -22,7 +22,10 @@
 import { detectChange, type EngineExit, type LaunchedEngine, type StopLatch } from "./reconcile.ts";
 import {
   diffFleet,
+  DuplicateOriginSlugError,
   DuplicateTenantSlugError,
+  WorkspaceStructuralChangeError,
+  WorkspaceTenantAxisSkip,
   type DiscoveredTenant,
   type FleetDiscoverResult,
   type TenantSample,
@@ -104,6 +107,14 @@ export type SuperviseFleetDeps = {
   onDiscoverError?: (error: unknown) => void;
   /** Reap a child we intentionally drained (relaunch/remove); the broker owner id. */
   onReap?: (tenantId: string) => void;
+  /**
+   * When the root config stat moves, confirm whether the resolved `engine` field
+   * actually changed (#138). Return `changed: false` to rebase the stored config
+   * fingerprint and fall through to the tenant axis without draining.
+   */
+  confirmEngineConfigChange?: (
+    launched: LaunchedEngine,
+  ) => Promise<{ changed: boolean; configFingerprint: string | null }>;
   crashBackoffMs?: number;
   /** Grace after `SIGTERM` before a drain escalates to `SIGKILL` (#79). */
   drainTimeoutMs?: number;
@@ -178,6 +189,23 @@ export async function superviseFleet(deps: SuperviseFleetDeps): Promise<EngineEx
     children.clear();
   };
 
+  const respawnFleetFromDiscovery = async (): Promise<void> => {
+    const discovered = normalizeDiscover(await deps.discover());
+    for (const { tenant, fingerprint } of discovered.samples) {
+      spawnFor(tenant, fingerprint);
+    }
+  };
+
+  const relaunchEngineAndFleet = async (): Promise<void> => {
+    await drainAll();
+    try {
+      engine = await deps.launch();
+      await respawnFleetFromDiscovery();
+    } catch (error) {
+      deps.onLaunchError?.(error);
+    }
+  };
+
   // Initial fleet: one child per discovered tenant.
   for (const { tenant, fingerprint } of normalizeDiscover(await deps.discover()).samples) {
     spawnFor(tenant, fingerprint);
@@ -229,19 +257,20 @@ export async function superviseFleet(deps: SuperviseFleetDeps): Promise<EngineEx
         current,
       });
       if (reason) {
-        deps.onEngineChange?.(reason);
-        const survivors = [...children.values()].map((r) => ({
-          tenant: r.tenant,
-          fingerprint: r.fingerprint,
-        }));
-        await drainAll();
-        try {
-          engine = await deps.launch();
-          for (const { tenant, fingerprint } of survivors) spawnFor(tenant, fingerprint);
-        } catch (error) {
-          deps.onLaunchError?.(error);
+        if (reason === "config" && deps.confirmEngineConfigChange) {
+          const confirmed = await deps.confirmEngineConfigChange(engine);
+          if (!confirmed.changed) {
+            engine = { ...engine, config: confirmed.configFingerprint };
+          } else {
+            deps.onEngineChange?.(reason);
+            await relaunchEngineAndFleet();
+            continue;
+          }
+        } else {
+          deps.onEngineChange?.(reason);
+          await relaunchEngineAndFleet();
+          continue;
         }
-        continue;
       }
     }
 
@@ -260,7 +289,18 @@ export async function superviseFleet(deps: SuperviseFleetDeps): Promise<EngineEx
       samples = discovered.samples;
       hold = new Set(discovered.hold ?? []);
     } catch (error) {
-      if (error instanceof DuplicateTenantSlugError) throw error;
+      if (error instanceof WorkspaceTenantAxisSkip) {
+        deps.onDiscoverError?.(error);
+        continue;
+      }
+      if (
+        error instanceof DuplicateTenantSlugError ||
+        error instanceof DuplicateOriginSlugError ||
+        error instanceof WorkspaceStructuralChangeError
+      ) {
+        await drainAll();
+        throw error;
+      }
       deps.onDiscoverError?.(error);
       continue;
     }

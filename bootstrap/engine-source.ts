@@ -81,3 +81,11 @@ export function readEngineSource(config: Record<string, unknown>): ResolvedEngin
   }
   return resolveEngineSource(field);
 }
+
+/** Whether two resolved engine sources name the same materialization target. */
+export function engineSourcesEqual(a: ResolvedEngineSource, b: ResolvedEngineSource): boolean {
+  if (a.source !== b.source) return false;
+  if (a.source === "local") return true;
+  if (b.source !== "github") return false;
+  return a.ref === b.ref && a.repo === b.repo;
+}
