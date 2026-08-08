@@ -191,11 +191,22 @@ async function launchTarget(configPath: string, guard: CrashGuard): Promise<Laun
     config: configFingerprint(configPath),
     remoteSha: watchedRefSha(source, token),
   });
+  const confirmEngineSource = async () =>
+    readEngineSource(await loadMountedConfig(configPath, configFingerprint(configPath)));
 
   if (source.source === "local") {
     const entry = resolveEngineEntry(source);
     console.log(`[phoebe] boot: engine source "local" — exec ${entry} (long-running).`);
-    return { entry, sha: null, config: fingerprint, guarded: false, quarantinedSha: null, sample };
+    return {
+      entry,
+      sha: null,
+      config: fingerprint,
+      source,
+      confirmEngineSource,
+      guarded: false,
+      quarantinedSha: null,
+      sample,
+    };
   }
 
   const guarded = isMovingBranch(source, token);
@@ -217,7 +228,16 @@ async function launchTarget(configPath: string, guard: CrashGuard): Promise<Laun
     `[phoebe] boot: engine source "github" ${provenance} — exec ${entry} (long-running).`,
   );
 
-  return { entry, sha, config: fingerprint, guarded, quarantinedSha, sample };
+  return {
+    entry,
+    sha,
+    config: fingerprint,
+    source,
+    confirmEngineSource,
+    guarded,
+    quarantinedSha,
+    sample,
+  };
 }
 
 /**

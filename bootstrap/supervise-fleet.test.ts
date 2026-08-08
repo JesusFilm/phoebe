@@ -6,7 +6,14 @@
 import { describe, expect, test } from "vite-plus/test";
 import type { EngineExit, LaunchedEngine } from "./reconcile.ts";
 import type { DiscoveredTenant, TenantSample } from "./tenants.ts";
+import { DuplicateOriginSlugError } from "./tenants.ts";
 import { superviseFleet, type DrainTimer, type FleetChild } from "./supervise-fleet.ts";
+
+const DEFAULT_ENGINE_SOURCE = {
+  source: "github" as const,
+  ref: "main",
+  repo: "JesusFilm/phoebe",
+};
 
 function tenant(slug: string): DiscoveredTenant {
   return {
@@ -104,12 +111,17 @@ async function settle(): Promise<void> {
 
 function harness(initial: TenantSample[]) {
   const clock = gatedClock();
-  const engineState = { config: "1:1", remoteSha: "a".repeat(40) };
+  const engineState = {
+    config: "1:1",
+    remoteSha: "a".repeat(40),
+    source: { ...DEFAULT_ENGINE_SOURCE },
+  };
   let tenants = [...initial];
   const spawned: Array<{ slug: string | null; fake: ReturnType<typeof fakeChild> }> = [];
   let stopRequested = false;
   let launches = 0;
   let throwOnDiscover = false;
+  let engineChanges = 0;
   const discoverErrors: unknown[] = [];
 
   // A (re)materialized engine is checked out at the *current* tracked ref, so
@@ -120,8 +132,10 @@ function harness(initial: TenantSample[]) {
     entry: "/data/engine/src/cli.ts",
     sha: engineState.remoteSha,
     config: engineState.config,
+    source: { ...engineState.source },
     quarantinedSha: null,
     guarded: true,
+    confirmEngineSource: async () => ({ ...engineState.source }),
     sample: () => ({ config: engineState.config, remoteSha: engineState.remoteSha }),
   });
 
@@ -137,6 +151,9 @@ function harness(initial: TenantSample[]) {
       return tenants;
     },
     onDiscoverError: (e) => discoverErrors.push(e),
+    onEngineChange: () => {
+      engineChanges += 1;
+    },
     spawn: (t) => {
       const fake = fakeChild();
       spawned.push({ slug: t.slug, fake });
@@ -156,8 +173,17 @@ function harness(initial: TenantSample[]) {
     get launches() {
       return launches;
     },
+    get engineChanges() {
+      return engineChanges;
+    },
     setTenants: (next: TenantSample[]) => {
       tenants = next;
+    },
+    moveEngineConfig: (config: string) => {
+      engineState.config = config;
+    },
+    moveEngineSource: (ref: string) => {
+      engineState.source = { ...DEFAULT_ENGINE_SOURCE, ref };
     },
     setThrowOnDiscover: (v: boolean) => {
       throwOnDiscover = v;
@@ -234,6 +260,51 @@ describe("superviseFleet", () => {
     expect(h.spawned).toHaveLength(4); // 2 initial + 2 respawned
   });
 
+  test("a root config edit that does not move the engine source does not drain the fleet", async () => {
+    const h = harness([sample("acme/widget", "fp1"), sample("acme/gadget", "fp1")]);
+    await settle();
+    const initial = [...h.spawned];
+
+    h.moveEngineConfig("2:2");
+    h.tick();
+    await settle();
+    for (const s of initial) expect(s.fake.kills).toEqual([]);
+    expect(h.launches).toBe(1);
+    expect(h.engineChanges).toBe(0);
+  });
+
+  test("rebasing the engine fingerprint prevents config churn every poll (#138)", async () => {
+    const h = harness([sample("acme/widget", "fp1")]);
+    await settle();
+    const initial = [...h.spawned];
+
+    h.moveEngineConfig("2:2");
+    h.tick();
+    await settle();
+    h.moveEngineConfig("3:3");
+    h.tick();
+    await settle();
+
+    for (const s of initial) expect(s.fake.kills).toEqual([]);
+    expect(h.launches).toBe(1);
+    expect(h.engineChanges).toBe(0);
+    expect(h.spawned).toHaveLength(1);
+  });
+
+  test("a root config edit that moves the engine source drains and relaunches", async () => {
+    const h = harness([sample("acme/widget", "fp1")]);
+    await settle();
+    const initial = [...h.spawned];
+
+    h.moveEngineConfig("2:2");
+    h.moveEngineSource("next");
+    h.tick();
+    await settle();
+    for (const s of initial) expect(s.fake.kills).toContain("SIGTERM");
+    expect(h.launches).toBe(2);
+    expect(h.engineChanges).toBe(1);
+  });
+
   test("a throwing discovery skips the tenant axis instead of draining the fleet", async () => {
     const h = harness([sample("acme/widget", "fp1"), sample("acme/gadget", "fp1")]);
     await settle();
@@ -254,9 +325,59 @@ describe("superviseFleet", () => {
     expect(h.spawned).toHaveLength(2);
   });
 
+  test("DuplicateOriginSlugError drains the fleet before aborting (#138)", async () => {
+    const clock = gatedClock();
+    let throwDuplicateOrigin = false;
+    const spawned: Array<ReturnType<typeof fakeChild>> = [];
+
+    const result = superviseFleet({
+      intervalMs: 1000,
+      launch: () => ({
+        entry: "/data/engine/src/cli.ts",
+        sha: "a".repeat(40),
+        config: "1:1",
+        source: { ...DEFAULT_ENGINE_SOURCE },
+        quarantinedSha: null,
+        guarded: true,
+        sample: () => ({ config: "1:1", remoteSha: "a".repeat(40) }),
+      }),
+      discover: () => {
+        if (throwDuplicateOrigin) {
+          throw new DuplicateOriginSlugError("acme/widget", "/a", "/b");
+        }
+        return [sample("acme/widget", "fp1")];
+      },
+      spawn: () => {
+        const fake = fakeChild();
+        spawned.push(fake);
+        return fake.child;
+      },
+      stop: {
+        get requested() {
+          return false;
+        },
+        wait: clock.wait,
+      },
+    });
+
+    await settle();
+    expect(spawned).toHaveLength(1);
+
+    throwDuplicateOrigin = true;
+    clock.tick();
+    const rejection = expect(result).rejects.toBeInstanceOf(DuplicateOriginSlugError);
+    await settle();
+    expect(spawned[0]!.kills).toContain("SIGTERM");
+    await rejection;
+  });
+
   test("a hold id keeps a missing sample from draining (#86/#91)", async () => {
     const clock = gatedClock();
-    const engineState = { config: "1:1", remoteSha: "a".repeat(40) };
+    const engineState = {
+      config: "1:1",
+      remoteSha: "a".repeat(40),
+      source: { ...DEFAULT_ENGINE_SOURCE },
+    };
     let samples: TenantSample[] = [sample("acme/widget", "fp1"), sample("acme/gadget", "fp1")];
     let hold: string[] = [];
     const spawned: Array<{ slug: string | null; fake: ReturnType<typeof fakeChild> }> = [];
@@ -269,8 +390,10 @@ describe("superviseFleet", () => {
         entry: "/data/engine/src/cli.ts",
         sha: engineState.remoteSha,
         config: engineState.config,
+        source: { ...engineState.source },
         quarantinedSha: null,
         guarded: true,
+        confirmEngineSource: async () => ({ ...engineState.source }),
         sample: () => ({ config: engineState.config, remoteSha: engineState.remoteSha }),
       }),
       discover: () => ({ samples, hold }),
@@ -350,6 +473,7 @@ describe("superviseFleet", () => {
         entry: "/data/engine/src/cli.ts",
         sha: "a".repeat(40),
         config: "1:1",
+        source: { ...DEFAULT_ENGINE_SOURCE },
         quarantinedSha: null,
         guarded: true,
         sample: () => ({ config: "1:1", remoteSha: "a".repeat(40) }),
@@ -396,6 +520,7 @@ describe("superviseFleet", () => {
         entry: "/data/engine/src/cli.ts",
         sha: "a".repeat(40),
         config: "1:1",
+        source: { ...DEFAULT_ENGINE_SOURCE },
         quarantinedSha: null,
         guarded: true,
         sample: () => ({ config: "1:1", remoteSha: "a".repeat(40) }),

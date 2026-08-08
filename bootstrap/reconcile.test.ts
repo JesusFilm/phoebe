@@ -27,6 +27,7 @@ import {
 const SHA_A = "a".repeat(40);
 const SHA_B = "b".repeat(40);
 const SHA_C = "c".repeat(40);
+const DEFAULT_SOURCE = { source: "github" as const, ref: "main", repo: "JesusFilm/phoebe" };
 
 describe("detectChange", () => {
   test("nothing moved — no relaunch", () => {
@@ -225,10 +226,11 @@ function harness(
   } = {},
 ) {
   const clock = gatedClock();
-  const state: WatchState & { sha: string | null } = {
+  const state: WatchState & { sha: string | null; source: typeof DEFAULT_SOURCE } = {
     config: "1:2",
     remoteSha: SHA_A,
     sha: SHA_A,
+    source: { ...DEFAULT_SOURCE },
   };
   const children: Array<ReturnType<typeof fakeChild>> = [];
   const entries: string[] = [];
@@ -251,8 +253,10 @@ function harness(
         entry: `/engine/${n}/src/cli.ts`,
         sha: state.sha,
         config: state.config,
+        source: { ...state.source },
         quarantinedSha: null,
         guarded: true,
+        confirmEngineSource: async () => ({ ...state.source }),
         sample: () => ({ config: state.config, remoteSha: state.remoteSha }),
       };
     },
@@ -327,6 +331,7 @@ describe("superviseEngine", () => {
     await settle();
 
     h.state.config = "9:9";
+    h.state.source = { source: "github", ref: "next", repo: "JesusFilm/phoebe" };
     h.tick();
     await settle();
 
@@ -342,6 +347,30 @@ describe("superviseEngine", () => {
     h.requestStop();
     await settle();
     h.children[1]?.exit();
+    await h.result;
+  });
+
+  test("a config edit that does not move the engine source is rebased without draining (#138)", async () => {
+    const h = harness();
+    await settle();
+
+    h.state.config = "9:9";
+    h.tick();
+    await settle();
+
+    expect(h.relaunches).toEqual([]);
+    expect(h.children[0]?.kills).toEqual([]);
+    expect(h.entries).toHaveLength(1);
+
+    h.state.config = "10:10";
+    h.tick();
+    await settle();
+    expect(h.relaunches).toEqual([]);
+    expect(h.entries).toHaveLength(1);
+
+    h.requestStop();
+    await settle();
+    h.children[0]?.exit();
     await h.result;
   });
 
@@ -390,6 +419,7 @@ describe("superviseEngine", () => {
     await settle();
 
     h.state.config = "9:9";
+    h.state.source = { source: "github", ref: "next", repo: "JesusFilm/phoebe" };
     h.tick();
     await settle();
     expect(h.children[0]?.kills).toEqual(["SIGTERM"]);
@@ -412,8 +442,10 @@ describe("superviseEngine", () => {
           entry: `/engine/${attempt}/src/cli.ts`,
           sha: SHA_A,
           config: attempt === 0 ? "1:2" : "9:9",
+          source: { ...DEFAULT_SOURCE, ref: attempt === 0 ? "main" : "next" },
           quarantinedSha: null,
           guarded: true,
+          confirmEngineSource: async () => ({ ...DEFAULT_SOURCE, ref: "next" }),
           sample: () => ({ config: "9:9", remoteSha: SHA_A }),
         };
       },
@@ -474,6 +506,7 @@ describe("superviseEngine", () => {
     await settle();
 
     h.state.config = "9:9";
+    h.state.source = { source: "github", ref: "next", repo: "JesusFilm/phoebe" };
     h.tick();
     await settle();
     h.children[0]?.exit();
@@ -516,6 +549,7 @@ describe("superviseEngine", () => {
 
     h.advance(90_000);
     h.state.config = "9:9";
+    h.state.source = { source: "github", ref: "next", repo: "JesusFilm/phoebe" };
     h.tick();
     await settle();
     h.children[0]?.exit();
