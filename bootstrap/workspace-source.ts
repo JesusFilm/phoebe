@@ -303,3 +303,8 @@ export function resolveWorkspace(
 ): ResolvedWorkspace | null {
   return readWorkspaceField(config, opts);
 }
+
+/** Which discovery arm a resolved block uses. */
+export function workspaceArm(workspace: ResolvedWorkspace): "depth" | "tenants" {
+  return isExplicitWorkspace(workspace) ? "tenants" : "depth";
+}
