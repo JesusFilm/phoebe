@@ -291,3 +291,6 @@ export function readWorkspaceField(
   if (field === undefined) return null;
   return validateWorkspaceField(field, opts);
 }
+
+/** Single entry point for resolving a deployment's workspace block (#137/#140). */
+export const resolveWorkspace = readWorkspaceField;

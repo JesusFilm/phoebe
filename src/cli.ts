@@ -34,6 +34,7 @@ import { setResolvedConfig } from "./resolved-config.ts";
 import {
   addRepo,
   isNested,
+  LIST_HELD_LEGEND,
   listTenants,
   parseSlug,
   purgeTenant,
@@ -186,7 +187,7 @@ Usage:
   phoebe init --tenant [dir]       Scaffold a workspace child in-tree install
   phoebe add-repo <owner/repo>     Add a tenant (→ nested multi-tenant)
   phoebe remove-repo <owner/repo>  Remove a tenant's config (data retained)
-  phoebe list                      List tenants + health (in-container)
+  phoebe list [--json] [--check]    List tenants + health (in-container)
   phoebe purge <owner/repo> --yes  Wipe a removed tenant's data (in-container)
   phoebe [--config <path>] [flags] Run the engine
 
@@ -321,32 +322,75 @@ function runRemoveRepoCli(argv: readonly string[]): void {
   );
 }
 
-function formatTenantListing(listing: TenantListing): string {
+function formatHealthColumns(listing: TenantListing): string {
   const flag = (label: string, on: boolean): string => `${on ? "✓" : "✗"} ${label}`;
   const unit = listing.status?.currentUnit;
   const state = unit ? `working ${unit.kind} #${unit.id}` : listing.status ? "idle" : "no status";
   return (
-    `  ${listing.slug}\n` +
-    `      ${flag("config", listing.configValid)}  ${flag("env", listing.envPresent)}  ` +
+    `${flag("config", listing.configValid)}  ${flag("env", listing.envPresent)}  ` +
     `${flag("data", listing.retainedData)}  ${state}`
   );
 }
 
+function formatTenantListing(listing: TenantListing): string {
+  const header =
+    listing.slug !== null ? `  ${listing.path}  (${listing.slug})` : `  ${listing.path}`;
+  if (listing.held) {
+    const held = `held — ${listing.reason ?? "held"}`;
+    const detail = listing.slug !== null ? `${held}  ${formatHealthColumns(listing)}` : held;
+    return `${header}\n      ${detail}`;
+  }
+  return `${header}\n      ${formatHealthColumns(listing)}`;
+}
+
 /** `phoebe list` — enumerate tenants + health (reads status.json). */
-async function runListCli(): Promise<void> {
-  const listings = await listTenants({
+async function runListCli(argv: readonly string[]): Promise<void> {
+  const { flags } = parseCommandArgs(argv);
+  const result = await listTenants({
     configDir: process.cwd(),
     dataBase: resolveDataBase(process.env),
   });
-  if (listings.length === 0) {
+
+  if (flags["json"] === true) {
+    process.stdout.write(
+      `${JSON.stringify({
+        declared: result.declared,
+        live: result.live,
+        tenants: result.listings.map((listing) => ({
+          path: listing.path,
+          slug: listing.slug,
+          held: listing.held,
+          reason: listing.reason,
+          configValid: listing.configValid,
+          envPresent: listing.envPresent,
+          retainedData: listing.retainedData,
+          status: listing.status,
+        })),
+      })}\n`,
+    );
+    if (flags["check"] === true && result.explicit && result.listings.some((l) => l.held)) {
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  if (result.listings.length === 0) {
     process.stdout.write(
       "[phoebe] No tenants (flat single-tenant deployment, or none added yet).\n",
     );
     return;
   }
-  process.stdout.write(
-    `[phoebe] ${listings.length} tenant(s):\n${listings.map(formatTenantListing).join("\n")}\n`,
-  );
+
+  const header = result.explicit
+    ? `[phoebe] ${result.live} of ${result.declared} declared tenant(s):`
+    : `[phoebe] ${result.listings.length} tenant(s):`;
+  const body = result.listings.map(formatTenantListing).join("\n");
+  const legend = result.listings.some((listing) => listing.held) ? `\n${LIST_HELD_LEGEND}` : "";
+  process.stdout.write(`${header}\n${body}${legend}\n`);
+
+  if (flags["check"] === true && result.explicit && result.listings.some((l) => l.held)) {
+    process.exitCode = 1;
+  }
 }
 
 /** `phoebe purge <owner/repo> --yes` — wipe a removed tenant's retained data. */
@@ -407,7 +451,7 @@ export async function runCli(): Promise<void> {
   // data volume. None load the engine config.
   if (args[0] === "add-repo") return runAddRepoCli(args.slice(1));
   if (args[0] === "remove-repo") return runRemoveRepoCli(args.slice(1));
-  if (args[0] === "list") return await runListCli();
+  if (args[0] === "list") return await runListCli(args.slice(1));
   if (args[0] === "purge") return runPurgeCli(args.slice(1));
 
   const parsed = parseCliArgs(args);
