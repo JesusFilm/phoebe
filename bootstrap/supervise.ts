@@ -26,12 +26,16 @@
 //
 // Two axes are polled every `intervalMs`:
 //   - the engine axis (shared): `launch()`'s own `sample()` reports whether the
-//     mounted config or the tracked ref moved. A hit drains every current child
-//     (the distinct `REF_CHANGE_DRAIN_SIGNAL` for a ref move, so a draining
-//     child can report why — src/drain.ts) and re-launches once, so every child
-//     runs a version-uniform engine. Flat's tenant fingerprint is constant
-//     (null), so this is its *only* relaunch trigger — one config edit is one
-//     relaunch, not two.
+//     mounted config or the tracked ref moved, and `isCondemned` (#79) reports
+//     whether the crash-loop guard has since condemned the commit that is
+//     actually running — a SHA reached mid-life, not only at launch. Either
+//     hit drains every current child (the distinct `REF_CHANGE_DRAIN_SIGNAL`
+//     for a ref move, so a draining child can report why — src/drain.ts) and
+//     re-launches once, so every child runs a version-uniform engine; a
+//     condemned relaunch is where `launchTarget`'s `fallbackFor` actually pins
+//     it to the last-good commit. Flat's tenant fingerprint is constant
+//     (null), so the engine axis is its *only* relaunch trigger — one config
+//     edit is one relaunch, not two.
 //   - the tenant axis (`children.discover`): which children should exist right
 //     now, with a fingerprint each. A dir appearing/vanishing/changing spawns,
 //     drains, or relaunches *only* that child, reusing the currently-launched
@@ -85,8 +89,8 @@ export const CHILD_RESPAWN_BACKOFF_MS = 10_000;
  */
 export const DEFAULT_DRAIN_TIMEOUT_MS = 3_600_000;
 
-/** Which of the two watched inputs moved, and so why a child is relaunching. */
-export type ReconcileReason = "config" | "ref";
+/** Which of the watched inputs moved, and so why a child is relaunching. */
+export type ReconcileReason = "config" | "ref" | "condemned";
 
 /**
  * A single sample of the engine axis.
@@ -314,6 +318,16 @@ export type SuperviseDeps<T extends { id: string }> = {
   drainTimer?: DrainTimer;
   /** Backoff before respawning a child that exited on its own. Defaults to `CHILD_RESPAWN_BACKOFF_MS`. */
   childRespawnBackoffMs?: number;
+  /**
+   * Is the currently-running engine's commit condemned right now (#79)? Consulted
+   * every poll beside the config/ref sample — a pure query (unlike `sample()`,
+   * it does no I/O), so it still fires even on a poll where `sample()` itself
+   * threw. True is an engine-axis change like any other: every current child is
+   * drained and the engine relaunched, where `launch()` (`launchTarget`'s
+   * `fallbackFor`) pins the fresh launch to the last-good commit. Optional —
+   * a deployment with no crash-loop guard wired simply never condemns.
+   */
+  isCondemned?: (engine: LaunchedEngine) => boolean;
   /** The engine axis changed — every current child is being drained and relaunched. */
   onEngineChange?: (reason: ReconcileReason) => void;
   /** The tenant axis moved: which child ids were added, removed, or relaunched. */
@@ -568,29 +582,38 @@ export async function supervise<T extends { id: string }>(
       deps.onSampleError?.(error);
       current = null;
     }
-    if (current) {
-      const reason = detectChange({
-        launched: { config: engine.config, sha: engine.sha, quarantinedSha: engine.quarantinedSha },
-        current,
-      });
-      if (reason) {
-        deps.onEngineChange?.(reason);
-        const survivors = [...children.values()].map((record) => ({
-          tenant: record.tenant,
-          fingerprint: record.fingerprint,
-        }));
-        // A ref change gets a distinct signal from a plain config change or
-        // container stop, so a draining child can report why (#23, src/drain.ts).
-        const signal = reason === "ref" ? REF_CHANGE_DRAIN_SIGNAL : "SIGTERM";
-        const exits = await drainAll(signal, reason);
-        if (deps.stop.requested) return finishStop(exits);
-        const fresh = await launch();
-        if (fresh !== null) {
-          engine = fresh;
-          for (const { tenant, fingerprint } of survivors) spawnFor(tenant, fingerprint, engine);
-        }
-        continue;
+    // A condemned commit is an engine-axis change too, and independent of the
+    // sample above (it is a pure query over the guard's own record) — checked
+    // even on a poll where `sample()` itself threw.
+    const sampledReason = current
+      ? detectChange({
+          launched: {
+            config: engine.config,
+            sha: engine.sha,
+            quarantinedSha: engine.quarantinedSha,
+          },
+          current,
+        })
+      : null;
+    const reason: ReconcileReason | null =
+      sampledReason ?? (deps.isCondemned?.(engine) ? "condemned" : null);
+    if (reason) {
+      deps.onEngineChange?.(reason);
+      const survivors = [...children.values()].map((record) => ({
+        tenant: record.tenant,
+        fingerprint: record.fingerprint,
+      }));
+      // A ref change gets a distinct signal from a plain config change or
+      // container stop, so a draining child can report why (#23, src/drain.ts).
+      const signal = reason === "ref" ? REF_CHANGE_DRAIN_SIGNAL : "SIGTERM";
+      const exits = await drainAll(signal, reason);
+      if (deps.stop.requested) return finishStop(exits);
+      const fresh = await launch();
+      if (fresh !== null) {
+        engine = fresh;
+        for (const { tenant, fingerprint } of survivors) spawnFor(tenant, fingerprint, engine);
       }
+      continue;
     }
     if (deps.stop.requested) return await stopExit();
 

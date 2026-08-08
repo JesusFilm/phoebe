@@ -385,13 +385,13 @@ export function engineProvenanceEnv(engine: {
  * depends on loading any config and cannot drift with a mid-flight config edit.
  *
  * `roster` is the tenants with a live child, excluding held ones (#78) — flat
- * passes its one constant tenant; a fleet still passes none, since feeding it
- * live tenant discovery (and calling `record`/`noteAlive`/`shouldRetry` at
- * all, #60 §6) is a follow-up. An empty roster keeps `fallbackFor` from
- * pinning on a fleet's behalf until that lands.
+ * passes its one constant tenant; a fleet passes the live set `buildFleetDeps`
+ * maintains from its own spawn/tenant-axis hooks (#79), so breadth × count
+ * reflects who is actually running.
  *
  * Exported so `deployment.ts` can create the one guard a launch (of any
- * topology) and its `onChildGone`/`onChildRun`/`onChildTick` policy share.
+ * topology) and its `onChildGone`/`onChildRun`/`onChildTick`/`isCondemned`
+ * policy share.
  */
 export function createBootCrashGuard(roster: () => readonly string[]): CrashGuard {
   return createCrashGuard({

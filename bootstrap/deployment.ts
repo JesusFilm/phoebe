@@ -108,14 +108,27 @@ export type ResolveDeploymentOpts = {
   argv: readonly string[];
   /** The crash-loop fallback policy every topology's `launch` shares.
    *  Defaults to a fresh container-rooted guard (boot.ts) whose roster is
-   *  topology-dependent: flat's one constant tenant, or empty for a fleet
-   *  (#78 — a fleet's live roster is not wired yet). */
+   *  topology-dependent: flat's one constant tenant, or (#79) a fleet's own
+   *  live tenant set. */
   guard?: CrashGuard;
   /** Defaults to the real `spawn-engine.mjs` launchers; overridable so the
    *  spawn adapters are unit-tested without a real child process. */
   spawnEngine?: SpawnEngineFn;
   spawnEngineChild?: SpawnEngineChildFn;
 };
+
+/**
+ * Is the commit `engine` is currently running condemned by the crash-loop
+ * guard right now (#79)? Wired as `supervise`'s `isCondemned`, so both
+ * topologies drain and relaunch onto it the moment the guard's verdict flips
+ * mid-life, not only at the next scheduled launch. Guards a null sha (a local
+ * mount) and an unguarded source (a pinned SHA/tag) before ever asking —
+ * `condemns` would just answer false for those, but the guard is meant to be
+ * inert for them, not merely quiet.
+ */
+function engineCondemned(guard: CrashGuard): (engine: LaunchedEngine) => boolean {
+  return (engine) => engine.guarded && engine.sha !== null && guard.condemns(engine.sha);
+}
 
 /**
  * Load the mounted `phoebe.config.ts` as the arbitrary record the detection
@@ -164,9 +177,12 @@ export async function resolveDeployment(opts: ResolveDeploymentOpts): Promise<De
       `[phoebe] boot: workspace mode — supervising ${initial.tenants.length} tenant(s) ` +
         `on one shared engine (depth ${workspace.depth}).`,
     );
-    // A fleet's live roster is not wired yet (see buildFleetDeps's doc comment)
-    // — this guard only ever applies an existing pin via `fallbackFor`.
-    const guard = opts.guard ?? createBootCrashGuard(() => []);
+    // Tenants with a live child right now (#79) — mutated by `buildFleetDeps`'s
+    // spawn/tenant-axis hooks, read fresh by the guard on every `condemns`/
+    // `fallbackFor` call, so the breadth half of breadth × count (#78) reflects
+    // who is actually running rather than staying permanently empty.
+    const liveTenants = new Set<string>();
+    const guard = opts.guard ?? createBootCrashGuard(() => [...liveTenants]);
     const launch = (): Promise<LaunchedEngine> => launchTarget(configPath, guard);
     return buildFleetDeps({
       configPath,
@@ -176,6 +192,7 @@ export async function resolveDeployment(opts: ResolveDeploymentOpts): Promise<De
       env,
       spawnEngineChild: spawnChild,
       discover: workspaceDiscover(configDir, workspace),
+      liveTenants,
     });
   }
 
@@ -188,9 +205,12 @@ export async function resolveDeployment(opts: ResolveDeploymentOpts): Promise<De
       `[phoebe] boot: nested deployment — supervising ${discovery.tenants.length} tenant(s) ` +
         `on one shared engine.`,
     );
-    // A fleet's live roster is not wired yet (see buildFleetDeps's doc comment)
-    // — this guard only ever applies an existing pin via `fallbackFor`.
-    const guard = opts.guard ?? createBootCrashGuard(() => []);
+    // Tenants with a live child right now (#79) — mutated by `buildFleetDeps`'s
+    // spawn/tenant-axis hooks, read fresh by the guard on every `condemns`/
+    // `fallbackFor` call, so the breadth half of breadth × count (#78) reflects
+    // who is actually running rather than staying permanently empty.
+    const liveTenants = new Set<string>();
+    const guard = opts.guard ?? createBootCrashGuard(() => [...liveTenants]);
     const launch = (): Promise<LaunchedEngine> => launchTarget(configPath, guard);
     return buildFleetDeps({
       configPath,
@@ -200,6 +220,7 @@ export async function resolveDeployment(opts: ResolveDeploymentOpts): Promise<De
       env,
       spawnEngineChild: spawnChild,
       discover: nestedDiscover(configDir),
+      liveTenants,
     });
   }
 
@@ -231,15 +252,33 @@ export async function resolveDeployment(opts: ResolveDeploymentOpts): Promise<De
     onChildTick: ({ engine, elapsedMs }) => {
       if (engine.sha !== null) guard.noteAlive(engine.sha, elapsedMs);
     },
+    // A condemned SHA is an engine-axis change like any other (#79) — the
+    // fallback `launchTarget` pins to on the resulting relaunch is otherwise
+    // never reached mid-life, only at the next scheduled launch.
+    isCondemned: engineCondemned(guard),
     // Flat is always exactly one child (#65): on a stop, the container's own
     // exit is that one engine's exit, not a generic 0.
     onStop: (exits) => exits[0] ?? { code: 0, signal: null },
-    onEngineChange: (reason) =>
-      console.log(
-        reason === "config"
-          ? "[phoebe] boot: mounted config changed — draining the engine (SIGTERM) and relaunching."
-          : "[phoebe] boot: tracked ref advanced — draining the engine (ref-change signal) and relaunching.",
-      ),
+    onEngineChange: (reason) => {
+      switch (reason) {
+        case "config":
+          console.log(
+            "[phoebe] boot: mounted config changed — draining the engine (SIGTERM) and relaunching.",
+          );
+          return;
+        case "ref":
+          console.log(
+            "[phoebe] boot: tracked ref advanced — draining the engine (ref-change signal) and relaunching.",
+          );
+          return;
+        case "condemned":
+          console.log(
+            "[phoebe] boot: the running engine commit was condemned by the crash-loop guard — " +
+              "draining the engine and relaunching onto the last-good commit.",
+          );
+          return;
+      }
+    },
     onDrainTimeout: (reason) =>
       console.error(
         `[phoebe] boot: the engine did not finish draining for a ${reason} change — ` +
@@ -314,11 +353,15 @@ function readTenantEnv(envPath: string): Record<string, string> {
  * the shared engine and every sibling untouched (#60 §6).
  *
  * Each child is spawned with an IPC channel + the tenant's scrubbed env (#61)
- * and cwd (its config dir), and wired to the broker (#59). The crash-loop guard
- * still applies any existing engine fallback on each (re)launch; wiring a live
- * tenant roster and calling `record`/`noteAlive`/`shouldRetry` here so a fleet
- * actually accrues fleet-aggregated crash verdicts (#78's breadth × count rule)
- * is a follow-up — nested live validation is deferred to #77.
+ * and cwd (its config dir), and wired to the broker (#59). The crash-loop
+ * guard's bookkeeping (`record`/`noteAlive`) sees every run and tick here too
+ * (#79), against the live `liveTenants` roster this function maintains — a
+ * fleet now accrues fleet-aggregated crash verdicts (#78's breadth × count
+ * rule) the same as flat does. `onChildGone` itself is unchanged: a fleet
+ * child that dies is always respawned with backoff regardless of the guard's
+ * `shouldRetry` — that call is flat-only, since a fleet's per-child answer to
+ * one tenant dying has nothing to do with crash policy. Nested live
+ * validation is deferred to #77.
  *
  * `discover` is injected so nested mode can stay a pure filesystem scan while
  * workspace mode re-walks the tree and reloads each child's `repoSlug` (#91).
@@ -331,8 +374,11 @@ function buildFleetDeps(opts: {
   env: NodeJS.ProcessEnv;
   spawnEngineChild: SpawnEngineChildFn;
   discover: () => DiscoverInput<DiscoveredTenant>;
+  /** Tenant ids with a live child right now — mutated here, read by the guard's roster. */
+  liveTenants: Set<string>;
 }): Deployment {
   const broker = createSlotBroker(resolveMaxConcurrent(opts.env));
+  const { guard, liveTenants } = opts;
 
   const spawnFleetChild = (tenant: DiscoveredTenant, engine: LaunchedEngine): SupervisedChild => {
     const env = childEnv({
@@ -364,12 +410,18 @@ function buildFleetDeps(opts: {
       },
     });
     attachBroker({ owner: tenant.id, broker, child });
+    liveTenants.add(tenant.id);
     return { kill: (signal) => child.kill(signal), exited };
   };
 
   return {
     launch: opts.launch,
     children: { discover: opts.discover, spawn: spawnFleetChild },
+    // A fleet child that dies on its own is always respawned — the shared
+    // engine and every sibling are untouched (#60 §6). This is per-child
+    // supervision, not crash policy, so `guard.shouldRetry` is never
+    // consulted here; only `isCondemned` (below) ever pulls the whole fleet
+    // off a bad engine commit.
     onChildGone: (run) => {
       console.error(
         `[phoebe] boot: tenant ${run.tenant.id} exited (${run.exit.code ?? run.exit.signal}) — ` +
@@ -377,17 +429,45 @@ function buildFleetDeps(opts: {
       );
       return "respawn";
     },
-    onEngineChange: (reason) =>
-      console.log(
-        reason === "config"
-          ? "[phoebe] boot: shared config changed — draining the fleet and relaunching every tenant."
-          : "[phoebe] boot: tracked engine ref advanced — draining the fleet and relaunching every tenant.",
-      ),
-    onChildChange: ({ added, removed, changed }) =>
+    // The guard's bookkeeping half (#79): every ended run (a requested drain's
+    // `inconclusive` verdict included) and a heartbeat for one still running,
+    // so the fleet actually accrues the crash record `isCondemned` reads.
+    onChildRun: (run) => guard.record(run, run.tenant.id),
+    onChildTick: ({ engine, elapsedMs }) => {
+      if (engine.sha !== null) guard.noteAlive(engine.sha, elapsedMs);
+    },
+    // A condemned SHA is an engine-axis change like any other (#79) — drain
+    // the fleet and relaunch, where `launchTarget`'s `fallbackFor` pins the
+    // fresh launch to the last-good commit. No new drain path, no new spawn
+    // path: the loop already knows how to relaunch every tenant.
+    isCondemned: engineCondemned(guard),
+    onEngineChange: (reason) => {
+      switch (reason) {
+        case "config":
+          console.log(
+            "[phoebe] boot: shared config changed — draining the fleet and relaunching every tenant.",
+          );
+          return;
+        case "ref":
+          console.log(
+            "[phoebe] boot: tracked engine ref advanced — draining the fleet and relaunching every tenant.",
+          );
+          return;
+        case "condemned":
+          console.log(
+            "[phoebe] boot: the running engine commit was condemned by the crash-loop guard — " +
+              "draining the fleet and relaunching every tenant onto the last-good commit.",
+          );
+          return;
+      }
+    },
+    onChildChange: ({ added, removed, changed }) => {
+      for (const id of removed) liveTenants.delete(id);
       console.log(
         `[phoebe] boot: tenant reconcile — +${added.length} added, -${removed.length} removed, ` +
           `~${changed.length} relaunched (no container restart).`,
-      ),
+      );
+    },
     onLaunchError: (error) =>
       console.error(`[phoebe] boot: fleet (re)launch failed — ${describe(error)}. Retrying.`),
     onDiscoverError: (error) => {

@@ -285,6 +285,7 @@ function harness(
     launch?: (attempt: number) => Promise<LaunchedEngine> | LaunchedEngine;
     relaunchAfterExit?: (run: EngineRun) => boolean;
     drainTimeoutMs?: number;
+    isCondemned?: (engine: LaunchedEngine) => boolean;
   } = {},
 ) {
   const clock = gatedClock();
@@ -312,6 +313,7 @@ function harness(
     onChildGone: (run) =>
       (options.relaunchAfterExit?.(run) ?? false) ? "respawn" : { propagate: run.exit },
     ...(options.drainTimeoutMs !== undefined ? { drainTimeoutMs: options.drainTimeoutMs } : {}),
+    ...(options.isCondemned !== undefined ? { isCondemned: options.isCondemned } : {}),
     drainTimer: drainTimers.make,
     onDrainTimeout: (reason) => drainTimeouts.push(reason),
     launch: async () => {
@@ -482,6 +484,68 @@ describe("superviseEngine", () => {
 
     // The relaunched engine is on the new commit, so the watch goes quiet again.
     h.tick();
+    await settle();
+    expect(h.entries).toHaveLength(2);
+
+    h.requestStop();
+    await settle();
+    h.children[1]?.exit();
+    await h.result;
+  });
+
+  test("a commit condemned mid-life drains and relaunches, plain SIGTERM (#79)", async () => {
+    // Nothing on the config/ref sample moved — `isCondemned` alone is the
+    // trigger, so a fast-crashing SHA does not have to wait for the tracked
+    // ref to move before boot stops chasing it. Only the very first launch's
+    // engine is "condemned" (a real guard's `condemns` goes quiet again once
+    // the relaunch lands on the fallback), so this settles at one relaunch
+    // rather than chasing its own drain forever.
+    const h = harness({ isCondemned: (engine) => engine.entry === "/engine/0/src/cli.ts" });
+    await settle();
+    expect(h.relaunches).toEqual([]);
+
+    h.tick();
+    await settle();
+    // Not the distinct ref-change signal — the branch tip never moved.
+    expect(h.children[0]?.kills).toEqual(["SIGTERM"]);
+    h.children[0]?.exit();
+    await settle();
+
+    expect(h.relaunches).toEqual(["condemned"]);
+    expect(h.entries).toHaveLength(2);
+
+    // A later poll finds the fresh engine no longer condemned — settled, not
+    // chasing its own relaunch forever.
+    h.tick();
+    await settle();
+    expect(h.entries).toHaveLength(2);
+
+    h.requestStop();
+    await settle();
+    h.children[1]?.exit();
+    await h.result;
+  });
+
+  test("condemnation is still consulted when the engine-axis sample throws", async () => {
+    const h = harness({
+      isCondemned: (engine) => engine.entry === "/engine/0/src/cli.ts",
+      launch: (n) => ({
+        entry: `/engine/${n}/src/cli.ts`,
+        sha: SHA_A,
+        config: "1:2",
+        quarantinedSha: null,
+        guarded: true,
+        sample: () => {
+          throw new Error("ls-remote failed");
+        },
+      }),
+    });
+    await settle();
+
+    h.tick();
+    await settle();
+    expect(h.relaunches).toEqual(["condemned"]);
+    h.children[0]?.exit();
     await settle();
     expect(h.entries).toHaveLength(2);
 

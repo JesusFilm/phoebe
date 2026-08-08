@@ -8,9 +8,29 @@
 
 import { describe, expect, test } from "vite-plus/test";
 import { REF_CHANGE_DRAIN_SIGNAL } from "../src/drain.ts";
+import { createCrashGuard } from "./crash-loop.ts";
 import type { EngineExit, LaunchedEngine } from "./supervise.ts";
 import type { DiscoveredTenant, TenantSample } from "./tenants.ts";
 import { supervise, type DrainTimer, type SupervisedChild } from "./supervise.ts";
+
+/** The store shape `createCrashGuard` accepts — not exported, so derived structurally. */
+type CrashLoopStore = NonNullable<Parameters<typeof createCrashGuard>[0]["store"]>;
+
+/** A fake store good enough for a whole test — no filesystem involved. */
+function fakeStore(): CrashLoopStore {
+  let state: ReturnType<CrashLoopStore["read"]> = {
+    lastGoodSha: null,
+    failingSha: null,
+    failureCount: 0,
+    crashedTenants: [],
+  };
+  return {
+    read: () => state,
+    write: (next) => {
+      state = next;
+    },
+  };
+}
 
 function tenant(slug: string): DiscoveredTenant {
   return {
@@ -443,5 +463,229 @@ describe("superviseFleet", () => {
     expect(exit).toEqual({ code: 0, signal: null });
     expect(spawned[0]!.kills).toEqual(["SIGTERM"]); // no SIGKILL
     expect(timers.canceledCount()).toBe(1); // grace timer was canceled, not left pending
+  });
+});
+
+// --- Fed by a real crash-loop guard (#79) -----------------------------------
+//
+// `buildFleetDeps` (deployment.ts) wires the fleet to the crash-loop guard the
+// same way flat does: `onChildRun`/`onChildTick` feed its bookkeeping, and its
+// live tenant roster — mutated on spawn and on a tenant-axis removal — is what
+// makes the breadth half of breadth × count (#78) reflect who is actually
+// running instead of staying permanently empty. `launch` here stands in for
+// `launchTarget`: it re-consults `guard.fallbackFor` on every call, exactly as
+// the real one does. `isCondemned` is supervise's third engine-axis trigger.
+
+const THRESHOLD = 3;
+const HEALTHY_MS = 1_000;
+const SHA_GOOD = "9".repeat(40);
+const SHA_BAD = "b".repeat(40);
+
+function guardedFleetHarness(initial: TenantSample[]) {
+  const clock = gatedClock();
+  const engineState = { config: "1:1", remoteSha: SHA_GOOD };
+  const liveTenants = new Set<string>();
+  const guard = createCrashGuard({
+    engineDir: "/data/engine",
+    log: () => {},
+    roster: () => [...liveTenants],
+    store: fakeStore(),
+    threshold: THRESHOLD,
+    healthyMs: HEALTHY_MS,
+  });
+  let tenants = [...initial];
+  const spawned: Array<{
+    slug: string | null;
+    sha: string | null;
+    fake: ReturnType<typeof fakeChild>;
+  }> = [];
+  let stopRequested = false;
+  let clockMs = 0;
+
+  const launch = (): LaunchedEngine => {
+    const target = engineState.remoteSha;
+    const pin = guard.fallbackFor(target);
+    const sha = pin ?? target;
+    return {
+      entry: "/data/engine/src/cli.ts",
+      sha,
+      config: engineState.config,
+      quarantinedSha: pin !== null ? target : null,
+      guarded: true,
+      sample: () => ({ config: engineState.config, remoteSha: engineState.remoteSha }),
+    };
+  };
+
+  const result = supervise<DiscoveredTenant>({
+    now: () => clockMs,
+    intervalMs: 1000,
+    childRespawnBackoffMs: 500,
+    launch,
+    children: {
+      discover: () => tenants,
+      spawn: (t, engine) => {
+        const fake = fakeChild();
+        spawned.push({ slug: t.slug, sha: engine.sha, fake });
+        liveTenants.add(t.id);
+        return fake.child;
+      },
+    },
+    // A fleet child that dies is always respawned (#60 §6) — `shouldRetry` is
+    // flat-only; the fleet's `onChildGone` never consults the guard.
+    onChildGone: () => "respawn",
+    onChildRun: (run) => guard.record(run, run.tenant.id),
+    onChildTick: ({ engine, elapsedMs }) => {
+      if (engine.sha !== null) guard.noteAlive(engine.sha, elapsedMs);
+    },
+    isCondemned: (engine) => engine.guarded && engine.sha !== null && guard.condemns(engine.sha),
+    onChildChange: ({ removed }) => {
+      for (const id of removed) liveTenants.delete(id);
+    },
+    stop: {
+      get requested() {
+        return stopRequested;
+      },
+      wait: clock.wait,
+    },
+  });
+
+  return {
+    result,
+    guard,
+    latestShaFor: (slug: string) =>
+      [...spawned].reverse().find((s) => s.slug === slug)?.sha ?? null,
+    killsFor: (slug: string) => spawned.filter((s) => s.slug === slug).flatMap((s) => s.fake.kills),
+    crash: (slug: string) => {
+      const last = [...spawned].reverse().find((s) => s.slug === slug);
+      last?.fake.exit({ code: 1, signal: null });
+    },
+    moveEngineRef: (sha: string) => {
+      engineState.remoteSha = sha;
+    },
+    tick: clock.tick,
+    advance: (ms: number) => {
+      clockMs += ms;
+    },
+    requestStop: () => {
+      stopRequested = true;
+      clock.tick();
+    },
+  };
+}
+
+describe("fleet + a real crash-loop guard (#79)", () => {
+  test("a fleet whose every child crashes fast relaunches onto the last-good commit", async () => {
+    const h = guardedFleetHarness([sample("acme/widget", "fp1"), sample("acme/gadget", "fp1")]);
+    await settle();
+
+    // Prove SHA_GOOD as the fallback target before anything goes wrong.
+    h.advance(HEALTHY_MS);
+    h.tick();
+    await settle();
+
+    // The tracked ref moves to a commit neither tenant can boot on.
+    h.moveEngineRef(SHA_BAD);
+    h.tick();
+    await settle();
+    expect(h.latestShaFor("acme/widget")).toBe(SHA_BAD);
+    expect(h.latestShaFor("acme/gadget")).toBe(SHA_BAD);
+
+    // Breadth (#78): each tenant fast-crashing once is not enough on its own.
+    h.crash("acme/widget");
+    await settle();
+    h.tick();
+    await settle();
+    h.crash("acme/gadget");
+    await settle();
+    h.tick();
+    await settle();
+    expect(h.guard.condemns(SHA_BAD)).toBe(false); // count 2/3
+
+    // The third fast crash, with both tenants now in `crashedTenants`,
+    // condemns the commit — this respawn lands straight on the fallback.
+    h.crash("acme/widget");
+    await settle();
+    h.tick();
+    await settle();
+    expect(h.guard.condemns(SHA_BAD)).toBe(true);
+    expect(h.latestShaFor("acme/widget")).toBe(SHA_GOOD);
+
+    // Gadget is still crash-looping too (the premise: *every* child crashes),
+    // so its own very next respawn also lands on the fallback — the fleet is
+    // not stuck respawning it onto the condemned commit forever.
+    h.crash("acme/gadget");
+    await settle();
+    h.tick();
+    await settle();
+    expect(h.latestShaFor("acme/gadget")).toBe(SHA_GOOD);
+  });
+
+  test("one tenant crash-looping alone never condemns the shared engine", async () => {
+    const h = guardedFleetHarness([sample("acme/widget", "fp1"), sample("acme/gadget", "fp1")]);
+    await settle();
+
+    h.advance(HEALTHY_MS);
+    h.tick();
+    await settle();
+
+    h.moveEngineRef(SHA_BAD);
+    h.tick();
+    await settle();
+    // The one shared-engine drain so far, from the ref move above.
+    const gadgetKillsAfterRefMove = h.killsFor("acme/gadget");
+
+    // Widget alone fast-crashes past the threshold; gadget never does.
+    for (let i = 0; i < THRESHOLD + 2; i++) {
+      h.crash("acme/widget");
+      await settle();
+      h.tick(); // release the respawn backoff
+      await settle();
+    }
+
+    // Breadth rules this out — one broken tenant does not cost the fleet its
+    // engine: gadget is never drained again, and the commit is never condemned.
+    expect(h.guard.condemns(SHA_BAD)).toBe(false);
+    expect(h.killsFor("acme/gadget")).toEqual(gadgetKillsAfterRefMove);
+    expect(h.latestShaFor("acme/widget")).toBe(SHA_BAD); // still respawning, unpinned
+  });
+
+  test("a pinned fleet does not chase the tip while it still points at the quarantined commit", async () => {
+    const h = guardedFleetHarness([sample("acme/widget", "fp1"), sample("acme/gadget", "fp1")]);
+    await settle();
+
+    h.advance(HEALTHY_MS);
+    h.tick();
+    await settle();
+    h.moveEngineRef(SHA_BAD);
+    h.tick();
+    await settle();
+
+    // Condemn SHA_BAD: three fast crashes with full breadth.
+    h.crash("acme/widget");
+    await settle();
+    h.tick();
+    await settle();
+    h.crash("acme/gadget");
+    await settle();
+    h.tick();
+    await settle();
+    h.crash("acme/widget");
+    await settle();
+    h.tick();
+    await settle();
+    expect(h.guard.condemns(SHA_BAD)).toBe(true);
+    expect(h.latestShaFor("acme/widget")).toBe(SHA_GOOD);
+
+    const killsBefore = h.killsFor("acme/gadget");
+
+    // The tracked branch still points at the quarantined commit — several more
+    // polls must not read that as a change to chase.
+    h.tick();
+    await settle();
+    h.tick();
+    await settle();
+
+    expect(h.killsFor("acme/gadget")).toEqual(killsBefore); // no new drain
+    expect(h.guard.condemns(SHA_GOOD)).toBe(false); // the fallback itself is fine
   });
 });
