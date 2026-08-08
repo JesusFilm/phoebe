@@ -483,14 +483,18 @@ describe("slugFromRemoteUrl / initTenant (#94)", () => {
       git: () => "https://github.com/acme/widget.git\n",
     });
 
-    const discovery = await discoverWorkspaceTenants(workspace, 1, {
-      loadRepoSlug: async (configPath) => {
-        const src = readFileSync(configPath, "utf8");
-        const m = /repoSlug:\s*"([^"]+)"/.exec(src);
-        if (!m) throw new Error(`no repoSlug in ${configPath}`);
-        return m[1]!;
+    const discovery = await discoverWorkspaceTenants(
+      workspace,
+      { depth: 1 },
+      {
+        loadRepoSlug: async (configPath) => {
+          const src = readFileSync(configPath, "utf8");
+          const m = /repoSlug:\s*"([^"]+)"/.exec(src);
+          if (!m) throw new Error(`no repoSlug in ${configPath}`);
+          return m[1]!;
+        },
       },
-    });
+    );
     expect(discovery.mode).toBe("workspace");
     expect(discovery.tenants).toHaveLength(1);
     expect(discovery.tenants[0]!.slug).toBe("acme/widget");

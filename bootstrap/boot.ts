@@ -25,7 +25,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { installDrainSignal } from "../src/drain.ts";
 import { defaultGit, type GitRunner } from "../src/git-model.ts";
 import { loadUserConfig, resolveConfigPath } from "../src/load-config.ts";
@@ -48,10 +48,16 @@ import {
   withTenantConfigDir,
   type DiscoveredTenant,
   type TenantSample,
+  type WorkspaceDiscoveryResult,
+  type WorkspaceHold,
 } from "./tenants.ts";
 import { readConfigDir } from "./config-dir.ts";
 import { superviseFleet, type FleetChild, type FleetDiscoverInput } from "./supervise-fleet.ts";
-import { readWorkspaceField, requireDepthArm, type ResolvedWorkspace } from "./workspace-source.ts";
+import {
+  isExplicitWorkspace,
+  resolveWorkspace,
+  type ResolvedWorkspace,
+} from "./workspace-source.ts";
 import { readFileSync } from "node:fs";
 import {
   configFingerprint,
@@ -495,28 +501,99 @@ function nestedDiscover(configDir: string): () => FleetDiscoverInput {
 }
 
 /**
- * Workspace-mode discover callback (#91): re-walk the tree every poll, load each
- * child's `repoSlug`, and report hold ids for mid-rewrite configs (#86).
+ * Workspace-mode discover callback (#91/#137): re-run discovery every poll, load
+ * each child's `repoSlug`, and report hold ids for mid-rewrite configs (#86) or
+ * declared dirs that cannot become tenants (explicit arm).
  */
 function workspaceDiscover(
   configDir: string,
   workspace: ResolvedWorkspace,
 ): () => FleetDiscoverInput {
-  const depth = requireDepthArm(workspace);
+  let previousHoldKey: string | null = null;
+  let summaryLogged = false;
+
   return async () => {
-    const result = await discoverWorkspaceTenants(configDir, depth, {
+    const result = await discoverWorkspaceTenants(configDir, workspace, {
       loadRepoSlug: loadTenantRepoSlug,
       loadConfigDir: loadTenantConfigDir,
       warn: (message) => console.warn(message),
     });
+    const holdKey = workspaceHoldKey(result.holds);
+    if (!summaryLogged) {
+      logWorkspaceBootSummary(configDir, workspace, result);
+      summaryLogged = true;
+      previousHoldKey = holdKey;
+    } else if (holdKey !== previousHoldKey) {
+      logWorkspaceHoldSummary(configDir, workspace, result.holds);
+      previousHoldKey = holdKey;
+    }
     return {
       samples: result.tenants.map((tenant) => ({
         tenant,
         fingerprint: tenantFingerprint(tenant.configPath, tenant.envPath),
       })),
-      hold: result.holdIds,
+      hold: reconcileHoldIds(result),
     };
   };
+}
+
+function workspaceHoldKey(holds: readonly WorkspaceHold[]): string {
+  return holds
+    .map((hold) => `${hold.dir}\0${hold.reason}`)
+    .sort()
+    .join("\n");
+}
+
+function reconcileHoldIds(result: WorkspaceDiscoveryResult): string[] {
+  return result.holds.map((hold) => hold.dir);
+}
+
+function logWorkspaceBootSummary(
+  configDir: string,
+  workspace: ResolvedWorkspace,
+  result: WorkspaceDiscoveryResult,
+): void {
+  if (isExplicitWorkspace(workspace)) {
+    const declared = workspace.tenants.length;
+    const suffix = declared === 0 ? " (empty declared fleet)" : "";
+    console.log(
+      `[phoebe] boot: workspace mode — supervising ${result.tenants.length} of ${declared} ` +
+        `declared tenant(s) on one shared engine${suffix}.`,
+    );
+  } else {
+    console.log(
+      `[phoebe] boot: workspace mode — supervising ${result.tenants.length} tenant(s) ` +
+        `on one shared engine (depth ${workspace.depth}).`,
+    );
+  }
+  if (result.holds.length > 0) {
+    console.warn(formatWorkspaceHoldSummary(configDir, workspace, result.holds));
+  }
+}
+
+function logWorkspaceHoldSummary(
+  configDir: string,
+  workspace: ResolvedWorkspace,
+  holds: readonly WorkspaceHold[],
+): void {
+  console.warn(formatWorkspaceHoldSummary(configDir, workspace, holds));
+}
+
+function formatWorkspaceHoldSummary(
+  configDir: string,
+  workspace: ResolvedWorkspace,
+  holds: readonly WorkspaceHold[],
+): string {
+  if (holds.length === 0) {
+    return "[phoebe] boot: workspace: no held tenants.";
+  }
+  const label = isExplicitWorkspace(workspace) ? "declared tenant(s)" : "tenant(s)";
+  const parts = holds.map((hold) => {
+    const rel = relative(configDir, hold.dir).replace(/\\/g, "/");
+    const name = rel.length > 0 ? rel : hold.dir;
+    return `${name} (${hold.reason})`;
+  });
+  return `[phoebe] boot: workspace: held ${holds.length} ${label}: ${parts.join(", ")}.`;
 }
 
 /**
@@ -599,7 +676,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   // re-reads on each (re)launch for the engine source + cache bust.
   const rootFingerprint = configFingerprint(configPath);
   const rootConfig = await loadMountedConfig(configPath, rootFingerprint);
-  const workspace = readWorkspaceField(rootConfig, { root: configDir });
+  const workspace = resolveWorkspace(rootConfig, { root: configDir });
 
   if (workspace !== null) {
     if (isNestedDeployment(configDir)) {
@@ -608,18 +685,6 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
           "(nested central layout is off for this deployment).",
       );
     }
-    // Refused here, at the top of workspace mode, so a declared fleet fails
-    // before any child is spawned rather than after a surprise walk (#128).
-    const depth = requireDepthArm(workspace);
-    // Count tenants for the startup log (same walk the fleet will use).
-    const initial = await discoverWorkspaceTenants(configDir, depth, {
-      loadRepoSlug: loadTenantRepoSlug,
-      warn: (message) => console.warn(message),
-    });
-    console.log(
-      `[phoebe] boot: workspace mode — supervising ${initial.tenants.length} tenant(s) ` +
-        `on one shared engine (depth ${depth}).`,
-    );
     let fleetExit: EngineExit;
     try {
       fleetExit = await runFleet({
