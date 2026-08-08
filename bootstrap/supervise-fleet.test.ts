@@ -6,6 +6,7 @@
 import { describe, expect, test } from "vite-plus/test";
 import type { EngineExit, LaunchedEngine } from "./reconcile.ts";
 import type { DiscoveredTenant, TenantSample } from "./tenants.ts";
+import { DuplicateOriginSlugError } from "./tenants.ts";
 import { superviseFleet, type DrainTimer, type FleetChild } from "./supervise-fleet.ts";
 
 function tenant(slug: string): DiscoveredTenant {
@@ -422,5 +423,103 @@ describe("superviseFleet", () => {
     expect(exit).toEqual({ code: 0, signal: null });
     expect(spawned[0]!.kills).toEqual(["SIGTERM"]); // no SIGKILL
     expect(timers.canceledCount()).toBe(1); // grace timer was canceled, not left pending
+  });
+
+  test("a root-config stat move with unchanged engine does not drain the fleet (#138)", async () => {
+    const clock = gatedClock();
+    const engineState = { config: "1:1", remoteSha: "a".repeat(40) };
+    const engineSource = { source: "github" as const, ref: "main", repo: "JesusFilm/phoebe" };
+    const tenants = [sample("acme/widget", "fp1")];
+    const spawned: Array<ReturnType<typeof fakeChild>> = [];
+    let engineChangeLogs = 0;
+    let stopRequested = false;
+
+    const result = superviseFleet({
+      intervalMs: 1000,
+      launch: () => ({
+        entry: "/data/engine/src/cli.ts",
+        sha: engineState.remoteSha,
+        config: engineState.config,
+        quarantinedSha: null,
+        guarded: true,
+        engineSource,
+        sample: () => ({ config: engineState.config, remoteSha: engineState.remoteSha }),
+      }),
+      confirmEngineConfigChange: async (_launched) => {
+        return { changed: false, configFingerprint: "2:2" };
+      },
+      discover: () => tenants,
+      spawn: () => {
+        const fake = fakeChild();
+        spawned.push(fake);
+        return fake.child;
+      },
+      onEngineChange: () => {
+        engineChangeLogs += 1;
+      },
+      stop: {
+        get requested() {
+          return stopRequested;
+        },
+        wait: clock.wait,
+      },
+    });
+
+    await settle();
+    engineState.config = "2:2";
+    clock.tick();
+    await settle();
+    clock.tick();
+    await settle();
+
+    expect(spawned).toHaveLength(1);
+    expect(engineChangeLogs).toBe(0);
+    expect(spawned[0]!.kills).toEqual([]);
+
+    stopRequested = true;
+    clock.tick();
+    spawned[0]!.exit();
+    await result;
+  });
+
+  test("DuplicateOriginSlugError drains before aborting (#138)", async () => {
+    const clock = gatedClock();
+    let discoverCount = 0;
+    const spawned: Array<ReturnType<typeof fakeChild>> = [];
+
+    const resultPromise = superviseFleet({
+      intervalMs: 1000,
+      launch: () => ({
+        entry: "/data/engine/src/cli.ts",
+        sha: "a".repeat(40),
+        config: "1:1",
+        quarantinedSha: null,
+        guarded: true,
+        sample: () => ({ config: "1:1", remoteSha: "a".repeat(40) }),
+      }),
+      discover: () => {
+        discoverCount += 1;
+        if (discoverCount === 1) return [sample("acme/widget", "fp1")];
+        throw new DuplicateOriginSlugError("acme/shared", "/a", "/b");
+      },
+      spawn: () => {
+        const fake = fakeChild();
+        spawned.push(fake);
+        return fake.child;
+      },
+      stop: {
+        get requested() {
+          return false;
+        },
+        wait: clock.wait,
+      },
+    });
+
+    await settle();
+    clock.tick();
+    const error = await resultPromise.catch((e: unknown) => e);
+    await settle();
+    expect(spawned[0]!.kills).toContain("SIGTERM");
+    expect(error).toBeInstanceOf(DuplicateOriginSlugError);
   });
 });

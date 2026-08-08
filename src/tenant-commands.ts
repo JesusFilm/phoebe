@@ -335,9 +335,13 @@ async function listWorkspaceTenants(opts: {
   depth: number;
   loadRepoSlug?: (configPath: string) => string | Promise<string>;
 }): Promise<TenantListing[]> {
-  const discovery = await discoverWorkspaceTenants(opts.configDir, opts.depth, {
-    loadRepoSlug: opts.loadRepoSlug ?? defaultLoadRepoSlug,
-  });
+  const discovery = await discoverWorkspaceTenants(
+    opts.configDir,
+    { depth: opts.depth },
+    {
+      loadRepoSlug: opts.loadRepoSlug ?? defaultLoadRepoSlug,
+    },
+  );
   const listings: TenantListing[] = [];
   for (const tenant of discovery.tenants) {
     if (tenant.slug === null) continue;

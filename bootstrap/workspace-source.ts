@@ -291,3 +291,19 @@ export function readWorkspaceField(
   if (field === undefined) return null;
   return validateWorkspaceField(field, opts);
 }
+
+/**
+ * Resolve the root `workspace` block from a loaded config record — the single
+ * entry point boot and `phoebe list` share so they cannot disagree about the fleet.
+ */
+export function resolveWorkspace(
+  config: Record<string, unknown>,
+  opts: { root?: string } = {},
+): ResolvedWorkspace | null {
+  return readWorkspaceField(config, opts);
+}
+
+/** Which discovery arm a resolved block uses. */
+export function workspaceArm(workspace: ResolvedWorkspace): "depth" | "tenants" {
+  return isExplicitWorkspace(workspace) ? "tenants" : "depth";
+}

@@ -36,7 +36,11 @@ import {
   type CrashGuardEvent,
   type RunOutcome,
 } from "./crash-loop.ts";
-import { readEngineSource, type ResolvedEngineSource } from "./engine-source.ts";
+import {
+  readEngineSource,
+  engineSourcesEqual,
+  type ResolvedEngineSource,
+} from "./engine-source.ts";
 import { lsRemoteBranchSha, materializeGithubEngine } from "./github-engine.ts";
 import { buildEngineChildEnv, parseDotenv } from "./engine-child-env.ts";
 import { attachBroker } from "./broker-ipc.ts";
@@ -45,13 +49,23 @@ import {
   discoverTenants,
   discoverWorkspaceTenants,
   isNestedDeployment,
+  WorkspaceStructuralChangeError,
+  WorkspaceTenantAxisSkip,
   withTenantConfigDir,
   type DiscoveredTenant,
   type TenantSample,
+  type WorkspaceDiscoveryResult,
+  type WorkspaceHold,
+  type FleetDiscoverResult,
 } from "./tenants.ts";
 import { readConfigDir } from "./config-dir.ts";
 import { superviseFleet, type FleetChild, type FleetDiscoverInput } from "./supervise-fleet.ts";
-import { readWorkspaceField, requireDepthArm, type ResolvedWorkspace } from "./workspace-source.ts";
+import {
+  isExplicitWorkspace,
+  readWorkspaceField,
+  workspaceArm,
+  type ResolvedWorkspace,
+} from "./workspace-source.ts";
 import { readFileSync } from "node:fs";
 import {
   configFingerprint,
@@ -195,7 +209,15 @@ async function launchTarget(configPath: string, guard: CrashGuard): Promise<Laun
   if (source.source === "local") {
     const entry = resolveEngineEntry(source);
     console.log(`[phoebe] boot: engine source "local" — exec ${entry} (long-running).`);
-    return { entry, sha: null, config: fingerprint, guarded: false, quarantinedSha: null, sample };
+    return {
+      entry,
+      sha: null,
+      config: fingerprint,
+      guarded: false,
+      quarantinedSha: null,
+      engineSource: source,
+      sample,
+    };
   }
 
   const guarded = isMovingBranch(source, token);
@@ -217,7 +239,7 @@ async function launchTarget(configPath: string, guard: CrashGuard): Promise<Laun
     `[phoebe] boot: engine source "github" ${provenance} — exec ${entry} (long-running).`,
   );
 
-  return { entry, sha, config: fingerprint, guarded, quarantinedSha, sample };
+  return { entry, sha, config: fingerprint, guarded, quarantinedSha, engineSource: source, sample };
 }
 
 /**
@@ -437,6 +459,27 @@ function runFleet(opts: {
     spawn: spawnFleetChild,
     stop: opts.stop,
     intervalMs: opts.intervalMs,
+    confirmEngineConfigChange: async (launched) => {
+      const fingerprint = configFingerprint(opts.configPath);
+      if (fingerprint === null) {
+        return { changed: false, configFingerprint: launched.config };
+      }
+      try {
+        const config = await loadMountedConfig(opts.configPath, fingerprint);
+        const newSource = readEngineSource(config);
+        const prior = launched.engineSource ?? newSource;
+        return {
+          changed: !engineSourcesEqual(newSource, prior),
+          configFingerprint: fingerprint,
+        };
+      } catch (error) {
+        console.warn(
+          `[phoebe] boot: could not confirm engine config change — ${describe(error)}. ` +
+            `Skipping the engine relaunch this poll.`,
+        );
+        return { changed: false, configFingerprint: launched.config };
+      }
+    },
     onEngineChange: (reason) =>
       console.log(
         reason === "config"
@@ -495,28 +538,137 @@ function nestedDiscover(configDir: string): () => FleetDiscoverInput {
 }
 
 /**
- * Workspace-mode discover callback (#91): re-walk the tree every poll, load each
- * child's `repoSlug`, and report hold ids for mid-rewrite configs (#86).
+ * Workspace-mode discover callback (#91/#139): re-read the root `workspace` block
+ * and each child's config every poll; report hold ids for mid-rewrite configs (#86).
  */
 function workspaceDiscover(
   configDir: string,
-  workspace: ResolvedWorkspace,
+  configPath: string,
+  initialWorkspace: ResolvedWorkspace,
 ): () => FleetDiscoverInput {
-  const depth = requireDepthArm(workspace);
-  return async () => {
-    const result = await discoverWorkspaceTenants(configDir, depth, {
-      loadRepoSlug: loadTenantRepoSlug,
-      loadConfigDir: loadTenantConfigDir,
-      warn: (message) => console.warn(message),
+  let lastArm = workspaceArm(initialWorkspace);
+  let previousHoldIds = new Set<string>();
+  const supervisedIds = new Set<string>();
+
+  const discoveryDeps = {
+    loadRepoSlug: loadTenantRepoSlug,
+    loadConfigDir: loadTenantConfigDir,
+    warn: (message: string) => console.warn(message),
+  };
+
+  const logHeldSetChange = (
+    discovery: WorkspaceDiscoveryResult,
+    runningIds: ReadonlySet<string>,
+  ): void => {
+    if (discovery.holdIds.length === 0) return;
+    const holds: WorkspaceHold[] = discovery.holdIds.map((id) => ({
+      id,
+      reason: discovery.holdReasons.get(id) ?? "could not start",
+    }));
+    const holdKey = holds
+      .map((h) => `${h.id}:${h.reason}`)
+      .sort()
+      .join("|");
+    const prevKey = [...previousHoldIds]
+      .map((id) => `${id}:${discovery.holdReasons.get(id) ?? ""}`)
+      .sort()
+      .join("|");
+    if (holdKey === prevKey && previousHoldIds.size === holds.length) return;
+
+    const parts = holds.map((hold) => {
+      const label = discovery.tenants.find((t) => t.id === hold.id)?.declaredPath ?? hold.id;
+      const suffix = runningIds.has(hold.id)
+        ? " — was supervising it; the child keeps running until you edit the config"
+        : "";
+      return `${label} (${hold.reason})${suffix}`;
     });
+    console.warn(`[phoebe] boot: workspace: held ${holds.length} tenant(s) — ${parts.join("; ")}.`);
+    previousHoldIds = new Set(discovery.holdIds);
+  };
+
+  const toFleetResult = (discovery: WorkspaceDiscoveryResult): FleetDiscoverResult => {
+    for (const tenant of discovery.tenants) supervisedIds.add(tenant.id);
+    if (discovery.declaredCount !== undefined) {
+      logHeldSetChange(discovery, supervisedIds);
+    }
     return {
-      samples: result.tenants.map((tenant) => ({
+      samples: discovery.tenants.map((tenant) => ({
         tenant,
         fingerprint: tenantFingerprint(tenant.configPath, tenant.envPath),
       })),
-      hold: result.holdIds,
+      hold: discovery.holdIds,
+      holdReasons: discovery.holdReasons,
     };
   };
+
+  return async () => {
+    const rootFingerprint = configFingerprint(configPath);
+    let rootConfig: Record<string, unknown>;
+    try {
+      if (rootFingerprint === null) {
+        throw new WorkspaceTenantAxisSkip(
+          "root phoebe.config.ts is unreadable — skipping the tenant axis this poll",
+        );
+      }
+      rootConfig = await loadMountedConfig(configPath, rootFingerprint);
+    } catch (error) {
+      if (error instanceof WorkspaceTenantAxisSkip) throw error;
+      console.warn(
+        `[phoebe] boot: could not read root config — ${describe(error)}. ` +
+          "Skipping the tenant axis this poll (the running fleet is left intact).",
+      );
+      throw new WorkspaceTenantAxisSkip(describe(error));
+    }
+
+    let workspace: ResolvedWorkspace | null;
+    try {
+      workspace = readWorkspaceField(rootConfig, { root: configDir });
+    } catch (error) {
+      console.warn(
+        `[phoebe] boot: malformed workspace block — ${describe(error)}. ` +
+          "Skipping the tenant axis this poll (the running fleet is left intact).",
+      );
+      throw new WorkspaceTenantAxisSkip(describe(error));
+    }
+
+    if (workspace === null) {
+      throw new WorkspaceStructuralChangeError(
+        "workspace block deleted from phoebe.config.ts — draining the fleet and restarting boot",
+      );
+    }
+
+    const arm = workspaceArm(workspace);
+    if (arm !== lastArm) {
+      throw new WorkspaceStructuralChangeError(
+        "workspace discovery arm switched (depth ⇄ tenants) — draining the fleet and restarting boot",
+      );
+    }
+    lastArm = arm;
+
+    const discovery = await discoverWorkspaceTenants(configDir, workspace, discoveryDeps);
+    return toFleetResult(discovery);
+  };
+}
+
+function logWorkspaceBootSummary(
+  workspace: ResolvedWorkspace,
+  discovery: WorkspaceDiscoveryResult,
+): void {
+  if (isExplicitWorkspace(workspace)) {
+    const declared = workspace.tenants.length;
+    const live = discovery.tenants.length;
+    if (declared === 0) {
+      console.warn("[phoebe] boot: workspace: explicit fleet is empty — supervising zero tenants.");
+    }
+    console.log(
+      `[phoebe] boot: workspace mode — supervising ${live} of ${declared} declared tenant(s).`,
+    );
+    return;
+  }
+  console.log(
+    `[phoebe] boot: workspace mode — supervising ${discovery.tenants.length} tenant(s) ` +
+      `on one shared engine (depth ${workspace.depth}).`,
+  );
 }
 
 /**
@@ -610,16 +762,13 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     }
     // Refused here, at the top of workspace mode, so a declared fleet fails
     // before any child is spawned rather than after a surprise walk (#128).
-    const depth = requireDepthArm(workspace);
-    // Count tenants for the startup log (same walk the fleet will use).
-    const initial = await discoverWorkspaceTenants(configDir, depth, {
+    const discover = workspaceDiscover(configDir, configPath, workspace);
+    const initial = await discoverWorkspaceTenants(configDir, workspace, {
       loadRepoSlug: loadTenantRepoSlug,
+      loadConfigDir: loadTenantConfigDir,
       warn: (message) => console.warn(message),
     });
-    console.log(
-      `[phoebe] boot: workspace mode — supervising ${initial.tenants.length} tenant(s) ` +
-        `on one shared engine (depth ${depth}).`,
-    );
+    logWorkspaceBootSummary(workspace, initial);
     let fleetExit: EngineExit;
     try {
       fleetExit = await runFleet({
@@ -628,8 +777,15 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
         stop,
         intervalMs,
         argv,
-        discover: workspaceDiscover(configDir, workspace),
+        discover,
       });
+    } catch (error) {
+      if (error instanceof WorkspaceStructuralChangeError) {
+        console.error(`[phoebe] boot: ${error.message}`);
+        propagateExit(1, null);
+        return;
+      }
+      throw error;
     } finally {
       stop.dispose();
     }

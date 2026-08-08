@@ -6,12 +6,32 @@
 
 import { join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
+import { engineSourcesEqual } from "./engine-source.ts";
 import {
   isMovingBranch,
   LOCAL_ENGINE_DIR,
   resolveEngineEntry,
   setupGitCredentials,
 } from "./boot.ts";
+
+describe("engineSourcesEqual", () => {
+  test("github sources match on repo and ref", () => {
+    const a = { source: "github" as const, ref: "main", repo: "JesusFilm/phoebe" };
+    const b = { source: "github" as const, ref: "main", repo: "JesusFilm/phoebe" };
+    expect(engineSourcesEqual(a, b)).toBe(true);
+    expect(engineSourcesEqual(a, { ...a, ref: "v1" })).toBe(false);
+  });
+
+  test("local sources always match each other", () => {
+    expect(engineSourcesEqual({ source: "local" }, { source: "local" })).toBe(true);
+    expect(
+      engineSourcesEqual(
+        { source: "local" },
+        { source: "github", ref: "main", repo: "JesusFilm/phoebe" },
+      ),
+    ).toBe(false);
+  });
+});
 
 describe("resolveEngineEntry", () => {
   test("a local source execs the engine CLI under the mounted dir", () => {

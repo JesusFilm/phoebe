@@ -31,6 +31,8 @@
 
 import { statSync } from "node:fs";
 
+import type { ResolvedEngineSource } from "./engine-source.ts";
+
 /** How often the watch samples the config and the tracked ref. */
 export const DEFAULT_RECONCILE_INTERVAL_MS = 60_000;
 
@@ -79,6 +81,8 @@ export type LaunchedEngine = {
    * exit hooks; boot.ts is what decides with it.
    */
   guarded: boolean;
+  /** Resolved `engine` field at launch — semantic config-change confirm (#138). */
+  engineSource?: ResolvedEngineSource;
 };
 
 export type EngineExit = { code: number | null; signal: NodeJS.Signals | null };
