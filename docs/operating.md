@@ -152,19 +152,19 @@ add or remove one. There are two discovery layouts:
 
 - **Nested** — directories under `repos/<owner>/<repo>/` (this section).
 - **Workspace** — child checkouts under a root that declares
-  `workspace: { depth }` (plain clones or submodules). Full topology + runbook:
-  [`workspace.md`](workspace.md).
+  `workspace: { depth }` (walk) or `workspace: { tenants: [...] }` (declare).
+  Full topology + runbook: [`workspace.md`](workspace.md).
 
 Read [`trust.md`](trust.md) first: co-locating repos means co-locating them in
 one trust domain.
 
-| Action                                  | How                                                                                                                                                            |
-| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Add a repo                              | `phoebe add-repo <owner/repo>` (host-side, in the deployment dir). Creates `repos/<owner>/<repo>/`; the supervisor discovers it next poll. Fill in its `.env`. |
-| Migrate a flat deployment's fields down | `phoebe add-repo <owner/repo> --from-config` copies the top config's install/check/test commands into the new tenant.                                          |
-| Remove a repo                           | `phoebe remove-repo <owner/repo>` (host-side). Reversible — the tenant's `/data` is retained; re-adding re-uses it.                                            |
-| Reclaim a removed repo's disk           | `phoebe purge <owner/repo> --yes` (in-container). Destructive; refuses while a live config still exists.                                                       |
-| See every tenant + its health           | `phoebe list` (in-container): config present? `.env` present? retained data? current unit (read from each tenant's `status.json`).                             |
+| Action                                  | How                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Add a repo                              | `phoebe add-repo <owner/repo>` (host-side, in the deployment dir). Creates `repos/<owner>/<repo>/`; the supervisor discovers it next poll. Fill in its `.env`.                                                                                                                                                                                                                                                                                                         |
+| Migrate a flat deployment's fields down | `phoebe add-repo <owner/repo> --from-config` copies the top config's install/check/test commands into the new tenant.                                                                                                                                                                                                                                                                                                                                                  |
+| Remove a repo                           | `phoebe remove-repo <owner/repo>` (host-side). Reversible — the tenant's `/data` is retained; re-adding re-uses it.                                                                                                                                                                                                                                                                                                                                                    |
+| Reclaim a removed repo's disk           | `phoebe purge <owner/repo> --yes` (in-container). Destructive; refuses while a live config still exists.                                                                                                                                                                                                                                                                                                                                                               |
+| See every tenant + its health           | `phoebe list` (in-container): config present? `.env` present? retained data? current unit (read from each tenant's `status.json`). Rows that cannot boot show `held — <reason>`. Use `--json` for scriptable output and `--check` to exit non-zero when the declaration is not fully honoured (declared-arm accounting — `N of M`, declared order, `undeclared` — lives in [`workspace.md` → Declaring the fleet](workspace.md#declaring-the-fleet-workspacetenants)). |
 
 **Concurrency across tenants.** Only `PHOEBE_MAX_CONCURRENT_AGENTS` work units
 (default **1**) execute at once across the whole fleet — a supervisor-brokered,

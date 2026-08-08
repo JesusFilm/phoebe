@@ -25,7 +25,7 @@ plus two placeholder child checkouts — see
 
 ```text
 workspace-root/                         # bind-mounted :ro → /etc/phoebe
-  phoebe.config.ts                      # engine + workspace: { depth } only
+  phoebe.config.ts                      # engine + workspace: { depth } or { tenants }
   .env                                  # deployment: engine-checkout GH_TOKEN, toggles
   .env.example
   .gitignore
@@ -45,14 +45,16 @@ workspace-root/                         # bind-mounted :ro → /etc/phoebe
 
 | Layer              | Who owns it            | What it holds                                                                                                     |
 | ------------------ | ---------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| **Root**           | deployment / workspace | Shared `engine` + `workspace: { depth }`; deployment-level `.env`; `container/`                                   |
+| **Root**           | deployment / workspace | Shared `engine` + `workspace: { depth }` or `{ tenants }`; deployment-level `.env`; `container/`                  |
 | **Child (tenant)** | each linked repo       | In-tree `phoebe.config.ts` + gitignored `.env` (+ optional `prompts/`); **no** `container/`                       |
 | **Private clone**  | container volumes      | `/data/repos/<owner>/<repo>/` — each tenant still clones privately; the host checkout is **not** the working copy |
 
-**One supervised engine child per tenant.** The bootstrapper walks the tree to
-`workspace.depth` (default `1`), treats every directory with a root-level
-`phoebe.config.ts` as a tenant, and never treats the workspace root itself as a
-tenant. Bad children are skip-and-warned; a duplicate `repoSlug` aborts boot.
+**One supervised engine child per tenant.** The bootstrapper discovers children
+via the root's `workspace` arm — walk to `workspace.depth` (default `1`) or the
+declared `workspace.tenants` list ([Declaring the fleet](#declaring-the-fleet-workspacetenants))
+— treats every resolved directory with a root-level `phoebe.config.ts` as a
+tenant, and never treats the workspace root itself as a tenant. Bad children are
+skip-and-warned; a duplicate `repoSlug` aborts boot.
 
 **Private clones.** Discovery reads config and secrets from the on-disk child
 checkout; the engine still runs against a private clone under
@@ -145,12 +147,51 @@ declaring both is an error:
 | `{ tenants: ["widget"] }` | **Declared.** Exactly the directories listed, in the order listed.                                                              |
 
 Everything below this section describes the **walk** arm, which is the default
-and what `phoebe init --workspace` scaffolds. The declared arm's field shape and
-validation have landed — entries normalize, absolute and `..` paths supervise
-repos outside the workspace checkout, and an entry that is (or contains) the
-root, a duplicate, a nested pair, or a glob is rejected at load — but discovery
-for a declared fleet is not wired yet: `phoebe boot` and `phoebe list` refuse
-such a config rather than falling back to a walk.
+and what `phoebe init --workspace` scaffolds. For the declared arm — explicit
+order, hold-not-fatal, out-of-tree entries, `phoebe list` accounting, and the
+add-a-child delta — see [Declaring the fleet](#declaring-the-fleet-workspacetenants).
+
+## Declaring the fleet (workspace.tenants)
+
+When fleet membership and supervision order should be reviewable in the config
+diff rather than emergent from whatever happens to be on disk, declare the fleet
+explicitly:
+
+```typescript
+workspace: {
+  tenants: ["service-a", "service-b"];
+}
+```
+
+**Declared order is authoritative.** The list is spawn order, `phoebe list`
+order, and warn order — not sorted by `repoSlug`.
+
+**Entries are directory paths** resolved against the workspace root. Absolute
+paths and `..` chains are deliberately supported so a root may supervise repos
+outside the workspace checkout. Out-of-tree entries are a **host-location
+affordance only**: they are not inside the `:ro` mount at `/etc/phoebe`, so
+Phoebe reads config from the host path at boot/list time but such a tenant
+**holds** rather than boots in the container.
+
+**Hold-not-fatal.** Anything discovery observes about a single declared
+directory — absent dir, no config, unreadable config, empty `repoSlug`, origin
+mismatch — is skip-and-warn and **hold**. A declared tenant is never `removed`
+by discovery; deleting a checkout on disk keeps the child running until you edit
+the config.
+
+**Accounting in `phoebe list`.** On the explicit arm, `phoebe list` prints one
+row per declared entry in declared order. The header reads `N of M declared
+tenant(s)`. Rows that cannot boot show `held — <reason>`. Config-carrying
+directories on disk that are not in the list surface as `undeclared` (a drift
+check — boot never walks the tree for this). See
+[`operating.md`](operating.md#running-many-repos-in-one-container) for the
+shared `held — <reason>` rendering plus `--json` and `--check`.
+
+**Add a child (delta from the walk arm).** After linking a checkout and running
+`phoebe init --tenant`, paste the line the command prints into the root
+`workspace.tenants` array — Phoebe never edits the root config for you. See
+[runbook step 3](#3-per-child-place-a-checkout-scaffold-secret) for the full
+flow.
 
 ## Operator runbook
 
@@ -192,6 +233,8 @@ the host path that compose bind-mounts.
 
 ### 3. Per child: place a checkout, scaffold, secret
 
+**Walk arm** (default — `workspace: { depth }`):
+
 ```bash
 # Put a checkout on disk. A plain clone is simplest and needs no root git repo:
 git clone https://github.com/acme/service-a.git service-a
@@ -203,6 +246,26 @@ npx --yes phoebe-agent init --tenant ./service-a
 cp service-a/.env.example service-a/.env
 # Fill service-a/.env: that repo's GH_TOKEN + provider key
 ```
+
+The walk finds each child on the next poll — no root-config edit.
+
+**Declared arm** (`workspace: { tenants: [...] }`):
+
+```bash
+# 1. Link the checkout (same as walk — Phoebe never runs git here):
+git clone https://github.com/acme/service-a.git service-a
+
+# 2. Scaffold the in-tree install:
+npx --yes phoebe-agent init --tenant ./service-a
+# Edit service-a/phoebe.config.ts if needed; copy and fill service-a/.env
+
+# 3. Paste the line init --tenant printed into the root workspace.tenants array:
+#    workspace: { tenants: ["service-a", "service-b"] },
+```
+
+`init --tenant` detects the declared arm and prints the exact entry to paste;
+it refuses to edit the root config. Until the entry is in the list, the child
+silently never boots — step 3 is not optional.
 
 Repeat for each child. `init --tenant` refuses if `phoebe.config.ts` already
 exists (loud no-clobber). It does **not** create `container/` under the child.
@@ -236,9 +299,10 @@ docker compose --env-file ../.env up -d
 `phoebe boot` then:
 
 1. Selects workspace mode from the root `workspace` block,
-2. Walks children to `depth`,
+2. Discovers children (walks to `depth`, or resolves the declared `tenants`
+   list — see [Declaring the fleet](#declaring-the-fleet-workspacetenants)),
 3. Hands the discovered set to the #57 fleet (one engine child per tenant,
-   env-scrub, shared concurrency cap, reconcile re-walk every poll).
+   env-scrub, shared concurrency cap, reconcile re-reads the block every poll).
 
 See the mount notes beside the scaffolded templates
 (`container/README.md` when produced by `init --workspace`) for why each child's
@@ -258,6 +322,7 @@ must be material before first boot.
 
 | Topic                                                        | Where                                                              |
 | ------------------------------------------------------------ | ------------------------------------------------------------------ |
+| Explicit `workspace.tenants` arm (declared fleet)            | #127, [Declaring the fleet](#declaring-the-fleet-workspacetenants) |
 | Discovery contract (depth, prune, skip-and-warn, duplicates) | #82, `bootstrap/tenants.ts`                                        |
 | Mode ladder / coexistence with `repos/`                      | #83                                                                |
 | Child in-tree layout                                         | #84                                                                |

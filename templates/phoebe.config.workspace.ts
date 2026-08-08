@@ -1,11 +1,11 @@
 // Workspace-root Phoebe config — scaffolded by `phoebe init --workspace`.
 //
-// Only `engine` and `workspace` are read from the deployment root. Per-repo
-// config and secrets live in-tree on each child (scaffold with
-// `phoebe init --tenant <dir>` after linking the child). The presence of the
-// `workspace` block is what selects workspace discovery mode
-// (`bootstrap/tenants.ts`): `phoebe boot` walks children under this root and
-// treats each as a tenant — the root itself is never a tenant.
+// Only `engine` and `workspace` are read here; per-repo fields live on each child
+// (`phoebe init --tenant <dir>`). The `workspace` block declares one of two arms —
+// walk to `depth` for children carrying `phoebe.config.ts`, or declare explicitly:
+//   // workspace: { tenants: ["service-a", "service-b"] },
+// Declaring both is an error. Switch to `tenants` when fleet membership and order
+// should be reviewable in the config diff rather than emergent from disk.
 //
 // Type-only import on purpose: the container mounts this file at /etc/phoebe
 // and `phoebe boot` imports it before the engine exists, from a directory with
