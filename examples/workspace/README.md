@@ -46,6 +46,24 @@ The `workspace` block on the root config is what selects workspace mode; `depth`
 the root — the two here (`widget/`, `gadget/`) are placeholders showing the
 multiplicity.
 
+## Declared fleet (alternative arm)
+
+The example above uses the walk arm (`workspace: { depth: 1 }`), matching what
+`phoebe init --workspace` scaffolds. The layout is identical under the declared
+arm — only the root config field changes:
+
+```typescript
+workspace: {
+  tenants: ["widget", "gadget"];
+}
+```
+
+Declared order is authoritative; see
+[`docs/workspace.md` → Declaring the fleet](../../docs/workspace.md#declaring-the-fleet-workspacetenants)
+for hold behaviour, out-of-tree entries, `phoebe list` accounting, and the
+add-a-child delta. This snippet is **not** CI-type-checked (only the on-disk
+`phoebe.config.ts` is).
+
 ## Directory name vs. `repoSlug`
 
 The one thing that differs from nested: here a child's **directory name is an
