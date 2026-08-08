@@ -7,6 +7,7 @@ import { describe, expect, test } from "vite-plus/test";
 import {
   DEFAULT_ENGINE_REF,
   DEFAULT_ENGINE_REPO,
+  engineSourcesEqual,
   readEngineSource,
   resolveEngineSource,
 } from "./engine-source.ts";
@@ -62,6 +63,32 @@ describe("resolveEngineSource", () => {
 
   test("local passes through with no github fields", () => {
     expect(resolveEngineSource({ source: "local" })).toEqual({ source: "local" });
+  });
+});
+
+describe("engineSourcesEqual", () => {
+  test("github sources match when ref and repo agree", () => {
+    const a = { source: "github", ref: "main", repo: "JesusFilm/phoebe" } as const;
+    expect(engineSourcesEqual(a, { ...a })).toBe(true);
+  });
+
+  test("github sources differ when ref or repo moves", () => {
+    const base = { source: "github", ref: "main", repo: "JesusFilm/phoebe" } as const;
+    expect(engineSourcesEqual(base, { ...base, ref: "next" })).toBe(false);
+    expect(engineSourcesEqual(base, { ...base, repo: "acme/fork" })).toBe(false);
+  });
+
+  test("local sources always match each other", () => {
+    expect(engineSourcesEqual({ source: "local" }, { source: "local" })).toBe(true);
+  });
+
+  test("local and github never match", () => {
+    expect(
+      engineSourcesEqual(
+        { source: "local" },
+        { source: "github", ref: "main", repo: "JesusFilm/phoebe" },
+      ),
+    ).toBe(false);
   });
 });
 
