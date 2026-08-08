@@ -199,6 +199,7 @@ describe("listTenants", () => {
       declared: 0,
       live: 0,
       explicit: false,
+      undeclared: [],
     });
   });
 
@@ -359,6 +360,72 @@ describe("listTenants", () => {
       retainedData: true,
     });
     expect(listings[0]?.status?.currentUnit).toEqual({ kind: "issues", id: "3" });
+  });
+
+  test("explicit arm reports undeclared in-tree children after the declared block", async () => {
+    writeFileSync(
+      join(configDir, "phoebe.config.ts"),
+      `export default { workspace: { tenants: ["widget"] } };\n`,
+    );
+    mkdirSync(join(configDir, "widget"), { recursive: true });
+    mkdirSync(join(configDir, "orphan"), { recursive: true });
+    writeFileSync(join(configDir, "widget", "phoebe.config.ts"), "export default {};\n");
+    writeFileSync(join(configDir, "orphan", "phoebe.config.ts"), "export default {};\n");
+
+    const result = await listTenants({
+      configDir,
+      dataBase,
+      loadRepoSlug: (path) => (path.includes("widget") ? "acme/widget" : "acme/orphan"),
+    });
+
+    expect(result.undeclared).toEqual(["orphan"]);
+    expect(result.listings.map((l) => l.path)).toEqual(["widget"]);
+  });
+
+  test("explicit arm undeclared scan skips node_modules, .git, and dotdirs", async () => {
+    writeFileSync(
+      join(configDir, "phoebe.config.ts"),
+      `export default { workspace: { tenants: [] } };\n`,
+    );
+    for (const name of ["node_modules", ".git", ".hidden", "real"]) {
+      mkdirSync(join(configDir, name), { recursive: true });
+      writeFileSync(join(configDir, name, "phoebe.config.ts"), "export default {};\n");
+    }
+
+    const { undeclared } = await listTenants({ configDir, dataBase });
+    expect(undeclared).toEqual(["real"]);
+  });
+
+  test("explicit arm does not flag a declared entry as undeclared", async () => {
+    writeFileSync(
+      join(configDir, "phoebe.config.ts"),
+      `export default { workspace: { tenants: ["./widget/"] } };\n`,
+    );
+    mkdirSync(join(configDir, "widget"), { recursive: true });
+    writeFileSync(join(configDir, "widget", "phoebe.config.ts"), "export default {};\n");
+
+    const { undeclared } = await listTenants({
+      configDir,
+      dataBase,
+      loadRepoSlug: () => "acme/widget",
+    });
+    expect(undeclared).toEqual([]);
+  });
+
+  test("walk arm leaves undeclared empty", async () => {
+    writeFileSync(
+      join(configDir, "phoebe.config.ts"),
+      `export default { workspace: { depth: 1 } };\n`,
+    );
+    mkdirSync(join(configDir, "child"), { recursive: true });
+    writeFileSync(join(configDir, "child", "phoebe.config.ts"), "export default {};\n");
+
+    const { undeclared } = await listTenants({
+      configDir,
+      dataBase,
+      loadRepoSlug: () => "acme/child",
+    });
+    expect(undeclared).toEqual([]);
   });
 });
 

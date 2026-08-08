@@ -25,7 +25,7 @@
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 
 import { DEFAULT_TENANT_CONFIG_DIR } from "./config-dir.ts";
 import { isExplicitWorkspace, type ResolvedWorkspace } from "./workspace-source.ts";
@@ -495,4 +495,29 @@ export async function discoverWorkspaceTenants(
     .map((id) => holdMeta.get(id) ?? { id, reason: "discovery failed", slug: null });
 
   return { mode: "workspace", tenants, holds };
+}
+
+/**
+ * Depth-1 backstop for `phoebe list` on the explicit arm only (#141). Finds
+ * immediate in-tree children carrying a root-level `phoebe.config.ts` that are
+ * not declared in `workspace.tenants`. Knowingly partial — a hint, not a
+ * guarantee: out-of-tree repos and candidates deeper than depth 1 are invisible
+ * by construction. Boot and reconcile never call this.
+ */
+export function discoverUndeclaredInTreeTenants(
+  configDir: string,
+  declaredTenants: readonly string[],
+): string[] {
+  const declared = new Set(declaredTenants.map((entry) => resolve(configDir, entry)));
+
+  const undeclared: string[] = [];
+  for (const name of listDirs(configDir)) {
+    if (shouldSkipWorkspaceDir(name)) continue;
+    const dir = join(configDir, name);
+    if (!existsSync(join(dir, TENANT_CONFIG_FILE))) continue;
+    if (declared.has(resolve(dir))) continue;
+    const rel = relative(configDir, dir).replace(/\\/g, "/");
+    undeclared.push(rel.length > 0 ? rel : dir);
+  }
+  return undeclared.sort((a, b) => a.localeCompare(b));
 }

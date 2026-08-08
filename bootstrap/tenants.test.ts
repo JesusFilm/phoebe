@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
 import {
   diffFleet,
   discoverTenants,
+  discoverUndeclaredInTreeTenants,
   discoverWorkspaceTenants,
   DuplicateOriginSlugError,
   DuplicateTenantSlugError,
@@ -444,6 +445,14 @@ describe("workspace mode", () => {
       { id: "missing", reason: "directory does not exist", slug: null },
       { id: "empty", reason: "no phoebe.config.ts", slug: null },
     ]);
+  });
+
+  test("discoverUndeclaredInTreeTenants finds depth-1 config dirs not in the declaration", () => {
+    writeSlugConfig(join(dir, "widget"), "acme/widget");
+    writeSlugConfig(join(dir, "orphan"), "acme/orphan");
+    writeSlugConfig(join(dir, "apps", "nested"), "acme/nested");
+
+    expect(discoverUndeclaredInTreeTenants(dir, ["widget"])).toEqual(["orphan"]);
   });
 });
 
