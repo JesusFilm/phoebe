@@ -3,7 +3,24 @@
 // accepted/rejected before this move is still accepted/rejected identically.
 
 import { describe, expect, test } from "vite-plus/test";
-import { parseInitArgs } from "./init.ts";
+import { planInitOutputs } from "../init.ts";
+import { INIT_HELP_TEXT, parseInitArgs } from "./init.ts";
+
+describe("INIT_HELP_TEXT file lists (#74)", () => {
+  test("flat block names every planInitOutputs('flat') destination, prompts collapsed", () => {
+    for (const output of planInitOutputs("flat")) {
+      const key = output.source.kind === "shipped-prompt" ? "prompts/" : output.destRelPath;
+      expect(INIT_HELP_TEXT).toContain(`    ${key}`);
+    }
+  });
+
+  test("workspace block names every planInitOutputs('workspace') destination, container/* collapsed", () => {
+    for (const output of planInitOutputs("workspace")) {
+      const key = output.destRelPath.startsWith("container/") ? "container/" : output.destRelPath;
+      expect(INIT_HELP_TEXT).toContain(`    ${key}`);
+    }
+  });
+});
 
 describe("parseInitArgs", () => {
   test("defaults to current directory and flat profile when no args given", () => {

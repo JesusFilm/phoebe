@@ -7,8 +7,10 @@ import {
   copyShippedPromptsInto,
   formatInitReport,
   initTenant,
+  planInitOutputs,
   runInit,
   type InitProfile,
+  type PlannedOutput,
 } from "../init.ts";
 import type { Command } from "./types.ts";
 
@@ -102,6 +104,78 @@ export function parseInitArgs(argv: readonly string[]): ParsedInitArgs {
   };
 }
 
+const FILE_LIST_COLUMN_WIDTH = 29;
+
+/**
+ * The one-line description shown next to each scaffolded output in the
+ * `flat`/`workspace` blocks below (#74) — everything else about the list
+ * (which paths, in which order) comes from `planInitOutputs`. Keyed by
+ * `fileListKey`'s grouped key rather than the raw `destRelPath`, since every
+ * shipped prompt collapses to one `prompts/` line (flat) and every container
+ * file collapses to one `container/` line (workspace).
+ */
+const FLAT_FILE_DESCRIPTIONS: Readonly<Record<string, string>> = {
+  "phoebe.config.ts": "Consumer config starter (five required fields + engine)",
+  ".env.example": "Documented environment variables to copy to .env",
+  "container/Dockerfile": "Runtime image (Node 24 + git + gh, entrypoint: phoebe boot)",
+  "container/compose.yml": "Compose config for the long-lived boot container",
+  "container/compose.local.yml": "Dev overlay to run an engine checkout from your host",
+  "prompts/": "Copies of the shipped agent prompts (edit to override)",
+  ".gitignore": "Additive — .env, repos/**/.env, node_modules/",
+};
+
+const WORKSPACE_FILE_DESCRIPTIONS: Readonly<Record<string, string>> = {
+  "phoebe.config.ts": "engine + workspace: { depth: 1 } only (no per-repo fields)",
+  ".env.example": "Deployment secrets (GH_TOKEN, provider keys) — no tenant secrets",
+  "container/": "Same #57 templates as flat, plus README.md mount docs",
+  ".gitignore": "Additive — .env, node_modules/",
+};
+
+/** The key a planned output's help line is grouped under (see the file-description doc above). */
+function fileListKey(profile: "flat" | "workspace", output: PlannedOutput): string {
+  if (profile === "flat" && output.source.kind === "shipped-prompt") return "prompts/";
+  if (profile === "workspace" && output.destRelPath.startsWith("container/")) return "container/";
+  return output.destRelPath;
+}
+
+/**
+ * Render a profile's scaffolded-file list for `INIT_HELP_TEXT` straight from
+ * `planInitOutputs` (#74) — a file `planInitOutputs` starts or stops
+ * producing appears or disappears here with no separate edit. The
+ * description table above must stay exactly in step: a group `planInitOutputs`
+ * produces with no description, or a description for a group it no longer
+ * produces, throws at import time rather than silently drifting.
+ */
+function renderFileList(
+  profile: "flat" | "workspace",
+  descriptions: Readonly<Record<string, string>>,
+): string {
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  for (const output of planInitOutputs(profile)) {
+    const key = fileListKey(profile, output);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const description = descriptions[key];
+    if (description === undefined) {
+      throw new Error(
+        `\`phoebe init --help\` has no description for the ${profile} output \`${key}\` — ` +
+          `add one to the matching descriptions table in src/commands/init.ts.`,
+      );
+    }
+    lines.push(`    ${key.padEnd(FILE_LIST_COLUMN_WIDTH)}${description}`);
+  }
+  for (const key of Object.keys(descriptions)) {
+    if (!seen.has(key)) {
+      throw new Error(
+        `\`phoebe init --help\`'s ${profile} descriptions table names \`${key}\`, but ` +
+          `planInitOutputs("${profile}") no longer produces it — remove the stale entry.`,
+      );
+    }
+  }
+  return lines.join("\n");
+}
+
 export const INIT_HELP_TEXT = `phoebe init — scaffold a consumer-owned runtime
 
 Usage:
@@ -113,19 +187,10 @@ Usage:
 Profiles (mutually exclusive; default is flat):
 
   flat (default) writes into [dir]:
-    phoebe.config.ts             Consumer config starter (five required fields + engine)
-    prompts/                     Copies of the shipped agent prompts (edit to override)
-    .env.example                 Documented environment variables to copy to .env
-    .gitignore                   Additive — .env, repos/**/.env, node_modules/
-    container/Dockerfile         Runtime image (Node 24 + git + gh, entrypoint: phoebe boot)
-    container/compose.yml        Compose config for the long-lived boot container
-    container/compose.local.yml  Dev overlay to run an engine checkout from your host
+${renderFileList("flat", FLAT_FILE_DESCRIPTIONS)}
 
   --workspace writes into [dir]:
-    phoebe.config.ts             engine + workspace: { depth: 1 } only (no per-repo fields)
-    .env.example                 Deployment secrets (GH_TOKEN, provider keys) — no tenant secrets
-    .gitignore                   Additive — .env, node_modules/
-    container/                   Same #57 templates as flat, plus README.md mount docs
+${renderFileList("workspace", WORKSPACE_FILE_DESCRIPTIONS)}
     (no prompts/, no child files — link children then run init --tenant)
 
   --tenant writes a child's in-tree install (after \`git submodule add\`):
@@ -143,7 +208,9 @@ Flat/workspace: existing files are left untouched. Tenant: refuses to overwrite.
 
 export const initCommand: Command = {
   name: "init",
-  summary: "phoebe init [dir]                Scaffold a flat single-tenant deployment",
+  summary: `phoebe init [dir]                Scaffold a flat single-tenant deployment
+  phoebe init --workspace [dir]    Scaffold a workspace root (multi-child)
+  phoebe init --tenant [dir]       Scaffold a workspace child in-tree install`,
   help: INIT_HELP_TEXT,
   async run(argv, ctx) {
     const parsed = parseInitArgs(argv);

@@ -17,6 +17,7 @@ import { DEFAULT_RESOLVED_CONFIG } from "./init.ts";
 import {
   createReadlinePrompter,
   maskSecret,
+  NEXT_STEPS,
   parseGitRemote,
   type Prompter,
   renderEnv,
@@ -549,5 +550,54 @@ describe("createReadlinePrompter", () => {
     expect(await secret).toBe("hunter2");
     expect(text()).not.toContain("hunter2");
     p.close();
+  });
+});
+
+// --- NEXT_STEPS docs drift ---------------------------------------------------
+
+// README.md and docs/ai-install.md each restate the docker incantation with
+// their own surrounding prose (#74) rather than embedding NEXT_STEPS verbatim,
+// so the check below is "same commands, same order, comments aside" — not a
+// byte comparison — and still fails the moment any of the three moves alone.
+
+/** Drop a trailing `# comment` and surrounding whitespace from one line. */
+function significantLine(line: string): string {
+  const withoutComment = line.includes("#") ? line.slice(0, line.indexOf("#")) : line;
+  return withoutComment.trim();
+}
+
+function significantLines(text: string): string[] {
+  return text
+    .split("\n")
+    .map(significantLine)
+    .filter((line) => line.length > 0);
+}
+
+/** Assert every line of `steps` occurs in `doc`, in order (not necessarily contiguous). */
+function expectOrderedSubsequence(doc: readonly string[], steps: readonly string[]): void {
+  let cursor = -1;
+  for (const step of steps) {
+    const idx = doc.indexOf(step, cursor + 1);
+    if (idx <= cursor) {
+      throw new Error(
+        `Expected \`${step}\` after position ${cursor} in the doc — the docker incantation has ` +
+          `drifted from src/setup.ts's NEXT_STEPS.`,
+      );
+    }
+    cursor = idx;
+  }
+}
+
+describe("NEXT_STEPS docs drift", () => {
+  const steps = significantLines(NEXT_STEPS);
+
+  test("README.md restates the same commands in the same order", () => {
+    const doc = significantLines(readFileSync(join(REPO_ROOT, "README.md"), "utf8"));
+    expectOrderedSubsequence(doc, steps);
+  });
+
+  test("docs/ai-install.md restates the same commands in the same order", () => {
+    const doc = significantLines(readFileSync(join(REPO_ROOT, "docs", "ai-install.md"), "utf8"));
+    expectOrderedSubsequence(doc, steps);
   });
 });

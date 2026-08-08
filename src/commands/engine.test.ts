@@ -2,7 +2,21 @@
 // verbatim from src/cli.test.ts when parseCliArgs relocated to this module.
 
 import { describe, expect, test } from "vite-plus/test";
+import { HELP_TEXT } from "./engine.ts";
 import { parseCliArgs } from "./engine.ts";
+import { COMMAND_TABLE } from "./table.ts";
+
+describe("root usage (#74)", () => {
+  test("lists every command table entry's summary, in table order", () => {
+    const summaries = Object.values(COMMAND_TABLE).map((command) => command.summary);
+    let cursor = -1;
+    for (const summary of summaries) {
+      const idx = HELP_TEXT.indexOf(summary);
+      expect(idx).toBeGreaterThan(cursor);
+      cursor = idx;
+    }
+  });
+});
 
 describe("parseCliArgs", () => {
   test("returns empty parsed state for empty argv", () => {

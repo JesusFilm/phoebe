@@ -28,36 +28,12 @@ import {
 import { resolveDataBase } from "../paths.ts";
 import { setResolvedConfig } from "../resolved-config.ts";
 import { isNested, parseSlug } from "../tenant-commands.ts";
+import { parseCliArgs } from "./cli-args.ts";
+import { COMMAND_TABLE } from "./table.ts";
 import type { Command } from "./types.ts";
 
 export { BOOTSTRAP_RESOLVED_CONFIG_ENV };
-
-export type ParsedCliArgs = { configPath: string | undefined; help: boolean; forward: string[] };
-
-const CLI_SPEC: ArgSpec = {
-  booleanFlags: ["help"],
-  valueFlags: ["config"],
-  aliases: { h: "help", c: "config" },
-  onUnknownFlag: "forward",
-  missingValue: (arg) => `${arg} requires a path argument (e.g. --config phoebe.config.ts).`,
-};
-
-/**
- * Extract `--config <path>` / `--config=<path>` / `-c <path>` and `--help`/`-h`
- * from argv, forwarding everything else to `runEngine`. A minimal parser is
- * enough — the engine handles its own boolean flags (`--run-once`, `--dry-run`)
- * from the forwarded array. Also reused by `phoebe status`, which shares the
- * same `--config`/`--help` surface and does its own filtering of the rest.
- */
-export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
-  const parsed = parseArgs(argv, CLI_SPEC);
-  const configPath = parsed.flags["config"];
-  return {
-    configPath: typeof configPath === "string" ? configPath : undefined,
-    help: parsed.flags["help"] === true,
-    forward: parsed.positionals,
-  };
-}
+export { parseCliArgs, type ParsedCliArgs } from "./cli-args.ts";
 
 const REPO_FLAG_SPEC: ArgSpec = {
   guardedValueFlags: ["repo"],
@@ -121,22 +97,23 @@ export function loadEngineConfiguration(
 // the rest of the text — `boot` is composed onto the table from outside
 // `src/`, so `src/` itself never lists it (a standalone `node src/cli.ts` has
 // no `boot`).
-const HELP_HEADER = `phoebe — AFK coding agent
+const HELP_BANNER = `phoebe — AFK coding agent
 
 Usage:
-  phoebe setup [dir]               Interactive wizard: scaffold + fill config & .env
-  phoebe init [dir]                Scaffold a flat single-tenant deployment
-  phoebe init --workspace [dir]    Scaffold a workspace root (multi-child)
-  phoebe init --tenant [dir]       Scaffold a workspace child in-tree install
-  phoebe add-repo <owner/repo>     Add a tenant (→ nested multi-tenant)
-  phoebe remove-repo <owner/repo>  Remove a tenant's config (data retained)
-  phoebe list                      List tenants + health (in-container)
-  phoebe purge <owner/repo> --yes  Wipe a removed tenant's data (in-container)
-  phoebe serve [--port N]          Serve a read-only fleet page (see --help)
-    [--state-dir DIR]...
-  phoebe config resolve --json     Print the canonical effective configuration
-  phoebe status --json             Read the local status-v2 projection
 `;
+
+/**
+ * Every table entry's `summary`, indented and newline-terminated, in table
+ * order (#74) — the mechanical part of root usage. Adding a command to
+ * `COMMAND_TABLE` (./table.ts) makes it appear here with no second edit; a
+ * command whose usage needs more than one line (`init`'s profile flags,
+ * `serve`'s `--state-dir`) embeds its own continuation lines in `summary`.
+ */
+function renderCommandLines(): string {
+  return Object.values(COMMAND_TABLE)
+    .map((command) => `  ${command.summary}\n`)
+    .join("");
+}
 
 const HELP_FOOTER = `  phoebe [--config <path>] [flags] Run the engine
 
@@ -169,7 +146,7 @@ Runtime toggles (read directly by the engine, not overlaid onto the config):
  * `phoebe --help` text the engine table alone has always shown.
  */
 export function buildHelpText(extraCommandLines = ""): string {
-  return HELP_HEADER + extraCommandLines + HELP_FOOTER;
+  return HELP_BANNER + renderCommandLines() + extraCommandLines + HELP_FOOTER;
 }
 
 export const HELP_TEXT = buildHelpText();

@@ -52,7 +52,10 @@ const KEY_LINKS: Record<string, string> = {
   OPENAI_KEY: "https://platform.openai.com/api-keys",
 };
 
-const NEXT_STEPS = `  cd container
+// Also lives, expanded with commentary, in README.md and docs/ai-install.md
+// (#74) — drift-tested rather than generated (setup.test.ts) since each copy
+// needs its own surrounding prose.
+export const NEXT_STEPS = `  cd container
   docker compose --env-file ../.env build
   docker compose --env-file ../.env run --rm phoebe --dry-run --run-once
   docker compose --env-file ../.env up -d

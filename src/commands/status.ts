@@ -4,7 +4,7 @@
 import { loadConfiguration, resolveConfigPath } from "../config/index.ts";
 import { ContractCapabilityError, STATUS_SCHEMA_VERSION } from "../status-contract.ts";
 import { readStatusSnapshot } from "../status-store.ts";
-import { parseCliArgs } from "./engine.ts";
+import { parseCliArgs } from "./cli-args.ts";
 import type { Command } from "./types.ts";
 
 export type ParsedStatusArgs = { configPath: string | undefined; help: boolean };
