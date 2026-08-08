@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
 import {
   diffFleet,
   discoverTenants,
+  discoverUndeclaredInTreeTenants,
   discoverWorkspaceTenants,
   DuplicateOriginSlugError,
   DuplicateTenantSlugError,
@@ -136,18 +137,22 @@ describe("workspace mode", () => {
       [join(dir, "gadget", TENANT_CONFIG_FILE), "acme/gadget"],
       [join(dir, TENANT_CONFIG_FILE), "acme/workspace-root"],
     ]);
-    const discovery = await discoverWorkspaceTenants(dir, 1, {
-      loadRepoSlug: (path) => {
-        const slug = slugs.get(path);
-        if (!slug) throw new Error(`unexpected path ${path}`);
-        return slug;
+    const discovery = await discoverWorkspaceTenants(
+      dir,
+      { depth: 1 },
+      {
+        loadRepoSlug: (path) => {
+          const slug = slugs.get(path);
+          if (!slug) throw new Error(`unexpected path ${path}`);
+          return slug;
+        },
+        readOriginUrl: () => null,
       },
-      readOriginUrl: () => null,
-    });
+    );
     expect(discovery.mode).toBe("workspace");
     expect(discovery.tenants.map((t) => t.slug)).toEqual(["acme/gadget", "acme/widget"]);
     expect(discovery.tenants.every((t) => t.dir !== dir)).toBe(true);
-    expect(discovery.holdIds).toEqual([]);
+    expect(discovery.holds).toEqual([]);
   });
 
   test("depth 2 walks nested dirs and prunes at the first config hit", async () => {
@@ -157,15 +162,19 @@ describe("workspace mode", () => {
     // Deeper than depth without an intermediate config needs depth ≥ remaining.
     writeSlugConfig(join(dir, "apps", "lib", "gadget"), "acme/gadget");
 
-    const discovery = await discoverWorkspaceTenants(dir, 2, {
-      loadRepoSlug: (path) => {
-        if (path.includes("/nested/")) return "acme/nested";
-        if (path.includes("widget")) return "acme/widget";
-        if (path.includes("gadget")) return "acme/gadget";
-        throw new Error(path);
+    const discovery = await discoverWorkspaceTenants(
+      dir,
+      { depth: 2 },
+      {
+        loadRepoSlug: (path) => {
+          if (path.includes("/nested/")) return "acme/nested";
+          if (path.includes("widget")) return "acme/widget";
+          if (path.includes("gadget")) return "acme/gadget";
+          throw new Error(path);
+        },
+        readOriginUrl: () => null,
       },
-      readOriginUrl: () => null,
-    });
+    );
     // depth 2: root→apps (no config)→widget (config, prune); root→apps→lib has no config
     // at depth budget remaining 0 under lib when depth is 2...
     // walk(root, 2): apps has no config → walk(apps, 1): widget has config → tenant;
@@ -173,15 +182,19 @@ describe("workspace mode", () => {
     expect(discovery.tenants.map((t) => t.slug)).toEqual(["acme/widget"]);
     expect(discovery.tenants.find((t) => t.slug === "acme/nested")).toBeUndefined();
 
-    const deep = await discoverWorkspaceTenants(dir, 3, {
-      loadRepoSlug: (path) => {
-        if (path.includes("/nested/")) return "acme/nested";
-        if (path.includes("widget")) return "acme/widget";
-        if (path.includes("gadget")) return "acme/gadget";
-        throw new Error(path);
+    const deep = await discoverWorkspaceTenants(
+      dir,
+      { depth: 3 },
+      {
+        loadRepoSlug: (path) => {
+          if (path.includes("/nested/")) return "acme/nested";
+          if (path.includes("widget")) return "acme/widget";
+          if (path.includes("gadget")) return "acme/gadget";
+          throw new Error(path);
+        },
+        readOriginUrl: () => null,
       },
-      readOriginUrl: () => null,
-    });
+    );
     expect(deep.tenants.map((t) => t.slug)).toEqual(["acme/gadget", "acme/widget"]);
   });
 
@@ -190,16 +203,22 @@ describe("workspace mode", () => {
     writeConfig(join(dir, "broken")); // present config, load fails
     const warnings: string[] = [];
 
-    const discovery = await discoverWorkspaceTenants(dir, 1, {
-      loadRepoSlug: (path) => {
-        if (path.includes("broken")) throw new Error("parse failure");
-        return "acme/good";
+    const discovery = await discoverWorkspaceTenants(
+      dir,
+      { depth: 1 },
+      {
+        loadRepoSlug: (path) => {
+          if (path.includes("broken")) throw new Error("parse failure");
+          return "acme/good";
+        },
+        readOriginUrl: () => null,
+        warn: (m) => warnings.push(m),
       },
-      readOriginUrl: () => null,
-      warn: (m) => warnings.push(m),
-    });
+    );
     expect(discovery.tenants.map((t) => t.slug)).toEqual(["acme/good"]);
-    expect(discovery.holdIds).toEqual([join(dir, "broken")]);
+    expect(discovery.holds).toEqual([
+      { id: join(dir, "broken"), reason: "parse failure", slug: null },
+    ]);
     expect(warnings.some((w) => /broken/.test(w) && /parse failure/.test(w))).toBe(true);
   });
 
@@ -208,17 +227,25 @@ describe("workspace mode", () => {
     writeSlugConfig(join(dir, "b"), "acme/same");
 
     await expect(
-      discoverWorkspaceTenants(dir, 1, {
-        loadRepoSlug: () => "acme/same",
-        readOriginUrl: () => null,
-      }),
+      discoverWorkspaceTenants(
+        dir,
+        { depth: 1 },
+        {
+          loadRepoSlug: () => "acme/same",
+          readOriginUrl: () => null,
+        },
+      ),
     ).rejects.toBeInstanceOf(DuplicateTenantSlugError);
 
     try {
-      await discoverWorkspaceTenants(dir, 1, {
-        loadRepoSlug: () => "acme/same",
-        readOriginUrl: () => null,
-      });
+      await discoverWorkspaceTenants(
+        dir,
+        { depth: 1 },
+        {
+          loadRepoSlug: () => "acme/same",
+          readOriginUrl: () => null,
+        },
+      );
     } catch (error) {
       expect(error).toBeInstanceOf(DuplicateTenantSlugError);
       const dup = error as DuplicateTenantSlugError;
@@ -236,22 +263,32 @@ describe("workspace mode", () => {
     writeSlugConfig(mismatch, "acme/configured");
     const warnings: string[] = [];
 
-    const discovery = await discoverWorkspaceTenants(dir, 1, {
-      loadRepoSlug: (path) => {
-        if (path.includes("mismatch")) return "acme/configured";
-        return "acme/good";
+    const discovery = await discoverWorkspaceTenants(
+      dir,
+      { depth: 1 },
+      {
+        loadRepoSlug: (path) => {
+          if (path.includes("mismatch")) return "acme/configured";
+          return "acme/good";
+        },
+        readOriginUrl: origins({
+          [good]: "git@github.com:acme/good.git",
+          [mismatch]: "https://github.com/acme/other.git",
+        }),
+        warn: (m) => warnings.push(m),
       },
-      readOriginUrl: origins({
-        [good]: "git@github.com:acme/good.git",
-        [mismatch]: "https://github.com/acme/other.git",
-      }),
-      warn: (m) => warnings.push(m),
-    });
+    );
     expect(discovery.tenants.map((t) => t.slug)).toEqual(["acme/good"]);
-    expect(discovery.holdIds).toEqual([mismatch]);
+    expect(discovery.holds).toEqual([
+      {
+        id: mismatch,
+        reason: 'origin slug "acme/other" ≠ repoSlug',
+        slug: "acme/configured",
+      },
+    ]);
     expect(
       warnings.some(
-        (w) => w.includes("mismatch") && w.includes("acme/other") && w.includes("acme/configured"),
+        (w) => w.includes("mismatch") && w.includes('origin slug "acme/other" ≠ repoSlug'),
       ),
     ).toBe(true);
   });
@@ -260,22 +297,30 @@ describe("workspace mode", () => {
     writeSlugConfig(join(dir, "orphan"), "acme/orphan");
     const warnings: string[] = [];
 
-    const discovery = await discoverWorkspaceTenants(dir, 1, {
-      loadRepoSlug: () => "acme/orphan",
-      readOriginUrl: () => null,
-      warn: (m) => warnings.push(m),
-    });
+    const discovery = await discoverWorkspaceTenants(
+      dir,
+      { depth: 1 },
+      {
+        loadRepoSlug: () => "acme/orphan",
+        readOriginUrl: () => null,
+        warn: (m) => warnings.push(m),
+      },
+    );
     expect(discovery.tenants.map((t) => t.slug)).toEqual(["acme/orphan"]);
-    expect(discovery.holdIds).toEqual([]);
+    expect(discovery.holds).toEqual([]);
     expect(warnings).toEqual([]);
   });
 
   test("malformed / non-GitHub origin is treated as absent and admits", async () => {
     writeSlugConfig(join(dir, "child"), "acme/child");
-    const discovery = await discoverWorkspaceTenants(dir, 1, {
-      loadRepoSlug: () => "acme/child",
-      readOriginUrl: () => "https://gitlab.com/acme/child.git",
-    });
+    const discovery = await discoverWorkspaceTenants(
+      dir,
+      { depth: 1 },
+      {
+        loadRepoSlug: () => "acme/child",
+        readOriginUrl: () => "https://gitlab.com/acme/child.git",
+      },
+    );
     expect(discovery.tenants.map((t) => t.slug)).toEqual(["acme/child"]);
   });
 
@@ -285,14 +330,18 @@ describe("workspace mode", () => {
     writeSlugConfig(a, "acme/widget");
     writeSlugConfig(b, "acme/gadget");
 
-    const discovery = await discoverWorkspaceTenants(dir, 1, {
-      loadRepoSlug: (path) =>
-        path === join(a, TENANT_CONFIG_FILE) ? "acme/widget" : "acme/gadget",
-      readOriginUrl: origins({
-        [a]: "git@github.com:acme/widget.git",
-        [b]: "https://github.com/acme/gadget",
-      }),
-    });
+    const discovery = await discoverWorkspaceTenants(
+      dir,
+      { depth: 1 },
+      {
+        loadRepoSlug: (path) =>
+          path === join(a, TENANT_CONFIG_FILE) ? "acme/widget" : "acme/gadget",
+        readOriginUrl: origins({
+          [a]: "git@github.com:acme/widget.git",
+          [b]: "https://github.com/acme/gadget",
+        }),
+      },
+    );
     expect(discovery.tenants.map((t) => t.slug)).toEqual(["acme/gadget", "acme/widget"]);
   });
 
@@ -311,17 +360,25 @@ describe("workspace mode", () => {
     });
 
     await expect(
-      discoverWorkspaceTenants(dir, 1, {
-        loadRepoSlug: loadSlug,
-        readOriginUrl: sameRemote,
-      }),
+      discoverWorkspaceTenants(
+        dir,
+        { depth: 1 },
+        {
+          loadRepoSlug: loadSlug,
+          readOriginUrl: sameRemote,
+        },
+      ),
     ).rejects.toBeInstanceOf(DuplicateOriginSlugError);
 
     try {
-      await discoverWorkspaceTenants(dir, 1, {
-        loadRepoSlug: loadSlug,
-        readOriginUrl: sameRemote,
-      });
+      await discoverWorkspaceTenants(
+        dir,
+        { depth: 1 },
+        {
+          loadRepoSlug: loadSlug,
+          readOriginUrl: sameRemote,
+        },
+      );
     } catch (error) {
       expect(error).toBeInstanceOf(DuplicateOriginSlugError);
       const dup = error as DuplicateOriginSlugError;
@@ -338,14 +395,64 @@ describe("workspace mode", () => {
     writeSlugConfig(join(dir, ".git", "modules", "x"), "acme/git");
     writeSlugConfig(join(dir, ".hidden"), "acme/hidden");
 
-    const discovery = await discoverWorkspaceTenants(dir, 2, {
-      loadRepoSlug: (path) => {
-        if (path.includes("real")) return "acme/real";
-        throw new Error(`should not load ${path}`);
+    const discovery = await discoverWorkspaceTenants(
+      dir,
+      { depth: 2 },
+      {
+        loadRepoSlug: (path) => {
+          if (path.includes("real")) return "acme/real";
+          throw new Error(`should not load ${path}`);
+        },
+        readOriginUrl: () => null,
       },
-      readOriginUrl: () => null,
-    });
+    );
     expect(discovery.tenants.map((t) => t.slug)).toEqual(["acme/real"]);
+  });
+
+  test("explicit arm discovers declared dirs in declared order without descending", async () => {
+    writeSlugConfig(join(dir, "widget"), "acme/widget");
+    writeSlugConfig(join(dir, "gadget"), "acme/gadget");
+    mkdirSync(join(dir, "widget", "nested"), { recursive: true });
+    writeSlugConfig(join(dir, "widget", "nested"), "acme/nested");
+
+    const discovery = await discoverWorkspaceTenants(
+      dir,
+      { tenants: ["gadget", "widget"] },
+      {
+        loadRepoSlug: (path) => (path.includes("widget") ? "acme/widget" : "acme/gadget"),
+        readOriginUrl: () => null,
+      },
+    );
+    expect(discovery.tenants.map((t) => t.id)).toEqual(["gadget", "widget"]);
+    expect(discovery.tenants.map((t) => t.slug)).toEqual(["acme/gadget", "acme/widget"]);
+    expect(discovery.holds).toEqual([]);
+  });
+
+  test("explicit arm holds absent dirs and dirs without a config", async () => {
+    writeSlugConfig(join(dir, "widget"), "acme/widget");
+    mkdirSync(join(dir, "empty"), { recursive: true });
+
+    const discovery = await discoverWorkspaceTenants(
+      dir,
+      { tenants: ["widget", "missing", "empty"] },
+      {
+        loadRepoSlug: () => "acme/widget",
+        readOriginUrl: () => null,
+      },
+    );
+    expect(discovery.tenants.map((t) => t.id)).toEqual(["widget"]);
+    expect(discovery.holds).toEqual([
+      { id: "missing", reason: "directory does not exist", slug: null },
+      { id: "empty", reason: "no phoebe.config.ts", slug: null },
+    ]);
+  });
+
+  test("discoverUndeclaredInTreeTenants finds depth-1 config dirs not in the declaration", () => {
+    writeSlugConfig(join(dir, "widget"), "acme/widget");
+    writeSlugConfig(join(dir, "orphan"), "acme/orphan");
+    writeSlugConfig(join(dir, "apps", "nested"), "acme/nested");
+
+    expect(discoverUndeclaredInTreeTenants(dir, ["widget"])).toEqual(["orphan"]);
   });
 });
 
@@ -354,11 +461,15 @@ describe("configDir asset relocation (#98)", () => {
     writeSlugConfig(join(dir, "widget"), "acme/widget");
     writeSlugConfig(join(dir, "gadget"), "acme/gadget");
 
-    const discovery = await discoverWorkspaceTenants(dir, 1, {
-      loadRepoSlug: (path) => (path.includes("widget") ? "acme/widget" : "acme/gadget"),
-      loadConfigDir: (path) => (path.includes("widget") ? ".phoebe" : "."),
-      readOriginUrl: () => null,
-    });
+    const discovery = await discoverWorkspaceTenants(
+      dir,
+      { depth: 1 },
+      {
+        loadRepoSlug: (path) => (path.includes("widget") ? "acme/widget" : "acme/gadget"),
+        loadConfigDir: (path) => (path.includes("widget") ? ".phoebe" : "."),
+        readOriginUrl: () => null,
+      },
+    );
 
     const widget = discovery.tenants.find((t) => t.slug === "acme/widget");
     const gadget = discovery.tenants.find((t) => t.slug === "acme/gadget");
@@ -374,27 +485,37 @@ describe("configDir asset relocation (#98)", () => {
     writeSlugConfig(join(dir, "bad"), "acme/bad");
     const warnings: string[] = [];
 
-    const discovery = await discoverWorkspaceTenants(dir, 1, {
-      loadRepoSlug: (path) => (path.includes("bad") ? "acme/bad" : "acme/good"),
-      loadConfigDir: (path) => {
-        if (path.includes("bad")) throw new Error("`configDir` must be relative");
-        return ".";
+    const discovery = await discoverWorkspaceTenants(
+      dir,
+      { depth: 1 },
+      {
+        loadRepoSlug: (path) => (path.includes("bad") ? "acme/bad" : "acme/good"),
+        loadConfigDir: (path) => {
+          if (path.includes("bad")) throw new Error("`configDir` must be relative");
+          return ".";
+        },
+        readOriginUrl: () => null,
+        warn: (m) => warnings.push(m),
       },
-      readOriginUrl: () => null,
-      warn: (m) => warnings.push(m),
-    });
+    );
 
     expect(discovery.tenants.map((t) => t.slug)).toEqual(["acme/good"]);
-    expect(discovery.holdIds).toEqual([join(dir, "bad")]);
+    expect(discovery.holds).toEqual([
+      { id: join(dir, "bad"), reason: "`configDir` must be relative", slug: "acme/bad" },
+    ]);
     expect(warnings.some((w) => /bad/.test(w) && /configDir/.test(w))).toBe(true);
   });
 
   test("no loadConfigDir dep keeps .env co-located (back-compat)", async () => {
     writeSlugConfig(join(dir, "widget"), "acme/widget");
-    const discovery = await discoverWorkspaceTenants(dir, 1, {
-      loadRepoSlug: () => "acme/widget",
-      readOriginUrl: () => null,
-    });
+    const discovery = await discoverWorkspaceTenants(
+      dir,
+      { depth: 1 },
+      {
+        loadRepoSlug: () => "acme/widget",
+        readOriginUrl: () => null,
+      },
+    );
     expect(discovery.tenants[0]?.envPath).toBe(join(dir, "widget", TENANT_ENV_FILE));
   });
 

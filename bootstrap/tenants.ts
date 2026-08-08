@@ -25,9 +25,10 @@
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative, resolve } from "node:path";
 
 import { DEFAULT_TENANT_CONFIG_DIR } from "./config-dir.ts";
+import { isExplicitWorkspace, type ResolvedWorkspace } from "./workspace-source.ts";
 
 /** Canonical in-container deployment config dir (compose bind-mounts here). */
 export const DEFAULT_CONFIG_DIR = "/etc/phoebe";
@@ -168,13 +169,14 @@ function tenantAt(
   dir: string,
   slug: string | null,
   configDir: string = DEFAULT_TENANT_CONFIG_DIR,
+  id: string = dir,
 ): DiscoveredTenant {
   // `configDir` relocates the tenant's asset dir (its `.env` + prompts) to a
   // subdir of `dir` (#98). The config itself always stays at `dir`; only the
   // `.env` — and thus the engine child's cwd, `dirname(envPath)` — moves.
   const assetsDir = configDir === DEFAULT_TENANT_CONFIG_DIR ? dir : join(dir, configDir);
   return {
-    id: dir,
+    id,
     slug,
     dir,
     configPath: join(dir, TENANT_CONFIG_FILE),
@@ -318,6 +320,22 @@ function shouldSkipWorkspaceDir(name: string): boolean {
   return name.startsWith(".");
 }
 
+/** One declared or walked dir discovery could not turn into a tenant (#137/#140). */
+export type WorkspaceHold = {
+  /** Reconcile key: absolute dir on the walk arm, declared path on the explicit arm. */
+  id: string;
+  /** Observational hold reason for `phoebe list` and boot warnings. */
+  reason: string;
+  /** Config `repoSlug` when discovery recovered it before holding (origin mismatch). */
+  slug: string | null;
+};
+
+export type WorkspaceDiscovery = {
+  mode: "workspace";
+  tenants: DiscoveredTenant[];
+  holds: WorkspaceHold[];
+};
+
 export type DiscoverWorkspaceDeps = {
   /**
    * Load a child `phoebe.config.ts` and return its authoritative `repoSlug`.
@@ -343,45 +361,46 @@ export type DiscoverWorkspaceDeps = {
 };
 
 /**
- * Walk a workspace tree and discover tenants (#82/#91/#92).
+ * Discover workspace tenants (#82/#91/#92/#137).
  *
- * - Scan under `configDir` to `depth` (default applied by the caller via
- *   `readWorkspaceField`); the root itself is never a tenant.
- * - Any dir with a root-level `phoebe.config.ts` is a tenant candidate; the
- *   walk prunes there (no tenants inside a found tenant).
- * - Config `repoSlug` is authoritative; path layout is not validated (#58's
- *   owner/repo path rule does not apply to the flat workspace tree).
- * - Fleet uniqueness: duplicate `repoSlug` → {@link DuplicateTenantSlugError};
- *   duplicate origin-slug (any parseable GitHub origin) →
- *   {@link DuplicateOriginSlugError}. Both abort boot.
- * - Origin cross-check after uniqueness claims: `slugFromUrl(origin) ===
- *   repoSlug` when origin parses as GitHub; absent/malformed → admit; present +
- *   mismatch → skip-and-warn (config stays authoritative; does not touch
- *   `ensureClone`'s exact-URL guard).
- * - A child that cannot be read/parsed is skip-and-warned and listed in
- *   `holdIds` (reconcile holds a still-running child rather than draining).
+ * Candidate enumeration dispatches on the resolved workspace arm: the walk arm
+ * recursively descends with prune-at-first-hit; the explicit arm takes the
+ * declared list directly and never descends. {@link considerWorkspaceDir} is
+ * shared verbatim across both arms.
+ *
+ * Holds are computed structurally as `candidates − successful` so every
+ * failure path is accounted for (#137). Each hold carries an observational
+ * reason string for `phoebe list` and boot warnings (#140).
  */
 export async function discoverWorkspaceTenants(
   configDir: string,
-  depth: number,
+  workspace: ResolvedWorkspace,
   deps: DiscoverWorkspaceDeps,
-): Promise<{ mode: "workspace"; tenants: DiscoveredTenant[]; holdIds: string[] }> {
+): Promise<WorkspaceDiscovery> {
   const warn = deps.warn ?? (() => {});
   const readOrigin = deps.readOriginUrl ?? readTenantOriginUrl;
   const tenants: DiscoveredTenant[] = [];
-  const holdIds: string[] = [];
+  const candidates: string[] = [];
+  const holdMeta = new Map<string, WorkspaceHold>();
   /** Fleet uniqueness: config `repoSlug` → first tenant dir. */
   const bySlug = new Map<string, string>();
   /** Fleet uniqueness: transport-normalised origin slug → first tenant dir. */
   const byOriginSlug = new Map<string, string>();
 
-  const consider = async (dir: string): Promise<void> => {
+  const recordHold = (id: string, reason: string, slug: string | null, dir: string): void => {
+    holdMeta.set(id, { id, reason, slug });
+    warn(`[phoebe] boot: workspace: skipping ${dir} — ${reason}.`);
+  };
+
+  const consider = async (id: string, dir: string): Promise<void> => {
+    candidates.push(id);
     const configPath = join(dir, TENANT_CONFIG_FILE);
+    let recoveredSlug: string | null = null;
     try {
       const slug = (await deps.loadRepoSlug(configPath)).trim();
+      recoveredSlug = slug.length > 0 ? slug : null;
       if (slug.length === 0) {
-        warn(`[phoebe] boot: workspace: skipping ${dir} — phoebe.config.ts has an empty repoSlug.`);
-        holdIds.push(dir);
+        recordHold(id, "empty repoSlug", null, dir);
         return;
       }
 
@@ -409,30 +428,21 @@ export async function discoverWorkspaceTenants(
       // Best-effort origin cross-check: null / unparseable / non-GitHub → absent
       // (admit on config authority). Present + mismatch → skip-and-warn.
       if (originSlug !== null && originSlug !== slug) {
-        warn(
-          `[phoebe] boot: workspace: skipping ${dir} — origin slug "${originSlug}" ` +
-            `does not match config repoSlug "${slug}" (config is authoritative; ` +
-            `fix the checkout origin or the child's repoSlug).`,
-        );
-        holdIds.push(dir);
+        recordHold(id, `origin slug "${originSlug}" ≠ repoSlug`, slug, dir);
         return;
       }
 
       // Asset-dir relocation (#98): read the child's `configDir` (default ".")
       // from the same config. A malformed value throws here and is caught below
       // as skip-and-warn, exactly like a bad `repoSlug`.
-      const configDir = deps.loadConfigDir
+      const tenantConfigDir = deps.loadConfigDir
         ? (await deps.loadConfigDir(configPath)).trim()
         : DEFAULT_TENANT_CONFIG_DIR;
-      tenants.push(tenantAt(dir, slug, configDir));
+      tenants.push(tenantAt(dir, slug, tenantConfigDir, id));
     } catch (error) {
       if (isFatalWorkspaceDiscoveryError(error)) throw error;
-      warn(
-        `[phoebe] boot: workspace: skipping ${dir} — ${
-          error instanceof Error ? error.message : String(error)
-        }.`,
-      );
-      holdIds.push(dir);
+      const reason = error instanceof Error ? error.message : String(error);
+      recordHold(id, reason, recoveredSlug, dir);
     }
   };
 
@@ -443,14 +453,71 @@ export async function discoverWorkspaceTenants(
       const dir = join(parent, name);
       if (existsSync(join(dir, TENANT_CONFIG_FILE))) {
         // Prune-at-first-hit: this dir is a tenant candidate, never descend.
-        await consider(dir);
+        await consider(dir, dir);
       } else {
         await walk(dir, remaining - 1);
       }
     }
   };
 
-  await walk(configDir, depth);
-  tenants.sort((a, b) => (a.slug ?? "").localeCompare(b.slug ?? ""));
-  return { mode: "workspace", tenants, holdIds };
+  if (isExplicitWorkspace(workspace)) {
+    for (const entry of workspace.tenants) {
+      const dir = resolve(configDir, entry);
+      let dirExists = false;
+      try {
+        dirExists = existsSync(dir) && statSync(dir).isDirectory();
+      } catch {
+        dirExists = false;
+      }
+      if (!dirExists) {
+        candidates.push(entry);
+        holdMeta.set(entry, { id: entry, reason: "directory does not exist", slug: null });
+        warn(`[phoebe] boot: workspace: skipping ${dir} — directory does not exist.`);
+        continue;
+      }
+      if (!existsSync(join(dir, TENANT_CONFIG_FILE))) {
+        candidates.push(entry);
+        holdMeta.set(entry, { id: entry, reason: "no phoebe.config.ts", slug: null });
+        warn(`[phoebe] boot: workspace: skipping ${dir} — no phoebe.config.ts.`);
+        continue;
+      }
+      await consider(entry, dir);
+    }
+  } else {
+    await walk(configDir, workspace.depth);
+    tenants.sort((a, b) => (a.slug ?? "").localeCompare(b.slug ?? ""));
+  }
+
+  const successful = new Set(tenants.map((tenant) => tenant.id));
+  const holdSource = isExplicitWorkspace(workspace) ? workspace.tenants : candidates;
+  const holds = holdSource
+    .filter((id) => !successful.has(id))
+    .map((id) => holdMeta.get(id) ?? { id, reason: "discovery failed", slug: null });
+
+  return { mode: "workspace", tenants, holds };
+}
+
+/**
+ * Depth-1 backstop for `phoebe list` on the explicit arm only (#141). Finds
+ * immediate in-tree children carrying a root-level `phoebe.config.ts` that are
+ * not declared in `workspace.tenants`. Knowingly partial — a hint, not a
+ * guarantee: out-of-tree repos and candidates deeper than depth 1 are invisible
+ * by construction. Boot and reconcile never call this.
+ */
+export function discoverUndeclaredInTreeTenants(
+  configDir: string,
+  declaredTenants: readonly string[],
+): string[] {
+  const declared = new Set(declaredTenants.map((entry) => resolve(configDir, entry)));
+
+  const undeclared: string[] = [];
+  for (const name of listDirs(configDir)) {
+    if (shouldSkipWorkspaceDir(name)) continue;
+    const dir = join(configDir, name);
+    if (!existsSync(join(dir, TENANT_CONFIG_FILE))) continue;
+    if (declared.has(resolve(dir))) continue;
+    const rel = relative(configDir, dir).replace(/\\/g, "/");
+    undeclared.push(rel.length > 0 ? rel : dir);
+  }
+  return undeclared.sort((a, b) => a.localeCompare(b));
 }

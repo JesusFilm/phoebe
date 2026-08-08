@@ -504,17 +504,21 @@ function workspaceDiscover(
 ): () => FleetDiscoverInput {
   const depth = requireDepthArm(workspace);
   return async () => {
-    const result = await discoverWorkspaceTenants(configDir, depth, {
-      loadRepoSlug: loadTenantRepoSlug,
-      loadConfigDir: loadTenantConfigDir,
-      warn: (message) => console.warn(message),
-    });
+    const result = await discoverWorkspaceTenants(
+      configDir,
+      { depth },
+      {
+        loadRepoSlug: loadTenantRepoSlug,
+        loadConfigDir: loadTenantConfigDir,
+        warn: (message) => console.warn(message),
+      },
+    );
     return {
       samples: result.tenants.map((tenant) => ({
         tenant,
         fingerprint: tenantFingerprint(tenant.configPath, tenant.envPath),
       })),
-      hold: result.holdIds,
+      hold: result.holds.map((hold) => hold.id),
     };
   };
 }
@@ -612,10 +616,14 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     // before any child is spawned rather than after a surprise walk (#128).
     const depth = requireDepthArm(workspace);
     // Count tenants for the startup log (same walk the fleet will use).
-    const initial = await discoverWorkspaceTenants(configDir, depth, {
-      loadRepoSlug: loadTenantRepoSlug,
-      warn: (message) => console.warn(message),
-    });
+    const initial = await discoverWorkspaceTenants(
+      configDir,
+      { depth },
+      {
+        loadRepoSlug: loadTenantRepoSlug,
+        warn: (message) => console.warn(message),
+      },
+    );
     console.log(
       `[phoebe] boot: workspace mode — supervising ${initial.tenants.length} tenant(s) ` +
         `on one shared engine (depth ${depth}).`,
