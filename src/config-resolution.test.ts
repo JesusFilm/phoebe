@@ -406,29 +406,41 @@ describe("loadConfiguration", () => {
 });
 
 describe("parseResolvedConfigurationSnapshot", () => {
-  // #37: a boot-supervised child parses boot's snapshot; a directly-invoked
-  // engine resolves the authored files itself. Both must thread the same
-  // `PHOEBE_DATA_DIR`-derived data base into resolution, or the two entry
-  // points derive different `config.paths` for identical environments.
-  test("matches direct resolution's paths for a non-default data base", () => {
+  // #127: `paths` is adopted verbatim from the snapshot instead of re-derived,
+  // so it stays correct even when whatever produced the snapshot used a
+  // different data base than this process would derive on its own — the #37
+  // bug class (paths disagreeing across a boot/child split) can no longer
+  // reproduce on this path because nothing here re-derives `paths` at all.
+  test("adopts paths verbatim from the snapshot, independent of this process's data base", () => {
     const repository = repositoryConfig();
-    const direct = resolveConfiguration({ repository, dataBase: "/custom/data" });
-    const snapshot = formatResolvedConfiguration(direct);
-
-    const fromSnapshot = parseResolvedConfigurationSnapshot(snapshot, { dataBase: "/custom/data" });
-
-    expect(fromSnapshot.config.paths).toEqual(direct.config.paths);
-    expect(fromSnapshot.config.paths).toEqual(derivePaths("acme/widget", "/custom/data"));
-  });
-
-  test("defaults paths to the default data base when no override is given", () => {
-    const repository = repositoryConfig();
-    const direct = resolveConfiguration({ repository });
+    const direct = resolveConfiguration({ repository, dataBase: "/snapshot/data" });
     const snapshot = formatResolvedConfiguration(direct);
 
     const fromSnapshot = parseResolvedConfigurationSnapshot(snapshot);
 
     expect(fromSnapshot.config.paths).toEqual(direct.config.paths);
-    expect(fromSnapshot.config.paths).toEqual(derivePaths("acme/widget"));
+    expect(fromSnapshot.config.paths).toEqual(derivePaths("acme/widget", "/snapshot/data"));
+  });
+
+  test("rejects a snapshot whose paths block is missing a required key", () => {
+    const repository = repositoryConfig();
+    const direct = resolveConfiguration({ repository });
+    const snapshot = JSON.parse(formatResolvedConfiguration(direct));
+    delete snapshot.config.paths.stateDir;
+
+    expect(() => parseResolvedConfigurationSnapshot(`${JSON.stringify(snapshot)}\n`)).toThrow(
+      /config\.paths\.stateDir must be a string/i,
+    );
+  });
+
+  test("rejects a snapshot whose paths block is not an object", () => {
+    const repository = repositoryConfig();
+    const direct = resolveConfiguration({ repository });
+    const snapshot = JSON.parse(formatResolvedConfiguration(direct));
+    snapshot.config.paths = "/data/repos/acme/widget";
+
+    expect(() => parseResolvedConfigurationSnapshot(`${JSON.stringify(snapshot)}\n`)).toThrow(
+      /config\.paths must be an object/i,
+    );
   });
 });

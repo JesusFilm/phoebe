@@ -83,7 +83,7 @@ export function loadEngineConfiguration(
   const snapshot = env[BOOTSTRAP_RESOLVED_CONFIG_ENV];
   return snapshot === undefined
     ? loadConfiguration({ repositoryPath: configPath, env, dataBase })
-    : Promise.resolve(parseResolvedConfigurationSnapshot(snapshot, { dataBase }));
+    : Promise.resolve(parseResolvedConfigurationSnapshot(snapshot));
 }
 
 // The engine command's `--help` prints the full root usage (every command's

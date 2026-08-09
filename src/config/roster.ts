@@ -42,8 +42,10 @@ export type ScaffoldProfile = "flat" | "workspace" | "tenant";
 
 export type FieldDescriptor = {
   kind: FieldKind;
-  /** Shipped default for an omitted optional field. Absent for `required`,
-   *  `derived`, and `bootstrapper-only` fields, which have none. */
+  /** Shipped default for an omitted optional field. Absent for `required`
+   *  and `bootstrapper-only` fields, which have none. `paths` — the one
+   *  resolved-only field on `PhoebeConfig` — isn't on the roster at all: it
+   *  has no authored counterpart, so there's no `FieldKind` for it (#127). */
   default?: unknown;
   /** `PHOEBE_*` scalar/enum overlay key. Absent when the field is not
    *  env-overridable through the config-resolution overlay. */
