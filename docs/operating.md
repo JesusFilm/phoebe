@@ -182,6 +182,18 @@ supervisor tags its own `[phoebe:supervisor]`), so a host log collector can
 attribute each line to its tenant. Agent output nests: `[phoebe:<slug>] [cursor] …`.
 The container writes no log files — stdout is the whole story.
 
+**Polling for external alerting.** `phoebe status --json` reads
+`paths.stateDir/status-v2.json` straight off disk — no GitHub calls — and is
+the machine-readable per-tenant snapshot behind everything `phoebe list` and
+`phoebe serve` render for humans. The fields an alerting tool would key off:
+`control.quarantine.active` (+ `reason`) for a stuck unit, `health.state`
+(`healthy` / `degraded` / `unhealthy`) for runtime health, and `lastFailure`
+(`outcome` + `failureCategory`) for the most recent failed unit. Cron-poll
+`phoebe status --json` per tenant, or read `status-v2.json` directly across
+tenants the way `phoebe serve` does, and feed it into your own webhook or
+alert — Phoebe ships no built-in push mechanism, the same way it leaves piping
+stdout to a log collector up to you.
+
 **When a unit hangs.** A work unit that exceeds its wall-clock budget
 (`PHOEBE_RUN_TIMEOUT_MS`, default 45 min) is aborted so it can't starve the
 fleet, and the engine moves on. A unit that hangs **every** time is quarantined
