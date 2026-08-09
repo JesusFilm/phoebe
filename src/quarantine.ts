@@ -41,7 +41,9 @@
 // `buildQuarantineComment`'s optional `dependents` list is this trigger's one
 // addition — the other issues left stuck behind a quarantined blocker.
 
-import type { Sha } from "./branded.ts";
+import { asPrNumber, type PrNumber, type Sha } from "./branded.ts";
+import type { GitHub } from "./github.ts";
+import type { UnitRef } from "./kinds/kind.ts";
 
 /** Phoebe-owned skip label — distinct from the user-supplied `prOptOutLabel`. */
 export const PHOEBE_QUARANTINE_LABEL = "phoebe:quarantined";
@@ -350,4 +352,145 @@ export function shouldBackoffUnitRetry(opts: {
     return false;
   }
   return elapsedMs < unitBackoffMs(opts.attemptCount, opts.baseMs, opts.capMs);
+}
+
+/**
+ * Drop PR-keyed candidates that are inside their no-commit-attempt backoff
+ * window (#25) — a transient failure (rate limit, 504) then recovers on its
+ * own instead of burning a full agent cycle every poll while it's within the
+ * growing gap between retries. A quarantined unit never reaches this filter:
+ * it's already excluded upstream by the `PHOEBE_QUARANTINE_LABEL` scope check.
+ */
+export function filterBackoffEligible<T extends { attemptMarker?: UnitAttemptMarker | null }>(
+  candidates: readonly T[],
+  now: string,
+): T[] {
+  return candidates.filter((c) => {
+    const marker = c.attemptMarker;
+    if (!marker) {
+      return true;
+    }
+    return !shouldBackoffUnitRetry({ attemptCount: marker.n, lastAttemptAt: marker.at, now });
+  });
+}
+
+/** Bound, marker-safe slug for a `UnitAttemptMarker.signature`. */
+export function slugifyFailureSignature(input: string, maxLen = 80): string {
+  const slug = input
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug.slice(0, maxLen) || "unknown";
+}
+
+// --- Generic whole-unit timeout quarantine write path (#75, generalised for #53) ---
+//
+// The read/skip half lives beside each selector (`pr-scope.ts#isPrInScope`,
+// `producer.ts#selectIssue` both drop `phoebe:quarantined` units). This is the
+// write half: on a whole-unit timeout, count consecutive timeouts on the unit
+// itself (a GitHub marker) and, at `k`, apply the label + escalation comment
+// so the poisonous unit stops being re-picked. Generic over `UnitRef` so the
+// loop calls it without knowing any kind's unit shape — `ref.target.type`
+// picks the issue-comment or PR-comment read.
+
+type TimeoutComment = { body: string; createdAt: string; authorLogin: string };
+
+type UnitTimeoutInputs = {
+  comments: TimeoutComment[];
+  extraActivityAt: string | null;
+  baseline: string;
+};
+
+function fetchIssueTimeoutInputs(github: GitHub, issueNumber: number): UnitTimeoutInputs {
+  const activity = github.issueActivity(issueNumber);
+  // Issues have no commits and `gh` does not expose body-edit times, so a new
+  // human comment is the only reset signal; `updatedAt` is the un-stick baseline.
+  return { comments: activity.comments, extraActivityAt: null, baseline: activity.updatedAt };
+}
+
+function fetchPrTimeoutInputs(github: GitHub, prNumber: PrNumber): UnitTimeoutInputs {
+  const activity = github.prActivity(prNumber);
+  // A new push (head commit) or human comment resets; head SHA is the baseline.
+  return {
+    comments: activity.comments,
+    extraActivityAt: activity.lastCommitAt,
+    baseline: activity.headRefOid,
+  };
+}
+
+function postUnitComment(github: GitHub, isIssue: boolean, id: number, body: string): void {
+  if (isIssue) {
+    github.commentIssue(id, body);
+  } else {
+    github.commentPr(asPrNumber(id), body);
+  }
+}
+
+function addQuarantineLabel(github: GitHub, isIssue: boolean, id: number): void {
+  if (isIssue) {
+    github.labelIssue(id, PHOEBE_QUARANTINE_LABEL);
+  } else {
+    github.labelPr(asPrNumber(id), PHOEBE_QUARANTINE_LABEL);
+  }
+}
+
+export type UnitTimeoutRecord = { quarantined: boolean; count: number };
+
+/**
+ * Record one whole-unit timeout toward the poison-unit quarantine: read the
+ * latest timeout marker on the unit, post the incremented count, and at `k`
+ * apply `phoebe:quarantined` plus the escalation comment. Best-effort — a
+ * GitHub write failure here is logged via `opts.error` and swallowed so it can
+ * never take the daemon down; the timeout itself is already recorded by the
+ * caller's own status transition.
+ */
+export async function recordUnitTimeout(opts: {
+  ref: UnitRef;
+  github: GitHub;
+  login(): Promise<string>;
+  maxUnitTimeouts: number;
+  log(message: string): void;
+  error(message: string): void;
+}): Promise<UnitTimeoutRecord | null> {
+  const { ref } = opts;
+  const isIssue = ref.target.type === "issue";
+  const id = ref.target.number;
+  try {
+    const login = await opts.login();
+    const inputs = isIssue
+      ? fetchIssueTimeoutInputs(opts.github, id)
+      : fetchPrTimeoutInputs(opts.github, asPrNumber(id));
+    const { count, quarantine } = decideTimeoutRecord({
+      comments: inputs.comments,
+      phoebeLogin: login,
+      extraActivityAt: inputs.extraActivityAt,
+      k: opts.maxUnitTimeouts,
+    });
+    postUnitComment(opts.github, isIssue, id, buildUnitTimeoutMarker(count));
+    if (quarantine) {
+      addQuarantineLabel(opts.github, isIssue, id);
+      postUnitComment(
+        opts.github,
+        isIssue,
+        id,
+        buildQuarantineComment({
+          kind: ref.kind,
+          id,
+          k: count,
+          baseline: inputs.baseline,
+          reason: "timed out",
+        }),
+      );
+      opts.log(
+        `Quarantined ${ref.kind} unit for #${id} after ${count} timeouts with no completion.`,
+      );
+    }
+    return { quarantined: quarantine, count };
+  } catch (error) {
+    opts.error(
+      `Could not record timeout toward quarantine for ${ref.kind} #${id} — ` +
+        `${error instanceof Error ? error.message : String(error)}`,
+    );
+    return null;
+  }
 }

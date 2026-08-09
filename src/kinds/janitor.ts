@@ -1,0 +1,263 @@
+// The shared skeleton behind every PR-fix work kind (conflicts/checks/reviews):
+// the agent-run workflow (snapshot origin, prepare a worktree, install, run
+// the agent, re-snapshot, count commits), the blocker-first clean-merge
+// attempt, and the #25 no-commit-attempt marker/quarantine glue. Only
+// `onResult` differs per kind (push vs. failure comment vs. watermark).
+
+import { asBranchRef, type BranchRef, type PrNumber, type Sha } from "../branded.ts";
+import {
+  buildQuarantineComment,
+  buildUnitAttemptMarker,
+  findLatestUnitAttemptComment,
+  PHOEBE_QUARANTINE_LABEL,
+  planUnitAttempt,
+} from "../quarantine.ts";
+import { readVerificationReport, removeVerificationReport } from "../verification.ts";
+import type { PhoebeLogFn } from "../phoebe-log.ts";
+import type { KindDeps, UnitResult } from "./kind.ts";
+
+// The observed outcome of an automatic (no-agent) merge attempt:
+//   "pushed"     — merged cleanly and pushed; the PR is caught up.
+//   "conflicted" — real merge conflicts in the tree; an agent must resolve them.
+//   "failed"     — could not even start/finish the merge (e.g. worktree setup);
+//                  no conflicts were observed.
+export type CleanMergeOutcome = "pushed" | "conflicted" | "failed";
+
+export type AgentWorkflowResult = {
+  worktreeDir: string;
+  branch: BranchRef;
+  originShaBefore: Sha;
+  originShaAfter: Sha;
+  localCommitCount: number;
+};
+
+export type JanitorHelpers = {
+  tryCleanMerge(
+    branch: BranchRef,
+    mergedBlockerPrNumbers?: readonly PrNumber[],
+    baseBranch?: BranchRef,
+  ): CleanMergeOutcome;
+  attemptBlockerFirstMerges(
+    worktreeDir: string,
+    mergedBlockerPrNumbers: readonly PrNumber[],
+    baseBranch: BranchRef,
+  ): void;
+  runAgentWorkflow(opts: {
+    pr: { prNumber: PrNumber; headRefName: BranchRef };
+    promptFile: string;
+    promptArgs: Record<string, string>;
+    beforeAgent?: (worktreeDir: string) => void;
+    onResult: (result: AgentWorkflowResult) => void | Promise<void>;
+  }): Promise<UnitResult>;
+  recordFailedAttempt(opts: {
+    kind: "conflict" | "checks";
+    prNumber: PrNumber;
+    currentPrHead: Sha;
+    signature: string;
+    failureComment: string;
+  }): void;
+};
+
+/**
+ * Where the agent is told to write its post-verify report (#17). Kept as a
+ * sibling of the worktree, not inside it — so nothing the agent does inside
+ * the worktree (a stray `git add -A`, a clean/reset) can sweep it into a
+ * commit or delete it as untracked cruft.
+ */
+function verificationReportPath(worktreeDir: string): string {
+  return `${worktreeDir}.verification.json`;
+}
+
+/** Retry budget for a PR whose mergeability GitHub is still computing (`UNKNOWN`). Shared by conflicts/checks fetch. */
+export const MERGEABLE_RETRY_MS = 5_000;
+export const MERGEABLE_RETRY_COUNT = 3;
+
+export function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Oldest PR (lowest number) among candidates, or `null` when the list is empty. Shared by all three PR-keyed kinds. */
+export function pickOldestPr<T extends { prNumber: number }>(candidates: readonly T[]): T | null {
+  if (candidates.length === 0) {
+    return null;
+  }
+  return candidates.reduce((oldest, pr) => (pr.prNumber < oldest.prNumber ? pr : oldest));
+}
+
+export function createJanitorHelpers(deps: KindDeps, log: PhoebeLogFn): JanitorHelpers {
+  const { config, io } = deps;
+  const defaultBranchRef = asBranchRef(config.defaultBranch);
+
+  function attemptBlockerFirstMerges(
+    worktreeDir: string,
+    mergedBlockerPrNumbers: readonly PrNumber[],
+    baseBranch: BranchRef,
+  ): void {
+    try {
+      for (const n of mergedBlockerPrNumbers) {
+        io.git.gitInWorktree(worktreeDir, ["fetch", "origin", `pull/${n}/head`], {
+          stdio: "inherit",
+        });
+        io.git.gitInWorktree(worktreeDir, ["merge", "FETCH_HEAD"], { stdio: "pipe" });
+      }
+      io.git.gitInWorktree(worktreeDir, ["fetch", "origin", baseBranch], { stdio: "inherit" });
+      io.git.gitInWorktree(worktreeDir, ["merge", `origin/${baseBranch}`], { stdio: "pipe" });
+    } catch {
+      // Conflicts stay in the tree for the agent to resolve.
+    }
+  }
+
+  function tryCleanMerge(
+    branch: BranchRef,
+    mergedBlockerPrNumbers: readonly PrNumber[] = [],
+    baseBranch: BranchRef = defaultBranchRef,
+  ): CleanMergeOutcome {
+    let worktreeDir: string;
+    try {
+      worktreeDir = io.git.prepareWorktree({ branch });
+    } catch {
+      return "failed";
+    }
+
+    try {
+      for (const blockerPrNumber of mergedBlockerPrNumbers) {
+        io.git.gitInWorktree(worktreeDir, ["fetch", "origin", `pull/${blockerPrNumber}/head`], {
+          stdio: "inherit",
+        });
+        io.git.gitInWorktree(worktreeDir, ["merge", "FETCH_HEAD"], { stdio: "pipe" });
+      }
+      io.git.gitInWorktree(worktreeDir, ["fetch", "origin", baseBranch], { stdio: "inherit" });
+      io.git.gitInWorktree(worktreeDir, ["merge", `origin/${baseBranch}`], { stdio: "pipe" });
+      io.git.pushBranch(worktreeDir, branch);
+      io.git.removeWorktree(worktreeDir);
+      return "pushed";
+    } catch {
+      try {
+        const unmerged = io.git.gitInWorktree(worktreeDir, [
+          "diff",
+          "--name-only",
+          "--diff-filter=U",
+        ]);
+        if (unmerged.trim()) {
+          io.git.gitInWorktree(worktreeDir, ["merge", "--abort"], { stdio: "ignore" });
+          io.git.removeWorktree(worktreeDir);
+          return "conflicted";
+        }
+      } catch {
+        // Fall through to failed.
+      }
+      try {
+        io.git.gitInWorktree(worktreeDir, ["merge", "--abort"], { stdio: "ignore" });
+      } catch {
+        // Best-effort.
+      }
+      io.git.removeWorktree(worktreeDir);
+      return "failed";
+    }
+  }
+
+  /**
+   * The agent is prompted to write a verification report as part of its own
+   * verify step (#17); this reads it back after the agent exits. A missing or
+   * malformed report just means `verification` comes back undefined — the
+   * engine never re-runs the gate itself.
+   */
+  async function runAgentWorkflow(opts: {
+    pr: { prNumber: PrNumber; headRefName: BranchRef };
+    promptFile: string;
+    promptArgs: Record<string, string>;
+    beforeAgent?: (worktreeDir: string) => void;
+    onResult: (result: AgentWorkflowResult) => void | Promise<void>;
+  }): Promise<UnitResult> {
+    const branch = opts.pr.headRefName;
+
+    io.git.fetchOrigin();
+    const originShaBefore = io.git.originBranchSha(branch);
+
+    const worktreeDir = io.git.prepareWorktree({ branch });
+    const reportPath = verificationReportPath(worktreeDir);
+    removeVerificationReport(reportPath);
+    try {
+      io.shell.run(config.installCommand, worktreeDir);
+      opts.beforeAgent?.(worktreeDir);
+
+      const template = io.prompts.load(opts.promptFile);
+      const prompt = io.prompts.render(
+        template,
+        { ...io.prompts.defaultArgs(), ...opts.promptArgs, VERIFICATION_RESULT_FILE: reportPath },
+        worktreeDir,
+      );
+      const agentExitCode = await io.agent.run({ worktreeDir, prompt });
+      const verification = readVerificationReport(reportPath);
+
+      io.git.fetchOrigin();
+      const originShaAfter = io.git.originBranchSha(branch);
+      const localCommitCount = io.git.commitCount(worktreeDir, `origin/${branch}..HEAD`);
+
+      await opts.onResult({
+        worktreeDir,
+        branch,
+        originShaBefore,
+        originShaAfter,
+        localCommitCount,
+      });
+      return { exitCode: agentExitCode, verification };
+    } finally {
+      removeVerificationReport(reportPath);
+      io.git.removeWorktree(worktreeDir);
+    }
+  }
+
+  /**
+   * Record one failed (no-commit) attempt on a PR-keyed unit (#25): find the
+   * unit's tracking comment (if any), fold this attempt into its counter, and
+   * either edit that comment in place (below threshold — no new comment, no
+   * new notification) or escalate it into the quarantine comment and apply
+   * the label (at threshold). Never posts more than the one tracking comment
+   * per unit.
+   */
+  function recordFailedAttempt(opts: {
+    kind: "conflict" | "checks";
+    prNumber: PrNumber;
+    currentPrHead: Sha;
+    signature: string;
+    failureComment: string;
+  }): void {
+    const comments = io.github.prActivity(opts.prNumber).comments;
+    const found = findLatestUnitAttemptComment(comments, opts.kind);
+    const k = config.maxUnitAttempts;
+    const plan = planUnitAttempt({
+      previous: found?.marker ?? null,
+      ref: opts.currentPrHead,
+      signature: opts.signature,
+      now: new Date().toISOString(),
+      k,
+    });
+
+    const body = plan.quarantined
+      ? buildQuarantineComment({
+          kind: opts.kind,
+          id: opts.prNumber,
+          k,
+          baseline: opts.currentPrHead,
+          reason: "produced no commit",
+          signature: opts.signature,
+        })
+      : opts.failureComment;
+    const fullBody = `${body}\n\n${buildUnitAttemptMarker(opts.kind, plan.marker)}`;
+    if (found?.commentId) {
+      io.github.updateComment(found.commentId, fullBody);
+    } else {
+      io.github.commentPr(opts.prNumber, fullBody);
+    }
+
+    if (plan.quarantined) {
+      io.github.labelPr(opts.prNumber, PHOEBE_QUARANTINE_LABEL);
+      log(
+        `Quarantined ${opts.kind} unit for PR #${opts.prNumber} after ${plan.marker.n} attempts with no commit (${opts.signature}).`,
+      );
+    }
+  }
+
+  return { tryCleanMerge, attemptBlockerFirstMerges, runAgentWorkflow, recordFailedAttempt };
+}

@@ -60,6 +60,28 @@ export function isPhoebeHeadBranch(branch: BranchRef, branchPrefix: string): boo
   return branch.startsWith(branchPrefix);
 }
 
+export type IssueScopeConfig = {
+  issueAuthors: readonly string[];
+};
+
+/**
+ * Whether a `ready`/`research` issue is eligible for pickup — an author
+ * allowlist mirroring `isPrInScope`'s, so one operator's Phoebe on a
+ * multi-operator repo skips tickets filed for someone else's instance.
+ * Empty `issueAuthors` admits every author.
+ */
+export function isIssueInScope(
+  issue: { authorLogin?: string },
+  scopeConfig: IssueScopeConfig,
+): boolean {
+  if (scopeConfig.issueAuthors.length === 0) {
+    return true;
+  }
+  return scopeConfig.issueAuthors.some(
+    (author) => author.toLowerCase() === (issue.authorLogin ?? "").toLowerCase(),
+  );
+}
+
 const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 // Memoized on `branchPrefix` rather than rebuilt on every call — call sites

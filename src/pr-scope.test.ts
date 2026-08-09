@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vite-plus/test";
 import { asBranchRef } from "./branded.ts";
 import {
+  isIssueInScope,
   isPhoebeHeadBranch,
   isPrInScope,
   isPrMergeConflicting,
@@ -11,6 +12,23 @@ describe("isPhoebeHeadBranch", () => {
   test("matches phoebe/ prefix", () => {
     expect(isPhoebeHeadBranch(asBranchRef("phoebe/issue-109"), "phoebe/")).toBe(true);
     expect(isPhoebeHeadBranch(asBranchRef("feature/foo"), "phoebe/")).toBe(false);
+  });
+});
+
+describe("isIssueInScope", () => {
+  test("unset issueAuthors admits every author", () => {
+    expect(isIssueInScope({ authorLogin: "octocat" }, { issueAuthors: [] })).toBe(true);
+    expect(isIssueInScope({}, { issueAuthors: [] })).toBe(true);
+  });
+
+  test("author scope includes only configured GitHub logins, case-insensitively", () => {
+    const scoped = { issueAuthors: ["TanFlem"] };
+    expect(isIssueInScope({ authorLogin: "tanflem" }, scoped)).toBe(true);
+    expect(isIssueInScope({ authorLogin: "coworker" }, scoped)).toBe(false);
+  });
+
+  test("author scope excludes issues with no author on record", () => {
+    expect(isIssueInScope({}, { issueAuthors: ["tanflem"] })).toBe(false);
   });
 });
 

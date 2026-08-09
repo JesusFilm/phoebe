@@ -112,9 +112,10 @@ author cannot queue their own ticket for the agent no matter what they write in
 it. Applying `ready-for-agent` **is** the vouch for that ticket.
 
 That is why the engine has no vouch-awareness and no new config field. Adding an
-author check to `src/orchestrator.ts` would gate the same door twice, and would
-push a trust policy onto every consumer of the package — most of whom run Phoebe
-against a private repo where the question does not arise.
+author check to the `issues`/`research` kinds (`src/kinds/producer.ts`) would
+gate the same door twice, and would push a trust policy onto every consumer of
+the package — most of whom run Phoebe against a private repo where the
+question does not arise.
 
 What the vouch label buys us is the signal _before_ that decision: on the triage
 list, `vouch:unvouched` marks the tickets to read carefully, and
@@ -128,7 +129,7 @@ The interaction to remember:
   removing `readyLabel` is the documented pause lever.
 - The vouch label on a **PR** is a review signal only. Phoebe's PR janitors scan
   by branch prefix and skip cross-repository PRs entirely (`isPrInScope` in
-  `src/orchestrator.ts`), so a fork PR is already outside its reach.
+  `src/pr-scope.ts`), so a fork PR is already outside its reach.
 
 ## One container = one trust domain
 

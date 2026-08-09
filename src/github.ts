@@ -34,12 +34,7 @@ import {
   type PrNumber,
   type Sha,
 } from "./branded.ts";
-import {
-  ghStackExtensionInstallArgs,
-  type Issue,
-  type ReviewThread,
-  type WorkflowRunItem,
-} from "./orchestrator.ts";
+import { ghStackExtensionInstallArgs, type Issue } from "./stack.ts";
 
 export type GhRun = (
   args: readonly string[],
@@ -69,6 +64,24 @@ export class GhCommandError extends Error {
 }
 
 export type NativeBlocker = { number: number; state: string };
+
+export type ReviewThreadComment = {
+  createdAt: string;
+  authorLogin: string;
+};
+
+export type ReviewThread = {
+  isResolved: boolean;
+  isOutdated: boolean;
+  comments: readonly ReviewThreadComment[];
+};
+
+export type WorkflowRunItem = {
+  workflowName?: string;
+  name?: string;
+  status?: string;
+  conclusion?: string | null;
+};
 
 export type ActivityComment = {
   id: string;
@@ -131,6 +144,7 @@ export interface GitHub {
   createPr(opts: { head: BranchRef; base: string; title: string; body: string }): void;
   retargetPr(prNumber: PrNumber, base: string): void;
   labelIssue(issueNumber: number, label: string): void;
+  unlabelIssue(issueNumber: number, label: string): void;
   labelPr(prNumber: PrNumber, label: string): void;
   /** Registers a native GitHub stack, bottom (predecessor) to top (successor). */
   linkStack(predecessor: BranchRef, successor: BranchRef): void;
@@ -477,6 +491,10 @@ export function createGitHub(opts: { repoSlug: string; run?: GhRun; timeoutMs?: 
 
     labelIssue(issueNumber: number, label: string): void {
       scopedVoid(["issue", "edit", String(issueNumber), "--add-label", label]);
+    },
+
+    unlabelIssue(issueNumber: number, label: string): void {
+      scopedVoid(["issue", "edit", String(issueNumber), "--remove-label", label]);
     },
 
     labelPr(prNumber: PrNumber, label: string): void {

@@ -5,8 +5,10 @@ kind that has workable work. There are five kinds: three **janitors** that keep
 open PRs moving (`conflicts`, `checks`, `reviews`) and two **producers** that
 start new work (`issues`, and `research` for wayfinder research tickets). This
 file documents how each selects and executes a unit. Field references point at
-[`configuration.md`](configuration.md); the runtime plumbing is
-`src/orchestrator.ts` and `src/main.ts`.
+[`configuration.md`](configuration.md); the runtime plumbing is each kind's
+own module under `src/kinds/` (`conflicts.ts`, `checks.ts`, `reviews.ts`,
+`producer.ts` for `issues`/`research`), `src/cycle.ts`'s shared per-cycle
+gather, and `src/main.ts`'s composition root and loop.
 
 ## The poll loop and `workOrder`
 
@@ -14,9 +16,9 @@ file documents how each selects and executes a unit. Field references point at
 workOrder: ["conflicts", "checks", "reviews", "issues", "research"] # default
 ```
 
-Each cycle the engine gathers work data for every kind, then
-`selectFirstWorkUnit` returns the first kind (in `workOrder` order) that yields a
-unit. Order is priority: with the default, a conflicting PR is reconciled before
+Each cycle the engine gathers shared context once (`gatherCycleContext`), then
+walks each kind in `workOrder` order and runs the first one whose `select`
+yields a unit (`pickFirstPlan`). Order is priority: with the default, a conflicting PR is reconciled before
 a red-CI PR, which is handled before review feedback, which is handled before a
 brand-new issue is picked up, which is handled before a research ticket. That
 keeps already-open work flowing rather than piling up new branches.

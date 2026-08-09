@@ -11,6 +11,7 @@ import {
   buildUnitAttemptMarker,
   buildUnitTimeoutMarker,
   decideTimeoutRecord,
+  filterBackoffEligible,
   findLatestUnitAttemptComment,
   latestTimeoutMarker,
   newestForeignCommentAt,
@@ -24,10 +25,13 @@ import {
   shouldAutoUnstick,
   shouldBackoffUnitRetry,
   shouldQuarantine,
+  slugifyFailureSignature,
   unitBackoffMs,
   type UnitAttemptMarker,
 } from "./quarantine.ts";
-import { isPrInScope, selectIssue, type Issue } from "./orchestrator.ts";
+import { isPrInScope } from "./pr-scope.ts";
+import { selectIssue } from "./kinds/producer.ts";
+import type { Issue } from "./stack.ts";
 import { asBranchRef } from "./branded.ts";
 
 describe("markers", () => {
@@ -291,7 +295,12 @@ describe("selection excludes quarantined units", () => {
       issue({ number: 1, labels: [PHOEBE_QUARANTINE_LABEL] }),
       issue({ number: 2, labels: [] }),
     ];
-    const picked = selectIssue(issues, new Map());
+    const picked = selectIssue(issues, new Map(), {
+      blockedByPattern: "[Bb]locked by #(\\d+)",
+      blockerSource: "body",
+      branchPrefix: "phoebe/",
+      stackMode: "banner",
+    });
     expect(picked?.issue.number).toBe(2);
   });
 });
@@ -517,5 +526,46 @@ describe("unit backoff (#25)", () => {
         now: "2026-08-04T12:00:00.000Z",
       }),
     ).toBe(false);
+  });
+});
+
+describe("slugifyFailureSignature", () => {
+  test("lowercases and hyphenates", () => {
+    expect(slugifyFailureSignature("Mergeable CONFLICTING")).toBe("mergeable-conflicting");
+  });
+  test("falls back to unknown for empty input", () => {
+    expect(slugifyFailureSignature("")).toBe("unknown");
+  });
+  test("truncates to maxLen", () => {
+    expect(slugifyFailureSignature("a".repeat(200), 10)).toBe("a".repeat(10));
+  });
+});
+
+describe("filterBackoffEligible", () => {
+  const now = "2026-08-04T12:00:00.000Z";
+
+  test("a candidate with no attempt marker is always eligible", () => {
+    const candidates = [{ attemptMarker: null }];
+    expect(filterBackoffEligible(candidates, now)).toEqual(candidates);
+  });
+
+  test("drops a candidate still inside its backoff window", () => {
+    const candidates = [
+      {
+        prNumber: 1,
+        attemptMarker: { n: 1, signature: "s", ref: "sha1", at: "2026-08-04T11:59:00.000Z" },
+      },
+    ];
+    expect(filterBackoffEligible(candidates, now)).toEqual([]);
+  });
+
+  test("keeps a candidate once its backoff window has elapsed", () => {
+    const candidates = [
+      {
+        prNumber: 1,
+        attemptMarker: { n: 1, signature: "s", ref: "sha1", at: "2026-08-04T11:00:00.000Z" },
+      },
+    ];
+    expect(filterBackoffEligible(candidates, now)).toEqual(candidates);
   });
 });
