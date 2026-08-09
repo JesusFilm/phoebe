@@ -247,6 +247,48 @@ describe("openPrs — unfiltered, opts.base optional", () => {
   });
 });
 
+describe("prsWithLabel", () => {
+  test("argv scoped with -R and --label, maps rows the same as openPrs", () => {
+    const row = {
+      number: 3,
+      headRefName: "phoebe/issue-3",
+      baseRefName: "main",
+      isDraft: false,
+      isCrossRepository: false,
+      labels: [{ name: "phoebe:quarantined" }],
+      author: { login: "phoebe-bot" },
+    };
+    const { run, calls } = fakeRun([JSON.stringify([row])]);
+    const github = createGitHub({ repoSlug: REPO_SLUG, run });
+
+    expect(github.prsWithLabel("phoebe:quarantined")).toEqual([
+      {
+        number: 3,
+        headRefName: "phoebe/issue-3",
+        baseRefName: "main",
+        isDraft: false,
+        isCrossRepository: false,
+        labels: ["phoebe:quarantined"],
+        authorLogin: "phoebe-bot",
+      },
+    ]);
+    expect(calls[0]!.args).toEqual([
+      "pr",
+      "list",
+      "--state",
+      "open",
+      "--label",
+      "phoebe:quarantined",
+      "--json",
+      "number,headRefName,baseRefName,isDraft,isCrossRepository,labels,author",
+      "--limit",
+      "100",
+      "-R",
+      REPO_SLUG,
+    ]);
+  });
+});
+
 describe("prMergeInfo", () => {
   test("maps branded fields", () => {
     const { run, calls } = fakeRun([
@@ -461,6 +503,31 @@ describe("write methods — scoped, stdio inherit", () => {
       "edit",
       "10",
       "--add-label",
+      "phoebe:quarantined",
+      "-R",
+      REPO_SLUG,
+    ]);
+  });
+
+  test("unlabelIssue / unlabelPr remove a single label", () => {
+    const { run, calls } = fakeRun(["", ""]);
+    const github = createGitHub({ repoSlug: REPO_SLUG, run });
+    github.unlabelIssue(9, "phoebe:quarantined");
+    github.unlabelPr(asPrNumber(10), "phoebe:quarantined");
+    expect(calls[0]!.args).toEqual([
+      "issue",
+      "edit",
+      "9",
+      "--remove-label",
+      "phoebe:quarantined",
+      "-R",
+      REPO_SLUG,
+    ]);
+    expect(calls[1]!.args).toEqual([
+      "pr",
+      "edit",
+      "10",
+      "--remove-label",
       "phoebe:quarantined",
       "-R",
       REPO_SLUG,

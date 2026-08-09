@@ -135,6 +135,8 @@ export interface GitHub {
   prNumberForHead(branch: BranchRef, state: "open" | "merged"): PrNumber | undefined;
   /** Unfiltered open PRs, newest scope decisions (isPrInScope, prBaseScope) left to the caller. Capped at 100. */
   openPrs(opts?: { base?: string }): OpenPr[];
+  /** Open PRs carrying `label`. Capped at 100. */
+  prsWithLabel(label: string): OpenPr[];
   prMergeInfo(prNumber: PrNumber): PrMergeInfo;
   prActivity(prNumber: PrNumber): PrActivity;
   /** Every review thread on a PR, fully paginated. */
@@ -148,6 +150,7 @@ export interface GitHub {
   labelIssue(issueNumber: number, label: string): void;
   unlabelIssue(issueNumber: number, label: string): void;
   labelPr(prNumber: PrNumber, label: string): void;
+  unlabelPr(prNumber: PrNumber, label: string): void;
   /** Registers a native GitHub stack, bottom (predecessor) to top (successor). */
   linkStack(predecessor: BranchRef, successor: BranchRef): void;
   /** Unscoped: installs the `github/gh-stack` extension. */
@@ -219,6 +222,18 @@ function toActivityComment(row: GhCommentRow): ActivityComment {
     body: row.body,
     createdAt: row.createdAt,
     authorLogin: row.author?.login ?? "",
+  };
+}
+
+function toOpenPr(row: GhOpenPrRow): OpenPr {
+  return {
+    number: asPrNumber(row.number),
+    headRefName: asBranchRef(row.headRefName),
+    baseRefName: asBranchRef(row.baseRefName),
+    isDraft: row.isDraft,
+    isCrossRepository: row.isCrossRepository,
+    labels: row.labels.map((l) => l.name),
+    authorLogin: row.author.login,
   };
 }
 
@@ -346,15 +361,22 @@ export function createGitHub(opts: { repoSlug: string; run?: GhRun; timeoutMs?: 
         "100",
         ...(openPrsOpts?.base !== undefined ? ["--base", openPrsOpts.base] : []),
       ];
-      return scopedJson<GhOpenPrRow[]>(args).map((row) => ({
-        number: asPrNumber(row.number),
-        headRefName: asBranchRef(row.headRefName),
-        baseRefName: asBranchRef(row.baseRefName),
-        isDraft: row.isDraft,
-        isCrossRepository: row.isCrossRepository,
-        labels: row.labels.map((l) => l.name),
-        authorLogin: row.author.login,
-      }));
+      return scopedJson<GhOpenPrRow[]>(args).map(toOpenPr);
+    },
+
+    prsWithLabel(label: string): OpenPr[] {
+      return scopedJson<GhOpenPrRow[]>([
+        "pr",
+        "list",
+        "--state",
+        "open",
+        "--label",
+        label,
+        "--json",
+        "number,headRefName,baseRefName,isDraft,isCrossRepository,labels,author",
+        "--limit",
+        "100",
+      ]).map(toOpenPr);
     },
 
     prMergeInfo(prNumber: PrNumber): PrMergeInfo {
@@ -505,6 +527,10 @@ export function createGitHub(opts: { repoSlug: string; run?: GhRun; timeoutMs?: 
 
     labelPr(prNumber: PrNumber, label: string): void {
       scopedVoid(["pr", "edit", String(prNumber), "--add-label", label]);
+    },
+
+    unlabelPr(prNumber: PrNumber, label: string): void {
+      scopedVoid(["pr", "edit", String(prNumber), "--remove-label", label]);
     },
 
     linkStack(predecessor: BranchRef, successor: BranchRef): void {

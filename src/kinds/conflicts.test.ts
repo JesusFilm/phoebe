@@ -295,6 +295,7 @@ function fakeIo(overrides: Partial<Io> = {}): Io {
     nativeBlockers: () => [],
     prNumberForHead: () => undefined,
     openPrs: () => [],
+    prsWithLabel: () => [],
     prMergeInfo: () => {
       throw new Error("not implemented in fake");
     },
@@ -308,6 +309,7 @@ function fakeIo(overrides: Partial<Io> = {}): Io {
     labelIssue: () => {},
     unlabelIssue: () => {},
     labelPr: () => {},
+    unlabelPr: () => {},
     linkStack: () => {},
     installStackExtension: () => {},
     login: () => "phoebe-bot",

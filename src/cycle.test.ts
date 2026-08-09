@@ -18,6 +18,7 @@ function fakeGithub(overrides: Partial<GitHub> = {}): GitHub {
     nativeBlockers: () => [],
     prNumberForHead: () => undefined,
     openPrs: () => [],
+    prsWithLabel: () => [],
     prMergeInfo: () => {
       throw new Error("not implemented in fake");
     },
@@ -31,6 +32,7 @@ function fakeGithub(overrides: Partial<GitHub> = {}): GitHub {
     labelIssue: () => {},
     unlabelIssue: () => {},
     labelPr: () => {},
+    unlabelPr: () => {},
     linkStack: () => {},
     installStackExtension: () => {},
     login: () => "phoebe-bot",
@@ -54,7 +56,7 @@ function fakeIo(overrides: Partial<Io> = {}): Io {
     agent: { run: async () => 0 },
     prompts: { load: () => "template", defaultArgs: () => ({}), render: (t) => t },
     shell: { run: () => {} },
-    quarantine: { record: () => {}, resolve: () => {} },
+    quarantine: { record: () => {}, resolve: () => {}, sweepUnstuck: () => {} },
     ...overrides,
   };
 }

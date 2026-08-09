@@ -402,7 +402,10 @@ export async function runEngine(opts: {
       // #15/#13 per-cycle self-recovery and stack maintenance: every kind's own
       // `sweep` runs against the ctx just gathered, container + non-dry-run only,
       // before selection — the loop stays ignorant of which kinds have one.
+      // #69's auto-un-stick sweep lives beside these for the same reason but is
+      // not one of them — one label query across all kinds, not a per-kind hook.
       if (inContainer && !dryRun) {
+        io.quarantine.sweepUnstuck();
         for (const kind of kindHandles) {
           await kind.sweep?.(ctx);
         }

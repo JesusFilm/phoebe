@@ -11,9 +11,9 @@
 // (`pr-scope.ts#isPrInScope`, `producer.ts#selectIssue`), both pure and both
 // importable without this façade.
 //
-// `createQuarantine` is the one write entry point (`record`/`resolve`),
-// constructed once per process alongside the other adapters (#53's `io`
-// bundle) and passed into every kind. It owns the marker format, the
+// `createQuarantine` is the one write entry point (`record`/`resolve`/
+// `sweepUnstuck`), constructed once per process alongside the other adapters
+// (#53's `io` bundle) and passed into every kind. It owns the marker format, the
 // try/catch-and-swallow around every GitHub write (a write failure while
 // recording a failure must never take the daemon down), and the one tracking
 // comment per `(kind, id)` — up to two `<!-- phoebe-unit:<kind>:<trigger> -->`
@@ -38,8 +38,16 @@
 // the unit's comments are already fetched: an escalation section whose label
 // is now absent means a human cleared it — that trigger's counter resets to 0
 // before recording this new failure.
+//
+// The auto-un-stick sweep is the other side of that same escalation comment's
+// promise (#69): `sweepUnstuck()` runs once a cycle, before selection — one
+// `phoebe:quarantined` list query apiece for issues and PRs, then per hit, a
+// baseline compare against the escalation section(s) still on its tracking
+// comment(s). On a clear it resets the counter and drops the label together,
+// so the retry that follows doesn't re-quarantine itself on its first slip.
 
-import { asPrNumber, type Sha } from "./branded.ts";
+import { asPrNumber, asSha, type Sha } from "./branded.ts";
+import { WORK_KIND_NAMES, type WorkKindName } from "./config/index.ts";
 import type { GitHub } from "./github.ts";
 import type { UnitRef } from "./kinds/kind.ts";
 
@@ -231,6 +239,48 @@ export function findLatestUnitAttemptComment(
   return { marker: section.marker, commentId };
 }
 
+// --- Escalated-section scan (for sweepUnstuck, #69) --------------------------
+
+/** Same shape as `unitMarkerRe`, but `kind` and `trigger` are captures rather than fixed — the auto-un-stick sweep finds units by label, not by kind. */
+const ANY_UNIT_MARKER_RE =
+  /<!--\s*phoebe-unit:([a-z][a-z-]*):([a-z][a-z-]*)\s+n=\d+\s+sig=[a-z0-9-]+\s+ref=[A-Za-z0-9._:-]+\s+at=[0-9TZ:.+-]+\s*-->/gi;
+
+function asWorkKindName(value: string): WorkKindName | null {
+  return (WORK_KIND_NAMES as readonly string[]).includes(value) ? (value as WorkKindName) : null;
+}
+
+function asUnitTrigger(value: string): UnitTrigger | null {
+  return (ALL_TRIGGERS as readonly string[]).includes(value) ? (value as UnitTrigger) : null;
+}
+
+export type EscalatedSection = { kind: WorkKindName; trigger: UnitTrigger; baseline: string };
+
+/**
+ * Every trigger section, across all of a unit's tracking comments, that is
+ * currently the escalation (its prose still carries the `phoebe-quarantine-
+ * baseline` marker `buildQuarantineComment` writes at threshold) — a
+ * below-threshold section never carries that marker, so it's excluded for
+ * free. Kind and trigger are read off the marker itself rather than guessed,
+ * since `sweepUnstuck` only knows the unit by its label, not by kind.
+ */
+export function findEscalatedSections(comments: readonly { body: string }[]): EscalatedSection[] {
+  const sections: EscalatedSection[] = [];
+  for (const comment of comments) {
+    let cursor = 0;
+    for (const match of comment.body.matchAll(ANY_UNIT_MARKER_RE)) {
+      const prose = comment.body.slice(cursor, match.index).trim();
+      cursor = match.index + match[0].length;
+      const baseline = parseQuarantineBaseline(prose);
+      const kind = asWorkKindName(match[1]!);
+      const trigger = asUnitTrigger(match[2]!);
+      if (baseline !== null && kind !== null && trigger !== null) {
+        sections.push({ kind, trigger, baseline });
+      }
+    }
+  }
+  return sections;
+}
+
 // --- No-commit / no-PR backoff (#25) ------------------------------------------
 
 const DEFAULT_UNIT_BACKOFF_BASE_MS = 5 * 60_000;
@@ -297,6 +347,10 @@ export function slugifyFailureSignature(input: string, maxLen = 80): string {
 }
 
 // --- The façade ----------------------------------------------------------
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 /** Later of two optional ISO instants (`gh` returns them Z-normalized, so `>` is chronological). */
 function maxIso(a: string | null, b: string | null): string | null {
@@ -380,6 +434,14 @@ export type Quarantine = {
   record(unit: UnitRef, trigger: UnitTrigger, detail: QuarantineDetail): void;
   /** Clear a trigger's counter on forward progress (e.g. an issue produced a PR) — `note` replaces its section. */
   resolve(unit: UnitRef, trigger: UnitTrigger, note: string): void;
+  /**
+   * Cycle-level, run once before selection (#69): every issue and PR still
+   * carrying `phoebe:quarantined`, auto-cleared — counter reset and label
+   * removed together — the moment its content has moved past the baseline
+   * recorded at escalation. The manual-clear path (a human removing the
+   * label by hand) is a different event, handled at `record()` time instead.
+   */
+  sweepUnstuck(): void;
 };
 
 type UnitActivity = {
@@ -402,18 +464,19 @@ export function createQuarantine(opts: {
 }): Quarantine {
   const { github, config, log } = opts;
 
-  function fetchActivity(unit: UnitRef): UnitActivity {
-    if (unit.target.type === "issue") {
-      const activity = github.issueActivity(unit.target.number);
+  /** Takes a bare target (not a full `UnitRef`) — `kind` plays no part in what gets fetched, and `sweepUnstuck` doesn't know it yet when it calls this. */
+  function fetchActivity(target: UnitRef["target"]): UnitActivity {
+    if (target.type === "issue") {
+      const activity = github.issueActivity(target.number);
       return {
         comments: activity.comments,
         labels: activity.labels,
-        ref: String(unit.target.number),
+        ref: String(target.number),
         baseline: activity.updatedAt,
         lastCommitAt: null,
       };
     }
-    const activity = github.prActivity(asPrNumber(unit.target.number));
+    const activity = github.prActivity(asPrNumber(target.number));
     return {
       comments: activity.comments,
       labels: activity.labels,
@@ -443,7 +506,7 @@ export function createQuarantine(opts: {
     const { kind, target } = unit;
     const id = target.number;
     try {
-      const activity = fetchActivity(unit);
+      const activity = fetchActivity(target);
       const tracking = findTrackingComment(activity.comments, kind);
       let previous = tracking.sections[trigger]?.marker ?? null;
 
@@ -503,8 +566,7 @@ export function createQuarantine(opts: {
       }
     } catch (error) {
       log(
-        `Could not record ${trigger} toward quarantine for ${kind} #${id} — ` +
-          `${error instanceof Error ? error.message : String(error)}`,
+        `Could not record ${trigger} toward quarantine for ${kind} #${id} — ${errorMessage(error)}`,
       );
     }
   }
@@ -512,7 +574,7 @@ export function createQuarantine(opts: {
   function resolve(unit: UnitRef, trigger: UnitTrigger, note: string): void {
     const { kind, target } = unit;
     try {
-      const activity = fetchActivity(unit);
+      const activity = fetchActivity(target);
       const tracking = findTrackingComment(activity.comments, kind);
       if (!tracking.commentId || !tracking.sections[trigger]) {
         return;
@@ -524,11 +586,81 @@ export function createQuarantine(opts: {
       github.updateComment(tracking.commentId, body);
     } catch (error) {
       log(
-        `Could not clear ${trigger} tracking for ${kind} #${target.number} — ` +
-          `${error instanceof Error ? error.message : String(error)}`,
+        `Could not clear ${trigger} tracking for ${kind} #${target.number} — ${errorMessage(error)}`,
       );
     }
   }
 
-  return { record, resolve };
+  function sweepUnstuck(): void {
+    let quarantinedIssues: readonly { number: number }[] = [];
+    try {
+      quarantinedIssues = github.issuesWithLabel(PHOEBE_QUARANTINE_LABEL);
+    } catch (error) {
+      log(`Could not list quarantined issues for the auto-un-stick sweep — ${errorMessage(error)}`);
+    }
+    for (const issue of quarantinedIssues) {
+      unstickOne({ type: "issue", number: issue.number });
+    }
+
+    let quarantinedPrs: readonly { number: number }[] = [];
+    try {
+      quarantinedPrs = github.prsWithLabel(PHOEBE_QUARANTINE_LABEL);
+    } catch (error) {
+      log(`Could not list quarantined PRs for the auto-un-stick sweep — ${errorMessage(error)}`);
+    }
+    for (const pr of quarantinedPrs) {
+      unstickOne({ type: "pr", number: pr.number });
+    }
+  }
+
+  /**
+   * One quarantined unit: read its baseline(s) off the escalation section(s)
+   * still on its tracking comment(s) — kind and trigger are read straight off
+   * the marker, never assumed, since this is called from a plain label list
+   * with no kind attached. Clears (resets every escalated trigger's counter +
+   * removes the label, together) only when every escalated section has
+   * advanced past its own baseline — a unit stuck on two triggers at once
+   * stays labelled until both let go.
+   */
+  function unstickOne(target: UnitRef["target"]): void {
+    try {
+      const activity = fetchActivity(target);
+      if (!activity.labels.includes(PHOEBE_QUARANTINE_LABEL)) {
+        return;
+      }
+      const sections = findEscalatedSections(activity.comments);
+      if (sections.length === 0) {
+        return;
+      }
+      const cleared = sections.every((section) =>
+        shouldAutoUnstick(
+          target.type === "issue"
+            ? { baseline: section.baseline, currentIssueEditedAt: activity.baseline }
+            : { baseline: section.baseline, currentHeadSha: asSha(activity.baseline) },
+        ),
+      );
+      if (!cleared) {
+        return;
+      }
+      for (const section of sections) {
+        resolve(
+          { kind: section.kind, target },
+          section.trigger,
+          `Phoebe auto-cleared \`${PHOEBE_QUARANTINE_LABEL}\` — the content advanced past the recorded baseline.`,
+        );
+      }
+      if (target.type === "issue") {
+        github.unlabelIssue(target.number, PHOEBE_QUARANTINE_LABEL);
+      } else {
+        github.unlabelPr(asPrNumber(target.number), PHOEBE_QUARANTINE_LABEL);
+      }
+      log(`Auto-un-stuck ${target.type} #${target.number} — cleared ${PHOEBE_QUARANTINE_LABEL}.`);
+    } catch (error) {
+      log(
+        `Could not evaluate auto-un-stick for ${target.type} #${target.number} — ${errorMessage(error)}`,
+      );
+    }
+  }
+
+  return { record, resolve, sweepUnstuck };
 }

@@ -8,12 +8,13 @@
 // config layer (#56) — see src/load-config.test.ts.
 
 import { describe, expect, test } from "vite-plus/test";
-import { asBranchRef, asSha } from "./branded.ts";
+import { asBranchRef, asPrNumber, asSha } from "./branded.ts";
 import type { ActivityComment, GitHub } from "./github.ts";
 import {
   buildQuarantineComment,
   createQuarantine,
   filterBackoffEligible,
+  findEscalatedSections,
   findLatestUnitAttemptComment,
   parseQuarantineBaseline,
   PHOEBE_QUARANTINE_LABEL,
@@ -267,6 +268,7 @@ function createFakeGithub(
     nativeBlockers: () => [],
     prNumberForHead: () => undefined,
     openPrs: () => [],
+    prsWithLabel: () => [],
     prMergeInfo: () => {
       throw new Error("not implemented in fake");
     },
@@ -290,6 +292,9 @@ function createFakeGithub(
     },
     labelPr: (_n, label) => {
       if (!state.labels.includes(label)) state.labels.push(label);
+    },
+    unlabelPr: (_n, label) => {
+      state.labels = state.labels.filter((l) => l !== label);
     },
     linkStack: () => {},
     installStackExtension: () => {},
@@ -636,5 +641,424 @@ describe("createQuarantine — resolve()", () => {
       "counter reset",
     );
     expect(state.comments).toHaveLength(0);
+  });
+});
+
+// --- findEscalatedSections ---------------------------------------------------
+
+describe("findEscalatedSections", () => {
+  test("finds a section whose prose carries the baseline marker, kind and trigger read off the marker itself", () => {
+    const escalation = buildQuarantineComment({
+      kind: "checks",
+      id: 5,
+      k: 3,
+      baseline: "sha-1",
+      reason: "produced no commit",
+    });
+    const body = `${escalation}\n\n<!-- phoebe-unit:checks:no-commit n=3 sig=s ref=sha-1 at=2026-01-01T00:00:00Z -->`;
+    expect(findEscalatedSections([{ body }])).toEqual([
+      { kind: "checks", trigger: "no-commit", baseline: "sha-1" },
+    ]);
+  });
+
+  test("skips a below-threshold section — its prose never carries the baseline marker", () => {
+    const body =
+      "attempt 1/3\n\n<!-- phoebe-unit:checks:no-commit n=1 sig=s ref=sha-1 at=2026-01-01T00:00:00Z -->";
+    expect(findEscalatedSections([{ body }])).toEqual([]);
+  });
+
+  test("finds escalated sections across two different kinds' tracking comments", () => {
+    const escalation1 = buildQuarantineComment({
+      kind: "checks",
+      id: 5,
+      k: 3,
+      baseline: "sha-1",
+      reason: "produced no commit",
+    });
+    const escalation2 = buildQuarantineComment({
+      kind: "conflicts",
+      id: 5,
+      k: 3,
+      baseline: "sha-2",
+      reason: "timed out",
+    });
+    const comments = [
+      {
+        body: `${escalation1}\n\n<!-- phoebe-unit:checks:no-commit n=3 sig=s ref=sha-1 at=2026-01-01T00:00:00Z -->`,
+      },
+      {
+        body: `${escalation2}\n\n<!-- phoebe-unit:conflicts:timed-out n=3 sig=timeout ref=sha-2 at=2026-01-01T00:00:00Z -->`,
+      },
+    ];
+    expect(findEscalatedSections(comments)).toEqual([
+      { kind: "checks", trigger: "no-commit", baseline: "sha-1" },
+      { kind: "conflicts", trigger: "timed-out", baseline: "sha-2" },
+    ]);
+  });
+});
+
+// --- createQuarantine — sweepUnstuck() ---------------------------------------
+
+type MultiUnitState = { comments: ActivityComment[]; labels: string[] };
+
+function createMultiUnitFakeGithub(
+  opts: {
+    issues?: Record<number, Partial<MultiUnitState> & { updatedAt?: string }>;
+    prs?: Record<number, Partial<MultiUnitState> & { headRefOid?: string }>;
+  } = {},
+): {
+  github: GitHub;
+  issues: Map<number, MultiUnitState & { updatedAt: string }>;
+  prs: Map<number, MultiUnitState & { headRefOid: string }>;
+} {
+  const issues = new Map(
+    Object.entries(opts.issues ?? {}).map(([n, v]) => [
+      Number(n),
+      {
+        comments: v.comments ? [...v.comments] : [],
+        labels: v.labels ? [...v.labels] : [],
+        updatedAt: v.updatedAt ?? "2026-01-01T00:00:00Z",
+      },
+    ]),
+  );
+  const prs = new Map(
+    Object.entries(opts.prs ?? {}).map(([n, v]) => [
+      Number(n),
+      {
+        comments: v.comments ? [...v.comments] : [],
+        labels: v.labels ? [...v.labels] : [],
+        headRefOid: v.headRefOid ?? "sha-1",
+      },
+    ]),
+  );
+
+  function updateComment(id: string, body: string): void {
+    for (const unit of [...issues.values(), ...prs.values()]) {
+      const comment = unit.comments.find((c) => c.id === id);
+      if (comment) {
+        comment.body = body;
+        return;
+      }
+    }
+  }
+
+  const github: GitHub = {
+    issuesWithLabel: (label) =>
+      [...issues.entries()]
+        .filter(([, s]) => s.labels.includes(label))
+        .map(([number]) => ({
+          number,
+          title: "",
+          body: "",
+          createdAt: "2026-01-01T00:00:00Z",
+          labels: [],
+          authorLogin: "",
+        })),
+    issueBody: () => "",
+    issueActivity: (n) => {
+      const s = issues.get(n)!;
+      return { updatedAt: s.updatedAt, comments: s.comments, labels: s.labels };
+    },
+    nativeBlockers: () => [],
+    prNumberForHead: () => undefined,
+    openPrs: () => [],
+    prsWithLabel: (label) =>
+      [...prs.entries()]
+        .filter(([, s]) => s.labels.includes(label))
+        .map(([number]) => ({
+          number: asPrNumber(number),
+          headRefName: asBranchRef("phoebe/issue-x"),
+          baseRefName: asBranchRef("main"),
+          isDraft: false,
+          isCrossRepository: false,
+          labels: [],
+          authorLogin: "",
+        })),
+    prMergeInfo: () => {
+      throw new Error("not implemented in fake");
+    },
+    prActivity: (n) => {
+      const s = prs.get(n)!;
+      return {
+        headRefOid: asSha(s.headRefOid),
+        lastCommitAt: null,
+        comments: s.comments,
+        labels: s.labels,
+      };
+    },
+    reviewThreads: () => [],
+    commitCheckRuns: () => [],
+    commentIssue: () => {},
+    commentPr: () => {},
+    createPr: () => {},
+    retargetPr: () => {},
+    labelIssue: (n, label) => {
+      const s = issues.get(n)!;
+      if (!s.labels.includes(label)) s.labels.push(label);
+    },
+    unlabelIssue: (n, label) => {
+      const s = issues.get(n)!;
+      s.labels = s.labels.filter((l) => l !== label);
+    },
+    labelPr: (n, label) => {
+      const s = prs.get(n)!;
+      if (!s.labels.includes(label)) s.labels.push(label);
+    },
+    unlabelPr: (n, label) => {
+      const s = prs.get(n)!;
+      s.labels = s.labels.filter((l) => l !== label);
+    },
+    linkStack: () => {},
+    installStackExtension: () => {},
+    login: () => "phoebe-bot",
+    updateComment,
+  };
+  return { github, issues, prs };
+}
+
+function escalatedTrackingComment(opts: {
+  id: string;
+  kind: string;
+  trigger: UnitMarker["trigger"];
+  issueOrPrNumber: number;
+  baseline: string;
+  ref: string;
+  n?: number;
+}): ActivityComment {
+  const prose = buildQuarantineComment({
+    kind: opts.kind,
+    id: opts.issueOrPrNumber,
+    k: 3,
+    baseline: opts.baseline,
+    reason: "produced no commit",
+    signature: "sig",
+  });
+  const marker = `<!-- phoebe-unit:${opts.kind}:${opts.trigger} n=${opts.n ?? 3} sig=sig ref=${opts.ref} at=2026-01-01T00:00:00Z -->`;
+  return {
+    id: opts.id,
+    body: `${prose}\n\n${marker}`,
+    createdAt: "2026-01-01T00:00:00Z",
+    authorLogin: "phoebe-bot",
+  };
+}
+
+describe("createQuarantine — sweepUnstuck()", () => {
+  test("a PR unit whose head SHA advanced past baseline is unlabelled and its counter reset", () => {
+    const { github, prs } = createMultiUnitFakeGithub({
+      prs: {
+        7: {
+          headRefOid: "sha-2",
+          labels: [PHOEBE_QUARANTINE_LABEL],
+          comments: [
+            escalatedTrackingComment({
+              id: "track1",
+              kind: "checks",
+              trigger: "no-commit",
+              issueOrPrNumber: 7,
+              baseline: "sha-1",
+              ref: "sha-1",
+            }),
+          ],
+        },
+      },
+    });
+    const quarantine = createQuarantine({
+      github,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: () => {},
+    });
+    quarantine.sweepUnstuck();
+    const pr = prs.get(7)!;
+    expect(pr.labels).toEqual([]);
+    expect(pr.comments[0]!.body).not.toContain("phoebe-unit:checks:no-commit");
+  });
+
+  test("an issue unit whose updatedAt advanced past baseline is unlabelled and its counter reset", () => {
+    const { github, issues } = createMultiUnitFakeGithub({
+      issues: {
+        42: {
+          updatedAt: "2026-02-01T00:00:00Z",
+          labels: [PHOEBE_QUARANTINE_LABEL],
+          comments: [
+            escalatedTrackingComment({
+              id: "track1",
+              kind: "issues",
+              trigger: "no-pr",
+              issueOrPrNumber: 42,
+              baseline: "2026-01-01T00:00:00Z",
+              ref: "42",
+            }),
+          ],
+        },
+      },
+    });
+    const quarantine = createQuarantine({
+      github,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: () => {},
+    });
+    quarantine.sweepUnstuck();
+    const issue = issues.get(42)!;
+    expect(issue.labels).toEqual([]);
+    expect(issue.comments[0]!.body).not.toContain("phoebe-unit:issues:no-pr");
+  });
+
+  test("a PR unit whose head SHA has not moved stays quarantined", () => {
+    const { github, prs } = createMultiUnitFakeGithub({
+      prs: {
+        7: {
+          headRefOid: "sha-1",
+          labels: [PHOEBE_QUARANTINE_LABEL],
+          comments: [
+            escalatedTrackingComment({
+              id: "track1",
+              kind: "checks",
+              trigger: "no-commit",
+              issueOrPrNumber: 7,
+              baseline: "sha-1",
+              ref: "sha-1",
+            }),
+          ],
+        },
+      },
+    });
+    const quarantine = createQuarantine({
+      github,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: () => {},
+    });
+    quarantine.sweepUnstuck();
+    const pr = prs.get(7)!;
+    expect(pr.labels).toEqual([PHOEBE_QUARANTINE_LABEL]);
+    expect(pr.comments[0]!.body).toContain("phoebe-unit:checks:no-commit n=3");
+  });
+
+  test("a unit quarantined on two triggers stays labelled unless both clear", () => {
+    const escalation1 = buildQuarantineComment({
+      kind: "issues",
+      id: 42,
+      k: 3,
+      baseline: "2026-01-01T00:00:00Z",
+      reason: "timed out",
+    });
+    const marker1 = `<!-- phoebe-unit:issues:timed-out n=3 sig=timeout ref=42 at=2026-01-01T00:00:00Z -->`;
+    const escalation2 = buildQuarantineComment({
+      kind: "issues",
+      id: 42,
+      k: 3,
+      baseline: "2026-03-01T00:00:00Z",
+      reason: "was claimed and released with no PR",
+    });
+    const marker2 = `<!-- phoebe-unit:issues:no-pr n=3 sig=sig ref=42 at=2026-01-01T00:00:00Z -->`;
+    const { github, issues } = createMultiUnitFakeGithub({
+      issues: {
+        42: {
+          // Newer than escalation1's baseline (clears timed-out) but older than escalation2's (doesn't clear no-pr).
+          updatedAt: "2026-02-01T00:00:00Z",
+          labels: [PHOEBE_QUARANTINE_LABEL],
+          comments: [
+            {
+              id: "track1",
+              body: `${escalation1}\n\n${marker1}\n\n${escalation2}\n\n${marker2}`,
+              createdAt: "2026-01-01T00:00:00Z",
+              authorLogin: "phoebe-bot",
+            },
+          ],
+        },
+      },
+    });
+    const quarantine = createQuarantine({
+      github,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: () => {},
+    });
+    quarantine.sweepUnstuck();
+    const issue = issues.get(42)!;
+    expect(issue.labels).toEqual([PHOEBE_QUARANTINE_LABEL]);
+    expect(issue.comments[0]!.body).toContain("phoebe-unit:issues:timed-out");
+    expect(issue.comments[0]!.body).toContain("phoebe-unit:issues:no-pr");
+  });
+
+  test("a labelled unit with no escalated section (stale/below-threshold) is left alone", () => {
+    const { github, issues } = createMultiUnitFakeGithub({
+      issues: {
+        9: {
+          labels: [PHOEBE_QUARANTINE_LABEL],
+          comments: [
+            {
+              id: "track1",
+              body: "attempt 1/3\n\n<!-- phoebe-unit:issues:no-pr n=1 sig=s ref=9 at=2026-01-01T00:00:00Z -->",
+              createdAt: "2026-01-01T00:00:00Z",
+              authorLogin: "phoebe-bot",
+            },
+          ],
+        },
+      },
+    });
+    const quarantine = createQuarantine({
+      github,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: () => {},
+    });
+    expect(() => quarantine.sweepUnstuck()).not.toThrow();
+    expect(issues.get(9)!.labels).toEqual([PHOEBE_QUARANTINE_LABEL]);
+  });
+
+  test("a listing failure is swallowed and logged, and does not stop the other list from being processed", () => {
+    const { github, prs } = createMultiUnitFakeGithub({
+      prs: {
+        7: {
+          headRefOid: "sha-2",
+          labels: [PHOEBE_QUARANTINE_LABEL],
+          comments: [
+            escalatedTrackingComment({
+              id: "track1",
+              kind: "checks",
+              trigger: "no-commit",
+              issueOrPrNumber: 7,
+              baseline: "sha-1",
+              ref: "sha-1",
+            }),
+          ],
+        },
+      },
+    });
+    const failing: GitHub = {
+      ...github,
+      issuesWithLabel: () => {
+        throw new Error("boom");
+      },
+    };
+    const logs: string[] = [];
+    const quarantine = createQuarantine({
+      github: failing,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: (m) => logs.push(m),
+    });
+    expect(() => quarantine.sweepUnstuck()).not.toThrow();
+    expect(logs.some((l) => l.includes("Could not list quarantined issues"))).toBe(true);
+    expect(prs.get(7)!.labels).toEqual([]);
+  });
+
+  test("a per-unit activity fetch failure is swallowed and logged", () => {
+    const { github } = createMultiUnitFakeGithub({
+      issues: { 9: { labels: [PHOEBE_QUARANTINE_LABEL] } },
+    });
+    const failing: GitHub = {
+      ...github,
+      issueActivity: () => {
+        throw new Error("boom");
+      },
+    };
+    const logs: string[] = [];
+    const quarantine = createQuarantine({
+      github: failing,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: (m) => logs.push(m),
+    });
+    expect(() => quarantine.sweepUnstuck()).not.toThrow();
+    expect(logs.some((l) => l.includes("Could not evaluate auto-un-stick for issue #9"))).toBe(
+      true,
+    );
   });
 });
