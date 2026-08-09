@@ -25,7 +25,7 @@ const CAPABILITIES = [
 
 type VerificationResult = WorkOutcomeEvent["verification"][number];
 
-/** The work a `work-started`/`unit-quarantined` transition identifies (#60). */
+/** The work a `work-started`/`unit-quarantined`/`unit-unquarantined` transition identifies (#60/#70). */
 type WorkRef = {
   kind: WorkKind;
   issueNumber?: number;
@@ -52,6 +52,7 @@ export type RuntimeStatusTransition =
     }
   | { kind: "work-timed-out"; elapsedMs: number }
   | { kind: "unit-quarantined"; work: WorkRef; reason: string }
+  | { kind: "unit-unquarantined"; work: WorkRef; reason: string }
   | { kind: "backoff"; reason: string; until?: string }
   | { kind: "draining"; reason: string }
   | { kind: "engine-failed"; error: unknown }
@@ -449,6 +450,15 @@ export function createRuntimeStatusReporter(options: {
         // so the unit is carried explicitly rather than read off `activeWork`.
         const reason = sanitizeTelemetryText(transition.reason, options.secrets);
         line = `${tag} quarantined ${transition.work.kind} #${workRefLabel(transition.work)} — ${reason}`;
+        break;
+      }
+      case "unit-unquarantined": {
+        // `unit-quarantined`'s counterpart (#70) — log-only for the same
+        // reason: the un-stick sweep and the manual-clear reset at record
+        // time both already write the durable state (comment + label) on
+        // GitHub, so this is the one reporting rail for a clear, not a copy.
+        const reason = sanitizeTelemetryText(transition.reason, options.secrets);
+        line = `${tag} unquarantined ${transition.work.kind} #${workRefLabel(transition.work)} — ${reason}`;
         break;
       }
       case "backoff": {

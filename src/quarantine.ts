@@ -429,6 +429,22 @@ export type QuarantineDetail = {
   dependents?: readonly number[];
 };
 
+/** A unit's identity as the status rail (`runtime-status.ts`) names it — never the reset rule, just carried data. */
+type QuarantineWorkRef = { kind: WorkKindName; issueNumber?: number; pullRequestNumber?: number };
+
+/**
+ * The one reporting rail a quarantine label going on or off routes through
+ * (#70/#60) — structurally `RuntimeStatusTransition`'s `unit-quarantined`/
+ * `unit-unquarantined` cases, narrowed so this module doesn't need to import
+ * the whole union. Defaults to a no-op: most callers (tests, and any future
+ * standalone use of this façade) don't care that the status rail exists.
+ */
+export type QuarantineReport = (
+  event:
+    | { kind: "unit-quarantined"; work: QuarantineWorkRef; reason: string }
+    | { kind: "unit-unquarantined"; work: QuarantineWorkRef; reason: string },
+) => void;
+
 export type Quarantine = {
   /** Fold one failure into the unit's `(kind, id, trigger)` counter; at threshold, label + escalate. Best-effort. */
   record(unit: UnitRef, trigger: UnitTrigger, detail: QuarantineDetail): void;
@@ -461,8 +477,16 @@ export function createQuarantine(opts: {
   github: GitHub;
   config: { maxUnitTimeouts: number; maxUnitAttempts: number };
   log: (message: string) => void;
+  report?: QuarantineReport;
 }): Quarantine {
   const { github, config, log } = opts;
+  const report = opts.report ?? (() => {});
+
+  function workRefFor(unit: UnitRef): QuarantineWorkRef {
+    return unit.target.type === "pr"
+      ? { kind: unit.kind, pullRequestNumber: unit.target.number }
+      : { kind: unit.kind, issueNumber: unit.target.number };
+  }
 
   /** Takes a bare target (not a full `UnitRef`) — `kind` plays no part in what gets fetched, and `sweepUnstuck` doesn't know it yet when it calls this. */
   function fetchActivity(target: UnitRef["target"]): UnitActivity {
@@ -518,6 +542,11 @@ export function createQuarantine(opts: {
       if (previous && parseQuarantineBaseline(priorProse) !== null) {
         if (!activity.labels.includes(PHOEBE_QUARANTINE_LABEL)) {
           previous = null;
+          report({
+            kind: "unit-unquarantined",
+            work: workRefFor(unit),
+            reason: `the ${PHOEBE_QUARANTINE_LABEL} label was removed by hand — the ${trigger} counter reset to 0`,
+          });
         }
       }
 
@@ -560,9 +589,11 @@ export function createQuarantine(opts: {
 
       if (quarantined) {
         applyLabel(unit);
-        log(
-          `Quarantined ${kind} unit for #${id} after ${n} time(s) — labelled ${PHOEBE_QUARANTINE_LABEL} (${detail.reason}).`,
-        );
+        report({
+          kind: "unit-quarantined",
+          work: workRefFor(unit),
+          reason: `${detail.reason} ${n} time(s) — labelled ${PHOEBE_QUARANTINE_LABEL}`,
+        });
       }
     } catch (error) {
       log(
@@ -648,13 +679,17 @@ export function createQuarantine(opts: {
           section.trigger,
           `Phoebe auto-cleared \`${PHOEBE_QUARANTINE_LABEL}\` — the content advanced past the recorded baseline.`,
         );
+        report({
+          kind: "unit-unquarantined",
+          work: workRefFor({ kind: section.kind, target }),
+          reason: "the content advanced past the recorded baseline — auto-cleared",
+        });
       }
       if (target.type === "issue") {
         github.unlabelIssue(target.number, PHOEBE_QUARANTINE_LABEL);
       } else {
         github.unlabelPr(asPrNumber(target.number), PHOEBE_QUARANTINE_LABEL);
       }
-      log(`Auto-un-stuck ${target.type} #${target.number} — cleared ${PHOEBE_QUARANTINE_LABEL}.`);
     } catch (error) {
       log(
         `Could not evaluate auto-un-stick for ${target.type} #${target.number} — ${errorMessage(error)}`,

@@ -244,6 +244,15 @@ describe("runtime status projection", () => {
       "[phoebe:owner/repo] quarantined checks #9 — timed out 3× — labelled phoebe:quarantined",
     );
 
+    reporter.record({
+      kind: "unit-unquarantined",
+      work: { kind: "checks", pullRequestNumber: 9 },
+      reason: "the content advanced past the recorded baseline — auto-cleared",
+    });
+    expect(lines.at(-1)).toBe(
+      "[phoebe:owner/repo] unquarantined checks #9 — the content advanced past the recorded baseline — auto-cleared",
+    );
+
     // Never the bare, un-attributable `[phoebe]` prefix.
     expect(lines.every((line) => line.startsWith("[phoebe:owner/repo]"))).toBe(true);
   });
@@ -287,20 +296,27 @@ describe("runtime status projection", () => {
     });
     expect(lines).toHaveLength(8);
 
-    reporter.record({ kind: "backoff", reason: "quota" });
+    reporter.record({
+      kind: "unit-unquarantined",
+      work: { kind: "issues", issueNumber: 1 },
+      reason: "cleared by hand",
+    });
     expect(lines).toHaveLength(9);
 
-    reporter.record({ kind: "draining", reason: "stop" });
+    reporter.record({ kind: "backoff", reason: "quota" });
     expect(lines).toHaveLength(10);
 
-    reporter.record({ kind: "engine-failed", error: new Error("dead") });
+    reporter.record({ kind: "draining", reason: "stop" });
     expect(lines).toHaveLength(11);
 
-    reporter.record({ kind: "stopped" });
+    reporter.record({ kind: "engine-failed", error: new Error("dead") });
     expect(lines).toHaveLength(12);
 
+    reporter.record({ kind: "stopped" });
+    expect(lines).toHaveLength(13);
+
     reporter.record({ kind: "selecting" });
-    expect(lines).toHaveLength(12);
+    expect(lines).toHaveLength(13);
   });
 
   test("work-timed-out clears activeWork, records an agent-category failure, and bumps retry (#60)", () => {
@@ -342,6 +358,35 @@ describe("runtime status projection", () => {
     const after = reporter.snapshot();
     expect(after).toEqual({ ...before, updatedAt: after.updatedAt });
     expect(after.control.quarantine).toEqual({ active: false });
+  });
+
+  test("unit-unquarantined logs the unit's tagged line without mutating the snapshot beyond updatedAt (#70)", () => {
+    const stateDir = makeStateDir();
+    const lines: string[] = [];
+    const reporter = createRuntimeStatusReporter({
+      stateDir,
+      runtimeId: "runtime-1",
+      ...context,
+      log: (line) => lines.push(line),
+    });
+    reporter.record({
+      kind: "unit-quarantined",
+      work: { kind: "issues", issueNumber: 42 },
+      reason: "timed out 3× — labelled phoebe:quarantined",
+    });
+    const before = reporter.snapshot();
+
+    reporter.record({
+      kind: "unit-unquarantined",
+      work: { kind: "issues", issueNumber: 42 },
+      reason: "the content advanced past the recorded baseline — auto-cleared",
+    });
+
+    const after = reporter.snapshot();
+    expect(after).toEqual({ ...before, updatedAt: after.updatedAt });
+    expect(lines.at(-1)).toBe(
+      "[phoebe:owner/repo] unquarantined issues #42 — the content advanced past the recorded baseline — auto-cleared",
+    );
   });
 
   test("a nonzero agent exit is recorded as exactly one failed outcome — never also completed (#60 regression)", () => {

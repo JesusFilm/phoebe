@@ -491,10 +491,12 @@ describe("createQuarantine — record()", () => {
         },
       ],
     });
+    const reported: unknown[] = [];
     const quarantine = createQuarantine({
       github,
       config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
       log: () => {},
+      report: (event) => reported.push(event),
     });
     quarantine.record({ kind: "issues", target: { type: "issue", number: 99 } }, "no-pr", {
       signature: "apply-patch-failed",
@@ -504,6 +506,14 @@ describe("createQuarantine — record()", () => {
     const body = state.comments.find((c) => c.id === "track1")!.body;
     expect(body).toContain("n=3");
     expect(state.labels).toContain(PHOEBE_QUARANTINE_LABEL);
+    // Threshold reached — the one status-rail report replaces the bare log call (#70).
+    expect(reported).toEqual([
+      {
+        kind: "unit-quarantined",
+        work: { kind: "issues", issueNumber: 99 },
+        reason: "was claimed and released with no PR 3 time(s) — labelled phoebe:quarantined",
+      },
+    ]);
   });
 
   test("record() at threshold for no-pr includes the dependents list in the escalation prose (#22)", () => {
@@ -554,10 +564,12 @@ describe("createQuarantine — record()", () => {
         },
       ],
     });
+    const reported: unknown[] = [];
     const quarantine = createQuarantine({
       github,
       config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
       log: () => {},
+      report: (event) => reported.push(event),
     });
     quarantine.record({ kind: "checks", target: { type: "pr", number: 5 } }, "no-commit", {
       signature: "checks-failed",
@@ -567,6 +579,15 @@ describe("createQuarantine — record()", () => {
     const body = state.comments.find((c) => c.id === "track1")!.body;
     expect(body).toContain("n=1");
     expect(state.labels).toEqual([]);
+    // The manual clear is its own event (#70) — distinct from whatever this new attempt does.
+    expect(reported).toEqual([
+      {
+        kind: "unit-unquarantined",
+        work: { kind: "checks", pullRequestNumber: 5 },
+        reason:
+          "the phoebe:quarantined label was removed by hand — the no-commit counter reset to 0",
+      },
+    ]);
   });
 
   test("a GitHub write failure while recording is swallowed and logged, never thrown", () => {
@@ -862,15 +883,25 @@ describe("createQuarantine — sweepUnstuck()", () => {
         },
       },
     });
+    const reported: unknown[] = [];
     const quarantine = createQuarantine({
       github,
       config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
       log: () => {},
+      report: (event) => reported.push(event),
     });
     quarantine.sweepUnstuck();
     const pr = prs.get(7)!;
     expect(pr.labels).toEqual([]);
     expect(pr.comments[0]!.body).not.toContain("phoebe-unit:checks:no-commit");
+    // The auto-un-stick sweep is what emits unit-unquarantined (#70).
+    expect(reported).toEqual([
+      {
+        kind: "unit-unquarantined",
+        work: { kind: "checks", pullRequestNumber: 7 },
+        reason: "the content advanced past the recorded baseline — auto-cleared",
+      },
+    ]);
   });
 
   test("an issue unit whose updatedAt advanced past baseline is unlabelled and its counter reset", () => {

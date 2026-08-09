@@ -301,13 +301,36 @@ export async function runEngine(opts: {
     return { run: runAgentInWorktree };
   }
 
+  // Built ahead of `io` (rather than beside the rest of the loop setup below)
+  // solely so `quarantine`'s `report` can route a quarantine/un-quarantine
+  // line through the one status rail (#70/#60) instead of a bare log call.
+  const selectedProvider = selectProvider();
+  const contractContext = buildRuntimeContractContext({
+    config,
+    providerName: selectedProvider.provider.name,
+    model: selectedProvider.model,
+    runtimeRoot: process.cwd(),
+    env: process.env,
+  });
+  const status = createRuntimeStatusReporter({
+    ...(inContainer ? { stateDir: config.paths.stateDir } : {}),
+    ...(process.env["PHOEBE_RUNTIME_ID"] ? { runtimeId: process.env["PHOEBE_RUNTIME_ID"] } : {}),
+    ...contractContext,
+    onWriteError: (error) =>
+      phoebeError(
+        `Runtime telemetry write failed — ${
+          error instanceof Error ? error.message : String(error)
+        }. Work will continue.`,
+      ),
+  });
+
   const io: Io = {
     github,
     git: buildGitOps(),
     agent: buildAgentRunner(),
     prompts: buildPrompts(),
     shell: buildShell(),
-    quarantine: createQuarantine({ github, config, log: phoebeLog }),
+    quarantine: createQuarantine({ github, config, log: phoebeLog, report: status.record }),
   };
 
   const kindDeps: KindDeps = { config, io };
@@ -570,26 +593,6 @@ export async function runEngine(opts: {
     Number.isFinite(rawPollIntervalMs) && rawPollIntervalMs > 0
       ? rawPollIntervalMs
       : DEFAULT_POLL_INTERVAL_MS;
-  const selectedProvider = selectProvider();
-  const contractContext = buildRuntimeContractContext({
-    config,
-    providerName: selectedProvider.provider.name,
-    model: selectedProvider.model,
-    runtimeRoot: process.cwd(),
-    env: process.env,
-  });
-  const status = createRuntimeStatusReporter({
-    ...(inContainer ? { stateDir: config.paths.stateDir } : {}),
-    ...(process.env["PHOEBE_RUNTIME_ID"] ? { runtimeId: process.env["PHOEBE_RUNTIME_ID"] } : {}),
-    ...contractContext,
-    onWriteError: (error) =>
-      phoebeError(
-        `Runtime telemetry write failed — ${
-          error instanceof Error ? error.message : String(error)
-        }. Work will continue.`,
-      ),
-  });
-
   phoebeLog(
     runOnce
       ? "Run-once mode — will work at most one unit of the first one-shot-eligible kind in WORK_ORDER, then exit."
