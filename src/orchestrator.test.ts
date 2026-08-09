@@ -1,19 +1,15 @@
-import { afterEach, describe, expect, test } from "vite-plus/test";
+import { describe, expect, test } from "vite-plus/test";
 import { asBranchRef, asPrNumber, asSha } from "./branded.ts";
 import { resolveConfiguration, type PhoebeUserConfig } from "./config/index.ts";
 import { setResolvedConfig } from "./resolved-config.ts";
 import { config as sampleUserConfig } from "../phoebe.config.ts";
-import type { BlockerSource } from "./config/index.ts";
 
 function resolveConfig(user: PhoebeUserConfig) {
   return resolveConfiguration({ repository: user }).config;
 }
 import {
-  buildChecksFailWatermarkMarker,
-  buildConflictFailWatermarkMarker,
   buildInitialPrBody,
   buildReviewsHandledComment,
-  buildReviewsHandledMarker,
   checksFailureSignature,
   checksFixFailureComment,
   classifyPriority,
@@ -21,32 +17,15 @@ import {
   conflictFailureSignature,
   conflictFixFailureComment,
   filterBackoffEligible,
-  findBlockedDependents,
   followUpPrComment,
   formatFailingChecksForPrompt,
   hasNewNonPhoebeReviewActivity,
-  isPhoebeHeadBranch,
-  isPrInScope,
-  isPrMergeConflicting,
   isReviewSummaryComment,
   issueAttemptFailureSignature,
-  issueBranch,
-  issueBlockers,
   listFailingChecks,
-  mergeBlockerNumbers,
   newestReviewThreadCommentCreatedAt,
-  parseBlockedBy,
-  parseChecksFailWatermark,
   parseConflictFailWatermark,
-  parseLatestMarker,
-  parseReviewsHandledWatermark,
-  parseIssueNumberFromBranch,
-  resolveWorktreeBase,
   buildIssueQueue,
-  resolveStackedPrPlan,
-  getMergedBlockerPrNumbers,
-  ghStackExtensionInstallArgs,
-  nativeStackGitConfig,
   oneShotWorkKinds,
   selectChecksUnit,
   selectConflictFixCandidates,
@@ -54,7 +33,6 @@ import {
   selectFirstWorkUnit,
   selectIssue,
   selectReviewsUnit,
-  selectStackRetargetCandidates,
   summarizeChecksSelection,
   summarizeConflictSelection,
   summarizeReviewsSelection,
@@ -64,15 +42,9 @@ import {
   workflowRunsToCheckItems,
   WORK_KIND_ONE_SHOT_ELIGIBLE,
   shouldPostConflictFixFailure,
-  shouldSkipStackedChecksFix,
-  shouldSkipStackedConflictFix,
-  shouldSkipStackedReviewsFix,
   shouldSkipWatermarkChecksFix,
   shouldSkipWatermarkConflictFix,
   slugifyFailureSignature,
-  stackedCatchUpRetractionComment,
-  stackedPrComment,
-  stackRetargetedComment,
   type BlockerPrState,
   type ChecksCandidate,
   type ConflictingPrCandidate,
@@ -91,65 +63,6 @@ function issue(overrides: Partial<Issue> & Pick<Issue, "number">): Issue {
     ...overrides,
   };
 }
-
-describe("parseBlockedBy", () => {
-  test("parses Blocked by #N from body", () => {
-    expect(parseBlockedBy("Blocked by #98\n\n## Summary")).toEqual([98]);
-  });
-
-  test("deduplicates multiple refs", () => {
-    expect(parseBlockedBy("Blocked by #98\nBlocked by #98")).toEqual([98]);
-  });
-
-  test("returns empty when no blockers", () => {
-    expect(parseBlockedBy("No blockers here")).toEqual([]);
-  });
-});
-
-describe("mergeBlockerNumbers", () => {
-  test("body mode ignores native blockers (reproduces today's behavior)", () => {
-    expect(mergeBlockerNumbers([98], [42], "body")).toEqual([98]);
-    expect(mergeBlockerNumbers([], [42], "body")).toEqual([]);
-  });
-
-  test("native mode ignores body blockers", () => {
-    expect(mergeBlockerNumbers([98], [42], "native")).toEqual([42]);
-  });
-
-  test("both mode unions and deduplicates, body refs first", () => {
-    expect(mergeBlockerNumbers([98, 7], [7, 42], "both")).toEqual([98, 7, 42]);
-  });
-
-  test("empty native result leaves body blockers untouched under both", () => {
-    expect(mergeBlockerNumbers([98], [], "both")).toEqual([98]);
-  });
-
-  test("empty native result yields nothing under native", () => {
-    expect(mergeBlockerNumbers([98], [], "native")).toEqual([]);
-  });
-});
-
-describe("issueBlockers", () => {
-  const withBlockerSource = (source: BlockerSource) =>
-    setResolvedConfig(resolveConfig({ ...sampleUserConfig, blockerSource: source }));
-
-  afterEach(() => setResolvedConfig(resolveConfig(sampleUserConfig)));
-
-  test("defaults to config.blockerSource — body ignores native", () => {
-    withBlockerSource("body");
-    expect(issueBlockers(issue({ number: 1, body: "Blocked by #98" }), [42])).toEqual([98]);
-  });
-
-  test("native source uses native blockers, not the body regex", () => {
-    withBlockerSource("native");
-    expect(issueBlockers(issue({ number: 1, body: "Blocked by #98" }), [42])).toEqual([42]);
-  });
-
-  test("both source unions body and native, deduplicated", () => {
-    withBlockerSource("both");
-    expect(issueBlockers(issue({ number: 1, body: "Blocked by #98" }), [98, 42])).toEqual([98, 42]);
-  });
-});
 
 describe("classifyPriority", () => {
   test("classifies bug-fix issues highest", () => {
@@ -181,242 +94,6 @@ describe("compareIssues", () => {
     });
     expect(compareIssues(bug, polish)).toBeLessThan(0);
     expect(compareIssues(polish, bug)).toBeGreaterThan(0);
-  });
-});
-
-describe("resolveWorktreeBase", () => {
-  const emptyStates = new Map<number, BlockerPrState>();
-
-  test("PHOEBE_BASE overrides everything", () => {
-    const blocked = issue({ number: 102, body: "Blocked by #98" });
-    expect(resolveWorktreeBase(blocked, emptyStates, "feature/custom")).toEqual({
-      worktreeBase: "feature/custom",
-      stacked: false,
-    });
-  });
-
-  test("unblocked issues base off origin/main", () => {
-    expect(resolveWorktreeBase(issue({ number: 108 }), emptyStates)).toEqual({
-      worktreeBase: "origin/main",
-      stacked: false,
-    });
-  });
-
-  test("stacks on blocker remote tip when blocker PR is open", () => {
-    const blocked = issue({ number: 102, body: "Blocked by #98" });
-    const states = new Map<number, BlockerPrState>([
-      [98, { hasOpenPr: true, openPrNumber: asPrNumber(104), hasMergedPr: false }],
-    ]);
-    expect(resolveWorktreeBase(blocked, states)).toEqual({
-      worktreeBase: `origin/${issueBranch(98)}`,
-      stacked: true,
-      blockerIssueNumber: 98,
-      blockerPrNumber: 104,
-    });
-  });
-
-  test("uses origin/main when blocker PR merged", () => {
-    const blocked = issue({ number: 102, body: "Blocked by #98" });
-    const states = new Map<number, BlockerPrState>([[98, { hasOpenPr: false, hasMergedPr: true }]]);
-    expect(resolveWorktreeBase(blocked, states)).toEqual({
-      worktreeBase: "origin/main",
-      stacked: false,
-    });
-  });
-
-  test("skips when blocked with no open or merged blocker PR", () => {
-    const blocked = issue({ number: 102, body: "Blocked by #98" });
-    const states = new Map<number, BlockerPrState>([
-      [98, { hasOpenPr: false, hasMergedPr: false }],
-    ]);
-    expect(resolveWorktreeBase(blocked, states)).toBeNull();
-  });
-
-  test("skips when blocker state is unknown", () => {
-    const blocked = issue({ number: 102, body: "Blocked by #98" });
-    expect(resolveWorktreeBase(blocked, emptyStates)).toBeNull();
-  });
-
-  test("stacks on a native blocker (no body ref) under native source", () => {
-    setResolvedConfig(resolveConfig({ ...sampleUserConfig, blockerSource: "native" }));
-    const blocked = issue({ number: 102, body: "## Blocked by\n\n- #98" });
-    const states = new Map<number, BlockerPrState>([
-      [98, { hasOpenPr: true, openPrNumber: asPrNumber(104), hasMergedPr: false }],
-    ]);
-    expect(resolveWorktreeBase(blocked, states, undefined, [98])).toEqual({
-      worktreeBase: `origin/${issueBranch(98)}`,
-      stacked: true,
-      blockerIssueNumber: 98,
-      blockerPrNumber: 104,
-    });
-    setResolvedConfig(resolveConfig(sampleUserConfig));
-  });
-
-  test("native blockers are ignored under the default body source", () => {
-    // Body has no ref, so a native-only blocker must not gate the base in body mode.
-    const blocked = issue({ number: 102, body: "no body ref here" });
-    const states = new Map<number, BlockerPrState>([
-      [98, { hasOpenPr: false, hasMergedPr: false }],
-    ]);
-    expect(resolveWorktreeBase(blocked, states, undefined, [98])).toEqual({
-      worktreeBase: "origin/main",
-      stacked: false,
-    });
-  });
-
-  test("stackMode 'off' honors the blocker for the skip decision but never stacks", () => {
-    const blocked = issue({ number: 102, body: "Blocked by #98" });
-    const open = new Map<number, BlockerPrState>([
-      [98, { hasOpenPr: true, openPrNumber: asPrNumber(104), hasMergedPr: false }],
-    ]);
-    // Open blocker PR: base off main, not the blocker branch — and not skipped.
-    expect(resolveWorktreeBase(blocked, open, undefined, [], "off")).toEqual({
-      worktreeBase: "origin/main",
-      stacked: false,
-    });
-    // No blocker PR at all: still skipped, exactly as the other modes.
-    const none = new Map<number, BlockerPrState>([[98, { hasOpenPr: false, hasMergedPr: false }]]);
-    expect(resolveWorktreeBase(blocked, none, undefined, [], "off")).toBeNull();
-  });
-
-  test("stackMode 'native' cuts the branch off the blocker tip, same as banner", () => {
-    const blocked = issue({ number: 102, body: "Blocked by #98" });
-    const states = new Map<number, BlockerPrState>([
-      [98, { hasOpenPr: true, openPrNumber: asPrNumber(104), hasMergedPr: false }],
-    ]);
-    expect(resolveWorktreeBase(blocked, states, undefined, [], "native")).toEqual({
-      worktreeBase: `origin/${issueBranch(98)}`,
-      stacked: true,
-      blockerIssueNumber: 98,
-      blockerPrNumber: 104,
-    });
-  });
-
-  describe("multi-blocker (#13)", () => {
-    test("skips when any blocker has no PR at all yet, even if others are open", () => {
-      const blocked = issue({ number: 102, body: "Blocked by #98\nBlocked by #99" });
-      const states = new Map<number, BlockerPrState>([
-        [98, { hasOpenPr: true, openPrNumber: asPrNumber(104), hasMergedPr: false }],
-        [99, { hasOpenPr: false, hasMergedPr: false }],
-      ]);
-      expect(resolveWorktreeBase(blocked, states)).toBeNull();
-    });
-
-    test("bases off main once every blocker has merged", () => {
-      const blocked = issue({ number: 102, body: "Blocked by #98\nBlocked by #99" });
-      const states = new Map<number, BlockerPrState>([
-        [98, { hasOpenPr: false, hasMergedPr: true, mergedPrNumber: asPrNumber(104) }],
-        [99, { hasOpenPr: false, hasMergedPr: true, mergedPrNumber: asPrNumber(105) }],
-      ]);
-      expect(resolveWorktreeBase(blocked, states)).toEqual({
-        worktreeBase: "origin/main",
-        stacked: false,
-      });
-    });
-
-    test("stacks on the still-unmerged blocker when one of two has merged", () => {
-      const blocked = issue({ number: 102, body: "Blocked by #98\nBlocked by #99" });
-      const states = new Map<number, BlockerPrState>([
-        [98, { hasOpenPr: false, hasMergedPr: true, mergedPrNumber: asPrNumber(104) }],
-        [99, { hasOpenPr: true, openPrNumber: asPrNumber(107), hasMergedPr: false }],
-      ]);
-      expect(resolveWorktreeBase(blocked, states)).toEqual({
-        worktreeBase: `origin/${issueBranch(99)}`,
-        stacked: true,
-        blockerIssueNumber: 99,
-        blockerPrNumber: 107,
-      });
-    });
-
-    test("stacks on the last-listed unmerged blocker when several are still open", () => {
-      const blocked = issue({ number: 102, body: "Blocked by #98\nBlocked by #99" });
-      const states = new Map<number, BlockerPrState>([
-        [98, { hasOpenPr: true, openPrNumber: asPrNumber(104), hasMergedPr: false }],
-        [99, { hasOpenPr: true, openPrNumber: asPrNumber(107), hasMergedPr: false }],
-      ]);
-      expect(resolveWorktreeBase(blocked, states)).toEqual({
-        worktreeBase: `origin/${issueBranch(99)}`,
-        stacked: true,
-        blockerIssueNumber: 99,
-        blockerPrNumber: 107,
-      });
-    });
-
-    test("skips when one blocker's state is entirely unknown", () => {
-      const blocked = issue({ number: 102, body: "Blocked by #98\nBlocked by #99" });
-      const states = new Map<number, BlockerPrState>([
-        [98, { hasOpenPr: true, openPrNumber: asPrNumber(104), hasMergedPr: false }],
-      ]);
-      expect(resolveWorktreeBase(blocked, states)).toBeNull();
-    });
-  });
-});
-
-describe("resolveStackedPrPlan", () => {
-  const stacked = { stacked: true as const, blockerIssueNumber: 98 };
-  const unstacked = { stacked: false as const };
-
-  test("banner: base=main, banner on, no stack link (today's behavior)", () => {
-    expect(
-      resolveStackedPrPlan({
-        issueNumber: 102,
-        resolution: stacked,
-        stackMode: "banner",
-        defaultBranch: "main",
-      }),
-    ).toEqual({ prBase: "main", includeBanner: true, stackLink: null });
-  });
-
-  test("native: base=blocker branch, no banner, bottom-to-top stack link pair", () => {
-    expect(
-      resolveStackedPrPlan({
-        issueNumber: 102,
-        resolution: stacked,
-        stackMode: "native",
-        defaultBranch: "main",
-      }),
-    ).toEqual({
-      prBase: issueBranch(98),
-      includeBanner: false,
-      stackLink: { predecessor: issueBranch(98), successor: issueBranch(102) },
-    });
-  });
-
-  test("unstacked resolution (off / unblocked / PHOEBE_BASE): base=main, no banner, no link", () => {
-    for (const stackMode of ["banner", "native", "off"] as const) {
-      expect(
-        resolveStackedPrPlan({
-          issueNumber: 102,
-          resolution: unstacked,
-          stackMode,
-          defaultBranch: "main",
-        }),
-      ).toEqual({ prBase: "main", includeBanner: false, stackLink: null });
-    }
-  });
-
-  test("honors a non-default defaultBranch for the base", () => {
-    expect(
-      resolveStackedPrPlan({
-        issueNumber: 102,
-        resolution: unstacked,
-        stackMode: "banner",
-        defaultBranch: "trunk",
-      }).prBase,
-    ).toBe("trunk");
-  });
-});
-
-describe("native-stack tooling argv builders", () => {
-  test("git config presets remote.pushDefault and rerere.enabled", () => {
-    expect(nativeStackGitConfig()).toEqual([
-      ["config", "remote.pushDefault", "origin"],
-      ["config", "rerere.enabled", "true"],
-    ]);
-  });
-
-  test("extension install targets github/gh-stack", () => {
-    expect(ghStackExtensionInstallArgs()).toEqual(["extension", "install", "github/gh-stack"]);
   });
 });
 
@@ -456,17 +133,20 @@ describe("selectIssue", () => {
 
   test("threads per-issue native blockers into base resolution under native source", () => {
     setResolvedConfig(resolveConfig({ ...sampleUserConfig, blockerSource: "native" }));
-    // No body ref; the blocker is known only via the native dependencies map.
-    const issues = [issue({ number: 102, body: "## Blocked by\n\n- #98" })];
-    const states = new Map<number, BlockerPrState>([
-      [98, { hasOpenPr: true, openPrNumber: asPrNumber(104), hasMergedPr: false }],
-    ]);
-    const nativeBlockersByIssue = new Map<number, readonly number[]>([[102, [98]]]);
-    const picked = selectIssue(issues, states, undefined, nativeBlockersByIssue);
-    expect(picked?.issue.number).toBe(102);
-    expect(picked?.resolution.stacked).toBe(true);
-    expect(picked?.resolution.blockerIssueNumber).toBe(98);
-    setResolvedConfig(resolveConfig(sampleUserConfig));
+    try {
+      // No body ref; the blocker is known only via the native dependencies map.
+      const issues = [issue({ number: 102, body: "## Blocked by\n\n- #98" })];
+      const states = new Map<number, BlockerPrState>([
+        [98, { hasOpenPr: true, openPrNumber: asPrNumber(104), hasMergedPr: false }],
+      ]);
+      const nativeBlockersByIssue = new Map<number, readonly number[]>([[102, [98]]]);
+      const picked = selectIssue(issues, states, undefined, nativeBlockersByIssue);
+      expect(picked?.issue.number).toBe(102);
+      expect(picked?.resolution.stacked).toBe(true);
+      expect(picked?.resolution.blockerIssueNumber).toBe(98);
+    } finally {
+      setResolvedConfig(resolveConfig(sampleUserConfig));
+    }
   });
 });
 
@@ -513,246 +193,6 @@ describe("buildIssueQueue (#20)", () => {
   test("excludes quarantined issues", () => {
     const issues = [issue({ number: 104, labels: ["phoebe:quarantined"] })];
     expect(buildIssueQueue(issues, new Map())).toEqual([]);
-  });
-});
-
-describe("stackedPrComment", () => {
-  test("names blocker issue and PR with do-not-merge warning", () => {
-    const comment = stackedPrComment(98, asPrNumber(104));
-    expect(comment).toContain("#98");
-    expect(comment).toContain("PR #104");
-    expect(comment).toContain("Do not merge");
-  });
-});
-
-describe("isPhoebeHeadBranch", () => {
-  test("matches phoebe/ prefix", () => {
-    expect(isPhoebeHeadBranch(asBranchRef("phoebe/issue-109"))).toBe(true);
-    expect(isPhoebeHeadBranch(asBranchRef("feature/foo"))).toBe(false);
-  });
-});
-
-const defaultPrScopeConfig = {
-  branchPrefix: "phoebe/",
-  prScope: "phoebe" as const,
-  prAuthors: [] as readonly string[],
-  draftPrs: "skip-non-phoebe" as const,
-  prOptOutLabel: "ready-for-human",
-};
-
-function prScanFields(
-  overrides: Partial<{
-    headRefName: string;
-    authorLogin: string;
-    isDraft: boolean;
-    isCrossRepository: boolean;
-    labels: string[];
-  }> = {},
-) {
-  return {
-    isDraft: false,
-    authorLogin: "octocat",
-    isCrossRepository: false,
-    labels: [] as string[],
-    ...overrides,
-    headRefName: asBranchRef(overrides.headRefName ?? "phoebe/issue-1"),
-  };
-}
-
-describe("isPrInScope", () => {
-  test("phoebe scope includes Phoebe branches", () => {
-    expect(isPrInScope(prScanFields({ headRefName: "phoebe/issue-1" }), defaultPrScopeConfig)).toBe(
-      true,
-    );
-  });
-
-  test("phoebe scope excludes non-Phoebe branches", () => {
-    expect(isPrInScope(prScanFields({ headRefName: "feature/foo" }), defaultPrScopeConfig)).toBe(
-      false,
-    );
-  });
-
-  test("all scope includes same-repo non-Phoebe branches", () => {
-    expect(
-      isPrInScope(prScanFields({ headRefName: "feature/foo" }), {
-        ...defaultPrScopeConfig,
-        prScope: "all",
-      }),
-    ).toBe(true);
-  });
-
-  test("author scope includes only configured GitHub logins, case-insensitively", () => {
-    const scoped = { ...defaultPrScopeConfig, prScope: "all" as const, prAuthors: ["TanFlem"] };
-    expect(isPrInScope(prScanFields({ authorLogin: "tanflem" }), scoped)).toBe(true);
-    expect(isPrInScope(prScanFields({ authorLogin: "coworker" }), scoped)).toBe(false);
-  });
-
-  test("cross-repo PRs are always excluded", () => {
-    expect(
-      isPrInScope(prScanFields({ headRefName: "feature/foo", isCrossRepository: true }), {
-        ...defaultPrScopeConfig,
-        prScope: "all",
-      }),
-    ).toBe(false);
-  });
-
-  test("opt-out label excludes any PR including Phoebe branches", () => {
-    expect(
-      isPrInScope(
-        prScanFields({ headRefName: "phoebe/issue-1", labels: ["ready-for-human"] }),
-        defaultPrScopeConfig,
-      ),
-    ).toBe(false);
-  });
-
-  test("skip-all draft mode excludes all drafts", () => {
-    expect(
-      isPrInScope(prScanFields({ headRefName: "phoebe/issue-1", isDraft: true }), {
-        ...defaultPrScopeConfig,
-        draftPrs: "skip-all",
-      }),
-    ).toBe(false);
-    expect(
-      isPrInScope(prScanFields({ headRefName: "feature/foo", isDraft: true }), {
-        ...defaultPrScopeConfig,
-        prScope: "all",
-        draftPrs: "skip-all",
-      }),
-    ).toBe(false);
-  });
-
-  test("skip-non-phoebe draft mode excludes drafts on human branches only", () => {
-    expect(
-      isPrInScope(prScanFields({ headRefName: "feature/foo", isDraft: true }), {
-        ...defaultPrScopeConfig,
-        prScope: "all",
-      }),
-    ).toBe(false);
-    expect(
-      isPrInScope(prScanFields({ headRefName: "phoebe/issue-1", isDraft: true }), {
-        ...defaultPrScopeConfig,
-        prScope: "all",
-      }),
-    ).toBe(true);
-  });
-
-  test("include draft mode allows drafts on any in-scope branch", () => {
-    expect(
-      isPrInScope(prScanFields({ headRefName: "feature/foo", isDraft: true }), {
-        ...defaultPrScopeConfig,
-        prScope: "all",
-        draftPrs: "include",
-      }),
-    ).toBe(true);
-  });
-});
-
-describe("parseIssueNumberFromBranch", () => {
-  test("parses phoebe/issue-N branches", () => {
-    expect(parseIssueNumberFromBranch(asBranchRef("phoebe/issue-109"))).toBe(109);
-  });
-
-  test("returns null for non-issue branches", () => {
-    expect(parseIssueNumberFromBranch(asBranchRef("phoebe/custom"))).toBeNull();
-  });
-});
-
-describe("isPrMergeConflicting", () => {
-  test("detects CONFLICTING mergeable state", () => {
-    expect(isPrMergeConflicting("CONFLICTING")).toBe(true);
-    expect(isPrMergeConflicting("MERGEABLE")).toBe(false);
-  });
-
-  test("treats UNKNOWN + DIRTY as conflicting", () => {
-    expect(isPrMergeConflicting("UNKNOWN", "DIRTY")).toBe(true);
-    expect(isPrMergeConflicting("UNKNOWN", "CLEAN")).toBe(false);
-  });
-});
-
-describe("shouldSkipStackedConflictFix", () => {
-  test("skips when blocker PR is still open", () => {
-    const states = new Map<number, BlockerPrState>([
-      [108, { hasOpenPr: true, openPrNumber: asPrNumber(112), hasMergedPr: false }],
-    ]);
-    expect(shouldSkipStackedConflictFix("Blocked by #108", states)).toBe(true);
-  });
-
-  test("does not skip when blocker PR merged", () => {
-    const states = new Map<number, BlockerPrState>([
-      [108, { hasOpenPr: false, hasMergedPr: true, mergedPrNumber: asPrNumber(112) }],
-    ]);
-    expect(shouldSkipStackedConflictFix("Blocked by #108", states)).toBe(false);
-  });
-});
-
-describe("getMergedBlockerPrNumbers", () => {
-  test("returns every merged blocker PR number in stack order", () => {
-    const states = new Map<number, BlockerPrState>([
-      [100, { hasOpenPr: false, hasMergedPr: true, mergedPrNumber: asPrNumber(110) }],
-      [101, { hasOpenPr: false, hasMergedPr: true, mergedPrNumber: asPrNumber(111) }],
-      [102, { hasOpenPr: true, openPrNumber: asPrNumber(112), hasMergedPr: false }],
-    ]);
-    expect(
-      getMergedBlockerPrNumbers("Blocked by #100\nBlocked by #101\nBlocked by #102", states),
-    ).toEqual([110, 111]);
-  });
-
-  test("returns empty when no blockers merged", () => {
-    const states = new Map<number, BlockerPrState>([
-      [108, { hasOpenPr: true, openPrNumber: asPrNumber(112), hasMergedPr: false }],
-    ]);
-    expect(getMergedBlockerPrNumbers("Blocked by #108", states)).toEqual([]);
-  });
-});
-
-describe("stackedCatchUpRetractionComment", () => {
-  test("retracts single-blocker banner", () => {
-    const comment = stackedCatchUpRetractionComment([asPrNumber(112)]);
-    expect(comment).toContain("#112");
-    expect(comment).toContain("independently mergeable");
-  });
-
-  test("names all blockers for multi-blocker stacks", () => {
-    const comment = stackedCatchUpRetractionComment([asPrNumber(110), asPrNumber(111)]);
-    expect(comment).toContain("#110");
-    expect(comment).toContain("#111");
-  });
-});
-
-describe("selectStackRetargetCandidates", () => {
-  test("selects a PR based on a blocker branch whose PR has merged", () => {
-    const prs = [{ prNumber: asPrNumber(200), baseRefName: issueBranch(98) }];
-    const states = new Map<number, BlockerPrState>([
-      [98, { hasOpenPr: false, hasMergedPr: true, mergedPrNumber: asPrNumber(104) }],
-    ]);
-    expect(selectStackRetargetCandidates(prs, states)).toEqual(prs);
-  });
-
-  test("ignores a PR based on a blocker branch whose PR is still open", () => {
-    const prs = [{ prNumber: asPrNumber(200), baseRefName: issueBranch(98) }];
-    const states = new Map<number, BlockerPrState>([
-      [98, { hasOpenPr: true, openPrNumber: asPrNumber(104), hasMergedPr: false }],
-    ]);
-    expect(selectStackRetargetCandidates(prs, states)).toEqual([]);
-  });
-
-  test("ignores a PR already based on defaultBranch (not a stack branch)", () => {
-    const prs = [{ prNumber: asPrNumber(200), baseRefName: asBranchRef("main") }];
-    const states = new Map<number, BlockerPrState>();
-    expect(selectStackRetargetCandidates(prs, states)).toEqual([]);
-  });
-
-  test("ignores a PR whose base blocker has no known state", () => {
-    const prs = [{ prNumber: asPrNumber(200), baseRefName: issueBranch(98) }];
-    expect(selectStackRetargetCandidates(prs, new Map())).toEqual([]);
-  });
-});
-
-describe("stackRetargetedComment", () => {
-  test("names the default branch", () => {
-    const comment = stackRetargetedComment("main");
-    expect(comment).toContain("`main`");
-    expect(comment).toContain("retargeted");
   });
 });
 
@@ -1176,34 +616,6 @@ describe("selectConflictUnit watermark skip", () => {
   });
 });
 
-describe("conflict fail watermark", () => {
-  const watermark = { prHead: asSha("abc123def"), mainHead: asSha("9876543210ab") };
-
-  test("builds a parseable HTML comment marker", () => {
-    const marker = buildConflictFailWatermarkMarker(watermark);
-    expect(marker).toBe("<!-- phoebe-conflict-fail: prHead=abc123def mainHead=9876543210ab -->");
-    expect(parseConflictFailWatermark(marker)).toEqual(watermark);
-  });
-
-  test("parseConflictFailWatermark returns null when marker absent", () => {
-    expect(parseConflictFailWatermark("no marker here")).toBeNull();
-  });
-
-  test("parseLatestMarker returns latest conflict marker", () => {
-    const older = buildConflictFailWatermarkMarker({
-      prHead: asSha("old"),
-      mainHead: asSha("oldmain"),
-    });
-    const newer = buildConflictFailWatermarkMarker(watermark);
-    expect(
-      parseLatestMarker(
-        [`failure\n${older}`, "unrelated", `retry\n${newer}`],
-        parseConflictFailWatermark,
-      ),
-    ).toEqual(watermark);
-  });
-});
-
 describe("shouldSkipWatermarkConflictFix", () => {
   const watermark = { prHead: asSha("pr1"), mainHead: asSha("main1") };
 
@@ -1574,27 +986,6 @@ describe("selectFirstWorkUnit checks ordering", () => {
   });
 });
 
-describe("checks fail watermark", () => {
-  const watermark = { prHead: asSha("abc123def") };
-
-  test("builds a parseable HTML comment marker", () => {
-    const marker = buildChecksFailWatermarkMarker(watermark);
-    expect(marker).toBe("<!-- phoebe-checks-fail: prHead=abc123def -->");
-    expect(parseChecksFailWatermark(marker)).toEqual(watermark);
-  });
-
-  test("parseLatestMarker returns latest checks marker", () => {
-    const older = buildChecksFailWatermarkMarker({ prHead: asSha("old") });
-    const newer = buildChecksFailWatermarkMarker(watermark);
-    expect(
-      parseLatestMarker(
-        [`failure\n${older}`, "unrelated", `retry\n${newer}`],
-        parseChecksFailWatermark,
-      ),
-    ).toEqual(watermark);
-  });
-});
-
 describe("shouldSkipWatermarkChecksFix", () => {
   test("skips when prHead matches watermark", () => {
     expect(
@@ -1612,12 +1003,6 @@ describe("shouldSkipWatermarkChecksFix", () => {
         currentPrHead: asSha("pr2"),
       }),
     ).toBe(false);
-  });
-});
-
-describe("shouldSkipStackedChecksFix", () => {
-  test("aliases stacked conflict skip logic", () => {
-    expect(shouldSkipStackedChecksFix).toBe(shouldSkipStackedConflictFix);
   });
 });
 
@@ -1784,25 +1169,6 @@ describe("newestReviewThreadCommentCreatedAt", () => {
       }),
     ];
     expect(newestReviewThreadCommentCreatedAt(threads)).toBe("2026-06-03T09:00:00Z");
-  });
-});
-
-describe("reviews handled watermark", () => {
-  test("builds and parses timestamp marker", () => {
-    const marker = buildReviewsHandledMarker({ latest: "2026-06-03T09:00:00Z" });
-    expect(marker).toBe("<!-- phoebe-reviews-handled: latest=2026-06-03T09:00:00Z -->");
-    expect(parseReviewsHandledWatermark(marker)).toEqual({ latest: "2026-06-03T09:00:00Z" });
-  });
-
-  test("parseLatestMarker returns latest reviews marker", () => {
-    const older = buildReviewsHandledMarker({ latest: "2026-06-01T00:00:00Z" });
-    const newer = buildReviewsHandledMarker({ latest: "2026-06-03T00:00:00Z" });
-    expect(
-      parseLatestMarker(
-        [`done\n${older}`, "unrelated", `retry\n${newer}`],
-        parseReviewsHandledWatermark,
-      ),
-    ).toEqual({ latest: "2026-06-03T00:00:00Z" });
   });
 });
 
@@ -1982,12 +1348,6 @@ describe("selectFirstWorkUnit reviews ordering", () => {
   });
 });
 
-describe("shouldSkipStackedReviewsFix", () => {
-  test("aliases stacked conflict skip logic", () => {
-    expect(shouldSkipStackedReviewsFix).toBe(shouldSkipStackedConflictFix);
-  });
-});
-
 describe("selection summaries", () => {
   const conflictPr = (
     overrides: Omit<Partial<ConflictingPrCandidate>, "prNumber"> & { prNumber: number },
@@ -2132,38 +1492,6 @@ describe("issueAttemptFailureSignature (#22)", () => {
   test("falls back to a generic marker with no signal at all", () => {
     expect(issueAttemptFailureSignature({ agentExitCode: null })).toBe("no-commit-produced");
     expect(issueAttemptFailureSignature({ agentExitCode: 0 })).toBe("no-commit-produced");
-  });
-});
-
-describe("findBlockedDependents (#22)", () => {
-  test("finds open issues that name the quarantined issue as a body blocker", () => {
-    const issues = [
-      issue({ number: 763, body: "Blocked by #784" }),
-      issue({ number: 700, body: "Blocked by #784\nAlso relates to #1" }),
-      issue({ number: 900, body: "unrelated" }),
-    ];
-    expect(findBlockedDependents(784, issues)).toEqual([763, 700]);
-  });
-
-  test("finds dependents via native blockers", () => {
-    setResolvedConfig(resolveConfig({ ...sampleUserConfig, blockerSource: "native" }));
-    try {
-      const issues = [issue({ number: 50, body: "no body refs" })];
-      const nativeBlockersByIssue = new Map([[50, [784]]]);
-      expect(findBlockedDependents(784, issues, nativeBlockersByIssue)).toEqual([50]);
-    } finally {
-      setResolvedConfig(resolveConfig(sampleUserConfig));
-    }
-  });
-
-  test("excludes the issue itself even if self-referential", () => {
-    const issues = [issue({ number: 784, body: "Blocked by #784" })];
-    expect(findBlockedDependents(784, issues)).toEqual([]);
-  });
-
-  test("empty when nothing depends on it", () => {
-    const issues = [issue({ number: 1, body: "" })];
-    expect(findBlockedDependents(784, issues)).toEqual([]);
   });
 });
 

@@ -14,7 +14,7 @@
 // nothing, so a poison *unit* can never quarantine a healthy *engine SHA* (#60).
 //
 // The marker/comment builders here mirror the `*FailWatermark` family in
-// orchestrator.ts (`build*`/`parse*`, read via `parseLatestMarker`).
+// markers.ts (`build*`/`parse*`, read via `parseLatestMarker`).
 //
 // #25 generalises the same label/comment/baseline machinery to a second
 // trigger: K consecutive attempts that produce no commit, on the PR-keyed work

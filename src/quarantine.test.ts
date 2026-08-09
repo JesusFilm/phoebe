@@ -267,7 +267,15 @@ describe("selection excludes quarantined units", () => {
       isCrossRepository: false,
       labels: [PHOEBE_QUARANTINE_LABEL],
     };
-    expect(isPrInScope(pr)).toBe(false);
+    expect(
+      isPrInScope(pr, {
+        branchPrefix: "phoebe/",
+        prScope: "phoebe",
+        prAuthors: [],
+        draftPrs: "skip-non-phoebe",
+        prOptOutLabel: "ready-for-human",
+      }),
+    ).toBe(false);
   });
 
   test("a quarantined issue is not selected", () => {

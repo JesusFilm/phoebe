@@ -1,14 +1,40 @@
-// Pure selection + base-resolution logic for Phoebe's orchestrator.
+// Per-work-kind pure selection logic for Phoebe's orchestrator, plus a
+// re-export shim over the cross-kind modules (`stack.ts`, `pr-scope.ts`,
+// `markers.ts`) so `main.ts` and existing tests keep a single import path.
 // Kept separate from main.ts so it can be unit-tested without Docker/gh.
+//
+// The re-export shim is temporary (issue #52, step 1 of 3): step 2 deletes
+// it once `main.ts` imports the three modules directly.
 
-import { asBranchRef, asSha, type BranchRef, type PrNumber, type Sha } from "./branded.ts";
-import type { BlockerSource, StackMode, WorkKindName } from "./config/index.ts";
+import type { BranchRef, PrNumber, Sha } from "./branded.ts";
+import type { WorkKindName } from "./config/index.ts";
 import { config } from "./resolved-config.ts";
 import {
   PHOEBE_QUARANTINE_LABEL,
   shouldBackoffUnitRetry,
   type UnitAttemptMarker,
 } from "./quarantine.ts";
+import {
+  issueBlockers,
+  resolveWorktreeBase,
+  shouldSkipStackedFix,
+  stackedPrComment,
+  type BaseResolution,
+  type BlockerPrState,
+  type Issue,
+  type NativeBlockerMap,
+  type StackConfig,
+  type StackContext,
+} from "./stack.ts";
+import { isPrMergeConflicting, parseIssueNumberFromBranch } from "./pr-scope.ts";
+import {
+  buildChecksFailWatermarkMarker,
+  buildConflictFailWatermarkMarker,
+  buildReviewsHandledMarker,
+  type ChecksFailWatermark,
+  type ConflictFailWatermark,
+  type ReviewsHandledWatermark,
+} from "./markers.ts";
 
 export {
   validateWorkOrder,
@@ -20,89 +46,56 @@ export {
   type WorkKindName,
 } from "./config/index.ts";
 
-/** Native blocker issue numbers keyed by the blocked issue's number. */
-export type NativeBlockerMap = ReadonlyMap<number, readonly number[]>;
+export {
+  parseBlockedBy,
+  mergeBlockerNumbers,
+  issueBlockers,
+  issueBranch,
+  resolveWorktreeBase,
+  resolveStackedPrPlan,
+  stackedPrComment,
+  nativeStackGitConfig,
+  ghStackExtensionInstallArgs,
+  getMergedBlockerPrNumbers,
+  stackedCatchUpRetractionComment,
+  selectStackRetargetCandidates,
+  stackRetargetedComment,
+  findBlockedDependents,
+  type BaseResolution,
+  type BlockerConfig,
+  type BlockerPrState,
+  type NativeBlockerMap,
+  type Issue,
+  type StackConfig,
+  type StackContext,
+  type StackedPrPlan,
+  type StackRetargetCandidate,
+} from "./stack.ts";
 
-export type Issue = {
-  number: number;
-  title: string;
-  body: string;
-  labels: string[];
-  createdAt: string;
-  /** Absent from most fixtures — populated by `GitHub#issuesWithLabel` (#51 author scoping). */
-  authorLogin?: string;
-};
+export {
+  isPhoebeHeadBranch,
+  isPrInScope,
+  isPrMergeConflicting,
+  parseIssueNumberFromBranch,
+  type PrScanFields,
+  type PrScopeConfig,
+} from "./pr-scope.ts";
 
-export type BlockerPrState = {
-  hasOpenPr: boolean;
-  openPrNumber?: PrNumber;
-  hasMergedPr: boolean;
-  mergedPrNumber?: PrNumber;
-};
-
-export type BaseResolution = {
-  worktreeBase: string;
-  stacked: boolean;
-  blockerIssueNumber?: number;
-  blockerPrNumber?: PrNumber;
-};
-
-/**
- * The stack-aware context every candidate selector needs: issue bodies (to read
- * `blocked by` references) keyed by issue number, and the open/merged PR state of
- * each referenced blocker. Bundled so the three work-kind flows thread one value
- * instead of the same `(issueBodies, blockerStates)` pair.
- */
-export type StackContext = {
-  issueBodies: ReadonlyMap<number, string>;
-  blockerStates: ReadonlyMap<number, BlockerPrState>;
-};
+export {
+  parseLatestMarker,
+  buildConflictFailWatermarkMarker,
+  parseConflictFailWatermark,
+  buildChecksFailWatermarkMarker,
+  parseChecksFailWatermark,
+  buildReviewsHandledMarker,
+  parseReviewsHandledWatermark,
+  type ChecksFailWatermark,
+  type ConflictFailWatermark,
+  type ReviewsHandledWatermark,
+} from "./markers.ts";
 
 const PRIORITY_ORDER = ["bug", "tracer", "polish", "refactor"] as const;
 export type Priority = (typeof PRIORITY_ORDER)[number];
-
-/**
- * Parse blocker references from issue body text (and optional comments).
- * The pattern is configurable via `config.blockedByPattern`; capture group 1
- * must yield the blocker issue number.
- */
-export function parseBlockedBy(...texts: string[]): number[] {
-  const blockers: number[] = [];
-  const pattern = new RegExp(config.blockedByPattern, "gi");
-  for (const text of texts) {
-    for (const match of text.matchAll(pattern)) {
-      blockers.push(Number(match[1]));
-    }
-  }
-  return [...new Set(blockers)];
-}
-
-/**
- * Combine body-regex and native (issue-dependencies API) blocker numbers per
- * `config.blockerSource`, deduplicating while preserving first-seen order
- * (body refs before native ones under `both`). This is the single seam the
- * native-blocker source feeds through: every downstream stacking decision keeps
- * consuming a plain `number[]`, so only *where* the numbers come from changes.
- */
-export function mergeBlockerNumbers(
-  bodyBlockers: readonly number[],
-  nativeBlockers: readonly number[],
-  source: BlockerSource = config.blockerSource,
-): number[] {
-  const combined: number[] = [];
-  if (source === "body" || source === "both") {
-    combined.push(...bodyBlockers);
-  }
-  if (source === "native" || source === "both") {
-    combined.push(...nativeBlockers);
-  }
-  return [...new Set(combined)];
-}
-
-/** An issue's effective blockers: body refs merged with its native blockers. */
-export function issueBlockers(issue: Issue, nativeBlockers: readonly number[] = []): number[] {
-  return mergeBlockerNumbers(parseBlockedBy(issue.body), nativeBlockers);
-}
 
 export function classifyPriority(issue: Issue): Priority {
   const text = `${issue.title} ${issue.body}`.toLowerCase();
@@ -122,72 +115,13 @@ export function compareIssues(a: Issue, b: Issue): number {
   return a.number - b.number;
 }
 
-export function issueBranch(issueNumber: number): BranchRef {
-  return asBranchRef(`${config.branchPrefix}issue-${issueNumber}`);
-}
-
-/**
- * Resolve the worktree base for an issue.
- * Returns `null` when the issue should be skipped this cycle (blocked with no
- * open/merged blocker PR).
- *
- * A diamond/multi-blocker issue (#13) must gate on *every* blocker, not just
- * the first: any blocker with no PR at all yet parks the issue, exactly as the
- * single-blocker case always has. Once every blocker has at least an open PR,
- * the issue is workable — stacked on whichever blocker is still unmerged
- * (the last one in blocker-list order, so a diamond re-bases forward as each
- * of its parents merges in turn) unless every blocker has already merged, in
- * which case the branch cuts off `main` same as an unblocked issue.
- */
-export function resolveWorktreeBase(
-  issue: Issue,
-  blockerStates: ReadonlyMap<number, BlockerPrState>,
-  phoebeBase?: string,
-  nativeBlockers: readonly number[] = [],
-  stackMode: StackMode = config.stackMode,
-): BaseResolution | null {
-  if (phoebeBase) {
-    return { worktreeBase: phoebeBase, stacked: false };
-  }
-
-  const blockers = issueBlockers(issue, nativeBlockers);
-  if (blockers.length === 0) {
-    return { worktreeBase: "origin/main", stacked: false };
-  }
-
-  let lastUnmergedBlocker: { issueNumber: number; state: BlockerPrState } | null = null;
-  for (const blockerIssueNumber of blockers) {
-    const state = blockerStates.get(blockerIssueNumber);
-    if (!state) {
-      return null;
-    }
-    if (state.hasMergedPr) {
-      continue;
-    }
-    if (!state.hasOpenPr) {
-      return null;
-    }
-    lastUnmergedBlocker = { issueNumber: blockerIssueNumber, state };
-  }
-
-  if (!lastUnmergedBlocker) {
-    // Every blocker has merged.
-    return { worktreeBase: "origin/main", stacked: false };
-  }
-
-  // `off` still honors every blocker for the skip decision above, but never
-  // stacks: the branch is cut off main and no banner is added downstream.
-  if (stackMode === "off") {
-    return { worktreeBase: "origin/main", stacked: false };
-  }
-
-  // `banner` and `native` both cut the branch off the unmerged blocker's tip;
-  // they diverge only in the PR base + banner, decided by `resolveStackedPrPlan`.
+/** The blocker/branch config `resolveWorktreeBase`/`issueBlockers` need, read from the singleton. */
+function stackConfigFromConfig(): StackConfig {
   return {
-    worktreeBase: `origin/${issueBranch(lastUnmergedBlocker.issueNumber)}`,
-    stacked: true,
-    blockerIssueNumber: lastUnmergedBlocker.issueNumber,
-    blockerPrNumber: lastUnmergedBlocker.state.openPrNumber,
+    blockedByPattern: config.blockedByPattern,
+    blockerSource: config.blockerSource,
+    branchPrefix: config.branchPrefix,
+    stackMode: config.stackMode,
   };
 }
 
@@ -208,6 +142,7 @@ export function selectIssue(
       blockerStates,
       phoebeBase,
       nativeBlockersByIssue.get(issue.number) ?? [],
+      stackConfigFromConfig(),
     );
     if (resolution) {
       return { issue, resolution };
@@ -233,106 +168,14 @@ export function buildIssueQueue(
   const sorted = [...eligible].sort(compareIssues);
   return sorted.map((issue) => {
     const nativeBlockers = nativeBlockersByIssue.get(issue.number) ?? [];
+    const stackConfig = stackConfigFromConfig();
     return {
       issueNumber: issue.number,
-      blockedBy: issueBlockers(issue, nativeBlockers),
-      workable: resolveWorktreeBase(issue, blockerStates, phoebeBase, nativeBlockers) !== null,
+      blockedBy: issueBlockers(issue, stackConfig, nativeBlockers),
+      workable:
+        resolveWorktreeBase(issue, blockerStates, phoebeBase, nativeBlockers, stackConfig) !== null,
     };
   });
-}
-
-export function stackedPrComment(blockerIssueNumber: number, blockerPrNumber: PrNumber): string {
-  const issueRef = `#${blockerIssueNumber}`;
-  return (
-    `⛓️ Blocked by ${issueRef} (PR #${blockerPrNumber}). ` +
-    `Its commits appear in this diff until #${blockerPrNumber} merges. ` +
-    `**Do not merge this PR before #${blockerPrNumber}** — doing so would pull ` +
-    `${issueRef}'s work into \`main\` ahead of its own review.`
-  );
-}
-
-/**
- * Pure PR-shape decision for a freshly-pushed issue branch, given the resolved
- * base and the configured {@link StackMode}. Everything the impure PR-open step
- * needs — the `--base` branch, whether to add the stacked banner to the body,
- * and the `gh stack link` argv (or `null`) — is decided here so it can be unit
- * tested without shelling out to `gh`.
- *
- * The three modes:
- *  - not stacked (unblocked / merged blocker / `PHOEBE_BASE` / `off`): base is
- *    `defaultBranch`, no banner, no stack link. Byte-for-byte the historical
- *    behavior.
- *  - `banner`: base is `defaultBranch`, banner added, no stack link — today's
- *    behavior exactly.
- *  - `native`: base is the blocker's branch (`<branchPrefix>issue-<blocker>`),
- *    no banner, and a `gh stack link <predecessor> <successor>` argv registers
- *    the native GitHub stack (bottom-to-top). The PR is created first with
- *    Phoebe's own title/body, so `link` only corrects the base chain and never
- *    auto-generates a title over ours.
- */
-export type StackedPrPlan = {
-  /** The branch the PR is opened against (`gh pr create --base`). */
-  prBase: string;
-  /** Whether the stacked "do not merge before the blocker" banner is added. */
-  includeBanner: boolean;
-  /** The bottom-to-top branch pair to register as a native stack, or `null`. Argv-building is `GitHub#linkStack`'s job, not this module's. */
-  stackLink: { predecessor: BranchRef; successor: BranchRef } | null;
-};
-
-export function resolveStackedPrPlan(opts: {
-  issueNumber: number;
-  resolution: Pick<BaseResolution, "stacked" | "blockerIssueNumber">;
-  stackMode?: StackMode;
-  defaultBranch?: string;
-}): StackedPrPlan {
-  const stackMode = opts.stackMode ?? config.stackMode;
-  const defaultBranch = opts.defaultBranch ?? config.defaultBranch;
-  const notStacked: StackedPrPlan = {
-    prBase: defaultBranch,
-    includeBanner: false,
-    stackLink: null,
-  };
-
-  // `off` never reaches here stacked (resolveWorktreeBase collapses it), so an
-  // unstacked resolution — or any non-native mode below — falls through to a
-  // main-based, unbannered PR.
-  if (!opts.resolution.stacked || opts.resolution.blockerIssueNumber === undefined) {
-    return notStacked;
-  }
-
-  if (stackMode === "native") {
-    const predecessor = issueBranch(opts.resolution.blockerIssueNumber);
-    const successor = issueBranch(opts.issueNumber);
-    return {
-      prBase: predecessor,
-      includeBanner: false,
-      // Bottom-to-top: the lower (blocker) branch first, then this run's branch.
-      stackLink: { predecessor, successor },
-    };
-  }
-
-  // `banner` (the only remaining stacked mode): base on main + add the banner.
-  return { prBase: defaultBranch, includeBanner: true, stackLink: null };
-}
-
-/**
- * Local git config the native-stack path pre-sets on the private clone so
- * `gh stack` / rebase operations run non-interactively — `remote.pushDefault`
- * removes the "which remote?" prompt when more than one exists, and
- * `rerere.enabled` lets cascade-rebases reuse recorded conflict resolutions.
- * Returned as `git` argv (sans the `git` program) so the impure caller runs
- * them against the clone directory. Only applied when `stackMode === 'native'`.
- */
-export function nativeStackGitConfig(): readonly (readonly string[])[] {
-  return [
-    ["config", "remote.pushDefault", "origin"],
-    ["config", "rerere.enabled", "true"],
-  ];
-}
-
-/** `gh` argv (sans the `gh` program) that installs the gh-stack extension. */
-export function ghStackExtensionInstallArgs(): readonly string[] {
-  return ["extension", "install", "github/gh-stack"];
 }
 
 export type ConflictingPrCandidate = {
@@ -347,44 +190,6 @@ export type ConflictingPrCandidate = {
   attemptMarker?: UnitAttemptMarker | null;
 };
 
-export type ConflictFailWatermark = {
-  prHead: Sha;
-  mainHead: Sha;
-};
-
-const CONFLICT_FAIL_WATERMARK_RE =
-  /<!--\s*phoebe-conflict-fail:\s*prHead=([0-9a-f]+)\s+mainHead=([0-9a-f]+)\s*-->/i;
-
-export function buildConflictFailWatermarkMarker(watermark: ConflictFailWatermark): string {
-  return `<!-- phoebe-conflict-fail: prHead=${watermark.prHead} mainHead=${watermark.mainHead} -->`;
-}
-
-export function parseConflictFailWatermark(text: string): ConflictFailWatermark | null {
-  const match = CONFLICT_FAIL_WATERMARK_RE.exec(text);
-  if (!match) {
-    return null;
-  }
-  return { prHead: asSha(match[1]!), mainHead: asSha(match[2]!) };
-}
-
-/**
- * Scan comment bodies newest-first and return the first marker `parse` extracts,
- * or `null` when none match. Shared by every work kind's watermark lookup — the
- * latest marker wins when several exist on one PR.
- */
-export function parseLatestMarker<T>(
-  bodies: readonly string[],
-  parse: (text: string) => T | null,
-): T | null {
-  for (let i = bodies.length - 1; i >= 0; i--) {
-    const parsed = parse(bodies[i]!);
-    if (parsed !== null) {
-      return parsed;
-    }
-  }
-  return null;
-}
-
 export function shouldSkipWatermarkConflictFix(opts: {
   watermark: ConflictFailWatermark | null;
   currentPrHead: Sha;
@@ -398,176 +203,13 @@ export function shouldSkipWatermarkConflictFix(opts: {
   );
 }
 
-const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-const ISSUE_BRANCH_RE = new RegExp(`^${escapeRegExp(config.branchPrefix)}issue-(\\d+)$`);
-
-export function isPhoebeHeadBranch(branch: BranchRef): boolean {
-  return branch.startsWith(config.branchPrefix);
-}
-
-export type PrScopeConfig = {
-  branchPrefix: string;
-  prScope: "phoebe" | "all";
-  prAuthors: readonly string[];
-  draftPrs: "skip-non-phoebe" | "skip-all" | "include";
-  prOptOutLabel: string;
-};
-
-export type PrScanFields = {
-  headRefName: BranchRef;
-  authorLogin: string;
-  isDraft: boolean;
-  isCrossRepository: boolean;
-  labels: readonly string[];
-};
-
-const defaultPrScopeConfig = (): PrScopeConfig => ({
-  branchPrefix: config.branchPrefix,
-  prScope: config.prScope,
-  prAuthors: config.prAuthors,
-  draftPrs: config.draftPrs,
-  prOptOutLabel: config.prOptOutLabel,
-});
-
-/** Whether an open PR is eligible for conflicts/checks/reviews scanning. */
-export function isPrInScope(
-  pr: PrScanFields,
-  scopeConfig: PrScopeConfig = defaultPrScopeConfig(),
-): boolean {
-  if (pr.isCrossRepository) {
-    return false;
-  }
-  if (pr.labels.includes(scopeConfig.prOptOutLabel)) {
-    return false;
-  }
-  // Poison-unit quarantine (#75): a unit that timed out K times is labelled and
-  // skipped for *work* (still inspected for auto-un-stick elsewhere). Reuses the
-  // existing opt-out filter mechanism; the label is a Phoebe-owned constant.
-  if (pr.labels.includes(PHOEBE_QUARANTINE_LABEL)) {
-    return false;
-  }
-  if (
-    scopeConfig.prAuthors.length > 0 &&
-    !scopeConfig.prAuthors.some((author) => author.toLowerCase() === pr.authorLogin.toLowerCase())
-  ) {
-    return false;
-  }
-  const isPhoebe = pr.headRefName.startsWith(scopeConfig.branchPrefix);
-  if (scopeConfig.prScope === "phoebe" && !isPhoebe) {
-    return false;
-  }
-  if (pr.isDraft) {
-    if (scopeConfig.draftPrs === "skip-all") {
-      return false;
-    }
-    if (scopeConfig.draftPrs === "skip-non-phoebe" && !isPhoebe) {
-      return false;
-    }
-  }
-  return true;
-}
-
-export function parseIssueNumberFromBranch(branch: BranchRef): number | null {
-  const match = ISSUE_BRANCH_RE.exec(branch);
-  return match ? Number(match[1]) : null;
-}
-
-/** GitHub may return UNKNOWN while mergeability is still computing. */
-export function isPrMergeConflicting(mergeable: string, mergeStateStatus?: string): boolean {
-  if (mergeable === "CONFLICTING") return true;
-  if (mergeable === "UNKNOWN" && mergeStateStatus === "DIRTY") return true;
-  return false;
-}
-
-/**
- * Skip idle conflict-fix when the PR's issue is still stacked on a blocker with
- * an open PR — its divergence from `main` is expected, not a real conflict.
- */
-export function shouldSkipStackedConflictFix(
-  issueBody: string,
-  blockerStates: ReadonlyMap<number, BlockerPrState>,
-): boolean {
-  for (const blockerIssueNumber of parseBlockedBy(issueBody)) {
-    const state = blockerStates.get(blockerIssueNumber);
-    if (state?.hasOpenPr) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/** Merged blocker PR numbers for lazy catch-up (bottom-up stack order). */
-export function getMergedBlockerPrNumbers(
-  issueBody: string,
-  blockerStates: ReadonlyMap<number, BlockerPrState>,
-): PrNumber[] {
-  const merged: PrNumber[] = [];
-  for (const blockerIssueNumber of parseBlockedBy(issueBody)) {
-    const state = blockerStates.get(blockerIssueNumber);
-    if (state?.hasMergedPr && state.mergedPrNumber !== undefined) {
-      merged.push(state.mergedPrNumber);
-    }
-  }
-  return merged;
-}
-
-export function stackedCatchUpRetractionComment(blockerPrNumbers: readonly PrNumber[]): string {
-  if (blockerPrNumbers.length === 1) {
-    return (
-      `Blocker #${blockerPrNumbers[0]} merged; this branch has been caught up to \`main\` ` +
-      `and is now independently mergeable.`
-    );
-  }
-  const list = blockerPrNumbers.map((n) => `#${n}`).join(", ");
-  return (
-    `Blockers ${list} merged; this branch has been caught up to \`main\` ` +
-    `and is now independently mergeable.`
-  );
-}
-
-export type StackRetargetCandidate = {
-  prNumber: PrNumber;
-  baseRefName: BranchRef;
-};
-
-/**
- * Open Phoebe PRs whose base is a native-stack blocker branch (#13) whose own
- * PR has since merged. GitHub only auto-retargets a PR onto its grandparent
- * when the base branch is *deleted*; tenant repos run
- * `delete_branch_on_merge=false`, so a merged blocker's branch survives and
- * nothing else ever moves its successor's base off it. `blockerStates` here is
- * keyed by the blocker issue number parsed straight out of each candidate's
- * `baseRefName` — the base branch name *is* the evidence of the native stack,
- * independent of `blocked by` body/native refs.
- */
-export function selectStackRetargetCandidates<T extends StackRetargetCandidate>(
-  prs: readonly T[],
-  blockerStates: ReadonlyMap<number, BlockerPrState>,
-): T[] {
-  return prs.filter((pr) => {
-    const blockerIssueNumber = parseIssueNumberFromBranch(pr.baseRefName);
-    if (blockerIssueNumber === null) {
-      return false;
-    }
-    return blockerStates.get(blockerIssueNumber)?.hasMergedPr === true;
-  });
-}
-
-/** Posted after a successor PR's base is moved from a merged blocker's branch to `defaultBranch` (#13). */
-export function stackRetargetedComment(defaultBranch: string): string {
-  return (
-    `Blocker merged; this PR's base has been retargeted to \`${defaultBranch}\` ` +
-    `so it can merge independently.`
-  );
-}
-
-/** Oldest PR (lowest number) among candidates, or `null` when the list is empty. */
-function pickOldestPr<T extends { prNumber: number }>(candidates: readonly T[]): T | null {
-  if (candidates.length === 0) {
-    return null;
-  }
-  return candidates.reduce((oldest, pr) => (pr.prNumber < oldest.prNumber ? pr : oldest));
+/** Pick the single conflict unit — oldest PR number among unblocked candidates. */
+export function selectConflictUnit(
+  prs: readonly ConflictingPrCandidate[],
+  ctx: StackContext,
+  opts?: { currentMainHead: Sha },
+): ConflictingPrCandidate | null {
+  return pickOldestPr(selectConflictFixCandidates(prs, ctx, opts));
 }
 
 export function selectConflictFixCandidates(
@@ -576,10 +218,11 @@ export function selectConflictFixCandidates(
   opts?: { currentMainHead: Sha },
 ): ConflictingPrCandidate[] {
   return prs.filter((pr) => {
-    const issueNumber = pr.issueNumber ?? parseIssueNumberFromBranch(pr.headRefName);
+    const issueNumber =
+      pr.issueNumber ?? parseIssueNumberFromBranch(pr.headRefName, config.branchPrefix);
     if (issueNumber !== null) {
       const body = ctx.issueBodies.get(issueNumber) ?? "";
-      if (shouldSkipStackedConflictFix(body, ctx.blockerStates)) {
+      if (shouldSkipStackedFix(body, ctx.blockerStates, config.blockedByPattern)) {
         return false;
       }
     }
@@ -734,24 +377,6 @@ export type ChecksCandidate = {
   attemptMarker?: UnitAttemptMarker | null;
 };
 
-export type ChecksFailWatermark = {
-  prHead: Sha;
-};
-
-const CHECKS_FAIL_WATERMARK_RE = /<!--\s*phoebe-checks-fail:\s*prHead=([0-9a-f]+)\s*-->/i;
-
-export function buildChecksFailWatermarkMarker(watermark: ChecksFailWatermark): string {
-  return `<!-- phoebe-checks-fail: prHead=${watermark.prHead} -->`;
-}
-
-export function parseChecksFailWatermark(text: string): ChecksFailWatermark | null {
-  const match = CHECKS_FAIL_WATERMARK_RE.exec(text);
-  if (!match) {
-    return null;
-  }
-  return { prHead: asSha(match[1]!) };
-}
-
 export function shouldSkipWatermarkChecksFix(opts: {
   watermark: ChecksFailWatermark | null;
   currentPrHead: Sha;
@@ -762,9 +387,6 @@ export function shouldSkipWatermarkChecksFix(opts: {
   return opts.watermark.prHead === opts.currentPrHead;
 }
 
-/** Reuse stacked-blocker skip logic — stacked PR red CI is handled at blocker merge. */
-export const shouldSkipStackedChecksFix = shouldSkipStackedConflictFix;
-
 export function selectChecksCandidates(
   prs: readonly ChecksCandidate[],
   ctx: StackContext,
@@ -773,10 +395,11 @@ export function selectChecksCandidates(
     if (isPrMergeConflicting(pr.mergeable, pr.mergeStateStatus)) {
       return false;
     }
-    const issueNumber = pr.issueNumber ?? parseIssueNumberFromBranch(pr.headRefName);
+    const issueNumber =
+      pr.issueNumber ?? parseIssueNumberFromBranch(pr.headRefName, config.branchPrefix);
     if (issueNumber !== null) {
       const body = ctx.issueBodies.get(issueNumber) ?? "";
-      if (shouldSkipStackedChecksFix(body, ctx.blockerStates)) {
+      if (shouldSkipStackedFix(body, ctx.blockerStates, config.blockedByPattern)) {
         return false;
       }
     }
@@ -824,24 +447,6 @@ export type ReviewsCandidate = {
   threads: readonly ReviewThread[];
   handledWatermark?: ReviewsHandledWatermark | null;
 };
-
-export type ReviewsHandledWatermark = {
-  latest: string;
-};
-
-const REVIEWS_HANDLED_WATERMARK_RE = /<!--\s*phoebe-reviews-handled:\s*latest=([^\s>]+)\s*-->/i;
-
-export function buildReviewsHandledMarker(watermark: ReviewsHandledWatermark): string {
-  return `<!-- phoebe-reviews-handled: latest=${watermark.latest} -->`;
-}
-
-export function parseReviewsHandledWatermark(text: string): ReviewsHandledWatermark | null {
-  const match = REVIEWS_HANDLED_WATERMARK_RE.exec(text);
-  if (!match) {
-    return null;
-  }
-  return { latest: match[1]! };
-}
 
 export function isReviewSummaryComment(body: string): boolean {
   return body.includes(config.reviewsSuccessHeading);
@@ -896,9 +501,6 @@ export function hasNewNonPhoebeReviewActivity(opts: {
   return false;
 }
 
-/** Reuse stacked-blocker skip logic — stacked PR review comments are often about blocker code. */
-export const shouldSkipStackedReviewsFix = shouldSkipStackedConflictFix;
-
 export function selectReviewsCandidates(
   prs: readonly ReviewsCandidate[],
   ctx: StackContext,
@@ -908,10 +510,11 @@ export function selectReviewsCandidates(
     if (isPrMergeConflicting(pr.mergeable, pr.mergeStateStatus)) {
       return false;
     }
-    const issueNumber = pr.issueNumber ?? parseIssueNumberFromBranch(pr.headRefName);
+    const issueNumber =
+      pr.issueNumber ?? parseIssueNumberFromBranch(pr.headRefName, config.branchPrefix);
     if (issueNumber !== null) {
       const body = ctx.issueBodies.get(issueNumber) ?? "";
-      if (shouldSkipStackedReviewsFix(body, ctx.blockerStates)) {
+      if (shouldSkipStackedFix(body, ctx.blockerStates, config.blockedByPattern)) {
         return false;
       }
     }
@@ -964,13 +567,12 @@ export function oneShotWorkKinds(workOrder: readonly WorkKindName[]): readonly W
   return workOrder.filter((kind) => WORK_KIND_ONE_SHOT_ELIGIBLE[kind]);
 }
 
-/** Pick the single conflict unit — oldest PR number among unblocked candidates. */
-export function selectConflictUnit(
-  prs: readonly ConflictingPrCandidate[],
-  ctx: StackContext,
-  opts?: { currentMainHead: Sha },
-): ConflictingPrCandidate | null {
-  return pickOldestPr(selectConflictFixCandidates(prs, ctx, opts));
+/** Oldest PR (lowest number) among candidates, or `null` when the list is empty. */
+function pickOldestPr<T extends { prNumber: number }>(candidates: readonly T[]): T | null {
+  if (candidates.length === 0) {
+    return null;
+  }
+  return candidates.reduce((oldest, pr) => (pr.prNumber < oldest.prNumber ? pr : oldest));
 }
 
 export type IssueWorkUnit = { issue: Issue; resolution: BaseResolution };
@@ -1174,27 +776,6 @@ export function issueAttemptFailureSignature(opts: {
     return slugifyFailureSignature(`agent-exit-${opts.agentExitCode}`);
   }
   return "no-commit-produced";
-}
-
-/**
- * Open issues that name `blockerIssueNumber` as a blocker (#22) — the
- * dependents a quarantine comment names as "stays blocked", so the stalled
- * chain is visible without walking the graph by hand.
- */
-export function findBlockedDependents(
-  blockerIssueNumber: number,
-  issues: readonly Issue[],
-  nativeBlockersByIssue: NativeBlockerMap = new Map(),
-): number[] {
-  return issues
-    .filter(
-      (issue) =>
-        issue.number !== blockerIssueNumber &&
-        issueBlockers(issue, nativeBlockersByIssue.get(issue.number) ?? []).includes(
-          blockerIssueNumber,
-        ),
-    )
-    .map((issue) => issue.number);
 }
 
 export function conflictFixFailureComment(

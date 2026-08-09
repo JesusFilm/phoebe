@@ -311,7 +311,7 @@ function reclaimStaleClaims(runtimeId: string, opts: { forceOwnReclaim: boolean 
 }
 
 function blockerPrState(blockerIssueNumber: number): BlockerPrState {
-  const branch: BranchRef = issueBranch(blockerIssueNumber);
+  const branch: BranchRef = issueBranch(config.branchPrefix, blockerIssueNumber);
   const openPrNumber = github.prNumberForHead(branch, "open");
   const mergedPrNumber = github.prNumberForHead(branch, "merged");
   return {
@@ -359,8 +359,9 @@ function buildBlockerStates(
   const blockerNumbers = new Set<number>();
   for (const issue of issues) {
     const merged = mergeBlockerNumbers(
-      parseBlockedBy(issue.body),
+      parseBlockedBy(config.blockedByPattern, issue.body),
       nativeBlockersByIssue.get(issue.number) ?? [],
+      config.blockerSource,
     );
     for (const n of merged) {
       blockerNumbers.add(n);
@@ -548,9 +549,16 @@ function recordUnitTimeout(
 }
 
 function listOpenPhoebePrs(): OpenPhoebePr[] {
+  const prScopeConfig = {
+    branchPrefix: config.branchPrefix,
+    prScope: config.prScope,
+    prAuthors: config.prAuthors,
+    draftPrs: config.draftPrs,
+    prOptOutLabel: config.prOptOutLabel,
+  };
   return github
     .openPrs(config.prBaseScope === "default" ? { base: PR_BASE } : undefined)
-    .filter((pr) => isPrInScope(pr))
+    .filter((pr) => isPrInScope(pr, prScopeConfig))
     .map((pr) => ({
       number: pr.number,
       headRefName: pr.headRefName,
@@ -729,6 +737,7 @@ function recordFailedIssueAttempt(opts: {
         dependents: findBlockedDependents(
           opts.issueNumber,
           opts.dependentsPool,
+          { blockedByPattern: config.blockedByPattern, blockerSource: config.blockerSource },
           opts.nativeBlockersByIssue,
         ),
       })
@@ -1136,7 +1145,7 @@ function retargetMergedStackedPrs(): void {
   const openPrs = listOpenPhoebePrs();
   const blockerIssueNumbers = new Set<number>();
   for (const pr of openPrs) {
-    const blockerIssueNumber = parseIssueNumberFromBranch(pr.baseRefName);
+    const blockerIssueNumber = parseIssueNumberFromBranch(pr.baseRefName, config.branchPrefix);
     if (blockerIssueNumber !== null) {
       blockerIssueNumbers.add(blockerIssueNumber);
     }
@@ -1157,7 +1166,7 @@ function retargetMergedStackedPrs(): void {
   }
 
   const candidates = openPrs.map((pr) => ({ prNumber: pr.number, baseRefName: pr.baseRefName }));
-  for (const pr of selectStackRetargetCandidates(candidates, blockerStates)) {
+  for (const pr of selectStackRetargetCandidates(candidates, blockerStates, config.branchPrefix)) {
     phoebeLog(
       `Retargeting PR #${pr.prNumber} from ${pr.baseRefName} to ${config.defaultBranch} — blocker merged.`,
     );
@@ -1180,9 +1189,14 @@ async function fixOnePrConflict(
   phoebeLog(`Conflict fix: PR #${pr.prNumber} (${pr.headRefName}).`);
   fetchOrigin();
 
-  const issueNumber = pr.issueNumber ?? parseIssueNumberFromBranch(pr.headRefName);
+  const issueNumber =
+    pr.issueNumber ?? parseIssueNumberFromBranch(pr.headRefName, config.branchPrefix);
   const body = issueNumber !== null ? (ctx.issueBodies.get(issueNumber) ?? "") : "";
-  const mergedBlockerPrNumbers = getMergedBlockerPrNumbers(body, ctx.blockerStates);
+  const mergedBlockerPrNumbers = getMergedBlockerPrNumbers(
+    body,
+    ctx.blockerStates,
+    config.blockedByPattern,
+  );
   if (mergedBlockerPrNumbers.length > 0) {
     phoebeLog(
       `Stacked catch-up: merging blocker PR(s) ${mergedBlockerPrNumbers.map((n) => `#${n}`).join(", ")} before ${config.defaultBranch}.`,
@@ -1258,9 +1272,14 @@ async function fixOnePrChecks(pr: ChecksCandidate, ctx: StackContext): Promise<U
   fetchOrigin();
 
   if (pr.mergeStateStatus === "BEHIND") {
-    const issueNumber = pr.issueNumber ?? parseIssueNumberFromBranch(pr.headRefName);
+    const issueNumber =
+      pr.issueNumber ?? parseIssueNumberFromBranch(pr.headRefName, config.branchPrefix);
     const body = issueNumber !== null ? (ctx.issueBodies.get(issueNumber) ?? "") : "";
-    const mergedBlockerPrNumbers = getMergedBlockerPrNumbers(body, ctx.blockerStates);
+    const mergedBlockerPrNumbers = getMergedBlockerPrNumbers(
+      body,
+      ctx.blockerStates,
+      config.blockedByPattern,
+    );
     if (mergedBlockerPrNumbers.length > 0) {
       phoebeLog(
         `Behind ${baseBranch} — catch-up merging blocker PR(s) ${mergedBlockerPrNumbers.map((n) => `#${n}`).join(", ")} before ${baseBranch}.`,
@@ -1375,7 +1394,7 @@ async function runOneIssue(opts: {
 }): Promise<UnitResult> {
   const { issueNumber, issueTitle, worktreeBase, stacked, promptFile } = opts;
   const { blockerIssueNumber, blockerPrNumber } = opts;
-  const agentBranch = issueBranch(issueNumber);
+  const agentBranch = issueBranch(config.branchPrefix, issueNumber);
 
   fetchOrigin();
   const worktreeDir = prepareWorktree({ branch: agentBranch, baseRef: worktreeBase });
@@ -1414,6 +1433,9 @@ async function runOneIssue(opts: {
         const plan = resolveStackedPrPlan({
           issueNumber,
           resolution: { stacked, blockerIssueNumber },
+          stackMode: config.stackMode,
+          defaultBranch: config.defaultBranch,
+          branchPrefix: config.branchPrefix,
         });
         const prTitle = `Phoebe: ${issueTitle} (#${issueNumber})`;
         const prBody = buildInitialPrBody({
@@ -1524,7 +1546,7 @@ async function conflictingPrCandidate(pr: OpenPhoebePr): Promise<ConflictingPrCa
   for (let attempt = 0; attempt < MERGEABLE_RETRY_COUNT; attempt++) {
     const info = viewPrMergeInfo(pr.number);
     if (isPrMergeConflicting(info.mergeable, info.mergeStateStatus)) {
-      const issueNumber = parseIssueNumberFromBranch(info.headRefName);
+      const issueNumber = parseIssueNumberFromBranch(info.headRefName, config.branchPrefix);
       return {
         prNumber: info.number,
         headRefName: info.headRefName,
@@ -1577,7 +1599,7 @@ async function failingChecksCandidate(pr: OpenPhoebePr): Promise<ChecksCandidate
     const checkItems = listCommitCheckItems(info.headRefOid);
     const rollup = statusCheckRollupState(checkItems);
     if (rollup === "FAILURE") {
-      const issueNumber = parseIssueNumberFromBranch(info.headRefName);
+      const issueNumber = parseIssueNumberFromBranch(info.headRefName, config.branchPrefix);
       return {
         prNumber: info.number,
         headRefName: info.headRefName,
@@ -1628,7 +1650,9 @@ function harvestIssueBodies(
   const issueNumbers = [
     ...new Set(
       prs
-        .map((pr) => pr.issueNumber ?? parseIssueNumberFromBranch(pr.headRefName))
+        .map(
+          (pr) => pr.issueNumber ?? parseIssueNumberFromBranch(pr.headRefName, config.branchPrefix),
+        )
         .filter((n): n is number => n !== null),
     ),
   ];
@@ -1651,7 +1675,7 @@ async function fetchReviewsWorkData(): Promise<{
         continue;
       }
       const threads = github.reviewThreads(pr.number);
-      const issueNumber = parseIssueNumberFromBranch(info.headRefName);
+      const issueNumber = parseIssueNumberFromBranch(info.headRefName, config.branchPrefix);
       reviewActivityPrs.push({
         prNumber: info.number,
         headRefName: info.headRefName,
@@ -1766,7 +1790,7 @@ async function runIssueUnit(unit: IssueWorkUnit, context: RunContext): Promise<U
   // flip) before the agent ever starts, and refreshes the heartbeat while it
   // runs — so a crash mid-run leaves a claim the next boot/cycle can reclaim,
   // rather than a bare label flip nothing ever re-examines.
-  const branch = issueBranch(target.number);
+  const branch = issueBranch(config.branchPrefix, target.number);
   const claimedAt = new Date().toISOString();
   claimIssueLease({ issueNumber: target.number, branch, runtimeId, claimedAt });
   const stopHeartbeat = startLeaseHeartbeat({
@@ -2064,7 +2088,7 @@ function workIdentity(
   return {
     kind: picked.kind,
     issueNumber: picked.unit.issue.number,
-    branch: issueBranch(picked.unit.issue.number),
+    branch: issueBranch(config.branchPrefix, picked.unit.issue.number),
   };
 }
 
@@ -2072,7 +2096,7 @@ function pullRequestNumberAfterWork(picked: WorkUnit): number | undefined {
   if (picked.kind === "conflicts" || picked.kind === "checks" || picked.kind === "reviews") {
     return picked.unit.prNumber;
   }
-  const branch = issueBranch(picked.unit.issue.number);
+  const branch = issueBranch(config.branchPrefix, picked.unit.issue.number);
   try {
     return github.prNumberForHead(branch, "open");
   } catch (error) {

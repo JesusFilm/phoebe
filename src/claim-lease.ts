@@ -10,7 +10,7 @@
 // State lives entirely on GitHub (the marker comment + the label), matching
 // #75's quarantine marker — it survives container/volume loss. The
 // marker/decision builders here mirror quarantine.ts's `build*`/`parse*`
-// family, read via orchestrator.ts's `parseLatestMarker` (latest wins, since a
+// family, read via markers.ts's `parseLatestMarker` (latest wins, since a
 // heartbeat posts a fresh comment each tick rather than editing in place).
 
 /**
