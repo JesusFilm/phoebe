@@ -6,7 +6,7 @@
 
 import { describe, expect, test } from "vite-plus/test";
 import { asBranchRef, asPrNumber, asSha } from "../branded.ts";
-import { config } from "../resolved-config.ts";
+import { sampleConfig as config } from "../test-config.ts";
 import type { ReviewThread } from "../github.ts";
 import type { CycleContext } from "../cycle.ts";
 import type { Io } from "./kind.ts";

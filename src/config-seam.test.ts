@@ -11,7 +11,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { basename, join, sep } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
 import { PROVIDER_NAMES } from "./config/index.ts";
-import { config } from "./resolved-config.ts";
+import { sampleConfig as config } from "./test-config.ts";
 
 const srcDir = join(import.meta.dirname, ".");
 const configDir = join(srcDir, "config") + sep;
@@ -20,15 +20,14 @@ const promptsDir = join(import.meta.dirname, "..", "prompts");
 // Files that legitimately define, resolve, load, or fixture the shipped
 // defaults. Excluded from the "engine body" that must not repeat config
 // literals — everything under src/config/ (the config layer proper), plus
-// three residual basenames: `resolved-config.ts` (the runtime holder,
-// installed by `config.*` readers), `test-setup.ts` (the test-time installer),
+// two residual basenames: `test-config.ts` (the test-time sample resolver),
 // and `init.ts`, the scaffolder — its `DEFAULT_TEMPLATE_PARAMS` deliberately
 // holds the generic placeholders (`your-org/your-repo`) it renders into a
 // starter config, the same placeholders the repo-root sample config carries,
 // so it too owns config literals by design rather than reading them through
 // `config.*`. A new internal config file joins the layer automatically by
 // living under src/config/ — no second edit to a hardcoded list.
-const CONFIG_LAYER_BASENAMES = new Set(["resolved-config.ts", "test-setup.ts", "init.ts"]);
+const CONFIG_LAYER_BASENAMES = new Set(["test-config.ts", "init.ts"]);
 
 function isConfigLayerFile(file: string): boolean {
   return file.startsWith(configDir) || CONFIG_LAYER_BASENAMES.has(basename(file));

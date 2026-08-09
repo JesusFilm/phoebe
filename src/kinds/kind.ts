@@ -8,7 +8,7 @@
 // Also home to `Io` — the impure capabilities a kind factory closes over
 // (`createConflictsKind(deps)` etc., `deps = { config, io }`). `io` is built
 // once in `runEngine`'s composition root and passed to every kind factory;
-// nothing under `src/kinds/` spawns a binary or reads `resolved-config.ts`
+// nothing under `src/kinds/` spawns a binary or reads config off a global
 // directly — every impure read/write goes through one of these six seams.
 
 import type { BranchRef, Sha } from "../branded.ts";

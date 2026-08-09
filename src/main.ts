@@ -6,9 +6,9 @@
 // loop below never sees a kind's own `Data`/`Unit` shape, only `UnitRef`,
 // `Gathered`, and `Plan`. See docs/architecture.md for the full design.
 //
-// The `runEngine(argv)` export is the loop entry point invoked by src/cli.ts
-// after it loads the consumer's phoebe.config.ts and installs the resolved
-// config into src/resolved-config.ts. Recognised argv flags:
+// The `runEngine({ config, argv })` export is the loop entry point invoked by
+// src/commands/engine.ts after it resolves the consumer's phoebe.config.ts.
+// Recognised argv flags:
 //
 //   (no flags)              # persistent poll loop
 //   --run-once               # one unit of the first one-shot-eligible kind
@@ -18,8 +18,12 @@
 // (src/execution-gate.ts).
 
 import { execFileSync, execSync } from "node:child_process";
-import { config } from "./resolved-config.ts";
-import { PROVIDER_NAMES, validateWorkOrder, type ProviderName } from "./config/index.ts";
+import {
+  PROVIDER_NAMES,
+  validateWorkOrder,
+  type PhoebeConfig,
+  type ProviderName,
+} from "./config/index.ts";
 import type { BranchRef } from "./branded.ts";
 import { createGitHub, defaultGhRun, type GitHub } from "./github.ts";
 import { buildAgentEnv } from "./agent-env.ts";
@@ -84,71 +88,12 @@ import {
 } from "./kinds/producer.ts";
 
 const DEFAULT_POLL_INTERVAL_MS = 300_000;
-// Whole-unit wall-clock budget (#72): the agent phase — the async, hang-prone
-// step — runs under this deadline, so a hung unit releases its #59 slot within
-// a known ceiling instead of starving the fleet. `PHOEBE_RUN_TIMEOUT_MS` is
-// already folded into `config.runTimeoutMs` by the env overlay (#56).
-const RUN_TIMEOUT_MS = config.runTimeoutMs;
 // Never let a git child process block the persistent loop forever (rate-limit
 // backoff, credential prompt, network partition). Configured toolchain commands
 // (install/test) get a longer leash. `gh` calls carry their own timeout default,
-// set on the `github` client below (src/github.ts).
+// set on the `github` client built in `runEngine` (src/github.ts).
 const CHILD_PROCESS_TIMEOUT_MS = 120_000;
 const SHELL_COMMAND_TIMEOUT_MS = 600_000;
-
-const inContainer = isInsideContainer();
-// On the host only selection/--dry-run runs, against the local checkout; in
-// the container all git state lives in the private clone on the named volume.
-const repoDir = inContainer ? config.paths.repoDir : process.cwd();
-const worktreesDir = config.paths.worktreesDir;
-
-// One process per tenant (#62): every line this engine prints carries its
-// slug, so a host log collector multiplexing N repos onto one container's
-// stdout can attribute each line back to a repo.
-const { phoebeLog, phoebeError } = createPhoebeLog(config.repoSlug);
-
-// Every `gh` call the engine makes goes through this one client (#41/#50).
-const github: GitHub = createGitHub({
-  repoSlug: config.repoSlug,
-  timeoutMs: CHILD_PROCESS_TIMEOUT_MS,
-});
-
-const workOrder = validateWorkOrder(config.workOrder);
-
-const stackConfig: StackConfig = {
-  blockedByPattern: config.blockedByPattern,
-  blockerSource: config.blockerSource,
-  branchPrefix: config.branchPrefix,
-  stackMode: config.stackMode,
-};
-
-// ---------------------------------------------------------------------------
-// Provider selection (multi-provider ready)
-// ---------------------------------------------------------------------------
-
-function selectProvider(): { provider: Provider; model: string } {
-  const name = process.env["PHOEBE_AGENT"] ?? config.defaultProvider;
-  if (!(PROVIDER_NAMES as readonly string[]).includes(name)) {
-    throw new Error(`Unknown PHOEBE_AGENT "${name}". Use one of: ${PROVIDER_NAMES.join(", ")}.`);
-  }
-  const provider = PROVIDERS[name as ProviderName];
-  const model = process.env["PHOEBE_MODEL"] ?? config.defaultModels[name as ProviderName];
-  return { provider, model };
-}
-
-// ---------------------------------------------------------------------------
-// `io` construction — every impure capability a kind factory closes over.
-// This is the ONLY place in the engine that spawns `git`/`gh` child processes
-// or reads prompt files off disk; every kind reaches them only through `io`.
-// ---------------------------------------------------------------------------
-
-/** `gh <args> -R <repoSlug>` — the one raw escape hatch left, kept for `ensure-labels.ts`'s injection point. */
-function gh(args: string[], opts?: { input?: string }): void {
-  defaultGhRun([...args, "-R", config.repoSlug], {
-    stdio: "inherit",
-    ...(opts?.input !== undefined ? { input: opts.input } : {}),
-  });
-}
 
 function gitInWorktree(
   dir: string,
@@ -162,32 +107,6 @@ function gitInWorktree(
   }) as unknown as string;
 }
 
-function buildGitOps(): GitOps {
-  return {
-    fetchOrigin: () => gitFetchOrigin(repoDir),
-    originBranchSha: (branch: BranchRef) => gitOriginBranchSha(repoDir, branch),
-    prepareWorktree: (opts: { branch: BranchRef; baseRef?: string }) => {
-      const worktreeDir = worktreeDirForBranch(worktreesDir, opts.branch);
-      removeWorktree(repoDir, worktreeDir);
-      if (opts.baseRef) {
-        addWorktreeForNewBranch({
-          repoDir,
-          worktreeDir,
-          branch: opts.branch,
-          baseRef: opts.baseRef,
-        });
-      } else {
-        addWorktreeForExistingBranch({ repoDir, worktreeDir, branch: opts.branch });
-      }
-      return worktreeDir;
-    },
-    removeWorktree: (worktreeDir: string) => removeWorktree(repoDir, worktreeDir),
-    pushBranch: (worktreeDir: string, branch: BranchRef) => pushBranch(worktreeDir, branch),
-    commitCount: (worktreeDir: string, range: string) => commitCount(worktreeDir, range),
-    gitInWorktree,
-  };
-}
-
 /** Run a configured toolchain command (a shell string) inside a worktree, to completion. */
 function runShellCommand(command: string, cwd: string): void {
   execSync(command, { cwd, stdio: "inherit", timeout: SHELL_COMMAND_TIMEOUT_MS });
@@ -199,89 +118,8 @@ function promptShell(cwd: string): (command: string) => string {
     execSync(command, { cwd, encoding: "utf8", timeout: SHELL_COMMAND_TIMEOUT_MS });
 }
 
-function buildPrompts(): Prompts {
-  return {
-    load: (relativePath: string) => loadPromptTemplateFromRoot(relativePath, process.cwd()),
-    defaultArgs: () => buildDefaultPromptArgs(config),
-    render: (template, args, worktreeDir) => renderPrompt(template, args, promptShell(worktreeDir)),
-  };
-}
-
 function buildShell(): Shell {
   return { run: runShellCommand };
-}
-
-/**
- * Bound the *agent phase* by the run budget (#72) — the one phase where a hang
- * is abortable (the agent respects the `AbortSignal`); install/test run via
- * `execSync` outside this deadline. On expiry the deadline aborts the signal,
- * `runAgent` kills the child, and a `RunTimeoutError` propagates — caught at
- * the unit boundary (the loop logs it, releases the #59 slot in `finally`,
- * and continues; #75 counts it toward quarantine).
- */
-async function runAgentInWorktree(opts: { worktreeDir: string; prompt: string }): Promise<number> {
-  const { provider, model } = selectProvider();
-  const env = buildAgentEnv({
-    parentEnv: process.env,
-    provider: provider.name,
-    providerEnv: config.providerEnv,
-  });
-  const { exitCode } = await runWithDeadline({
-    ms: RUN_TIMEOUT_MS,
-    work: (signal) =>
-      runAgent({ provider, model, prompt: opts.prompt, cwd: opts.worktreeDir, env, signal }),
-  });
-  if (exitCode !== 0) {
-    phoebeLog(`Agent exited with code ${exitCode}.`);
-  }
-  return exitCode;
-}
-
-function buildAgentRunner(): AgentRunner {
-  return { run: runAgentInWorktree };
-}
-
-const io: Io = {
-  github,
-  git: buildGitOps(),
-  agent: buildAgentRunner(),
-  prompts: buildPrompts(),
-  shell: buildShell(),
-  quarantine: createQuarantine({ github, config, log: phoebeLog }),
-};
-
-const kindDeps: KindDeps = { config, io };
-
-const kindHandles: readonly KindHandle[] = [
-  boxKind(createConflictsKind(kindDeps)),
-  boxKind(createChecksKind(kindDeps)),
-  boxKind(createReviewsKind(kindDeps)),
-  boxKind(createIssuesKind(kindDeps)),
-  boxKind(createResearchKind(kindDeps)),
-];
-
-/**
- * One-time, native-mode-only setup on the private clone: pre-set the
- * non-interactive git config gh-stack and cascade-rebase expect, then install
- * the gh-stack extension. Idempotent and best-effort — `gh extension install`
- * errors when the extension is already present, which we swallow. Run at boot
- * (guarded by `stackMode === 'native'`) rather than baked into the image, so the
- * default banner/off image carries no gh-stack dependency and needs no
- * build-time network or auth to install it.
- */
-function prepareNativeStackTooling(): void {
-  for (const args of nativeStackGitConfig()) {
-    gitInWorktree(repoDir, [...args]);
-  }
-  try {
-    github.installStackExtension();
-  } catch (error) {
-    phoebeError(
-      `gh-stack extension not installed (already present, or offline at boot). ` +
-        `Native stacking needs it — install with \`gh ${ghStackExtensionInstallArgs().join(" ")}\`. ` +
-        `(${error instanceof Error ? error.message : String(error)})`,
-    );
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -303,37 +141,425 @@ function workRefFromRef(ref: UnitRef): WorkRef {
     : { ...base, issueNumber: ref.target.number };
 }
 
-/** The PR a just-finished unit is now known by — direct for PR-keyed kinds, resolved for issue-keyed ones. */
-function pullRequestNumberAfterWork(ref: UnitRef): number | undefined {
-  if (ref.target.type === "pr") {
-    return ref.target.number;
-  }
-  if (!ref.branch) {
-    return undefined;
-  }
-  try {
-    return github.prNumberForHead(ref.branch, "open");
-  } catch (error) {
-    phoebeError(
-      `Could not resolve the PR link for ${ref.branch} — ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-    return undefined;
-  }
+/**
+ * The `lifecycle.reason` prefix for a "draining" transition — distinguishes a
+ * ref-change drain (`phoebe boot`'s reconcile watch, REF_CHANGE_DRAIN_SIGNAL)
+ * from a plain container stop (SIGTERM), so an operator reading the status
+ * snapshot can tell "about to relaunch on the new commit" from "shutting
+ * down" (#23).
+ */
+function drainReason(drain: DrainSignal, detail: string): string {
+  const cause = drain.signal === REF_CHANGE_DRAIN_SIGNAL ? "Engine ref changed" : "Drain requested";
+  return `${cause} — ${detail}`;
 }
-
-// ---------------------------------------------------------------------------
-// Main loop
-// ---------------------------------------------------------------------------
 
 /**
  * Drive the Phoebe worker loop until it exits (persistent mode) or completes
- * one unit (`--run-once`). Called by src/cli.ts after the resolved config is
- * installed; the CLI passes its argv with `--config <path>` already stripped
- * so this only sees engine-level flags.
+ * one unit (`--run-once`). Called by src/commands/engine.ts after it resolves
+ * the consumer's phoebe.config.ts; the caller passes argv with `--config
+ * <path>` already stripped so this only sees engine-level flags.
  */
-export async function runEngine(argv: readonly string[] = process.argv.slice(2)): Promise<void> {
+export async function runEngine(opts: {
+  config: PhoebeConfig;
+  argv?: readonly string[];
+}): Promise<void> {
+  const { config } = opts;
+  const argv = opts.argv ?? process.argv.slice(2);
+
+  // Whole-unit wall-clock budget (#72): the agent phase — the async, hang-prone
+  // step — runs under this deadline, so a hung unit releases its #59 slot within
+  // a known ceiling instead of starving the fleet. `PHOEBE_RUN_TIMEOUT_MS` is
+  // already folded into `config.runTimeoutMs` by the env overlay (#56).
+  const RUN_TIMEOUT_MS = config.runTimeoutMs;
+
+  const inContainer = isInsideContainer();
+  // On the host only selection/--dry-run runs, against the local checkout; in
+  // the container all git state lives in the private clone on the named volume.
+  const repoDir = inContainer ? config.paths.repoDir : process.cwd();
+  const worktreesDir = config.paths.worktreesDir;
+
+  // One process per tenant (#62): every line this engine prints carries its
+  // slug, so a host log collector multiplexing N repos onto one container's
+  // stdout can attribute each line back to a repo.
+  const { phoebeLog, phoebeError } = createPhoebeLog(config.repoSlug);
+
+  // Every `gh` call the engine makes goes through this one client (#41/#50).
+  const github: GitHub = createGitHub({
+    repoSlug: config.repoSlug,
+    timeoutMs: CHILD_PROCESS_TIMEOUT_MS,
+  });
+
+  const workOrder = validateWorkOrder(config.workOrder);
+
+  const stackConfig: StackConfig = {
+    blockedByPattern: config.blockedByPattern,
+    blockerSource: config.blockerSource,
+    branchPrefix: config.branchPrefix,
+    stackMode: config.stackMode,
+  };
+
+  // ---------------------------------------------------------------------------
+  // Provider selection (multi-provider ready)
+  // ---------------------------------------------------------------------------
+
+  function selectProvider(): { provider: Provider; model: string } {
+    const name = process.env["PHOEBE_AGENT"] ?? config.defaultProvider;
+    if (!(PROVIDER_NAMES as readonly string[]).includes(name)) {
+      throw new Error(`Unknown PHOEBE_AGENT "${name}". Use one of: ${PROVIDER_NAMES.join(", ")}.`);
+    }
+    const provider = PROVIDERS[name as ProviderName];
+    const model = process.env["PHOEBE_MODEL"] ?? config.defaultModels[name as ProviderName];
+    return { provider, model };
+  }
+
+  // ---------------------------------------------------------------------------
+  // `io` construction — every impure capability a kind factory closes over.
+  // This is the ONLY place in the engine that spawns `git`/`gh` child processes
+  // or reads prompt files off disk; every kind reaches them only through `io`.
+  // ---------------------------------------------------------------------------
+
+  /** `gh <args> -R <repoSlug>` — the one raw escape hatch left, kept for `ensure-labels.ts`'s injection point. */
+  function gh(args: string[], ghOpts?: { input?: string }): void {
+    defaultGhRun([...args, "-R", config.repoSlug], {
+      stdio: "inherit",
+      ...(ghOpts?.input !== undefined ? { input: ghOpts.input } : {}),
+    });
+  }
+
+  function buildGitOps(): GitOps {
+    return {
+      fetchOrigin: () => gitFetchOrigin(repoDir),
+      originBranchSha: (branch: BranchRef) => gitOriginBranchSha(repoDir, branch),
+      prepareWorktree: (prepareOpts: { branch: BranchRef; baseRef?: string }) => {
+        const worktreeDir = worktreeDirForBranch(worktreesDir, prepareOpts.branch);
+        removeWorktree(repoDir, worktreeDir);
+        if (prepareOpts.baseRef) {
+          addWorktreeForNewBranch({
+            repoDir,
+            worktreeDir,
+            branch: prepareOpts.branch,
+            baseRef: prepareOpts.baseRef,
+          });
+        } else {
+          addWorktreeForExistingBranch({ repoDir, worktreeDir, branch: prepareOpts.branch });
+        }
+        return worktreeDir;
+      },
+      removeWorktree: (worktreeDir: string) => removeWorktree(repoDir, worktreeDir),
+      pushBranch: (worktreeDir: string, branch: BranchRef) => pushBranch(worktreeDir, branch),
+      commitCount: (worktreeDir: string, range: string) => commitCount(worktreeDir, range),
+      gitInWorktree,
+    };
+  }
+
+  function buildPrompts(): Prompts {
+    return {
+      load: (relativePath: string) => loadPromptTemplateFromRoot(relativePath, process.cwd()),
+      defaultArgs: () => buildDefaultPromptArgs(config),
+      render: (template, args, worktreeDir) =>
+        renderPrompt(template, args, promptShell(worktreeDir)),
+    };
+  }
+
+  /**
+   * Bound the *agent phase* by the run budget (#72) — the one phase where a hang
+   * is abortable (the agent respects the `AbortSignal`); install/test run via
+   * `execSync` outside this deadline. On expiry the deadline aborts the signal,
+   * `runAgent` kills the child, and a `RunTimeoutError` propagates — caught at
+   * the unit boundary (the loop logs it, releases the #59 slot in `finally`,
+   * and continues; #75 counts it toward quarantine).
+   */
+  async function runAgentInWorktree(agentOpts: {
+    worktreeDir: string;
+    prompt: string;
+  }): Promise<number> {
+    const { provider, model } = selectProvider();
+    const env = buildAgentEnv({
+      parentEnv: process.env,
+      provider: provider.name,
+      providerEnv: config.providerEnv,
+    });
+    const { exitCode } = await runWithDeadline({
+      ms: RUN_TIMEOUT_MS,
+      work: (signal) =>
+        runAgent({
+          provider,
+          model,
+          prompt: agentOpts.prompt,
+          cwd: agentOpts.worktreeDir,
+          env,
+          signal,
+        }),
+    });
+    if (exitCode !== 0) {
+      phoebeLog(`Agent exited with code ${exitCode}.`);
+    }
+    return exitCode;
+  }
+
+  function buildAgentRunner(): AgentRunner {
+    return { run: runAgentInWorktree };
+  }
+
+  const io: Io = {
+    github,
+    git: buildGitOps(),
+    agent: buildAgentRunner(),
+    prompts: buildPrompts(),
+    shell: buildShell(),
+    quarantine: createQuarantine({ github, config, log: phoebeLog }),
+  };
+
+  const kindDeps: KindDeps = { config, io };
+
+  const kindHandles: readonly KindHandle[] = [
+    boxKind(createConflictsKind(kindDeps)),
+    boxKind(createChecksKind(kindDeps)),
+    boxKind(createReviewsKind(kindDeps)),
+    boxKind(createIssuesKind(kindDeps)),
+    boxKind(createResearchKind(kindDeps)),
+  ];
+
+  /**
+   * One-time, native-mode-only setup on the private clone: pre-set the
+   * non-interactive git config gh-stack and cascade-rebase expect, then install
+   * the gh-stack extension. Idempotent and best-effort — `gh extension install`
+   * errors when the extension is already present, which we swallow. Run at boot
+   * (guarded by `stackMode === 'native'`) rather than baked into the image, so the
+   * default banner/off image carries no gh-stack dependency and needs no
+   * build-time network or auth to install it.
+   */
+  function prepareNativeStackTooling(): void {
+    for (const args of nativeStackGitConfig()) {
+      gitInWorktree(repoDir, [...args]);
+    }
+    try {
+      github.installStackExtension();
+    } catch (error) {
+      phoebeError(
+        `gh-stack extension not installed (already present, or offline at boot). ` +
+          `Native stacking needs it — install with \`gh ${ghStackExtensionInstallArgs().join(" ")}\`. ` +
+          `(${error instanceof Error ? error.message : String(error)})`,
+      );
+    }
+  }
+
+  /** The PR a just-finished unit is now known by — direct for PR-keyed kinds, resolved for issue-keyed ones. */
+  function pullRequestNumberAfterWork(ref: UnitRef): number | undefined {
+    if (ref.target.type === "pr") {
+      return ref.target.number;
+    }
+    if (!ref.branch) {
+      return undefined;
+    }
+    try {
+      return github.prNumberForHead(ref.branch, "open");
+    } catch (error) {
+      phoebeError(
+        `Could not resolve the PR link for ${ref.branch} — ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return undefined;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Main loop
+  // ---------------------------------------------------------------------------
+
+  async function runLoop({
+    runOnce,
+    dryRun,
+    pollIntervalMs,
+    drain,
+    status,
+    slotClient,
+  }: {
+    runOnce: boolean;
+    dryRun: boolean;
+    pollIntervalMs: number;
+    drain: DrainSignal;
+    status: ReturnType<typeof createRuntimeStatusReporter>;
+    slotClient: SlotClient | null;
+  }): Promise<void> {
+    while (true) {
+      if (drain.requested) {
+        status.record({
+          kind: "draining",
+          reason: drainReason(drain, "starting no new work unit."),
+        });
+        break;
+      }
+
+      status.record({ kind: "selecting" });
+      const runtimeId = status.snapshot().runtime.runtimeId;
+      const ctx = await gatherCycleContext(
+        { config, io, runtimeId, error: phoebeError },
+        kindHandles,
+      );
+
+      // #15/#13 per-cycle self-recovery and stack maintenance: every kind's own
+      // `sweep` runs against the ctx just gathered, container + non-dry-run only,
+      // before selection — the loop stays ignorant of which kinds have one.
+      if (inContainer && !dryRun) {
+        for (const kind of kindHandles) {
+          await kind.sweep?.(ctx);
+        }
+      }
+
+      // #20: publish the resolved `issues` lookahead — every eligible issue in
+      // selection order with its full blocker set, not just the one about to be
+      // picked — so an observer can see what comes after `activeWork`.
+      status.setQueue(
+        buildIssueQueue(
+          ctx.pools.ready,
+          ctx.blockerStates,
+          stackConfig,
+          process.env["PHOEBE_BASE"],
+          ctx.nativeBlockers,
+        ),
+      );
+
+      const orderedKinds = workOrder
+        .map((name) => kindHandles.find((k) => k.name === name))
+        .filter((k): k is KindHandle => k !== undefined);
+      const fetchKinds = runOnce ? oneShotEligible(orderedKinds) : orderedKinds;
+
+      const gathered: Gathered[] = [];
+      for (const handle of fetchKinds) {
+        gathered.push(await handle.gather(ctx));
+      }
+
+      const picked = pickFirstPlan(gathered, ctx);
+
+      if (!picked) {
+        const idleReason = runOnce ? RUN_ONCE_NOTHING_MESSAGE : pickFirstIdleReason(gathered);
+        status.record({ kind: "idle", reason: idleReason ?? "No work this cycle — idle." });
+        if (runOnce || dryRun) break;
+        // Interruptible idle poll — a SIGTERM mid-sleep wakes it, the next
+        // iteration's drain check breaks, and shutdown does not wait a full cycle.
+        await drain.wait(pollIntervalMs);
+        continue;
+      }
+
+      // A drain that arrived during the fetch/selection above must not let this
+      // freshly-picked unit start — "start no new one". The in-flight unit (if any)
+      // already finished before we looped back here, so exit now.
+      if (drain.requested) {
+        status.record({
+          kind: "draining",
+          reason: drainReason(drain, "starting no new work unit."),
+        });
+        break;
+      }
+
+      const decision = executionDecision({ dryRun, inContainer });
+      if (decision === "dry-run") {
+        status.record({ kind: "idle", reason: `Would execute: ${picked.describe()}.` });
+        break;
+      }
+      if (decision === "refuse") {
+        status.record({ kind: "engine-failed", error: EXECUTION_REFUSED_MESSAGE });
+        process.exit(1);
+      }
+
+      // Acquire a concurrency slot for the whole unit execution (#59): the
+      // supervisor's global cap bounds how many repos run a unit at once. Held
+      // through worktree + install + agent + test + push, released in `finally`
+      // so timeout, error, and normal completion share one leak-free release
+      // path (#72). Standalone (unbrokered) engines skip this entirely.
+      if (slotClient) {
+        try {
+          await slotClient.acquire();
+        } catch (error) {
+          if (error instanceof BrokerDisconnectedError) {
+            // The supervisor's channel closed while we waited for a slot. Stop
+            // rather than run unbrokered (which, across a fleet, would bypass the
+            // global cap); the supervisor is gone or will respawn us afresh.
+            phoebeError(`${error.message} — stopping this engine.`);
+            break;
+          }
+          throw error;
+        }
+      }
+      status.record({ kind: "work-started", work: workRefFromRef(picked.ref) });
+      try {
+        const { exitCode: agentExitCode, verification } = await picked.execute(ctx);
+        const pullRequestNumber = pullRequestNumberAfterWork(picked.ref);
+        if (agentExitCode !== null && agentExitCode !== 0) {
+          status.record({
+            kind: "work-failed",
+            error: new Error(`Agent exited with code ${agentExitCode}.`),
+            ...(pullRequestNumber !== undefined ? { pullRequestNumber } : {}),
+            ...(verification ? { verification } : {}),
+            resources: {
+              agentExitCode,
+              summary: "The work unit completed its cleanup after a nonzero agent exit.",
+            },
+          });
+        } else {
+          status.record({
+            kind: "work-completed",
+            ...(pullRequestNumber !== undefined ? { pullRequestNumber } : {}),
+            ...(verification ? { verification } : {}),
+            ...(agentExitCode === null
+              ? {}
+              : {
+                  resources: {
+                    agentExitCode,
+                    summary: "The work unit completed after a successful agent run.",
+                  },
+                }),
+          });
+        }
+      } catch (error) {
+        if (error instanceof RunTimeoutError) {
+          // A whole-unit timeout (#72): the agent was killed, the slot releases in
+          // `finally`, and the engine survives (never told to the supervisor, #60
+          // orthogonality). #75/#68 layer the poison-unit quarantine on this event —
+          // consecutive timeouts on the same unit, at K, get a `phoebe:quarantined`
+          // label + escalation comment so a genuinely poisonous unit stops being
+          // re-picked forever.
+          status.record({ kind: "work-timed-out", elapsedMs: error.elapsedMs });
+          io.quarantine.record(picked.ref, "timed-out", {
+            signature: "timeout",
+            reason: "timed out",
+            belowThresholdNote: () => "",
+          });
+        } else {
+          // A non-timeout failure: clear the current unit and record the error so
+          // `phoebe list` shows it (the durable record is still the per-work-kind
+          // watermark/failure-comment on GitHub; this is the at-a-glance snapshot).
+          status.record({ kind: "work-failed", error });
+        }
+        if (runOnce) {
+          throw error;
+        }
+        // A failed unit must not kill the daemon — `prepareWorktree` clears any
+        // stale worktree on the next attempt.
+        phoebeError(
+          `Failed executing ${picked.describe()} — ${error instanceof Error ? error.message : String(error)}`,
+        );
+        await drain.wait(pollIntervalMs);
+        continue;
+      } finally {
+        slotClient?.release();
+      }
+
+      if (runOnce) break;
+      // Drain requested while the unit ran: it is finished, so exit now rather
+      // than picking up another. This is the graceful-drain boundary.
+      if (drain.requested) {
+        status.record({
+          kind: "draining",
+          reason: drainReason(drain, "the in-flight unit finished."),
+        });
+        break;
+      }
+    }
+  }
+
   const runOnce = argv.includes("--run-once");
   const dryRun = argv.includes("--dry-run");
   const rawPollIntervalMs = Number(process.env["PHOEBE_POLL_INTERVAL_MS"]);
@@ -425,209 +651,5 @@ export async function runEngine(argv: readonly string[] = process.argv.slice(2))
   } finally {
     if (!failed) status.record({ kind: "stopped" });
     drain.dispose();
-  }
-}
-
-/**
- * The `lifecycle.reason` prefix for a "draining" transition — distinguishes a
- * ref-change drain (`phoebe boot`'s reconcile watch, REF_CHANGE_DRAIN_SIGNAL)
- * from a plain container stop (SIGTERM), so an operator reading the status
- * snapshot can tell "about to relaunch on the new commit" from "shutting
- * down" (#23).
- */
-function drainReason(drain: DrainSignal, detail: string): string {
-  const cause = drain.signal === REF_CHANGE_DRAIN_SIGNAL ? "Engine ref changed" : "Drain requested";
-  return `${cause} — ${detail}`;
-}
-
-async function runLoop({
-  runOnce,
-  dryRun,
-  pollIntervalMs,
-  drain,
-  status,
-  slotClient,
-}: {
-  runOnce: boolean;
-  dryRun: boolean;
-  pollIntervalMs: number;
-  drain: DrainSignal;
-  status: ReturnType<typeof createRuntimeStatusReporter>;
-  slotClient: SlotClient | null;
-}): Promise<void> {
-  while (true) {
-    if (drain.requested) {
-      status.record({
-        kind: "draining",
-        reason: drainReason(drain, "starting no new work unit."),
-      });
-      break;
-    }
-
-    status.record({ kind: "selecting" });
-    const runtimeId = status.snapshot().runtime.runtimeId;
-    const ctx = await gatherCycleContext(
-      { config, io, runtimeId, error: phoebeError },
-      kindHandles,
-    );
-
-    // #15/#13 per-cycle self-recovery and stack maintenance: every kind's own
-    // `sweep` runs against the ctx just gathered, container + non-dry-run only,
-    // before selection — the loop stays ignorant of which kinds have one.
-    if (inContainer && !dryRun) {
-      for (const kind of kindHandles) {
-        await kind.sweep?.(ctx);
-      }
-    }
-
-    // #20: publish the resolved `issues` lookahead — every eligible issue in
-    // selection order with its full blocker set, not just the one about to be
-    // picked — so an observer can see what comes after `activeWork`.
-    status.setQueue(
-      buildIssueQueue(
-        ctx.pools.ready,
-        ctx.blockerStates,
-        stackConfig,
-        process.env["PHOEBE_BASE"],
-        ctx.nativeBlockers,
-      ),
-    );
-
-    const orderedKinds = workOrder
-      .map((name) => kindHandles.find((k) => k.name === name))
-      .filter((k): k is KindHandle => k !== undefined);
-    const fetchKinds = runOnce ? oneShotEligible(orderedKinds) : orderedKinds;
-
-    const gathered: Gathered[] = [];
-    for (const handle of fetchKinds) {
-      gathered.push(await handle.gather(ctx));
-    }
-
-    const picked = pickFirstPlan(gathered, ctx);
-
-    if (!picked) {
-      const idleReason = runOnce ? RUN_ONCE_NOTHING_MESSAGE : pickFirstIdleReason(gathered);
-      status.record({ kind: "idle", reason: idleReason ?? "No work this cycle — idle." });
-      if (runOnce || dryRun) break;
-      // Interruptible idle poll — a SIGTERM mid-sleep wakes it, the next
-      // iteration's drain check breaks, and shutdown does not wait a full cycle.
-      await drain.wait(pollIntervalMs);
-      continue;
-    }
-
-    // A drain that arrived during the fetch/selection above must not let this
-    // freshly-picked unit start — "start no new one". The in-flight unit (if any)
-    // already finished before we looped back here, so exit now.
-    if (drain.requested) {
-      status.record({
-        kind: "draining",
-        reason: drainReason(drain, "starting no new work unit."),
-      });
-      break;
-    }
-
-    const decision = executionDecision({ dryRun, inContainer });
-    if (decision === "dry-run") {
-      status.record({ kind: "idle", reason: `Would execute: ${picked.describe()}.` });
-      break;
-    }
-    if (decision === "refuse") {
-      status.record({ kind: "engine-failed", error: EXECUTION_REFUSED_MESSAGE });
-      process.exit(1);
-    }
-
-    // Acquire a concurrency slot for the whole unit execution (#59): the
-    // supervisor's global cap bounds how many repos run a unit at once. Held
-    // through worktree + install + agent + test + push, released in `finally`
-    // so timeout, error, and normal completion share one leak-free release
-    // path (#72). Standalone (unbrokered) engines skip this entirely.
-    if (slotClient) {
-      try {
-        await slotClient.acquire();
-      } catch (error) {
-        if (error instanceof BrokerDisconnectedError) {
-          // The supervisor's channel closed while we waited for a slot. Stop
-          // rather than run unbrokered (which, across a fleet, would bypass the
-          // global cap); the supervisor is gone or will respawn us afresh.
-          phoebeError(`${error.message} — stopping this engine.`);
-          break;
-        }
-        throw error;
-      }
-    }
-    status.record({ kind: "work-started", work: workRefFromRef(picked.ref) });
-    try {
-      const { exitCode: agentExitCode, verification } = await picked.execute(ctx);
-      const pullRequestNumber = pullRequestNumberAfterWork(picked.ref);
-      if (agentExitCode !== null && agentExitCode !== 0) {
-        status.record({
-          kind: "work-failed",
-          error: new Error(`Agent exited with code ${agentExitCode}.`),
-          ...(pullRequestNumber !== undefined ? { pullRequestNumber } : {}),
-          ...(verification ? { verification } : {}),
-          resources: {
-            agentExitCode,
-            summary: "The work unit completed its cleanup after a nonzero agent exit.",
-          },
-        });
-      } else {
-        status.record({
-          kind: "work-completed",
-          ...(pullRequestNumber !== undefined ? { pullRequestNumber } : {}),
-          ...(verification ? { verification } : {}),
-          ...(agentExitCode === null
-            ? {}
-            : {
-                resources: {
-                  agentExitCode,
-                  summary: "The work unit completed after a successful agent run.",
-                },
-              }),
-        });
-      }
-    } catch (error) {
-      if (error instanceof RunTimeoutError) {
-        // A whole-unit timeout (#72): the agent was killed, the slot releases in
-        // `finally`, and the engine survives (never told to the supervisor, #60
-        // orthogonality). #75/#68 layer the poison-unit quarantine on this event —
-        // consecutive timeouts on the same unit, at K, get a `phoebe:quarantined`
-        // label + escalation comment so a genuinely poisonous unit stops being
-        // re-picked forever.
-        status.record({ kind: "work-timed-out", elapsedMs: error.elapsedMs });
-        io.quarantine.record(picked.ref, "timed-out", {
-          signature: "timeout",
-          reason: "timed out",
-          belowThresholdNote: () => "",
-        });
-      } else {
-        // A non-timeout failure: clear the current unit and record the error so
-        // `phoebe list` shows it (the durable record is still the per-work-kind
-        // watermark/failure-comment on GitHub; this is the at-a-glance snapshot).
-        status.record({ kind: "work-failed", error });
-      }
-      if (runOnce) {
-        throw error;
-      }
-      // A failed unit must not kill the daemon — `prepareWorktree` clears any
-      // stale worktree on the next attempt.
-      phoebeError(
-        `Failed executing ${picked.describe()} — ${error instanceof Error ? error.message : String(error)}`,
-      );
-      await drain.wait(pollIntervalMs);
-      continue;
-    } finally {
-      slotClient?.release();
-    }
-
-    if (runOnce) break;
-    // Drain requested while the unit ran: it is finished, so exit now rather
-    // than picking up another. This is the graceful-drain boundary.
-    if (drain.requested) {
-      status.record({
-        kind: "draining",
-        reason: drainReason(drain, "the in-flight unit finished."),
-      });
-      break;
-    }
   }
 }

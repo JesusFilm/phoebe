@@ -1,7 +1,7 @@
 // Blockers and stacked-PR shape — the cross-kind pure logic for `blocked by`
 // parsing, worktree-base resolution, and the native/banner stacked-PR
 // machinery. Every function takes the config it needs as a parameter; no
-// reads of the resolved-config.ts singleton happen in this module.
+// module-global config reads happen in this module.
 
 import { asBranchRef, type BranchRef, type PrNumber } from "./branded.ts";
 import type { BlockerSource, StackMode } from "./config/index.ts";

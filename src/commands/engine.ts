@@ -1,8 +1,7 @@
 // Engine bootstrapping — the table's unnamed default entry (#73). Not CLI
 // glue: `extractRepoFlag` → `resolveEngineConfigPath` → `loadEngineConfiguration`
-// → `setResolvedConfig` → dynamic `import("../main.ts")`. Loads the consumer's
-// `phoebe.config.ts`, overlays `PHOEBE_*` env vars, installs the resolved
-// config, then hands off to `runEngine`.
+// → `runEngine`. Loads the consumer's `phoebe.config.ts`, overlays `PHOEBE_*`
+// env vars, then hands the resolved config straight to `runEngine`.
 //
 // A direct engine run (`--run-once` / `--dry-run`) selects its tenant (#63):
 // flat has no selector; nested requires `--repo <owner/repo>`, loading only
@@ -26,7 +25,7 @@ import {
   type ResolvedConfiguration,
 } from "../config/index.ts";
 import { resolveDataBase } from "../paths.ts";
-import { setResolvedConfig } from "../resolved-config.ts";
+import { runEngine } from "../main.ts";
 import { isNested, parseSlug } from "../tenant-commands.ts";
 import { parseCliArgs } from "./cli-args.ts";
 import { COMMAND_TABLE } from "./table.ts";
@@ -172,12 +171,7 @@ export async function runEngineMode(
       ? resolveEngineConfigPath(parsed.configPath, repoSlug, ctx.cwd)
       : (parsed.configPath ?? "phoebe.config.ts");
   const resolved = await loadEngineConfiguration(configPath, ctx.env, dataBase);
-  setResolvedConfig(resolved.config);
-
-  // Import after the config is installed — main.ts's module-level constants
-  // read `config` at import time via the Proxy in resolved-config.ts.
-  const { runEngine } = await import("../main.ts");
-  await runEngine(forward);
+  await runEngine({ config: resolved.config, argv: forward });
   return 0;
 }
 

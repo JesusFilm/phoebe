@@ -1,7 +1,8 @@
 // Phoebe consumer config for JesusFilm/phoebe. It doubles as the fixture that
-// src/test-setup.ts installs into src/resolved-config.ts before any test module
-// loads, AND as this repo's tenant entry when it is a member of the workspace
-// deployment one directory up (../phoebe.config.ts scans for it). Real consumers
+// src/test-config.ts resolves into a sample `PhoebeConfig` tests can pass to
+// the module under test, AND as this repo's tenant entry when it is a member
+// of the workspace deployment one directory up (../phoebe.config.ts scans for
+// it). Real consumers
 // install `phoebe-agent` and export their own config; the shape is identical:
 //
 // ```ts

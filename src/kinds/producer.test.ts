@@ -4,7 +4,7 @@
 
 import { describe, expect, test } from "vite-plus/test";
 import { asPrNumber } from "../branded.ts";
-import { config } from "../resolved-config.ts";
+import { sampleConfig as config } from "../test-config.ts";
 import type { GitHub } from "../github.ts";
 import { createQuarantine } from "../quarantine.ts";
 import type { StackConfig } from "../stack.ts";

@@ -23,7 +23,7 @@
     "scripts/status-contract-container.sh",
     "templates",
     "!**/*.test.ts",
-    "!src/test-setup.ts"
+    "!src/test-config.ts"
   ],
   "type": "module",
   "main": "./bootstrap/index.mjs",
