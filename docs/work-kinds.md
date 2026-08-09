@@ -34,6 +34,18 @@ keeps already-open work flowing rather than piling up new branches.
 A failed unit in persistent mode is logged and skipped; the daemon continues to
 the next cycle. Under `--run-once`, a failure throws.
 
+**Starvation tradeoff.** Priority is strict, not fair: a sustained backlog in
+an earlier kind (or within a kind, an issue that keeps producing new candidates)
+can theoretically starve a later kind indefinitely across cycles, since each
+cycle re-walks `workOrder` from the top with no memory of what it skipped last
+time. This is deliberate — see [#85](https://github.com/tanflem/phoebe/issues/85),
+which ruled out building a fairness mechanism (round-robin budget, age-based
+promotion, etc.) because no starvation has ever been observed in this repo's
+history, and `selectFirstWorkUnit` is intentionally stateless between cycles.
+If a kind or issue is starving something you care about, mitigate by hand:
+reorder `workOrder` per-tenant in `phoebe.config.ts`, or remove `readyLabel`
+from an issue to pause it without deleting it.
+
 ## Which PRs the janitors scan
 
 All three janitors scan open PRs based on the same scope rules (`isPrInScope`):
