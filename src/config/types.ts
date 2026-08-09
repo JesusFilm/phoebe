@@ -146,6 +146,10 @@ export type PhoebeConfig = {
   researchLabel: string;
   /** Label the agent applies to an issue it has claimed and is working. */
   processingLabel: string;
+  /** Optional GitHub logins allowed into `ready`/`research` issue selection.
+   *  Empty means every author — lets one operator on a multi-operator repo
+   *  skip tickets filed for someone else's Phoebe instance. */
+  issueAuthors: readonly string[];
   /** Which open PRs the conflicts/checks/reviews work-kinds scan.
    *  "phoebe" = only branchPrefix branches. "all" = any same-repo PR. */
   prScope: "phoebe" | "all";
@@ -286,6 +290,7 @@ export type PhoebeUserConfig = {
   readyLabel?: string;
   researchLabel?: string;
   processingLabel?: string;
+  issueAuthors?: readonly string[];
   prScope?: PhoebeConfig["prScope"];
   prAuthors?: readonly string[];
   prBaseScope?: PhoebeConfig["prBaseScope"];

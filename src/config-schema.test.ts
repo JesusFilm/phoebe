@@ -127,6 +127,7 @@ describe("resolveConfiguration: filling in the roster's shipped defaults", () =>
     expect(resolved.readyLabel).toBe("ready-for-agent");
     expect(resolved.researchLabel).toBe("wayfinder:research");
     expect(resolved.processingLabel).toBe("processing");
+    expect(resolved.issueAuthors).toEqual([]);
     expect(resolved.readyCommand).toBe("npm run ready");
     expect(resolved.blockedByPattern).toBe(String.raw`Blocked by\s+#(\d+)`);
     expect(resolved.blockerSource).toBe("body");
@@ -172,12 +173,14 @@ describe("resolveConfiguration: filling in the roster's shipped defaults", () =>
       defaultBranch: "trunk",
       readyLabel: "green-light",
       readyCommand: "pnpm ready",
+      issueAuthors: ["tanflem"],
       prAuthors: ["tanflem"],
       prBaseScope: "all",
     });
     expect(resolved.defaultBranch).toBe("trunk");
     expect(resolved.readyLabel).toBe("green-light");
     expect(resolved.readyCommand).toBe("pnpm ready");
+    expect(resolved.issueAuthors).toEqual(["tanflem"]);
     expect(resolved.prAuthors).toEqual(["tanflem"]);
     expect(resolved.prBaseScope).toBe("all");
   });

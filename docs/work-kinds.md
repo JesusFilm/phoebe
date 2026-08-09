@@ -54,7 +54,10 @@ base branch rather than `defaultBranch`.
 
 The producer. Selection (`selectIssue`):
 
-1. List open issues labelled `readyLabel`, oldest-created first.
+1. List open issues labelled `readyLabel`, oldest-created first. If
+   `issueAuthors` is non-empty, only issues authored by one of those GitHub
+   logins qualify (`isIssueInScope`) — lets one operator's Phoebe on a
+   multi-operator repo skip tickets filed for someone else's instance.
 2. Sort by **priority** then age then number. Priority is inferred from the
    title + body text: `bug` (bug/broken/crash/regression/fix) → `tracer`
    (tracer/wire/poc) → `polish` (default) → `refactor`.
@@ -116,7 +119,8 @@ comment, close the ticket, and append a pointer to the map's _Decisions so far_.
 Selection **reuses the `issues` path** (`selectIssue`) against the
 `researchLabel`-tagged open issues rather than the `readyLabel` set: same
 priority/age ordering, same `Blocked by #N` handling and base resolution
-(blocked tickets with no blocker PR are skipped this cycle). It is _not_ full
+(blocked tickets with no blocker PR are skipped this cycle), same
+`issueAuthors` allowlist. It is _not_ full
 wayfinder-native selection — no querying of map children, no GitHub native
 `blocked-by`, no assignment-as-claim; those are follow-ups. Double-work
 avoidance relies on branch/PR existence, same as `issues`.

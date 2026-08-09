@@ -130,12 +130,13 @@ does not force you to supply the rest.
 
 ## Labels
 
-| Field             | Default                | Meaning                                                             |
-| ----------------- | ---------------------- | ------------------------------------------------------------------- |
-| `readyLabel`      | `"ready-for-agent"`    | Only issues carrying this label are picked up by the `issues` kind. |
-| `researchLabel`   | `"wayfinder:research"` | Open issues with this label are picked up by the `research` kind.   |
-| `processingLabel` | `"processing"`         | The agent applies this to an issue it has claimed.                  |
-| `prOptOutLabel`   | `"ready-for-human"`    | PRs with this label are excluded from every PR scan.                |
+| Field             | Default                | Meaning                                                                                                                         |
+| ----------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `readyLabel`      | `"ready-for-agent"`    | Only issues carrying this label are picked up by the `issues` kind.                                                             |
+| `researchLabel`   | `"wayfinder:research"` | Open issues with this label are picked up by the `research` kind.                                                               |
+| `processingLabel` | `"processing"`         | The agent applies this to an issue it has claimed.                                                                              |
+| `issueAuthors`    | `[]`                   | Optional GitHub-login allowlist for `ready`/`research` issue selection. Empty means every author. Matching is case-insensitive. |
+| `prOptOutLabel`   | `"ready-for-human"`    | PRs with this label are excluded from every PR scan.                                                                            |
 
 See [`operating.md`](operating.md) for how a human drives Phoebe with these.
 

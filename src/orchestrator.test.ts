@@ -20,6 +20,7 @@ import {
   followUpPrComment,
   formatFailingChecksForPrompt,
   hasNewNonPhoebeReviewActivity,
+  isIssueInScope,
   isReviewSummaryComment,
   issueAttemptFailureSignature,
   listFailingChecks,
@@ -193,6 +194,25 @@ describe("buildIssueQueue (#20)", () => {
   test("excludes quarantined issues", () => {
     const issues = [issue({ number: 104, labels: ["phoebe:quarantined"] })];
     expect(buildIssueQueue(issues, new Map())).toEqual([]);
+  });
+});
+
+describe("isIssueInScope", () => {
+  test("unset issueAuthors admits every author", () => {
+    expect(isIssueInScope(issue({ number: 1, authorLogin: "octocat" }), { issueAuthors: [] })).toBe(
+      true,
+    );
+    expect(isIssueInScope(issue({ number: 2 }), { issueAuthors: [] })).toBe(true);
+  });
+
+  test("author scope includes only configured GitHub logins, case-insensitively", () => {
+    const scoped = { issueAuthors: ["TanFlem"] };
+    expect(isIssueInScope(issue({ number: 1, authorLogin: "tanflem" }), scoped)).toBe(true);
+    expect(isIssueInScope(issue({ number: 2, authorLogin: "coworker" }), scoped)).toBe(false);
+  });
+
+  test("author scope excludes issues with no author on record", () => {
+    expect(isIssueInScope(issue({ number: 1 }), { issueAuthors: ["tanflem"] })).toBe(false);
   });
 });
 

@@ -172,6 +172,11 @@ export const ROSTER = {
     env: "PHOEBE_PROCESSING_LABEL",
     baseAllowed: true,
   },
+  issueAuthors: {
+    kind: { type: "string-array" },
+    default: [] as readonly string[],
+    baseAllowed: true,
+  },
   prScope: {
     kind: { type: "enum", values: PR_SCOPE_VALUES },
     default: "phoebe",

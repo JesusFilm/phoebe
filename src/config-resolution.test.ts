@@ -277,6 +277,12 @@ describe("loadConfiguration", () => {
         false,
       ],
       [
+        "non-array issueAuthors",
+        { schemaVersion: 1, config: { issueAuthors: "octocat" } },
+        /(?=.*config\.issueAuthors must be an array of strings)(?=.*generated-base\.json)/i,
+        false,
+      ],
+      [
         "non-numeric runTimeoutMs",
         { schemaVersion: 1, config: { runTimeoutMs: "60000" } },
         /(?=.*config\.runTimeoutMs must be a number)(?=.*generated-base\.json)/i,
@@ -322,6 +328,7 @@ describe("loadConfiguration", () => {
           readyLabel: "managed-ready",
           researchLabel: "managed-research",
           processingLabel: "managed-processing",
+          issueAuthors: ["octocat"],
           prScope: "all",
           prAuthors: ["octocat"],
           prBaseScope: "all",
@@ -355,6 +362,7 @@ describe("loadConfiguration", () => {
       readyLabel: "managed-ready",
       researchLabel: "managed-research",
       processingLabel: "managed-processing",
+      issueAuthors: ["octocat"],
       prScope: "all",
       prAuthors: ["octocat"],
       prBaseScope: "all",

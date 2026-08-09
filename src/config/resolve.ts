@@ -107,6 +107,7 @@ export function resolveConfig(
     readyLabel: user.readyLabel ?? ROSTER.readyLabel.default,
     researchLabel: user.researchLabel ?? ROSTER.researchLabel.default,
     processingLabel: user.processingLabel ?? ROSTER.processingLabel.default,
+    issueAuthors: user.issueAuthors ?? ROSTER.issueAuthors.default,
     prScope: user.prScope ?? ROSTER.prScope.default,
     prAuthors: user.prAuthors ?? ROSTER.prAuthors.default,
     prBaseScope: user.prBaseScope ?? ROSTER.prBaseScope.default,

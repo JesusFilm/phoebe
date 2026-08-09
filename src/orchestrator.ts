@@ -125,6 +125,32 @@ function stackConfigFromConfig(): StackConfig {
   };
 }
 
+export type IssueScopeConfig = {
+  issueAuthors: readonly string[];
+};
+
+const defaultIssueScopeConfig = (): IssueScopeConfig => ({
+  issueAuthors: config.issueAuthors,
+});
+
+/**
+ * Whether a `ready`/`research` issue is eligible for pickup — an author
+ * allowlist mirroring `isPrInScope`'s, so one operator's Phoebe on a
+ * multi-operator repo skips tickets filed for someone else's instance.
+ * Unset `issueAuthors` (the default) admits every author.
+ */
+export function isIssueInScope(
+  issue: Pick<Issue, "authorLogin">,
+  scopeConfig: IssueScopeConfig = defaultIssueScopeConfig(),
+): boolean {
+  if (scopeConfig.issueAuthors.length === 0) {
+    return true;
+  }
+  return scopeConfig.issueAuthors.some(
+    (author) => author.toLowerCase() === (issue.authorLogin ?? "").toLowerCase(),
+  );
+}
+
 /** Pick the highest-priority workable issue, or `null` when none qualify. */
 export function selectIssue(
   issues: readonly Issue[],

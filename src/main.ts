@@ -97,6 +97,7 @@ import {
   isReviewSummaryComment,
   issueAttemptFailureSignature,
   issueBranch,
+  isIssueInScope,
   isPrInScope,
   isPrMergeConflicting,
   listFailingChecks,
@@ -268,11 +269,11 @@ function listIssuesWithLabel(label: string): Issue[] {
 }
 
 function listReadyIssues(): Issue[] {
-  return listIssuesWithLabel(config.readyLabel);
+  return listIssuesWithLabel(config.readyLabel).filter((issue) => isIssueInScope(issue));
 }
 
 function listResearchIssues(): Issue[] {
-  return listIssuesWithLabel(config.researchLabel);
+  return listIssuesWithLabel(config.researchLabel).filter((issue) => isIssueInScope(issue));
 }
 
 /**
