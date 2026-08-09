@@ -136,12 +136,17 @@ describe("selection excludes quarantined units", () => {
       issue({ number: 1, labels: [PHOEBE_QUARANTINE_LABEL] }),
       issue({ number: 2, labels: [] }),
     ];
-    const picked = selectIssue(issues, new Map(), {
-      blockedByPattern: "[Bb]locked by #(\\d+)",
-      blockerSource: "body",
-      branchPrefix: "phoebe/",
-      stackMode: "banner",
-    });
+    const picked = selectIssue(
+      issues,
+      new Map(),
+      {
+        blockedByPattern: "[Bb]locked by #(\\d+)",
+        blockerSource: "body",
+        branchPrefix: "phoebe/",
+        stackMode: "banner",
+      },
+      "priority:",
+    );
     expect(picked?.issue.number).toBe(2);
   });
 });

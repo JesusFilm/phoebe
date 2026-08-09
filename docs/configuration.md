@@ -130,13 +130,14 @@ does not force you to supply the rest.
 
 ## Labels
 
-| Field             | Default                | Meaning                                                                                                                         |
-| ----------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `readyLabel`      | `"ready-for-agent"`    | Only issues carrying this label are picked up by the `issues` kind.                                                             |
-| `researchLabel`   | `"wayfinder:research"` | Open issues with this label are picked up by the `research` kind.                                                               |
-| `processingLabel` | `"processing"`         | The agent applies this to an issue it has claimed.                                                                              |
-| `issueAuthors`    | `[]`                   | Optional GitHub-login allowlist for `ready`/`research` issue selection. Empty means every author. Matching is case-insensitive. |
-| `prOptOutLabel`   | `"ready-for-human"`    | PRs with this label are excluded from every PR scan.                                                                            |
+| Field                 | Default                | Meaning                                                                                                                                                                                                                             |
+| --------------------- | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `readyLabel`          | `"ready-for-agent"`    | Only issues carrying this label are picked up by the `issues` kind.                                                                                                                                                                 |
+| `researchLabel`       | `"wayfinder:research"` | Open issues with this label are picked up by the `research` kind.                                                                                                                                                                   |
+| `processingLabel`     | `"processing"`         | The agent applies this to an issue it has claimed.                                                                                                                                                                                  |
+| `priorityLabelPrefix` | `"priority:"`          | A `<prefix>bug`/`tracer`/`polish`/`refactor` label on an issue sets its priority bucket directly; `classifyPriority` falls back to title/body keyword-sniffing when no such label is present. See [`work-kinds.md`](work-kinds.md). |
+| `issueAuthors`        | `[]`                   | Optional GitHub-login allowlist for `ready`/`research` issue selection. Empty means every author. Matching is case-insensitive.                                                                                                     |
+| `prOptOutLabel`       | `"ready-for-human"`    | PRs with this label are excluded from every PR scan.                                                                                                                                                                                |
 
 See [`operating.md`](operating.md) for how a human drives Phoebe with these.
 
@@ -442,6 +443,7 @@ to the default.
 | `PHOEBE_READY_LABEL`             | `readyLabel`            |                                                                                                                                                |
 | `PHOEBE_RESEARCH_LABEL`          | `researchLabel`         |                                                                                                                                                |
 | `PHOEBE_PROCESSING_LABEL`        | `processingLabel`       |                                                                                                                                                |
+| `PHOEBE_PRIORITY_LABEL_PREFIX`   | `priorityLabelPrefix`   |                                                                                                                                                |
 | `PHOEBE_PR_OPT_OUT_LABEL`        | `prOptOutLabel`         |                                                                                                                                                |
 | `PHOEBE_INSTALL_COMMAND`         | `installCommand`        |                                                                                                                                                |
 | `PHOEBE_CHECK_COMMAND`           | `checkCommand`          |                                                                                                                                                |

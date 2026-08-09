@@ -174,6 +174,12 @@ export const ROSTER = {
     env: "PHOEBE_PROCESSING_LABEL",
     baseAllowed: true,
   },
+  priorityLabelPrefix: {
+    kind: { type: "string" },
+    default: "priority:",
+    env: "PHOEBE_PRIORITY_LABEL_PREFIX",
+    baseAllowed: true,
+  },
   issueAuthors: {
     kind: { type: "string-array" },
     default: [] as readonly string[],

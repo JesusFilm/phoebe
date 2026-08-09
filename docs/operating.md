@@ -32,9 +32,14 @@ Add `readyLabel` (default `ready-for-agent`) to an issue and Phoebe will pick it
 up when it reaches the front of the queue. To influence _which_ ready issue goes
 first:
 
-- **Priority** is inferred from the title/body text: wording like _bug, broken,
-  crash, regression, fix_ sorts first; _tracer, wire, poc_ next; then ordinary
-  _polish_; then _refactor_ last.
+- **Priority** — the primary way to set it is an explicit label:
+  `priorityLabelPrefix` (default `priority:`) followed by `bug`, `tracer`,
+  `polish`, or `refactor`, e.g. `priority:bug`. If an issue carries more than
+  one of those labels, `bug` wins over `tracer` wins over `polish` wins over
+  `refactor`. With no priority label, Phoebe falls back to sniffing the
+  title/body text: wording like _bug, broken, crash, regression, fix_ sorts
+  first; _tracer, wire, poc_ next; then ordinary _polish_; then _refactor_
+  last.
 - Within a priority, **older issues win** (oldest created, then lowest number).
 
 To pause an issue without deleting it, just remove `readyLabel`. Phoebe never
@@ -137,7 +142,7 @@ See the [environment overlay table](configuration.md#environment-overlay-phoebe_
 | --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | Queue an issue for Phoebe                     | Add `readyLabel` (`ready-for-agent`).                                                                                                         |
 | Pause a queued issue                          | Remove `readyLabel`.                                                                                                                          |
-| Bump an issue up the queue                    | Word it as a bug/fix, or it waits its turn by age.                                                                                            |
+| Bump an issue up the queue                    | Add `priorityLabelPrefix` + bucket (e.g. `priority:bug`), or word it as a bug/fix and it waits its turn by age.                               |
 | Sequence-dependent issues                     | `Blocked by #N` in the body.                                                                                                                  |
 | Take a PR away from Phoebe                    | Add `prOptOutLabel` (`ready-for-human`) — works for any PR. Under the default `draftPrs`, marking a **non-Phoebe** PR draft also opts it out. |
 | Hand a PR back                                | Remove the label / mark ready-for-review.                                                                                                     |

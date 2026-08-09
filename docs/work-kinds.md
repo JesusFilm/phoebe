@@ -60,7 +60,11 @@ The producer. Selection (`selectIssue`):
    `issueAuthors` is non-empty, only issues authored by one of those GitHub
    logins qualify (`isIssueInScope`) — lets one operator's Phoebe on a
    multi-operator repo skip tickets filed for someone else's instance.
-2. Sort by **priority** then age then number. Priority is inferred from the
+2. Sort by **priority** then age then number (`classifyPriority`). An explicit
+   `<priorityLabelPrefix>bug` / `tracer` / `polish` / `refactor` label (default
+   prefix `priority:`) sets the bucket directly; if more than one such label
+   is on the issue, the first bucket in `bug` → `tracer` → `polish` →
+   `refactor` order wins. With no priority label, priority falls back to the
    title + body text: `bug` (bug/broken/crash/regression/fix) → `tracer`
    (tracer/wire/poc) → `polish` (default) → `refactor`.
 3. For each candidate in order, resolve a worktree base; take the first issue

@@ -36,7 +36,22 @@ import type { KindDeps, UnitRef, UnitResult, WorkKind } from "./kind.ts";
 const PRIORITY_ORDER = ["bug", "tracer", "polish", "refactor"] as const;
 export type Priority = (typeof PRIORITY_ORDER)[number];
 
-export function classifyPriority(issue: Issue): Priority {
+/**
+ * Bucket an issue into one of `PRIORITY_ORDER`'s four priorities. An explicit
+ * `<priorityLabelPrefix>bug` / `tracer` / `polish` / `refactor` label wins
+ * over the title/body keyword cascade (#87/#130); if more than one such label
+ * is on the issue, the first bucket in `PRIORITY_ORDER` wins, same as the
+ * cascade below resolves overlapping keywords.
+ */
+export function classifyPriority(issue: Issue, priorityLabelPrefix: string): Priority {
+  const labeled = new Set(
+    issue.labels
+      .filter((label) => label.startsWith(priorityLabelPrefix))
+      .map((label) => label.slice(priorityLabelPrefix.length)),
+  );
+  const labelMatch = PRIORITY_ORDER.find((bucket) => labeled.has(bucket));
+  if (labelMatch) return labelMatch;
+
   const text = `${issue.title} ${issue.body}`.toLowerCase();
   if (/\b(bug|broken|crash|regression|fix)\b/.test(text)) return "bug";
   if (/\b(tracer|wire|poc)\b/.test(text)) return "tracer";
@@ -44,9 +59,9 @@ export function classifyPriority(issue: Issue): Priority {
   return "polish";
 }
 
-export function compareIssues(a: Issue, b: Issue): number {
-  const pa = PRIORITY_ORDER.indexOf(classifyPriority(a));
-  const pb = PRIORITY_ORDER.indexOf(classifyPriority(b));
+export function compareIssues(a: Issue, b: Issue, priorityLabelPrefix: string): number {
+  const pa = PRIORITY_ORDER.indexOf(classifyPriority(a, priorityLabelPrefix));
+  const pb = PRIORITY_ORDER.indexOf(classifyPriority(b, priorityLabelPrefix));
   if (pa !== pb) return pa - pb;
   const ta = Date.parse(a.createdAt);
   const tb = Date.parse(b.createdAt);
@@ -61,13 +76,14 @@ export function selectIssue(
   issues: readonly Issue[],
   blockerStates: ReadonlyMap<number, BlockerPrState>,
   stackConfig: StackConfig,
+  priorityLabelPrefix: string,
   phoebeBase?: string,
   nativeBlockersByIssue: NativeBlockerMap = new Map(),
 ): IssueWorkUnit | null {
   // Quarantined issues/research tickets (#75) are skipped for work until a human
   // clears the label or the issue is edited (the auto-un-stick sweep).
   const eligible = issues.filter((issue) => !issue.labels.includes(PHOEBE_QUARANTINE_LABEL));
-  const sorted = [...eligible].sort(compareIssues);
+  const sorted = [...eligible].sort((a, b) => compareIssues(a, b, priorityLabelPrefix));
   for (const issue of sorted) {
     const resolution = resolveWorktreeBase(
       issue,
@@ -94,11 +110,12 @@ export function buildIssueQueue(
   issues: readonly Issue[],
   blockerStates: ReadonlyMap<number, BlockerPrState>,
   stackConfig: StackConfig,
+  priorityLabelPrefix: string,
   phoebeBase?: string,
   nativeBlockersByIssue: NativeBlockerMap = new Map(),
 ): Array<{ issueNumber: number; blockedBy: readonly number[]; workable: boolean }> {
   const eligible = issues.filter((issue) => !issue.labels.includes(PHOEBE_QUARANTINE_LABEL));
-  const sorted = [...eligible].sort(compareIssues);
+  const sorted = [...eligible].sort((a, b) => compareIssues(a, b, priorityLabelPrefix));
   return sorted.map((issue) => {
     const nativeBlockers = nativeBlockersByIssue.get(issue.number) ?? [];
     return {
@@ -203,6 +220,7 @@ function createProducerKind(
       data.issues,
       data.blockerStates,
       stackConfig,
+      config.priorityLabelPrefix,
       phoebeBaseOverride(),
       data.nativeBlockers,
     );

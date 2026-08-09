@@ -442,6 +442,7 @@ export async function runEngine(opts: {
           ctx.pools.ready,
           ctx.blockerStates,
           stackConfig,
+          config.priorityLabelPrefix,
           process.env["PHOEBE_BASE"],
           ctx.nativeBlockers,
         ),

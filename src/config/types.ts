@@ -146,6 +146,14 @@ export type PhoebeConfig = {
   researchLabel: string;
   /** Label the agent applies to an issue it has claimed and is working. */
   processingLabel: string;
+  /**
+   * Prefix for an explicit priority label (e.g. `priority:bug`) that
+   * `classifyPriority` checks before falling back to its title/body keyword
+   * cascade — see {@link https://github.com/tanflem/phoebe/issues/87 #87}.
+   * The suffix after the prefix must name one of `PRIORITY_ORDER`'s four
+   * buckets (`bug`/`tracer`/`polish`/`refactor`); anything else is ignored.
+   */
+  priorityLabelPrefix: string;
   /** Optional GitHub logins allowed into `ready`/`research` issue selection.
    *  Empty means every author — lets one operator on a multi-operator repo
    *  skip tickets filed for someone else's Phoebe instance. */
@@ -290,6 +298,7 @@ export type PhoebeUserConfig = {
   readyLabel?: string;
   researchLabel?: string;
   processingLabel?: string;
+  priorityLabelPrefix?: string;
   issueAuthors?: readonly string[];
   prScope?: PhoebeConfig["prScope"];
   prAuthors?: readonly string[];

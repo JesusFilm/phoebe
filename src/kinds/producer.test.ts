@@ -30,6 +30,8 @@ const STACK_CONFIG: StackConfig = {
   stackMode: "banner",
 };
 
+const PRIORITY_LABEL_PREFIX = "priority:";
+
 function issue(overrides: Partial<Issue> & Pick<Issue, "number">): Issue {
   return {
     title: `Issue ${overrides.number}`,
@@ -42,17 +44,59 @@ function issue(overrides: Partial<Issue> & Pick<Issue, "number">): Issue {
 
 describe("classifyPriority", () => {
   test("classifies bug-fix issues highest", () => {
-    expect(classifyPriority(issue({ number: 1, title: "Fix crash on startup" }))).toBe("bug");
+    expect(
+      classifyPriority(issue({ number: 1, title: "Fix crash on startup" }), PRIORITY_LABEL_PREFIX),
+    ).toBe("bug");
   });
 
   test("classifies tracer bullets", () => {
-    expect(classifyPriority(issue({ number: 2, title: "Wire API-mode discovery POC" }))).toBe(
-      "tracer",
-    );
+    expect(
+      classifyPriority(
+        issue({ number: 2, title: "Wire API-mode discovery POC" }),
+        PRIORITY_LABEL_PREFIX,
+      ),
+    ).toBe("tracer");
   });
 
   test("defaults to polish", () => {
-    expect(classifyPriority(issue({ number: 3, title: "Add quota resilience" }))).toBe("polish");
+    expect(
+      classifyPriority(issue({ number: 3, title: "Add quota resilience" }), PRIORITY_LABEL_PREFIX),
+    ).toBe("polish");
+  });
+
+  test("a priority label overrides conflicting title/body text (#87, #130)", () => {
+    expect(
+      classifyPriority(
+        issue({
+          number: 4,
+          title: "Fix crash on startup",
+          labels: ["ready-for-agent", "priority:polish"],
+        }),
+        PRIORITY_LABEL_PREFIX,
+      ),
+    ).toBe("polish");
+  });
+
+  test("no priority label falls back to the title/body cascade", () => {
+    expect(
+      classifyPriority(
+        issue({ number: 5, title: "Fix crash on startup", labels: ["ready-for-agent"] }),
+        PRIORITY_LABEL_PREFIX,
+      ),
+    ).toBe("bug");
+  });
+
+  test("multiple conflicting priority labels resolve via PRIORITY_ORDER (bug > tracer > polish > refactor)", () => {
+    expect(
+      classifyPriority(
+        issue({
+          number: 6,
+          title: "Add quota resilience",
+          labels: ["ready-for-agent", "priority:refactor", "priority:tracer"],
+        }),
+        PRIORITY_LABEL_PREFIX,
+      ),
+    ).toBe("tracer");
   });
 });
 
@@ -68,8 +112,25 @@ describe("compareIssues", () => {
       title: "Add toggle",
       createdAt: "2026-06-01T00:00:00Z",
     });
-    expect(compareIssues(bug, polish)).toBeLessThan(0);
-    expect(compareIssues(polish, bug)).toBeGreaterThan(0);
+    expect(compareIssues(bug, polish, PRIORITY_LABEL_PREFIX)).toBeLessThan(0);
+    expect(compareIssues(polish, bug, PRIORITY_LABEL_PREFIX)).toBeGreaterThan(0);
+  });
+
+  test("a priority label reorders issues against their keyword-implied priority", () => {
+    const labeledRefactor = issue({
+      number: 20,
+      title: "Fix broken workflow",
+      labels: ["ready-for-agent", "priority:refactor"],
+      createdAt: "2026-06-01T00:00:00Z",
+    });
+    const unlabeledPolish = issue({
+      number: 21,
+      title: "Add toggle",
+      createdAt: "2026-06-02T00:00:00Z",
+    });
+    expect(compareIssues(labeledRefactor, unlabeledPolish, PRIORITY_LABEL_PREFIX)).toBeGreaterThan(
+      0,
+    );
   });
 });
 
@@ -87,7 +148,7 @@ describe("selectIssue", () => {
     const states = new Map<number, BlockerPrState>([
       [98, { hasOpenPr: false, hasMergedPr: false }],
     ]);
-    const picked = selectIssue(issues, states, STACK_CONFIG);
+    const picked = selectIssue(issues, states, STACK_CONFIG, PRIORITY_LABEL_PREFIX);
     expect(picked?.issue.number).toBe(108);
     expect(picked?.resolution.worktreeBase).toBe("origin/main");
   });
@@ -100,7 +161,7 @@ describe("selectIssue", () => {
     const states = new Map<number, BlockerPrState>([
       [98, { hasOpenPr: false, hasMergedPr: false }],
     ]);
-    expect(selectIssue(issues, states, STACK_CONFIG)).toBeNull();
+    expect(selectIssue(issues, states, STACK_CONFIG, PRIORITY_LABEL_PREFIX)).toBeNull();
   });
 
   test("threads per-issue native blockers into base resolution under native source", () => {
@@ -114,6 +175,7 @@ describe("selectIssue", () => {
       issues,
       states,
       { ...STACK_CONFIG, blockerSource: "native" },
+      PRIORITY_LABEL_PREFIX,
       undefined,
       nativeBlockersByIssue,
     );
@@ -127,13 +189,15 @@ describe("selectIssue", () => {
       issue({ number: 1, labels: ["phoebe:quarantined"] }),
       issue({ number: 2, labels: [] }),
     ];
-    expect(selectIssue(issues, new Map(), STACK_CONFIG)?.issue.number).toBe(2);
+    expect(selectIssue(issues, new Map(), STACK_CONFIG, PRIORITY_LABEL_PREFIX)?.issue.number).toBe(
+      2,
+    );
   });
 });
 
 describe("buildIssueQueue (#20)", () => {
   test("returns an empty queue when there are no eligible issues", () => {
-    expect(buildIssueQueue([], new Map(), STACK_CONFIG)).toEqual([]);
+    expect(buildIssueQueue([], new Map(), STACK_CONFIG, PRIORITY_LABEL_PREFIX)).toEqual([]);
   });
 
   test("orders a linear chain and reports the full resolved blocker set", () => {
@@ -144,7 +208,7 @@ describe("buildIssueQueue (#20)", () => {
     const states = new Map<number, BlockerPrState>([
       [100, { hasOpenPr: true, openPrNumber: asPrNumber(200), hasMergedPr: false }],
     ]);
-    expect(buildIssueQueue(issues, states, STACK_CONFIG)).toEqual([
+    expect(buildIssueQueue(issues, states, STACK_CONFIG, PRIORITY_LABEL_PREFIX)).toEqual([
       { issueNumber: 100, blockedBy: [], workable: true },
       { issueNumber: 101, blockedBy: [100], workable: true },
     ]);
@@ -155,7 +219,7 @@ describe("buildIssueQueue (#20)", () => {
     const states = new Map<number, BlockerPrState>([
       [100, { hasOpenPr: false, hasMergedPr: false }],
     ]);
-    expect(buildIssueQueue(issues, states, STACK_CONFIG)).toEqual([
+    expect(buildIssueQueue(issues, states, STACK_CONFIG, PRIORITY_LABEL_PREFIX)).toEqual([
       { issueNumber: 101, blockedBy: [100], workable: false },
     ]);
   });
@@ -166,14 +230,14 @@ describe("buildIssueQueue (#20)", () => {
       [101, { hasOpenPr: true, openPrNumber: asPrNumber(201), hasMergedPr: false }],
       [102, { hasOpenPr: true, openPrNumber: asPrNumber(202), hasMergedPr: false }],
     ]);
-    expect(buildIssueQueue(issues, states, STACK_CONFIG)).toEqual([
+    expect(buildIssueQueue(issues, states, STACK_CONFIG, PRIORITY_LABEL_PREFIX)).toEqual([
       { issueNumber: 103, blockedBy: [101, 102], workable: true },
     ]);
   });
 
   test("excludes quarantined issues", () => {
     const issues = [issue({ number: 104, labels: ["phoebe:quarantined"] })];
-    expect(buildIssueQueue(issues, new Map(), STACK_CONFIG)).toEqual([]);
+    expect(buildIssueQueue(issues, new Map(), STACK_CONFIG, PRIORITY_LABEL_PREFIX)).toEqual([]);
   });
 });
 
