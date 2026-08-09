@@ -17,7 +17,7 @@ import {
   findLatestUnitAttemptComment,
   slugifyFailureSignature,
 } from "../quarantine.ts";
-import type { UnitAttemptMarker } from "../quarantine.ts";
+import type { UnitMarker } from "../quarantine.ts";
 import {
   getMergedBlockerPrNumbers,
   selectStackRetargetCandidates,
@@ -46,7 +46,7 @@ export type ConflictsUnit = {
   baseSha?: Sha;
   failureWatermark?: ConflictFailWatermark | null;
   /** No-commit-attempt counter (#25) — read from the unit's tracking comment. */
-  attemptMarker?: UnitAttemptMarker | null;
+  attemptMarker?: UnitMarker | null;
 };
 
 export type ConflictsData = {
@@ -113,7 +113,7 @@ function shouldPostFailure(opts: {
 export function createConflictsKind(deps: KindDeps): WorkKind<ConflictsData, ConflictsUnit> {
   const { config, io } = deps;
   const { phoebeLog, phoebeError } = createPhoebeLog(config.repoSlug);
-  const janitor = createJanitorHelpers(deps, phoebeLog);
+  const janitor = createJanitorHelpers(deps);
   const defaultBranchRef = asBranchRef(config.defaultBranch);
 
   function candidates(
@@ -197,7 +197,8 @@ export function createConflictsKind(deps: KindDeps): WorkKind<ConflictsData, Con
           comments.map((c) => c.body),
           parseConflictFailWatermark,
         ),
-        attemptMarker: findLatestUnitAttemptComment(comments, "conflict")?.marker ?? null,
+        attemptMarker:
+          findLatestUnitAttemptComment(comments, "conflicts", "no-commit")?.marker ?? null,
       };
     });
     // #25: a unit still inside its no-commit-attempt backoff window sits this cycle out.
@@ -280,9 +281,8 @@ export function createConflictsKind(deps: KindDeps): WorkKind<ConflictsData, Con
           );
           const watermark = currentFailureWatermark(pr.headRefName, baseBranch);
           janitor.recordFailedAttempt({
-            kind: "conflict",
+            kind: "conflicts",
             prNumber: pr.prNumber,
-            currentPrHead: watermark.prHead,
             signature: failureSignature({
               mergeable: prInfo.mergeable,
               mergeStateStatus: prInfo.mergeStateStatus,
@@ -330,9 +330,8 @@ export function createConflictsKind(deps: KindDeps): WorkKind<ConflictsData, Con
       phoebeLog(`Could not start merge for PR #${pr.prNumber} — skipping.`);
       const watermark = currentFailureWatermark(pr.headRefName, baseBranch);
       janitor.recordFailedAttempt({
-        kind: "conflict",
+        kind: "conflicts",
         prNumber: pr.prNumber,
-        currentPrHead: watermark.prHead,
         signature: failureSignature({}),
         failureComment: failureComment(pr.prNumber, watermark),
       });

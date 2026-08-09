@@ -1,46 +1,33 @@
-// Poison-unit quarantine tests (#75): the timeout-counter and baseline
-// markers, the count/quarantine/auto-unstick decisions, and the selection
-// exclusion that reuses the opt-out filter. Threshold resolution
-// (`maxUnitTimeouts`/`maxUnitAttempts` config defaults + their `PHOEBE_*`
-// overlay) moved to the config layer (#56) — see src/load-config.test.ts.
+// One quarantine façade (#68): the trigger-scoped marker/comment builders,
+// the escalation-comment text, the read-only backoff/auto-unstick helpers
+// that stay importable without the façade, and `createQuarantine`'s
+// `record`/`resolve` behavior against a fake `GitHub` — one tracking comment
+// per unit, up to two trigger sections, the manual-clear reset, and the
+// write-failure swallow. Threshold resolution (`maxUnitTimeouts`/
+// `maxUnitAttempts` config defaults + their `PHOEBE_*` overlay) lives at the
+// config layer (#56) — see src/load-config.test.ts.
 
 import { describe, expect, test } from "vite-plus/test";
-import { asSha } from "./branded.ts";
+import { asBranchRef, asSha } from "./branded.ts";
+import type { ActivityComment, GitHub } from "./github.ts";
 import {
   buildQuarantineComment,
-  buildUnitAttemptMarker,
-  buildUnitTimeoutMarker,
-  decideTimeoutRecord,
+  createQuarantine,
   filterBackoffEligible,
   findLatestUnitAttemptComment,
-  latestTimeoutMarker,
-  newestForeignCommentAt,
-  nextAttemptCount,
-  nextTimeoutCount,
   parseQuarantineBaseline,
-  parseUnitAttemptMarker,
-  parseUnitTimeoutMarker,
   PHOEBE_QUARANTINE_LABEL,
-  planUnitAttempt,
   shouldAutoUnstick,
-  shouldBackoffUnitRetry,
-  shouldQuarantine,
   slugifyFailureSignature,
-  unitBackoffMs,
-  type UnitAttemptMarker,
+  type UnitMarker,
 } from "./quarantine.ts";
 import { isPrInScope } from "./pr-scope.ts";
 import { selectIssue } from "./kinds/producer.ts";
+import type { UnitRef } from "./kinds/kind.ts";
 import type { Issue } from "./stack.ts";
-import { asBranchRef } from "./branded.ts";
 
-describe("markers", () => {
-  test("timeout counter marker round-trips", () => {
-    expect(parseUnitTimeoutMarker(buildUnitTimeoutMarker(2))).toEqual({ n: 2 });
-    expect(parseUnitTimeoutMarker("no marker here")).toBeNull();
-  });
-
-  test("escalation comment embeds the baseline marker and names the label", () => {
+describe("buildQuarantineComment", () => {
+  test("names the label and the reason with the actual count", () => {
     const comment = buildQuarantineComment({
       kind: "issues",
       id: 42,
@@ -53,7 +40,7 @@ describe("markers", () => {
     expect(parseQuarantineBaseline(comment)).toBe("abc123");
   });
 
-  test("escalation comment carries the last failure signature for a no-commit trigger (#25)", () => {
+  test("carries the last failure signature for a no-commit trigger (#25)", () => {
     const comment = buildQuarantineComment({
       kind: "conflicts",
       id: 1043,
@@ -66,7 +53,7 @@ describe("markers", () => {
     expect(comment).toContain("mergeable-conflicting");
   });
 
-  test("escalation comment names the blocked dependents for the issue-keyed no-PR trigger (#22)", () => {
+  test("names the blocked dependents for the issue-keyed no-PR trigger (#22)", () => {
     const comment = buildQuarantineComment({
       kind: "issues",
       id: 784,
@@ -82,7 +69,7 @@ describe("markers", () => {
     expect(comment).toContain("#700");
   });
 
-  test("escalation comment omits the dependents line when there are none", () => {
+  test("omits the dependents line when there are none", () => {
     const comment = buildQuarantineComment({
       kind: "issues",
       id: 784,
@@ -93,153 +80,6 @@ describe("markers", () => {
       dependents: [],
     });
     expect(comment).not.toContain("keeps");
-  });
-});
-
-describe("count + quarantine decisions", () => {
-  test("first timeout with no prior marker records 1", () => {
-    expect(nextTimeoutCount(null, false)).toBe(1);
-  });
-  test("carries the prior count when there is no newer activity", () => {
-    expect(nextTimeoutCount(2, false)).toBe(3);
-  });
-  test("resets to 0 (then +1) when newer activity is present", () => {
-    expect(nextTimeoutCount(2, true)).toBe(1);
-  });
-  test("quarantines at the threshold", () => {
-    expect(shouldQuarantine(2, 3)).toBe(false);
-    expect(shouldQuarantine(3, 3)).toBe(true);
-  });
-});
-
-describe("latestTimeoutMarker", () => {
-  test("null when the unit has never timed out", () => {
-    expect(
-      latestTimeoutMarker([{ body: "just a human comment", createdAt: "2026-01-01T00:00:00Z" }]),
-    ).toBeNull();
-    expect(latestTimeoutMarker([])).toBeNull();
-  });
-
-  test("returns the newest marker's n and its comment createdAt", () => {
-    const comments = [
-      { body: buildUnitTimeoutMarker(1), createdAt: "2026-01-01T00:00:00Z" },
-      { body: "a human replied", createdAt: "2026-01-02T00:00:00Z" },
-      { body: buildUnitTimeoutMarker(2), createdAt: "2026-01-03T00:00:00Z" },
-    ];
-    expect(latestTimeoutMarker(comments)).toEqual({ n: 2, createdAt: "2026-01-03T00:00:00Z" });
-  });
-});
-
-describe("newestForeignCommentAt", () => {
-  const phoebe = "phoebe-bot";
-  test("null when there are no foreign comments", () => {
-    expect(
-      newestForeignCommentAt([{ createdAt: "2026-01-01T00:00:00Z", authorLogin: phoebe }], phoebe),
-    ).toBeNull();
-    expect(newestForeignCommentAt([], phoebe)).toBeNull();
-  });
-  test("a deleted author (empty login) still counts as foreign activity", () => {
-    // main.ts coerces a null GitHub author to "" — never Phoebe (whose login is
-    // always non-empty here), so such a comment must count toward the reset.
-    expect(
-      newestForeignCommentAt([{ createdAt: "2026-01-03T00:00:00Z", authorLogin: "" }], phoebe),
-    ).toBe("2026-01-03T00:00:00Z");
-  });
-  test("ignores Phoebe's own comments and returns the newest foreign instant", () => {
-    expect(
-      newestForeignCommentAt(
-        [
-          { createdAt: "2026-01-05T00:00:00Z", authorLogin: phoebe },
-          { createdAt: "2026-01-02T00:00:00Z", authorLogin: "human" },
-          { createdAt: "2026-01-04T00:00:00Z", authorLogin: "other" },
-        ],
-        phoebe,
-      ),
-    ).toBe("2026-01-04T00:00:00Z");
-  });
-});
-
-describe("decideTimeoutRecord (engine write-path core)", () => {
-  const k = 3;
-  const phoebe = "phoebe-bot";
-
-  test("first timeout with no prior marker records 1 and does not quarantine", () => {
-    expect(
-      decideTimeoutRecord({
-        comments: [{ body: "hello", createdAt: "2026-01-01T00:00:00Z", authorLogin: "human" }],
-        phoebeLogin: phoebe,
-        k,
-      }),
-    ).toEqual({ count: 1, quarantine: false });
-  });
-
-  test("carries the prior count when no foreign activity is newer than the marker", () => {
-    expect(
-      decideTimeoutRecord({
-        comments: [
-          { body: "human note", createdAt: "2026-01-02T00:00:00Z", authorLogin: "human" },
-          {
-            body: buildUnitTimeoutMarker(1),
-            createdAt: "2026-01-03T00:00:00Z",
-            authorLogin: phoebe,
-          },
-        ],
-        phoebeLogin: phoebe,
-        k,
-      }),
-    ).toEqual({ count: 2, quarantine: false });
-  });
-
-  test("Phoebe's own newer marker never resets the count (the #80 blocker)", () => {
-    // A marker comment authored by Phoebe is newer than the prior marker, but
-    // must NOT count as reset-triggering activity — else the count never climbs.
-    expect(
-      decideTimeoutRecord({
-        comments: [
-          {
-            body: buildUnitTimeoutMarker(2),
-            createdAt: "2026-01-03T00:00:00Z",
-            authorLogin: phoebe,
-          },
-        ],
-        phoebeLogin: phoebe,
-        k,
-      }),
-    ).toEqual({ count: 3, quarantine: true });
-  });
-
-  test("resets to 1 when a foreign comment landed after the latest marker", () => {
-    expect(
-      decideTimeoutRecord({
-        comments: [
-          {
-            body: buildUnitTimeoutMarker(2),
-            createdAt: "2026-01-03T00:00:00Z",
-            authorLogin: phoebe,
-          },
-          { body: "a human pushed a fix", createdAt: "2026-01-04T00:00:00Z", authorLogin: "human" },
-        ],
-        phoebeLogin: phoebe,
-        k,
-      }),
-    ).toEqual({ count: 1, quarantine: false });
-  });
-
-  test("resets when the extra activity instant (a PR push) is newer than the marker", () => {
-    expect(
-      decideTimeoutRecord({
-        comments: [
-          {
-            body: buildUnitTimeoutMarker(2),
-            createdAt: "2026-01-03T00:00:00Z",
-            authorLogin: phoebe,
-          },
-        ],
-        phoebeLogin: phoebe,
-        extraActivityAt: "2026-01-04T00:00:00Z",
-        k,
-      }),
-    ).toEqual({ count: 1, quarantine: false });
   });
 });
 
@@ -305,227 +145,48 @@ describe("selection excludes quarantined units", () => {
   });
 });
 
-describe("unit attempt marker (#25)", () => {
-  const marker: UnitAttemptMarker = {
-    n: 2,
-    signature: "mergeable-conflicting",
-    ref: "abc1234",
-    at: "2026-08-04T12:00:00.000Z",
-  };
-
-  test("round-trips through build/parse, scoped by kind", () => {
-    const text = buildUnitAttemptMarker("conflicts", marker);
-    expect(parseUnitAttemptMarker("conflicts", text)).toEqual(marker);
-  });
-
-  test("a checks marker is invisible to a conflicts parse — independent per-kind counters", () => {
-    const text = buildUnitAttemptMarker("checks", marker);
-    expect(parseUnitAttemptMarker("conflicts", text)).toBeNull();
-    expect(parseUnitAttemptMarker("checks", text)).toEqual(marker);
-  });
-
-  test("parse returns null when no marker is present", () => {
-    expect(parseUnitAttemptMarker("conflicts", "just a normal comment")).toBeNull();
-  });
-});
-
-describe("findLatestUnitAttemptComment", () => {
-  test("finds the newest kind-matching marker and its comment id", () => {
-    const older = buildUnitAttemptMarker("conflicts", {
-      n: 1,
-      signature: "sig-a",
-      ref: "sha1",
-      at: "2026-08-04T10:00:00.000Z",
-    });
-    const newer = buildUnitAttemptMarker("conflicts", {
-      n: 2,
-      signature: "sig-b",
-      ref: "sha1",
-      at: "2026-08-04T11:00:00.000Z",
-    });
+describe("findLatestUnitAttemptComment (trigger-aware)", () => {
+  test("finds the newest kind+trigger marker and its comment id", () => {
     const comments = [
-      { id: "IC_1", body: older },
+      {
+        id: "IC_1",
+        body: "<!-- phoebe-unit:conflicts:no-commit n=1 sig=sig-a ref=sha1 at=2026-08-04T10:00:00.000Z -->",
+      },
       { id: "IC_2", body: "unrelated human comment" },
-      { id: "IC_3", body: newer },
     ];
-    const found = findLatestUnitAttemptComment(comments, "conflicts");
-    expect(found?.commentId).toBe("IC_3");
-    expect(found?.marker.n).toBe(2);
-  });
-
-  test("ignores markers for a different kind", () => {
-    const checksMarker = buildUnitAttemptMarker("checks", {
+    const found = findLatestUnitAttemptComment(comments, "conflicts", "no-commit");
+    expect(found?.commentId).toBe("IC_1");
+    expect(found?.marker).toEqual({
+      trigger: "no-commit",
       n: 1,
       signature: "sig-a",
       ref: "sha1",
       at: "2026-08-04T10:00:00.000Z",
     });
-    expect(findLatestUnitAttemptComment([{ id: "IC_1", body: checksMarker }], "conflicts")).toBe(
-      null,
-    );
+  });
+
+  test("ignores a marker for a different kind", () => {
+    const comments = [
+      {
+        id: "IC_1",
+        body: "<!-- phoebe-unit:checks:no-commit n=1 sig=sig-a ref=sha1 at=2026-08-04T10:00:00.000Z -->",
+      },
+    ];
+    expect(findLatestUnitAttemptComment(comments, "conflicts", "no-commit")).toBeNull();
+  });
+
+  test("ignores a marker for a different trigger on the same kind", () => {
+    const comments = [
+      {
+        id: "IC_1",
+        body: "<!-- phoebe-unit:issues:timed-out n=1 sig=timeout ref=42 at=2026-08-04T10:00:00.000Z -->",
+      },
+    ];
+    expect(findLatestUnitAttemptComment(comments, "issues", "no-pr")).toBeNull();
   });
 
   test("returns null with no comments", () => {
-    expect(findLatestUnitAttemptComment([], "conflicts")).toBeNull();
-  });
-});
-
-describe("nextAttemptCount (#25)", () => {
-  test("first attempt with no prior marker records 1", () => {
-    expect(nextAttemptCount(null, "sha1")).toBe(1);
-  });
-  test("carries the prior count when the ref (PR head) is unchanged", () => {
-    const previous: UnitAttemptMarker = { n: 2, signature: "s", ref: "sha1", at: "t" };
-    expect(nextAttemptCount(previous, "sha1")).toBe(3);
-  });
-  test("resets to 0 (then +1) once the ref advances — a commit landed", () => {
-    const previous: UnitAttemptMarker = { n: 2, signature: "s", ref: "sha1", at: "t" };
-    expect(nextAttemptCount(previous, "sha2")).toBe(1);
-  });
-});
-
-describe("planUnitAttempt", () => {
-  test("below threshold: increments and does not quarantine", () => {
-    const plan = planUnitAttempt({
-      previous: { n: 1, signature: "s", ref: "sha1", at: "t" },
-      ref: "sha1",
-      signature: "s2",
-      now: "2026-08-04T12:00:00.000Z",
-      k: 3,
-    });
-    expect(plan.marker.n).toBe(2);
-    expect(plan.marker.signature).toBe("s2");
-    expect(plan.quarantined).toBe(false);
-  });
-
-  test("at threshold: quarantines", () => {
-    const plan = planUnitAttempt({
-      previous: { n: 2, signature: "s", ref: "sha1", at: "t" },
-      ref: "sha1",
-      signature: "s",
-      now: "2026-08-04T12:00:00.000Z",
-      k: 3,
-    });
-    expect(plan.marker.n).toBe(3);
-    expect(plan.quarantined).toBe(true);
-  });
-
-  test("a produced commit (ref advanced) never quarantines even past K in the old run", () => {
-    const plan = planUnitAttempt({
-      previous: { n: 5, signature: "s", ref: "sha1", at: "t" },
-      ref: "sha2",
-      signature: "s",
-      now: "2026-08-04T12:00:00.000Z",
-      k: 3,
-    });
-    expect(plan.marker.n).toBe(1);
-    expect(plan.quarantined).toBe(false);
-  });
-});
-
-describe("planUnitAttempt reused for the issue-keyed no-PR trigger (#22)", () => {
-  // An issue-keyed unit has no in-progress ref to stale-check against, so the
-  // caller (main.ts's recordFailedIssueAttempt) passes a constant `ref` — the
-  // issue number — across every attempt, and resets by dropping the marker
-  // (previous: null) the moment a run produces a PR, rather than relying on
-  // `ref` advancing.
-  test("consecutive no-PR claims with a constant ref count up and quarantine at K", () => {
-    const first = planUnitAttempt({
-      previous: null,
-      ref: "784",
-      signature: "apply-patch-failed",
-      now: "2026-08-04T10:00:00.000Z",
-      k: 3,
-    });
-    expect(first.marker.n).toBe(1);
-    expect(first.quarantined).toBe(false);
-
-    const second = planUnitAttempt({
-      previous: first.marker,
-      ref: "784",
-      signature: "apply-patch-failed",
-      now: "2026-08-04T11:00:00.000Z",
-      k: 3,
-    });
-    expect(second.marker.n).toBe(2);
-    expect(second.quarantined).toBe(false);
-
-    const third = planUnitAttempt({
-      previous: second.marker,
-      ref: "784",
-      signature: "apply-patch-failed",
-      now: "2026-08-04T12:00:00.000Z",
-      k: 3,
-    });
-    expect(third.marker.n).toBe(3);
-    expect(third.quarantined).toBe(true);
-  });
-
-  test("a claim that produced a PR resets the counter — a slow-but-progressing unit is never quarantined", () => {
-    // Two no-PR claims, then a successful one clears the tracking comment
-    // (main.ts's resetIssueAttemptCounter), so the next failure starts at 1
-    // instead of continuing from 3.
-    const afterTwoFailures: { n: number; signature: string; ref: string; at: string } = {
-      n: 2,
-      signature: "apply-patch-failed",
-      ref: "784",
-      at: "2026-08-04T11:00:00.000Z",
-    };
-    expect(shouldQuarantine(afterTwoFailures.n, 3)).toBe(false);
-
-    // The reset drops the marker entirely — the next failed attempt reads no
-    // prior marker, exactly like `previous: null` above.
-    const afterReset = planUnitAttempt({
-      previous: null,
-      ref: "784",
-      signature: "apply-patch-failed",
-      now: "2026-08-04T13:00:00.000Z",
-      k: 3,
-    });
-    expect(afterReset.marker.n).toBe(1);
-    expect(afterReset.quarantined).toBe(false);
-  });
-});
-
-describe("unit backoff (#25)", () => {
-  test("no backoff before any attempt", () => {
-    expect(unitBackoffMs(0)).toBe(0);
-  });
-  test("doubles per attempt, capped", () => {
-    expect(unitBackoffMs(1)).toBe(5 * 60_000);
-    expect(unitBackoffMs(2)).toBe(10 * 60_000);
-    expect(unitBackoffMs(3)).toBe(20 * 60_000);
-    expect(unitBackoffMs(10)).toBe(60 * 60_000);
-  });
-
-  test("shouldBackoffUnitRetry holds off a retry inside the backoff window", () => {
-    expect(
-      shouldBackoffUnitRetry({
-        attemptCount: 1,
-        lastAttemptAt: "2026-08-04T12:00:00.000Z",
-        now: "2026-08-04T12:01:00.000Z",
-      }),
-    ).toBe(true);
-  });
-
-  test("shouldBackoffUnitRetry allows retry once the window has elapsed — a transient failure recovers", () => {
-    expect(
-      shouldBackoffUnitRetry({
-        attemptCount: 1,
-        lastAttemptAt: "2026-08-04T12:00:00.000Z",
-        now: "2026-08-04T12:06:00.000Z",
-      }),
-    ).toBe(false);
-  });
-
-  test("first attempt (count 0) is never backed off", () => {
-    expect(
-      shouldBackoffUnitRetry({
-        attemptCount: 0,
-        lastAttemptAt: "2026-08-04T12:00:00.000Z",
-        now: "2026-08-04T12:00:00.000Z",
-      }),
-    ).toBe(false);
+    expect(findLatestUnitAttemptComment([], "conflicts", "no-commit")).toBeNull();
   });
 });
 
@@ -543,6 +204,13 @@ describe("slugifyFailureSignature", () => {
 
 describe("filterBackoffEligible", () => {
   const now = "2026-08-04T12:00:00.000Z";
+  const marker = (n: number, at: string): UnitMarker => ({
+    trigger: "no-commit",
+    n,
+    signature: "s",
+    ref: "sha1",
+    at,
+  });
 
   test("a candidate with no attempt marker is always eligible", () => {
     const candidates = [{ attemptMarker: null }];
@@ -550,22 +218,423 @@ describe("filterBackoffEligible", () => {
   });
 
   test("drops a candidate still inside its backoff window", () => {
-    const candidates = [
-      {
-        prNumber: 1,
-        attemptMarker: { n: 1, signature: "s", ref: "sha1", at: "2026-08-04T11:59:00.000Z" },
-      },
-    ];
+    const candidates = [{ prNumber: 1, attemptMarker: marker(1, "2026-08-04T11:59:00.000Z") }];
     expect(filterBackoffEligible(candidates, now)).toEqual([]);
   });
 
   test("keeps a candidate once its backoff window has elapsed", () => {
-    const candidates = [
-      {
-        prNumber: 1,
-        attemptMarker: { n: 1, signature: "s", ref: "sha1", at: "2026-08-04T11:00:00.000Z" },
-      },
-    ];
+    const candidates = [{ prNumber: 1, attemptMarker: marker(1, "2026-08-04T11:00:00.000Z") }];
     expect(filterBackoffEligible(candidates, now)).toEqual(candidates);
+  });
+});
+
+// --- createQuarantine — the write façade -------------------------------------
+
+type FakeComment = ActivityComment;
+
+function createFakeGithub(
+  opts: {
+    login?: string;
+    comments?: FakeComment[];
+    labels?: string[];
+    updatedAt?: string;
+    headRefOid?: string;
+    lastCommitAt?: string | null;
+  } = {},
+): { github: GitHub; state: { comments: FakeComment[]; labels: string[] } } {
+  const state = {
+    comments: opts.comments ? [...opts.comments] : [],
+    labels: opts.labels ? [...opts.labels] : [],
+  };
+  const login = opts.login ?? "phoebe-bot";
+  let nextId = 1000;
+  const post = (body: string): void => {
+    state.comments.push({
+      id: `posted-${nextId++}`,
+      body,
+      createdAt: "2026-01-05T00:00:00Z",
+      authorLogin: login,
+    });
+  };
+  const github: GitHub = {
+    issuesWithLabel: () => [],
+    issueBody: () => "",
+    issueActivity: () => ({
+      updatedAt: opts.updatedAt ?? "2026-01-01T00:00:00Z",
+      comments: state.comments,
+      labels: state.labels,
+    }),
+    nativeBlockers: () => [],
+    prNumberForHead: () => undefined,
+    openPrs: () => [],
+    prMergeInfo: () => {
+      throw new Error("not implemented in fake");
+    },
+    prActivity: () => ({
+      headRefOid: asSha(opts.headRefOid ?? "sha-1"),
+      lastCommitAt: opts.lastCommitAt ?? null,
+      comments: state.comments,
+      labels: state.labels,
+    }),
+    reviewThreads: () => [],
+    commitCheckRuns: () => [],
+    commentIssue: (_n, body) => post(body),
+    commentPr: (_n, body) => post(body),
+    createPr: () => {},
+    retargetPr: () => {},
+    labelIssue: (_n, label) => {
+      if (!state.labels.includes(label)) state.labels.push(label);
+    },
+    unlabelIssue: (_n, label) => {
+      state.labels = state.labels.filter((l) => l !== label);
+    },
+    labelPr: (_n, label) => {
+      if (!state.labels.includes(label)) state.labels.push(label);
+    },
+    linkStack: () => {},
+    installStackExtension: () => {},
+    login: () => login,
+    updateComment: (id, body) => {
+      const comment = state.comments.find((c) => c.id === id);
+      if (comment) comment.body = body;
+    },
+  };
+  return { github, state };
+}
+
+const noteThreshold = (n: number, k: number): string => `attempt ${n}/${k}`;
+
+describe("createQuarantine — record()", () => {
+  test("first failure posts one new tracking comment, below threshold", () => {
+    const { github, state } = createFakeGithub();
+    const quarantine = createQuarantine({
+      github,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: () => {},
+    });
+    quarantine.record({ kind: "checks", target: { type: "pr", number: 10 } }, "no-commit", {
+      signature: "checks-failed",
+      reason: "produced no commit",
+      belowThresholdNote: noteThreshold,
+    });
+    expect(state.comments).toHaveLength(1);
+    expect(state.comments[0]!.body).toContain("attempt 1/3");
+    expect(state.comments[0]!.body).toContain(
+      "<!-- phoebe-unit:checks:no-commit n=1 sig=checks-failed ref=sha-1 at=",
+    );
+    expect(state.labels).toEqual([]);
+  });
+
+  test("a second failure with the same ref edits the same comment in place, incrementing n", () => {
+    const { github, state } = createFakeGithub();
+    const quarantine = createQuarantine({
+      github,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: () => {},
+    });
+    const unit: UnitRef = { kind: "checks", target: { type: "pr", number: 10 } };
+    const detail = {
+      signature: "checks-failed",
+      reason: "produced no commit",
+      belowThresholdNote: noteThreshold,
+    };
+    quarantine.record(unit, "no-commit", detail);
+    quarantine.record(unit, "no-commit", detail);
+    expect(state.comments).toHaveLength(1);
+    expect(state.comments[0]!.body).toContain("attempt 2/3");
+    expect(state.comments[0]!.body).toContain("n=2");
+  });
+
+  test("crossing the threshold labels the unit and escalates with the baseline marker", () => {
+    const { github, state } = createFakeGithub();
+    const quarantine = createQuarantine({
+      github,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: () => {},
+    });
+    const unit: UnitRef = { kind: "checks", target: { type: "pr", number: 10 } };
+    const detail = {
+      signature: "checks-failed",
+      reason: "produced no commit",
+      belowThresholdNote: noteThreshold,
+    };
+    quarantine.record(unit, "no-commit", detail);
+    quarantine.record(unit, "no-commit", detail);
+    quarantine.record(unit, "no-commit", detail);
+    expect(state.comments).toHaveLength(1);
+    expect(state.labels).toEqual([PHOEBE_QUARANTINE_LABEL]);
+    expect(state.comments[0]!.body).toContain("produced no commit 3 times");
+    expect(parseQuarantineBaseline(state.comments[0]!.body)).toBe("sha-1");
+  });
+
+  test("two triggers on the same unit share one tracking comment, each section preserved", () => {
+    const { github, state } = createFakeGithub();
+    const quarantine = createQuarantine({
+      github,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: () => {},
+    });
+    const unit: UnitRef = { kind: "issues", target: { type: "issue", number: 42 } };
+    quarantine.record(unit, "timed-out", {
+      signature: "timeout",
+      reason: "timed out",
+      belowThresholdNote: () => "",
+    });
+    quarantine.record(unit, "no-pr", {
+      signature: "apply-patch-failed",
+      reason: "was claimed and released with no PR",
+      belowThresholdNote: noteThreshold,
+    });
+    expect(state.comments).toHaveLength(1);
+    const body = state.comments[0]!.body;
+    expect(body).toContain("phoebe-unit:issues:timed-out n=1");
+    expect(body).toContain("phoebe-unit:issues:no-pr n=1");
+    expect(body).toContain("attempt 1/3");
+  });
+
+  test("timed-out resets when a foreign comment lands after the marker's own timestamp", () => {
+    const { github, state } = createFakeGithub({
+      comments: [
+        {
+          id: "human1",
+          body: "please look at this",
+          createdAt: "2026-01-02T00:00:00Z",
+          authorLogin: "human",
+        },
+        {
+          id: "track1",
+          body: "<!-- phoebe-unit:issues:timed-out n=2 sig=timeout ref=42 at=2026-01-01T00:00:00Z -->",
+          createdAt: "2026-01-01T00:00:00Z",
+          authorLogin: "phoebe-bot",
+        },
+      ],
+    });
+    const quarantine = createQuarantine({
+      github,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: () => {},
+    });
+    quarantine.record({ kind: "issues", target: { type: "issue", number: 42 } }, "timed-out", {
+      signature: "timeout",
+      reason: "timed out",
+      belowThresholdNote: () => "",
+    });
+    const track = state.comments.find((c) => c.id === "track1")!;
+    expect(track.body).toContain("n=1");
+  });
+
+  test("timed-out carries the prior count when no foreign activity is newer than the marker", () => {
+    const { github, state } = createFakeGithub({
+      comments: [
+        { id: "human1", body: "old note", createdAt: "2025-12-31T00:00:00Z", authorLogin: "human" },
+        {
+          id: "track1",
+          body: "<!-- phoebe-unit:issues:timed-out n=2 sig=timeout ref=42 at=2026-01-01T00:00:00Z -->",
+          createdAt: "2026-01-01T00:00:00Z",
+          authorLogin: "phoebe-bot",
+        },
+      ],
+    });
+    const quarantine = createQuarantine({
+      github,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: () => {},
+    });
+    quarantine.record({ kind: "issues", target: { type: "issue", number: 42 } }, "timed-out", {
+      signature: "timeout",
+      reason: "timed out",
+      belowThresholdNote: () => "",
+    });
+    expect(state.comments.find((c) => c.id === "track1")!.body).toContain("n=3");
+  });
+
+  test("no-commit resets when the PR head SHA has moved since the marker", () => {
+    const { github, state } = createFakeGithub({
+      headRefOid: "sha-2",
+      comments: [
+        {
+          id: "track1",
+          body: "<!-- phoebe-unit:checks:no-commit n=2 sig=checks-failed ref=sha-1 at=2026-01-01T00:00:00Z -->",
+          createdAt: "2026-01-01T00:00:00Z",
+          authorLogin: "phoebe-bot",
+        },
+      ],
+    });
+    const quarantine = createQuarantine({
+      github,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: () => {},
+    });
+    quarantine.record({ kind: "checks", target: { type: "pr", number: 7 } }, "no-commit", {
+      signature: "checks-failed",
+      reason: "produced no commit",
+      belowThresholdNote: () => "",
+    });
+    const body = state.comments.find((c) => c.id === "track1")!.body;
+    expect(body).toContain("n=1");
+    expect(body).toContain("ref=sha-2");
+  });
+
+  test("no-pr's ref (the issue number) never moves on its own — carries the count until resolve() clears it", () => {
+    const { github, state } = createFakeGithub({
+      comments: [
+        {
+          id: "track1",
+          body: "<!-- phoebe-unit:issues:no-pr n=2 sig=apply-patch-failed ref=99 at=2026-01-01T00:00:00Z -->",
+          createdAt: "2026-01-01T00:00:00Z",
+          authorLogin: "phoebe-bot",
+        },
+      ],
+    });
+    const quarantine = createQuarantine({
+      github,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: () => {},
+    });
+    quarantine.record({ kind: "issues", target: { type: "issue", number: 99 } }, "no-pr", {
+      signature: "apply-patch-failed",
+      reason: "was claimed and released with no PR",
+      belowThresholdNote: () => "",
+    });
+    const body = state.comments.find((c) => c.id === "track1")!.body;
+    expect(body).toContain("n=3");
+    expect(state.labels).toContain(PHOEBE_QUARANTINE_LABEL);
+  });
+
+  test("record() at threshold for no-pr includes the dependents list in the escalation prose (#22)", () => {
+    const { github, state } = createFakeGithub({
+      comments: [
+        {
+          id: "track1",
+          body: "<!-- phoebe-unit:issues:no-pr n=2 sig=apply-patch-failed ref=784 at=2026-01-01T00:00:00Z -->",
+          createdAt: "2026-01-01T00:00:00Z",
+          authorLogin: "phoebe-bot",
+        },
+      ],
+    });
+    const quarantine = createQuarantine({
+      github,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: () => {},
+    });
+    quarantine.record({ kind: "issues", target: { type: "issue", number: 784 } }, "no-pr", {
+      signature: "apply-patch-failed",
+      reason: "was claimed and released with no PR",
+      belowThresholdNote: () => "",
+      dependents: [763, 700],
+    });
+    const body = state.comments.find((c) => c.id === "track1")!.body;
+    expect(body).toContain("#763");
+    expect(body).toContain("#700");
+  });
+
+  test("a human removing the quarantine label resets that trigger's counter before recording the new failure", () => {
+    const escalation = buildQuarantineComment({
+      kind: "checks",
+      id: 5,
+      k: 3,
+      baseline: "sha-1",
+      reason: "produced no commit",
+      signature: "checks-failed",
+    });
+    const { github, state } = createFakeGithub({
+      headRefOid: "sha-1",
+      labels: [],
+      comments: [
+        {
+          id: "track1",
+          body: `${escalation}\n\n<!-- phoebe-unit:checks:no-commit n=3 sig=checks-failed ref=sha-1 at=2026-01-01T00:00:00Z -->`,
+          createdAt: "2026-01-01T00:00:00Z",
+          authorLogin: "phoebe-bot",
+        },
+      ],
+    });
+    const quarantine = createQuarantine({
+      github,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: () => {},
+    });
+    quarantine.record({ kind: "checks", target: { type: "pr", number: 5 } }, "no-commit", {
+      signature: "checks-failed",
+      reason: "produced no commit",
+      belowThresholdNote: () => "note",
+    });
+    const body = state.comments.find((c) => c.id === "track1")!.body;
+    expect(body).toContain("n=1");
+    expect(state.labels).toEqual([]);
+  });
+
+  test("a GitHub write failure while recording is swallowed and logged, never thrown", () => {
+    const { github } = createFakeGithub();
+    const failing: GitHub = {
+      ...github,
+      commentPr: () => {
+        throw new Error("boom");
+      },
+    };
+    const logs: string[] = [];
+    const quarantine = createQuarantine({
+      github: failing,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: (m) => logs.push(m),
+    });
+    expect(() =>
+      quarantine.record({ kind: "checks", target: { type: "pr", number: 1 } }, "no-commit", {
+        signature: "s",
+        reason: "produced no commit",
+        belowThresholdNote: () => "note",
+      }),
+    ).not.toThrow();
+    expect(logs.some((l) => l.includes("Could not record"))).toBe(true);
+  });
+});
+
+describe("createQuarantine — resolve()", () => {
+  test("clears the trigger's section, preserving a co-existing trigger's section", () => {
+    const { github, state } = createFakeGithub({
+      comments: [
+        {
+          id: "track1",
+          body: [
+            "<!-- phoebe-unit:issues:timed-out n=1 sig=timeout ref=99 at=2026-01-01T00:00:00Z -->",
+            "",
+            "some no-pr prose",
+            "",
+            "<!-- phoebe-unit:issues:no-pr n=2 sig=apply-patch-failed ref=99 at=2026-01-01T00:00:00Z -->",
+          ].join("\n"),
+          createdAt: "2026-01-01T00:00:00Z",
+          authorLogin: "phoebe-bot",
+        },
+      ],
+    });
+    const quarantine = createQuarantine({
+      github,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: () => {},
+    });
+    quarantine.resolve(
+      { kind: "issues", target: { type: "issue", number: 99 } },
+      "no-pr",
+      "counter reset",
+    );
+    const body = state.comments[0]!.body;
+    expect(body).toContain("counter reset");
+    expect(body).toContain("phoebe-unit:issues:timed-out n=1");
+    expect(body).not.toContain("no-pr");
+  });
+
+  test("a unit with no tracking comment is a no-op", () => {
+    const { github, state } = createFakeGithub();
+    const quarantine = createQuarantine({
+      github,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: () => {},
+    });
+    quarantine.resolve(
+      { kind: "issues", target: { type: "issue", number: 1 } },
+      "no-pr",
+      "counter reset",
+    );
+    expect(state.comments).toHaveLength(0);
   });
 });

@@ -54,7 +54,7 @@ import {
 } from "./prompt.ts";
 import { buildRuntimeContractContext } from "./runtime-contract-context.ts";
 import { createRuntimeStatusReporter } from "./runtime-status.ts";
-import { PHOEBE_QUARANTINE_LABEL, recordUnitTimeout } from "./quarantine.ts";
+import { createQuarantine } from "./quarantine.ts";
 import { ghStackExtensionInstallArgs, nativeStackGitConfig, type StackConfig } from "./stack.ts";
 import { gatherCycleContext } from "./cycle.ts";
 import {
@@ -247,6 +247,7 @@ const io: Io = {
   agent: buildAgentRunner(),
   prompts: buildPrompts(),
   shell: buildShell(),
+  quarantine: createQuarantine({ github, config, log: phoebeLog }),
 };
 
 const kindDeps: KindDeps = { config, io };
@@ -588,25 +589,16 @@ async function runLoop({
       if (error instanceof RunTimeoutError) {
         // A whole-unit timeout (#72): the agent was killed, the slot releases in
         // `finally`, and the engine survives (never told to the supervisor, #60
-        // orthogonality). #75 layers the poison-unit quarantine on this event.
+        // orthogonality). #75/#68 layer the poison-unit quarantine on this event —
+        // consecutive timeouts on the same unit, at K, get a `phoebe:quarantined`
+        // label + escalation comment so a genuinely poisonous unit stops being
+        // re-picked forever.
         status.record({ kind: "work-timed-out", elapsedMs: error.elapsedMs });
-        // Count this timeout on the unit and, at K consecutive, quarantine it so
-        // a genuinely poisonous unit stops being re-picked forever (#75).
-        const result = await recordUnitTimeout({
-          ref: picked.ref,
-          github,
-          login: () => ctx.login(),
-          maxUnitTimeouts: config.maxUnitTimeouts,
-          log: phoebeLog,
-          error: phoebeError,
+        io.quarantine.record(picked.ref, "timed-out", {
+          signature: "timeout",
+          reason: "timed out",
+          belowThresholdNote: () => "",
         });
-        if (result?.quarantined) {
-          status.record({
-            kind: "unit-quarantined",
-            work: workRefFromRef(picked.ref),
-            reason: `timed out ${result.count}× — labelled ${PHOEBE_QUARANTINE_LABEL}`,
-          });
-        }
       } else {
         // A non-timeout failure: clear the current unit and record the error so
         // `phoebe list` shows it (the durable record is still the per-work-kind

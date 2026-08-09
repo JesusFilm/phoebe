@@ -5,15 +5,7 @@
 // `onResult` differs per kind (push vs. failure comment vs. watermark).
 
 import { asBranchRef, type BranchRef, type PrNumber, type Sha } from "../branded.ts";
-import {
-  buildQuarantineComment,
-  buildUnitAttemptMarker,
-  findLatestUnitAttemptComment,
-  PHOEBE_QUARANTINE_LABEL,
-  planUnitAttempt,
-} from "../quarantine.ts";
 import { readVerificationReport, removeVerificationReport } from "../verification.ts";
-import type { PhoebeLogFn } from "../phoebe-log.ts";
 import type { KindDeps, UnitResult } from "./kind.ts";
 
 // The observed outcome of an automatic (no-agent) merge attempt:
@@ -50,9 +42,8 @@ export type JanitorHelpers = {
     onResult: (result: AgentWorkflowResult) => void | Promise<void>;
   }): Promise<UnitResult>;
   recordFailedAttempt(opts: {
-    kind: "conflict" | "checks";
+    kind: "conflicts" | "checks";
     prNumber: PrNumber;
-    currentPrHead: Sha;
     signature: string;
     failureComment: string;
   }): void;
@@ -84,7 +75,7 @@ export function pickOldestPr<T extends { prNumber: number }>(candidates: readonl
   return candidates.reduce((oldest, pr) => (pr.prNumber < oldest.prNumber ? pr : oldest));
 }
 
-export function createJanitorHelpers(deps: KindDeps, log: PhoebeLogFn): JanitorHelpers {
+export function createJanitorHelpers(deps: KindDeps): JanitorHelpers {
   const { config, io } = deps;
   const defaultBranchRef = asBranchRef(config.defaultBranch);
 
@@ -209,54 +200,25 @@ export function createJanitorHelpers(deps: KindDeps, log: PhoebeLogFn): JanitorH
   }
 
   /**
-   * Record one failed (no-commit) attempt on a PR-keyed unit (#25): find the
-   * unit's tracking comment (if any), fold this attempt into its counter, and
-   * either edit that comment in place (below threshold — no new comment, no
-   * new notification) or escalate it into the quarantine comment and apply
-   * the label (at threshold). Never posts more than the one tracking comment
-   * per unit.
+   * Record one failed (no-commit) attempt on a PR-keyed unit (#25) via the
+   * `no-commit` trigger — one tracking comment per unit, edited in place, and
+   * escalated into `phoebe:quarantined` at threshold (`quarantine.ts`).
    */
   function recordFailedAttempt(opts: {
-    kind: "conflict" | "checks";
+    kind: "conflicts" | "checks";
     prNumber: PrNumber;
-    currentPrHead: Sha;
     signature: string;
     failureComment: string;
   }): void {
-    const comments = io.github.prActivity(opts.prNumber).comments;
-    const found = findLatestUnitAttemptComment(comments, opts.kind);
-    const k = config.maxUnitAttempts;
-    const plan = planUnitAttempt({
-      previous: found?.marker ?? null,
-      ref: opts.currentPrHead,
-      signature: opts.signature,
-      now: new Date().toISOString(),
-      k,
-    });
-
-    const body = plan.quarantined
-      ? buildQuarantineComment({
-          kind: opts.kind,
-          id: opts.prNumber,
-          k,
-          baseline: opts.currentPrHead,
-          reason: "produced no commit",
-          signature: opts.signature,
-        })
-      : opts.failureComment;
-    const fullBody = `${body}\n\n${buildUnitAttemptMarker(opts.kind, plan.marker)}`;
-    if (found?.commentId) {
-      io.github.updateComment(found.commentId, fullBody);
-    } else {
-      io.github.commentPr(opts.prNumber, fullBody);
-    }
-
-    if (plan.quarantined) {
-      io.github.labelPr(opts.prNumber, PHOEBE_QUARANTINE_LABEL);
-      log(
-        `Quarantined ${opts.kind} unit for PR #${opts.prNumber} after ${plan.marker.n} attempts with no commit (${opts.signature}).`,
-      );
-    }
+    io.quarantine.record(
+      { kind: opts.kind, target: { type: "pr", number: opts.prNumber } },
+      "no-commit",
+      {
+        signature: opts.signature,
+        reason: "produced no commit",
+        belowThresholdNote: () => opts.failureComment,
+      },
+    );
   }
 
   return { tryCleanMerge, attemptBlockerFirstMerges, runAgentWorkflow, recordFailedAttempt };

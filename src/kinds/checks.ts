@@ -16,7 +16,7 @@ import {
   findLatestUnitAttemptComment,
   slugifyFailureSignature,
 } from "../quarantine.ts";
-import type { UnitAttemptMarker } from "../quarantine.ts";
+import type { UnitMarker } from "../quarantine.ts";
 import {
   getMergedBlockerPrNumbers,
   shouldSkipStackedFix,
@@ -140,7 +140,7 @@ export type ChecksUnit = {
   failingChecks: FailingCheck[];
   failureWatermark?: ChecksFailWatermark | null;
   /** No-commit-attempt counter (#25) — read from the unit's tracking comment. */
-  attemptMarker?: UnitAttemptMarker | null;
+  attemptMarker?: UnitMarker | null;
 };
 
 export type ChecksData = {
@@ -191,7 +191,7 @@ function shouldPostFailure(opts: {
 export function createChecksKind(deps: KindDeps): WorkKind<ChecksData, ChecksUnit> {
   const { config, io } = deps;
   const { phoebeLog, phoebeError } = createPhoebeLog(config.repoSlug);
-  const janitor = createJanitorHelpers(deps, phoebeLog);
+  const janitor = createJanitorHelpers(deps);
   const defaultBranchRef = asBranchRef(config.defaultBranch);
 
   function candidates(units: readonly ChecksUnit[], ctx: StackContext): ChecksUnit[] {
@@ -279,7 +279,8 @@ export function createChecksKind(deps: KindDeps): WorkKind<ChecksData, ChecksUni
           comments.map((c) => c.body),
           parseChecksFailWatermark,
         ),
-        attemptMarker: findLatestUnitAttemptComment(comments, "checks")?.marker ?? null,
+        attemptMarker:
+          findLatestUnitAttemptComment(comments, "checks", "no-commit")?.marker ?? null,
       };
     });
     // #25: a unit still inside its no-commit-attempt backoff window sits this cycle out.
@@ -341,7 +342,6 @@ export function createChecksKind(deps: KindDeps): WorkKind<ChecksData, ChecksUni
           janitor.recordFailedAttempt({
             kind: "checks",
             prNumber: pr.prNumber,
-            currentPrHead: watermark.prHead,
             signature: failureSignature(pr.failingChecks),
             failureComment: failureComment(pr.prNumber, watermark),
           });

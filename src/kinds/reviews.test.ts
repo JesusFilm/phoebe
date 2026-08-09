@@ -222,6 +222,7 @@ describe("createReviewsKind — run", () => {
               body: "## Review feedback addressed\n\nFixed the thing.",
             },
           ],
+          labels: [],
         }),
         commentPr: (prNumber, body) => {
           posted.push({ prNumber: Number(prNumber), body });
@@ -240,7 +241,12 @@ describe("createReviewsKind — run", () => {
     const io = fakeIo({
       github: {
         ...fakeIo().github,
-        prActivity: () => ({ headRefOid: asSha("aaa"), lastCommitAt: null, comments: [] }),
+        prActivity: () => ({
+          headRefOid: asSha("aaa"),
+          lastCommitAt: null,
+          comments: [],
+          labels: [],
+        }),
         commentPr: (prNumber, body) => {
           posted.push({ prNumber: Number(prNumber), body });
         },
@@ -261,14 +267,19 @@ function fakeIo(overrides: Partial<Io> = {}): Io {
     github: {
       issuesWithLabel: () => [],
       issueBody: () => "",
-      issueActivity: () => ({ updatedAt: "2026-01-01T00:00:00Z", comments: [] }),
+      issueActivity: () => ({ updatedAt: "2026-01-01T00:00:00Z", comments: [], labels: [] }),
       nativeBlockers: () => [],
       prNumberForHead: () => undefined,
       openPrs: () => [],
       prMergeInfo: () => {
         throw new Error("not implemented in fake");
       },
-      prActivity: () => ({ headRefOid: asSha("aaa"), lastCommitAt: null, comments: [] }),
+      prActivity: () => ({
+        headRefOid: asSha("aaa"),
+        lastCommitAt: null,
+        comments: [],
+        labels: [],
+      }),
       reviewThreads: () => [],
       commitCheckRuns: () => [],
       commentIssue: () => {},
@@ -299,6 +310,7 @@ function fakeIo(overrides: Partial<Io> = {}): Io {
       render: (template) => template,
     },
     shell: { run: () => {} },
+    quarantine: { record: () => {}, resolve: () => {} },
     ...overrides,
   };
 }

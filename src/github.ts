@@ -93,6 +93,7 @@ export type ActivityComment = {
 export type IssueActivity = {
   updatedAt: string;
   comments: ActivityComment[];
+  labels: string[];
 };
 
 export type PrActivity = {
@@ -100,6 +101,7 @@ export type PrActivity = {
   /** The last commit's push time, or `null` for a PR with no commits. */
   lastCommitAt: string | null;
   comments: ActivityComment[];
+  labels: string[];
 };
 
 export type OpenPr = {
@@ -294,14 +296,16 @@ export function createGitHub(opts: { repoSlug: string; run?: GhRun; timeoutMs?: 
     },
 
     issueActivity(issueNumber: number): IssueActivity {
-      const raw = scopedJson<{ updatedAt: string; comments: GhCommentRow[] }>([
-        "issue",
-        "view",
-        String(issueNumber),
-        "--json",
-        "comments,updatedAt",
-      ]);
-      return { updatedAt: raw.updatedAt, comments: raw.comments.map(toActivityComment) };
+      const raw = scopedJson<{
+        updatedAt: string;
+        comments: GhCommentRow[];
+        labels: Array<{ name: string }>;
+      }>(["issue", "view", String(issueNumber), "--json", "comments,updatedAt,labels"]);
+      return {
+        updatedAt: raw.updatedAt,
+        comments: raw.comments.map(toActivityComment),
+        labels: raw.labels.map((l) => l.name),
+      };
     },
 
     nativeBlockers(issueNumber: number): NativeBlocker[] {
@@ -377,13 +381,15 @@ export function createGitHub(opts: { repoSlug: string; run?: GhRun; timeoutMs?: 
         headRefOid: string;
         comments: GhCommentRow[];
         commits: Array<{ committedDate: string }>;
-      }>(["pr", "view", String(prNumber), "--json", "comments,commits,headRefOid"]);
+        labels: Array<{ name: string }>;
+      }>(["pr", "view", String(prNumber), "--json", "comments,commits,headRefOid,labels"]);
       const lastCommitAt =
         raw.commits.length > 0 ? raw.commits[raw.commits.length - 1]!.committedDate : null;
       return {
         headRefOid: asSha(raw.headRefOid),
         lastCommitAt,
         comments: raw.comments.map(toActivityComment),
+        labels: raw.labels.map((l) => l.name),
       };
     },
 

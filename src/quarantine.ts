@@ -1,67 +1,79 @@
-// Poison-unit repeat protection (#75) — a unit-scoped quarantine policy layered
-// on #60's `unit-quarantined` runtime-status transition and a GitHub-marker
-// durable home.
+// Poison-unit repeat protection — one façade over three write paths that used
+// to diverge by accident (#68, decided in #45). #72's timeout keeps a hung
+// unit from starving the fleet, but not a unit that hangs *every* rotation
+// (#75); #25 generalises the same label/comment/baseline machinery to PR-keyed
+// units that fail fast with no commit; #22 is the issue-keyed sibling (a
+// claim→release cycle that produces no PR). All three count consecutive
+// failures per `(kind, id, trigger)` and, at `k`, apply `phoebe:quarantined` +
+// one escalation comment so a human takes over. State lives entirely on
+// GitHub (this module's marker + the label), so it survives container/volume
+// loss (#73) — the read/skip half lives beside each selector
+// (`pr-scope.ts#isPrInScope`, `producer.ts#selectIssue`), both pure and both
+// importable without this façade.
 //
-// #72's timeout keeps a hung unit from starving the fleet, but it does not stop
-// a *genuinely* poisonous unit — one that hangs the agent every rotation — from
-// being re-picked forever, burning the full budget and producing nothing. This
-// module is the policy: count consecutive timeouts per `(kind, id)`, and at K
-// apply a `phoebe:quarantined` label + an escalation comment so a human takes
-// over. State lives entirely on GitHub (a timeout-counter marker + the label),
-// so it survives container/volume loss — the reason #73 chose markers over a
-// local file. All of this is engine-side, in the per-tenant poll/selection
-// layer: it touches zero of the crash-loop guard and sends the supervisor
-// nothing, so a poison *unit* can never quarantine a healthy *engine SHA* (#60).
+// `createQuarantine` is the one write entry point (`record`/`resolve`),
+// constructed once per process alongside the other adapters (#53's `io`
+// bundle) and passed into every kind. It owns the marker format, the
+// try/catch-and-swallow around every GitHub write (a write failure while
+// recording a failure must never take the daemon down), and the one tracking
+// comment per `(kind, id)` — up to two `<!-- phoebe-unit:<kind>:<trigger> -->`
+// sections, one per active trigger, edited in place and never reposted. The
+// trigger tag (not just `kind`) is what keeps a timeout and a no-PR attempt on
+// the same issue from colliding into one shared counter.
 //
-// The marker/comment builders here mirror the `*FailWatermark` family in
-// markers.ts (`build*`/`parse*`, read via `parseLatestMarker`).
+// `ref` is embedded in every marker as carried data (head SHA for PR-keyed
+// units, the issue number for issue-keyed ones) — never the reset rule. Two
+// counting rules survive the collapse, because they are not accidental:
+// activity-based (`timed-out` — a foreign comment or push newer than the
+// marker's own `at` means someone touched the hang since; comparing against
+// the *marker's* timestamp rather than the comment's `createdAt` is what lets
+// the counter live on an edited-in-place comment, since GitHub never bumps a
+// comment's `createdAt` on edit) and progress-based (`no-commit`/`no-pr` — a
+// moved `ref` resets automatically for PR-keyed units; an issue-keyed unit's
+// `ref` never moves on its own, so its caller resets explicitly via
+// `resolve()` the moment a run produces a PR).
 //
-// #25 generalises the same label/comment/baseline machinery to a second
-// trigger: K consecutive attempts that produce no commit, on the PR-keyed work
-// kinds (conflicts/checks) the #75 timeout counter above never covers, since
-// those runs fail fast at verification rather than hanging. `UnitAttemptMarker`
-// below is that counter — kind-scoped (a PR can be failing conflicts *and*
-// checks at once, each with its own count) and reset-on-commit via `ref`
-// (the PR head SHA at last count), the PR-unit analogue of #75's
-// activity-staleness check. It shares `PHOEBE_QUARANTINE_LABEL` and
-// `buildQuarantineComment` with the timeout trigger — same mechanism, a new
-// counting rule — but is a distinct counter/config knob (`maxUnitAttempts`),
-// since "hung" and "fails fast with no commit" are different failure shapes
-// worth tuning independently.
-//
-// #22 is the issue-keyed sibling of #25's trigger: a claim→release cycle
-// (issues/research) that fails verification and produces no `<branchPrefix>issue-<n>`
-// branch/PR is the same "fails fast, never hangs" shape #75's timeout counter
-// misses. It reuses `UnitAttemptMarker`/`planUnitAttempt`/`buildUnitAttemptMarker`
-// as-is, kind-scoped by `"issues"`/`"research"` and the same `maxUnitAttempts`
-// knob — but `ref` is the issue number (constant across attempts) rather than
-// a moving head SHA, since an issue-keyed unit has no in-progress ref to
-// stale-check against: the caller resets the counter explicitly the moment a
-// run produces a PR, instead of inferring progress from `ref` advancing.
-// `buildQuarantineComment`'s optional `dependents` list is this trigger's one
-// addition — the other issues left stuck behind a quarantined blocker.
+// A quarantine a human clears by hand (removing the label) is invisible to a
+// sweep that queries *by* label, so it is handled here, at record time, where
+// the unit's comments are already fetched: an escalation section whose label
+// is now absent means a human cleared it — that trigger's counter resets to 0
+// before recording this new failure.
 
-import { asPrNumber, type PrNumber, type Sha } from "./branded.ts";
+import { asPrNumber, type Sha } from "./branded.ts";
 import type { GitHub } from "./github.ts";
 import type { UnitRef } from "./kinds/kind.ts";
 
 /** Phoebe-owned skip label — distinct from the user-supplied `prOptOutLabel`. */
 export const PHOEBE_QUARANTINE_LABEL = "phoebe:quarantined";
 
-// --- Timeout counter marker (posted on every timeout; embeds n) --------------
+export type UnitTrigger = "timed-out" | "no-commit" | "no-pr";
 
-const UNIT_TIMEOUT_MARKER_RE = /<!--\s*phoebe-unit-timeout:\s*n=(\d+)\s*-->/i;
+const ALL_TRIGGERS: readonly UnitTrigger[] = ["timed-out", "no-commit", "no-pr"];
 
-export function buildUnitTimeoutMarker(n: number): string {
-  return `<!-- phoebe-unit-timeout: n=${n} -->`;
+/** One trigger's counter on a unit's tracking comment. `ref` and `sig` are always filled — never optional. */
+export type UnitMarker = {
+  trigger: UnitTrigger;
+  n: number;
+  /** Bound, marker-safe slug for what went wrong this attempt, e.g. `mergeable-conflicting`; `"timeout"` for `timed-out`. */
+  signature: string;
+  /** The unit's identity reference at this attempt — PR head SHA, or the issue number, as carried data. */
+  ref: string;
+  /** ISO timestamp of this attempt — the `timed-out` trigger's staleness clock. */
+  at: string;
+};
+
+function unitMarkerRe(kind: string, trigger: UnitTrigger): RegExp {
+  return new RegExp(
+    `<!--\\s*phoebe-unit:${kind}:${trigger}\\s+n=(\\d+)\\s+sig=([a-z0-9-]+)\\s+ref=([A-Za-z0-9._:-]+)\\s+at=([0-9TZ:.+-]+)\\s*-->`,
+    "i",
+  );
 }
 
-export function parseUnitTimeoutMarker(text: string): { n: number } | null {
-  const match = UNIT_TIMEOUT_MARKER_RE.exec(text);
-  return match ? { n: Number(match[1]) } : null;
+function buildUnitMarker(kind: string, marker: UnitMarker): string {
+  return `<!-- phoebe-unit:${kind}:${marker.trigger} n=${marker.n} sig=${marker.signature} ref=${marker.ref} at=${marker.at} -->`;
 }
 
-// --- Quarantine baseline marker (in the escalation comment, for auto-unstick) -
+// --- Quarantine baseline marker (in the escalation section, for auto-unstick) -
 
 const QUARANTINE_BASELINE_RE = /<!--\s*phoebe-quarantine-baseline:\s*([^\s>]+)\s*-->/i;
 
@@ -75,10 +87,10 @@ export function parseQuarantineBaseline(text: string): string | null {
 }
 
 /**
- * The one escalation comment posted at threshold: says the unit timed out K
+ * The one escalation section posted at threshold: says the unit failed K
  * times and needs a human, and records the baseline (PR head SHA for
- * conflicts/checks/reviews; issue `lastEditedAt` for issues/research) so the
- * auto-un-stick sweep can tell when someone has actually changed the thing.
+ * conflicts/checks; issue `updatedAt` for issues/research) so the auto-un-stick
+ * sweep can tell when someone has actually changed the thing.
  */
 export function buildQuarantineComment(opts: {
   kind: string;
@@ -114,100 +126,6 @@ export function buildQuarantineComment(opts: {
   ].join("\n");
 }
 
-// --- Pure counting + quarantine decision -------------------------------------
-
-/**
- * The next timeout count to record for a unit. Reset-on-activity (#75): if the
- * unit has newer activity than the latest timeout marker (a newer commit or
- * comment), the prior count is stale and treated as 0; otherwise carry it. Then
- * increment for this timeout. A missing prior marker means this is the first.
- */
-export function nextTimeoutCount(previous: number | null, staleActivity: boolean): number {
-  const base = staleActivity ? 0 : (previous ?? 0);
-  return base + 1;
-}
-
-/** Quarantine when the recorded count reaches the threshold. */
-export function shouldQuarantine(count: number, k: number): boolean {
-  return count >= k;
-}
-
-/**
- * The latest `phoebe-unit-timeout` marker among a unit's comments (given
- * oldest-first, as `gh` returns them), paired with the `createdAt` of the comment
- * carrying it — the timestamp the reset-on-activity check compares against. Scans
- * newest-first so the most recent marker wins. `null` when the unit has never
- * timed out. This is the timeout-counter analogue of orchestrator's
- * `parseLatestMarker`, but it must keep the marker comment's timestamp.
- */
-export function latestTimeoutMarker(
-  comments: readonly { body: string; createdAt: string }[],
-): { n: number; createdAt: string } | null {
-  for (let i = comments.length - 1; i >= 0; i--) {
-    const parsed = parseUnitTimeoutMarker(comments[i]!.body);
-    if (parsed) {
-      return { n: parsed.n, createdAt: comments[i]!.createdAt };
-    }
-  }
-  return null;
-}
-
-/**
- * The newest comment instant NOT authored by Phoebe, or `null`. This is the reset
- * signal for a hung unit: a human comment counts, but Phoebe's own timeout
- * markers must not — otherwise every rotation's marker would look like fresh
- * activity and the count could never climb to K.
- */
-export function newestForeignCommentAt(
-  comments: readonly { createdAt: string; authorLogin: string }[],
-  phoebeLogin: string,
-): string | null {
-  let newest: string | null = null;
-  for (const comment of comments) {
-    if (comment.authorLogin === phoebeLogin) {
-      continue;
-    }
-    if (newest === null || comment.createdAt > newest) {
-      newest = comment.createdAt;
-    }
-  }
-  return newest;
-}
-
-/** Later of two optional ISO instants (`gh` returns them Z-normalized, so `>` is chronological). */
-function maxIso(a: string | null, b: string | null): string | null {
-  if (a === null) return b;
-  if (b === null) return a;
-  return a > b ? a : b;
-}
-
-/**
- * Decide the count to record for a just-timed-out unit and whether it crosses the
- * quarantine threshold. Pure: the engine supplies the unit's fetched comments
- * (body + createdAt + authorLogin), Phoebe's own login, an optional extra
- * external-activity instant (`extraActivityAt` — e.g. a PR head commit's
- * committedDate), and `k`. Reset-on-activity fires when the newest external
- * activity (a foreign comment or that extra instant) is strictly newer than the
- * latest timeout marker, so a unit someone has touched since its last timeout
- * starts counting afresh.
- */
-export function decideTimeoutRecord(opts: {
-  comments: readonly { body: string; createdAt: string; authorLogin: string }[];
-  phoebeLogin: string;
-  extraActivityAt?: string | null;
-  k: number;
-}): { count: number; quarantine: boolean } {
-  const marker = latestTimeoutMarker(opts.comments);
-  const latestActivityAt = maxIso(
-    newestForeignCommentAt(opts.comments, opts.phoebeLogin),
-    opts.extraActivityAt ?? null,
-  );
-  const staleActivity =
-    marker !== null && latestActivityAt !== null && latestActivityAt > marker.createdAt;
-  const count = nextTimeoutCount(marker ? marker.n : null, staleActivity);
-  return { count, quarantine: shouldQuarantine(count, opts.k) };
-}
-
 /**
  * Whether a quarantined unit should be auto-un-stuck: someone changed the thing
  * that hung. A PR unit clears when its head SHA advanced past baseline; an issue
@@ -229,99 +147,96 @@ export function shouldAutoUnstick(opts: {
   return false;
 }
 
-// --- No-commit attempt counter (#25) -----------------------------------------
-//
-// One tracking comment per `(kind, id)`, created on the first failed attempt
-// and *edited* (never reposted) on every attempt after — the fix for "a fresh
-// comment every cycle". The marker embeds `ref` (the PR head SHA at the time of
-// that attempt) so a later read can tell a stale count (the unit produced a
-// commit since) from a live one, without a separate watermark: `nextAttemptCount`
-// resets to 0 whenever `ref` no longer matches the unit's current head.
+// --- The one tracking comment: up to two trigger-scoped sections -------------
 
-export type UnitAttemptMarker = {
-  n: number;
-  /** Short slug of what went wrong, e.g. `mergeable-conflicting`. */
-  signature: string;
-  /** The unit's identity reference at this attempt (PR head SHA today). */
-  ref: string;
-  /** ISO timestamp of this attempt — the backoff clock. */
-  at: string;
-};
+type TrackingSection = { prose: string; marker: UnitMarker };
+type TrackingSections = Partial<Record<UnitTrigger, TrackingSection>>;
+type TrackingComment = { commentId: string | null; sections: TrackingSections };
 
-function unitAttemptMarkerRe(kind: string): RegExp {
-  return new RegExp(
-    `<!--\\s*phoebe-unit-attempt:${kind}\\s+n=(\\d+)\\s+sig=([a-z0-9-]+)\\s+ref=([A-Za-z0-9._:-]+)\\s+at=([0-9TZ:.+-]+)\\s*-->`,
-    "i",
-  );
-}
-
-/** `kind` is embedded in the marker tag itself, so each kind gets its own counter on the same unit. */
-export function buildUnitAttemptMarker(kind: string, marker: UnitAttemptMarker): string {
-  return `<!-- phoebe-unit-attempt:${kind} n=${marker.n} sig=${marker.signature} ref=${marker.ref} at=${marker.at} -->`;
-}
-
-export function parseUnitAttemptMarker(kind: string, text: string): UnitAttemptMarker | null {
-  const match = unitAttemptMarkerRe(kind).exec(text);
-  if (!match) {
-    return null;
+function parseTrackingSections(kind: string, body: string): TrackingSections {
+  const found: Array<{ trigger: UnitTrigger; marker: UnitMarker; start: number; end: number }> = [];
+  for (const trigger of ALL_TRIGGERS) {
+    const match = unitMarkerRe(kind, trigger).exec(body);
+    if (match) {
+      found.push({
+        trigger,
+        marker: {
+          trigger,
+          n: Number(match[1]),
+          signature: match[2]!,
+          ref: match[3]!,
+          at: match[4]!,
+        },
+        start: match.index,
+        end: match.index + match[0].length,
+      });
+    }
   }
-  return { n: Number(match[1]), signature: match[2]!, ref: match[3]!, at: match[4]! };
+  found.sort((a, b) => a.start - b.start);
+  const sections: TrackingSections = {};
+  let cursor = 0;
+  for (const f of found) {
+    sections[f.trigger] = { prose: body.slice(cursor, f.start).trim(), marker: f.marker };
+    cursor = f.end;
+  }
+  return sections;
 }
 
 /**
- * Scan comment bodies newest-first for the latest `kind`-scoped attempt marker,
- * returning it along with the id of the comment that carries it (so the caller
- * can edit that comment in place instead of posting a new one).
+ * The unit's one tracking comment for `kind` (newest match wins), or `null`
+ * comment id with empty sections when it has never failed. Scans newest-first
+ * so a comment carrying stale markers under an older format can never shadow
+ * a fresher one — moot today (#68's cutover is free, no deployed state uses
+ * the old per-trigger comment formats) but keeps the scan direction correct.
+ */
+function findTrackingComment(
+  comments: readonly { id: string; body: string }[],
+  kind: string,
+): TrackingComment {
+  for (let i = comments.length - 1; i >= 0; i--) {
+    const sections = parseTrackingSections(kind, comments[i]!.body);
+    if (Object.keys(sections).length > 0) {
+      return { commentId: comments[i]!.id, sections };
+    }
+  }
+  return { commentId: null, sections: {} };
+}
+
+function serializeTrackingSections(sections: TrackingSections, kind: string): string {
+  const parts: string[] = [];
+  for (const trigger of ALL_TRIGGERS) {
+    const section = sections[trigger];
+    if (!section) continue;
+    if (section.prose) parts.push(section.prose);
+    parts.push(buildUnitMarker(kind, section.marker));
+  }
+  return parts.join("\n\n");
+}
+
+/**
+ * The latest trigger-scoped marker on a unit's tracking comment, read-only —
+ * the no-commit backoff filter's window into the counter (#25) without
+ * reaching for the write-side façade.
  */
 export function findLatestUnitAttemptComment(
   comments: readonly { id: string; body: string }[],
   kind: string,
-): { marker: UnitAttemptMarker; commentId: string } | null {
-  for (let i = comments.length - 1; i >= 0; i--) {
-    const marker = parseUnitAttemptMarker(kind, comments[i]!.body);
-    if (marker) {
-      return { marker, commentId: comments[i]!.id };
-    }
+  trigger: UnitTrigger,
+): { marker: UnitMarker; commentId: string } | null {
+  const { commentId, sections } = findTrackingComment(comments, kind);
+  const section = sections[trigger];
+  if (!commentId || !section) {
+    return null;
   }
-  return null;
+  return { marker: section.marker, commentId };
 }
 
-/**
- * The next attempt count for a unit. Reset-on-commit: if `currentRef` (the PR
- * head SHA now) doesn't match the marker's recorded `ref`, the unit has moved
- * since — a commit landed — so the prior count is stale and treated as 0.
- */
-export function nextAttemptCount(previous: UnitAttemptMarker | null, currentRef: string): number {
-  const stale = previous === null || previous.ref !== currentRef;
-  const base = stale ? 0 : previous.n;
-  return base + 1;
-}
+// --- No-commit / no-PR backoff (#25) ------------------------------------------
 
-export type UnitAttemptPlan = {
-  marker: UnitAttemptMarker;
-  quarantined: boolean;
-};
+const DEFAULT_UNIT_BACKOFF_BASE_MS = 5 * 60_000;
+const DEFAULT_UNIT_BACKOFF_CAP_MS = 60 * 60_000;
 
-/** Fold one failed attempt into the next marker + whether it crosses the quarantine threshold. */
-export function planUnitAttempt(opts: {
-  previous: UnitAttemptMarker | null;
-  ref: string;
-  signature: string;
-  now: string;
-  k: number;
-}): UnitAttemptPlan {
-  const n = nextAttemptCount(opts.previous, opts.ref);
-  return {
-    marker: { n, signature: opts.signature, ref: opts.ref, at: opts.now },
-    quarantined: shouldQuarantine(n, opts.k),
-  };
-}
-
-/** Exponential backoff between retries below the quarantine threshold, capped. */
-export const DEFAULT_UNIT_BACKOFF_BASE_MS = 5 * 60_000;
-export const DEFAULT_UNIT_BACKOFF_CAP_MS = 60 * 60_000;
-
-export function unitBackoffMs(
+function unitBackoffMs(
   attemptCount: number,
   baseMs: number = DEFAULT_UNIT_BACKOFF_BASE_MS,
   capMs: number = DEFAULT_UNIT_BACKOFF_CAP_MS,
@@ -337,12 +252,10 @@ export function unitBackoffMs(
  * skip dispatch this cycle — a transient failure (rate limit, 504) then gets a
  * growing gap before the next try instead of burning a full cycle every poll.
  */
-export function shouldBackoffUnitRetry(opts: {
+function shouldBackoffUnitRetry(opts: {
   attemptCount: number;
   lastAttemptAt: string;
   now: string;
-  baseMs?: number;
-  capMs?: number;
 }): boolean {
   if (opts.attemptCount <= 0) {
     return false;
@@ -351,7 +264,7 @@ export function shouldBackoffUnitRetry(opts: {
   if (!Number.isFinite(elapsedMs) || elapsedMs < 0) {
     return false;
   }
-  return elapsedMs < unitBackoffMs(opts.attemptCount, opts.baseMs, opts.capMs);
+  return elapsedMs < unitBackoffMs(opts.attemptCount);
 }
 
 /**
@@ -361,7 +274,7 @@ export function shouldBackoffUnitRetry(opts: {
  * growing gap between retries. A quarantined unit never reaches this filter:
  * it's already excluded upstream by the `PHOEBE_QUARANTINE_LABEL` scope check.
  */
-export function filterBackoffEligible<T extends { attemptMarker?: UnitAttemptMarker | null }>(
+export function filterBackoffEligible<T extends { attemptMarker?: UnitMarker | null }>(
   candidates: readonly T[],
   now: string,
 ): T[] {
@@ -374,7 +287,7 @@ export function filterBackoffEligible<T extends { attemptMarker?: UnitAttemptMar
   });
 }
 
-/** Bound, marker-safe slug for a `UnitAttemptMarker.signature`. */
+/** Bound, marker-safe slug for a `UnitMarker.signature`. */
 export function slugifyFailureSignature(input: string, maxLen = 80): string {
   const slug = input
     .toLowerCase()
@@ -383,114 +296,239 @@ export function slugifyFailureSignature(input: string, maxLen = 80): string {
   return slug.slice(0, maxLen) || "unknown";
 }
 
-// --- Generic whole-unit timeout quarantine write path (#75, generalised for #53) ---
-//
-// The read/skip half lives beside each selector (`pr-scope.ts#isPrInScope`,
-// `producer.ts#selectIssue` both drop `phoebe:quarantined` units). This is the
-// write half: on a whole-unit timeout, count consecutive timeouts on the unit
-// itself (a GitHub marker) and, at `k`, apply the label + escalation comment
-// so the poisonous unit stops being re-picked. Generic over `UnitRef` so the
-// loop calls it without knowing any kind's unit shape — `ref.target.type`
-// picks the issue-comment or PR-comment read.
+// --- The façade ----------------------------------------------------------
 
-type TimeoutComment = { body: string; createdAt: string; authorLogin: string };
-
-type UnitTimeoutInputs = {
-  comments: TimeoutComment[];
-  extraActivityAt: string | null;
-  baseline: string;
-};
-
-function fetchIssueTimeoutInputs(github: GitHub, issueNumber: number): UnitTimeoutInputs {
-  const activity = github.issueActivity(issueNumber);
-  // Issues have no commits and `gh` does not expose body-edit times, so a new
-  // human comment is the only reset signal; `updatedAt` is the un-stick baseline.
-  return { comments: activity.comments, extraActivityAt: null, baseline: activity.updatedAt };
+/** Later of two optional ISO instants (`gh` returns them Z-normalized, so `>` is chronological). */
+function maxIso(a: string | null, b: string | null): string | null {
+  if (a === null) return b;
+  if (b === null) return a;
+  return a > b ? a : b;
 }
-
-function fetchPrTimeoutInputs(github: GitHub, prNumber: PrNumber): UnitTimeoutInputs {
-  const activity = github.prActivity(prNumber);
-  // A new push (head commit) or human comment resets; head SHA is the baseline.
-  return {
-    comments: activity.comments,
-    extraActivityAt: activity.lastCommitAt,
-    baseline: activity.headRefOid,
-  };
-}
-
-function postUnitComment(github: GitHub, isIssue: boolean, id: number, body: string): void {
-  if (isIssue) {
-    github.commentIssue(id, body);
-  } else {
-    github.commentPr(asPrNumber(id), body);
-  }
-}
-
-function addQuarantineLabel(github: GitHub, isIssue: boolean, id: number): void {
-  if (isIssue) {
-    github.labelIssue(id, PHOEBE_QUARANTINE_LABEL);
-  } else {
-    github.labelPr(asPrNumber(id), PHOEBE_QUARANTINE_LABEL);
-  }
-}
-
-export type UnitTimeoutRecord = { quarantined: boolean; count: number };
 
 /**
- * Record one whole-unit timeout toward the poison-unit quarantine: read the
- * latest timeout marker on the unit, post the incremented count, and at `k`
- * apply `phoebe:quarantined` plus the escalation comment. Best-effort — a
- * GitHub write failure here is logged via `opts.error` and swallowed so it can
- * never take the daemon down; the timeout itself is already recorded by the
- * caller's own status transition.
+ * The newest comment instant NOT authored by Phoebe, or `null`. This is the
+ * `timed-out` trigger's reset signal: a human comment counts, but Phoebe's own
+ * marker edits must not — otherwise every rotation's edit would look like
+ * fresh activity and the count could never climb to K.
  */
-export async function recordUnitTimeout(opts: {
-  ref: UnitRef;
+function newestForeignCommentAt(
+  comments: readonly { createdAt: string; authorLogin: string }[],
+  phoebeLogin: string,
+): string | null {
+  let newest: string | null = null;
+  for (const comment of comments) {
+    if (comment.authorLogin === phoebeLogin) {
+      continue;
+    }
+    if (newest === null || comment.createdAt > newest) {
+      newest = comment.createdAt;
+    }
+  }
+  return newest;
+}
+
+/**
+ * The next count for one trigger. `timed-out` is activity-based: reset when
+ * newer foreign activity (a comment or, for PR-keyed units, a push) exists
+ * than the prior marker's own `at` — comparing against the marker's embedded
+ * timestamp rather than the comment's `createdAt` is what survives the move
+ * onto an edited-in-place comment. `no-commit`/`no-pr` are progress-based:
+ * reset when `ref` has moved since the prior marker — automatic for PR-keyed
+ * units (the head SHA changes on push); a no-op for issue-keyed units (the
+ * issue number never moves), whose caller resets explicitly via `resolve()`.
+ */
+function nextCount(
+  trigger: UnitTrigger,
+  previous: UnitMarker | null,
+  opts: {
+    ref: string;
+    comments: readonly { createdAt: string; authorLogin: string }[];
+    phoebeLogin: string;
+    extraActivityAt: string | null;
+  },
+): number {
+  if (trigger === "timed-out") {
+    const latestActivityAt = maxIso(
+      newestForeignCommentAt(opts.comments, opts.phoebeLogin),
+      opts.extraActivityAt,
+    );
+    const stale = previous !== null && latestActivityAt !== null && latestActivityAt > previous.at;
+    return (stale ? 0 : (previous?.n ?? 0)) + 1;
+  }
+  const stale = previous === null || previous.ref !== opts.ref;
+  return (stale ? 0 : previous!.n) + 1;
+}
+
+export type QuarantineDetail = {
+  /** Bound, marker-safe slug for what went wrong this attempt, e.g. `mergeable-conflicting`. Ignored for `timed-out`. */
+  signature: string;
+  /** What kept happening, for the escalation comment: "timed out" / "produced no commit" / "was claimed and released with no PR". */
+  reason: string;
+  /**
+   * Prose shown while below threshold — trigger/kind-specific wording the
+   * caller owns. A function because the attempt count (`n`) and threshold
+   * (`k`) are only known once the façade has read the unit's current state;
+   * most callers ignore the arguments entirely.
+   */
+  belowThresholdNote(n: number, k: number): string;
+  /** Open issues blocked on this one — the `no-pr` trigger's addition (#22). */
+  dependents?: readonly number[];
+};
+
+export type Quarantine = {
+  /** Fold one failure into the unit's `(kind, id, trigger)` counter; at threshold, label + escalate. Best-effort. */
+  record(unit: UnitRef, trigger: UnitTrigger, detail: QuarantineDetail): void;
+  /** Clear a trigger's counter on forward progress (e.g. an issue produced a PR) — `note` replaces its section. */
+  resolve(unit: UnitRef, trigger: UnitTrigger, note: string): void;
+};
+
+type UnitActivity = {
+  comments: readonly { id: string; body: string; createdAt: string; authorLogin: string }[];
+  labels: readonly string[];
+  ref: string;
+  baseline: string;
+  lastCommitAt: string | null;
+};
+
+/**
+ * `createQuarantine({ github, config, log })` — the one write entry point for
+ * all three quarantine triggers, built once per process alongside the other
+ * adapters (#53) and passed into every kind's `io` bundle.
+ */
+export function createQuarantine(opts: {
   github: GitHub;
-  login(): Promise<string>;
-  maxUnitTimeouts: number;
-  log(message: string): void;
-  error(message: string): void;
-}): Promise<UnitTimeoutRecord | null> {
-  const { ref } = opts;
-  const isIssue = ref.target.type === "issue";
-  const id = ref.target.number;
-  try {
-    const login = await opts.login();
-    const inputs = isIssue
-      ? fetchIssueTimeoutInputs(opts.github, id)
-      : fetchPrTimeoutInputs(opts.github, asPrNumber(id));
-    const { count, quarantine } = decideTimeoutRecord({
-      comments: inputs.comments,
-      phoebeLogin: login,
-      extraActivityAt: inputs.extraActivityAt,
-      k: opts.maxUnitTimeouts,
-    });
-    postUnitComment(opts.github, isIssue, id, buildUnitTimeoutMarker(count));
-    if (quarantine) {
-      addQuarantineLabel(opts.github, isIssue, id);
-      postUnitComment(
-        opts.github,
-        isIssue,
-        id,
-        buildQuarantineComment({
-          kind: ref.kind,
-          id,
-          k: count,
-          baseline: inputs.baseline,
-          reason: "timed out",
-        }),
-      );
-      opts.log(
-        `Quarantined ${ref.kind} unit for #${id} after ${count} timeouts with no completion.`,
+  config: { maxUnitTimeouts: number; maxUnitAttempts: number };
+  log: (message: string) => void;
+}): Quarantine {
+  const { github, config, log } = opts;
+
+  function fetchActivity(unit: UnitRef): UnitActivity {
+    if (unit.target.type === "issue") {
+      const activity = github.issueActivity(unit.target.number);
+      return {
+        comments: activity.comments,
+        labels: activity.labels,
+        ref: String(unit.target.number),
+        baseline: activity.updatedAt,
+        lastCommitAt: null,
+      };
+    }
+    const activity = github.prActivity(asPrNumber(unit.target.number));
+    return {
+      comments: activity.comments,
+      labels: activity.labels,
+      ref: activity.headRefOid,
+      baseline: activity.headRefOid,
+      lastCommitAt: activity.lastCommitAt,
+    };
+  }
+
+  function writeComment(unit: UnitRef, body: string): void {
+    if (unit.target.type === "issue") {
+      github.commentIssue(unit.target.number, body);
+    } else {
+      github.commentPr(asPrNumber(unit.target.number), body);
+    }
+  }
+
+  function applyLabel(unit: UnitRef): void {
+    if (unit.target.type === "issue") {
+      github.labelIssue(unit.target.number, PHOEBE_QUARANTINE_LABEL);
+    } else {
+      github.labelPr(asPrNumber(unit.target.number), PHOEBE_QUARANTINE_LABEL);
+    }
+  }
+
+  function record(unit: UnitRef, trigger: UnitTrigger, detail: QuarantineDetail): void {
+    const { kind, target } = unit;
+    const id = target.number;
+    try {
+      const activity = fetchActivity(unit);
+      const tracking = findTrackingComment(activity.comments, kind);
+      let previous = tracking.sections[trigger]?.marker ?? null;
+
+      // The manual-clear reset (#68): a sweep that queries *by* label can
+      // never see a unit a human unlabelled by hand, so it's handled here,
+      // where the comments are already fetched — an escalation section whose
+      // label is now absent means a human cleared it.
+      const priorProse = tracking.sections[trigger]?.prose ?? "";
+      if (previous && parseQuarantineBaseline(priorProse) !== null) {
+        if (!activity.labels.includes(PHOEBE_QUARANTINE_LABEL)) {
+          previous = null;
+        }
+      }
+
+      const now = new Date().toISOString();
+      const k = trigger === "timed-out" ? config.maxUnitTimeouts : config.maxUnitAttempts;
+      const n = nextCount(trigger, previous, {
+        ref: activity.ref,
+        comments: activity.comments,
+        phoebeLogin: github.login(),
+        extraActivityAt: activity.lastCommitAt,
+      });
+      const quarantined = n >= k;
+      const marker: UnitMarker = {
+        trigger,
+        n,
+        signature: detail.signature,
+        ref: activity.ref,
+        at: now,
+      };
+
+      const prose = quarantined
+        ? buildQuarantineComment({
+            kind,
+            id,
+            k,
+            baseline: activity.baseline,
+            reason: detail.reason,
+            ...(trigger === "timed-out" ? {} : { signature: detail.signature }),
+            ...(detail.dependents ? { dependents: detail.dependents } : {}),
+          })
+        : detail.belowThresholdNote(n, k);
+
+      const nextSections: TrackingSections = { ...tracking.sections, [trigger]: { prose, marker } };
+      const body = serializeTrackingSections(nextSections, kind);
+      if (tracking.commentId) {
+        github.updateComment(tracking.commentId, body);
+      } else {
+        writeComment(unit, body);
+      }
+
+      if (quarantined) {
+        applyLabel(unit);
+        log(
+          `Quarantined ${kind} unit for #${id} after ${n} time(s) — labelled ${PHOEBE_QUARANTINE_LABEL} (${detail.reason}).`,
+        );
+      }
+    } catch (error) {
+      log(
+        `Could not record ${trigger} toward quarantine for ${kind} #${id} — ` +
+          `${error instanceof Error ? error.message : String(error)}`,
       );
     }
-    return { quarantined: quarantine, count };
-  } catch (error) {
-    opts.error(
-      `Could not record timeout toward quarantine for ${ref.kind} #${id} — ` +
-        `${error instanceof Error ? error.message : String(error)}`,
-    );
-    return null;
   }
+
+  function resolve(unit: UnitRef, trigger: UnitTrigger, note: string): void {
+    const { kind, target } = unit;
+    try {
+      const activity = fetchActivity(unit);
+      const tracking = findTrackingComment(activity.comments, kind);
+      if (!tracking.commentId || !tracking.sections[trigger]) {
+        return;
+      }
+      const remaining: TrackingSections = { ...tracking.sections };
+      delete remaining[trigger];
+      const remainingBody = serializeTrackingSections(remaining, kind);
+      const body = remainingBody ? `${note}\n\n${remainingBody}` : note;
+      github.updateComment(tracking.commentId, body);
+    } catch (error) {
+      log(
+        `Could not clear ${trigger} tracking for ${kind} #${target.number} — ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  return { record, resolve };
 }

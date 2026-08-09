@@ -16,14 +16,7 @@ import {
   reclaimDecision,
 } from "../claim-lease.ts";
 import { parseLatestMarker } from "../markers.ts";
-import {
-  buildQuarantineComment,
-  buildUnitAttemptMarker,
-  findLatestUnitAttemptComment,
-  PHOEBE_QUARANTINE_LABEL,
-  planUnitAttempt,
-  slugifyFailureSignature,
-} from "../quarantine.ts";
+import { PHOEBE_QUARANTINE_LABEL, slugifyFailureSignature } from "../quarantine.ts";
 import { readVerificationReport, removeVerificationReport } from "../verification.ts";
 import {
   findBlockedDependents,
@@ -245,14 +238,11 @@ function createProducerKind(
     }
   }
 
+  /** A run produced a PR (or one already existed) — the no-PR counter (#22) resets, since an issue-keyed `ref` never moves on its own to signal progress. */
   function resetIssueAttemptCounter(issueNumber: number): void {
-    const comments = io.github.issueActivity(issueNumber).comments;
-    const found = findLatestUnitAttemptComment(comments, spec.name);
-    if (!found) {
-      return;
-    }
-    io.github.updateComment(
-      found.commentId,
+    io.quarantine.resolve(
+      { kind: spec.name, target: { type: "issue", number: issueNumber } },
+      "no-pr",
       `✅ Phoebe produced a PR for this ${spec.name === "issues" ? "issue" : "research ticket"} — the no-PR attempt counter is reset.`,
     );
   }
@@ -263,48 +253,25 @@ function createProducerKind(
     dependentsPool: readonly Issue[];
     nativeBlockersByIssue: NativeBlockerMap;
   }): void {
-    const comments = io.github.issueActivity(opts.issueNumber).comments;
-    const found = findLatestUnitAttemptComment(comments, spec.name);
-    const k = config.maxUnitAttempts;
-    const plan = planUnitAttempt({
-      previous: found?.marker ?? null,
-      ref: String(opts.issueNumber),
-      signature: opts.signature,
-      now: new Date().toISOString(),
-      k,
-    });
-
-    const body = plan.quarantined
-      ? buildQuarantineComment({
-          kind: spec.name,
-          id: opts.issueNumber,
-          k,
-          baseline: io.github.issueActivity(opts.issueNumber).updatedAt,
-          reason: "was claimed and released with no PR",
-          signature: opts.signature,
-          dependents: findBlockedDependents(
-            opts.issueNumber,
-            opts.dependentsPool,
-            { blockedByPattern: config.blockedByPattern, blockerSource: config.blockerSource },
-            opts.nativeBlockersByIssue,
-          ),
-        })
-      : `⚠️ Phoebe claimed this ${spec.name === "issues" ? "issue" : "research ticket"} and released it ` +
-        `with no PR (attempt ${plan.marker.n}/${k}, \`${opts.signature}\`). It stays in the ready queue ` +
-        `and will retry once the claim lease expires.`;
-    const fullBody = `${body}\n\n${buildUnitAttemptMarker(spec.name, plan.marker)}`;
-    if (found?.commentId) {
-      io.github.updateComment(found.commentId, fullBody);
-    } else {
-      io.github.commentIssue(opts.issueNumber, fullBody);
-    }
-
-    if (plan.quarantined) {
-      io.github.labelIssue(opts.issueNumber, PHOEBE_QUARANTINE_LABEL);
-      phoebeLog(
-        `Quarantined ${spec.name} #${opts.issueNumber} after ${plan.marker.n} claims with no PR (${opts.signature}).`,
-      );
-    }
+    const dependents = findBlockedDependents(
+      opts.issueNumber,
+      opts.dependentsPool,
+      { blockedByPattern: config.blockedByPattern, blockerSource: config.blockerSource },
+      opts.nativeBlockersByIssue,
+    );
+    io.quarantine.record(
+      { kind: spec.name, target: { type: "issue", number: opts.issueNumber } },
+      "no-pr",
+      {
+        signature: opts.signature,
+        reason: "was claimed and released with no PR",
+        belowThresholdNote: (n, k) =>
+          `⚠️ Phoebe claimed this ${spec.name === "issues" ? "issue" : "research ticket"} and released it ` +
+          `with no PR (attempt ${n}/${k}, \`${opts.signature}\`). It stays in the ready queue ` +
+          `and will retry once the claim lease expires.`,
+        ...(dependents.length > 0 ? { dependents } : {}),
+      },
+    );
   }
 
   /**

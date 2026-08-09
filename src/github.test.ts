@@ -105,7 +105,7 @@ describe("issueBody / issueActivity", () => {
     expect(calls[0]!.args).toEqual(["issue", "view", "7", "--json", "body", "-R", REPO_SLUG]);
   });
 
-  test("issueActivity carries comments (id/body/createdAt/authorLogin) + updatedAt", () => {
+  test("issueActivity carries comments (id/body/createdAt/authorLogin) + updatedAt + labels", () => {
     const { run, calls } = fakeRun([
       JSON.stringify({
         updatedAt: "2026-02-01T00:00:00Z",
@@ -113,6 +113,7 @@ describe("issueBody / issueActivity", () => {
           { id: "c1", body: "first", createdAt: "2026-01-01T00:00:00Z", author: { login: "a" } },
           { id: "c2", body: "deleted author", createdAt: "2026-01-02T00:00:00Z", author: null },
         ],
+        labels: [{ name: "bug" }],
       }),
     ]);
     const github = createGitHub({ repoSlug: REPO_SLUG, run });
@@ -122,13 +123,14 @@ describe("issueBody / issueActivity", () => {
         { id: "c1", body: "first", createdAt: "2026-01-01T00:00:00Z", authorLogin: "a" },
         { id: "c2", body: "deleted author", createdAt: "2026-01-02T00:00:00Z", authorLogin: "" },
       ],
+      labels: ["bug"],
     });
     expect(calls[0]!.args).toEqual([
       "issue",
       "view",
       "7",
       "--json",
-      "comments,updatedAt",
+      "comments,updatedAt,labels",
       "-R",
       REPO_SLUG,
     ]);
@@ -292,6 +294,7 @@ describe("prActivity — consolidates fetchPrCommentBodies / hasNewReviewSummary
           { committedDate: "2026-01-01T00:00:00Z" },
           { committedDate: "2026-01-02T00:00:00Z" },
         ],
+        labels: [{ name: "phoebe:quarantined" }],
       }),
     ]);
     const github = createGitHub({ repoSlug: REPO_SLUG, run });
@@ -299,20 +302,23 @@ describe("prActivity — consolidates fetchPrCommentBodies / hasNewReviewSummary
       headRefOid: "abc123",
       lastCommitAt: "2026-01-02T00:00:00Z",
       comments: [{ id: "c1", body: "hi", createdAt: "2026-01-01T00:00:00Z", authorLogin: "a" }],
+      labels: ["phoebe:quarantined"],
     });
     expect(calls[0]!.args).toEqual([
       "pr",
       "view",
       "3",
       "--json",
-      "comments,commits,headRefOid",
+      "comments,commits,headRefOid,labels",
       "-R",
       REPO_SLUG,
     ]);
   });
 
   test("lastCommitAt is null with no commits", () => {
-    const { run } = fakeRun([JSON.stringify({ headRefOid: "abc123", comments: [], commits: [] })]);
+    const { run } = fakeRun([
+      JSON.stringify({ headRefOid: "abc123", comments: [], commits: [], labels: [] }),
+    ]);
     const github = createGitHub({ repoSlug: REPO_SLUG, run });
     expect(github.prActivity(asPrNumber(3)).lastCommitAt).toBeNull();
   });

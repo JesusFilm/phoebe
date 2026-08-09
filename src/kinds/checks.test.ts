@@ -17,6 +17,8 @@
 import { describe, expect, test } from "vite-plus/test";
 import { asBranchRef, asPrNumber, asSha } from "../branded.ts";
 import { config } from "../resolved-config.ts";
+import type { GitHub } from "../github.ts";
+import { createQuarantine } from "../quarantine.ts";
 import type { CycleContext } from "../cycle.ts";
 import type { Io } from "./kind.ts";
 import {
@@ -263,32 +265,33 @@ describe("createChecksKind — run (BEHIND catch-up)", () => {
 });
 
 function fakeIo(overrides: Partial<Io> = {}): Io {
-  return {
-    github: {
-      issuesWithLabel: () => [],
-      issueBody: () => "",
-      issueActivity: () => ({ updatedAt: "2026-01-01T00:00:00Z", comments: [] }),
-      nativeBlockers: () => [],
-      prNumberForHead: () => undefined,
-      openPrs: () => [],
-      prMergeInfo: () => {
-        throw new Error("not implemented in fake");
-      },
-      prActivity: () => ({ headRefOid: asSha("aaa"), lastCommitAt: null, comments: [] }),
-      reviewThreads: () => [],
-      commitCheckRuns: () => [],
-      commentIssue: () => {},
-      commentPr: () => {},
-      createPr: () => {},
-      retargetPr: () => {},
-      labelIssue: () => {},
-      unlabelIssue: () => {},
-      labelPr: () => {},
-      linkStack: () => {},
-      installStackExtension: () => {},
-      login: () => "phoebe-bot",
-      updateComment: () => {},
+  const github: GitHub = overrides.github ?? {
+    issuesWithLabel: () => [],
+    issueBody: () => "",
+    issueActivity: () => ({ updatedAt: "2026-01-01T00:00:00Z", comments: [], labels: [] }),
+    nativeBlockers: () => [],
+    prNumberForHead: () => undefined,
+    openPrs: () => [],
+    prMergeInfo: () => {
+      throw new Error("not implemented in fake");
     },
+    prActivity: () => ({ headRefOid: asSha("aaa"), lastCommitAt: null, comments: [], labels: [] }),
+    reviewThreads: () => [],
+    commitCheckRuns: () => [],
+    commentIssue: () => {},
+    commentPr: () => {},
+    createPr: () => {},
+    retargetPr: () => {},
+    labelIssue: () => {},
+    unlabelIssue: () => {},
+    labelPr: () => {},
+    linkStack: () => {},
+    installStackExtension: () => {},
+    login: () => "phoebe-bot",
+    updateComment: () => {},
+  };
+  return {
+    github,
     git: {
       fetchOrigin: () => {},
       originBranchSha: () => asSha("abc123"),
@@ -305,6 +308,11 @@ function fakeIo(overrides: Partial<Io> = {}): Io {
       render: (template) => template,
     },
     shell: { run: () => {} },
+    quarantine: createQuarantine({
+      github,
+      config: { maxUnitTimeouts: config.maxUnitTimeouts, maxUnitAttempts: config.maxUnitAttempts },
+      log: () => {},
+    }),
     ...overrides,
   };
 }

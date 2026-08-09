@@ -9,11 +9,12 @@
 // (`createConflictsKind(deps)` etc., `deps = { config, io }`). `io` is built
 // once in `runEngine`'s composition root and passed to every kind factory;
 // nothing under `src/kinds/` spawns a binary or reads `resolved-config.ts`
-// directly — every impure read/write goes through one of these five seams.
+// directly — every impure read/write goes through one of these six seams.
 
 import type { BranchRef, Sha } from "../branded.ts";
 import type { PhoebeConfig, WorkKindName } from "../config/index.ts";
 import type { GitHub } from "../github.ts";
+import type { Quarantine } from "../quarantine.ts";
 import type { VerificationResult } from "../verification.ts";
 import type { CycleContext } from "../cycle.ts";
 
@@ -80,6 +81,7 @@ export type Io = {
   agent: AgentRunner;
   prompts: Prompts;
   shell: Shell;
+  quarantine: Quarantine;
 };
 
 /** What every kind factory (`createConflictsKind`, ...) takes. */

@@ -102,7 +102,7 @@ function buildHandledComment(opts: { latestActivityAt: string | null; failed: bo
 export function createReviewsKind(deps: KindDeps): WorkKind<ReviewsData, ReviewsUnit> {
   const { config, io } = deps;
   const { phoebeLog, phoebeError } = createPhoebeLog(config.repoSlug);
-  const janitor = createJanitorHelpers(deps, phoebeLog);
+  const janitor = createJanitorHelpers(deps);
 
   function candidates(
     units: readonly ReviewsUnit[],
