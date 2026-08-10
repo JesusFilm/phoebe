@@ -29,6 +29,7 @@ import {
 } from "node:fs";
 import { join, relative } from "node:path";
 import {
+  discoverUndeclaredInTreeTenants,
   discoverWorkspaceTenants,
   REPOS_DIR,
   resolveDeclaredTenantDir,
@@ -282,12 +283,22 @@ export type ListTenantsResult = {
   live: number;
   /** True when the root config uses `workspace.tenants`. */
   explicit: boolean;
+  /**
+   * In-tree config-carrying dirs not declared in `workspace.tenants` (explicit
+   * arm only; empty otherwise). Depth-1 scan — a hint, not a guarantee (#141).
+   */
+  undeclared: string[];
 };
 
 /** Legend line for held rows (#129). */
 export const LIST_HELD_LEGEND =
   "held = discovery would skip this dir now; a held tenant may still be running — " +
   "the supervisor only drops a tenant when you edit the config.";
+
+/** Legend line for undeclared rows on the explicit arm (#141). */
+export const LIST_UNDECLARED_LEGEND =
+  "undeclared = in-tree directory with phoebe.config.ts not listed in workspace.tenants " +
+  "(depth-1 scan only — out-of-tree and nested candidates are invisible by design).";
 
 /** Whether a `.env` (not just the example) is present for a tenant dir. */
 function envPresent(dir: string): boolean {
@@ -441,7 +452,10 @@ async function listWorkspaceTenants(opts: {
   }
 
   const live = listings.filter((listing) => !listing.held).length;
-  return { listings, declared: listings.length, live, explicit };
+  const undeclared = isExplicitWorkspace(opts.workspace)
+    ? discoverUndeclaredInTreeTenants(opts.configDir, opts.workspace.tenants)
+    : [];
+  return { listings, declared: listings.length, live, explicit, undeclared };
 }
 
 /** Nested-mode scan: every `repos/<owner>/<repo>/` dir with its health signals. */
@@ -454,7 +468,7 @@ function listNestedTenants(configDir: string, dataBase: string): ListTenantsResu
       .filter((e) => e.isDirectory())
       .map((e) => e.name);
   } catch {
-    return { listings, declared: 0, live: 0, explicit: false };
+    return { listings, declared: 0, live: 0, explicit: false, undeclared: [] };
   }
   for (const owner of owners) {
     let repos: string[];
@@ -487,7 +501,7 @@ function listNestedTenants(configDir: string, dataBase: string): ListTenantsResu
   }
   listings.sort((a, b) => (a.slug ?? "").localeCompare(b.slug ?? ""));
   const live = listings.filter((listing) => !listing.held).length;
-  return { listings, declared: listings.length, live, explicit: false };
+  return { listings, declared: listings.length, live, explicit: false, undeclared: [] };
 }
 
 /**
