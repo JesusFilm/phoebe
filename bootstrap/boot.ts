@@ -42,14 +42,11 @@ import { buildEngineChildEnv, parseDotenv } from "./engine-child-env.ts";
 import { attachBroker } from "./broker-ipc.ts";
 import { createSlotBroker, resolveMaxConcurrent } from "./slot-broker.ts";
 import {
-  discoverTenants,
+  assertNotRemovedReposLayout,
   discoverWorkspaceTenants,
-  isNestedDeployment,
   WorkspaceStructuralChangeError,
   WorkspaceTenantAxisSkip,
-  withTenantConfigDir,
   type DiscoveredTenant,
-  type TenantSample,
   type WorkspaceDiscoveryResult,
   type WorkspaceHold,
   type FleetDiscoverResult,
@@ -405,7 +402,7 @@ function readTenantEnv(envPath: string): Record<string, string> {
 }
 
 /**
- * Supervise a nested or workspace multi-tenant deployment (#58/#59/#61/#91): a
+ * Supervise a workspace multi-tenant deployment (#58/#59/#61/#91): a
  * shared engine (#60, materialized once by `launchTarget` from the top config's
  * `engine` field) with one child per tenant, a global concurrency broker across
  * them, and hot add/remove/change via `superviseFleet`.
@@ -413,11 +410,12 @@ function readTenantEnv(envPath: string): Record<string, string> {
  * Each child is spawned with an IPC channel + the tenant's scrubbed env (#61)
  * and cwd (its config dir), and wired to the broker (#59). The crash-loop guard
  * still applies any existing engine fallback on each (re)launch; feeding the
- * guard fleet-aggregated crash verdicts (#60 §6) is a follow-up — nested live
+ * guard fleet-aggregated crash verdicts (#60 §6) is a follow-up — live fleet
  * validation is deferred to #77.
  *
- * `discover` is injected so nested mode can stay a pure filesystem scan while
- * workspace mode re-walks the tree and reloads each child's `repoSlug` (#91).
+ * `discover` is injected rather than called directly so the reconcile loop stays
+ * testable against a fake fleet: today's one caller re-walks the workspace tree
+ * and reloads each child's `repoSlug` every poll (#91).
  */
 function runFleet(opts: {
   configPath: string;
@@ -491,37 +489,6 @@ function runFleet(opts: {
           `Skipping the tenant axis this poll (the running fleet is left intact).`,
       ),
   });
-}
-
-/**
- * Nested-mode discover callback: filesystem scan + per-tenant fingerprints.
- * The sync scan builds tenants co-located; a second pass reads each tenant's
- * bootstrapper-only `configDir` (#98) and relocates its `.env` accordingly. A
- * config that will not load / a malformed `configDir` is **held**, not started —
- * the same skip-and-hold workspace discovery uses (#86), so a misconfigured
- * tenant surfaces loudly rather than silently running against the wrong `.env`.
- */
-function nestedDiscover(configDir: string): () => FleetDiscoverInput {
-  return async () => {
-    const samples: TenantSample[] = [];
-    const hold: string[] = [];
-    for (const tenant of discoverTenants(configDir).tenants) {
-      try {
-        const resolved = withTenantConfigDir(tenant, await loadTenantConfigDir(tenant.configPath));
-        samples.push({
-          tenant: resolved,
-          fingerprint: tenantFingerprint(resolved.configPath, resolved.envPath),
-        });
-      } catch (error) {
-        console.warn(
-          `[phoebe] boot: nested: holding ${tenant.id} — ${describe(error)} ` +
-            `(not started until its configDir resolves).`,
-        );
-        hold.push(tenant.id);
-      }
-    }
-    return { samples, hold };
-  };
 }
 
 /**
@@ -704,8 +671,8 @@ async function loadTenantRepoSlug(configPath: string): Promise<string> {
 /**
  * Load a tenant config and return its bootstrapper-only `configDir` (#98), or
  * "." when unset. Throws when the config will not load or the value is
- * malformed — the workspace walker treats that as skip-and-warn, nested falls
- * back to co-location. Reuses `loadUserConfig`'s fingerprint cache, so this does
+ * malformed — the workspace walker treats that as skip-and-warn. Reuses
+ * `loadUserConfig`'s fingerprint cache, so this does
  * not re-read a config the slug load already parsed this poll.
  */
 async function loadTenantConfigDir(configPath: string): Promise<string> {
@@ -758,20 +725,14 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   const stop = installDrainSignal(process, ["SIGTERM", "SIGINT"]);
 
   // Detection ladder (#83/#91): loaded root config has a `workspace` block →
-  // workspace mode (warn + ignore any `repos/`); else `repos/` → nested; else flat.
-  // The root config is loaded here for the mode decision; `launchTarget` still
-  // re-reads on each (re)launch for the engine source + cache bust.
+  // workspace mode; else solo. The root config is loaded here for the mode
+  // decision; `launchTarget` still re-reads on each (re)launch for the engine
+  // source + cache bust.
   const rootFingerprint = configFingerprint(configPath);
   const rootConfig = await loadMountedConfig(configPath, rootFingerprint);
   const workspace = resolveWorkspace(rootConfig, { root: configDir });
 
   if (workspace !== null) {
-    if (isNestedDeployment(configDir)) {
-      console.warn(
-        "[phoebe] boot: workspace block present — ignoring `repos/` " +
-          "(nested central layout is off for this deployment).",
-      );
-    }
     let fleetExit: EngineExit;
     try {
       fleetExit = await runFleet({
@@ -798,31 +759,11 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     return;
   }
 
-  // A `repos/` dir beside the top config selects nested/multi-tenant mode (#63):
-  // supervise a shared engine with one child per tenant. Absent → the flat
-  // single-tenant fast-path below, unchanged: one engine child, no scanning.
-  const discovery = discoverTenants(configDir);
-  if (discovery.mode === "nested") {
-    console.log(
-      `[phoebe] boot: nested deployment — supervising ${discovery.tenants.length} tenant(s) ` +
-        `on one shared engine.`,
-    );
-    let fleetExit: EngineExit;
-    try {
-      fleetExit = await runFleet({
-        configPath,
-        guard,
-        stop,
-        intervalMs,
-        argv,
-        discover: nestedDiscover(configDir),
-      });
-    } finally {
-      stop.dispose();
-    }
-    propagateExit(fleetExit.code, fleetExit.signal);
-    return;
-  }
+  // Not a workspace ⇒ solo, the single-tenant fast-path below: one engine child,
+  // no scanning. One guard first — a root that carries the removed `repos/`
+  // layout is refused by name here, rather than read as a solo deployment whose
+  // config is missing every per-repo field.
+  assertNotRemovedReposLayout(configDir);
 
   let exit: EngineExit;
   try {

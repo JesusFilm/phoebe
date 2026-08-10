@@ -212,10 +212,11 @@ migration** — it is a clean break:
    volumes were never touched and persist until you `docker volume prune` them,
    so reverting brings the previous deployment straight back.
 
-Going from **one repo to many** needs no re-init: `phoebe add-repo <owner/repo>`
-per repo drops a tenant under `repos/` and the running supervisor picks it up on
-the next poll (see [`configuration.md`](configuration.md) and
-[`operating.md`](operating.md)). Read [`trust.md`](trust.md) first — co-locating
+Going from **one repo to many** means moving to a workspace root: add a
+`workspace` block to the root config, place each repo's checkout under it, and
+run `phoebe init --tenant <dir>` per child. The running supervisor picks each up
+on the next poll (see [`workspace.md`](workspace.md),
+[`configuration.md`](configuration.md), and [`operating.md`](operating.md)). Read [`trust.md`](trust.md) first — co-locating
 repos in one container means co-locating them in **one trust domain**.
 
 ## First install

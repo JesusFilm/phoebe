@@ -1,7 +1,7 @@
 // The supervisor side of the concurrency broker's IPC (#59) — the adapter that
 // maps an engine child's slot messages onto the in-memory `SlotBroker`.
 //
-// Each nested-mode engine child is spawned with an IPC channel (spawn-engine.mjs
+// Each workspace-mode engine child is spawned with an IPC channel (spawn-engine.mjs
 // `spawnEngineChild`) and runs `createSlotClient(process)` (src/slot-client.ts).
 // This binds one child's channel to the shared broker: an acquire request blocks
 // until the broker grants a slot, then the grant is sent back; a release frees

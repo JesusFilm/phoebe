@@ -17,9 +17,7 @@
 // scaffolding, log formatting) without breaking a library API.
 
 import { realpathSync } from "node:fs";
-import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { REPOS_DIR } from "../bootstrap/tenants.ts";
 import { resolveConfig } from "./config-schema.ts";
 import {
   copyShippedPromptsInto,
@@ -33,26 +31,31 @@ import { applyEnvOverlay, loadUserConfig, resolveConfigPath } from "./load-confi
 import { resolveDataBase } from "./paths.ts";
 import { setResolvedConfig } from "./resolved-config.ts";
 import {
-  addRepo,
-  isNested,
   LIST_HELD_LEGEND,
   LIST_UNDECLARED_LEGEND,
   listTenants,
-  parseSlug,
   purgeTenant,
-  readFlatRepoFields,
-  removeRepo,
   TRUST_DOMAIN_NOTE,
   type TenantListing,
 } from "./tenant-commands.ts";
 
 type ParsedArgs = { configPath: string | undefined; help: boolean; forward: string[] };
 
+/** The boolean flags `runEngine` reads out of the forwarded array. */
+const ENGINE_FLAGS = new Set(["--run-once", "--dry-run"]);
+
 /**
  * Extract `--config <path>` / `--config=<path>` / `-c <path>` and `--help`/`-h`
- * from argv, forwarding everything else to `runEngine`. A minimal parser is
- * enough — the engine handles its own boolean flags (`--run-once`, `--dry-run`)
- * from the forwarded array.
+ * from argv, forwarding the engine's own boolean flags (`--run-once`,
+ * `--dry-run`) on to `runEngine`.
+ *
+ * An unrecognised flag is rejected rather than forwarded, matching
+ * {@link parseInitArgs}: the engine reads its flags with `argv.includes(...)`, so
+ * anything it does not know is silently dropped — a typo like `--dry-runn`, or a
+ * flag that used to exist, would otherwise run the *opposite* of what was asked
+ * with no diagnostic. `--repo <owner/repo>` is the reason this matters now: it
+ * selected a nested tenant's config until 0.4.0, and must fail loudly rather
+ * than survive as a no-op alias (#169).
  */
 export function parseCliArgs(argv: readonly string[]): ParsedArgs {
   const forward: string[] = [];
@@ -77,6 +80,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedArgs {
       configPath = arg.slice("--config=".length);
       continue;
     }
+    if (arg !== undefined && arg.startsWith("-") && !ENGINE_FLAGS.has(arg)) {
+      throw new Error(`Unknown flag \`${arg}\` for \`phoebe\`. See \`phoebe --help\`.`);
+    }
     if (arg !== undefined) {
       forward.push(arg);
     }
@@ -88,8 +94,8 @@ export type ParsedInitArgs = {
   targetDir: string;
   help: boolean;
   /**
-   * Scaffold profile. Default `flat` (today's single-tenant layout).
-   * `--workspace` and `--tenant` are mutually exclusive (#93/#94).
+   * Scaffold profile. Default `solo` (the single-tenant layout).
+   * `--solo`, `--workspace`, and `--tenant` are mutually exclusive (#93/#94).
    */
   profile: InitProfile;
   /** Tenant profile: explicit slug override (wins over origin prefill). */
@@ -105,15 +111,19 @@ export type ParsedInitArgs = {
 /**
  * Parse argv left after the leading `init` token has been consumed. Supports
  * an optional positional target directory (`phoebe init ./my-agent`), the
- * mutually exclusive profile flags `--workspace` / `--tenant`, tenant-only
- * overrides (`--slug`, `--url`, `--with-prompts`, `--root`), and `--help`. Extra flags
- * are rejected loudly so a typo like `--forcee` fails fast instead of being
- * silently ignored.
+ * mutually exclusive profile flags `--solo` / `--workspace` / `--tenant`,
+ * tenant-only overrides (`--slug`, `--url`, `--with-prompts`, `--root`), and
+ * `--help`. Extra flags are rejected loudly so a typo like `--forcee` fails fast
+ * instead of being silently ignored.
+ *
+ * `--solo` names the default rather than changing it: bare `phoebe init` and
+ * `phoebe init --solo` scaffold the same tree. It exists so neither supported
+ * layout is nameless on the CLI (#169).
  */
 export function parseInitArgs(argv: readonly string[]): ParsedInitArgs {
   let targetDir: string | undefined;
   let help = false;
-  let profile: InitProfile = "flat";
+  let profile: InitProfile = "solo";
   let profileFlag: string | undefined;
   let repoSlug: string | undefined;
   let repoUrl: string | undefined;
@@ -126,15 +136,15 @@ export function parseInitArgs(argv: readonly string[]): ParsedInitArgs {
       help = true;
       continue;
     }
-    if (arg === "--workspace" || arg === "--tenant") {
+    if (arg === "--solo" || arg === "--workspace" || arg === "--tenant") {
       if (profileFlag !== undefined) {
         throw new Error(
-          `\`phoebe init\` flags \`--workspace\` and \`--tenant\` are mutually exclusive ` +
-            `(got both \`${profileFlag}\` and \`${arg}\`).`,
+          `\`phoebe init\` flags \`--solo\`, \`--workspace\`, and \`--tenant\` are mutually ` +
+            `exclusive (got both \`${profileFlag}\` and \`${arg}\`).`,
         );
       }
       profileFlag = arg;
-      profile = arg === "--workspace" ? "workspace" : "tenant";
+      profile = arg === "--solo" ? "solo" : arg === "--workspace" ? "workspace" : "tenant";
       continue;
     }
     if (arg === "--with-prompts") {
@@ -199,12 +209,10 @@ export function parseInitArgs(argv: readonly string[]): ParsedInitArgs {
 const HELP_TEXT = `phoebe — AFK coding agent
 
 Usage:
-  phoebe init [dir]                Scaffold a flat single-tenant deployment
+  phoebe init [--solo] [dir]       Scaffold a solo single-tenant deployment
   phoebe init --workspace [dir]    Scaffold a workspace root (multi-child)
   phoebe init --tenant [dir]       Scaffold a workspace child in-tree install
-  phoebe add-repo <owner/repo>     Add a tenant (→ nested multi-tenant)
-  phoebe remove-repo <owner/repo>  Remove a tenant's config (data retained)
-  phoebe list [--json] [--check]    List tenants + health (in-container)
+  phoebe list [--json] [--check]   List tenants + health (in-container)
   phoebe purge <owner/repo> --yes  Wipe a removed tenant's data (in-container)
   phoebe [--config <path>] [flags] Run the engine
 
@@ -230,19 +238,19 @@ Runtime toggles (read directly by the engine, not overlaid onto the config):
 const INIT_HELP_TEXT = `phoebe init — scaffold a consumer-owned runtime
 
 Usage:
-  phoebe init [dir]                 Flat single-tenant deployment (default)
+  phoebe init [--solo] [dir]        Solo single-tenant deployment (default)
   phoebe init --workspace [dir]     Workspace root (engine + workspace block)
   phoebe init --tenant [dir]        Workspace child in-tree install
                                     [--slug owner/repo] [--url <git-url>]
                                     [--root <workspace-root>] [--with-prompts]
 
-Profiles (mutually exclusive; default is flat):
+Profiles (mutually exclusive; default is solo):
 
-  flat (default) writes into [dir]:
+  --solo (default) writes into [dir]:
     phoebe.config.ts             Consumer config starter (five required fields + engine)
     prompts/                     Copies of the shipped agent prompts (edit to override)
     .env.example                 Documented environment variables to copy to .env
-    .gitignore                   Additive — .env, repos/**/.env, node_modules/
+    .gitignore                   Additive — .env, node_modules/
     container/Dockerfile         Runtime image (Node 24 + git + gh, entrypoint: phoebe boot)
     container/compose.yml        Compose config for the long-lived boot container
     container/compose.local.yml  Dev overlay to run an engine checkout from your host
@@ -251,7 +259,7 @@ Profiles (mutually exclusive; default is flat):
     phoebe.config.ts             engine + workspace: { depth: 1 } only (no per-repo fields)
     .env.example                 Deployment secrets (GH_TOKEN, provider keys) — no tenant secrets
     .gitignore                   Additive — .env, node_modules/
-    container/                   Same #57 templates as flat, plus README.md mount docs
+    container/                   Same #57 templates as solo, plus README.md mount docs
     (no prompts/, no child files — link children then run init --tenant)
 
   --tenant writes a child's in-tree install (after \`git submodule add\`):
@@ -264,7 +272,7 @@ Profiles (mutually exclusive; default is flat):
     Prefills repoSlug/repoUrl from the child's \`origin\` remote; --slug/--url win.
     Absent origin → placeholder slug/url the operator fills. Re-run refuses if config exists.
 
-Flat/workspace: existing files are left untouched. Tenant: refuses to overwrite.
+Solo/workspace: existing files are left untouched. Tenant: refuses to overwrite.
 `;
 
 /** Pull `--flag value` / `--flag=value` / bare `--flag` and positionals apart. */
@@ -296,48 +304,6 @@ function parseCommandArgs(argv: readonly string[]): {
     }
   }
   return { positionals, flags };
-}
-
-/** `phoebe add-repo <owner/repo> [--url] [--with-prompts] [--from-config]`. */
-function runAddRepoCli(argv: readonly string[]): void {
-  const { positionals, flags } = parseCommandArgs(argv);
-  const slug = positionals[0];
-  if (slug === undefined) {
-    throw new Error(
-      "Usage: phoebe add-repo <owner/repo> [--url <git-url>] [--with-prompts] [--from-config]",
-    );
-  }
-  const configDir = process.cwd();
-  const fromConfig = flags["from-config"] === true ? readFlatRepoFields(configDir) : {};
-  const withPrompts = flags["with-prompts"] === true;
-  const result = addRepo({
-    configDir,
-    slug,
-    ...(typeof flags["url"] === "string" ? { repoUrl: flags["url"] } : {}),
-    ...fromConfig,
-    withPrompts,
-    ...(withPrompts ? { seedPrompt: (dir: string) => copyShippedPromptsInto(dir) } : {}),
-  });
-  process.stdout.write(
-    `[phoebe] add-repo ${slug} → ${result.tenantDir}\n` +
-      result.created.map((p) => `    created ${p}`).join("\n") +
-      `\n\nFill in ${result.tenantDir}/.env (copy .env.example). ` +
-      `The running deployment picks it up on the next poll.\n`,
-  );
-  // Trust-domain note on every run — fires exactly when co-tenancy matters (#61/#63).
-  process.stderr.write(`\n${TRUST_DOMAIN_NOTE}\n`);
-}
-
-/** `phoebe remove-repo <owner/repo>`. */
-function runRemoveRepoCli(argv: readonly string[]): void {
-  const { positionals } = parseCommandArgs(argv);
-  const slug = positionals[0];
-  if (slug === undefined) throw new Error("Usage: phoebe remove-repo <owner/repo>");
-  const { removed } = removeRepo({ configDir: process.cwd(), slug });
-  process.stdout.write(
-    `[phoebe] remove-repo ${slug} → deleted ${removed}\n` +
-      `Its /data is retained (reversible). \`phoebe purge ${slug} --yes\` reclaims it.\n`,
-  );
 }
 
 function formatHealthColumns(listing: TenantListing): string {
@@ -395,7 +361,7 @@ async function runListCli(argv: readonly string[]): Promise<void> {
 
   if (result.listings.length === 0 && result.undeclared.length === 0) {
     process.stdout.write(
-      "[phoebe] No tenants (flat single-tenant deployment, or none added yet).\n",
+      "[phoebe] No tenants (solo single-tenant deployment, or a workspace with none declared yet).\n",
     );
     return;
   }
@@ -424,11 +390,11 @@ async function runListCli(argv: readonly string[]): Promise<void> {
 }
 
 /** `phoebe purge <owner/repo> --yes` — wipe a removed tenant's retained data. */
-function runPurgeCli(argv: readonly string[]): void {
+async function runPurgeCli(argv: readonly string[]): Promise<void> {
   const { positionals, flags } = parseCommandArgs(argv);
   const slug = positionals[0];
   if (slug === undefined) throw new Error("Usage: phoebe purge <owner/repo> --yes");
-  const { purged } = purgeTenant({
+  const { purged } = await purgeTenant({
     configDir: process.cwd(),
     dataBase: resolveDataBase(process.env),
     slug,
@@ -474,6 +440,9 @@ export async function runCli(): Promise<void> {
           `\nFill in ${result.tenantDir}/.env (copy .env.example).\n` +
           registrationAdvice,
       );
+      // Trust-domain note on every run — fires exactly when co-tenancy matters
+      // (#61): a second tenant is being added to one container.
+      process.stderr.write(`\n${TRUST_DOMAIN_NOTE}\n`);
       return;
     }
     const report = runInit({ targetDir: parsed.targetDir, profile: parsed.profile });
@@ -481,13 +450,10 @@ export async function runCli(): Promise<void> {
     return;
   }
 
-  // Multi-tenant lifecycle commands (#63). Host-side: add-repo / remove-repo
-  // scaffold the bind-mounted config tree. In-container: list / purge act on the
-  // data volume. None load the engine config.
-  if (args[0] === "add-repo") return runAddRepoCli(args.slice(1));
-  if (args[0] === "remove-repo") return runRemoveRepoCli(args.slice(1));
+  // In-container fleet commands (#95): list / purge act on the data volume.
+  // Neither loads the engine config.
   if (args[0] === "list") return await runListCli(args.slice(1));
-  if (args[0] === "purge") return runPurgeCli(args.slice(1));
+  if (args[0] === "purge") return await runPurgeCli(args.slice(1));
 
   const parsed = parseCliArgs(args);
   if (parsed.help) {
@@ -495,13 +461,11 @@ export async function runCli(): Promise<void> {
     return;
   }
 
-  // A direct engine run (`--run-once` / `--dry-run`) selects its tenant (#63):
-  // flat has no selector; nested requires `--repo <owner/repo>`, loading only
-  // that tenant's config. A boot-spawned child runs with cwd = its tenant dir
-  // (flat from there), so this only fires for a manual invocation from the
-  // deployment root. `phoebe boot` (the supervisor) never reaches here.
-  const { slug: repoSlug, forward } = extractRepoFlag(parsed.forward);
-  const configPath = resolveEngineConfigPath(parsed.configPath, repoSlug);
+  // A direct engine run (`--run-once` / `--dry-run`) has no tenant selector:
+  // it loads the config under cwd (or `--config`). A boot-spawned child runs
+  // with cwd = its tenant dir, so a workspace child is reached by running from
+  // that child's directory. `phoebe boot` (the supervisor) never gets here.
+  const configPath = resolveConfigPath(parsed.configPath, process.cwd());
   const userConfig = await loadUserConfig(configPath);
   const overlaid = applyEnvOverlay(userConfig, process.env);
   setResolvedConfig(resolveConfig(overlaid, { dataBase: resolveDataBase(process.env) }));
@@ -509,57 +473,7 @@ export async function runCli(): Promise<void> {
   // Import after the config is installed — main.ts's module-level constants
   // read `config` at import time via the Proxy in resolved-config.ts.
   const { runEngine } = await import("./main.ts");
-  await runEngine(forward);
-}
-
-/** Pull an optional `--repo <owner/repo>` (or `--repo=…`) out of the engine argv. */
-function extractRepoFlag(argv: readonly string[]): { slug: string | undefined; forward: string[] } {
-  const forward: string[] = [];
-  let slug: string | undefined;
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i]!;
-    if (arg === "--repo") {
-      // Only consume the next token as the slug if it is a value, not another
-      // flag (mirrors the `--url` guard in parseCommandArgs). Otherwise a
-      // malformed `--repo --dry-run` would swallow `--dry-run` as the slug and
-      // silently execute instead of doing a dry run.
-      const next = argv[i + 1];
-      if (next !== undefined && !next.startsWith("--")) {
-        slug = next;
-        i += 1;
-      }
-    } else if (arg.startsWith("--repo=")) {
-      slug = arg.slice("--repo=".length);
-    } else {
-      forward.push(arg);
-    }
-  }
-  return { slug, forward };
-}
-
-/**
- * Resolve which `phoebe.config.ts` a direct engine run loads. An explicit
- * `--config` always wins. Otherwise: nested (a `repos/` dir under cwd) requires
- * `--repo <owner/repo>` and loads `repos/<owner>/<repo>/phoebe.config.ts`; flat
- * loads the top config and ignores `--repo`.
- */
-function resolveEngineConfigPath(
-  configArg: string | undefined,
-  repoSlug: string | undefined,
-): string {
-  const cwd = process.cwd();
-  if (configArg !== undefined) return resolveConfigPath(configArg, cwd);
-  if (isNested(cwd)) {
-    if (repoSlug === undefined) {
-      throw new Error(
-        "This is a nested (multi-tenant) deployment — specify --repo <owner/repo> " +
-          "(see `phoebe list`), or run `phoebe boot` to supervise every tenant.",
-      );
-    }
-    const { owner, repo } = parseSlug(repoSlug);
-    return resolveConfigPath(join(REPOS_DIR, owner, repo, "phoebe.config.ts"), cwd);
-  }
-  return resolveConfigPath(undefined, cwd);
+  await runEngine(parsed.forward);
 }
 
 // Run the engine only when this module is invoked directly (`node …/src/cli.ts`)

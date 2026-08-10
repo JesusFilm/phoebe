@@ -21,8 +21,8 @@
 # rebuild and no restart; rebuild only when this image's toolchain changes.
 
 # Project name — namespaces this instance's containers and named volumes.
-# Defaults to `phoebe`. One Phoebe container now serves *many* repos as tenants
-# (drop each under `repos/<owner>/<repo>/`), so you no longer need one instance
+# Defaults to `phoebe`. One Phoebe container can serve *many* repos as tenants
+# (a workspace root declaring its children), so you no longer need one instance
 # per repo — but if you *do* run more than one Phoebe container on the same host,
 # set COMPOSE_PROJECT_NAME uniquely per instance in `.env`, or Compose derives
 # the project from this file's parent dir (`container`, identical for everyone)
@@ -59,8 +59,8 @@ services:
       - phoebe-data:/data/repos
       - phoebe-engine:/data/engine
       # The whole deployment dir, mounted read-only so `boot` reads the top
-      # `phoebe.config.ts` (flat) and — once you add tenants — the whole
-      # `repos/<owner>/<repo>/` tree (their configs, `.env` files, prompt
+      # `phoebe.config.ts` (solo) and — in a workspace — every declared child
+      # tree too (their configs, `.env` files, prompt
       # overrides). A *directory* mount (unlike the old single-file one) sees
       # added/removed tenant dirs and atomic-save/`git pull` renames, so `boot`'s
       # reconcile watch notices them without a `--force-recreate`.

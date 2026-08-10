@@ -132,7 +132,8 @@ The interaction to remember:
 
 ## One container = one trust domain
 
-A single Phoebe container can serve **many repos** as tenants (`phoebe add-repo`).
+A single Phoebe container can serve **many repos** as tenants (a workspace root
+and its child checkouts).
 Every tenant's engine child runs as the same unprivileged user (uid 10001), and
 that is a deliberate isolation boundary with one sharp edge.
 
@@ -147,8 +148,7 @@ radius is the same as a single-repo deployment.
 
 **What is _not_ isolated (the accepted residual).** Because all tenants share one
 uid, filesystem permissions cannot distinguish them at rest: a prompt-injected
-agent in tenant A **can read tenant B's `/etc/phoebe/repos/<owner>/<repo>/.env`
-off disk**. Delivering
+agent in tenant A **can read tenant B's `/etc/phoebe/<child>/.env` off disk**. Delivering
 real at-rest separation would need per-tenant OS users (rootless user
 namespaces — the documented "model B" upgrade), which an unprivileged container
 cannot set up.
@@ -158,7 +158,7 @@ cannot set up.
 > **Co-locate in one container only repos whose mutual compromise is already
 > acceptable** — the same org, the same token scope, the same trust domain.
 
-`phoebe add-repo` prints this on every run, precisely when adding tenant #2+
+`phoebe init --tenant` prints this on every run, precisely when adding a tenant
 makes it relevant. The moment you need to co-locate **mutually-untrusted**
 tenants, one container is no longer enough — give them separate containers (or
 adopt model B). This is the named trigger for that upgrade.

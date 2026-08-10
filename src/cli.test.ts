@@ -63,23 +63,33 @@ describe("parseCliArgs", () => {
       forward: ["--run-once", "--dry-run"],
     });
   });
+
+  test("rejects an unknown flag instead of forwarding it into the void", () => {
+    // The engine reads its flags with `argv.includes(...)`, so a forwarded
+    // unknown flag is silently dropped — a typo would run the opposite of what
+    // was asked. `--repo` is the case that motivated this: it selected a nested
+    // tenant's config until 0.4.0 and must not survive as a no-op alias (#169).
+    expect(() => parseCliArgs(["--repo", "acme/widget"])).toThrow(/Unknown flag `--repo`/);
+    expect(() => parseCliArgs(["--repo=acme/widget"])).toThrow(/Unknown flag/);
+    expect(() => parseCliArgs(["--dry-runn"])).toThrow(/Unknown flag/);
+  });
 });
 
 describe("parseInitArgs", () => {
-  test("defaults to current directory and flat profile when no args given", () => {
+  test("defaults to current directory and solo profile when no args given", () => {
     expect(parseInitArgs([])).toEqual({
       targetDir: ".",
       help: false,
-      profile: "flat",
+      profile: "solo",
       withPrompts: false,
     });
   });
 
-  test("accepts a positional target directory (flat)", () => {
+  test("accepts a positional target directory (solo)", () => {
     expect(parseInitArgs(["./my-agent"])).toEqual({
       targetDir: "./my-agent",
       help: false,
-      profile: "flat",
+      profile: "solo",
       withPrompts: false,
     });
   });
@@ -163,16 +173,23 @@ describe("parseInitArgs", () => {
     expect(() => parseInitArgs(["--root", "."])).toThrow(/only valid with/);
   });
 
-  test("--workspace and --tenant are mutually exclusive", () => {
+  test("--solo names the default: identical to a bare `phoebe init`", () => {
+    expect(parseInitArgs(["--solo"])).toEqual(parseInitArgs([]));
+    expect(parseInitArgs(["--solo", "./my-agent"])).toEqual(parseInitArgs(["./my-agent"]));
+  });
+
+  test("--solo, --workspace, and --tenant are mutually exclusive", () => {
     expect(() => parseInitArgs(["--workspace", "--tenant"])).toThrow(/mutually exclusive/);
     expect(() => parseInitArgs(["--tenant", "--workspace", "./x"])).toThrow(/mutually exclusive/);
+    expect(() => parseInitArgs(["--solo", "--workspace"])).toThrow(/mutually exclusive/);
+    expect(() => parseInitArgs(["--tenant", "--solo"])).toThrow(/mutually exclusive/);
   });
 
   test("--help / -h set help without requiring a directory", () => {
     expect(parseInitArgs(["--help"])).toEqual({
       targetDir: ".",
       help: true,
-      profile: "flat",
+      profile: "solo",
       withPrompts: false,
     });
     expect(parseInitArgs(["-h"]).help).toBe(true);

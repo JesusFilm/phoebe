@@ -162,20 +162,20 @@ The base is `/data/repos` in the container; `PHOEBE_DATA_DIR` overrides it for
 host/dev. These map to the two named volumes in `compose.yml` — see
 [`architecture.md`](architecture.md#named-volumes).
 
-## Multiple repos (nested tenants)
+## Multiple repos (workspace tenants)
 
-A deployment is **flat**, **nested**, or **workspace**, selected by the boot
-ladder: a root `workspace` block → workspace; else a `repos/` directory →
-nested; else flat. Workspace topology and the operator runbook live
-in [`workspace.md`](workspace.md). Nested layout:
+A deployment is **solo** or **workspace**, selected by the boot ladder: a root
+`workspace` block → workspace; else solo. Workspace topology and the operator
+runbook live in [`workspace.md`](workspace.md). Side by side:
 
 ```text
-# Flat (phoebe init):            # Nested (after phoebe add-repo):
-.phoebe/                         .phoebe/
-  phoebe.config.ts   ← the repo    phoebe.config.ts   ← SHARED ONLY: engine source + global knobs
-  .env                             repos/<owner>/<repo>/
-  prompts/?                          phoebe.config.ts ← per-tenant (no engine field)
-  container/                         .env             ← per-tenant secrets (co-located, 1:1)
+# Solo (phoebe init):            # Workspace (phoebe init --workspace):
+.phoebe/                         workspace-root/
+  phoebe.config.ts   ← the repo    phoebe.config.ts   ← SHARED ONLY: engine source + workspace block
+  .env                             .env               ← supervisor's token only
+  prompts/?                        widget/            ← a child checkout the operator placed
+  container/                         phoebe.config.ts ← per-tenant (no engine field)
+                                     .env             ← per-tenant secrets (co-located, 1:1)
                                      prompts/?        ← optional per-tenant overrides
                                    container/
 ```
@@ -183,23 +183,27 @@ in [`workspace.md`](workspace.md). Nested layout:
 - **Config↔env binding is 1:1 by co-location** — each tenant dir has exactly one
   `phoebe.config.ts` and one `.env`; the supervisor reads that `.env` and hands
   the tenant's engine child **only** its own secrets (`buildEngineChildEnv`).
-- **Engine source is shared** across the fleet — set `engine` in the top
+- **Engine source is shared** across the fleet — set `engine` in the root
   `phoebe.config.ts` only; a tenant config carrying `engine` is ignored with a
   warning (one engine version for everyone).
 - **`paths` still derives from each tenant's `repoSlug`**, identically in both
-  modes. Use `phoebe add-repo` / `remove-repo` / `list` / `purge` to manage
-  nested tenants (see [`operating.md`](operating.md)); for workspace children
-  use `init --tenant` after linking the checkout ([`workspace.md`](workspace.md)).
+  modes. Scaffold a child with `init --tenant` after linking its checkout, then
+  use `list` / `purge` to operate the fleet
+  ([`workspace.md`](workspace.md), [`operating.md`](operating.md)).
 
-See [`examples/nested/`](../examples/nested/) for a complete nested layout — the
-engine-only root config plus two placeholder tenants under `repos/<owner>/<repo>/`.
+See [`examples/workspace/`](../examples/workspace/) for a complete layout — the
+engine-only root config plus two placeholder children.
+
+> The `repos/<owner>/<repo>/` (nested) layout was **removed in 0.4.0**. A
+> deployment root still carrying a `repos/` directory fails boot with a message
+> pointing here; move each tenant to a checkout under a workspace root.
 
 ## Asset directory (`configDir`)
 
 Bootstrapper-only, per tenant. By default a tenant's `.env` (and any relative
 `promptFiles`) sit **co-located** with its `phoebe.config.ts`. `configDir`
-relocates them to a subdirectory of that dir — so a workspace child or nested
-tenant can reuse its standalone `.phoebe/` folder instead of duplicating `.env`
+relocates them to a subdirectory of that dir — so a workspace child can reuse
+its standalone `.phoebe/` folder instead of duplicating `.env`
 and `prompts/` at the repo root:
 
 ```ts
@@ -233,8 +237,8 @@ export default config;
   `container/` is operator-run (never read by the engine), so it can live in
   `.phoebe/` too; you just point compose at it.
 - Must be a **relative** path with no `..` (it stays inside the tenant dir).
-  Default `"."` (co-located). Honored for fleet tenants — workspace children and
-  nested `repos/`. Like `engine`, it is bootstrapper-only and `resolveConfig`
+  Default `"."` (co-located). Honored for fleet tenants (workspace children).
+  Like `engine`, it is bootstrapper-only and `resolveConfig`
   drops it (the engine never sees it).
 
 ## Engine source (`engine`)
@@ -382,7 +386,7 @@ config-file territory.
 
 Secrets (`GH_TOKEN` and the active provider's key) are also read from the
 environment — see [`ai-install.md`](ai-install.md) and `.env.example`. In a
-nested or workspace deployment each tenant's secrets live in its own co-located
+workspace deployment each tenant's secrets live in its own co-located
 `.env`, read by the supervisor and scrubbed so a tenant's engine child sees only
 its own (workspace two-tier model: [`workspace.md`](workspace.md)).
 </content>

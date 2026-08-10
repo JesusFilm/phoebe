@@ -61,8 +61,8 @@ first three are defaulted in `config.paths`):
 
 The consumer's deployment directory (config, optional `prompts/`, and in
 multi-tenant layouts the whole tenant tree) is mounted **read-only** into
-`/etc/phoebe`, so `phoebe boot` re-reads config edits without a rebuild. Nested
-(`repos/`) and workspace (child checkouts) both use that directory mount; see
+`/etc/phoebe`, so `phoebe boot` re-reads config edits without a rebuild. Solo
+and workspace (child checkouts) both use that directory mount; see
 [`workspace.md`](workspace.md) for workspace topology and the operator
 runbook.
 

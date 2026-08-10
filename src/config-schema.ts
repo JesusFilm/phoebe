@@ -183,7 +183,7 @@ export type PhoebeUserConfig = {
    * standalone deployment's `.phoebe/` folder instead of duplicating `.env` and
    * `prompts/` at the repo root. Default `"."` (co-located — today's behavior).
    *
-   * Honored for fleet tenants (workspace children + nested `repos/`): the
+   * Honored for fleet tenants (workspace children): the
    * supervisor reads the tenant `.env` from `<dir>/<configDir>/.env` and runs
    * the tenant's engine child with cwd `<dir>/<configDir>` (so relative
    * `promptFiles` resolve there), while still loading THIS config from `<dir>`.

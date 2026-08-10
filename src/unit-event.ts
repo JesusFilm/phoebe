@@ -3,7 +3,7 @@
 // With N repos multiplexed into one container, every line must be attributable
 // per repo. The chosen shape is per-tenant-tagged stdout, host-collected, so the
 // container stays log-stateless (no on-disk logs, no rotation): every Phoebe
-// line is `[phoebe:<slug>]`, even in flat single-tenant mode — one grammar for
+// line is `[phoebe:<slug>]`, even in solo single-tenant mode — one grammar for
 // any host parser, and the un-attributable bare `[phoebe]` is eliminated.
 //
 // Two concerns, one file each (#73 Decision 4): stdout is the append-only event
@@ -34,7 +34,7 @@ export type UnitEvent = {
   detail?: string;
 };
 
-/** The per-tenant stdout tag. Flat mode uses its config's `repoSlug`, never bare. */
+/** The per-tenant stdout tag. Solo mode uses its config's `repoSlug`, never bare. */
 export function unitTag(tenant: string): string {
   return `[phoebe:${tenant}]`;
 }

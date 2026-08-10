@@ -9,9 +9,8 @@ volumes:
 working_dir: /etc/phoebe
 ```
 
-That mount model is deliberate and shared with the nested (`repos/`) layout:
-one directory mount so `phoebe boot` re-walks the tree every poll and sees
-children come and go without a recreate.
+That mount model is deliberate: one directory mount, so `phoebe boot` re-walks
+the tree every poll and sees children come and go without a recreate.
 
 ## Workspace specifics
 

@@ -1,16 +1,12 @@
-// Multi-tenant lifecycle commands (#63/#95) — the CLI surface for a deployment
-// that owns many repos rather than a single scaffold.
+// Multi-tenant lifecycle commands (#95/#169) — the in-container CLI surface for
+// a deployment that owns many repos rather than a single scaffold. Workspace
+// children are scaffolded by `phoebe init --tenant`, so there is no host-side
+// add/remove verb here; registering a child is an edit to the root config the
+// operator owns (#127 — Phoebe never writes it).
 //
-// Host-side (operate on the bind-mounted config tree):
-//   - `add-repo <owner/repo>`  scaffold repos/<owner>/<repo>/ → transitions the
-//                              deployment to nested; the running supervisor
-//                              discovers it on the next poll (file-drop, #58).
-//   - `remove-repo <owner/repo>`  delete the tenant config dir (reversible;
-//                              /data/repos/<slug> is retained, #62).
-// In-container (act on the data volume):
 //   - `list`   enumerate tenants + health (config valid? env present? engine
-//              state from status.json? retained /data?). Nested scans `repos/`;
-//              workspace mode reuses the #91 discover walk over child trees.
+//              state from status.json? retained /data?), through the same #91
+//              discover walk boot supervises with. Solo has nothing to list.
 //   - `purge <owner/repo> --yes`  destructive wipe of a *removed* tenant's
 //              retained /data/repos/<slug>; refuses while a live config exists.
 //
@@ -18,22 +14,13 @@
 // dir and data base, so they are unit-tested against temp dirs; the CLI layer
 // (src/cli.ts) resolves those roots and prints the reports.
 
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { join, relative } from "node:path";
 import { readConfigDir } from "../bootstrap/config-dir.ts";
 import {
   type DiscoveredTenant,
   discoverUndeclaredInTreeTenants,
   discoverWorkspaceTenants,
-  REPOS_DIR,
   resolveDeclaredTenantDir,
   TENANT_CONFIG_FILE,
   TENANT_ENV_FILE,
@@ -49,8 +36,8 @@ import { readStatus, STATUS_FILE, type StatusSnapshot } from "./unit-event.ts";
 
 /**
  * The named model-A constraint (#61/#63): all tenants share uid 10001, so their
- * `.env` files are NOT DAC-isolated at rest. `add-repo` prints this on every run
- * — it fires exactly when a second tenant makes co-tenancy relevant.
+ * `.env` files are NOT DAC-isolated at rest. `init --tenant` prints this on
+ * every run — it fires exactly when adding a tenant makes co-tenancy relevant.
  */
 export const TRUST_DOMAIN_NOTE =
   "⚠️  One container = one trust domain. All tenants run as the same user, so a " +
@@ -63,7 +50,7 @@ export const TRUST_DOMAIN_NOTE =
  *
  * The character class allows `.` (real repo names contain it, e.g. `foo.js`),
  * so a segment could be exactly `.` or `..` — which every consumer joins into a
- * filesystem path (`addRepo`/`removeRepo`/`purgeTenant`, the last an `rmSync`).
+ * filesystem path (`purgeTenant`, an `rmSync`).
  * A traversing segment would escape the tenant tree / data base, so reject `.`
  * and `..` as whole segments explicitly (the regex alone cannot, since it must
  * still admit dots inside a name).
@@ -105,12 +92,11 @@ export function stripUrlCredentials(url: string): string {
 
 /**
  * Render a per-tenant `phoebe.config.ts`. Type-only import (like the shipped
- * flat scaffold) so it loads from the container mount with no `node_modules`;
+ * solo scaffold) so it loads from the container mount with no `node_modules`;
  * deliberately carries NO `engine` field — engine source is shared, set in the
  * deployment-root config (#60/#63).
  *
- * Used by `add-repo` (nested path tenants) and `init --tenant` (workspace
- * child in-tree installs, #94).
+ * Used by `init --tenant` (workspace child in-tree installs, #94).
  */
 export function renderTenantConfig(fields: {
   repoSlug: string;
@@ -119,7 +105,7 @@ export function renderTenantConfig(fields: {
   checkCommand: string;
   testCommand: string;
 }): string {
-  return `// Per-tenant Phoebe config — scaffolded by \`phoebe add-repo\` or \`phoebe init --tenant\`.
+  return `// Per-tenant Phoebe config — scaffolded by \`phoebe init --tenant\`.
 //
 // One tenant of a multi-tenant deployment. The shared engine source and
 // fleet-global knobs live in the deployment-root phoebe.config.ts, not here.
@@ -138,7 +124,7 @@ export default config;
 `;
 }
 
-/** Per-tenant secrets template — copy to `.env`. Shared by add-repo + init --tenant. */
+/** Per-tenant secrets template — copy to `.env`. Written by `init --tenant`. */
 export const TENANT_ENV_EXAMPLE = `# Per-tenant secrets — copy to \`.env\`. Read ONLY by this tenant's engine child
 # (the supervisor scrubs every other tenant's secrets, #61).
 
@@ -194,76 +180,8 @@ export function slugFromRemoteUrl(url: string): string | null {
   }
 }
 
-export type AddRepoResult = { tenantDir: string; created: string[] };
-
-/**
- * Scaffold one tenant under `repos/<owner>/<repo>/`. Creates `repos/` on first
- * use (transitioning the deployment to nested). Refuses to overwrite an existing
- * tenant. Prompt overrides are seeded only with `withPrompts` (the engine ships
- * defaults otherwise, #63).
- */
-export function addRepo(opts: {
-  configDir: string;
-  slug: string;
-  repoUrl?: string;
-  installCommand?: string;
-  checkCommand?: string;
-  testCommand?: string;
-  withPrompts?: boolean;
-  seedPrompt?: (promptsDir: string) => string[];
-}): AddRepoResult {
-  const { owner, repo } = parseSlug(opts.slug);
-  const tenantDir = join(opts.configDir, REPOS_DIR, owner, repo);
-  if (existsSync(tenantDir)) {
-    throw new Error(
-      `Tenant ${opts.slug} already exists at ${tenantDir}. ` +
-        `Edit it in place, or \`remove-repo\` it first.`,
-    );
-  }
-  mkdirSync(tenantDir, { recursive: true });
-
-  const created: string[] = [];
-  const configPath = join(tenantDir, TENANT_CONFIG_FILE);
-  writeFileSync(
-    configPath,
-    renderTenantConfig({
-      repoSlug: opts.slug,
-      repoUrl: opts.repoUrl ?? defaultRepoUrl(opts.slug),
-      installCommand: opts.installCommand ?? "npm ci",
-      checkCommand: opts.checkCommand ?? "npm run check",
-      testCommand: opts.testCommand ?? "npm test",
-    }),
-  );
-  created.push(configPath);
-
-  const envExamplePath = join(tenantDir, `${TENANT_ENV_FILE}.example`);
-  writeFileSync(envExamplePath, TENANT_ENV_EXAMPLE);
-  created.push(envExamplePath);
-
-  if (opts.withPrompts && opts.seedPrompt) {
-    created.push(...opts.seedPrompt(join(tenantDir, "prompts")));
-  }
-
-  return { tenantDir, created };
-}
-
-/**
- * Remove a tenant's config dir (reversible — its `/data/repos/<slug>` is retained
- * by the supervisor, #62; use `purge` to reclaim it). Refuses when the tenant
- * does not exist so a typo is loud rather than a silent no-op.
- */
-export function removeRepo(opts: { configDir: string; slug: string }): { removed: string } {
-  const { owner, repo } = parseSlug(opts.slug);
-  const tenantDir = join(opts.configDir, REPOS_DIR, owner, repo);
-  if (!existsSync(tenantDir)) {
-    throw new Error(`No tenant ${opts.slug} at ${tenantDir}.`);
-  }
-  rmSync(tenantDir, { recursive: true, force: true });
-  return { removed: tenantDir };
-}
-
 export type TenantListing = {
-  /** Display path: declared entry, walk-relative dir, or nested slug. */
+  /** Display path: the declared entry, or the walk-relative tenant dir. */
   path: string;
   /** Authoritative `repoSlug` when the config was readable; null otherwise. */
   slug: string | null;
@@ -371,7 +289,7 @@ async function defaultLoadRepoSlug(configPath: string): Promise<string> {
 
 /**
  * Resolve the root `workspace` block, if any. A missing / unreadable root config
- * is not workspace mode (detection ladder falls through to nested / flat). A
+ * is not workspace mode (the detection ladder falls through to solo). A
  * present but *malformed* `workspace` field throws — same as boot.
  *
  * Returns the whole resolved block rather than a bare depth (#128): on the
@@ -410,6 +328,29 @@ export type WorkspaceEnumeration = {
 };
 
 /**
+ * The injectable halves of workspace discovery: how a child's config is read,
+ * and how its checkout's origin is. Every fleet-wide entry point takes the same
+ * bundle and forwards it unchanged, so `phoebe list`, `phoebe purge`, and a
+ * token sweep can never disagree about what the fleet is. Each is optional and
+ * defaults to the real reader; tests override them to avoid on-disk configs and
+ * git calls.
+ */
+export type TenantDiscoverySeams = {
+  loadRepoSlug?: (configPath: string) => string | Promise<string>;
+  loadConfigDir?: (configPath: string) => string | Promise<string>;
+  readOriginUrl?: (tenantDir: string) => string | null | Promise<string | null>;
+};
+
+/** Drop the unset seams, so an absent override never shadows a default. */
+function definedSeams(seams: TenantDiscoverySeams): TenantDiscoverySeams {
+  return {
+    ...(seams.loadRepoSlug !== undefined ? { loadRepoSlug: seams.loadRepoSlug } : {}),
+    ...(seams.loadConfigDir !== undefined ? { loadConfigDir: seams.loadConfigDir } : {}),
+    ...(seams.readOriginUrl !== undefined ? { readOriginUrl: seams.readOriginUrl } : {}),
+  };
+}
+
+/**
  * Resolve the root `workspace` block and run the same discovery boot runs,
  * returning the raw {@link DiscoveredTenant}s rather than display rows — the
  * single seam every fleet-wide caller shares (#154). `phoebe list` renders these
@@ -418,12 +359,9 @@ export type WorkspaceEnumeration = {
  * one the supervisor supervises. `null` when the root is not a workspace,
  * letting callers fall through the detection ladder (#83) as boot does.
  */
-export async function enumerateWorkspaceTenants(opts: {
-  configDir: string;
-  loadRepoSlug?: (configPath: string) => string | Promise<string>;
-  loadConfigDir?: (configPath: string) => string | Promise<string>;
-  readOriginUrl?: (tenantDir: string) => string | null | Promise<string | null>;
-}): Promise<WorkspaceEnumeration | null> {
+export async function enumerateWorkspaceTenants(
+  opts: TenantDiscoverySeams & { configDir: string },
+): Promise<WorkspaceEnumeration | null> {
   const workspace = await resolveRootWorkspace(opts.configDir);
   if (workspace === null) return null;
   const discovery = await discoverWorkspaceTenants(opts.configDir, workspace, {
@@ -502,71 +440,19 @@ function listWorkspaceTenants(opts: {
   return { listings, declared: listings.length, live, explicit, undeclared };
 }
 
-/** Nested-mode scan: every `repos/<owner>/<repo>/` dir with its health signals. */
-function listNestedTenants(configDir: string, dataBase: string): ListTenantsResult {
-  const reposRoot = join(configDir, REPOS_DIR);
-  const listings: TenantListing[] = [];
-  let owners: string[];
-  try {
-    owners = readdirSync(reposRoot, { withFileTypes: true })
-      .filter((e) => e.isDirectory())
-      .map((e) => e.name);
-  } catch {
-    return { listings, declared: 0, live: 0, explicit: false, undeclared: [] };
-  }
-  for (const owner of owners) {
-    let repos: string[];
-    try {
-      repos = readdirSync(join(reposRoot, owner), { withFileTypes: true })
-        .filter((e) => e.isDirectory())
-        .map((e) => e.name);
-    } catch {
-      continue;
-    }
-    for (const repo of repos) {
-      const slug = `${owner}/${repo}`;
-      const dir = join(reposRoot, owner, repo);
-      const configValid = existsSync(join(dir, TENANT_CONFIG_FILE));
-      if (configValid) {
-        listings.push(listingForLive(slug, slug, dir, dataBase, true));
-      } else {
-        listings.push({
-          path: slug,
-          slug: null,
-          held: true,
-          reason: "no phoebe.config.ts",
-          configValid: false,
-          envPresent: envPresent(dir),
-          retainedData: false,
-          status: null,
-        });
-      }
-    }
-  }
-  listings.sort((a, b) => (a.slug ?? "").localeCompare(b.slug ?? ""));
-  const live = listings.filter((listing) => !listing.held).length;
-  return { listings, declared: listings.length, live, explicit: false, undeclared: [] };
-}
-
 /**
- * Enumerate tenants with health signals for `phoebe list` (#63/#95).
+ * Enumerate tenants with health signals for `phoebe list` (#95).
  *
  * Detection ladder matches boot (#83): root config has a `workspace` block →
- * walk the workspace tree (same walk as #91); else scan `repos/` (nested);
- * else empty (flat has nothing to list beyond "no tenants").
+ * walk the workspace tree (same walk as #91); else empty (solo has nothing to
+ * list beyond "no tenants").
  */
-export async function listTenants(opts: {
-  configDir: string;
-  dataBase: string;
-  /** Injectable workspace slug loader (tests); defaults to `loadUserConfig`. */
-  loadRepoSlug?: (configPath: string) => string | Promise<string>;
-  /** Injectable origin reader (tests); defaults to git `remote.origin.url`. */
-  readOriginUrl?: (tenantDir: string) => string | null | Promise<string | null>;
-}): Promise<ListTenantsResult> {
+export async function listTenants(
+  opts: TenantDiscoverySeams & { configDir: string; dataBase: string },
+): Promise<ListTenantsResult> {
   const enumeration = await enumerateWorkspaceTenants({
     configDir: opts.configDir,
-    ...(opts.loadRepoSlug !== undefined ? { loadRepoSlug: opts.loadRepoSlug } : {}),
-    ...(opts.readOriginUrl !== undefined ? { readOriginUrl: opts.readOriginUrl } : {}),
+    ...definedSeams(opts),
   });
   if (enumeration !== null) {
     return listWorkspaceTenants({
@@ -575,30 +461,70 @@ export async function listTenants(opts: {
       enumeration,
     });
   }
-  return listNestedTenants(opts.configDir, opts.dataBase);
+  // Solo: exactly one tenant, and it is the deployment root itself — there is
+  // no fleet to enumerate, so `phoebe list` reports no tenants.
+  return { listings: [], declared: 0, live: 0, explicit: false, undeclared: [] };
+}
+
+/**
+ * The config dir still claiming `slug` in this deployment, or `null` when no
+ * live config does.
+ *
+ * A *held* child counts: discovery would skip it now, but its config dir is
+ * still on disk and its engine child may still be running (#129), so its data is
+ * not a removed tenant's to reclaim. Solo answers from the root config itself —
+ * the deployment root *is* the tenant there.
+ */
+async function liveConfigDirForSlug(
+  configDir: string,
+  slug: string,
+  seams: TenantDiscoverySeams,
+): Promise<string | null> {
+  const enumeration = await enumerateWorkspaceTenants({ configDir, ...definedSeams(seams) });
+  if (enumeration !== null) {
+    const tenant = enumeration.tenants.find((candidate) => candidate.slug === slug);
+    if (tenant !== undefined) return tenant.dir;
+    return enumeration.holds.find((hold) => hold.slug === slug)?.dir ?? null;
+  }
+  const rootConfigPath = join(configDir, TENANT_CONFIG_FILE);
+  if (!existsSync(rootConfigPath)) return null;
+  try {
+    const root = await loadUserConfig(rootConfigPath);
+    return root.repoSlug === slug ? configDir : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
  * Destructively wipe a *removed* tenant's retained `/data/repos/<slug>`. Refuses
- * while a live config dir still exists for that slug (purge is for removed
- * tenants only — otherwise it would nuke a running tenant's clone), and requires
- * an explicit `confirm` (the CLI's `--yes`).
+ * while a live config still claims that slug (purge is for removed tenants only
+ * — otherwise it would nuke a running tenant's clone), and requires an explicit
+ * `confirm` (the CLI's `--yes`).
+ *
+ * The refusal is advisory about what to do next and stops there: unregistering a
+ * child means editing the root `phoebe.config.ts`, which Phoebe never writes on
+ * the operator's behalf (#127).
  */
-export function purgeTenant(opts: {
-  configDir: string;
-  dataBase: string;
-  slug: string;
-  confirm: boolean;
-}): { purged: string } {
+export async function purgeTenant(
+  opts: TenantDiscoverySeams & {
+    configDir: string;
+    dataBase: string;
+    slug: string;
+    confirm: boolean;
+  },
+): Promise<{ purged: string }> {
   const { owner, repo } = parseSlug(opts.slug);
   if (!opts.confirm) {
     throw new Error(`Refusing to purge ${opts.slug} without --yes (this is irreversible).`);
   }
-  const tenantConfigDir = join(opts.configDir, REPOS_DIR, owner, repo);
-  if (existsSync(tenantConfigDir)) {
+  const liveDir = await liveConfigDirForSlug(opts.configDir, opts.slug, opts);
+  if (liveDir !== null) {
     throw new Error(
-      `Tenant ${opts.slug} still has a live config at ${tenantConfigDir}. ` +
-        `\`remove-repo\` it first — purge only reclaims data for removed tenants.`,
+      `Tenant ${opts.slug} still has a live config at ${liveDir}. ` +
+        `Remove the child from \`workspace.tenants\` in the deployment-root ` +
+        `phoebe.config.ts and/or delete its config dir, then purge — purge only ` +
+        `reclaims data for removed tenants.`,
     );
   }
   const dataDir = join(opts.dataBase, owner, repo);
@@ -607,36 +533,4 @@ export function purgeTenant(opts: {
   }
   rmSync(dataDir, { recursive: true, force: true });
   return { purged: dataDir };
-}
-
-/** Read a tenant config's fields for `add-repo --from-config` migration. */
-export function readFlatRepoFields(configDir: string): {
-  installCommand?: string;
-  checkCommand?: string;
-  testCommand?: string;
-} {
-  const path = join(configDir, TENANT_CONFIG_FILE);
-  try {
-    const source = readFileSync(path, "utf8");
-    const pick = (key: string): string | undefined => {
-      const m = new RegExp(`${key}\\s*:\\s*(["'\\\`])((?:\\\\.|(?!\\1).)*)\\1`).exec(source);
-      return m?.[2];
-    };
-    return {
-      installCommand: pick("installCommand"),
-      checkCommand: pick("checkCommand"),
-      testCommand: pick("testCommand"),
-    };
-  } catch {
-    return {};
-  }
-}
-
-/** True when the deployment root has a `repos/` dir (nested mode). */
-export function isNested(configDir: string): boolean {
-  try {
-    return statSync(join(configDir, REPOS_DIR)).isDirectory();
-  } catch {
-    return false;
-  }
 }
