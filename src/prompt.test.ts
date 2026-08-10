@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
 import { resolveConfig, type PhoebeUserConfig } from "./config-schema.ts";
 import {
+  assertPromptFilesExist,
   buildDefaultPromptArgs,
   loadPromptTemplate,
   renderPrompt,
@@ -11,8 +12,8 @@ import {
   substitutePromptArgs,
 } from "./prompt.ts";
 
-function fixtureConfig(): ReturnType<typeof resolveConfig> {
-  const user: PhoebeUserConfig = {
+function minimalUser(): PhoebeUserConfig {
+  return {
     repoSlug: "acme/widget",
     repoUrl: "https://github.com/acme/widget.git",
     installCommand: "npm ci",
@@ -20,7 +21,10 @@ function fixtureConfig(): ReturnType<typeof resolveConfig> {
     testCommand: "npm test",
     readyCommand: "npm run ready",
   };
-  return resolveConfig(user);
+}
+
+function fixtureConfig(): ReturnType<typeof resolveConfig> {
+  return resolveConfig(minimalUser());
 }
 
 describe("substitutePromptArgs", () => {
@@ -177,5 +181,123 @@ describe("resolvePromptFile / loadPromptTemplate", () => {
     expect(() => resolvePromptFile("prompts/missing.md", runtimeRoot)).toThrow(
       /Could not find prompt file prompts\/missing\.md/,
     );
+  });
+
+  test("rejects a directory at the prompt path, rather than reading it", () => {
+    // A directory satisfies "exists" but not "can be loaded" — `readFileSync`
+    // would throw EISDIR at dispatch, which is the fail-at-use mode the startup
+    // check exists to remove.
+    const runtimeRoot = mkdtempSync(join(tmpdir(), "phoebe-prompt-dir-"));
+    mkdirSync(join(runtimeRoot, "prompts", "issues-prompt.md"), { recursive: true });
+
+    expect(() => resolvePromptFile("prompts/issues-prompt.md", runtimeRoot)).toThrow(
+      /Could not find prompt file prompts\/issues-prompt\.md/,
+    );
+  });
+});
+
+describe("assertPromptFilesExist", () => {
+  /** A runtime root holding `prompts/<name>` for each name given. */
+  function runtimeRootWith(names: readonly string[]): string {
+    const root = mkdtempSync(join(tmpdir(), "phoebe-prompt-assert-"));
+    mkdirSync(join(root, "prompts"), { recursive: true });
+    for (const name of names) writeFileSync(join(root, "prompts", name), `# ${name}\n`);
+    return root;
+  }
+
+  const ALL_PROMPTS = [
+    "issues-prompt.md",
+    "conflict-prompt.md",
+    "checks-prompt.md",
+    "reviews-prompt.md",
+    "research-prompt.md",
+  ];
+
+  test("passes when every promptFiles entry resolves", () => {
+    const runtimeRoot = runtimeRootWith(ALL_PROMPTS);
+    expect(() => assertPromptFilesExist(fixtureConfig(), runtimeRoot)).not.toThrow();
+  });
+
+  test("only checks the kinds this tenant's workOrder actually runs", () => {
+    // A tenant that dropped `research` from `workOrder` never dispatches a
+    // research unit, so it has no research prompt to be missing — refusing to
+    // boot over one would be a new failure, not a caught one.
+    const runtimeRoot = runtimeRootWith(ALL_PROMPTS.filter((n) => n !== "research-prompt.md"));
+    const config = resolveConfig({
+      ...minimalUser(),
+      workOrder: ["conflicts", "checks", "reviews", "issues"],
+    });
+
+    expect(() => assertPromptFilesExist(config, runtimeRoot)).not.toThrow();
+    // …and the same runtime root still fails for a tenant that does run it.
+    expect(() => assertPromptFilesExist(fixtureConfig(), runtimeRoot)).toThrow(/research/);
+  });
+
+  test("names the tenant, every missing kind, and each resolved path", () => {
+    // The #164 shape: a hand-copied asset dir that never got the prompt kinds
+    // added after it was copied. All of them are reported in one throw, so one
+    // boot tells you the whole list instead of one kind per re-run.
+    const runtimeRoot = runtimeRootWith(["issues-prompt.md", "conflict-prompt.md"]);
+
+    let message = "";
+    try {
+      assertPromptFilesExist(fixtureConfig(), runtimeRoot);
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+
+    expect(message).toContain("acme/widget");
+    expect(message).toContain("checks");
+    expect(message).toContain("reviews");
+    expect(message).toContain("research");
+    expect(message).toContain(resolve(runtimeRoot, "prompts/research-prompt.md"));
+    expect(message).not.toContain("issues-prompt.md");
+  });
+
+  test("accepts an entry that escapes the runtime root, as long as it exists", () => {
+    // What `configDir` deployments need (#98/#164): the engine child's cwd is
+    // `<repo>/.phoebe`, and its prompts are the repo's own `prompts/` one level
+    // up. Existence is the rule, not containment.
+    const repo = runtimeRootWith(ALL_PROMPTS);
+    const runtimeRoot = join(repo, ".phoebe");
+    mkdirSync(runtimeRoot, { recursive: true });
+    const config = resolveConfig({
+      ...minimalUser(),
+      promptFiles: {
+        issue: "../prompts/issues-prompt.md",
+        conflict: "../prompts/conflict-prompt.md",
+        checks: "../prompts/checks-prompt.md",
+        reviews: "../prompts/reviews-prompt.md",
+        research: "../prompts/research-prompt.md",
+      },
+    });
+
+    expect(() => assertPromptFilesExist(config, runtimeRoot)).not.toThrow();
+  });
+
+  test("counts a directory at a prompt path as missing", () => {
+    const runtimeRoot = runtimeRootWith(ALL_PROMPTS.filter((n) => n !== "checks-prompt.md"));
+    mkdirSync(join(runtimeRoot, "prompts", "checks-prompt.md"), { recursive: true });
+
+    expect(() => assertPromptFilesExist(fixtureConfig(), runtimeRoot)).toThrow(/checks/);
+  });
+
+  test("checks absolute entries as-is, ignoring the runtime root", () => {
+    const elsewhere = runtimeRootWith(["issues-prompt.md"]);
+    const runtimeRoot = mkdtempSync(join(tmpdir(), "phoebe-prompt-abs-"));
+    const config = resolveConfig({
+      ...minimalUser(),
+      promptFiles: { issue: join(elsewhere, "prompts", "issues-prompt.md") },
+    });
+
+    let message = "";
+    try {
+      assertPromptFilesExist(config, runtimeRoot);
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+
+    expect(message).not.toContain("issue:");
+    expect(message).toContain("research");
   });
 });

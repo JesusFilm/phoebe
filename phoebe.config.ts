@@ -45,6 +45,25 @@ export const config = defineConfig({
   // deployment ignores this (configDir only applies to fleet tenants), so solo
   // still works unchanged. Requires engine >= v0.3.0.
   configDir: ".phoebe",
+
+  // …and, because `configDir` moves the engine child's cwd to `.phoebe/`, point
+  // every prompt back at the repo's own `prompts/` one level up rather than
+  // keeping a second copy under `.phoebe/prompts/`. The whole working tree is
+  // mounted, so `..` is in reach, and one tree means prompt edits reach the
+  // agent that works this repo instead of drifting out of sight (#164). Relative
+  // `promptFiles` are resolved by existence, not containment.
+  //
+  // These are written for the cwd this config is RUN with — `.phoebe/` — so a
+  // by-hand engine run against this repo belongs there too (`cd .phoebe && node
+  // ../src/cli.ts --dry-run --run-once`), not at the repo root, where `..` would
+  // leave the checkout and the startup check would say so.
+  promptFiles: {
+    issue: "../prompts/issues-prompt.md",
+    conflict: "../prompts/conflict-prompt.md",
+    checks: "../prompts/checks-prompt.md",
+    reviews: "../prompts/reviews-prompt.md",
+    research: "../prompts/research-prompt.md",
+  },
 });
 
 export default config;

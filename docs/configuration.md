@@ -132,6 +132,19 @@ tickets. Omit `research` to disable it for a repo. See
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `promptFiles` | `{ issue: "prompts/issues-prompt.md", conflict: "prompts/conflict-prompt.md", checks: "prompts/checks-prompt.md", reviews: "prompts/reviews-prompt.md", research: "prompts/research-prompt.md" }` | Prompt template paths, relative to the **runtime root** (process working directory — the consumer checkout on the host, or `/etc/phoebe` in the container where compose mounts `phoebe.config.ts` and `prompts/`). Resolved only from that base, never from the installed package. `phoebe init` copies the shipped defaults into `prompts/`; edit them to override, or point a key at another runtime-root-relative path. |
 
+Every key a tenant can dispatch is checked **at engine startup**: if one names a
+file that does not exist, the engine refuses to start and names the tenant and
+every missing kind at once. Prompt loading used to be fail-at-use, so a tenant
+missing one kind booted clean and only died when the first unit of that kind was
+dispatched — weeks later, if that kind was rare (#164). The check follows
+[`workOrder`](#work-order), so a kind you dropped there needs no prompt file.
+
+A key may point outside the runtime root. Being a loadable file is the rule, not
+containment: `promptFiles: { issue: "../prompts/issues-prompt.md", … }` is how a
+[`configDir`](#asset-directory-configdir) tenant reaches the prompts at its repo
+root instead of keeping a second copy under `.phoebe/prompts/` — a copy that
+receives no prompt improvement you later merge.
+
 ## Container paths (derived, not configured)
 
 `paths` is **no longer a config field** — it is derived from `repoSlug`, so a
@@ -208,6 +221,12 @@ export default config;
 - The supervisor reads the tenant `.env` from `<dir>/<configDir>/.env` and runs
   the tenant's engine child with cwd `<dir>/<configDir>`, so relative
   `promptFiles` (and other cwd-relative assets) resolve there.
+- **That includes prompts you did not move.** If your prompts stayed at the repo
+  root, say so — `promptFiles: { issue: "../prompts/issues-prompt.md", … }` — and
+  keep one tree. Copying them into `<configDir>/prompts/` instead is what let
+  this repo's own dogfood run months-old prompts and lose a kind outright (#164);
+  the startup check now catches the missing kind, but nothing catches a stale
+  copy.
 - **The `phoebe.config.ts` itself must stay at `<dir>`.** Workspace discovery
   skips dotfolders, so a config inside `.phoebe/` would never be found — the
   config is a thin root file pointing at `configDir`, and everything else moves.

@@ -44,7 +44,8 @@ services:
     # saves by writing a new file and renaming it over the old one is invisible
     # inside the container — and `boot`'s config watch would never fire. Under a
     # directory mount the rename is seen normally. Prompts resolve relative to
-    # this cwd too (.phoebe/prompts).
+    # this cwd too — the config points them at ../prompts, the repo's own tree,
+    # so there is no second copy here to drift (#164).
     working_dir: /opt/phoebe-engine/.phoebe
     environment:
       # Secrets — populate via `.env` (see `.env.example`).
