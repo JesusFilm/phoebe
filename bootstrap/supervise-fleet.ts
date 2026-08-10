@@ -27,6 +27,8 @@ import {
   diffFleet,
   DuplicateOriginSlugError,
   DuplicateTenantSlugError,
+  WorkspaceStructuralChangeError,
+  WorkspaceTenantAxisSkip,
   type DiscoveredTenant,
   type FleetDiscoverResult,
   type TenantSample,
@@ -285,7 +287,17 @@ export async function superviseFleet(deps: SuperviseFleetDeps): Promise<EngineEx
       samples = discovered.samples;
       hold = new Set(discovered.hold ?? []);
     } catch (error) {
-      if (error instanceof DuplicateTenantSlugError || error instanceof DuplicateOriginSlugError) {
+      // A mid-flight malformed `workspace` block is unknown state, not an empty
+      // fleet: skip the tenant axis this poll (#139).
+      if (error instanceof WorkspaceTenantAxisSkip) {
+        deps.onDiscoverError?.(error);
+        continue;
+      }
+      if (
+        error instanceof DuplicateTenantSlugError ||
+        error instanceof DuplicateOriginSlugError ||
+        error instanceof WorkspaceStructuralChangeError
+      ) {
         await drainAll();
         throw error;
       }

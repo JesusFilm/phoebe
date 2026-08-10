@@ -25,7 +25,7 @@
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 
 import { DEFAULT_TENANT_CONFIG_DIR } from "./config-dir.ts";
 import { isInsideContainer } from "../src/execution-gate.ts";
@@ -41,7 +41,7 @@ export const TENANT_ENV_FILE = ".env";
 export const REPOS_DIR = "repos";
 
 export type DiscoveredTenant = {
-  /** Stable id and reconcile key: the tenant's config dir (unique per tenant). */
+  /** Stable id and reconcile key: the tenant's normalized absolute config dir. */
   id: string;
   /** `owner/repo` in nested/workspace mode; null in flat (child derives it). */
   slug: string | null;
@@ -51,6 +51,11 @@ export type DiscoveredTenant = {
   configPath: string;
   /** Absolute path to the tenant's co-located `.env`. */
   envPath: string;
+  /**
+   * Declared spelling from `workspace.tenants`, retained for diagnostics only —
+   * reconcile identity is always {@link id}.
+   */
+  declaredPath?: string;
 };
 
 export type Discovery =
@@ -94,6 +99,28 @@ export class DuplicateOriginSlugError extends Error {
     this.name = "DuplicateOriginSlugError";
     this.originSlug = originSlug;
     this.paths = [firstDir, secondDir];
+  }
+}
+
+/**
+ * Raised when the root `workspace` block is deleted or its arm is switched on a
+ * running supervisor — drain the fleet, then abort so boot re-runs the ladder.
+ */
+export class WorkspaceStructuralChangeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "WorkspaceStructuralChangeError";
+  }
+}
+
+/**
+ * Raised when the root config or `workspace` block is unreadable/malformed
+ * mid-flight — skip the tenant axis this poll and leave the running fleet intact.
+ */
+export class WorkspaceTenantAxisSkip extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "WorkspaceTenantAxisSkip";
   }
 }
 
@@ -170,21 +197,30 @@ export function readTenantOriginUrl(
   }
 }
 
+function tenantDirId(configDir: string, dir: string): string {
+  return isAbsolute(dir) ? normalize(dir) : resolve(configDir, dir);
+}
+
 function tenantAt(
+  configDir: string,
   dir: string,
   slug: string | null,
-  configDir: string = DEFAULT_TENANT_CONFIG_DIR,
+  configDirRel: string = DEFAULT_TENANT_CONFIG_DIR,
+  declaredPath?: string,
 ): DiscoveredTenant {
-  // `configDir` relocates the tenant's asset dir (its `.env` + prompts) to a
+  const absDir = tenantDirId(configDir, dir);
+  // `configDirRel` relocates the tenant's asset dir (its `.env` + prompts) to a
   // subdir of `dir` (#98). The config itself always stays at `dir`; only the
   // `.env` — and thus the engine child's cwd, `dirname(envPath)` — moves.
-  const assetsDir = configDir === DEFAULT_TENANT_CONFIG_DIR ? dir : join(dir, configDir);
+  const assetsDir =
+    configDirRel === DEFAULT_TENANT_CONFIG_DIR ? absDir : join(absDir, configDirRel);
   return {
-    id: dir,
+    id: absDir,
     slug,
-    dir,
-    configPath: join(dir, TENANT_CONFIG_FILE),
+    dir: absDir,
+    configPath: join(absDir, TENANT_CONFIG_FILE),
     envPath: join(assetsDir, TENANT_ENV_FILE),
+    ...(declaredPath === undefined ? {} : { declaredPath }),
   };
 }
 
@@ -299,7 +335,7 @@ export function isNestedDeployment(configDir: string): boolean {
  */
 export function discoverTenants(configDir: string): Discovery {
   if (!isNestedDeployment(configDir)) {
-    return { mode: "flat", tenants: [tenantAt(configDir, null)] };
+    return { mode: "flat", tenants: [tenantAt(configDir, configDir, null)] };
   }
   const reposRoot = join(configDir, REPOS_DIR);
   const tenants: DiscoveredTenant[] = [];
@@ -307,7 +343,7 @@ export function discoverTenants(configDir: string): Discovery {
     for (const repo of listDirs(join(reposRoot, owner))) {
       const dir = join(reposRoot, owner, repo);
       if (existsSync(join(dir, TENANT_CONFIG_FILE))) {
-        tenants.push(tenantAt(dir, `${owner}/${repo}`));
+        tenants.push(tenantAt(configDir, dir, `${owner}/${repo}`));
       }
     }
   }
@@ -366,7 +402,7 @@ export type DiscoverWorkspaceDeps = {
 
 /** Resolve one declared `workspace.tenants` entry to an absolute tenant dir. */
 export function resolveDeclaredTenantDir(configDir: string, entry: string): string {
-  return isAbsolute(entry) ? entry : resolve(configDir, entry);
+  return tenantDirId(configDir, entry);
 }
 
 /** Hold reason when a declared dir is absent on the host — already the whole truth. */
@@ -455,7 +491,11 @@ export async function discoverWorkspaceTenants(
   /** Fleet uniqueness: transport-normalised origin slug → first tenant dir. */
   const byOriginSlug = new Map<string, string>();
 
-  const consider = async (dir: string): Promise<void> => {
+  // `dir` is normalized to its absolute form up front: that path is the tenant's
+  // reconcile identity, so two spellings of one directory must not read as two
+  // tenants (#139). `declaredPath` is the explicit arm's spelling, diagnostics only.
+  const consider = async (rawDir: string, declaredPath?: string): Promise<void> => {
+    const dir = tenantDirId(configDir, rawDir);
     attempted.add(dir);
     const configPath = join(dir, TENANT_CONFIG_FILE);
     try {
@@ -505,7 +545,7 @@ export async function discoverWorkspaceTenants(
       const tenantConfigDir = deps.loadConfigDir
         ? (await deps.loadConfigDir(configPath)).trim()
         : DEFAULT_TENANT_CONFIG_DIR;
-      tenants.push(tenantAt(dir, slug, tenantConfigDir));
+      tenants.push(tenantAt(configDir, dir, slug, tenantConfigDir, declaredPath));
     } catch (error) {
       if (isFatalWorkspaceDiscoveryError(error)) throw error;
       const reason = error instanceof Error ? error.message : String(error);
@@ -532,7 +572,7 @@ export async function discoverWorkspaceTenants(
     const declaredDirs = workspace.tenants.map((entry) =>
       resolveDeclaredTenantDir(configDir, entry),
     );
-    for (const dir of declaredDirs) {
+    for (const [index, dir] of declaredDirs.entries()) {
       if (isAbsentTenantDir(dir)) {
         const reason = absentDeclaredDirHoldReason(configDir, dir, inContainer());
         skipReasons.set(dir, reason);
@@ -545,7 +585,7 @@ export async function discoverWorkspaceTenants(
         warnWorkspaceSkip(warn, dir, reason);
         continue;
       }
-      await consider(dir);
+      await consider(dir, workspace.tenants[index]);
     }
     return {
       mode: "workspace",

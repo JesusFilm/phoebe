@@ -805,3 +805,121 @@ describe("diffFleet", () => {
     expect(diff.removed).toEqual([]);
   });
 });
+
+// The hot half of the explicit arm: one poll's discovery feeding the next
+// poll's reconcile diff, which is where a wrong tenant identity shows up as
+// churn. Discovery shape itself is pinned by "workspace explicit arm (#137)".
+describe("explicit workspace tenants arm — reconcile identity (#139)", () => {
+  test("absent declared dir is held, not removed from a running fleet", async () => {
+    writeSlugConfig(join(dir, "widget"), "acme/widget");
+    const widgetDir = join(dir, "widget");
+    const missingDir = join(dir, "missing");
+
+    const discovery = await discoverWorkspaceTenants(
+      dir,
+      { tenants: ["widget", "missing"] },
+      {
+        loadRepoSlug: () => "acme/widget",
+        readOriginUrl: () => null,
+      },
+    );
+    expect(discovery.tenants.map((t) => t.id)).toEqual([widgetDir]);
+    expect(discovery.holds).toEqual([{ dir: missingDir, reason: DIRECTORY_ABSENT_HOLD_REASON }]);
+
+    const previous = new Map<string, string | null>([
+      [widgetDir, "fp1"],
+      [missingDir, "fp1"],
+    ]);
+    const diff = diffFleet(
+      previous,
+      discovery.tenants.map((tenant) => ({ tenant, fingerprint: "fp1" })),
+      new Set(discovery.holds.map((hold) => hold.dir)),
+    );
+    expect(diff.removed).toEqual([]);
+  });
+
+  test("rm -rf of a declared dir does not emit removed for a running child", async () => {
+    writeSlugConfig(join(dir, "widget"), "acme/widget");
+    const widgetDir = join(dir, "widget");
+    const previous = new Map<string, string | null>([[widgetDir, "fp1"]]);
+
+    rmSync(widgetDir, { recursive: true, force: true });
+
+    const discovery = await discoverWorkspaceTenants(
+      dir,
+      { tenants: ["widget"] },
+      {
+        loadRepoSlug: () => "acme/widget",
+        readOriginUrl: () => null,
+      },
+    );
+    expect(discovery.tenants).toEqual([]);
+    expect(discovery.holds.map((hold) => hold.dir)).toEqual([widgetDir]);
+
+    const diff = diffFleet(previous, [], new Set(discovery.holds.map((hold) => hold.dir)));
+    expect(diff.removed).toEqual([]);
+  });
+
+  test("tidying declared spelling is a no-op identity", async () => {
+    writeSlugConfig(join(dir, "widget"), "acme/widget");
+    const widgetDir = join(dir, "widget");
+
+    const tidy = await discoverWorkspaceTenants(
+      dir,
+      { tenants: ["./widget"] },
+      {
+        loadRepoSlug: () => "acme/widget",
+        readOriginUrl: () => null,
+      },
+    );
+    const plain = await discoverWorkspaceTenants(
+      dir,
+      { tenants: ["widget"] },
+      {
+        loadRepoSlug: () => "acme/widget",
+        readOriginUrl: () => null,
+      },
+    );
+    expect(tidy.tenants[0]?.id).toBe(widgetDir);
+    expect(plain.tenants[0]?.id).toBe(widgetDir);
+  });
+
+  test("reordering declared tenants does not diff against a running fleet", async () => {
+    writeSlugConfig(join(dir, "widget"), "acme/widget");
+    writeSlugConfig(join(dir, "gadget"), "acme/gadget");
+    const widgetDir = join(dir, "widget");
+    const gadgetDir = join(dir, "gadget");
+
+    const first = await discoverWorkspaceTenants(
+      dir,
+      { tenants: ["widget", "gadget"] },
+      {
+        loadRepoSlug: (path) => (path.includes("widget") ? "acme/widget" : "acme/gadget"),
+        readOriginUrl: () => null,
+      },
+    );
+    const reordered = await discoverWorkspaceTenants(
+      dir,
+      { tenants: ["gadget", "widget"] },
+      {
+        loadRepoSlug: (path) => (path.includes("widget") ? "acme/widget" : "acme/gadget"),
+        readOriginUrl: () => null,
+      },
+    );
+
+    const previous = new Map<string, string | null>([
+      [widgetDir, "fp1"],
+      [gadgetDir, "fp1"],
+    ]);
+    const diff = diffFleet(
+      previous,
+      reordered.tenants.map((tenant) => ({ tenant, fingerprint: "fp1" })),
+    );
+    expect(diff.added).toEqual([]);
+    expect(diff.removed).toEqual([]);
+    expect(diff.changed).toEqual([]);
+    expect(new Set(first.tenants.map((t) => t.id))).toEqual(
+      new Set(reordered.tenants.map((t) => t.id)),
+    );
+  });
+});
