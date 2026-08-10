@@ -7,6 +7,7 @@
 // so adding a field here without describing it in the roster is a compile error.
 
 import { isAbsolute } from "node:path";
+import { validateWorkspaceField as resolveWorkspaceField } from "../../bootstrap/workspace-source.ts";
 
 export const PROVIDER_NAMES = ["cursor", "claude", "codex"] as const;
 export type ProviderName = (typeof PROVIDER_NAMES)[number];
@@ -102,17 +103,17 @@ export function validateEngineSourceField(
 }
 
 /**
- * Bootstrapper-only workspace discovery knobs (#83/#97). Presence of this
- * block on the deployment-root config selects workspace mode; `depth` is how
- * many directory levels under the root the bootstrapper scans for tenant
- * configs (integer ≥ 1, default 1). The engine never reads this: it lives on
- * `PhoebeUserConfig` so a consumer config that sets it still type-checks, and
- * `resolveConfiguration` deliberately drops it — it never reaches `PhoebeConfig`.
+ * Bootstrapper-only workspace discovery knobs (#83/#97/#128). Presence of this
+ * block on the deployment-root config selects workspace mode, with exactly one
+ * of two discovery arms: `depth` (walk the tree, integer ≥ 1, default 1) or
+ * `tenants` (declare the fleet explicitly). The engine never reads this: it
+ * lives on `PhoebeUserConfig` so a consumer config that sets it still
+ * type-checks, and `resolveConfiguration` deliberately drops it — it never
+ * reaches `PhoebeConfig`.
  */
-export type WorkspaceField = {
-  /** Scan depth under the workspace root; omit ⇒ 1. */
-  depth?: number;
-};
+export type WorkspaceField =
+  | { depth?: number; tenants?: never }
+  | { tenants: string[]; depth?: never };
 
 export type PromptFilesConfig = {
   issue: string;
@@ -379,19 +380,15 @@ export function validateConfigDir(value: unknown, location: string): void {
 
 /**
  * Reject a malformed bootstrapper-only `workspace` block. Presence is enough
- * to select workspace mode later; `depth` must be an integer ≥ 1 when set, and
- * omitted `depth` is fine (bootstrap defaults it to 1). Wired into the roster
- * (./roster.ts) as `workspace`'s `validate`.
+ * to select workspace mode later; delegates to `bootstrap/workspace-source.ts`
+ * so the two entry points (bootstrapper load, engine-side `validateUserConfig`)
+ * cannot drift as the discovery arms grow (#128). `location` is unused here —
+ * `fieldLocation("workspace")` (./resolve.ts) already produces the exact
+ * message prefix that module hardcodes. Wired into the roster (./roster.ts) as
+ * `workspace`'s `validate`.
  */
-export function validateWorkspaceField(value: unknown, location: string): void {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${location} must be { depth?: integer ≥ 1 } (got ${JSON.stringify(value)}).`);
-  }
-  const { depth } = value as WorkspaceField;
-  if (depth === undefined) return;
-  if (typeof depth !== "number" || !Number.isInteger(depth) || depth < 1) {
-    throw new Error(`${location}.depth must be an integer ≥ 1 (got ${JSON.stringify(depth)}).`);
-  }
+export function validateWorkspaceField(value: unknown, _location: string): void {
+  resolveWorkspaceField(value);
 }
 
 /**
