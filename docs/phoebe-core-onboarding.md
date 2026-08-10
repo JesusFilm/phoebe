@@ -71,13 +71,13 @@ Create it at **Settings → Developer settings → Fine-grained tokens**:
 - **Repository access:** _Only select repositories_ → `JesusFilm/core`.
 - **Repository permissions:**
 
-  | Permission    | Access         | Why                                                              |
-  | ------------- | -------------- | ---------------------------------------------------------------- |
-  | Metadata      | Read (auto)    | Mandatory for every other permission.                            |
-  | Contents      | Read and write | Clone the repo, push branches.                                   |
-  | Pull requests | Read and write | Open/update PRs, post PR comments & watermarks.                  |
-  | Issues        | Read and write | Read `readyLabel`, swap in `processingLabel`, comment.           |
-  | Actions       | Read           | `gh run list` — the check-state source for the `checks` janitor. |
+  | Permission    | Access                | Why                                                              |
+  | ------------- | --------------------- | ---------------------------------------------------------------- |
+  | Metadata      | Read-only (automatic) | Mandatory for every other permission.                            |
+  | Contents      | Read and write        | Clone the repo, push branches.                                   |
+  | Pull requests | Read and write        | Open/update PRs, post PR comments & watermarks.                  |
+  | Issues        | Read and write        | Read `readyLabel`, swap in `processingLabel`, comment.           |
+  | Actions       | Read-only             | `gh run list` — the check-state source for the `checks` janitor. |
 
   Leave everything else _No access_. Add **Workflows: Read and write** only if you
   expect the agent to edit files under `.github/workflows/` (GitHub blocks pushing
@@ -85,6 +85,25 @@ Create it at **Settings → Developer settings → Fine-grained tokens**:
 
 Set an expiry you can live with and rotate it into `.env` when it lapses. Store it
 only in `GH_TOKEN` (§5) — never commit it.
+
+**Check the token before you trust it.** Every step above is a browser click, and
+a missed checkbox — or an org approval that never landed — does not fail at boot.
+It fails later, mid-run, as a 403 from whichever API hop needed the grant. Verify
+it up front:
+
+```bash
+node scripts/verify-tenant-token.mjs --slug JesusFilm/core --token github_pat_…
+# or, once §5 has written the .env, from the tenant directory:
+node scripts/verify-tenant-token.mjs
+```
+
+It reports each of the five permissions above as granted / missing / unknown,
+names the missing ones as the GitHub UI spells them (the Access column above), tells "no access at all"
+(the usual sign of a token still awaiting org approval) apart from one missing
+checkbox, and surfaces the expiry date — warning inside 14 days. Every probe is
+read-only: the write grants are proven by aiming a mutating call at a resource
+that cannot exist, so it is safe against a production repo. It never prints the
+token.
 
 ## 3. Create the labels (engine defaults, verbatim)
 

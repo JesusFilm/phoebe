@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
 import {
   addRepo,
   defaultRepoUrl,
+  enumerateWorkspaceTenants,
   isNested,
   listTenants,
   parseSlug,
@@ -428,6 +429,48 @@ describe("listTenants", () => {
       loadRepoSlug: () => "acme/child",
     });
     expect(undeclared).toEqual([]);
+  });
+});
+
+describe("enumerateWorkspaceTenants", () => {
+  test("returns the DiscoveredTenants boot would supervise, envPath and all", async () => {
+    writeFileSync(
+      join(configDir, "phoebe.config.ts"),
+      `export default { workspace: { tenants: ["widget", "absent"] } };\n`,
+    );
+    mkdirSync(join(configDir, "widget"), { recursive: true });
+    writeFileSync(join(configDir, "widget", "phoebe.config.ts"), "export default {};\n");
+
+    const result = await enumerateWorkspaceTenants({
+      configDir,
+      loadRepoSlug: () => "acme/widget",
+      readOriginUrl: () => null,
+    });
+
+    expect(result).not.toBeNull();
+    expect(result!.tenants.map((t) => t.slug)).toEqual(["acme/widget"]);
+    expect(result!.tenants[0]?.envPath).toBe(join(configDir, "widget", ".env"));
+    expect(result!.holds.map((h) => h.dir)).toEqual([join(configDir, "absent")]);
+  });
+
+  test("relocates a child's envPath when its config sets configDir (#98)", async () => {
+    writeFileSync(
+      join(configDir, "phoebe.config.ts"),
+      `export default { workspace: { tenants: ["widget"] } };\n`,
+    );
+    mkdirSync(join(configDir, "widget"), { recursive: true });
+    writeFileSync(
+      join(configDir, "widget", "phoebe.config.ts"),
+      `export default { repoSlug: "acme/widget", configDir: ".phoebe" };\n`,
+    );
+
+    const result = await enumerateWorkspaceTenants({ configDir, readOriginUrl: () => null });
+    expect(result!.tenants[0]?.envPath).toBe(join(configDir, "widget", ".phoebe", ".env"));
+  });
+
+  test("is null when the root is not a workspace, so callers can fall through", async () => {
+    writeFileSync(join(configDir, "phoebe.config.ts"), "export default {};\n");
+    expect(await enumerateWorkspaceTenants({ configDir })).toBeNull();
   });
 });
 

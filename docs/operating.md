@@ -125,6 +125,32 @@ the deployed shape — `docker compose up -d` runs the persistent loop.
 the container. See [`upgrading.md`](upgrading.md) for start/stop/upgrade
 commands and [`work-kinds.md`](work-kinds.md) for the full selection rules.
 
+## Checking a tenant's GitHub token
+
+Phoebe acts entirely as `GH_TOKEN`'s identity. When that token is short a
+permission — or its org approval never landed — nothing fails at boot; it fails
+mid-run as a 403 from whichever API hop needed the grant.
+
+`node scripts/verify-tenant-token.mjs` says which grant is missing, before
+Phoebe runs.
+
+| Invocation                                         | Verifies                                                            |
+| -------------------------------------------------- | ------------------------------------------------------------------- |
+| `verify-tenant-token.mjs`                          | The cwd's tenant — its `phoebe.config.ts` and its `.env`.           |
+| `verify-tenant-token.mjs ./repos/JesusFilm/core`   | A specific tenant directory (repeatable).                           |
+| `verify-tenant-token.mjs --all`                    | Every tenant of the deployment rooted here, one section each.       |
+| `verify-tenant-token.mjs --slug o/r --token ghp_…` | A token you have not written to a file yet.                         |
+| `--json` / `--check`                               | Machine-readable output / exit 1 on any finding (as `phoebe list`). |
+
+It reports each of the five permissions
+[onboarding §2](phoebe-core-onboarding.md#2-operator-github-token--a-fine-grained-pat)
+asks for as granted / missing / unknown, distinguishes "no access at all" (the
+usual sign of a fine-grained PAT still awaiting org approval) from one missing
+checkbox, and warns when the token expires inside 14 days. Every probe is
+read-only — the write grants are proven by aiming a mutating call at a resource
+that cannot exist — so it is safe against production, and it never prints the
+token. `--all` does not abort when one tenant fails.
+
 ## One-off overrides without editing config
 
 Most scalar fields have a `PHOEBE_*` env override for a single run — e.g.
@@ -164,6 +190,7 @@ one trust domain.
 | Migrate a flat deployment's fields down | `phoebe add-repo <owner/repo> --from-config` copies the top config's install/check/test commands into the new tenant.                                                                                                                                                                                                                                                                                                                                                  |
 | Remove a repo                           | `phoebe remove-repo <owner/repo>` (host-side). Reversible — the tenant's `/data` is retained; re-adding re-uses it.                                                                                                                                                                                                                                                                                                                                                    |
 | Reclaim a removed repo's disk           | `phoebe purge <owner/repo> --yes` (in-container). Destructive; refuses while a live config still exists.                                                                                                                                                                                                                                                                                                                                                               |
+| Check every tenant's GitHub token       | `node scripts/verify-tenant-token.mjs --all` (host-side, in the deployment dir). One section per tenant; `--check` exits non-zero when any is short a grant. See [Checking a tenant's GitHub token](#checking-a-tenants-github-token).                                                                                                                                                                                                                                 |
 | See every tenant + its health           | `phoebe list` (in-container): config present? `.env` present? retained data? current unit (read from each tenant's `status.json`). Rows that cannot boot show `held — <reason>`. Use `--json` for scriptable output and `--check` to exit non-zero when the declaration is not fully honoured (declared-arm accounting — `N of M`, declared order, `undeclared` — lives in [`workspace.md` → Declaring the fleet](workspace.md#declaring-the-fleet-workspacetenants)). |
 
 **Concurrency across tenants.** Only `PHOEBE_MAX_CONCURRENT_AGENTS` work units
