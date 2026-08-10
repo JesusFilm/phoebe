@@ -224,6 +224,19 @@ describe("resolveConfiguration: filling in the roster's shipped defaults", () =>
     expect(resolved.defaultModels.codex).toBe("gpt-5.4-mini");
   });
 
+  test("shallow-merges provider effort defaults: one override leaves claude's default", () => {
+    const resolved = resolve({ defaultEfforts: { codex: "medium" } });
+    expect(resolved.defaultEfforts.codex).toBe("medium");
+    expect(resolved.defaultEfforts.claude).toBe("high");
+  });
+
+  test("defaults claude's effort to high and leaves cursor/codex unset", () => {
+    const resolved = resolve();
+    expect(resolved.defaultEfforts.claude).toBe("high");
+    expect(resolved.defaultEfforts.cursor).toBeUndefined();
+    expect(resolved.defaultEfforts.codex).toBeUndefined();
+  });
+
   test("shallow-merges provider env vars the same way", () => {
     const resolved = resolve({ providerEnv: { cursor: "MY_CURSOR_KEY" } });
     expect(resolved.providerEnv.cursor).toBe("MY_CURSOR_KEY");

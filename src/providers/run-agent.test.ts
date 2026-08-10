@@ -78,6 +78,35 @@ describe("runAgent", () => {
     expect(result).toEqual({ exitCode: 0, resultText: "finished" });
   });
 
+  test("threads effort into the built command's argv", async () => {
+    const fake = makeFakeChild();
+    let spawnedArgs: readonly string[] = [];
+    const spawn: SpawnAgent = (file, args) => {
+      spawnedArgs = args;
+      queueMicrotask(() => fake.close(0));
+      return fake.child;
+    };
+
+    await runAgent({
+      provider: PROVIDERS.claude,
+      model: "claude-m",
+      effort: "high",
+      prompt: "the prompt",
+      cwd: "/work/tree",
+      env: {},
+      spawn,
+      log: () => {},
+    });
+
+    const modelIdx = spawnedArgs.indexOf("--model");
+    expect(spawnedArgs.slice(modelIdx, modelIdx + 4)).toEqual([
+      "--model",
+      "claude-m",
+      "--effort",
+      "high",
+    ]);
+  });
+
   test("keeps the last result across chunk-split lines and maps failure exit codes", async () => {
     const fake = makeFakeChild();
     const spawn: SpawnAgent = () => {
