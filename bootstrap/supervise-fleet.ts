@@ -8,7 +8,9 @@
 // Two orthogonal axes are polled:
 //   - Engine axis (shared, #60): the top config's `engine` field or the tracked
 //     ref moves → re-materialize once and drain+respawn the *whole* fleet, so
-//     every tenant runs a version-uniform engine.
+//     every tenant runs a version-uniform engine. A stat-only root-config edit
+//     that does not change the resolved engine source is rebased without draining
+//     (#138) — the tenant axis still runs in the same poll.
 //   - Tenant axis (#58): a tenant dir appears / vanishes / its config changes →
 //     spawn / drain+reap / relaunch *only* that child.
 // A child that dies on its own (crash / OOM) is per-tenant supervision (#60 §6):
@@ -20,9 +22,13 @@
 // real timers (mirroring reconcile.ts's superviseEngine harness).
 
 import { detectChange, type EngineExit, type LaunchedEngine, type StopLatch } from "./reconcile.ts";
+import { engineSourcesEqual } from "./engine-source.ts";
 import {
   diffFleet,
+  DuplicateOriginSlugError,
   DuplicateTenantSlugError,
+  WorkspaceStructuralChangeError,
+  WorkspaceTenantAxisSkip,
   type DiscoveredTenant,
   type FleetDiscoverResult,
   type TenantSample,
@@ -141,6 +147,23 @@ export async function superviseFleet(deps: SuperviseFleetDeps): Promise<EngineEx
     });
   let waking = rearm();
 
+  const respawnFleetFromDiscovery = async (): Promise<void> => {
+    for (const { tenant, fingerprint } of normalizeDiscover(await deps.discover()).samples) {
+      spawnFor(tenant, fingerprint);
+    }
+  };
+
+  const relaunchEngineAndFleet = async (reason: "config" | "ref"): Promise<void> => {
+    deps.onEngineChange?.(reason);
+    await drainAll();
+    try {
+      engine = await deps.launch();
+      await respawnFleetFromDiscovery();
+    } catch (error) {
+      deps.onLaunchError?.(error);
+    }
+  };
+
   let engine = await deps.launch();
 
   const spawnFor = (tenant: DiscoveredTenant, fingerprint: string | null): void => {
@@ -229,19 +252,23 @@ export async function superviseFleet(deps: SuperviseFleetDeps): Promise<EngineEx
         current,
       });
       if (reason) {
-        deps.onEngineChange?.(reason);
-        const survivors = [...children.values()].map((r) => ({
-          tenant: r.tenant,
-          fingerprint: r.fingerprint,
-        }));
-        await drainAll();
-        try {
-          engine = await deps.launch();
-          for (const { tenant, fingerprint } of survivors) spawnFor(tenant, fingerprint);
-        } catch (error) {
-          deps.onLaunchError?.(error);
+        if (reason === "config" && engine.confirmEngineSource) {
+          try {
+            const confirmed = await engine.confirmEngineSource();
+            if (engineSourcesEqual(engine.source, confirmed)) {
+              engine = { ...engine, config: current.config };
+            } else {
+              await relaunchEngineAndFleet(reason);
+              continue;
+            }
+          } catch (error) {
+            deps.onLaunchError?.(error);
+            continue;
+          }
+        } else {
+          await relaunchEngineAndFleet(reason);
+          continue;
         }
-        continue;
       }
     }
 
@@ -260,7 +287,20 @@ export async function superviseFleet(deps: SuperviseFleetDeps): Promise<EngineEx
       samples = discovered.samples;
       hold = new Set(discovered.hold ?? []);
     } catch (error) {
-      if (error instanceof DuplicateTenantSlugError) throw error;
+      // A mid-flight malformed `workspace` block is unknown state, not an empty
+      // fleet: skip the tenant axis this poll (#139).
+      if (error instanceof WorkspaceTenantAxisSkip) {
+        deps.onDiscoverError?.(error);
+        continue;
+      }
+      if (
+        error instanceof DuplicateTenantSlugError ||
+        error instanceof DuplicateOriginSlugError ||
+        error instanceof WorkspaceStructuralChangeError
+      ) {
+        await drainAll();
+        throw error;
+      }
       deps.onDiscoverError?.(error);
       continue;
     }

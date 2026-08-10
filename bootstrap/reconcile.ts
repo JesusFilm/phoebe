@@ -30,6 +30,7 @@
 // without processes or timers.
 
 import { statSync } from "node:fs";
+import { engineSourcesEqual, type ResolvedEngineSource } from "./engine-source.ts";
 
 /** How often the watch samples the config and the tracked ref. */
 export const DEFAULT_RECONCILE_INTERVAL_MS = 60_000;
@@ -65,6 +66,13 @@ export type LaunchedEngine = {
   sha: string | null;
   /** The config fingerprint at launch. */
   config: string | null;
+  /** The resolved engine source at launch — compared on a stat-only config move. */
+  source: ResolvedEngineSource;
+  /**
+   * Re-read the mounted config and return its resolved engine source. Stat is the
+   * cheap poll trigger; this load runs only when the fingerprint moved (#138).
+   */
+  confirmEngineSource?: () => Promise<ResolvedEngineSource>;
   /** Sample the watched inputs now, bound to the source this engine came from. */
   sample: () => WatchState;
   /**
@@ -247,6 +255,18 @@ async function watchEngine(
       launched: { config: engine.config, sha: engine.sha, quarantinedSha: engine.quarantinedSha },
       current,
     });
+    if (reason === "config" && engine.confirmEngineSource) {
+      try {
+        const confirmed = await engine.confirmEngineSource();
+        if (engineSourcesEqual(engine.source, confirmed)) {
+          engine.config = current.config;
+          continue;
+        }
+      } catch (error) {
+        deps.onSampleError?.(error);
+        continue;
+      }
+    }
     if (reason) return { kind: "change", reason };
   }
 }
