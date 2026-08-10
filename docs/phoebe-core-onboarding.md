@@ -100,10 +100,12 @@ node scripts/verify-tenant-token.mjs
 It reports each of the five permissions above as granted / missing / unknown,
 names the missing ones as the GitHub UI spells them (the Access column above), tells "no access at all"
 (the usual sign of a token still awaiting org approval) apart from one missing
-checkbox, and surfaces the expiry date — warning inside 14 days. Every probe is
-non-mutating: the write grants are proven by aiming a mutating call at a resource
-that cannot exist, so it is safe against a production repo. It never prints the
-token.
+checkbox, and surfaces the expiry date — warning inside 14 days. No probe
+changes anything: the three write grants are proven by aiming a `POST`/`PATCH`
+at a resource that cannot exist, so GitHub answers with the permission verdict
+and there is nothing to mutate. It is safe against a production repo — though it
+does issue write-method requests, which is worth knowing if you are approving it
+through a network policy. It never prints the token.
 
 ## 3. Create the labels (engine defaults, verbatim)
 

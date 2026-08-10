@@ -9,7 +9,7 @@
 /**
  * @typedef {"granted" | "missing" | "unknown"} GrantState
  * @typedef {{ id: string, ui: string, state: GrantState, status?: number | null }} Grant
- * @typedef {{ raw: string, iso: string, daysLeft: number, expired: boolean, warn: boolean }} Expiry
+ * @typedef {{ raw: string, iso: string | null, daysLeft: number | null, expired: boolean | null, warn: boolean, unparsed: boolean }} Expiry
  * @typedef {{ id: string, label: string, note: string | null }} TokenKind
  */
 
@@ -196,43 +196,62 @@ export function scopeCoverage(scopes) {
 /** Warn this many days out — long enough to rotate before Phoebe starts 401ing. */
 export const EXPIRY_WARN_DAYS = 14;
 
-/** GitHub's `github-authentication-token-expiration` header — date, time, zone. */
-const EXPIRY_HEADER_RE = /^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s+(UTC|Z|[+-]\d{2}:?\d{2})$/i;
-
-function parseExpiryHeader(header) {
-  const m = header.trim().match(EXPIRY_HEADER_RE);
-  if (!m) return NaN;
-  const [, date, time, zoneRaw] = m;
-  const zoneUpper = zoneRaw.toUpperCase();
-  let zone;
-  if (zoneUpper === "UTC" || zoneUpper === "Z") {
-    zone = "Z";
-  } else if (/^[+-]\d{4}$/.test(zoneRaw)) {
-    zone = `${zoneRaw.slice(0, 3)}:${zoneRaw.slice(3)}`;
-  } else {
-    zone = zoneRaw;
-  }
-  const iso = zone === "Z" ? `${date}T${time}Z` : `${date}T${time}${zone}`;
-  return Date.parse(iso);
-}
+/**
+ * `YYYY-MM-DD HH:MM:SS <zone>`, the shape of the expiry header. GitHub sends
+ * ` UTC`, but the zone is accepted in the forms a proxy or a future GitHub
+ * might use — `Z`, `+HHMM`, `+HH:MM` — and an absent zone is read as UTC.
+ */
+const EXPIRY_HEADER =
+  /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?:\.\d+)?\s*(UTC|Z|[+-]\d{2}:?\d{2})?$/i;
 
 /**
  * Read the `github-authentication-token-expiration` header GitHub returns for
- * an expiring token (`2026-09-30 09:00:00 UTC`). A non-expiring token has no
- * header, and that is not a finding — `null`, not a warning.
+ * an expiring token (`2026-09-30 09:00:00 UTC`).
+ *
+ * Three outcomes, deliberately distinct:
+ *
+ * - **absent header** → `null`. A non-expiring token is not a finding.
+ * - **readable header** → the expiry, with `unparsed: false`.
+ * - **unreadable header** → an expiry with `unparsed: true` and no instant.
+ *   This must *not* collapse to `null`: a `null` renders as no expiry line at
+ *   all, which is indistinguishable from a non-expiring token, so a token about
+ *   to lapse would be reported as fine. An unreadable header is a "check this
+ *   by hand", not a clean bill of health.
  */
 export function describeExpiry(header, nowMs) {
   if (header === null || header === undefined) return null;
-  const at = parseExpiryHeader(header);
-  if (Number.isNaN(at)) return null;
+  const raw = String(header);
+  const unreadable = {
+    raw,
+    iso: null,
+    daysLeft: null,
+    expired: null,
+    warn: true,
+    unparsed: true,
+  };
+
+  const match = EXPIRY_HEADER.exec(raw.trim());
+  if (match === null) return unreadable;
+  const [, date, time, zone] = match;
+  const upper = zone?.toUpperCase();
+  const offset =
+    upper === undefined || upper === "UTC" || upper === "Z"
+      ? "Z"
+      : zone.includes(":")
+        ? zone
+        : `${zone.slice(0, 3)}:${zone.slice(3)}`;
+  const at = Date.parse(`${date}T${time}${offset}`);
+  if (Number.isNaN(at)) return unreadable;
+
   const daysLeft = Math.floor((at - nowMs) / 86_400_000);
   const expired = at <= nowMs;
   return {
-    raw: header,
+    raw,
     iso: new Date(at).toISOString(),
     daysLeft,
     expired,
     warn: expired || daysLeft <= EXPIRY_WARN_DAYS,
+    unparsed: false,
   };
 }
 
@@ -310,7 +329,12 @@ export function diagnose({ grants, metadataStatus, expiry = null, tokenKind = nu
     );
   }
 
-  if (expiry?.expired === true) {
+  if (expiry?.unparsed === true) {
+    advice.push(
+      `GitHub reported a token expiry this script could not parse: "${expiry.raw}". Check it ` +
+        "by hand — an unreadable expiry is not the same as a token that never expires.",
+    );
+  } else if (expiry?.expired === true) {
     advice.push(
       `The token expired on ${expiry.iso}. Rotate it into the tenant's .env (onboarding §2).`,
     );
@@ -360,10 +384,12 @@ export function renderReport(report) {
         "— read from x-oauth-scopes, not probed",
     );
   }
-  if (report.expiry !== null) {
-    const when = report.expiry.expired
-      ? `EXPIRED ${report.expiry.iso}`
-      : `${report.expiry.iso} (${report.expiry.daysLeft} day(s) left)`;
+  if (report.expiry != null) {
+    const when = report.expiry.unparsed
+      ? `UNREADABLE — GitHub said "${report.expiry.raw}"`
+      : report.expiry.expired
+        ? `EXPIRED ${report.expiry.iso}`
+        : `${report.expiry.iso} (${report.expiry.daysLeft} day(s) left)`;
     lines.push(`  expires: ${when}`);
   }
   for (const grant of report.grants) {
@@ -389,6 +415,9 @@ export function reportToJson(report) {
     expiresAt: report.expiry?.iso ?? null,
     expired: report.expiry?.expired ?? null,
     daysUntilExpiry: report.expiry?.daysLeft ?? null,
+    // The raw header, so a consumer can tell "no expiry" (null) apart from an
+    // expiry we could not read (a string, with expiresAt still null).
+    expiryHeader: report.expiry?.raw ?? null,
     grants: (report.grants ?? []).map((grant) => ({
       permission: grant.id,
       label: grant.ui,

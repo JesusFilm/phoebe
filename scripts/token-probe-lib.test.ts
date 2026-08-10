@@ -212,7 +212,33 @@ describe("describeExpiry", () => {
 
   it("returns null for an absent header — a non-expiring token is not a finding", () => {
     expect(describeExpiry(null, now)).toBeNull();
-    expect(describeExpiry("not a date", now)).toBeNull();
+    expect(describeExpiry(undefined, now)).toBeNull();
+  });
+
+  it("accepts a numeric UTC offset and an ISO `Z`, not just the ` UTC` suffix", () => {
+    // `+0500` is 5 hours ahead, so the instant is 04:00Z.
+    expect(describeExpiry("2026-09-30 09:00:00 +0500", now)!.iso).toBe("2026-09-30T04:00:00.000Z");
+    expect(describeExpiry("2026-09-30 09:00:00 +05:00", now)!.iso).toBe("2026-09-30T04:00:00.000Z");
+    expect(describeExpiry("2026-09-30 09:00:00 -0500", now)!.iso).toBe("2026-09-30T14:00:00.000Z");
+    expect(describeExpiry("2026-09-30T09:00:00Z", now)!.iso).toBe("2026-09-30T09:00:00.000Z");
+  });
+
+  // An absent header means "never expires". A header we cannot read means
+  // nothing of the sort — and reporting it as null would render as no expiry
+  // line at all, i.e. exactly the same as a non-expiring token. A token about
+  // to lapse would look fine.
+  it("does not let an unreadable header masquerade as a non-expiring token", () => {
+    const e = describeExpiry("not a date", now)!;
+    expect(e).not.toBeNull();
+    expect(e.unparsed).toBe(true);
+    expect(e.raw).toBe("not a date");
+    expect(e.iso).toBeNull();
+    expect(e.expired).toBeNull();
+    expect(e.warn).toBe(true);
+  });
+
+  it("marks a readable header as parsed, so callers can branch on it", () => {
+    expect(describeExpiry("2026-09-30 09:00:00 UTC", now)!.unparsed).toBe(false);
   });
 });
 
@@ -298,6 +324,7 @@ describe("diagnose", () => {
         daysLeft: -3,
         expired: true,
         warn: true,
+        unparsed: false,
       },
     });
     expect(d.ok).toBe(false);
@@ -314,10 +341,31 @@ describe("diagnose", () => {
         daysLeft: 5,
         expired: false,
         warn: true,
+        unparsed: false,
       },
     });
     expect(d.ok).toBe(true);
     expect(d.advice.join(" ")).toMatch(/5 day/);
+  });
+
+  it("says so plainly when the expiry header could not be read", () => {
+    const d = diagnose({
+      grants: grants({}),
+      metadataStatus: 200,
+      expiry: {
+        raw: "whenever",
+        iso: null,
+        daysLeft: null,
+        expired: null,
+        warn: true,
+        unparsed: true,
+      },
+    });
+    // Never "expires in null day(s)": the advice must quote the raw header and
+    // send the operator to check by hand.
+    expect(d.advice.join(" ")).not.toMatch(/null/);
+    expect(d.advice.join(" ")).toMatch(/whenever/);
+    expect(d.advice.join(" ")).toMatch(/could not (be )?parse|unreadable|by hand/i);
   });
 });
 

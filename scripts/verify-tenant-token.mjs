@@ -292,20 +292,33 @@ async function resolveTargets() {
 async function callProbe(probe, slug, token) {
   const init = {
     method: probe.method,
+    // Bounds reading the body as well as the request, so a response that stops
+    // arriving mid-stream cannot hang a serial `--all` sweep either.
+    signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
     headers: {
       accept: "application/vnd.github+json",
       "x-github-api-version": "2022-11-28",
       "user-agent": "phoebe-verify-tenant-token",
       authorization: `Bearer ${token}`,
     },
-    signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
   };
   if (probe.body !== undefined) {
     init.headers["content-type"] = "application/json";
     init.body = JSON.stringify(probe.body);
   }
-  const res = await fetch(`${API}${probe.path(slug)}`, init);
-  const text = await res.text();
+  let res;
+  let text;
+  try {
+    res = await fetch(`${API}${probe.path(slug)}`, init);
+    text = await res.text();
+  } catch (error) {
+    // TimeoutError is what AbortSignal.timeout raises; say so plainly, because
+    // a bare "fetch failed" after a long stall reads like a network outage.
+    if (error instanceof Error && error.name === "TimeoutError") {
+      throw new Error(`timed out after ${PROBE_TIMEOUT_MS / 1000}s`);
+    }
+    throw error;
+  }
   let message = "";
   try {
     message = String(JSON.parse(text)?.message ?? "");

@@ -146,10 +146,13 @@ It reports each of the five permissions
 [onboarding §2](phoebe-core-onboarding.md#2-operator-github-token--a-fine-grained-pat)
 asks for as granted / missing / unknown, distinguishes "no access at all" (the
 usual sign of a fine-grained PAT still awaiting org approval) from one missing
-checkbox, and warns when the token expires inside 14 days. Every probe is
-non-mutating — the write grants are proven by aiming a mutating call at a resource
-that cannot exist — so it is safe against production, and it never prints the
-token. `--all` does not abort when one tenant fails.
+checkbox, and warns when the token expires inside 14 days. No probe changes
+anything: the three write grants are proven by aiming a `POST`/`PATCH` at a
+resource that cannot exist, so GitHub answers with the permission verdict and
+there is nothing to mutate. It is safe against production — but note that it
+does issue write-method requests, which matters if you are approving it through
+a network policy. It never prints the token, and `--all` does not abort when one
+tenant fails.
 
 ## One-off overrides without editing config
 
