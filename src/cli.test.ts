@@ -112,6 +112,20 @@ describe("parseInitArgs", () => {
       profile: "tenant",
       withPrompts: false,
     });
+    expect(parseInitArgs(["--tenant", "./child", "--root", "../ws"])).toEqual({
+      targetDir: "./child",
+      help: false,
+      profile: "tenant",
+      withPrompts: false,
+      rootDir: "../ws",
+    });
+    expect(parseInitArgs(["--tenant", "--root=../ws"])).toEqual({
+      targetDir: ".",
+      help: false,
+      profile: "tenant",
+      withPrompts: false,
+      rootDir: "../ws",
+    });
   });
 
   test("accepts tenant overrides --slug / --url / --with-prompts", () => {
@@ -146,6 +160,7 @@ describe("parseInitArgs", () => {
   test("rejects tenant-only flags without --tenant", () => {
     expect(() => parseInitArgs(["--slug", "a/b"])).toThrow(/only valid with/);
     expect(() => parseInitArgs(["--workspace", "--with-prompts"])).toThrow(/only valid with/);
+    expect(() => parseInitArgs(["--root", "."])).toThrow(/only valid with/);
   });
 
   test("--workspace and --tenant are mutually exclusive", () => {
