@@ -28,7 +28,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join, relative } from "node:path";
+import { readConfigDir } from "../bootstrap/config-dir.ts";
 import {
+  type DiscoveredTenant,
   discoverUndeclaredInTreeTenants,
   discoverWorkspaceTenants,
   REPOS_DIR,
@@ -390,23 +392,65 @@ async function resolveRootWorkspace(configDir: string): Promise<ResolvedWorkspac
 }
 
 /**
- * Enumerate workspace-mode children via the same discovery boot uses
- * (`discoverWorkspaceTenants`, #91/#140). The explicit arm prints one row per
- * declared entry in declared order; the walk arm keeps its slug sort. Held dirs
- * surface a first-class `held — <reason>` row rather than a line of ✗s.
+ * Load a workspace child's bootstrapper-only `configDir` (#98) — the asset
+ * subdir its `.env` lives in. Mirrors boot's reader so a caller that needs a
+ * tenant's real `envPath` (`scripts/verify-tenant-token.mjs`, #154) gets the
+ * same path the engine child will.
  */
-async function listWorkspaceTenants(opts: {
-  configDir: string;
-  dataBase: string;
+async function defaultLoadConfigDir(configPath: string): Promise<string> {
+  const user = await loadUserConfig(configPath);
+  return readConfigDir(user as unknown as Record<string, unknown>);
+}
+
+export type WorkspaceEnumeration = {
   workspace: ResolvedWorkspace;
+  explicit: boolean;
+  tenants: DiscoveredTenant[];
+  holds: WorkspaceHold[];
+};
+
+/**
+ * Resolve the root `workspace` block and run the same discovery boot runs,
+ * returning the raw {@link DiscoveredTenant}s rather than display rows — the
+ * single seam every fleet-wide caller shares (#154). `phoebe list` renders these
+ * rows (via {@link listWorkspaceTenants}) and `scripts/verify-tenant-token.mjs`
+ * probes their tokens, so a sweep can never enumerate a different fleet from the
+ * one the supervisor supervises. `null` when the root is not a workspace,
+ * letting callers fall through the detection ladder (#83) as boot does.
+ */
+export async function enumerateWorkspaceTenants(opts: {
+  configDir: string;
   loadRepoSlug?: (configPath: string) => string | Promise<string>;
+  loadConfigDir?: (configPath: string) => string | Promise<string>;
   readOriginUrl?: (tenantDir: string) => string | null | Promise<string | null>;
-}): Promise<ListTenantsResult> {
-  const explicit = isExplicitWorkspace(opts.workspace);
-  const discovery = await discoverWorkspaceTenants(opts.configDir, opts.workspace, {
+}): Promise<WorkspaceEnumeration | null> {
+  const workspace = await resolveRootWorkspace(opts.configDir);
+  if (workspace === null) return null;
+  const discovery = await discoverWorkspaceTenants(opts.configDir, workspace, {
     loadRepoSlug: opts.loadRepoSlug ?? defaultLoadRepoSlug,
+    loadConfigDir: opts.loadConfigDir ?? defaultLoadConfigDir,
     ...(opts.readOriginUrl !== undefined ? { readOriginUrl: opts.readOriginUrl } : {}),
   });
+  return {
+    workspace,
+    explicit: isExplicitWorkspace(workspace),
+    tenants: discovery.tenants,
+    holds: discovery.holds,
+  };
+}
+
+/**
+ * Render one {@link WorkspaceEnumeration} as `phoebe list` rows (#91/#140). The
+ * explicit arm prints one row per declared entry in declared order; the walk arm
+ * keeps its slug sort. Held dirs surface a first-class `held — <reason>` row
+ * rather than a line of ✗s.
+ */
+function listWorkspaceTenants(opts: {
+  configDir: string;
+  dataBase: string;
+  enumeration: WorkspaceEnumeration;
+}): ListTenantsResult {
+  const { explicit, workspace, ...discovery } = opts.enumeration;
 
   // Discovery keys both tenants and holds by normalized absolute dir (#139), so
   // the declared spelling is resolved the same way before either lookup.
@@ -414,8 +458,8 @@ async function listWorkspaceTenants(opts: {
   const holdByDir = new Map(discovery.holds.map((hold) => [hold.dir, hold]));
   const listings: TenantListing[] = [];
 
-  if (isExplicitWorkspace(opts.workspace)) {
-    for (const entry of opts.workspace.tenants) {
+  if (isExplicitWorkspace(workspace)) {
+    for (const entry of workspace.tenants) {
       const dir = resolveDeclaredTenantDir(opts.configDir, entry);
       const tenant = tenantByDir.get(dir);
       if (tenant !== undefined) {
@@ -452,8 +496,8 @@ async function listWorkspaceTenants(opts: {
   }
 
   const live = listings.filter((listing) => !listing.held).length;
-  const undeclared = isExplicitWorkspace(opts.workspace)
-    ? discoverUndeclaredInTreeTenants(opts.configDir, opts.workspace.tenants)
+  const undeclared = isExplicitWorkspace(workspace)
+    ? discoverUndeclaredInTreeTenants(opts.configDir, workspace.tenants)
     : [];
   return { listings, declared: listings.length, live, explicit, undeclared };
 }
@@ -519,14 +563,16 @@ export async function listTenants(opts: {
   /** Injectable origin reader (tests); defaults to git `remote.origin.url`. */
   readOriginUrl?: (tenantDir: string) => string | null | Promise<string | null>;
 }): Promise<ListTenantsResult> {
-  const workspace = await resolveRootWorkspace(opts.configDir);
-  if (workspace !== null) {
+  const enumeration = await enumerateWorkspaceTenants({
+    configDir: opts.configDir,
+    ...(opts.loadRepoSlug !== undefined ? { loadRepoSlug: opts.loadRepoSlug } : {}),
+    ...(opts.readOriginUrl !== undefined ? { readOriginUrl: opts.readOriginUrl } : {}),
+  });
+  if (enumeration !== null) {
     return listWorkspaceTenants({
       configDir: opts.configDir,
       dataBase: opts.dataBase,
-      workspace,
-      loadRepoSlug: opts.loadRepoSlug,
-      readOriginUrl: opts.readOriginUrl,
+      enumeration,
     });
   }
   return listNestedTenants(opts.configDir, opts.dataBase);

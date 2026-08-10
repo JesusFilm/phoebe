@@ -22,6 +22,7 @@ import {
   slugFromUrl,
   TENANT_CONFIG_FILE,
   TENANT_ENV_FILE,
+  tenantForDir,
   withTenantConfigDir,
   type DiscoveredTenant,
 } from "./tenants.ts";
@@ -488,6 +489,23 @@ describe("configDir asset relocation (#98)", () => {
       },
     );
     expect(discovery.tenants[0]?.envPath).toBe(join(dir, "widget", TENANT_ENV_FILE));
+  });
+
+  test("tenantForDir builds the same shape discovery does for a known dir", () => {
+    const tenantDir = join(dir, "widget");
+    const tenant = tenantForDir(tenantDir, "acme/widget");
+    expect(tenant.id).toBe(tenantDir);
+    expect(tenant.dir).toBe(tenantDir);
+    expect(tenant.slug).toBe("acme/widget");
+    expect(tenant.configPath).toBe(join(tenantDir, TENANT_CONFIG_FILE));
+    expect(tenant.envPath).toBe(join(tenantDir, TENANT_ENV_FILE));
+  });
+
+  test("tenantForDir honours configDir so the .env is where the child reads it", () => {
+    const tenantDir = join(dir, "widget");
+    expect(tenantForDir(tenantDir, "acme/widget", ".phoebe").envPath).toBe(
+      join(tenantDir, ".phoebe", TENANT_ENV_FILE),
+    );
   });
 
   test("withTenantConfigDir relocates envPath only; '.' is a no-op", () => {

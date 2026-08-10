@@ -225,6 +225,23 @@ function tenantAt(
 }
 
 /**
+ * Build the {@link DiscoveredTenant} for a tenant directory that is already
+ * known — the same shape discovery produces, for callers handed a dir rather
+ * than finding one (`scripts/verify-tenant-token.mjs`, #154). Going through the
+ * one builder is what keeps `envPath` honest: `configDir` relocation (#98) is
+ * easy to forget when hand-joining a path, and a diagnostic that read the wrong
+ * `.env` would report the wrong token.
+ */
+export function tenantForDir(
+  dir: string,
+  slug: string | null,
+  configDir: string = DEFAULT_TENANT_CONFIG_DIR,
+): DiscoveredTenant {
+  const absDir = resolve(dir);
+  return tenantAt(absDir, absDir, slug, configDir);
+}
+
+/**
  * Return a copy of `tenant` with its `.env` (and thus its engine child's cwd,
  * `dirname(envPath)`) relocated under `configDir`, a subdirectory of the tenant
  * dir (#98). `"."` is a no-op. Nested discovery uses this because its sync scan
