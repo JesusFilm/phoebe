@@ -399,7 +399,6 @@ export function createBootCrashGuard(roster: () => readonly string[]): CrashGuar
  * the result as this process's own exit. Extra args after `boot` are forwarded
  * to every engine child (none ⇒ its normal persistent loop).
  */
-
 export async function runBoot(argv: readonly string[]): Promise<void> {
   // Before any engine git call (ensureClone, fetch/push, agent child): one
   // global github.com credential helper from GH_TOKEN. Survives reconcile

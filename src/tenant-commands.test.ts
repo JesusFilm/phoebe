@@ -337,19 +337,6 @@ describe("listTenants", () => {
     const [widget] = await listTenants({ configDir, dataBase });
     expect(widget?.queue).toEqual([]);
   });
-
-  test("a declared fleet is refused, not silently reported as no tenants", async () => {
-    // The explicit arm has no `depth`, so reading one would drop `list` out of
-    // workspace mode and report a declared fleet as an empty nested scan (#128).
-    writeFileSync(
-      join(configDir, "phoebe.config.ts"),
-      `export default { workspace: { tenants: ["child"] } };\n`,
-    );
-    mkdirSync(join(configDir, "child"), { recursive: true });
-    writeFileSync(join(configDir, "child", "phoebe.config.ts"), "export default {};\n");
-
-    await expect(listTenants({ configDir, dataBase })).rejects.toThrow(/not supported/i);
-  });
 });
 
 describe("purgeTenant", () => {

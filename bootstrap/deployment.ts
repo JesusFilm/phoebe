@@ -27,7 +27,7 @@
 // both spawn adapters are unit-tested without a container.
 
 import { readFileSync } from "node:fs";
-import { dirname, relative } from "node:path";
+import { dirname } from "node:path";
 import { parseDotenv } from "../src/dotenv.ts";
 import { loadUserConfig, resolveConfigPath } from "../src/config/index.ts";
 import { attachBroker, type BrokerChild } from "./broker-ipc.ts";
@@ -59,14 +59,8 @@ import {
   withTenantConfigDir,
   type DiscoveredTenant,
   type TenantSample,
-  type WorkspaceDiscoveryResult,
-  type WorkspaceHold,
 } from "./tenants.ts";
-import {
-  isExplicitWorkspace,
-  resolveWorkspace,
-  type ResolvedWorkspace,
-} from "./workspace-source.ts";
+import { readWorkspaceField, type ResolvedWorkspace } from "./workspace-source.ts";
 
 /** A running child process, as far as a spawn adapter needs it. */
 type SpawnedProcess = { kill: (signal: NodeJS.Signals) => void };
@@ -165,7 +159,7 @@ export async function resolveDeployment(opts: ResolveDeploymentOpts): Promise<De
 
   const rootFingerprint = configFingerprint(configPath);
   const rootConfig = await loadMountedConfig(configPath, rootFingerprint);
-  const workspace = resolveWorkspace(rootConfig, { root: configDir });
+  const workspace = readWorkspaceField(rootConfig);
 
   if (workspace !== null) {
     if (isNestedDeployment(configDir)) {
@@ -174,6 +168,15 @@ export async function resolveDeployment(opts: ResolveDeploymentOpts): Promise<De
           "(nested central layout is off for this deployment).",
       );
     }
+    // Count tenants for the startup log (same walk the fleet will use).
+    const initial = await discoverWorkspaceTenants(configDir, workspace.depth, {
+      loadRepoSlug: loadTenantRepoSlug,
+      warn: (message) => console.warn(message),
+    });
+    console.log(
+      `[phoebe] boot: workspace mode — supervising ${initial.tenants.length} tenant(s) ` +
+        `on one shared engine (depth ${workspace.depth}).`,
+    );
     // Tenants with a live child right now (#79) — mutated by `buildFleetDeps`'s
     // spawn/tenant-axis hooks, read fresh by the guard on every `condemns`/
     // `fallbackFor` call, so the breadth half of breadth × count (#78) reflects
@@ -511,100 +514,27 @@ function nestedDiscover(configDir: string): () => DiscoverInput<DiscoveredTenant
 }
 
 /**
- * Workspace-mode discover callback (#91/#137): re-run discovery every poll, load
- * each child's `repoSlug`, and report hold ids for mid-rewrite configs (#86) or
- * declared dirs that cannot become tenants (explicit arm).
+ * Workspace-mode discover callback (#91): re-walk the tree every poll, load each
+ * child's `repoSlug`, and report hold ids for mid-rewrite configs (#86).
  */
 function workspaceDiscover(
   configDir: string,
   workspace: ResolvedWorkspace,
 ): () => DiscoverInput<DiscoveredTenant> {
-  let previousHoldKey: string | null = null;
-  let summaryLogged = false;
-
   return async () => {
-    const result = await discoverWorkspaceTenants(configDir, workspace, {
+    const result = await discoverWorkspaceTenants(configDir, workspace.depth, {
       loadRepoSlug: loadTenantRepoSlug,
       loadConfigDir: loadTenantConfigDir,
       warn: (message) => console.warn(message),
     });
-    const holdKey = workspaceHoldKey(result.holds);
-    if (!summaryLogged) {
-      logWorkspaceBootSummary(configDir, workspace, result);
-      summaryLogged = true;
-      previousHoldKey = holdKey;
-    } else if (holdKey !== previousHoldKey) {
-      logWorkspaceHoldSummary(configDir, workspace, result.holds);
-      previousHoldKey = holdKey;
-    }
     return {
       samples: result.tenants.map((tenant) => ({
         tenant,
         fingerprint: tenantFingerprint(tenant.configPath, tenant.envPath),
       })),
-      hold: reconcileHoldIds(result),
+      hold: result.holdIds,
     };
   };
-}
-
-function workspaceHoldKey(holds: readonly WorkspaceHold[]): string {
-  return holds
-    .map((hold) => `${hold.dir}\0${hold.reason}`)
-    .sort()
-    .join("\n");
-}
-
-function reconcileHoldIds(result: WorkspaceDiscoveryResult): string[] {
-  return result.holds.map((hold) => hold.dir);
-}
-
-function logWorkspaceBootSummary(
-  configDir: string,
-  workspace: ResolvedWorkspace,
-  result: WorkspaceDiscoveryResult,
-): void {
-  if (isExplicitWorkspace(workspace)) {
-    const declared = workspace.tenants.length;
-    const suffix = declared === 0 ? " (empty declared fleet)" : "";
-    const message =
-      `[phoebe] boot: workspace mode — supervising ${result.tenants.length} of ${declared} ` +
-      `declared tenant(s) on one shared engine${suffix}.`;
-    if (declared === 0) console.warn(message);
-    else console.log(message);
-  } else {
-    console.log(
-      `[phoebe] boot: workspace mode — supervising ${result.tenants.length} tenant(s) ` +
-        `on one shared engine (depth ${workspace.depth}).`,
-    );
-  }
-  if (result.holds.length > 0) {
-    console.warn(formatWorkspaceHoldSummary(configDir, workspace, result.holds));
-  }
-}
-
-function logWorkspaceHoldSummary(
-  configDir: string,
-  workspace: ResolvedWorkspace,
-  holds: readonly WorkspaceHold[],
-): void {
-  console.warn(formatWorkspaceHoldSummary(configDir, workspace, holds));
-}
-
-function formatWorkspaceHoldSummary(
-  configDir: string,
-  workspace: ResolvedWorkspace,
-  holds: readonly WorkspaceHold[],
-): string {
-  if (holds.length === 0) {
-    return "[phoebe] boot: workspace: no held tenants.";
-  }
-  const label = isExplicitWorkspace(workspace) ? "declared tenant(s)" : "tenant(s)";
-  const parts = holds.map((hold) => {
-    const rel = relative(configDir, hold.dir).replace(/\\/g, "/");
-    const name = rel.length > 0 ? rel : hold.dir;
-    return `${name} (${hold.reason})`;
-  });
-  return `[phoebe] boot: workspace: held ${holds.length} ${label}: ${parts.join(", ")}.`;
 }
 
 /**

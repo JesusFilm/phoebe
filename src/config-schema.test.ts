@@ -98,29 +98,6 @@ describe("resolveConfiguration: validating the repository declaration", () => {
     expect(() => resolve({ workspace: { depth: 1.5 } })).toThrow(/workspace.*depth/i);
   });
 
-  test("accepts an explicitly declared fleet", () => {
-    expect(() => resolve({ workspace: { tenants: ["widget", "gadget"] } })).not.toThrow();
-    expect(() => resolve({ workspace: { tenants: [] } })).not.toThrow();
-  });
-
-  test("engine-side validation shares the bootstrapper's tenants rules", () => {
-    // Not re-testing every rule here — the point is that one validator backs
-    // both entry points, so a rule added in bootstrap/workspace-source.ts is
-    // enforced at `resolveConfiguration` too, without a second copy to keep in step.
-    expect(() => resolve({ workspace: { tenants: ["apps/*"] } })).toThrow(/glob/i);
-    expect(() => resolve({ workspace: { tenants: ["apps", "apps/web"] } })).toThrow(/nested/i);
-  });
-
-  test("rejects a workspace block declaring both arms", () => {
-    expect(() =>
-      resolve(
-        // @ts-expect-error the WorkspaceField union rejects both arms at compile
-        // time too — this asserts the runtime guard behind that type.
-        { workspace: { depth: 1, tenants: ["widget"] } },
-      ),
-    ).toThrow(/exactly one of/i);
-  });
-
   test("accepts a relative configDir", () => {
     expect(() => resolve({ configDir: ".phoebe" })).not.toThrow();
     expect(() => resolve({ configDir: "deploy/phoebe" })).not.toThrow();

@@ -38,9 +38,6 @@ The file is loaded via native Node type-stripping (unflagged on Node ≥ 24, the
 version Phoebe requires), so **no bundler is needed on the consumer side**.
 Either a default export or a named `export const config` is accepted.
 
-See [`examples/solo/`](../examples/solo/) for a complete single-repo layout
-(config + `.env.example` + README) built from exactly this shape.
-
 Resolution order is deterministic:
 
 1. shipped Phoebe defaults
@@ -264,9 +261,6 @@ in [`workspace.md`](workspace.md). Nested layout:
   modes. Use `phoebe add-repo` / `remove-repo` / `list` / `purge` to manage
   nested tenants (see [`operating.md`](operating.md)); for workspace children
   use `init --tenant` after linking the checkout ([`workspace.md`](workspace.md)).
-
-See [`examples/nested/`](../examples/nested/) for a complete nested layout — the
-engine-only root config plus two placeholder tenants under `repos/<owner>/<repo>/`.
 
 ## Asset directory (`configDir`)
 

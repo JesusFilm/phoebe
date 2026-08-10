@@ -27,11 +27,7 @@ import {
   TENANT_CONFIG_FILE,
   TENANT_ENV_FILE,
 } from "../bootstrap/tenants.ts";
-import {
-  requireDepthArm,
-  resolveWorkspace,
-  type ResolvedWorkspace,
-} from "../bootstrap/workspace-source.ts";
+import { readWorkspaceField } from "../bootstrap/workspace-source.ts";
 import { loadUserConfig, renderAuthoredConfig } from "./config/index.ts";
 import { ContractCapabilityError, type QueueEntry } from "./status-contract.ts";
 import { readStatusSnapshot, type StatusReadResult } from "./status-store.ts";
@@ -293,16 +289,11 @@ async function defaultLoadRepoSlug(configPath: string): Promise<string> {
 }
 
 /**
- * Resolve the root `workspace` block, if any. A missing / unreadable root config
- * is not workspace mode (detection ladder falls through to nested / flat). A
- * present but *malformed* `workspace` field throws — same as boot.
- *
- * Returns the whole resolved block rather than a bare depth (#128): on the
- * explicit arm there is no `depth`, and reading one would yield `undefined`,
- * drop `phoebe list` out of workspace mode, and report a declared fleet as no
- * tenants at all.
+ * Resolve the root `workspace: { depth? }` block, if any. A missing / unreadable
+ * root config is not workspace mode (detection ladder falls through to nested /
+ * flat). A present but *malformed* `workspace` field throws — same as boot.
  */
-async function resolveRootWorkspace(configDir: string): Promise<ResolvedWorkspace | null> {
+async function resolveWorkspaceDepth(configDir: string): Promise<number | null> {
   const rootConfigPath = join(configDir, TENANT_CONFIG_FILE);
   if (!existsSync(rootConfigPath)) return null;
   let root: Record<string, unknown>;
@@ -311,11 +302,12 @@ async function resolveRootWorkspace(configDir: string): Promise<ResolvedWorkspac
   } catch {
     return null;
   }
-  return resolveWorkspace(root, { root: configDir });
+  const workspace = readWorkspaceField(root);
+  return workspace?.depth ?? null;
 }
 
 /**
- * Enumerate workspace-mode children via the same discovery boot uses
+ * Enumerate workspace-mode children via the same walk ticket 1 / #91 uses
  * (`discoverWorkspaceTenants`). Valid children surface full health columns;
  * broken (hold) dirs appear with `configValid: false` so `phoebe list` still
  * flags them. Nested/flat scanning is unchanged (#95).
@@ -323,10 +315,10 @@ async function resolveRootWorkspace(configDir: string): Promise<ResolvedWorkspac
 async function listWorkspaceTenants(opts: {
   configDir: string;
   dataBase: string;
-  workspace: { depth: number };
+  depth: number;
   loadRepoSlug?: (configPath: string) => string | Promise<string>;
 }): Promise<TenantListing[]> {
-  const discovery = await discoverWorkspaceTenants(opts.configDir, opts.workspace, {
+  const discovery = await discoverWorkspaceTenants(opts.configDir, opts.depth, {
     loadRepoSlug: opts.loadRepoSlug ?? defaultLoadRepoSlug,
   });
   const listings: TenantListing[] = [];
@@ -334,14 +326,14 @@ async function listWorkspaceTenants(opts: {
     if (tenant.slug === null) continue;
     listings.push(listingFor(tenant.slug, tenant.dir, opts.dataBase, true));
   }
-  for (const hold of discovery.holds) {
+  for (const holdDir of discovery.holdIds) {
     // No authoritative slug when load/parse failed — show a path-relative id so
     // the operator can find the broken child; data/status stay dark without a slug.
-    const rel = relative(opts.configDir, hold.dir).replace(/\\/g, "/");
+    const rel = relative(opts.configDir, holdDir).replace(/\\/g, "/");
     listings.push({
-      slug: rel.length > 0 ? rel : hold.dir,
+      slug: rel.length > 0 ? rel : holdDir,
       configValid: false,
-      envPresent: envPresent(hold.dir),
+      envPresent: envPresent(holdDir),
       retainedData: false,
       status: null,
       queue: [],
@@ -393,12 +385,12 @@ export async function listTenants(opts: {
   /** Injectable workspace slug loader (tests); defaults to `loadUserConfig`. */
   loadRepoSlug?: (configPath: string) => string | Promise<string>;
 }): Promise<TenantListing[]> {
-  const workspace = await resolveRootWorkspace(opts.configDir);
-  if (workspace !== null) {
+  const depth = await resolveWorkspaceDepth(opts.configDir);
+  if (depth !== null) {
     return listWorkspaceTenants({
       configDir: opts.configDir,
       dataBase: opts.dataBase,
-      workspace: { depth: requireDepthArm(workspace) },
+      depth,
       loadRepoSlug: opts.loadRepoSlug,
     });
   }
