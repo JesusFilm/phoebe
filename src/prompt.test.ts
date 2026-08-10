@@ -182,6 +182,18 @@ describe("resolvePromptFile / loadPromptTemplate", () => {
       /Could not find prompt file prompts\/missing\.md/,
     );
   });
+
+  test("rejects a directory at the prompt path, rather than reading it", () => {
+    // A directory satisfies "exists" but not "can be loaded" — `readFileSync`
+    // would throw EISDIR at dispatch, which is the fail-at-use mode the startup
+    // check exists to remove.
+    const runtimeRoot = mkdtempSync(join(tmpdir(), "phoebe-prompt-dir-"));
+    mkdirSync(join(runtimeRoot, "prompts", "issues-prompt.md"), { recursive: true });
+
+    expect(() => resolvePromptFile("prompts/issues-prompt.md", runtimeRoot)).toThrow(
+      /Could not find prompt file prompts\/issues-prompt\.md/,
+    );
+  });
 });
 
 describe("assertPromptFilesExist", () => {
@@ -261,6 +273,13 @@ describe("assertPromptFilesExist", () => {
     });
 
     expect(() => assertPromptFilesExist(config, runtimeRoot)).not.toThrow();
+  });
+
+  test("counts a directory at a prompt path as missing", () => {
+    const runtimeRoot = runtimeRootWith(ALL_PROMPTS.filter((n) => n !== "checks-prompt.md"));
+    mkdirSync(join(runtimeRoot, "prompts", "checks-prompt.md"), { recursive: true });
+
+    expect(() => assertPromptFilesExist(fixtureConfig(), runtimeRoot)).toThrow(/checks/);
   });
 
   test("checks absolute entries as-is, ignoring the runtime root", () => {

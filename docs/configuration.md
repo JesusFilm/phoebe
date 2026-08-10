@@ -139,7 +139,7 @@ missing one kind booted clean and only died when the first unit of that kind was
 dispatched — weeks later, if that kind was rare (#164). The check follows
 [`workOrder`](#work-order), so a kind you dropped there needs no prompt file.
 
-A key may point outside the runtime root. Existence is the rule, not
+A key may point outside the runtime root. Being a loadable file is the rule, not
 containment: `promptFiles: { issue: "../prompts/issues-prompt.md", … }` is how a
 [`configDir`](#asset-directory-configdir) tenant reaches the prompts at its repo
 root instead of keeping a second copy under `.phoebe/prompts/` — a copy that
