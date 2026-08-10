@@ -10,7 +10,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, test } from "vite-plus/test";
 import { asBranchRef, asPrNumber, asSha } from "./branded.ts";
-import type { ActivityComment, GitHub } from "./github.ts";
+import type { ActivityComment, GitHub, LabelRemoval } from "./github.ts";
 import {
   buildQuarantineComment,
   createQuarantine,
@@ -276,6 +276,7 @@ function createFakeGithub(
       body: state.body,
     }),
     nativeBlockers: () => [],
+    labelRemovals: () => [],
     prNumberForHead: () => undefined,
     openPrs: () => [],
     prsWithLabel: () => [],
@@ -736,12 +737,26 @@ describe("findEscalatedSections", () => {
 
 // --- createQuarantine — sweepUnstuck() ---------------------------------------
 
-type MultiUnitState = { comments: ActivityComment[]; labels: string[] };
+type MultiUnitState = {
+  comments: ActivityComment[];
+  labels: string[];
+  labelRemovals: LabelRemoval[];
+};
 
 function createMultiUnitFakeGithub(
   opts: {
     issues?: Record<number, Partial<MultiUnitState> & { updatedAt?: string; body?: string }>;
     prs?: Record<number, Partial<MultiUnitState> & { headRefOid?: string }>;
+    /** Numbers whose `labelRemovals()` throws — exercises the timeline-read-failure fallback (#138). */
+    labelRemovalsFailFor?: readonly number[];
+    /**
+     * Numbers that `issuesWithLabel(PHOEBE_QUARANTINE_LABEL)` reports as listed
+     * even though their current `labels` no longer include it — simulates the
+     * race `unstickViaManualClear` (#138) exists for: a human unlabels between
+     * `sweepUnstuck`'s list query and this unit's per-unit fetch.
+     */
+    raceListedIssues?: readonly number[];
+    raceListedPrs?: readonly number[];
   } = {},
 ): {
   github: GitHub;
@@ -754,6 +769,7 @@ function createMultiUnitFakeGithub(
       {
         comments: v.comments ? [...v.comments] : [],
         labels: v.labels ? [...v.labels] : [],
+        labelRemovals: v.labelRemovals ? [...v.labelRemovals] : [],
         updatedAt: v.updatedAt ?? "2026-01-01T00:00:00Z",
         body: v.body ?? "",
       },
@@ -765,10 +781,14 @@ function createMultiUnitFakeGithub(
       {
         comments: v.comments ? [...v.comments] : [],
         labels: v.labels ? [...v.labels] : [],
+        labelRemovals: v.labelRemovals ? [...v.labelRemovals] : [],
         headRefOid: v.headRefOid ?? "sha-1",
       },
     ]),
   );
+  const labelRemovalsFailFor = new Set(opts.labelRemovalsFailFor ?? []);
+  const raceListedIssues = new Set(opts.raceListedIssues ?? []);
+  const raceListedPrs = new Set(opts.raceListedPrs ?? []);
 
   let nextCommentId = 2000;
 
@@ -801,7 +821,7 @@ function createMultiUnitFakeGithub(
   const github: GitHub = {
     issuesWithLabel: (label) =>
       [...issues.entries()]
-        .filter(([, s]) => s.labels.includes(label))
+        .filter(([n, s]) => s.labels.includes(label) || raceListedIssues.has(n))
         .map(([number]) => ({
           number,
           title: "",
@@ -816,11 +836,18 @@ function createMultiUnitFakeGithub(
       return { updatedAt: s.updatedAt, comments: s.comments, labels: s.labels, body: s.body };
     },
     nativeBlockers: () => [],
+    labelRemovals: (n) => {
+      if (labelRemovalsFailFor.has(n)) {
+        throw new Error("timeline API unavailable");
+      }
+      const s = issues.get(n) ?? prs.get(n);
+      return s?.labelRemovals ?? [];
+    },
     prNumberForHead: () => undefined,
     openPrs: () => [],
     prsWithLabel: (label) =>
       [...prs.entries()]
-        .filter(([, s]) => s.labels.includes(label))
+        .filter(([n, s]) => s.labels.includes(label) || raceListedPrs.has(n))
         .map(([number]) => ({
           number: asPrNumber(number),
           headRefName: asBranchRef("phoebe/issue-x"),
@@ -1275,6 +1302,154 @@ describe("createQuarantine — sweepUnstuck()", () => {
     expect(logs.some((l) => l.includes("Could not evaluate auto-un-stick for issue #9"))).toBe(
       true,
     );
+  });
+});
+
+describe("createQuarantine — sweepUnstuck() eager manual-clear via the unlabeled timeline (#138)", () => {
+  test("an issue listed as quarantined but already unlabelled by fetch time is acknowledged now: counter reset, audit comment naming the actor, unit-unquarantined reported", () => {
+    const { github, issues } = createMultiUnitFakeGithub({
+      issues: {
+        42: {
+          labels: [],
+          labelRemovals: [{ actorLogin: "some-human", removedAt: "2026-01-06T00:00:00Z" }],
+          comments: [
+            escalatedTrackingComment({
+              id: "track1",
+              kind: "issues",
+              trigger: "no-pr",
+              issueOrPrNumber: 42,
+              baseline: issueBaseline("same body throughout"),
+              ref: "42",
+            }),
+          ],
+        },
+      },
+      raceListedIssues: [42],
+    });
+    const reported: unknown[] = [];
+    const quarantine = createQuarantine({
+      github,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: () => {},
+      report: (event) => reported.push(event),
+    });
+    quarantine.sweepUnstuck();
+
+    const issue = issues.get(42)!;
+    expect(issue.comments[0]!.body).not.toContain("phoebe-unit:issues:no-pr");
+    // Unlike the auto-clear path, there's no label to remove — a human already did that;
+    // this path only resets the counter and acknowledges it.
+    expect(issue.labels).toEqual([]);
+    expect(issue.comments.some((c) => c.body.includes("@some-human"))).toBe(true);
+    expect(reported).toEqual([
+      {
+        kind: "unit-unquarantined",
+        work: { kind: "issues", issueNumber: 42 },
+        reason: "@some-human removed the phoebe:quarantined label by hand — manually cleared",
+      },
+    ]);
+  });
+
+  test("a PR listed as quarantined but already unlabelled by fetch time is acknowledged now", () => {
+    const { github, prs } = createMultiUnitFakeGithub({
+      prs: {
+        7: {
+          labels: [],
+          labelRemovals: [{ actorLogin: "some-human", removedAt: "2026-01-06T00:00:00Z" }],
+          comments: [
+            escalatedTrackingComment({
+              id: "track1",
+              kind: "checks",
+              trigger: "no-commit",
+              issueOrPrNumber: 7,
+              baseline: "sha-1",
+              ref: "sha-1",
+            }),
+          ],
+        },
+      },
+      raceListedPrs: [7],
+    });
+    const reported: unknown[] = [];
+    const quarantine = createQuarantine({
+      github,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: () => {},
+      report: (event) => reported.push(event),
+    });
+    quarantine.sweepUnstuck();
+
+    const pr = prs.get(7)!;
+    expect(pr.comments[0]!.body).not.toContain("phoebe-unit:checks:no-commit");
+    expect(pr.comments.some((c) => c.body.includes("@some-human"))).toBe(true);
+    expect(reported).toEqual([
+      {
+        kind: "unit-unquarantined",
+        work: { kind: "checks", pullRequestNumber: 7 },
+        reason: "@some-human removed the phoebe:quarantined label by hand — manually cleared",
+      },
+    ]);
+  });
+
+  test("falls back silently to the lazy record()-time reset when the timeline read itself fails", () => {
+    const { github, issues } = createMultiUnitFakeGithub({
+      issues: {
+        42: {
+          labels: [],
+          comments: [
+            escalatedTrackingComment({
+              id: "track1",
+              kind: "issues",
+              trigger: "no-pr",
+              issueOrPrNumber: 42,
+              baseline: issueBaseline("same body throughout"),
+              ref: "42",
+            }),
+          ],
+        },
+      },
+      raceListedIssues: [42],
+      labelRemovalsFailFor: [42],
+    });
+    const reported: unknown[] = [];
+    const logs: string[] = [];
+    const quarantine = createQuarantine({
+      github,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: (m) => logs.push(m),
+      report: (event) => reported.push(event),
+    });
+    expect(() => quarantine.sweepUnstuck()).not.toThrow();
+
+    const issue = issues.get(42)!;
+    // Nothing reset or reported here — the next record() call still catches it lazily.
+    expect(issue.comments[0]!.body).toContain("phoebe-unit:issues:no-pr");
+    expect(reported).toEqual([]);
+    expect(
+      logs.some((l) => l.includes("Could not read the unlabeled timeline for issue #42")),
+    ).toBe(true);
+  });
+
+  test("no escalated section on the tracking comment means nothing to clear — no timeline call made", () => {
+    let called = false;
+    const { github } = createMultiUnitFakeGithub({
+      issues: { 9: { labels: [] } },
+      raceListedIssues: [9],
+    });
+    const spied: GitHub = {
+      ...github,
+      labelRemovals: (...args) => {
+        called = true;
+        return github.labelRemovals(...args);
+      },
+    };
+    const quarantine = createQuarantine({
+      github: spied,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: () => {},
+    });
+    quarantine.sweepUnstuck();
+    expect(called).toBe(false);
   });
 });
 

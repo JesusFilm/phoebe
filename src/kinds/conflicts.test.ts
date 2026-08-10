@@ -298,6 +298,7 @@ function fakeIo(overrides: Partial<Io> = {}): Io {
       body: "",
     }),
     nativeBlockers: () => [],
+    labelRemovals: () => [],
     prNumberForHead: () => undefined,
     openPrs: () => [],
     prsWithLabel: () => [],

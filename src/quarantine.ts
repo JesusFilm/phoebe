@@ -34,10 +34,11 @@
 // `resolve()` the moment a run produces a PR).
 //
 // A quarantine a human clears by hand (removing the label) is invisible to a
-// sweep that queries *by* label, so it is handled here, at record time, where
-// the unit's comments are already fetched: an escalation section whose label
-// is now absent means a human cleared it — that trigger's counter resets to 0
-// before recording this new failure.
+// sweep that queries *by* label — it can't discover a unit that no longer
+// carries the label at all. `record()` handles the fully-lazy case, at the
+// unit's next failure, where the comments are already fetched: an escalation
+// section whose label is now absent means a human cleared it — that trigger's
+// counter resets to 0 before recording this new failure.
 //
 // The auto-un-stick sweep is the other side of that same escalation comment's
 // promise (#69): `sweepUnstuck()` runs once a cycle, before selection — one
@@ -45,11 +46,17 @@
 // baseline compare against the escalation section(s) still on its tracking
 // comment(s). On a clear it resets the counter and drops the label together,
 // so the retry that follows doesn't re-quarantine itself on its first slip.
+// A unit can still lose the label between that list query and this per-unit
+// fetch — a human unlabelling it mid-cycle. `unstickViaManualClear` (#138)
+// catches that race eagerly instead of leaving it to the next failure: the
+// `unlabeled` timeline confirms a real human removal before resetting
+// counters and posting an audit comment naming the actor, and it falls back
+// silently to `record()`'s lazy path if the timeline read itself fails.
 
 import { createHash } from "node:crypto";
 import { asPrNumber } from "./branded.ts";
 import { WORK_KIND_NAMES, type WorkKindName } from "./config/index.ts";
-import type { GitHub } from "./github.ts";
+import type { GitHub, LabelRemoval } from "./github.ts";
 import type { UnitRef } from "./kinds/kind.ts";
 
 /** Phoebe-owned skip label — distinct from the user-supplied `prOptOutLabel`. */
@@ -747,15 +754,72 @@ export function createQuarantine(opts: {
   }
 
   /**
+   * Eager manual-clear detection (#138): a by-label sweep structurally can't
+   * *discover* a hand-unlabelled unit — it only gets here because it still
+   * carried `PHOEBE_QUARANTINE_LABEL` at `sweepUnstuck`'s list-query moment,
+   * and lost it before this per-unit fetch ran. The timeline read confirms
+   * that was a genuine `unlabeled` event (not just a unit with nothing to
+   * clear) before resetting counters and reporting, so the acknowledgment
+   * lands this cycle instead of waiting on the unit's next failure — the
+   * `record()` reset at #68/#544-558 stays as the fallback for when the
+   * timeline call itself fails.
+   */
+  function unstickViaManualClear(target: UnitRef["target"], activity: UnitActivity): void {
+    const sections = findEscalatedSections(activity.comments);
+    if (sections.length === 0) {
+      return;
+    }
+    let removals: readonly LabelRemoval[];
+    try {
+      removals = github.labelRemovals(target.number, PHOEBE_QUARANTINE_LABEL);
+    } catch (error) {
+      log(
+        `Could not read the unlabeled timeline for ${target.type} #${target.number} — ` +
+          `falling back to the lazy manual-clear reset at next record() — ${errorMessage(error)}`,
+      );
+      return;
+    }
+    const latest = removals[removals.length - 1];
+    if (!latest) {
+      return;
+    }
+    for (const section of sections) {
+      resolve(
+        { kind: section.kind, target },
+        section.trigger,
+        `Phoebe detected that @${latest.actorLogin} removed \`${PHOEBE_QUARANTINE_LABEL}\` by hand — ` +
+          `the \`${section.trigger}\` counter reset to 0.`,
+      );
+      report({
+        kind: "unit-unquarantined",
+        work: workRefFor({ kind: section.kind, target }),
+        reason: `@${latest.actorLogin} removed the ${PHOEBE_QUARANTINE_LABEL} label by hand — manually cleared`,
+      });
+    }
+    const auditBody =
+      `🔓 Phoebe noticed @${latest.actorLogin} removed \`${PHOEBE_QUARANTINE_LABEL}\` by hand and reset ` +
+      `its counter${sections.length > 1 ? "s" : ""} to 0.`;
+    if (target.type === "issue") {
+      github.commentIssue(target.number, auditBody);
+    } else {
+      github.commentPr(asPrNumber(target.number), auditBody);
+    }
+  }
+
+  /**
    * One quarantined and/or retry-flagged unit: read its baseline(s) off the
    * escalation section(s) still on its tracking comment(s) — kind and
    * trigger are read straight off the marker, never assumed, since this is
    * called from a plain label list with no kind attached. `phoebe:retry`
    * short-circuits straight to `unstickViaRetry` — unconditional, no
-   * baseline check. Absent that label, clears (resets every escalated
-   * trigger's counter + removes the label, together) only when every
-   * escalated section has advanced past its own baseline — a unit stuck on
-   * two triggers at once stays labelled until both let go.
+   * baseline check. If `PHOEBE_QUARANTINE_LABEL` is already gone by the time
+   * this per-unit fetch runs (it was present at `sweepUnstuck`'s list-query
+   * moment, or this unit wouldn't be a candidate at all), that's a manual
+   * clear caught mid-race — `unstickViaManualClear` confirms it via the
+   * timeline before resetting. With the label still present, clears (resets
+   * every escalated trigger's counter + removes the label, together) only
+   * when every escalated section has advanced past its own baseline — a unit
+   * stuck on two triggers at once stays labelled until both let go.
    */
   function unstickOne(target: UnitRef["target"]): void {
     try {
@@ -765,6 +829,7 @@ export function createQuarantine(opts: {
         return;
       }
       if (!activity.labels.includes(PHOEBE_QUARANTINE_LABEL)) {
+        unstickViaManualClear(target, activity);
         return;
       }
       const sections = findEscalatedSections(activity.comments);

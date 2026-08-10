@@ -65,6 +65,9 @@ export class GhCommandError extends Error {
 
 export type NativeBlocker = { number: number; state: string };
 
+/** One `unlabeled` timeline event for a given label — who removed it, and when. */
+export type LabelRemoval = { actorLogin: string; removedAt: string };
+
 export type ReviewThreadComment = {
   createdAt: string;
   authorLogin: string;
@@ -132,6 +135,8 @@ export interface GitHub {
   issueActivity(issueNumber: number): IssueActivity;
   /** GitHub's native issue-dependencies read. Throws — callers decide the fallback. */
   nativeBlockers(issueNumber: number): NativeBlocker[];
+  /** `unlabeled` timeline events matching `label`, oldest first. Works for PR numbers too — GitHub's timeline endpoint is issue-number-keyed either way. Throws — callers decide the fallback. */
+  labelRemovals(number: number, label: string): LabelRemoval[];
   /** The PR (if any) whose head is `branch`, in the given state. */
   prNumberForHead(branch: BranchRef, state: "open" | "merged"): PrNumber | undefined;
   /** Unfiltered open PRs, newest scope decisions (isPrInScope, prBaseScope) left to the caller. Capped at 100. */
@@ -333,6 +338,22 @@ export function createGitHub(opts: { repoSlug: string; run?: GhRun; timeoutMs?: 
       ]);
       return Array.isArray(rows)
         ? rows.map((row) => ({ number: row.number, state: row.state }))
+        : [];
+    },
+
+    labelRemovals(number: number, label: string): LabelRemoval[] {
+      const rows = unscopedJson<
+        Array<{
+          event?: string;
+          actor?: { login: string } | null;
+          created_at?: string;
+          label?: { name: string };
+        }>
+      >(["api", `repos/${repoSlug}/issues/${number}/timeline`]);
+      return Array.isArray(rows)
+        ? rows
+            .filter((row) => row.event === "unlabeled" && row.label?.name === label)
+            .map((row) => ({ actorLogin: row.actor?.login ?? "", removedAt: row.created_at ?? "" }))
         : [];
     },
 

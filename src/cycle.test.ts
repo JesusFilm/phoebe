@@ -21,6 +21,7 @@ function fakeGithub(overrides: Partial<GitHub> = {}): GitHub {
       body: "",
     }),
     nativeBlockers: () => [],
+    labelRemovals: () => [],
     prNumberForHead: () => undefined,
     openPrs: () => [],
     prsWithLabel: () => [],

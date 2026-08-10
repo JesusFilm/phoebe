@@ -160,6 +160,67 @@ describe("nativeBlockers — unscoped exception, throws (no warn-and-[] here)", 
   });
 });
 
+describe("labelRemovals — unscoped timeline read, filtered to unlabeled events on `label`", () => {
+  test("argv has no -R; repoSlug is embedded in the endpoint URL; maps actor/created_at, dropping other event types and other labels", () => {
+    const { run, calls } = fakeRun([
+      JSON.stringify([
+        {
+          event: "labeled",
+          actor: { login: "tanflem" },
+          created_at: "2026-01-01T00:00:00Z",
+          label: { name: "phoebe:quarantined" },
+        },
+        {
+          event: "unlabeled",
+          actor: { login: "tanflem" },
+          created_at: "2026-01-02T00:00:00Z",
+          label: { name: "bug" },
+        },
+        {
+          event: "unlabeled",
+          actor: { login: "tanflem" },
+          created_at: "2026-01-03T00:00:00Z",
+          label: { name: "phoebe:quarantined" },
+        },
+      ]),
+    ]);
+    const github = createGitHub({ repoSlug: REPO_SLUG, run });
+    expect(github.labelRemovals(9, "phoebe:quarantined")).toEqual([
+      { actorLogin: "tanflem", removedAt: "2026-01-03T00:00:00Z" },
+    ]);
+    expect(calls[0]!.args).toEqual(["api", `repos/${REPO_SLUG}/issues/9/timeline`]);
+  });
+
+  test("deleted actor degrades to an empty login rather than throwing", () => {
+    const { run } = fakeRun([
+      JSON.stringify([
+        {
+          event: "unlabeled",
+          actor: null,
+          created_at: "2026-01-03T00:00:00Z",
+          label: { name: "phoebe:quarantined" },
+        },
+      ]),
+    ]);
+    const github = createGitHub({ repoSlug: REPO_SLUG, run });
+    expect(github.labelRemovals(9, "phoebe:quarantined")).toEqual([
+      { actorLogin: "", removedAt: "2026-01-03T00:00:00Z" },
+    ]);
+  });
+
+  test("non-array response degrades to []", () => {
+    const { run } = fakeRun([JSON.stringify({ message: "not found" })]);
+    const github = createGitHub({ repoSlug: REPO_SLUG, run });
+    expect(github.labelRemovals(9, "phoebe:quarantined")).toEqual([]);
+  });
+
+  test("propagates a GhCommandError on failure — no swallow-to-[] inside the module", () => {
+    const { run } = fakeRun([new Error("HTTP 404")]);
+    const github = createGitHub({ repoSlug: REPO_SLUG, run });
+    expect(() => github.labelRemovals(9, "phoebe:quarantined")).toThrow(GhCommandError);
+  });
+});
+
 describe("prNumberForHead — collapses the 4 head-branch→PR lookups", () => {
   test("open state", () => {
     const { run, calls } = fakeRun([JSON.stringify([{ number: 42 }])]);
