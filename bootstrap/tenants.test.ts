@@ -2,7 +2,8 @@
 // presence, the nested scan over `repos/<owner>/<repo>/`, workspace tree walk,
 // origin cross-check, and fleet-level slug uniqueness.
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
@@ -10,9 +11,13 @@ import {
   diffFleet,
   discoverTenants,
   discoverWorkspaceTenants,
+  DIRECTORY_ABSENT_HOLD_REASON,
   DuplicateOriginSlugError,
   DuplicateTenantSlugError,
   isNestedDeployment,
+  OUT_OF_TREE_CONTAINER_HOLD_REASON,
+  readTenantOriginUrl,
+  resolveDeclaredTenantDir,
   slugFromUrl,
   TENANT_CONFIG_FILE,
   TENANT_ENV_FILE,
@@ -520,7 +525,9 @@ describe("workspace explicit arm (#137)", () => {
       },
     );
     expect(discovery.tenants.map((t) => t.slug)).toEqual(["acme/widget"]);
-    expect(discovery.holds).toEqual([{ dir: join(dir, "missing"), reason: "directory absent" }]);
+    expect(discovery.holds).toEqual([
+      { dir: join(dir, "missing"), reason: DIRECTORY_ABSENT_HOLD_REASON },
+    ]);
     expect(warnings.some((w) => /missing/.test(w) && /directory absent/.test(w))).toBe(true);
   });
 
@@ -577,6 +584,146 @@ describe("workspace explicit arm (#137)", () => {
       ),
     ).rejects.toBeInstanceOf(DuplicateTenantSlugError);
   });
+});
+
+describe("out-of-tree tenants (#143)", () => {
+  test("holds an absent out-of-tree dir with a container-specific reason", async () => {
+    const warnings: string[] = [];
+    const discovery = await discoverWorkspaceTenants(
+      dir,
+      { tenants: ["../missing-sibling"] },
+      {
+        loadRepoSlug: () => "acme/missing",
+        readOriginUrl: () => null,
+        warn: (m) => warnings.push(m),
+        inContainer: () => true,
+      },
+    );
+    const heldDir = resolveDeclaredTenantDir(dir, "../missing-sibling");
+    expect(discovery.holds).toEqual([{ dir: heldDir, reason: OUT_OF_TREE_CONTAINER_HOLD_REASON }]);
+    expect(warnings.some((w) => w.includes(OUT_OF_TREE_CONTAINER_HOLD_REASON))).toBe(true);
+  });
+
+  test("keeps the generic absent reason for out-of-tree dirs on the host", async () => {
+    const discovery = await discoverWorkspaceTenants(
+      dir,
+      { tenants: ["../missing-sibling"] },
+      {
+        loadRepoSlug: () => "acme/missing",
+        readOriginUrl: () => null,
+        inContainer: () => false,
+      },
+    );
+    expect(discovery.holds).toEqual([
+      {
+        dir: resolveDeclaredTenantDir(dir, "../missing-sibling"),
+        reason: DIRECTORY_ABSENT_HOLD_REASON,
+      },
+    ]);
+  });
+
+  test("keeps the generic absent reason for an in-tree `..`-prefixed dir in a container", async () => {
+    const discovery = await discoverWorkspaceTenants(
+      dir,
+      { tenants: ["..tenant"] },
+      {
+        loadRepoSlug: () => "acme/dotdot",
+        readOriginUrl: () => null,
+        inContainer: () => true,
+      },
+    );
+    expect(discovery.holds).toEqual([
+      {
+        dir: resolveDeclaredTenantDir(dir, "..tenant"),
+        reason: DIRECTORY_ABSENT_HOLD_REASON,
+      },
+    ]);
+  });
+
+  test("boots an out-of-tree tenant silently when it resolves", async () => {
+    const sibling = join(dir, "..", "outboard");
+    writeSlugConfig(sibling, "acme/outboard");
+    const warnings: string[] = [];
+
+    const discovery = await discoverWorkspaceTenants(
+      dir,
+      { tenants: ["../outboard"] },
+      {
+        loadRepoSlug: () => "acme/outboard",
+        readOriginUrl: () => null,
+        warn: (m) => warnings.push(m),
+        inContainer: () => true,
+      },
+    );
+    expect(discovery.tenants.map((t) => t.slug)).toEqual(["acme/outboard"]);
+    expect(discovery.holds).toEqual([]);
+    expect(warnings).toEqual([]);
+    rmSync(sibling, { recursive: true, force: true });
+  });
+
+  test("a symlink-aliased duplicate lands on DuplicateTenantSlugError at discovery", async () => {
+    writeSlugConfig(join(dir, "widget"), "acme/same");
+    symlinkSync(join(dir, "widget"), join(dir, "widget-link"));
+
+    await expect(
+      discoverWorkspaceTenants(
+        dir,
+        { tenants: ["widget", "widget-link"] },
+        {
+          loadRepoSlug: () => "acme/same",
+          readOriginUrl: () => null,
+        },
+      ),
+    ).rejects.toBeInstanceOf(DuplicateTenantSlugError);
+  });
+
+  for (const [label, inContainer] of [
+    ["on-host", false],
+    ["in-container", true],
+  ] as const) {
+    test(`${label}: discovery issues no mutating git operation under tenant.dir`, async () => {
+      const tenantDir = join(dir, "widget");
+      writeSlugConfig(tenantDir, "acme/widget");
+      execFileSync("git", ["init"], { cwd: tenantDir, encoding: "utf8" });
+      execFileSync("git", ["remote", "add", "origin", "https://github.com/acme/widget.git"], {
+        cwd: tenantDir,
+        encoding: "utf8",
+      });
+
+      const gitCalls: string[][] = [];
+      const recordingExec: typeof execFileSync = ((cmd, args, options) => {
+        if (cmd === "git") gitCalls.push(args as string[]);
+        return execFileSync(cmd, args as string[], options as object);
+      }) as typeof execFileSync;
+
+      await discoverWorkspaceTenants(
+        dir,
+        { tenants: ["widget"] },
+        {
+          loadRepoSlug: () => "acme/widget",
+          readOriginUrl: (d) => readTenantOriginUrl(d, { execFile: recordingExec }),
+          inContainer: () => inContainer,
+        },
+      );
+
+      expect(gitCalls).toEqual([["-C", tenantDir, "config", "--get", "remote.origin.url"]]);
+      const mutating = new Set([
+        "add",
+        "commit",
+        "checkout",
+        "clone",
+        "fetch",
+        "merge",
+        "pull",
+        "push",
+        "rebase",
+        "reset",
+        "restore",
+        "switch",
+      ]);
+      expect(gitCalls.flat().some((arg) => mutating.has(arg))).toBe(false);
+    });
+  }
 });
 
 describe("diffFleet", () => {

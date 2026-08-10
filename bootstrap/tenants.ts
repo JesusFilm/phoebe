@@ -25,9 +25,10 @@
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { DEFAULT_TENANT_CONFIG_DIR } from "./config-dir.ts";
+import { isInsideContainer } from "../src/execution-gate.ts";
 import { isExplicitWorkspace, type ResolvedWorkspace } from "./workspace-source.ts";
 
 /** Canonical in-container deployment config dir (compose bind-mounts here). */
@@ -153,9 +154,13 @@ function normalizeGithubSlug(owner: string, repoWithOptionalGit: string): string
  * Read `remote.origin.url` from a child checkout (never `.gitmodules`). An
  * unset or unreadable origin is `null` — admitted on config `repoSlug` (#92).
  */
-export function readTenantOriginUrl(tenantDir: string): string | null {
+export function readTenantOriginUrl(
+  tenantDir: string,
+  opts: { execFile?: typeof execFileSync } = {},
+): string | null {
+  const execFile = opts.execFile ?? execFileSync;
   try {
-    const out = execFileSync("git", ["-C", tenantDir, "config", "--get", "remote.origin.url"], {
+    const out = execFile("git", ["-C", tenantDir, "config", "--get", "remote.origin.url"], {
       encoding: "utf8",
       timeout: 5_000,
     }).trim();
@@ -355,11 +360,46 @@ export type DiscoverWorkspaceDeps = {
    */
   readOriginUrl?: (tenantDir: string) => string | null | Promise<string | null>;
   warn?: (message: string) => void;
+  /** Injectable container probe (tests); defaults to {@link isInsideContainer}. */
+  inContainer?: () => boolean;
 };
 
 /** Resolve one declared `workspace.tenants` entry to an absolute tenant dir. */
 export function resolveDeclaredTenantDir(configDir: string, entry: string): string {
   return isAbsolute(entry) ? entry : resolve(configDir, entry);
+}
+
+/** Hold reason when a declared dir is absent on the host — already the whole truth. */
+export const DIRECTORY_ABSENT_HOLD_REASON = "directory absent";
+
+/**
+ * Hold reason when a declared out-of-tree dir is absent inside the container.
+ * Out-of-tree tenants are a host-only affordance and are not bind-mounted in.
+ */
+export const OUT_OF_TREE_CONTAINER_HOLD_REASON =
+  "out-of-tree tenant not visible inside the container (host-only affordance)";
+
+/** Whether a resolved tenant dir sits outside the workspace root checkout. */
+export function isOutsideWorkspaceRoot(workspaceRoot: string, tenantDir: string): boolean {
+  const root = resolve(workspaceRoot);
+  const dir = resolve(tenantDir);
+  if (dir === root) return false;
+  const rel = relative(root, dir);
+  // Only a parent-path segment means out of tree — an in-tree child may itself
+  // be named `..tenant`, whose relative path starts with ".." but stays inside.
+  return rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
+}
+
+/** Hold reason for a declared dir discovery cannot stat as a directory. */
+export function absentDeclaredDirHoldReason(
+  workspaceRoot: string,
+  tenantDir: string,
+  inContainer: boolean,
+): string {
+  if (inContainer && isOutsideWorkspaceRoot(workspaceRoot, tenantDir)) {
+    return OUT_OF_TREE_CONTAINER_HOLD_REASON;
+  }
+  return DIRECTORY_ABSENT_HOLD_REASON;
 }
 
 function isAbsentTenantDir(dir: string): boolean {
@@ -405,6 +445,7 @@ export async function discoverWorkspaceTenants(
   deps: DiscoverWorkspaceDeps,
 ): Promise<WorkspaceDiscoveryResult> {
   const warn = deps.warn ?? (() => {});
+  const inContainer = deps.inContainer ?? isInsideContainer;
   const readOrigin = deps.readOriginUrl ?? readTenantOriginUrl;
   const tenants: DiscoveredTenant[] = [];
   const skipReasons = new Map<string, string>();
@@ -493,7 +534,7 @@ export async function discoverWorkspaceTenants(
     );
     for (const dir of declaredDirs) {
       if (isAbsentTenantDir(dir)) {
-        const reason = "directory absent";
+        const reason = absentDeclaredDirHoldReason(configDir, dir, inContainer());
         skipReasons.set(dir, reason);
         warnWorkspaceSkip(warn, dir, reason);
         continue;
