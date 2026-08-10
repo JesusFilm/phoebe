@@ -191,6 +191,13 @@ describe("describeExpiry", () => {
     expect(e.warn).toBe(false);
   });
 
+  it("reads offset-form headers such as `+0500`", () => {
+    const e = describeExpiry("2026-09-30 09:00:00 +0500", now)!;
+    expect(e.iso).toBe("2026-09-30T04:00:00.000Z");
+    expect(e.expired).toBe(false);
+    expect(e.warn).toBe(false);
+  });
+
   it("warns inside 14 days", () => {
     expect(describeExpiry("2026-08-20 12:00:00 UTC", now)!.daysLeft).toBe(10);
     expect(describeExpiry("2026-08-20 12:00:00 UTC", now)!.warn).toBe(true);

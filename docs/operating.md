@@ -147,7 +147,7 @@ It reports each of the five permissions
 asks for as granted / missing / unknown, distinguishes "no access at all" (the
 usual sign of a fine-grained PAT still awaiting org approval) from one missing
 checkbox, and warns when the token expires inside 14 days. Every probe is
-read-only — the write grants are proven by aiming a mutating call at a resource
+non-mutating — the write grants are proven by aiming a mutating call at a resource
 that cannot exist — so it is safe against production, and it never prints the
 token. `--all` does not abort when one tenant fails.
 

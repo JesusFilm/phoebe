@@ -91,6 +91,8 @@ try {
 }
 
 const API = "https://api.github.com";
+/** Bound each probe so a stalled GitHub hop cannot block a fleet sweep. */
+const PROBE_TIMEOUT_MS = 30_000;
 const TOKEN_VAR = "GH_TOKEN";
 const cwd = process.cwd();
 
@@ -296,6 +298,7 @@ async function callProbe(probe, slug, token) {
       "user-agent": "phoebe-verify-tenant-token",
       authorization: `Bearer ${token}`,
     },
+    signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
   };
   if (probe.body !== undefined) {
     init.headers["content-type"] = "application/json";

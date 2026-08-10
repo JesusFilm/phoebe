@@ -101,7 +101,7 @@ It reports each of the five permissions above as granted / missing / unknown,
 names the missing ones as the GitHub UI spells them (the Access column above), tells "no access at all"
 (the usual sign of a token still awaiting org approval) apart from one missing
 checkbox, and surfaces the expiry date — warning inside 14 days. Every probe is
-read-only: the write grants are proven by aiming a mutating call at a resource
+non-mutating: the write grants are proven by aiming a mutating call at a resource
 that cannot exist, so it is safe against a production repo. It never prints the
 token.
 

@@ -196,6 +196,26 @@ export function scopeCoverage(scopes) {
 /** Warn this many days out — long enough to rotate before Phoebe starts 401ing. */
 export const EXPIRY_WARN_DAYS = 14;
 
+/** GitHub's `github-authentication-token-expiration` header — date, time, zone. */
+const EXPIRY_HEADER_RE = /^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s+(UTC|Z|[+-]\d{2}:?\d{2})$/i;
+
+function parseExpiryHeader(header) {
+  const m = header.trim().match(EXPIRY_HEADER_RE);
+  if (!m) return NaN;
+  const [, date, time, zoneRaw] = m;
+  const zoneUpper = zoneRaw.toUpperCase();
+  let zone;
+  if (zoneUpper === "UTC" || zoneUpper === "Z") {
+    zone = "Z";
+  } else if (/^[+-]\d{4}$/.test(zoneRaw)) {
+    zone = `${zoneRaw.slice(0, 3)}:${zoneRaw.slice(3)}`;
+  } else {
+    zone = zoneRaw;
+  }
+  const iso = zone === "Z" ? `${date}T${time}Z` : `${date}T${time}${zone}`;
+  return Date.parse(iso);
+}
+
 /**
  * Read the `github-authentication-token-expiration` header GitHub returns for
  * an expiring token (`2026-09-30 09:00:00 UTC`). A non-expiring token has no
@@ -203,7 +223,7 @@ export const EXPIRY_WARN_DAYS = 14;
  */
 export function describeExpiry(header, nowMs) {
   if (header === null || header === undefined) return null;
-  const at = Date.parse(header.trim().replace(" UTC", "Z").replace(" ", "T"));
+  const at = parseExpiryHeader(header);
   if (Number.isNaN(at)) return null;
   const daysLeft = Math.floor((at - nowMs) / 86_400_000);
   const expired = at <= nowMs;
