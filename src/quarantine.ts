@@ -46,7 +46,8 @@
 // comment(s). On a clear it resets the counter and drops the label together,
 // so the retry that follows doesn't re-quarantine itself on its first slip.
 
-import { asPrNumber, asSha, type Sha } from "./branded.ts";
+import { createHash } from "node:crypto";
+import { asPrNumber } from "./branded.ts";
 import { WORK_KIND_NAMES, type WorkKindName } from "./config/index.ts";
 import type { GitHub } from "./github.ts";
 import type { UnitRef } from "./kinds/kind.ts";
@@ -97,8 +98,9 @@ export function parseQuarantineBaseline(text: string): string | null {
 /**
  * The one escalation section posted at threshold: says the unit failed K
  * times and needs a human, and records the baseline (PR head SHA for
- * conflicts/checks; issue `updatedAt` for issues/research) so the auto-un-stick
- * sweep can tell when someone has actually changed the thing.
+ * conflicts/checks; a content hash of the issue body for issues/research) so
+ * the auto-un-stick sweep can tell when someone has actually changed the
+ * thing — a Phoebe-authored write (label, comment) never moves either.
  */
 export function buildQuarantineComment(opts: {
   kind: string;
@@ -135,24 +137,14 @@ export function buildQuarantineComment(opts: {
 }
 
 /**
- * Whether a quarantined unit should be auto-un-stuck: someone changed the thing
- * that hung. A PR unit clears when its head SHA advanced past baseline; an issue
- * unit clears when its `lastEditedAt` is newer than baseline. A bare human
- * comment (no content change) does not clear it — it can't silently re-arm a
- * unit no one has fixed.
+ * Whether a quarantined unit should be auto-un-stuck: someone changed the
+ * thing that hung. `current` is the PR's head SHA, or a content hash of the
+ * issue body — either way, "has the identity ref moved past what was
+ * recorded at escalation". A bare human comment (no content change) does not
+ * move either, so it can't silently re-arm a unit no one has fixed.
  */
-export function shouldAutoUnstick(opts: {
-  baseline: string;
-  currentHeadSha?: Sha;
-  currentIssueEditedAt?: string;
-}): boolean {
-  if (opts.currentHeadSha !== undefined) {
-    return opts.currentHeadSha !== opts.baseline;
-  }
-  if (opts.currentIssueEditedAt !== undefined) {
-    return opts.currentIssueEditedAt > opts.baseline;
-  }
-  return false;
+export function shouldAutoUnstick(opts: { baseline: string; current: string }): boolean {
+  return opts.current !== opts.baseline;
 }
 
 // --- The one tracking comment: up to two trigger-scoped sections -------------
@@ -352,6 +344,11 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** An issue-keyed unit's baseline (#135): a content hash, not a timestamp — no Phoebe write (comment, label) can move it, only an edit to the body itself. */
+function issueContentBaseline(body: string): string {
+  return `sha256:${createHash("sha256").update(body).digest("hex")}`;
+}
+
 /** Later of two optional ISO instants (`gh` returns them Z-normalized, so `>` is chronological). */
 function maxIso(a: string | null, b: string | null): string | null {
   if (a === null) return b;
@@ -496,7 +493,7 @@ export function createQuarantine(opts: {
         comments: activity.comments,
         labels: activity.labels,
         ref: String(target.number),
-        baseline: activity.updatedAt,
+        baseline: issueContentBaseline(activity.body),
         lastCommitAt: null,
       };
     }
@@ -664,11 +661,7 @@ export function createQuarantine(opts: {
         return;
       }
       const cleared = sections.every((section) =>
-        shouldAutoUnstick(
-          target.type === "issue"
-            ? { baseline: section.baseline, currentIssueEditedAt: activity.baseline }
-            : { baseline: section.baseline, currentHeadSha: asSha(activity.baseline) },
-        ),
+        shouldAutoUnstick({ baseline: section.baseline, current: activity.baseline }),
       );
       if (!cleared) {
         return;

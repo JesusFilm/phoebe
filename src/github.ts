@@ -94,6 +94,7 @@ export type IssueActivity = {
   updatedAt: string;
   comments: ActivityComment[];
   labels: string[];
+  body: string;
 };
 
 export type PrActivity = {
@@ -315,11 +316,13 @@ export function createGitHub(opts: { repoSlug: string; run?: GhRun; timeoutMs?: 
         updatedAt: string;
         comments: GhCommentRow[];
         labels: Array<{ name: string }>;
-      }>(["issue", "view", String(issueNumber), "--json", "comments,updatedAt,labels"]);
+        body: string;
+      }>(["issue", "view", String(issueNumber), "--json", "comments,updatedAt,labels,body"]);
       return {
         updatedAt: raw.updatedAt,
         comments: raw.comments.map(toActivityComment),
         labels: raw.labels.map((l) => l.name),
+        body: raw.body,
       };
     },
 

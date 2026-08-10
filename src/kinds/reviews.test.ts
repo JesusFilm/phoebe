@@ -267,7 +267,12 @@ function fakeIo(overrides: Partial<Io> = {}): Io {
     github: {
       issuesWithLabel: () => [],
       issueBody: () => "",
-      issueActivity: () => ({ updatedAt: "2026-01-01T00:00:00Z", comments: [], labels: [] }),
+      issueActivity: () => ({
+        updatedAt: "2026-01-01T00:00:00Z",
+        comments: [],
+        labels: [],
+        body: "",
+      }),
       nativeBlockers: () => [],
       prNumberForHead: () => undefined,
       openPrs: () => [],

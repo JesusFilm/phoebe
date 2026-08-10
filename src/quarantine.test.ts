@@ -7,6 +7,7 @@
 // `maxUnitAttempts` config defaults + their `PHOEBE_*` overlay) lives at the
 // config layer (#56) — see src/load-config.test.ts.
 
+import { createHash } from "node:crypto";
 import { describe, expect, test } from "vite-plus/test";
 import { asBranchRef, asPrNumber, asSha } from "./branded.ts";
 import type { ActivityComment, GitHub } from "./github.ts";
@@ -85,21 +86,11 @@ describe("buildQuarantineComment", () => {
 });
 
 describe("shouldAutoUnstick", () => {
-  test("PR unit clears when head SHA advanced past baseline", () => {
-    expect(shouldAutoUnstick({ baseline: "aaa", currentHeadSha: asSha("bbb") })).toBe(true);
-    expect(shouldAutoUnstick({ baseline: "aaa", currentHeadSha: asSha("aaa") })).toBe(false);
+  test("clears when current has moved past baseline — PR head SHA or issue content hash alike", () => {
+    expect(shouldAutoUnstick({ baseline: "aaa", current: "bbb" })).toBe(true);
   });
-  test("issue unit clears when lastEditedAt is newer than baseline", () => {
-    const baseline = "2026-07-31T12:00:00Z";
-    expect(shouldAutoUnstick({ baseline, currentIssueEditedAt: "2026-07-31T13:00:00Z" })).toBe(
-      true,
-    );
-    expect(shouldAutoUnstick({ baseline, currentIssueEditedAt: "2026-07-31T11:00:00Z" })).toBe(
-      false,
-    );
-  });
-  test("no content signal → stays quarantined (a bare comment can't re-arm)", () => {
-    expect(shouldAutoUnstick({ baseline: "aaa" })).toBe(false);
+  test("stays quarantined when current still matches baseline", () => {
+    expect(shouldAutoUnstick({ baseline: "aaa", current: "aaa" })).toBe(false);
   });
 });
 
@@ -244,16 +235,28 @@ function createFakeGithub(
     comments?: FakeComment[];
     labels?: string[];
     updatedAt?: string;
+    body?: string;
     headRefOid?: string;
     lastCommitAt?: string | null;
   } = {},
-): { github: GitHub; state: { comments: FakeComment[]; labels: string[] } } {
+): {
+  github: GitHub;
+  state: { comments: FakeComment[]; labels: string[]; updatedAt: string; body: string };
+} {
   const state = {
     comments: opts.comments ? [...opts.comments] : [],
     labels: opts.labels ? [...opts.labels] : [],
+    updatedAt: opts.updatedAt ?? "2026-01-01T00:00:00Z",
+    body: opts.body ?? "",
   };
   const login = opts.login ?? "phoebe-bot";
   let nextId = 1000;
+  // Real GitHub bumps an issue's updatedAt on every comment/label write (#135)
+  // — the fake must too, so a fix that (wrongly) keys the baseline off
+  // updatedAt fails here instead of only in production.
+  const bumpUpdatedAt = (): void => {
+    state.updatedAt = new Date(Date.parse(state.updatedAt) + 1000).toISOString();
+  };
   const post = (body: string): void => {
     state.comments.push({
       id: `posted-${nextId++}`,
@@ -266,9 +269,10 @@ function createFakeGithub(
     issuesWithLabel: () => [],
     issueBody: () => "",
     issueActivity: () => ({
-      updatedAt: opts.updatedAt ?? "2026-01-01T00:00:00Z",
+      updatedAt: state.updatedAt,
       comments: state.comments,
       labels: state.labels,
+      body: state.body,
     }),
     nativeBlockers: () => [],
     prNumberForHead: () => undefined,
@@ -285,15 +289,20 @@ function createFakeGithub(
     }),
     reviewThreads: () => [],
     commitCheckRuns: () => [],
-    commentIssue: (_n, body) => post(body),
+    commentIssue: (_n, body) => {
+      post(body);
+      bumpUpdatedAt();
+    },
     commentPr: (_n, body) => post(body),
     createPr: () => {},
     retargetPr: () => {},
     labelIssue: (_n, label) => {
       if (!state.labels.includes(label)) state.labels.push(label);
+      bumpUpdatedAt();
     },
     unlabelIssue: (_n, label) => {
       state.labels = state.labels.filter((l) => l !== label);
+      bumpUpdatedAt();
     },
     labelPr: (_n, label) => {
       if (!state.labels.includes(label)) state.labels.push(label);
@@ -307,6 +316,7 @@ function createFakeGithub(
     updateComment: (id, body) => {
       const comment = state.comments.find((c) => c.id === id);
       if (comment) comment.body = body;
+      bumpUpdatedAt();
     },
   };
   return { github, state };
@@ -729,12 +739,12 @@ type MultiUnitState = { comments: ActivityComment[]; labels: string[] };
 
 function createMultiUnitFakeGithub(
   opts: {
-    issues?: Record<number, Partial<MultiUnitState> & { updatedAt?: string }>;
+    issues?: Record<number, Partial<MultiUnitState> & { updatedAt?: string; body?: string }>;
     prs?: Record<number, Partial<MultiUnitState> & { headRefOid?: string }>;
   } = {},
 ): {
   github: GitHub;
-  issues: Map<number, MultiUnitState & { updatedAt: string }>;
+  issues: Map<number, MultiUnitState & { updatedAt: string; body: string }>;
   prs: Map<number, MultiUnitState & { headRefOid: string }>;
 } {
   const issues = new Map(
@@ -744,6 +754,7 @@ function createMultiUnitFakeGithub(
         comments: v.comments ? [...v.comments] : [],
         labels: v.labels ? [...v.labels] : [],
         updatedAt: v.updatedAt ?? "2026-01-01T00:00:00Z",
+        body: v.body ?? "",
       },
     ]),
   );
@@ -758,8 +769,26 @@ function createMultiUnitFakeGithub(
     ]),
   );
 
+  let nextCommentId = 2000;
+
+  // Real GitHub bumps an issue's updatedAt on every comment/label write
+  // (#135) — the fake must too, so a fix that (wrongly) keys the baseline
+  // off updatedAt fails here instead of only in production.
+  function bumpIssueUpdatedAt(n: number): void {
+    const s = issues.get(n);
+    if (s) s.updatedAt = new Date(Date.parse(s.updatedAt) + 1000).toISOString();
+  }
+
   function updateComment(id: string, body: string): void {
-    for (const unit of [...issues.values(), ...prs.values()]) {
+    for (const [n, unit] of issues) {
+      const comment = unit.comments.find((c) => c.id === id);
+      if (comment) {
+        comment.body = body;
+        bumpIssueUpdatedAt(n);
+        return;
+      }
+    }
+    for (const unit of prs.values()) {
       const comment = unit.comments.find((c) => c.id === id);
       if (comment) {
         comment.body = body;
@@ -783,7 +812,7 @@ function createMultiUnitFakeGithub(
     issueBody: () => "",
     issueActivity: (n) => {
       const s = issues.get(n)!;
-      return { updatedAt: s.updatedAt, comments: s.comments, labels: s.labels };
+      return { updatedAt: s.updatedAt, comments: s.comments, labels: s.labels, body: s.body };
     },
     nativeBlockers: () => [],
     prNumberForHead: () => undefined,
@@ -814,17 +843,36 @@ function createMultiUnitFakeGithub(
     },
     reviewThreads: () => [],
     commitCheckRuns: () => [],
-    commentIssue: () => {},
-    commentPr: () => {},
+    commentIssue: (n, body) => {
+      const s = issues.get(n)!;
+      s.comments.push({
+        id: `posted-${nextCommentId++}`,
+        body,
+        createdAt: "2026-01-05T00:00:00Z",
+        authorLogin: "phoebe-bot",
+      });
+      bumpIssueUpdatedAt(n);
+    },
+    commentPr: (n, body) => {
+      const s = prs.get(n)!;
+      s.comments.push({
+        id: `posted-${nextCommentId++}`,
+        body,
+        createdAt: "2026-01-05T00:00:00Z",
+        authorLogin: "phoebe-bot",
+      });
+    },
     createPr: () => {},
     retargetPr: () => {},
     labelIssue: (n, label) => {
       const s = issues.get(n)!;
       if (!s.labels.includes(label)) s.labels.push(label);
+      bumpIssueUpdatedAt(n);
     },
     unlabelIssue: (n, label) => {
       const s = issues.get(n)!;
       s.labels = s.labels.filter((l) => l !== label);
+      bumpIssueUpdatedAt(n);
     },
     labelPr: (n, label) => {
       const s = prs.get(n)!;
@@ -840,6 +888,11 @@ function createMultiUnitFakeGithub(
     updateComment,
   };
   return { github, issues, prs };
+}
+
+/** Mirrors quarantine.ts's private `issueContentBaseline` so fixtures can construct a matching (or deliberately stale) baseline for an issue body. */
+function issueBaseline(body: string): string {
+  return `sha256:${createHash("sha256").update(body).digest("hex")}`;
 }
 
 function escalatedTrackingComment(opts: {
@@ -909,11 +962,11 @@ describe("createQuarantine — sweepUnstuck()", () => {
     ]);
   });
 
-  test("an issue unit whose updatedAt advanced past baseline is unlabelled and its counter reset", () => {
+  test("an issue unit whose body content changed past baseline is unlabelled and its counter reset", () => {
     const { github, issues } = createMultiUnitFakeGithub({
       issues: {
         42: {
-          updatedAt: "2026-02-01T00:00:00Z",
+          body: "an edited body",
           labels: [PHOEBE_QUARANTINE_LABEL],
           comments: [
             escalatedTrackingComment({
@@ -921,7 +974,7 @@ describe("createQuarantine — sweepUnstuck()", () => {
               kind: "issues",
               trigger: "no-pr",
               issueOrPrNumber: 42,
-              baseline: "2026-01-01T00:00:00Z",
+              baseline: issueBaseline("the original body"),
               ref: "42",
             }),
           ],
@@ -937,6 +990,36 @@ describe("createQuarantine — sweepUnstuck()", () => {
     const issue = issues.get(42)!;
     expect(issue.labels).toEqual([]);
     expect(issue.comments[0]!.body).not.toContain("phoebe-unit:issues:no-pr");
+  });
+
+  test("an issue unit whose body content has not changed stays quarantined — labels/comments alone don't clear it (#135)", () => {
+    const { github, issues } = createMultiUnitFakeGithub({
+      issues: {
+        42: {
+          body: "same body throughout",
+          labels: [PHOEBE_QUARANTINE_LABEL],
+          comments: [
+            escalatedTrackingComment({
+              id: "track1",
+              kind: "issues",
+              trigger: "no-pr",
+              issueOrPrNumber: 42,
+              baseline: issueBaseline("same body throughout"),
+              ref: "42",
+            }),
+          ],
+        },
+      },
+    });
+    const quarantine = createQuarantine({
+      github,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: () => {},
+    });
+    quarantine.sweepUnstuck();
+    const issue = issues.get(42)!;
+    expect(issue.labels).toEqual([PHOEBE_QUARANTINE_LABEL]);
+    expect(issue.comments[0]!.body).toContain("phoebe-unit:issues:no-pr n=3");
   });
 
   test("a PR unit whose head SHA has not moved stays quarantined", () => {
@@ -970,11 +1053,12 @@ describe("createQuarantine — sweepUnstuck()", () => {
   });
 
   test("a unit quarantined on two triggers stays labelled unless both clear", () => {
+    const currentBody = "final body text";
     const escalation1 = buildQuarantineComment({
       kind: "issues",
       id: 42,
       k: 3,
-      baseline: "2026-01-01T00:00:00Z",
+      baseline: issueBaseline("initial buggy body"),
       reason: "timed out",
     });
     const marker1 = `<!-- phoebe-unit:issues:timed-out n=3 sig=timeout ref=42 at=2026-01-01T00:00:00Z -->`;
@@ -982,15 +1066,15 @@ describe("createQuarantine — sweepUnstuck()", () => {
       kind: "issues",
       id: 42,
       k: 3,
-      baseline: "2026-03-01T00:00:00Z",
+      baseline: issueBaseline(currentBody),
       reason: "was claimed and released with no PR",
     });
     const marker2 = `<!-- phoebe-unit:issues:no-pr n=3 sig=sig ref=42 at=2026-01-01T00:00:00Z -->`;
     const { github, issues } = createMultiUnitFakeGithub({
       issues: {
         42: {
-          // Newer than escalation1's baseline (clears timed-out) but older than escalation2's (doesn't clear no-pr).
-          updatedAt: "2026-02-01T00:00:00Z",
+          // Differs from escalation1's baseline (clears timed-out) but matches escalation2's exactly (doesn't clear no-pr).
+          body: currentBody,
           labels: [PHOEBE_QUARANTINE_LABEL],
           comments: [
             {
@@ -1013,6 +1097,100 @@ describe("createQuarantine — sweepUnstuck()", () => {
     expect(issue.labels).toEqual([PHOEBE_QUARANTINE_LABEL]);
     expect(issue.comments[0]!.body).toContain("phoebe-unit:issues:timed-out");
     expect(issue.comments[0]!.body).toContain("phoebe-unit:issues:no-pr");
+  });
+
+  // --- #135: the escalation write itself must never re-arm the very unit it just quarantined ---
+
+  test("record() to threshold on an issue, then sweepUnstuck(): the label stays and the counter stays at K", () => {
+    const { github, issues } = createMultiUnitFakeGithub({
+      issues: { 42: { body: "the issue body, untouched by Phoebe's writes" } },
+    });
+    const quarantine = createQuarantine({
+      github,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: () => {},
+    });
+    const unit: UnitRef = { kind: "issues", target: { type: "issue", number: 42 } };
+    const detail = {
+      signature: "apply-patch-failed",
+      reason: "was claimed and released with no PR",
+      belowThresholdNote: noteThreshold,
+    };
+    quarantine.record(unit, "no-pr", detail);
+    quarantine.record(unit, "no-pr", detail);
+    quarantine.record(unit, "no-pr", detail);
+    // Escalating (the comment edit + label add) is itself a GitHub write — under the old
+    // updatedAt-keyed baseline this would silently re-arm the unit on the very next sweep.
+    expect(issues.get(42)!.labels).toEqual([PHOEBE_QUARANTINE_LABEL]);
+
+    quarantine.sweepUnstuck();
+
+    const issue = issues.get(42)!;
+    expect(issue.labels).toEqual([PHOEBE_QUARANTINE_LABEL]);
+    expect(issue.comments[0]!.body).toContain("phoebe-unit:issues:no-pr n=3");
+  });
+
+  test("editing the issue body between escalation and sweep clears the label and resets every escalated trigger's counter", () => {
+    const { github, issues } = createMultiUnitFakeGithub({
+      issues: { 42: { body: "the original issue body" } },
+    });
+    const quarantine = createQuarantine({
+      github,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: () => {},
+    });
+    const unit: UnitRef = { kind: "issues", target: { type: "issue", number: 42 } };
+    const detail = {
+      signature: "apply-patch-failed",
+      reason: "was claimed and released with no PR",
+      belowThresholdNote: noteThreshold,
+    };
+    quarantine.record(unit, "no-pr", detail);
+    quarantine.record(unit, "no-pr", detail);
+    quarantine.record(unit, "no-pr", detail);
+    expect(issues.get(42)!.labels).toEqual([PHOEBE_QUARANTINE_LABEL]);
+
+    issues.get(42)!.body = "a human edited the issue to add more detail";
+
+    quarantine.sweepUnstuck();
+
+    const issue = issues.get(42)!;
+    expect(issue.labels).toEqual([]);
+    expect(issue.comments[0]!.body).not.toContain("phoebe-unit:issues:no-pr");
+  });
+
+  test("posting a comment (any author) between escalation and sweep does not clear it", () => {
+    const { github, issues } = createMultiUnitFakeGithub({
+      issues: { 42: { body: "the issue body, untouched" } },
+    });
+    const quarantine = createQuarantine({
+      github,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: () => {},
+    });
+    const unit: UnitRef = { kind: "issues", target: { type: "issue", number: 42 } };
+    const detail = {
+      signature: "apply-patch-failed",
+      reason: "was claimed and released with no PR",
+      belowThresholdNote: noteThreshold,
+    };
+    quarantine.record(unit, "no-pr", detail);
+    quarantine.record(unit, "no-pr", detail);
+    quarantine.record(unit, "no-pr", detail);
+    expect(issues.get(42)!.labels).toEqual([PHOEBE_QUARANTINE_LABEL]);
+
+    issues.get(42)!.comments.push({
+      id: "human-1",
+      body: "any human comment, no content change",
+      createdAt: "2026-01-06T00:00:00Z",
+      authorLogin: "some-human",
+    });
+
+    quarantine.sweepUnstuck();
+
+    const issue = issues.get(42)!;
+    expect(issue.labels).toEqual([PHOEBE_QUARANTINE_LABEL]);
+    expect(issue.comments.some((c) => c.body.includes("phoebe-unit:issues:no-pr n=3"))).toBe(true);
   });
 
   test("a labelled unit with no escalated section (stale/below-threshold) is left alone", () => {

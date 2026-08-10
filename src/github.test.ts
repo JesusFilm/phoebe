@@ -105,7 +105,7 @@ describe("issueBody / issueActivity", () => {
     expect(calls[0]!.args).toEqual(["issue", "view", "7", "--json", "body", "-R", REPO_SLUG]);
   });
 
-  test("issueActivity carries comments (id/body/createdAt/authorLogin) + updatedAt + labels", () => {
+  test("issueActivity carries comments (id/body/createdAt/authorLogin) + updatedAt + labels + body", () => {
     const { run, calls } = fakeRun([
       JSON.stringify({
         updatedAt: "2026-02-01T00:00:00Z",
@@ -114,6 +114,7 @@ describe("issueBody / issueActivity", () => {
           { id: "c2", body: "deleted author", createdAt: "2026-01-02T00:00:00Z", author: null },
         ],
         labels: [{ name: "bug" }],
+        body: "the issue body",
       }),
     ]);
     const github = createGitHub({ repoSlug: REPO_SLUG, run });
@@ -124,13 +125,14 @@ describe("issueBody / issueActivity", () => {
         { id: "c2", body: "deleted author", createdAt: "2026-01-02T00:00:00Z", authorLogin: "" },
       ],
       labels: ["bug"],
+      body: "the issue body",
     });
     expect(calls[0]!.args).toEqual([
       "issue",
       "view",
       "7",
       "--json",
-      "comments,updatedAt,labels",
+      "comments,updatedAt,labels,body",
       "-R",
       REPO_SLUG,
     ]);
