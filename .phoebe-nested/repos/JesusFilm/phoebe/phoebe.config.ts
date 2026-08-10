@@ -22,6 +22,19 @@ const config: PhoebeUserConfig = {
   // Cursor provider (composer-2.5 default). Requires CURSOR_API_KEY in THIS
   // tenant's .env — the supervisor scrubs every other tenant's secrets (#61).
   defaultProvider: "cursor",
+
+  // Prompts are a deployment asset, not a target-repo one: this tenant dir holds
+  // no `prompts/`, so point every kind at the ones this repo ships, four levels
+  // up in the same mounted working tree. Copying them per tenant is what let
+  // `.phoebe/prompts/` drift and lose a whole prompt kind (#164). The engine
+  // checks all five exist at startup.
+  promptFiles: {
+    issue: "../../../../prompts/issues-prompt.md",
+    conflict: "../../../../prompts/conflict-prompt.md",
+    checks: "../../../../prompts/checks-prompt.md",
+    reviews: "../../../../prompts/reviews-prompt.md",
+    research: "../../../../prompts/research-prompt.md",
+  },
 };
 
 export default config;

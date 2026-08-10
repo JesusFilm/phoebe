@@ -12,9 +12,67 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
-import type { PhoebeConfig } from "./config-schema.ts";
+import type { PhoebeConfig, PromptFilesConfig } from "./config-schema.ts";
+import { validateWorkOrder, type WorkKindName } from "./orchestrator.ts";
 
 export type PromptArgs = Record<string, string>;
+
+/** Where a `promptFiles.*` entry lands: absolute as-is, relative off the root. */
+function promptFilePath(promptPath: string, runtimeRoot: string): string {
+  return isAbsolute(promptPath) ? promptPath : resolve(runtimeRoot, promptPath);
+}
+
+/**
+ * The `promptFiles` key each work kind dispatches with — the pairing main.ts
+ * makes at every `promptFile:` call site, named once so the startup check can
+ * ask "which prompts does this tenant's `workOrder` actually need?".
+ */
+const PROMPT_KEY_FOR_WORK_KIND: Record<WorkKindName, keyof PromptFilesConfig> = {
+  conflicts: "conflict",
+  checks: "checks",
+  reviews: "reviews",
+  issues: "issue",
+  research: "research",
+};
+
+/**
+ * Boot-time check that every prompt this tenant can dispatch names a file that
+ * exists.
+ *
+ * Prompt loading is otherwise fail-at-use: a tenant whose asset dir is missing
+ * one kind boots clean, polls happily, and only dies weeks later when the first
+ * unit of that kind is dispatched — a hand-copied asset dir that never received
+ * `research-prompt.md` stayed broken for months that way (#164). Called once at
+ * engine startup, this turns that into a startup failure naming the tenant and
+ * every missing kind at once.
+ *
+ * Scoped to `workOrder`, because that is what makes it a *caught* failure rather
+ * than a new one: a kind the tenant dropped is never dispatched, so its prompt
+ * being absent breaks nothing and must not refuse a boot.
+ *
+ * Existence is the whole rule — an entry is free to point outside the runtime
+ * root (`../prompts/…` is how a `configDir` tenant reaches its repo's own
+ * prompts instead of duplicating them), and absolute entries are checked as-is.
+ */
+export function assertPromptFilesExist(
+  config: PhoebeConfig,
+  runtimeRoot: string,
+  workKinds: readonly WorkKindName[] = validateWorkOrder(config.workOrder),
+): void {
+  const missing: string[] = [];
+  for (const kind of workKinds) {
+    const key = PROMPT_KEY_FOR_WORK_KIND[kind];
+    const promptPath = config.promptFiles[key];
+    const absolute = promptFilePath(promptPath, runtimeRoot);
+    if (!existsSync(absolute)) missing.push(`  ${key}: ${promptPath} → ${absolute}`);
+  }
+  if (missing.length === 0) return;
+  throw new Error(
+    `Tenant ${config.repoSlug} is missing ${missing.length} prompt file(s), resolved from ` +
+      `runtime root ${runtimeRoot}:\n${missing.join("\n")}\n` +
+      `Add the file(s), or point the matching \`promptFiles\` key at a path that exists.`,
+  );
+}
 
 /**
  * Resolve a `promptFiles.*` path against the runtime root. Absolute paths are
@@ -22,7 +80,7 @@ export type PromptArgs = Record<string, string>;
  * missing — never falls back into the installed package tree.
  */
 export function resolvePromptFile(promptPath: string, runtimeRoot: string): string {
-  const absolute = isAbsolute(promptPath) ? promptPath : resolve(runtimeRoot, promptPath);
+  const absolute = promptFilePath(promptPath, runtimeRoot);
   if (!existsSync(absolute)) {
     throw new Error(
       `Could not find prompt file ${promptPath} (resolved to ${absolute} from runtime root ${runtimeRoot})`,

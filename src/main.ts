@@ -66,6 +66,7 @@ import { PROVIDERS } from "./providers/providers.ts";
 import { runAgent } from "./providers/run-agent.ts";
 import type { Provider } from "./providers/types.ts";
 import {
+  assertPromptFilesExist,
   buildDefaultPromptArgs,
   loadPromptTemplate as loadPromptTemplateFromRoot,
   renderPrompt,
@@ -1670,6 +1671,12 @@ function describeUnit(picked: WorkUnit): string {
  * so this only sees engine-level flags.
  */
 export async function runEngine(argv: readonly string[] = process.argv.slice(2)): Promise<void> {
+  // Before anything else, and before a dry run too: a prompt this tenant cannot
+  // load is a startup failure, not a surprise weeks later when the first unit of
+  // that kind is dispatched (#164). Scoped to the validated `workOrder` — only
+  // the kinds this tenant can actually dispatch need a prompt.
+  assertPromptFilesExist(config, process.cwd(), workOrder);
+
   const runOnce = argv.includes("--run-once");
   const dryRun = argv.includes("--dry-run");
   const rawPollIntervalMs = Number(process.env["PHOEBE_POLL_INTERVAL_MS"]);
