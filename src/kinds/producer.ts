@@ -16,7 +16,14 @@ import {
   reclaimDecision,
 } from "../claim-lease.ts";
 import { parseLatestMarker } from "../markers.ts";
-import { PHOEBE_QUARANTINE_LABEL, slugifyFailureSignature } from "../quarantine.ts";
+import type { ActivityComment } from "../github.ts";
+import {
+  filterBackoffEligible,
+  findLatestUnitAttemptComment,
+  PHOEBE_QUARANTINE_LABEL,
+  slugifyFailureSignature,
+  type UnitMarker,
+} from "../quarantine.ts";
 import { readVerificationReport, removeVerificationReport } from "../verification.ts";
 import {
   findBlockedDependents,
@@ -177,6 +184,23 @@ type ProducerData = {
   nativeBlockers: NativeBlockerMap;
 };
 
+/**
+ * The newer of the unit's `no-pr` and `timed-out` markers (#137) — an
+ * issue-keyed unit can carry both at once (a claim that timed out, then a
+ * retry that produced no PR), and the backoff filter only needs the most
+ * recent attempt to compute the current growing gap.
+ */
+function latestIssueAttemptMarker(
+  comments: readonly ActivityComment[],
+  kind: "issues" | "research",
+): UnitMarker | null {
+  const noPr = findLatestUnitAttemptComment(comments, kind, "no-pr")?.marker ?? null;
+  const timedOut = findLatestUnitAttemptComment(comments, kind, "timed-out")?.marker ?? null;
+  if (!noPr) return timedOut;
+  if (!timedOut) return noPr;
+  return timedOut.at > noPr.at ? timedOut : noPr;
+}
+
 type ProducerSpec = {
   name: "issues" | "research";
   label: string;
@@ -211,7 +235,21 @@ function createProducerKind(
   const stackConfig = stackConfigFrom(config);
 
   async function fetch(ctx: CycleContext): Promise<ProducerData> {
-    const issues = spec.name === "issues" ? ctx.pools.ready : ctx.pools.research;
+    const pool = spec.name === "issues" ? ctx.pools.ready : ctx.pools.research;
+    const nowIso = new Date().toISOString();
+    const withMarkers = pool.map((candidate) => ({
+      issue: candidate,
+      // Quarantined issues are filtered downstream by `selectIssue`/`buildIssueQueue`
+      // regardless — skip the activity fetch for them rather than burn an API call
+      // on a unit that's excluded either way.
+      attemptMarker: candidate.labels.includes(PHOEBE_QUARANTINE_LABEL)
+        ? null
+        : latestIssueAttemptMarker(io.github.issueActivity(candidate.number).comments, spec.name),
+    }));
+    // #137: a unit still inside its no-pr/timed-out backoff window sits this cycle
+    // out — the same growing-gap protection the PR-keyed no-commit trigger already
+    // gets (#25), now covering the triggers that previously churned at full cadence.
+    const issues = filterBackoffEligible(withMarkers, nowIso).map((c) => c.issue);
     return { issues, blockerStates: ctx.blockerStates, nativeBlockers: ctx.nativeBlockers };
   }
 

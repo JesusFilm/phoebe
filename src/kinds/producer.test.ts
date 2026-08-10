@@ -6,7 +6,7 @@ import { describe, expect, test } from "vite-plus/test";
 import { asPrNumber } from "../branded.ts";
 import { sampleConfig as config } from "../test-config.ts";
 import type { GitHub } from "../github.ts";
-import { createQuarantine } from "../quarantine.ts";
+import { createQuarantine, PHOEBE_QUARANTINE_LABEL } from "../quarantine.ts";
 import type { StackConfig } from "../stack.ts";
 import type { BlockerPrState, Issue } from "../stack.ts";
 import type { CycleContext } from "../cycle.ts";
@@ -405,5 +405,119 @@ describe("createResearchKind", () => {
     const unit = kind.select(data, fakeCtx());
     expect(unit?.issue.number).toBe(7);
     expect(kind.refFor(unit!).target).toEqual({ type: "issue", number: 7 });
+  });
+});
+
+// --- no-pr / timed-out backoff (#137) ----------------------------------------
+
+function markerComment(kind: "issues" | "research", trigger: "no-pr" | "timed-out", at: string) {
+  return {
+    id: `IC_${kind}_${trigger}`,
+    body: `<!-- phoebe-unit:${kind}:${trigger} n=1 sig=no-commit-produced ref=42 at=${at} -->`,
+    createdAt: at,
+    authorLogin: "phoebe-bot",
+  };
+}
+
+function fakeIoWithIssueActivity(
+  commentsByIssue: Record<number, ReturnType<typeof markerComment>[]>,
+) {
+  return fakeIo({
+    github: {
+      ...fakeIo().github,
+      issueActivity: (issueNumber: number) => ({
+        updatedAt: "2026-01-01T00:00:00Z",
+        comments: commentsByIssue[issueNumber] ?? [],
+        labels: [],
+        body: "",
+      }),
+    },
+  });
+}
+
+describe("createIssuesKind / createResearchKind — no-pr/timed-out backoff (#137)", () => {
+  test("a fresh no-pr marker holds the issue back inside its backoff window", async () => {
+    const now = new Date().toISOString();
+    const deps: KindDeps = {
+      config,
+      io: fakeIoWithIssueActivity({ 42: [markerComment("issues", "no-pr", now)] }),
+    };
+    const kind = createIssuesKind(deps);
+    const ready = [issue({ number: 42 })];
+    const data = await kind.fetch(fakeCtx({ pools: { ready, research: [] } }));
+    expect(data.issues).toEqual([]);
+  });
+
+  test("a no-pr marker past its backoff window is re-picked", async () => {
+    const deps: KindDeps = {
+      config,
+      io: fakeIoWithIssueActivity({
+        42: [markerComment("issues", "no-pr", "2000-01-01T00:00:00.000Z")],
+      }),
+    };
+    const kind = createIssuesKind(deps);
+    const ready = [issue({ number: 42 })];
+    const data = await kind.fetch(fakeCtx({ pools: { ready, research: [] } }));
+    expect(data.issues.map((i) => i.number)).toEqual([42]);
+  });
+
+  test("a fresh timed-out marker holds the issue back the same as no-pr", async () => {
+    const now = new Date().toISOString();
+    const deps: KindDeps = {
+      config,
+      io: fakeIoWithIssueActivity({ 42: [markerComment("issues", "timed-out", now)] }),
+    };
+    const kind = createIssuesKind(deps);
+    const ready = [issue({ number: 42 })];
+    const data = await kind.fetch(fakeCtx({ pools: { ready, research: [] } }));
+    expect(data.issues).toEqual([]);
+  });
+
+  test("research tickets get the same backoff despite not leasing", async () => {
+    const now = new Date().toISOString();
+    const deps: KindDeps = {
+      config,
+      io: fakeIoWithIssueActivity({ 7: [markerComment("research", "no-pr", now)] }),
+    };
+    const kind = createResearchKind(deps);
+    const research = [issue({ number: 7 })];
+    const data = await kind.fetch(fakeCtx({ pools: { ready: [], research } }));
+    expect(data.issues).toEqual([]);
+  });
+
+  test("a marker for the other kind's namespace does not apply — issues and research count separately", async () => {
+    const now = new Date().toISOString();
+    const deps: KindDeps = {
+      config,
+      // A no-pr marker recorded under "research" must not back off the same
+      // issue number picked up as a plain "issues" ticket.
+      io: fakeIoWithIssueActivity({ 42: [markerComment("research", "no-pr", now)] }),
+    };
+    const kind = createIssuesKind(deps);
+    const ready = [issue({ number: 42 })];
+    const data = await kind.fetch(fakeCtx({ pools: { ready, research: [] } }));
+    expect(data.issues.map((i) => i.number)).toEqual([42]);
+  });
+
+  test("a quarantined issue is not fetched for activity and stays excluded", async () => {
+    let calls = 0;
+    const deps: KindDeps = {
+      config,
+      io: fakeIo({
+        github: {
+          ...fakeIo().github,
+          issueActivity: () => {
+            calls++;
+            return { updatedAt: "2026-01-01T00:00:00Z", comments: [], labels: [], body: "" };
+          },
+        },
+      }),
+    };
+    const kind = createIssuesKind(deps);
+    const ready = [issue({ number: 99, labels: [PHOEBE_QUARANTINE_LABEL] })];
+    const data = await kind.fetch(fakeCtx({ pools: { ready, research: [] } }));
+    expect(data.issues.map((i) => i.number)).toEqual([99]);
+    expect(kind.select(data, fakeCtx())).toBeNull();
+    expect(calls).toBe(0);
   });
 });
