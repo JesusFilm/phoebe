@@ -12,8 +12,8 @@
 // It reads the configs off disk through the same functions boot uses
 // (`loadUserConfig`, `readConfigDir`, `resolveConfig`), so a new deployment or a
 // moved asset dir is covered without touching this file — only the list below.
-// Sibling of container-image.test.ts / nested-dogfood.test.ts, and under `src/`
-// for the same reason: test files never ship, and `vp test` already covers them.
+// Sibling of container-image.test.ts, and under `src/` for the same reason: test
+// files never ship, and `vp test` already covers them.
 
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -30,11 +30,8 @@ const SHIPPED_PROMPTS = join(repoRoot, "prompts");
 const DEPLOYMENT_CONFIGS = [
   // The workspace-tenant entry for this repo (and the test fixture).
   "phoebe.config.ts",
-  // The flat dogfood.
+  // The dogfood.
   ".phoebe/phoebe.config.ts",
-  // Both tenants of the nested dogfood.
-  ".phoebe-nested/repos/JesusFilm/phoebe/phoebe.config.ts",
-  ".phoebe-nested/repos/JesusFilm/youtube-studio/phoebe.config.ts",
 ] as const;
 
 /**
