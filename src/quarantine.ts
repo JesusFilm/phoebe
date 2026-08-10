@@ -55,6 +55,15 @@ import type { UnitRef } from "./kinds/kind.ts";
 /** Phoebe-owned skip label — distinct from the user-supplied `prOptOutLabel`. */
 export const PHOEBE_QUARANTINE_LABEL = "phoebe:quarantined";
 
+/**
+ * Phoebe-owned escape hatch (#136): a human applies this to say "retry this
+ * unit as-is" — environment fixed, flaky infra resolved, or a PR-keyed unit
+ * whose head can't move. `sweepUnstuck()` consumes it unconditionally,
+ * unlike the baseline-advance check the label-only `PHOEBE_QUARANTINE_LABEL`
+ * path requires.
+ */
+export const PHOEBE_RETRY_LABEL = "phoebe:retry";
+
 export type UnitTrigger = "timed-out" | "no-commit" | "no-pr";
 
 const ALL_TRIGGERS: readonly UnitTrigger[] = ["timed-out", "no-commit", "no-pr"];
@@ -130,7 +139,8 @@ export function buildQuarantineComment(opts: {
     ...dependentsLine,
     "",
     `Remove the \`${PHOEBE_QUARANTINE_LABEL}\` label to retry, or push a fix / edit the ` +
-      `issue — Phoebe auto-clears the label when the content advances past the baseline below.`,
+      `issue — Phoebe auto-clears the label when the content advances past the baseline below. ` +
+      `Edit the body if the spec changed; apply \`${PHOEBE_RETRY_LABEL}\` to retry unchanged.`,
     "",
     buildQuarantineBaselineMarker(opts.baseline),
   ].join("\n");
@@ -620,39 +630,140 @@ export function createQuarantine(opts: {
   }
 
   function sweepUnstuck(): void {
-    let quarantinedIssues: readonly { number: number }[] = [];
+    const issueNumbers = new Set<number>();
     try {
-      quarantinedIssues = github.issuesWithLabel(PHOEBE_QUARANTINE_LABEL);
+      for (const issue of github.issuesWithLabel(PHOEBE_QUARANTINE_LABEL)) {
+        issueNumbers.add(issue.number);
+      }
     } catch (error) {
       log(`Could not list quarantined issues for the auto-un-stick sweep — ${errorMessage(error)}`);
     }
-    for (const issue of quarantinedIssues) {
-      unstickOne({ type: "issue", number: issue.number });
+    try {
+      for (const issue of github.issuesWithLabel(PHOEBE_RETRY_LABEL)) {
+        issueNumbers.add(issue.number);
+      }
+    } catch (error) {
+      log(
+        `Could not list ${PHOEBE_RETRY_LABEL} issues for the auto-un-stick sweep — ${errorMessage(error)}`,
+      );
+    }
+    for (const number of issueNumbers) {
+      unstickOne({ type: "issue", number });
     }
 
-    let quarantinedPrs: readonly { number: number }[] = [];
+    const prNumbers = new Set<number>();
     try {
-      quarantinedPrs = github.prsWithLabel(PHOEBE_QUARANTINE_LABEL);
+      for (const pr of github.prsWithLabel(PHOEBE_QUARANTINE_LABEL)) {
+        prNumbers.add(pr.number);
+      }
     } catch (error) {
       log(`Could not list quarantined PRs for the auto-un-stick sweep — ${errorMessage(error)}`);
     }
-    for (const pr of quarantinedPrs) {
-      unstickOne({ type: "pr", number: pr.number });
+    try {
+      for (const pr of github.prsWithLabel(PHOEBE_RETRY_LABEL)) {
+        prNumbers.add(pr.number);
+      }
+    } catch (error) {
+      log(
+        `Could not list ${PHOEBE_RETRY_LABEL} PRs for the auto-un-stick sweep — ${errorMessage(error)}`,
+      );
+    }
+    for (const number of prNumbers) {
+      unstickOne({ type: "pr", number });
     }
   }
 
   /**
-   * One quarantined unit: read its baseline(s) off the escalation section(s)
-   * still on its tracking comment(s) — kind and trigger are read straight off
-   * the marker, never assumed, since this is called from a plain label list
-   * with no kind attached. Clears (resets every escalated trigger's counter +
-   * removes the label, together) only when every escalated section has
-   * advanced past its own baseline — a unit stuck on two triggers at once
-   * stays labelled until both let go.
+   * `phoebe:retry`'s audit trail (#136) — a top-level comment distinct from
+   * the tracking-comment edit `resolve()` makes, so the "why" survives even
+   * though the trigger sections it names get folded back into their prose.
+   */
+  function buildRetryAuditComment(opts: {
+    wasQuarantined: boolean;
+    resetTriggers: readonly UnitTrigger[];
+  }): string {
+    if (!opts.wasQuarantined) {
+      return (
+        `♻️ Phoebe cleared \`${PHOEBE_RETRY_LABEL}\` — this unit wasn't ` +
+        `\`${PHOEBE_QUARANTINE_LABEL}\`, so there was nothing to reset.`
+      );
+    }
+    const triggerList = opts.resetTriggers.map((t) => `\`${t}\``).join(", ");
+    const resetNote = triggerList ? ` and reset its ${triggerList} counter(s) to 0` : "";
+    return (
+      `♻️ Phoebe retried this unit at a human's request (\`${PHOEBE_RETRY_LABEL}\`): removed ` +
+      `\`${PHOEBE_QUARANTINE_LABEL}\`${resetNote}.`
+    );
+  }
+
+  /**
+   * The `phoebe:retry` escape hatch (#136): unconditional, unlike the
+   * baseline-advance check below — a human is vouching for the retry, so no
+   * content-moved evidence is required. Every escalated trigger's counter
+   * resets via the normal `resolve()` path, both labels come off, and an
+   * audit comment records what happened even when the unit was never
+   * quarantined in the first place (a human may apply the label pre-
+   * emptively, or after the quarantine already cleared) — that case still
+   * needs the label consumed, just with nothing to reset.
+   */
+  function unstickViaRetry(target: UnitRef["target"], activity: UnitActivity): void {
+    const wasQuarantined = activity.labels.includes(PHOEBE_QUARANTINE_LABEL);
+    const sections = wasQuarantined ? findEscalatedSections(activity.comments) : [];
+
+    for (const section of sections) {
+      resolve(
+        { kind: section.kind, target },
+        section.trigger,
+        `Phoebe reset this via \`${PHOEBE_RETRY_LABEL}\` — a human asked to retry as-is; the ` +
+          `\`${section.trigger}\` counter reset to 0.`,
+      );
+      report({
+        kind: "unit-unquarantined",
+        work: workRefFor({ kind: section.kind, target }),
+        reason: `a human applied \`${PHOEBE_RETRY_LABEL}\` — retried as-is`,
+      });
+    }
+
+    if (wasQuarantined) {
+      if (target.type === "issue") {
+        github.unlabelIssue(target.number, PHOEBE_QUARANTINE_LABEL);
+      } else {
+        github.unlabelPr(asPrNumber(target.number), PHOEBE_QUARANTINE_LABEL);
+      }
+    }
+
+    const auditBody = buildRetryAuditComment({
+      wasQuarantined,
+      resetTriggers: sections.map((s) => s.trigger),
+    });
+    if (target.type === "issue") {
+      github.unlabelIssue(target.number, PHOEBE_RETRY_LABEL);
+      github.commentIssue(target.number, auditBody);
+    } else {
+      const prNumber = asPrNumber(target.number);
+      github.unlabelPr(prNumber, PHOEBE_RETRY_LABEL);
+      github.commentPr(prNumber, auditBody);
+    }
+  }
+
+  /**
+   * One quarantined and/or retry-flagged unit: read its baseline(s) off the
+   * escalation section(s) still on its tracking comment(s) — kind and
+   * trigger are read straight off the marker, never assumed, since this is
+   * called from a plain label list with no kind attached. `phoebe:retry`
+   * short-circuits straight to `unstickViaRetry` — unconditional, no
+   * baseline check. Absent that label, clears (resets every escalated
+   * trigger's counter + removes the label, together) only when every
+   * escalated section has advanced past its own baseline — a unit stuck on
+   * two triggers at once stays labelled until both let go.
    */
   function unstickOne(target: UnitRef["target"]): void {
     try {
       const activity = fetchActivity(target);
+      if (activity.labels.includes(PHOEBE_RETRY_LABEL)) {
+        unstickViaRetry(target, activity);
+        return;
+      }
       if (!activity.labels.includes(PHOEBE_QUARANTINE_LABEL)) {
         return;
       }

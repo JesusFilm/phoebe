@@ -1,14 +1,15 @@
 // Boot-time label existence (#67). Every label the engine writes —
 // `readyLabel`/`processingLabel` (the claim/reclaim flip, #15/#81),
 // `researchLabel` (the wayfinder queue), `prOptOutLabel` (`ready-for-human`,
-// the PR hand-back signal a human must be able to apply), and
-// `PHOEBE_QUARANTINE_LABEL` (#75) — is a Phoebe-owned constant the user never
-// types and has no reason to know exists. Nothing in this repo ever created
-// them: docs/phoebe-core-onboarding.md documented creating three of the five
-// *by hand*, and never mentioned quarantine at all, so a fresh repo silently
-// drops every write against a label that doesn't exist yet (quarantine writes
-// swallowed or uncaught; a missing `processingLabel` ejects claimed issues
-// from the queue with no PR and no visible failure).
+// the PR hand-back signal a human must be able to apply),
+// `PHOEBE_QUARANTINE_LABEL` (#75), and `PHOEBE_RETRY_LABEL` (#136, the
+// deliberate un-stick escape hatch) — is a Phoebe-owned constant the user
+// never types and has no reason to know exists. Nothing in this repo ever
+// created them: docs/phoebe-core-onboarding.md documented creating three of
+// the five *by hand*, and never mentioned quarantine at all, so a fresh repo
+// silently drops every write against a label that doesn't exist yet
+// (quarantine writes swallowed or uncaught; a missing `processingLabel`
+// ejects claimed issues from the queue with no PR and no visible failure).
 //
 // `gh label create --force` is idempotent — it updates rather than errors
 // when the label already exists — so this runs unconditionally once per
@@ -17,7 +18,7 @@
 // quarantine (rare by construction); `processingLabel` is written on every
 // claim, and an extra round trip per claim is not free.
 
-import { PHOEBE_QUARANTINE_LABEL } from "./quarantine.ts";
+import { PHOEBE_QUARANTINE_LABEL, PHOEBE_RETRY_LABEL } from "./quarantine.ts";
 
 export type LabelSpec = {
   repoSlug: string;
@@ -67,6 +68,12 @@ export function phoebeLabelSet(config: {
       name: PHOEBE_QUARANTINE_LABEL,
       description: "Phoebe quarantined this unit after repeated failures",
       color: "B60205",
+    },
+    {
+      repoSlug: config.repoSlug,
+      name: PHOEBE_RETRY_LABEL,
+      description: "Retry this unit as-is — un-sticks it and resets its counters",
+      color: "0E8A16",
     },
   ];
 }

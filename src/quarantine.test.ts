@@ -19,6 +19,7 @@ import {
   findLatestUnitAttemptComment,
   parseQuarantineBaseline,
   PHOEBE_QUARANTINE_LABEL,
+  PHOEBE_RETRY_LABEL,
   shouldAutoUnstick,
   slugifyFailureSignature,
   type UnitMarker,
@@ -1274,5 +1275,197 @@ describe("createQuarantine — sweepUnstuck()", () => {
     expect(logs.some((l) => l.includes("Could not evaluate auto-un-stick for issue #9"))).toBe(
       true,
     );
+  });
+});
+
+// --- createQuarantine — sweepUnstuck() consumes phoebe:retry (#136) ---------
+
+function withCommentCapture(github: GitHub): {
+  github: GitHub;
+  posted: Array<{ type: "issue" | "pr"; number: number; body: string }>;
+} {
+  const posted: Array<{ type: "issue" | "pr"; number: number; body: string }> = [];
+  return {
+    github: {
+      ...github,
+      commentIssue: (n, body) => posted.push({ type: "issue", number: n, body }),
+      commentPr: (n, body) => posted.push({ type: "pr", number: n, body }),
+    },
+    posted,
+  };
+}
+
+describe("createQuarantine — sweepUnstuck() consumes phoebe:retry", () => {
+  test("an issue-keyed quarantined unit is un-stuck unconditionally, even with no baseline advance", () => {
+    const { github: fakeGithub, issues } = createMultiUnitFakeGithub({
+      issues: {
+        42: {
+          // Same instant as the escalation baseline — the ordinary auto-unstick
+          // path would leave this labelled.
+          updatedAt: "2026-01-01T00:00:00Z",
+          labels: [PHOEBE_QUARANTINE_LABEL, PHOEBE_RETRY_LABEL],
+          comments: [
+            escalatedTrackingComment({
+              id: "track1",
+              kind: "issues",
+              trigger: "no-pr",
+              issueOrPrNumber: 42,
+              baseline: "2026-01-01T00:00:00Z",
+              ref: "42",
+            }),
+          ],
+        },
+      },
+    });
+    const { github, posted } = withCommentCapture(fakeGithub);
+    const reported: unknown[] = [];
+    const quarantine = createQuarantine({
+      github,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: () => {},
+      report: (event) => reported.push(event),
+    });
+    quarantine.sweepUnstuck();
+
+    const issue = issues.get(42)!;
+    expect(issue.labels).toEqual([]);
+    expect(issue.comments[0]!.body).not.toContain("phoebe-unit:issues:no-pr");
+    expect(posted).toEqual([
+      {
+        type: "issue",
+        number: 42,
+        body: expect.stringContaining(PHOEBE_RETRY_LABEL),
+      },
+    ]);
+    expect(posted[0]!.body).toContain("no-pr");
+    expect(reported).toEqual([
+      {
+        kind: "unit-unquarantined",
+        work: { kind: "issues", issueNumber: 42 },
+        reason: `a human applied \`${PHOEBE_RETRY_LABEL}\` — retried as-is`,
+      },
+    ]);
+  });
+
+  test("a PR-keyed quarantined unit is un-stuck unconditionally, even with a stationary head SHA", () => {
+    const { github: fakeGithub, prs } = createMultiUnitFakeGithub({
+      prs: {
+        7: {
+          headRefOid: "sha-1",
+          labels: [PHOEBE_QUARANTINE_LABEL, PHOEBE_RETRY_LABEL],
+          comments: [
+            escalatedTrackingComment({
+              id: "track1",
+              kind: "checks",
+              trigger: "no-commit",
+              issueOrPrNumber: 7,
+              baseline: "sha-1",
+              ref: "sha-1",
+            }),
+          ],
+        },
+      },
+    });
+    const { github, posted } = withCommentCapture(fakeGithub);
+    const reported: unknown[] = [];
+    const quarantine = createQuarantine({
+      github,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: () => {},
+      report: (event) => reported.push(event),
+    });
+    quarantine.sweepUnstuck();
+
+    const pr = prs.get(7)!;
+    expect(pr.labels).toEqual([]);
+    expect(pr.comments[0]!.body).not.toContain("phoebe-unit:checks:no-commit");
+    expect(posted).toEqual([
+      { type: "pr", number: 7, body: expect.stringContaining(PHOEBE_RETRY_LABEL) },
+    ]);
+    expect(reported).toEqual([
+      {
+        kind: "unit-unquarantined",
+        work: { kind: "checks", pullRequestNumber: 7 },
+        reason: `a human applied \`${PHOEBE_RETRY_LABEL}\` — retried as-is`,
+      },
+    ]);
+  });
+
+  test("phoebe:retry on a non-quarantined unit is consumed harmlessly — no counter change, no status-rail event", () => {
+    const { github: fakeGithub, issues } = createMultiUnitFakeGithub({
+      issues: {
+        9: {
+          labels: [PHOEBE_RETRY_LABEL],
+        },
+      },
+    });
+    const { github, posted } = withCommentCapture(fakeGithub);
+    const reported: unknown[] = [];
+    const quarantine = createQuarantine({
+      github,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: () => {},
+      report: (event) => reported.push(event),
+    });
+    quarantine.sweepUnstuck();
+
+    expect(issues.get(9)!.labels).toEqual([]);
+    expect(posted).toEqual([
+      {
+        type: "issue",
+        number: 9,
+        body: expect.stringContaining("wasn't"),
+      },
+    ]);
+    expect(reported).toEqual([]);
+  });
+
+  test("a unit escalated on two triggers has both reset by a single phoebe:retry", () => {
+    const escalation1 = buildQuarantineComment({
+      kind: "issues",
+      id: 42,
+      k: 3,
+      baseline: "2026-01-01T00:00:00Z",
+      reason: "timed out",
+    });
+    const marker1 = `<!-- phoebe-unit:issues:timed-out n=3 sig=timeout ref=42 at=2026-01-01T00:00:00Z -->`;
+    const escalation2 = buildQuarantineComment({
+      kind: "issues",
+      id: 42,
+      k: 3,
+      baseline: "2026-03-01T00:00:00Z",
+      reason: "was claimed and released with no PR",
+    });
+    const marker2 = `<!-- phoebe-unit:issues:no-pr n=3 sig=sig ref=42 at=2026-01-01T00:00:00Z -->`;
+    const { github: fakeGithub, issues } = createMultiUnitFakeGithub({
+      issues: {
+        42: {
+          updatedAt: "2026-01-01T00:00:00Z",
+          labels: [PHOEBE_QUARANTINE_LABEL, PHOEBE_RETRY_LABEL],
+          comments: [
+            {
+              id: "track1",
+              body: `${escalation1}\n\n${marker1}\n\n${escalation2}\n\n${marker2}`,
+              createdAt: "2026-01-01T00:00:00Z",
+              authorLogin: "phoebe-bot",
+            },
+          ],
+        },
+      },
+    });
+    const { github, posted } = withCommentCapture(fakeGithub);
+    const quarantine = createQuarantine({
+      github,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: () => {},
+    });
+    quarantine.sweepUnstuck();
+
+    const issue = issues.get(42)!;
+    expect(issue.labels).toEqual([]);
+    expect(issue.comments[0]!.body).not.toContain("phoebe-unit:issues:timed-out");
+    expect(issue.comments[0]!.body).not.toContain("phoebe-unit:issues:no-pr");
+    expect(posted[0]!.body).toContain("timed-out");
+    expect(posted[0]!.body).toContain("no-pr");
   });
 });
