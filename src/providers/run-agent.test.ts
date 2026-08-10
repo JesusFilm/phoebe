@@ -103,6 +103,31 @@ describe("runAgent", () => {
     expect(result).toEqual({ exitCode: 3, resultText: "partial answer" });
   });
 
+  test("threads effort through to the provider's built command (#155)", async () => {
+    const fake = makeFakeChild();
+    let spawnedArgs: readonly string[] = [];
+    const spawn: SpawnAgent = (_file, args) => {
+      spawnedArgs = args;
+      queueMicrotask(() => fake.close(0));
+      return fake.child;
+    };
+
+    await runAgent({
+      provider: PROVIDERS.claude,
+      model: "claude-m",
+      effort: "high",
+      prompt: "p",
+      cwd: "/w",
+      env: {},
+      spawn,
+      log: () => {},
+    });
+
+    const modelIdx = spawnedArgs.indexOf("--model");
+    expect(spawnedArgs[modelIdx + 2]).toBe("--effort");
+    expect(spawnedArgs[modelIdx + 3]).toBe("high");
+  });
+
   test("null exit code (signal kill) maps to failure", async () => {
     const fake = makeFakeChild();
     const spawn: SpawnAgent = () => {

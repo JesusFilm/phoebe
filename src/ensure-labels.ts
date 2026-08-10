@@ -2,9 +2,11 @@
 // `readyLabel`/`processingLabel` (the claim/reclaim flip, #15/#81),
 // `researchLabel` (the wayfinder queue), `prOptOutLabel` (`ready-for-human`,
 // the PR hand-back signal a human must be able to apply),
-// `PHOEBE_QUARANTINE_LABEL` (#75), and `PHOEBE_RETRY_LABEL` (#136, the
-// deliberate un-stick escape hatch) — is a Phoebe-owned constant the user
-// never types and has no reason to know exists. Nothing in this repo ever
+// `PHOEBE_QUARANTINE_LABEL` (#75), `PHOEBE_RETRY_LABEL` (#136, the
+// deliberate un-stick escape hatch), and the three `phoebe:tier:*` labels
+// (#155, a human-placed per-ticket model/effort override) — is a Phoebe-owned
+// constant the user never types and has no reason to know exists. Nothing in
+// this repo ever
 // created them: docs/phoebe-core-onboarding.md documented creating three of
 // the five *by hand*, and never mentioned quarantine at all, so a fresh repo
 // silently drops every write against a label that doesn't exist yet
@@ -19,6 +21,7 @@
 // claim, and an extra round trip per claim is not free.
 
 import { PHOEBE_QUARANTINE_LABEL, PHOEBE_RETRY_LABEL } from "./quarantine.ts";
+import { TIER_BUNDLES, PHOEBE_TIER_LABEL_PREFIX, type Tier } from "./tier.ts";
 
 export type LabelSpec = {
   repoSlug: string;
@@ -75,7 +78,26 @@ export function phoebeLabelSet(config: {
       description: "Retry this unit as-is — un-sticks it and resets its counters",
       color: "0E8A16",
     },
+    ...TIER_LABEL_SPECS(config.repoSlug),
   ];
+}
+
+const TIER_LABEL_DESCRIPTIONS: Record<Tier, string> = {
+  basic: "Run this unit cheap — Sonnet, low effort",
+  mid: "Run this unit at the tenant default — Sonnet, high effort",
+  strong: "Run this unit on Opus, high effort — a human placed this deliberately",
+};
+
+const TIER_LABEL_COLOR = "5319E7";
+
+/** The three `phoebe:tier:*` labels (#155), provisioned fleet-wide like the quarantine/retry labels. */
+function TIER_LABEL_SPECS(repoSlug: string): LabelSpec[] {
+  return (Object.keys(TIER_BUNDLES) as Tier[]).map((tier) => ({
+    repoSlug,
+    name: `${PHOEBE_TIER_LABEL_PREFIX}${tier}`,
+    description: TIER_LABEL_DESCRIPTIONS[tier],
+    color: TIER_LABEL_COLOR,
+  }));
 }
 
 /** `gh label create --force`, once per spec — safe to call unconditionally. */

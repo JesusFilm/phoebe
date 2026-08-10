@@ -340,6 +340,7 @@ function createProducerKind(
   async function runOneIssue(opts: {
     issueNumber: number;
     issueTitle: string;
+    issueLabels: readonly string[];
     worktreeBase: string;
     stacked: boolean;
     blockerIssueNumber?: number;
@@ -369,7 +370,7 @@ function createProducerKind(
         },
         worktreeDir,
       );
-      const agentExitCode = await io.agent.run({ worktreeDir, prompt });
+      const agentExitCode = await io.agent.run({ worktreeDir, prompt, labels: opts.issueLabels });
       const verification = readVerificationReport(reportPath);
 
       const newCommitCount = io.git.commitCount(worktreeDir, `${worktreeBase}..HEAD`);
@@ -508,6 +509,7 @@ function createProducerKind(
     const runOpts = {
       issueNumber: target.number,
       issueTitle: target.title,
+      issueLabels: target.labels,
       worktreeBase: resolution.worktreeBase,
       stacked: resolution.stacked,
       blockerIssueNumber: resolution.blockerIssueNumber,

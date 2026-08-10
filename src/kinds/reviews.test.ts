@@ -262,6 +262,71 @@ describe("createReviewsKind — run", () => {
   });
 });
 
+describe("createReviewsKind — labels (#155)", () => {
+  test("fetch populates a unit's labels from prActivity, the same call it already reads comments from", async () => {
+    const io = fakeIo({
+      github: {
+        ...fakeIo().github,
+        prMergeInfo: () => ({
+          number: asPrNumber(600),
+          headRefName: asBranchRef("phoebe/issue-600"),
+          baseRefName: asBranchRef("main"),
+          headRefOid: asSha("head1"),
+          baseRefOid: asSha("base1"),
+          mergeable: "MERGEABLE",
+          mergeStateStatus: "CLEAN",
+        }),
+        reviewThreads: () => [
+          reviewThread({
+            comments: [{ authorLogin: "reviewer", createdAt: "2026-06-03T12:00:00Z" }],
+          }),
+        ],
+        prActivity: () => ({
+          headRefOid: asSha("aaa"),
+          lastCommitAt: null,
+          comments: [],
+          labels: ["phoebe:tier:mid"],
+        }),
+      },
+    });
+    const kind = createReviewsKind({ config, io });
+    const data = await kind.fetch(
+      fakeCtx({
+        openPrs: [
+          {
+            number: asPrNumber(600),
+            headRefName: asBranchRef("phoebe/issue-600"),
+            baseRefName: asBranchRef("main"),
+            authorLogin: "someone-else",
+          },
+        ],
+      }),
+    );
+    expect(data.reviewActivityPrs[0]?.labels).toEqual(["phoebe:tier:mid"]);
+  });
+
+  test("run threads a unit's labels to io.agent.run", async () => {
+    let receivedLabels: readonly string[] | undefined;
+    const thread = reviewThread({
+      comments: [{ authorLogin: "reviewer", createdAt: "2026-06-03T12:00:00Z" }],
+    });
+    const unit = reviewsPr({ prNumber: 700, threads: [thread], labels: ["phoebe:tier:mid"] });
+    const io = fakeIo({
+      agent: {
+        run: async (opts) => {
+          receivedLabels = opts.labels;
+          return 0;
+        },
+      },
+    });
+    const kind = createReviewsKind({ config, io });
+
+    await kind.run(unit, fakeCtx());
+
+    expect(receivedLabels).toEqual(["phoebe:tier:mid"]);
+  });
+});
+
 function fakeIo(overrides: Partial<Io> = {}): Io {
   return {
     github: {

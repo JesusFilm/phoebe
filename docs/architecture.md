@@ -101,9 +101,13 @@ stale worktree on the next attempt.
 The chosen provider runs as a **direct child process** of the engine, not a
 nested container. Providers live in `src/providers/`; three are supported —
 `cursor`, `claude`, and `codex` — each wrapping its CLI's argv and stream-JSON
-output schema (`src/providers/providers.ts`). Provider and model are chosen per
-run from `config.defaultProvider` / `config.defaultModels`, overridable with
-`PHOEBE_AGENT` / `PHOEBE_MODEL`.
+output schema (`src/providers/providers.ts`). Provider, model, and (Claude only) effort are chosen per run from
+`config.defaultProvider` / `config.defaultModels` / `config.defaultEfforts`,
+overridable with `PHOEBE_AGENT` / `PHOEBE_MODEL` / `PHOEBE_EFFORT`. A
+per-ticket `phoebe:tier:basic|mid|strong` label on the unit's issue or PR
+short-circuits straight to that tier's model/effort bundle, bypassing all of
+the above for that one run — see
+[configuration.md](configuration.md#per-ticket-tier-override).
 
 The child sees a **deliberately narrow env allowlist** (`src/agent-env.ts`):
 `PATH`, `HOME`, `GH_TOKEN`, the git identity vars, `CI=true`, and **only the

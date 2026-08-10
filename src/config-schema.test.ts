@@ -230,6 +230,18 @@ describe("resolveConfiguration: filling in the roster's shipped defaults", () =>
     expect(resolved.providerEnv.claude).toBe("ANTHROPIC_API_KEY");
   });
 
+  test("defaults claude's effort to high; other providers get no default (#155)", () => {
+    const resolved = resolve();
+    expect(resolved.defaultEfforts.claude).toBe("high");
+    expect(resolved.defaultEfforts.cursor).toBeUndefined();
+    expect(resolved.defaultEfforts.codex).toBeUndefined();
+  });
+
+  test("shallow-merges effort defaults the same way as models", () => {
+    const resolved = resolve({ defaultEfforts: { claude: "xhigh" } });
+    expect(resolved.defaultEfforts.claude).toBe("xhigh");
+  });
+
   test("derives per-tenant paths from the slug under the default data base", () => {
     const resolved = resolve();
     expect(resolved.paths.repoDir).toBe("/data/repos/acme/widget/repo");

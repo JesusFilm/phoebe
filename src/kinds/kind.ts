@@ -57,9 +57,14 @@ export type GitOps = {
   ): string;
 };
 
-/** Runs one already-rendered prompt in a prepared worktree: provider select, env allowlist, run-budget deadline. */
+/**
+ * Runs one already-rendered prompt in a prepared worktree: provider select,
+ * env allowlist, run-budget deadline. `labels` is the unit's GitHub labels
+ * (issue or PR) — a `phoebe:tier:*` label among them overrides the tenant's
+ * default model/effort for this one run (#155).
+ */
 export type AgentRunner = {
-  run(opts: { worktreeDir: string; prompt: string }): Promise<number>;
+  run(opts: { worktreeDir: string; prompt: string; labels?: readonly string[] }): Promise<number>;
 };
 
 /** Prompt template load + `{{KEY}}` substitution + `` !`cmd` `` shell splicing. */

@@ -207,11 +207,34 @@ tickets. Omit `research` to disable it for a repo. See
 
 ## Providers & models
 
-| Field             | Default                                                                          | Meaning                                                                                                      |
-| ----------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `defaultProvider` | `"cursor"`                                                                       | Which agent CLI to drive: `cursor`, `claude`, or `codex`.                                                    |
-| `defaultModels`   | `{ cursor: "composer-2.5", claude: "claude-sonnet-4-6", codex: "gpt-5.4-mini" }` | Per-provider model. Merged key-by-key.                                                                       |
-| `providerEnv`     | `{ cursor: "CURSOR_API_KEY", claude: "ANTHROPIC_API_KEY", codex: "OPENAI_KEY" }` | Env var holding each provider's API key — the **only** key the agent child inherits for the active provider. |
+| Field             | Default                                                                          | Meaning                                                                                                                                                                                           |
+| ----------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `defaultProvider` | `"cursor"`                                                                       | Which agent CLI to drive: `cursor`, `claude`, or `codex`.                                                                                                                                         |
+| `defaultModels`   | `{ cursor: "composer-2.5", claude: "claude-sonnet-4-6", codex: "gpt-5.4-mini" }` | Per-provider model. Merged key-by-key.                                                                                                                                                            |
+| `defaultEfforts`  | `{ claude: "high" }`                                                             | Per-provider effort, threaded to the CLI the same way `defaultModels` threads a model. Only `claude` has an effort concept; `cursor`/`codex` carry no default and ignore whatever they're passed. |
+| `providerEnv`     | `{ cursor: "CURSOR_API_KEY", claude: "ANTHROPIC_API_KEY", codex: "OPENAI_KEY" }` | Env var holding each provider's API key — the **only** key the agent child inherits for the active provider.                                                                                      |
+
+### Per-ticket tier override
+
+A human can attach one of `phoebe:tier:basic`, `phoebe:tier:mid`, or
+`phoebe:tier:strong` to a single issue or PR to override that one run's
+model/effort, bypassing `PHOEBE_AGENT`/`PHOEBE_MODEL`/`PHOEBE_EFFORT` and the
+tenant default entirely:
+
+| Label                | Model (Claude CLI alias) | Effort |
+| -------------------- | ------------------------ | ------ |
+| `phoebe:tier:basic`  | `sonnet`                 | `low`  |
+| `phoebe:tier:mid`    | `sonnet`                 | `high` |
+| `phoebe:tier:strong` | `opus`                   | `high` |
+
+This is a fleet-wide constant, not per-tenant configurable — the same reason
+the quarantine/retry labels are hardcoded rather than a config field. No
+label, or an unrecognized value after the prefix, falls back to the tenant's
+normal default resolution unchanged. `strong` is the only way Phoebe ever
+runs on Opus, and only via a label a human placed in advance — the fleet
+never chooses it for itself. All three labels are provisioned automatically
+on every tenant repo at boot, the same way the quarantine/retry labels are
+(`src/ensure-labels.ts`).
 
 ## Prompt files
 
@@ -474,6 +497,7 @@ to the default.
 | ------------------------------ | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `PHOEBE_AGENT`                 | —                    | Provider for this run (`cursor` \| `claude` \| `codex`).                                                                                                                 |
 | `PHOEBE_MODEL`                 | —                    | Model for this run.                                                                                                                                                      |
+| `PHOEBE_EFFORT`                | —                    | Effort level for this run. Threaded to the CLI the same way `PHOEBE_MODEL` is; only the `claude` provider's CLI has an effort concept.                                   |
 | `PHOEBE_RUNTIME_ID`            | generated once       | Stable runtime identity for a new state volume. The persisted `runtime-id` wins on later starts; a conflicting override is rejected.                                     |
 | `PHOEBE_POLL_INTERVAL_MS`      | `300000`             | Persistent-mode idle poll interval.                                                                                                                                      |
 | `PHOEBE_ENGINE_DIR`            | `<tmp>/phoebe-agent` | Base dir `phoebe boot` clones a `github` engine source into (and bin.mjs materializes under). Put it on a persistent volume so github boots fetch instead of re-cloning. |

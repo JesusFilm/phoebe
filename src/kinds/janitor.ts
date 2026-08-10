@@ -35,7 +35,7 @@ export type JanitorHelpers = {
     baseBranch: BranchRef,
   ): void;
   runAgentWorkflow(opts: {
-    pr: { prNumber: PrNumber; headRefName: BranchRef };
+    pr: { prNumber: PrNumber; headRefName: BranchRef; labels?: readonly string[] };
     promptFile: string;
     promptArgs: Record<string, string>;
     beforeAgent?: (worktreeDir: string) => void;
@@ -154,7 +154,7 @@ export function createJanitorHelpers(deps: KindDeps): JanitorHelpers {
    * engine never re-runs the gate itself.
    */
   async function runAgentWorkflow(opts: {
-    pr: { prNumber: PrNumber; headRefName: BranchRef };
+    pr: { prNumber: PrNumber; headRefName: BranchRef; labels?: readonly string[] };
     promptFile: string;
     promptArgs: Record<string, string>;
     beforeAgent?: (worktreeDir: string) => void;
@@ -178,7 +178,7 @@ export function createJanitorHelpers(deps: KindDeps): JanitorHelpers {
         { ...io.prompts.defaultArgs(), ...opts.promptArgs, VERIFICATION_RESULT_FILE: reportPath },
         worktreeDir,
       );
-      const agentExitCode = await io.agent.run({ worktreeDir, prompt });
+      const agentExitCode = await io.agent.run({ worktreeDir, prompt, labels: opts.pr.labels });
       const verification = readVerificationReport(reportPath);
 
       io.git.fetchOrigin();

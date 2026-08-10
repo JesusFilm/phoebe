@@ -219,6 +219,12 @@ Set:
   it in `.env` keeps the choice local to this operator's box — a different operator
   can run the same committed runtime under a different provider.
 
+  For Claude, `PHOEBE_EFFORT` (falls back to `defaultEfforts`, default `high`)
+  overrides the effort level the same way `PHOEBE_MODEL` overrides the model;
+  `cursor`/`codex` have no effort concept and ignore it. A per-ticket
+  `phoebe:tier:basic|mid|strong` label overrides both model and effort for
+  that one run — see [configuration.md](configuration.md#per-ticket-tier-override).
+
 The engine version is **not** an env var: it is `engine.ref` in
 `phoebe.config.ts`. Pin an explicit released tag for a real deployment
 ([upgrading.md](upgrading.md#pinning-the-engine-version)).

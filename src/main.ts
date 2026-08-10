@@ -18,12 +18,7 @@
 // (src/execution-gate.ts).
 
 import { execFileSync, execSync } from "node:child_process";
-import {
-  PROVIDER_NAMES,
-  validateWorkOrder,
-  type PhoebeConfig,
-  type ProviderName,
-} from "./config/index.ts";
+import { validateWorkOrder, type PhoebeConfig } from "./config/index.ts";
 import type { BranchRef } from "./branded.ts";
 import { createGitHub, defaultGhRun, type GitHub } from "./github.ts";
 import { buildAgentEnv } from "./agent-env.ts";
@@ -48,9 +43,9 @@ import {
   removeWorktree,
   worktreeDirForBranch,
 } from "./git-model.ts";
-import { PROVIDERS } from "./providers/providers.ts";
 import { runAgent } from "./providers/run-agent.ts";
-import type { Provider } from "./providers/types.ts";
+import { selectProvider } from "./providers/select.ts";
+import { classifyTier } from "./tier.ts";
 import {
   buildDefaultPromptArgs,
   loadPromptTemplate as loadPromptTemplateFromRoot,
@@ -199,20 +194,6 @@ export async function runEngine(opts: {
   };
 
   // ---------------------------------------------------------------------------
-  // Provider selection (multi-provider ready)
-  // ---------------------------------------------------------------------------
-
-  function selectProvider(): { provider: Provider; model: string } {
-    const name = process.env["PHOEBE_AGENT"] ?? config.defaultProvider;
-    if (!(PROVIDER_NAMES as readonly string[]).includes(name)) {
-      throw new Error(`Unknown PHOEBE_AGENT "${name}". Use one of: ${PROVIDER_NAMES.join(", ")}.`);
-    }
-    const provider = PROVIDERS[name as ProviderName];
-    const model = process.env["PHOEBE_MODEL"] ?? config.defaultModels[name as ProviderName];
-    return { provider, model };
-  }
-
-  // ---------------------------------------------------------------------------
   // `io` construction — every impure capability a kind factory closes over.
   // This is the ONLY place in the engine that spawns `git`/`gh` child processes
   // or reads prompt files off disk; every kind reaches them only through `io`.
@@ -272,8 +253,10 @@ export async function runEngine(opts: {
   async function runAgentInWorktree(agentOpts: {
     worktreeDir: string;
     prompt: string;
+    labels?: readonly string[];
   }): Promise<number> {
-    const { provider, model } = selectProvider();
+    const tier = classifyTier(agentOpts.labels ?? []);
+    const { provider, model, effort } = selectProvider({ config, env: process.env, tier });
     const env = buildAgentEnv({
       parentEnv: process.env,
       provider: provider.name,
@@ -285,6 +268,7 @@ export async function runEngine(opts: {
         runAgent({
           provider,
           model,
+          effort,
           prompt: agentOpts.prompt,
           cwd: agentOpts.worktreeDir,
           env,
@@ -304,7 +288,7 @@ export async function runEngine(opts: {
   // Built ahead of `io` (rather than beside the rest of the loop setup below)
   // solely so `quarantine`'s `report` can route a quarantine/un-quarantine
   // line through the one status rail (#70/#60) instead of a bare log call.
-  const selectedProvider = selectProvider();
+  const selectedProvider = selectProvider({ config, env: process.env });
   const contractContext = buildRuntimeContractContext({
     config,
     providerName: selectedProvider.provider.name,

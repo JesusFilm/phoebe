@@ -233,6 +233,83 @@ describe("createConflictsKind — run", () => {
   });
 });
 
+describe("createConflictsKind — labels (#155)", () => {
+  test("fetch populates a unit's labels from prActivity, the same call it already reads comments from", async () => {
+    const io = fakeIo({
+      github: {
+        ...fakeIo().github,
+        prMergeInfo: () => ({
+          number: asPrNumber(210),
+          headRefName: asBranchRef("phoebe/issue-210"),
+          baseRefName: asBranchRef("main"),
+          headRefOid: asSha("head1"),
+          baseRefOid: asSha("base1"),
+          mergeable: "CONFLICTING",
+          mergeStateStatus: "DIRTY",
+        }),
+        prActivity: () => ({
+          headRefOid: asSha("aaa"),
+          lastCommitAt: null,
+          comments: [],
+          labels: ["phoebe:tier:strong"],
+        }),
+      },
+    });
+    const kind = createConflictsKind({ config, io });
+    const data = await kind.fetch(
+      fakeCtx({
+        openPrs: [
+          {
+            number: asPrNumber(210),
+            headRefName: asBranchRef("phoebe/issue-210"),
+            baseRefName: asBranchRef("main"),
+            authorLogin: "phoebe-bot",
+          },
+        ],
+      }),
+    );
+    expect(data.conflictingPrs[0]?.labels).toEqual(["phoebe:tier:strong"]);
+  });
+
+  test("run threads a unit's labels to io.agent.run when a real conflict escalates to the agent", async () => {
+    let receivedLabels: readonly string[] | undefined;
+    const io = fakeIo({
+      github: {
+        ...fakeIo().github,
+        prMergeInfo: () => ({
+          number: asPrNumber(500),
+          headRefName: asBranchRef("phoebe/issue-500"),
+          baseRefName: asBranchRef("main"),
+          headRefOid: asSha("head1"),
+          baseRefOid: asSha("base1"),
+          mergeable: "CONFLICTING",
+          mergeStateStatus: "DIRTY",
+        }),
+      },
+      git: {
+        ...fakeIo().git,
+        gitInWorktree: (_dir, args) => {
+          if (args[0] === "merge" && args[1] !== "--abort") throw new Error("merge conflict");
+          if (args[0] === "diff") return "conflicted-file.txt\n";
+          return "";
+        },
+      },
+      agent: {
+        run: async (opts) => {
+          receivedLabels = opts.labels;
+          return 0;
+        },
+      },
+    });
+    const kind = createConflictsKind({ config, io });
+    const unit = pr({ prNumber: 500, labels: ["phoebe:tier:strong"] });
+
+    await kind.run(unit, fakeCtx());
+
+    expect(receivedLabels).toEqual(["phoebe:tier:strong"]);
+  });
+});
+
 describe("createConflictsKind — sweep (#13 stack retarget)", () => {
   test("retargets a Phoebe PR whose base is a merged blocker's branch", async () => {
     const retargeted: Array<{ prNumber: number; base: string }> = [];

@@ -264,6 +264,66 @@ describe("createChecksKind — run (BEHIND catch-up)", () => {
   });
 });
 
+describe("createChecksKind — labels (#155)", () => {
+  test("fetch populates a unit's labels from prActivity, the same call it already reads comments from", async () => {
+    const io = fakeIo({
+      github: {
+        ...fakeIo().github,
+        prMergeInfo: () => ({
+          number: asPrNumber(201),
+          headRefName: asBranchRef("phoebe/issue-201"),
+          baseRefName: asBranchRef("main"),
+          headRefOid: asSha("head1"),
+          baseRefOid: asSha("base1"),
+          mergeable: "MERGEABLE",
+          mergeStateStatus: "CLEAN",
+        }),
+        commitCheckRuns: () => [
+          { workflowName: "ready", status: "completed", conclusion: "failure" },
+        ],
+        prActivity: () => ({
+          headRefOid: asSha("aaa"),
+          lastCommitAt: null,
+          comments: [],
+          labels: ["phoebe:tier:basic"],
+        }),
+      },
+    });
+    const kind = createChecksKind({ config, io });
+    const data = await kind.fetch(
+      fakeCtx({
+        openPrs: [
+          {
+            number: asPrNumber(201),
+            headRefName: asBranchRef("phoebe/issue-201"),
+            baseRefName: asBranchRef("main"),
+            authorLogin: "phoebe-bot",
+          },
+        ],
+      }),
+    );
+    expect(data.failingCheckPrs[0]?.labels).toEqual(["phoebe:tier:basic"]);
+  });
+
+  test("run threads a unit's labels to io.agent.run", async () => {
+    let receivedLabels: readonly string[] | undefined;
+    const io = fakeIo({
+      agent: {
+        run: async (opts) => {
+          receivedLabels = opts.labels;
+          return 0;
+        },
+      },
+    });
+    const kind = createChecksKind({ config, io });
+    const unit = checksPr({ prNumber: 400, labels: ["phoebe:tier:basic"] });
+
+    await kind.run(unit, fakeCtx());
+
+    expect(receivedLabels).toEqual(["phoebe:tier:basic"]);
+  });
+});
+
 function fakeIo(overrides: Partial<Io> = {}): Io {
   const github: GitHub = overrides.github ?? {
     issuesWithLabel: () => [],

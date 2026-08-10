@@ -141,6 +141,8 @@ export type ChecksUnit = {
   failureWatermark?: ChecksFailWatermark | null;
   /** No-commit-attempt counter (#25) — read from the unit's tracking comment. */
   attemptMarker?: UnitMarker | null;
+  /** The PR's labels — a `phoebe:tier:*` label among them overrides the tenant default for this run (#155). */
+  labels?: readonly string[];
 };
 
 export type ChecksData = {
@@ -272,9 +274,11 @@ export function createChecksKind(deps: KindDeps): WorkKind<ChecksData, ChecksUni
 
     const nowIso = new Date().toISOString();
     const withMarkers = raw.map((pr) => {
-      const comments = io.github.prActivity(pr.prNumber).comments;
+      const activity = io.github.prActivity(pr.prNumber);
+      const comments = activity.comments;
       return {
         ...pr,
+        labels: activity.labels,
         failureWatermark: parseLatestMarker(
           comments.map((c) => c.body),
           parseChecksFailWatermark,

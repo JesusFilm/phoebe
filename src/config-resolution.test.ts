@@ -343,6 +343,7 @@ describe("loadConfiguration", () => {
           workOrder: ["issues"],
           defaultProvider: "claude",
           defaultModels: { claude: "managed-model" },
+          defaultEfforts: { claude: "managed-effort" },
           providerEnv: { claude: "MANAGED_CLAUDE_KEY" },
           runTimeoutMs: 60_000,
           maxUnitTimeouts: 5,
@@ -381,6 +382,7 @@ describe("loadConfiguration", () => {
     });
     expect(resolved.config.promptFiles.issue).toBe("managed/issue.md");
     expect(resolved.config.defaultModels.claude).toBe("managed-model");
+    expect(resolved.config.defaultEfforts.claude).toBe("managed-effort");
     expect(resolved.config.providerEnv.claude).toBe("MANAGED_CLAUDE_KEY");
   });
 

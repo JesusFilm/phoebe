@@ -409,6 +409,28 @@ describe("createResearchKind", () => {
   });
 });
 
+describe("createIssuesKind — run threads the issue's labels to the agent invocation (#155)", () => {
+  test("the issue's labels reach io.agent.run", async () => {
+    let receivedLabels: readonly string[] | undefined;
+    const io = fakeIo({
+      agent: {
+        run: async (opts) => {
+          receivedLabels = opts.labels;
+          return 0;
+        },
+      },
+    });
+    const deps: KindDeps = { config, io };
+    const kind = createIssuesKind(deps);
+    const target = issue({ number: 55, labels: ["ready-for-agent", "phoebe:tier:strong"] });
+    const unit = { issue: target, resolution: { worktreeBase: "main", stacked: false } };
+
+    await kind.run(unit, fakeCtx());
+
+    expect(receivedLabels).toEqual(["ready-for-agent", "phoebe:tier:strong"]);
+  });
+});
+
 // --- no-pr / timed-out backoff (#137) ----------------------------------------
 
 function markerComment(kind: "issues" | "research", trigger: "no-pr" | "timed-out", at: string) {

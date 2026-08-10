@@ -217,6 +217,14 @@ export type PhoebeConfig = {
   workOrder: readonly string[];
   defaultProvider: ProviderName;
   defaultModels: Record<ProviderName, string>;
+  /**
+   * Per-provider effort level, threaded to the provider's command builder the
+   * same way `defaultModels` threads a model (#155). Only the `claude`
+   * provider's CLI has an effort concept, so this is a partial record —
+   * `cursor`/`codex` carry no default and their command builders ignore
+   * whatever value they're passed.
+   */
+  defaultEfforts: Partial<Record<ProviderName, string>>;
   /** Env var holding each provider's API key — the only key the agent child inherits. */
   providerEnv: Record<ProviderName, string>;
   /**
@@ -315,6 +323,7 @@ export type PhoebeUserConfig = {
   workOrder?: readonly string[];
   defaultProvider?: ProviderName;
   defaultModels?: Partial<Record<ProviderName, string>>;
+  defaultEfforts?: Partial<Record<ProviderName, string>>;
   providerEnv?: Partial<Record<ProviderName, string>>;
   /** Whole-unit wall-clock timeout in ms (#72); default 45 min. */
   runTimeoutMs?: number;

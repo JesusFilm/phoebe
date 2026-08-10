@@ -284,6 +284,14 @@ export const ROSTER = {
     },
     baseAllowed: true,
   },
+  // `high` restores the behavior every tenant .env already believes is in
+  // effect (#155's dead-wiring fix) — not a further escalation. cursor/codex
+  // have no effort concept, so they get no default.
+  defaultEfforts: {
+    kind: { type: "nested", keys: PROVIDER_NAMES },
+    default: { claude: "high" } as Partial<Record<(typeof PROVIDER_NAMES)[number], string>>,
+    baseAllowed: true,
+  },
   providerEnv: {
     kind: { type: "nested", keys: PROVIDER_NAMES },
     default: {

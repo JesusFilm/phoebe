@@ -5,6 +5,7 @@
 import { describe, expect, test } from "vite-plus/test";
 import { ensureLabels, phoebeLabelSet, type GhRunner } from "./ensure-labels.ts";
 import { PHOEBE_QUARANTINE_LABEL, PHOEBE_RETRY_LABEL } from "./quarantine.ts";
+import { PHOEBE_TIER_LABEL_PREFIX } from "./tier.ts";
 
 const singleRepoConfig = {
   repoSlug: "o/r",
@@ -24,6 +25,9 @@ describe("phoebeLabelSet", () => {
       "o/r#ready-for-human",
       `o/r#${PHOEBE_QUARANTINE_LABEL}`,
       `o/r#${PHOEBE_RETRY_LABEL}`,
+      `o/r#${PHOEBE_TIER_LABEL_PREFIX}basic`,
+      `o/r#${PHOEBE_TIER_LABEL_PREFIX}mid`,
+      `o/r#${PHOEBE_TIER_LABEL_PREFIX}strong`,
     ]);
   });
 

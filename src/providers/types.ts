@@ -21,6 +21,11 @@ export type AgentEvent =
 
 export type Provider = {
   readonly name: ProviderName;
-  buildCommand(opts: { prompt: string; model: string }): AgentCommand;
+  /**
+   * `effort` is Claude-CLI-specific (`--effort <value>`, #155) — other
+   * providers' builders ignore it, same as they'd ignore any option their CLI
+   * doesn't have.
+   */
+  buildCommand(opts: { prompt: string; model: string; effort?: string }): AgentCommand;
   parseStreamLine(line: string): AgentEvent[];
 };

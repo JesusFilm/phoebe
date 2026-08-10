@@ -28,6 +28,8 @@ export type ReviewsUnit = {
   mergeStateStatus?: string;
   threads: readonly ReviewThread[];
   handledWatermark?: ReviewsHandledWatermark | null;
+  /** The PR's labels — a `phoebe:tier:*` label among them overrides the tenant default for this run (#155). */
+  labels?: readonly string[];
 };
 
 export type ReviewsData = {
@@ -142,7 +144,8 @@ export function createReviewsKind(deps: KindDeps): WorkKind<ReviewsData, Reviews
         }
         const threads = io.github.reviewThreads(pr.number);
         const issueNumber = parseIssueNumberFromBranch(info.headRefName, config.branchPrefix);
-        const commentBodies = io.github.prActivity(pr.number).comments.map((c) => c.body);
+        const activity = io.github.prActivity(pr.number);
+        const commentBodies = activity.comments.map((c) => c.body);
         reviewActivityPrs.push({
           prNumber: info.number,
           headRefName: info.headRefName,
@@ -151,6 +154,7 @@ export function createReviewsKind(deps: KindDeps): WorkKind<ReviewsData, Reviews
           mergeable: info.mergeable,
           mergeStateStatus: info.mergeStateStatus,
           threads,
+          labels: activity.labels,
           handledWatermark: parseLatestMarker(commentBodies, parseReviewsHandledWatermark),
           ...(issueNumber !== null ? { issueNumber } : {}),
         });

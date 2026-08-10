@@ -123,6 +123,7 @@ export function resolveConfig(
     workOrder: user.workOrder ?? ROSTER.workOrder.default,
     defaultProvider: user.defaultProvider ?? ROSTER.defaultProvider.default,
     defaultModels: { ...ROSTER.defaultModels.default, ...user.defaultModels },
+    defaultEfforts: { ...ROSTER.defaultEfforts.default, ...user.defaultEfforts },
     providerEnv: { ...ROSTER.providerEnv.default, ...user.providerEnv },
     runTimeoutMs: user.runTimeoutMs ?? ROSTER.runTimeoutMs.default,
     maxUnitTimeouts: user.maxUnitTimeouts ?? ROSTER.maxUnitTimeouts.default,

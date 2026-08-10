@@ -13,6 +13,15 @@ describe("cursor provider", () => {
     expect(cmd.stdin).toBeUndefined();
   });
 
+  test("ignores an effort value — the cursor CLI has no effort concept", () => {
+    const cmd = PROVIDERS.cursor.buildCommand({
+      prompt: "do the thing",
+      model: "composer-x",
+      effort: "high",
+    });
+    expect(cmd.argv).not.toContain("--effort");
+  });
+
   test("rejects prompts too large for a single argv argument", () => {
     const huge = "x".repeat(121 * 1024);
     expect(() => PROVIDERS.cursor.buildCommand({ prompt: huge, model: "m" })).toThrow(/bytes/);
@@ -53,6 +62,23 @@ describe("claude provider", () => {
     expect(cmd.argv[modelIdx + 1]).toBe("claude-m");
   });
 
+  test("appends --effort immediately after --model when an effort value is present", () => {
+    const cmd = PROVIDERS.claude.buildCommand({
+      prompt: "big prompt",
+      model: "claude-m",
+      effort: "high",
+    });
+    const modelIdx = cmd.argv.indexOf("--model");
+    expect(cmd.argv[modelIdx + 1]).toBe("claude-m");
+    expect(cmd.argv[modelIdx + 2]).toBe("--effort");
+    expect(cmd.argv[modelIdx + 3]).toBe("high");
+  });
+
+  test("omits --effort when no effort value is given", () => {
+    const cmd = PROVIDERS.claude.buildCommand({ prompt: "big prompt", model: "claude-m" });
+    expect(cmd.argv).not.toContain("--effort");
+  });
+
   test("parses assistant text and allowlisted tool_use blocks", () => {
     const line = JSON.stringify({
       type: "assistant",
@@ -89,6 +115,11 @@ describe("codex provider", () => {
     expect(cmd.stdin).toBe("fix it");
     const modelIdx = cmd.argv.indexOf("-m");
     expect(cmd.argv[modelIdx + 1]).toBe("gpt-m");
+  });
+
+  test("ignores an effort value — the codex CLI has no effort concept", () => {
+    const cmd = PROVIDERS.codex.buildCommand({ prompt: "fix it", model: "gpt-m", effort: "high" });
+    expect(cmd.argv).not.toContain("--effort");
   });
 
   test("maps agent_message completion to text + result", () => {
