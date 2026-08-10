@@ -1,6 +1,6 @@
 // The supervisor's per-tenant env scrub — isolation model A, §1 (#61).
 //
-// In a nested/multi-tenant deployment the supervisor (boot.ts) spawns one engine
+// In a workspace/multi-tenant deployment the supervisor (boot.ts) spawns one engine
 // child per tenant. Left as today's `stdio: "inherit"` with no `env`, every
 // child would inherit the supervisor's full `process.env` — which holds the
 // deployment engine-clone credential (#60) and, once several tenants' `.env`
@@ -17,7 +17,7 @@
 // secrets. `buildAgentEnv` (src/agent-env.ts) then narrows correctly at the
 // agent hop, unchanged, because the child's env already holds only tenant T's.
 //
-// Flat single-tenant mode does NOT use this: one tenant is one trust domain
+// Solo single-tenant mode does NOT use this: one tenant is one trust domain
 // (the whole container), Docker injects exactly that tenant's secrets, and the
 // child inherits the supervisor env as it does today.
 

@@ -10,20 +10,15 @@ concurrency broker. This is the
 super-repo of submodules, a folder of clones, a set of worktrees) and you want
 one container to pick up whatever is on disk.
 
-Under the hood it is the same multi-tenant fleet as nested — workspace mode is
-only a different **discovery source** (walk the children) feeding the #57
-supervisor. Use a different topology when:
+Under the hood, discovery (walk the children) is all that distinguishes it: from
+the first child onward it is the #57 fleet supervisor — one engine child per
+tenant, one shared engine, one broker. Use the other topology when you have
+**one repo, one deployment** → see [`../solo/`](../solo/) (the classic
+single-root layout).
 
-- you have **one repo, one deployment** → see [`../solo/`](../solo/) (the classic
-  single-root layout);
-- you want the deployment to **own the tenant directories** under `repos/` rather
-  than discover checkouts on disk → see [`../nested/`](../nested/) (the
-  [#57](https://github.com/JesusFilm/phoebe/issues/57) `repos/<owner>/<repo>/`
-  layout).
-
-Nested and workspace are **mutually exclusive per deployment** — a `workspace`
-block on the root config selects workspace mode and a `repos/` dir would be
-ignored (with a warning). See [`docs/workspace.md` → Mode selection](../../docs/workspace.md#mode-selection).
+Solo and workspace are **mutually exclusive per deployment** — a `workspace`
+block on the root config selects workspace mode; without one the deployment is
+solo. See [`docs/workspace.md` → Mode selection](../../docs/workspace.md#mode-selection).
 
 ## What's here
 
@@ -66,14 +61,13 @@ add-a-child delta. This snippet is **not** CI-type-checked (only the on-disk
 
 ## Directory name vs. `repoSlug`
 
-The one thing that differs from nested: here a child's **directory name is an
-operator-chosen local checkout name**, not its identity. `widget/` and `gadget/`
+A child's **directory name is an operator-chosen local checkout name**, not its
+identity. `widget/` and `gadget/`
 are just what the checkouts happen to be called on disk; the authoritative
 identity is each child's `repoSlug` (`acme/widget`, `acme/gadget`), which drives
 the `/data/repos/<owner>/<repo>/` clone path and the `gh -R` calls. Phoebe
-best-effort cross-checks `repoSlug` against the checkout's git origin but the
-directory name is free. (In nested, by contrast, the `repos/<owner>/<repo>/` path
-segment _is_ the slug.)
+best-effort cross-checks `repoSlug` against the checkout's git origin, but the
+directory name itself is free.
 
 ## What you author vs. what Phoebe creates
 
@@ -86,7 +80,7 @@ Discovery only **reads** each child's config + `.env` off the host mount.
 At runtime the engine still runs against a **private clone** under
 `/data/repos/<owner>/<repo>/` on the container volume — never the host checkout.
 So the host workspace stays read-only discovery + config; the working copy lives
-in the container. (Same isolation invariant as nested — see
+in the container. (See
 [`docs/workspace.md` → Topology](../../docs/workspace.md#topology).)
 
 These placeholder children commit only the two authored files shown
@@ -109,9 +103,9 @@ root.
   different provider keys with no cross-child leakage.
 
 These configs are a **reference illustration**, not a runnable fixture. The
-`acme/widget` + `acme/gadget` naming is fictional and shared across all three
-examples so they read as one progression (the same two repos appear solo, then as
-nested tenants, then as workspace children). Every config type-checks against the
+`acme/widget` + `acme/gadget` naming is fictional and shared across both
+examples so they read as one progression (the same two repos appear solo, then
+as workspace children). Every config type-checks against the
 live schema (`src/config-schema.ts`) as part of the repo's `typecheck` — if the
 schema changes underneath, this example fails CI rather than silently rotting.
 

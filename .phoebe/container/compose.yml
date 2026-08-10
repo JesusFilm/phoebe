@@ -64,7 +64,7 @@ services:
     volumes:
       # Two named volumes (#62): all tenant data nests under /data/repos as
       # /data/repos/<owner>/<repo>/{repo,worktrees,state} (the dogfood is one
-      # flat tenant, JesusFilm/phoebe).
+      # solo tenant, JesusFilm/phoebe).
       - phoebe-data:/data/repos
       # Unused while `engine.source` is "local"; here so flipping the config to
       # a github ref does not also need a compose edit.

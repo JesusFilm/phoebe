@@ -1,6 +1,6 @@
-// Discovery tests (#58/#63/#91/#92): flat vs nested selection by `repos/`
-// presence, the nested scan over `repos/<owner>/<repo>/`, workspace tree walk,
-// origin cross-check, and fleet-level slug uniqueness.
+// Discovery tests (#58/#91/#92/#169): the solo fast-path and its removed-layout
+// guard, the workspace tree walk, origin cross-check, and fleet-level slug
+// uniqueness.
 
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -15,15 +15,14 @@ import {
   DIRECTORY_ABSENT_HOLD_REASON,
   DuplicateOriginSlugError,
   DuplicateTenantSlugError,
-  isNestedDeployment,
   OUT_OF_TREE_CONTAINER_HOLD_REASON,
   readTenantOriginUrl,
   resolveDeclaredTenantDir,
   slugFromUrl,
   TENANT_CONFIG_FILE,
   TENANT_ENV_FILE,
+  RemovedReposLayoutError,
   tenantForDir,
-  withTenantConfigDir,
   type DiscoveredTenant,
 } from "./tenants.ts";
 
@@ -78,11 +77,11 @@ describe("slugFromUrl", () => {
   });
 });
 
-describe("flat mode", () => {
+describe("solo mode", () => {
   test("no repos/ dir → one in-place tenant", () => {
     writeConfig(dir);
     const discovery = discoverTenants(dir);
-    expect(discovery.mode).toBe("flat");
+    expect(discovery.mode).toBe("solo");
     expect(discovery.tenants).toHaveLength(1);
     const [tenant] = discovery.tenants;
     expect(tenant.dir).toBe(dir);
@@ -91,43 +90,11 @@ describe("flat mode", () => {
     expect(tenant.envPath).toBe(join(dir, TENANT_ENV_FILE));
   });
 
-  test("isNestedDeployment is false without repos/", () => {
+  test("a `repos/` dir beside the root config is the removed layout, not solo", () => {
     writeConfig(dir);
-    expect(isNestedDeployment(dir)).toBe(false);
-  });
-});
-
-describe("nested mode", () => {
-  test("repos/ dir → one tenant per <owner>/<repo> with a config", () => {
-    writeConfig(join(dir, "repos", "acme", "widget"));
-    writeConfig(join(dir, "repos", "acme", "gadget"));
-    writeConfig(join(dir, "repos", "globex", "thing"));
-
-    const discovery = discoverTenants(dir);
-    expect(discovery.mode).toBe("nested");
-    expect(discovery.tenants.map((t) => t.slug)).toEqual([
-      "acme/gadget",
-      "acme/widget",
-      "globex/thing",
-    ]);
-    const widget = discovery.tenants.find((t) => t.slug === "acme/widget");
-    expect(widget?.dir).toBe(join(dir, "repos", "acme", "widget"));
-    expect(widget?.id).toBe(widget?.dir);
-  });
-
-  test("a repo dir without a config is not a tenant", () => {
-    writeConfig(join(dir, "repos", "acme", "widget"));
-    mkdirSync(join(dir, "repos", "acme", "empty"), { recursive: true });
-    const discovery = discoverTenants(dir);
-    expect(discovery.tenants.map((t) => t.slug)).toEqual(["acme/widget"]);
-  });
-
-  test("an empty repos/ is a valid nested deployment with zero tenants", () => {
     mkdirSync(join(dir, "repos"), { recursive: true });
-    const discovery = discoverTenants(dir);
-    expect(discovery.mode).toBe("nested");
-    expect(discovery.tenants).toEqual([]);
-    expect(isNestedDeployment(dir)).toBe(true);
+    expect(() => discoverTenants(dir)).toThrow(RemovedReposLayoutError);
+    expect(() => discoverTenants(dir)).toThrow(/removed in 0\.4\.0; use workspace mode/);
   });
 });
 
@@ -506,22 +473,6 @@ describe("configDir asset relocation (#98)", () => {
     expect(tenantForDir(tenantDir, "acme/widget", ".phoebe").envPath).toBe(
       join(tenantDir, ".phoebe", TENANT_ENV_FILE),
     );
-  });
-
-  test("withTenantConfigDir relocates envPath only; '.' is a no-op", () => {
-    const tenantDir = join(dir, "widget");
-    const base: DiscoveredTenant = {
-      id: tenantDir,
-      slug: "acme/widget",
-      dir: tenantDir,
-      configPath: join(tenantDir, TENANT_CONFIG_FILE),
-      envPath: join(tenantDir, TENANT_ENV_FILE),
-    };
-    expect(withTenantConfigDir(base, ".")).toBe(base);
-    const moved = withTenantConfigDir(base, ".phoebe");
-    expect(moved.envPath).toBe(join(tenantDir, ".phoebe", TENANT_ENV_FILE));
-    expect(moved.configPath).toBe(base.configPath);
-    expect(moved.dir).toBe(base.dir);
   });
 });
 

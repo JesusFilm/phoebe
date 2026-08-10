@@ -28,8 +28,9 @@ export const DEFAULT_DATA_BASE = "/data/repos";
 
 /**
  * Derive a tenant's `{repoDir, worktreesDir, stateDir}` from its `owner/repo`
- * slug and the deployment data base. The slug is authoritative and the nested
- * path is derived from it (#58), so two tenants can never collide and any
+ * slug and the deployment data base. The slug is authoritative and the
+ * `<owner>/<repo>` data path is derived from it (#58), so two tenants can never
+ * collide and any
  * retained data is only ever reused by the same repo. A pure function of its
  * inputs — no environment read — so callers stay testable.
  */

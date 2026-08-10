@@ -41,7 +41,7 @@ export const config = defineConfig({
 
   // As a workspace tenant, reuse this repo's standalone `.phoebe/` folder: the
   // supervisor reads `.env` (and cwd-relative prompts) from `.phoebe/` instead
-  // of the repo root, so nothing is duplicated. The flat/standalone `.phoebe/`
+  // of the repo root, so nothing is duplicated. A standalone `.phoebe/`
   // deployment ignores this (configDir only applies to fleet tenants), so solo
   // still works unchanged. Requires engine >= v0.3.0.
   configDir: ".phoebe",

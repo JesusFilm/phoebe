@@ -1,7 +1,7 @@
-// The nested/multi-tenant supervision loop — `phoebe boot`'s fleet manager (#58/#59).
+// The workspace/multi-tenant supervision loop — `phoebe boot`'s fleet manager (#58/#59).
 //
-// Flat single-tenant deployments keep the original single-child `superviseEngine`
-// (reconcile.ts), untouched. This is the *nested* path: a shared engine (#60)
+// Solo single-tenant deployments keep the original single-child `superviseEngine`
+// (reconcile.ts), untouched. This is the *fleet* path: a shared engine (#60)
 // with one child per discovered tenant (#58), a global concurrency broker across
 // them (#59), and hot add/remove/change of tenants without a container restart.
 //
@@ -129,7 +129,7 @@ type ChildRecord = {
 
 /**
  * Supervise a fleet of tenant children until the container stops. Resolves 0
- * when drained by a container stop (nested boot has no single "engine exit" to
+ * when drained by a container stop (fleet boot has no single "engine exit" to
  * propagate — a lone child's death is handled in-loop, not by exiting).
  */
 export async function superviseFleet(deps: SuperviseFleetDeps): Promise<EngineExit> {

@@ -1,7 +1,7 @@
 // `phoebe init` scaffolder. Given a target directory, drops the consumer-owned
 // runtime into place. Three profiles share this module:
 //
-//   flat (default)   Full single-tenant runtime: config (five required fields
+//   solo (default)   Full single-tenant runtime: config (five required fields
 //                    + engine), prompts/, .env.example, container/, gitignore.
 //   workspace (#93)  Bootable workspace *root*: engine + workspace block,
 //                    deployment .env.example, container/ (incl. mount docs),
@@ -10,8 +10,8 @@
 //                    + .gitignore'd .env (no container/). Prefills repoSlug/
 //                    repoUrl from the checkout's origin; refuses re-clobber.
 //
-// Flat/workspace re-runs skip existing files. Tenant re-runs refuse loudly
-// when a root `phoebe.config.ts` already exists (mirror add-repo).
+// Solo/workspace re-runs skip existing files. Tenant re-runs refuse loudly
+// when a root `phoebe.config.ts` already exists.
 // The plan/render split keeps the pure logic (what files, what placeholders)
 // separately testable from the fs I/O in `runInit`.
 
@@ -33,7 +33,7 @@ import {
 } from "./tenant-commands.ts";
 
 /** Init scaffold profile — which file set lands under the target dir. */
-export type InitProfile = "flat" | "workspace" | "tenant";
+export type InitProfile = "solo" | "workspace" | "tenant";
 
 /** Placeholder tokens rendered into every scaffolded file. */
 export type TemplateParams = {
@@ -66,9 +66,9 @@ export type PlannedOutput = {
     | { kind: "gitignore"; entries: readonly string[] };
 };
 
-// Flat gitignore: deployment `.env`, every per-tenant `repos/<owner>/<repo>/.env`
-// (#63) must never be committed; `node_modules/` for the scaffolded toolchain.
-const FLAT_GITIGNORE_ENTRIES = [".env", "repos/**/.env", "node_modules/"] as const;
+// Solo gitignore: the deployment `.env` must never be committed;
+// `node_modules/` for the scaffolded toolchain.
+const SOLO_GITIGNORE_ENTRIES = [".env", "node_modules/"] as const;
 
 // Workspace root: only deployment `.env` (children carry their own `.env` and
 // `.gitignore` when scaffolded with `init --tenant`).
@@ -77,7 +77,7 @@ const WORKSPACE_GITIGNORE_ENTRIES = [".env", "node_modules/"] as const;
 // Workspace child in-tree install: secrets stay out of the child repo.
 const TENANT_GITIGNORE_ENTRIES = [".env"] as const;
 
-/** Shared container files scaffolded for flat and workspace roots. */
+/** Shared container files scaffolded for solo and workspace roots. */
 function planContainerOutputs(): PlannedOutput[] {
   return [
     {
@@ -96,14 +96,14 @@ function planContainerOutputs(): PlannedOutput[] {
 }
 
 /**
- * Enumerate every file init will produce for a profile. Flat prompts are
+ * Enumerate every file init will produce for a profile. Solo prompts are
  * derived from `CONFIG_DEFAULTS.promptFiles` so adding a new prompt kind to
  * the engine automatically gets scaffolded — no drift between the two lists.
  *
  * Tenant profile (`init --tenant`) is handled by {@link initTenant} — origin
  * prefill makes the config dynamic, so it is not part of this static plan.
  */
-export function planInitOutputs(profile: InitProfile = "flat"): PlannedOutput[] {
+export function planInitOutputs(profile: InitProfile = "solo"): PlannedOutput[] {
   if (profile === "tenant") {
     throw new Error(
       "`phoebe init --tenant` uses initTenant() (dynamic origin prefill), not planInitOutputs.",
@@ -135,7 +135,7 @@ export function planInitOutputs(profile: InitProfile = "flat"): PlannedOutput[] 
     ];
   }
 
-  // flat — today's single-tenant deployment scaffold
+  // solo — the single-tenant deployment scaffold
   const promptOutputs: PlannedOutput[] = Object.values(CONFIG_DEFAULTS.promptFiles).map(
     (relPath) => ({
       destRelPath: relPath,
@@ -155,7 +155,7 @@ export function planInitOutputs(profile: InitProfile = "flat"): PlannedOutput[] 
     ...promptOutputs,
     {
       destRelPath: ".gitignore",
-      source: { kind: "gitignore", entries: FLAT_GITIGNORE_ENTRIES },
+      source: { kind: "gitignore", entries: SOLO_GITIGNORE_ENTRIES },
     },
   ];
 }
@@ -248,7 +248,7 @@ function resolvePackageResource(relativePath: string, moduleDir: string): string
 export type RunInitOptions = {
   /** Directory the scaffolded files land under. Created if missing. */
   targetDir: string;
-  /** Scaffold profile (flat | workspace | tenant). Default: flat. */
+  /** Scaffold profile (solo | workspace | tenant). Default: solo. */
   profile?: InitProfile;
   /** Override template params (`installCommand`, `cliBin`). */
   params?: Partial<TemplateParams>;
@@ -280,7 +280,7 @@ function readShippedFile(
  */
 export function runInit(opts: RunInitOptions): InitReport {
   const targetDir = resolvePath(opts.targetDir);
-  const profile = opts.profile ?? "flat";
+  const profile = opts.profile ?? "solo";
   if (profile === "tenant") {
     throw new Error("`phoebe init --tenant` uses initTenant(), not runInit().");
   }
@@ -382,7 +382,7 @@ export type InitTenantOptions = {
  * root): `phoebe.config.ts`, `.env.example`, `.gitignore` entry for `.env`.
  * Prefills `repoSlug`/`repoUrl` from the child's `origin` when present;
  * otherwise writes placeholders. Refuses if a root `phoebe.config.ts` already
- * exists (loud re-run, mirrors `add-repo`).
+ * exists (loud re-run).
  */
 export function initTenant(opts: InitTenantOptions): InitTenantResult {
   const tenantDir = resolvePath(opts.targetDir);
@@ -469,7 +469,7 @@ export function initTenant(opts: InitTenantOptions): InitTenantResult {
 
 /**
  * Copy the shipped default prompts into a `prompts/` dir (for
- * `add-repo --with-prompts`, #63). Each shipped `prompts/<name>.md` lands as
+ * `init --tenant --with-prompts`). Each shipped `prompts/<name>.md` lands as
  * `<promptsDir>/<name>.md`, where the engine resolves a tenant's override from
  * its cwd. Returns the written paths. Reuses the same package-resource resolver
  * as `runInit`, so an installed dep still finds the shipped prompts.

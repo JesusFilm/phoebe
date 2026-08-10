@@ -14,7 +14,7 @@ import {
 } from "./workspace-source.ts";
 
 describe("readWorkspaceField", () => {
-  test("absent workspace → null (ladder falls through to nested/flat)", () => {
+  test("absent workspace → null (ladder falls through to solo)", () => {
     expect(readWorkspaceField({})).toBeNull();
     expect(readWorkspaceField({ engine: { source: "local" } })).toBeNull();
   });

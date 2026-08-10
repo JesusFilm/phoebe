@@ -34,7 +34,7 @@
 //
 // Usage:
 //   node scripts/verify-tenant-token.mjs                    # cwd's tenant: read .env + phoebe.config.ts
-//   node scripts/verify-tenant-token.mjs ./repos/JesusFilm/core   # a specific tenant dir (repeatable)
+//   node scripts/verify-tenant-token.mjs ./core             # a specific tenant dir (repeatable)
 //   node scripts/verify-tenant-token.mjs --all              # every tenant of the deployment rooted here
 //   node scripts/verify-tenant-token.mjs --slug JesusFilm/core --token github_pat_…  # explicit, no files
 //   node scripts/verify-tenant-token.mjs --json             # machine-readable
@@ -129,7 +129,7 @@ function displayPath(dir) {
  * a multi-tenant deployment the supervisor scrubs its own env and hands each
  * child *only* that tenant's `.env` (bootstrap/engine-child-env.ts) — so falling
  * back to the operator's shell `GH_TOKEN` there would certify a tenant that
- * cannot boot. It is allowed only where it is the truth: a flat deployment,
+ * cannot boot. It is allowed only where it is the truth: a solo deployment,
  * where Docker injects the secret and there is no file to read, and the explicit
  * `--slug` form, which has no files at all.
  */
@@ -200,8 +200,8 @@ async function targetForDir(dir, { allowAmbient }) {
 /**
  * Every tenant of the deployment rooted at the cwd, through the same seams boot
  * uses: `enumerateWorkspaceTenants` in workspace mode, `discoverTenants` for the
- * nested/flat ladder (#83). A fleet sweep that enumerated differently from boot
- * could pass while the supervisor was short a tenant.
+ * solo arm of the ladder (#83). A fleet sweep that enumerated differently from
+ * boot could pass while the supervisor was short a tenant.
  */
 async function allTargets() {
   const workspace = await enumerateWorkspaceTenants({ configDir: cwd });
@@ -224,17 +224,18 @@ async function allTargets() {
     return [...live, ...held];
   }
 
-  // Not a workspace: the nested/flat arm. Discovery does not read child configs
-  // there, so each tenant's `configDir` (and thus its `.env`) is resolved here.
-  // Flat mode is the one shape where the child *does* inherit the supervisor's
-  // env, so it is the one shape where the ambient GH_TOKEN is the truth.
+  // Not a workspace: the solo arm. Discovery does not read the config there, so
+  // the tenant's `configDir` (and thus its `.env`) is resolved here. Solo is the
+  // one shape where the child *does* inherit the supervisor's env, so it is the
+  // one shape where the ambient GH_TOKEN is the truth — a one-child workspace is
+  // NOT solo, so this branches on `mode`, never on `tenants.length`.
   const discovery = discoverTenants(cwd);
-  const allowAmbient = discovery.mode === "flat";
+  const allowAmbient = discovery.mode === "solo";
   const targets = [];
   for (const tenant of discovery.tenants) {
     const resolved = await targetForDir(tenant.dir, { allowAmbient });
-    // Nested path identity is authoritative (#58) — keep it when the config is
-    // unreadable, so a broken tenant is still named by its slug.
+    // Discovery's own slug wins when the config is unreadable, so a broken
+    // tenant is still named by its slug.
     targets.push(
       resolved.slug === null && tenant.slug !== null
         ? { ...resolved, slug: tenant.slug }

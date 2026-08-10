@@ -4,7 +4,7 @@
 // bootstrapper concern the engine never reads (`resolveConfig` drops it, same
 // as `engine`/`workspace`). It relocates a tenant's asset directory — where its
 // co-located `.env` and prompt/asset files live — to a subdirectory of the dir
-// holding its `phoebe.config.ts`, so a workspace/nested tenant can reuse its
+// holding its `phoebe.config.ts`, so a workspace tenant can reuse its
 // standalone `.phoebe/` folder instead of duplicating `.env` and `prompts/` at
 // the repo root.
 //
