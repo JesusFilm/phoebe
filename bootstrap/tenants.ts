@@ -364,6 +364,13 @@ function shouldSkipWorkspaceDir(name: string): boolean {
 export type WorkspaceHold = {
   dir: string;
   reason: string;
+  /**
+   * Config `repoSlug` when discovery got far enough to recover it before
+   * holding — today only the origin-mismatch skip. `null` when the hold landed
+   * before the config was readable. `phoebe list` uses this to keep a held row's
+   * slug and its data / `status.json` columns lit (#140).
+   */
+  slug: string | null;
 };
 
 export type WorkspaceDiscoveryResult = {
@@ -454,11 +461,16 @@ function structuralHolds(
   candidates: readonly string[],
   tenants: readonly DiscoveredTenant[],
   skipReasons: ReadonlyMap<string, string>,
+  recoveredSlugs: ReadonlyMap<string, string>,
 ): WorkspaceHold[] {
   const successful = new Set(tenants.map((tenant) => tenant.id));
   return candidates
     .filter((dir) => !successful.has(dir))
-    .map((dir) => ({ dir, reason: skipReasons.get(dir) ?? "discovery failed" }));
+    .map((dir) => ({
+      dir,
+      reason: skipReasons.get(dir) ?? "discovery failed",
+      slug: recoveredSlugs.get(dir) ?? null,
+    }));
 }
 
 /**
@@ -485,6 +497,8 @@ export async function discoverWorkspaceTenants(
   const readOrigin = deps.readOriginUrl ?? readTenantOriginUrl;
   const tenants: DiscoveredTenant[] = [];
   const skipReasons = new Map<string, string>();
+  /** Held dir → config `repoSlug` discovery had already read (#140). */
+  const recoveredSlugs = new Map<string, string>();
   const attempted = new Set<string>();
   /** Fleet uniqueness: config `repoSlug` → first tenant dir. */
   const bySlug = new Map<string, string>();
@@ -535,6 +549,9 @@ export async function discoverWorkspaceTenants(
           `origin slug "${originSlug}" does not match config repoSlug "${slug}" ` +
           `(config is authoritative; fix the checkout origin or the child's repoSlug)`;
         skipReasons.set(dir, reason);
+        // The config was readable, so `phoebe list` can still name this tenant
+        // and read its data dir / status.json (#140).
+        recoveredSlugs.set(dir, slug);
         warnWorkspaceSkip(warn, dir, reason);
         return;
       }
@@ -590,7 +607,7 @@ export async function discoverWorkspaceTenants(
     return {
       mode: "workspace",
       tenants,
-      holds: structuralHolds(declaredDirs, tenants, skipReasons),
+      holds: structuralHolds(declaredDirs, tenants, skipReasons, recoveredSlugs),
       declaredDirs,
     };
   }
@@ -600,6 +617,6 @@ export async function discoverWorkspaceTenants(
   return {
     mode: "workspace",
     tenants,
-    holds: structuralHolds([...attempted], tenants, skipReasons),
+    holds: structuralHolds([...attempted], tenants, skipReasons, recoveredSlugs),
   };
 }

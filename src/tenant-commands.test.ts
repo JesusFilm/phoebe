@@ -166,12 +166,18 @@ describe("listTenants", () => {
     writeFileSync(join(configDir, "repos", "acme", "widget", ".env"), "GH_TOKEN=x");
     mkdirSync(join(dataBase, "acme", "widget"), { recursive: true });
 
-    const listings = await listTenants({ configDir, dataBase });
+    const { listings } = await listTenants({ configDir, dataBase });
     expect(listings.map((l) => l.slug)).toEqual(["acme/gadget", "acme/widget"]);
     const widget = listings.find((l) => l.slug === "acme/widget")!;
-    expect(widget).toMatchObject({ configValid: true, envPresent: true, retainedData: true });
+    expect(widget).toMatchObject({
+      path: "acme/widget",
+      held: false,
+      configValid: true,
+      envPresent: true,
+      retainedData: true,
+    });
     const gadget = listings.find((l) => l.slug === "acme/gadget")!;
-    expect(gadget).toMatchObject({ envPresent: false, retainedData: false });
+    expect(gadget).toMatchObject({ envPresent: false, retainedData: false, held: false });
   });
 
   test("reads status.json when present", async () => {
@@ -182,18 +188,24 @@ describe("listTenants", () => {
       join(stateDir, "status.json"),
       JSON.stringify({ tenant: "acme/widget", currentUnit: { kind: "issues", id: "5" } }),
     );
-    const [widget] = await listTenants({ configDir, dataBase });
+    const { listings } = await listTenants({ configDir, dataBase });
+    const widget = listings.find((l) => l.slug === "acme/widget")!;
     expect(widget?.status?.currentUnit).toEqual({ kind: "issues", id: "5" });
   });
 
   test("empty when there is no repos/ dir", async () => {
-    expect(await listTenants({ configDir, dataBase })).toEqual([]);
+    expect(await listTenants({ configDir, dataBase })).toEqual({
+      listings: [],
+      declared: 0,
+      live: 0,
+      explicit: false,
+    });
   });
 
-  test("workspace mode lists valid + broken + env-less children with health columns", async () => {
+  test("workspace walk mode lists valid + held children with observational reasons", async () => {
     // Root declares workspace mode (#83); children live as siblings of the root
     // config (not under repos/). Valid child has status + .env; env-less is
-    // config-ok without secrets; broken fails loadRepoSlug → configValid false.
+    // config-ok without secrets; broken fails loadRepoSlug → held row.
     writeFileSync(
       join(configDir, "phoebe.config.ts"),
       `export default { workspace: { depth: 1 }, engine: { source: "local" } };\n`,
@@ -212,7 +224,7 @@ describe("listTenants", () => {
       JSON.stringify({ tenant: "acme/valid", currentUnit: { kind: "issues", id: "9" } }),
     );
 
-    const listings = await listTenants({
+    const { listings } = await listTenants({
       configDir,
       dataBase,
       loadRepoSlug: (path) => {
@@ -224,8 +236,9 @@ describe("listTenants", () => {
       },
     });
 
-    expect(listings.map((l) => l.slug)).toEqual(["acme/envless", "acme/valid", "broken"]);
+    expect(listings.map((l) => l.path)).toEqual(["envless", "valid", "broken"]);
     expect(listings.find((l) => l.slug === "acme/valid")).toMatchObject({
+      held: false,
       configValid: true,
       envPresent: true,
       retainedData: true,
@@ -235,12 +248,16 @@ describe("listTenants", () => {
       id: "9",
     });
     expect(listings.find((l) => l.slug === "acme/envless")).toMatchObject({
+      held: false,
       configValid: true,
       envPresent: false,
       retainedData: false,
       status: null,
     });
-    expect(listings.find((l) => l.slug === "broken")).toMatchObject({
+    expect(listings.find((l) => l.path === "broken")).toMatchObject({
+      held: true,
+      reason: "parse failure",
+      slug: null,
       configValid: false,
       envPresent: false,
       retainedData: false,
@@ -254,7 +271,7 @@ describe("listTenants", () => {
     mkdirSync(join(configDir, "child"), { recursive: true });
     writeFileSync(join(configDir, "child", "phoebe.config.ts"), "export default {};\n");
 
-    const listings = await listTenants({
+    const { listings } = await listTenants({
       configDir,
       dataBase,
       loadRepoSlug: () => "acme/child",
@@ -262,17 +279,88 @@ describe("listTenants", () => {
     expect(listings.map((l) => l.slug)).toEqual(["acme/child"]);
   });
 
-  test("a declared fleet is refused, not silently reported as no tenants", async () => {
-    // The explicit arm has no `depth`, so reading one would drop `list` out of
-    // workspace mode and report a declared fleet as an empty nested scan (#128).
+  test("explicit arm prints one row per declared entry in declared order", async () => {
     writeFileSync(
       join(configDir, "phoebe.config.ts"),
-      `export default { workspace: { tenants: ["child"] } };\n`,
+      `export default { workspace: { tenants: ["widget", "sprocket", "gadget"] } };\n`,
     );
-    mkdirSync(join(configDir, "child"), { recursive: true });
-    writeFileSync(join(configDir, "child", "phoebe.config.ts"), "export default {};\n");
+    mkdirSync(join(configDir, "widget"), { recursive: true });
+    mkdirSync(join(configDir, "sprocket"), { recursive: true });
+    mkdirSync(join(configDir, "gadget"), { recursive: true });
+    writeFileSync(join(configDir, "widget", "phoebe.config.ts"), "export default {};\n");
+    writeFileSync(join(configDir, "gadget", "phoebe.config.ts"), "export default {};\n");
+    writeFileSync(join(configDir, "widget", ".env"), "GH_TOKEN=x\n");
+    const stateDir = join(dataBase, "acme", "widget", "state");
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(
+      join(stateDir, "status.json"),
+      JSON.stringify({ tenant: "acme/widget", currentUnit: { kind: "issues", id: "41" } }),
+    );
 
-    await expect(listTenants({ configDir, dataBase })).rejects.toThrow(/not supported/i);
+    const result = await listTenants({
+      configDir,
+      dataBase,
+      loadRepoSlug: (path) => {
+        if (path.includes("widget")) return "acme/widget";
+        if (path.includes("gadget")) return "acme/gadget";
+        throw new Error("unexpected");
+      },
+    });
+
+    expect(result.explicit).toBe(true);
+    expect(result.declared).toBe(3);
+    expect(result.live).toBe(2);
+    expect(result.listings.map((l) => l.path)).toEqual(["widget", "sprocket", "gadget"]);
+    expect(result.listings[0]).toMatchObject({
+      slug: "acme/widget",
+      held: false,
+      configValid: true,
+      retainedData: true,
+    });
+    expect(result.listings[1]).toMatchObject({
+      slug: null,
+      held: true,
+      reason: "no phoebe.config.ts at directory root",
+      configValid: false,
+      retainedData: false,
+    });
+    expect(result.listings[2]).toMatchObject({ slug: "acme/gadget", held: false });
+  });
+
+  test("explicit arm surfaces origin-mismatch holds with slug and health columns", async () => {
+    writeFileSync(
+      join(configDir, "phoebe.config.ts"),
+      `export default { workspace: { tenants: ["outboard"] } };\n`,
+    );
+    mkdirSync(join(configDir, "outboard"), { recursive: true });
+    writeFileSync(join(configDir, "outboard", "phoebe.config.ts"), "export default {};\n");
+    writeFileSync(join(configDir, "outboard", ".env"), "GH_TOKEN=x\n");
+    mkdirSync(join(dataBase, "acme", "outboard", "state"), { recursive: true });
+    writeFileSync(
+      join(dataBase, "acme", "outboard", "state", "status.json"),
+      JSON.stringify({ tenant: "acme/outboard", currentUnit: { kind: "issues", id: "3" } }),
+    );
+
+    const { listings } = await listTenants({
+      configDir,
+      dataBase,
+      loadRepoSlug: () => "acme/outboard",
+      readOriginUrl: () => "https://github.com/acme/other.git",
+    });
+
+    expect(listings).toHaveLength(1);
+    expect(listings[0]).toMatchObject({
+      path: "outboard",
+      slug: "acme/outboard",
+      held: true,
+      reason:
+        'origin slug "acme/other" does not match config repoSlug "acme/outboard" ' +
+        "(config is authoritative; fix the checkout origin or the child's repoSlug)",
+      configValid: true,
+      envPresent: true,
+      retainedData: true,
+    });
+    expect(listings[0]?.status?.currentUnit).toEqual({ kind: "issues", id: "3" });
   });
 });
 

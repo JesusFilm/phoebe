@@ -220,7 +220,9 @@ describe("workspace mode", () => {
       },
     );
     expect(discovery.tenants.map((t) => t.slug)).toEqual(["acme/good"]);
-    expect(discovery.holds).toEqual([{ dir: join(dir, "broken"), reason: "parse failure" }]);
+    expect(discovery.holds).toEqual([
+      { dir: join(dir, "broken"), reason: "parse failure", slug: null },
+    ]);
     expect(warnings.some((w) => /broken/.test(w) && /parse failure/.test(w))).toBe(true);
   });
 
@@ -287,6 +289,9 @@ describe("workspace mode", () => {
         reason:
           'origin slug "acme/other" does not match config repoSlug "acme/configured" ' +
           "(config is authoritative; fix the checkout origin or the child's repoSlug)",
+        // Config was readable before the mismatch skip, so `phoebe list` keeps
+        // the row's slug and its data / status.json columns lit (#140).
+        slug: "acme/configured",
       },
     ]);
     expect(
@@ -458,7 +463,7 @@ describe("configDir asset relocation (#98)", () => {
 
     expect(discovery.tenants.map((t) => t.slug)).toEqual(["acme/good"]);
     expect(discovery.holds).toEqual([
-      { dir: join(dir, "bad"), reason: "`configDir` must be relative" },
+      { dir: join(dir, "bad"), reason: "`configDir` must be relative", slug: null },
     ]);
     expect(warnings.some((w) => /bad/.test(w) && /configDir/.test(w))).toBe(true);
   });
@@ -526,7 +531,7 @@ describe("workspace explicit arm (#137)", () => {
     );
     expect(discovery.tenants.map((t) => t.slug)).toEqual(["acme/widget"]);
     expect(discovery.holds).toEqual([
-      { dir: join(dir, "missing"), reason: DIRECTORY_ABSENT_HOLD_REASON },
+      { dir: join(dir, "missing"), reason: DIRECTORY_ABSENT_HOLD_REASON, slug: null },
     ]);
     expect(warnings.some((w) => /missing/.test(w) && /directory absent/.test(w))).toBe(true);
   });
@@ -549,6 +554,7 @@ describe("workspace explicit arm (#137)", () => {
       {
         dir: join(dir, "empty"),
         reason: "no phoebe.config.ts at directory root",
+        slug: null,
       },
     ]);
     expect(warnings.some((w) => /empty/.test(w) && /no phoebe\.config\.ts/.test(w))).toBe(true);
@@ -600,7 +606,9 @@ describe("out-of-tree tenants (#143)", () => {
       },
     );
     const heldDir = resolveDeclaredTenantDir(dir, "../missing-sibling");
-    expect(discovery.holds).toEqual([{ dir: heldDir, reason: OUT_OF_TREE_CONTAINER_HOLD_REASON }]);
+    expect(discovery.holds).toEqual([
+      { dir: heldDir, reason: OUT_OF_TREE_CONTAINER_HOLD_REASON, slug: null },
+    ]);
     expect(warnings.some((w) => w.includes(OUT_OF_TREE_CONTAINER_HOLD_REASON))).toBe(true);
   });
 
@@ -618,6 +626,7 @@ describe("out-of-tree tenants (#143)", () => {
       {
         dir: resolveDeclaredTenantDir(dir, "../missing-sibling"),
         reason: DIRECTORY_ABSENT_HOLD_REASON,
+        slug: null,
       },
     ]);
   });
@@ -636,6 +645,7 @@ describe("out-of-tree tenants (#143)", () => {
       {
         dir: resolveDeclaredTenantDir(dir, "..tenant"),
         reason: DIRECTORY_ABSENT_HOLD_REASON,
+        slug: null,
       },
     ]);
   });
@@ -824,7 +834,9 @@ describe("explicit workspace tenants arm — reconcile identity (#139)", () => {
       },
     );
     expect(discovery.tenants.map((t) => t.id)).toEqual([widgetDir]);
-    expect(discovery.holds).toEqual([{ dir: missingDir, reason: DIRECTORY_ABSENT_HOLD_REASON }]);
+    expect(discovery.holds).toEqual([
+      { dir: missingDir, reason: DIRECTORY_ABSENT_HOLD_REASON, slug: null },
+    ]);
 
     const previous = new Map<string, string | null>([
       [widgetDir, "fp1"],
