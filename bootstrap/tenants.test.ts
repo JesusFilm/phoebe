@@ -622,6 +622,24 @@ describe("out-of-tree tenants (#143)", () => {
     ]);
   });
 
+  test("keeps the generic absent reason for an in-tree `..`-prefixed dir in a container", async () => {
+    const discovery = await discoverWorkspaceTenants(
+      dir,
+      { tenants: ["..tenant"] },
+      {
+        loadRepoSlug: () => "acme/dotdot",
+        readOriginUrl: () => null,
+        inContainer: () => true,
+      },
+    );
+    expect(discovery.holds).toEqual([
+      {
+        dir: resolveDeclaredTenantDir(dir, "..tenant"),
+        reason: DIRECTORY_ABSENT_HOLD_REASON,
+      },
+    ]);
+  });
+
   test("boots an out-of-tree tenant silently when it resolves", async () => {
     const sibling = join(dir, "..", "outboard");
     writeSlugConfig(sibling, "acme/outboard");

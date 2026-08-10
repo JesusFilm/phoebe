@@ -25,7 +25,7 @@
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { DEFAULT_TENANT_CONFIG_DIR } from "./config-dir.ts";
 import { isInsideContainer } from "../src/execution-gate.ts";
@@ -385,7 +385,9 @@ export function isOutsideWorkspaceRoot(workspaceRoot: string, tenantDir: string)
   const dir = resolve(tenantDir);
   if (dir === root) return false;
   const rel = relative(root, dir);
-  return rel.startsWith("..") || isAbsolute(rel);
+  // Only a parent-path segment means out of tree — an in-tree child may itself
+  // be named `..tenant`, whose relative path starts with ".." but stays inside.
+  return rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
 }
 
 /** Hold reason for a declared dir discovery cannot stat as a directory. */
