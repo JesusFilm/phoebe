@@ -1,0 +1,9 @@
+# Secrets — the deployment-root token and every per-child secret file. Only the
+# `.env.example` templates are tracked; the real `.env` files never are.
+.env
+*/.env
+
+# In a real workspace each child dir is a materialized checkout the operator
+# places (clone / submodule / worktree). Here the children are committed
+# placeholders illustrating the layout, so nothing is ignored under them beyond
+# their `.env`.
