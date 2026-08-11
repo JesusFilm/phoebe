@@ -14,7 +14,7 @@ There is no single official standard, but there is a clear de-facto stack:
   and only AST nodes you modify are pretty-printed; untouched code keeps its original
   formatting and comments. Source: https://github.com/benjamn/recast (README).
 - **jscodeshift** (facebook/jscodeshift) is a multi-file runner + jQuery-like API
-  *wrapped around recast*, maintained by Meta. Ships `--dry` and `--print` flags.
+  _wrapped around recast_, maintained by Meta. Ships `--dry` and `--print` flags.
   Source: https://github.com/facebook/jscodeshift (README).
 - **Codemod CLI** (codemod.com, `codemod` on npm) is a newer registry/runner. Primary
   engine is jssg (ast-grep for JS); jscodeshift and ts-morph are supported as legacy
@@ -27,13 +27,13 @@ There is no single official standard, but there is a clear de-facto stack:
 
 What major tools ship:
 
-| Tool | Framework used |
-|---|---|
-| Next.js `@next/codemod` | jscodeshift transforms; `upgrade` also shells out to the codemod.com CLI for React 19 codemods (source: https://github.com/vercel/next.js/tree/canary/packages/next-codemod, `bin/upgrade.ts`) |
-| Angular `ng update` | Its own Schematics engine (`@angular-devkit/schematics`), virtual-FS tree based — not recast/jscodeshift (source: https://github.com/angular/angular-cli, `packages/angular/cli/src/commands/update/`) |
-| Storybook `automigrate` | Bespoke "Fix" plugin system; file edits via its own `ConfigFile` (babel parse + recast print) (source: https://github.com/storybookjs/storybook, `code/lib/cli-storybook/src/automigrate/`, `code/core/src/csf-tools/ConfigFile.ts`) |
-| ESLint `@eslint/migrate-config` | One-shot generator, no AST editing of user code (source: https://github.com/eslint/rewrite/tree/main/packages/migrate-config) |
-| Vite | No codemod tooling at all; manual migration guide plus *runtime* back-compat shims in the config loader (e.g. `optimizeDeps.esbuildOptions` auto-converted to `rolldownOptions`) (source: https://vite.dev/guide/migration) |
+| Tool                            | Framework used                                                                                                                                                                                                                       |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Next.js `@next/codemod`         | jscodeshift transforms; `upgrade` also shells out to the codemod.com CLI for React 19 codemods (source: https://github.com/vercel/next.js/tree/canary/packages/next-codemod, `bin/upgrade.ts`)                                       |
+| Angular `ng update`             | Its own Schematics engine (`@angular-devkit/schematics`), virtual-FS tree based — not recast/jscodeshift (source: https://github.com/angular/angular-cli, `packages/angular/cli/src/commands/update/`)                               |
+| Storybook `automigrate`         | Bespoke "Fix" plugin system; file edits via its own `ConfigFile` (babel parse + recast print) (source: https://github.com/storybookjs/storybook, `code/lib/cli-storybook/src/automigrate/`, `code/core/src/csf-tools/ConfigFile.ts`) |
+| ESLint `@eslint/migrate-config` | One-shot generator, no AST editing of user code (source: https://github.com/eslint/rewrite/tree/main/packages/migrate-config)                                                                                                        |
+| Vite                            | No codemod tooling at all; manual migration guide plus _runtime_ back-compat shims in the config loader (e.g. `optimizeDeps.esbuildOptions` auto-converted to `rolldownOptions`) (source: https://vite.dev/guide/migration)          |
 
 Takeaway: big tools do **not** adopt a shared migration framework; they build a thin
 bespoke runner and reuse recast (directly or via jscodeshift) for the actual text edits.
@@ -89,8 +89,8 @@ converts them internally (https://vite.dev/guide/migration).
   identifier) and errors with "Could not set the field as the default export is not an
   object" otherwise. Source: `code/core/src/csf-tools/ConfigFile.ts` in
   https://github.com/storybookjs/storybook.
-- **Regenerate-and-overwrite** is used only when the target file is being *replaced
-  wholesale by a new format*: ESLint's flat-config migrator writes a fresh file
+- **Regenerate-and-overwrite** is used only when the target file is being _replaced
+  wholesale by a new format_: ESLint's flat-config migrator writes a fresh file
   (https://github.com/eslint/rewrite/tree/main/packages/migrate-config), and Next.js's
   `next-lint-to-eslint-cli` codemod creates a new `eslint.config.mjs`
   (https://nextjs.org/docs/app/guides/upgrading/codemods).
@@ -123,9 +123,9 @@ running the migration code that ships inside the newly installed version:**
   `code/lib/cli-storybook/src/upgrade.ts`.
 
 Note this is the opposite of Phoebe's current "migrate-then-flip-ref" leaning — but the
-reason these tools migrate *after* install is that the migrations live in the new
+reason these tools migrate _after_ install is that the migrations live in the new
 package, so installing is the only way to obtain them. An engine fetched at a git ref can
-run the new ref's migration code against the old deployment *before* flipping the active
+run the new ref's migration code against the old deployment _before_ flipping the active
 ref, achieving the same "new code migrates old artifacts" property with better rollback.
 
 **Partial failure:**
@@ -161,7 +161,7 @@ Three distinct postures, all verified in source:
     `packages/angular/cli/src/commands/update/utilities/git.ts` and `cli.ts`.
   - `@next/codemod <transform>`: `checkGitStatus()` (via `is-git-clean`) exits 1 with
     "before we continue, please stash or commit your git changes." unless `--force`.
-    Notably, a directory that is *not a git repo at all* is treated as clean. Source:
+    Notably, a directory that is _not a git repo at all_ is treated as clean. Source:
     `packages/next-codemod/lib/utils.ts`.
   - Codemod CLI: has the same class of check — Next's own upgrade flow must pass
     `--allow-dirty` to it after having touched package.json (source:
@@ -195,12 +195,12 @@ Three distinct postures, all verified in source:
   more proven implementation of "surgical" than regex/magic-string.
 - **Migrate-then-flip-ref is sound and strictly better than the ecosystem norm.** Others
   migrate after install only because migrations ship inside the new package. Phoebe's
-  engine-at-ref architecture lets the *new* engine's migration code run against the old
+  engine-at-ref architecture lets the _new_ engine's migration code run against the old
   deployment before the ref flips — same invariant (new code owns the migration), plus a
   clean abort path: if migration fails, the ref never flips.
 - **Write-but-never-commit is the majority posture** (only Angular auto-commits, and only
   opt-in). Given Phoebe already never writes the root config on its own initiative
-  (map #127), the Angular-style *preflight* is the piece worth borrowing: a cheap
+  (map #127), the Angular-style _preflight_ is the piece worth borrowing: a cheap
   `git status --porcelain` check with a warn-or-block before touching configs, plus
   `--check`/dry-run that runs all detection and prints the report with zero writes
   (Storybook's `dryRun` pattern) — which also composes naturally with `phoebe doctor`'s
