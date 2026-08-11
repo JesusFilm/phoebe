@@ -125,6 +125,29 @@ the deployed shape — `docker compose up -d` runs the persistent loop.
 the container. See [`upgrading.md`](upgrading.md) for start/stop/upgrade
 commands and [`work-kinds.md`](work-kinds.md) for the full selection rules.
 
+## Checking the deployment's health: `phoebe doctor`
+
+`phoebe doctor` (report-only) runs six checks and exits 1 when any fails:
+
+- **cli** — installed `phoebe-agent` vs the npm registry's latest.
+- **engine** — the configured pin vs the latest release tag, plus the commit
+  actually materialized in the engine checkout.
+- **config** — the root `phoebe.config.ts` loads and its `engine` field parses.
+- **repo** — the engine repo answers `ls-remote` with the current `GH_TOKEN`.
+- **crash-loop** — whether a quarantine is in force, i.e. the container is
+  silently running the last-known-good commit instead of the tracked tip.
+- **supervisor** — whether `phoebe boot` is the container's main process
+  (answerable in-container only: `docker compose exec phoebe phoebe doctor`).
+
+In workspace mode it also sweeps every tenant — the same enumeration boot
+supervises with — checking each tenant's `GH_TOKEN` is present the way its
+engine child reads it, and that its repo answers to that token. Held tenants
+surface as failures with their hold reason. `--json` for scripts.
+
+Division of labor: `phoebe upgrade` moves you between versions; `doctor` tells
+you whether the version you are on works. For the per-permission token
+diagnosis, doctor points at the deeper probe below.
+
 ## Checking a tenant's GitHub token
 
 Phoebe acts entirely as `GH_TOKEN`'s identity. When that token is short a
