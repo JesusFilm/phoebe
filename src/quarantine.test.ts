@@ -7,8 +7,12 @@ import { asSha } from "./branded.ts";
 import {
   buildQuarantineComment,
   buildUnitTimeoutMarker,
+  buildUnstickComment,
+  decideAutoUnstick,
   decideTimeoutRecord,
   DEFAULT_MAX_UNIT_TIMEOUTS,
+  issueContentBaseline,
+  latestQuarantineBaseline,
   latestTimeoutMarker,
   newestForeignCommentAt,
   nextTimeoutCount,
@@ -16,7 +20,6 @@ import {
   parseUnitTimeoutMarker,
   PHOEBE_QUARANTINE_LABEL,
   resolveMaxUnitTimeouts,
-  shouldAutoUnstick,
   shouldQuarantine,
 } from "./quarantine.ts";
 import { isPrInScope, selectIssue, type Issue } from "./orchestrator.ts";
@@ -177,6 +180,58 @@ describe("decideTimeoutRecord (engine write-path core)", () => {
     ).toEqual({ count: 1, quarantine: false });
   });
 
+  test("a manually cleared label buys a fresh K, not one retry (#153)", () => {
+    // The marker already stands at K, so this unit was quarantined — and
+    // selection skips quarantined units, so being picked again at all means a
+    // human removed the label. That is a deliberate retry: start from zero
+    // instead of re-quarantining on the very next timeout.
+    expect(
+      decideTimeoutRecord({
+        comments: [
+          {
+            body: buildUnitTimeoutMarker(3),
+            createdAt: "2026-01-03T00:00:00Z",
+            authorLogin: phoebe,
+          },
+        ],
+        phoebeLogin: phoebe,
+        k,
+      }),
+    ).toEqual({ count: 1, quarantine: false });
+  });
+
+  test("a marker past K (after K was lowered) also counts as a manual clear", () => {
+    expect(
+      decideTimeoutRecord({
+        comments: [
+          {
+            body: buildUnitTimeoutMarker(5),
+            createdAt: "2026-01-03T00:00:00Z",
+            authorLogin: phoebe,
+          },
+        ],
+        phoebeLogin: phoebe,
+        k,
+      }),
+    ).toEqual({ count: 1, quarantine: false });
+  });
+
+  test("an auto-unstick reset marker (n=0) starts the count over", () => {
+    expect(
+      decideTimeoutRecord({
+        comments: [
+          {
+            body: buildUnstickComment(),
+            createdAt: "2026-01-03T00:00:00Z",
+            authorLogin: phoebe,
+          },
+        ],
+        phoebeLogin: phoebe,
+        k,
+      }),
+    ).toEqual({ count: 1, quarantine: false });
+  });
+
   test("resets when the extra activity instant (a PR push) is newer than the marker", () => {
     expect(
       decideTimeoutRecord({
@@ -195,22 +250,111 @@ describe("decideTimeoutRecord (engine write-path core)", () => {
   });
 });
 
-describe("shouldAutoUnstick", () => {
-  test("PR unit clears when head SHA advanced past baseline", () => {
-    expect(shouldAutoUnstick({ baseline: "aaa", currentHeadSha: asSha("bbb") })).toBe(true);
-    expect(shouldAutoUnstick({ baseline: "aaa", currentHeadSha: asSha("aaa") })).toBe(false);
+describe("issueContentBaseline", () => {
+  test("is stable for the same body and differs after an edit", () => {
+    expect(issueContentBaseline("hello")).toBe(issueContentBaseline("hello"));
+    expect(issueContentBaseline("hello")).not.toBe(issueContentBaseline("hello!"));
   });
-  test("issue unit clears when lastEditedAt is newer than baseline", () => {
-    const baseline = "2026-07-31T12:00:00Z";
-    expect(shouldAutoUnstick({ baseline, currentIssueEditedAt: "2026-07-31T13:00:00Z" })).toBe(
+  test("is namespaced so it can never collide with a PR head SHA baseline", () => {
+    expect(issueContentBaseline("hello")).toMatch(/^body:[0-9a-f]{12}$/);
+  });
+});
+
+describe("latestQuarantineBaseline", () => {
+  const escalation = (baseline: string) => ({
+    body: buildQuarantineComment({ kind: "issues", id: 1, k: 3, baseline }),
+  });
+
+  test("null when no escalation comment carries a baseline", () => {
+    expect(latestQuarantineBaseline([{ body: "a human comment" }])).toBeNull();
+    expect(latestQuarantineBaseline([])).toBeNull();
+  });
+
+  test("the newest baseline wins when a unit has been quarantined twice", () => {
+    const comments = [escalation("old"), { body: "human note" }, escalation("new")];
+    expect(latestQuarantineBaseline(comments)).toBe("new");
+  });
+
+  test("a baseline behind the un-stick comment is spent and does not count", () => {
+    // Otherwise a label a human re-applies by hand would be stripped on the next
+    // sweep by the stale baseline of the quarantine Phoebe already lifted.
+    const comments = [escalation("aaa"), { body: buildUnstickComment() }];
+    expect(latestQuarantineBaseline(comments)).toBeNull();
+  });
+
+  test("a re-quarantine after an un-stick is in force again", () => {
+    const comments = [escalation("aaa"), { body: buildUnstickComment() }, escalation("bbb")];
+    expect(latestQuarantineBaseline(comments)).toBe("bbb");
+  });
+
+  test("a quoted escalation comment does not resurrect its baseline", () => {
+    // GitHub's "Quote reply" reproduces the comment verbatim behind `> `.
+    const quoted = escalation("aaa")
+      .body.split("\n")
+      .map((line) => `> ${line}`)
+      .join("\n");
+    expect(latestQuarantineBaseline([{ body: `${quoted}\n\nagreed` }])).toBeNull();
+  });
+});
+
+describe("decideAutoUnstick (the sweep's core)", () => {
+  const escalation = (baseline: string) => ({
+    body: buildQuarantineComment({ kind: "conflicts", id: 7, k: 3, baseline }),
+  });
+
+  test("a PR clears once its head SHA advanced past the recorded baseline", () => {
+    expect(
+      decideAutoUnstick({ comments: [escalation("aaa")], currentBaseline: asSha("bbb") }),
+    ).toBe(true);
+    expect(
+      decideAutoUnstick({ comments: [escalation("aaa")], currentBaseline: asSha("aaa") }),
+    ).toBe(false);
+  });
+
+  test("an issue clears once its body fingerprint changed", () => {
+    const comments = [escalation(issueContentBaseline("original"))];
+    expect(decideAutoUnstick({ comments, currentBaseline: issueContentBaseline("edited") })).toBe(
       true,
     );
-    expect(shouldAutoUnstick({ baseline, currentIssueEditedAt: "2026-07-31T11:00:00Z" })).toBe(
+    expect(decideAutoUnstick({ comments, currentBaseline: issueContentBaseline("original") })).toBe(
       false,
     );
   });
-  test("no content signal → stays quarantined (a bare comment can't re-arm)", () => {
-    expect(shouldAutoUnstick({ baseline: "aaa" })).toBe(false);
+
+  test("holds when no Phoebe escalation comment exists — a human's label is theirs to remove", () => {
+    expect(
+      decideAutoUnstick({ comments: [{ body: "labelled this by hand" }], currentBaseline: "bbb" }),
+    ).toBe(false);
+  });
+
+  test("Phoebe's own later writes do not move the baseline", () => {
+    // The escalation comment and the label both land *after* the baseline is
+    // snapshotted; only the unit's own content can clear the quarantine (#153).
+    const comments = [escalation("aaa"), { body: buildUnitTimeoutMarker(3) }];
+    expect(decideAutoUnstick({ comments, currentBaseline: "aaa" })).toBe(false);
+  });
+
+  test("a bare comment cannot re-arm a unit: only the fingerprint counts", () => {
+    // The #153 baseline trap: `updatedAt` moves on any comment, label, or
+    // reaction, so it can never stand in for the unit's content.
+    const body = "unchanged body";
+    const comments = [escalation(issueContentBaseline(body)), { body: "any news?" }];
+    expect(decideAutoUnstick({ comments, currentBaseline: issueContentBaseline(body) })).toBe(
+      false,
+    );
+  });
+
+  test("holds after an un-stick when a human re-applies the label by hand", () => {
+    const comments = [escalation("aaa"), { body: buildUnstickComment() }];
+    expect(decideAutoUnstick({ comments, currentBaseline: "bbb" })).toBe(false);
+  });
+});
+
+describe("buildUnstickComment", () => {
+  test("names the label it removed and resets the timeout counter to zero", () => {
+    const comment = buildUnstickComment();
+    expect(comment).toContain(PHOEBE_QUARANTINE_LABEL);
+    expect(parseUnitTimeoutMarker(comment)).toEqual({ n: 0 });
   });
 });
 
