@@ -5,7 +5,7 @@
 // level in dev; here we just pin the surface.
 
 import { describe, expect, test } from "vite-plus/test";
-import { parseCliArgs, parseInitArgs } from "./cli.ts";
+import { assertNotWorkspaceRoot, parseCliArgs, parseInitArgs } from "./cli.ts";
 
 describe("parseCliArgs", () => {
   test("returns empty parsed state for empty argv", () => {
@@ -72,6 +72,31 @@ describe("parseCliArgs", () => {
     expect(() => parseCliArgs(["--repo", "acme/widget"])).toThrow(/Unknown flag `--repo`/);
     expect(() => parseCliArgs(["--repo=acme/widget"])).toThrow(/Unknown flag/);
     expect(() => parseCliArgs(["--dry-runn"])).toThrow(/Unknown flag/);
+  });
+
+  test("rejects a bare word as an unknown command instead of forwarding it", () => {
+    // The newer-verb-on-older-CLI case: a deployment on 0.4.x running
+    // `phoebe upgrade` saw the verb forwarded to the engine-run path, which
+    // died deep in config validation with a "missing required field(s)" error.
+    // The parser now names the real problem and points at the self-upgrade
+    // path.
+    expect(() => parseCliArgs(["upgrayedd"])).toThrow(/Unknown command `upgrayedd`/);
+    expect(() => parseCliArgs(["upgrayedd"])).toThrow(/pnpm dlx phoebe-agent@latest upgrade/);
+    expect(() => parseCliArgs(["--run-once", "extra"])).toThrow(/Unknown command `extra`/);
+  });
+});
+
+describe("assertNotWorkspaceRoot", () => {
+  test("lets a config without a workspace block through", () => {
+    expect(() => assertNotWorkspaceRoot({}, "/tenant/phoebe.config.ts")).not.toThrow();
+  });
+
+  test("refuses a workspace-root config with a pointer, not the five-field error", () => {
+    const call = () =>
+      assertNotWorkspaceRoot({ workspace: { depth: 1 } }, "/root/phoebe.config.ts");
+    expect(call).toThrow(/workspace root/);
+    expect(call).toThrow(/phoebe boot/);
+    expect(call).toThrow(String.raw`/root/phoebe.config.ts`);
   });
 });
 
