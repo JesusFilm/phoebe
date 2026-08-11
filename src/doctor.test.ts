@@ -3,7 +3,35 @@
 // "silently running last-known-good" state doctor exists to surface.
 
 import { describe, expect, test } from "vite-plus/test";
-import { buildDoctorReport, crashLoopCheck, formatDoctorReport } from "./doctor.ts";
+import {
+  buildDoctorReport,
+  crashLoopCheck,
+  describeRepoProbe,
+  formatDoctorReport,
+} from "./doctor.ts";
+
+describe("describeRepoProbe", () => {
+  test("200 is reachable", () => {
+    expect(describeRepoProbe(200, "acme/widget").ok).toBe(true);
+  });
+
+  test("401/403/404 are token verdicts", () => {
+    for (const status of [401, 403, 404]) {
+      const probe = describeRepoProbe(status, "acme/widget");
+      expect(probe.ok).toBe(false);
+      expect(probe.detail).toMatch(/token cannot see the repo/);
+    }
+  });
+
+  test("429 and 5xx fail without blaming the token", () => {
+    for (const status of [429, 500, 502, 503]) {
+      const probe = describeRepoProbe(status, "acme/widget");
+      expect(probe.ok).toBe(false);
+      expect(probe.detail).not.toMatch(/token cannot see/);
+      expect(probe.detail).toMatch(/not a token verdict/);
+    }
+  });
+});
 
 describe("buildDoctorReport", () => {
   test("warn and unknown do not fail the report; fail does", () => {

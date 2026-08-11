@@ -193,6 +193,17 @@ export function engineEditInstruction(ref: string): string {
   return `engine: { source: "github", ref: ${JSON.stringify(ref)} },`;
 }
 
+/**
+ * Strip an embedded token from a message before rendering it. `execFileSync`
+ * failure messages include the full command line, and the authenticated
+ * ls-remote URL carries `GH_TOKEN` — without this, a failed probe prints the
+ * secret into terminal output and container logs.
+ */
+export function redactToken(message: string, token: string | undefined): string {
+  if (token === undefined || token.length === 0) return message;
+  return message.replaceAll(token, "***");
+}
+
 const ENGINE_BLOCK = /\bengine\s*:\s*\{([^{}]*)\}/g;
 const REF_LITERAL = /(\bref\s*:\s*)(['"])((?:[^'"\\])*)\2/g;
 const GITHUB_SOURCE = /(\bsource\s*:\s*(['"])github\2)/;
@@ -354,10 +365,18 @@ export function buildCheckReport(fields: {
         : null;
     engine = { source: "github", ref: source.ref, latest: latestTag, tracking, behind };
   }
-  const cliBehind =
-    fields.installedCli !== null && fields.latestCli !== null
-      ? fields.installedCli !== fields.latestCli
-      : null;
+  // Ordering, not string inequality: an installed CLI *newer* than the
+  // registry's latest (a prerelease install, a dist-tag rollback) is not
+  // "behind". Non-X.Y.Z versions fall back to inequality.
+  let cliBehind: boolean | null = null;
+  if (fields.installedCli !== null && fields.latestCli !== null) {
+    const installedVersion = releaseVersion(`v${fields.installedCli}`);
+    const latestVersion = releaseVersion(`v${fields.latestCli}`);
+    cliBehind =
+      installedVersion !== null && latestVersion !== null
+        ? compareVersions(installedVersion, latestVersion) < 0
+        : fields.installedCli !== fields.latestCli;
+  }
   return {
     engine,
     cli: { installed: fields.installedCli, latest: fields.latestCli, behind: cliBehind },
@@ -451,13 +470,25 @@ export async function runUpgradeCli(argv: readonly string[]): Promise<void> {
     return;
   }
 
-  const configPath = resolveConfigPath(parsed.configPath, process.cwd());
-  const source = readEngineSource(
-    (await loadUserConfig(configPath)) as unknown as Record<string, unknown>,
-  );
   const token = process.env["GH_TOKEN"];
 
+  // The root config is loaded lazily: only `--check` and the engine half need
+  // it. A host that carries nothing but the npm launcher must still be able to
+  // run `phoebe upgrade --cli`.
+  let cached: { configPath: string; source: ResolvedEngineSource } | undefined;
+  const engineConfig = async (): Promise<{ configPath: string; source: ResolvedEngineSource }> => {
+    if (cached === undefined) {
+      const configPath = resolveConfigPath(parsed.configPath, process.cwd());
+      const source = readEngineSource(
+        (await loadUserConfig(configPath)) as unknown as Record<string, unknown>,
+      );
+      cached = { configPath, source };
+    }
+    return cached;
+  };
+
   if (parsed.check) {
+    const { source } = await engineConfig();
     const report = buildCheckReport({
       source,
       latestTag: source.source === "github" ? lsRemoteLatestTag(source, token, io.git) : null,
@@ -498,17 +529,34 @@ export async function runUpgradeCli(argv: readonly string[]): Promise<void> {
   }
 
   // Both halves share one resolved release version so "--both" cannot straddle.
+  // A cli-only bare upgrade takes npm's latest instead — no config needed.
   let releaseTag: string | null = null;
-  if (parsed.ref === undefined && source.source === "github") {
-    releaseTag = lsRemoteLatestTag(source, token, io.git);
-  } else if (parsed.ref !== undefined && refKind === "release-tag") {
+  if (parsed.ref !== undefined && refKind === "release-tag") {
     releaseTag = parsed.ref;
+  } else if (parsed.ref === undefined && (target === "engine" || target === "both")) {
+    const { source } = await engineConfig();
+    if (source.source === "github") releaseTag = lsRemoteLatestTag(source, token, io.git);
   }
 
+  let engineMoved = true;
   if (target === "engine" || target === "both") {
-    upgradeEngineHalf({ configPath, source, ref: parsed.ref ?? releaseTag, refKind, token, io });
+    const { configPath, source } = await engineConfig();
+    engineMoved = upgradeEngineHalf({
+      configPath,
+      source,
+      ref: parsed.ref ?? releaseTag,
+      refKind,
+      token,
+      io,
+    });
   }
   if (target === "cli" || target === "both") {
+    if (!engineMoved) {
+      // The whole point of `--both` is landing both halves on one version; a
+      // refused engine rewrite must not leave the deployment straddling two.
+      io.stderr("cli: skipped — the engine half was refused, so the CLI stays where it is.");
+      return;
+    }
     upgradeCliHalf({ releaseTag, io });
   }
 }
@@ -542,7 +590,7 @@ function upgradeEngineHalf(opts: {
   refKind: RefKind;
   token: string | undefined;
   io: Required<UpgradeIo>;
-}): void {
+}): boolean {
   const { configPath, source, io } = opts;
   if (source.source === "local") {
     throw new Error(
@@ -560,7 +608,7 @@ function upgradeEngineHalf(opts: {
 
   if (ref === source.ref) {
     io.stdout(`engine: already at ${ref} — nothing to do.`);
-    return;
+    return true;
   }
 
   // Validate-then-commit: a typo'd tag or branch must fail here, before a
@@ -575,7 +623,7 @@ function upgradeEngineHalf(opts: {
     } catch (error) {
       throw new Error(
         `Could not reach ${source.repo} to validate \`${ref}\`: ` +
-          `${error instanceof Error ? error.message : String(error)}`,
+          redactToken(error instanceof Error ? error.message : String(error), opts.token),
       );
     }
     if (rows.length === 0) {
@@ -600,7 +648,7 @@ function upgradeEngineHalf(opts: {
         `  ${engineEditInstruction(ref)}`,
     );
     process.exitCode = 1;
-    return;
+    return false;
   }
   // In-place write on the same inode, deliberately not write-temp-then-rename:
   // the container bind-mounts this file, and a new inode is invisible to it.
@@ -619,6 +667,7 @@ function upgradeEngineHalf(opts: {
         ? "  (pinned refs never auto-roll-back — pinning means pinning)"
         : ""),
   );
+  return true;
 }
 
 function upgradeCliHalf(opts: { releaseTag: string | null; io: Required<UpgradeIo> }): void {

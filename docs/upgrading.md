@@ -69,7 +69,7 @@ checkout on your own machine, see `container/compose.local.yml`.
 Edit `engine.ref` in `phoebe.config.ts` — by hand, or with the command that does
 exactly that edit for you:
 
-```
+```bash
 phoebe upgrade                  # prompt for a target, move to the latest release tag
 phoebe upgrade v0.4.0 --both    # engine pin + npm CLI to one release
 phoebe upgrade main --engine    # pin back to branch-following

@@ -46,6 +46,7 @@ import {
   latestCliVersion,
   type NpmRunner,
   defaultNpm,
+  redactToken,
   releaseVersion,
   compareVersions,
 } from "./upgrade.ts";
@@ -136,6 +137,30 @@ type DoctorDeps = {
 const PROBE_TIMEOUT_MS = 30_000;
 
 /**
+ * Classify a repo-probe status. Only 401/403/404 are token verdicts — a 429 or
+ * a 5xx says GitHub is rate-limiting or down, and blaming the token for those
+ * would send an operator off to re-mint a credential that is fine. Pure, for
+ * tests.
+ */
+export function describeRepoProbe(status: number, slug: string): { ok: boolean; detail: string } {
+  if (status === 200) return { ok: true, detail: "reachable with this token (HTTP 200)" };
+  if (status === 401 || status === 403 || status === 404) {
+    return {
+      ok: false,
+      detail:
+        `HTTP ${status} from GET /repos/${slug} — the token cannot see the repo. ` +
+        `Run node scripts/verify-tenant-token.mjs for the per-permission diagnosis`,
+    };
+  }
+  return {
+    ok: false,
+    detail:
+      `HTTP ${status} from GET /repos/${slug} — not a token verdict ` +
+      `(rate limiting or a GitHub outage?); retry before re-minting anything`,
+  };
+}
+
+/**
  * GET /repos/<slug> with a token — the reachability slice of #154's probe
  * ladder. 200 proves the token sees the repo; 401/403/404 all mean the child
  * would fail its first API hop.
@@ -155,19 +180,34 @@ async function probeRepo(
         authorization: `Bearer ${token}`,
       },
     });
-    if (res.status === 200) return { ok: true, detail: "reachable with this token (HTTP 200)" };
-    return {
-      ok: false,
-      detail:
-        `HTTP ${res.status} from GET /repos/${slug} — the token cannot see the repo. ` +
-        `Run node scripts/verify-tenant-token.mjs for the per-permission diagnosis`,
-    };
+    return describeRepoProbe(res.status, slug);
   } catch (error) {
     return {
       ok: false,
       detail: `could not reach api.github.com: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
+}
+
+/** How many tenant repo probes run at once during the sweep. */
+const TENANT_PROBE_CONCURRENCY = 4;
+
+/** Map with bounded concurrency, preserving input order in the results. */
+async function mapBounded<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = Array.from({ length: items.length }) as R[];
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
 }
 
 /** A tenant's GH_TOKEN, read exactly the way its engine child reads it. */
@@ -260,9 +300,11 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
       checks.push({
         id: "repo",
         state: "fail",
+        // Redacted: execFileSync's failure message includes the full command
+        // line, and the authenticated URL on it carries GH_TOKEN.
         detail:
           `${source.repo} did not answer ls-remote${token ? " with GH_TOKEN" : ""}: ` +
-          `${error instanceof Error ? error.message : String(error)}`,
+          redactToken(error instanceof Error ? error.message : String(error), token),
       });
     }
 
@@ -314,6 +356,19 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
       id: "engine",
       state: "ok",
       detail: "local mount — version pinning does not apply",
+    });
+  } else {
+    // Config resolution failed above; the report still carries all six checks
+    // so the (JSON) shape never varies with the failure mode.
+    checks.push({
+      id: "repo",
+      state: "unknown",
+      detail: "not probed — config resolution failed (see the config check)",
+    });
+    checks.push({
+      id: "engine",
+      state: "unknown",
+      detail: "not probed — config resolution failed (see the config check)",
     });
   }
 
@@ -381,10 +436,14 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
   const tenants: TenantDoctorRow[] = [];
   const enumeration = await enumerateWorkspaceTenants({ configDir: deps.configDir });
   if (enumeration !== null) {
-    for (const tenant of enumeration.tenants) {
-      const tokenValue = tenantToken(tenant.envPath);
-      tenants.push(
-        await tenantRow({
+    // Bounded, order-preserving: each probe can wait out its 30s timeout, so a
+    // serial sweep over a fleet of unreachable tenants would take
+    // tenant-count × 30s. Bounded (not Promise.all) so a big fleet cannot
+    // stampede api.github.com either.
+    tenants.push(
+      ...(await mapBounded(enumeration.tenants, TENANT_PROBE_CONCURRENCY, (tenant) => {
+        const tokenValue = tenantToken(tenant.envPath);
+        return tenantRow({
           path: tenant.dir,
           slug: tenant.slug,
           token: tokenValue,
@@ -394,9 +453,9 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
               : `no GH_TOKEN in ${tenant.envPath} — the supervisor scrubs its own env, so this ` +
                 `tenant's child boots with no token at all`,
           fetchFn,
-        }),
-      );
-    }
+        });
+      })),
+    );
     for (const hold of enumeration.holds) {
       tenants.push({
         path: hold.dir,

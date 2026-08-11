@@ -10,9 +10,21 @@ import {
   engineEditInstruction,
   latestReleaseTag,
   parseUpgradeArgs,
+  redactToken,
   releaseVersion,
   rewriteEngineRef,
 } from "./upgrade.ts";
+
+describe("redactToken", () => {
+  test("strips every occurrence of the token, tolerating an absent one", () => {
+    const message = "fatal: could not read from https://x-access-token:ghs_secret@github.com";
+    expect(redactToken(message, "ghs_secret")).toBe(
+      "fatal: could not read from https://x-access-token:***@github.com",
+    );
+    expect(redactToken(message, undefined)).toBe(message);
+    expect(redactToken(message, "")).toBe(message);
+  });
+});
 
 describe("parseUpgradeArgs", () => {
   test("bare invocation leaves ref and target undefined (prompt territory)", () => {
@@ -202,6 +214,26 @@ describe("buildCheckReport", () => {
     expect(report.engine.tracking).toBe(true);
     expect(report.engine.behind).toBeNull();
     expect(report.ok).toBe(true);
+  });
+
+  test("an installed CLI newer than the registry's latest is not 'behind'", () => {
+    const report = buildCheckReport({
+      source: { source: "github", ref: "v0.4.0", repo: "JesusFilm/phoebe" },
+      latestTag: "v0.4.0",
+      installedCli: "0.5.0-rc.1",
+      latestCli: "0.4.0",
+    });
+    // Non-X.Y.Z installed version falls back to inequality…
+    expect(report.cli.behind).toBe(true);
+    const ahead = buildCheckReport({
+      source: { source: "github", ref: "v0.4.0", repo: "JesusFilm/phoebe" },
+      latestTag: "v0.4.0",
+      installedCli: "0.5.0",
+      latestCli: "0.4.0",
+    });
+    // …but a plain newer version compares by ordering, not string inequality.
+    expect(ahead.cli.behind).toBe(false);
+    expect(ahead.ok).toBe(true);
   });
 
   test("unknowns stay null and do not fail the check", () => {
