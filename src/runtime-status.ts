@@ -90,7 +90,7 @@ export function sanitizeTelemetryText(
   return text.length <= maxLength ? text : `${text.slice(0, maxLength - 1)}…`;
 }
 
-function classifyFailure(message: string): {
+export function classifyFailure(message: string): {
   outcome: NormalizedOutcome;
   category: FailureCategory;
   retryable: boolean;

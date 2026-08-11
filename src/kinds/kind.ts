@@ -17,6 +17,11 @@ import type { GitHub } from "../github.ts";
 import type { Quarantine } from "../quarantine.ts";
 import type { VerificationResult } from "../verification.ts";
 import type { CycleContext } from "../cycle.ts";
+import {
+  classifyFailure,
+  sanitizeTelemetryText,
+  type RuntimeStatusTransition,
+} from "../runtime-status.ts";
 
 /** What every kind's `run`/`Plan.execute` reports back to the loop for telemetry. */
 export type UnitResult = {
@@ -212,4 +217,37 @@ export function pickFirstIdleReason(gathered: readonly Gathered[]): string | nul
     }
   }
   return null;
+}
+
+/**
+ * Run every one of `fetchKinds`' `gather(ctx)` — the per-cycle GitHub fetch
+ * phase (#162). Any GitHub failure along the way (most notably a 403 off the
+ * reviews kind's identity check when the configured credential's rate limit
+ * is exhausted) is classified the same way a failing work unit already is: a
+ * quota/rate-limit outcome records a `backoff` status transition and returns
+ * `null` — discarding whatever this cycle already gathered, so the next cycle
+ * refetches cleanly — rather than propagating and crashing the engine. Any
+ * other classification rethrows, preserving today's fail-fast (engine-failed)
+ * behavior.
+ */
+export async function gatherFetchPhase(
+  fetchKinds: readonly KindHandle[],
+  ctx: CycleContext,
+  deps: { secrets: readonly string[]; record: (transition: RuntimeStatusTransition) => void },
+): Promise<Gathered[] | null> {
+  try {
+    const gathered: Gathered[] = [];
+    for (const handle of fetchKinds) {
+      gathered.push(await handle.gather(ctx));
+    }
+    return gathered;
+  } catch (error) {
+    const message = sanitizeTelemetryText(error, deps.secrets);
+    const classified = classifyFailure(message);
+    if (classified.outcome !== "quota-backoff") {
+      throw error;
+    }
+    deps.record({ kind: "backoff", reason: message });
+    return null;
+  }
 }

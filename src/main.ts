@@ -58,12 +58,12 @@ import { ghStackExtensionInstallArgs, nativeStackGitConfig, type StackConfig } f
 import { gatherCycleContext } from "./cycle.ts";
 import {
   boxKind,
+  gatherFetchPhase,
   oneShotEligible,
   pickFirstIdleReason,
   pickFirstPlan,
   RUN_ONCE_NOTHING_MESSAGE,
   type AgentRunner,
-  type Gathered,
   type GitOps,
   type Io,
   type KindDeps,
@@ -437,9 +437,20 @@ export async function runEngine(opts: {
         .filter((k): k is KindHandle => k !== undefined);
       const fetchKinds = runOnce ? oneShotEligible(orderedKinds) : orderedKinds;
 
-      const gathered: Gathered[] = [];
-      for (const handle of fetchKinds) {
-        gathered.push(await handle.gather(ctx));
+      const gathered = await gatherFetchPhase(fetchKinds, ctx, {
+        secrets: contractContext.secrets,
+        record: status.record,
+      });
+      if (gathered === null) {
+        // A quota/rate-limit GitHub failure somewhere in this cycle's fetch
+        // phase (#162) — most notably a 403 off the reviews kind's identity
+        // check when the configured credential's rate limit is exhausted.
+        // `gatherFetchPhase` already recorded the backoff; skip to the next
+        // poll exactly as an idle cycle would, discarding whatever this cycle
+        // gathered (the next cycle refetches cleanly).
+        if (runOnce || dryRun) break;
+        await drain.wait(pollIntervalMs);
+        continue;
       }
 
       const picked = pickFirstPlan(gathered, ctx);

@@ -9,6 +9,7 @@ import { asBranchRef } from "../branded.ts";
 import type { CycleContext } from "../cycle.ts";
 import {
   boxKind,
+  gatherFetchPhase,
   oneShotEligible,
   pickFirstIdleReason,
   pickFirstPlan,
@@ -29,6 +30,23 @@ function fakeCtx(): CycleContext {
     nativeBlockers: new Map(),
     runtimeId: "runtime-1",
   };
+}
+
+/** A synthetic kind whose `fetch` always throws — the fetch-phase failure this module simulates. */
+function throwingKind(name: UnitRef["kind"], error: unknown): KindHandle {
+  const kind: WorkKind<never, never> = {
+    name,
+    oneShot: false,
+    fetch: async () => {
+      throw error;
+    },
+    select: () => null,
+    run: async () => ({ exitCode: null }),
+    refFor: () => {
+      throw new Error("never called");
+    },
+  };
+  return boxKind(kind);
 }
 
 /** A synthetic PR-shaped kind: `fetch` always returns the same optional number, `select` picks it. */
@@ -192,6 +210,59 @@ describe("pickFirstIdleReason", () => {
   test("returns null when no kind has anything to explain", async () => {
     const kinds = [fakeKind({ name: "conflicts", prNumber: null, idleReason: null })];
     expect(pickFirstIdleReason(await gatherAll(kinds, fakeCtx()))).toBeNull();
+  });
+});
+
+describe("gatherFetchPhase", () => {
+  test("a successful fetch is unaffected — returns gathered data, records nothing", async () => {
+    const kinds = [fakeKind({ name: "issues", prNumber: 135 })];
+    const records: unknown[] = [];
+    const gathered = await gatherFetchPhase(kinds, fakeCtx(), {
+      secrets: [],
+      record: (t) => records.push(t),
+    });
+    expect(gathered).not.toBeNull();
+    expect(pickFirstPlan(gathered!, fakeCtx())?.ref.target.number).toBe(135);
+    expect(records).toEqual([]);
+  });
+
+  test("a rate-limit-shaped fetch failure backs off instead of throwing (#162)", async () => {
+    const kinds = [
+      fakeKind({ name: "conflicts", prNumber: null }),
+      throwingKind("checks", new Error("gh api user: HTTP 403: API rate limit exceeded")),
+    ];
+    const records: unknown[] = [];
+    const gathered = await gatherFetchPhase(kinds, fakeCtx(), {
+      secrets: [],
+      record: (t) => records.push(t),
+    });
+    expect(gathered).toBeNull();
+    expect(records).toEqual([
+      { kind: "backoff", reason: "gh api user: HTTP 403: API rate limit exceeded" },
+    ]);
+  });
+
+  test("a non-retryable fetch failure still propagates — no backoff recorded", async () => {
+    const kinds = [throwingKind("checks", new Error("ENOSPC: no space left on the state volume"))];
+    const records: unknown[] = [];
+    await expect(
+      gatherFetchPhase(kinds, fakeCtx(), { secrets: [], record: (t) => records.push(t) }),
+    ).rejects.toThrow("ENOSPC");
+    expect(records).toEqual([]);
+  });
+
+  test("redacts configured secrets from the recorded backoff reason", async () => {
+    const kinds = [
+      throwingKind("checks", new Error("gh api user: 429 rate limit hit token ghp_supersecret123")),
+    ];
+    const records: unknown[] = [];
+    await gatherFetchPhase(kinds, fakeCtx(), {
+      secrets: ["ghp_supersecret123"],
+      record: (t) => records.push(t),
+    });
+    expect(records).toEqual([
+      { kind: "backoff", reason: "gh api user: 429 rate limit hit token [REDACTED]" },
+    ]);
   });
 });
 
