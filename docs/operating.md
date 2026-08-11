@@ -230,7 +230,21 @@ The container writes no log files — stdout is the whole story.
 fleet, and the engine moves on. A unit that hangs **every** time is quarantined
 after `PHOEBE_MAX_UNIT_TIMEOUTS` (default 3) consecutive timeouts: Phoebe applies
 a `phoebe:quarantined` label and posts one escalation comment asking for a human.
-Remove the label to retry, or push a fix / edit the issue — Phoebe auto-clears
-the label when the content advances.
+
+There are two ways out, and both give the unit a **fresh** allowance of
+`PHOEBE_MAX_UNIT_TIMEOUTS` timeouts, not a single retry:
+
+- **Change the content.** Push to the PR, or edit the issue body. Each cycle
+  Phoebe sweeps the quarantined units and compares them against the baseline
+  recorded in the escalation comment — the PR's head SHA, or a fingerprint of the
+  issue body. When that has moved, Phoebe removes the label itself and says so in
+  a comment. A bare comment or reaction does **not** count: it can't re-arm a unit
+  nobody has actually fixed.
+- **Remove the label by hand.** Phoebe treats that as a deliberate "try again"
+  and starts the timeout count over.
+
+Phoebe only ever auto-removes a label it applied itself (it looks for its own
+escalation comment first), so a `phoebe:quarantined` you add by hand stays until
+you take it off.
 
 </content>

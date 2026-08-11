@@ -8,14 +8,18 @@
 // apply a `phoebe:quarantined` label + an escalation comment so a human takes
 // over. State lives entirely on GitHub (a timeout-counter marker + the label),
 // so it survives container/volume loss — the reason #73 chose markers over a
-// local file. All of this is engine-side, in the per-tenant poll/selection
-// layer: it touches zero of the crash-loop guard and sends the supervisor
-// nothing, so a poison *unit* can never quarantine a healthy *engine SHA* (#60).
+// local file. Quarantine is not a one-way door: the engine sweeps labelled units
+// every cycle and clears the ones whose *content* has advanced past the baseline
+// the escalation comment recorded (`decideAutoUnstick`), and either exit — the
+// sweep or a hand-removed label — restarts the count from zero. All of this is
+// engine-side, in the per-tenant poll/selection layer: it touches zero of the
+// crash-loop guard and sends the supervisor nothing, so a poison *unit* can never
+// quarantine a healthy *engine SHA* (#60).
 //
 // The marker/comment builders here mirror the `*FailWatermark` family in
 // orchestrator.ts (`build*`/`parse*`, read via `parseLatestMarker`).
 
-import type { Sha } from "./branded.ts";
+import { createHash } from "node:crypto";
 
 /** Phoebe-owned skip label — distinct from the user-supplied `prOptOutLabel`. */
 export const PHOEBE_QUARANTINE_LABEL = "phoebe:quarantined";
@@ -54,7 +58,14 @@ export function parseUnitTimeoutMarker(text: string): { n: number } | null {
 
 // --- Quarantine baseline marker (in the escalation comment, for auto-unstick) -
 
-const QUARANTINE_BASELINE_RE = /<!--\s*phoebe-quarantine-baseline:\s*([^\s>]+)\s*-->/i;
+// Both markers are anchored to the start of a line: GitHub's "Quote reply"
+// reproduces a comment verbatim behind `> `, and an unanchored pattern would let
+// a human quoting an old escalation comment resurrect its stale baseline.
+const QUARANTINE_BASELINE_RE = /^<!--\s*phoebe-quarantine-baseline:\s*([^\s>]+)\s*-->/im;
+
+/** Stamped on the un-stick comment, marking the quarantine above it as spent. */
+const QUARANTINE_CLEARED_MARKER = "<!-- phoebe-quarantine-cleared -->";
+const QUARANTINE_CLEARED_RE = /^<!--\s*phoebe-quarantine-cleared\s*-->/im;
 
 export function buildQuarantineBaselineMarker(baseline: string): string {
   return `<!-- phoebe-quarantine-baseline: ${baseline} -->`;
@@ -66,9 +77,44 @@ export function parseQuarantineBaseline(text: string): string | null {
 }
 
 /**
+ * The baseline recorded for a quarantined issue/research unit: a fingerprint of
+ * the issue body. It must be *content*, not a timestamp — GitHub bumps an issue's
+ * `updatedAt` on any comment, label change, or reaction, including the quarantine
+ * comment and label Phoebe itself writes right after snapshotting the baseline,
+ * so a timestamp baseline clears every quarantine on the first sweep (#153).
+ * Namespaced with `body:` so it can never be confused with a PR's head-SHA
+ * baseline.
+ */
+export function issueContentBaseline(body: string): string {
+  return `body:${createHash("sha256").update(body, "utf8").digest("hex").slice(0, 12)}`;
+}
+
+/**
+ * The baseline of the quarantine currently in force, or `null` when there is
+ * none — which is how a human-applied `phoebe:quarantined` label is told apart
+ * from Phoebe's own, so the sweep only ever lifts a label it placed itself.
+ * Comments come oldest-first, as `gh` returns them, and the scan runs newest-first
+ * so it stops at the un-stick comment: a baseline older than that belongs to a
+ * quarantine already lifted, and must not clear a label re-applied by hand since.
+ */
+export function latestQuarantineBaseline(comments: readonly { body: string }[]): string | null {
+  for (let i = comments.length - 1; i >= 0; i--) {
+    const body = comments[i]!.body;
+    if (QUARANTINE_CLEARED_RE.test(body)) {
+      return null;
+    }
+    const baseline = parseQuarantineBaseline(body);
+    if (baseline !== null) {
+      return baseline;
+    }
+  }
+  return null;
+}
+
+/**
  * The one escalation comment posted at threshold: says the unit timed out K
  * times and needs a human, and records the baseline (PR head SHA for
- * conflicts/checks/reviews; issue `lastEditedAt` for issues/research) so the
+ * conflicts/checks/reviews; `issueContentBaseline` for issues/research) so the
  * auto-un-stick sweep can tell when someone has actually changed the thing.
  */
 export function buildQuarantineComment(opts: {
@@ -87,6 +133,22 @@ export function buildQuarantineComment(opts: {
       `issue — Phoebe auto-clears the label when the content advances past the baseline below.`,
     "",
     buildQuarantineBaselineMarker(opts.baseline),
+  ].join("\n");
+}
+
+/**
+ * The comment posted when the sweep auto-un-sticks a unit. It embeds an `n=0`
+ * timeout marker, so clearing the label also clears the counter — otherwise the
+ * unit would re-quarantine on its very next timeout instead of getting a fresh K.
+ */
+export function buildUnstickComment(): string {
+  return [
+    `♻️ This has changed since it was quarantined, so Phoebe removed the ` +
+      `\`${PHOEBE_QUARANTINE_LABEL}\` label and reset its timeout count. It is eligible ` +
+      `for work again.`,
+    "",
+    buildUnitTimeoutMarker(0),
+    QUARANTINE_CLEARED_MARKER,
   ].join("\n");
 }
 
@@ -180,27 +242,30 @@ export function decideTimeoutRecord(opts: {
   );
   const staleActivity =
     marker !== null && latestActivityAt !== null && latestActivityAt > marker.createdAt;
-  const count = nextTimeoutCount(marker ? marker.n : null, staleActivity);
+  // A marker already at or past K means the unit *was* quarantined — and
+  // selection skips quarantined units, so its being picked again at all means the
+  // label is gone: either a human removed it or the sweep did. Either way that is
+  // a deliberate retry and deserves a fresh K, not the single retry a carried-over
+  // count would buy (#153). (If the label write itself failed back at K, this
+  // resets too — so quarantine is re-attempted every K timeouts until one of those
+  // writes lands, rather than the unit being stuck uncounted.)
+  const clearedSinceQuarantine = marker !== null && marker.n >= opts.k;
+  const count = nextTimeoutCount(marker ? marker.n : null, staleActivity || clearedSinceQuarantine);
   return { count, quarantine: shouldQuarantine(count, opts.k) };
 }
 
 /**
- * Whether a quarantined unit should be auto-un-stuck: someone changed the thing
- * that hung. A PR unit clears when its head SHA advanced past baseline; an issue
- * unit clears when its `lastEditedAt` is newer than baseline. A bare human
- * comment (no content change) does not clear it — it can't silently re-arm a
- * unit no one has fixed.
+ * The auto-un-stick sweep's decision for one quarantined unit: someone changed
+ * the thing that hung. `currentBaseline` is the unit's content fingerprint right
+ * now — a PR's head SHA, an issue's `issueContentBaseline` — and any difference
+ * from the in-force quarantine's baseline clears it. A bare comment or reaction
+ * changes no fingerprint, so nothing can silently re-arm a unit no one has fixed;
+ * a label with no live escalation comment behind it is never touched at all.
  */
-export function shouldAutoUnstick(opts: {
-  baseline: string;
-  currentHeadSha?: Sha;
-  currentIssueEditedAt?: string;
+export function decideAutoUnstick(opts: {
+  comments: readonly { body: string }[];
+  currentBaseline: string;
 }): boolean {
-  if (opts.currentHeadSha !== undefined) {
-    return opts.currentHeadSha !== opts.baseline;
-  }
-  if (opts.currentIssueEditedAt !== undefined) {
-    return opts.currentIssueEditedAt > opts.baseline;
-  }
-  return false;
+  const baseline = latestQuarantineBaseline(opts.comments);
+  return baseline !== null && baseline !== opts.currentBaseline;
 }

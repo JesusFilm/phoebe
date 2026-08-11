@@ -41,7 +41,10 @@ import {
 import {
   buildQuarantineComment,
   buildUnitTimeoutMarker,
+  buildUnstickComment,
+  decideAutoUnstick,
   decideTimeoutRecord,
+  issueContentBaseline,
   PHOEBE_QUARANTINE_LABEL,
   resolveMaxUnitTimeouts,
 } from "./quarantine.ts";
@@ -327,19 +330,22 @@ function toTimeoutComments(comments: readonly GhTimeoutComment[]): TimeoutCommen
 }
 
 function fetchIssueTimeoutInputs(issueNumber: number): UnitTimeoutInputs {
-  const raw = ghJson<{ updatedAt: string; comments: GhTimeoutComment[] }>([
+  const raw = ghJson<{ body: string; comments: GhTimeoutComment[] }>([
     "issue",
     "view",
     String(issueNumber),
     "--json",
-    "comments,updatedAt",
+    "comments,body",
   ]);
-  // Issues have no commits and `gh` does not expose body-edit times, so a new
-  // human comment is the only reset signal; `updatedAt` is the un-stick baseline.
+  // Issues have no commits, so a new human comment is the only reset signal. The
+  // un-stick baseline is a fingerprint of the body, never `updatedAt`: GitHub
+  // bumps that on any comment, label, or reaction — including the quarantine
+  // comment + label Phoebe writes moments later — so a timestamp baseline would
+  // make every quarantine clear itself on the first sweep (#153).
   return {
     comments: toTimeoutComments(raw.comments),
     extraActivityAt: null,
-    baseline: raw.updatedAt,
+    baseline: issueContentBaseline(raw.body),
   };
 }
 
@@ -418,6 +424,111 @@ function recordUnitTimeout(picked: WorkUnit, phoebeLogin: string, emit: EmitUnit
       `[phoebe] Could not record timeout toward quarantine for ${ref.kind} #${ref.id} — ` +
         `${error instanceof Error ? error.message : String(error)}`,
     );
+  }
+}
+
+// --- Auto-un-stick sweep (#153) ----------------------------------------------
+// The quarantine's second exit — the one the escalation comment promises. Once
+// per cycle, look at every open unit still carrying `phoebe:quarantined`, compare
+// its current content fingerprint against the baseline recorded in that comment,
+// and drop the label when the content has advanced (a push on a PR, a body edit
+// on an issue). Both list queries return comment bodies, so the whole sweep is
+// two `gh` calls per cycle and no per-unit fetch. The decision itself is pure, in
+// quarantine.ts (`decideAutoUnstick`).
+
+type QuarantinedUnit = {
+  isIssueKind: boolean;
+  id: number;
+  /** The unit's content right now — a PR head SHA, or an issue body fingerprint. */
+  currentBaseline: string;
+  comments: Array<{ body: string }>;
+};
+
+function listQuarantinedIssues(): QuarantinedUnit[] {
+  type Row = { number: number; body: string; comments: Array<{ body: string }> };
+  return ghJson<Row[]>([
+    "issue",
+    "list",
+    "--state",
+    "open",
+    "--label",
+    PHOEBE_QUARANTINE_LABEL,
+    "--limit",
+    "100",
+    "--json",
+    "number,body,comments",
+  ]).map((row) => ({
+    isIssueKind: true,
+    id: row.number,
+    currentBaseline: issueContentBaseline(row.body),
+    comments: row.comments,
+  }));
+}
+
+function listQuarantinedPrs(): QuarantinedUnit[] {
+  type Row = { number: number; headRefOid: string; comments: Array<{ body: string }> };
+  return ghJson<Row[]>([
+    "pr",
+    "list",
+    "--state",
+    "open",
+    "--label",
+    PHOEBE_QUARANTINE_LABEL,
+    "--limit",
+    "100",
+    "--json",
+    "number,headRefOid,comments",
+  ]).map((row) => ({
+    isIssueKind: false,
+    id: row.number,
+    currentBaseline: row.headRefOid,
+    comments: row.comments,
+  }));
+}
+
+function removeQuarantineLabel(isIssueKind: boolean, id: string): void {
+  gh([isIssueKind ? "issue" : "pr", "edit", id, "--remove-label", PHOEBE_QUARANTINE_LABEL]);
+}
+
+/**
+ * Clear the quarantine label from every unit whose content has advanced past its
+ * recorded baseline. Best-effort, like the write path: one unit's failure is
+ * logged and the rest of the sweep continues, and a failure of the whole sweep
+ * never stops the cycle — the worst case is a unit staying quarantined a cycle
+ * longer, which a human can still fix by hand.
+ */
+function sweepQuarantine(): void {
+  let quarantined: QuarantinedUnit[];
+  try {
+    quarantined = [...listQuarantinedIssues(), ...listQuarantinedPrs()];
+  } catch (error) {
+    console.error(
+      `[phoebe] Could not list quarantined units for the auto-un-stick sweep — ` +
+        `${error instanceof Error ? error.message : String(error)}`,
+    );
+    return;
+  }
+  for (const unit of quarantined) {
+    if (!decideAutoUnstick({ comments: unit.comments, currentBaseline: unit.currentBaseline })) {
+      continue;
+    }
+    const id = String(unit.id);
+    try {
+      // Label first: the comment is the audit trail, but the label is what
+      // actually re-arms the unit, and a half-applied un-stick should err toward
+      // the unit being workable again rather than silently stuck.
+      removeQuarantineLabel(unit.isIssueKind, id);
+      postUnitComment(unit.isIssueKind, id, buildUnstickComment());
+      console.log(
+        `[phoebe] Un-quarantined ${unit.isIssueKind ? "issue" : "PR"} #${id} — its content ` +
+          `advanced past the quarantine baseline.`,
+      );
+    } catch (error) {
+      console.error(
+        `[phoebe] Could not un-quarantine ${unit.isIssueKind ? "issue" : "PR"} #${id} — ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 }
 
@@ -1757,6 +1868,13 @@ async function runLoop({
     if (drain.requested) {
       console.log("[phoebe] Drain requested — starting no new work unit; exiting 0.");
       break;
+    }
+    // Auto-un-stick before selecting (#153): a unit whose content advanced since
+    // it was quarantined loses the label here, so it is eligible in *this*
+    // cycle's fetch rather than the next one. Skipped under `--dry-run`, which
+    // must not write to GitHub.
+    if (!dryRun) {
+      sweepQuarantine();
     }
     const fetchKinds = runOnce ? oneShotWorkKinds(workOrder) : workOrder;
     const data = await fetchCycleWorkData(fetchKinds);
