@@ -98,6 +98,17 @@ export function parseCliArgs(argv: readonly string[]): ParsedArgs {
     if (arg !== undefined && arg.startsWith("-") && !ENGINE_FLAGS.has(arg)) {
       throw new Error(`Unknown flag \`${arg}\` for \`phoebe\`. See \`phoebe --help\`.`);
     }
+    if (arg === "boot") {
+      // `boot` is real but lives a layer up: bootstrap/cli.ts dispatches it to
+      // `runBoot` before delegating here, so through the packaged bin this
+      // branch is unreachable. It exists for a *direct* engine invocation
+      // (`node src/cli.ts boot`), where the generic unknown-command error
+      // below would absurdly list `boot` among the known commands.
+      throw new Error(
+        "`boot` is a bootstrapper command — run it via the packaged `phoebe` bin, which " +
+          "supervises the engine as a child. The engine CLI cannot boot itself.",
+      );
+    }
     if (arg !== undefined && !arg.startsWith("-")) {
       // A bare word is an intended subcommand, never an engine flag — every
       // dispatchable verb was consumed before this parser ran. Forwarding it

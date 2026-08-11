@@ -84,6 +84,15 @@ describe("parseCliArgs", () => {
     expect(() => parseCliArgs(["upgrayedd"])).toThrow(/pnpm dlx phoebe-agent@latest upgrade/);
     expect(() => parseCliArgs(["--run-once", "extra"])).toThrow(/Unknown command `extra`/);
   });
+
+  test("points a direct-engine `boot` at the bootstrapper instead of calling it unknown", () => {
+    // Through the packaged bin, bootstrap/cli.ts dispatches `boot` before the
+    // engine CLI runs, so this only fires on a direct engine invocation — where
+    // the generic error would list `boot` among the known commands while
+    // rejecting it.
+    expect(() => parseCliArgs(["boot"])).toThrow(/bootstrapper command/);
+    expect(() => parseCliArgs(["boot"])).not.toThrow(/Unknown command/);
+  });
 });
 
 describe("assertNotWorkspaceRoot", () => {
