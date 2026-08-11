@@ -16,7 +16,7 @@
 // install pipeline and leaves the door open to CLI-only concerns (init/pin
 // scaffolding, log formatting) without breaking a library API.
 
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { resolveConfig } from "./config-schema.ts";
 import {
@@ -57,6 +57,21 @@ const ENGINE_FLAGS = new Set(["--run-once", "--dry-run"]);
  * selected a nested tenant's config until 0.4.0, and must fail loudly rather
  * than survive as a no-op alias (#169).
  */
+/**
+ * This package's own version, for self-diagnosing error messages. Best-effort:
+ * unreadable/odd packaging yields null rather than masking the error being
+ * reported.
+ */
+function installedVersion(): string | null {
+  try {
+    const raw = readFileSync(new URL("../package.json", import.meta.url), "utf8");
+    const parsed = JSON.parse(raw) as { version?: unknown };
+    return typeof parsed.version === "string" ? parsed.version : null;
+  } catch {
+    return null;
+  }
+}
+
 export function parseCliArgs(argv: readonly string[]): ParsedArgs {
   const forward: string[] = [];
   let configPath: string | undefined;
@@ -82,6 +97,30 @@ export function parseCliArgs(argv: readonly string[]): ParsedArgs {
     }
     if (arg !== undefined && arg.startsWith("-") && !ENGINE_FLAGS.has(arg)) {
       throw new Error(`Unknown flag \`${arg}\` for \`phoebe\`. See \`phoebe --help\`.`);
+    }
+    if (arg === "boot") {
+      // `boot` is real but lives a layer up: bootstrap/cli.ts dispatches it to
+      // `runBoot` before delegating here, so through the packaged bin this
+      // branch is unreachable. It exists for a *direct* engine invocation
+      // (`node src/cli.ts boot`), where the generic unknown-command error
+      // below would absurdly list `boot` among the known commands.
+      throw new Error(
+        "`boot` is a bootstrapper command — run it via the packaged `phoebe` bin, which " +
+          "supervises the engine as a child. The engine CLI cannot boot itself.",
+      );
+    }
+    if (arg !== undefined && !arg.startsWith("-")) {
+      // A bare word is an intended subcommand, never an engine flag — every
+      // dispatchable verb was consumed before this parser ran. Forwarding it
+      // used to fall through to the engine-run path, so a verb this version
+      // does not know (or a typo) died deep in config validation with an error
+      // about tenant fields instead of naming the actual problem.
+      const version = installedVersion();
+      throw new Error(
+        `Unknown command \`${arg}\` for \`phoebe\`${version === null ? "" : ` (phoebe-agent v${version})`}. ` +
+          `Known commands: boot, init, list, purge, upgrade, doctor. If \`${arg}\` was added in a newer ` +
+          `release, upgrade first: \`pnpm dlx phoebe-agent@latest upgrade\`. See \`phoebe --help\`.`,
+      );
     }
     if (arg !== undefined) {
       forward.push(arg);
@@ -408,6 +447,26 @@ async function runPurgeCli(argv: readonly string[]): Promise<void> {
 }
 
 /**
+ * Refuse to run the engine on a workspace-root config. Presence of the
+ * `workspace` block is what selects workspace mode (#83/#91); the engine runs
+ * one tenant at a time, so a root config on the engine-run path can only fall
+ * through to `resolveConfig` and die with a "missing required field(s)" error
+ * about tenant fields the root never carries — the same misleading-error
+ * landmine `RemovedReposLayoutError` guards against on the boot path.
+ */
+export function assertNotWorkspaceRoot(
+  userConfig: { workspace?: unknown },
+  configPath: string,
+): void {
+  if (userConfig.workspace === undefined) return;
+  throw new Error(
+    `${configPath} is a workspace root (it carries a \`workspace\` block). The engine runs one ` +
+      `tenant at a time: run \`phoebe\` from a tenant directory, or \`phoebe boot\` here to ` +
+      `supervise the fleet.`,
+  );
+}
+
+/**
  * Engine-CLI entry point. Loads the consumer's config, overlays env, installs
  * the resolved config, then runs the engine (or scaffolds via `init`). The
  * bootstrapper (bootstrap/cli.ts) delegates here so the engine keeps a single
@@ -483,6 +542,7 @@ export async function runCli(): Promise<void> {
   // that child's directory. `phoebe boot` (the supervisor) never gets here.
   const configPath = resolveConfigPath(parsed.configPath, process.cwd());
   const userConfig = await loadUserConfig(configPath);
+  assertNotWorkspaceRoot(userConfig, configPath);
   const overlaid = applyEnvOverlay(userConfig, process.env);
   setResolvedConfig(resolveConfig(overlaid, { dataBase: resolveDataBase(process.env) }));
 
