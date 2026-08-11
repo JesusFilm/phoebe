@@ -1,0 +1,486 @@
+// `phoebe doctor` — the deployment health panel. Report-only in v1: `upgrade`
+// moves you between versions; `doctor` tells you whether the version you are on
+// is actually working. (A `--fix` mode that repairs at the current pin is a
+// mapped follow-up.)
+//
+// Six checks, all reads of state that already exists:
+//   1. cli       — installed bootstrapper vs the npm registry's latest
+//   2. engine    — configured pin vs the latest release tag, plus the commit
+//                  actually materialized in the engine checkout
+//   3. config    — the root phoebe.config.ts loads and its engine field parses
+//   4. repo      — the engine repo answers ls-remote with the current GH_TOKEN
+//   5. crash-loop— whether the deployment is silently running last-known-good
+//                  (the single most confusing failure mode this system has)
+//   6. supervisor— is `phoebe boot` actually the container's main process
+//
+// In workspace mode it also sweeps tenants — the same enumeration boot
+// supervises with (#91/#154), so doctor can never report a different fleet from
+// the one that is running. Per tenant: is a GH_TOKEN present the way the child
+// would read it, and does the tenant repo answer to it. The full five-permission
+// grant probe stays in scripts/verify-tenant-token.mjs (it ships with the repo,
+// not the package); doctor's per-tenant probe is the reachability slice of it.
+
+import { existsSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  CRASH_LOOP_THRESHOLD,
+  crashLoopStatePath,
+  readCrashLoopState,
+  type CrashLoopState,
+} from "../bootstrap/crash-loop.ts";
+import { parseDotenv } from "../bootstrap/engine-child-env.ts";
+import { readEngineSource, type ResolvedEngineSource } from "../bootstrap/engine-source.ts";
+import {
+  buildAuthenticatedRepoUrl,
+  githubEngineDir,
+  LS_REMOTE_TIMEOUT_MS,
+} from "../bootstrap/github-engine.ts";
+import { TENANT_CONFIG_FILE } from "../bootstrap/tenants.ts";
+import { isInsideContainer } from "./execution-gate.ts";
+import { defaultGit, type GitRunner } from "./git-model.ts";
+import { loadUserConfig } from "./load-config.ts";
+import {
+  latestReleaseTag,
+  installedCliVersion,
+  latestCliVersion,
+  type NpmRunner,
+  defaultNpm,
+  releaseVersion,
+  compareVersions,
+} from "./upgrade.ts";
+import { enumerateWorkspaceTenants } from "./tenant-commands.ts";
+
+export type CheckState = "ok" | "warn" | "fail" | "unknown";
+
+export type DoctorCheck = {
+  id: string;
+  state: CheckState;
+  detail: string;
+};
+
+export type TenantDoctorRow = {
+  path: string;
+  slug: string | null;
+  checks: DoctorCheck[];
+};
+
+export type DoctorReport = {
+  checks: DoctorCheck[];
+  tenants: TenantDoctorRow[];
+  /** False when any deployment or tenant check failed. */
+  ok: boolean;
+};
+
+/** Fold every check into the report verdict. Pure, for tests. */
+export function buildDoctorReport(checks: DoctorCheck[], tenants: TenantDoctorRow[]): DoctorReport {
+  const failed = (list: DoctorCheck[]) => list.some((check) => check.state === "fail");
+  return {
+    checks,
+    tenants,
+    ok: !failed(checks) && !tenants.some((tenant) => failed(tenant.checks)),
+  };
+}
+
+/**
+ * Read the crash-loop record into a check. A quarantine in force means the
+ * container is serving last-known-good code, not what the config names — worth
+ * a loud warn even though nothing is "broken" (the guard is doing its job).
+ */
+export function crashLoopCheck(
+  state: CrashLoopState,
+  threshold = CRASH_LOOP_THRESHOLD,
+): DoctorCheck {
+  if (state.failingSha !== null && state.failureCount >= threshold) {
+    return {
+      id: "crash-loop",
+      state: "warn",
+      detail:
+        `commit ${state.failingSha.slice(0, 12)} is quarantined after ${state.failureCount} fast ` +
+        `crashes — the engine is running last-good ${state.lastGoodSha?.slice(0, 12) ?? "(none)"}, ` +
+        `NOT the tracked ref's tip, until the ref moves past the bad commit`,
+    };
+  }
+  if (state.failingSha !== null) {
+    return {
+      id: "crash-loop",
+      state: "warn",
+      detail:
+        `commit ${state.failingSha.slice(0, 12)} has ${state.failureCount} fast crash(es) recorded ` +
+        `(quarantine at ${threshold})`,
+    };
+  }
+  return {
+    id: "crash-loop",
+    state: "ok",
+    detail:
+      state.lastGoodSha !== null
+        ? `no quarantine; last-good fallback target is ${state.lastGoodSha.slice(0, 12)}`
+        : "no quarantine (no fallback target recorded yet)",
+  };
+}
+
+/** Same default as boot.ts `engineBaseDir` — where github engine clones live. */
+function engineBaseDir(env: NodeJS.ProcessEnv): string {
+  return env["PHOEBE_ENGINE_DIR"] ?? join(tmpdir(), "phoebe-agent");
+}
+
+type DoctorDeps = {
+  configDir: string;
+  env: NodeJS.ProcessEnv;
+  git?: GitRunner;
+  npm?: NpmRunner;
+  fetchFn?: typeof fetch;
+};
+
+const PROBE_TIMEOUT_MS = 30_000;
+
+/**
+ * GET /repos/<slug> with a token — the reachability slice of #154's probe
+ * ladder. 200 proves the token sees the repo; 401/403/404 all mean the child
+ * would fail its first API hop.
+ */
+async function probeRepo(
+  slug: string,
+  token: string,
+  fetchFn: typeof fetch,
+): Promise<{ ok: boolean; detail: string }> {
+  try {
+    const res = await fetchFn(`https://api.github.com/repos/${slug}`, {
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+      headers: {
+        accept: "application/vnd.github+json",
+        "x-github-api-version": "2022-11-28",
+        "user-agent": "phoebe-doctor",
+        authorization: `Bearer ${token}`,
+      },
+    });
+    if (res.status === 200) return { ok: true, detail: "reachable with this token (HTTP 200)" };
+    return {
+      ok: false,
+      detail:
+        `HTTP ${res.status} from GET /repos/${slug} — the token cannot see the repo. ` +
+        `Run node scripts/verify-tenant-token.mjs for the per-permission diagnosis`,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      detail: `could not reach api.github.com: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
+/** A tenant's GH_TOKEN, read exactly the way its engine child reads it. */
+function tenantToken(envPath: string): string | undefined {
+  try {
+    const value = parseDotenv(readFileSync(envPath, "utf8"))["GH_TOKEN"];
+    return value !== undefined && value.length > 0 ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function tenantRow(fields: {
+  path: string;
+  slug: string | null;
+  token: string | undefined;
+  tokenDetail: string;
+  fetchFn: typeof fetch;
+}): Promise<TenantDoctorRow> {
+  const checks: DoctorCheck[] = [];
+  if (fields.token === undefined) {
+    checks.push({ id: "token", state: "fail", detail: fields.tokenDetail });
+    checks.push({ id: "repo", state: "unknown", detail: "not probed (no token)" });
+  } else {
+    checks.push({ id: "token", state: "ok", detail: fields.tokenDetail });
+    if (fields.slug !== null) {
+      const probe = await probeRepo(fields.slug, fields.token, fields.fetchFn);
+      checks.push({ id: "repo", state: probe.ok ? "ok" : "fail", detail: probe.detail });
+    } else {
+      checks.push({ id: "repo", state: "unknown", detail: "not probed (no repoSlug)" });
+    }
+  }
+  return { path: fields.path, slug: fields.slug, checks };
+}
+
+/** Run every check and assemble the report. The CLI renders it. */
+export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
+  const git = deps.git ?? defaultGit;
+  const npm = deps.npm ?? defaultNpm;
+  const fetchFn = deps.fetchFn ?? fetch;
+  const token = deps.env["GH_TOKEN"];
+  const checks: DoctorCheck[] = [];
+
+  // 3. Root config loads + engine field parses. Everything engine-shaped hangs
+  // off this, so it runs first even though it is check three in the docs.
+  const configPath = join(deps.configDir, TENANT_CONFIG_FILE);
+  let source: ResolvedEngineSource | null = null;
+  let rootConfig: Record<string, unknown> | null = null;
+  if (!existsSync(configPath)) {
+    checks.push({
+      id: "config",
+      state: "fail",
+      detail: `no ${TENANT_CONFIG_FILE} at ${deps.configDir}`,
+    });
+  } else {
+    try {
+      rootConfig = (await loadUserConfig(configPath)) as unknown as Record<string, unknown>;
+      source = readEngineSource(rootConfig);
+      checks.push({
+        id: "config",
+        state: "ok",
+        detail:
+          source.source === "github"
+            ? `loads; engine: github ${source.repo}@${source.ref}`
+            : "loads; engine: local mount",
+      });
+    } catch (error) {
+      checks.push({
+        id: "config",
+        state: "fail",
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  // 4 + 2. One ls-remote serves both: reachability with the current token, and
+  // the latest release tag for the pin comparison.
+  let latestTag: string | null = null;
+  if (source !== null && source.source === "github") {
+    try {
+      const url = buildAuthenticatedRepoUrl(source.repo, token);
+      const output = git(["ls-remote", "--tags", url], { timeout: LS_REMOTE_TIMEOUT_MS });
+      latestTag = latestReleaseTag(output);
+      checks.push({
+        id: "repo",
+        state: "ok",
+        detail: `${source.repo} answers ls-remote${token ? " with GH_TOKEN" : " (no token — public access)"}`,
+      });
+    } catch (error) {
+      checks.push({
+        id: "repo",
+        state: "fail",
+        detail:
+          `${source.repo} did not answer ls-remote${token ? " with GH_TOKEN" : ""}: ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
+
+    // 2. The pin vs the latest release, plus what is actually checked out.
+    let materialized = "";
+    const cloneDir = githubEngineDir(engineBaseDir(deps.env), source.repo);
+    if (existsSync(join(cloneDir, ".git"))) {
+      try {
+        materialized = `; materialized ${git(["-C", cloneDir, "rev-parse", "HEAD"]).trim().slice(0, 12)}`;
+      } catch {
+        materialized = "; materialized commit unreadable";
+      }
+    } else {
+      materialized = "; no engine checkout yet (first boot pending?)";
+    }
+    const refVersion = releaseVersion(source.ref);
+    if (refVersion === null) {
+      checks.push({
+        id: "engine",
+        state: "ok",
+        detail:
+          `tracking \`${source.ref}\` (auto-upgrades on push)` +
+          (latestTag !== null ? `; latest release ${latestTag}` : "") +
+          materialized,
+      });
+    } else if (latestTag !== null && compareVersions(refVersion, releaseVersion(latestTag)!) < 0) {
+      checks.push({
+        id: "engine",
+        state: "warn",
+        detail: `pinned ${source.ref}, behind latest ${latestTag} — \`phoebe upgrade\` to advance${materialized}`,
+      });
+    } else {
+      checks.push({
+        id: "engine",
+        state: latestTag !== null ? "ok" : "unknown",
+        detail:
+          `pinned ${source.ref}` +
+          (latestTag !== null ? ` (latest ${latestTag})` : " (latest unknown)") +
+          materialized,
+      });
+    }
+  } else if (source !== null) {
+    checks.push({
+      id: "repo",
+      state: "unknown",
+      detail: "local engine mount — no remote to probe",
+    });
+    checks.push({
+      id: "engine",
+      state: "ok",
+      detail: "local mount — version pinning does not apply",
+    });
+  }
+
+  // 1. Bootstrapper vs npm latest.
+  const installed = installedCliVersion(npm);
+  const latestCli = latestCliVersion(npm);
+  if (installed === null) {
+    checks.push({
+      id: "cli",
+      state: "unknown",
+      detail: isInsideContainer()
+        ? "baked into the image (npm global lookup does not apply in-container)"
+        : "phoebe-agent is not npm-installed globally here (npx run, or a repo checkout?)",
+    });
+  } else if (latestCli === null) {
+    checks.push({
+      id: "cli",
+      state: "unknown",
+      detail: `${installed} installed; registry unreachable`,
+    });
+  } else if (installed === latestCli) {
+    checks.push({ id: "cli", state: "ok", detail: `${installed} (latest)` });
+  } else {
+    checks.push({
+      id: "cli",
+      state: "warn",
+      detail: `${installed} installed, latest is ${latestCli} — \`phoebe upgrade --cli\` to advance`,
+    });
+  }
+
+  // 5. Crash-loop / quarantine state.
+  checks.push(crashLoopCheck(readCrashLoopState(crashLoopStatePath(engineBaseDir(deps.env)))));
+
+  // 6. Supervisor liveness. Only answerable from inside the container, where
+  // `phoebe boot` should be PID 1. On the host this is honest "unknown" — there
+  // is no pidfile, and guessing from status.json age would misread an idle
+  // (event-driven, not heartbeat) deployment as dead.
+  if (isInsideContainer()) {
+    let cmdline = "";
+    try {
+      cmdline = readFileSync("/proc/1/cmdline", "utf8").replaceAll("\0", " ");
+    } catch {
+      cmdline = "";
+    }
+    checks.push(
+      cmdline.includes("boot")
+        ? { id: "supervisor", state: "ok", detail: "phoebe boot is the container's main process" }
+        : {
+            id: "supervisor",
+            state: "fail",
+            detail: `PID 1 is \`${cmdline.trim() || "unreadable"}\`, not phoebe boot`,
+          },
+    );
+  } else {
+    checks.push({
+      id: "supervisor",
+      state: "unknown",
+      detail:
+        "not in the container — run `docker compose exec phoebe phoebe doctor` for a live check",
+    });
+  }
+
+  // Tenant sweep: workspace mode enumerates the same fleet boot supervises;
+  // solo probes the root itself (the deployment root IS the tenant there).
+  const tenants: TenantDoctorRow[] = [];
+  const enumeration = await enumerateWorkspaceTenants({ configDir: deps.configDir });
+  if (enumeration !== null) {
+    for (const tenant of enumeration.tenants) {
+      const tokenValue = tenantToken(tenant.envPath);
+      tenants.push(
+        await tenantRow({
+          path: tenant.dir,
+          slug: tenant.slug,
+          token: tokenValue,
+          tokenDetail:
+            tokenValue !== undefined
+              ? `GH_TOKEN present in ${tenant.envPath}`
+              : `no GH_TOKEN in ${tenant.envPath} — the supervisor scrubs its own env, so this ` +
+                `tenant's child boots with no token at all`,
+          fetchFn,
+        }),
+      );
+    }
+    for (const hold of enumeration.holds) {
+      tenants.push({
+        path: hold.dir,
+        slug: hold.slug,
+        checks: [{ id: "discovery", state: "fail", detail: `held — ${hold.reason}` }],
+      });
+    }
+  } else if (rootConfig !== null && typeof rootConfig["repoSlug"] === "string") {
+    // Solo: the child inherits the supervisor's env, so the ambient token is
+    // the truth here (and only here) — same reasoning as verify-tenant-token.
+    const slug = rootConfig["repoSlug"];
+    tenants.push(
+      await tenantRow({
+        path: deps.configDir,
+        slug,
+        token: token,
+        tokenDetail:
+          token !== undefined && token.length > 0
+            ? "GH_TOKEN present in the environment"
+            : "no GH_TOKEN set",
+        fetchFn,
+      }),
+    );
+  }
+
+  return buildDoctorReport(checks, tenants);
+}
+
+const STATE_MARK: Record<CheckState, string> = { ok: "✓", warn: "!", fail: "✗", unknown: "?" };
+
+export function formatDoctorReport(report: DoctorReport): string {
+  const lines: string[] = ["[phoebe] doctor"];
+  for (const check of report.checks) {
+    lines.push(`  ${STATE_MARK[check.state]} ${check.id.padEnd(11)} ${check.detail}`);
+  }
+  if (report.tenants.length > 0) {
+    lines.push("tenants:");
+    for (const tenant of report.tenants) {
+      lines.push(`  ${tenant.path}${tenant.slug !== null ? `  (${tenant.slug})` : ""}`);
+      for (const check of tenant.checks) {
+        lines.push(`      ${STATE_MARK[check.state]} ${check.id.padEnd(6)} ${check.detail}`);
+      }
+    }
+  }
+  const failing =
+    report.checks.filter((c) => c.state === "fail").length +
+    report.tenants.flatMap((t) => t.checks).filter((c) => c.state === "fail").length;
+  lines.push(
+    report.ok ? "healthy: no failing checks." : `${failing} failing check(s) — see above.`,
+  );
+  return lines.join("\n");
+}
+
+const DOCTOR_HELP_TEXT = `phoebe doctor — deployment health checks (report-only)
+
+Usage:
+  phoebe doctor [--json]
+
+Checks: cli version vs npm latest; engine pin vs latest release (+ the commit
+actually materialized); root config loads; engine repo reachable with GH_TOKEN;
+crash-loop/quarantine state (are you silently on last-known-good?); supervisor
+liveness (in-container only). In workspace mode every tenant is swept — token
+present the way its child reads it, and its repo reachable with that token.
+
+The full five-permission token probe is scripts/verify-tenant-token.mjs.
+Exit code is 1 when any check fails. \`phoebe upgrade\` moves versions;
+doctor reports whether the version you are on works.
+`;
+
+/** `phoebe doctor` entry. */
+export async function runDoctorCli(argv: readonly string[]): Promise<void> {
+  let json = false;
+  for (const arg of argv) {
+    if (arg === "--help" || arg === "-h") {
+      process.stdout.write(DOCTOR_HELP_TEXT);
+      return;
+    }
+    if (arg === "--json") {
+      json = true;
+      continue;
+    }
+    throw new Error(`Unknown flag \`${arg}\` for \`phoebe doctor\`. See \`phoebe doctor --help\`.`);
+  }
+  const report = await runDoctor({ configDir: process.cwd(), env: process.env });
+  process.stdout.write(json ? `${JSON.stringify(report)}\n` : `${formatDoctorReport(report)}\n`);
+  if (!report.ok) process.exitCode = 1;
+}
