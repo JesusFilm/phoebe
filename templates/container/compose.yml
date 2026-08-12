@@ -8,7 +8,12 @@
 #   docker compose up -d          # run it
 #   docker compose logs -f        # watch it
 #   docker compose stop           # SIGTERM → the engine drains, finishing its
-#                                 # current work unit and starting no new one
+#                                 # current work unit and starting no new one.
+#                                 # stop_grace_period below is 1h — the same
+#                                 # window the fleet supervisor allows
+#                                 # (DEFAULT_DRAIN_TIMEOUT_MS) — so Compose
+#                                 # does not fall back to its 10s default and
+#                                 # SIGKILL mid-drain.
 #
 # For a scoped, non-daemon invocation, pass engine flags — the image's `CMD []`
 # means anything here is forwarded straight through `boot` to the engine:
@@ -37,6 +42,10 @@ services:
         PHOEBE_INSTALL_COMMAND: "{{INSTALL_COMMAND}}"
     image: phoebe-runtime:latest
     restart: unless-stopped
+    # Match bootstrap/supervise-fleet.ts DEFAULT_DRAIN_TIMEOUT_MS (1h). A work
+    # unit may run up to the per-unit timeout (45 min by default); without this,
+    # Compose's 10s default SIGKILLs mid-drain.
+    stop_grace_period: 1h
     environment:
       # Secrets — populate via `.env` (see `.env.example`). GH_TOKEN also
       # authenticates the engine checkout when `engine.source` is "github".
