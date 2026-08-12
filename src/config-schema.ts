@@ -130,6 +130,13 @@ export type PhoebeConfig = {
   workOrder: readonly string[];
   defaultProvider: ProviderName;
   defaultModels: Record<ProviderName, string>;
+  /**
+   * Per-provider reasoning-effort level, e.g. `{ claude: "low" }`. Partial on
+   * purpose: an unset provider passes no effort flag at all, so that CLI's own
+   * default stands, and a provider whose CLI has no such knob ignores it.
+   * Env-overridable for the active provider via `PHOEBE_EFFORT`.
+   */
+  defaultEfforts: Partial<Record<ProviderName, string>>;
   /** Env var holding each provider's API key — the only key the agent child inherits. */
   providerEnv: Record<ProviderName, string>;
   /**
@@ -155,7 +162,7 @@ export type PhoebeConfig = {
  * User-facing shape of `phoebe.config.ts`. Only the five fields with no sane
  * cross-repo default are required; everything else is optional and filled from
  * `CONFIG_DEFAULTS` by `resolveConfig()`. Nested objects (`promptFiles`,
- * `defaultModels`, `providerEnv`) are merged key-by-key, so overriding one
+ * `defaultModels`, `defaultEfforts`, `providerEnv`) are merged key-by-key, so overriding one
  * provider's model or one prompt file does not force the caller to supply the
  * rest. `paths` is *not* here: it is derived from `repoSlug` (src/paths.ts).
  */
@@ -207,6 +214,7 @@ export type PhoebeUserConfig = {
   workOrder?: readonly string[];
   defaultProvider?: ProviderName;
   defaultModels?: Partial<Record<ProviderName, string>>;
+  defaultEfforts?: Partial<Record<ProviderName, string>>;
   providerEnv?: Partial<Record<ProviderName, string>>;
   /** Whole-unit wall-clock timeout in ms (#72); default 45 min. */
   runTimeoutMs?: number;
@@ -245,6 +253,9 @@ export const CONFIG_DEFAULTS = {
     claude: "claude-sonnet-4-6",
     codex: "gpt-5.4-mini",
   } satisfies Record<ProviderName, string>,
+  // Empty on purpose: no effort flag is passed unless a consumer asks for one,
+  // so every provider CLI keeps its own default until told otherwise.
+  defaultEfforts: {} satisfies Partial<Record<ProviderName, string>>,
   providerEnv: {
     cursor: "CURSOR_API_KEY",
     claude: "ANTHROPIC_API_KEY",
@@ -393,6 +404,7 @@ export function resolveConfig(
     workOrder: user.workOrder ?? CONFIG_DEFAULTS.workOrder,
     defaultProvider: user.defaultProvider ?? CONFIG_DEFAULTS.defaultProvider,
     defaultModels: { ...CONFIG_DEFAULTS.defaultModels, ...user.defaultModels },
+    defaultEfforts: { ...CONFIG_DEFAULTS.defaultEfforts, ...user.defaultEfforts },
     providerEnv: { ...CONFIG_DEFAULTS.providerEnv, ...user.providerEnv },
     runTimeoutMs: user.runTimeoutMs ?? CONFIG_DEFAULTS.runTimeoutMs,
     maxUnitTimeouts: user.maxUnitTimeouts ?? CONFIG_DEFAULTS.maxUnitTimeouts,

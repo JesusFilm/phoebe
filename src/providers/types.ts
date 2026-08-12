@@ -21,6 +21,12 @@ export type AgentEvent =
 
 export type Provider = {
   readonly name: ProviderName;
-  buildCommand(opts: { prompt: string; model: string }): AgentCommand;
+  /**
+   * `effort` is the reasoning-effort level for this run (`defaultEfforts` /
+   * `PHOEBE_EFFORT`). It is optional and provider-specific: a provider whose
+   * CLI has no such knob ignores it, and omitting it leaves the CLI's own
+   * default in place.
+   */
+  buildCommand(opts: { prompt: string; model: string; effort?: string }): AgentCommand;
   parseStreamLine(line: string): AgentEvent[];
 };

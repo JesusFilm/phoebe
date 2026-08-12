@@ -37,6 +37,8 @@ const defaultSpawn: SpawnAgent = (file, args, opts) =>
 export async function runAgent(opts: {
   provider: Provider;
   model: string;
+  /** Reasoning-effort level, when the deployment configured one. */
+  effort?: string;
   prompt: string;
   cwd: string;
   env: Record<string, string>;
@@ -50,11 +52,11 @@ export async function runAgent(opts: {
    */
   signal?: AbortSignal;
 }): Promise<AgentRunResult> {
-  const { provider, model, prompt, cwd, env } = opts;
+  const { provider, model, effort, prompt, cwd, env } = opts;
   const spawn = opts.spawn ?? defaultSpawn;
   const log = opts.log ?? ((line: string) => console.log(line));
 
-  const command = provider.buildCommand({ prompt, model });
+  const command = provider.buildCommand({ prompt, model, effort });
   const [file, ...args] = command.argv;
   if (!file) {
     throw new Error(`Provider "${provider.name}" built an empty command.`);

@@ -19,9 +19,21 @@ const config: PhoebeUserConfig = {
   testCommand: "pnpm run test",
   readyCommand: "pnpm run ready",
 
-  // Dogfood with the Cursor provider (composer-2.5 default). Requires
-  // CURSOR_API_KEY in the container env (see .env).
-  defaultProvider: "cursor",
+  // Dogfood with Claude Code on Opus 5, running under a Claude Pro/Max
+  // *subscription* rather than pay-as-you-go API billing: `providerEnv.claude`
+  // points at CLAUDE_CODE_OAUTH_TOKEN, so `buildAgentEnv` hands the CLI that
+  // token and never ANTHROPIC_API_KEY — no ambiguity about which credential is
+  // used. Mint the token with `node scripts/hoist-claude-login.mjs` and see
+  // docs/claude-subscription-auth.md for the whole path.
+  //
+  // Low effort: Phoebe's work units are well-specified by the prompts and the
+  // issue, and this is a long-running loop paying against subscription usage
+  // limits, so the cheap tier is the right default. Raise it per-run without
+  // editing this file via PHOEBE_EFFORT.
+  defaultProvider: "claude",
+  defaultModels: { claude: "claude-opus-5" },
+  defaultEfforts: { claude: "low" },
+  providerEnv: { claude: "CLAUDE_CODE_OAUTH_TOKEN" },
 
   // The engine child's cwd is this directory (compose `working_dir`), so point
   // every prompt at the repo's own `prompts/` one level up instead of keeping a

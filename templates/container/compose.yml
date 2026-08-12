@@ -59,6 +59,7 @@ services:
       # Optional runtime toggles.
       PHOEBE_AGENT: "${PHOEBE_AGENT:-}"
       PHOEBE_MODEL: "${PHOEBE_MODEL:-}"
+      PHOEBE_EFFORT: "${PHOEBE_EFFORT:-}"
       PHOEBE_POLL_INTERVAL_MS: "${PHOEBE_POLL_INTERVAL_MS:-}"
       PHOEBE_RECONCILE_INTERVAL_MS: "${PHOEBE_RECONCILE_INTERVAL_MS:-}"
     volumes:

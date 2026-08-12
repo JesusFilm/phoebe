@@ -57,7 +57,7 @@ and non-empty; the engine throws at startup otherwise.
 | `testCommand`    | string | Test gate; surfaced to prompts as `{{TEST_COMMAND}}`.         |
 
 Everything below is optional — override a field only when the default does not
-fit. Nested objects (`promptFiles`, `defaultModels`, `providerEnv`)
+fit. Nested objects (`promptFiles`, `defaultModels`, `defaultEfforts`, `providerEnv`)
 are **merged key-by-key**, so overriding one provider's model or one prompt file
 does not force you to supply the rest.
 
@@ -120,11 +120,19 @@ tickets. Omit `research` to disable it for a repo. See
 
 ## Providers & models
 
-| Field             | Default                                                                          | Meaning                                                                                                      |
-| ----------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `defaultProvider` | `"cursor"`                                                                       | Which agent CLI to drive: `cursor`, `claude`, or `codex`.                                                    |
-| `defaultModels`   | `{ cursor: "composer-2.5", claude: "claude-sonnet-4-6", codex: "gpt-5.4-mini" }` | Per-provider model. Merged key-by-key.                                                                       |
-| `providerEnv`     | `{ cursor: "CURSOR_API_KEY", claude: "ANTHROPIC_API_KEY", codex: "OPENAI_KEY" }` | Env var holding each provider's API key — the **only** key the agent child inherits for the active provider. |
+| Field             | Default                                                                          | Meaning                                                                                                                                                                                                                                                  |
+| ----------------- | -------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `defaultProvider` | `"cursor"`                                                                       | Which agent CLI to drive: `cursor`, `claude`, or `codex`.                                                                                                                                                                                                |
+| `defaultModels`   | `{ cursor: "composer-2.5", claude: "claude-sonnet-4-6", codex: "gpt-5.4-mini" }` | Per-provider model. Merged key-by-key.                                                                                                                                                                                                                   |
+| `defaultEfforts`  | `{}`                                                                             | Per-provider reasoning effort, merged key-by-key. Only `claude` honours it today (`--effort`, one of `low`, `medium`, `high`, `xhigh`, `max`); `cursor` and `codex` ignore it. A provider left unset gets **no** effort flag, so its CLI default stands. |
+| `providerEnv`     | `{ cursor: "CURSOR_API_KEY", claude: "ANTHROPIC_API_KEY", codex: "OPENAI_KEY" }` | Env var holding each provider's API key — the **only** key the agent child inherits for the active provider.                                                                                                                                             |
+
+`PHOEBE_AGENT`, `PHOEBE_MODEL`, and `PHOEBE_EFFORT` override `defaultProvider`
+and the active provider's entry in `defaultModels` / `defaultEfforts` for one
+run, without editing the config. To run the `claude` provider under a Claude
+Pro/Max subscription instead of API-key billing, point `providerEnv.claude` at
+`CLAUDE_CODE_OAUTH_TOKEN` — see
+[`claude-subscription-auth.md`](claude-subscription-auth.md).
 
 ## Prompt files
 
@@ -346,7 +354,7 @@ simply never causes a fallback.) Every fallback event is logged with both SHAs
 `phoebe.config.ts` (`src/load-config.ts`). The overlay is additive: an unset
 var leaves the field untouched, so `resolveConfig` can still fall back to a
 default. Only **scalar** fields are overlayable — nested records
-(`promptFiles`, `defaultModels`, `providerEnv`, `workOrder`) stay
+(`promptFiles`, `defaultModels`, `defaultEfforts`, `providerEnv`, `workOrder`) stay
 config-file territory.
 
 | Env var                          | Config field            | Notes                                                   |
@@ -375,6 +383,7 @@ config-file territory.
 | ------------------------------ | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `PHOEBE_AGENT`                 | —                    | Provider for this run (`cursor` \| `claude` \| `codex`).                                                                                                                 |
 | `PHOEBE_MODEL`                 | —                    | Model for this run.                                                                                                                                                      |
+| `PHOEBE_EFFORT`                | —                    | Reasoning effort for this run, overriding the active provider's `defaultEfforts` entry. Only `claude` honours it (`low` \| `medium` \| `high` \| `xhigh` \| `max`).      |
 | `PHOEBE_POLL_INTERVAL_MS`      | `300000`             | Persistent-mode idle poll interval.                                                                                                                                      |
 | `PHOEBE_ENGINE_DIR`            | `<tmp>/phoebe-agent` | Base dir `phoebe boot` clones a `github` engine source into (and bin.mjs materializes under). Put it on a persistent volume so github boots fetch instead of re-cloning. |
 | `PHOEBE_RECONCILE_INTERVAL_MS` | `60000`              | How often `phoebe boot` polls the mounted config and the tracked ref for a drain-and-relaunch (see Engine source → Reconcile).                                           |

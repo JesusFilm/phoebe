@@ -228,6 +228,18 @@ describe("resolveConfig", () => {
     expect(resolved.defaultModels.codex).toBe(CONFIG_DEFAULTS.defaultModels.codex);
   });
 
+  test("effort defaults to unset per provider, and merges the same way", () => {
+    // No entry means no `--effort` flag at all, which is what leaves each
+    // provider CLI's own default in place for consumers who never set one.
+    const bare = resolveConfig(minimalUserConfig());
+    for (const provider of PROVIDER_NAMES) {
+      expect(bare.defaultEfforts[provider]).toBeUndefined();
+    }
+    const resolved = resolveConfig(minimalUserConfig({ defaultEfforts: { claude: "low" } }));
+    expect(resolved.defaultEfforts.claude).toBe("low");
+    expect(resolved.defaultEfforts.cursor).toBeUndefined();
+  });
+
   test("shallow-merges provider env vars the same way", () => {
     const resolved = resolveConfig(minimalUserConfig({ providerEnv: { cursor: "MY_CURSOR_KEY" } }));
     expect(resolved.providerEnv.cursor).toBe("MY_CURSOR_KEY");

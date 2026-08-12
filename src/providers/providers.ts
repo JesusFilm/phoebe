@@ -188,7 +188,7 @@ const cursor: Provider = {
 
 const claude: Provider = {
   name: "claude",
-  buildCommand({ prompt, model }): AgentCommand {
+  buildCommand({ prompt, model, effort }): AgentCommand {
     return {
       argv: [
         "claude",
@@ -199,6 +199,9 @@ const claude: Provider = {
         "stream-json",
         "--model",
         model,
+        // Reasoning effort (`low` | `medium` | `high` | `xhigh` | `max`).
+        // Omitted entirely when unconfigured, so the CLI's own default stands.
+        ...(effort === undefined ? [] : ["--effort", effort]),
         "-p",
         "-",
       ],
