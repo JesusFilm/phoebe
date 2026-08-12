@@ -342,6 +342,14 @@ describe("runInit — workspace profile (#93)", () => {
     expect(compose).toContain("- ..:/etc/phoebe:ro");
     expect(compose).toContain("working_dir: /etc/phoebe");
   });
+
+  test("compose stop_grace_period matches the fleet drain timeout (#185)", () => {
+    const target = makeTempDir();
+    runInit({ targetDir: target, profile: "solo" });
+    const compose = readFileSync(join(target, "container/compose.yml"), "utf8");
+    // 1h === DEFAULT_DRAIN_TIMEOUT_MS (3_600_000) in bootstrap/supervise-fleet.ts.
+    expect(compose).toMatch(/^\s*stop_grace_period:\s*1h\s*$/m);
+  });
 });
 
 describe("slugFromRemoteUrl / initTenant (#94)", () => {
