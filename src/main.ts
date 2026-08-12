@@ -47,6 +47,7 @@ import { runAgent } from "./providers/run-agent.ts";
 import { selectProvider } from "./providers/select.ts";
 import { classifyTier } from "./tier.ts";
 import {
+  assertPromptFilesExist,
   buildDefaultPromptArgs,
   loadPromptTemplate as loadPromptTemplateFromRoot,
   renderPrompt,
@@ -185,6 +186,12 @@ export async function runEngine(opts: {
   });
 
   const workOrder = validateWorkOrder(config.workOrder);
+
+  // Before anything else, and before a dry run too: a prompt this tenant cannot
+  // load is a startup failure, not a surprise weeks later when the first unit of
+  // that kind is dispatched (#164). Scoped to the validated `workOrder` — only
+  // the kinds this tenant can actually dispatch need a prompt.
+  assertPromptFilesExist(config, process.cwd(), workOrder);
 
   const stackConfig: StackConfig = {
     blockedByPattern: config.blockedByPattern,

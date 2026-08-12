@@ -19,7 +19,10 @@ function listingWithStatus(
   overrides: Partial<TenantListing> = {},
 ): TenantListing {
   return {
+    path: "acme/widget",
     slug: "acme/widget",
+    held: false,
+    reason: null,
     configValid: true,
     envPresent: true,
     retainedData: true,

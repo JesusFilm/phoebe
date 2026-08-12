@@ -5,14 +5,12 @@
 // install) — the operator places the checkout on disk (clone / submodule /
 // worktree) and Phoebe discovers it. The directory name here (`widget/`) is an
 // operator-chosen LOCAL checkout name; the authoritative identity is `repoSlug`
-// below, cross-checked best-effort against the checkout's git origin. (This is
-// the one real difference from nested, where the `repos/<owner>/<repo>/` path
-// segment *is* the slug.)
+// below, cross-checked best-effort against the checkout's git origin.
 //
 // Like every child it holds a full five-field PhoebeUserConfig with ONE
 // omission: no `engine` field. Engine source is shared and set once on the
 // deployment-root config (../phoebe.config.ts) — a child carrying `engine` is
-// ignored with a warning. Same #115 convention as the solo/nested examples.
+// ignored with a warning. Same #115 convention as the solo example.
 
 import type { PhoebeUserConfig } from "phoebe-agent";
 
@@ -26,7 +24,7 @@ const config: PhoebeUserConfig = {
   // This child runs the `claude` provider, so its co-located .env supplies
   // ANTHROPIC_API_KEY. The supervisor scrubs every OTHER child's secrets from
   // this engine's env (#61), so the sibling `gadget` child's key is never
-  // visible here — per-tenant isolation is identical to the nested topology.
+  // visible here — that per-tenant isolation is what makes co-tenancy safe.
   defaultProvider: "claude",
 };
 

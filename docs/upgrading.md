@@ -66,7 +66,32 @@ checkout on your own machine, see `container/compose.local.yml`.
 
 ## Upgrading
 
-Edit `engine.ref` in `phoebe.config.ts`.
+Edit `engine.ref` in `phoebe.config.ts` — by hand, or with the command that does
+exactly that edit for you:
+
+```bash
+phoebe upgrade                  # prompt for a target, move to the latest release tag
+phoebe upgrade v0.4.0 --both    # engine pin + npm CLI to one release
+phoebe upgrade main --engine    # pin back to branch-following
+phoebe upgrade --check [--json] # report current vs latest; exit 1 when behind
+```
+
+`phoebe upgrade` is the one sanctioned case of Phoebe writing your root config:
+an operator-initiated command, rewriting only the `engine.ref` string literal
+(or inserting the scaffold-shaped `engine` block when absent), in place on the
+same inode so the bind-mount watch keeps working. Anything fancier than a plain
+string literal is refused with the exact one-line edit printed — the file stays
+yours. Refs are validated against the remote **before** the pin moves (a typo'd
+tag changes nothing), and every upgrade prints the previous ref plus the exact
+rollback command. Recommended posture for production: **pin to release tags and
+advance with `phoebe upgrade`**; branch-following is the opt-in live mode.
+
+The `--cli` half runs `npm install -g phoebe-agent@<version>` on a host; inside
+the container the launcher is baked into the image, so it prints the rebuild
+step instead. A commit SHA or branch ref is engine-only — the npm package has
+no version for it.
+
+However the edit happens, applying it works the same way:
 
 Within one reconcile interval (`PHOEBE_RECONCILE_INTERVAL_MS`, default 60s) the
 running `boot` notices the config changed, `SIGTERM`s the engine — which finishes
@@ -212,10 +237,11 @@ migration** — it is a clean break:
    volumes were never touched and persist until you `docker volume prune` them,
    so reverting brings the previous deployment straight back.
 
-Going from **one repo to many** needs no re-init: `phoebe add-repo <owner/repo>`
-per repo drops a tenant under `repos/` and the running supervisor picks it up on
-the next poll (see [`configuration.md`](configuration.md) and
-[`operating.md`](operating.md)). Read [`trust.md`](trust.md) first — co-locating
+Going from **one repo to many** means moving to a workspace root: add a
+`workspace` block to the root config, place each repo's checkout under it, and
+run `phoebe init --tenant <dir>` per child. The running supervisor picks each up
+on the next poll (see [`workspace.md`](workspace.md),
+[`configuration.md`](configuration.md), and [`operating.md`](operating.md)). Read [`trust.md`](trust.md) first — co-locating
 repos in one container means co-locating them in **one trust domain**.
 
 ## `state/<slug>/status.json` is retired

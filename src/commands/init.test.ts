@@ -7,8 +7,8 @@ import { planInitOutputs } from "../init.ts";
 import { INIT_HELP_TEXT, parseInitArgs } from "./init.ts";
 
 describe("INIT_HELP_TEXT file lists (#74)", () => {
-  test("flat block names every planInitOutputs('flat') destination, prompts collapsed", () => {
-    for (const output of planInitOutputs("flat")) {
+  test("solo block names every planInitOutputs('solo') destination, prompts collapsed", () => {
+    for (const output of planInitOutputs("solo")) {
       const key = output.source.kind === "shipped-prompt" ? "prompts/" : output.destRelPath;
       expect(INIT_HELP_TEXT).toContain(`    ${key}`);
     }
@@ -23,20 +23,20 @@ describe("INIT_HELP_TEXT file lists (#74)", () => {
 });
 
 describe("parseInitArgs", () => {
-  test("defaults to current directory and flat profile when no args given", () => {
+  test("defaults to current directory and solo profile when no args given", () => {
     expect(parseInitArgs([])).toEqual({
       targetDir: ".",
       help: false,
-      profile: "flat",
+      profile: "solo",
       withPrompts: false,
     });
   });
 
-  test("accepts a positional target directory (flat)", () => {
+  test("accepts a positional target directory (solo)", () => {
     expect(parseInitArgs(["./my-agent"])).toEqual({
       targetDir: "./my-agent",
       help: false,
-      profile: "flat",
+      profile: "solo",
       withPrompts: false,
     });
   });
@@ -114,7 +114,7 @@ describe("parseInitArgs", () => {
     expect(parseInitArgs(["--help"])).toEqual({
       targetDir: ".",
       help: true,
-      profile: "flat",
+      profile: "solo",
       withPrompts: false,
     });
     expect(parseInitArgs(["-h"]).help).toBe(true);

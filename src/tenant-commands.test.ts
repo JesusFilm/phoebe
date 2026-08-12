@@ -1,5 +1,5 @@
-// Multi-tenant lifecycle command tests (#63): add-repo / remove-repo / list /
-// purge against temp config + data trees.
+// Multi-tenant lifecycle command tests (#95/#169): list / purge against temp
+// config + data trees.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -19,13 +19,11 @@ function installFixtureSnapshot(stateDir: string, name: string): void {
   );
 }
 import {
-  addRepo,
   defaultRepoUrl,
-  isNested,
+  enumerateWorkspaceTenants,
   listTenants,
   parseSlug,
   purgeTenant,
-  removeRepo,
   slugFromRemoteUrl,
   stripUrlCredentials,
 } from "./tenant-commands.ts";
@@ -88,7 +86,7 @@ describe("parseSlug / defaultRepoUrl / slugFromRemoteUrl", () => {
       expect(() => parseSlug(bad)).toThrow(/Invalid repo slug/);
     }
   });
-  test("rejects `.`/`..` path segments (no traversal into add/remove/purge)", () => {
+  test("rejects `.`/`..` path segments (no traversal out of the data base)", () => {
     // These match the char class but would escape the tenant tree / data base
     // once joined into a path (purgeTenant → rmSync). Must be refused.
     for (const bad of ["../x", "x/..", "../..", "./x", "x/.", "."]) {
@@ -132,106 +130,36 @@ describe("stripUrlCredentials", () => {
   });
 });
 
-describe("addRepo", () => {
-  test("scaffolds repos/<owner>/<repo>/ with config + .env.example, and goes nested", () => {
-    expect(isNested(configDir)).toBe(false);
-    const result = addRepo({ configDir, slug: "acme/widget" });
-    expect(result.tenantDir).toBe(join(configDir, "repos", "acme", "widget"));
-    expect(existsSync(join(result.tenantDir, "phoebe.config.ts"))).toBe(true);
-    expect(existsSync(join(result.tenantDir, ".env.example"))).toBe(true);
-    expect(isNested(configDir)).toBe(true);
-  });
-
-  test("uses the derived url and default commands when none given", () => {
-    const { tenantDir } = addRepo({ configDir, slug: "acme/widget" });
-    const src = readFileSync(join(tenantDir, "phoebe.config.ts"), "utf8");
-    expect(src).toContain("https://github.com/acme/widget.git");
-    expect(src).toContain('installCommand: "npm ci"');
-  });
-
-  test("honors explicit url + commands (e.g. from --from-config)", () => {
-    const { tenantDir } = addRepo({
-      configDir,
-      slug: "acme/widget",
-      repoUrl: "git@example.com:acme/widget.git",
-      installCommand: "pnpm install --frozen-lockfile",
-    });
-    const src = readFileSync(join(tenantDir, "phoebe.config.ts"), "utf8");
-    expect(src).toContain("git@example.com:acme/widget.git");
-    expect(src).toContain("pnpm install --frozen-lockfile");
-  });
-
-  test("seeds prompts only with withPrompts", () => {
-    const seedPrompt = (dir: string): string[] => {
-      mkdirSync(dir, { recursive: true });
-      const p = join(dir, "issues-prompt.md");
-      writeFileSync(p, "prompt");
-      return [p];
-    };
-    const bare = addRepo({ configDir, slug: "acme/one" });
-    expect(bare.created.some((p) => p.includes("prompts"))).toBe(false);
-    const withP = addRepo({ configDir, slug: "acme/two", withPrompts: true, seedPrompt });
-    expect(withP.created.some((p) => p.includes("prompts"))).toBe(true);
-  });
-
-  test("refuses to overwrite an existing tenant", () => {
-    addRepo({ configDir, slug: "acme/widget" });
-    expect(() => addRepo({ configDir, slug: "acme/widget" })).toThrow(/already exists/);
-  });
-});
-
-describe("removeRepo", () => {
-  test("deletes the tenant config dir", () => {
-    const { tenantDir } = addRepo({ configDir, slug: "acme/widget" });
-    removeRepo({ configDir, slug: "acme/widget" });
-    expect(existsSync(tenantDir)).toBe(false);
-  });
-  test("throws for an unknown tenant", () => {
-    expect(() => removeRepo({ configDir, slug: "acme/ghost" })).toThrow(/No tenant/);
-  });
-});
-
 describe("listTenants", () => {
-  test("reports config/env/retained-data per tenant, sorted", async () => {
-    addRepo({ configDir, slug: "acme/widget" });
-    addRepo({ configDir, slug: "acme/gadget" });
-    // widget has a real .env and retained /data; gadget has neither.
-    writeFileSync(join(configDir, "repos", "acme", "widget", ".env"), "GH_TOKEN=x");
-    mkdirSync(join(dataBase, "acme", "widget"), { recursive: true });
-
-    const listings = await listTenants({ configDir, dataBase });
-    expect(listings.map((l) => l.slug)).toEqual(["acme/gadget", "acme/widget"]);
-    const widget = listings.find((l) => l.slug === "acme/widget")!;
-    expect(widget).toMatchObject({ configValid: true, envPresent: true, retainedData: true });
-    const gadget = listings.find((l) => l.slug === "acme/gadget")!;
-    expect(gadget).toMatchObject({ envPresent: false, retainedData: false });
-  });
-
-  test("reads the status-v2 contract snapshot when present", async () => {
-    addRepo({ configDir, slug: "acme/widget" });
-    const stateDir = join(dataBase, "acme", "widget", "state");
-    installFixtureSnapshot(stateDir, "running");
-    const [widget] = await listTenants({ configDir, dataBase });
-    expect(widget?.status).toMatchObject({
-      available: true,
-      status: {
-        lifecycle: { state: "running" },
-        activeWork: { kind: "issues", issueNumber: 42 },
-      },
+  test("solo deployment has no fleet to list", async () => {
+    expect(await listTenants({ configDir, dataBase })).toEqual({
+      listings: [],
+      declared: 0,
+      live: 0,
+      explicit: false,
+      undeclared: [],
     });
   });
 
   test("reduces a version-mismatched snapshot to an available:false result carrying the received version", async () => {
-    addRepo({ configDir, slug: "acme/widget" });
+    writeFileSync(
+      join(configDir, "phoebe.config.ts"),
+      `export default { workspace: { depth: 1 } };\n`,
+    );
+    mkdirSync(join(configDir, "widget"), { recursive: true });
+    writeFileSync(
+      join(configDir, "widget", "phoebe.config.ts"),
+      `export default { repoSlug: "acme/widget" };\n`,
+    );
     const stateDir = join(dataBase, "acme", "widget", "state");
     mkdirSync(stateDir, { recursive: true });
     writeFileSync(
       join(stateDir, STATUS_SNAPSHOT_FILE),
       JSON.stringify({ ...MINIMAL_STATUS_V2, schemaVersion: "status-v3" }),
     );
-    const [widget] = await listTenants({ configDir, dataBase });
-    expect(widget).toMatchObject({ configValid: true, envPresent: false, retainedData: true });
-    expect(widget?.status).toEqual({
+    const { listings } = await listTenants({ configDir, dataBase });
+    expect(listings[0]).toMatchObject({ configValid: true, envPresent: false, retainedData: true });
+    expect(listings[0]?.status).toEqual({
       available: false,
       reason: "unsupported-version",
       receivedVersion: "status-v3",
@@ -239,14 +167,10 @@ describe("listTenants", () => {
     });
   });
 
-  test("empty when there is no repos/ dir", async () => {
-    expect(await listTenants({ configDir, dataBase })).toEqual([]);
-  });
-
-  test("workspace mode lists valid + broken + env-less children with health columns", async () => {
+  test("workspace walk mode lists valid + held children with observational reasons", async () => {
     // Root declares workspace mode (#83); children live as siblings of the root
-    // config (not under repos/). Valid child has status + .env; env-less is
-    // config-ok without secrets; broken fails loadRepoSlug → configValid false.
+    // config. Valid child has status + .env; env-less is
+    // config-ok without secrets; broken fails loadRepoSlug → held row.
     writeFileSync(
       join(configDir, "phoebe.config.ts"),
       `export default { workspace: { depth: 1 }, engine: { source: "local" } };\n`,
@@ -261,7 +185,7 @@ describe("listTenants", () => {
     const stateDir = join(dataBase, "acme", "valid", "state");
     installFixtureSnapshot(stateDir, "running");
 
-    const listings = await listTenants({
+    const { listings } = await listTenants({
       configDir,
       dataBase,
       loadRepoSlug: (path) => {
@@ -273,8 +197,9 @@ describe("listTenants", () => {
       },
     });
 
-    expect(listings.map((l) => l.slug)).toEqual(["acme/envless", "acme/valid", "broken"]);
+    expect(listings.map((l) => l.path)).toEqual(["envless", "valid", "broken"]);
     expect(listings.find((l) => l.slug === "acme/valid")).toMatchObject({
+      held: false,
       configValid: true,
       envPresent: true,
       retainedData: true,
@@ -284,12 +209,16 @@ describe("listTenants", () => {
       status: { lifecycle: { state: "running" }, activeWork: { kind: "issues", issueNumber: 42 } },
     });
     expect(listings.find((l) => l.slug === "acme/envless")).toMatchObject({
+      held: false,
       configValid: true,
       envPresent: false,
       retainedData: false,
       status: { available: false, reason: "not-found" },
     });
-    expect(listings.find((l) => l.slug === "broken")).toMatchObject({
+    expect(listings.find((l) => l.path === "broken")).toMatchObject({
+      held: true,
+      reason: "parse failure",
+      slug: null,
       configValid: false,
       envPresent: false,
       retainedData: false,
@@ -297,22 +226,184 @@ describe("listTenants", () => {
     });
   });
 
-  test("workspace block wins over a co-present repos/ tree (list ignores nested)", async () => {
-    writeFileSync(join(configDir, "phoebe.config.ts"), `export default { workspace: {} };\n`);
-    addRepo({ configDir, slug: "acme/nested-only" });
+  test("explicit arm prints one row per declared entry in declared order", async () => {
+    writeFileSync(
+      join(configDir, "phoebe.config.ts"),
+      `export default { workspace: { tenants: ["widget", "sprocket", "gadget"] } };\n`,
+    );
+    mkdirSync(join(configDir, "widget"), { recursive: true });
+    mkdirSync(join(configDir, "sprocket"), { recursive: true });
+    mkdirSync(join(configDir, "gadget"), { recursive: true });
+    writeFileSync(join(configDir, "widget", "phoebe.config.ts"), "export default {};\n");
+    writeFileSync(join(configDir, "gadget", "phoebe.config.ts"), "export default {};\n");
+    writeFileSync(join(configDir, "widget", ".env"), "GH_TOKEN=x\n");
+    const stateDir = join(dataBase, "acme", "widget", "state");
+    installFixtureSnapshot(stateDir, "running");
+
+    const result = await listTenants({
+      configDir,
+      dataBase,
+      loadRepoSlug: (path) => {
+        if (path.includes("widget")) return "acme/widget";
+        if (path.includes("gadget")) return "acme/gadget";
+        throw new Error("unexpected");
+      },
+    });
+
+    expect(result.explicit).toBe(true);
+    expect(result.declared).toBe(3);
+    expect(result.live).toBe(2);
+    expect(result.listings.map((l) => l.path)).toEqual(["widget", "sprocket", "gadget"]);
+    expect(result.listings[0]).toMatchObject({
+      slug: "acme/widget",
+      held: false,
+      configValid: true,
+      retainedData: true,
+    });
+    expect(result.listings[1]).toMatchObject({
+      slug: null,
+      held: true,
+      reason: "no phoebe.config.ts at directory root",
+      configValid: false,
+      retainedData: false,
+    });
+    expect(result.listings[2]).toMatchObject({ slug: "acme/gadget", held: false });
+  });
+
+  test("explicit arm surfaces origin-mismatch holds with slug and health columns", async () => {
+    writeFileSync(
+      join(configDir, "phoebe.config.ts"),
+      `export default { workspace: { tenants: ["outboard"] } };\n`,
+    );
+    mkdirSync(join(configDir, "outboard"), { recursive: true });
+    writeFileSync(join(configDir, "outboard", "phoebe.config.ts"), "export default {};\n");
+    writeFileSync(join(configDir, "outboard", ".env"), "GH_TOKEN=x\n");
+    const stateDir = join(dataBase, "acme", "outboard", "state");
+    installFixtureSnapshot(stateDir, "running");
+
+    const { listings } = await listTenants({
+      configDir,
+      dataBase,
+      loadRepoSlug: () => "acme/outboard",
+      readOriginUrl: () => "https://github.com/acme/other.git",
+    });
+
+    expect(listings).toHaveLength(1);
+    expect(listings[0]).toMatchObject({
+      path: "outboard",
+      slug: "acme/outboard",
+      held: true,
+      reason:
+        'origin slug "acme/other" does not match config repoSlug "acme/outboard" ' +
+        "(config is authoritative; fix the checkout origin or the child's repoSlug)",
+      configValid: true,
+      envPresent: true,
+      retainedData: true,
+    });
+    expect(listings[0]?.status).toMatchObject({
+      available: true,
+      status: { lifecycle: { state: "running" }, activeWork: { kind: "issues", issueNumber: 42 } },
+    });
+  });
+
+  test("explicit arm reports undeclared in-tree children after the declared block", async () => {
+    writeFileSync(
+      join(configDir, "phoebe.config.ts"),
+      `export default { workspace: { tenants: ["widget"] } };\n`,
+    );
+    mkdirSync(join(configDir, "widget"), { recursive: true });
+    mkdirSync(join(configDir, "orphan"), { recursive: true });
+    writeFileSync(join(configDir, "widget", "phoebe.config.ts"), "export default {};\n");
+    writeFileSync(join(configDir, "orphan", "phoebe.config.ts"), "export default {};\n");
+
+    const result = await listTenants({
+      configDir,
+      dataBase,
+      loadRepoSlug: (path) => (path.includes("widget") ? "acme/widget" : "acme/orphan"),
+    });
+
+    expect(result.undeclared).toEqual(["orphan"]);
+    expect(result.listings.map((l) => l.path)).toEqual(["widget"]);
+  });
+
+  test("explicit arm undeclared scan skips node_modules, .git, and dotdirs", async () => {
+    writeFileSync(
+      join(configDir, "phoebe.config.ts"),
+      `export default { workspace: { tenants: [] } };\n`,
+    );
+    for (const name of ["node_modules", ".git", ".hidden", "real"]) {
+      mkdirSync(join(configDir, name), { recursive: true });
+      writeFileSync(join(configDir, name, "phoebe.config.ts"), "export default {};\n");
+    }
+
+    const { undeclared } = await listTenants({ configDir, dataBase });
+    expect(undeclared).toEqual(["real"]);
+  });
+
+  test("explicit arm does not flag a declared entry as undeclared", async () => {
+    writeFileSync(
+      join(configDir, "phoebe.config.ts"),
+      `export default { workspace: { tenants: ["./widget/"] } };\n`,
+    );
+    mkdirSync(join(configDir, "widget"), { recursive: true });
+    writeFileSync(join(configDir, "widget", "phoebe.config.ts"), "export default {};\n");
+
+    const { undeclared } = await listTenants({
+      configDir,
+      dataBase,
+      loadRepoSlug: () => "acme/widget",
+    });
+    expect(undeclared).toEqual([]);
+  });
+
+  test("walk arm leaves undeclared empty", async () => {
+    writeFileSync(
+      join(configDir, "phoebe.config.ts"),
+      `export default { workspace: { depth: 1 } };\n`,
+    );
     mkdirSync(join(configDir, "child"), { recursive: true });
     writeFileSync(join(configDir, "child", "phoebe.config.ts"), "export default {};\n");
 
-    const listings = await listTenants({
+    const { undeclared } = await listTenants({
       configDir,
       dataBase,
       loadRepoSlug: () => "acme/child",
     });
-    expect(listings.map((l) => l.slug)).toEqual(["acme/child"]);
+    expect(undeclared).toEqual([]);
+  });
+});
+
+describe("enumerateWorkspaceTenants", () => {
+  test("returns the DiscoveredTenants boot would supervise, envPath and all", async () => {
+    writeFileSync(
+      join(configDir, "phoebe.config.ts"),
+      `export default { workspace: { tenants: ["widget", "absent"] } };\n`,
+    );
+    mkdirSync(join(configDir, "widget"), { recursive: true });
+    writeFileSync(join(configDir, "widget", "phoebe.config.ts"), "export default {};\n");
+
+    const result = await enumerateWorkspaceTenants({
+      configDir,
+      loadRepoSlug: () => "acme/widget",
+      readOriginUrl: () => null,
+    });
+
+    expect(result).not.toBeNull();
+    expect(result!.tenants.map((t) => t.slug)).toEqual(["acme/widget"]);
+    expect(result!.tenants[0]?.envPath).toBe(join(configDir, "widget", ".env"));
+    expect(result!.holds.map((h) => h.dir)).toEqual([join(configDir, "absent")]);
   });
 
   test("surfaces the status-v2 queue lookahead when present", async () => {
-    addRepo({ configDir, slug: "acme/widget" });
+    writeFileSync(
+      join(configDir, "phoebe.config.ts"),
+      `export default { workspace: { depth: 1 } };\n`,
+    );
+    mkdirSync(join(configDir, "widget"), { recursive: true });
+    writeFileSync(
+      join(configDir, "widget", "phoebe.config.ts"),
+      `export default { repoSlug: "acme/widget" };\n`,
+    );
     const stateDir = join(dataBase, "acme", "widget", "state");
     mkdirSync(stateDir, { recursive: true });
     writeFileSync(
@@ -325,61 +416,125 @@ describe("listTenants", () => {
         ],
       }),
     );
-    const [widget] = await listTenants({ configDir, dataBase });
-    expect(widget?.queue).toEqual([
+    const { listings } = await listTenants({ configDir, dataBase });
+    expect(listings[0]?.queue).toEqual([
       { issueNumber: 100, blockedBy: [], workable: true },
       { issueNumber: 103, blockedBy: [100, 101], workable: false },
     ]);
   });
 
   test("defaults to an empty queue when no status-v2 snapshot exists yet", async () => {
-    addRepo({ configDir, slug: "acme/widget" });
-    const [widget] = await listTenants({ configDir, dataBase });
-    expect(widget?.queue).toEqual([]);
+    writeFileSync(
+      join(configDir, "phoebe.config.ts"),
+      `export default { workspace: { depth: 1 } };\n`,
+    );
+    mkdirSync(join(configDir, "widget"), { recursive: true });
+    writeFileSync(
+      join(configDir, "widget", "phoebe.config.ts"),
+      `export default { repoSlug: "acme/widget" };\n`,
+    );
+    const { listings } = await listTenants({ configDir, dataBase });
+    expect(listings[0]?.queue).toEqual([]);
   });
 
-  test("a declared fleet is refused, not silently reported as no tenants", async () => {
-    // The explicit arm has no `depth`, so reading one would drop `list` out of
-    // workspace mode and report a declared fleet as an empty nested scan (#128).
+  test("relocates a child's envPath when its config sets configDir (#98)", async () => {
+    writeFileSync(
+      join(configDir, "phoebe.config.ts"),
+      `export default { workspace: { tenants: ["widget"] } };\n`,
+    );
+    mkdirSync(join(configDir, "widget"), { recursive: true });
+    writeFileSync(
+      join(configDir, "widget", "phoebe.config.ts"),
+      `export default { repoSlug: "acme/widget", configDir: ".phoebe" };\n`,
+    );
+
+    const result = await enumerateWorkspaceTenants({ configDir, readOriginUrl: () => null });
+    expect(result!.tenants[0]?.envPath).toBe(join(configDir, "widget", ".phoebe", ".env"));
+  });
+
+  test("is null when the root is not a workspace, so callers can fall through", async () => {
+    writeFileSync(join(configDir, "phoebe.config.ts"), "export default {};\n");
+    expect(await enumerateWorkspaceTenants({ configDir })).toBeNull();
+  });
+});
+
+describe("purgeTenant", () => {
+  /** A workspace root declaring `child/` as its one tenant, with data retained. */
+  function writeWorkspaceWithChild(): void {
     writeFileSync(
       join(configDir, "phoebe.config.ts"),
       `export default { workspace: { tenants: ["child"] } };\n`,
     );
     mkdirSync(join(configDir, "child"), { recursive: true });
     writeFileSync(join(configDir, "child", "phoebe.config.ts"), "export default {};\n");
-
-    await expect(listTenants({ configDir, dataBase })).rejects.toThrow(/not supported/i);
-  });
-});
-
-describe("purgeTenant", () => {
-  test("wipes retained data for a removed tenant with --yes", () => {
-    addRepo({ configDir, slug: "acme/widget" });
     mkdirSync(join(dataBase, "acme", "widget"), { recursive: true });
-    removeRepo({ configDir, slug: "acme/widget" });
+  }
 
-    const { purged } = purgeTenant({ configDir, dataBase, slug: "acme/widget", confirm: true });
+  test("wipes retained data once no config claims the slug", async () => {
+    writeWorkspaceWithChild();
+    // The operator unregistered and deleted the child; only its data remains.
+    rmSync(join(configDir, "child"), { recursive: true, force: true });
+    writeFileSync(join(configDir, "phoebe.config.ts"), `export default { workspace: {} };\n`);
+
+    const { purged } = await purgeTenant({
+      configDir,
+      dataBase,
+      slug: "acme/widget",
+      confirm: true,
+    });
     expect(purged).toBe(join(dataBase, "acme", "widget"));
     expect(existsSync(purged)).toBe(false);
   });
 
-  test("refuses without confirm", () => {
-    expect(() => purgeTenant({ configDir, dataBase, slug: "acme/widget", confirm: false })).toThrow(
-      /without --yes/,
-    );
+  test("refuses without confirm", async () => {
+    await expect(
+      purgeTenant({ configDir, dataBase, slug: "acme/widget", confirm: false }),
+    ).rejects.toThrow(/without --yes/);
   });
 
-  test("refuses while a live config still exists", () => {
-    addRepo({ configDir, slug: "acme/widget" });
+  test("refuses while a workspace child still claims the slug, naming no removed verb", async () => {
+    writeWorkspaceWithChild();
+    await expect(
+      purgeTenant({
+        configDir,
+        dataBase,
+        slug: "acme/widget",
+        confirm: true,
+        loadRepoSlug: () => "acme/widget",
+      }),
+    ).rejects.toThrow(/still has a live config.*workspace\.tenants/s);
+    expect(existsSync(join(dataBase, "acme", "widget"))).toBe(true);
+  });
+
+  test("refuses while a *held* child still claims the slug (it may still be running)", async () => {
+    writeWorkspaceWithChild();
+    // Origin mismatch → discovery holds the dir but recovers its slug (#140).
+    await expect(
+      purgeTenant({
+        configDir,
+        dataBase,
+        slug: "acme/widget",
+        confirm: true,
+        loadRepoSlug: () => "acme/widget",
+        readOriginUrl: () => "https://github.com/acme/other.git",
+      }),
+    ).rejects.toThrow(/still has a live config/);
+  });
+
+  test("refuses when the solo root config is itself that tenant", async () => {
+    writeFileSync(
+      join(configDir, "phoebe.config.ts"),
+      `export default { repoSlug: "acme/widget" };\n`,
+    );
     mkdirSync(join(dataBase, "acme", "widget"), { recursive: true });
-    expect(() => purgeTenant({ configDir, dataBase, slug: "acme/widget", confirm: true })).toThrow(
-      /still has a live config/,
-    );
+    await expect(
+      purgeTenant({ configDir, dataBase, slug: "acme/widget", confirm: true }),
+    ).rejects.toThrow(/still has a live config/);
   });
 
-  test("throws when there is no retained data", () => {
-    expect(() => purgeTenant({ configDir, dataBase, slug: "acme/ghost", confirm: true })).toThrow(
-      /No retained data/,
-    );
+  test("throws when there is no retained data", async () => {
+    await expect(
+      purgeTenant({ configDir, dataBase, slug: "acme/ghost", confirm: true }),
+    ).rejects.toThrow(/No retained data/);
   });
 });

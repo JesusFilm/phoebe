@@ -1,75 +1,34 @@
 // Engine bootstrapping — the table's unnamed default entry (#73). Not CLI
-// glue: `extractRepoFlag` → `resolveEngineConfigPath` → `loadEngineConfiguration`
-// → `runEngine`. Loads the consumer's `phoebe.config.ts`, overlays `PHOEBE_*`
-// env vars, then hands the resolved config straight to `runEngine`.
+// glue: `resolveConfigPath` → `loadEngineConfiguration` → `runEngine`. Loads
+// the consumer's `phoebe.config.ts`, overlays `PHOEBE_*` env vars, then hands
+// the resolved config straight to `runEngine`.
 //
-// A direct engine run (`--run-once` / `--dry-run`) selects its tenant (#63):
-// flat has no selector; nested requires `--repo <owner/repo>`, loading only
-// that tenant's config. A boot-spawned child runs with cwd = its tenant dir
-// (flat from there), so this only fires for a manual invocation from the
-// deployment root. `phoebe boot` (the supervisor) never reaches here. It also
-// consumes boot's BOOTSTRAP_RESOLVED_CONFIG_ENV snapshot when present, so a
+// A direct engine run (`--run-once` / `--dry-run`) always loads the config at
+// cwd (solo has no selector; a workspace child is cd'd into like any other
+// solo deployment). A boot-spawned child runs with cwd = its tenant dir, so
+// this only fires for a manual invocation from a deployment root or child
+// dir — `phoebe boot` (the supervisor) never reaches here. It also consumes
+// boot's BOOTSTRAP_RESOLVED_CONFIG_ENV snapshot when present, so a
 // boot-spawned child gets its pre-resolved config atomically rather than
 // re-reading mutable files.
 
-import { join } from "node:path";
-import { REPOS_DIR } from "../../bootstrap/tenants.ts";
-import type { ArgSpec } from "../arg-spec.ts";
-import { parseArgs } from "../arg-spec.ts";
 import type { CliContext } from "../cli-context.ts";
 import {
   BOOTSTRAP_RESOLVED_CONFIG_ENV,
   loadConfiguration,
+  loadUserConfig,
   parseResolvedConfigurationSnapshot,
   resolveConfigPath,
   type ResolvedConfiguration,
 } from "../config/index.ts";
 import { resolveDataBase } from "../paths.ts";
 import { runEngine } from "../main.ts";
-import { isNested, parseSlug } from "../tenant-commands.ts";
 import { parseCliArgs } from "./cli-args.ts";
 import { COMMAND_TABLE } from "./table.ts";
 import type { Command } from "./types.ts";
 
 export { BOOTSTRAP_RESOLVED_CONFIG_ENV };
 export { parseCliArgs, type ParsedCliArgs } from "./cli-args.ts";
-
-const REPO_FLAG_SPEC: ArgSpec = {
-  guardedValueFlags: ["repo"],
-  onUnknownFlag: "forward",
-};
-
-/** Pull an optional `--repo <owner/repo>` (or `--repo=…`) out of the engine argv. */
-function extractRepoFlag(argv: readonly string[]): { slug: string | undefined; forward: string[] } {
-  const parsed = parseArgs(argv, REPO_FLAG_SPEC);
-  const slug = parsed.flags["repo"];
-  return { slug: typeof slug === "string" ? slug : undefined, forward: parsed.positionals };
-}
-
-/**
- * Resolve which `phoebe.config.ts` a direct engine run loads. An explicit
- * `--config` always wins. Otherwise: nested (a `repos/` dir under cwd) requires
- * `--repo <owner/repo>` and loads `repos/<owner>/<repo>/phoebe.config.ts`; flat
- * loads the top config and ignores `--repo`.
- */
-function resolveEngineConfigPath(
-  configArg: string | undefined,
-  repoSlug: string | undefined,
-  cwd: string,
-): string {
-  if (configArg !== undefined) return resolveConfigPath(configArg, cwd);
-  if (isNested(cwd)) {
-    if (repoSlug === undefined) {
-      throw new Error(
-        "This is a nested (multi-tenant) deployment — specify --repo <owner/repo> " +
-          "(see `phoebe list`), or run `phoebe boot` to supervise every tenant.",
-      );
-    }
-    const { owner, repo } = parseSlug(repoSlug);
-    return resolveConfigPath(join(REPOS_DIR, owner, repo, "phoebe.config.ts"), cwd);
-  }
-  return resolveConfigPath(undefined, cwd);
-}
 
 /**
  * Engine-mode resolution. A boot-supervised child consumes boot's immutable
@@ -151,6 +110,26 @@ export function buildHelpText(extraCommandLines = ""): string {
 
 export const HELP_TEXT = buildHelpText();
 
+/**
+ * Refuse to run the engine on a workspace-root config. Presence of the
+ * `workspace` block is what selects workspace mode (#83/#91); the engine runs
+ * one tenant at a time, so a root config on the engine-run path can only fall
+ * through to `resolveConfig` and die with a "missing required field(s)" error
+ * about tenant fields the root never carries — the same misleading-error
+ * landmine `RemovedReposLayoutError` guards against on the boot path.
+ */
+export function assertNotWorkspaceRoot(
+  userConfig: { workspace?: unknown },
+  configPath: string,
+): void {
+  if (userConfig.workspace === undefined) return;
+  throw new Error(
+    `${configPath} is a workspace root (it carries a \`workspace\` block). The engine runs one ` +
+      `tenant at a time: run \`phoebe\` from a tenant directory, or \`phoebe boot\` here to ` +
+      `supervise the fleet.`,
+  );
+}
+
 /** Engine-mode run body, parametrized on which root usage `--help` prints —
  *  the table's own default (`HELP_TEXT`) or the bootstrapper's extended text
  *  (`buildHelpText` plus `boot`'s line, #75). */
@@ -165,14 +144,17 @@ export async function runEngineMode(
     return 0;
   }
 
-  const { slug: repoSlug, forward } = extractRepoFlag(parsed.forward);
   const dataBase = resolveDataBase(ctx.env);
-  const configPath =
-    ctx.env[BOOTSTRAP_RESOLVED_CONFIG_ENV] === undefined
-      ? resolveEngineConfigPath(parsed.configPath, repoSlug, ctx.cwd)
-      : (parsed.configPath ?? "phoebe.config.ts");
+  const usesBootSnapshot = ctx.env[BOOTSTRAP_RESOLVED_CONFIG_ENV] !== undefined;
+  const configPath = usesBootSnapshot
+    ? (parsed.configPath ?? "phoebe.config.ts")
+    : resolveConfigPath(parsed.configPath, ctx.cwd);
+  if (!usesBootSnapshot) {
+    const userConfig = await loadUserConfig(configPath);
+    assertNotWorkspaceRoot(userConfig, configPath);
+  }
   const resolved = await loadEngineConfiguration(configPath, ctx.env, dataBase);
-  await runEngine({ config: resolved.config, argv: forward });
+  await runEngine({ config: resolved.config, argv: parsed.forward });
   return 0;
 }
 

@@ -2,7 +2,7 @@
 // verbatim from src/cli.test.ts when parseCliArgs relocated to this module.
 
 import { describe, expect, test } from "vite-plus/test";
-import { HELP_TEXT } from "./engine.ts";
+import { assertNotWorkspaceRoot, HELP_TEXT } from "./engine.ts";
 import { parseCliArgs } from "./engine.ts";
 import { COMMAND_TABLE } from "./table.ts";
 
@@ -73,5 +73,19 @@ describe("parseCliArgs", () => {
       help: false,
       forward: ["--run-once", "--dry-run"],
     });
+  });
+});
+
+describe("assertNotWorkspaceRoot", () => {
+  test("lets a config without a workspace block through", () => {
+    expect(() => assertNotWorkspaceRoot({}, "/tenant/phoebe.config.ts")).not.toThrow();
+  });
+
+  test("refuses a workspace-root config with a pointer, not the five-field error", () => {
+    const call = () =>
+      assertNotWorkspaceRoot({ workspace: { depth: 1 } }, "/root/phoebe.config.ts");
+    expect(call).toThrow(/workspace root/);
+    expect(call).toThrow(/phoebe boot/);
+    expect(call).toThrow(String.raw`/root/phoebe.config.ts`);
   });
 });

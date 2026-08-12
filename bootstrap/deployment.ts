@@ -55,10 +55,7 @@ import {
   discoverTenants,
   discoverWorkspaceTenants,
   isFatalWorkspaceDiscoveryError,
-  isNestedDeployment,
-  withTenantConfigDir,
   type DiscoveredTenant,
-  type TenantSample,
   type WorkspaceDiscoveryResult,
   type WorkspaceHold,
 } from "./tenants.ts";
@@ -168,12 +165,6 @@ export async function resolveDeployment(opts: ResolveDeploymentOpts): Promise<De
   const workspace = resolveWorkspace(rootConfig, { root: configDir });
 
   if (workspace !== null) {
-    if (isNestedDeployment(configDir)) {
-      console.warn(
-        "[phoebe] boot: workspace block present — ignoring `repos/` " +
-          "(nested central layout is off for this deployment).",
-      );
-    }
     // Tenants with a live child right now (#79) — mutated by `buildFleetDeps`'s
     // spawn/tenant-axis hooks, read fresh by the guard on every `condemns`/
     // `fallbackFor` call, so the breadth half of breadth × count (#78) reflects
@@ -193,33 +184,11 @@ export async function resolveDeployment(opts: ResolveDeploymentOpts): Promise<De
     });
   }
 
-  // A `repos/` dir beside the top config selects nested/multi-tenant mode (#63):
-  // supervise a shared engine with one child per tenant. Absent → the flat
-  // single-tenant fast-path below, unchanged: one engine child, no scanning.
+  // No `workspace` block → solo mode (#93/#94, nested central layout removed):
+  // the top config's own dir, run in place, one engine child, no scanning.
+  // `discoverTenants` itself refuses a leftover `repos/` dir here
+  // (`RemovedReposLayoutError`, bootstrap/tenants.ts).
   const discovery = discoverTenants(configDir);
-  if (discovery.mode === "nested") {
-    console.log(
-      `[phoebe] boot: nested deployment — supervising ${discovery.tenants.length} tenant(s) ` +
-        `on one shared engine.`,
-    );
-    // Tenants with a live child right now (#79) — mutated by `buildFleetDeps`'s
-    // spawn/tenant-axis hooks, read fresh by the guard on every `condemns`/
-    // `fallbackFor` call, so the breadth half of breadth × count (#78) reflects
-    // who is actually running rather than staying permanently empty.
-    const liveTenants = new Set<string>();
-    const guard = opts.guard ?? createBootCrashGuard(() => [...liveTenants]);
-    const launch = (): Promise<LaunchedEngine> => launchTarget(configPath, guard);
-    return buildFleetDeps({
-      configPath,
-      guard,
-      launch,
-      argv,
-      env,
-      spawnEngineChild: spawnChild,
-      discover: nestedDiscover(configDir),
-      liveTenants,
-    });
-  }
 
   // Flat is a fleet of one (#65): the top config's own dir, run in place. Its
   // tenant fingerprint is constant (null) so the tenant axis never fires — the
@@ -476,37 +445,6 @@ function buildFleetDeps(opts: {
           `Skipping the tenant axis this poll (the running fleet is left intact).`,
       );
     },
-  };
-}
-
-/**
- * Nested-mode discover callback: filesystem scan + per-tenant fingerprints.
- * The sync scan builds tenants co-located; a second pass reads each tenant's
- * bootstrapper-only `configDir` (#98) and relocates its `.env` accordingly. A
- * config that will not load / a malformed `configDir` is **held**, not started —
- * the same skip-and-hold workspace discovery uses (#86), so a misconfigured
- * tenant surfaces loudly rather than silently running against the wrong `.env`.
- */
-function nestedDiscover(configDir: string): () => DiscoverInput<DiscoveredTenant> {
-  return async () => {
-    const samples: TenantSample[] = [];
-    const hold: string[] = [];
-    for (const tenant of discoverTenants(configDir).tenants) {
-      try {
-        const resolved = withTenantConfigDir(tenant, await loadTenantConfigDir(tenant.configPath));
-        samples.push({
-          tenant: resolved,
-          fingerprint: tenantFingerprint(resolved.configPath, resolved.envPath),
-        });
-      } catch (error) {
-        console.warn(
-          `[phoebe] boot: nested: holding ${tenant.id} — ${describe(error)} ` +
-            `(not started until its configDir resolves).`,
-        );
-        hold.push(tenant.id);
-      }
-    }
-    return { samples, hold };
   };
 }
 

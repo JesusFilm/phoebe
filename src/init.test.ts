@@ -11,6 +11,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
+import { DEFAULT_DRAIN_TIMEOUT_MS } from "../bootstrap/supervise.ts";
 import {
   DEFAULT_RESOLVED_CONFIG,
   DEFAULT_TEMPLATE_PARAMS,
@@ -33,9 +34,62 @@ function makeTempDir(): string {
   return mkdtempSync(join(tmpdir(), "phoebe-init-test-"));
 }
 
+/** Compose duration for an exact hour/minute/second/ms multiple of `ms`. */
+function msToComposeDuration(ms: number): string {
+  if (ms % 3_600_000 === 0) return `${ms / 3_600_000}h`;
+  if (ms % 60_000 === 0) return `${ms / 60_000}m`;
+  if (ms % 1_000 === 0) return `${ms / 1_000}s`;
+  return `${ms}ms`;
+}
+
+/**
+ * Read `services.<service>.stop_grace_period` from Compose YAML without a
+ * full parser — enough structure to reject a match outside that service.
+ */
+function stopGracePeriodForService(compose: string, service: string): string | undefined {
+  const lines = compose.split(/\r?\n/);
+  let servicesIndent: number | undefined;
+  let currentService: string | undefined;
+  let serviceIndent: number | undefined;
+  for (const line of lines) {
+    if (!line.trim() || line.trimStart().startsWith("#")) continue;
+    const indent = line.length - line.trimStart().length;
+    const text = line.trim();
+    if (text === "services:") {
+      servicesIndent = indent;
+      currentService = undefined;
+      serviceIndent = undefined;
+      continue;
+    }
+    if (servicesIndent !== undefined && indent === servicesIndent + 2 && text.endsWith(":")) {
+      currentService = text.slice(0, -1);
+      serviceIndent = indent;
+      continue;
+    }
+    if (
+      currentService === service &&
+      serviceIndent !== undefined &&
+      indent > serviceIndent &&
+      text.startsWith("stop_grace_period:")
+    ) {
+      return text.slice("stop_grace_period:".length).trim();
+    }
+    if (
+      currentService !== undefined &&
+      serviceIndent !== undefined &&
+      indent <= serviceIndent &&
+      text.endsWith(":")
+    ) {
+      currentService = undefined;
+      serviceIndent = undefined;
+    }
+  }
+  return undefined;
+}
+
 describe("planInitOutputs", () => {
-  test("flat: scaffolds config, env example, three container files, every prompt, gitignore", () => {
-    const plan = planInitOutputs("flat");
+  test("solo: scaffolds config, env example, three container files, every prompt, gitignore", () => {
+    const plan = planInitOutputs("solo");
     const dests = plan.map((p) => p.destRelPath);
     expect(dests).toContain("phoebe.config.ts");
     expect(dests).toContain(".env.example");
@@ -313,9 +367,8 @@ describe("runInit — workspace profile (#93)", () => {
     for (const output of planInitOutputs("workspace")) {
       expect(statSync(join(target, output.destRelPath)).isFile()).toBe(true);
     }
-    // No flat-only artefacts.
+    // No solo-only artefacts.
     expect(existsSync(join(target, "prompts"))).toBe(false);
-    expect(existsSync(join(target, "repos"))).toBe(false);
     expect(report.skipped).toEqual([]);
     expect(report.created).toContain("phoebe.config.ts");
     expect(report.created).toContain("container/README.md");
@@ -334,10 +387,10 @@ describe("runInit — workspace profile (#93)", () => {
     expect(config).not.toMatch(/^import (?!type )/m);
   });
 
-  test("container templates match #57 flat scaffolding byte-for-byte (compose files)", () => {
-    const flat = makeTempDir();
+  test("container templates match #57 solo scaffolding byte-for-byte (compose files)", () => {
+    const solo = makeTempDir();
     const workspace = makeTempDir();
-    runInit({ targetDir: flat, profile: "flat" });
+    runInit({ targetDir: solo, profile: "solo" });
     runInit({ targetDir: workspace, profile: "workspace" });
     for (const rel of [
       "container/Dockerfile",
@@ -345,7 +398,7 @@ describe("runInit — workspace profile (#93)", () => {
       "container/compose.local.yml",
     ] as const) {
       expect(readFileSync(join(workspace, rel), "utf8")).toBe(
-        readFileSync(join(flat, rel), "utf8"),
+        readFileSync(join(solo, rel), "utf8"),
       );
     }
   });
@@ -389,6 +442,15 @@ describe("runInit — workspace profile (#93)", () => {
     const compose = readFileSync(join(target, "container/compose.yml"), "utf8");
     expect(compose).toContain("- ..:/etc/phoebe:ro");
     expect(compose).toContain("working_dir: /etc/phoebe");
+  });
+
+  test("compose stop_grace_period matches the fleet drain timeout (#185)", () => {
+    const target = makeTempDir();
+    runInit({ targetDir: target, profile: "solo" });
+    const compose = readFileSync(join(target, "container/compose.yml"), "utf8");
+    expect(stopGracePeriodForService(compose, "phoebe")).toBe(
+      msToComposeDuration(DEFAULT_DRAIN_TIMEOUT_MS),
+    );
   });
 });
 

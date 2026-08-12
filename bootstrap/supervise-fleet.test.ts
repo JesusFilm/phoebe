@@ -11,6 +11,7 @@ import { REF_CHANGE_DRAIN_SIGNAL } from "../src/drain.ts";
 import { createCrashGuard } from "./crash-loop.ts";
 import type { EngineExit, LaunchedEngine } from "./supervise.ts";
 import type { DiscoveredTenant, TenantSample } from "./tenants.ts";
+import { DuplicateOriginSlugError } from "./tenants.ts";
 import { supervise, type DrainTimer, type SupervisedChild } from "./supervise.ts";
 
 /** The store shape `createCrashGuard` accepts — not exported, so derived structurally. */
@@ -31,6 +32,12 @@ function fakeStore(): CrashLoopStore {
     },
   };
 }
+
+const DEFAULT_ENGINE_SOURCE = {
+  source: "github" as const,
+  ref: "main",
+  repo: "JesusFilm/phoebe",
+};
 
 function tenant(slug: string): DiscoveredTenant {
   return {
@@ -128,12 +135,17 @@ async function settle(): Promise<void> {
 
 function harness(initial: TenantSample[]) {
   const clock = gatedClock();
-  const engineState = { config: "1:1", remoteSha: "a".repeat(40) };
+  const engineState = {
+    config: "1:1",
+    remoteSha: "a".repeat(40),
+    source: { ...DEFAULT_ENGINE_SOURCE },
+  };
   let tenants = [...initial];
   const spawned: Array<{ slug: string | null; fake: ReturnType<typeof fakeChild> }> = [];
   let stopRequested = false;
   let launches = 0;
   let throwOnDiscover = false;
+  let engineChanges = 0;
   const discoverErrors: unknown[] = [];
 
   // A (re)materialized engine is checked out at the *current* tracked ref, so
@@ -144,6 +156,7 @@ function harness(initial: TenantSample[]) {
     entry: "/data/engine/src/cli.ts",
     sha: engineState.remoteSha,
     config: engineState.config,
+    source: { ...engineState.source },
     quarantinedSha: null,
     guarded: true,
     sample: () => ({ config: engineState.config, remoteSha: engineState.remoteSha }),
@@ -171,6 +184,9 @@ function harness(initial: TenantSample[]) {
     // the shared engine and every sibling are left untouched (#60 §6).
     onChildGone: () => "respawn",
     onDiscoverError: (e) => discoverErrors.push(e),
+    onEngineChange: () => {
+      engineChanges += 1;
+    },
     stop: {
       get requested() {
         return stopRequested;
@@ -185,8 +201,17 @@ function harness(initial: TenantSample[]) {
     get launches() {
       return launches;
     },
+    get engineChanges() {
+      return engineChanges;
+    },
     setTenants: (next: TenantSample[]) => {
       tenants = next;
+    },
+    moveEngineConfig: (config: string) => {
+      engineState.config = config;
+    },
+    moveEngineSource: (ref: string) => {
+      engineState.source = { ...DEFAULT_ENGINE_SOURCE, ref };
     },
     setThrowOnDiscover: (v: boolean) => {
       throwOnDiscover = v;
@@ -286,9 +311,64 @@ describe("superviseFleet", () => {
     expect(h.spawned).toHaveLength(2);
   });
 
+  test("DuplicateOriginSlugError aborts the supervisor (#138)", async () => {
+    const clock = gatedClock();
+    let throwDuplicateOrigin = false;
+    const spawned: Array<ReturnType<typeof fakeChild>> = [];
+
+    const result = supervise<DiscoveredTenant>({
+      intervalMs: 1000,
+      launch: () => ({
+        entry: "/data/engine/src/cli.ts",
+        sha: "a".repeat(40),
+        config: "1:1",
+        source: { ...DEFAULT_ENGINE_SOURCE },
+        quarantinedSha: null,
+        guarded: true,
+        sample: () => ({ config: "1:1", remoteSha: "a".repeat(40) }),
+      }),
+      children: {
+        discover: () => {
+          if (throwDuplicateOrigin) {
+            throw new DuplicateOriginSlugError("acme/widget", "/a", "/b");
+          }
+          return [sample("acme/widget", "fp1")];
+        },
+        spawn: () => {
+          const fake = fakeChild();
+          spawned.push(fake);
+          return fake.child;
+        },
+      },
+      // A fatal discover error (unlike a transient one) is rethrown by
+      // `onDiscoverError`, so `supervise` rejects instead of respawning.
+      onChildGone: () => "respawn",
+      onDiscoverError: (e) => {
+        throw e;
+      },
+      stop: {
+        get requested() {
+          return false;
+        },
+        wait: clock.wait,
+      },
+    });
+
+    await settle();
+    expect(spawned).toHaveLength(1);
+
+    throwDuplicateOrigin = true;
+    clock.tick();
+    await expect(result).rejects.toBeInstanceOf(DuplicateOriginSlugError);
+  });
+
   test("a hold id keeps a missing sample from draining (#86/#91)", async () => {
     const clock = gatedClock();
-    const engineState = { config: "1:1", remoteSha: "a".repeat(40) };
+    const engineState = {
+      config: "1:1",
+      remoteSha: "a".repeat(40),
+      source: { ...DEFAULT_ENGINE_SOURCE },
+    };
     let samples: TenantSample[] = [sample("acme/widget", "fp1"), sample("acme/gadget", "fp1")];
     let hold: string[] = [];
     const spawned: Array<{ slug: string | null; fake: ReturnType<typeof fakeChild> }> = [];
@@ -301,6 +381,7 @@ describe("superviseFleet", () => {
         entry: "/data/engine/src/cli.ts",
         sha: engineState.remoteSha,
         config: engineState.config,
+        source: { ...engineState.source },
         quarantinedSha: null,
         guarded: true,
         sample: () => ({ config: engineState.config, remoteSha: engineState.remoteSha }),
@@ -385,6 +466,7 @@ describe("superviseFleet", () => {
         entry: "/data/engine/src/cli.ts",
         sha: "a".repeat(40),
         config: "1:1",
+        source: { ...DEFAULT_ENGINE_SOURCE },
         quarantinedSha: null,
         guarded: true,
         sample: () => ({ config: "1:1", remoteSha: "a".repeat(40) }),
@@ -434,6 +516,7 @@ describe("superviseFleet", () => {
         entry: "/data/engine/src/cli.ts",
         sha: "a".repeat(40),
         config: "1:1",
+        source: { ...DEFAULT_ENGINE_SOURCE },
         quarantinedSha: null,
         guarded: true,
         sample: () => ({ config: "1:1", remoteSha: "a".repeat(40) }),

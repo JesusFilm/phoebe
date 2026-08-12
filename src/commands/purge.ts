@@ -17,7 +17,7 @@ export const purgeCommand: Command = {
     const { positionals, flags } = parseArgs(argv, PURGE_SPEC);
     const slug = positionals[0];
     if (slug === undefined) throw new Error("Usage: phoebe purge <owner/repo> --yes");
-    const { purged } = purgeTenant({
+    const { purged } = await purgeTenant({
       configDir: ctx.cwd,
       dataBase: resolveDataBase(ctx.env),
       slug,

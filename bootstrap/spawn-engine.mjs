@@ -83,7 +83,7 @@ export function spawnEngine(entry, args, { env, onSpawnError, onExit } = {}) {
 }
 
 /**
- * Spawn one nested-mode tenant engine child (bootstrap/supervise.ts).
+ * Spawn one workspace tenant's engine child (bootstrap/deployment.ts).
  * Differs from `spawnEngine` in two ways the fleet needs:
  *
  *   * An **IPC channel** (4th stdio slot), so the child's `createSlotClient`

@@ -1,10 +1,9 @@
-// Guards the ten `phoebe.config.ts` samples, the three shipped scaffold
+// Guards the six `phoebe.config.ts` samples, the three shipped scaffold
 // templates, and docs/configuration.md's base-config JSON example against
-// roster drift (#57). `tsconfig.json` only type-checks five of the ten
-// (repo root, examples/solo, examples/nested, and the two
-// examples/nested/repos/* tenants) and no test resolved any of them — a
-// config that type-checks can still fail `resolveConfiguration`'s runtime
-// validation (#36).
+// roster drift (#57). `tsconfig.json` type-checks the ones under `examples/`
+// (solo, workspace, and its two child tenants) but not `.phoebe/` or the repo
+// root, and no test resolved any of them — a config that type-checks can
+// still fail `resolveConfiguration`'s runtime validation (#36).
 //
 // The three shipped templates (`templates/phoebe.config*.ts`) carry bare
 // `{{TOKEN}}` placeholders since #72 (see vite.config.ts's lint
@@ -59,13 +58,10 @@ async function expectResolves(path: string): Promise<void> {
 const REAL_SAMPLES = [
   "phoebe.config.ts",
   ".phoebe/phoebe.config.ts",
-  ".phoebe-nested/phoebe.config.ts",
-  ".phoebe-nested/repos/JesusFilm/phoebe/phoebe.config.ts",
-  ".phoebe-nested/repos/JesusFilm/youtube-studio/phoebe.config.ts",
   "examples/solo/phoebe.config.ts",
-  "examples/nested/phoebe.config.ts",
-  "examples/nested/repos/acme/gadget/phoebe.config.ts",
-  "examples/nested/repos/acme/widget/phoebe.config.ts",
+  "examples/workspace/phoebe.config.ts",
+  "examples/workspace/gadget/phoebe.config.ts",
+  "examples/workspace/widget/phoebe.config.ts",
 ];
 
 describe("sample phoebe.config.ts files resolve cleanly (#57)", () => {

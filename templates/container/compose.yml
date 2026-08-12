@@ -8,7 +8,12 @@
 #   docker compose up -d          # run it
 #   docker compose logs -f        # watch it
 #   docker compose stop           # SIGTERM → the engine drains, finishing its
-#                                 # current work unit and starting no new one
+#                                 # current work unit and starting no new one.
+#                                 # stop_grace_period below is 1h — the same
+#                                 # window the fleet supervisor allows
+#                                 # (DEFAULT_DRAIN_TIMEOUT_MS) — so Compose
+#                                 # does not fall back to its 10s default and
+#                                 # SIGKILL mid-drain.
 #
 # For a scoped, non-daemon invocation, pass engine flags — the image's `CMD []`
 # means anything here is forwarded straight through `boot` to the engine:
@@ -21,8 +26,8 @@
 # rebuild and no restart; rebuild only when this image's toolchain changes.
 
 # Project name — namespaces this instance's containers and named volumes.
-# Defaults to `phoebe`. One Phoebe container now serves *many* repos as tenants
-# (drop each under `repos/<owner>/<repo>/`), so you no longer need one instance
+# Defaults to `phoebe`. One Phoebe container can serve *many* repos as tenants
+# (a workspace root declaring its children), so you no longer need one instance
 # per repo — but if you *do* run more than one Phoebe container on the same host,
 # set COMPOSE_PROJECT_NAME uniquely per instance in `.env`, or Compose derives
 # the project from this file's parent dir (`container`, identical for everyone)
@@ -37,6 +42,10 @@ services:
         PHOEBE_INSTALL_COMMAND: "{{INSTALL_COMMAND}}"
     image: phoebe-runtime:latest
     restart: unless-stopped
+    # Match bootstrap/supervise-fleet.ts DEFAULT_DRAIN_TIMEOUT_MS (1h). A work
+    # unit may run up to the per-unit timeout (45 min by default); without this,
+    # Compose's 10s default SIGKILLs mid-drain.
+    stop_grace_period: 1h
     environment:
       # Secrets — populate via `.env` (see `.env.example`). GH_TOKEN also
       # authenticates the engine checkout when `engine.source` is "github".
@@ -60,8 +69,8 @@ services:
       - phoebe-data:/data/repos
       - phoebe-engine:/data/engine
       # The whole deployment dir, mounted read-only so `boot` reads the top
-      # `phoebe.config.ts` (flat) and — once you add tenants — the whole
-      # `repos/<owner>/<repo>/` tree (their configs, `.env` files, prompt
+      # `phoebe.config.ts` (solo) and — in a workspace — every declared child
+      # tree too (their configs, `.env` files, prompt
       # overrides). A *directory* mount (unlike the old single-file one) sees
       # added/removed tenant dirs and atomic-save/`git pull` renames, so `boot`'s
       # reconcile watch notices them without a `--force-recreate`.

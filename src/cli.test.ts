@@ -91,21 +91,6 @@ describe("runCli — table entries", () => {
     expect(ctx.text().out).toContain("phoebe status — read the local runtime projection");
   });
 
-  test("add-repo scaffolds a tenant under the dispatched cwd", async () => {
-    const ctx = fakeCtx({ cwd: dir });
-    const code = await runCli(["add-repo", "acme/widget"], ctx);
-    expect(code).toBe(0);
-    expect(ctx.text().out).toContain("add-repo acme/widget");
-    expect(existsSync(join(dir, "repos", "acme", "widget", "phoebe.config.ts"))).toBe(true);
-  });
-
-  test("remove-repo without a slug exits 1 with the usage message", async () => {
-    const ctx = fakeCtx({ cwd: dir });
-    const code = await runCli(["remove-repo"], ctx);
-    expect(code).toBe(1);
-    expect(ctx.text().err).toContain("Usage: phoebe remove-repo <owner/repo>");
-  });
-
   test("list reports no tenants for an empty deployment", async () => {
     const ctx = fakeCtx({ cwd: dir });
     const code = await runCli(["list"], ctx);
@@ -125,6 +110,30 @@ describe("runCli — table entries", () => {
     const code = await runCli(["serve", "--help"], ctx);
     expect(code).toBe(0);
     expect(ctx.text().out).toContain("phoebe serve — one read-only page");
+  });
+
+  test("upgrade --help", async () => {
+    const ctx = fakeCtx({ cwd: dir });
+    const code = await runCli(["upgrade", "--help"], ctx);
+    expect(code).toBe(0);
+  });
+
+  test("doctor --help", async () => {
+    const ctx = fakeCtx({ cwd: dir });
+    const code = await runCli(["doctor", "--help"], ctx);
+    expect(code).toBe(0);
+  });
+
+  test("stop --help", async () => {
+    const ctx = fakeCtx({ cwd: dir });
+    const code = await runCli(["stop", "--help"], ctx);
+    expect(code).toBe(0);
+  });
+
+  test("start --help", async () => {
+    const ctx = fakeCtx({ cwd: dir });
+    const code = await runCli(["start", "--help"], ctx);
+    expect(code).toBe(0);
   });
 });
 

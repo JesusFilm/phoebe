@@ -1,22 +1,28 @@
-// Discovery tests (#58/#63/#91/#92): flat vs nested selection by `repos/`
-// presence, the nested scan over `repos/<owner>/<repo>/`, workspace tree walk,
-// origin cross-check, and fleet-level slug uniqueness.
+// Discovery tests (#58/#91/#92/#169): the solo fast-path and its removed-layout
+// guard, the workspace tree walk, origin cross-check, and fleet-level slug
+// uniqueness.
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
 import {
   diffFleet,
   discoverTenants,
+  discoverUndeclaredInTreeTenants,
   discoverWorkspaceTenants,
+  DIRECTORY_ABSENT_HOLD_REASON,
   DuplicateOriginSlugError,
   DuplicateTenantSlugError,
-  isNestedDeployment,
+  OUT_OF_TREE_CONTAINER_HOLD_REASON,
+  readTenantOriginUrl,
+  resolveDeclaredTenantDir,
   slugFromUrl,
   TENANT_CONFIG_FILE,
   TENANT_ENV_FILE,
-  withTenantConfigDir,
+  RemovedReposLayoutError,
+  tenantForDir,
   type DiscoveredTenant,
 } from "./tenants.ts";
 
@@ -71,11 +77,11 @@ describe("slugFromUrl", () => {
   });
 });
 
-describe("flat mode", () => {
+describe("solo mode", () => {
   test("no repos/ dir → one in-place tenant", () => {
     writeConfig(dir);
     const discovery = discoverTenants(dir);
-    expect(discovery.mode).toBe("flat");
+    expect(discovery.mode).toBe("solo");
     expect(discovery.tenants).toHaveLength(1);
     const [tenant] = discovery.tenants;
     expect(tenant.dir).toBe(dir);
@@ -84,43 +90,11 @@ describe("flat mode", () => {
     expect(tenant.envPath).toBe(join(dir, TENANT_ENV_FILE));
   });
 
-  test("isNestedDeployment is false without repos/", () => {
+  test("a `repos/` dir beside the root config is the removed layout, not solo", () => {
     writeConfig(dir);
-    expect(isNestedDeployment(dir)).toBe(false);
-  });
-});
-
-describe("nested mode", () => {
-  test("repos/ dir → one tenant per <owner>/<repo> with a config", () => {
-    writeConfig(join(dir, "repos", "acme", "widget"));
-    writeConfig(join(dir, "repos", "acme", "gadget"));
-    writeConfig(join(dir, "repos", "globex", "thing"));
-
-    const discovery = discoverTenants(dir);
-    expect(discovery.mode).toBe("nested");
-    expect(discovery.tenants.map((t) => t.slug)).toEqual([
-      "acme/gadget",
-      "acme/widget",
-      "globex/thing",
-    ]);
-    const widget = discovery.tenants.find((t) => t.slug === "acme/widget");
-    expect(widget?.dir).toBe(join(dir, "repos", "acme", "widget"));
-    expect(widget?.id).toBe(widget?.dir);
-  });
-
-  test("a repo dir without a config is not a tenant", () => {
-    writeConfig(join(dir, "repos", "acme", "widget"));
-    mkdirSync(join(dir, "repos", "acme", "empty"), { recursive: true });
-    const discovery = discoverTenants(dir);
-    expect(discovery.tenants.map((t) => t.slug)).toEqual(["acme/widget"]);
-  });
-
-  test("an empty repos/ is a valid nested deployment with zero tenants", () => {
     mkdirSync(join(dir, "repos"), { recursive: true });
-    const discovery = discoverTenants(dir);
-    expect(discovery.mode).toBe("nested");
-    expect(discovery.tenants).toEqual([]);
-    expect(isNestedDeployment(dir)).toBe(true);
+    expect(() => discoverTenants(dir)).toThrow(RemovedReposLayoutError);
+    expect(() => discoverTenants(dir)).toThrow(/removed in 0\.4\.0; use workspace mode/);
   });
 });
 
@@ -215,7 +189,9 @@ describe("workspace mode", () => {
       },
     );
     expect(discovery.tenants.map((t) => t.slug)).toEqual(["acme/good"]);
-    expect(discovery.holds).toEqual([{ dir: join(dir, "broken"), reason: "parse failure" }]);
+    expect(discovery.holds).toEqual([
+      { dir: join(dir, "broken"), reason: "parse failure", slug: null },
+    ]);
     expect(warnings.some((w) => /broken/.test(w) && /parse failure/.test(w))).toBe(true);
   });
 
@@ -282,6 +258,9 @@ describe("workspace mode", () => {
         reason:
           'origin slug "acme/other" does not match config repoSlug "acme/configured" ' +
           "(config is authoritative; fix the checkout origin or the child's repoSlug)",
+        // Config was readable before the mismatch skip, so `phoebe list` keeps
+        // the row's slug and its data / status.json columns lit (#140).
+        slug: "acme/configured",
       },
     ]);
     expect(
@@ -406,6 +385,14 @@ describe("workspace mode", () => {
     );
     expect(discovery.tenants.map((t) => t.slug)).toEqual(["acme/real"]);
   });
+
+  test("discoverUndeclaredInTreeTenants finds depth-1 config dirs not in the declaration", () => {
+    writeSlugConfig(join(dir, "widget"), "acme/widget");
+    writeSlugConfig(join(dir, "orphan"), "acme/orphan");
+    writeSlugConfig(join(dir, "apps", "nested"), "acme/nested");
+
+    expect(discoverUndeclaredInTreeTenants(dir, ["widget"])).toEqual(["orphan"]);
+  });
 });
 
 describe("configDir asset relocation (#98)", () => {
@@ -453,7 +440,7 @@ describe("configDir asset relocation (#98)", () => {
 
     expect(discovery.tenants.map((t) => t.slug)).toEqual(["acme/good"]);
     expect(discovery.holds).toEqual([
-      { dir: join(dir, "bad"), reason: "`configDir` must be relative" },
+      { dir: join(dir, "bad"), reason: "`configDir` must be relative", slug: null },
     ]);
     expect(warnings.some((w) => /bad/.test(w) && /configDir/.test(w))).toBe(true);
   });
@@ -471,20 +458,21 @@ describe("configDir asset relocation (#98)", () => {
     expect(discovery.tenants[0]?.envPath).toBe(join(dir, "widget", TENANT_ENV_FILE));
   });
 
-  test("withTenantConfigDir relocates envPath only; '.' is a no-op", () => {
+  test("tenantForDir builds the same shape discovery does for a known dir", () => {
     const tenantDir = join(dir, "widget");
-    const base: DiscoveredTenant = {
-      id: tenantDir,
-      slug: "acme/widget",
-      dir: tenantDir,
-      configPath: join(tenantDir, TENANT_CONFIG_FILE),
-      envPath: join(tenantDir, TENANT_ENV_FILE),
-    };
-    expect(withTenantConfigDir(base, ".")).toBe(base);
-    const moved = withTenantConfigDir(base, ".phoebe");
-    expect(moved.envPath).toBe(join(tenantDir, ".phoebe", TENANT_ENV_FILE));
-    expect(moved.configPath).toBe(base.configPath);
-    expect(moved.dir).toBe(base.dir);
+    const tenant = tenantForDir(tenantDir, "acme/widget");
+    expect(tenant.id).toBe(tenantDir);
+    expect(tenant.dir).toBe(tenantDir);
+    expect(tenant.slug).toBe("acme/widget");
+    expect(tenant.configPath).toBe(join(tenantDir, TENANT_CONFIG_FILE));
+    expect(tenant.envPath).toBe(join(tenantDir, TENANT_ENV_FILE));
+  });
+
+  test("tenantForDir honours configDir so the .env is where the child reads it", () => {
+    const tenantDir = join(dir, "widget");
+    expect(tenantForDir(tenantDir, "acme/widget", ".phoebe").envPath).toBe(
+      join(tenantDir, ".phoebe", TENANT_ENV_FILE),
+    );
   });
 });
 
@@ -520,7 +508,9 @@ describe("workspace explicit arm (#137)", () => {
       },
     );
     expect(discovery.tenants.map((t) => t.slug)).toEqual(["acme/widget"]);
-    expect(discovery.holds).toEqual([{ dir: join(dir, "missing"), reason: "directory absent" }]);
+    expect(discovery.holds).toEqual([
+      { dir: join(dir, "missing"), reason: DIRECTORY_ABSENT_HOLD_REASON, slug: null },
+    ]);
     expect(warnings.some((w) => /missing/.test(w) && /directory absent/.test(w))).toBe(true);
   });
 
@@ -542,6 +532,7 @@ describe("workspace explicit arm (#137)", () => {
       {
         dir: join(dir, "empty"),
         reason: "no phoebe.config.ts at directory root",
+        slug: null,
       },
     ]);
     expect(warnings.some((w) => /empty/.test(w) && /no phoebe\.config\.ts/.test(w))).toBe(true);
@@ -577,6 +568,150 @@ describe("workspace explicit arm (#137)", () => {
       ),
     ).rejects.toBeInstanceOf(DuplicateTenantSlugError);
   });
+});
+
+describe("out-of-tree tenants (#143)", () => {
+  test("holds an absent out-of-tree dir with a container-specific reason", async () => {
+    const warnings: string[] = [];
+    const discovery = await discoverWorkspaceTenants(
+      dir,
+      { tenants: ["../missing-sibling"] },
+      {
+        loadRepoSlug: () => "acme/missing",
+        readOriginUrl: () => null,
+        warn: (m) => warnings.push(m),
+        inContainer: () => true,
+      },
+    );
+    const heldDir = resolveDeclaredTenantDir(dir, "../missing-sibling");
+    expect(discovery.holds).toEqual([
+      { dir: heldDir, reason: OUT_OF_TREE_CONTAINER_HOLD_REASON, slug: null },
+    ]);
+    expect(warnings.some((w) => w.includes(OUT_OF_TREE_CONTAINER_HOLD_REASON))).toBe(true);
+  });
+
+  test("keeps the generic absent reason for out-of-tree dirs on the host", async () => {
+    const discovery = await discoverWorkspaceTenants(
+      dir,
+      { tenants: ["../missing-sibling"] },
+      {
+        loadRepoSlug: () => "acme/missing",
+        readOriginUrl: () => null,
+        inContainer: () => false,
+      },
+    );
+    expect(discovery.holds).toEqual([
+      {
+        dir: resolveDeclaredTenantDir(dir, "../missing-sibling"),
+        reason: DIRECTORY_ABSENT_HOLD_REASON,
+        slug: null,
+      },
+    ]);
+  });
+
+  test("keeps the generic absent reason for an in-tree `..`-prefixed dir in a container", async () => {
+    const discovery = await discoverWorkspaceTenants(
+      dir,
+      { tenants: ["..tenant"] },
+      {
+        loadRepoSlug: () => "acme/dotdot",
+        readOriginUrl: () => null,
+        inContainer: () => true,
+      },
+    );
+    expect(discovery.holds).toEqual([
+      {
+        dir: resolveDeclaredTenantDir(dir, "..tenant"),
+        reason: DIRECTORY_ABSENT_HOLD_REASON,
+        slug: null,
+      },
+    ]);
+  });
+
+  test("boots an out-of-tree tenant silently when it resolves", async () => {
+    const sibling = join(dir, "..", "outboard");
+    writeSlugConfig(sibling, "acme/outboard");
+    const warnings: string[] = [];
+
+    const discovery = await discoverWorkspaceTenants(
+      dir,
+      { tenants: ["../outboard"] },
+      {
+        loadRepoSlug: () => "acme/outboard",
+        readOriginUrl: () => null,
+        warn: (m) => warnings.push(m),
+        inContainer: () => true,
+      },
+    );
+    expect(discovery.tenants.map((t) => t.slug)).toEqual(["acme/outboard"]);
+    expect(discovery.holds).toEqual([]);
+    expect(warnings).toEqual([]);
+    rmSync(sibling, { recursive: true, force: true });
+  });
+
+  test("a symlink-aliased duplicate lands on DuplicateTenantSlugError at discovery", async () => {
+    writeSlugConfig(join(dir, "widget"), "acme/same");
+    symlinkSync(join(dir, "widget"), join(dir, "widget-link"));
+
+    await expect(
+      discoverWorkspaceTenants(
+        dir,
+        { tenants: ["widget", "widget-link"] },
+        {
+          loadRepoSlug: () => "acme/same",
+          readOriginUrl: () => null,
+        },
+      ),
+    ).rejects.toBeInstanceOf(DuplicateTenantSlugError);
+  });
+
+  for (const [label, inContainer] of [
+    ["on-host", false],
+    ["in-container", true],
+  ] as const) {
+    test(`${label}: discovery issues no mutating git operation under tenant.dir`, async () => {
+      const tenantDir = join(dir, "widget");
+      writeSlugConfig(tenantDir, "acme/widget");
+      execFileSync("git", ["init"], { cwd: tenantDir, encoding: "utf8" });
+      execFileSync("git", ["remote", "add", "origin", "https://github.com/acme/widget.git"], {
+        cwd: tenantDir,
+        encoding: "utf8",
+      });
+
+      const gitCalls: string[][] = [];
+      const recordingExec: typeof execFileSync = ((cmd, args, options) => {
+        if (cmd === "git") gitCalls.push(args as string[]);
+        return execFileSync(cmd, args as string[], options as object);
+      }) as typeof execFileSync;
+
+      await discoverWorkspaceTenants(
+        dir,
+        { tenants: ["widget"] },
+        {
+          loadRepoSlug: () => "acme/widget",
+          readOriginUrl: (d) => readTenantOriginUrl(d, { execFile: recordingExec }),
+          inContainer: () => inContainer,
+        },
+      );
+
+      expect(gitCalls).toEqual([["-C", tenantDir, "config", "--get", "remote.origin.url"]]);
+      const mutating = new Set([
+        "add",
+        "commit",
+        "checkout",
+        "clone",
+        "fetch",
+        "merge",
+        "pull",
+        "push",
+        "rebase",
+        "reset",
+        "restore",
+        "switch",
+      ]);
+      expect(gitCalls.flat().some((arg) => mutating.has(arg))).toBe(false);
+    });
+  }
 });
 
 describe("diffFleet", () => {
@@ -656,5 +791,125 @@ describe("diffFleet", () => {
       new Set([join(dir, "gadget")]),
     );
     expect(diff.removed).toEqual([]);
+  });
+});
+
+// The hot half of the explicit arm: one poll's discovery feeding the next
+// poll's reconcile diff, which is where a wrong tenant identity shows up as
+// churn. Discovery shape itself is pinned by "workspace explicit arm (#137)".
+describe("explicit workspace tenants arm — reconcile identity (#139)", () => {
+  test("absent declared dir is held, not removed from a running fleet", async () => {
+    writeSlugConfig(join(dir, "widget"), "acme/widget");
+    const widgetDir = join(dir, "widget");
+    const missingDir = join(dir, "missing");
+
+    const discovery = await discoverWorkspaceTenants(
+      dir,
+      { tenants: ["widget", "missing"] },
+      {
+        loadRepoSlug: () => "acme/widget",
+        readOriginUrl: () => null,
+      },
+    );
+    expect(discovery.tenants.map((t) => t.id)).toEqual([widgetDir]);
+    expect(discovery.holds).toEqual([
+      { dir: missingDir, reason: DIRECTORY_ABSENT_HOLD_REASON, slug: null },
+    ]);
+
+    const previous = new Map<string, string | null>([
+      [widgetDir, "fp1"],
+      [missingDir, "fp1"],
+    ]);
+    const diff = diffFleet(
+      previous,
+      discovery.tenants.map((tenant) => ({ tenant, fingerprint: "fp1" })),
+      new Set(discovery.holds.map((hold) => hold.dir)),
+    );
+    expect(diff.removed).toEqual([]);
+  });
+
+  test("rm -rf of a declared dir does not emit removed for a running child", async () => {
+    writeSlugConfig(join(dir, "widget"), "acme/widget");
+    const widgetDir = join(dir, "widget");
+    const previous = new Map<string, string | null>([[widgetDir, "fp1"]]);
+
+    rmSync(widgetDir, { recursive: true, force: true });
+
+    const discovery = await discoverWorkspaceTenants(
+      dir,
+      { tenants: ["widget"] },
+      {
+        loadRepoSlug: () => "acme/widget",
+        readOriginUrl: () => null,
+      },
+    );
+    expect(discovery.tenants).toEqual([]);
+    expect(discovery.holds.map((hold) => hold.dir)).toEqual([widgetDir]);
+
+    const diff = diffFleet(previous, [], new Set(discovery.holds.map((hold) => hold.dir)));
+    expect(diff.removed).toEqual([]);
+  });
+
+  test("tidying declared spelling is a no-op identity", async () => {
+    writeSlugConfig(join(dir, "widget"), "acme/widget");
+    const widgetDir = join(dir, "widget");
+
+    const tidy = await discoverWorkspaceTenants(
+      dir,
+      { tenants: ["./widget"] },
+      {
+        loadRepoSlug: () => "acme/widget",
+        readOriginUrl: () => null,
+      },
+    );
+    const plain = await discoverWorkspaceTenants(
+      dir,
+      { tenants: ["widget"] },
+      {
+        loadRepoSlug: () => "acme/widget",
+        readOriginUrl: () => null,
+      },
+    );
+    expect(tidy.tenants[0]?.id).toBe(widgetDir);
+    expect(plain.tenants[0]?.id).toBe(widgetDir);
+  });
+
+  test("reordering declared tenants does not diff against a running fleet", async () => {
+    writeSlugConfig(join(dir, "widget"), "acme/widget");
+    writeSlugConfig(join(dir, "gadget"), "acme/gadget");
+    const widgetDir = join(dir, "widget");
+    const gadgetDir = join(dir, "gadget");
+
+    const first = await discoverWorkspaceTenants(
+      dir,
+      { tenants: ["widget", "gadget"] },
+      {
+        loadRepoSlug: (path) => (path.includes("widget") ? "acme/widget" : "acme/gadget"),
+        readOriginUrl: () => null,
+      },
+    );
+    const reordered = await discoverWorkspaceTenants(
+      dir,
+      { tenants: ["gadget", "widget"] },
+      {
+        loadRepoSlug: (path) => (path.includes("widget") ? "acme/widget" : "acme/gadget"),
+        readOriginUrl: () => null,
+      },
+    );
+
+    const previous = new Map<string, string | null>([
+      [widgetDir, "fp1"],
+      [gadgetDir, "fp1"],
+    ]);
+    const diff = diffFleet(
+      previous,
+      reordered.tenants.map((tenant) => ({ tenant, fingerprint: "fp1" })),
+    );
+    expect(diff.added).toEqual([]);
+    expect(diff.removed).toEqual([]);
+    expect(diff.changed).toEqual([]);
+    expect(new Set(first.tenants.map((t) => t.id))).toEqual(
+      new Set(reordered.tenants.map((t) => t.id)),
+    );
   });
 });

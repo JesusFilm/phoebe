@@ -1,5 +1,103 @@
 # phoebe-agent
 
+## 0.5.2
+
+### Patch Changes
+
+- 21f7cf7: Two CLI guards against misleading errors: an unknown bare subcommand is now rejected with the installed version and the `pnpm dlx phoebe-agent@latest upgrade` hint (instead of falling through to the engine-run path and dying in config validation), and the engine-run path refuses a workspace-root config with "run from a tenant directory, or `phoebe boot`" (instead of the five-required-fields error about tenant fields a root never carries).
+
+## 0.5.1
+
+### Patch Changes
+
+- 204aa3e: Quarantine now has two working exits. The auto-un-stick sweep is wired into the
+  poll cycle: each cycle Phoebe checks every unit still labelled
+  `phoebe:quarantined` and removes the label when the unit's content has advanced
+  past the baseline its escalation comment recorded — a PR's head SHA, or a
+  fingerprint of the issue body. Issue baselines are that fingerprint rather than
+  `updatedAt`, which GitHub bumps on any comment, label, or reaction (including
+  Phoebe's own quarantine writes) and which would therefore have cleared every
+  quarantine on the first sweep. Both exits — the sweep and a hand-removed label —
+  now reset the timeout counter, so a released unit gets a fresh
+  `maxUnitTimeouts` allowance instead of re-quarantining on its next timeout. A
+  `phoebe:quarantined` label applied by a human is never auto-removed: the sweep
+  only acts on a quarantine of its own that is still in force, and ignores the
+  baseline of one it has already lifted.
+
+## 0.5.0
+
+### Minor Changes
+
+- 808b24f: New operator commands: `phoebe upgrade` advances the pinned engine ref (a
+  strict-literal, in-place rewrite of `engine.ref` in the deployment-root
+  `phoebe.config.ts` — refs validated before the pin moves, rollback command
+  printed) and/or the npm CLI, with `--check [--json]` as a scriptable
+  behind-detector; `phoebe doctor [--json]` reports deployment health (cli and
+  engine versions, config, repo reachability, crash-loop quarantine state,
+  supervisor liveness) and sweeps every tenant's token and repo reachability.
+
+## 0.4.0
+
+### Minor Changes
+
+- c7a741a: Remove the nested (`repos/<owner>/<repo>/`) layout; **solo and workspace are the
+  only supported layouts** (#169). Nested was never used in a real deployment, and
+  workspace mode covers every fleet case it was meant to — and better, since
+  children are self-configured repos rather than config dirs the operator
+  hand-assembles.
+
+  Breaking, with no deprecation window:
+
+  - The surviving single-repo layout is renamed **`flat` → `solo`** everywhere —
+    `InitProfile`, the discovery `mode` discriminant, help text, log lines, and
+    docs — so code, docs, and `examples/` share one vocabulary.
+  - `phoebe init` gains an explicit `--solo` flag alongside `--workspace` /
+    `--tenant`. Default behaviour is unchanged: no flag ⇒ solo.
+  - `phoebe add-repo` and `phoebe remove-repo` are **deleted** — both were
+    nested-only. Workspace children are scaffolded by `phoebe init --tenant`, and
+    registering or unregistering one is an edit to the deployment-root config the
+    operator owns.
+  - `--repo <owner/repo>` is **deleted**, along with the config-selection ladder it
+    drove. It existed only to pick a nested tenant's config. So that it fails loudly
+    rather than surviving as a no-op alias, engine mode now **rejects any
+    unrecognised flag** instead of forwarding it — the engine reads its flags with
+    `argv.includes(...)`, so a forwarded unknown flag was silently dropped and a
+    typo like `--dry-runn` would run the opposite of what was asked. `--run-once`,
+    `--dry-run`, `--config`/`-c`, and `--help`/`-h` are unchanged.
+  - `phoebe list` and `phoebe purge` survive minus their nested arms. `list`
+    enumerates workspace children and reports no tenants in solo; `purge` now
+    refuses whenever a live config still claims the slug — including a _held_
+    child, whose engine may still be running — and its advice names no removed
+    verb.
+  - A deployment root that still carries a `repos/` directory **fails boot** with
+    `nested \`repos/\` layout was removed in 0.4.0; use workspace mode`. That guard
+    is an error message, not a mode: without it such a tree would fall through to
+    solo and die on a misleading "missing required field".
+  - `examples/nested/` is retired; `examples/` ships solo and workspace.
+
+  `/data/repos/<owner>/<repo>/` is untouched — that is the runtime data layout for
+  every tenant, unrelated to the removed config-side `repos/`.
+
+## 0.3.2
+
+### Patch Changes
+
+- c66e9f1: Validate `promptFiles` at engine startup (#164). Prompt loading was fail-at-use:
+  a tenant whose runtime root was missing one prompt kind booted clean, polled
+  happily, and only died when the first work unit of that kind was dispatched —
+  which for a rare kind meant weeks later, one failed unit at a time. The engine
+  now checks, before it starts, every entry the tenant's `workOrder` can actually
+  dispatch, and refuses to run with a single error naming the tenant and every
+  missing kind with its resolved path. A kind you dropped from `workOrder` needs no
+  prompt file — it was never going to be loaded.
+
+  Being a loadable file is the whole rule — a regular file, since a directory would
+  pass an existence check and then throw `EISDIR` at dispatch — so a `promptFiles`
+  key may point outside the runtime root. That is what a `configDir` tenant wants:
+  `issue: "../prompts/issues-prompt.md"` reaches the prompts at the repo root
+  instead of keeping a second copy under `<configDir>/prompts/` that silently
+  misses every prompt improvement merged afterward.
+
 ## 0.3.1
 
 ### Patch Changes

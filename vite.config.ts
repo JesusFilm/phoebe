@@ -2,7 +2,7 @@ import { defineConfig } from "vite-plus";
 
 export default defineConfig({
   test: {
-    include: ["src/**/*.test.ts", "bootstrap/**/*.test.ts"],
+    include: ["src/**/*.test.ts", "bootstrap/**/*.test.ts", "scripts/**/*.test.ts"],
   },
   lint: {
     // Consumer-owned template files are not real project sources — they

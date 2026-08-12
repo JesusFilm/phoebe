@@ -116,9 +116,9 @@ export function validateWorkspaceField(
 /**
  * Normalize and check every declared entry. Declared order is authoritative —
  * it is spawn order, `phoebe list` order, and warn order — so the returned list
- * preserves it verbatim. An empty list is a valid zero-tenant fleet (the
- * empty-`repos/` precedent); discovery warns so an empty supervisor does not
- * look like a silent failure.
+ * preserves it verbatim. An empty list is a valid zero-tenant fleet (a root
+ * mid-add or mid-remove); discovery warns so an empty supervisor does not look
+ * like a silent failure.
  */
 function validateTenantList(value: unknown, root: string | undefined): string[] {
   if (!Array.isArray(value)) {
@@ -280,7 +280,7 @@ export function requireDepthArm(workspace: ResolvedWorkspace): number {
 
 /**
  * Extract the resolved `workspace` block from a loaded root config, or `null`
- * when the block is absent (nested / flat mode ladders take over). A present
+ * when the block is absent (the deployment is solo). A present
  * but malformed block is a hard error — see {@link validateWorkspaceField}.
  */
 export function readWorkspaceField(
@@ -294,12 +294,17 @@ export function readWorkspaceField(
 
 /**
  * Single entry point for resolving the workspace block from a loaded root
- * config. Boot and `phoebe list` both call this so they cannot disagree about
- * which discovery arm is in force (#137).
+ * config. Boot, `phoebe list`, and `init --tenant` all call this so they
+ * cannot disagree about which discovery arm is in force (#137/#142).
  */
 export function resolveWorkspace(
   config: Record<string, unknown>,
   opts: { root?: string } = {},
 ): ResolvedWorkspace | null {
   return readWorkspaceField(config, opts);
+}
+
+/** Which discovery arm a resolved block uses. */
+export function workspaceArm(workspace: ResolvedWorkspace): "depth" | "tenants" {
+  return isExplicitWorkspace(workspace) ? "tenants" : "depth";
 }

@@ -1,21 +1,21 @@
 // The one child-env builder every engine spawn path routes through (#64).
 //
-// `phoebe boot` spawns an engine child two ways: flat (one child, the
-// supervisor's own process) and nested/workspace (one child per tenant, from
-// `supervise`). Both need the same deployment-critical vars — the base
-// allowlist, the atomic launch snapshot, and engine provenance — and only ever
-// differ in *where the secrets come from*. Splitting the two spawn paths into
-// separate env-construction code is exactly how #38 happened: nested silently
-// lost the snapshot, provenance, and `PHOEBE_BASE_CONFIG` because nothing
-// forced the two builders to stay in sync. `childEnv` is the one function both
-// paths call so that cannot happen again.
+// `phoebe boot` spawns an engine child two ways: solo (one child, the
+// supervisor's own process) and workspace (one child per tenant, from
+// `deployment.ts`'s fleet path). Both need the same deployment-critical vars —
+// the base allowlist, the atomic launch snapshot, and engine provenance — and
+// only ever differ in *where the secrets come from*. Splitting the two spawn
+// paths into separate env-construction code is exactly how #38 happened:
+// workspace silently lost the snapshot, provenance, and `PHOEBE_BASE_CONFIG`
+// because nothing forced the two builders to stay in sync. `childEnv` is the
+// one function both paths call so that cannot happen again.
 //
 // Isolation is still structural, not disciplinary: a child can only ever hold
 // what its own `secrets` source handed over, never the caller's ambient env.
-// For nested/workspace, that source is tenant T's freshly-parsed `.env` — the
+// For workspace, that source is tenant T's freshly-parsed `.env` — the
 // supervisor's own `process.env` (and the #60 deployment clone credential in
 // it) is never on the base allowlist, so it is fail-closed invisible to fleet
-// children. For flat, the source is the supervisor's own `process.env`
+// children. For solo, the source is the supervisor's own `process.env`
 // itself: one tenant is one trust domain (the whole container), and Docker
 // already injects exactly that tenant's secrets into it — so passing it
 // through in full changes nothing. `buildAgentEnv` (src/agent-env.ts) then

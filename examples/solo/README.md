@@ -5,12 +5,10 @@ A single, self-configured repo — the classic single-deployment layout. One
 works that repository's issues and PRs. This is the topology to reach for when
 **one repo, one deployment** is all you need.
 
-Use one of the multi-repo topologies instead when:
-
-- you want **one container serving many repos** as isolated tenants → see
-  [`../nested/`](../nested/) (the [#57](https://github.com/JesusFilm/phoebe/issues/57) `repos/<owner>/<repo>/` layout);
-- you run Phoebe at the **root of a workspace** of self-configured child repos →
-  see [`../workspace/`](../workspace/) (the [#81](https://github.com/JesusFilm/phoebe/issues/81) layout).
+Use the multi-repo topology instead when you want **one container serving many
+repos** as isolated tenants: run Phoebe at the **root of a workspace** of
+self-configured child repos → see [`../workspace/`](../workspace/) (the
+[#81](https://github.com/JesusFilm/phoebe/issues/81) layout).
 
 ## What's here
 

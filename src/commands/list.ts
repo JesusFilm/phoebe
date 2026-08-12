@@ -1,11 +1,20 @@
 // `phoebe list` — in-container, enumerate tenants + health (reads the
-// status-v2 contract snapshot; #63/#95).
+// status-v2 contract snapshot; #63/#95/#127/#141).
 
+import type { ArgSpec } from "../arg-spec.ts";
+import { parseArgs } from "../arg-spec.ts";
 import { resolveDataBase } from "../paths.ts";
 import type { StatusSnapshot } from "../status-contract.ts";
 import { workIdentityId } from "../status-contract.ts";
-import { listTenants, type TenantListing } from "../tenant-commands.ts";
+import {
+  LIST_HELD_LEGEND,
+  LIST_UNDECLARED_LEGEND,
+  listTenants,
+  type TenantListing,
+} from "../tenant-commands.ts";
 import type { Command } from "./types.ts";
+
+const LIST_SPEC: ArgSpec = { booleanFlags: ["json", "check"] };
 
 const QUEUE_LOOKAHEAD_LIMIT = 5;
 
@@ -54,33 +63,90 @@ function formatTenantStatus(status: TenantListing["status"]): string {
   return formatSnapshotState(status.status);
 }
 
-export function formatTenantListing(listing: TenantListing): string {
+function formatHealthDetail(listing: TenantListing): string {
   const flag = (label: string, on: boolean): string => `${on ? "✓" : "✗"} ${label}`;
   const state = formatTenantStatus(listing.status);
   return (
-    `  ${listing.slug}\n` +
-    `      ${flag("config", listing.configValid)}  ${flag("env", listing.envPresent)}  ` +
+    `${flag("config", listing.configValid)}  ${flag("env", listing.envPresent)}  ` +
     `${flag("data", listing.retainedData)}  ${state}\n` +
     `      ${formatQueueLookahead(listing.queue)}`
   );
 }
 
+/** Held rows (#129) surface as `held — <reason>`, not a wall of ✗s. */
+export function formatTenantListing(listing: TenantListing): string {
+  const header =
+    listing.slug !== null ? `  ${listing.path}  (${listing.slug})` : `  ${listing.path}`;
+  if (listing.held) {
+    const held = `held — ${listing.reason ?? "held"}`;
+    const detail = listing.slug !== null ? `${held}  ${formatHealthDetail(listing)}` : held;
+    return `${header}\n      ${detail}`;
+  }
+  return `${header}\n      ${formatHealthDetail(listing)}`;
+}
+
 export const listCommand: Command = {
   name: "list",
-  summary: "phoebe list                      List tenants + health (in-container)",
-  help: "phoebe list — enumerate tenants + health\n\nUsage: phoebe list\n",
-  async run(_argv, ctx) {
-    const listings = await listTenants({
+  summary: "phoebe list [--json] [--check]   List tenants + health (in-container)",
+  help:
+    "phoebe list — enumerate tenants + health\n\n" +
+    "Usage: phoebe list [--json] [--check]\n\n" +
+    "--check exits 1 when the declared fleet (workspace.tenants) has a held row.\n",
+  async run(argv, ctx) {
+    const { flags } = parseArgs(argv, LIST_SPEC);
+    const result = await listTenants({
       configDir: ctx.cwd,
       dataBase: resolveDataBase(ctx.env),
     });
-    if (listings.length === 0) {
-      ctx.stdout.write("[phoebe] No tenants (flat single-tenant deployment, or none added yet).\n");
+
+    const held = result.listings.some((listing) => listing.held);
+
+    if (flags["json"] === true) {
+      ctx.stdout.write(
+        `${JSON.stringify({
+          declared: result.declared,
+          live: result.live,
+          tenants: result.listings.map((listing) => ({
+            path: listing.path,
+            slug: listing.slug,
+            held: listing.held,
+            reason: listing.reason,
+            configValid: listing.configValid,
+            envPresent: listing.envPresent,
+            retainedData: listing.retainedData,
+            status: listing.status,
+          })),
+          undeclared: result.undeclared,
+        })}\n`,
+      );
+      return flags["check"] === true && result.explicit && held ? 1 : 0;
+    }
+
+    if (result.listings.length === 0 && result.undeclared.length === 0) {
+      ctx.stdout.write(
+        "[phoebe] No tenants (solo single-tenant deployment, or a workspace with none declared yet).\n",
+      );
       return 0;
     }
-    ctx.stdout.write(
-      `[phoebe] ${listings.length} tenant(s):\n${listings.map(formatTenantListing).join("\n")}\n`,
-    );
-    return 0;
+
+    const header =
+      result.explicit && result.declared > 0
+        ? `[phoebe] ${result.live} of ${result.declared} declared tenant(s):`
+        : result.listings.length > 0
+          ? `[phoebe] ${result.listings.length} tenant(s):`
+          : "[phoebe] 0 declared tenant(s):";
+    const body = result.listings.map(formatTenantListing).join("\n");
+    const undeclaredSection =
+      result.undeclared.length > 0
+        ? `\n\nundeclared:\n${result.undeclared.map((path) => `  ${path}`).join("\n")}`
+        : "";
+    const legendParts: string[] = [];
+    if (held) legendParts.push(LIST_HELD_LEGEND);
+    if (result.undeclared.length > 0) legendParts.push(LIST_UNDECLARED_LEGEND);
+    const legend = legendParts.length > 0 ? `\n${legendParts.join("\n")}` : "";
+    const main = body.length > 0 ? `${header}\n${body}` : header;
+    ctx.stdout.write(`${main}${undeclaredSection}${legend}\n`);
+
+    return flags["check"] === true && result.explicit && held ? 1 : 0;
   },
 };

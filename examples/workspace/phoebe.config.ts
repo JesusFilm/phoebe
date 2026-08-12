@@ -7,12 +7,12 @@
 // Phoebe only discovers what is already there.
 //
 // What selects workspace mode is the `workspace: { … }` block on THIS root
-// config (bootstrap/tenants.ts detection ladder: a `workspace` block wins over
-// a `repos/` dir, which is nested mode). `depth` is how many directory levels
+// config (bootstrap/tenants.ts detection ladder: a `workspace` block → workspace
+// mode; without one the deployment is solo). `depth` is how many directory levels
 // under the root are scanned for a child `phoebe.config.ts` — default 1, which
 // is exactly the sibling-children layout shown here (widget/, gadget/).
 //
-// This root file is SHARED-ONLY, like the nested root: the bootstrapper reads
+// This root file is SHARED-ONLY: the bootstrapper reads
 // just the `engine` source (one engine version for the whole fleet) and the
 // `workspace` discovery block from it. It describes no single repo, so it has no
 // repoSlug/commands — the type is narrowed to exactly the two fields the root

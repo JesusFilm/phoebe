@@ -58,7 +58,7 @@ import type { EngineRun } from "./supervise.ts";
  * last-good one. Three is enough to rule out a one-off (a flaky network on the
  * engine's first fetch, a busy host) while still recovering in minutes.
  */
-const CRASH_LOOP_THRESHOLD = 3;
+export const CRASH_LOOP_THRESHOLD = 3;
 
 /**
  * How long an engine run must survive to count as healthy. A commit that cannot
@@ -71,7 +71,7 @@ const HEALTHY_RUN_MS = 60_000;
 const CRASH_LOOP_STATE_FILE = "engine-crash-loop.json";
 
 /** Crash-loop bookkeeping, persisted across container restarts on the state volume. */
-type CrashLoopState = {
+export type CrashLoopState = {
   /** SHA that last ran healthily — the fallback target. */
   lastGoodSha: string | null;
   /** SHA currently accumulating fast-crash counts (or quarantined as bad). */
@@ -270,7 +270,7 @@ function fallbackSha(
  * tenants, colocated with the shared engine checkout rather than any tenant's
  * state dir (#60/#62).
  */
-function crashLoopStatePath(engineDir: string): string {
+export function crashLoopStatePath(engineDir: string): string {
   return join(engineDir, CRASH_LOOP_STATE_FILE);
 }
 
@@ -292,7 +292,7 @@ function isCrashLoopState(value: unknown): value is CrashLoopState {
  * degrades to "nothing known" rather than failing boot: the cost is losing one
  * fallback target, and the alternative is a bootstrapper that a bad file bricks.
  */
-function readCrashLoopState(path: string): CrashLoopState {
+export function readCrashLoopState(path: string): CrashLoopState {
   try {
     const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
     if (!isCrashLoopState(parsed)) return INITIAL_CRASH_LOOP_STATE;

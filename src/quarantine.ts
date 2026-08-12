@@ -100,7 +100,10 @@ function buildUnitMarker(kind: string, marker: UnitMarker): string {
 
 // --- Quarantine baseline marker (in the escalation section, for auto-unstick) -
 
-const QUARANTINE_BASELINE_RE = /<!--\s*phoebe-quarantine-baseline:\s*([^\s>]+)\s*-->/i;
+// Both markers are anchored to the start of a line: GitHub's "Quote reply"
+// reproduces a comment verbatim behind `> `, and an unanchored pattern would let
+// a human quoting an old escalation comment resurrect its stale baseline.
+const QUARANTINE_BASELINE_RE = /^<!--\s*phoebe-quarantine-baseline:\s*([^\s>]+)\s*-->/im;
 
 export function buildQuarantineBaselineMarker(baseline: string): string {
   return `<!-- phoebe-quarantine-baseline: ${baseline} -->`;

@@ -1,23 +1,19 @@
-// Tenant discovery — how `phoebe boot` finds what to supervise (#58/#63/#91/#92).
+// Tenant discovery — how `phoebe boot` finds what to supervise (#58/#91/#92).
 //
-// A deployment is workspace XOR nested XOR flat, selected by the detection
-// ladder (#83): a root config with a `workspace` block → workspace mode (warns
-// and ignores any `repos/`); else a `repos/` directory → nested; else flat.
+// A deployment is workspace XOR solo, selected by the detection ladder (#83):
+// a root config with a `workspace` block → workspace mode; else solo.
 //
-//   flat  (no repos/)   /etc/phoebe/phoebe.config.ts   → one engine child, the
-//                       config is the single tenant, run in place. The #63
-//                       single-tenant fast-path: no scanning.
-//   nested (repos/)     /etc/phoebe/repos/<owner>/<repo>/phoebe.config.ts
-//                       → one engine child per tenant dir, discovered by scan.
-//   workspace           children under the root that carry a root-level
-//                       `phoebe.config.ts`; slug from that config's `repoSlug`.
-//                       The root declaring `workspace` is never itself a tenant.
-//                       Path is *not* owner/repo layout (#58 path↔slug validation
-//                       does not apply). Origin is a best-effort cross-check (#92).
+//   solo        /etc/phoebe/phoebe.config.ts → one engine child, the config is
+//               the single tenant, run in place. The single-tenant fast-path:
+//               no scanning.
+//   workspace   children under the root that carry a root-level
+//               `phoebe.config.ts`; slug from that config's `repoSlug`.
+//               The root declaring `workspace` is never itself a tenant.
+//               Path is *not* owner/repo layout (#58 path↔slug validation
+//               does not apply). Origin is a best-effort cross-check (#92).
 //
-// Nested `<owner>/<repo>` path is the authoritative tenant identity (#58); in
-// workspace mode the authoritative slug is the child's in-tree config (#85).
-// Flat mode leaves the slug unknown to the supervisor (null).
+// In workspace mode the authoritative slug is the child's in-tree config (#85).
+// Solo mode leaves the slug unknown to the supervisor (null).
 //
 // This module only *discovers* the current set. The reconcile diff (added /
 // removed / changed / held since last poll) and the child lifecycle live in
@@ -25,24 +21,23 @@
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 
 import { DEFAULT_TENANT_CONFIG_DIR } from "./config-dir.ts";
+import { isInsideContainer } from "../src/execution-gate.ts";
 import { isExplicitWorkspace, type ResolvedWorkspace } from "./workspace-source.ts";
 
 /** Canonical in-container deployment config dir (compose bind-mounts here). */
 export const DEFAULT_CONFIG_DIR = "/etc/phoebe";
-/** Per-tenant (and flat-top) config filename. */
+/** Per-tenant (and solo-top) config filename. */
 export const TENANT_CONFIG_FILE = "phoebe.config.ts";
 /** Per-tenant co-located secrets file. */
 export const TENANT_ENV_FILE = ".env";
-/** Subdir whose presence selects nested/multi-tenant mode (when not workspace). */
-export const REPOS_DIR = "repos";
 
 export type DiscoveredTenant = {
-  /** Stable id and reconcile key: the tenant's config dir (unique per tenant). */
+  /** Stable id and reconcile key: the tenant's normalized absolute config dir. */
   id: string;
-  /** `owner/repo` in nested/workspace mode; null in flat (child derives it). */
+  /** `owner/repo` in workspace mode; null in solo (the child derives it). */
   slug: string | null;
   /** Directory the engine child runs in (cwd): holds the config, `.env`, `prompts/`. */
   dir: string;
@@ -50,12 +45,33 @@ export type DiscoveredTenant = {
   configPath: string;
   /** Absolute path to the tenant's co-located `.env`. */
   envPath: string;
+  /**
+   * Declared spelling from `workspace.tenants`, retained for diagnostics only —
+   * reconcile identity is always {@link id}.
+   */
+  declaredPath?: string;
 };
 
-export type Discovery =
-  | { mode: "flat"; tenants: [DiscoveredTenant] }
-  | { mode: "nested"; tenants: DiscoveredTenant[] }
-  | { mode: "workspace"; tenants: DiscoveredTenant[] };
+/** The solo arm: the deployment root is itself the one tenant, run in place. */
+export type SoloDiscovery = { mode: "solo"; tenants: [DiscoveredTenant] };
+
+/**
+ * What layout a deployment root resolved to. Two arms, and the `mode`
+ * discriminant is load-bearing: a one-child workspace is *not* solo. Only solo
+ * runs its engine child with the supervisor's own environment, so callers that
+ * gate on ambient credentials (`scripts/verify-tenant-token.mjs`) branch on
+ * `mode`, never on `tenants.length`.
+ *
+ * The two arms are produced by two functions, because the workspace arm needs
+ * the loaded root config and async child parsing that the solo arm does not:
+ * {@link discoverTenants} yields the solo arm, {@link discoverWorkspaceTenants}
+ * the workspace one ({@link WorkspaceDiscoveryResult} widens it with the hold
+ * bookkeeping only a fleet has).
+ */
+export type DeploymentDiscovery = SoloDiscovery | WorkspaceDiscovery;
+
+/** The workspace arm: zero or more discovered children; the root is never one. */
+export type WorkspaceDiscovery = { mode: "workspace"; tenants: DiscoveredTenant[] };
 
 /**
  * Fatal discovery error: two workspace children claim the same `repoSlug`.
@@ -93,6 +109,28 @@ export class DuplicateOriginSlugError extends Error {
     this.name = "DuplicateOriginSlugError";
     this.originSlug = originSlug;
     this.paths = [firstDir, secondDir];
+  }
+}
+
+/**
+ * Raised when the root `workspace` block is deleted or its arm is switched on a
+ * running supervisor — drain the fleet, then abort so boot re-runs the ladder.
+ */
+export class WorkspaceStructuralChangeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "WorkspaceStructuralChangeError";
+  }
+}
+
+/**
+ * Raised when the root config or `workspace` block is unreadable/malformed
+ * mid-flight — skip the tenant axis this poll and leave the running fleet intact.
+ */
+export class WorkspaceTenantAxisSkip extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "WorkspaceTenantAxisSkip";
   }
 }
 
@@ -153,9 +191,13 @@ function normalizeGithubSlug(owner: string, repoWithOptionalGit: string): string
  * Read `remote.origin.url` from a child checkout (never `.gitmodules`). An
  * unset or unreadable origin is `null` — admitted on config `repoSlug` (#92).
  */
-export function readTenantOriginUrl(tenantDir: string): string | null {
+export function readTenantOriginUrl(
+  tenantDir: string,
+  opts: { execFile?: typeof execFileSync } = {},
+): string | null {
+  const execFile = opts.execFile ?? execFileSync;
   try {
-    const out = execFileSync("git", ["-C", tenantDir, "config", "--get", "remote.origin.url"], {
+    const out = execFile("git", ["-C", tenantDir, "config", "--get", "remote.origin.url"], {
       encoding: "utf8",
       timeout: 5_000,
     }).trim();
@@ -165,43 +207,57 @@ export function readTenantOriginUrl(tenantDir: string): string | null {
   }
 }
 
+function tenantDirId(configDir: string, dir: string): string {
+  return isAbsolute(dir) ? normalize(dir) : resolve(configDir, dir);
+}
+
 function tenantAt(
+  configDir: string,
   dir: string,
   slug: string | null,
-  configDir: string = DEFAULT_TENANT_CONFIG_DIR,
+  configDirRel: string = DEFAULT_TENANT_CONFIG_DIR,
+  declaredPath?: string,
 ): DiscoveredTenant {
-  // `configDir` relocates the tenant's asset dir (its `.env` + prompts) to a
+  const absDir = tenantDirId(configDir, dir);
+  // `configDirRel` relocates the tenant's asset dir (its `.env` + prompts) to a
   // subdir of `dir` (#98). The config itself always stays at `dir`; only the
   // `.env` — and thus the engine child's cwd, `dirname(envPath)` — moves.
-  const assetsDir = configDir === DEFAULT_TENANT_CONFIG_DIR ? dir : join(dir, configDir);
+  const assetsDir =
+    configDirRel === DEFAULT_TENANT_CONFIG_DIR ? absDir : join(absDir, configDirRel);
   return {
-    id: dir,
+    id: absDir,
     slug,
-    dir,
-    configPath: join(dir, TENANT_CONFIG_FILE),
+    dir: absDir,
+    configPath: join(absDir, TENANT_CONFIG_FILE),
     envPath: join(assetsDir, TENANT_ENV_FILE),
+    ...(declaredPath === undefined ? {} : { declaredPath }),
   };
 }
 
 /**
- * Return a copy of `tenant` with its `.env` (and thus its engine child's cwd,
- * `dirname(envPath)`) relocated under `configDir`, a subdirectory of the tenant
- * dir (#98). `"."` is a no-op. Nested discovery uses this because its sync scan
- * builds tenants before any config is loaded; workspace discovery instead
- * threads `configDir` straight through {@link tenantAt}.
+ * Build the {@link DiscoveredTenant} for a tenant directory that is already
+ * known — the same shape discovery produces, for callers handed a dir rather
+ * than finding one (`scripts/verify-tenant-token.mjs`, #154). Going through the
+ * one builder is what keeps `envPath` honest: `configDir` relocation (#98) is
+ * easy to forget when hand-joining a path, and a diagnostic that read the wrong
+ * `.env` would report the wrong token.
  */
-export function withTenantConfigDir(tenant: DiscoveredTenant, configDir: string): DiscoveredTenant {
-  if (configDir === DEFAULT_TENANT_CONFIG_DIR) return tenant;
-  return { ...tenant, envPath: join(tenant.dir, configDir, TENANT_ENV_FILE) };
+export function tenantForDir(
+  dir: string,
+  slug: string | null,
+  configDir: string = DEFAULT_TENANT_CONFIG_DIR,
+): DiscoveredTenant {
+  const absDir = resolve(dir);
+  return tenantAt(absDir, absDir, slug, configDir);
 }
 
 /** A tenant paired with its config fingerprint (mtime:size) at one poll. */
 export type TenantSample = { tenant: DiscoveredTenant; fingerprint: string | null };
 
 /**
- * Result of one discovery poll for the fleet supervisor. Flat/nested mode only
- * fills `samples`; workspace mode also lists dirs whose config is transiently
- * unreadable so `diffFleet` *holds* a running child rather than draining it (#86).
+ * Result of one discovery poll for the fleet supervisor. Alongside `samples`,
+ * workspace mode lists dirs whose config is transiently unreadable so
+ * `diffFleet` *holds* a running child rather than draining it (#86).
  */
 export type FleetDiscoverResult = {
   samples: TenantSample[];
@@ -271,43 +327,61 @@ function listDirs(parent: string): string[] {
   }
 }
 
-/** Whether a `repos/` dir beside the top config selects nested mode. */
-export function isNestedDeployment(configDir: string): boolean {
-  try {
-    return statSync(join(configDir, REPOS_DIR)).isDirectory();
-  } catch {
-    return false;
+/**
+ * The directory whose presence beside the deployment-root config used to select
+ * the `repos/<owner>/<repo>/` layout removed in 0.4.0.
+ */
+const REMOVED_REPOS_DIR = "repos";
+
+/**
+ * Raised when a deployment root still carries the removed `repos/` layout.
+ *
+ * This is an error message, not a mode. Without it such a tree falls through to
+ * solo, boot reads the root config — which in that layout carries no per-repo
+ * fields — and dies with a misleading "missing required field" instead of the
+ * truth.
+ */
+export class RemovedReposLayoutError extends Error {
+  constructor(configDir: string) {
+    super(
+      `nested \`repos/\` layout was removed in 0.4.0; use workspace mode ` +
+        `(found ${join(configDir, REMOVED_REPOS_DIR)}/ beside the deployment-root ` +
+        `phoebe.config.ts — see docs/workspace.md).`,
+    );
+    this.name = "RemovedReposLayoutError";
   }
 }
 
 /**
- * Discover the tenants a flat or nested deployment should supervise right now.
- * Flat mode always yields exactly one tenant (the top config, run in place);
- * nested mode scans `repos/<owner>/<repo>/` for any dir carrying a
- * `phoebe.config.ts`, sorted by slug for a deterministic, stable supervision
- * order (#58: first in order wins the frontier). An empty `repos/` is a valid
- * nested deployment with zero tenants (mid-add / mid-remove).
- *
- * Workspace mode is *not* selected here — it needs the loaded root config's
- * `workspace` block and async child-config parsing. Call
- * {@link discoverWorkspaceTenants} after {@link readWorkspaceField}.
+ * Refuse a deployment root that still carries the removed `repos/` layout.
+ * Called on the solo arm only: a root declaring `workspace` has its own
+ * discovery, and a directory named `repos` under it is just another child dir.
  */
-export function discoverTenants(configDir: string): Discovery {
-  if (!isNestedDeployment(configDir)) {
-    return { mode: "flat", tenants: [tenantAt(configDir, null)] };
+export function assertNotRemovedReposLayout(configDir: string): void {
+  let hasReposDir: boolean;
+  try {
+    hasReposDir = statSync(join(configDir, REMOVED_REPOS_DIR)).isDirectory();
+  } catch {
+    hasReposDir = false;
   }
-  const reposRoot = join(configDir, REPOS_DIR);
-  const tenants: DiscoveredTenant[] = [];
-  for (const owner of listDirs(reposRoot)) {
-    for (const repo of listDirs(join(reposRoot, owner))) {
-      const dir = join(reposRoot, owner, repo);
-      if (existsSync(join(dir, TENANT_CONFIG_FILE))) {
-        tenants.push(tenantAt(dir, `${owner}/${repo}`));
-      }
-    }
-  }
-  tenants.sort((a, b) => (a.slug ?? "").localeCompare(b.slug ?? ""));
-  return { mode: "nested", tenants };
+  if (hasReposDir) throw new RemovedReposLayoutError(configDir);
+}
+
+/**
+ * Discover the tenants a solo deployment should supervise right now: exactly
+ * one, the top config run in place. Throws {@link RemovedReposLayoutError} when
+ * the root still carries a `repos/` directory, so a caller that reaches here
+ * with a removed-layout tree learns that rather than being handed a "tenant"
+ * whose config carries no per-repo fields.
+ *
+ * Workspace mode is *not* discovered here — it needs the loaded root config's
+ * `workspace` block and async child-config parsing. Call
+ * {@link discoverWorkspaceTenants} after {@link readWorkspaceField}; a root that
+ * declares `workspace` never reaches this function.
+ */
+export function discoverTenants(configDir: string): SoloDiscovery {
+  assertNotRemovedReposLayout(configDir);
+  return { mode: "solo", tenants: [tenantAt(configDir, configDir, null)] };
 }
 
 /**
@@ -323,11 +397,16 @@ function shouldSkipWorkspaceDir(name: string): boolean {
 export type WorkspaceHold = {
   dir: string;
   reason: string;
+  /**
+   * Config `repoSlug` when discovery got far enough to recover it before
+   * holding — today only the origin-mismatch skip. `null` when the hold landed
+   * before the config was readable. `phoebe list` uses this to keep a held row's
+   * slug and its data / `status.json` columns lit (#140).
+   */
+  slug: string | null;
 };
 
-export type WorkspaceDiscoveryResult = {
-  mode: "workspace";
-  tenants: DiscoveredTenant[];
+export type WorkspaceDiscoveryResult = WorkspaceDiscovery & {
   holds: WorkspaceHold[];
   /** Absolute declared directories on the explicit arm (reconcile hold semantics). */
   declaredDirs?: readonly string[];
@@ -355,11 +434,46 @@ export type DiscoverWorkspaceDeps = {
    */
   readOriginUrl?: (tenantDir: string) => string | null | Promise<string | null>;
   warn?: (message: string) => void;
+  /** Injectable container probe (tests); defaults to {@link isInsideContainer}. */
+  inContainer?: () => boolean;
 };
 
 /** Resolve one declared `workspace.tenants` entry to an absolute tenant dir. */
 export function resolveDeclaredTenantDir(configDir: string, entry: string): string {
-  return isAbsolute(entry) ? entry : resolve(configDir, entry);
+  return tenantDirId(configDir, entry);
+}
+
+/** Hold reason when a declared dir is absent on the host — already the whole truth. */
+export const DIRECTORY_ABSENT_HOLD_REASON = "directory absent";
+
+/**
+ * Hold reason when a declared out-of-tree dir is absent inside the container.
+ * Out-of-tree tenants are a host-only affordance and are not bind-mounted in.
+ */
+export const OUT_OF_TREE_CONTAINER_HOLD_REASON =
+  "out-of-tree tenant not visible inside the container (host-only affordance)";
+
+/** Whether a resolved tenant dir sits outside the workspace root checkout. */
+export function isOutsideWorkspaceRoot(workspaceRoot: string, tenantDir: string): boolean {
+  const root = resolve(workspaceRoot);
+  const dir = resolve(tenantDir);
+  if (dir === root) return false;
+  const rel = relative(root, dir);
+  // Only a parent-path segment means out of tree — an in-tree child may itself
+  // be named `..tenant`, whose relative path starts with ".." but stays inside.
+  return rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
+}
+
+/** Hold reason for a declared dir discovery cannot stat as a directory. */
+export function absentDeclaredDirHoldReason(
+  workspaceRoot: string,
+  tenantDir: string,
+  inContainer: boolean,
+): string {
+  if (inContainer && isOutsideWorkspaceRoot(workspaceRoot, tenantDir)) {
+    return OUT_OF_TREE_CONTAINER_HOLD_REASON;
+  }
+  return DIRECTORY_ABSENT_HOLD_REASON;
 }
 
 function isAbsentTenantDir(dir: string): boolean {
@@ -378,11 +492,16 @@ function structuralHolds(
   candidates: readonly string[],
   tenants: readonly DiscoveredTenant[],
   skipReasons: ReadonlyMap<string, string>,
+  recoveredSlugs: ReadonlyMap<string, string>,
 ): WorkspaceHold[] {
   const successful = new Set(tenants.map((tenant) => tenant.id));
   return candidates
     .filter((dir) => !successful.has(dir))
-    .map((dir) => ({ dir, reason: skipReasons.get(dir) ?? "discovery failed" }));
+    .map((dir) => ({
+      dir,
+      reason: skipReasons.get(dir) ?? "discovery failed",
+      slug: recoveredSlugs.get(dir) ?? null,
+    }));
 }
 
 /**
@@ -405,16 +524,23 @@ export async function discoverWorkspaceTenants(
   deps: DiscoverWorkspaceDeps,
 ): Promise<WorkspaceDiscoveryResult> {
   const warn = deps.warn ?? (() => {});
+  const inContainer = deps.inContainer ?? isInsideContainer;
   const readOrigin = deps.readOriginUrl ?? readTenantOriginUrl;
   const tenants: DiscoveredTenant[] = [];
   const skipReasons = new Map<string, string>();
+  /** Held dir → config `repoSlug` discovery had already read (#140). */
+  const recoveredSlugs = new Map<string, string>();
   const attempted = new Set<string>();
   /** Fleet uniqueness: config `repoSlug` → first tenant dir. */
   const bySlug = new Map<string, string>();
   /** Fleet uniqueness: transport-normalised origin slug → first tenant dir. */
   const byOriginSlug = new Map<string, string>();
 
-  const consider = async (dir: string): Promise<void> => {
+  // `dir` is normalized to its absolute form up front: that path is the tenant's
+  // reconcile identity, so two spellings of one directory must not read as two
+  // tenants (#139). `declaredPath` is the explicit arm's spelling, diagnostics only.
+  const consider = async (rawDir: string, declaredPath?: string): Promise<void> => {
+    const dir = tenantDirId(configDir, rawDir);
     attempted.add(dir);
     const configPath = join(dir, TENANT_CONFIG_FILE);
     try {
@@ -454,6 +580,9 @@ export async function discoverWorkspaceTenants(
           `origin slug "${originSlug}" does not match config repoSlug "${slug}" ` +
           `(config is authoritative; fix the checkout origin or the child's repoSlug)`;
         skipReasons.set(dir, reason);
+        // The config was readable, so `phoebe list` can still name this tenant
+        // and read its data dir / status.json (#140).
+        recoveredSlugs.set(dir, slug);
         warnWorkspaceSkip(warn, dir, reason);
         return;
       }
@@ -464,7 +593,7 @@ export async function discoverWorkspaceTenants(
       const tenantConfigDir = deps.loadConfigDir
         ? (await deps.loadConfigDir(configPath)).trim()
         : DEFAULT_TENANT_CONFIG_DIR;
-      tenants.push(tenantAt(dir, slug, tenantConfigDir));
+      tenants.push(tenantAt(configDir, dir, slug, tenantConfigDir, declaredPath));
     } catch (error) {
       if (isFatalWorkspaceDiscoveryError(error)) throw error;
       const reason = error instanceof Error ? error.message : String(error);
@@ -491,9 +620,9 @@ export async function discoverWorkspaceTenants(
     const declaredDirs = workspace.tenants.map((entry) =>
       resolveDeclaredTenantDir(configDir, entry),
     );
-    for (const dir of declaredDirs) {
+    for (const [index, dir] of declaredDirs.entries()) {
       if (isAbsentTenantDir(dir)) {
-        const reason = "directory absent";
+        const reason = absentDeclaredDirHoldReason(configDir, dir, inContainer());
         skipReasons.set(dir, reason);
         warnWorkspaceSkip(warn, dir, reason);
         continue;
@@ -504,12 +633,12 @@ export async function discoverWorkspaceTenants(
         warnWorkspaceSkip(warn, dir, reason);
         continue;
       }
-      await consider(dir);
+      await consider(dir, workspace.tenants[index]);
     }
     return {
       mode: "workspace",
       tenants,
-      holds: structuralHolds(declaredDirs, tenants, skipReasons),
+      holds: structuralHolds(declaredDirs, tenants, skipReasons, recoveredSlugs),
       declaredDirs,
     };
   }
@@ -519,6 +648,31 @@ export async function discoverWorkspaceTenants(
   return {
     mode: "workspace",
     tenants,
-    holds: structuralHolds([...attempted], tenants, skipReasons),
+    holds: structuralHolds([...attempted], tenants, skipReasons, recoveredSlugs),
   };
+}
+
+/**
+ * Depth-1 backstop for `phoebe list` on the explicit arm only (#141). Finds
+ * immediate in-tree children carrying a root-level `phoebe.config.ts` that are
+ * not declared in `workspace.tenants`. Knowingly partial — a hint, not a
+ * guarantee: out-of-tree repos and candidates deeper than depth 1 are invisible
+ * by construction. Boot and reconcile never call this.
+ */
+export function discoverUndeclaredInTreeTenants(
+  configDir: string,
+  declaredTenants: readonly string[],
+): string[] {
+  const declared = new Set(declaredTenants.map((entry) => resolve(configDir, entry)));
+
+  const undeclared: string[] = [];
+  for (const name of listDirs(configDir)) {
+    if (shouldSkipWorkspaceDir(name)) continue;
+    const dir = join(configDir, name);
+    if (!existsSync(join(dir, TENANT_CONFIG_FILE))) continue;
+    if (declared.has(resolve(dir))) continue;
+    const rel = relative(configDir, dir).replace(/\\/g, "/");
+    undeclared.push(rel.length > 0 ? rel : dir);
+  }
+  return undeclared.sort((a, b) => a.localeCompare(b));
 }

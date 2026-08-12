@@ -18,7 +18,7 @@ export type ParsedInitArgs = {
   targetDir: string;
   help: boolean;
   /**
-   * Scaffold profile. Default `flat` (today's single-tenant layout).
+   * Scaffold profile. Default `solo` (today's single-tenant layout).
    * `--workspace` and `--tenant` are mutually exclusive (#93/#94).
    */
   profile: InitProfile;
@@ -85,7 +85,7 @@ export function parseInitArgs(argv: readonly string[]): ParsedInitArgs {
       ? "tenant"
       : parsed.flags["workspace"] === true
         ? "workspace"
-        : "flat";
+        : "solo";
   const withPrompts = parsed.flags["with-prompts"] === true;
 
   if ((slug !== undefined || url !== undefined || withPrompts) && profile !== "tenant") {
@@ -108,10 +108,10 @@ const FILE_LIST_COLUMN_WIDTH = 29;
 
 /**
  * The one-line description shown next to each scaffolded output in the
- * `flat`/`workspace` blocks below (#74) — everything else about the list
+ * `solo`/`workspace` blocks below (#74) — everything else about the list
  * (which paths, in which order) comes from `planInitOutputs`. Keyed by
  * `fileListKey`'s grouped key rather than the raw `destRelPath`, since every
- * shipped prompt collapses to one `prompts/` line (flat) and every container
+ * shipped prompt collapses to one `prompts/` line (solo) and every container
  * file collapses to one `container/` line (workspace).
  */
 const FLAT_FILE_DESCRIPTIONS: Readonly<Record<string, string>> = {
@@ -127,13 +127,13 @@ const FLAT_FILE_DESCRIPTIONS: Readonly<Record<string, string>> = {
 const WORKSPACE_FILE_DESCRIPTIONS: Readonly<Record<string, string>> = {
   "phoebe.config.ts": "engine + workspace: { depth: 1 } only (no per-repo fields)",
   ".env.example": "Deployment secrets (GH_TOKEN, provider keys) — no tenant secrets",
-  "container/": "Same #57 templates as flat, plus README.md mount docs",
+  "container/": "Same #57 templates as solo, plus README.md mount docs",
   ".gitignore": "Additive — .env, node_modules/",
 };
 
 /** The key a planned output's help line is grouped under (see the file-description doc above). */
-function fileListKey(profile: "flat" | "workspace", output: PlannedOutput): string {
-  if (profile === "flat" && output.source.kind === "shipped-prompt") return "prompts/";
+function fileListKey(profile: "solo" | "workspace", output: PlannedOutput): string {
+  if (profile === "solo" && output.source.kind === "shipped-prompt") return "prompts/";
   if (profile === "workspace" && output.destRelPath.startsWith("container/")) return "container/";
   return output.destRelPath;
 }
@@ -147,7 +147,7 @@ function fileListKey(profile: "flat" | "workspace", output: PlannedOutput): stri
  * produces, throws at import time rather than silently drifting.
  */
 function renderFileList(
-  profile: "flat" | "workspace",
+  profile: "solo" | "workspace",
   descriptions: Readonly<Record<string, string>>,
 ): string {
   const seen = new Set<string>();
@@ -179,15 +179,15 @@ function renderFileList(
 export const INIT_HELP_TEXT = `phoebe init — scaffold a consumer-owned runtime
 
 Usage:
-  phoebe init [dir]                 Flat single-tenant deployment (default)
+  phoebe init [dir]                 Solo single-tenant deployment (default)
   phoebe init --workspace [dir]     Workspace root (engine + workspace block)
   phoebe init --tenant [dir]        Workspace child in-tree install
                                     [--slug owner/repo] [--url <git-url>] [--with-prompts]
 
-Profiles (mutually exclusive; default is flat):
+Profiles (mutually exclusive; default is solo):
 
-  flat (default) writes into [dir]:
-${renderFileList("flat", FLAT_FILE_DESCRIPTIONS)}
+  solo (default) writes into [dir]:
+${renderFileList("solo", FLAT_FILE_DESCRIPTIONS)}
 
   --workspace writes into [dir]:
 ${renderFileList("workspace", WORKSPACE_FILE_DESCRIPTIONS)}
@@ -203,12 +203,12 @@ ${renderFileList("workspace", WORKSPACE_FILE_DESCRIPTIONS)}
     Prefills repoSlug/repoUrl from the child's \`origin\` remote; --slug/--url win.
     Absent origin → placeholder slug/url the operator fills. Re-run refuses if config exists.
 
-Flat/workspace: existing files are left untouched. Tenant: refuses to overwrite.
+Solo/workspace: existing files are left untouched. Tenant: refuses to overwrite.
 `;
 
 export const initCommand: Command = {
   name: "init",
-  summary: `phoebe init [dir]                Scaffold a flat single-tenant deployment
+  summary: `phoebe init [dir]                Scaffold a solo single-tenant deployment
   phoebe init --workspace [dir]    Scaffold a workspace root (multi-child)
   phoebe init --tenant [dir]       Scaffold a workspace child in-tree install`,
   help: INIT_HELP_TEXT,

@@ -8,24 +8,28 @@
 // can import the table without a cycle: `index.ts` imports `engine.ts` for
 // `engineCommand`/`buildHelpText`, so `engine.ts` cannot import `index.ts` back.
 
-import { addRepoCommand } from "./add-repo.ts";
 import { configResolveCommand } from "./config-resolve.ts";
+import { doctorCommand } from "./doctor.ts";
 import { initCommand } from "./init.ts";
 import { listCommand } from "./list.ts";
 import { purgeCommand } from "./purge.ts";
-import { removeRepoCommand } from "./remove-repo.ts";
 import { serveCommand } from "./serve.ts";
 import { setupCommand } from "./setup.ts";
+import { startCommand } from "./start.ts";
 import { statusCommand } from "./status.ts";
+import { stopCommand } from "./stop.ts";
+import { upgradeCommand } from "./upgrade.ts";
 import type { Command } from "./types.ts";
 
 export const COMMAND_TABLE: Readonly<Record<string, Command>> = {
   setup: setupCommand,
   init: initCommand,
-  "add-repo": addRepoCommand,
-  "remove-repo": removeRepoCommand,
   list: listCommand,
   purge: purgeCommand,
+  upgrade: upgradeCommand,
+  doctor: doctorCommand,
+  stop: stopCommand,
+  start: startCommand,
   serve: serveCommand,
   config: configResolveCommand,
   status: statusCommand,

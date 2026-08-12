@@ -23,6 +23,19 @@ const config: PhoebeUserConfig = {
   // CURSOR_API_KEY in the container env (see .env).
   defaultProvider: "cursor",
 
+  // The engine child's cwd is this directory (compose `working_dir`), so point
+  // every prompt at the repo's own `prompts/` one level up instead of keeping a
+  // second copy under `.phoebe/prompts/`. The whole working tree is mounted, so
+  // `..` is in reach, and one tree means a prompt improvement merged to
+  // `prompts/` actually reaches the agent working this repo (#164).
+  promptFiles: {
+    issue: "../prompts/issues-prompt.md",
+    conflict: "../prompts/conflict-prompt.md",
+    checks: "../prompts/checks-prompt.md",
+    reviews: "../prompts/reviews-prompt.md",
+    research: "../prompts/research-prompt.md",
+  },
+
   // Run the engine from the host working tree mounted at /opt/phoebe-engine
   // (container/compose.yml) rather than a github checkout, so `boot` execs
   // exactly what is checked out. Only the bootstrapper reads this field; the

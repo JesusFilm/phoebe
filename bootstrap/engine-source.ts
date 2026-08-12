@@ -57,6 +57,15 @@ export type { ResolvedEngineSource };
  * typo (bad `source`, numeric `ref`/`repo`) fails loudly instead of silently
  * resolving to the wrong source.
  */
+/** Whether two resolved sources name the same engine — the semantic confirm on a stat-only config move. */
+export function engineSourcesEqual(a: ResolvedEngineSource, b: ResolvedEngineSource): boolean {
+  if (a.source === "local" && b.source === "local") return true;
+  if (a.source === "github" && b.source === "github") {
+    return a.ref === b.ref && a.repo === b.repo;
+  }
+  return false;
+}
+
 export function readEngineSource(config: Record<string, unknown>): ResolvedEngineSource {
   const field = config["engine"];
   if (field !== undefined) validateEngineSourceField(field);
