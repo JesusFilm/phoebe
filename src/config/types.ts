@@ -253,6 +253,19 @@ export type PhoebeConfig = {
    */
   leaseTtlMs: number;
   /**
+   * Fleet cost backstop (#168): the max branch pushes this repo may make in a
+   * wall-clock hour — bounds rebase/fix-push churn (each a full CI run), not
+   * open-PR count. Counted at the single `pushBranch` choke point
+   * (`src/git-model.ts`) and persisted under `paths.stateDir` so a restart
+   * mid-hour can't reset the budget. When spent, the janitor kinds
+   * (`conflicts`/`checks`/`reviews` — the kinds that push to *existing* PR
+   * branches) are excluded from selection for the rest of that hour; the
+   * producer kinds (`issues`/`research`) are unaffected, so a spent budget
+   * pauses PR churn without starving new work. Env-overridable via
+   * `PHOEBE_MAX_PUSHES_PER_HOUR`. Default 20.
+   */
+  maxPushesPerHour: number;
+  /**
    * Per-tenant filesystem layout. Not user-supplied: derived from `repoSlug`
    * and the deployment data base by `resolveConfiguration` (see src/paths.ts,
    * #58/#62).
@@ -333,6 +346,8 @@ export type PhoebeUserConfig = {
   maxUnitAttempts?: number;
   /** Claim-lease TTL in ms before an orphaned claim is reclaimed (#15); default 30 min. */
   leaseTtlMs?: number;
+  /** Max branch pushes this repo may make per wall-clock hour (#168); default 20. */
+  maxPushesPerHour?: number;
 };
 
 export const WORK_KIND_NAMES = ["conflicts", "checks", "reviews", "issues", "research"] as const;

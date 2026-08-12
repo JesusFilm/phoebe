@@ -349,6 +349,7 @@ describe("loadConfiguration", () => {
           maxUnitTimeouts: 5,
           maxUnitAttempts: 2,
           leaseTtlMs: 120_000,
+          maxPushesPerHour: 8,
         },
       })}\n`,
     );
@@ -379,6 +380,7 @@ describe("loadConfiguration", () => {
       maxUnitTimeouts: 5,
       maxUnitAttempts: 2,
       leaseTtlMs: 120_000,
+      maxPushesPerHour: 8,
     });
     expect(resolved.config.promptFiles.issue).toBe("managed/issue.md");
     expect(resolved.config.defaultModels.claude).toBe("managed-model");

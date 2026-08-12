@@ -129,6 +129,7 @@ export function resolveConfig(
     maxUnitTimeouts: user.maxUnitTimeouts ?? ROSTER.maxUnitTimeouts.default,
     maxUnitAttempts: user.maxUnitAttempts ?? ROSTER.maxUnitAttempts.default,
     leaseTtlMs: user.leaseTtlMs ?? ROSTER.leaseTtlMs.default,
+    maxPushesPerHour: user.maxPushesPerHour ?? ROSTER.maxPushesPerHour.default,
     paths: derivePaths(user.repoSlug, opts.dataBase),
   };
 }

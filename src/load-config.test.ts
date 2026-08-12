@@ -86,14 +86,16 @@ describe("PHOEBE_* env overlay (via resolveConfiguration)", () => {
     expect(() => resolveWithEnv({ [envKey]: invalid })).toThrow(new RegExp(envKey));
   });
 
-  // The four run-protection knobs (#56, folded off their own bespoke
-  // point-of-use readers): a number field overlay parses the env string and
-  // rejects anything that isn't a positive number/integer.
+  // The numeric run-protection / cost-backstop knobs (#56, folded off their
+  // own bespoke point-of-use readers; #168 added the push-rate one): a number
+  // field overlay parses the env string and rejects anything that isn't a
+  // positive number/integer.
   const NUMERIC_OVERLAYS = [
     ["PHOEBE_RUN_TIMEOUT_MS", "runTimeoutMs", 60_000],
     ["PHOEBE_MAX_UNIT_TIMEOUTS", "maxUnitTimeouts", 5],
     ["PHOEBE_MAX_UNIT_ATTEMPTS", "maxUnitAttempts", 4],
     ["PHOEBE_LEASE_TTL_MS", "leaseTtlMs", 120_000],
+    ["PHOEBE_MAX_PUSHES_PER_HOUR", "maxPushesPerHour", 5],
   ] as const;
 
   test.each(NUMERIC_OVERLAYS)("%s overlays %s", (envKey, field, value) => {
@@ -108,12 +110,13 @@ describe("PHOEBE_* env overlay (via resolveConfiguration)", () => {
     expect(() => resolveWithEnv({ [envKey]: "0" })).toThrow(new RegExp(envKey));
   });
 
-  test("the four run-protection knobs default when env is unset", () => {
+  test("the run-protection knobs default when env is unset", () => {
     const resolved = resolveWithEnv({});
     expect(resolved.runTimeoutMs).toBe(2_700_000);
     expect(resolved.maxUnitTimeouts).toBe(3);
     expect(resolved.maxUnitAttempts).toBe(3);
     expect(resolved.leaseTtlMs).toBe(1_800_000);
+    expect(resolved.maxPushesPerHour).toBe(20);
   });
 });
 

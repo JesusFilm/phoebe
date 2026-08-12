@@ -43,6 +43,7 @@ import {
   removeWorktree,
   worktreeDirForBranch,
 } from "./git-model.ts";
+import { pushBudgetExhausted, recordPush } from "./push-rate-limit.ts";
 import { runAgent } from "./providers/run-agent.ts";
 import { selectProvider } from "./providers/select.ts";
 import { classifyTier } from "./tier.ts";
@@ -234,7 +235,13 @@ export async function runEngine(opts: {
         return worktreeDir;
       },
       removeWorktree: (worktreeDir: string) => removeWorktree(repoDir, worktreeDir),
-      pushBranch: (worktreeDir: string, branch: BranchRef) => pushBranch(worktreeDir, branch),
+      // #168: every kind's push funnels through this one binding — the choke
+      // point where a push is counted toward the hourly budget the loop checks
+      // before selection, below.
+      pushBranch: (worktreeDir: string, branch: BranchRef) => {
+        pushBranch(worktreeDir, branch);
+        recordPush(config.paths.stateDir, new Date());
+      },
       commitCount: (worktreeDir: string, range: string) => commitCount(worktreeDir, range),
       gitInWorktree,
     };
@@ -442,7 +449,27 @@ export async function runEngine(opts: {
       const orderedKinds = workOrder
         .map((name) => kindHandles.find((k) => k.name === name))
         .filter((k): k is KindHandle => k !== undefined);
-      const fetchKinds = runOnce ? oneShotEligible(orderedKinds) : orderedKinds;
+
+      // #168: a spent hourly push budget excludes the janitor kinds
+      // (conflicts/checks/reviews — the ones that push to *existing* PR
+      // branches on every sweep, the cost driver this bounds) from selection
+      // for the rest of the hour, reusing the same one-shot-eligible filter
+      // `--run-once` already uses. Falling through to the producer kinds
+      // (issues/research) rather than idling the whole cycle is the
+      // deliberate choice: it caps PR-churn cost without also starving
+      // brand-new issue pickup behind it (see docs/work-kinds.md's
+      // starvation tradeoff, which this reuses rather than duplicates).
+      const pushBudgetSpent = pushBudgetExhausted(
+        config.paths.stateDir,
+        config.maxPushesPerHour,
+        new Date(),
+      );
+      if (pushBudgetSpent) {
+        phoebeLog(
+          `Push budget spent (${config.maxPushesPerHour}/hour) — skipping conflicts/checks/reviews this cycle.`,
+        );
+      }
+      const fetchKinds = runOnce || pushBudgetSpent ? oneShotEligible(orderedKinds) : orderedKinds;
 
       const gathered = await gatherFetchPhase(fetchKinds, ctx, {
         secrets: contractContext.secrets,

@@ -335,6 +335,16 @@ export const ROSTER = {
     baseAllowed: true,
     validate: assertPositiveNumber,
   },
+  // A cost backstop, not a throughput target (#168) — high enough that a
+  // healthy repo never notices it, low enough to cap a red-`main` regenerate
+  // loop across a large PR backlog.
+  maxPushesPerHour: {
+    kind: { type: "number" },
+    default: 20,
+    env: "PHOEBE_MAX_PUSHES_PER_HOUR",
+    baseAllowed: true,
+    validate: assertPositiveInteger,
+  },
 } as const satisfies Record<keyof PhoebeUserConfig, FieldDescriptor>;
 
 export type RosterField = keyof typeof ROSTER;

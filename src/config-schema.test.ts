@@ -167,6 +167,7 @@ describe("resolveConfiguration: filling in the roster's shipped defaults", () =>
     expect(resolved.maxUnitTimeouts).toBe(3);
     expect(resolved.maxUnitAttempts).toBe(3);
     expect(resolved.leaseTtlMs).toBe(1_800_000);
+    expect(resolved.maxPushesPerHour).toBe(20);
   });
 
   test("run-protection knobs honor an override", () => {
@@ -175,11 +176,13 @@ describe("resolveConfiguration: filling in the roster's shipped defaults", () =>
       maxUnitTimeouts: 5,
       maxUnitAttempts: 4,
       leaseTtlMs: 120_000,
+      maxPushesPerHour: 5,
     });
     expect(resolved.runTimeoutMs).toBe(60_000);
     expect(resolved.maxUnitTimeouts).toBe(5);
     expect(resolved.maxUnitAttempts).toBe(4);
     expect(resolved.leaseTtlMs).toBe(120_000);
+    expect(resolved.maxPushesPerHour).toBe(5);
   });
 
   test("preserves the caller's required-field values verbatim", () => {

@@ -46,6 +46,40 @@ If a kind or issue is starving something you care about, mitigate by hand:
 reorder `workOrder` per-tenant in `phoebe.config.ts`, or remove `readyLabel`
 from an issue to pause it without deleting it.
 
+## Push rate limit
+
+`maxPushesPerHour` (default 20, env `PHOEBE_MAX_PUSHES_PER_HOUR`) bounds branch
+**pushes** per wall-clock hour, not open PR count — a tenant with a large
+backlog of open Phoebe PRs and a red `main` would otherwise have every janitor
+sweep regenerate and push to several of them, each push a full CI run, with
+nothing bounding the rate (#168). The counter lives beside the rest of the
+engine's persisted state (`paths.stateDir`) so a container restart mid-hour
+doesn't reset the budget, and it uses a wall-clock hour bucket rather than a
+rolling window — cheaper to maintain and adequate for a cost backstop (same
+rationale as Renovate's `commitHourlyLimit`).
+
+Every push funnels through one choke point (`pushBranch`, `src/git-model.ts`,
+bound once in `main.ts`'s `buildGitOps`), so counting is kind-agnostic — a
+push from any kind counts against the same budget. The **check**, though, is
+selective: once the hour's budget is spent, `main.ts` excludes only the
+**janitor** kinds (`conflicts`/`checks`/`reviews` — the kinds that push to
+_already-open_ PR branches, the actual rebase/fix-push cost driver) from that
+cycle's selection, reusing the same `oneShotEligible` filter `--run-once`
+already applies. The **producer** kinds (`issues`/`research`) are unaffected.
+
+This was a deliberate choice between the two ways a rate-limited cycle could
+behave:
+
+- **Skip the unit** — block selection outright until the hour rolls over.
+  Simpler, but a tenant with a large janitor backlog would also starve
+  `issues`/`research` for as long as the budget stays spent, on top of the
+  starvation tradeoff already documented above.
+- **Pick a different kind** (chosen) — fall through to the producer kinds
+  instead of idling. This caps the PR-churn cost the issue is about without
+  also pausing brand-new work behind it. The tradeoff: a producer kind can
+  still push (e.g. `issues` opening a first PR) once the janitors are capped,
+  so the budget is a backstop on total push volume, not a hard per-kind quota.
+
 ## Which PRs the janitors scan
 
 All three janitors scan open PRs based on the same scope rules (`isPrInScope`):
