@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vite-plus/test";
-import { buildAgentEnv } from "./agent-env.ts";
+import { buildAgentEnv, generateTraceparent } from "./agent-env.ts";
 
 const providerEnv = {
   cursor: "CURSOR_API_KEY",
@@ -57,5 +57,33 @@ describe("buildAgentEnv", () => {
       providerEnv,
     });
     expect(env).toEqual({ CI: "true", PATH: "/usr/bin" });
+  });
+
+  test("passes a TRACEPARENT set on the parent env through to the child", () => {
+    const env = buildAgentEnv({
+      parentEnv: { ...parentEnv, TRACEPARENT: "00-abc123-def456-01" },
+      provider: "claude",
+      providerEnv,
+    });
+    expect(env["TRACEPARENT"]).toBe("00-abc123-def456-01");
+  });
+
+  test("no TRACEPARENT in the parent env means none in the child", () => {
+    const env = buildAgentEnv({ parentEnv, provider: "claude", providerEnv });
+    expect(env).not.toHaveProperty("TRACEPARENT");
+  });
+});
+
+describe("generateTraceparent", () => {
+  const TRACEPARENT_PATTERN = /^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/;
+
+  test("produces a well-formed, sampled W3C traceparent", () => {
+    expect(generateTraceparent()).toMatch(TRACEPARENT_PATTERN);
+  });
+
+  test("generates a fresh trace/span id on every call", () => {
+    const first = generateTraceparent();
+    const second = generateTraceparent();
+    expect(first).not.toBe(second);
   });
 });

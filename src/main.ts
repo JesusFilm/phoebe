@@ -21,7 +21,7 @@ import { execFileSync, execSync, spawnSync } from "node:child_process";
 import { validateWorkOrder, type PhoebeConfig } from "./config/index.ts";
 import type { BranchRef } from "./branded.ts";
 import { createGitHub, defaultGhRun, type GitHub } from "./github.ts";
-import { buildAgentEnv } from "./agent-env.ts";
+import { buildAgentEnv, generateTraceparent } from "./agent-env.ts";
 import { installDrainSignal, REF_CHANGE_DRAIN_SIGNAL, type DrainSignal } from "./drain.ts";
 import { BrokerDisconnectedError, createSlotClient, type SlotClient } from "./slot-client.ts";
 import { RunTimeoutError, runWithDeadline } from "./run-timeout.ts";
@@ -302,8 +302,11 @@ export async function runEngine(opts: {
   }): Promise<{ exitCode: number; usage?: AgentUsage; costUsd?: number }> {
     const tier = classifyTier(agentOpts.labels ?? []);
     const { provider, model, effort } = selectProvider({ config, env: process.env, tier });
+    // #170: one trace per agent run, so the agent CLI's own spans (e.g.
+    // Claude Code's `claude_code.interaction` tree) are attributable to this
+    // Phoebe unit instead of landing in an unrelated or absent trace.
     const env = buildAgentEnv({
-      parentEnv: process.env,
+      parentEnv: { ...process.env, TRACEPARENT: generateTraceparent() },
       provider: provider.name,
       providerEnv: config.providerEnv,
     });
