@@ -12,10 +12,12 @@ import type { CycleContext } from "../cycle.ts";
 import type { Io } from "./kind.ts";
 import { createReviewsKind, type ReviewsData, type ReviewsUnit } from "./reviews.ts";
 
+let threadIdSeq = 0;
+
 function reviewThread(
   overrides: Partial<ReviewThread> & Pick<ReviewThread, "comments">,
 ): ReviewThread {
-  return { isResolved: false, isOutdated: false, ...overrides };
+  return { id: `thread-${++threadIdSeq}`, isResolved: false, isOutdated: false, ...overrides };
 }
 
 function reviewsPr(
@@ -260,6 +262,100 @@ describe("createReviewsKind — run", () => {
       "<!-- phoebe-reviews-handled: latest=2026-06-03T12:00:00Z -->",
     );
   });
+
+  test("a successful fix push resolves the pre-run eligible threads, skipping already-resolved/outdated ones (#169)", async () => {
+    const resolved: string[] = [];
+    const fixThread = reviewThread({
+      id: "t-fix",
+      comments: [{ authorLogin: "reviewer", createdAt: "2026-06-03T12:00:00Z" }],
+    });
+    const alreadyResolvedThread = reviewThread({
+      id: "t-done",
+      isResolved: true,
+      comments: [{ authorLogin: "reviewer", createdAt: "2026-06-01T00:00:00Z" }],
+    });
+    const outdatedThread = reviewThread({
+      id: "t-outdated",
+      isOutdated: true,
+      comments: [{ authorLogin: "reviewer", createdAt: "2026-06-01T00:00:00Z" }],
+    });
+    const pushedUnit = reviewsPr({
+      prNumber: 201,
+      threads: [fixThread, alreadyResolvedThread, outdatedThread],
+    });
+    const io = fakeIo({
+      github: {
+        ...fakeIo().github,
+        resolveReviewThread: (threadId) => {
+          resolved.push(threadId);
+        },
+      },
+      git: { ...fakeIo().git, commitCount: () => 1 },
+    });
+    const kind = createReviewsKind({ config, io });
+    await kind.run(pushedUnit, fakeCtx());
+    expect(resolved).toEqual(["t-fix"]);
+  });
+
+  test("no push means no thread is resolved", async () => {
+    const resolved: string[] = [];
+    const io = fakeIo({
+      github: {
+        ...fakeIo().github,
+        resolveReviewThread: (threadId) => {
+          resolved.push(threadId);
+        },
+      },
+    });
+    const kind = createReviewsKind({ config, io });
+    await kind.run(unit, fakeCtx());
+    expect(resolved).toEqual([]);
+  });
+
+  test("minimizes prior Phoebe handled/failure markers as OUTDATED, leaving human comments and the fresh marker alone (#169)", async () => {
+    const minimized: Array<{ commentId: string; classifier: string }> = [];
+    const io = fakeIo({
+      github: {
+        ...fakeIo().github,
+        prActivity: () => ({
+          headRefOid: asSha("aaa"),
+          lastCommitAt: null,
+          comments: [
+            {
+              id: "old-marker",
+              createdAt: "2026-06-01T00:00:00Z",
+              authorLogin: "phoebe-bot",
+              body: "<!-- phoebe-reviews-handled: latest=2026-05-01T00:00:00Z -->",
+            },
+            {
+              id: "old-failure-marker",
+              createdAt: "2026-06-02T00:00:00Z",
+              authorLogin: "phoebe-bot",
+              body:
+                "Phoebe attempted to handle review feedback and failed; will retry on new review activity.\n\n" +
+                "<!-- phoebe-reviews-handled: latest=2026-05-02T00:00:00Z -->",
+            },
+            {
+              id: "human-comment",
+              createdAt: "2026-06-02T12:00:00Z",
+              authorLogin: "reviewer",
+              body: "still not happy with this",
+            },
+          ],
+          labels: [],
+        }),
+        minimizeComment: (commentId, classifier) => {
+          minimized.push({ commentId, classifier });
+        },
+      },
+    });
+    const kind = createReviewsKind({ config, io });
+    await kind.run(unit, fakeCtx());
+    expect(minimized).toEqual([
+      { commentId: "old-marker", classifier: "OUTDATED" },
+      { commentId: "old-failure-marker", classifier: "OUTDATED" },
+    ]);
+  });
 });
 
 describe("createReviewsKind — labels (#155)", () => {
@@ -354,6 +450,8 @@ function fakeIo(overrides: Partial<Io> = {}): Io {
       }),
       reviewThreads: () => [],
       commitCheckRuns: () => [],
+      resolveReviewThread: () => {},
+      minimizeComment: () => {},
       commentIssue: () => {},
       commentPr: () => {},
       createPr: () => {},

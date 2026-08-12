@@ -439,6 +439,7 @@ describe("reviewThreads — unscoped GraphQL (owner/repo as query vars, no -R), 
               pageInfo: { hasNextPage: true, endCursor: "cursor-1" },
               nodes: [
                 {
+                  id: "PRRT_1",
                   isResolved: false,
                   isOutdated: false,
                   comments: {
@@ -459,6 +460,7 @@ describe("reviewThreads — unscoped GraphQL (owner/repo as query vars, no -R), 
               pageInfo: { hasNextPage: false, endCursor: null },
               nodes: [
                 {
+                  id: "PRRT_2",
                   isResolved: true,
                   isOutdated: false,
                   comments: { nodes: [{ createdAt: "2026-01-02T00:00:00Z", author: null }] },
@@ -474,11 +476,13 @@ describe("reviewThreads — unscoped GraphQL (owner/repo as query vars, no -R), 
 
     expect(github.reviewThreads(asPrNumber(9))).toEqual([
       {
+        id: "PRRT_1",
         isResolved: false,
         isOutdated: false,
         comments: [{ createdAt: "2026-01-01T00:00:00Z", authorLogin: "r1" }],
       },
       {
+        id: "PRRT_2",
         isResolved: true,
         isOutdated: false,
         comments: [{ createdAt: "2026-01-02T00:00:00Z", authorLogin: "" }],
@@ -642,7 +646,7 @@ describe("createPr — stdin piping, scoped", () => {
   });
 });
 
-describe("unscoped methods — installStackExtension / login / updateComment", () => {
+describe("unscoped methods — installStackExtension / login / updateComment / resolveReviewThread / minimizeComment", () => {
   test("installStackExtension has no -R", () => {
     const { run, calls } = fakeRun();
     const github = createGitHub({ repoSlug: REPO_SLUG, run });
@@ -670,6 +674,36 @@ describe("unscoped methods — installStackExtension / login / updateComment", (
       "id=PRIC_kwABC",
       "-f",
       "body=new body",
+    ]);
+  });
+
+  test("resolveReviewThread resolves by GraphQL node id, no -R", () => {
+    const { run, calls } = fakeRun();
+    const github = createGitHub({ repoSlug: REPO_SLUG, run });
+    github.resolveReviewThread("PRRT_kwABC");
+    expect(calls[0]!.args).toEqual([
+      "api",
+      "graphql",
+      "-f",
+      "query=mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{id isResolved}}}",
+      "-f",
+      "id=PRRT_kwABC",
+    ]);
+  });
+
+  test("minimizeComment collapses by GraphQL node id + classifier, no -R", () => {
+    const { run, calls } = fakeRun();
+    const github = createGitHub({ repoSlug: REPO_SLUG, run });
+    github.minimizeComment("PRIC_kwABC", "OUTDATED");
+    expect(calls[0]!.args).toEqual([
+      "api",
+      "graphql",
+      "-f",
+      "query=mutation($id:ID!,$classifier:ReportedContentClassifiers!){minimizeComment(input:{subjectId:$id, classifier:$classifier}){minimizedComment{isMinimized}}}",
+      "-f",
+      "id=PRIC_kwABC",
+      "-f",
+      "classifier=OUTDATED",
     ]);
   });
 });

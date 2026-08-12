@@ -74,10 +74,21 @@ export type ReviewThreadComment = {
 };
 
 export type ReviewThread = {
+  id: string;
   isResolved: boolean;
   isOutdated: boolean;
   comments: readonly ReviewThreadComment[];
 };
+
+/** `ReportedContentClassifiers` — the enum `minimizeComment` takes. Phoebe only ever minimizes its own superseded markers, hence `OUTDATED`. */
+export type ReportedContentClassifier =
+  | "ABUSE"
+  | "SPAM"
+  | "OFF_TOPIC"
+  | "OUTDATED"
+  | "DUPLICATE"
+  | "RESOLVED"
+  | "LOW_QUALITY";
 
 export type WorkflowRunItem = {
   workflowName?: string;
@@ -149,6 +160,10 @@ export interface GitHub {
   reviewThreads(prNumber: PrNumber): ReviewThread[];
   /** Newest-per-workflow check runs for a commit. Capped at 50. */
   commitCheckRuns(sha: Sha): WorkflowRunItem[];
+  /** Unscoped: resolves a review thread by its GraphQL node id. */
+  resolveReviewThread(threadId: string): void;
+  /** Unscoped: collapses a comment (by GraphQL node id) behind a classifier, e.g. a superseded bot marker. */
+  minimizeComment(commentId: string, classifier: ReportedContentClassifier): void;
   commentIssue(issueNumber: number, body: string): void;
   commentPr(prNumber: PrNumber, body: string): void;
   createPr(opts: { head: BranchRef; base: string; title: string; body: string }): void;
@@ -210,6 +225,7 @@ type GraphQLReviewThreadsPage = {
         reviewThreads: {
           pageInfo: { hasNextPage: boolean; endCursor: string | null };
           nodes: Array<{
+            id: string;
             isResolved: boolean;
             isOutdated: boolean;
             comments: {
@@ -452,6 +468,7 @@ export function createGitHub(opts: { repoSlug: string; run?: GhRun; timeoutMs?: 
       reviewThreads(first:100${afterArg}) {
         pageInfo { hasNextPage endCursor }
         nodes {
+          id
           isResolved
           isOutdated
           comments(first:30) {
@@ -481,6 +498,7 @@ export function createGitHub(opts: { repoSlug: string; run?: GhRun; timeoutMs?: 
         const reviewThreadsPage = page.data.repository.pullRequest.reviewThreads;
         for (const node of reviewThreadsPage.nodes) {
           threads.push({
+            id: node.id,
             isResolved: node.isResolved,
             isOutdated: node.isOutdated,
             comments: node.comments.nodes.map((comment) => ({
@@ -508,6 +526,30 @@ export function createGitHub(opts: { repoSlug: string; run?: GhRun; timeoutMs?: 
         "workflowName,status,conclusion",
         "--limit",
         "50",
+      ]);
+    },
+
+    resolveReviewThread(threadId: string): void {
+      unscopedVoid([
+        "api",
+        "graphql",
+        "-f",
+        "query=mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{id isResolved}}}",
+        "-f",
+        `id=${threadId}`,
+      ]);
+    },
+
+    minimizeComment(commentId: string, classifier: ReportedContentClassifier): void {
+      unscopedVoid([
+        "api",
+        "graphql",
+        "-f",
+        "query=mutation($id:ID!,$classifier:ReportedContentClassifiers!){minimizeComment(input:{subjectId:$id, classifier:$classifier}){minimizedComment{isMinimized}}}",
+        "-f",
+        `id=${commentId}`,
+        "-f",
+        `classifier=${classifier}`,
       ]);
     },
 

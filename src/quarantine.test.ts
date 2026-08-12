@@ -291,6 +291,8 @@ function createFakeGithub(
     }),
     reviewThreads: () => [],
     commitCheckRuns: () => [],
+    resolveReviewThread: () => {},
+    minimizeComment: () => {},
     commentIssue: (_n, body) => {
       post(body);
       bumpUpdatedAt();
@@ -871,6 +873,8 @@ function createMultiUnitFakeGithub(
     },
     reviewThreads: () => [],
     commitCheckRuns: () => [],
+    resolveReviewThread: () => {},
+    minimizeComment: () => {},
     commentIssue: (n, body) => {
       const s = issues.get(n)!;
       s.comments.push({

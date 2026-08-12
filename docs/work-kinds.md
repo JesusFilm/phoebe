@@ -266,6 +266,17 @@ bot's own GitHub login (`phoebeLogin`), fetched once per cycle:
    handled and correctly re-selects the PR next cycle. If the agent produced no
    summary and no push, the comment notes the failure and Phoebe retries on new
    activity.
+4. Minimize (`minimizeComment`, classifier `OUTDATED`) every earlier Phoebe
+   `handled`/failure marker comment on the PR — the fresh one just posted
+   supersedes them. Minimizing (not deleting) keeps the audit trail while
+   collapsing the accumulating column of stale bot comments a long-running
+   janitor would otherwise leave behind.
+5. If the run produced a push, resolve (`resolveReviewThread`) every thread
+   from the **pre-run** eligibility snapshot that is still unresolved and
+   non-outdated. The agent may already have resolved some inline (its own
+   prompt-driven `resolveReviewThread` call on `fix`/`fix-adjusted` threads);
+   re-resolving is a harmless no-op. No push means nothing was addressed, so
+   no thread is touched.
 
 ## Watermarks
 

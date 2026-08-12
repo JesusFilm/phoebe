@@ -214,6 +214,18 @@ export function createReviewsKind(deps: KindDeps): WorkKind<ReviewsData, Reviews
       );
   }
 
+  /** Phoebe's own prior `handled`/failure marker comments on this PR — always superseded once a fresh one posts. */
+  function supersededHandledCommentIds(prNumber: PrNumber, phoebeLogin: string): string[] {
+    return io.github
+      .prActivity(prNumber)
+      .comments.filter(
+        (comment) =>
+          comment.authorLogin === phoebeLogin &&
+          parseReviewsHandledWatermark(comment.body) !== null,
+      )
+      .map((comment) => comment.id);
+  }
+
   async function runResolutionAgent(pr: ReviewsUnit, phoebeLogin: string): Promise<UnitResult> {
     const runStartedAt = new Date().toISOString();
     return janitor.runAgentWorkflow({
@@ -243,10 +255,31 @@ export function createReviewsKind(deps: KindDeps): WorkKind<ReviewsData, Reviews
           phoebeLog(`Review handling for PR #${pr.prNumber} produced no summary or push.`);
         }
 
+        const staleCommentIds = supersededHandledCommentIds(pr.prNumber, phoebeLogin);
+
         io.github.commentPr(
           pr.prNumber,
           buildHandledComment({ latestActivityAt, failed: !hasSummary && !pushed }),
         );
+
+        // Every prior `handled`/failure marker is superseded by the one just
+        // posted — minimize rather than delete, so the audit trail survives
+        // (#169's comment-spam failure mode, docs/trust.md).
+        for (const commentId of staleCommentIds) {
+          io.github.minimizeComment(commentId, "OUTDATED");
+        }
+
+        // Resolve the threads that made this run eligible (pre-run snapshot —
+        // see the watermark note above) once a fix push confirms they were
+        // addressed. The agent may already have resolved some inline; a
+        // repeat call is a harmless no-op.
+        if (pushed) {
+          for (const thread of pr.threads) {
+            if (!thread.isResolved && !thread.isOutdated) {
+              io.github.resolveReviewThread(thread.id);
+            }
+          }
+        }
       },
     });
   }
