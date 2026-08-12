@@ -174,6 +174,8 @@ export type WorkOutcomeEvent = {
     command: string;
     status: "passed" | "failed" | "unknown" | "not-run";
     summary: string;
+    /** Set when the engine's own run (#166) killed the command on `SHELL_COMMAND_TIMEOUT_MS` — a typed park reason (#173) distinguishing a hang from an ordinary nonzero exit, both otherwise reported as `status: "failed"`. Never set on an agent-self-reported result, which carries no timeout signal. Additive field — unset is equivalent to `false` for any reader. */
+    timedOut?: boolean;
   }>;
   retries: number;
   escalations: number;
@@ -451,7 +453,8 @@ function isEventsV1(value: unknown): value is WorkOutcomeEvent {
         hasString(item, "command") &&
         isOneOf(item["status"], VERIFICATION_STATUSES) &&
         typeof item["summary"] === "string" &&
-        item["summary"].length <= 2_000,
+        item["summary"].length <= 2_000 &&
+        (item["timedOut"] === undefined || typeof item["timedOut"] === "boolean"),
     ) &&
     isNonNegativeInteger(value["retries"]) &&
     isNonNegativeInteger(value["escalations"]) &&

@@ -100,15 +100,28 @@ export function removeVerificationReport(path: string): void {
   rmSync(path, { force: true });
 }
 
-/** One command's engine-side execution — a shell seam, not a network/API call, so it never throws: a nonzero exit or a timeout is a result, not an error. */
-export type CaptureCommand = (command: string, cwd: string) => { exitCode: number; output: string };
+/**
+ * One command's engine-side execution — a shell seam, not a network/API call,
+ * so it never throws: a nonzero exit or a timeout is a result, not an error.
+ * `timedOut` (#173) is the engine's own signal that the command was killed on
+ * `SHELL_COMMAND_TIMEOUT_MS` rather than exiting on its own — optional so a
+ * capture implementation that can't distinguish the two (none exist today,
+ * but a future/test stand-in might) is still a valid `CaptureCommand`.
+ */
+export type CaptureCommand = (
+  command: string,
+  cwd: string,
+) => { exitCode: number; output: string; timedOut?: boolean };
 
 /**
  * Run `commands` in `cwd` via `capture` and map each to a `VerificationResult`
  * — the engine's own authoritative verification run (#166), independent of
  * anything the agent claims. Mirrors `readVerificationReport`'s shape so an
  * engine-run result and an agent-reported one are interchangeable wherever
- * `VerificationResult[]` is consumed.
+ * `VerificationResult[]` is consumed. `timedOut` (#173) rides along as an
+ * additive field, distinct from `status` (still just `"failed"`) — a typed
+ * park reason for callers that need to tell a hang from an ordinary failure,
+ * without breaking anything reading `status` alone.
  */
 export function runEngineVerification(
   commands: readonly string[],
@@ -116,8 +129,9 @@ export function runEngineVerification(
   capture: CaptureCommand,
 ): VerificationResult[] {
   return commands.map((command) => {
-    const { exitCode, output } = capture(command, cwd);
-    return toVerificationResult({ command, exitCode, output });
+    const { exitCode, output, timedOut } = capture(command, cwd);
+    const result = toVerificationResult({ command, exitCode, output });
+    return timedOut ? { ...result, timedOut: true } : result;
   });
 }
 

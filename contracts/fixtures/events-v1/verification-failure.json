@@ -10,7 +10,15 @@
   "endedAt": "2026-07-30T12:03:00.000Z",
   "outcome": "verification-failure",
   "failure": { "category": "verification", "summary": "vp test failed.", "retryable": true },
-  "verification": [{ "command": "vp test", "status": "failed", "summary": "1 test failed." }],
+  "verification": [
+    { "command": "vp run check", "status": "failed", "summary": "1 test failed." },
+    {
+      "command": "vp test",
+      "status": "failed",
+      "summary": "vp test timed out.",
+      "timedOut": true
+    }
+  ],
   "retries": 1,
   "escalations": 0,
   "resources": { "durationMs": 60000, "agentExitCode": 0, "summary": "Verification failed." },

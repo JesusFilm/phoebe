@@ -369,6 +369,38 @@ describe("createQuarantine — record()", () => {
     expect(state.comments[0]!.body).toContain("n=2");
   });
 
+  test("a changed signature resets the counter even with the same ref (#173)", () => {
+    const { github, state } = createFakeGithub();
+    const quarantine = createQuarantine({
+      github,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: () => {},
+    });
+    const unit: UnitRef = { kind: "checks", target: { type: "pr", number: 10 } };
+    quarantine.record(unit, "no-commit", {
+      signature: "verify-timeout",
+      reason: "produced no commit",
+      belowThresholdNote: noteThreshold,
+    });
+    quarantine.record(unit, "no-commit", {
+      signature: "verify-timeout",
+      reason: "produced no commit",
+      belowThresholdNote: noteThreshold,
+    });
+    // A different reason on the third attempt — not the same recurring
+    // problem twice more, so it must not carry the streak to n=3/threshold.
+    quarantine.record(unit, "no-commit", {
+      signature: "verify-failed",
+      reason: "produced no commit",
+      belowThresholdNote: noteThreshold,
+    });
+    expect(state.comments).toHaveLength(1);
+    expect(state.labels).toEqual([]);
+    expect(state.comments[0]!.body).toContain(
+      "<!-- phoebe-unit:checks:no-commit n=1 sig=verify-failed ref=sha-1 at=",
+    );
+  });
+
   test("crossing the threshold labels the unit and escalates with the baseline marker", () => {
     const { github, state } = createFakeGithub();
     const quarantine = createQuarantine({

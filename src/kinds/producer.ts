@@ -21,7 +21,6 @@ import {
   filterBackoffEligible,
   findLatestUnitAttemptComment,
   PHOEBE_QUARANTINE_LABEL,
-  slugifyFailureSignature,
   type UnitMarker,
 } from "../quarantine.ts";
 import {
@@ -29,6 +28,7 @@ import {
   removeVerificationReport,
   resolveVerification,
   runEngineVerification,
+  type VerificationResult,
 } from "../verification.ts";
 import {
   findBlockedDependents,
@@ -164,23 +164,42 @@ export function followUpPrComment(issueNumber: number, commitCount: number): str
 }
 
 /**
- * Failure signature for an issue/research unit that ran and produced no PR
- * (#22) — the verification command the agent's own report last failed on
- * (e.g. `apply_patch`), so the cause is visible on the issue without
- * container logs. Falls back to the agent's exit code, then a generic
- * marker when neither signal is available (a clean exit with no commits).
+ * Typed park reason (#173) for an issue/research unit that ran and produced
+ * no PR (#22) — a closed set rather than a command-derived free-text slug, so
+ * the quarantine counter (`quarantine.ts#nextCount`) can tell a recurring
+ * `verify-timeout` from a one-off `verify-failed` instead of conflating every
+ * distinct cause into "no commit, again."
+ */
+export type IssueAttemptFailureReason =
+  | "verify-timeout"
+  | "verify-failed"
+  | "agent-failed"
+  | "no-commit";
+
+/**
+ * Failure reason for an issue/research unit that ran and produced no PR
+ * (#22): a failed verification command (#166) outranks a nonzero agent exit,
+ * since a report can carry both — the agent may exit 0 having declared
+ * victory over a failing check. `timedOut` (#173) on any failed result
+ * distinguishes a hang (`verify-timeout`) from an ordinary nonzero exit
+ * (`verify-failed`) — checked across every failed command, not just the
+ * first, since a hang is the more specific and more actionable signal when
+ * one command timed out and another merely exited nonzero. Falls back to the
+ * agent's exit code, then a generic marker when neither signal is available
+ * (a clean exit with no commits).
  */
 export function issueAttemptFailureSignature(opts: {
-  failedCommand?: string;
+  verification: readonly VerificationResult[] | undefined;
   agentExitCode: number | null;
-}): string {
-  if (opts.failedCommand) {
-    return slugifyFailureSignature(`${opts.failedCommand}-failed`);
+}): IssueAttemptFailureReason {
+  const failures = opts.verification?.filter((v) => v.status === "failed") ?? [];
+  if (failures.length > 0) {
+    return failures.some((v) => v.timedOut) ? "verify-timeout" : "verify-failed";
   }
   if (opts.agentExitCode !== null && opts.agentExitCode !== 0) {
-    return slugifyFailureSignature(`agent-exit-${opts.agentExitCode}`);
+    return "agent-failed";
   }
-  return "no-commit-produced";
+  return "no-commit";
 }
 
 // --- Repro-test-must-fail-first (#171, competitive-landscape.md §4.8) -------
@@ -635,10 +654,9 @@ function createProducerKind(
             reproGateBelowThresholdNote(n, k, weakReproOutcome!.testFiles),
         });
       } else {
-        const failedCommand = verification?.find((v) => v.status === "failed")?.command;
         recordFailedIssueAttempt({
           issueNumber,
-          signature: issueAttemptFailureSignature({ failedCommand, agentExitCode }),
+          signature: issueAttemptFailureSignature({ verification, agentExitCode }),
           dependentsPool: opts.dependentsPool,
           nativeBlockersByIssue: opts.nativeBlockersByIssue,
         });

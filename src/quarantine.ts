@@ -31,7 +31,12 @@
 // comment's `createdAt` on edit) and progress-based (`no-commit`/`no-pr` — a
 // moved `ref` resets automatically for PR-keyed units; an issue-keyed unit's
 // `ref` never moves on its own, so its caller resets explicitly via
-// `resolve()` the moment a run produces a PR).
+// `resolve()` the moment a run produces a PR). Progress-based triggers also
+// reset on a changed `signature` (#173) — the typed reason a caller passes
+// in `QuarantineDetail` — so a streak only compounds toward quarantine while
+// the *same* problem keeps recurring; three attempts each failing a
+// different way reset to n=1 every time instead of stacking into a false
+// quarantine.
 //
 // A quarantine a human clears by hand (removing the label) is invisible to a
 // sweep that queries *by* label — it can't discover a unit that no longer
@@ -407,12 +412,21 @@ function newestForeignCommentAt(
  * reset when `ref` has moved since the prior marker — automatic for PR-keyed
  * units (the head SHA changes on push); a no-op for issue-keyed units (the
  * issue number never moves), whose caller resets explicitly via `resolve()`.
+ *
+ * Progress-based triggers also reset when `signature` — the typed reason a
+ * caller passes as `QuarantineDetail.signature` (#173) — differs from the
+ * prior marker's, on top of the `ref` check: three attempts that failed for
+ * three different reasons are not the same recurring problem three times
+ * over, so they must not compound into one streak toward quarantine. Only a
+ * reason repeating attempt over attempt is the signal quarantine exists to
+ * catch.
  */
 function nextCount(
   trigger: UnitTrigger,
   previous: UnitMarker | null,
   opts: {
     ref: string;
+    signature: string;
     comments: readonly { createdAt: string; authorLogin: string }[];
     phoebeLogin: string;
     extraActivityAt: string | null;
@@ -426,12 +440,21 @@ function nextCount(
     const stale = previous !== null && latestActivityAt !== null && latestActivityAt > previous.at;
     return (stale ? 0 : (previous?.n ?? 0)) + 1;
   }
-  const stale = previous === null || previous.ref !== opts.ref;
+  const stale =
+    previous === null || previous.ref !== opts.ref || previous.signature !== opts.signature;
   return (stale ? 0 : previous!.n) + 1;
 }
 
 export type QuarantineDetail = {
-  /** Bound, marker-safe slug for what went wrong this attempt, e.g. `mergeable-conflicting`. Ignored for `timed-out`. */
+  /**
+   * Bound, marker-safe slug for what went wrong this attempt, e.g.
+   * `mergeable-conflicting` — a typed reason where the caller has one (#173;
+   * see `producer.ts#issueAttemptFailureSignature`), a free-text-derived slug
+   * otherwise. Beyond display, this is also part of the progress-based
+   * triggers' counter key (`nextCount`): a change in signature resets the
+   * streak, the same as a moved `ref`. Ignored for `timed-out`, whose
+   * counter is purely activity-based.
+   */
   signature: string;
   /** What kept happening, for the escalation comment: "timed out" / "produced no commit" / "was claimed and released with no PR". */
   reason: string;
@@ -571,6 +594,7 @@ export function createQuarantine(opts: {
       const k = trigger === "timed-out" ? config.maxUnitTimeouts : config.maxUnitAttempts;
       const n = nextCount(trigger, previous, {
         ref: activity.ref,
+        signature: detail.signature,
         comments: activity.comments,
         phoebeLogin: github.login(),
         extraActivityAt: activity.lastCommitAt,

@@ -181,6 +181,25 @@ describe("runEngineVerification", () => {
     }));
     expect(result[0]?.status).toBe("failed");
   });
+
+  test("a capture that signals timedOut carries it onto the result as a typed reason (#173)", () => {
+    const result = runEngineVerification(["npm test"], "/repo", () => ({
+      exitCode: 124,
+      output: "killed by SIGTERM (timeout).",
+      timedOut: true,
+    }));
+    expect(result[0]?.status).toBe("failed");
+    expect(result[0]?.timedOut).toBe(true);
+  });
+
+  test("an ordinary failure (no timedOut signal) does not carry the field at all", () => {
+    const result = runEngineVerification(["npm test"], "/repo", () => ({
+      exitCode: 1,
+      output: "assertion failed",
+    }));
+    expect(result[0]?.status).toBe("failed");
+    expect(result[0]?.timedOut).toBeUndefined();
+  });
 });
 
 const PASSED = (command: string): VerificationResult => ({

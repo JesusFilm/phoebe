@@ -10,6 +10,7 @@ import { createQuarantine, PHOEBE_QUARANTINE_LABEL } from "../quarantine.ts";
 import type { StackConfig } from "../stack.ts";
 import type { BlockerPrState, Issue } from "../stack.ts";
 import type { CycleContext } from "../cycle.ts";
+import type { VerificationResult } from "../verification.ts";
 import type { Io, KindDeps } from "./kind.ts";
 import {
   buildInitialPrBody,
@@ -266,18 +267,54 @@ describe("followUpPrComment", () => {
   });
 });
 
-describe("issueAttemptFailureSignature (#22)", () => {
-  test("embeds the verification report's failed command", () => {
-    expect(issueAttemptFailureSignature({ failedCommand: "apply_patch", agentExitCode: 1 })).toBe(
-      "apply-patch-failed",
+describe("issueAttemptFailureSignature (#22, typed reasons #173)", () => {
+  const FAILED: VerificationResult = {
+    command: "pnpm run check",
+    status: "failed",
+    summary: "pnpm run check exited 1.",
+  };
+  const TIMED_OUT: VerificationResult = {
+    command: "pnpm test",
+    status: "failed",
+    summary: "pnpm test timed out.",
+    timedOut: true,
+  };
+  const PASSED: VerificationResult = {
+    command: "pnpm run check",
+    status: "passed",
+    summary: "pnpm run check passed.",
+  };
+
+  test("a failed verification command yields verify-failed", () => {
+    expect(issueAttemptFailureSignature({ verification: [PASSED, FAILED], agentExitCode: 1 })).toBe(
+      "verify-failed",
     );
   });
-  test("falls back to the agent exit code with no verification report", () => {
-    expect(issueAttemptFailureSignature({ agentExitCode: 2 })).toBe("agent-exit-2");
+  test("a timed-out verification command yields verify-timeout, outranking a plain failure", () => {
+    expect(
+      issueAttemptFailureSignature({ verification: [FAILED, TIMED_OUT], agentExitCode: 1 }),
+    ).toBe("verify-timeout");
+  });
+  test("verification outranks the agent exit code — an agent that exits 0 but fails its own check is still verify-failed", () => {
+    expect(issueAttemptFailureSignature({ verification: [FAILED], agentExitCode: 0 })).toBe(
+      "verify-failed",
+    );
+  });
+  test("falls back to the agent exit code with no failing verification result", () => {
+    expect(issueAttemptFailureSignature({ verification: [PASSED], agentExitCode: 2 })).toBe(
+      "agent-failed",
+    );
+    expect(issueAttemptFailureSignature({ verification: undefined, agentExitCode: 2 })).toBe(
+      "agent-failed",
+    );
   });
   test("falls back to a generic marker with no signal at all", () => {
-    expect(issueAttemptFailureSignature({ agentExitCode: null })).toBe("no-commit-produced");
-    expect(issueAttemptFailureSignature({ agentExitCode: 0 })).toBe("no-commit-produced");
+    expect(issueAttemptFailureSignature({ verification: undefined, agentExitCode: null })).toBe(
+      "no-commit",
+    );
+    expect(issueAttemptFailureSignature({ verification: [PASSED], agentExitCode: 0 })).toBe(
+      "no-commit",
+    );
   });
 });
 

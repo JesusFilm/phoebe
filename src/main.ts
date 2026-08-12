@@ -138,7 +138,7 @@ function tryRunShellCommand(command: string, cwd: string): number {
 function runShellCommandCapture(
   command: string,
   cwd: string,
-): { exitCode: number; output: string } {
+): { exitCode: number; output: string; timedOut: boolean } {
   const result = spawnSync(command, {
     cwd,
     shell: true,
@@ -147,12 +147,16 @@ function runShellCommandCapture(
   });
   const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
   if (result.error) {
-    return { exitCode: 1, output: `${output}${result.error.message}` };
+    return { exitCode: 1, output: `${output}${result.error.message}`, timedOut: false };
   }
   if (result.signal) {
-    return { exitCode: 124, output: `${output}\nkilled by ${result.signal} (timeout).` };
+    return {
+      exitCode: 124,
+      output: `${output}\nkilled by ${result.signal} (timeout).`,
+      timedOut: true,
+    };
   }
-  return { exitCode: result.status ?? 1, output };
+  return { exitCode: result.status ?? 1, output, timedOut: false };
 }
 
 /** Shell executor for prompt !`...` expansion — captures stdout. */

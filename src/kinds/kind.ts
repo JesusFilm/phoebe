@@ -110,8 +110,10 @@ export type Shell = {
    * of inheriting stdio — the engine's own verification run (#166,
    * `verification.ts#runEngineVerification`). Never throws on a nonzero
    * exit or a timeout; both are a result (`exitCode`), not an error.
+   * `timedOut` (#173) distinguishes the two: set only when the command was
+   * killed on `SHELL_COMMAND_TIMEOUT_MS` rather than exiting on its own.
    */
-  capture(command: string, cwd: string): { exitCode: number; output: string };
+  capture(command: string, cwd: string): { exitCode: number; output: string; timedOut?: boolean };
 };
 
 /** The impure capabilities a kind factory closes over. Built once in `runEngine`. */

@@ -105,7 +105,8 @@
         "properties": {
           "command": { "type": "string" },
           "status": { "enum": ["passed", "failed", "unknown", "not-run"] },
-          "summary": { "type": "string", "maxLength": 2000 }
+          "summary": { "type": "string", "maxLength": 2000 },
+          "timedOut": { "type": "boolean" }
         }
       }
     },
