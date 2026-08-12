@@ -15,6 +15,7 @@ import {
   BLOCKER_SOURCES,
   PROVIDER_NAMES,
   STACK_MODES,
+  VERIFY_MODES,
   WORK_KIND_NAMES,
   validateBlockedByPattern,
   validateConfigDir,
@@ -250,6 +251,15 @@ export const ROSTER = {
     env: "PHOEBE_STACK_MODE",
     baseAllowed: true,
     validate: assertOneOf(STACK_MODES),
+  },
+  // #166: shadow-mode-first — `agent` keeps today's read-only behavior until a
+  // consumer opts into `both`/`engine`.
+  verifyMode: {
+    kind: { type: "enum", values: VERIFY_MODES },
+    default: "agent",
+    env: "PHOEBE_VERIFY_MODE",
+    baseAllowed: true,
+    validate: assertOneOf(VERIFY_MODES),
   },
   reviewsSuccessHeading: {
     kind: { type: "string" },

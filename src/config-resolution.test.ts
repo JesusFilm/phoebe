@@ -265,6 +265,12 @@ describe("loadConfiguration", () => {
         false,
       ],
       [
+        "invalid verifyMode",
+        { schemaVersion: 1, config: { verifyMode: "bogus" } },
+        /(?=.*config\.verifyMode must be one of)(?=.*generated-base\.json)/i,
+        false,
+      ],
+      [
         "invalid prBaseScope",
         { schemaVersion: 1, config: { prBaseScope: "bogus" } },
         /(?=.*config\.prBaseScope must be)(?=.*generated-base\.json)/i,
@@ -338,6 +344,7 @@ describe("loadConfiguration", () => {
           blockedByPattern: String.raw`Blocked by\s+#(\d+)`,
           blockerSource: "both",
           stackMode: "native",
+          verifyMode: "both",
           reviewsSuccessHeading: "## managed heading",
           promptFiles: { issue: "managed/issue.md" },
           workOrder: ["issues"],
@@ -373,6 +380,7 @@ describe("loadConfiguration", () => {
       readyCommand: "make ready",
       blockerSource: "both",
       stackMode: "native",
+      verifyMode: "both",
       reviewsSuccessHeading: "## managed heading",
       workOrder: ["issues"],
       defaultProvider: "claude",

@@ -417,7 +417,7 @@ function fakeIo(overrides: Partial<Io> = {}): Io {
       defaultArgs: () => ({}),
       render: (template) => template,
     },
-    shell: { run: () => {} },
+    shell: { run: () => {}, capture: () => ({ exitCode: 0, output: "" }) },
     quarantine: createQuarantine({
       github,
       config: { maxUnitTimeouts: config.maxUnitTimeouts, maxUnitAttempts: config.maxUnitAttempts },

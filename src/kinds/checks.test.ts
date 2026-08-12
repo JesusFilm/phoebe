@@ -343,6 +343,34 @@ describe("createChecksKind — labels (#155)", () => {
   });
 });
 
+describe("createChecksKind — engine-executed verification (#166)", () => {
+  test("verifyMode 'engine' runs checkCommand and testCommand itself, in the worktree, and reports that result", async () => {
+    const capturedCommands: Array<{ command: string; cwd: string }> = [];
+    const io = fakeIo({
+      shell: {
+        run: () => {},
+        capture: (command, cwd) => {
+          capturedCommands.push({ command, cwd });
+          return { exitCode: 0, output: "" };
+        },
+      },
+    });
+    const kind = createChecksKind({ config: { ...config, verifyMode: "engine" }, io });
+    const unit = checksPr({ prNumber: 500 });
+
+    const result = await kind.run(unit, fakeCtx());
+
+    expect(capturedCommands).toEqual([
+      { command: config.checkCommand, cwd: "/tmp/worktree" },
+      { command: config.testCommand, cwd: "/tmp/worktree" },
+    ]);
+    expect(result.verification).toEqual([
+      { command: config.checkCommand, status: "passed", summary: `${config.checkCommand} passed.` },
+      { command: config.testCommand, status: "passed", summary: `${config.testCommand} passed.` },
+    ]);
+  });
+});
+
 function fakeIo(overrides: Partial<Io> = {}): Io {
   const github: GitHub = overrides.github ?? {
     issuesWithLabel: () => [],
@@ -396,7 +424,7 @@ function fakeIo(overrides: Partial<Io> = {}): Io {
       defaultArgs: () => ({}),
       render: (template) => template,
     },
-    shell: { run: () => {} },
+    shell: { run: () => {}, capture: () => ({ exitCode: 0, output: "" }) },
     quarantine: createQuarantine({
       github,
       config: { maxUnitTimeouts: config.maxUnitTimeouts, maxUnitAttempts: config.maxUnitAttempts },

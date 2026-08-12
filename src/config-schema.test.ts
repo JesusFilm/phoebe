@@ -293,6 +293,18 @@ describe("resolveConfiguration: filling in the roster's shipped defaults", () =>
     expect(resolve({ stackMode: "off" }).stackMode).toBe("off");
   });
 
+  test("verifyMode defaults to agent and honors an override", () => {
+    expect(resolve().verifyMode).toBe("agent");
+    expect(resolve({ verifyMode: "engine" }).verifyMode).toBe("engine");
+    expect(resolve({ verifyMode: "both" }).verifyMode).toBe("both");
+  });
+
+  test("verifyMode rejects an unknown value", () => {
+    expect(() => resolve({ verifyMode: "bogus" as never })).toThrow(
+      /verifyMode.*must be one of agent, engine, both/,
+    );
+  });
+
   test("default blockedByPattern compiles and captures the issue number", () => {
     const pattern = new RegExp(resolve().blockedByPattern, "gi");
     const matches = [..."Blocked by #42\nblocked by  #7".matchAll(pattern)].map((m) =>

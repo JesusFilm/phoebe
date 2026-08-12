@@ -173,6 +173,31 @@ someone is running an unusually long `workOrder` against an unusually short
 
 ---
 
+## `verifyMode` set to `engine` or `both` adds wall-clock to every unit
+
+Issue #166 ("Engine-executed verification gate: stop trusting the agent's
+self-report") adds `checkCommand`/`testCommand` as an engine-run step,
+sequenced _after_ the agent's own run finishes (`runOneIssue` in
+`src/kinds/producer.ts`, `runAgentWorkflow` in `src/kinds/janitor.ts`). It is
+opt-in — `verifyMode` defaults to `"agent"`, today's behavior, where the
+engine never runs the gate itself — but choosing `"engine"` or `"both"`
+sequences a second, full `checkCommand` + `testCommand` run onto the critical
+path of every unit, on top of whatever gate the agent already ran as part of
+its own workflow. For a repo whose test suite takes minutes, that is minutes
+added per unit, not a one-time cost. This does not compound with lever 2's
+`SHELL_COMMAND_TIMEOUT_MS` — the engine run is bounded by the same
+600-second-per-command budget the agent's own install/test commands already
+use — but it is additive with the agent's own verification time, since
+nothing skips the agent's self-verification step just because the engine will
+also verify.
+
+**What changing it looks like:** stay on the default `"agent"` if per-unit
+latency matters more than catching a fabricated self-report; opt into
+`"both"` (shadow mode — the engine result is authoritative but a mismatch
+against the agent's report is only logged, not acted on further) to observe
+the actual cost and disagreement rate before deciding whether the tradeoff is
+worth it for a given repo.
+
 ## Already in flight / already shipped (don't duplicate)
 
 | Issue/PR                                                                   | Title                                                              | State             | Relevance                                                                                                                                                                                                                                                                                                                                                                 |

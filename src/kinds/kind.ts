@@ -90,6 +90,13 @@ export type Prompts = {
 /** A configured toolchain command (install/check/test), run to completion with output inherited. */
 export type Shell = {
   run(command: string, cwd: string): void;
+  /**
+   * Run a configured command to completion and capture its outcome instead
+   * of inheriting stdio — the engine's own verification run (#166,
+   * `verification.ts#runEngineVerification`). Never throws on a nonzero
+   * exit or a timeout; both are a result (`exitCode`), not an error.
+   */
+  capture(command: string, cwd: string): { exitCode: number; output: string };
 };
 
 /** The impure capabilities a kind factory closes over. Built once in `runEngine`. */

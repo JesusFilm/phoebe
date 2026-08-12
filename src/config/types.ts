@@ -54,6 +54,27 @@ export const STACK_MODES = ["banner", "native", "off"] as const;
 export type StackMode = (typeof STACK_MODES)[number];
 
 /**
+ * Who verification results come from (#166). `agent` (default) is today's
+ * behavior unchanged: the engine only reads back the report the agent wrote
+ * about its own `checkCommand`/`testCommand` run, and trusts it as-is.
+ * `engine` and `both` have the engine execute `checkCommand` then
+ * `testCommand` itself, in the same worktree, after the agent's run — an
+ * agent that never actually ran its gate (or had its permission gate
+ * bypassed, see `src/providers/providers.ts`) can no longer fabricate a
+ * passing report unnoticed. `both` keeps the agent's self-report as a
+ * secondary signal: it still runs the engine gate and uses that result, but
+ * also compares it against whatever the agent claimed and logs a
+ * disagreement — a mismatch is itself a high-value signal, not something to
+ * silently discard. `engine` skips the comparison and never reads the
+ * agent's report at all. Recommended rollout is `both` first (shadow
+ * mode — compare without acting on the agent's claim any differently than
+ * `engine` already would) before narrowing to `engine`. Running the engine
+ * gate adds wall-clock to the critical path — see `docs/performance.md`.
+ */
+export const VERIFY_MODES = ["agent", "engine", "both"] as const;
+export type VerifyMode = (typeof VERIFY_MODES)[number];
+
+/**
  * Selects where the thin `phoebe boot` bootstrapper materializes the engine
  * from — a GitHub ref (branch/tag/SHA, defaulting to `main` on the shipped
  * engine repo) or a local mount. The engine itself never reads this: it is a
@@ -199,6 +220,11 @@ export type PhoebeConfig = {
    * disables stacking entirely.
    */
   stackMode: StackMode;
+  /**
+   * Who verification results come from — see {@link VerifyMode}. Defaults to
+   * `"agent"` so existing consumers keep today's behavior until they opt in.
+   */
+  verifyMode: VerifyMode;
   /**
    * Markdown heading the reviews agent must include when it posts its summary
    * comment. The orchestrator detects the summary by substring match on this
@@ -353,6 +379,7 @@ export type PhoebeUserConfig = {
   blockedByPattern?: string;
   blockerSource?: BlockerSource;
   stackMode?: StackMode;
+  verifyMode?: VerifyMode;
   reviewsSuccessHeading?: string;
   promptFiles?: Partial<PromptFilesConfig>;
   workOrder?: readonly string[];

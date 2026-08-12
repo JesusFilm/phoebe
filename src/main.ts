@@ -17,7 +17,7 @@
 // Work-unit execution is refused outside the container marker
 // (src/execution-gate.ts).
 
-import { execFileSync, execSync } from "node:child_process";
+import { execFileSync, execSync, spawnSync } from "node:child_process";
 import { validateWorkOrder, type PhoebeConfig } from "./config/index.ts";
 import type { BranchRef } from "./branded.ts";
 import { createGitHub, defaultGhRun, type GitHub } from "./github.ts";
@@ -111,6 +111,35 @@ function runShellCommand(command: string, cwd: string): void {
   execSync(command, { cwd, stdio: "inherit", timeout: SHELL_COMMAND_TIMEOUT_MS });
 }
 
+/**
+ * Run a configured toolchain command to completion, capturing its exit code
+ * and combined stdout+stderr instead of inheriting stdio (#166) — the
+ * engine's own verification run, so it must observe a nonzero exit or a
+ * timeout as a result rather than an exception. `spawnSync` (not `execSync`)
+ * because it reports a killed-by-timeout command via `signal`, not a thrown
+ * error, and returns stdout/stderr together instead of losing stderr to the
+ * parent's inherited stream.
+ */
+function runShellCommandCapture(
+  command: string,
+  cwd: string,
+): { exitCode: number; output: string } {
+  const result = spawnSync(command, {
+    cwd,
+    shell: true,
+    encoding: "utf8",
+    timeout: SHELL_COMMAND_TIMEOUT_MS,
+  });
+  const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+  if (result.error) {
+    return { exitCode: 1, output: `${output}${result.error.message}` };
+  }
+  if (result.signal) {
+    return { exitCode: 124, output: `${output}\nkilled by ${result.signal} (timeout).` };
+  }
+  return { exitCode: result.status ?? 1, output };
+}
+
 /** Shell executor for prompt !`...` expansion — captures stdout. */
 function promptShell(cwd: string): (command: string) => string {
   return (command) =>
@@ -118,7 +147,7 @@ function promptShell(cwd: string): (command: string) => string {
 }
 
 function buildShell(): Shell {
-  return { run: runShellCommand };
+  return { run: runShellCommand, capture: runShellCommandCapture };
 }
 
 // ---------------------------------------------------------------------------

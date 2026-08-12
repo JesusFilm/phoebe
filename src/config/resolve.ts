@@ -118,6 +118,7 @@ export function resolveConfig(
     blockedByPattern: user.blockedByPattern ?? ROSTER.blockedByPattern.default,
     blockerSource: user.blockerSource ?? ROSTER.blockerSource.default,
     stackMode: user.stackMode ?? ROSTER.stackMode.default,
+    verifyMode: user.verifyMode ?? ROSTER.verifyMode.default,
     reviewsSuccessHeading: user.reviewsSuccessHeading ?? ROSTER.reviewsSuccessHeading.default,
     promptFiles: { ...ROSTER.promptFiles.default, ...user.promptFiles },
     workOrder: user.workOrder ?? ROSTER.workOrder.default,

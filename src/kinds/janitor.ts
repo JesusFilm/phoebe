@@ -5,7 +5,13 @@
 // `onResult` differs per kind (push vs. failure comment vs. watermark).
 
 import { asBranchRef, type BranchRef, type PrNumber, type Sha } from "../branded.ts";
-import { readVerificationReport, removeVerificationReport } from "../verification.ts";
+import { createPhoebeLog } from "../phoebe-log.ts";
+import {
+  readVerificationReport,
+  removeVerificationReport,
+  resolveVerification,
+  runEngineVerification,
+} from "../verification.ts";
 import type { KindDeps, UnitResult } from "./kind.ts";
 
 // The observed outcome of an automatic (no-agent) merge attempt:
@@ -78,6 +84,7 @@ export function pickOldestPr<T extends { prNumber: number }>(candidates: readonl
 export function createJanitorHelpers(deps: KindDeps): JanitorHelpers {
   const { config, io } = deps;
   const defaultBranchRef = asBranchRef(config.defaultBranch);
+  const { phoebeLog } = createPhoebeLog(config.repoSlug);
 
   function attemptBlockerFirstMerges(
     worktreeDir: string,
@@ -149,9 +156,10 @@ export function createJanitorHelpers(deps: KindDeps): JanitorHelpers {
 
   /**
    * The agent is prompted to write a verification report as part of its own
-   * verify step (#17); this reads it back after the agent exits. A missing or
-   * malformed report just means `verification` comes back undefined — the
-   * engine never re-runs the gate itself.
+   * verify step (#17); this reads it back after the agent exits. Under
+   * `config.verifyMode` (#166, default `"agent"`) that self-report may be
+   * only a secondary signal, or ignored outright — see
+   * `verification.ts#resolveVerification`.
    */
   async function runAgentWorkflow(opts: {
     pr: { prNumber: PrNumber; headRefName: BranchRef; labels?: readonly string[] };
@@ -183,7 +191,19 @@ export function createJanitorHelpers(deps: KindDeps): JanitorHelpers {
         usage,
         costUsd,
       } = await io.agent.run({ worktreeDir, prompt, labels: opts.pr.labels });
-      const verification = readVerificationReport(reportPath);
+      const verification = resolveVerification({
+        verifyMode: config.verifyMode,
+        agentReported: readVerificationReport(reportPath),
+        runEngine: () =>
+          runEngineVerification([config.checkCommand, config.testCommand], worktreeDir, (c, d) =>
+            io.shell.capture(c, d),
+          ),
+        onDisagreement: (disagreements) =>
+          phoebeLog(
+            `⚠️ verification disagreement for PR #${opts.pr.prNumber} (${branch}): ` +
+              disagreements.join(" "),
+          ),
+      });
 
       io.git.fetchOrigin();
       const originShaAfter = io.git.originBranchSha(branch);

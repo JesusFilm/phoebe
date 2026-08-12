@@ -335,7 +335,7 @@ function fakeIo(overrides: Partial<Io> = {}): Io {
       defaultArgs: () => ({}),
       render: (template) => template,
     },
-    shell: { run: () => {} },
+    shell: { run: () => {}, capture: () => ({ exitCode: 0, output: "" }) },
     quarantine: createQuarantine({
       github,
       config: { maxUnitTimeouts: config.maxUnitTimeouts, maxUnitAttempts: config.maxUnitAttempts },
@@ -451,6 +451,87 @@ describe("createIssuesKind — run threads the issue's labels to the agent invoc
 
     expect(result.usage).toEqual({ inputTokens: 9, outputTokens: 56 });
     expect(result.costUsd).toBe(0.015);
+  });
+});
+
+describe("createIssuesKind — engine-executed verification (#166)", () => {
+  test("verifyMode 'agent' never calls io.shell.capture", async () => {
+    let captureCalled = false;
+    const io = fakeIo({
+      shell: {
+        run: () => {},
+        capture: () => {
+          captureCalled = true;
+          return { exitCode: 0, output: "" };
+        },
+      },
+    });
+    const deps: KindDeps = { config: { ...config, verifyMode: "agent" }, io };
+    const kind = createIssuesKind(deps);
+    const target = issue({ number: 60 });
+    const unit = { issue: target, resolution: { worktreeBase: "main", stacked: false } };
+
+    await kind.run(unit, fakeCtx());
+
+    expect(captureCalled).toBe(false);
+  });
+
+  test("verifyMode 'engine' runs checkCommand and testCommand itself and reports that result", async () => {
+    const capturedCommands: string[] = [];
+    const io = fakeIo({
+      shell: {
+        run: () => {},
+        capture: (command) => {
+          capturedCommands.push(command);
+          return command === config.testCommand
+            ? { exitCode: 1, output: "boom" }
+            : { exitCode: 0, output: "" };
+        },
+      },
+    });
+    const deps: KindDeps = { config: { ...config, verifyMode: "engine" }, io };
+    const kind = createIssuesKind(deps);
+    const target = issue({ number: 61 });
+    const unit = { issue: target, resolution: { worktreeBase: "main", stacked: false } };
+
+    const result = await kind.run(unit, fakeCtx());
+
+    expect(capturedCommands).toEqual([config.checkCommand, config.testCommand]);
+    expect(result.verification).toEqual([
+      { command: config.checkCommand, status: "passed", summary: `${config.checkCommand} passed.` },
+      {
+        command: config.testCommand,
+        status: "failed",
+        summary: `${config.testCommand} exited 1.\nboom`,
+      },
+    ]);
+  });
+
+  test("verifyMode 'both' reports the engine's result and logs a disagreement with the agent's report", async () => {
+    const logLines: string[] = [];
+    const io = fakeIo({
+      shell: {
+        run: () => {},
+        capture: () => ({ exitCode: 1, output: "engine says it failed" }),
+      },
+    });
+    const deps: KindDeps = { config: { ...config, verifyMode: "both" }, io };
+    const kind = createIssuesKind(deps);
+    const target = issue({ number: 62 });
+    const unit = { issue: target, resolution: { worktreeBase: "main", stacked: false } };
+
+    const originalConsoleLog = console.log;
+    console.log = (line: string) => logLines.push(line);
+    try {
+      await kind.run(unit, fakeCtx());
+    } finally {
+      console.log = originalConsoleLog;
+    }
+
+    // No VERIFICATION_RESULT_FILE was actually written (the fake agent never
+    // wrote one), so the agent side of the comparison is "reported nothing" —
+    // still a disagreement against the engine's failed result.
+    expect(logLines.some((line) => line.includes("verification disagreement"))).toBe(true);
   });
 });
 

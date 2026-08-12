@@ -24,7 +24,12 @@ import {
   slugifyFailureSignature,
   type UnitMarker,
 } from "../quarantine.ts";
-import { readVerificationReport, removeVerificationReport } from "../verification.ts";
+import {
+  readVerificationReport,
+  removeVerificationReport,
+  resolveVerification,
+  runEngineVerification,
+} from "../verification.ts";
 import {
   findBlockedDependents,
   issueBlockers,
@@ -375,7 +380,18 @@ function createProducerKind(
         usage,
         costUsd,
       } = await io.agent.run({ worktreeDir, prompt, labels: opts.issueLabels });
-      const verification = readVerificationReport(reportPath);
+      const verification = resolveVerification({
+        verifyMode: config.verifyMode,
+        agentReported: readVerificationReport(reportPath),
+        runEngine: () =>
+          runEngineVerification([config.checkCommand, config.testCommand], worktreeDir, (c, d) =>
+            io.shell.capture(c, d),
+          ),
+        onDisagreement: (disagreements) =>
+          phoebeLog(
+            `⚠️ verification disagreement for issue #${issueNumber}: ${disagreements.join(" ")}`,
+          ),
+      });
 
       const newCommitCount = io.git.commitCount(worktreeDir, `${worktreeBase}..HEAD`);
 

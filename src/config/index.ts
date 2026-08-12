@@ -34,6 +34,7 @@ export type {
   ProviderName,
   ResolvedEngineSource,
   StackMode,
+  VerifyMode,
   WorkKindName,
   WorkspaceField,
 } from "./types.ts";
@@ -42,6 +43,7 @@ export {
   BLOCKER_SOURCES,
   PROVIDER_NAMES,
   STACK_MODES,
+  VERIFY_MODES,
   WORK_KIND_NAMES,
   validateEngineSourceField,
   validateWorkOrder,
