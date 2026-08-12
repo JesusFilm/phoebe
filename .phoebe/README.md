@@ -39,7 +39,15 @@ is the test fixture, and `phoebe init` won't overwrite it.
   inside the working-tree mount, rather than the scaffold's single-file bind
   mount of `phoebe.config.ts`. A file bind mount pins the host _inode_, so an
   editor that saves by rename would be invisible to `boot`'s config watch.
-- **Cursor provider.** `defaultProvider: "cursor"` + `CURSOR_API_KEY`.
+- **Claude provider on a subscription.** `defaultProvider: "claude"` with
+  `claude-opus-5` at `low` effort, authenticating with `CLAUDE_CODE_OAUTH_TOKEN`
+  (a Pro/Max subscription token) rather than `ANTHROPIC_API_KEY` — see
+  [`docs/claude-subscription-auth.md`](../docs/claude-subscription-auth.md).
+  The image therefore also carries a pinned `@anthropic-ai/claude-code`, and
+  makes its own `node` execute-only so the process holding that token is
+  non-dumpable — the same `#61` property the pinned Cursor block gets from
+  `chmod 0711` on Cursor's vendored `node`. The Cursor CLI stays installed, so
+  `PHOEBE_AGENT=cursor` still works without a rebuild.
 
 **What is _not_ different:** the image hardening. The unprivileged `phoebe`
 user, the pre-owned `/data` mount points, and the pinned + checksum-verified
@@ -60,13 +68,15 @@ ref; flip `engine` to `{ source: "github", ref }` to try that path by hand.
 
 - Docker + Docker Compose, Node ≥ 24, pnpm (via corepack) on the host.
 - A GitHub token with `repo` + `read:org` on `JesusFilm/phoebe`.
-- A `CURSOR_API_KEY`.
+- A Claude Pro/Max subscription token in `CLAUDE_CODE_OAUTH_TOKEN` — mint one
+  with `node scripts/hoist-claude-login.mjs`, which writes it into `.phoebe/.env`.
 - At least one issue on `JesusFilm/phoebe` labeled `ready-for-agent`.
 
 ## Run it
 
 First set secrets: edit `.phoebe/.env` and fill in `GH_TOKEN` and
-`CURSOR_API_KEY` (`.env` is gitignored — never commit it).
+`CLAUDE_CODE_OAUTH_TOKEN` (`.env` is gitignored — never commit it). Compose
+refuses to start without either.
 
 The quick path is `run.sh`, wired to `vp run phoebe`. It builds the image (a
 Docker-cache no-op once warm) and starts the container:
@@ -131,5 +141,5 @@ So everything up to the GitHub boundary is proven. What still needs your
 secrets, on a first real run, is the far side of it:
 
 - `pnpm install --frozen-lockfile` succeeding inside the container's clone,
-- the Cursor agent authenticating with `CURSOR_API_KEY`,
+- the Claude Code CLI authenticating with `CLAUDE_CODE_OAUTH_TOKEN`,
 - a work unit going all the way to an opened PR.

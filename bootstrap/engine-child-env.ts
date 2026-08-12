@@ -51,6 +51,7 @@ export const ENGINE_CHILD_DEPLOYMENT_KNOBS = [
   "PHOEBE_BASE",
   "PHOEBE_AGENT",
   "PHOEBE_MODEL",
+  "PHOEBE_EFFORT",
 ] as const;
 
 /**

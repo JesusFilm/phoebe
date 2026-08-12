@@ -53,6 +53,21 @@ describe("claude provider", () => {
     expect(cmd.argv[modelIdx + 1]).toBe("claude-m");
   });
 
+  test("passes no --effort flag when none is configured", () => {
+    // Omitting it entirely (rather than sending a default) is what leaves the
+    // CLI's own effort default in place for consumers who never set one.
+    const cmd = PROVIDERS.claude.buildCommand({ prompt: "p", model: "claude-m" });
+    expect(cmd.argv).not.toContain("--effort");
+  });
+
+  test("passes the configured effort level through", () => {
+    const cmd = PROVIDERS.claude.buildCommand({ prompt: "p", model: "claude-m", effort: "low" });
+    const effortIdx = cmd.argv.indexOf("--effort");
+    expect(cmd.argv[effortIdx + 1]).toBe("low");
+    // The prompt still has to arrive on stdin behind the `-p -` terminator.
+    expect(cmd.argv.slice(-2)).toEqual(["-p", "-"]);
+  });
+
   test("parses assistant text and allowlisted tool_use blocks", () => {
     const line = JSON.stringify({
       type: "assistant",

@@ -277,6 +277,7 @@ Environment overlays (each replaces the corresponding config field):
 Runtime toggles (read directly by the engine, not overlaid onto the config):
   PHOEBE_AGENT           Provider name to use for this run (cursor|claude|codex)
   PHOEBE_MODEL           Model to use for this run
+  PHOEBE_EFFORT          Reasoning effort for this run (claude: low|medium|high|xhigh|max)
   PHOEBE_POLL_INTERVAL_MS Persistent-mode poll interval (default 300000)
 `;
 

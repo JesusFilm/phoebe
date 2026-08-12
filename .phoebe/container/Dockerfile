@@ -80,6 +80,29 @@ RUN set -eux; \
     ln -s /opt/cursor-agent/cursor-agent /usr/local/bin/agent; \
     ln -s /opt/cursor-agent/cursor-agent /usr/local/bin/cursor-agent
 
+# DOGFOOD DEVIATION: the Claude Code CLI, because this deployment's
+# `defaultProvider` is "claude" (phoebe.config.ts) and the engine spawns the
+# provider CLI by bare name — without it every unit dies on `spawn claude
+# ENOENT`. The shipped scaffold leaves this commented out and installs Cursor,
+# which stays above so flipping PHOEBE_AGENT back needs no rebuild.
+#
+# Pinned for the same reason the Cursor artifact is: an unpinned `npm install
+# -g` bakes an unrecorded version into the image. npm resolves the tarball
+# through the registry with an integrity hash from the lock metadata, so there
+# is no separate digest to carry here — the version pin is the whole control.
+ARG CLAUDE_CODE_VERSION=2.1.228
+RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+
+# DOGFOOD DEVIATION (consequence of the line above): the image's own `node`
+# made execute-only, mirroring `chmod 0711 /opt/cursor-agent/node` in the
+# pinned block above. Cursor ships its own vendored `node`; Claude Code runs on
+# this one, so without this the long-lived process holding GH_TOKEN and
+# CLAUDE_CODE_OAUTH_TOKEN is an ordinary exec and stays dumpable — a same-uid
+# sibling tenant could read its /proc/<pid>/environ (#61). Non-readable is
+# enough: exec still maps the image (secureexec), and the shebang shims
+# (`npm`, `corepack`, `claude`) are read by the *kernel*, not by node.
+RUN chmod 0711 "$(command -v node)"
+
 # DOGFOOD DEVIATION: no `npm install -g phoebe-agent`.
 #
 # The scaffold installs the bootstrapper from npm and lets it check the engine

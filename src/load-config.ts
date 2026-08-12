@@ -17,7 +17,7 @@ import { PROVIDER_NAMES } from "./config-schema.ts";
 /**
  * Scalar-only overlay: each `PHOEBE_*` env var, when set to a non-empty
  * string, replaces the corresponding user-config field. Nested records
- * (`promptFiles`, `paths`, `defaultModels`, `providerEnv`, `workOrder`) stay
+ * (`promptFiles`, `paths`, `defaultModels`, `defaultEfforts`, `providerEnv`, `workOrder`) stay
  * config-file territory — env vars are for one-off run overrides where the
  * consumer doesn't want to edit `phoebe.config.ts`, and expanding structured
  * shapes into env keys defeats the point.

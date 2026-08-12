@@ -52,10 +52,16 @@ services:
       GH_TOKEN: "${GH_TOKEN:?GH_TOKEN is required}"
       CURSOR_API_KEY: "${CURSOR_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      # The subscription credential this deployment actually runs on — the
+      # config's `providerEnv.claude` names it, so it is the one var the agent
+      # child inherits (src/agent-env.ts). Required, since defaultProvider is
+      # "claude": without it the CLI has nothing to authenticate with.
+      CLAUDE_CODE_OAUTH_TOKEN: "${CLAUDE_CODE_OAUTH_TOKEN:?CLAUDE_CODE_OAUTH_TOKEN is required}"
       OPENAI_KEY: "${OPENAI_KEY:-}"
       PHOEBE_ENGINE_DIR: /data/engine
       PHOEBE_AGENT: "${PHOEBE_AGENT:-}"
       PHOEBE_MODEL: "${PHOEBE_MODEL:-}"
+      PHOEBE_EFFORT: "${PHOEBE_EFFORT:-}"
       PHOEBE_POLL_INTERVAL_MS: "${PHOEBE_POLL_INTERVAL_MS:-}"
       # A minute is a long time to wait when demonstrating a relaunch; the
       # reconcile poll is one stat (plus one ls-remote for a github source), so
