@@ -304,3 +304,8 @@ node scripts/probe-bot-ci.mjs --i-know --protect \
 Both scripts **write to the repos they are pointed at** — that is how identity
 and triggering are observed — so they refuse to run without `--i-know` and remove
 their comments, branches and PRs unless `--keep`. Scratch repos only.
+
+`--protect` only ever removes a protection rule it created itself: if the branch
+is already protected it skips the phase rather than overwrite and restore, since
+GitHub's protection `GET` shape is not the `PUT` shape and a "restore" would
+silently drop settings.

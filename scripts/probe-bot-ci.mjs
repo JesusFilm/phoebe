@@ -61,8 +61,17 @@ function parseArgs(argv) {
     else if (a === "--key") out.key = next();
     else if (a === "--installation") out.installation = next();
     else if (a === "--repo") out.repo = next();
-    else if (a === "--timeout") out.timeout = Number(next());
-    else if (a === "--protect") out.protect = true;
+    else if (a === "--timeout") {
+      // A NaN timeout would make `Date.now() < deadline` false on the first
+      // check, so the poll loop would never run and the probe would report
+      // `triggered: false` — inventing the one answer that would condemn the
+      // `checks` work kind. Reject it at the door.
+      const seconds = Number(next());
+      if (!Number.isFinite(seconds) || seconds <= 0) {
+        throw new Error("--timeout requires a positive number of seconds");
+      }
+      out.timeout = seconds;
+    } else if (a === "--protect") out.protect = true;
     else if (a === "--keep") out.keep = true;
     else if (a === "--i-know") out.iKnow = true;
     else throw new Error(`unknown argument: ${a}`);
@@ -293,11 +302,17 @@ async function main() {
   const token = minted.json.token;
 
   // #161 resolves the bot's commit identity from the slug, never from /user.
+  // Unchecked, a failure here yields `undefined+<slug>[bot]@…` — which the probe
+  // would push commits under *and* report back as the observed bot identity. A
+  // wrong observation is worse than no observation, so this fails loudly.
   const slug = app.json.slug;
   const botUser = await call(`/users/${slug}[bot]`, { token });
+  if (botUser.status !== 200 || typeof botUser.json?.id !== "number") {
+    throw new Error(`GET /users/${slug}[bot] → ${botUser.status}: ${botUser.json?.message}`);
+  }
   const botIdentity = {
     name: `${slug}[bot]`,
-    email: `${botUser.json?.id}+${slug}[bot]@users.noreply.github.com`,
+    email: `${botUser.json.id}+${slug}[bot]@users.noreply.github.com`,
   };
 
   const stamp = Date.now().toString(36);
@@ -312,202 +327,268 @@ async function main() {
     branch,
   };
 
-  // ---- Q1/Q2: does a git-seam push trigger a run, and who is the actor?
-  const seam = gitSeam({ token, repo: args.repo, branch, botIdentity, keep: true });
-  observations.git_seam_push = {
-    setup_git: seam.setup_git?.trim?.() ?? seam.setup_git,
-    push_ok: seam.push_ok,
-    error: seam.error,
-    sha: seam.pushed_sha,
-  };
-  if (!seam.push_ok) {
-    console.log(JSON.stringify(observations, null, 2));
-    process.exit(1);
-  }
-  observations.push_runs = await waitForRuns({
-    token,
-    repo: args.repo,
-    sha: seam.pushed_sha,
-    timeoutSeconds: args.timeout,
-    label: "push over the gh credential helper, branch has no PR yet",
-  });
+  // From here on the script mutates a real repo and spends real wall-clock on
+  // rate-limited polls. Every exit path — a thrown error included — has to end
+  // up printing what was observed and removing what was created, or a failure in
+  // the last phase silently discards the first three phases' evidence and leaves
+  // a branch, a PR and two temp directories behind.
+  let seam;
+  let prNumber;
+  let protectionCreatedByProbe = false;
+  let failed = false;
 
-  // ---- Q3: does `pull_request` fire on a PR opened BY the bot?
-  const pr = await call(`/repos/${args.repo}/pulls`, {
-    token,
-    method: "POST",
-    body: {
-      title: `Probe: bot-opened PR for #197 (${stamp})`,
-      head: branch,
-      base: "main",
-      body: "Opened by an installation token to observe whether `pull_request` events fire.",
-    },
-  });
-  observations.pr_open = {
-    status: pr.status,
-    number: pr.json?.number,
-    author: pr.json?.user?.login,
-    author_type: pr.json?.user?.type,
-    author_association: pr.json?.author_association,
-    message: pr.json?.message,
-    errors: pr.json?.errors,
-  };
-  const prNumber = pr.json?.number;
-
-  if (prNumber) {
-    // The `pull_request` run is keyed to the same head sha as the push run, so
-    // re-poll the same sha and look for a second run with a different event.
-    observations.pr_open_runs = await waitForRuns({
+  try {
+    // ---- Q1/Q2: does a git-seam push trigger a run, and who is the actor?
+    seam = gitSeam({ token, repo: args.repo, branch, botIdentity, keep: true });
+    observations.git_seam_push = {
+      setup_git: seam.setup_git?.trim?.() ?? seam.setup_git,
+      push_ok: seam.push_ok,
+      error: seam.error,
+      sha: seam.pushed_sha,
+    };
+    if (!seam.push_ok) {
+      failed = true;
+      return;
+    }
+    observations.push_runs = await waitForRuns({
       token,
       repo: args.repo,
       sha: seam.pushed_sha,
       timeoutSeconds: args.timeout,
-      event: "pull_request",
-      label: "same sha, re-read after the bot opened a PR — look for event: pull_request",
+      label: "push over the gh credential helper, branch has no PR yet",
     });
 
-    // ---- a second commit onto the open PR: push + synchronize
-    const secondSha = gitSeamSecondCommit({ seam, branch });
-    observations.second_commit_runs = await waitForRuns({
+    // ---- Q3: does `pull_request` fire on a PR opened BY the bot?
+    const pr = await call(`/repos/${args.repo}/pulls`, {
       token,
-      repo: args.repo,
-      sha: secondSha,
-      timeoutSeconds: args.timeout,
-      label: "second commit pushed onto an open bot PR",
+      method: "POST",
+      body: {
+        title: `Probe: bot-opened PR for #197 (${stamp})`,
+        head: branch,
+        base: "main",
+        body: "Opened by an installation token to observe whether `pull_request` events fire.",
+      },
     });
-
-    // Can the bot's own token see the checks it triggered? `checks` work kind
-    // reads this, so a blind bot would be as broken as an untriggered run.
-    const checkRuns = await call(`/repos/${args.repo}/commits/${secondSha}/check-runs`, { token });
-    observations.bot_can_read_own_checks = {
-      status: checkRuns.status,
-      total: checkRuns.json?.total_count,
-      names: checkRuns.json?.check_runs?.map((c) => c.name),
+    observations.pr_open = {
+      status: pr.status,
+      number: pr.json?.number,
+      author: pr.json?.user?.login,
+      author_type: pr.json?.user?.type,
+      author_association: pr.json?.author_association,
+      message: pr.json?.message,
+      errors: pr.json?.errors,
     };
-  }
+    prNumber = pr.json?.number;
 
-  // ---- Q4: does a human approval clear branch protection on a bot's PR?
-  if (args.protect && prNumber) {
-    const protection = {};
-    // Branch protection is a PUT with a nested body, which gh's -f flags cannot
-    // express — it has to go in over stdin, so this one call does not go through
-    // ghAsHuman.
-    protection.enable = (() => {
-      const env = { ...process.env };
-      delete env.GH_TOKEN;
-      delete env.GITHUB_TOKEN;
-      const payload = JSON.stringify({
-        required_status_checks: null,
-        enforce_admins: true,
-        required_pull_request_reviews: {
-          required_approving_review_count: 1,
-          dismiss_stale_reviews: false,
-        },
-        restrictions: null,
-      });
-      try {
-        execFileSync(
-          "gh",
-          ["api", "--method", "PUT", `repos/${args.repo}/branches/main/protection`, "--input", "-"],
-          { env, input: payload, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] },
-        );
-        return { ok: true };
-      } catch (e) {
-        return { ok: false, error: String(e.stderr || e.message).slice(0, 600) };
-      }
-    })();
-
-    if (protection.enable.ok) {
-      const before = await call(`/repos/${args.repo}/pulls/${prNumber}`, { token });
-      protection.before_review = {
-        mergeable_state: before.json?.mergeable_state,
-        mergeable: before.json?.mergeable,
-      };
-
-      // The human approves the bot's PR. GitHub blocks approving your OWN pull
-      // request; the question banked by #161 is whether an App owned by that
-      // same human counts as "own".
-      const review = ghAsHuman([
-        "api",
-        "--method",
-        "POST",
-        `repos/${args.repo}/pulls/${prNumber}/reviews`,
-        "-f",
-        "event=APPROVE",
-        "-f",
-        "body=probe: human approval of a bot-authored PR (phoebe#197)",
-      ]);
-      protection.human_approval = review.ok
-        ? {
-            ok: true,
-            state: JSON.parse(review.out).state,
-            user: JSON.parse(review.out).user?.login,
-          }
-        : review;
-
-      await sleep(4000);
-      const after = await call(`/repos/${args.repo}/pulls/${prNumber}`, { token });
-      protection.after_review = {
-        mergeable_state: after.json?.mergeable_state,
-        mergeable: after.json?.mergeable,
-      };
-      const decision = ghAsHuman([
-        "pr",
-        "view",
-        String(prNumber),
-        "-R",
-        args.repo,
-        "--json",
-        "reviewDecision,reviews",
-      ]);
-      protection.review_decision = decision.ok ? JSON.parse(decision.out).reviewDecision : decision;
-
-      // Whether the *bot* can then merge is a second grant question entirely.
-      const merge = await call(`/repos/${args.repo}/pulls/${prNumber}/merge`, {
-        token,
-        method: "PUT",
-        body: { merge_method: "squash" },
-      });
-      protection.bot_merge_attempt = { status: merge.status, message: merge.json?.message };
-    }
-    observations.branch_protection = protection;
-  }
-
-  // ------------------------------------------------------------------ cleanup
-  if (!args.keep) {
-    const cleanup = {};
-    if (args.protect) {
-      cleanup.protection_removed = ghAsHuman([
-        "api",
-        "--method",
-        "DELETE",
-        `repos/${args.repo}/branches/main/protection`,
-      ]).ok;
-    }
     if (prNumber) {
-      const closed = await call(`/repos/${args.repo}/pulls/${prNumber}`, {
+      // The `pull_request` run is keyed to the same head sha as the push run, so
+      // re-poll the same sha and look for a second run with a different event.
+      observations.pr_open_runs = await waitForRuns({
         token,
-        method: "PATCH",
-        body: { state: "closed" },
+        repo: args.repo,
+        sha: seam.pushed_sha,
+        timeoutSeconds: args.timeout,
+        event: "pull_request",
+        label: "same sha, re-read after the bot opened a PR — look for event: pull_request",
       });
-      cleanup.pr_closed = closed.status === 200 || closed.json?.state === "closed";
+
+      // ---- a second commit onto the open PR: push + synchronize.
+      // Contained: a push failure here must not cost us the push-run verdict
+      // above, which is the ticket's primary observation.
+      let secondSha;
+      try {
+        secondSha = gitSeamSecondCommit({ seam, branch });
+      } catch (e) {
+        observations.second_commit_runs = {
+          error: String(e.stderr || e.message).slice(0, 800),
+          note: "second commit failed; earlier observations stand",
+        };
+      }
+      if (secondSha) {
+        observations.second_commit_runs = await waitForRuns({
+          token,
+          repo: args.repo,
+          sha: secondSha,
+          timeoutSeconds: args.timeout,
+          label: "second commit pushed onto an open bot PR",
+        });
+
+        // Can the bot's own token see the checks it triggered? `checks` work kind
+        // reads this, so a blind bot would be as broken as an untriggered run.
+        const checkRuns = await call(`/repos/${args.repo}/commits/${secondSha}/check-runs`, {
+          token,
+        });
+        observations.bot_can_read_own_checks = {
+          status: checkRuns.status,
+          total: checkRuns.json?.total_count,
+          names: checkRuns.json?.check_runs?.map((c) => c.name),
+        };
+      }
     }
-    const delRef = await call(`/repos/${args.repo}/git/refs/heads/${branch}`, {
-      token,
-      method: "DELETE",
-    });
-    cleanup.branch_deleted = delRef.status === 204;
-    if (seam.home) rmSync(seam.home, { recursive: true, force: true });
-    if (seam.work) rmSync(seam.work, { recursive: true, force: true });
-    observations.cleanup = cleanup;
-  } else {
-    observations.kept = { branch, pr: prNumber, worktree: seam.work };
+
+    // ---- Q4: does a human approval clear branch protection on a bot's PR?
+    if (args.protect && prNumber) {
+      const protection = {};
+
+      // Only ever delete a rule this probe created. If the branch is already
+      // protected, do not run the phase at all — recording the old rule and
+      // putting it back is not a safe alternative, because GET returns a
+      // different shape than PUT accepts (nested `enabled` wrappers, apps/users/
+      // teams expanded as objects rather than slugs), so a "restore" would
+      // quietly drop settings.
+      const existing = ghAsHuman(["api", `repos/${args.repo}/branches/main/protection`]);
+      if (existing.ok) {
+        protection.skipped =
+          "main is already protected — refusing to touch a rule this probe did not create";
+      } else {
+        // Branch protection is a PUT with a nested body, which gh's -f flags
+        // cannot express — it has to go in over stdin, so this one call does not
+        // go through ghAsHuman.
+        protection.enable = (() => {
+          const env = { ...process.env };
+          delete env.GH_TOKEN;
+          delete env.GITHUB_TOKEN;
+          const payload = JSON.stringify({
+            required_status_checks: null,
+            enforce_admins: true,
+            required_pull_request_reviews: {
+              required_approving_review_count: 1,
+              dismiss_stale_reviews: false,
+            },
+            restrictions: null,
+          });
+          try {
+            execFileSync(
+              "gh",
+              [
+                "api",
+                "--method",
+                "PUT",
+                `repos/${args.repo}/branches/main/protection`,
+                "--input",
+                "-",
+              ],
+              { env, input: payload, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] },
+            );
+            return { ok: true };
+          } catch (e) {
+            return { ok: false, error: String(e.stderr || e.message).slice(0, 600) };
+          }
+        })();
+        protectionCreatedByProbe = protection.enable.ok;
+      }
+
+      if (protection.enable?.ok) {
+        const before = await call(`/repos/${args.repo}/pulls/${prNumber}`, { token });
+        protection.before_review = {
+          mergeable_state: before.json?.mergeable_state,
+          mergeable: before.json?.mergeable,
+        };
+
+        // The human approves the bot's PR. GitHub blocks approving your OWN pull
+        // request; the question banked by #161 is whether an App owned by that
+        // same human counts as "own".
+        const review = ghAsHuman([
+          "api",
+          "--method",
+          "POST",
+          `repos/${args.repo}/pulls/${prNumber}/reviews`,
+          "-f",
+          "event=APPROVE",
+          "-f",
+          "body=probe: human approval of a bot-authored PR (phoebe#197)",
+        ]);
+        protection.human_approval = review.ok
+          ? {
+              ok: true,
+              state: JSON.parse(review.out).state,
+              user: JSON.parse(review.out).user?.login,
+            }
+          : review;
+
+        await sleep(4000);
+        const after = await call(`/repos/${args.repo}/pulls/${prNumber}`, { token });
+        protection.after_review = {
+          mergeable_state: after.json?.mergeable_state,
+          mergeable: after.json?.mergeable,
+        };
+        const decision = ghAsHuman([
+          "pr",
+          "view",
+          String(prNumber),
+          "-R",
+          args.repo,
+          "--json",
+          "reviewDecision,reviews",
+        ]);
+        protection.review_decision = decision.ok
+          ? JSON.parse(decision.out).reviewDecision
+          : decision;
+
+        // Whether the *bot* can then merge is a second grant question entirely.
+        const merge = await call(`/repos/${args.repo}/pulls/${prNumber}/merge`, {
+          token,
+          method: "PUT",
+          body: { merge_method: "squash" },
+        });
+        protection.bot_merge_attempt = { status: merge.status, message: merge.json?.message };
+      }
+      observations.branch_protection = protection;
+    }
+  } catch (e) {
+    // Never let a late failure swallow what the earlier phases already proved.
+    failed = true;
+    observations.aborted = { error: String(e.stack || e.message).slice(0, 1200) };
+  } finally {
+    // ---------------------------------------------------------------- cleanup
+    if (!args.keep) {
+      const cleanup = {};
+      if (protectionCreatedByProbe) {
+        const del = ghAsHuman([
+          "api",
+          "--method",
+          "DELETE",
+          `repos/${args.repo}/branches/main/protection`,
+        ]);
+        cleanup.protection_removed = del.ok;
+        // A silent false here would leave the branch protected with no clue why,
+        // which is the one cleanup failure an operator must not have to guess at.
+        if (!del.ok) cleanup.protection_remove_error = del.error;
+      }
+      if (prNumber) {
+        const closed = await call(`/repos/${args.repo}/pulls/${prNumber}`, {
+          token,
+          method: "PATCH",
+          body: { state: "closed" },
+        });
+        cleanup.pr_closed = closed.status === 200 || closed.json?.state === "closed";
+        if (!cleanup.pr_closed) cleanup.pr_close_error = closed.json?.message;
+      }
+      if (seam?.push_ok) {
+        const delRef = await call(`/repos/${args.repo}/git/refs/heads/${branch}`, {
+          token,
+          method: "DELETE",
+        });
+        cleanup.branch_deleted = delRef.status === 204;
+        if (!cleanup.branch_deleted) cleanup.branch_delete_error = delRef.json?.message;
+      }
+      // gitSeam is called with keep:true so the worktree survives the second
+      // commit; these two are the only reason it can leak, so they belong here
+      // rather than on the happy path.
+      if (seam?.home) rmSync(seam.home, { recursive: true, force: true });
+      if (seam?.work) rmSync(seam.work, { recursive: true, force: true });
+      observations.cleanup = cleanup;
+    } else {
+      observations.kept = { branch, pr: prNumber, worktree: seam?.work, home: seam?.home };
+    }
+
+    console.log(JSON.stringify(observations, null, 2));
   }
 
-  console.log(JSON.stringify(observations, null, 2));
+  if (failed) process.exitCode = 1;
 }
 
 main().catch((e) => {
-  console.error(e.message);
+  console.error(e.stack || e.message);
   process.exit(1);
 });
