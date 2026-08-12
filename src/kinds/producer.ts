@@ -370,7 +370,11 @@ function createProducerKind(
         },
         worktreeDir,
       );
-      const agentExitCode = await io.agent.run({ worktreeDir, prompt, labels: opts.issueLabels });
+      const {
+        exitCode: agentExitCode,
+        usage,
+        costUsd,
+      } = await io.agent.run({ worktreeDir, prompt, labels: opts.issueLabels });
       const verification = readVerificationReport(reportPath);
 
       const newCommitCount = io.git.commitCount(worktreeDir, `${worktreeBase}..HEAD`);
@@ -439,7 +443,12 @@ function createProducerKind(
         });
       }
 
-      return { exitCode: agentExitCode, verification };
+      return {
+        exitCode: agentExitCode,
+        verification,
+        ...(usage !== undefined ? { usage } : {}),
+        ...(costUsd !== undefined ? { costUsd } : {}),
+      };
     } finally {
       removeVerificationReport(reportPath);
       io.git.removeWorktree(worktreeDir);

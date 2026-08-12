@@ -157,6 +157,41 @@ describe("runAgent", () => {
     expect(spawnedArgs[modelIdx + 3]).toBe("high");
   });
 
+  test("carries usage and cost off the terminal result event (#165)", async () => {
+    const fake = makeFakeChild();
+    const spawn: SpawnAgent = () => {
+      queueMicrotask(() => {
+        fake.emitStdout(
+          `${JSON.stringify({
+            type: "result",
+            result: "finished",
+            total_cost_usd: 0.5,
+            usage: { input_tokens: 10, output_tokens: 20 },
+          })}\n`,
+        );
+        fake.close(0);
+      });
+      return fake.child;
+    };
+
+    const result = await runAgent({
+      provider: PROVIDERS.claude,
+      model: "claude-m",
+      prompt: "the prompt",
+      cwd: "/work/tree",
+      env: {},
+      spawn,
+      log: () => {},
+    });
+
+    expect(result).toEqual({
+      exitCode: 0,
+      resultText: "finished",
+      usage: { inputTokens: 10, outputTokens: 20 },
+      costUsd: 0.5,
+    });
+  });
+
   test("null exit code (signal kill) maps to failure", async () => {
     const fake = makeFakeChild();
     const spawn: SpawnAgent = () => {

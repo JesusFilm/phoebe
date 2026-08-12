@@ -411,7 +411,7 @@ describe("createReviewsKind — labels (#155)", () => {
       agent: {
         run: async (opts) => {
           receivedLabels = opts.labels;
-          return 0;
+          return { exitCode: 0 };
         },
       },
     });
@@ -474,7 +474,7 @@ function fakeIo(overrides: Partial<Io> = {}): Io {
       commitCount: () => 0,
       gitInWorktree: () => "",
     },
-    agent: { run: async () => 0 },
+    agent: { run: async () => ({ exitCode: 0 }) },
     prompts: {
       load: () => "template",
       defaultArgs: () => ({}),

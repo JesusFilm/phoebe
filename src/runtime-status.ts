@@ -13,6 +13,7 @@ import {
   type WorkKind,
   type WorkKindRef,
   type WorkOutcomeEvent,
+  type WorkOutcomeUsage,
 } from "./status-contract.ts";
 import { loadOrCreateRuntimeId, readStatusSnapshot, writeStatusSnapshot } from "./status-store.ts";
 
@@ -40,7 +41,12 @@ export type RuntimeStatusTransition =
   | {
       kind: "work-completed";
       verification?: readonly VerificationResult[];
-      resources?: { agentExitCode?: number; summary?: string };
+      resources?: {
+        agentExitCode?: number;
+        usage?: WorkOutcomeUsage;
+        costUsd?: number;
+        summary?: string;
+      };
       pullRequestNumber?: number;
     }
   | {
@@ -48,7 +54,12 @@ export type RuntimeStatusTransition =
       error: unknown;
       pullRequestNumber?: number;
       verification?: readonly VerificationResult[];
-      resources?: { agentExitCode?: number; summary?: string };
+      resources?: {
+        agentExitCode?: number;
+        usage?: WorkOutcomeUsage;
+        costUsd?: number;
+        summary?: string;
+      };
     }
   | { kind: "work-timed-out"; elapsedMs: number }
   | { kind: "unit-quarantined"; work: WorkRef; reason: string }
@@ -264,7 +275,12 @@ export function createRuntimeStatusReporter(options: {
     failure: WorkOutcomeEvent["failure"],
     extra: {
       verification?: readonly VerificationResult[];
-      resources?: { agentExitCode?: number; summary?: string };
+      resources?: {
+        agentExitCode?: number;
+        usage?: WorkOutcomeUsage;
+        costUsd?: number;
+        summary?: string;
+      };
     },
   ): void => {
     const active = snapshot.activeWork;
@@ -311,6 +327,8 @@ export function createRuntimeStatusReporter(options: {
         ...(extra.resources?.agentExitCode !== undefined
           ? { agentExitCode: extra.resources.agentExitCode }
           : {}),
+        ...(extra.resources?.usage !== undefined ? { usage: extra.resources.usage } : {}),
+        ...(extra.resources?.costUsd !== undefined ? { costUsd: extra.resources.costUsd } : {}),
         summary: sanitizeTelemetryText(
           extra.resources?.summary ??
             (outcome === "success" ? "Work unit completed." : "Work unit failed."),

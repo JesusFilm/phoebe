@@ -13,11 +13,24 @@ export type AgentCommand = {
   readonly stdin?: string;
 };
 
+/**
+ * Token accounting off a provider's terminal usage event (#165). Every field is
+ * optional because providers report different subsets — Codex has no cache
+ * fields, a provider with no usage on its terminal event reports none of them.
+ */
+export type AgentUsage = {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
+};
+
 /** Events parsed from one line of the agent's JSONL output stream. */
 export type AgentEvent =
   | { type: "text"; text: string }
   | { type: "result"; result: string }
-  | { type: "tool_call"; name: string; args: string };
+  | { type: "tool_call"; name: string; args: string }
+  | { type: "usage"; usage?: AgentUsage; costUsd?: number };
 
 export type Provider = {
   readonly name: ProviderName;

@@ -44,7 +44,9 @@ import {
   worktreeDirForBranch,
 } from "./git-model.ts";
 import { pushBudgetExhausted, recordPush } from "./push-rate-limit.ts";
+import { dailyCostBudgetExhausted } from "./cost-cap.ts";
 import { runAgent } from "./providers/run-agent.ts";
+import type { AgentUsage } from "./providers/types.ts";
 import { selectProvider } from "./providers/select.ts";
 import { classifyTier } from "./tier.ts";
 import {
@@ -268,7 +270,7 @@ export async function runEngine(opts: {
     worktreeDir: string;
     prompt: string;
     labels?: readonly string[];
-  }): Promise<number> {
+  }): Promise<{ exitCode: number; usage?: AgentUsage; costUsd?: number }> {
     const tier = classifyTier(agentOpts.labels ?? []);
     const { provider, model, effort } = selectProvider({ config, env: process.env, tier });
     const env = buildAgentEnv({
@@ -276,7 +278,7 @@ export async function runEngine(opts: {
       provider: provider.name,
       providerEnv: config.providerEnv,
     });
-    const { exitCode } = await runWithDeadline({
+    const { exitCode, usage, costUsd } = await runWithDeadline({
       ms: RUN_TIMEOUT_MS,
       work: (signal) =>
         runAgent({
@@ -292,7 +294,11 @@ export async function runEngine(opts: {
     if (exitCode !== 0) {
       phoebeLog(`Agent exited with code ${exitCode}.`);
     }
-    return exitCode;
+    return {
+      exitCode,
+      ...(usage !== undefined ? { usage } : {}),
+      ...(costUsd !== undefined ? { costUsd } : {}),
+    };
   }
 
   function buildAgentRunner(): AgentRunner {
@@ -446,6 +452,21 @@ export async function runEngine(opts: {
         ),
       );
 
+      // #165: a spent daily cost budget idles the whole cycle rather than
+      // narrowing kinds the way the hourly push budget does below — every kind
+      // can spend on an agent run (not just the janitor ones the push budget
+      // targets), so the only hard stop that actually caps the fleet's daily
+      // bill is skipping selection entirely until the UTC day rolls over.
+      const dailyCostCap = config.dailyCostCapUsd;
+      if (dailyCostBudgetExhausted(config.paths.stateDir, dailyCostCap, new Date())) {
+        const reason = `Daily cost cap ($${dailyCostCap.toFixed(2)}, PHOEBE_DAILY_COST_CAP_USD) reached — idling until the UTC day rolls over.`;
+        phoebeLog(reason);
+        status.record({ kind: "idle", reason });
+        if (runOnce || dryRun) break;
+        await drain.wait(pollIntervalMs);
+        continue;
+      }
+
       const orderedKinds = workOrder
         .map((name) => kindHandles.find((k) => k.name === name))
         .filter((k): k is KindHandle => k !== undefined);
@@ -541,8 +562,21 @@ export async function runEngine(opts: {
       }
       status.record({ kind: "work-started", work: workRefFromRef(picked.ref) });
       try {
-        const { exitCode: agentExitCode, verification } = await picked.execute(ctx);
+        const { exitCode: agentExitCode, verification, usage, costUsd } = await picked.execute(ctx);
         const pullRequestNumber = pullRequestNumberAfterWork(picked.ref);
+        const resourceExtras = {
+          ...(usage !== undefined ? { usage } : {}),
+          ...(costUsd !== undefined ? { costUsd } : {}),
+        };
+        // #165: a run that reports a cost above `runCostCapUsd` is recorded as a
+        // failure even on a clean agent exit — the spend already happened (the
+        // stream only reports cost on the terminal event, so nothing short of
+        // killing the child mid-run could have stopped it), but flagging it
+        // loudly and routing it through the same retryable-failure path as a
+        // nonzero exit means a unit that repeatedly blows the cap rides the
+        // existing quarantine machinery instead of burning tokens forever.
+        const runCostCap = config.runCostCapUsd;
+        const capExceeded = runCostCap > 0 && costUsd !== undefined && costUsd > runCostCap;
         if (agentExitCode !== null && agentExitCode !== 0) {
           status.record({
             kind: "work-failed",
@@ -551,7 +585,23 @@ export async function runEngine(opts: {
             ...(verification ? { verification } : {}),
             resources: {
               agentExitCode,
+              ...resourceExtras,
               summary: "The work unit completed its cleanup after a nonzero agent exit.",
+            },
+          });
+        } else if (capExceeded) {
+          status.record({
+            kind: "work-failed",
+            error: new Error(
+              `Agent run failed its per-run cost cap: cost $${costUsd.toFixed(2)} exceeded the ` +
+                `$${runCostCap.toFixed(2)} PHOEBE_RUN_COST_CAP_USD limit.`,
+            ),
+            ...(pullRequestNumber !== undefined ? { pullRequestNumber } : {}),
+            ...(verification ? { verification } : {}),
+            resources: {
+              ...(agentExitCode !== null ? { agentExitCode } : {}),
+              ...resourceExtras,
+              summary: "The work unit exceeded its per-run cost cap.",
             },
           });
         } else {
@@ -564,6 +614,7 @@ export async function runEngine(opts: {
               : {
                   resources: {
                     agentExitCode,
+                    ...resourceExtras,
                     summary: "The work unit completed after a successful agent run.",
                   },
                 }),

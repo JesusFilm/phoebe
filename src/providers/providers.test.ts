@@ -101,6 +101,39 @@ describe("claude provider", () => {
     expect(PROVIDERS.claude.parseStreamLine(line)).toEqual([{ type: "result", result: "done" }]);
   });
 
+  test("captures usage and total_cost_usd off the terminal result event", () => {
+    const line = JSON.stringify({
+      type: "result",
+      result: "done",
+      total_cost_usd: 0.0150938,
+      usage: {
+        input_tokens: 9,
+        output_tokens: 56,
+        cache_creation_input_tokens: 6515,
+        cache_read_input_tokens: 17748,
+        service_tier: "standard",
+      },
+    });
+    expect(PROVIDERS.claude.parseStreamLine(line)).toEqual([
+      { type: "result", result: "done" },
+      {
+        type: "usage",
+        usage: {
+          inputTokens: 9,
+          outputTokens: 56,
+          cacheCreationTokens: 6515,
+          cacheReadTokens: 17748,
+        },
+        costUsd: 0.0150938,
+      },
+    ]);
+  });
+
+  test("omits the usage event when the result carries neither usage nor cost", () => {
+    const line = JSON.stringify({ type: "result", result: "done", is_error: false });
+    expect(PROVIDERS.claude.parseStreamLine(line)).toEqual([{ type: "result", result: "done" }]);
+  });
+
   test("ignores non-JSON lines", () => {
     expect(PROVIDERS.claude.parseStreamLine("plain text")).toEqual([]);
     expect(PROVIDERS.claude.parseStreamLine("{not json")).toEqual([]);
@@ -148,5 +181,34 @@ describe("codex provider", () => {
     expect(PROVIDERS.codex.parseStreamLine(line)).toEqual([
       { type: "result", result: "rate limited" },
     ]);
+  });
+
+  test("captures usage off turn.completed — no cost, codex has none on its stream", () => {
+    const line = JSON.stringify({
+      type: "turn.completed",
+      usage: {
+        input_tokens: 13178,
+        cached_input_tokens: 9984,
+        cache_write_input_tokens: 0,
+        output_tokens: 6,
+        reasoning_output_tokens: 0,
+      },
+    });
+    expect(PROVIDERS.codex.parseStreamLine(line)).toEqual([
+      {
+        type: "usage",
+        usage: {
+          inputTokens: 13178,
+          outputTokens: 6,
+          cacheReadTokens: 9984,
+          cacheCreationTokens: 0,
+        },
+      },
+    ]);
+  });
+
+  test("ignores a turn.completed with no usage object", () => {
+    const line = JSON.stringify({ type: "turn.completed" });
+    expect(PROVIDERS.codex.parseStreamLine(line)).toEqual([]);
   });
 });

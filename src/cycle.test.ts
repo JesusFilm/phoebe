@@ -61,7 +61,7 @@ function fakeIo(overrides: Partial<Io> = {}): Io {
       commitCount: () => 0,
       gitInWorktree: () => "",
     },
-    agent: { run: async () => 0 },
+    agent: { run: async () => ({ exitCode: 0 }) },
     prompts: { load: () => "template", defaultArgs: () => ({}), render: (t) => t },
     shell: { run: () => {} },
     quarantine: { record: () => {}, resolve: () => {}, sweepUnstuck: () => {} },

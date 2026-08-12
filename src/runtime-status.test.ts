@@ -101,6 +101,35 @@ describe("runtime status projection", () => {
     });
   });
 
+  test("carries usage and costUsd through to the journaled event (#165)", () => {
+    const stateDir = makeStateDir();
+    const reporter = createRuntimeStatusReporter({
+      stateDir,
+      runtimeId: "runtime-1",
+      ...context,
+    });
+
+    reporter.record({ kind: "selecting" });
+    reporter.record({ kind: "work-started", work: { kind: "issues", issueNumber: 42 } });
+    reporter.record({
+      kind: "work-completed",
+      resources: {
+        agentExitCode: 0,
+        usage: { inputTokens: 10, outputTokens: 20 },
+        costUsd: 0.5,
+        summary: "1 commit",
+      },
+    });
+
+    expect(replayEventJournal(stateDir).events[0]).toMatchObject({
+      resources: {
+        agentExitCode: 0,
+        usage: { inputTokens: 10, outputTokens: 20 },
+        costUsd: 0.5,
+      },
+    });
+  });
+
   test("publishes the resolved issue queue lookahead (#20)", () => {
     const stateDir = makeStateDir();
     const reporter = createRuntimeStatusReporter({

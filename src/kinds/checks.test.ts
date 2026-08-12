@@ -311,7 +311,7 @@ describe("createChecksKind — labels (#155)", () => {
       agent: {
         run: async (opts) => {
           receivedLabels = opts.labels;
-          return 0;
+          return { exitCode: 0 };
         },
       },
     });
@@ -321,6 +321,25 @@ describe("createChecksKind — labels (#155)", () => {
     await kind.run(unit, fakeCtx());
 
     expect(receivedLabels).toEqual(["phoebe:tier:basic"]);
+  });
+
+  test("usage and costUsd off io.agent.run reach the UnitResult via janitor.runAgentWorkflow (#165)", async () => {
+    const io = fakeIo({
+      agent: {
+        run: async () => ({
+          exitCode: 0,
+          usage: { inputTokens: 3, outputTokens: 4 },
+          costUsd: 0.02,
+        }),
+      },
+    });
+    const kind = createChecksKind({ config, io });
+    const unit = checksPr({ prNumber: 401 });
+
+    const result = await kind.run(unit, fakeCtx());
+
+    expect(result.usage).toEqual({ inputTokens: 3, outputTokens: 4 });
+    expect(result.costUsd).toBe(0.02);
   });
 });
 
@@ -371,7 +390,7 @@ function fakeIo(overrides: Partial<Io> = {}): Io {
       commitCount: () => 0,
       gitInWorktree: () => "",
     },
-    agent: { run: async () => 0 },
+    agent: { run: async () => ({ exitCode: 0 }) },
     prompts: {
       load: () => "template",
       defaultArgs: () => ({}),

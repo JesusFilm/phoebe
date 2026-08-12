@@ -118,6 +118,17 @@
       "properties": {
         "durationMs": { "type": "integer", "minimum": 0 },
         "agentExitCode": { "type": "integer" },
+        "usage": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "inputTokens": { "type": "number", "minimum": 0 },
+            "outputTokens": { "type": "number", "minimum": 0 },
+            "cacheReadTokens": { "type": "number", "minimum": 0 },
+            "cacheCreationTokens": { "type": "number", "minimum": 0 }
+          }
+        },
+        "costUsd": { "type": "number", "minimum": 0 },
         "summary": { "type": "string", "maxLength": 2000 }
       }
     },

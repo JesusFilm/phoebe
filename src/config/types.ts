@@ -266,6 +266,28 @@ export type PhoebeConfig = {
    */
   maxPushesPerHour: number;
   /**
+   * Hard per-run dollar cap (#165): a work unit whose agent run reports a
+   * `total_cost_usd` above this is recorded as a failed run (retryable, same
+   * as a nonzero agent exit) instead of a success — so a wedged unit that
+   * blows the cap gets flagged immediately and, on repeat offenses, rides the
+   * existing retry/quarantine machinery rather than repeating silently.
+   * `0` disables the cap (SWE-agent's convention — docs/competitive-landscape.md
+   * §4.1). Only providers that report a dollar cost on their terminal event
+   * (Claude, Cursor) can trip it; Codex reports tokens only. Env-overridable
+   * via `PHOEBE_RUN_COST_CAP_USD`. Default `0`.
+   */
+  runCostCapUsd: number;
+  /**
+   * Hard daily dollar cap across the whole fleet-tenant (#165): summed from
+   * `resources.costUsd` on the events-v1 journal for the current UTC day — the
+   * durable "system of record" for what a run cost, not new state to keep in
+   * sync (the stateless poll loop has nowhere else to remember a cross-cycle
+   * total). Once reached, the engine idles for the rest of the day rather than
+   * starting new work. `0` disables the cap. Env-overridable via
+   * `PHOEBE_DAILY_COST_CAP_USD`. Default `0`.
+   */
+  dailyCostCapUsd: number;
+  /**
    * Per-tenant filesystem layout. Not user-supplied: derived from `repoSlug`
    * and the deployment data base by `resolveConfiguration` (see src/paths.ts,
    * #58/#62).
@@ -348,6 +370,10 @@ export type PhoebeUserConfig = {
   leaseTtlMs?: number;
   /** Max branch pushes this repo may make per wall-clock hour (#168); default 20. */
   maxPushesPerHour?: number;
+  /** Hard per-run dollar cap (#165); `0` disables it. Default 0. */
+  runCostCapUsd?: number;
+  /** Hard daily dollar cap across the tenant (#165); `0` disables it. Default 0. */
+  dailyCostCapUsd?: number;
 };
 
 export const WORK_KIND_NAMES = ["conflicts", "checks", "reviews", "issues", "research"] as const;

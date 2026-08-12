@@ -329,7 +329,7 @@ function fakeIo(overrides: Partial<Io> = {}): Io {
       commitCount: () => 0,
       gitInWorktree: () => "",
     },
-    agent: { run: async () => 0 },
+    agent: { run: async () => ({ exitCode: 0 }) },
     prompts: {
       load: () => "template",
       defaultArgs: () => ({}),
@@ -418,7 +418,7 @@ describe("createIssuesKind — run threads the issue's labels to the agent invoc
       agent: {
         run: async (opts) => {
           receivedLabels = opts.labels;
-          return 0;
+          return { exitCode: 0 };
         },
       },
     });
@@ -430,6 +430,27 @@ describe("createIssuesKind — run threads the issue's labels to the agent invoc
     await kind.run(unit, fakeCtx());
 
     expect(receivedLabels).toEqual(["ready-for-agent", "phoebe:tier:strong"]);
+  });
+
+  test("usage and costUsd off io.agent.run reach the UnitResult (#165)", async () => {
+    const io = fakeIo({
+      agent: {
+        run: async () => ({
+          exitCode: 0,
+          usage: { inputTokens: 9, outputTokens: 56 },
+          costUsd: 0.015,
+        }),
+      },
+    });
+    const deps: KindDeps = { config, io };
+    const kind = createIssuesKind(deps);
+    const target = issue({ number: 56 });
+    const unit = { issue: target, resolution: { worktreeBase: "main", stacked: false } };
+
+    const result = await kind.run(unit, fakeCtx());
+
+    expect(result.usage).toEqual({ inputTokens: 9, outputTokens: 56 });
+    expect(result.costUsd).toBe(0.015);
   });
 });
 

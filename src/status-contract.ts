@@ -137,6 +137,14 @@ export type FailureCategory =
   | "github"
   | "internal";
 
+/** Token accounting on a `WorkOutcomeEvent` — mirrors `providers/types.ts`'s `AgentUsage` on the wire contract's own terms (#165). */
+export type WorkOutcomeUsage = {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
+};
+
 export type WorkOutcomeEvent = {
   schemaVersion: typeof EVENTS_SCHEMA_VERSION;
   runtimeId: string;
@@ -172,6 +180,10 @@ export type WorkOutcomeEvent = {
   resources: {
     durationMs: number;
     agentExitCode?: number;
+    /** Token usage off the provider's terminal usage event, if it reported any (#165). */
+    usage?: WorkOutcomeUsage;
+    /** Dollar cost off the provider's terminal usage event — Claude/Cursor only, Codex reports none (#165). */
+    costUsd?: number;
     summary: string;
   };
   links: {
@@ -254,6 +266,21 @@ function isOptionalString(record: Record<string, unknown>, key: string): boolean
 
 function isOptionalPositiveInteger(record: Record<string, unknown>, key: string): boolean {
   return record[key] === undefined || isPositiveInteger(record[key]);
+}
+
+function isOptionalNonNegativeNumber(record: Record<string, unknown>, key: string): boolean {
+  const value = record[key];
+  return value === undefined || (typeof value === "number" && Number.isFinite(value) && value >= 0);
+}
+
+function isWorkOutcomeUsage(value: unknown): value is WorkOutcomeUsage {
+  return (
+    isRecord(value) &&
+    isOptionalNonNegativeNumber(value, "inputTokens") &&
+    isOptionalNonNegativeNumber(value, "outputTokens") &&
+    isOptionalNonNegativeNumber(value, "cacheReadTokens") &&
+    isOptionalNonNegativeNumber(value, "cacheCreationTokens")
+  );
 }
 
 function isWorkIdentity(value: unknown): value is WorkIdentity {
@@ -433,6 +460,8 @@ function isEventsV1(value: unknown): value is WorkOutcomeEvent {
     (resources["agentExitCode"] === undefined ||
       (typeof resources["agentExitCode"] === "number" &&
         Number.isSafeInteger(resources["agentExitCode"]))) &&
+    (resources["usage"] === undefined || isWorkOutcomeUsage(resources["usage"])) &&
+    isOptionalNonNegativeNumber(resources, "costUsd") &&
     typeof resources["summary"] === "string" &&
     resources["summary"].length <= 2_000 &&
     isRecord(links) &&

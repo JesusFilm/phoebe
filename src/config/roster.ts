@@ -92,6 +92,13 @@ function assertPositiveInteger(value: unknown, location: string): void {
   }
 }
 
+/** `0` is a valid value for the two cost-cap knobs — it's their disable switch (SWE-agent's convention). */
+function assertNonNegativeNumber(value: unknown, location: string): void {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new Error(`${location} must be a non-negative number (got ${JSON.stringify(value)}).`);
+  }
+}
+
 /**
  * The roster. `Record<keyof PhoebeUserConfig, FieldDescriptor>` makes it total
  * by construction — see the module docstring.
@@ -344,6 +351,22 @@ export const ROSTER = {
     env: "PHOEBE_MAX_PUSHES_PER_HOUR",
     baseAllowed: true,
     validate: assertPositiveInteger,
+  },
+  // `0` disables the cap (#165) — SWE-agent's convention for its three
+  // orthogonal cost knobs (docs/competitive-landscape.md §4.1).
+  runCostCapUsd: {
+    kind: { type: "number" },
+    default: 0,
+    env: "PHOEBE_RUN_COST_CAP_USD",
+    baseAllowed: true,
+    validate: assertNonNegativeNumber,
+  },
+  dailyCostCapUsd: {
+    kind: { type: "number" },
+    default: 0,
+    env: "PHOEBE_DAILY_COST_CAP_USD",
+    baseAllowed: true,
+    validate: assertNonNegativeNumber,
   },
 } as const satisfies Record<keyof PhoebeUserConfig, FieldDescriptor>;
 

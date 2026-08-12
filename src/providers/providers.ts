@@ -3,7 +3,7 @@
 // `@ai-hero/sandcastle` package sources) and carry its field-level
 // knowledge of each CLI's output format.
 
-import type { AgentCommand, AgentEvent, Provider } from "./types.ts";
+import type { AgentCommand, AgentEvent, AgentUsage, Provider } from "./types.ts";
 import type { ProviderName } from "../config/index.ts";
 
 /** Maps allowlisted tool names to the input field carrying the display arg. */
@@ -13,6 +13,27 @@ const TOOL_ARG_FIELDS: Record<string, string> = {
   WebFetch: "url",
   Agent: "description",
 };
+
+/**
+ * Claude Code's terminal `result` event carries `usage` (`input_tokens`,
+ * `output_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`)
+ * and `total_cost_usd` alongside the `result` text (#165) — verified against a
+ * live `claude --output-format stream-json` run, not just documentation.
+ */
+function claudeUsage(value: unknown): AgentUsage | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const raw = value as Record<string, unknown>;
+  const usage: AgentUsage = {};
+  if (typeof raw["input_tokens"] === "number") usage.inputTokens = raw["input_tokens"];
+  if (typeof raw["output_tokens"] === "number") usage.outputTokens = raw["output_tokens"];
+  if (typeof raw["cache_read_input_tokens"] === "number") {
+    usage.cacheReadTokens = raw["cache_read_input_tokens"];
+  }
+  if (typeof raw["cache_creation_input_tokens"] === "number") {
+    usage.cacheCreationTokens = raw["cache_creation_input_tokens"];
+  }
+  return Object.keys(usage).length > 0 ? usage : undefined;
+}
 
 /**
  * Claude Code and Cursor share the Claude stream-json line schema:
@@ -57,7 +78,17 @@ const parseClaudeStreamLine = (line: string): AgentEvent[] => {
       return events;
     }
     if (obj["type"] === "result" && typeof obj["result"] === "string") {
-      return [{ type: "result", result: obj["result"] }];
+      const events: AgentEvent[] = [{ type: "result", result: obj["result"] }];
+      const usage = claudeUsage(obj["usage"]);
+      const costUsd = typeof obj["total_cost_usd"] === "number" ? obj["total_cost_usd"] : undefined;
+      if (usage !== undefined || costUsd !== undefined) {
+        events.push({
+          type: "usage",
+          ...(usage !== undefined ? { usage } : {}),
+          ...(costUsd !== undefined ? { costUsd } : {}),
+        });
+      }
+      return events;
     }
   } catch {
     // Not valid JSON — skip.
@@ -120,6 +151,29 @@ const extractErrorMessage = (obj: Record<string, unknown>): string | undefined =
   return undefined;
 };
 
+/**
+ * Codex has no dollar cost on its stream (`RolloutBudget` only injects
+ * reminders — docs/competitive-landscape.md §4.1) but `turn.completed` carries
+ * token usage separately from the `item.completed` text event, verified
+ * against a live `codex exec --json` run: `{"type":"turn.completed","usage":
+ * {"input_tokens":...,"cached_input_tokens":...,"cache_write_input_tokens":...,
+ * "output_tokens":...,"reasoning_output_tokens":...}}`.
+ */
+function codexUsage(value: unknown): AgentUsage | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const raw = value as Record<string, unknown>;
+  const usage: AgentUsage = {};
+  if (typeof raw["input_tokens"] === "number") usage.inputTokens = raw["input_tokens"];
+  if (typeof raw["output_tokens"] === "number") usage.outputTokens = raw["output_tokens"];
+  if (typeof raw["cached_input_tokens"] === "number") {
+    usage.cacheReadTokens = raw["cached_input_tokens"];
+  }
+  if (typeof raw["cache_write_input_tokens"] === "number") {
+    usage.cacheCreationTokens = raw["cache_write_input_tokens"];
+  }
+  return Object.keys(usage).length > 0 ? usage : undefined;
+}
+
 /** Codex `exec --json` emits item/turn events rather than message blocks. */
 const parseCodexStreamLine = (line: string): AgentEvent[] => {
   if (!line.startsWith("{")) return [];
@@ -142,6 +196,10 @@ const parseCodexStreamLine = (line: string): AgentEvent[] => {
       typeof item.command === "string"
     ) {
       return [{ type: "tool_call", name: "Bash", args: item.command }];
+    }
+    if (obj["type"] === "turn.completed") {
+      const usage = codexUsage(obj["usage"]);
+      return usage !== undefined ? [{ type: "usage", usage }] : [];
     }
     // Codex reports auth/rate-limit/API errors on stdout, not stderr.
     if (obj["type"] === "error") {

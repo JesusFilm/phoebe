@@ -17,6 +17,7 @@ import type { GitHub } from "../github.ts";
 import type { Quarantine } from "../quarantine.ts";
 import type { VerificationResult } from "../verification.ts";
 import type { CycleContext } from "../cycle.ts";
+import type { AgentUsage } from "../providers/types.ts";
 import {
   classifyFailure,
   sanitizeTelemetryText,
@@ -27,6 +28,9 @@ import {
 export type UnitResult = {
   exitCode: number | null;
   verification?: readonly VerificationResult[];
+  /** Token usage/cost off the agent run that produced this result, if any (#165). */
+  usage?: AgentUsage;
+  costUsd?: number;
 };
 
 /**
@@ -69,7 +73,11 @@ export type GitOps = {
  * default model/effort for this one run (#155).
  */
 export type AgentRunner = {
-  run(opts: { worktreeDir: string; prompt: string; labels?: readonly string[] }): Promise<number>;
+  run(opts: {
+    worktreeDir: string;
+    prompt: string;
+    labels?: readonly string[];
+  }): Promise<{ exitCode: number; usage?: AgentUsage; costUsd?: number }>;
 };
 
 /** Prompt template load + `{{KEY}}` substitution + `` !`cmd` `` shell splicing. */

@@ -178,7 +178,11 @@ export function createJanitorHelpers(deps: KindDeps): JanitorHelpers {
         { ...io.prompts.defaultArgs(), ...opts.promptArgs, VERIFICATION_RESULT_FILE: reportPath },
         worktreeDir,
       );
-      const agentExitCode = await io.agent.run({ worktreeDir, prompt, labels: opts.pr.labels });
+      const {
+        exitCode: agentExitCode,
+        usage,
+        costUsd,
+      } = await io.agent.run({ worktreeDir, prompt, labels: opts.pr.labels });
       const verification = readVerificationReport(reportPath);
 
       io.git.fetchOrigin();
@@ -192,7 +196,12 @@ export function createJanitorHelpers(deps: KindDeps): JanitorHelpers {
         originShaAfter,
         localCommitCount,
       });
-      return { exitCode: agentExitCode, verification };
+      return {
+        exitCode: agentExitCode,
+        verification,
+        ...(usage !== undefined ? { usage } : {}),
+        ...(costUsd !== undefined ? { costUsd } : {}),
+      };
     } finally {
       removeVerificationReport(reportPath);
       io.git.removeWorktree(worktreeDir);

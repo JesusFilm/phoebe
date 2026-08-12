@@ -3,12 +3,16 @@
 // (see ../agent-env.ts) — never the orchestrator's full process.env.
 
 import { spawn as nodeSpawn } from "node:child_process";
-import type { Provider } from "./types.ts";
+import type { AgentUsage, Provider } from "./types.ts";
 
 export type AgentRunResult = {
   exitCode: number;
   /** Last `result` event the provider emitted, if any. */
   resultText: string;
+  /** Token usage off the provider's terminal usage event, if it reported any (#165). */
+  usage?: AgentUsage;
+  /** Dollar cost off the provider's terminal usage event — Claude/Cursor only, Codex reports none (#165). */
+  costUsd?: number;
 };
 
 /** Minimal child-process surface so tests can inject a fake spawn. */
@@ -66,6 +70,8 @@ export async function runAgent(opts: {
     const child = spawn(file, args, { cwd, env });
     let resultText = "";
     let stdoutBuffer = "";
+    let usage: AgentUsage | undefined;
+    let costUsd: number | undefined;
 
     const onAbort = (): void => {
       if (!child.kill) return;
@@ -86,6 +92,9 @@ export async function runAgent(opts: {
           if (text) log(`[${provider.name}] ${text}`);
         } else if (event.type === "tool_call") {
           log(`[${provider.name}] ${event.name}: ${event.args}`);
+        } else if (event.type === "usage") {
+          if (event.usage !== undefined) usage = event.usage;
+          if (event.costUsd !== undefined) costUsd = event.costUsd;
         } else {
           resultText = event.result;
         }
@@ -105,7 +114,12 @@ export async function runAgent(opts: {
     child.on("error", reject);
     child.on("close", (code) => {
       if (stdoutBuffer) handleLine(stdoutBuffer);
-      resolve({ exitCode: code ?? 1, resultText });
+      resolve({
+        exitCode: code ?? 1,
+        resultText,
+        ...(usage !== undefined ? { usage } : {}),
+        ...(costUsd !== undefined ? { costUsd } : {}),
+      });
     });
 
     if (command.stdin !== undefined) {

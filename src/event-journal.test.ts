@@ -103,6 +103,30 @@ describe("events-v1 journal", () => {
     });
   });
 
+  test("round-trips resources.usage and resources.costUsd (#165)", () => {
+    const stateDir = makeStateDir();
+    const journal = createEventJournal({ stateDir, runtimeId: "runtime-1" });
+
+    journal.append(
+      outcome({
+        resources: {
+          durationMs: 60_000,
+          agentExitCode: 0,
+          usage: { inputTokens: 9, outputTokens: 56, cacheReadTokens: 17_748 },
+          costUsd: 0.015,
+          summary: "1 commit",
+        },
+      }),
+    );
+
+    expect(replayEventJournal(stateDir).events[0]).toMatchObject({
+      resources: {
+        usage: { inputTokens: 9, outputTokens: 56, cacheReadTokens: 17_748 },
+        costUsd: 0.015,
+      },
+    });
+  });
+
   test("rotates on event count, prunes deterministically, and reports the unavailable range", () => {
     const stateDir = makeStateDir();
     let id = 0;

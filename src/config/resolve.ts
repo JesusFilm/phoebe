@@ -130,6 +130,8 @@ export function resolveConfig(
     maxUnitAttempts: user.maxUnitAttempts ?? ROSTER.maxUnitAttempts.default,
     leaseTtlMs: user.leaseTtlMs ?? ROSTER.leaseTtlMs.default,
     maxPushesPerHour: user.maxPushesPerHour ?? ROSTER.maxPushesPerHour.default,
+    runCostCapUsd: user.runCostCapUsd ?? ROSTER.runCostCapUsd.default,
+    dailyCostCapUsd: user.dailyCostCapUsd ?? ROSTER.dailyCostCapUsd.default,
     paths: derivePaths(user.repoSlug, opts.dataBase),
   };
 }
