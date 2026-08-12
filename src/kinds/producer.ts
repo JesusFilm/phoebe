@@ -6,7 +6,7 @@
 // a ticket claims a crash-safe lease (#15) — `research` tickets are cheap to
 // re-pick, so they skip the claim/heartbeat machinery entirely.
 
-import type { BranchRef, PrNumber } from "../branded.ts";
+import { asBranchRef, type BranchRef, type PrNumber } from "../branded.ts";
 import { createPhoebeLog } from "../phoebe-log.ts";
 import {
   buildLeaseComment,
@@ -183,6 +183,64 @@ export function issueAttemptFailureSignature(opts: {
   return "no-commit-produced";
 }
 
+// --- Repro-test-must-fail-first (#171, competitive-landscape.md §4.8) -------
+//
+// A new or modified test that already passes against the pre-change tree
+// proves nothing about the fix it's meant to cover — Agentless is the only
+// competitor found to actually enforce this rather than merely prompt for it.
+// After an issue unit commits, `runReproCheck` diffs for test-like paths
+// touched since `worktreeBase`, replays just those files onto a throwaway
+// worktree pinned to that same base, and installs + runs the test suite
+// there. `git bisect --run`'s exit-code contract (exit 125 = "cannot test
+// this tree", distinct from pass/fail) is mirrored as its own `untestable`
+// verdict: an environment that can't run the pre-patch tree at all must not
+// silently pass the gate, so it fails open (proceeds without blocking)
+// instead.
+
+/**
+ * Cheap heuristic for "which new tests to run pre-patch" (#171): a path that
+ * looks like a test by common convention across ecosystems — a
+ * `*.test.*`/`*.spec.*`/`*_test.*`/`test_*.*` filename, or anything under a
+ * `test(s)`/`__tests__`/`spec` directory. False positives just cost an extra
+ * pre-patch run on a file that turns out not to be a test; false negatives
+ * just mean the gate has nothing to check for that file — neither is a
+ * correctness bug.
+ */
+const TEST_LIKE_PATH_RE =
+  /(^|\/)(__tests__|tests?|spec)\/|(^|\/)test_[^/]+\.[^./]+$|[._-](tests?|specs?)\.[^./]+$/i;
+
+export function isTestLikePath(path: string): boolean {
+  return TEST_LIKE_PATH_RE.test(path);
+}
+
+export type ReproCheckOutcome =
+  /** No test-like path changed in this unit's diff — nothing to check. */
+  | { verdict: "no-tests" }
+  /** The new/modified test(s) correctly fail against the pre-change tree. */
+  | { verdict: "confirmed"; testFiles: readonly string[] }
+  /** The new/modified test(s) already pass against the pre-change tree — discard this attempt. */
+  | { verdict: "weak"; testFiles: readonly string[] }
+  /** Could not run the pre-change tree at all — fails open rather than blocking on an inconclusive signal. */
+  | { verdict: "untestable"; testFiles: readonly string[]; reason: string };
+
+/** Stable, kind-independent signature for the `no-pr` quarantine counter. */
+export const REPRO_GATE_FAILURE_SIGNATURE = "repro-test-passed-pre-patch";
+
+/** The tracking-comment prose for a repro-gate discard, below quarantine threshold. */
+export function reproGateBelowThresholdNote(
+  n: number,
+  k: number,
+  testFiles: readonly string[],
+): string {
+  const files = testFiles.map((f) => `\`${f}\``).join(", ");
+  return (
+    `⚠️ Phoebe discarded this attempt (attempt ${n}/${k}, \`${REPRO_GATE_FAILURE_SIGNATURE}\`): the ` +
+    `new/modified test(s) ${files} already pass against the pre-change tree, so they don't prove the fix ` +
+    `does anything (repro-test-must-fail-first). Write a test that fails without the change — it stays in ` +
+    `the ready queue and will retry once the claim lease expires.`
+  );
+}
+
 type ProducerData = {
   issues: readonly Issue[];
   blockerStates: ReadonlyMap<number, BlockerPrState>;
@@ -313,6 +371,9 @@ function createProducerKind(
     signature: string;
     dependentsPool: readonly Issue[];
     nativeBlockersByIssue: NativeBlockerMap;
+    /** Override the default "was claimed and released with no PR" wording (#171's repro gate). */
+    reason?: string;
+    belowThresholdNote?: (n: number, k: number) => string;
   }): void {
     const dependents = findBlockedDependents(
       opts.issueNumber,
@@ -325,14 +386,106 @@ function createProducerKind(
       "no-pr",
       {
         signature: opts.signature,
-        reason: "was claimed and released with no PR",
-        belowThresholdNote: (n, k) =>
-          `⚠️ Phoebe claimed this ${spec.name === "issues" ? "issue" : "research ticket"} and released it ` +
-          `with no PR (attempt ${n}/${k}, \`${opts.signature}\`). It stays in the ready queue ` +
-          `and will retry once the claim lease expires.`,
+        reason: opts.reason ?? "was claimed and released with no PR",
+        belowThresholdNote:
+          opts.belowThresholdNote ??
+          ((n, k) =>
+            `⚠️ Phoebe claimed this ${spec.name === "issues" ? "issue" : "research ticket"} and released it ` +
+            `with no PR (attempt ${n}/${k}, \`${opts.signature}\`). It stays in the ready queue ` +
+            `and will retry once the claim lease expires.`),
         ...(dependents.length > 0 ? { dependents } : {}),
       },
     );
+  }
+
+  /**
+   * The producer gate (#171): diff `worktreeDir` for test-like paths changed
+   * since `worktreeBase`, replay just those onto a throwaway worktree pinned
+   * to that same base, and install + run the test suite there. `verdict`
+   * follows `ReproCheckOutcome` — `"weak"` (tests already pass pre-patch) is
+   * the only verdict that blocks PR creation; `"untestable"` fails open
+   * rather than treat an inconclusive signal as either pass or fail.
+   */
+  function runReproCheck(opts: {
+    agentBranch: BranchRef;
+    worktreeBase: string;
+    worktreeDir: string;
+  }): ReproCheckOutcome {
+    const diffOutput = io.git.gitInWorktree(opts.worktreeDir, [
+      "diff",
+      "--name-only",
+      "--diff-filter=AM",
+      `${opts.worktreeBase}..HEAD`,
+    ]);
+    const testFiles = diffOutput
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && isTestLikePath(line));
+    if (testFiles.length === 0) {
+      return { verdict: "no-tests" };
+    }
+
+    const reproBranch = asBranchRef(`${opts.agentBranch}--repro-check`);
+    let reproWorktreeDir: string;
+    try {
+      reproWorktreeDir = io.git.prepareWorktree({
+        branch: reproBranch,
+        baseRef: opts.worktreeBase,
+        force: true,
+      });
+    } catch (error) {
+      return {
+        verdict: "untestable",
+        testFiles,
+        reason: `could not prepare the pre-patch worktree — ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+
+    try {
+      io.git.gitInWorktree(reproWorktreeDir, ["checkout", opts.agentBranch, "--", ...testFiles]);
+
+      try {
+        io.shell.run(config.installCommand, reproWorktreeDir);
+      } catch (error) {
+        return {
+          verdict: "untestable",
+          testFiles,
+          reason: `pre-patch install failed — ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
+
+      let exitCode: number;
+      try {
+        exitCode = io.shell.tryRun(config.testCommand, reproWorktreeDir);
+      } catch (error) {
+        return {
+          verdict: "untestable",
+          testFiles,
+          reason: `pre-patch test run did not complete — ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
+
+      // git bisect --run's convention: exit 125 means "cannot test this
+      // tree", distinct from pass/fail — mirrored here rather than read as
+      // a passing (0) or failing (any other non-zero) verdict.
+      if (exitCode === 125) {
+        return {
+          verdict: "untestable",
+          testFiles,
+          reason: "the test command exited 125 (cannot test this tree)",
+        };
+      }
+      return exitCode === 0 ? { verdict: "weak", testFiles } : { verdict: "confirmed", testFiles };
+    } finally {
+      try {
+        io.git.removeWorktree(reproWorktreeDir, { force: true });
+      } catch (error) {
+        phoebeError(
+          `Could not clean up the pre-patch repro worktree at ${reproWorktreeDir} — ` +
+            `${error instanceof Error ? error.message : String(error)}.`,
+        );
+      }
+    }
   }
 
   /**
@@ -403,37 +556,59 @@ function createProducerKind(
       // attempt, even when this particular run added nothing.
       const existingPr = io.github.prNumberForHead(agentBranch, "open");
 
+      // The producer gate (#171): only worth running ahead of a *new* PR —
+      // an already-open PR's follow-up push is a janitor-shaped concern, not
+      // this unit's first-time "does the fix actually do anything" check.
+      let reproOutcome: ReproCheckOutcome | null = null;
+      if (newCommitCount > 0 && existingPr === undefined) {
+        reproOutcome = runReproCheck({ agentBranch, worktreeBase, worktreeDir });
+        if (reproOutcome.verdict === "untestable") {
+          phoebeLog(
+            `Repro check inconclusive for #${issueNumber} — ${reproOutcome.reason}. Proceeding without the gate.`,
+          );
+        }
+      }
+      const weakReproOutcome = reproOutcome?.verdict === "weak" ? reproOutcome : null;
+      const reproGateFailed = weakReproOutcome !== null;
+
       if (newCommitCount > 0) {
         if (existingPr === undefined) {
-          const plan = resolveStackedPrPlan({
-            issueNumber,
-            resolution: { stacked, blockerIssueNumber },
-            stackMode: config.stackMode,
-            defaultBranch: config.defaultBranch,
-            branchPrefix: config.branchPrefix,
-          });
-          const prTitle = `Phoebe: ${issueTitle} (#${issueNumber})`;
-          const prBody = buildInitialPrBody({
-            issueNumber,
-            commitCount: newCommitCount,
-            ...(plan.includeBanner &&
-            blockerIssueNumber !== undefined &&
-            blockerPrNumber !== undefined
-              ? { stacked: { blockerIssueNumber, blockerPrNumber } }
-              : {}),
-          });
-          // Create the PR *first* with Phoebe's own title/body (base = the blocker
-          // branch in native mode), then register the stack — so `gh stack link`
-          // only corrects the base chain and never auto-generates a title over
-          // ours.
-          io.github.createPr({
-            head: agentBranch,
-            base: plan.prBase,
-            title: prTitle,
-            body: prBody,
-          });
-          if (plan.stackLink) {
-            registerNativeStack(plan.stackLink);
+          if (reproGateFailed) {
+            phoebeLog(
+              `Repro check: ${weakReproOutcome!.testFiles.join(", ")} already pass against the pre-change ` +
+                `tree for #${issueNumber} — discarding this attempt without opening a PR.`,
+            );
+          } else {
+            const plan = resolveStackedPrPlan({
+              issueNumber,
+              resolution: { stacked, blockerIssueNumber },
+              stackMode: config.stackMode,
+              defaultBranch: config.defaultBranch,
+              branchPrefix: config.branchPrefix,
+            });
+            const prTitle = `Phoebe: ${issueTitle} (#${issueNumber})`;
+            const prBody = buildInitialPrBody({
+              issueNumber,
+              commitCount: newCommitCount,
+              ...(plan.includeBanner &&
+              blockerIssueNumber !== undefined &&
+              blockerPrNumber !== undefined
+                ? { stacked: { blockerIssueNumber, blockerPrNumber } }
+                : {}),
+            });
+            // Create the PR *first* with Phoebe's own title/body (base = the blocker
+            // branch in native mode), then register the stack — so `gh stack link`
+            // only corrects the base chain and never auto-generates a title over
+            // ours.
+            io.github.createPr({
+              head: agentBranch,
+              base: plan.prBase,
+              title: prTitle,
+              body: prBody,
+            });
+            if (plan.stackLink) {
+              registerNativeStack(plan.stackLink);
+            }
           }
         } else {
           phoebeLog(
@@ -447,8 +622,18 @@ function createProducerKind(
 
       // #22: count claim→release cycles that end with no PR for this issue, and
       // quarantine at threshold.
-      if (newCommitCount > 0 || existingPr !== undefined) {
+      if ((newCommitCount > 0 && !reproGateFailed) || existingPr !== undefined) {
         resetIssueAttemptCounter(issueNumber);
+      } else if (reproGateFailed) {
+        recordFailedIssueAttempt({
+          issueNumber,
+          signature: REPRO_GATE_FAILURE_SIGNATURE,
+          dependentsPool: opts.dependentsPool,
+          nativeBlockersByIssue: opts.nativeBlockersByIssue,
+          reason: "produced a test that already passed against the pre-change tree",
+          belowThresholdNote: (n, k) =>
+            reproGateBelowThresholdNote(n, k, weakReproOutcome!.testFiles),
+        });
       } else {
         const failedCommand = verification?.find((v) => v.status === "failed")?.command;
         recordFailedIssueAttempt({

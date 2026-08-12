@@ -19,6 +19,7 @@ import {
   createIssuesKind,
   createResearchKind,
   followUpPrComment,
+  isTestLikePath,
   issueAttemptFailureSignature,
   selectIssue,
 } from "./producer.ts";
@@ -335,7 +336,7 @@ function fakeIo(overrides: Partial<Io> = {}): Io {
       defaultArgs: () => ({}),
       render: (template) => template,
     },
-    shell: { run: () => {}, capture: () => ({ exitCode: 0, output: "" }) },
+    shell: { run: () => {}, tryRun: () => 0, capture: () => ({ exitCode: 0, output: "" }) },
     quarantine: createQuarantine({
       github,
       config: { maxUnitTimeouts: config.maxUnitTimeouts, maxUnitAttempts: config.maxUnitAttempts },
@@ -454,12 +455,196 @@ describe("createIssuesKind — run threads the issue's labels to the agent invoc
   });
 });
 
+// --- Repro-test-must-fail-first gate (#171) ----------------------------------
+
+describe("isTestLikePath (#171)", () => {
+  test("matches common test-file conventions", () => {
+    expect(isTestLikePath("src/kinds/producer.test.ts")).toBe(true);
+    expect(isTestLikePath("src/kinds/producer.spec.ts")).toBe(true);
+    expect(isTestLikePath("internal/foo_test.go")).toBe(true);
+    expect(isTestLikePath("scripts/test_foo.py")).toBe(true);
+    expect(isTestLikePath("tests/foo.py")).toBe(true);
+    expect(isTestLikePath("src/__tests__/foo.ts")).toBe(true);
+  });
+
+  test("does not match ordinary source paths", () => {
+    expect(isTestLikePath("src/kinds/producer.ts")).toBe(false);
+    expect(isTestLikePath("src/latest.ts")).toBe(false);
+    expect(isTestLikePath("docs/contest-rules.md")).toBe(false);
+  });
+});
+
+type QuarantineRecordCall = { trigger: string; signature: string; reason: string };
+
+function fakeReproIo(opts: {
+  diffOutput?: string;
+  testCwdBehavior?: (cwd: string) => number;
+  installThrowsFor?: (cwd: string) => boolean;
+  prepareWorktreeThrowsForRepro?: boolean;
+}): { io: Io; createdPrs: Array<{ head: string }>; quarantineCalls: QuarantineRecordCall[] } {
+  const createdPrs: Array<{ head: string }> = [];
+  const quarantineCalls: QuarantineRecordCall[] = [];
+
+  const io = fakeIo({
+    git: {
+      fetchOrigin: () => {},
+      originBranchSha: () => "" as never,
+      prepareWorktree: (prepareOpts) => {
+        if (prepareOpts.force) {
+          if (opts.prepareWorktreeThrowsForRepro) {
+            throw new Error("worktree add failed");
+          }
+          return "/tmp/repro-worktree";
+        }
+        return "/tmp/worktree";
+      },
+      removeWorktree: () => {},
+      pushBranch: () => {},
+      commitCount: () => 1,
+      gitInWorktree: (_dir, args) => (args[0] === "diff" ? (opts.diffOutput ?? "") : ""),
+    },
+    shell: {
+      run: (_command, cwd) => {
+        if (opts.installThrowsFor?.(cwd)) {
+          throw new Error("install failed");
+        }
+      },
+      tryRun: (_command, cwd) => opts.testCwdBehavior?.(cwd) ?? 1,
+      capture: () => ({ exitCode: 0, output: "" }),
+    },
+    github: {
+      issuesWithLabel: () => [],
+      issueBody: () => "",
+      issueActivity: () => ({
+        updatedAt: "2026-01-01T00:00:00Z",
+        comments: [],
+        labels: [],
+        body: "",
+      }),
+      nativeBlockers: () => [],
+      labelRemovals: () => [],
+      prNumberForHead: () => undefined,
+      openPrs: () => [],
+      prsWithLabel: () => [],
+      prMergeInfo: () => {
+        throw new Error("not implemented in fake");
+      },
+      prActivity: () => ({ headRefOid: "" as never, lastCommitAt: null, comments: [], labels: [] }),
+      reviewThreads: () => [],
+      commitCheckRuns: () => [],
+      resolveReviewThread: () => {},
+      minimizeComment: () => {},
+      commentIssue: () => {},
+      commentPr: () => {},
+      createPr: (createOpts) => {
+        createdPrs.push({ head: createOpts.head });
+      },
+      retargetPr: () => {},
+      labelIssue: () => {},
+      unlabelIssue: () => {},
+      labelPr: () => {},
+      unlabelPr: () => {},
+      linkStack: () => {},
+      installStackExtension: () => {},
+      login: () => "phoebe-bot",
+      updateComment: () => {},
+    },
+    quarantine: {
+      record: (_unit, trigger, detail) => {
+        quarantineCalls.push({ trigger, signature: detail.signature, reason: detail.reason });
+      },
+      resolve: () => {},
+      sweepUnstuck: () => {},
+    },
+  });
+  return { io, createdPrs, quarantineCalls };
+}
+
+describe("createIssuesKind — repro-test-must-fail-first gate (#171)", () => {
+  test("no test-like path in the diff — the gate is a no-op, PR opens normally", async () => {
+    const { io, createdPrs, quarantineCalls } = fakeReproIo({
+      diffOutput: "src/kinds/producer.ts\n",
+    });
+    const kind = createIssuesKind({ config, io });
+    const target = issue({ number: 60 });
+    const unit = { issue: target, resolution: { worktreeBase: "main", stacked: false } };
+
+    await kind.run(unit, fakeCtx());
+
+    expect(createdPrs).toEqual([{ head: "phoebe/issue-60" }]);
+    expect(quarantineCalls).toEqual([]);
+  });
+
+  test("new test fails against the pre-change tree (confirmed) — PR opens normally", async () => {
+    const { io, createdPrs, quarantineCalls } = fakeReproIo({
+      diffOutput: "src/kinds/foo.test.ts\n",
+      testCwdBehavior: (cwd) => (cwd === "/tmp/repro-worktree" ? 1 : 0),
+    });
+    const kind = createIssuesKind({ config, io });
+    const target = issue({ number: 61 });
+    const unit = { issue: target, resolution: { worktreeBase: "main", stacked: false } };
+
+    await kind.run(unit, fakeCtx());
+
+    expect(createdPrs).toEqual([{ head: "phoebe/issue-61" }]);
+    expect(quarantineCalls).toEqual([]);
+  });
+
+  test("new test already passes against the pre-change tree (weak) — discarded, no PR, quarantine recorded", async () => {
+    const { io, createdPrs, quarantineCalls } = fakeReproIo({
+      diffOutput: "src/kinds/foo.test.ts\n",
+      testCwdBehavior: () => 0,
+    });
+    const kind = createIssuesKind({ config, io });
+    const target = issue({ number: 62 });
+    const unit = { issue: target, resolution: { worktreeBase: "main", stacked: false } };
+
+    await kind.run(unit, fakeCtx());
+
+    expect(createdPrs).toEqual([]);
+    expect(quarantineCalls).toEqual([
+      { trigger: "no-pr", signature: "repro-test-passed-pre-patch", reason: expect.any(String) },
+    ]);
+  });
+
+  test("pre-patch install failure is untestable — fails open, PR still opens", async () => {
+    const { io, createdPrs, quarantineCalls } = fakeReproIo({
+      diffOutput: "src/kinds/foo.test.ts\n",
+      installThrowsFor: (cwd) => cwd === "/tmp/repro-worktree",
+    });
+    const kind = createIssuesKind({ config, io });
+    const target = issue({ number: 63 });
+    const unit = { issue: target, resolution: { worktreeBase: "main", stacked: false } };
+
+    await kind.run(unit, fakeCtx());
+
+    expect(createdPrs).toEqual([{ head: "phoebe/issue-63" }]);
+    expect(quarantineCalls).toEqual([]);
+  });
+
+  test("cannot even prepare the pre-patch worktree — untestable, fails open", async () => {
+    const { io, createdPrs, quarantineCalls } = fakeReproIo({
+      diffOutput: "src/kinds/foo.test.ts\n",
+      prepareWorktreeThrowsForRepro: true,
+    });
+    const kind = createIssuesKind({ config, io });
+    const target = issue({ number: 64 });
+    const unit = { issue: target, resolution: { worktreeBase: "main", stacked: false } };
+
+    await kind.run(unit, fakeCtx());
+
+    expect(createdPrs).toEqual([{ head: "phoebe/issue-64" }]);
+    expect(quarantineCalls).toEqual([]);
+  });
+});
+
 describe("createIssuesKind — engine-executed verification (#166)", () => {
   test("verifyMode 'agent' never calls io.shell.capture", async () => {
     let captureCalled = false;
     const io = fakeIo({
       shell: {
         run: () => {},
+        tryRun: () => 0,
         capture: () => {
           captureCalled = true;
           return { exitCode: 0, output: "" };
@@ -481,6 +666,7 @@ describe("createIssuesKind — engine-executed verification (#166)", () => {
     const io = fakeIo({
       shell: {
         run: () => {},
+        tryRun: () => 0,
         capture: (command) => {
           capturedCommands.push(command);
           return command === config.testCommand
@@ -512,6 +698,7 @@ describe("createIssuesKind — engine-executed verification (#166)", () => {
     const io = fakeIo({
       shell: {
         run: () => {},
+        tryRun: () => 0,
         capture: () => ({ exitCode: 1, output: "engine says it failed" }),
       },
     });

@@ -480,7 +480,7 @@ function fakeIo(overrides: Partial<Io> = {}): Io {
       defaultArgs: () => ({}),
       render: (template) => template,
     },
-    shell: { run: () => {}, capture: () => ({ exitCode: 0, output: "" }) },
+    shell: { run: () => {}, tryRun: () => 0, capture: () => ({ exitCode: 0, output: "" }) },
     quarantine: { record: () => {}, resolve: () => {}, sweepUnstuck: () => {} },
     ...overrides,
   };

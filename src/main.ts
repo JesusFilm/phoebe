@@ -111,6 +111,21 @@ function runShellCommand(command: string, cwd: string): void {
   execSync(command, { cwd, stdio: "inherit", timeout: SHELL_COMMAND_TIMEOUT_MS });
 }
 
+/** Same as `runShellCommand`, but returns the exit code instead of throwing on a non-zero exit (#171). */
+function tryRunShellCommand(command: string, cwd: string): number {
+  try {
+    execSync(command, { cwd, stdio: "inherit", timeout: SHELL_COMMAND_TIMEOUT_MS });
+    return 0;
+  } catch (error) {
+    const status = (error as { status?: number | null }).status;
+    if (typeof status === "number") {
+      return status;
+    }
+    // Not a clean exit (timeout, signal, spawn failure) — not a test verdict.
+    throw error;
+  }
+}
+
 /**
  * Run a configured toolchain command to completion, capturing its exit code
  * and combined stdout+stderr instead of inheriting stdio (#166) — the
@@ -147,7 +162,7 @@ function promptShell(cwd: string): (command: string) => string {
 }
 
 function buildShell(): Shell {
-  return { run: runShellCommand, capture: runShellCommandCapture };
+  return { run: runShellCommand, tryRun: tryRunShellCommand, capture: runShellCommandCapture };
 }
 
 // ---------------------------------------------------------------------------
@@ -250,9 +265,9 @@ export async function runEngine(opts: {
     return {
       fetchOrigin: () => gitFetchOrigin(repoDir),
       originBranchSha: (branch: BranchRef) => gitOriginBranchSha(repoDir, branch),
-      prepareWorktree: (prepareOpts: { branch: BranchRef; baseRef?: string }) => {
+      prepareWorktree: (prepareOpts: { branch: BranchRef; baseRef?: string; force?: boolean }) => {
         const worktreeDir = worktreeDirForBranch(worktreesDir, prepareOpts.branch);
-        removeWorktree(repoDir, worktreeDir);
+        removeWorktree(repoDir, worktreeDir, { force: prepareOpts.force ?? false });
         if (prepareOpts.baseRef) {
           addWorktreeForNewBranch({
             repoDir,
@@ -265,7 +280,8 @@ export async function runEngine(opts: {
         }
         return worktreeDir;
       },
-      removeWorktree: (worktreeDir: string) => removeWorktree(repoDir, worktreeDir),
+      removeWorktree: (worktreeDir: string, removeOpts?: { force?: boolean }) =>
+        removeWorktree(repoDir, worktreeDir, removeOpts),
       // #168: every kind's push funnels through this one binding — the choke
       // point where a push is counted toward the hourly budget the loop checks
       // before selection, below.

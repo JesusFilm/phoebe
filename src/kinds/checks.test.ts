@@ -349,6 +349,7 @@ describe("createChecksKind — engine-executed verification (#166)", () => {
     const io = fakeIo({
       shell: {
         run: () => {},
+        tryRun: () => 0,
         capture: (command, cwd) => {
           capturedCommands.push({ command, cwd });
           return { exitCode: 0, output: "" };
@@ -424,7 +425,7 @@ function fakeIo(overrides: Partial<Io> = {}): Io {
       defaultArgs: () => ({}),
       render: (template) => template,
     },
-    shell: { run: () => {}, capture: () => ({ exitCode: 0, output: "" }) },
+    shell: { run: () => {}, tryRun: () => 0, capture: () => ({ exitCode: 0, output: "" }) },
     quarantine: createQuarantine({
       github,
       config: { maxUnitTimeouts: config.maxUnitTimeouts, maxUnitAttempts: config.maxUnitAttempts },

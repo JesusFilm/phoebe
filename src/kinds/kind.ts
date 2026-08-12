@@ -53,9 +53,16 @@ export type UnitRef = {
 export type GitOps = {
   fetchOrigin(): void;
   originBranchSha(branch: BranchRef): Sha;
-  /** Clears any stale worktree for the branch, then creates a fresh one. */
-  prepareWorktree(opts: { branch: BranchRef; baseRef?: string }): string;
-  removeWorktree(worktreeDir: string): void;
+  /**
+   * Clears any stale worktree for the branch, then creates a fresh one.
+   * `force` (#171) clears a stale worktree even if it still holds
+   * uncommitted or unpushed work, for throwaway worktrees (the
+   * repro-test-must-fail-first pre-patch check) that never carry anything
+   * worth preserving.
+   */
+  prepareWorktree(opts: { branch: BranchRef; baseRef?: string; force?: boolean }): string;
+  /** `force` (#171) discards uncommitted/unpushed work instead of refusing — for throwaway worktrees only. */
+  removeWorktree(worktreeDir: string, opts?: { force?: boolean }): void;
   pushBranch(worktreeDir: string, branch: BranchRef): void;
   commitCount(worktreeDir: string, range: string): number;
   /** `git -C <dir> <args>` — `dir` need not be a worktree (boot-time config on the clone itself). */
@@ -90,6 +97,14 @@ export type Prompts = {
 /** A configured toolchain command (install/check/test), run to completion with output inherited. */
 export type Shell = {
   run(command: string, cwd: string): void;
+  /**
+   * Same as `run`, but returns the exit code instead of throwing on a
+   * non-zero exit — for callers that need to distinguish pass/fail rather
+   * than just observe completion (the repro-test-must-fail-first gate,
+   * #171). Still throws for anything short of a clean exit (a timeout, a
+   * missing binary) — those aren't a test verdict.
+   */
+  tryRun(command: string, cwd: string): number;
   /**
    * Run a configured command to completion and capture its outcome instead
    * of inheriting stdio — the engine's own verification run (#166,
