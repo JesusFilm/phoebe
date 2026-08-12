@@ -1,10 +1,12 @@
 # What a GitHub App installation token actually does
 
-Observations for [#157](https://github.com/JesusFilm/phoebe/issues/157), a
-`wayfinder:task` on the GitHub App mode map ([#155](https://github.com/JesusFilm/phoebe/issues/155)).
-Everything below was observed first-hand on **2026-08-11** against a real App
-and two real repos, not read out of documentation. Reproduce with
-`scripts/probe-app-token.mjs`.
+Observations for [#157](https://github.com/JesusFilm/phoebe/issues/157) and
+[#197](https://github.com/JesusFilm/phoebe/issues/197), two `wayfinder:task`s on
+the GitHub App mode map ([#155](https://github.com/JesusFilm/phoebe/issues/155)).
+Everything below was observed first-hand — **2026-08-11** for the token itself,
+**2026-08-12** for what CI does under it — against a real App and two real repos,
+not read out of documentation. Reproduce with `scripts/probe-app-token.mjs` and
+`scripts/probe-bot-ci.mjs`.
 
 ## Setup
 
@@ -199,17 +201,106 @@ so Phoebe is safe today — but this is worth not regressing.
   installation** (`remaining` decremented across calls to the two repos). Per-tenant
   rate-budget isolation is _not_ free with this arm.
 
+## CI under an installation token
+
+Added for [#197](https://github.com/JesusFilm/phoebe/issues/197), observed
+**2026-08-12** against the same App, installation and repos. The `checks` work
+kind is built on runs actually happening, so if an installation-token push did
+not trigger them, `checks` would be dead under App mode. **It is not — every
+question came back favourable.** Reproduce with `scripts/probe-bot-ci.mjs`.
+
+The probe minted exactly what [#156](https://github.com/JesusFilm/phoebe/issues/156)'s
+per-tenant mint would: one repo, `contents:write` + `pull_requests:write` +
+`actions:read` + `checks:read`.
+
+### Pushes trigger workflows, and the actor is the bot
+
+The push went over the **real seam** — `gh auth setup-git` in a throwaway `HOME`,
+then `git clone` / `git commit` / `git push` through the resulting
+`!gh auth git-credential` helper, which is what `bootstrap/boot.ts:97` sets up.
+Not a token embedded in a remote URL.
+
+| Trigger                                     | Run appeared | Event                   | `actor` / `triggering_actor`               |
+| ------------------------------------------- | ------------ | ----------------------- | ------------------------------------------ |
+| `git push` of a new branch (no PR yet)      | **6 s**      | `push`                  | `phoebe-probe-1[bot]`, `type: Bot`, _both_ |
+| Bot opens a PR on that branch               | **6 s**      | `pull_request`          | `phoebe-probe-1[bot]`, _both_              |
+| Bot pushes a second commit onto the open PR | **6 s**      | `push` + `pull_request` | `phoebe-probe-1[bot]`, _both_              |
+
+The no-trigger rule really is specific to Actions' own `GITHUB_TOKEN`; an
+installation token is not subject to it. `actor` and `triggering_actor` agree, so
+a workflow gating on either sees the same `[bot]` login — but note it is a login
+a `github.actor == 'someone'` condition will not match, and `authorAssociation`
+on the bot's PR is `NONE`, consistent with the identity section above.
+
+**The bot can read the checks it triggered**: `GET /commits/{sha}/check-runs`
+→ 200 with both runs listed, on the narrowed token. `checks` needs no new grant
+beyond `actions:read` + `checks:read`.
+
+### A human approval of a bot PR satisfies required review
+
+With branch protection on `main` requiring one approving review and
+`enforce_admins: true`:
+
+| Step                                                            | Result                                     |
+| --------------------------------------------------------------- | ------------------------------------------ |
+| Bot's PR, before any review                                     | `mergeable_state: blocked`                 |
+| Operator (`mikeallisonJS`, `authorAssociation: OWNER`) approves | `APPROVED`, `reviewDecision: APPROVED`     |
+| Same PR, after                                                  | `mergeable_state: clean`                   |
+| **Bot merges its own approved PR** (`PUT /pulls/{n}/merge`)     | **200** `Pull Request successfully merged` |
+
+**Owning the App does not make the approval a self-approval.** GitHub blocks
+approving your own PR, but the bot is a separate account, so the operator who
+registered the App can still clear its PRs. This confirms by observation what
+[#161](https://github.com/JesusFilm/phoebe/issues/161) banked by reasoning, and
+goes one step further: the bot can then perform the merge itself, with
+`enforce_admins` in force.
+
+Two boundaries this did **not** probe, both configuration-dependent and worth a
+line in the runbook rather than another probe:
+
+- `dismiss_stale_reviews_on_push` was **false**. With it true, a bot push after
+  an approval dismisses that approval — which is exactly the shape of Phoebe
+  pushing a fixup onto an already-approved PR.
+- `require_last_push_approval` was **false**. With it true, the bot being the
+  last pusher would require a further approval from someone else.
+
+### A free-plan private repo cannot be protected at all
+
+Not about App mode, but it changes the reproduction recipe. On a **free-plan
+private** repo, both branch protection and rulesets refuse:
+
+```
+PUT  /repos/{r}/branches/main/protection  → 403 Upgrade to GitHub Pro or make this repository public
+POST /repos/{r}/rulesets                  → 403 (same message)
+```
+
+`pb-test-2` was flipped **public for the duration of the protection phase and
+back to private after**; the rule was deleted before the flip back. `pb-test-1`
+stayed private, which is why the protection phase there reports only the 403.
+
 ## Reproducing
 
 ```
+# #157 — what the token is
 node scripts/probe-app-token.mjs --i-know \
   --app-id 4551400 --key ~/.phoebe-scratch/phoebe-probe-1.pem \
   --repo mikeallisonJS/pb-test-1 --repo mikeallisonJS/pb-test-2
 
 # expiry needs a token aged past its hour:
 node scripts/probe-app-token.mjs --expired-check <ghs_ token minted >1h ago>
+
+# #197 — what CI does when the bot uses it
+node scripts/probe-bot-ci.mjs --i-know \
+  --app-id 4551400 --key ~/.phoebe-scratch/phoebe-probe-1.pem \
+  --repo mikeallisonJS/pb-test-1
+
+# ...and --protect for the branch-protection phase, which needs the repo to be
+# public (or the account on Pro) and uses the OPERATOR's gh login, not the App:
+node scripts/probe-bot-ci.mjs --i-know --protect \
+  --app-id 4551400 --key ~/.phoebe-scratch/phoebe-probe-1.pem \
+  --repo mikeallisonJS/pb-test-2
 ```
 
-The script **writes to the repos it is pointed at** — that is how identity is
-observed — so it refuses to run without `--i-know` and removes its comments and
-branches unless `--keep`. Scratch repos only.
+Both scripts **write to the repos they are pointed at** — that is how identity
+and triggering are observed — so they refuse to run without `--i-know` and remove
+their comments, branches and PRs unless `--keep`. Scratch repos only.
