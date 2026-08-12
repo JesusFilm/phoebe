@@ -118,7 +118,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedArgs {
       const version = installedVersion();
       throw new Error(
         `Unknown command \`${arg}\` for \`phoebe\`${version === null ? "" : ` (phoebe-agent v${version})`}. ` +
-          `Known commands: boot, init, list, purge, upgrade, doctor. If \`${arg}\` was added in a newer ` +
+          `Known commands: boot, init, list, purge, upgrade, doctor, stop. If \`${arg}\` was added in a newer ` +
           `release, upgrade first: \`pnpm dlx phoebe-agent@latest upgrade\`. See \`phoebe --help\`.`,
       );
     }
@@ -257,6 +257,7 @@ Usage:
                                    Advance the pinned engine ref and/or the npm CLI
   phoebe upgrade --check [--json]  Report current vs latest; exit 1 when behind
   phoebe doctor [--json]           Deployment + tenant health checks (report-only)
+  phoebe stop [--now]              Drain and stop the deployment container (host-side)
   phoebe [--config <path>] [flags] Run the engine
 
 Options (engine mode):
@@ -519,8 +520,9 @@ export async function runCli(): Promise<void> {
   if (args[0] === "purge") return await runPurgeCli(args.slice(1));
 
   // Operator commands: upgrade moves the deployment between versions; doctor
-  // reports whether the version it is on works. Lazy imports keep the plain
-  // engine-run path from loading their bootstrap dependencies.
+  // reports whether the version it is on works; stop drains the Compose
+  // container from the host (#186). Lazy imports keep the plain engine-run
+  // path from loading their bootstrap / Docker dependencies.
   if (args[0] === "upgrade") {
     const { runUpgradeCli } = await import("./upgrade.ts");
     return await runUpgradeCli(args.slice(1));
@@ -528,6 +530,10 @@ export async function runCli(): Promise<void> {
   if (args[0] === "doctor") {
     const { runDoctorCli } = await import("./doctor.ts");
     return await runDoctorCli(args.slice(1));
+  }
+  if (args[0] === "stop") {
+    const { runStopCli } = await import("./stop.ts");
+    return await runStopCli(args.slice(1));
   }
 
   const parsed = parseCliArgs(args);

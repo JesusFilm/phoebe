@@ -82,6 +82,7 @@ describe("parseCliArgs", () => {
     // path.
     expect(() => parseCliArgs(["upgrayedd"])).toThrow(/Unknown command `upgrayedd`/);
     expect(() => parseCliArgs(["upgrayedd"])).toThrow(/pnpm dlx phoebe-agent@latest upgrade/);
+    expect(() => parseCliArgs(["upgrayedd"])).toThrow(/Known commands:.*\bstop\b/);
     expect(() => parseCliArgs(["--run-once", "extra"])).toThrow(/Unknown command `extra`/);
   });
 
