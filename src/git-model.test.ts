@@ -20,9 +20,12 @@ import {
   commitCount,
   ensureClone,
   fetchOrigin,
+  lockWorktree,
   originBranchSha,
   pushBranch,
   removeWorktree,
+  repairWorktree,
+  unlockWorktree,
   worktreeDirForBranch,
   type GitRunner,
 } from "./git-model.ts";
@@ -103,7 +106,9 @@ describe("git model", () => {
     git(worktreeDir, "commit", "-m", "unit work");
     expect(commitCount(worktreeDir, "origin/main..HEAD", testGit)).toBe(1);
 
-    removeWorktree(repoDir, worktreeDir, testGit);
+    // Not pushed — this exercises `commitCount`, not the refuse-dirty-remove
+    // safety check covered below, so force past it.
+    removeWorktree(repoDir, worktreeDir, { force: true }, testGit);
     expect(existsSync(worktreeDir)).toBe(false);
   });
 
@@ -112,7 +117,8 @@ describe("git model", () => {
     const worktreeDir = worktreeDirForBranch(worktreesDir, branch);
     addWorktreeForExistingBranch({ repoDir, worktreeDir, branch }, testGit);
     expect(git(worktreeDir, "rev-parse", "--abbrev-ref", "HEAD").trim()).toBe(branch);
-    removeWorktree(repoDir, worktreeDir, testGit);
+    // Still the unpushed commit from the previous test.
+    removeWorktree(repoDir, worktreeDir, { force: true }, testGit);
   });
 
   test("existing-branch worktree falls back to -B origin/<branch> when the local branch is missing", () => {
@@ -171,11 +177,14 @@ describe("git model", () => {
     ).toThrow(/Refusing to work a foreign clone/);
   });
 
-  test("ensureClone clones the configured URL into the repo dir when missing", () => {
+  test("ensureClone clones the configured URL into the repo dir when missing, and tightens gc.worktreePruneExpire", () => {
     const { runner, calls } = spyGit();
     const freshDir = join(root, "fresh");
     ensureClone({ repoUrl: "https://example.com/repo.git", repoDir: freshDir }, runner);
-    expect(calls).toEqual([{ args: ["clone", "https://example.com/repo.git", freshDir] }]);
+    expect(calls).toEqual([
+      { args: ["clone", "https://example.com/repo.git", freshDir] },
+      { args: ["config", "gc.worktreePruneExpire", "3.days.ago"], cwd: freshDir },
+    ]);
   });
 
   test("pushBranch pushes the branch to origin from the worktree", () => {
@@ -190,5 +199,83 @@ describe("git model", () => {
     const { runner, calls } = spyGit();
     fetchOrigin("/data/repo", runner);
     expect(calls).toEqual([{ args: ["fetch", "origin"], cwd: "/data/repo" }]);
+  });
+
+  test("lockWorktree locks with the given reason", () => {
+    const { runner, calls } = spyGit();
+    lockWorktree("/data/repo", "/data/worktrees/x", "unit live", runner);
+    expect(calls).toEqual([
+      {
+        args: ["worktree", "lock", "--reason", "unit live", "/data/worktrees/x"],
+        cwd: "/data/repo",
+      },
+    ]);
+  });
+
+  test("unlockWorktree swallows a failure — not locked, or already gone, is not an error", () => {
+    const failing: GitRunner = () => {
+      throw new Error("fatal: '/data/worktrees/x' is not a working tree");
+    };
+    expect(() => unlockWorktree("/data/repo", "/data/worktrees/x", failing)).not.toThrow();
+  });
+
+  test("repairWorktree repairs every linked worktree from the clone", () => {
+    const { runner, calls } = spyGit();
+    repairWorktree("/data/repo", runner);
+    expect(calls).toEqual([{ args: ["worktree", "repair"], cwd: "/data/repo" }]);
+  });
+
+  test("removeWorktree refuses a worktree with uncommitted changes", () => {
+    const branch = asBranchRef("agent/issue-30");
+    const worktreeDir = worktreeDirForBranch(worktreesDir, branch);
+    addWorktreeForNewBranch({ repoDir, worktreeDir, branch, baseRef: "origin/main" }, testGit);
+    writeFileSync(join(worktreeDir, "dirty.txt"), "not committed\n");
+
+    expect(() => removeWorktree(repoDir, worktreeDir, {}, testGit)).toThrow(
+      /uncommitted or unpushed/,
+    );
+    expect(existsSync(worktreeDir)).toBe(true);
+
+    removeWorktree(repoDir, worktreeDir, { force: true }, testGit);
+    expect(existsSync(worktreeDir)).toBe(false);
+  });
+
+  test("removeWorktree refuses a worktree with unpushed commits, then removes it once pushed", () => {
+    const branch = asBranchRef("agent/issue-31");
+    const worktreeDir = worktreeDirForBranch(worktreesDir, branch);
+    addWorktreeForNewBranch({ repoDir, worktreeDir, branch, baseRef: "origin/main" }, testGit);
+    writeFileSync(join(worktreeDir, "work.txt"), "unit\n");
+    git(worktreeDir, "add", ".");
+    git(worktreeDir, "commit", "-m", "unit work");
+
+    expect(() => removeWorktree(repoDir, worktreeDir, {}, testGit)).toThrow(
+      /uncommitted or unpushed/,
+    );
+    expect(existsSync(worktreeDir)).toBe(true);
+
+    // A real push transport isn't available here (see the header comment) —
+    // stand in for it the same way `beforeAll` seeds `origin/main`.
+    git(
+      repoDir,
+      "update-ref",
+      `refs/remotes/origin/${branch}`,
+      git(worktreeDir, "rev-parse", "HEAD").trim(),
+    );
+
+    removeWorktree(repoDir, worktreeDir, {}, testGit);
+    expect(existsSync(worktreeDir)).toBe(false);
+  });
+
+  test("removeWorktree unlocks a locked-but-clean worktree before removing it", () => {
+    const branch = asBranchRef("agent/issue-32");
+    const worktreeDir = worktreeDirForBranch(worktreesDir, branch);
+    addWorktreeForNewBranch({ repoDir, worktreeDir, branch, baseRef: "origin/main" }, testGit);
+    lockWorktree(repoDir, worktreeDir, "unit live", testGit);
+    expect(git(repoDir, "worktree", "list", "--porcelain")).toContain("locked");
+
+    removeWorktree(repoDir, worktreeDir, {}, testGit);
+
+    expect(existsSync(worktreeDir)).toBe(false);
+    expect(git(repoDir, "worktree", "list", "--porcelain")).not.toContain(worktreeDir);
   });
 });
