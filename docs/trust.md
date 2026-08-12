@@ -131,6 +131,30 @@ The interaction to remember:
   by branch prefix and skip cross-repository PRs entirely (`isPrInScope` in
   `src/pr-scope.ts`), so a fork PR is already outside its reach.
 
+## Vouch gates the queue, not the text
+
+Vouch and `ready-for-agent` decide **whether** a ticket gets worked. Neither one
+touches **what the ticket says** once an agent is dispatched — and by then the
+gate is closed but the content isn't: `ready-for-agent` requires triage/write
+permission, but _commenting_ on an already-labelled issue doesn't, so anyone can
+still add text that lands in the working agent's prompt after a maintainer's
+one-time labelling act.
+
+The engine's defense for that is content-level, not identity-level. Every
+`prompts/*.md` template that splices `gh issue view` / `gh pr view` output uses
+a distinct **untrusted** shell-block form (see `src/prompt.ts`), rather than the
+plain form used for local, non-attacker-influenced commands like `git log`.
+Output from an untrusted splice is run through `sanitizeUntrusted()` — which
+strips HTML comments, invisible/zero-width/control characters, and escapes
+anything that could be mistaken for Phoebe's own `{{PLACEHOLDER}}` syntax or
+for the boundary tag itself — and is wrapped in an explicit
+`<untrusted-content>` boundary before it reaches the agent. The prompt text
+around that boundary tells the agent to treat what's inside as data describing
+the task, never as instructions. This is defense in depth, not a hard
+guarantee: a sufficiently novel injection can still land inside the boundary as
+data the agent misreads as a directive, the same way it could in any LLM prompt
+that quotes untrusted text.
+
 ## One container = one trust domain
 
 A single Phoebe container can serve **many repos** as tenants (a workspace root

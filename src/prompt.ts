@@ -4,6 +4,11 @@
 // template are marked *before* argument substitution, so `!`...`` patterns
 // arriving via substituted values are treated as data, never executed.
 //
+// !untrusted`command` is the same mechanism for output an issue/PR author can
+// influence (`gh issue view`, `gh pr view`, …): its stdout runs through
+// `sanitizeUntrusted` and lands inside an explicit `<untrusted-content>`
+// boundary rather than splicing verbatim into the prompt. See `expandShellBlocks`.
+//
 // Prompt file paths (`config.promptFiles.*`) resolve against the runtime root
 // (process cwd) — the consumer checkout on the host, `/etc/phoebe` in the
 // container where compose mounts `phoebe.config.ts` and `prompts/`. They do
@@ -137,18 +142,30 @@ export function buildDefaultPromptArgs(config: PhoebeConfig): PromptArgs {
 
 /**
  * Marker inserted between `!` and the opening backtick for shell blocks that
- * appear in the raw template. Only marked blocks are executed.
+ * appear in the raw template. Only marked blocks are executed. Trusted and
+ * untrusted (`!untrusted\`...\``) blocks get distinct markers so expansion
+ * knows, without re-inspecting the command text, which output needs to be
+ * treated as data rather than as part of the prompt Phoebe wrote.
  */
 const SHELL_BLOCK_MARKER = "\x01";
+const UNTRUSTED_SHELL_BLOCK_MARKER = "\x02";
 
-const SHELL_BLOCK_PATTERN = /!`([^`]+)`/g;
+const SHELL_BLOCK_PATTERN = /!(untrusted)?`([^`]+)`/g;
 const MARKED_SHELL_BLOCK_PATTERN = new RegExp(`!${SHELL_BLOCK_MARKER}\`([^\`]+)\``, "g");
+const MARKED_UNTRUSTED_SHELL_BLOCK_PATTERN = new RegExp(
+  `!${UNTRUSTED_SHELL_BLOCK_MARKER}\`([^\`]+)\``,
+  "g",
+);
 const PLACEHOLDER_PATTERN = /\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g;
 
 export function substitutePromptArgs(template: string, args: PromptArgs): string {
-  const marked = template.replace(SHELL_BLOCK_PATTERN, (_m, cmd: string) => {
-    return `!${SHELL_BLOCK_MARKER}\`${cmd}\``;
-  });
+  const marked = template.replace(
+    SHELL_BLOCK_PATTERN,
+    (_m, untrusted: string | undefined, cmd: string) => {
+      const marker = untrusted ? UNTRUSTED_SHELL_BLOCK_MARKER : SHELL_BLOCK_MARKER;
+      return `!${marker}\`${cmd}\``;
+    },
+  );
   return marked.replace(PLACEHOLDER_PATTERN, (match, key: string) => {
     const value = args[key];
     if (value === undefined) {
@@ -158,13 +175,66 @@ export function substitutePromptArgs(template: string, args: PromptArgs): string
   });
 }
 
-/** Execute marked shell blocks and splice their trimmed stdout into the prompt. */
+// Control chars (excluding \t\n\r) and zero-width/invisible/bidi-override
+// Unicode chars -- a standard obfuscation channel for hiding instructions
+// inside text that still renders as innocuous whitespace.
+const INVISIBLE_CHAR_PATTERN = new RegExp(
+  "[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F" +
+    "\\u200B-\\u200F\\u202A-\\u202E\\u2060-\\u2064\\uFEFF]",
+  "g",
+);
+
+/** The tag `sanitizeUntrusted`'s output is wrapped in — exported so callers/tests can match on it. */
+export const UNTRUSTED_CONTENT_TAG = "untrusted-content";
+
+/**
+ * Neutralize text pulled from outside Phoebe's own control (an issue body, a
+ * PR title, a comment — anything spliced via `!untrusted\`...\``) before it
+ * reaches the agent's prompt. Ported from the pattern in gh-aw's
+ * `sanitize_content_core.cjs` and `claude-code-action`'s content filtering,
+ * scaled to what this engine actually splices in.
+ *
+ * This does not need to defeat re-execution — `expandShellBlocks` only ever
+ * scans a template once, so text arriving here can no longer trigger a new
+ * `!`...`` shell block or `{{PLACEHOLDER}}` substitution (JS `String#replace`
+ * does not rescan inserted replacement text). It exists so the text can't
+ * *read* as one to the agent that receives the final prompt: an issue body
+ * containing a stray `{{DEFAULT_BRANCH}}` or a forged `</untrusted-content>`
+ * should not be mistakable for a real template construct or a boundary the
+ * content itself controls.
+ */
+export function sanitizeUntrusted(text: string): string {
+  return text
+    .replace(/<!--[\s\S]*?-->/g, "") // HTML comments: invisible on a rendered issue page, visible to the agent's raw-markdown read
+    .replace(INVISIBLE_CHAR_PATTERN, "")
+    .replace(/\{\{/g, "\\{\\{")
+    .replace(/\}\}/g, "\\}\\}")
+    .replace(new RegExp(`</?${UNTRUSTED_CONTENT_TAG}[^>]*>`, "gi"), "");
+}
+
+/** Wrap sanitized untrusted text in an explicit, labeled boundary. */
+function wrapUntrusted(text: string): string {
+  return `<${UNTRUSTED_CONTENT_TAG}>\n${sanitizeUntrusted(text)}\n</${UNTRUSTED_CONTENT_TAG}>`;
+}
+
+/**
+ * Execute marked shell blocks and splice their trimmed stdout into the
+ * prompt. `!untrusted\`...\`` blocks run through `sanitizeUntrusted` and are
+ * wrapped in an explicit `<untrusted-content>` boundary first — use that form
+ * for any command whose output an issue/PR author influences (`gh issue
+ * view`, `gh pr view`, `gh issue list`, …). Plain `!`...`` blocks (local git
+ * history, config-derived lookups) splice verbatim.
+ */
 export function expandShellBlocks(prompt: string, execShell: (command: string) => string): string {
   return prompt
+    .replace(MARKED_UNTRUSTED_SHELL_BLOCK_PATTERN, (_m, command: string) => {
+      return wrapUntrusted(execShell(command).trimEnd());
+    })
     .replace(MARKED_SHELL_BLOCK_PATTERN, (_m, command: string) => {
       return execShell(command).trimEnd();
     })
-    .replaceAll(SHELL_BLOCK_MARKER, "");
+    .replaceAll(SHELL_BLOCK_MARKER, "")
+    .replaceAll(UNTRUSTED_SHELL_BLOCK_MARKER, "");
 }
 
 export function renderPrompt(
