@@ -11,6 +11,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
+import { DEFAULT_DRAIN_TIMEOUT_MS } from "../bootstrap/supervise-fleet.ts";
 import { CONFIG_DEFAULTS } from "./config-schema.ts";
 import {
   DEFAULT_TEMPLATE_PARAMS,
@@ -31,6 +32,59 @@ import {
 
 function makeTempDir(): string {
   return mkdtempSync(join(tmpdir(), "phoebe-init-test-"));
+}
+
+/** Compose duration for an exact hour/minute/second/ms multiple of `ms`. */
+function msToComposeDuration(ms: number): string {
+  if (ms % 3_600_000 === 0) return `${ms / 3_600_000}h`;
+  if (ms % 60_000 === 0) return `${ms / 60_000}m`;
+  if (ms % 1_000 === 0) return `${ms / 1_000}s`;
+  return `${ms}ms`;
+}
+
+/**
+ * Read `services.<service>.stop_grace_period` from Compose YAML without a
+ * full parser — enough structure to reject a match outside that service.
+ */
+function stopGracePeriodForService(compose: string, service: string): string | undefined {
+  const lines = compose.split(/\r?\n/);
+  let servicesIndent: number | undefined;
+  let currentService: string | undefined;
+  let serviceIndent: number | undefined;
+  for (const line of lines) {
+    if (!line.trim() || line.trimStart().startsWith("#")) continue;
+    const indent = line.length - line.trimStart().length;
+    const text = line.trim();
+    if (text === "services:") {
+      servicesIndent = indent;
+      currentService = undefined;
+      serviceIndent = undefined;
+      continue;
+    }
+    if (servicesIndent !== undefined && indent === servicesIndent + 2 && text.endsWith(":")) {
+      currentService = text.slice(0, -1);
+      serviceIndent = indent;
+      continue;
+    }
+    if (
+      currentService === service &&
+      serviceIndent !== undefined &&
+      indent > serviceIndent &&
+      text.startsWith("stop_grace_period:")
+    ) {
+      return text.slice("stop_grace_period:".length).trim();
+    }
+    if (
+      currentService !== undefined &&
+      serviceIndent !== undefined &&
+      indent <= serviceIndent &&
+      text.endsWith(":")
+    ) {
+      currentService = undefined;
+      serviceIndent = undefined;
+    }
+  }
+  return undefined;
 }
 
 describe("planInitOutputs", () => {
@@ -347,8 +401,9 @@ describe("runInit — workspace profile (#93)", () => {
     const target = makeTempDir();
     runInit({ targetDir: target, profile: "solo" });
     const compose = readFileSync(join(target, "container/compose.yml"), "utf8");
-    // 1h === DEFAULT_DRAIN_TIMEOUT_MS (3_600_000) in bootstrap/supervise-fleet.ts.
-    expect(compose).toMatch(/^\s*stop_grace_period:\s*1h\s*$/m);
+    expect(stopGracePeriodForService(compose, "phoebe")).toBe(
+      msToComposeDuration(DEFAULT_DRAIN_TIMEOUT_MS),
+    );
   });
 });
 
