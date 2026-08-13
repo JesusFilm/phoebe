@@ -42,6 +42,20 @@ describe("createCredentialClient", () => {
     expect(createCredentialClient({ connected: false, send: () => {} })).toBeNull();
   });
 
+  test("returns null when on or off is missing (channel cannot deliver answers)", () => {
+    const send = (): void => {};
+    const on = (_e: string, _l: (m: unknown) => void): void => {};
+    const off = (_e: string, _l: (m: unknown) => void): void => {};
+    // Neither listener provided.
+    expect(createCredentialClient({ send, connected: true })).toBeNull();
+    // Only on provided, off absent.
+    expect(createCredentialClient({ send, connected: true, on })).toBeNull();
+    // Only off provided, on absent.
+    expect(createCredentialClient({ send, connected: true, off })).toBeNull();
+    // Both provided — should succeed.
+    expect(createCredentialClient({ send, connected: true, on, off })).not.toBeNull();
+  });
+
   test("requestLease sends a request with the budget and resolves with the token", async () => {
     const channel = mockChannel();
     const client = createCredentialClient(channel) as CredentialClient;

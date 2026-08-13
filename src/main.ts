@@ -2039,6 +2039,14 @@ async function runLoop({
       }
     }
 
+    // A drain that arrived while awaiting the credential lease must not let this
+    // unit start — "start no new one". Release the already-acquired slot.
+    if (drain.requested) {
+      slotClient?.release();
+      console.log("[phoebe] Drain requested before starting the next unit — exiting 0.");
+      break;
+    }
+
     const ref = unitRef(picked);
     emitUnitEvent({ unit: ref, event: "started" });
     try {

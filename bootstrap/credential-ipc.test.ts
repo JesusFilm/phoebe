@@ -147,12 +147,13 @@ describe("attachCredentialHandler", () => {
     expect(child.sent).toEqual([{ type: CREDENTIAL_ANSWER, token: "ghs_fresh" }]);
   });
 
-  test("App arm: mint failure → sends CREDENTIAL_BLOCKED and logs error (no token)", async () => {
+  test("App arm: mint failure → sends CREDENTIAL_BLOCKED and logs fixed message (no token)", async () => {
     const child = fakeChild();
     const cache: CredentialCache = new Map();
     const errorMessages: string[] = [];
+    // Error message contains a token-like value — must not appear in the log.
     const mint: MintFn = async () => {
-      throw new Error("GitHub API 503");
+      throw new Error("ghs_SECRETVALUE GitHub API 503");
     };
     attachCredentialHandler({
       tenantId: "acme/repo",
@@ -167,11 +168,11 @@ describe("attachCredentialHandler", () => {
     await tick();
     expect(child.sent).toEqual([{ type: CREDENTIAL_BLOCKED }]);
     expect(errorMessages).toHaveLength(1);
-    // The log must not contain a token value.
     const logMsg = errorMessages[0]!;
     expect(logMsg).toContain("Credential refresh failed");
-    expect(logMsg).toContain("GitHub API 503");
+    // The error message (including any token-like value) must not appear in the log.
     expect(logMsg).not.toContain("ghs_");
+    expect(logMsg).not.toContain("GitHub API 503");
   });
 
   test("App arm: cache outlives child respawns — second child reuses the live token", async () => {

@@ -83,7 +83,13 @@ function isBlocked(message: unknown): boolean {
  * credential it could not renew — the supervisor is gone.
  */
 export function createCredentialClient(proc: ParentChannel): CredentialClient | null {
-  if (typeof proc.send !== "function" || proc.connected === false) return null;
+  if (
+    typeof proc.send !== "function" ||
+    typeof proc.on !== "function" ||
+    typeof proc.off !== "function" ||
+    proc.connected === false
+  )
+    return null;
   const send = proc.send.bind(proc);
   return {
     requestLease(budgetMs: number): Promise<string | null> {

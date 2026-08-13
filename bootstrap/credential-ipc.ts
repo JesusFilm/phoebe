@@ -126,11 +126,8 @@ export function attachCredentialHandler(opts: {
     let minted: { installationId: string; token: string; expiresAtMs: number };
     try {
       minted = await mint({ budgetMs });
-    } catch (error) {
-      errorLog(
-        `[phoebe:${tenantId}] Credential refresh failed — ` +
-          `${error instanceof Error ? error.message : String(error)}`,
-      );
+    } catch {
+      errorLog(`[phoebe:${tenantId}] Credential refresh failed`);
       child.send?.({ type: CREDENTIAL_BLOCKED });
       return;
     }
