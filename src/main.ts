@@ -29,6 +29,7 @@ import {
   type Sha,
 } from "./branded.ts";
 import { buildAgentEnv } from "./agent-env.ts";
+import { buildShellCommandEnv } from "./shell-env.ts";
 import { installDrainSignal, type DrainSignal } from "./drain.ts";
 import { BrokerDisconnectedError, createSlotClient, type SlotClient } from "./slot-client.ts";
 import { RunTimeoutError, resolveRunTimeoutMs, runWithDeadline } from "./run-timeout.ts";
@@ -664,13 +665,23 @@ function gitInWorktree(
 
 /** Run a configured toolchain command (a shell string) inside a worktree. */
 function runShellCommand(command: string, cwd: string): void {
-  execSync(command, { cwd, stdio: "inherit", timeout: SHELL_COMMAND_TIMEOUT_MS });
+  execSync(command, {
+    cwd,
+    env: buildShellCommandEnv(),
+    stdio: "inherit",
+    timeout: SHELL_COMMAND_TIMEOUT_MS,
+  });
 }
 
 /** Shell executor for prompt !`...` expansion — captures stdout. */
 function promptShell(cwd: string): (command: string) => string {
   return (command) =>
-    execSync(command, { cwd, encoding: "utf8", timeout: SHELL_COMMAND_TIMEOUT_MS });
+    execSync(command, {
+      cwd,
+      env: buildShellCommandEnv(),
+      encoding: "utf8",
+      timeout: SHELL_COMMAND_TIMEOUT_MS,
+    });
 }
 
 /** Load a `promptFiles.*` template from the runtime root (process cwd). */
