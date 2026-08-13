@@ -78,6 +78,48 @@ export function spawnEngine(entry, args, { onSpawnError, onExit } = {}) {
 }
 
 /**
+ * Spawn the solo engine child: `spawnEngine` but with a 4th IPC channel slot
+ * so the engine's `createSlotClient` can talk to the supervisor's slot broker
+ * (src/slot-client.ts / bootstrap/broker-ipc.ts). Signal forwarding is kept —
+ * solo's process-level SIGTERM/SIGINT still reach the engine for graceful drain.
+ */
+export function spawnSoloChild(entry, args, { onSpawnError, onExit } = {}) {
+  const child = spawn(process.execPath, [entry, ...args], {
+    stdio: ["inherit", "inherit", "inherit", "ipc"],
+  });
+
+  const forwarders = new Map();
+  for (const signal of ["SIGINT", "SIGTERM"]) {
+    const forward = () => child.kill(signal);
+    forwarders.set(signal, forward);
+    process.on(signal, forward);
+  }
+  const clearForwarders = () => {
+    for (const [signal, forward] of forwarders) process.off(signal, forward);
+  };
+
+  child.on("error", (error) => {
+    clearForwarders();
+    if (onSpawnError) {
+      onSpawnError(error);
+      return;
+    }
+    console.error(`[phoebe] ${error.message}`);
+    process.exit(1);
+  });
+  child.on("exit", (code, signal) => {
+    clearForwarders();
+    if (onExit) {
+      onExit(code, signal);
+      return;
+    }
+    propagateExit(code, signal);
+  });
+
+  return child;
+}
+
+/**
  * Spawn one fleet tenant's engine child (bootstrap/supervise-fleet.ts).
  * Differs from `spawnEngine` in two ways the fleet needs:
  *

@@ -72,7 +72,7 @@ import {
 } from "./reconcile.ts";
 // Untyped plain-JS import (see spawn-engine.mjs / materialize.mjs for why the
 // bootstrapper's child-process plumbing can't be TypeScript).
-import { propagateExit, spawnEngine, spawnEngineChild } from "./spawn-engine.mjs";
+import { propagateExit, spawnEngineChild, spawnSoloChild } from "./spawn-engine.mjs";
 
 /** Where the local-engine compose overlay mounts the engine for `source: "local"`. */
 export const LOCAL_ENGINE_DIR = "/opt/phoebe-engine";
@@ -284,29 +284,6 @@ export function isMovingBranch(
 function watchedRefSha(source: ResolvedEngineSource, token: string | undefined): string | null {
   if (source.source === "local") return null;
   return lsRemoteBranchSha(source, { token });
-}
-
-/**
- * Spawn the engine and expose it as the supervisor's child handle. Both a normal
- * exit and a spawn failure settle `exited` — the failure as a non-zero exit — so
- * the supervisor always sees the child resolve and decides what to do (a
- * first-launch failure is fatal, a relaunch failure retries). Without the
- * `onSpawnError` override, spawn-engine.mjs's default would `process.exit(1)`
- * here, bypassing boot's drain-latch teardown and leaving `exited` pending.
- */
-function spawnSupervised(entry: string, argv: readonly string[]): SupervisedChild {
-  let settle!: (exit: EngineExit) => void;
-  const exited = new Promise<EngineExit>((resolve) => {
-    settle = resolve;
-  });
-  const child = spawnEngine(entry, argv, {
-    onExit: (code: number | null, signal: NodeJS.Signals | null) => settle({ code, signal }),
-    onSpawnError: (error: Error) => {
-      console.error(`[phoebe] boot: engine failed to spawn — ${error.message}`);
-      settle({ code: 1, signal: null });
-    },
-  });
-  return { kill: (signal) => child.kill(signal), exited };
 }
 
 /**
@@ -765,11 +742,31 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   // config is missing every per-repo field.
   assertNotRemovedReposLayout(configDir);
 
+  // Solo gets a cap-1 broker (honoring PHOEBE_MAX_CONCURRENT_AGENTS) so the
+  // child's slot client is properly wired and the env knob is meaningful.
+  // Default cap of 1 matches the engine's existing one-unit-at-a-time behaviour.
+  const soloBroker = createSlotBroker(resolveMaxConcurrent(process.env));
+  const spawnSolo = (entry: string): SupervisedChild => {
+    let settle!: (exit: EngineExit) => void;
+    const exited = new Promise<EngineExit>((resolve) => {
+      settle = resolve;
+    });
+    const child = spawnSoloChild(entry, argv, {
+      onExit: (code: number | null, signal: NodeJS.Signals | null) => settle({ code, signal }),
+      onSpawnError: (error: Error) => {
+        console.error(`[phoebe] boot: engine failed to spawn — ${error.message}`);
+        settle({ code: 1, signal: null });
+      },
+    });
+    attachBroker({ owner: "solo", broker: soloBroker, child });
+    return { kill: (signal) => child.kill(signal), exited };
+  };
+
   let exit: EngineExit;
   try {
     exit = await superviseEngine({
       launch: () => launchTarget(configPath, guard),
-      spawn: (entry) => spawnSupervised(entry, argv),
+      spawn: spawnSolo,
       stop,
       intervalMs,
       onRunEnd: (run) => {
