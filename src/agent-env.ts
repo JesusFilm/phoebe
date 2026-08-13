@@ -1,7 +1,9 @@
 // Explicit env allowlist for agent child processes. The agent sees PATH, HOME,
-// git identity, the GitHub token, and the *active* provider's API key — never
-// the other providers' keys, so a prompt-injected agent can't exfiltrate the
-// whole keyring.
+// git identity, the GitHub token, the bot login, and the *active* provider's
+// API key — never the other providers' keys, so a prompt-injected agent can't
+// exfiltrate the whole keyring. PHOEBE_GH_APP_* vars are deliberately absent:
+// only the minted GH_TOKEN reaches the child, not the App credentials that
+// minted it.
 
 import type { PhoebeConfig, ProviderName } from "./config-schema.ts";
 
@@ -9,6 +11,7 @@ const BASE_ALLOWLIST = [
   "PATH",
   "HOME",
   "GH_TOKEN",
+  "PHOEBE_GH_LOGIN",
   "GIT_AUTHOR_NAME",
   "GIT_AUTHOR_EMAIL",
   "GIT_COMMITTER_NAME",

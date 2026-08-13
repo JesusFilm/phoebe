@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vite-plus/test";
 import { buildAgentEnv } from "./agent-env.ts";
+import { GH_APP_ENV_PREFIX } from "./gh-app.ts";
 
 const providerEnv = {
   cursor: "CURSOR_API_KEY",
@@ -57,5 +58,35 @@ describe("buildAgentEnv", () => {
       providerEnv,
     });
     expect(env).toEqual({ CI: "true", PATH: "/usr/bin" });
+  });
+
+  test("PHOEBE_GH_APP_* keys never reach the agent even if present in parentEnv", () => {
+    const env = buildAgentEnv({
+      parentEnv: {
+        ...parentEnv,
+        [`${GH_APP_ENV_PREFIX}ID`]: "123456",
+        [`${GH_APP_ENV_PREFIX}PRIVATE_KEY`]: "-----BEGIN RSA PRIVATE KEY-----",
+        [`${GH_APP_ENV_PREFIX}WEBHOOK_SECRET`]: "s3cr3t",
+      },
+      provider: "claude",
+      providerEnv,
+    });
+    for (const key of Object.keys(env)) {
+      expect(key, `${key} leaked into agent env`).not.toMatch(new RegExp(`^${GH_APP_ENV_PREFIX}`));
+    }
+  });
+
+  test("PHOEBE_GH_LOGIN passes through when set in parentEnv", () => {
+    const env = buildAgentEnv({
+      parentEnv: { ...parentEnv, PHOEBE_GH_LOGIN: "myapp[bot]" },
+      provider: "claude",
+      providerEnv,
+    });
+    expect(env["PHOEBE_GH_LOGIN"]).toBe("myapp[bot]");
+  });
+
+  test("PHOEBE_GH_LOGIN is absent when not set in parentEnv", () => {
+    const env = buildAgentEnv({ parentEnv, provider: "claude", providerEnv });
+    expect(env).not.toHaveProperty("PHOEBE_GH_LOGIN");
   });
 });
