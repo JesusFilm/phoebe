@@ -32,7 +32,7 @@ import {
   resolveWorkspace,
   type ResolvedWorkspace,
 } from "../bootstrap/workspace-source.ts";
-import { resolveCredentialArm, type CredentialArm } from "./credential-arm.ts";
+import { resolveCredentialArm, type CredentialArm } from "../bootstrap/credential-arm.ts";
 import { loadUserConfig } from "./load-config.ts";
 import { readStatus, STATUS_FILE, type StatusSnapshot } from "./unit-event.ts";
 
@@ -199,8 +199,8 @@ export type TenantListing = {
   status: StatusSnapshot | null;
   /**
    * Resolved credential arm: `"pat"` when an explicit `GH_TOKEN` is present in
-   * the tenant's `.env`, `"app"` otherwise (deployment App key path, or no env
-   * yet).  Shared resolver — never re-derived per surface (#162).
+   * the tenant's `.env`, `"app"` when there is none and the deployment holds a
+   * GitHub App key. Shared resolver — never re-derived per surface (#162).
    */
   arm: CredentialArm;
 };
@@ -235,13 +235,20 @@ function envPresent(dir: string): boolean {
   return existsSync(join(dir, TENANT_ENV_FILE));
 }
 
-/** Resolve the credential arm from a tenant's `.env` file (absent/unreadable → app). */
+/**
+ * Resolve the credential arm from a tenant's `.env` file, weighed against this
+ * process's env for the deployment's App key. An absent or unreadable `.env`
+ * resolves the same way an empty one would — no explicit token, so the App key
+ * decides.
+ */
 function readTenantArm(envPath: string): CredentialArm {
+  let tenantEnv: Record<string, string | undefined>;
   try {
-    return resolveCredentialArm(parseDotenv(readFileSync(envPath, "utf8")));
+    tenantEnv = parseDotenv(readFileSync(envPath, "utf8"));
   } catch {
-    return resolveCredentialArm({});
+    tenantEnv = {};
   }
+  return resolveCredentialArm(tenantEnv, process.env);
 }
 
 /** Health columns for one live tenant dir. */

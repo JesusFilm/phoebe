@@ -8,3 +8,8 @@ node_modules/
 # machine-generated, so it may not be prettier-clean — keep it out of `vp check`'s
 # format/lint scan, which honors .gitignore. See #18.
 .claude/settings.local.json
+
+# Claude Code's git worktrees. Each is a full checkout of this repo at some other
+# commit, so leaving them visible makes `vp check`/lint/typecheck/test scan the
+# whole tree N extra times — and flag formatting on files that aren't ours to fix.
+.claude/worktrees/

@@ -28,6 +28,22 @@ afterEach(() => {
   rmSync(dataBase, { recursive: true, force: true });
 });
 
+/**
+ * Run `fn` with a deployment App key in the ambient env. `list` reads the App
+ * id from its own process env, and its presence is what lets an absent tenant
+ * `GH_TOKEN` resolve to the `app` arm rather than a pat-arm shortfall.
+ */
+async function withAppKey<T>(fn: () => T | Promise<T>): Promise<T> {
+  const previous = process.env["GH_APP_ID"];
+  process.env["GH_APP_ID"] = "123456";
+  try {
+    return await fn();
+  } finally {
+    if (previous === undefined) delete process.env["GH_APP_ID"];
+    else process.env["GH_APP_ID"] = previous;
+  }
+}
+
 describe("parseSlug / defaultRepoUrl / slugFromRemoteUrl", () => {
   test("splits a valid slug", () => {
     expect(parseSlug("acme/widget")).toEqual({ owner: "acme", repo: "widget" });
@@ -159,7 +175,9 @@ describe("listTenants", () => {
       envPresent: false,
       retainedData: false,
       status: null,
-      arm: "app",
+      // No `.env` and no deployment App key: nothing can mint, so an absent
+      // token is a pat-arm shortfall rather than a healthy app-arm tenant.
+      arm: "pat",
     });
     expect(listings.find((l) => l.path === "broken")).toMatchObject({
       held: true,
@@ -322,29 +340,32 @@ describe("listTenants", () => {
     expect(undeclared).toEqual([]);
   });
 
-  test("arm column: pat when GH_TOKEN present, app when absent, mixed fleet", async () => {
-    writeFileSync(
-      join(configDir, "phoebe.config.ts"),
-      `export default { workspace: { tenants: ["with-pat", "with-app"] } };\n`,
-    );
-    mkdirSync(join(configDir, "with-pat"), { recursive: true });
-    mkdirSync(join(configDir, "with-app"), { recursive: true });
-    writeFileSync(join(configDir, "with-pat", "phoebe.config.ts"), "export default {};\n");
-    writeFileSync(join(configDir, "with-app", "phoebe.config.ts"), "export default {};\n");
-    writeFileSync(join(configDir, "with-pat", ".env"), "GH_TOKEN=ghs_abc\n");
-    // with-app has no .env (app arm — no per-tenant token needed)
+  test("arm column: an explicit token stays pat while the rest of the fleet is app", async () => {
+    // A deployment App key is what makes an absent tenant token mean "app".
+    await withAppKey(async () => {
+      writeFileSync(
+        join(configDir, "phoebe.config.ts"),
+        `export default { workspace: { tenants: ["with-pat", "with-app"] } };\n`,
+      );
+      mkdirSync(join(configDir, "with-pat"), { recursive: true });
+      mkdirSync(join(configDir, "with-app"), { recursive: true });
+      writeFileSync(join(configDir, "with-pat", "phoebe.config.ts"), "export default {};\n");
+      writeFileSync(join(configDir, "with-app", "phoebe.config.ts"), "export default {};\n");
+      writeFileSync(join(configDir, "with-pat", ".env"), "GH_TOKEN=ghs_abc\n");
+      // with-app has no .env (app arm — no per-tenant token needed)
 
-    const { listings } = await listTenants({
-      configDir,
-      dataBase,
-      loadRepoSlug: (path) => (path.includes("with-pat") ? "acme/with-pat" : "acme/with-app"),
+      const { listings } = await listTenants({
+        configDir,
+        dataBase,
+        loadRepoSlug: (path) => (path.includes("with-pat") ? "acme/with-pat" : "acme/with-app"),
+      });
+
+      expect(listings.find((l) => l.slug === "acme/with-pat")?.arm).toBe("pat");
+      expect(listings.find((l) => l.slug === "acme/with-app")?.arm).toBe("app");
     });
-
-    expect(listings.find((l) => l.slug === "acme/with-pat")?.arm).toBe("pat");
-    expect(listings.find((l) => l.slug === "acme/with-app")?.arm).toBe("app");
   });
 
-  test("arm column: app when GH_TOKEN is empty string in .env", async () => {
+  test("arm column: an empty GH_TOKEN is not explicit — the App key decides", async () => {
     writeFileSync(
       join(configDir, "phoebe.config.ts"),
       `export default { workspace: { tenants: ["tenant"] } };\n`,
@@ -353,12 +374,12 @@ describe("listTenants", () => {
     writeFileSync(join(configDir, "tenant", "phoebe.config.ts"), "export default {};\n");
     writeFileSync(join(configDir, "tenant", ".env"), "GH_TOKEN=\n");
 
-    const { listings } = await listTenants({
-      configDir,
-      dataBase,
-      loadRepoSlug: () => "acme/tenant",
-    });
-    expect(listings[0]?.arm).toBe("app");
+    const listArm = async (): Promise<string | undefined> =>
+      (await listTenants({ configDir, dataBase, loadRepoSlug: () => "acme/tenant" })).listings[0]
+        ?.arm;
+
+    expect(await withAppKey(listArm)).toBe("app");
+    expect(await listArm()).toBe("pat");
   });
 });
 

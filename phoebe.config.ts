@@ -39,6 +39,19 @@ export const config = defineConfig({
   // tenant's .env — the supervisor scrubs every other tenant's secrets.
   defaultProvider: "cursor",
 
+  // Run the `claude` provider (via PHOEBE_AGENT=claude) on a Pro/Max
+  // subscription rather than metered API billing: name the OAuth token's var
+  // instead of the shipped `ANTHROPIC_API_KEY` default. `providerEnv` merges
+  // key-by-key, so cursor and codex keep theirs.
+  //
+  // This is not cosmetic — `buildAgentEnv` (src/agent-env.ts) forwards exactly
+  // the one var named here, so with the default mapping a `.env` holding only
+  // CLAUDE_CODE_OAUTH_TOKEN hands the CLI nothing and every unit dies on
+  // "Not logged in · Please run /login". Mint the token with `claude
+  // setup-token` (or `node scripts/hoist-claude-login.mjs`); see
+  // docs/claude-subscription-auth.md.
+  providerEnv: { claude: "CLAUDE_CODE_OAUTH_TOKEN" },
+
   // As a workspace tenant, reuse this repo's standalone `.phoebe/` folder: the
   // supervisor reads `.env` (and cwd-relative prompts) from `.phoebe/` instead
   // of the repo root, so nothing is duplicated. A standalone `.phoebe/`
