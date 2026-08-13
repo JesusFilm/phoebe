@@ -1,17 +1,91 @@
-// Pure helpers for scripts/verify-tenant-token.mjs (#154).
+// Pure helpers for scripts/verify-tenant-token.mjs (#154, #214).
 //
 // Everything here is I/O-free so the verifier's judgement calls — "is this 404
 // an absent resource or an invisible repo?", "which checkbox in onboarding §2
-// is missing?" — are testable without a live GitHub token. The driver script
-// holds the network, filesystem and tenant-discovery work; this file holds the
-// decisions it reports.
+// is missing?", "are this installation's grants sufficient?" — are testable
+// without a live GitHub token or App key. The driver script holds the network,
+// filesystem and tenant-discovery work; this file holds the decisions it
+// reports.
+
+import { createSign } from "node:crypto";
 
 /**
  * @typedef {"granted" | "missing" | "unknown"} GrantState
  * @typedef {{ id: string, ui: string, state: GrantState, status?: number | null }} Grant
  * @typedef {{ raw: string, iso: string | null, daysLeft: number | null, expired: boolean | null, warn: boolean, unparsed: boolean }} Expiry
  * @typedef {{ id: string, label: string, note: string | null }} TokenKind
+ * @typedef {"pat" | "app"} CredentialArm
  */
+
+/**
+ * Mint a short-lived App JWT for use as authorization to the
+ * `GET /repos/{owner}/{repo}/installation` endpoint (and other `GET /app/…`
+ * paths). RS256, 10 minutes max, backdated 60 s for clock skew.
+ *
+ * `nowSeconds` is injectable so callers that need a deterministic value for
+ * tests can provide one; the default is the live wall clock.
+ *
+ * @param {{ appId: string | number; privateKey: string; nowSeconds?: number }} opts
+ * @returns {string}
+ */
+export function mintAppJwt({ appId, privateKey, nowSeconds = Math.floor(Date.now() / 1000) }) {
+  const seg = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
+  const header = seg({ alg: "RS256", typ: "JWT" });
+  const payload = seg({ iat: nowSeconds - 60, exp: nowSeconds + 540, iss: String(appId) });
+  const unsigned = `${header}.${payload}`;
+  const signer = createSign("RSA-SHA256");
+  signer.update(unsigned);
+  return `${unsigned}.${signer.sign(privateKey, "base64url")}`;
+}
+
+/**
+ * The permission level required from a GitHub App installation for each of
+ * onboarding §2's five grants. "write" for GitHub Apps encompasses "read and
+ * write"; "read" is read-only. A grant at or above the required level
+ * satisfies the check.
+ */
+const APP_REQUIRED_LEVEL = {
+  metadata: "read",
+  contents: "write",
+  pull_requests: "write",
+  issues: "write",
+  actions: "read",
+};
+
+/** Numeric order of GitHub App permission levels. */
+const LEVEL_ORDER = { read: 0, write: 1, admin: 2 };
+
+/** Whether `actual` is at or above `required` on the GitHub App level scale. */
+function atLeastLevel(actual, required) {
+  if (actual === null || actual === undefined) return false;
+  return (LEVEL_ORDER[actual] ?? -1) >= (LEVEL_ORDER[required] ?? 99);
+}
+
+/**
+ * Map the `permissions` object from a GitHub App installation to the existing
+ * grant array format, ready for {@link diagnose}. An absent or insufficient
+ * permission becomes `"missing"`; a sufficient one becomes `"granted"`.
+ * `status` is always `null` — these grants come from the API response body,
+ * not from status-code probes.
+ *
+ * Level semantics: GitHub App installations report "read" | "write" | "admin".
+ * "write" implies read access, so `contents: "write"` satisfies the "Read and
+ * write" checkbox even though the probe name says "write". Anything below the
+ * required level is missing.
+ *
+ * @param {Record<string, string | undefined>} permissions
+ * @returns {Grant[]}
+ */
+export function parseInstallationGrants(permissions) {
+  return PERMISSION_PROBES.map((probe) => ({
+    id: probe.id,
+    ui: probe.ui,
+    state: atLeastLevel(permissions[probe.id], APP_REQUIRED_LEVEL[probe.id])
+      ? "granted"
+      : "missing",
+    status: null,
+  }));
+}
 
 /**
  * Issue / PR number aimed at by the write probes. Far above any real number on
@@ -372,17 +446,30 @@ const STATE_MARK = { granted: "✓", missing: "✗", unknown: "?" };
 export function renderReport(report) {
   const lines = [report.slug === null ? report.target : `${report.target}  (${report.slug})`];
 
+  // `unverifiable` is a distinct verdict, not an error — the App key source is
+  // legitimately unreachable from some execution contexts (a laptop developer
+  // running the script without the deployment's secrets). Show it neutrally.
+  if (report.verdict === "unverifiable") {
+    const reason = (report.advice ?? []).join(" ") || "App key source not reachable";
+    lines.push(`  ~ unverifiable — ${reason}`);
+    return lines.join("\n");
+  }
+
   if (report.error !== null && report.error !== undefined) {
     lines.push(`  ✗ ${report.error}`);
     return lines.join("\n");
   }
 
-  lines.push(`  token: ${report.tokenKind.label}, from ${report.tokenSource}`);
-  if (report.scopes !== null) {
-    lines.push(
-      `  scopes: ${report.scopes.length > 0 ? report.scopes.join(", ") : "(none granted)"} ` +
-        "— read from x-oauth-scopes, not probed",
-    );
+  if (report.arm === "app") {
+    lines.push(`  arm: GitHub App — ${report.tokenSource}`);
+  } else {
+    lines.push(`  token: ${report.tokenKind.label}, from ${report.tokenSource}`);
+    if (report.scopes !== null) {
+      lines.push(
+        `  scopes: ${report.scopes.length > 0 ? report.scopes.join(", ") : "(none granted)"} ` +
+          "— read from x-oauth-scopes, not probed",
+      );
+    }
   }
   if (report.expiry != null) {
     const when = report.expiry.unparsed
@@ -404,11 +491,15 @@ export function renderReport(report) {
  * One tenant's findings as machine-readable data. Built field by field rather
  * than by spreading the report, so a token (or anything else added to the
  * in-memory report later) cannot reach `--json` by accident.
+ *
+ * `arm` is `"pat"` for fine-grained PAT tenants and `"app"` for GitHub App
+ * installation tenants, including those that reported `"unverifiable"`.
  */
 export function reportToJson(report) {
   return {
     target: report.target,
     slug: report.slug,
+    arm: report.arm ?? "pat",
     tokenSource: report.tokenSource ?? null,
     tokenType: report.tokenKind?.id ?? null,
     scopes: report.scopes ?? null,
@@ -439,10 +530,20 @@ export function reportToJson(report) {
  * preflight can gate on. A tenant that could not be resolved counts as a
  * finding — a silently skipped tenant is exactly the failure this script exists
  * to stop.
+ *
+ * `unverifiable` is deliberately excluded: the App key source is legitimately
+ * unreachable from some execution contexts (a laptop developer running the
+ * script without the deployment's secrets), so gating CI on it would make
+ * `--check` unusable in exactly the context it was built for. Only a genuine
+ * missing-grant shortfall causes a non-zero exit.
  */
 export function sweepExitCode(reports, check) {
   if (!check) return 0;
-  return reports.some((report) => report.error != null || !report.ok) ? 1 : 0;
+  return reports.some(
+    (report) => report.verdict !== "unverifiable" && (report.error != null || !report.ok),
+  )
+    ? 1
+    : 0;
 }
 
 /** A `--slug` must be `owner/repo`; anything else is a typo, not a target. */

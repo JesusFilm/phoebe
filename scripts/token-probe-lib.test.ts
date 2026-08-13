@@ -1,5 +1,6 @@
-// Tests for the pure half of the tenant-token verifier (#154) — the judgement
-// calls the driver reports, exercised without a live GitHub token.
+// Tests for the pure half of the tenant-token verifier (#154, #214) — the
+// judgement calls the driver reports, exercised without a live GitHub token or
+// App key.
 
 import { describe, expect, it } from "vite-plus/test";
 
@@ -8,6 +9,7 @@ import {
   classifyTokenKind,
   diagnose,
   isAmbiguousRefusal,
+  parseInstallationGrants,
   redact,
   renderReport,
   reportToJson,
@@ -459,5 +461,164 @@ describe("isAmbiguousRefusal", () => {
 
   it("refuses to read a suspended or blocked account as a missing permission", () => {
     expect(isAmbiguousRefusal({ message: "Your account has been suspended." })).toBe(true);
+  });
+});
+
+describe("parseInstallationGrants", () => {
+  it("marks a permission as granted when the installation holds the required level", () => {
+    const grants = parseInstallationGrants({
+      metadata: "read",
+      contents: "write",
+      pull_requests: "write",
+      issues: "write",
+      actions: "read",
+    });
+    for (const g of grants) {
+      expect(g.state).toBe("granted");
+    }
+  });
+
+  it("marks a permission as missing when it is absent from the installation", () => {
+    const grants = parseInstallationGrants({});
+    for (const g of grants) {
+      expect(g.state).toBe("missing");
+    }
+  });
+
+  it("marks contents as missing when the installation has only read (write required)", () => {
+    const grants = parseInstallationGrants({ contents: "read" });
+    expect(grants.find((g) => g.id === "contents")!.state).toBe("missing");
+  });
+
+  it("marks contents as granted when the installation has write", () => {
+    const grants = parseInstallationGrants({ contents: "write" });
+    expect(grants.find((g) => g.id === "contents")!.state).toBe("granted");
+  });
+
+  it("marks metadata as granted with only read-level permission", () => {
+    const grants = parseInstallationGrants({ metadata: "read" });
+    expect(grants.find((g) => g.id === "metadata")!.state).toBe("granted");
+  });
+
+  it("marks actions as granted with only read-level permission", () => {
+    const grants = parseInstallationGrants({ actions: "read" });
+    expect(grants.find((g) => g.id === "actions")!.state).toBe("granted");
+  });
+
+  it("counts admin as satisfying any level requirement", () => {
+    const grants = parseInstallationGrants({
+      metadata: "admin",
+      contents: "admin",
+      pull_requests: "admin",
+      issues: "admin",
+      actions: "admin",
+    });
+    for (const g of grants) {
+      expect(g.state).toBe("granted");
+    }
+  });
+
+  it("always sets status to null — grants come from the API body, not HTTP codes", () => {
+    for (const g of parseInstallationGrants({ metadata: "read" })) {
+      expect(g.status).toBeNull();
+    }
+  });
+
+  it("produces one entry per onboarding §2 permission, in the same order as PERMISSION_PROBES", () => {
+    const grants = parseInstallationGrants({});
+    expect(grants.map((g) => g.id)).toEqual(PERMISSION_PROBES.map((p) => p.id));
+  });
+});
+
+describe("sweepExitCode with unverifiable tenants", () => {
+  const ok = { ok: true, error: null, verdict: "ok" };
+  const bad = { ok: false, error: null, verdict: "missing-grants" };
+  const broken = { ok: true, error: "no GH_TOKEN", verdict: null };
+  const unverifiable = { ok: false, error: null, verdict: "unverifiable" };
+
+  it("does not count unverifiable as a failure under --check", () => {
+    expect(sweepExitCode([ok, unverifiable], true)).toBe(0);
+    expect(sweepExitCode([unverifiable], true)).toBe(0);
+  });
+
+  it("still counts a genuine shortfall under --check alongside unverifiable", () => {
+    expect(sweepExitCode([ok, bad, unverifiable], true)).toBe(1);
+    expect(sweepExitCode([broken, unverifiable], true)).toBe(1);
+  });
+
+  it("stays 0 without --check regardless of unverifiable or bad tenants", () => {
+    expect(sweepExitCode([unverifiable, bad], false)).toBe(0);
+  });
+});
+
+describe("renderReport for unverifiable", () => {
+  const base = {
+    target: "core",
+    slug: "JesusFilm/core",
+    arm: "app",
+    verdict: "unverifiable",
+    ok: false,
+    error: null,
+    grants: [],
+    missing: [],
+    unknown: [],
+    advice: ["GH_APP_KEY_PATH is missing from the deployment env."],
+  };
+
+  it("renders a ~ marker and the reason, not a ✗ error row", () => {
+    const text = renderReport(base);
+    expect(text).toContain("~");
+    expect(text).toContain("unverifiable");
+    expect(text).toContain("GH_APP_KEY_PATH");
+    expect(text).not.toContain("✗");
+  });
+
+  it("includes the slug when present", () => {
+    expect(renderReport(base)).toContain("JesusFilm/core");
+  });
+});
+
+describe("reportToJson with arm field", () => {
+  const patReport = {
+    target: "core",
+    slug: "JesusFilm/core",
+    tokenSource: ".env at ...",
+    tokenKind: { id: "fine-grained", label: "fine-grained personal access token", note: null },
+    scopes: null,
+    expiry: null,
+    grants: [],
+    verdict: "ok",
+    ok: true,
+    missing: [],
+    unknown: [],
+    advice: [],
+    error: null,
+  };
+
+  it("defaults arm to pat when not set", () => {
+    expect(reportToJson(patReport).arm).toBe("pat");
+  });
+
+  it("includes arm: app for App arm reports", () => {
+    expect(reportToJson({ ...patReport, arm: "app" }).arm).toBe("app");
+  });
+
+  it("includes arm: unverifiable in JSON for unverifiable reports", () => {
+    const unverifiableReport = {
+      target: "core",
+      slug: "JesusFilm/core",
+      arm: "app",
+      verdict: "unverifiable",
+      ok: false,
+      error: null,
+      grants: [],
+      missing: [],
+      unknown: [],
+      advice: ["key not found"],
+    };
+    const json = reportToJson(unverifiableReport);
+    expect(json.arm).toBe("app");
+    expect(json.verdict).toBe("unverifiable");
+    expect(json.ok).toBe(false);
   });
 });
