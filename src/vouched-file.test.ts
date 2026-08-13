@@ -100,6 +100,18 @@ describe("vouch trust list", () => {
     expect(keys, `${VOUCHED_PATH} entries must be sorted alphabetically`).toEqual(sorted);
   });
 
+  test("no [bot] handles appear in the list", () => {
+    // Bots are auto-trusted by `gh-check-user` (early-return on any handle
+    // ending in `[bot]`), so listing one here would be both unreachable and
+    // misleading — it implies the entry is what grants the trust.
+    for (const entry of entries) {
+      expect(
+        entry.handle.endsWith("[bot]"),
+        `${VOUCHED_PATH}:${entry.lineNumber} — bots are auto-trusted and must not be listed`,
+      ).toBe(false);
+    }
+  });
+
   test("sits where check-user looks, and the workflow does not redirect it", () => {
     // Half the contract is that the file is at `check-user`'s default path —
     // the module-level read above fails this whole suite if it moves, and a

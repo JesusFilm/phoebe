@@ -150,9 +150,18 @@ diagnosis, doctor points at the deeper probe below.
 
 ## Checking a tenant's GitHub token
 
-Phoebe acts entirely as `GH_TOKEN`'s identity. When that token is short a
-permission — or its org approval never landed — nothing fails at boot; it fails
-mid-run as a 403 from whichever API hop needed the grant.
+Under the PAT arm, Phoebe acts entirely as `GH_TOKEN`'s identity. When that
+token is short a permission — or its org approval never landed — nothing fails at
+boot; it fails mid-run as a 403 from whichever API hop needed the grant. Under
+the App arm, `GH_TOKEN` is a synthesized installation token minted at startup;
+org approval does not apply, but the same five permissions must be granted to the
+App installation.
+
+**Branch-protection note (both arms).** If the repo enables
+`dismiss_stale_reviews_on_push` or `require_last_push_approval`, Phoebe's push
+after the agent commits voids any review approval on the PR — the pusher and
+reviewer resolve to the same identity. This is inherent to how GitHub applies
+those settings and is not specific to either credential arm.
 
 `node scripts/verify-tenant-token.mjs` says which grant is missing, before
 Phoebe runs.

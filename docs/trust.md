@@ -162,3 +162,16 @@ cannot set up.
 makes it relevant. The moment you need to co-locate **mutually-untrusted**
 tenants, one container is no longer enough — give them separate containers (or
 adopt model B). This is the named trigger for that upgrade.
+
+**The App key is a third secret class.** Under the App arm (`PHOEBE_APP_ID` /
+`PHOEBE_APP_KEY_B64`) the deployment holds a private key whose blast radius spans
+the App's entire installation set — strictly wider than any tenant's `GH_TOKEN` or
+the engine-clone credential. Anyone who holds the key can mint fresh installation
+tokens for **every** repo the App is installed on.
+
+> **Install a deployment's App only on the repos it serves.**
+
+This is the same kind of statement as the co-location constraint above: both are
+first-class policies because the runtime boundary is not a full security boundary.
+See [`github-app-mode.md` §2](github-app-mode.md#2-what-the-app-arm-costs-you) for
+the full blast-radius accounting.
