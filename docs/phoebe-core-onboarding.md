@@ -61,7 +61,10 @@ branches, opens/updates PRs, and reads/writes issue labels and comments. Mint a
 **fine-grained** personal access token scoped to the single repo. Phoebe is built
 to work under a fine-grained PAT — it reads check state from the REST Actions API
 rather than the GraphQL rollup precisely because fine-grained PATs cannot read the
-rollup ([work-kinds.md](work-kinds.md#checks--fix-failing-ci)).
+rollup ([work-kinds.md](work-kinds.md#checks--fix-failing-ci)). This section
+mints one token by hand; if the deployment grows into several repos under one
+owner, the App arm ([`github-app-mode.md`](github-app-mode.md)) replaces this
+ceremony — but for a single repo a fine-grained PAT is the recommendation.
 
 Create it at **Settings → Developer settings → Fine-grained tokens**:
 
@@ -71,13 +74,13 @@ Create it at **Settings → Developer settings → Fine-grained tokens**:
 - **Repository access:** _Only select repositories_ → `JesusFilm/core`.
 - **Repository permissions:**
 
-  | Permission    | Access                | Why                                                              |
-  | ------------- | --------------------- | ---------------------------------------------------------------- |
-  | Metadata      | Read-only (automatic) | Mandatory for every other permission.                            |
-  | Contents      | Read and write        | Clone the repo, push branches.                                   |
-  | Pull requests | Read and write        | Open/update PRs, post PR comments & watermarks.                  |
-  | Issues        | Read and write        | Read `readyLabel`, swap in `processingLabel`, comment.           |
-  | Actions       | Read-only             | `gh run list` — the check-state source for the `checks` janitor. |
+  | Permission    | PAT access            | App permission        | Why                                                              |
+  | ------------- | --------------------- | --------------------- | ---------------------------------------------------------------- |
+  | Metadata      | Read-only (automatic) | Read-only (automatic) | Mandatory for every other permission.                            |
+  | Contents      | Read and write        | Read and write        | Clone the repo, push branches.                                   |
+  | Pull requests | Read and write        | Read and write        | Open/update PRs, post PR comments & watermarks.                  |
+  | Issues        | Read and write        | Read and write        | Read `readyLabel`, swap in `processingLabel`, comment.           |
+  | Actions       | Read-only             | Read-only             | `gh run list` — the check-state source for the `checks` janitor. |
 
   Leave everything else _No access_. Add **Workflows: Read and write** only if you
   expect the agent to edit files under `.github/workflows/` (GitHub blocks pushing

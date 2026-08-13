@@ -146,7 +146,9 @@ Selection (`selectConflictUnit` → oldest eligible PR number):
 ## `checks` — fix failing CI
 
 Check state comes from the REST Actions API (`gh run list`), not GraphQL
-`statusCheckRollup`, because fine-grained PATs cannot read the rollup. Only the
+`statusCheckRollup`, because fine-grained PATs cannot read the rollup. (The App
+arm does not share this limitation, but Phoebe uses REST regardless — it is the
+single code path for both credential arms.) Only the
 newest run per workflow counts; a rollup is `FAILURE` only when at least one
 check failed and **none are pending**.
 

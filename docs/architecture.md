@@ -108,7 +108,9 @@ run from `config.defaultProvider` / `config.defaultModels`, overridable with
 The child sees a **deliberately narrow env allowlist** (`src/agent-env.ts`):
 `PATH`, `HOME`, `GH_TOKEN`, the git identity vars, `CI=true`, and **only the
 active provider's API key**. The other providers' keys are never passed, so a
-prompt-injected agent cannot exfiltrate the whole keyring.
+prompt-injected agent cannot exfiltrate the whole keyring. The allowlist is
+arm-independent: `GH_TOKEN` is always forwarded, but under the App arm its value
+is a synthesized installation token rather than a stored PAT.
 
 Prompts are rendered from templates (`src/prompt.ts`): `{{KEY}}` placeholders
 are substituted from config-derived args plus per-callsite args, and `` !`cmd` ``

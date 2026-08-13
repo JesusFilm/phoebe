@@ -85,10 +85,10 @@ fingerprint) and will respawn that child.
 
 ## Two-tier `.env` model
 
-| Tier                  | Path                  | Contents                                                                                      | Who sees it                                                      |
-| --------------------- | --------------------- | --------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| **Root (deployment)** | `workspace-root/.env` | Engine-checkout `GH_TOKEN`, default provider keys if used at boot, `PHOEBE_*` runtime toggles | Supervisor / compose; **not** handed wholesale to tenant engines |
-| **Child (tenant)**    | `child/.env`          | That repo's `GH_TOKEN` + the active provider key                                              | That tenant's engine child only, after env-scrub                 |
+| Tier                  | Path                  | Contents                                                                                                                                     | Who sees it                                                      |
+| --------------------- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| **Root (deployment)** | `workspace-root/.env` | Engine-checkout `GH_TOKEN`, default provider keys if used at boot, `PHOEBE_*` runtime toggles                                                | Supervisor / compose; **not** handed wholesale to tenant engines |
+| **Child (tenant)**    | `child/.env`          | That repo's `GH_TOKEN` + the active provider key (under the App arm `GH_TOKEN` may be blank here — the supervisor synthesizes it at startup) | That tenant's engine child only, after env-scrub                 |
 
 **Config↔env binding is 1:1 by co-location**: each child dir has
 one `phoebe.config.ts` and one `.env`. The supervisor parses each child's `.env`

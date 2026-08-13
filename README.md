@@ -56,7 +56,9 @@ clones or submodules (`phoebe init --workspace` / `init --tenant`; see
 [`docs/workspace.md`](docs/workspace.md)). Read [`docs/trust.md`](docs/trust.md) first: co-locating repos
 means co-locating them in one trust domain. See
 [`docs/configuration.md`](docs/configuration.md) and
-[`docs/operating.md`](docs/operating.md).
+[`docs/operating.md`](docs/operating.md). For deployments spanning several repos
+under one org owner, the GitHub App arm replaces the per-repo token ceremony —
+see [`docs/github-app-mode.md`](docs/github-app-mode.md).
 
 The full, execute-top-to-bottom version — prerequisites, secrets, verification —
 is [`docs/ai-install.md`](docs/ai-install.md).
