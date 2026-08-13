@@ -1,5 +1,74 @@
 # phoebe-agent
 
+## 0.6.0
+
+### Minor Changes
+
+- 1de2e41: Reasoning effort is now configurable per provider. `defaultEfforts` sits beside
+  `defaultModels` in `phoebe.config.ts` and is merged the same key-by-key way, so
+  `defaultEfforts: { claude: "low" }` sets a level without restating the rest;
+  `PHOEBE_EFFORT` overrides the active provider's entry for one run.
+
+  Only the `claude` provider maps it today — to `--effort`, one of `low`,
+  `medium`, `high`, `xhigh`, `max`. `cursor` and `codex` have no equivalent knob
+  and ignore it.
+
+  **Nothing changes for existing deployments.** The default is empty rather than a
+  level, so a provider with no entry is invoked with no effort flag at all and
+  keeps its CLI's own default — the behaviour before this change.
+
+- 08048b2: `phoebe start [--build]` brings the deployment container up detached from the
+  host. It reuses the Compose discovery and injectable command runner from
+  `phoebe stop` (#186), does not rebuild an existing image unless `--build` is
+  passed, confirms the container stayed up after a short settle wait, and returns
+  to the prompt pointing at how to follow the logs.
+- b104f8e: `phoebe stop [--now]` drains and stops the deployment container from the host.
+  It resolves `container/compose.yml` from the current directory (no upward walk),
+  passes the deployment `.env` only when present, blocks for up to the fleet
+  supervisor's 1h drain grace (or 1s with `--now`), streams Compose progress, and
+  warns loudly when the container was SIGKILLed mid-run. Shared Compose discovery
+  and an injectable command runner land here for `phoebe start` (#187) to reuse.
+
+### Patch Changes
+
+- 78227a3: The scaffolded `container/compose.yml` now sets `stop_grace_period: 1h` so
+  `docker compose stop` gives the engine its full drain window (finish the work
+  unit in flight, start no new one) instead of Compose's 10-second default, which
+  was SIGKILLing mid-run. The value matches the fleet supervisor's
+  `DEFAULT_DRAIN_TIMEOUT_MS`.
+
+  **Existing deployments are not updated automatically** — `phoebe init` skips
+  files you already have. Add this under the `phoebe` service in your
+  consumer-owned `container/compose.yml`, then recreate:
+
+  ```yaml
+  stop_grace_period: 1h
+  ```
+
+  ```bash
+  docker compose --env-file ../.env up -d --force-recreate
+  ```
+
+- 703445d: Corepack's download confirmation can no longer hang a work unit. The `pnpm` and
+  `yarn` shims `corepack enable` installs default `COREPACK_ENABLE_DOWNLOAD_PROMPT`
+  to `1`, so the first use of a version Corepack has not cached yet asks "Do you
+  want to continue? [Y/n]" — and blocks on stdin whenever it is a TTY and `CI` is
+  unset, which is exactly the case for a deployment started with `docker compose
+run`. The engine spawns `installCommand` with inherited stdio, so that question
+  reached a terminal with no operator watching it and the unit stalled at install
+  rather than failing; the run-timeout deadline cannot interrupt a blocked
+  `execSync`, so it stalled indefinitely. `installCommand` and the prompt `!`
+  expansions now default the variable to `0`, which answers the confirmation
+  without changing what gets downloaded — the version still comes from the repo's
+  own `packageManager` field. An operator who sets the variable themselves keeps
+  their value. (The expansions were never at risk of hanging — `execSync`'s default
+  stdio gives them a piped stdin — but they would still have logged Corepack's
+  download notice, and both spawns now build their env the same way.)
+
+  This removes the need for a consumer image to set it: the fix holds for any image
+  whose toolchain runs through Corepack, not just those that thought to add the
+  `ENV` line.
+
 ## 0.5.2
 
 ### Patch Changes
