@@ -98,25 +98,24 @@ export const defaultGh: GhRunner = (args) => {
 };
 
 /**
- * Configure a global git credential helper from `GH_TOKEN` so every later git
- * call against github.com authenticates — the engine's `ensureClone` /
- * `fetchOrigin` / `pushBranch`, and the agent child's own `git push`/`fetch`.
+ * Configure a global git credential helper so every later git call against
+ * github.com authenticates — the engine's `ensureClone` / `fetchOrigin` /
+ * `pushBranch`, and the agent child's own `git push`/`fetch`.
  *
  * Uses `gh auth setup-git --hostname github.com`, which writes a
  * `!gh auth git-credential` helper into `~/.gitconfig`. That helper reads
  * `GH_TOKEN` live per call, so no secret is written to disk and token rotation
  * keeps working. Only `github.com` is configured (Phoebe is github-only).
  *
- * Skipped when no token is present (public/anonymous path unchanged). A failed
- * setup warns and continues — a missing helper is better diagnosed at the first
+ * Runs unconditionally: when the supervisor holds no token a GitHub App child
+ * can still mint its own `GH_TOKEN` and have the helper ready. A failed setup
+ * warns and continues — a missing helper is better diagnosed at the first
  * private-repo clone than by aborting the container here.
  */
 export function setupGitCredentials(deps: {
-  token: string | undefined;
   gh?: GhRunner;
   warn?: (message: string) => void;
 }): void {
-  if (!deps.token) return;
   const gh = deps.gh ?? defaultGh;
   const warn = deps.warn ?? ((message) => console.warn(message));
   try {
@@ -802,7 +801,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   // Before any engine git call (ensureClone, fetch/push, agent child): one
   // global github.com credential helper from GH_TOKEN. Survives reconcile
   // relaunches via ~/.gitconfig + the agent-env HOME/GH_TOKEN allowlist.
-  setupGitCredentials({ token: process.env["GH_TOKEN"] });
+  setupGitCredentials({});
 
   const configDir = process.cwd();
   const configPath = resolveConfigPath(undefined, configDir);
