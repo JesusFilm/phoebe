@@ -34,6 +34,21 @@ export const TENANT_CONFIG_FILE = "phoebe.config.ts";
 /** Per-tenant co-located secrets file. */
 export const TENANT_ENV_FILE = ".env";
 
+/**
+ * The exact set of keys that `buildEngineChildEnv` copies from a supervisor-
+ * minted credential record into the child environment. Naming the fields here
+ * (rather than an unrestricted record) means callers cannot accidentally include
+ * `GH_APP_*` or other secrets — the type is the structural barrier.
+ */
+export type MintedCredentials = {
+  GH_TOKEN: string;
+  PHOEBE_GH_LOGIN: string;
+  GIT_AUTHOR_NAME: string;
+  GIT_AUTHOR_EMAIL: string;
+  GIT_COMMITTER_NAME: string;
+  GIT_COMMITTER_EMAIL: string;
+};
+
 export type DiscoveredTenant = {
   /** Stable id and reconcile key: the tenant's normalized absolute config dir. */
   id: string;
@@ -50,6 +65,15 @@ export type DiscoveredTenant = {
    * reconcile identity is always {@link id}.
    */
   declaredPath?: string;
+  /**
+   * Supervisor-minted credentials for tenants whose `.env` carries no
+   * `GH_TOKEN`: a per-repo GitHub App installation token (`GH_TOKEN`),
+   * `PHOEBE_GH_LOGIN`, and the App bot's fallback git identity. Applied before
+   * the tenant's parsed `.env` so an explicit `GH_TOKEN` in the file wins.
+   * Absent when App credentials are not configured or the tenant has its own
+   * token.
+   */
+  mintedEnv?: MintedCredentials;
 };
 
 /** The solo arm: the deployment root is itself the one tenant, run in place. */

@@ -6,6 +6,7 @@
 
 import { describe, expect, test } from "vite-plus/test";
 import { buildEngineChildEnv, parseDotenv } from "./engine-child-env.ts";
+import { GH_APP_CREDENTIAL_PREFIX } from "./github-app.ts";
 
 describe("parseDotenv", () => {
   test("parses KEY=VALUE lines, ignoring blanks and comments", () => {
@@ -86,5 +87,69 @@ describe("buildEngineChildEnv", () => {
     const env = buildEngineChildEnv({ base: { PATH: "/bin", HOME: "" }, tenantEnv: {} });
     expect(env.PATH).toBe("/bin");
     expect("HOME" in env).toBe(false);
+  });
+
+  // Named regression guard (#209): the App private key and ID must never reach
+  // a child process, even when accidentally allowlisted. The allowlist is the
+  // primary barrier; this tripwire makes the claim checkable in CI.
+  test("no key matching the App credential prefix (GH_APP_*) survives the child-env builder", () => {
+    const baseWithAppKeys = {
+      ...base,
+      GH_APP_ID: "12345",
+      GH_APP_PRIVATE_KEY: "-----BEGIN RSA PRIVATE KEY-----",
+      GH_APP_INSTALLATION_ID: "99999",
+    };
+    const env = buildEngineChildEnv({ base: baseWithAppKeys, tenantEnv: {} });
+    for (const key of Object.keys(env)) {
+      expect(
+        key.startsWith(GH_APP_CREDENTIAL_PREFIX),
+        `${key} must not start with ${GH_APP_CREDENTIAL_PREFIX}`,
+      ).toBe(false);
+    }
+  });
+
+  // Runtime allowlist guard: mintedEnv keys outside the explicit set must never
+  // reach the child even if the caller bypasses the MintedCredentials type.
+  test("mintedEnv keys outside the allowlist do not reach the child", () => {
+    const leakyMintedEnv = {
+      GH_TOKEN: "ghs_minted",
+      PHOEBE_GH_LOGIN: "bot",
+      GIT_AUTHOR_NAME: "bot",
+      GIT_AUTHOR_EMAIL: "bot@example.com",
+      GIT_COMMITTER_NAME: "bot",
+      GIT_COMMITTER_EMAIL: "bot@example.com",
+      GH_APP_ID: "secret-app-id",
+      GH_APP_PRIVATE_KEY: "-----BEGIN RSA PRIVATE KEY-----",
+    } as Record<string, string>;
+    const env = buildEngineChildEnv({ base, mintedEnv: leakyMintedEnv, tenantEnv: {} });
+    expect(env.GH_TOKEN).toBe("ghs_minted");
+    expect(env.GH_APP_ID).toBeUndefined();
+    expect(env.GH_APP_PRIVATE_KEY).toBeUndefined();
+  });
+
+  test("mintedEnv is applied after base+knobs and before tenantEnv", () => {
+    const mintedToken = "ghs_minted_token";
+    const env = buildEngineChildEnv({
+      base,
+      mintedEnv: {
+        GH_TOKEN: mintedToken,
+        PHOEBE_GH_LOGIN: "phoebe-app[bot]",
+        GIT_AUTHOR_NAME: "phoebe-app[bot]",
+        GIT_AUTHOR_EMAIL: "12345+phoebe-app[bot]@users.noreply.github.com",
+      },
+      tenantEnv: {},
+    });
+    expect(env.GH_TOKEN).toBe(mintedToken);
+    expect(env.PHOEBE_GH_LOGIN).toBe("phoebe-app[bot]");
+    expect(env.GIT_AUTHOR_NAME).toBe("phoebe-app[bot]");
+  });
+
+  test("an explicit GH_TOKEN in tenantEnv wins over a minted one", () => {
+    const env = buildEngineChildEnv({
+      base,
+      mintedEnv: { GH_TOKEN: "ghs_minted" },
+      tenantEnv: { GH_TOKEN: "ghp_tenant_own" },
+    });
+    expect(env.GH_TOKEN).toBe("ghp_tenant_own");
   });
 });
