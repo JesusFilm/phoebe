@@ -398,4 +398,26 @@ environment — see [`ai-install.md`](ai-install.md) and `.env.example`. In a
 workspace deployment each tenant's secrets live in its own co-located
 `.env`, read by the supervisor and scrubbed so a tenant's engine child sees only
 its own (workspace two-tier model: [`workspace.md`](workspace.md)).
+
+## GitHub App arm
+
+Two variables in the **deployment** env-file select the `app` credential arm —
+boot mints a per-tenant installation token from the App instead of reading each
+tenant's `GH_TOKEN`. The App arm is available in solo and workspace deployments.
+
+| Env var                     | Form               | Meaning                                                                                              |
+| --------------------------- | ------------------ | ---------------------------------------------------------------------------------------------------- |
+| `PHOEBE_GH_APP_ID`          | integer as string  | GitHub App id — visible on the App's settings page under "General".                                  |
+| `PHOEBE_GH_APP_PRIVATE_KEY` | base64-encoded PEM | App private key encoded as a single line (`base64 -w0 key.pem` on Linux, `base64 key.pem` on macOS). |
+
+Both must be set together; a partial declaration (one without the other) is a fatal boot error.
+Set neither to stay on the `pat` arm.
+
+**No file-path alternative.** A mounted key file is readable by every tenant in the container
+(all tenants share the same uid), so the file-path option does not exist rather than merely being
+discouraged. Base64 in the env-file is the only supported form.
+
+These variables are deployment env-file only — they live beside `GH_TOKEN` in the deployment
+root `.env`, never in a tenant's co-located `.env`. The supervisor withholds them from every
+engine child.
 </content>
