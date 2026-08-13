@@ -147,6 +147,7 @@ describe("listTenants", () => {
       configValid: true,
       envPresent: true,
       retainedData: true,
+      arm: "pat",
     });
     expect(listings.find((l) => l.slug === "acme/valid")?.status?.currentUnit).toEqual({
       kind: "issues",
@@ -158,6 +159,7 @@ describe("listTenants", () => {
       envPresent: false,
       retainedData: false,
       status: null,
+      arm: "app",
     });
     expect(listings.find((l) => l.path === "broken")).toMatchObject({
       held: true,
@@ -318,6 +320,45 @@ describe("listTenants", () => {
       loadRepoSlug: () => "acme/child",
     });
     expect(undeclared).toEqual([]);
+  });
+
+  test("arm column: pat when GH_TOKEN present, app when absent, mixed fleet", async () => {
+    writeFileSync(
+      join(configDir, "phoebe.config.ts"),
+      `export default { workspace: { tenants: ["with-pat", "with-app"] } };\n`,
+    );
+    mkdirSync(join(configDir, "with-pat"), { recursive: true });
+    mkdirSync(join(configDir, "with-app"), { recursive: true });
+    writeFileSync(join(configDir, "with-pat", "phoebe.config.ts"), "export default {};\n");
+    writeFileSync(join(configDir, "with-app", "phoebe.config.ts"), "export default {};\n");
+    writeFileSync(join(configDir, "with-pat", ".env"), "GH_TOKEN=ghs_abc\n");
+    // with-app has no .env (app arm — no per-tenant token needed)
+
+    const { listings } = await listTenants({
+      configDir,
+      dataBase,
+      loadRepoSlug: (path) => (path.includes("with-pat") ? "acme/with-pat" : "acme/with-app"),
+    });
+
+    expect(listings.find((l) => l.slug === "acme/with-pat")?.arm).toBe("pat");
+    expect(listings.find((l) => l.slug === "acme/with-app")?.arm).toBe("app");
+  });
+
+  test("arm column: app when GH_TOKEN is empty string in .env", async () => {
+    writeFileSync(
+      join(configDir, "phoebe.config.ts"),
+      `export default { workspace: { tenants: ["tenant"] } };\n`,
+    );
+    mkdirSync(join(configDir, "tenant"), { recursive: true });
+    writeFileSync(join(configDir, "tenant", "phoebe.config.ts"), "export default {};\n");
+    writeFileSync(join(configDir, "tenant", ".env"), "GH_TOKEN=\n");
+
+    const { listings } = await listTenants({
+      configDir,
+      dataBase,
+      loadRepoSlug: () => "acme/tenant",
+    });
+    expect(listings[0]?.arm).toBe("app");
   });
 });
 
