@@ -20,6 +20,7 @@
 import { execFileSync, execSync } from "node:child_process";
 import { config } from "./resolved-config.ts";
 import { PROVIDER_NAMES, type ProviderName } from "./config-schema.ts";
+import { detectAppCredentials, mintInstallationToken } from "./gh-app.ts";
 import {
   asBranchRef,
   asPrNumber,
@@ -123,6 +124,36 @@ import {
   type WorkKindName,
   type WorkUnit,
 } from "./orchestrator.ts";
+
+// ---------------------------------------------------------------------------
+// Credential arm selection
+//
+// "pat"  — operator supplied GH_TOKEN at startup; no minting attempted.
+// "app"  — no GH_TOKEN at startup; engine mints an installation token before
+//          each poll cycle so both its own gh calls and child agents can work.
+//
+// The arm is resolved from the startup snapshot to prevent a programmatically-
+// set GH_TOKEN (the minted one) from flipping the arm back to "pat" on the
+// next cycle. Logged at first spawn and on any flip so the implicit selector
+// is visible to the operator.
+// ---------------------------------------------------------------------------
+
+type CredentialArm = "pat" | "app";
+
+const STARTUP_GH_TOKEN: string | undefined = process.env["GH_TOKEN"];
+
+function resolveArm(): CredentialArm {
+  return STARTUP_GH_TOKEN ? "pat" : "app";
+}
+
+let lastLoggedArm: CredentialArm | null = null;
+
+function logArmIfChanged(arm: CredentialArm): void {
+  if (arm !== lastLoggedArm) {
+    console.log(`[phoebe] Credential arm: ${arm}.`);
+    lastLoggedArm = arm;
+  }
+}
 
 const DEFAULT_POLL_INTERVAL_MS = 300_000;
 // Whole-unit wall-clock budget (#72): the agent phase — the async, hang-prone
@@ -619,6 +650,11 @@ function fetchPrCommentBodies(prNumber: PrNumber): string[] {
 }
 
 function phoebeGhLogin(): string {
+  // Prefer the explicitly injected login (set during App-mode mint or by the
+  // operator) — `gh api user` 403s under an installation token, so we must
+  // not attempt the API call when PHOEBE_GH_LOGIN is already known.
+  const envLogin = process.env["PHOEBE_GH_LOGIN"];
+  if (envLogin) return envLogin;
   return ghApiJson<{ login: string }>("user").login;
 }
 
@@ -1885,6 +1921,49 @@ async function runLoop({
       console.log("[phoebe] Drain requested — starting no new work unit; exiting 0.");
       break;
     }
+
+    // ---------------------------------------------------------------------------
+    // Credential arm: mint a fresh installation token every cycle when App mode
+    // is active, so both the engine's own gh calls and the agent child process
+    // can authenticate. On mint failure log at error level, skip the cycle, and
+    // retry on the next poll — the container stays up and running (#208).
+    // ---------------------------------------------------------------------------
+    const arm = resolveArm();
+    logArmIfChanged(arm);
+
+    if (arm === "app" && !dryRun) {
+      const creds = detectAppCredentials(process.env);
+      if (!creds) {
+        console.error(
+          "[phoebe] App mode active but PHOEBE_GH_APP_ID or PHOEBE_GH_APP_PRIVATE_KEY is missing.",
+        );
+        if (runOnce) break;
+        await drain.wait(pollIntervalMs);
+        continue;
+      }
+      const mintResult = await mintInstallationToken(config.repoSlug, creds);
+      if (!mintResult.ok) {
+        const statusLabel = mintResult.status !== null ? ` HTTP ${mintResult.status}` : "";
+        console.error(`[phoebe] App mode mint failed${statusLabel}: ${mintResult.reason}`);
+        if (runOnce) break;
+        await drain.wait(pollIntervalMs);
+        continue;
+      }
+      // Inject the minted token as GH_TOKEN so all gh calls this cycle use it,
+      // and set PHOEBE_GH_LOGIN so phoebeGhLogin() does not have to shell out.
+      // Bot git identity is applied as a fallback: existing values win.
+      process.env["GH_TOKEN"] = mintResult.token;
+      process.env["PHOEBE_GH_LOGIN"] = mintResult.botLogin;
+      if (!process.env["GIT_AUTHOR_NAME"]) {
+        process.env["GIT_AUTHOR_NAME"] = mintResult.botName;
+        process.env["GIT_COMMITTER_NAME"] = mintResult.botName;
+      }
+      if (!process.env["GIT_AUTHOR_EMAIL"]) {
+        process.env["GIT_AUTHOR_EMAIL"] = mintResult.botEmail;
+        process.env["GIT_COMMITTER_EMAIL"] = mintResult.botEmail;
+      }
+    }
+
     // Auto-un-stick before selecting (#153): a unit whose content advanced since
     // it was quarantined loses the label here, so it is eligible in *this*
     // cycle's fetch rather than the next one. Skipped under `--dry-run`, which
