@@ -1,6 +1,8 @@
 // `phoebe doctor` verdict folding: which check states fail the report, and how
 // the crash-loop record reads as a check — especially the quarantine case, the
 // "silently running last-known-good" state doctor exists to surface.
+// Also covers arm-aware token checks: the App arm and the PAT arm behave
+// differently, and the unverifiable state must never fail --check.
 
 import { describe, expect, test } from "vite-plus/test";
 import {
@@ -8,6 +10,7 @@ import {
   crashLoopCheck,
   describeRepoProbe,
   formatDoctorReport,
+  tenantTokenCheck,
 } from "./doctor.ts";
 
 describe("describeRepoProbe", () => {
@@ -61,6 +64,92 @@ describe("buildDoctorReport", () => {
     );
     expect(report.ok).toBe(false);
     expect(formatDoctorReport(report)).toMatch(/1 failing check/);
+  });
+});
+
+describe("tenantTokenCheck", () => {
+  test("App arm is always ok regardless of token presence", () => {
+    const withToken = tenantTokenCheck({
+      arm: "app",
+      token: "ghp_abc",
+      envLabel: "/etc/phoebe/tenant/.env",
+      inContainer: true,
+    });
+    expect(withToken.state).toBe("ok");
+    expect(withToken.detail).toMatch(/App arm/);
+
+    const noToken = tenantTokenCheck({
+      arm: "app",
+      token: undefined,
+      envLabel: "/etc/phoebe/tenant/.env",
+      inContainer: true,
+    });
+    expect(noToken.state).toBe("ok");
+    expect(noToken.detail).toMatch(/App arm/);
+  });
+
+  test("App arm outside the container is still ok, not unverifiable", () => {
+    // The arm short-circuits ahead of the container check: GH_APP_ID was
+    // readable, so the arm is known even from the host and there is nothing
+    // left to be unsure about.
+    const check = tenantTokenCheck({
+      arm: "app",
+      token: undefined,
+      envLabel: "/etc/phoebe/tenant/.env",
+      inContainer: false,
+    });
+    expect(check.state).toBe("ok");
+    expect(check.detail).toMatch(/App arm/);
+  });
+
+  test("PAT arm with a token is ok", () => {
+    const check = tenantTokenCheck({
+      arm: "pat",
+      token: "ghp_abc",
+      envLabel: "/etc/phoebe/tenant/.env",
+      inContainer: true,
+    });
+    expect(check.state).toBe("ok");
+    expect(check.detail).toMatch(/GH_TOKEN present/);
+  });
+
+  test("PAT arm with no token inside the container is a real failure", () => {
+    const check = tenantTokenCheck({
+      arm: "pat",
+      token: undefined,
+      envLabel: "/etc/phoebe/tenant/.env",
+      inContainer: true,
+    });
+    expect(check.state).toBe("fail");
+    expect(check.detail).toMatch(/no GH_TOKEN/);
+  });
+
+  test("PAT arm with no token outside the container is unverifiable, not a failure", () => {
+    const check = tenantTokenCheck({
+      arm: "pat",
+      token: undefined,
+      envLabel: "/etc/phoebe/tenant/.env",
+      inContainer: false,
+    });
+    expect(check.state).toBe("unknown");
+    expect(check.detail).toMatch(/unverifiable/);
+  });
+
+  test("unverifiable state does not fail the report (AC: --check must not fail on it)", () => {
+    const report = buildDoctorReport(
+      [{ id: "config", state: "ok", detail: "loads" }],
+      [
+        {
+          path: "tenant",
+          slug: "acme/core",
+          checks: [
+            { id: "token", state: "unknown", detail: "unverifiable — ..." },
+            { id: "repo", state: "unknown", detail: "not probed (unverifiable)" },
+          ],
+        },
+      ],
+    );
+    expect(report.ok).toBe(true);
   });
 });
 
