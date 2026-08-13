@@ -17,11 +17,16 @@
  *     ! Corepack is about to download https://registry.npmjs.org/pnpm/...
  *     ? Do you want to continue? [Y/n]
  *
- * and — when stdin is a TTY and CI is unset — blocks reading that answer. Every
- * command here is spawned with inherited stdio, and a deployment launched with
- * `docker compose run` has a TTY by default, so the prompt reaches a terminal
- * with no operator watching it: the work unit hangs at install rather than
- * failing, and the run-timeout deadline cannot interrupt a blocked `execSync`.
+ * and — when stdin is a TTY and CI is unset — blocks reading that answer.
+ *
+ * `installCommand` is spawned with inherited stdio, and a deployment launched
+ * with `docker compose run` has a TTY by default, so there the prompt reaches a
+ * terminal with no operator watching it: the work unit hangs at install rather
+ * than failing, and the run-timeout deadline cannot interrupt a blocked
+ * `execSync`. The prompt expansions cannot hang — `execSync`'s default stdio
+ * hands the child a piped stdin, so the TTY guard is false and Corepack goes
+ * ahead — but they would still write that `!` line to the engine's stderr, and
+ * one helper across both spawns is one fewer thing to keep in step.
  *
  * Pre-setting the variable wins the shim's `??=`. `0` means "download without
  * asking", not "download anything you like" — the version still comes from the
