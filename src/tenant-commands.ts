@@ -14,8 +14,9 @@
 // dir and data base, so they are unit-tested against temp dirs; the CLI layer
 // (src/cli.ts) resolves those roots and prints the reports.
 
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join, relative } from "node:path";
+import { parseDotenv } from "../bootstrap/engine-child-env.ts";
 import { readConfigDir } from "../bootstrap/config-dir.ts";
 import {
   type DiscoveredTenant,
@@ -31,6 +32,7 @@ import {
   resolveWorkspace,
   type ResolvedWorkspace,
 } from "../bootstrap/workspace-source.ts";
+import { resolveCredentialArm, type CredentialArm } from "../bootstrap/credential-arm.ts";
 import { loadUserConfig } from "./load-config.ts";
 import { readStatus, STATUS_FILE, type StatusSnapshot } from "./unit-event.ts";
 
@@ -128,7 +130,9 @@ export default config;
 export const TENANT_ENV_EXAMPLE = `# Per-tenant secrets — copy to \`.env\`. Read ONLY by this tenant's engine child
 # (the supervisor scrubs every other tenant's secrets, #61).
 
-# --- Required ---
+# --- Required (pat arm) ---
+# Leave blank when the deployment uses the app credential arm
+# (PHOEBE_GH_APP_ID / PHOEBE_GH_APP_PRIVATE_KEY set on the deployment env-file).
 GH_TOKEN=
 
 # --- Provider key (set the one this repo's defaultProvider uses) ---
@@ -193,6 +197,12 @@ export type TenantListing = {
   envPresent: boolean;
   retainedData: boolean;
   status: StatusSnapshot | null;
+  /**
+   * Resolved credential arm: `"pat"` when an explicit `GH_TOKEN` is present in
+   * the tenant's `.env`, `"app"` when there is none and the deployment holds a
+   * GitHub App key. Shared resolver — never re-derived per surface (#162).
+   */
+  arm: CredentialArm;
 };
 
 export type ListTenantsResult = {
@@ -225,6 +235,22 @@ function envPresent(dir: string): boolean {
   return existsSync(join(dir, TENANT_ENV_FILE));
 }
 
+/**
+ * Resolve the credential arm from a tenant's `.env` file, weighed against this
+ * process's env for the deployment's App key. An absent or unreadable `.env`
+ * resolves the same way an empty one would — no explicit token, so the App key
+ * decides.
+ */
+function readTenantArm(envPath: string): CredentialArm {
+  let tenantEnv: Record<string, string | undefined>;
+  try {
+    tenantEnv = parseDotenv(readFileSync(envPath, "utf8"));
+  } catch {
+    tenantEnv = {};
+  }
+  return resolveCredentialArm(tenantEnv, process.env);
+}
+
 /** Health columns for one live tenant dir. */
 function listingForLive(
   path: string,
@@ -232,7 +258,9 @@ function listingForLive(
   dir: string,
   dataBase: string,
   configValid: boolean,
+  envPath?: string,
 ): TenantListing {
+  const resolvedEnvPath = envPath ?? join(dir, TENANT_ENV_FILE);
   const dataDir = join(dataBase, slug);
   return {
     path,
@@ -243,6 +271,7 @@ function listingForLive(
     envPresent: envPresent(dir),
     retainedData: existsSync(dataDir),
     status: readStatus(join(dataDir, "state", STATUS_FILE)),
+    arm: readTenantArm(resolvedEnvPath),
   };
 }
 
@@ -265,6 +294,7 @@ function listingForHeld(
     envPresent: envPresent(dir),
     retainedData: dataDir !== null && existsSync(dataDir),
     status: dataDir !== null ? readStatus(join(dataDir, "state", STATUS_FILE)) : null,
+    arm: readTenantArm(join(dir, TENANT_ENV_FILE)),
   };
 }
 
@@ -401,7 +431,9 @@ function listWorkspaceTenants(opts: {
       const dir = resolveDeclaredTenantDir(opts.configDir, entry);
       const tenant = tenantByDir.get(dir);
       if (tenant !== undefined) {
-        listings.push(listingForLive(entry, tenant.slug!, tenant.dir, opts.dataBase, true));
+        listings.push(
+          listingForLive(entry, tenant.slug!, tenant.dir, opts.dataBase, true, tenant.envPath),
+        );
         continue;
       }
       // Holds are structural (`declared − successful`), so every non-tenant
@@ -422,6 +454,7 @@ function listWorkspaceTenants(opts: {
           tenant.dir,
           opts.dataBase,
           true,
+          tenant.envPath,
         ),
       );
     }

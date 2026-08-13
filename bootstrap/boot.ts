@@ -70,6 +70,7 @@ import {
   type ResolvedWorkspace,
 } from "./workspace-source.ts";
 import { readFileSync } from "node:fs";
+import { resolveCredentialArm, type CredentialArm } from "./credential-arm.ts";
 import {
   configFingerprint,
   superviseEngine,
@@ -543,6 +544,8 @@ function workspaceDiscover(
   let lastArm = workspaceArm(initialWorkspace);
   let previousHoldKey: string | null = null;
   let summaryLogged = false;
+  /** Per-tenant id → last-known arm, for flip detection. */
+  let previousTenantArms = new Map<string, CredentialArm>();
 
   const discoveryDeps = {
     loadRepoSlug: loadTenantRepoSlug,
@@ -597,14 +600,31 @@ function workspaceDiscover(
       }
       summaryLogged = true;
       previousHoldKey = holdKey;
-    } else if (holdKey !== previousHoldKey) {
-      logWorkspaceHoldSummary(configDir, workspace, discovery.holds);
-      if (mintFailedIds.length > 0) {
-        console.warn(
-          `[phoebe] boot: workspace: held ${mintFailedIds.length} tenant(s) — App token mint failed.`,
-        );
+      for (const tenant of discovery.tenants) {
+        previousTenantArms.set(tenant.id, tenantArm(tenant.envPath));
       }
-      previousHoldKey = holdKey;
+    } else {
+      // Detect arm flips — log a line for each tenant whose arm changed.
+      const nextArms = new Map<string, CredentialArm>();
+      for (const tenant of discovery.tenants) {
+        const arm = tenantArm(tenant.envPath);
+        nextArms.set(tenant.id, arm);
+        const prev = previousTenantArms.get(tenant.id);
+        if (prev !== undefined && prev !== arm) {
+          const label = tenant.slug ?? tenant.id;
+          console.log(`[phoebe] boot: tenant ${label} credential arm: ${prev} → ${arm}.`);
+        }
+      }
+      previousTenantArms = nextArms;
+      if (holdKey !== previousHoldKey) {
+        logWorkspaceHoldSummary(configDir, workspace, discovery.holds);
+        if (mintFailedIds.length > 0) {
+          console.warn(
+            `[phoebe] boot: workspace: held ${mintFailedIds.length} tenant(s) — App token mint failed.`,
+          );
+        }
+        previousHoldKey = holdKey;
+      }
     }
     return { samples, hold: allHoldIds };
   };
@@ -669,23 +689,54 @@ function reconcileHoldIds(result: WorkspaceDiscoveryResult): string[] {
   return result.holds.map((hold) => hold.dir);
 }
 
+/**
+ * One tenant's credential arm: its own `.env` weighed against the supervisor's
+ * env, which is the only place the deployment's App key lives.
+ */
+function tenantArm(envPath: string): CredentialArm {
+  return resolveCredentialArm(readTenantEnv(envPath), process.env);
+}
+
+/**
+ * Build the arm tally suffix for the workspace boot summary line, e.g.
+ * " (2 pat, 1 app)" or " (3 pat)". Empty string when there are no tenants.
+ */
+function buildArmTally(tenants: readonly DiscoveredTenant[]): string {
+  if (tenants.length === 0) return "";
+  let pat = 0;
+  let app = 0;
+  for (const tenant of tenants) {
+    if (tenantArm(tenant.envPath) === "pat") pat++;
+    else app++;
+  }
+  const parts: string[] = [];
+  if (pat > 0) parts.push(`${pat} pat`);
+  if (app > 0) parts.push(`${app} app`);
+  return ` (${parts.join(", ")})`;
+}
+
 function logWorkspaceBootSummary(
   configDir: string,
   workspace: ResolvedWorkspace,
   result: WorkspaceDiscoveryResult,
 ): void {
+  const armTally = buildArmTally(result.tenants);
   if (isExplicitWorkspace(workspace)) {
     const declared = workspace.tenants.length;
     const suffix = declared === 0 ? " (empty declared fleet)" : "";
     const message =
       `[phoebe] boot: workspace mode — supervising ${result.tenants.length} of ${declared} ` +
-      `declared tenant(s) on one shared engine${suffix}.`;
+      `declared tenant(s) on one shared engine${armTally}${suffix}.`;
     if (declared === 0) console.warn(message);
     else console.log(message);
   } else {
+    const depthAndTally =
+      armTally.length > 0
+        ? `(depth ${workspace.depth}, ${armTally.slice(2, -1)})`
+        : `(depth ${workspace.depth})`;
     console.log(
       `[phoebe] boot: workspace mode — supervising ${result.tenants.length} tenant(s) ` +
-        `on one shared engine (depth ${workspace.depth}).`,
+        `on one shared engine ${depthAndTally}.`,
     );
   }
   if (result.holds.length > 0) {
@@ -852,6 +903,12 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   // layout is refused by name here, rather than read as a solo deployment whose
   // config is missing every per-repo field.
   assertNotRemovedReposLayout(configDir);
+
+  // Solo: log the credential arm once at first spawn. The root *is* the tenant
+  // here, so the ambient env serves as both the tenant and the deployment env.
+  console.log(
+    `[phoebe] boot: credential arm: ${resolveCredentialArm(process.env as Record<string, string | undefined>)}.`,
+  );
 
   // Solo gets a cap-1 broker (honoring PHOEBE_MAX_CONCURRENT_AGENTS) so the
   // child's slot client is properly wired and the env knob is meaningful.

@@ -228,8 +228,8 @@ function tenantToken(envPath: string): string | undefined {
  * - App arm: absent GH_TOKEN is expected — returns `ok`.
  * - PAT arm, token present: returns `ok`.
  * - PAT arm, no token, outside the container: returns `unknown` (unverifiable —
- *   GH_APP_ID is only visible inside the container, so doctor cannot tell
- *   whether this is an unconfigured PAT or a healthy App-arm deployment).
+ *   PHOEBE_GH_APP_ID is only visible inside the container, so doctor cannot
+ *   tell whether this is an unconfigured PAT or a healthy App-arm deployment).
  * - PAT arm, no token, inside the container: returns `fail` (genuine shortfall).
  */
 export function tenantTokenCheck(fields: {
@@ -249,7 +249,7 @@ export function tenantTokenCheck(fields: {
     return { id: "token", state: "ok", detail: `GH_TOKEN present in ${fields.envLabel}` };
   }
   if (!fields.inContainer) {
-    // Outside the container: GH_APP_ID is only visible inside, so we cannot
+    // Outside the container: PHOEBE_GH_APP_ID is only visible inside, so we cannot
     // tell whether this is a broken PAT arm or an App arm whose credential is
     // simply not reachable from the host. Never fail --check on this.
     return {
@@ -501,7 +501,6 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
   // Tenant sweep: workspace mode enumerates the same fleet boot supervises;
   // solo probes the root itself (the deployment root IS the tenant there).
   const tenants: TenantDoctorRow[] = [];
-  const arm = resolveCredentialArm(deps.env);
   const inContainer = isInsideContainer();
   const enumeration = await enumerateWorkspaceTenants({ configDir: deps.configDir });
   if (enumeration !== null) {
@@ -515,7 +514,10 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
         return tenantRow({
           path: tenant.dir,
           slug: tenant.slug,
-          arm,
+          // Per tenant, not per deployment: a fleet mixes arms whenever one
+          // tenant keeps its own PAT, and #157's per-installation approvals
+          // make that the normal state during any permission change.
+          arm: resolveCredentialArm({ GH_TOKEN: tokenValue }, deps.env),
           token: tokenValue,
           envLabel: tenant.envPath,
           fetchFn,
@@ -538,7 +540,8 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
       await tenantRow({
         path: deps.configDir,
         slug,
-        arm,
+        // Solo: the root is the tenant, so one env answers both halves.
+        arm: resolveCredentialArm(deps.env),
         token: token !== undefined && token.length > 0 ? token : undefined,
         envLabel: "the environment",
         fetchFn,
