@@ -29,6 +29,7 @@ import {
   readCrashLoopState,
   type CrashLoopState,
 } from "../bootstrap/crash-loop.ts";
+import { type CredentialArm, resolveCredentialArm } from "../bootstrap/credential-arm.ts";
 import { parseDotenv } from "../bootstrap/engine-child-env.ts";
 import { readEngineSource, type ResolvedEngineSource } from "../bootstrap/engine-source.ts";
 import {
@@ -220,25 +221,91 @@ function tenantToken(envPath: string): string | undefined {
   }
 }
 
+/**
+ * The credential-aware token check for one tenant. Pure, for tests.
+ *
+ * Three cases:
+ * - App arm: absent GH_TOKEN is expected — returns `ok`.
+ * - PAT arm, token present: returns `ok`.
+ * - PAT arm, no token, outside the container: returns `unknown` (unverifiable —
+ *   PHOEBE_GH_APP_ID is only visible inside the container, so doctor cannot
+ *   tell whether this is an unconfigured PAT or a healthy App-arm deployment).
+ * - PAT arm, no token, inside the container: returns `fail` (genuine shortfall).
+ */
+export function tenantTokenCheck(fields: {
+  arm: CredentialArm;
+  token: string | undefined;
+  envLabel: string;
+  inContainer: boolean;
+}): DoctorCheck {
+  if (fields.arm === "app") {
+    return {
+      id: "token",
+      state: "ok",
+      detail: "App arm: installation token minted by the GitHub App at runtime",
+    };
+  }
+  if (fields.token !== undefined) {
+    return { id: "token", state: "ok", detail: `GH_TOKEN present in ${fields.envLabel}` };
+  }
+  if (!fields.inContainer) {
+    // Outside the container: PHOEBE_GH_APP_ID is only visible inside, so we cannot
+    // tell whether this is a broken PAT arm or an App arm whose credential is
+    // simply not reachable from the host. Never fail --check on this.
+    return {
+      id: "token",
+      state: "unknown",
+      detail:
+        `unverifiable — no GH_TOKEN in ${fields.envLabel} and the credential source is not ` +
+        `visible outside the container (run \`docker compose exec phoebe phoebe doctor\` for a definitive check)`,
+    };
+  }
+  return {
+    id: "token",
+    state: "fail",
+    detail:
+      `no GH_TOKEN in ${fields.envLabel} — the supervisor scrubs its own env, so this ` +
+      `tenant's child boots with no token at all`,
+  };
+}
+
 async function tenantRow(fields: {
   path: string;
   slug: string | null;
+  arm: CredentialArm;
   token: string | undefined;
-  tokenDetail: string;
+  envLabel: string;
   fetchFn: typeof fetch;
+  inContainer: boolean;
 }): Promise<TenantDoctorRow> {
   const checks: DoctorCheck[] = [];
-  if (fields.token === undefined) {
-    checks.push({ id: "token", state: "fail", detail: fields.tokenDetail });
-    checks.push({ id: "repo", state: "unknown", detail: "not probed (no token)" });
-  } else {
-    checks.push({ id: "token", state: "ok", detail: fields.tokenDetail });
+  const tokenCheck = tenantTokenCheck(fields);
+  checks.push(tokenCheck);
+
+  if (fields.arm === "app") {
+    // Probing the repo requires minting a token, which doctor does not do.
+    // Repo access is verified at runtime when the token is minted.
+    checks.push({
+      id: "repo",
+      state: "unknown",
+      detail: "not probed (App arm — repo access verified at runtime when the token is minted)",
+    });
+  } else if (fields.token !== undefined) {
     if (fields.slug !== null) {
       const probe = await probeRepo(fields.slug, fields.token, fields.fetchFn);
       checks.push({ id: "repo", state: probe.ok ? "ok" : "fail", detail: probe.detail });
     } else {
       checks.push({ id: "repo", state: "unknown", detail: "not probed (no repoSlug)" });
     }
+  } else {
+    checks.push({
+      id: "repo",
+      state: "unknown",
+      detail:
+        tokenCheck.state === "unknown"
+          ? "not probed (credential source unverifiable outside the container)"
+          : "not probed (no token)",
+    });
   }
   return { path: fields.path, slug: fields.slug, checks };
 }
@@ -434,6 +501,7 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
   // Tenant sweep: workspace mode enumerates the same fleet boot supervises;
   // solo probes the root itself (the deployment root IS the tenant there).
   const tenants: TenantDoctorRow[] = [];
+  const inContainer = isInsideContainer();
   const enumeration = await enumerateWorkspaceTenants({ configDir: deps.configDir });
   if (enumeration !== null) {
     // Bounded, order-preserving: each probe can wait out its 30s timeout, so a
@@ -446,13 +514,14 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
         return tenantRow({
           path: tenant.dir,
           slug: tenant.slug,
+          // Per tenant, not per deployment: a fleet mixes arms whenever one
+          // tenant keeps its own PAT, and #157's per-installation approvals
+          // make that the normal state during any permission change.
+          arm: resolveCredentialArm({ GH_TOKEN: tokenValue }, deps.env),
           token: tokenValue,
-          tokenDetail:
-            tokenValue !== undefined
-              ? `GH_TOKEN present in ${tenant.envPath}`
-              : `no GH_TOKEN in ${tenant.envPath} — the supervisor scrubs its own env, so this ` +
-                `tenant's child boots with no token at all`,
+          envLabel: tenant.envPath,
           fetchFn,
+          inContainer,
         });
       })),
     );
@@ -471,12 +540,12 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
       await tenantRow({
         path: deps.configDir,
         slug,
-        token: token,
-        tokenDetail:
-          token !== undefined && token.length > 0
-            ? "GH_TOKEN present in the environment"
-            : "no GH_TOKEN set",
+        // Solo: the root is the tenant, so one env answers both halves.
+        arm: resolveCredentialArm(deps.env),
+        token: token !== undefined && token.length > 0 ? token : undefined,
+        envLabel: "the environment",
         fetchFn,
+        inContainer,
       }),
     );
   }

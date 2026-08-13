@@ -20,6 +20,7 @@
 import { execFileSync, execSync } from "node:child_process";
 import { config } from "./resolved-config.ts";
 import { PROVIDER_NAMES, type ProviderName } from "./config-schema.ts";
+import { detectAppCredentials, mintInstallationToken } from "./gh-app.ts";
 import {
   asBranchRef,
   asPrNumber,
@@ -31,7 +32,13 @@ import {
 import { buildAgentEnv } from "./agent-env.ts";
 import { buildShellCommandEnv } from "./shell-env.ts";
 import { installDrainSignal, type DrainSignal } from "./drain.ts";
-import { BrokerDisconnectedError, createSlotClient, type SlotClient } from "./slot-client.ts";
+import {
+  BrokerDisconnectedError,
+  createCredentialClient,
+  CredentialRefreshBlockedError,
+  type CredentialClient,
+} from "./credential-client.ts";
+import { createSlotClient, type SlotClient } from "./slot-client.ts";
 import { RunTimeoutError, resolveRunTimeoutMs, runWithDeadline } from "./run-timeout.ts";
 import {
   createEmitUnitEvent,
@@ -124,12 +131,47 @@ import {
   type WorkUnit,
 } from "./orchestrator.ts";
 
+// ---------------------------------------------------------------------------
+// Credential arm selection
+//
+// "pat"  — operator supplied GH_TOKEN at startup; no minting attempted.
+// "app"  — no GH_TOKEN at startup; engine mints an installation token before
+//          each poll cycle so both its own gh calls and child agents can work.
+//
+// The arm is resolved from the startup snapshot to prevent a programmatically-
+// set GH_TOKEN (the minted one) from flipping the arm back to "pat" on the
+// next cycle. Logged at first spawn and on any flip so the implicit selector
+// is visible to the operator.
+// ---------------------------------------------------------------------------
+
+type CredentialArm = "pat" | "app";
+
+const STARTUP_GH_TOKEN: string | undefined = process.env["GH_TOKEN"];
+
+function resolveArm(): CredentialArm {
+  return STARTUP_GH_TOKEN ? "pat" : "app";
+}
+
+let lastLoggedArm: CredentialArm | null = null;
+
+function logArmIfChanged(arm: CredentialArm): void {
+  if (arm !== lastLoggedArm) {
+    console.log(`[phoebe] Credential arm: ${arm}.`);
+    lastLoggedArm = arm;
+  }
+}
+
 const DEFAULT_POLL_INTERVAL_MS = 300_000;
 // Whole-unit wall-clock budget (#72): the agent phase — the async, hang-prone
 // step — runs under this deadline, so a hung unit releases its #59 slot within
 // a known ceiling instead of starving the fleet. Env (`PHOEBE_RUN_TIMEOUT_MS`)
 // overrides the config field.
 const RUN_TIMEOUT_MS = resolveRunTimeoutMs(process.env, config.runTimeoutMs);
+// Lease budget sent to the supervisor: run timeout plus ten minutes for the
+// install/push phases that follow the agent inside the same unit. Only the
+// child resolves this number — env-over-config precedence lives engine-side,
+// and a supervisor that computed it independently would duplicate and drift.
+const CREDENTIAL_BUDGET_MS = RUN_TIMEOUT_MS + 10 * 60 * 1000;
 // Never let a gh/git child process block the persistent loop forever (rate-limit
 // backoff, credential prompt, network partition). Configured toolchain commands
 // (install/test) get a longer leash.
@@ -619,6 +661,11 @@ function fetchPrCommentBodies(prNumber: PrNumber): string[] {
 }
 
 function phoebeGhLogin(): string {
+  // Prefer the explicitly injected login (set during App-mode mint or by the
+  // operator) — `gh api user` 403s under an installation token, so we must
+  // not attempt the API call when PHOEBE_GH_LOGIN is already known.
+  const envLogin = process.env["PHOEBE_GH_LOGIN"];
+  if (envLogin) return envLogin;
   return ghApiJson<{ login: string }>("user").login;
 }
 
@@ -1837,16 +1884,23 @@ export async function runEngine(argv: readonly string[] = process.argv.slice(2))
   // an IPC channel, `slotClient` requests a slot per work unit and blocks until
   // the supervisor grants one. A standalone engine (no channel) gets null here
   // and runs unbrokered — it is already serialized to one unit.
-  const slotClient = createSlotClient({
+  const ipcChannel = {
     send: process.send?.bind(process),
-    on: (event, listener) => {
+    on: (event: "message" | "disconnect", listener: (message: unknown) => void) => {
       process.on(event, listener);
     },
-    off: (event, listener) => {
+    off: (event: "message" | "disconnect", listener: (message: unknown) => void) => {
       process.off(event, listener);
     },
     connected: process.connected,
-  });
+  };
+  const slotClient = createSlotClient(ipcChannel);
+  // The credential lease client (#211): when this engine was forked with an IPC
+  // channel (App arm, fleet mode), `credentialClient` refreshes the installation
+  // token before each poll and again before each agent spawn. A standalone engine
+  // or a PAT tenant (no channel) gets null here and runs with its existing
+  // GH_TOKEN unchanged — the PAT arm is a strict no-op.
+  const credentialClient = createCredentialClient(ipcChannel);
 
   // Per-repo observability (#73): one tagged `[phoebe:<slug>]` line per unit
   // event + a `status.json` snapshot in this tenant's state dir, which
@@ -1859,7 +1913,15 @@ export async function runEngine(argv: readonly string[] = process.argv.slice(2))
 
   const drain = installDrainSignal();
   try {
-    await runLoop({ runOnce, dryRun, pollIntervalMs, drain, slotClient, emitUnitEvent });
+    await runLoop({
+      runOnce,
+      dryRun,
+      pollIntervalMs,
+      drain,
+      slotClient,
+      credentialClient,
+      emitUnitEvent,
+    });
   } finally {
     drain.dispose();
   }
@@ -1871,6 +1933,7 @@ async function runLoop({
   pollIntervalMs,
   drain,
   slotClient,
+  credentialClient,
   emitUnitEvent,
 }: {
   runOnce: boolean;
@@ -1878,6 +1941,7 @@ async function runLoop({
   pollIntervalMs: number;
   drain: DrainSignal;
   slotClient: SlotClient | null;
+  credentialClient: CredentialClient | null;
   emitUnitEvent: EmitUnitEvent;
 }): Promise<void> {
   while (true) {
@@ -1885,6 +1949,63 @@ async function runLoop({
       console.log("[phoebe] Drain requested — starting no new work unit; exiting 0.");
       break;
     }
+
+    // Credential lease — call site 1: top of each poll, before discovery (#211).
+    // Without this the idle path dies quietly after an hour: a tenant that cannot
+    // list issues or PRs finds no work and simply looks idle. A null client means
+    // standalone or PAT arm — proceed with the existing GH_TOKEN unchanged.
+    const arm = resolveArm();
+    logArmIfChanged(arm);
+
+    if (credentialClient) {
+      try {
+        const token = await credentialClient.requestLease(CREDENTIAL_BUDGET_MS);
+        if (token !== null) process.env["GH_TOKEN"] = token;
+      } catch (error) {
+        if (error instanceof BrokerDisconnectedError) {
+          console.error(`[phoebe] ${error.message} — stopping this engine.`);
+          break;
+        }
+        if (error instanceof CredentialRefreshBlockedError) {
+          console.warn("[phoebe] Credential refresh unavailable — skipping work this cycle.");
+          await drain.wait(pollIntervalMs);
+          continue;
+        }
+        throw error;
+      }
+    } else if (arm === "app" && !dryRun) {
+      const creds = detectAppCredentials(process.env);
+      if (!creds) {
+        console.error(
+          "[phoebe] App mode active but PHOEBE_GH_APP_ID or PHOEBE_GH_APP_PRIVATE_KEY is missing.",
+        );
+        if (runOnce) break;
+        await drain.wait(pollIntervalMs);
+        continue;
+      }
+      const mintResult = await mintInstallationToken(config.repoSlug, creds);
+      if (!mintResult.ok) {
+        const statusLabel = mintResult.status !== null ? ` HTTP ${mintResult.status}` : "";
+        console.error(`[phoebe] App mode mint failed${statusLabel}: ${mintResult.reason}`);
+        if (runOnce) break;
+        await drain.wait(pollIntervalMs);
+        continue;
+      }
+      // Inject the minted token as GH_TOKEN so all gh calls this cycle use it,
+      // and set PHOEBE_GH_LOGIN so phoebeGhLogin() does not have to shell out.
+      // Bot git identity is applied as a fallback: existing values win.
+      process.env["GH_TOKEN"] = mintResult.token;
+      process.env["PHOEBE_GH_LOGIN"] = mintResult.botLogin;
+      if (!process.env["GIT_AUTHOR_NAME"]) {
+        process.env["GIT_AUTHOR_NAME"] = mintResult.botName;
+        process.env["GIT_COMMITTER_NAME"] = mintResult.botName;
+      }
+      if (!process.env["GIT_AUTHOR_EMAIL"]) {
+        process.env["GIT_AUTHOR_EMAIL"] = mintResult.botEmail;
+        process.env["GIT_COMMITTER_EMAIL"] = mintResult.botEmail;
+      }
+    }
+
     // Auto-un-stick before selecting (#153): a unit whose content advanced since
     // it was quarantined loses the label here, so it is eligible in *this*
     // cycle's fetch rather than the next one. Skipped under `--dry-run`, which
@@ -1961,6 +2082,41 @@ async function runLoop({
         throw error;
       }
     }
+
+    // Credential lease — call site 2: after the slot grant, before the agent
+    // spawns (#211). The slot acquire can block arbitrarily long behind the
+    // concurrency cap; a lease taken before acquiring would be worthless in a
+    // busy fleet. A disconnect or a blocked answer releases the slot and loops —
+    // no drain, no kill, no hang.
+    if (credentialClient) {
+      try {
+        const token = await credentialClient.requestLease(CREDENTIAL_BUDGET_MS);
+        if (token !== null) process.env["GH_TOKEN"] = token;
+      } catch (error) {
+        slotClient?.release();
+        if (error instanceof BrokerDisconnectedError) {
+          console.error(`[phoebe] ${error.message} — stopping this engine.`);
+          break;
+        }
+        if (error instanceof CredentialRefreshBlockedError) {
+          console.warn(
+            `[phoebe] Credential refresh unavailable after slot grant — unit admission blocked.`,
+          );
+          await drain.wait(pollIntervalMs);
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    // A drain that arrived while awaiting the credential lease must not let this
+    // unit start — "start no new one". Release the already-acquired slot.
+    if (drain.requested) {
+      slotClient?.release();
+      console.log("[phoebe] Drain requested before starting the next unit — exiting 0.");
+      break;
+    }
+
     const ref = unitRef(picked);
     emitUnitEvent({ unit: ref, event: "started" });
     try {

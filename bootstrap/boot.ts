@@ -39,6 +39,14 @@ import {
 import { readEngineSource, type ResolvedEngineSource } from "./engine-source.ts";
 import { lsRemoteBranchSha, materializeGithubEngine } from "./github-engine.ts";
 import { buildEngineChildEnv, parseDotenv } from "./engine-child-env.ts";
+import {
+  fetchAppBotIdentity,
+  mintInstallationToken,
+  readAppCredentials,
+  type AppBotIdentity,
+  type AppCredentials,
+  type MintedToken,
+} from "./github-app.ts";
 import { attachBroker } from "./broker-ipc.ts";
 import { createSlotBroker, resolveMaxConcurrent } from "./slot-broker.ts";
 import {
@@ -47,9 +55,11 @@ import {
   WorkspaceStructuralChangeError,
   WorkspaceTenantAxisSkip,
   type DiscoveredTenant,
+  type MintedCredentials,
   type WorkspaceDiscoveryResult,
   type WorkspaceHold,
   type FleetDiscoverResult,
+  type TenantSample,
 } from "./tenants.ts";
 import { readConfigDir } from "./config-dir.ts";
 import { superviseFleet, type FleetChild, type FleetDiscoverInput } from "./supervise-fleet.ts";
@@ -60,6 +70,7 @@ import {
   type ResolvedWorkspace,
 } from "./workspace-source.ts";
 import { readFileSync } from "node:fs";
+import { resolveCredentialArm, type CredentialArm } from "./credential-arm.ts";
 import {
   configFingerprint,
   superviseEngine,
@@ -72,7 +83,7 @@ import {
 } from "./reconcile.ts";
 // Untyped plain-JS import (see spawn-engine.mjs / materialize.mjs for why the
 // bootstrapper's child-process plumbing can't be TypeScript).
-import { propagateExit, spawnEngine, spawnEngineChild } from "./spawn-engine.mjs";
+import { propagateExit, spawnEngineChild, spawnSoloChild } from "./spawn-engine.mjs";
 
 /** Where the local-engine compose overlay mounts the engine for `source: "local"`. */
 export const LOCAL_ENGINE_DIR = "/opt/phoebe-engine";
@@ -88,25 +99,24 @@ export const defaultGh: GhRunner = (args) => {
 };
 
 /**
- * Configure a global git credential helper from `GH_TOKEN` so every later git
- * call against github.com authenticates — the engine's `ensureClone` /
- * `fetchOrigin` / `pushBranch`, and the agent child's own `git push`/`fetch`.
+ * Configure a global git credential helper so every later git call against
+ * github.com authenticates — the engine's `ensureClone` / `fetchOrigin` /
+ * `pushBranch`, and the agent child's own `git push`/`fetch`.
  *
  * Uses `gh auth setup-git --hostname github.com`, which writes a
  * `!gh auth git-credential` helper into `~/.gitconfig`. That helper reads
  * `GH_TOKEN` live per call, so no secret is written to disk and token rotation
  * keeps working. Only `github.com` is configured (Phoebe is github-only).
  *
- * Skipped when no token is present (public/anonymous path unchanged). A failed
- * setup warns and continues — a missing helper is better diagnosed at the first
+ * Runs unconditionally: when the supervisor holds no token a GitHub App child
+ * can still mint its own `GH_TOKEN` and have the helper ready. A failed setup
+ * warns and continues — a missing helper is better diagnosed at the first
  * private-repo clone than by aborting the container here.
  */
 export function setupGitCredentials(deps: {
-  token: string | undefined;
   gh?: GhRunner;
   warn?: (message: string) => void;
 }): void {
-  if (!deps.token) return;
   const gh = deps.gh ?? defaultGh;
   const warn = deps.warn ?? ((message) => console.warn(message));
   try {
@@ -287,29 +297,6 @@ function watchedRefSha(source: ResolvedEngineSource, token: string | undefined):
 }
 
 /**
- * Spawn the engine and expose it as the supervisor's child handle. Both a normal
- * exit and a spawn failure settle `exited` — the failure as a non-zero exit — so
- * the supervisor always sees the child resolve and decides what to do (a
- * first-launch failure is fatal, a relaunch failure retries). Without the
- * `onSpawnError` override, spawn-engine.mjs's default would `process.exit(1)`
- * here, bypassing boot's drain-latch teardown and leaving `exited` pending.
- */
-function spawnSupervised(entry: string, argv: readonly string[]): SupervisedChild {
-  let settle!: (exit: EngineExit) => void;
-  const exited = new Promise<EngineExit>((resolve) => {
-    settle = resolve;
-  });
-  const child = spawnEngine(entry, argv, {
-    onExit: (code: number | null, signal: NodeJS.Signals | null) => settle({ code, signal }),
-    onSpawnError: (error: Error) => {
-      console.error(`[phoebe] boot: engine failed to spawn — ${error.message}`);
-      settle({ code: 1, signal: null });
-    },
-  });
-  return { kill: (signal) => child.kill(signal), exited };
-}
-
-/**
  * The crash-loop guard for this container, rooted at the deployment-global
  * engine dir (`/data/engine`, the shared `phoebe-engine` volume — #60/#62). One
  * guard about one engine SHA for the whole fleet; its home is a container
@@ -430,6 +417,7 @@ function runFleet(opts: {
   const spawnFleetChild = (tenant: DiscoveredTenant, engine: LaunchedEngine): FleetChild => {
     const env = buildEngineChildEnv({
       base: process.env,
+      mintedEnv: tenant.mintedEnv,
       tenantEnv: readTenantEnv(tenant.envPath),
     });
     let settle!: (exit: EngineExit) => void;
@@ -492,10 +480,53 @@ function runFleet(opts: {
 }
 
 /**
- * Workspace-mode discover callback (#91/#137/#139): re-read the root `workspace`
- * block *and* each child's config every poll, so adding or removing one declared
- * entry churns exactly that child. Reports hold ids for mid-rewrite configs (#86)
- * and for declared dirs that cannot become tenants (explicit arm).
+ * Per-tenant App token minting closure. Given a tenant's `repoSlug`, returns
+ * the minted credentials and their expiry. Throws when minting fails — the
+ * caller holds the tenant.
+ */
+type AppMintFn = (slug: string) => Promise<MintedToken & { mintedEnv: MintedCredentials }>;
+
+/** How long before a minted token's expiry to proactively refresh it. */
+const MINT_REFRESH_MARGIN_MS = 10 * 60 * 1000;
+
+/**
+ * Build a minted-env closure from App credentials and cached bot identity.
+ * Caches the minted token per-tenant, only reminting when it is within
+ * {@link MINT_REFRESH_MARGIN_MS} of expiry. Callers that receive a cached
+ * result (same `expiresAt`) produce the same fingerprint, so the running child
+ * is not restarted. A fresh mint changes `expiresAt`, which changes the
+ * fingerprint, triggering a controlled restart that delivers the new token.
+ */
+function createAppMintFn(creds: AppCredentials, identity: AppBotIdentity): AppMintFn {
+  const cache = new Map<string, MintedToken & { mintedEnv: MintedCredentials }>();
+
+  return async (slug: string) => {
+    const cached = cache.get(slug);
+    if (cached !== undefined && cached.expiresAt - Date.now() > MINT_REFRESH_MARGIN_MS) {
+      return cached;
+    }
+    const { token, expiresAt } = await mintInstallationToken(creds, slug);
+    const mintedEnv: MintedCredentials = {
+      GH_TOKEN: token,
+      PHOEBE_GH_LOGIN: identity.login,
+      GIT_AUTHOR_NAME: identity.gitName,
+      GIT_AUTHOR_EMAIL: identity.gitEmail,
+      GIT_COMMITTER_NAME: identity.gitName,
+      GIT_COMMITTER_EMAIL: identity.gitEmail,
+    };
+    const result = { token, expiresAt, mintedEnv };
+    cache.set(slug, result);
+    return result;
+  };
+}
+
+/**
+ * Workspace-mode discover callback (#91/#137/#139/#209): re-read the root
+ * `workspace` block *and* each child's config every poll, so adding or
+ * removing one declared entry churns exactly that child. Reports hold ids for
+ * mid-rewrite configs (#86) and for declared dirs that cannot become tenants
+ * (explicit arm). When `appMint` is supplied, also mints per-repo installation
+ * tokens for tenants whose `.env` carries no `GH_TOKEN` (#209).
  *
  * The block is only re-read for its *payload*: deleting it, or switching arms,
  * is a shape change this callback cannot absorb — it raises
@@ -508,10 +539,13 @@ function workspaceDiscover(
   configDir: string,
   configPath: string,
   initialWorkspace: ResolvedWorkspace,
+  appMint?: AppMintFn,
 ): () => FleetDiscoverInput {
   let lastArm = workspaceArm(initialWorkspace);
   let previousHoldKey: string | null = null;
   let summaryLogged = false;
+  /** Per-tenant id → last-known arm, for flip detection. */
+  let previousTenantArms = new Map<string, CredentialArm>();
 
   const discoveryDeps = {
     loadRepoSlug: loadTenantRepoSlug,
@@ -519,26 +553,80 @@ function workspaceDiscover(
     warn: (message: string) => console.warn(message),
   };
 
-  const toFleetResult = (
+  const toFleetResult = async (
     workspace: ResolvedWorkspace,
     discovery: WorkspaceDiscoveryResult,
-  ): FleetDiscoverResult => {
-    const holdKey = workspaceHoldKey(discovery.holds);
-    if (!summaryLogged) {
-      logWorkspaceBootSummary(configDir, workspace, discovery);
-      summaryLogged = true;
-      previousHoldKey = holdKey;
-    } else if (holdKey !== previousHoldKey) {
-      logWorkspaceHoldSummary(configDir, workspace, discovery.holds);
-      previousHoldKey = holdKey;
-    }
-    return {
-      samples: discovery.tenants.map((tenant) => ({
+  ): Promise<FleetDiscoverResult> => {
+    const samples: TenantSample[] = [];
+    const mintFailedIds: string[] = [];
+
+    for (const tenant of discovery.tenants) {
+      if (appMint && tenant.slug !== null) {
+        const tenantEnv = readTenantEnv(tenant.envPath);
+        if (!tenantEnv["GH_TOKEN"]) {
+          try {
+            const { mintedEnv, expiresAt } = await appMint(tenant.slug);
+            const configFp = tenantFingerprint(tenant.configPath, tenant.envPath);
+            samples.push({
+              tenant: { ...tenant, mintedEnv },
+              // Include the token expiry in the fingerprint so that when the
+              // cache refreshes (new expiresAt), diffFleet sees a change and
+              // restarts the child with the updated token. Preserve the null
+              // sentinel so a mid-rewrite config still blocks churning.
+              fingerprint: configFp !== null ? `${configFp}|mint:${expiresAt}` : null,
+            });
+          } catch (error) {
+            const diagnosis = error instanceof Error ? error.message : String(error);
+            console.warn(`[phoebe] boot: tenant ${tenant.slug} held — mint failed: ${diagnosis}.`);
+            mintFailedIds.push(tenant.id);
+          }
+          continue;
+        }
+      }
+      samples.push({
         tenant,
         fingerprint: tenantFingerprint(tenant.configPath, tenant.envPath),
-      })),
-      hold: reconcileHoldIds(discovery),
-    };
+      });
+    }
+
+    const allHoldIds = [...reconcileHoldIds(discovery), ...mintFailedIds];
+    const holdKey = [workspaceHoldKey(discovery.holds), mintFailedIds.join("\n")].join("|");
+    if (!summaryLogged) {
+      logWorkspaceBootSummary(configDir, workspace, discovery);
+      if (mintFailedIds.length > 0) {
+        console.warn(
+          `[phoebe] boot: workspace: held ${mintFailedIds.length} tenant(s) — App token mint failed.`,
+        );
+      }
+      summaryLogged = true;
+      previousHoldKey = holdKey;
+      for (const tenant of discovery.tenants) {
+        previousTenantArms.set(tenant.id, tenantArm(tenant.envPath));
+      }
+    } else {
+      // Detect arm flips — log a line for each tenant whose arm changed.
+      const nextArms = new Map<string, CredentialArm>();
+      for (const tenant of discovery.tenants) {
+        const arm = tenantArm(tenant.envPath);
+        nextArms.set(tenant.id, arm);
+        const prev = previousTenantArms.get(tenant.id);
+        if (prev !== undefined && prev !== arm) {
+          const label = tenant.slug ?? tenant.id;
+          console.log(`[phoebe] boot: tenant ${label} credential arm: ${prev} → ${arm}.`);
+        }
+      }
+      previousTenantArms = nextArms;
+      if (holdKey !== previousHoldKey) {
+        logWorkspaceHoldSummary(configDir, workspace, discovery.holds);
+        if (mintFailedIds.length > 0) {
+          console.warn(
+            `[phoebe] boot: workspace: held ${mintFailedIds.length} tenant(s) — App token mint failed.`,
+          );
+        }
+        previousHoldKey = holdKey;
+      }
+    }
+    return { samples, hold: allHoldIds };
   };
 
   return async () => {
@@ -601,23 +689,54 @@ function reconcileHoldIds(result: WorkspaceDiscoveryResult): string[] {
   return result.holds.map((hold) => hold.dir);
 }
 
+/**
+ * One tenant's credential arm: its own `.env` weighed against the supervisor's
+ * env, which is the only place the deployment's App key lives.
+ */
+function tenantArm(envPath: string): CredentialArm {
+  return resolveCredentialArm(readTenantEnv(envPath), process.env);
+}
+
+/**
+ * Build the arm tally suffix for the workspace boot summary line, e.g.
+ * " (2 pat, 1 app)" or " (3 pat)". Empty string when there are no tenants.
+ */
+function buildArmTally(tenants: readonly DiscoveredTenant[]): string {
+  if (tenants.length === 0) return "";
+  let pat = 0;
+  let app = 0;
+  for (const tenant of tenants) {
+    if (tenantArm(tenant.envPath) === "pat") pat++;
+    else app++;
+  }
+  const parts: string[] = [];
+  if (pat > 0) parts.push(`${pat} pat`);
+  if (app > 0) parts.push(`${app} app`);
+  return ` (${parts.join(", ")})`;
+}
+
 function logWorkspaceBootSummary(
   configDir: string,
   workspace: ResolvedWorkspace,
   result: WorkspaceDiscoveryResult,
 ): void {
+  const armTally = buildArmTally(result.tenants);
   if (isExplicitWorkspace(workspace)) {
     const declared = workspace.tenants.length;
     const suffix = declared === 0 ? " (empty declared fleet)" : "";
     const message =
       `[phoebe] boot: workspace mode — supervising ${result.tenants.length} of ${declared} ` +
-      `declared tenant(s) on one shared engine${suffix}.`;
+      `declared tenant(s) on one shared engine${armTally}${suffix}.`;
     if (declared === 0) console.warn(message);
     else console.log(message);
   } else {
+    const depthAndTally =
+      armTally.length > 0
+        ? `(depth ${workspace.depth}, ${armTally.slice(2, -1)})`
+        : `(depth ${workspace.depth})`;
     console.log(
       `[phoebe] boot: workspace mode — supervising ${result.tenants.length} tenant(s) ` +
-        `on one shared engine (depth ${workspace.depth}).`,
+        `on one shared engine ${depthAndTally}.`,
     );
   }
   if (result.holds.length > 0) {
@@ -710,7 +829,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   // Before any engine git call (ensureClone, fetch/push, agent child): one
   // global github.com credential helper from GH_TOKEN. Survives reconcile
   // relaunches via ~/.gitconfig + the agent-env HOME/GH_TOKEN allowlist.
-  setupGitCredentials({ token: process.env["GH_TOKEN"] });
+  setupGitCredentials({});
 
   const configDir = process.cwd();
   const configPath = resolveConfigPath(undefined, configDir);
@@ -733,6 +852,26 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   const workspace = resolveWorkspace(rootConfig, { root: configDir });
 
   if (workspace !== null) {
+    // GitHub App mode (#209): if the supervisor holds App credentials, fetch
+    // the bot identity once at fleet startup and wire up a per-tenant mint fn.
+    // Tenants with their own GH_TOKEN are untouched; tenants without one get a
+    // scoped installation token each poll. A failed identity fetch disables App
+    // mode gracefully — each tenant must then carry its own GH_TOKEN.
+    let appMint: AppMintFn | undefined;
+    const appCreds = readAppCredentials(process.env);
+    if (appCreds) {
+      try {
+        const identity = await fetchAppBotIdentity(appCreds);
+        console.log(`[phoebe] boot: GitHub App mode active — minting tokens as ${identity.login}.`);
+        appMint = createAppMintFn(appCreds, identity);
+      } catch (error) {
+        console.warn(
+          `[phoebe] boot: could not fetch App bot identity — ${describe(error)}. ` +
+            `App mode disabled; each tenant must carry its own GH_TOKEN.`,
+        );
+      }
+    }
+
     let fleetExit: EngineExit;
     try {
       fleetExit = await runFleet({
@@ -743,7 +882,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
         argv,
         // The root `workspace` block is re-read every poll from here on: this
         // callback owns both the hot tenant list and the shape-change abort (#139).
-        discover: workspaceDiscover(configDir, configPath, workspace),
+        discover: workspaceDiscover(configDir, configPath, workspace, appMint),
       });
     } catch (error) {
       if (error instanceof WorkspaceStructuralChangeError) {
@@ -765,11 +904,37 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   // config is missing every per-repo field.
   assertNotRemovedReposLayout(configDir);
 
+  // Solo: log the credential arm once at first spawn. The root *is* the tenant
+  // here, so the ambient env serves as both the tenant and the deployment env.
+  console.log(
+    `[phoebe] boot: credential arm: ${resolveCredentialArm(process.env as Record<string, string | undefined>)}.`,
+  );
+
+  // Solo gets a cap-1 broker (honoring PHOEBE_MAX_CONCURRENT_AGENTS) so the
+  // child's slot client is properly wired and the env knob is meaningful.
+  // Default cap of 1 matches the engine's existing one-unit-at-a-time behaviour.
+  const soloBroker = createSlotBroker(resolveMaxConcurrent(process.env));
+  const spawnSolo = (entry: string): SupervisedChild => {
+    let settle!: (exit: EngineExit) => void;
+    const exited = new Promise<EngineExit>((resolve) => {
+      settle = resolve;
+    });
+    const child = spawnSoloChild(entry, argv, {
+      onExit: (code: number | null, signal: NodeJS.Signals | null) => settle({ code, signal }),
+      onSpawnError: (error: Error) => {
+        console.error(`[phoebe] boot: engine failed to spawn — ${error.message}`);
+        settle({ code: 1, signal: null });
+      },
+    });
+    attachBroker({ owner: "solo", broker: soloBroker, child });
+    return { kill: (signal) => child.kill(signal), exited };
+  };
+
   let exit: EngineExit;
   try {
     exit = await superviseEngine({
       launch: () => launchTarget(configPath, guard),
-      spawn: (entry) => spawnSupervised(entry, argv),
+      spawn: spawnSolo,
       stop,
       intervalMs,
       onRunEnd: (run) => {

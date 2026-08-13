@@ -358,7 +358,7 @@ function formatHealthColumns(listing: TenantListing): string {
   const state = unit ? `working ${unit.kind} #${unit.id}` : listing.status ? "idle" : "no status";
   return (
     `${flag("config", listing.configValid)}  ${flag("env", listing.envPresent)}  ` +
-    `${flag("data", listing.retainedData)}  ${state}`
+    `${flag("data", listing.retainedData)}  arm: ${listing.arm}  ${state}`
   );
 }
 
@@ -391,6 +391,7 @@ async function runListCli(argv: readonly string[]): Promise<void> {
           slug: listing.slug,
           held: listing.held,
           reason: listing.reason,
+          arm: listing.arm,
           configValid: listing.configValid,
           envPresent: listing.envPresent,
           retainedData: listing.retainedData,

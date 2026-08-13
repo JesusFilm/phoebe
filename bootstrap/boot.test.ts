@@ -103,10 +103,9 @@ describe("isMovingBranch", () => {
 // --- GH_TOKEN → git credential helper at boot --------------------------------
 
 describe("setupGitCredentials", () => {
-  test("runs when token present", () => {
+  test("runs unconditionally", () => {
     const calls: string[][] = [];
     setupGitCredentials({
-      token: "ghs_test",
       gh: (args) => {
         calls.push([...args]);
       },
@@ -114,21 +113,21 @@ describe("setupGitCredentials", () => {
     expect(calls).toEqual([["auth", "setup-git", "--hostname", "github.com"]]);
   });
 
-  test("skips when absent", () => {
+  test("runs even when supervisor holds no token", () => {
+    // This is the App-mode path: no GH_TOKEN in the supervisor env, but the
+    // helper must be wired so child processes can use their own minted token.
     const calls: string[][] = [];
     setupGitCredentials({
-      token: undefined,
       gh: (args) => {
         calls.push([...args]);
       },
     });
-    expect(calls).toEqual([]);
+    expect(calls).toEqual([["auth", "setup-git", "--hostname", "github.com"]]);
   });
 
   test("warns on failure", () => {
     const warnings: string[] = [];
     setupGitCredentials({
-      token: "ghs_test",
       gh: () => {
         throw new Error("gh not found");
       },
