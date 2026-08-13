@@ -50,6 +50,15 @@ export type DiscoveredTenant = {
    * reconcile identity is always {@link id}.
    */
   declaredPath?: string;
+  /**
+   * Supervisor-minted credentials for tenants whose `.env` carries no
+   * `GH_TOKEN`: a per-repo GitHub App installation token (`GH_TOKEN`),
+   * `PHOEBE_GH_LOGIN`, and the App bot's fallback git identity. Applied before
+   * the tenant's parsed `.env` so an explicit `GH_TOKEN` in the file wins.
+   * Absent when App credentials are not configured or the tenant has its own
+   * token.
+   */
+  mintedEnv?: Record<string, string>;
 };
 
 /** The solo arm: the deployment root is itself the one tenant, run in place. */

@@ -619,6 +619,9 @@ function fetchPrCommentBodies(prNumber: PrNumber): string[] {
 }
 
 function phoebeGhLogin(): string {
+  // App installation tokens can't call /user; supervisor injects PHOEBE_GH_LOGIN instead.
+  const envLogin = process.env["PHOEBE_GH_LOGIN"];
+  if (envLogin) return envLogin;
   return ghApiJson<{ login: string }>("user").login;
 }
 

@@ -83,20 +83,41 @@ export function parseDotenv(contents: string): Record<string, string> {
 /**
  * Build a scrubbed, tenant-only env for one engine child. Deny-by-default: start
  * empty, copy the allowlisted base + deployment knobs from `base` (the
- * supervisor's `process.env`), then overlay tenant T's parsed `.env`. Because
- * `base`'s `GH_TOKEN` is not on either allowlist, the only `GH_TOKEN` a child
- * can hold is its own tenant's — the deployment clone credential never leaks.
+ * supervisor's `process.env`), then overlay the supervisor-minted credentials
+ * (GH_TOKEN from an App installation token, PHOEBE_GH_LOGIN, fallback git
+ * identity), then overlay tenant T's parsed `.env`. Because `base`'s `GH_TOKEN`
+ * is not on either allowlist, the only `GH_TOKEN` a child can hold is the one
+ * its tenant explicitly carries or the supervisor minted for it. App credential
+ * keys (GH_APP_*) are structurally absent — simply never on any list.
+ *
+ * Layer order (later wins):
+ *   1. allowlisted base + deployment knobs  (PATH, HOME, PHOEBE_*, …)
+ *   2. mintedEnv  (GH_TOKEN, PHOEBE_GH_LOGIN, git identity from App minting)
+ *   3. tenantEnv  (tenant's parsed .env — always wins every collision)
  */
 export function buildEngineChildEnv(opts: {
   base: Record<string, string | undefined>;
   tenantEnv: Record<string, string>;
+  /**
+   * Supervisor-minted credentials (GH_TOKEN, PHOEBE_GH_LOGIN, fallback git
+   * identity) for tenants without their own GH_TOKEN. Applied before
+   * `tenantEnv` so an explicit `GH_TOKEN` in the tenant's file always wins.
+   */
+  mintedEnv?: Record<string, string>;
 }): Record<string, string> {
-  const { base, tenantEnv } = opts;
+  const { base, tenantEnv, mintedEnv } = opts;
   const env: Record<string, string> = {};
   for (const key of [...ENGINE_CHILD_BASE_KEYS, ...ENGINE_CHILD_DEPLOYMENT_KNOBS]) {
     const value = base[key];
     if (value !== undefined && value !== "") {
       env[key] = value;
+    }
+  }
+  // Minted credentials overlay the base before the tenant's own values so an
+  // explicit GH_TOKEN (or any other key) in the tenant's .env always wins.
+  if (mintedEnv) {
+    for (const [key, value] of Object.entries(mintedEnv)) {
+      if (value !== "") env[key] = value;
     }
   }
   // Tenant secrets last: they are the tenant's own, and win over any collision.

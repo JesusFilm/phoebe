@@ -39,6 +39,13 @@ import {
 import { readEngineSource, type ResolvedEngineSource } from "./engine-source.ts";
 import { lsRemoteBranchSha, materializeGithubEngine } from "./github-engine.ts";
 import { buildEngineChildEnv, parseDotenv } from "./engine-child-env.ts";
+import {
+  fetchAppBotIdentity,
+  mintInstallationToken,
+  readAppCredentials,
+  type AppBotIdentity,
+  type AppCredentials,
+} from "./github-app.ts";
 import { attachBroker } from "./broker-ipc.ts";
 import { createSlotBroker, resolveMaxConcurrent } from "./slot-broker.ts";
 import {
@@ -50,6 +57,7 @@ import {
   type WorkspaceDiscoveryResult,
   type WorkspaceHold,
   type FleetDiscoverResult,
+  type TenantSample,
 } from "./tenants.ts";
 import { readConfigDir } from "./config-dir.ts";
 import { superviseFleet, type FleetChild, type FleetDiscoverInput } from "./supervise-fleet.ts";
@@ -430,6 +438,7 @@ function runFleet(opts: {
   const spawnFleetChild = (tenant: DiscoveredTenant, engine: LaunchedEngine): FleetChild => {
     const env = buildEngineChildEnv({
       base: process.env,
+      mintedEnv: tenant.mintedEnv,
       tenantEnv: readTenantEnv(tenant.envPath),
     });
     let settle!: (exit: EngineExit) => void;
@@ -492,10 +501,37 @@ function runFleet(opts: {
 }
 
 /**
- * Workspace-mode discover callback (#91/#137/#139): re-read the root `workspace`
- * block *and* each child's config every poll, so adding or removing one declared
- * entry churns exactly that child. Reports hold ids for mid-rewrite configs (#86)
- * and for declared dirs that cannot become tenants (explicit arm).
+ * Per-tenant App token minting closure. Given a tenant's `repoSlug`, returns
+ * a minted env record containing GH_TOKEN, PHOEBE_GH_LOGIN, and the fallback
+ * git identity. Throws when minting fails — the caller holds the tenant.
+ */
+type AppMintFn = (slug: string) => Promise<Record<string, string>>;
+
+/**
+ * Build a minted-env record from App credentials and cached bot identity.
+ * Called once per tenant per poll when the tenant has no GH_TOKEN of its own.
+ */
+function createAppMintFn(creds: AppCredentials, identity: AppBotIdentity): AppMintFn {
+  return async (slug: string) => {
+    const token = await mintInstallationToken(creds, slug);
+    return {
+      GH_TOKEN: token,
+      PHOEBE_GH_LOGIN: identity.login,
+      GIT_AUTHOR_NAME: identity.gitName,
+      GIT_AUTHOR_EMAIL: identity.gitEmail,
+      GIT_COMMITTER_NAME: identity.gitName,
+      GIT_COMMITTER_EMAIL: identity.gitEmail,
+    };
+  };
+}
+
+/**
+ * Workspace-mode discover callback (#91/#137/#139/#209): re-read the root
+ * `workspace` block *and* each child's config every poll, so adding or
+ * removing one declared entry churns exactly that child. Reports hold ids for
+ * mid-rewrite configs (#86) and for declared dirs that cannot become tenants
+ * (explicit arm). When `appMint` is supplied, also mints per-repo installation
+ * tokens for tenants whose `.env` carries no `GH_TOKEN` (#209).
  *
  * The block is only re-read for its *payload*: deleting it, or switching arms,
  * is a shape change this callback cannot absorb — it raises
@@ -508,6 +544,7 @@ function workspaceDiscover(
   configDir: string,
   configPath: string,
   initialWorkspace: ResolvedWorkspace,
+  appMint?: AppMintFn,
 ): () => FleetDiscoverInput {
   let lastArm = workspaceArm(initialWorkspace);
   let previousHoldKey: string | null = null;
@@ -519,26 +556,58 @@ function workspaceDiscover(
     warn: (message: string) => console.warn(message),
   };
 
-  const toFleetResult = (
+  const toFleetResult = async (
     workspace: ResolvedWorkspace,
     discovery: WorkspaceDiscoveryResult,
-  ): FleetDiscoverResult => {
-    const holdKey = workspaceHoldKey(discovery.holds);
+  ): Promise<FleetDiscoverResult> => {
+    const samples: TenantSample[] = [];
+    const mintFailedIds: string[] = [];
+
+    for (const tenant of discovery.tenants) {
+      if (appMint && tenant.slug !== null) {
+        const tenantEnv = readTenantEnv(tenant.envPath);
+        if (!tenantEnv["GH_TOKEN"]) {
+          try {
+            const mintedEnv = await appMint(tenant.slug);
+            samples.push({
+              tenant: { ...tenant, mintedEnv },
+              fingerprint: tenantFingerprint(tenant.configPath, tenant.envPath),
+            });
+          } catch (error) {
+            const diagnosis = error instanceof Error ? error.message : String(error);
+            console.warn(`[phoebe] boot: tenant ${tenant.slug} held — mint failed: ${diagnosis}.`);
+            mintFailedIds.push(tenant.id);
+          }
+          continue;
+        }
+      }
+      samples.push({
+        tenant,
+        fingerprint: tenantFingerprint(tenant.configPath, tenant.envPath),
+      });
+    }
+
+    const allHoldIds = [...reconcileHoldIds(discovery), ...mintFailedIds];
+    const holdKey = [workspaceHoldKey(discovery.holds), mintFailedIds.join("\n")].join("|");
     if (!summaryLogged) {
       logWorkspaceBootSummary(configDir, workspace, discovery);
+      if (mintFailedIds.length > 0) {
+        console.warn(
+          `[phoebe] boot: workspace: held ${mintFailedIds.length} tenant(s) — App token mint failed.`,
+        );
+      }
       summaryLogged = true;
       previousHoldKey = holdKey;
     } else if (holdKey !== previousHoldKey) {
       logWorkspaceHoldSummary(configDir, workspace, discovery.holds);
+      if (mintFailedIds.length > 0) {
+        console.warn(
+          `[phoebe] boot: workspace: held ${mintFailedIds.length} tenant(s) — App token mint failed.`,
+        );
+      }
       previousHoldKey = holdKey;
     }
-    return {
-      samples: discovery.tenants.map((tenant) => ({
-        tenant,
-        fingerprint: tenantFingerprint(tenant.configPath, tenant.envPath),
-      })),
-      hold: reconcileHoldIds(discovery),
-    };
+    return { samples, hold: allHoldIds };
   };
 
   return async () => {
@@ -733,6 +802,26 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   const workspace = resolveWorkspace(rootConfig, { root: configDir });
 
   if (workspace !== null) {
+    // GitHub App mode (#209): if the supervisor holds App credentials, fetch
+    // the bot identity once at fleet startup and wire up a per-tenant mint fn.
+    // Tenants with their own GH_TOKEN are untouched; tenants without one get a
+    // scoped installation token each poll. A failed identity fetch disables App
+    // mode gracefully — each tenant must then carry its own GH_TOKEN.
+    let appMint: AppMintFn | undefined;
+    const appCreds = readAppCredentials(process.env);
+    if (appCreds) {
+      try {
+        const identity = await fetchAppBotIdentity(appCreds);
+        console.log(`[phoebe] boot: GitHub App mode active — minting tokens as ${identity.login}.`);
+        appMint = createAppMintFn(appCreds, identity);
+      } catch (error) {
+        console.warn(
+          `[phoebe] boot: could not fetch App bot identity — ${describe(error)}. ` +
+            `App mode disabled; each tenant must carry its own GH_TOKEN.`,
+        );
+      }
+    }
+
     let fleetExit: EngineExit;
     try {
       fleetExit = await runFleet({
@@ -743,7 +832,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
         argv,
         // The root `workspace` block is re-read every poll from here on: this
         // callback owns both the hot tenant list and the shape-change abort (#139).
-        discover: workspaceDiscover(configDir, configPath, workspace),
+        discover: workspaceDiscover(configDir, configPath, workspace, appMint),
       });
     } catch (error) {
       if (error instanceof WorkspaceStructuralChangeError) {
