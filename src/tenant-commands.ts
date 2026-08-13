@@ -128,7 +128,7 @@ export default config;
 export const TENANT_ENV_EXAMPLE = `# Per-tenant secrets — copy to \`.env\`. Read ONLY by this tenant's engine child
 # (the supervisor scrubs every other tenant's secrets, #61).
 
-# --- Required ---
+# --- Required for the PAT arm; may be left blank when the deployment uses the app arm ---
 GH_TOKEN=
 
 # --- Provider key (set the one this repo's defaultProvider uses) ---
