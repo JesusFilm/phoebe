@@ -1,33 +1,53 @@
 #!/usr/bin/env node
-// Diagnose a tenant's GH_TOKEN before Phoebe 403s deep in a run (#154).
+// Diagnose a tenant's GitHub credential before Phoebe 403s deep in a run
+// (#154, #214).
 //
-// docs/phoebe-core-onboarding.md §2 asks the operator to hand-mint a
-// fine-grained PAT with five repository permissions and — for an org-owned repo
-// — to get it approved by an org owner. Every one of those steps is a browser
-// click, and GitHub offers no API to mint the token, so the procedure cannot be
-// automated away. What *can* be automated is the part that goes wrong: when a
-// permission is missing or the org approval never landed, Phoebe does not fail
-// at boot with a clear message, it fails later as a 403 from whichever API hop
-// needed the grant. This script names the missing checkbox up front.
+// The script is arm-aware: it detects whether each tenant holds a fine-grained
+// PAT (`pat` arm) or relies on a GitHub App installation (`app` arm), and
+// applies the appropriate verification path to each.
 //
-// Fine-grained PATs are not introspectable — no endpoint returns a token's own
-// permission set, and `x-oauth-scopes` is a classic-token header. So it probes:
-// one call per grant, reading the status code. The discriminator is 403 (no
-// permission) vs 404/422 (no such resource), which is what lets a *write* grant
-// be proven without writing anything — every mutating probe is aimed at a
-// deliberately non-existent target (issue/PR 999999999, a ref whose sha is 40
-// zeroes). NOTHING THIS SCRIPT DOES MUTATES THE REPO. It is safe to run against
-// production.
+// `pat` arm — docs/phoebe-core-onboarding.md §2 asks the operator to
+// hand-mint a fine-grained PAT with five repository permissions and — for an
+// org-owned repo — to get it approved by an org owner. Fine-grained PATs are
+// not introspectable, so this arm probes: one call per grant, reading the
+// status code. The discriminator is 403 (no permission) vs 404/422 (no such
+// resource), which is what lets a *write* grant be proven without writing
+// anything — every mutating probe is aimed at a deliberately non-existent
+// target (issue/PR 999999999, a ref whose sha is 40 zeroes). NOTHING THIS
+// SCRIPT DOES MUTATES THE REPO. It is safe to run against production.
 //
-// Verified first-hand on 2026-08-10, against a token with full access to a real
-// repo: metadata 200, actions/runs 200, PATCH issues/999999999 → 404, PATCH
-// pulls/999999999 → 404, POST git/refs with an all-zero sha → 422 "Object does
-// not exist" — and no ref was created. The 403-when-missing half is GitHub's
-// documented behaviour for fine-grained tokens and was NOT observed here, so any
-// status outside the two expected sets is reported `unknown`, never a colour.
-// Classic/OAuth tokens are a known exception: on a repo they can read but not
-// write, the write probes return 404, not 403 (observed). That is why a token
-// carrying `x-oauth-scopes` has its scopes reported directly and is not probed.
+// Verified first-hand on 2026-08-10, against a token with full access to a
+// real repo: metadata 200, actions/runs 200, PATCH issues/999999999 → 404,
+// PATCH pulls/999999999 → 404, POST git/refs with an all-zero sha → 422
+// "Object does not exist" — and no ref was created. The 403-when-missing half
+// is GitHub's documented behaviour for fine-grained tokens and was NOT observed
+// here, so any status outside the two expected sets is reported `unknown`,
+// never a colour. Classic/OAuth tokens are a known exception: on a repo they
+// can read but not write, the write probes return 404, not 403 (observed).
+// That is why a token carrying `x-oauth-scopes` has its scopes reported
+// directly and is not probed.
+//
+// `app` arm — the script reads the installation's grants directly from the
+// GitHub API (`GET /repos/{slug}/installation` via an App JWT), maps them to
+// the same five-permission shape the `pat` arm reports, and applies the same
+// output format. No calls are made on behalf of any individual tenant; the
+// App JWT authenticates as the App, and only the installation's approved
+// permissions are read — never the App's own (which include permissions an
+// installation has not yet approved). The script does NOT call the mutating
+// `probe-app-token.mjs` script, which remains a separate host-only scratch
+// tool.
+//
+// `unverifiable` — the App private key lives on the deployment env-file, which
+// is masked inside the container. When neither the host-side deployment `.env`
+// nor the supervisor's `process.env` provides the key, the tenant is reported
+// as `unverifiable` rather than failed. A developer running this on a laptop
+// legitimately holds no App key; they must not see a failure row. `--check`
+// never gates on `unverifiable` — only on a genuine permission shortfall.
+//
+// Arm detection: a tenant with `GH_TOKEN` in its env is on the `pat` arm.
+// A tenant without `GH_TOKEN` is on the `app` arm when the deployment env
+// (host-side `{cwd}/.env` or the supervisor's `process.env`) holds `GH_APP_ID`.
+// Otherwise it falls through to the existing "no token" error.
 //
 // Nothing here is part of the engine. It is an operator tool, like
 // scripts/hoist-claude-login.mjs, and ships with the repo, not the package.
@@ -57,7 +77,9 @@ import {
   classifyTokenKind,
   describeExpiry,
   diagnose,
+  mintAppJwt,
   parseArgs,
+  parseInstallationGrants,
   parseScopes,
   PERMISSION_PROBES,
   redact,
@@ -94,14 +116,53 @@ const API = "https://api.github.com";
 /** Bound each probe so a stalled GitHub hop cannot block a fleet sweep. */
 const PROBE_TIMEOUT_MS = 30_000;
 const TOKEN_VAR = "GH_TOKEN";
+/** App ID for a GitHub App installation arm deployment. */
+const APP_ID_VAR = "GH_APP_ID";
+/** Path to the App's RSA private key PEM file. */
+const APP_KEY_PATH_VAR = "GH_APP_KEY_PATH";
 const cwd = process.cwd();
+
+/**
+ * Read the App credential pair (`GH_APP_ID` + `GH_APP_KEY_PATH`) from the
+ * deployment env — tried in order:
+ *   1. `{deploymentRoot}/.env` — the host-side file beside the tenant dirs
+ *   2. `process.env` — the supervisor's env, available in-container
+ *
+ * Returns `null` when neither source holds `GH_APP_ID`, meaning no App arm
+ * credentials are reachable from this execution context. `keyPath` may be
+ * `null` even when `appId` is set, which the App-arm verifier treats as
+ * `unverifiable` (id is present but key is not).
+ *
+ * @param {string} deploymentRoot
+ * @returns {{ appId: string; keyPath: string | null } | null}
+ */
+function readDeploymentAppCredentials(deploymentRoot) {
+  let fileVars = {};
+  const deploymentEnvPath = join(deploymentRoot, ".env");
+  if (existsSync(deploymentEnvPath)) {
+    try {
+      fileVars = parseDotenv(readFileSync(deploymentEnvPath, "utf8"));
+    } catch {
+      /* best-effort: a missing or unreadable file is not an error here */
+    }
+  }
+  const appId = fileVars[APP_ID_VAR] ?? process.env[APP_ID_VAR];
+  if (!appId || String(appId).trim().length === 0) return null;
+  const keyPath = fileVars[APP_KEY_PATH_VAR] ?? process.env[APP_KEY_PATH_VAR] ?? null;
+  return { appId: String(appId).trim(), keyPath: keyPath ? String(keyPath).trim() : null };
+}
 
 // ------------------------------------------------------------------ targets
 
 /**
- * One thing to verify: a slug, a token, and where each came from. `error` means
- * resolution failed — the sweep still reports the target rather than dropping it,
- * because a silently skipped tenant is the failure this script exists to stop.
+ * One thing to verify: a slug, a token, where each came from, and which
+ * credential arm the tenant is on. `error` means resolution failed — the sweep
+ * still reports the target rather than dropping it, because a silently skipped
+ * tenant is the failure this script exists to stop.
+ *
+ * `arm` defaults to `"pat"` and is updated to `"app"` by {@link applyArm}
+ * when a tenant has no `GH_TOKEN` but the deployment provides `GH_APP_ID`.
+ * `appCredentials` is only non-null on the `"app"` arm.
  */
 function makeTarget(fields) {
   return {
@@ -110,8 +171,35 @@ function makeTarget(fields) {
     token: undefined,
     source: null,
     error: null,
+    arm: "pat",
+    appCredentials: null,
     ...fields,
   };
+}
+
+/**
+ * Determine a target's credential arm and attach deployment App credentials
+ * when appropriate.
+ *
+ * Arm resolution rule:
+ *   - A target with `GH_TOKEN` set is on the `pat` arm (unchanged).
+ *   - A target with a resolution error is left as-is (arm is irrelevant).
+ *   - A target without `GH_TOKEN` is on the `app` arm when the deployment env
+ *     provides `GH_APP_ID`; otherwise it stays on the `pat` arm and the
+ *     existing "no token" error path applies.
+ *
+ * This is the same rule `phoebe boot` will use once it implements arm
+ * resolution — see issue #214. "The way boot does" is defined here first.
+ *
+ * @param {ReturnType<typeof makeTarget>} target
+ * @param {{ appId: string; keyPath: string | null } | null} deploymentAppCredentials
+ */
+function applyArm(target, deploymentAppCredentials) {
+  if (target.error !== null || target.token !== undefined) return target;
+  if (deploymentAppCredentials !== null) {
+    return { ...target, arm: "app", appCredentials: deploymentAppCredentials };
+  }
+  return target;
 }
 
 /** Display path for a tenant dir: relative to cwd when that is shorter/inside. */
@@ -202,8 +290,13 @@ async function targetForDir(dir, { allowAmbient }) {
  * uses: `enumerateWorkspaceTenants` in workspace mode, `discoverTenants` for the
  * solo arm of the ladder (#83). A fleet sweep that enumerated differently from
  * boot could pass while the supervisor was short a tenant.
+ *
+ * App credentials are read once from the deployment root (cwd) and applied to
+ * every tenant that lacks a `GH_TOKEN`. This supports mixed fleets correctly:
+ * PAT tenants carry their own token; App tenants share the deployment key.
  */
 async function allTargets() {
+  const appCredentials = readDeploymentAppCredentials(cwd);
   const workspace = await enumerateWorkspaceTenants({ configDir: cwd });
   if (workspace !== null) {
     const held = workspace.holds.map((hold) =>
@@ -214,12 +307,15 @@ async function allTargets() {
       }),
     );
     const live = workspace.tenants.map((tenant) =>
-      makeTarget({
-        display: displayPath(tenant.dir),
-        slug: tenant.slug,
-        // Never ambient: a workspace child is supervised with a scrubbed env.
-        ...readTenantToken(tenant.envPath, { allowAmbient: false }),
-      }),
+      applyArm(
+        makeTarget({
+          display: displayPath(tenant.dir),
+          slug: tenant.slug,
+          // Never ambient: a workspace child is supervised with a scrubbed env.
+          ...readTenantToken(tenant.envPath, { allowAmbient: false }),
+        }),
+        appCredentials,
+      ),
     );
     return [...live, ...held];
   }
@@ -233,7 +329,7 @@ async function allTargets() {
   const allowAmbient = discovery.mode === "solo";
   const targets = [];
   for (const tenant of discovery.tenants) {
-    const resolved = await targetForDir(tenant.dir, { allowAmbient });
+    const resolved = applyArm(await targetForDir(tenant.dir, { allowAmbient }), appCredentials);
     // Discovery's own slug wins when the config is unreadable, so a broken
     // tenant is still named by its slug.
     targets.push(
@@ -256,9 +352,16 @@ async function allTargets() {
  * directories, defaulting to the cwd's tenant. `--token` overrides whatever a
  * resolved target read from disk, so an operator can test a replacement token
  * before writing it anywhere.
+ *
+ * App credentials are read from the deployment root (cwd) and applied to
+ * targets that lack `GH_TOKEN`, so a mixed fleet reports each tenant on its
+ * correct arm.
  */
 async function resolveTargets() {
   if (opts.all) return allTargets();
+
+  const appCredentials = readDeploymentAppCredentials(cwd);
+
   if (opts.slug !== undefined && opts.dirs.length === 0) {
     // No files in play, so the operator's own environment is the only source
     // there could be — ambient is the point of this form, not a fallback.
@@ -266,7 +369,9 @@ async function resolveTargets() {
       opts.token !== undefined
         ? { token: opts.token, source: "--token" }
         : readTenantToken(null, { allowAmbient: true });
-    return [makeTarget({ display: opts.slug, slug: opts.slug, ...explicit })];
+    return [
+      applyArm(makeTarget({ display: opts.slug, slug: opts.slug, ...explicit }), appCredentials),
+    ];
   }
   const dirs = opts.dirs.length > 0 ? opts.dirs : [cwd];
   const resolved = [];
@@ -274,9 +379,9 @@ async function resolveTargets() {
     // A single named directory is verified on its own terms: if it has no `.env`
     // the operator's shell token is a reasonable thing to be asking about.
     const one = await targetForDir(dir, { allowAmbient: true });
-    resolved.push(
-      opts.token !== undefined ? { ...one, token: opts.token, source: "--token" } : one,
-    );
+    const withToken =
+      opts.token !== undefined ? { ...one, token: opts.token, source: "--token" } : one;
+    resolved.push(applyArm(withToken, appCredentials));
   }
   return resolved;
 }
@@ -342,9 +447,194 @@ function unverified(subject, error) {
   return { ...subject, target: subject.display, grants: [], advice: [], error };
 }
 
+/**
+ * Call `GET /repos/{slug}/installation` authenticated with an App JWT. Returns
+ * the raw parsed body and the HTTP status. On network failure, throws.
+ */
+async function callInstallationApi(jwt, slug) {
+  let res;
+  let text;
+  try {
+    res = await fetch(`${API}/repos/${slug}/installation`, {
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+      headers: {
+        accept: "application/vnd.github+json",
+        "x-github-api-version": "2022-11-28",
+        "user-agent": "phoebe-verify-tenant-token",
+        authorization: `Bearer ${jwt}`,
+      },
+    });
+    text = await res.text();
+  } catch (error) {
+    if (error instanceof Error && error.name === "TimeoutError") {
+      throw new Error(`timed out after ${PROBE_TIMEOUT_MS / 1000}s`);
+    }
+    throw error;
+  }
+  let body;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    body = {};
+  }
+  return { status: res.status, body };
+}
+
+/**
+ * Verify a tenant on the `app` arm by reading its installation's grants
+ * directly from the GitHub API (`GET /repos/{slug}/installation`). No
+ * per-permission probes are issued — the installation's approved permissions
+ * are read once and mapped to the same five-grant output shape the `pat` arm
+ * produces. Grants come from the INSTALLATION, not from `GET /app`, so they
+ * reflect only what the operator has actually approved.
+ *
+ * Returns `unverifiable` when the App private key is not reachable from this
+ * execution context. `--check` never gates on `unverifiable`.
+ */
+async function verifyApp(subject) {
+  const { appCredentials } = subject;
+
+  // No App credentials in the deployment env at all — legitimately unreachable
+  // (a developer's laptop, an in-container run without the supervisor env).
+  if (appCredentials === null) {
+    return {
+      ...subject,
+      target: subject.display,
+      arm: "app",
+      verdict: "unverifiable",
+      ok: false,
+      grants: [],
+      missing: [],
+      unknown: [],
+      advice: [
+        `GH_APP_ID is not set in the deployment env (${cwd}/.env or process.env). ` +
+          `Run this script from the deployment host, or set GH_APP_ID and GH_APP_KEY_PATH.`,
+      ],
+      error: null,
+    };
+  }
+
+  const { appId, keyPath } = appCredentials;
+
+  if (keyPath === null) {
+    return {
+      ...subject,
+      target: subject.display,
+      arm: "app",
+      verdict: "unverifiable",
+      ok: false,
+      grants: [],
+      missing: [],
+      unknown: [],
+      advice: [
+        `GH_APP_ID=${appId} is set but GH_APP_KEY_PATH is missing from the deployment env. ` +
+          `Set GH_APP_KEY_PATH to the path of the App's RSA private key PEM file.`,
+      ],
+      error: null,
+    };
+  }
+
+  let privateKey;
+  try {
+    privateKey = readFileSync(keyPath, "utf8");
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return {
+      ...subject,
+      target: subject.display,
+      arm: "app",
+      verdict: "unverifiable",
+      ok: false,
+      grants: [],
+      missing: [],
+      unknown: [],
+      advice: [`GH_APP_KEY_PATH=${keyPath} — could not read the private key: ${reason}`],
+      error: null,
+    };
+  }
+
+  let jwt;
+  try {
+    jwt = mintAppJwt({ appId, privateKey });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return unverified(subject, `could not mint App JWT (app id: ${appId}): ${reason}`);
+  }
+
+  let installationStatus;
+  let installationBody;
+  try {
+    ({ status: installationStatus, body: installationBody } = await callInstallationApi(
+      jwt,
+      subject.slug,
+    ));
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return unverified(subject, `could not reach ${API}: ${reason}`);
+  }
+
+  if (installationStatus === 404) {
+    // App is not installed on this repo. Map as no-access so `diagnose` produces
+    // the correct `no-access` verdict and sends the operator to the right place.
+    const grants = parseInstallationGrants({});
+    // Override metadata to missing, as if the repo is invisible.
+    const noAccessGrants = grants.map((g) =>
+      g.id === "metadata" ? { ...g, state: "missing" } : { ...g, state: "unknown" },
+    );
+    const verdict = diagnose({ grants: noAccessGrants, metadataStatus: 404 });
+    return {
+      ...subject,
+      target: subject.display,
+      arm: "app",
+      tokenSource: `GitHub App (app id: ${appId})`,
+      tokenKind: { id: "installation", label: "GitHub App installation", note: null },
+      scopes: null,
+      expiry: null,
+      grants: noAccessGrants,
+      ...verdict,
+      // Override the advice for the App arm: org-approval logic is different.
+      advice: [
+        `The App (id: ${appId}) is not installed on ${subject.slug}. ` +
+          `Install it at the repository settings or via the organization, ` +
+          `then confirm the installation has been approved by an org owner.`,
+        ...verdict.advice.slice(1),
+      ],
+    };
+  }
+
+  if (installationStatus !== 200) {
+    const message = String(installationBody?.message ?? installationStatus);
+    return unverified(
+      subject,
+      `GET /repos/${subject.slug}/installation → ${installationStatus}: ${message}`,
+    );
+  }
+
+  const installationId = installationBody?.id ?? null;
+  const permissions = installationBody?.permissions ?? {};
+  const grants = parseInstallationGrants(permissions);
+  const verdict = diagnose({ grants, metadataStatus: 200 });
+
+  return {
+    ...subject,
+    target: subject.display,
+    arm: "app",
+    tokenSource: `GitHub App installation ${installationId} (app id: ${appId})`,
+    tokenKind: { id: "installation", label: "GitHub App installation", note: null },
+    scopes: null,
+    expiry: null,
+    grants,
+    ...verdict,
+  };
+}
+
 /** Probe one target and fold the results into a report the renderers accept. */
 async function verify(subject, nowMs) {
   if (subject.error !== null) return unverified(subject, subject.error);
+
+  // App arm: read installation grants, no per-permission probes.
+  if (subject.arm === "app") return verifyApp(subject);
+
   if (subject.token === undefined) {
     return unverified(
       subject,
@@ -432,22 +722,33 @@ for (const subject of targets) {
 }
 
 if (opts.json) {
+  // `ok` is true only when every verifiable tenant holds all grants. Unverifiable
+  // tenants are excluded: they are not failures, and they must not gate CI.
+  const verifiable = reports.filter((r) => r.verdict !== "unverifiable");
   process.stdout.write(
     `${JSON.stringify({
-      ok: reports.every((r) => r.error == null && r.ok),
+      ok: verifiable.every((r) => r.error == null && r.ok),
       tenants: reports.map(reportToJson),
     })}\n`,
   );
 } else {
-  const failing = reports.filter((r) => r.error != null || !r.ok).length;
+  const unverifiable = reports.filter((r) => r.verdict === "unverifiable").length;
+  const failing = reports.filter(
+    (r) => r.verdict !== "unverifiable" && (r.error != null || !r.ok),
+  ).length;
+  const verifiable = reports.length - unverifiable;
   console.log(`[phoebe] verify-tenant-token — ${reports.length} tenant(s)\n`);
   console.log(reports.map(renderReport).join("\n\n"));
-  console.log(
+  const summaryOk =
     failing === 0
-      ? `\n${reports.length} of ${reports.length} tenant(s) hold every permission onboarding §2 asks for.`
-      : `\n${failing} of ${reports.length} tenant(s) need attention.` +
-          (opts.check ? "" : " Re-run with --check to make that an exit code."),
-  );
+      ? `\n${verifiable} of ${verifiable} verifiable tenant(s) hold every permission onboarding §2 asks for.`
+      : `\n${failing} of ${verifiable} verifiable tenant(s) need attention.` +
+        (opts.check ? "" : " Re-run with --check to make that an exit code.");
+  const summaryUnverifiable =
+    unverifiable > 0
+      ? ` ${unverifiable} tenant(s) unverifiable (App key source not reachable — not a failure).`
+      : "";
+  console.log(summaryOk + summaryUnverifiable);
 }
 
 process.exitCode = sweepExitCode(reports, opts.check);
