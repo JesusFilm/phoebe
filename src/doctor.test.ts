@@ -88,6 +88,20 @@ describe("tenantTokenCheck", () => {
     expect(noToken.detail).toMatch(/App arm/);
   });
 
+  test("App arm outside the container is still ok, not unverifiable", () => {
+    // The arm short-circuits ahead of the container check: GH_APP_ID was
+    // readable, so the arm is known even from the host and there is nothing
+    // left to be unsure about.
+    const check = tenantTokenCheck({
+      arm: "app",
+      token: undefined,
+      envLabel: "/etc/phoebe/tenant/.env",
+      inContainer: false,
+    });
+    expect(check.state).toBe("ok");
+    expect(check.detail).toMatch(/App arm/);
+  });
+
   test("PAT arm with a token is ok", () => {
     const check = tenantTokenCheck({
       arm: "pat",
