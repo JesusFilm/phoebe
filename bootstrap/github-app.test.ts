@@ -132,6 +132,36 @@ describe("fetchAppBotIdentity", () => {
     );
   });
 
+  test("throws when 200 response is missing 'slug'", async () => {
+    const missingSlug: HttpsFetch = async () => ({
+      status: 200,
+      body: JSON.stringify({ id: 99 }),
+    });
+    await expect(fetchAppBotIdentity(TEST_CREDS, { fetch: missingSlug })).rejects.toThrow(
+      /missing or invalid 'slug'/,
+    );
+  });
+
+  test("throws when 200 response has an empty 'slug'", async () => {
+    const emptySlug: HttpsFetch = async () => ({
+      status: 200,
+      body: JSON.stringify({ slug: "", id: 99 }),
+    });
+    await expect(fetchAppBotIdentity(TEST_CREDS, { fetch: emptySlug })).rejects.toThrow(
+      /missing or invalid 'slug'/,
+    );
+  });
+
+  test("throws when 200 response is missing 'id'", async () => {
+    const missingId: HttpsFetch = async () => ({
+      status: 200,
+      body: JSON.stringify({ slug: "phoebe-app" }),
+    });
+    await expect(fetchAppBotIdentity(TEST_CREDS, { fetch: missingId })).rejects.toThrow(
+      /missing or invalid 'id'/,
+    );
+  });
+
   test("calls /app with a Bearer JWT header", async () => {
     const seen: string[] = [];
     const captureFetch: HttpsFetch = async (opts) => {
@@ -157,13 +187,18 @@ describe("mintInstallationToken", () => {
       if (opts.path === `/repos/${slug}/installation`) {
         return { status: installStatus, body: JSON.stringify({ id: installationId }) };
       }
-      return { status: tokenStatus, body: JSON.stringify({ token: mintedToken }) };
+      return {
+        status: tokenStatus,
+        body: JSON.stringify({ token: mintedToken, expires_at: "2026-12-31T23:59:59Z" }),
+      };
     };
   }
 
-  test("returns the minted token on success", async () => {
-    const token = await mintInstallationToken(TEST_CREDS, slug, { fetch: makeFetch(200, 201) });
-    expect(token).toBe(mintedToken);
+  test("returns the minted token and expiresAt on success", async () => {
+    const result = await mintInstallationToken(TEST_CREDS, slug, { fetch: makeFetch(200, 201) });
+    expect(result.token).toBe(mintedToken);
+    expect(typeof result.expiresAt).toBe("number");
+    expect(result.expiresAt).toBeGreaterThan(0);
   });
 
   test("throws with status when the installation is not found (404)", async () => {
@@ -173,7 +208,10 @@ describe("mintInstallationToken", () => {
           if (opts.path.includes("/installation")) {
             return { status: 404, body: JSON.stringify({ message: "Not Found" }) };
           }
-          return { status: 201, body: JSON.stringify({ token: mintedToken }) };
+          return {
+            status: 201,
+            body: JSON.stringify({ token: mintedToken, expires_at: "2026-12-31T23:59:59Z" }),
+          };
         },
       }),
     ).rejects.toThrow(/returned 404/);
@@ -185,12 +223,54 @@ describe("mintInstallationToken", () => {
     ).rejects.toThrow(/returned 422/);
   });
 
+  test("throws when 201 response is missing 'token'", async () => {
+    const noToken: HttpsFetch = async (opts) => {
+      if (opts.path.startsWith("/repos/")) {
+        return { status: 200, body: JSON.stringify({ id: installationId }) };
+      }
+      return { status: 201, body: JSON.stringify({ expires_at: "2026-12-31T23:59:59Z" }) };
+    };
+    await expect(mintInstallationToken(TEST_CREDS, slug, { fetch: noToken })).rejects.toThrow(
+      /missing or invalid 'token'/,
+    );
+  });
+
+  test("throws when 201 response is missing 'expires_at'", async () => {
+    const noExpiry: HttpsFetch = async (opts) => {
+      if (opts.path.startsWith("/repos/")) {
+        return { status: 200, body: JSON.stringify({ id: installationId }) };
+      }
+      return { status: 201, body: JSON.stringify({ token: mintedToken }) };
+    };
+    await expect(mintInstallationToken(TEST_CREDS, slug, { fetch: noExpiry })).rejects.toThrow(
+      /missing or invalid 'expires_at'/,
+    );
+  });
+
+  test("throws when installation response is missing 'id'", async () => {
+    const noInstallId: HttpsFetch = async (opts) => {
+      if (opts.path.startsWith("/repos/")) {
+        return { status: 200, body: JSON.stringify({}) };
+      }
+      return {
+        status: 201,
+        body: JSON.stringify({ token: mintedToken, expires_at: "2026-12-31T23:59:59Z" }),
+      };
+    };
+    await expect(mintInstallationToken(TEST_CREDS, slug, { fetch: noInstallId })).rejects.toThrow(
+      /missing or invalid 'id'/,
+    );
+  });
+
   test("scopes the token to the repo name only (not the full slug)", async () => {
     let tokenReqBody: string | undefined;
     const captureFetch: HttpsFetch = async (opts) => {
       if (opts.path.includes("/access_tokens")) {
         tokenReqBody = opts.body;
-        return { status: 201, body: JSON.stringify({ token: mintedToken }) };
+        return {
+          status: 201,
+          body: JSON.stringify({ token: mintedToken, expires_at: "2026-12-31T23:59:59Z" }),
+        };
       }
       return { status: 200, body: JSON.stringify({ id: installationId }) };
     };

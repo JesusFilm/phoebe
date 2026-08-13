@@ -21,6 +21,8 @@
 // (the whole container), Docker injects exactly that tenant's secrets, and the
 // child inherits the supervisor env as it does today.
 
+import { type MintedCredentials } from "./tenants.ts";
+
 /**
  * Hardcoded base allowlist: process essentials plus the deployment-global git
  * identity every tenant shares. Not secrets, and not per-tenant.
@@ -81,6 +83,20 @@ export function parseDotenv(contents: string): Record<string, string> {
 }
 
 /**
+ * Runtime allowlist for keys copied from `mintedEnv` into the child env.
+ * Mirrors the fields of {@link MintedCredentials} — the type is the
+ * compile-time barrier; this set is the runtime one (defense in depth).
+ */
+export const MINTED_ENV_ALLOWED_KEYS: ReadonlySet<keyof MintedCredentials> = new Set([
+  "GH_TOKEN",
+  "PHOEBE_GH_LOGIN",
+  "GIT_AUTHOR_NAME",
+  "GIT_AUTHOR_EMAIL",
+  "GIT_COMMITTER_NAME",
+  "GIT_COMMITTER_EMAIL",
+]);
+
+/**
  * Build a scrubbed, tenant-only env for one engine child. Deny-by-default: start
  * empty, copy the allowlisted base + deployment knobs from `base` (the
  * supervisor's `process.env`), then overlay the supervisor-minted credentials
@@ -103,7 +119,7 @@ export function buildEngineChildEnv(opts: {
    * identity) for tenants without their own GH_TOKEN. Applied before
    * `tenantEnv` so an explicit `GH_TOKEN` in the tenant's file always wins.
    */
-  mintedEnv?: Record<string, string>;
+  mintedEnv?: MintedCredentials | Record<string, string>;
 }): Record<string, string> {
   const { base, tenantEnv, mintedEnv } = opts;
   const env: Record<string, string> = {};
@@ -115,9 +131,12 @@ export function buildEngineChildEnv(opts: {
   }
   // Minted credentials overlay the base before the tenant's own values so an
   // explicit GH_TOKEN (or any other key) in the tenant's .env always wins.
+  // The runtime allowlist ensures keys outside MintedCredentials never reach
+  // the child even if the caller bypasses the type system.
   if (mintedEnv) {
     for (const [key, value] of Object.entries(mintedEnv)) {
-      if (value !== "") env[key] = value;
+      if ((MINTED_ENV_ALLOWED_KEYS as ReadonlySet<string>).has(key) && value !== "")
+        env[key] = value;
     }
   }
   // Tenant secrets last: they are the tenant's own, and win over any collision.

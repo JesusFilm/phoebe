@@ -108,6 +108,25 @@ describe("buildEngineChildEnv", () => {
     }
   });
 
+  // Runtime allowlist guard: mintedEnv keys outside the explicit set must never
+  // reach the child even if the caller bypasses the MintedCredentials type.
+  test("mintedEnv keys outside the allowlist do not reach the child", () => {
+    const leakyMintedEnv = {
+      GH_TOKEN: "ghs_minted",
+      PHOEBE_GH_LOGIN: "bot",
+      GIT_AUTHOR_NAME: "bot",
+      GIT_AUTHOR_EMAIL: "bot@example.com",
+      GIT_COMMITTER_NAME: "bot",
+      GIT_COMMITTER_EMAIL: "bot@example.com",
+      GH_APP_ID: "secret-app-id",
+      GH_APP_PRIVATE_KEY: "-----BEGIN RSA PRIVATE KEY-----",
+    } as Record<string, string>;
+    const env = buildEngineChildEnv({ base, mintedEnv: leakyMintedEnv, tenantEnv: {} });
+    expect(env.GH_TOKEN).toBe("ghs_minted");
+    expect(env.GH_APP_ID).toBeUndefined();
+    expect(env.GH_APP_PRIVATE_KEY).toBeUndefined();
+  });
+
   test("mintedEnv is applied after base+knobs and before tenantEnv", () => {
     const mintedToken = "ghs_minted_token";
     const env = buildEngineChildEnv({

@@ -45,6 +45,7 @@ import {
   readAppCredentials,
   type AppBotIdentity,
   type AppCredentials,
+  type MintedToken,
 } from "./github-app.ts";
 import { attachBroker } from "./broker-ipc.ts";
 import { createSlotBroker, resolveMaxConcurrent } from "./slot-broker.ts";
@@ -54,6 +55,7 @@ import {
   WorkspaceStructuralChangeError,
   WorkspaceTenantAxisSkip,
   type DiscoveredTenant,
+  type MintedCredentials,
   type WorkspaceDiscoveryResult,
   type WorkspaceHold,
   type FleetDiscoverResult,
@@ -502,19 +504,32 @@ function runFleet(opts: {
 
 /**
  * Per-tenant App token minting closure. Given a tenant's `repoSlug`, returns
- * a minted env record containing GH_TOKEN, PHOEBE_GH_LOGIN, and the fallback
- * git identity. Throws when minting fails — the caller holds the tenant.
+ * the minted credentials and their expiry. Throws when minting fails — the
+ * caller holds the tenant.
  */
-type AppMintFn = (slug: string) => Promise<Record<string, string>>;
+type AppMintFn = (slug: string) => Promise<MintedToken & { mintedEnv: MintedCredentials }>;
+
+/** How long before a minted token's expiry to proactively refresh it. */
+const MINT_REFRESH_MARGIN_MS = 10 * 60 * 1000;
 
 /**
- * Build a minted-env record from App credentials and cached bot identity.
- * Called once per tenant per poll when the tenant has no GH_TOKEN of its own.
+ * Build a minted-env closure from App credentials and cached bot identity.
+ * Caches the minted token per-tenant, only reminting when it is within
+ * {@link MINT_REFRESH_MARGIN_MS} of expiry. Callers that receive a cached
+ * result (same `expiresAt`) produce the same fingerprint, so the running child
+ * is not restarted. A fresh mint changes `expiresAt`, which changes the
+ * fingerprint, triggering a controlled restart that delivers the new token.
  */
 function createAppMintFn(creds: AppCredentials, identity: AppBotIdentity): AppMintFn {
+  const cache = new Map<string, MintedToken & { mintedEnv: MintedCredentials }>();
+
   return async (slug: string) => {
-    const token = await mintInstallationToken(creds, slug);
-    return {
+    const cached = cache.get(slug);
+    if (cached !== undefined && cached.expiresAt - Date.now() > MINT_REFRESH_MARGIN_MS) {
+      return cached;
+    }
+    const { token, expiresAt } = await mintInstallationToken(creds, slug);
+    const mintedEnv: MintedCredentials = {
       GH_TOKEN: token,
       PHOEBE_GH_LOGIN: identity.login,
       GIT_AUTHOR_NAME: identity.gitName,
@@ -522,6 +537,9 @@ function createAppMintFn(creds: AppCredentials, identity: AppBotIdentity): AppMi
       GIT_COMMITTER_NAME: identity.gitName,
       GIT_COMMITTER_EMAIL: identity.gitEmail,
     };
+    const result = { token, expiresAt, mintedEnv };
+    cache.set(slug, result);
+    return result;
   };
 }
 
@@ -568,10 +586,15 @@ function workspaceDiscover(
         const tenantEnv = readTenantEnv(tenant.envPath);
         if (!tenantEnv["GH_TOKEN"]) {
           try {
-            const mintedEnv = await appMint(tenant.slug);
+            const { mintedEnv, expiresAt } = await appMint(tenant.slug);
+            const configFp = tenantFingerprint(tenant.configPath, tenant.envPath);
             samples.push({
               tenant: { ...tenant, mintedEnv },
-              fingerprint: tenantFingerprint(tenant.configPath, tenant.envPath),
+              // Include the token expiry in the fingerprint so that when the
+              // cache refreshes (new expiresAt), diffFleet sees a change and
+              // restarts the child with the updated token. Preserve the null
+              // sentinel so a mid-rewrite config still blocks churning.
+              fingerprint: configFp !== null ? `${configFp}|mint:${expiresAt}` : null,
             });
           } catch (error) {
             const diagnosis = error instanceof Error ? error.message : String(error);

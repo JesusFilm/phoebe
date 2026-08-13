@@ -64,6 +64,9 @@ export type HttpsFetch = (opts: {
   body?: string;
 }) => Promise<{ status: number; body: string }>;
 
+/** Deadline applied to every GitHub API request, covering both connect and transfer. */
+const GITHUB_API_TIMEOUT_MS = 30_000;
+
 export const defaultFetch: HttpsFetch = (opts) =>
   new Promise((resolve, reject) => {
     const reqOpts: RequestOptions = {
@@ -77,9 +80,18 @@ export const defaultFetch: HttpsFetch = (opts) =>
       res.on("data", (chunk: Buffer) => {
         data += chunk.toString();
       });
-      res.on("end", () => resolve({ status: res.statusCode ?? 0, body: data }));
+      res.on("end", () => {
+        clearTimeout(deadline);
+        resolve({ status: res.statusCode ?? 0, body: data });
+      });
     });
-    req.on("error", reject);
+    req.on("error", (err) => {
+      clearTimeout(deadline);
+      reject(err);
+    });
+    const deadline = setTimeout(() => {
+      req.destroy(new Error(`GitHub API request timed out after ${GITHUB_API_TIMEOUT_MS}ms`));
+    }, GITHUB_API_TIMEOUT_MS);
     if (opts.body) req.write(opts.body);
     req.end();
   });
@@ -126,7 +138,13 @@ export async function fetchAppBotIdentity(
   if (response.status !== 200) {
     throw new Error(`GET /app returned ${response.status}: ${response.body.slice(0, 200)}`);
   }
-  const app = JSON.parse(response.body) as { slug: string; id: number };
+  const app = JSON.parse(response.body) as { slug?: unknown; id?: unknown };
+  if (typeof app.slug !== "string" || app.slug.length === 0) {
+    throw new Error(`GET /app: missing or invalid 'slug' in response`);
+  }
+  if (typeof app.id !== "number") {
+    throw new Error(`GET /app: missing or invalid 'id' in response`);
+  }
   const login = `${app.slug}[bot]`;
   return {
     login,
@@ -134,6 +152,14 @@ export async function fetchAppBotIdentity(
     gitEmail: `${app.id}+${login}@users.noreply.github.com`,
   };
 }
+
+/** A minted GitHub App installation access token with its expiry. */
+export type MintedToken = {
+  /** The short-lived installation access token. */
+  token: string;
+  /** Token expiry as epoch milliseconds (parsed from `expires_at` in the API response). */
+  expiresAt: number;
+};
 
 /**
  * Mint a per-repo GitHub App installation access token for `slug` (`owner/repo`).
@@ -149,7 +175,7 @@ export async function mintInstallationToken(
   creds: AppCredentials,
   slug: string,
   opts: { fetch?: HttpsFetch } = {},
-): Promise<string> {
+): Promise<MintedToken> {
   const fetch = opts.fetch ?? defaultFetch;
   const jwt = createAppJwt(creds);
 
@@ -164,7 +190,10 @@ export async function mintInstallationToken(
       `GET /repos/${slug}/installation returned ${installResp.status} (${summary(installResp.body)})`,
     );
   }
-  const install = JSON.parse(installResp.body) as { id: number };
+  const install = JSON.parse(installResp.body) as { id?: unknown };
+  if (typeof install.id !== "number") {
+    throw new Error(`GET /repos/${slug}/installation: missing or invalid 'id' in response`);
+  }
 
   const [, repo] = slug.split("/");
   const tokenBody = JSON.stringify({ repositories: [repo] });
@@ -184,7 +213,21 @@ export async function mintInstallationToken(
       `POST /app/installations/${install.id}/access_tokens returned ${tokenResp.status} (${summary(tokenResp.body)})`,
     );
   }
-  return (JSON.parse(tokenResp.body) as { token: string }).token;
+  const tokenData = JSON.parse(tokenResp.body) as { token?: unknown; expires_at?: unknown };
+  if (typeof tokenData.token !== "string" || tokenData.token.length === 0) {
+    throw new Error(
+      `POST /app/installations/${install.id}/access_tokens: missing or invalid 'token' in response`,
+    );
+  }
+  const expiresAt = Date.parse(
+    typeof tokenData.expires_at === "string" ? tokenData.expires_at : "",
+  );
+  if (isNaN(expiresAt)) {
+    throw new Error(
+      `POST /app/installations/${install.id}/access_tokens: missing or invalid 'expires_at' in response`,
+    );
+  }
+  return { token: tokenData.token, expiresAt };
 }
 
 function summary(body: string): string {
