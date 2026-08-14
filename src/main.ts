@@ -501,6 +501,7 @@ export async function runEngine(opts: {
           config.priorityLabelPrefix,
           process.env["PHOEBE_BASE"],
           ctx.nativeBlockers,
+          phoebeError,
         ),
       );
 

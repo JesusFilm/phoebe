@@ -3,10 +3,12 @@
 // `researchLabel` (the wayfinder queue), `prOptOutLabel` (`ready-for-human`,
 // the PR hand-back signal a human must be able to apply),
 // `PHOEBE_QUARANTINE_LABEL` (#75), `PHOEBE_RETRY_LABEL` (#136, the
-// deliberate un-stick escape hatch), and the three `phoebe:tier:*` labels
-// (#155, a human-placed per-ticket model/effort override) — is a Phoebe-owned
-// constant the user never types and has no reason to know exists. Nothing in
-// this repo ever
+// deliberate un-stick escape hatch), the three `phoebe:tier:*` labels (#155,
+// a human-placed per-ticket model/effort override), and the four
+// `priorityLabelPrefix`-prefixed priority labels (#144, a human-placed
+// override that outranks `classifyPriority`'s title/body keyword cascade) —
+// is a Phoebe-owned constant the user never types and has no reason to know
+// exists. Nothing in this repo ever
 // created them: docs/phoebe-core-onboarding.md documented creating three of
 // the five *by hand*, and never mentioned quarantine at all, so a fresh repo
 // silently drops every write against a label that doesn't exist yet
@@ -20,6 +22,7 @@
 // quarantine (rare by construction); `processingLabel` is written on every
 // claim, and an extra round trip per claim is not free.
 
+import { PRIORITY_ORDER } from "./kinds/producer.ts";
 import { PHOEBE_QUARANTINE_LABEL, PHOEBE_RETRY_LABEL } from "./quarantine.ts";
 import { TIER_BUNDLES, PHOEBE_TIER_LABEL_PREFIX, type Tier } from "./tier.ts";
 
@@ -40,6 +43,7 @@ export function phoebeLabelSet(config: {
   researchLabel: string;
   processingLabel: string;
   prOptOutLabel: string;
+  priorityLabelPrefix: string;
 }): LabelSpec[] {
   return [
     {
@@ -79,6 +83,7 @@ export function phoebeLabelSet(config: {
       color: "0E8A16",
     },
     ...TIER_LABEL_SPECS(config.repoSlug),
+    ...PRIORITY_LABEL_SPECS(config.repoSlug, config.priorityLabelPrefix),
   ];
 }
 
@@ -97,6 +102,25 @@ function TIER_LABEL_SPECS(repoSlug: string): LabelSpec[] {
     name: `${PHOEBE_TIER_LABEL_PREFIX}${tier}`,
     description: TIER_LABEL_DESCRIPTIONS[tier],
     color: TIER_LABEL_COLOR,
+  }));
+}
+
+const PRIORITY_LABEL_DESCRIPTIONS: Record<(typeof PRIORITY_ORDER)[number], string> = {
+  bug: "Priority override: classify this issue as a bug fix regardless of wording",
+  tracer: "Priority override: classify this issue as a tracer bullet regardless of wording",
+  polish: "Priority override: classify this issue as polish regardless of wording",
+  refactor: "Priority override: classify this issue as a refactor regardless of wording",
+};
+
+const PRIORITY_LABEL_COLOR = "C5DEF5";
+
+/** The four `<priorityLabelPrefix>bug`/`tracer`/`polish`/`refactor` labels (#144), which outrank `classifyPriority`'s title/body keyword cascade. */
+function PRIORITY_LABEL_SPECS(repoSlug: string, priorityLabelPrefix: string): LabelSpec[] {
+  return PRIORITY_ORDER.map((bucket) => ({
+    repoSlug,
+    name: `${priorityLabelPrefix}${bucket}`,
+    description: PRIORITY_LABEL_DESCRIPTIONS[bucket],
+    color: PRIORITY_LABEL_COLOR,
   }));
 }
 

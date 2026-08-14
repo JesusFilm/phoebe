@@ -100,6 +100,36 @@ describe("classifyPriority", () => {
       ),
     ).toBe("tracer");
   });
+
+  test("calls onConflict with every matched bucket, in PRIORITY_ORDER, when labels conflict", () => {
+    const conflicts: Array<{ number: number; labels: readonly string[] }> = [];
+    classifyPriority(
+      issue({
+        number: 6,
+        labels: ["ready-for-agent", "priority:refactor", "priority:tracer"],
+      }),
+      PRIORITY_LABEL_PREFIX,
+      (conflicted, labels) => conflicts.push({ number: conflicted.number, labels }),
+    );
+    expect(conflicts).toEqual([{ number: 6, labels: ["tracer", "refactor"] }]);
+  });
+
+  test("does not call onConflict for a single priority label or none at all", () => {
+    const conflicts: unknown[] = [];
+    const onConflict = (issue: Issue, labels: readonly string[]) =>
+      conflicts.push({ issue, labels });
+    classifyPriority(
+      issue({ number: 7, labels: ["ready-for-agent", "priority:bug"] }),
+      PRIORITY_LABEL_PREFIX,
+      onConflict,
+    );
+    classifyPriority(
+      issue({ number: 8, title: "Add quota resilience", labels: ["ready-for-agent"] }),
+      PRIORITY_LABEL_PREFIX,
+      onConflict,
+    );
+    expect(conflicts).toEqual([]);
+  });
 });
 
 describe("compareIssues", () => {
@@ -195,6 +225,30 @@ describe("selectIssue", () => {
       2,
     );
   });
+
+  test("logs one warning for an issue with conflicting priority labels, and none for a clean pool (#144)", () => {
+    const warnings: string[] = [];
+    const issues = [
+      issue({
+        number: 6,
+        labels: ["ready-for-agent", "priority:refactor", "priority:tracer"],
+      }),
+      issue({ number: 7, labels: ["ready-for-agent", "priority:bug"] }),
+    ];
+    selectIssue(
+      issues,
+      new Map(),
+      STACK_CONFIG,
+      PRIORITY_LABEL_PREFIX,
+      undefined,
+      undefined,
+      (message) => warnings.push(message),
+    );
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("#6");
+    expect(warnings[0]).toContain("priority:refactor");
+    expect(warnings[0]).toContain("priority:tracer");
+  });
 });
 
 describe("buildIssueQueue (#20)", () => {
@@ -240,6 +294,26 @@ describe("buildIssueQueue (#20)", () => {
   test("excludes quarantined issues", () => {
     const issues = [issue({ number: 104, labels: ["phoebe:quarantined"] })];
     expect(buildIssueQueue(issues, new Map(), STACK_CONFIG, PRIORITY_LABEL_PREFIX)).toEqual([]);
+  });
+
+  test("warns once per conflicting-priority-label issue, not once per comparison (#144)", () => {
+    const warnings: string[] = [];
+    const issues = [
+      issue({ number: 1, labels: ["ready-for-agent", "priority:bug", "priority:polish"] }),
+      issue({ number: 2, labels: ["ready-for-agent"] }),
+      issue({ number: 3, labels: ["ready-for-agent"] }),
+    ];
+    buildIssueQueue(
+      issues,
+      new Map(),
+      STACK_CONFIG,
+      PRIORITY_LABEL_PREFIX,
+      undefined,
+      undefined,
+      (message) => warnings.push(message),
+    );
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("#1");
   });
 });
 

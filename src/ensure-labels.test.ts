@@ -4,6 +4,7 @@
 
 import { describe, expect, test } from "vite-plus/test";
 import { ensureLabels, phoebeLabelSet, type GhRunner } from "./ensure-labels.ts";
+import { PRIORITY_ORDER } from "./kinds/producer.ts";
 import { PHOEBE_QUARANTINE_LABEL, PHOEBE_RETRY_LABEL } from "./quarantine.ts";
 import { PHOEBE_TIER_LABEL_PREFIX } from "./tier.ts";
 
@@ -13,6 +14,7 @@ const singleRepoConfig = {
   researchLabel: "wayfinder:research",
   processingLabel: "processing",
   prOptOutLabel: "ready-for-human",
+  priorityLabelPrefix: "priority:",
 };
 
 describe("phoebeLabelSet", () => {
@@ -28,6 +30,7 @@ describe("phoebeLabelSet", () => {
       `o/r#${PHOEBE_TIER_LABEL_PREFIX}basic`,
       `o/r#${PHOEBE_TIER_LABEL_PREFIX}mid`,
       `o/r#${PHOEBE_TIER_LABEL_PREFIX}strong`,
+      ...PRIORITY_ORDER.map((bucket) => `o/r#priority:${bucket}`),
     ]);
   });
 
@@ -36,6 +39,18 @@ describe("phoebeLabelSet", () => {
       expect(spec.description.length).toBeGreaterThan(0);
       expect(spec.color).toMatch(/^[0-9A-Fa-f]{6}$/);
     }
+  });
+
+  test("the four priority labels are built from the configured prefix, not a hardcoded one (#144)", () => {
+    const specs = phoebeLabelSet({ ...singleRepoConfig, priorityLabelPrefix: "urgency/" });
+    expect(specs.map((s) => s.name)).toEqual(
+      expect.arrayContaining([
+        "urgency/bug",
+        "urgency/tracer",
+        "urgency/polish",
+        "urgency/refactor",
+      ]),
+    );
   });
 });
 

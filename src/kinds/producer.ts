@@ -7,7 +7,7 @@
 // re-pick, so they skip the claim/heartbeat machinery entirely.
 
 import { asBranchRef, type BranchRef, type PrNumber } from "../branded.ts";
-import { createPhoebeLog } from "../phoebe-log.ts";
+import { createPhoebeLog, type PhoebeLogFn } from "../phoebe-log.ts";
 import {
   buildLeaseComment,
   buildReclaimComment,
@@ -45,30 +45,62 @@ import {
 import type { CycleContext } from "../cycle.ts";
 import type { KindDeps, UnitRef, UnitResult, WorkKind } from "./kind.ts";
 
-const PRIORITY_ORDER = ["bug", "tracer", "polish", "refactor"] as const;
+export const PRIORITY_ORDER = ["bug", "tracer", "polish", "refactor"] as const;
 export type Priority = (typeof PRIORITY_ORDER)[number];
 
 /**
  * Bucket an issue into one of `PRIORITY_ORDER`'s four priorities. An explicit
  * `<priorityLabelPrefix>bug` / `tracer` / `polish` / `refactor` label wins
- * over the title/body keyword cascade (#87/#130); if more than one such label
- * is on the issue, the first bucket in `PRIORITY_ORDER` wins, same as the
- * cascade below resolves overlapping keywords.
+ * over the title/body keyword cascade (#87/#130, #144); if more than one such
+ * label is on the issue, the first bucket in `PRIORITY_ORDER` wins, same as
+ * the cascade below resolves overlapping keywords, and `onConflict` (when
+ * given) is told which buckets collided so a caller can warn once.
  */
-export function classifyPriority(issue: Issue, priorityLabelPrefix: string): Priority {
+export function classifyPriority(
+  issue: Issue,
+  priorityLabelPrefix: string,
+  onConflict?: (issue: Issue, labels: readonly Priority[]) => void,
+): Priority {
   const labeled = new Set(
     issue.labels
       .filter((label) => label.startsWith(priorityLabelPrefix))
       .map((label) => label.slice(priorityLabelPrefix.length)),
   );
-  const labelMatch = PRIORITY_ORDER.find((bucket) => labeled.has(bucket));
-  if (labelMatch) return labelMatch;
+  const labelMatches = PRIORITY_ORDER.filter((bucket) => labeled.has(bucket));
+  if (labelMatches.length > 1) {
+    onConflict?.(issue, labelMatches);
+  }
+  if (labelMatches.length > 0) return labelMatches[0];
 
   const text = `${issue.title} ${issue.body}`.toLowerCase();
   if (/\b(bug|broken|crash|regression|fix)\b/.test(text)) return "bug";
   if (/\b(tracer|wire|poc)\b/.test(text)) return "tracer";
   if (/\brefactor\b/.test(text)) return "refactor";
   return "polish";
+}
+
+/**
+ * One warning per issue carrying more than one `priorityLabelPrefix` label
+ * (#144's "warning logged" acceptance criterion) — run as a single pass over
+ * the pool rather than from inside {@link compareIssues}'s comparator, which
+ * `Array.prototype.sort` invokes a variable, non-obvious number of times per
+ * element and would otherwise log the same conflict repeatedly.
+ */
+function warnConflictingPriorityLabels(
+  issues: readonly Issue[],
+  priorityLabelPrefix: string,
+  warn: PhoebeLogFn | undefined,
+): void {
+  if (!warn) return;
+  for (const issue of issues) {
+    classifyPriority(issue, priorityLabelPrefix, (conflicted, labels) => {
+      const names = labels.map((label) => `${priorityLabelPrefix}${label}`).join(", ");
+      warn(
+        `issue #${conflicted.number} carries multiple priority labels (${names}) — ` +
+          `using ${priorityLabelPrefix}${labels[0]} (${PRIORITY_ORDER.join(" > ")} precedence).`,
+      );
+    });
+  }
 }
 
 export function compareIssues(a: Issue, b: Issue, priorityLabelPrefix: string): number {
@@ -91,10 +123,12 @@ export function selectIssue(
   priorityLabelPrefix: string,
   phoebeBase?: string,
   nativeBlockersByIssue: NativeBlockerMap = new Map(),
+  warn?: PhoebeLogFn,
 ): IssueWorkUnit | null {
   // Quarantined issues/research tickets (#75) are skipped for work until a human
   // clears the label or the issue is edited (the auto-un-stick sweep).
   const eligible = issues.filter((issue) => !issue.labels.includes(PHOEBE_QUARANTINE_LABEL));
+  warnConflictingPriorityLabels(eligible, priorityLabelPrefix, warn);
   const sorted = [...eligible].sort((a, b) => compareIssues(a, b, priorityLabelPrefix));
   for (const issue of sorted) {
     const resolution = resolveWorktreeBase(
@@ -125,8 +159,10 @@ export function buildIssueQueue(
   priorityLabelPrefix: string,
   phoebeBase?: string,
   nativeBlockersByIssue: NativeBlockerMap = new Map(),
+  warn?: PhoebeLogFn,
 ): Array<{ issueNumber: number; blockedBy: readonly number[]; workable: boolean }> {
   const eligible = issues.filter((issue) => !issue.labels.includes(PHOEBE_QUARANTINE_LABEL));
+  warnConflictingPriorityLabels(eligible, priorityLabelPrefix, warn);
   const sorted = [...eligible].sort((a, b) => compareIssues(a, b, priorityLabelPrefix));
   return sorted.map((issue) => {
     const nativeBlockers = nativeBlockersByIssue.get(issue.number) ?? [];
@@ -343,6 +379,7 @@ function createProducerKind(
       config.priorityLabelPrefix,
       phoebeBaseOverride(),
       data.nativeBlockers,
+      phoebeError,
     );
   }
 

@@ -34,12 +34,14 @@ first:
 
 - **Priority** — the primary way to set it is an explicit label:
   `priorityLabelPrefix` (default `priority:`) followed by `bug`, `tracer`,
-  `polish`, or `refactor`, e.g. `priority:bug`. If an issue carries more than
-  one of those labels, `bug` wins over `tracer` wins over `polish` wins over
-  `refactor`. With no priority label, Phoebe falls back to sniffing the
-  title/body text: wording like _bug, broken, crash, regression, fix_ sorts
-  first; _tracer, wire, poc_ next; then ordinary _polish_; then _refactor_
-  last.
+  `polish`, or `refactor`, e.g. `priority:bug`. All four labels are
+  provisioned automatically at boot, so they're always available to attach.
+  If an issue carries more than one of those labels, `bug` wins over `tracer`
+  wins over `polish` wins over `refactor`, and Phoebe logs a warning naming
+  the conflicting labels — treat that as a nudge to drop the losing one.
+  With no priority label, Phoebe falls back to sniffing the title/body text:
+  wording like _bug, broken, crash, regression, fix_ sorts first; _tracer,
+  wire, poc_ next; then ordinary _polish_; then _refactor_ last.
 - Within a priority, **older issues win** (oldest created, then lowest number).
 
 To pause an issue without deleting it, just remove `readyLabel`. Phoebe never
