@@ -113,7 +113,7 @@ function makeThrowingMigration(id: string): Migration {
 
 describe("parseMigrateArgs", () => {
   test("empty argv produces defaults", () => {
-    expect(parseMigrateArgs([])).toEqual({ configPath: undefined, help: false });
+    expect(parseMigrateArgs([])).toEqual({ configPath: undefined, help: false, check: false });
   });
 
   test("--help and -h set help", () => {
@@ -121,10 +121,21 @@ describe("parseMigrateArgs", () => {
     expect(parseMigrateArgs(["-h"]).help).toBe(true);
   });
 
+  test("--check sets check", () => {
+    expect(parseMigrateArgs(["--check"]).check).toBe(true);
+  });
+
+  test("--check and --config together", () => {
+    const result = parseMigrateArgs(["--check", "--config", "my.config.ts"]);
+    expect(result.check).toBe(true);
+    expect(result.configPath).toBe("my.config.ts");
+  });
+
   test("--config <path>", () => {
     expect(parseMigrateArgs(["--config", "my.config.ts"])).toEqual({
       configPath: "my.config.ts",
       help: false,
+      check: false,
     });
   });
 
@@ -375,6 +386,90 @@ describe("runMigrate", () => {
   });
 });
 
+// ----------------------------------------------------------------- runMigrate check mode
+
+describe("runMigrate check mode", () => {
+  test("applicable migration reports 'applicable' state and writes nothing", async () => {
+    const dir = makeTempDir();
+    const configPath = scaffoldDeployment(dir);
+    const report = await runMigrate({
+      dir,
+      role: "solo-root",
+      configPath,
+      migrations: [makeApplyingMigration("test-check", "prompts/check.md", "# Check\n")],
+      validateFn: async () => {},
+      check: true,
+    });
+    expect(report.results[0]!.state).toBe("applicable");
+    expect(report.journal).toHaveLength(0);
+    expect(existsSync(join(dir, "prompts/check.md"))).toBe(false);
+    expect(report.ok).toBe(true);
+  });
+
+  test("non-applicable migration still reports 'not-applicable' in check mode", async () => {
+    const dir = makeTempDir();
+    const configPath = scaffoldDeployment(dir);
+    const report = await runMigrate({
+      dir,
+      role: "solo-root",
+      configPath,
+      migrations: [makeNonApplyingMigration("never-check")],
+      validateFn: async () => {},
+      check: true,
+    });
+    expect(report.results[0]!.state).toBe("not-applicable");
+    expect(report.journal).toHaveLength(0);
+  });
+
+  test("check mode does not call apply or validate", async () => {
+    const dir = makeTempDir();
+    const configPath = scaffoldDeployment(dir);
+    let applyCalled = false;
+    let validateCalled = false;
+    const m: Migration = {
+      id: "spy",
+      title: "Spy",
+      appliesTo: ["solo-root"] as const,
+      detect() {
+        return true;
+      },
+      describe() {
+        return "would scaffold";
+      },
+      apply() {
+        applyCalled = true;
+        return {};
+      },
+    };
+    await runMigrate({
+      dir,
+      role: "solo-root",
+      configPath,
+      migrations: [m],
+      validateFn: async () => {
+        validateCalled = true;
+      },
+      check: true,
+    });
+    expect(applyCalled).toBe(false);
+    expect(validateCalled).toBe(false);
+  });
+
+  test("check mode: applicable detail comes from describe()", async () => {
+    const dir = makeTempDir();
+    const configPath = scaffoldDeployment(dir);
+    const report = await runMigrate({
+      dir,
+      role: "solo-root",
+      configPath,
+      migrations: [makeApplyingMigration("test-detail", "prompts/detail.md", "# Detail\n")],
+      validateFn: async () => {},
+      check: true,
+    });
+    expect(report.results[0]!.detail).toBe("scaffold prompts/detail.md");
+  });
+});
+
 // ----------------------------------------------------------------- formatMigrateReport
 
 describe("formatMigrateReport", () => {
@@ -467,6 +562,33 @@ describe("formatMigrateReport", () => {
     const out = formatMigrateReport(BASE);
     expect(out).not.toContain("uncommitted");
     expect(out).not.toContain("Phoebe never commits");
+  });
+
+  test("applicable result shows ~ mark, 'applicable' count, and dependent caveat", () => {
+    const report: MigrateReport = {
+      ...BASE,
+      results: [{ id: "would-fire", state: "applicable", detail: "scaffold prompts/foo.md" }],
+    };
+    const out = formatMigrateReport(report);
+    expect(out).toContain("~");
+    expect(out).toContain("would-fire");
+    expect(out).toContain("scaffold prompts/foo.md");
+    expect(out).toContain("1 applicable");
+    expect(out).toContain("Note:");
+  });
+
+  test("dependent caveat absent when no applicable migrations", () => {
+    const out = formatMigrateReport(BASE);
+    expect(out).not.toContain("Note:");
+  });
+
+  test("dependent caveat absent when all migrations applied (apply mode)", () => {
+    const report: MigrateReport = {
+      ...BASE,
+      results: [{ id: "m1", state: "applied", detail: "did it" }],
+    };
+    const out = formatMigrateReport(report);
+    expect(out).not.toContain("Note:");
   });
 });
 
@@ -1069,6 +1191,112 @@ describe("formatFleetMigrateReport", () => {
     const out = formatFleetMigrateReport(makeFleetReport());
     expect(out).not.toContain("uncommitted");
     expect(out).not.toContain("Phoebe never commits");
+  });
+
+  test("pending verdict shows ~ mark", () => {
+    const out = formatFleetMigrateReport(
+      makeFleetReport({
+        tenantEntries: [
+          {
+            dir: "/d/c1",
+            slug: "acme/c1",
+            verdict: "pending",
+            report: {
+              sha: null,
+              dir: "/d/c1",
+              results: [{ id: "m1", state: "applicable", detail: "would scaffold" }],
+              journal: [],
+              ok: true,
+            },
+          },
+        ],
+      }),
+    );
+    expect(out).toContain("~ pending");
+    expect(out).toContain("Note:");
+  });
+
+  test("dependent caveat absent when no applicable migrations in fleet", () => {
+    const out = formatFleetMigrateReport(makeFleetReport());
+    expect(out).not.toContain("Note:");
+  });
+
+  test("dependent caveat present when root has applicable migrations", () => {
+    const out = formatFleetMigrateReport(
+      makeFleetReport({
+        rootReport: {
+          sha: null,
+          dir: "/root",
+          results: [{ id: "r1", state: "applicable", detail: "would do something" }],
+          journal: [],
+          ok: true,
+        },
+      }),
+    );
+    expect(out).toContain("Note:");
+    expect(out).toContain("1 applicable");
+  });
+});
+
+// ----------------------------------------------------------------- runFleetMigrate check mode
+
+describe("runFleetMigrate check mode", () => {
+  test("solo-root check: applicable migration reports applicable, nothing written", async () => {
+    const dir = makeTempDir();
+    const configPath = scaffoldDeployment(dir);
+    const migration = makeApplyingMigration("chk-solo", "prompts/chk.md", "# Chk\n");
+    const fleet = await runFleetMigrate({
+      configPath,
+      migrations: [migration],
+      validateFn: async () => {},
+      check: true,
+    });
+    expect(fleet.rootRole).toBe("solo-root");
+    expect(fleet.rootReport.results[0]!.state).toBe("applicable");
+    expect(fleet.rootReport.journal).toHaveLength(0);
+    expect(existsSync(join(dir, "prompts/chk.md"))).toBe(false);
+  });
+
+  test("workspace check: tenant with applicable migration gets 'pending' verdict", async () => {
+    const rootDir = makeTempDir();
+    const configPath = scaffoldWorkspaceRoot(rootDir);
+    const childDir = makeTempDir();
+    scaffoldDeployment(childDir);
+
+    const migration = makeTenantMigration("t-chk", "prompts/t.md", "# T\n");
+    const fleet = await runFleetMigrate({
+      configPath,
+      migrations: [migration],
+      validateFn: async () => {},
+      isDirtyFn: () => false,
+      enumerateFn: fakeEnumerate([makeTenant(childDir)]),
+      check: true,
+    });
+
+    const entry = fleet.tenantEntries[0]!;
+    expect(entry.verdict).toBe("pending");
+    expect(entry.report?.results[0]?.state).toBe("applicable");
+    expect(entry.report?.journal).toHaveLength(0);
+    expect(existsSync(join(childDir, "prompts/t.md"))).toBe(false);
+  });
+
+  test("workspace check: tenant with no applicable migrations gets 'up-to-date' verdict", async () => {
+    const rootDir = makeTempDir();
+    const configPath = scaffoldWorkspaceRoot(rootDir);
+    const childDir = makeTempDir();
+    scaffoldDeployment(childDir);
+
+    const fleet = await runFleetMigrate({
+      configPath,
+      migrations: [],
+      validateFn: async () => {},
+      isDirtyFn: () => false,
+      enumerateFn: fakeEnumerate([makeTenant(childDir)]),
+      check: true,
+    });
+
+    const entry = fleet.tenantEntries[0]!;
+    expect(entry.verdict).toBe("up-to-date");
   });
 });
 

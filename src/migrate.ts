@@ -69,7 +69,7 @@ export type Migration = {
   ) => Record<string, string> | ConfigRefusal;
 };
 
-export type MigrationState = "applied" | "not-applicable" | "failed" | "manual";
+export type MigrationState = "applied" | "not-applicable" | "failed" | "manual" | "applicable";
 
 export type MigrationResult = {
   id: string;
@@ -104,7 +104,8 @@ export type TenantVerdict =
   | "failed"
   | "reverted"
   | "skipped"
-  | "invalid";
+  | "invalid"
+  | "pending";
 
 export type TenantMigrateEntry = {
   dir: string;
@@ -135,6 +136,8 @@ export type RunFleetMigrateOptions = {
   ) => Promise<WorkspaceEnumeration | null>;
   /** Override dirty-tree detection (test seam). */
   isDirtyFn?: (dir: string) => boolean | Promise<boolean>;
+  /** Preview mode: detect only, never write. */
+  check?: boolean;
 };
 
 // ----------------------------------------------------------------- helpers
@@ -179,6 +182,8 @@ export type RunMigrateOptions = {
   migrations?: readonly Migration[];
   /** Override post-apply validation (test seam). */
   validateFn?: (configPath: string, counter: number) => Promise<void>;
+  /** Preview mode: detect only, never write. Applicable migrations emit state "applicable". */
+  check?: boolean;
 };
 
 export async function runMigrate(opts: RunMigrateOptions): Promise<MigrateReport> {
@@ -219,6 +224,12 @@ export async function runMigrate(opts: RunMigrateOptions): Promise<MigrateReport
 
     if (data === null) {
       results.push({ id: migration.id, state: "not-applicable", detail: "" });
+      continue;
+    }
+
+    // check mode: report applicable and skip all writes
+    if (opts.check) {
+      results.push({ id: migration.id, state: "applicable", detail: migration.describe(data) });
       continue;
     }
 
@@ -318,7 +329,17 @@ function makeDefaultValidate(
   );
 }
 
-function computeTenantVerdict(report: MigrateReport, preexistingInvalid: boolean): TenantVerdict {
+function computeTenantVerdict(
+  report: MigrateReport,
+  preexistingInvalid: boolean,
+  check = false,
+): TenantVerdict {
+  if (check) {
+    if (report.results.some((r) => r.state === "failed")) return "failed";
+    if (report.results.some((r) => r.state === "applicable")) return "pending";
+    if (preexistingInvalid) return "invalid";
+    return "up-to-date";
+  }
   if (report.results.some((r) => r.state === "manual")) return "manual";
   if (
     report.results.some(
@@ -339,6 +360,7 @@ export async function runFleetMigrate(opts: RunFleetMigrateOptions): Promise<Fle
   const dir = dirname(configPath);
   const validate = makeDefaultValidate(opts.validateFn);
   const isDirty = opts.isDirtyFn ?? ((d: string) => isTreeDirty(d, git));
+  const check = opts.check ?? false;
 
   const userConfig = await loadUserConfig(configPath);
   const rootRole: "workspace-root" | "solo-root" =
@@ -352,6 +374,7 @@ export async function runFleetMigrate(opts: RunFleetMigrateOptions): Promise<Fle
     git,
     migrations: opts.migrations,
     validateFn: opts.validateFn,
+    check,
   });
 
   if (rootRole === "solo-root") {
@@ -390,6 +413,7 @@ export async function runFleetMigrate(opts: RunFleetMigrateOptions): Promise<Fle
         git,
         migrations: opts.migrations,
         validateFn: opts.validateFn,
+        check,
       });
 
       // When no migrations applied, check whether the config was already broken
@@ -406,7 +430,7 @@ export async function runFleetMigrate(opts: RunFleetMigrateOptions): Promise<Fle
       tenantEntries.push({
         dir: tenant.dir,
         slug: tenant.slug,
-        verdict: computeTenantVerdict(report, preexistingInvalid),
+        verdict: computeTenantVerdict(report, preexistingInvalid, check),
         report,
       });
     }
@@ -421,12 +445,14 @@ const STATE_MARK: Record<Exclude<MigrationState, "not-applicable">, string> = {
   applied: "✓",
   failed: "✗",
   manual: "!",
+  applicable: "~",
 };
 
 export function formatMigrateReport(report: MigrateReport): string {
   const shaLabel = report.sha !== null ? report.sha.slice(0, 12) : "(non-repo checkout)";
   const lines: string[] = [`[phoebe] migrate — ${shaLabel}`];
 
+  let applicable = 0;
   let applied = 0;
   let failed = 0;
   let manual = 0;
@@ -437,7 +463,8 @@ export function formatMigrateReport(report: MigrateReport): string {
       notApplicable++;
       continue;
     }
-    if (result.state === "applied") applied++;
+    if (result.state === "applicable") applicable++;
+    else if (result.state === "applied") applied++;
     else if (result.state === "failed") failed++;
     else if (result.state === "manual") manual++;
     lines.push(`  ${STATE_MARK[result.state]} ${result.id.padEnd(28)} ${result.detail}`);
@@ -445,11 +472,19 @@ export function formatMigrateReport(report: MigrateReport): string {
 
   // Summary line collapsing not-applicable
   const parts: string[] = [];
+  if (applicable > 0) parts.push(`${String(applicable)} applicable`);
   if (applied > 0) parts.push(`${String(applied)} applied`);
   if (failed > 0) parts.push(`${String(failed)} failed`);
   if (manual > 0) parts.push(`${String(manual)} manual`);
   if (notApplicable > 0) parts.push(`${String(notApplicable)} not applicable`);
   if (parts.length > 0) lines.push(parts.join(", "));
+
+  // Dependent-migration caveat — only when ≥1 migration is applicable (check mode)
+  if (applicable > 0) {
+    lines.push(
+      "Note: a migration depending on an earlier applicable one may appear not-applicable here.",
+    );
+  }
 
   // Uncommitted listing — only paths from the journal (pre-existing dirt excluded)
   if (report.journal.length > 0) {
@@ -474,6 +509,7 @@ const VERDICT_MARK: Record<TenantVerdict, string> = {
   reverted: "✗",
   skipped: "—",
   invalid: "⚠",
+  pending: "~",
 };
 
 export function formatFleetMigrateReport(report: FleetMigrateReport): string {
@@ -484,7 +520,8 @@ export function formatFleetMigrateReport(report: FleetMigrateReport): string {
   // Root section
   lines.push("");
   lines.push(`root (${report.rootReport.dir}):`);
-  let applied = 0,
+  let applicable = 0,
+    applied = 0,
     failed = 0,
     manual = 0,
     notApplicable = 0;
@@ -493,12 +530,14 @@ export function formatFleetMigrateReport(report: FleetMigrateReport): string {
       notApplicable++;
       continue;
     }
-    if (result.state === "applied") applied++;
+    if (result.state === "applicable") applicable++;
+    else if (result.state === "applied") applied++;
     else if (result.state === "failed") failed++;
     else if (result.state === "manual") manual++;
     lines.push(`  ${STATE_MARK[result.state]} ${result.id.padEnd(28)} ${result.detail}`);
   }
   const rootParts: string[] = [];
+  if (applicable > 0) rootParts.push(`${String(applicable)} applicable`);
   if (applied > 0) rootParts.push(`${String(applied)} applied`);
   if (failed > 0) rootParts.push(`${String(failed)} failed`);
   if (manual > 0) rootParts.push(`${String(manual)} manual`);
@@ -526,6 +565,17 @@ export function formatFleetMigrateReport(report: FleetMigrateReport): string {
         }
       }
     }
+  }
+
+  // Dependent-migration caveat — only when ≥1 migration is applicable (check mode)
+  const anyApplicable =
+    report.rootReport.results.some((r) => r.state === "applicable") ||
+    report.tenantEntries.some((e) => e.report?.results.some((r) => r.state === "applicable"));
+  if (anyApplicable) {
+    lines.push("");
+    lines.push(
+      "Note: a migration depending on an earlier applicable one may appear not-applicable here.",
+    );
   }
 
   // Uncommitted listing — grouped by repository directory
@@ -562,16 +612,22 @@ export function formatFleetMigrateReport(report: FleetMigrateReport): string {
 export type ParsedMigrateArgs = {
   configPath: string | undefined;
   help: boolean;
+  check: boolean;
 };
 
 export function parseMigrateArgs(argv: readonly string[]): ParsedMigrateArgs {
   let configPath: string | undefined;
   let help = false;
+  let check = false;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === "--help" || arg === "-h") {
       help = true;
+      continue;
+    }
+    if (arg === "--check") {
+      check = true;
       continue;
     }
     if (arg === "--config" || arg === "-c") {
@@ -598,13 +654,14 @@ export function parseMigrateArgs(argv: readonly string[]): ParsedMigrateArgs {
     );
   }
 
-  return { configPath, help };
+  return { configPath, help, check };
 }
 
 const MIGRATE_HELP_TEXT = `phoebe migrate — apply deployment migrations
 
 Usage:
   phoebe migrate [--config <path>]
+  phoebe migrate --check [--config <path>]
 
 Runs every registered migration against the deployment root in order. Each
 migration detects whether it applies, stages writes, flushes them atomically,
@@ -618,10 +675,13 @@ After a run, any paths Phoebe wrote are listed with a review command.
 Phoebe never commits: review and commit the changes yourself.
 
 Options:
+  --check               Preview mode — detect only, nothing written. Exit 1
+                        when ≥1 migration is applicable, 0 when none.
   --config, -c <path>   Path to phoebe.config.ts (default: ./phoebe.config.ts)
   --help, -h            Show this message
 
 Exit code: 0 when the root migrated and validated; 1 when any migration failed.
+  With --check: 1 when ≥1 migration is applicable, 0 when none.
 `;
 
 export async function runMigrateCli(argv: readonly string[]): Promise<void> {
@@ -632,7 +692,7 @@ export async function runMigrateCli(argv: readonly string[]): Promise<void> {
   }
 
   const configPath = resolveConfigPath(parsed.configPath, process.cwd());
-  const fleet = await runFleetMigrate({ configPath });
+  const fleet = await runFleetMigrate({ configPath, check: parsed.check });
 
   if (fleet.rootRole === "solo-root") {
     process.stdout.write(`${formatMigrateReport(fleet.rootReport)}\n`);
@@ -640,8 +700,16 @@ export async function runMigrateCli(argv: readonly string[]): Promise<void> {
     process.stdout.write(`${formatFleetMigrateReport(fleet)}\n`);
   }
 
-  // Exit code reflects the root alone
-  if (!fleet.rootReport.ok) {
-    process.exitCode = 1;
+  if (parsed.check) {
+    // Exit 1 when ≥1 migration is applicable across the entire fleet
+    const anyApplicable =
+      fleet.rootReport.results.some((r) => r.state === "applicable") ||
+      fleet.tenantEntries.some((e) => e.report?.results.some((r) => r.state === "applicable"));
+    if (anyApplicable) process.exitCode = 1;
+  } else {
+    // Exit code reflects the root alone
+    if (!fleet.rootReport.ok) {
+      process.exitCode = 1;
+    }
   }
 }
