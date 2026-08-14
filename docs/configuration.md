@@ -269,7 +269,9 @@ later boots fetch instead of re-cloning. (`engine` is not `PHOEBE_*`-overlayable
 
 This field is the **upgrade knob**: editing `ref` is how a deployment moves to a
 new engine, and the running container picks it up without a rebuild or a restart
-(see Reconcile below, and [`upgrading.md`](upgrading.md#upgrading)).
+(see Reconcile below, and [`upgrading.md`](upgrading.md#upgrading)). When the
+ref moves, run `phoebe migrate` to apply any config or artifact changes the new
+engine requires — see [`upgrading.md` → What Phoebe may write](upgrading.md#what-phoebe-may-write-in-your-repos).
 
 ### Reconcile (config + ref watch)
 

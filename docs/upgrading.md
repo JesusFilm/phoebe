@@ -76,20 +76,77 @@ phoebe upgrade main --engine    # pin back to branch-following
 phoebe upgrade --check [--json] # report current vs latest; exit 1 when behind
 ```
 
-`phoebe upgrade` is the one sanctioned case of Phoebe writing your root config:
-an operator-initiated command, rewriting only the `engine.ref` string literal
-(or inserting the scaffold-shaped `engine` block when absent), in place on the
-same inode so the bind-mount watch keeps working. Anything fancier than a plain
-string literal is refused with the exact one-line edit printed — the file stays
-yours. Refs are validated against the remote **before** the pin moves (a typo'd
-tag changes nothing), and every upgrade prints the previous ref plus the exact
-rollback command. Recommended posture for production: **pin to release tags and
-advance with `phoebe upgrade`**; branch-following is the opt-in live mode.
+### What Phoebe may write in your repos
+
+**Closed set** — the only things Phoebe may ever write in a consumer's repos:
+
+- The `engine.ref` string literal in the root `phoebe.config.ts` — written by
+  `phoebe upgrade` when it succeeds.
+- Migration-owned config edits (e.g., appending a work kind to `workOrder`) —
+  written by `phoebe migrate` when a migration applies and validation succeeds.
+- Migration-scaffolded artifacts (new prompt files, compose fragments) — written
+  by `phoebe migrate` as create-if-absent; operator overrides are never touched.
+
+**Four prohibitions — Phoebe never:**
+
+1. Edits your fleet declaration: `workspace.tenants` is yours. No migration may
+   add, remove, or reorder tenants. See [Fleet invariants](workspace.md#fleet-invariants)
+   and [Declaring the fleet](workspace.md#declaring-the-fleet-workspacetenants).
+2. Commits. It writes files and lists them; the operator reviews and commits per
+   repo.
+3. Runs these writes from a boot, poll, or reconcile path. Only the two
+   operator-initiated verbs — `upgrade` and `migrate` — may write.
+4. Touches `/data`, named volumes, or git history.
+
+Every other "Phoebe never writes" or "Phoebe never edits the root config" claim
+in this documentation is a narrowing of rule 1 above: Phoebe may now write
+config _content_, but it may never write your _fleet declaration_. See
+[`workspace.md` → Declaring the fleet](workspace.md#declaring-the-fleet-workspacetenants).
+
+### `phoebe upgrade` — moving the engine ref
+
+`phoebe upgrade` is an operator-initiated command that rewrites only the
+`engine.ref` string literal (or inserts the scaffold-shaped `engine` block when
+absent), in place on the same inode so the bind-mount watch keeps working.
+Anything fancier than a plain string literal is refused with the exact one-line
+edit printed — the file stays yours. Refs are validated against the remote
+**before** the pin moves (a typo'd tag changes nothing), and every upgrade prints
+the previous ref plus the exact rollback command. Recommended posture for
+production: **pin to release tags and advance with `phoebe upgrade`**;
+branch-following is the opt-in live mode.
 
 The `--cli` half runs `npm install -g phoebe-agent@<version>` on a host; inside
 the container the launcher is baked into the image, so it prints the rebuild
 step instead. A commit SHA or branch ref is engine-only — the npm package has
 no version for it.
+
+**Two-voices output.** `phoebe upgrade` writes success lines and informational
+notes to stdout and diagnostic warnings or refusal details to stderr. A script
+that only wants the final result can redirect stderr; a human-facing terminal sees
+both voices interleaved. The engine-refusal message goes to stderr and exits 1;
+the engine-success message (`v0.3.0 → v0.4.0 written to …`) goes to stdout.
+
+**`upgrade --check` and its gap.** `phoebe upgrade --check [--json]` reports
+versions only: the configured engine ref versus the latest release tag, and the
+installed CLI versus the npm registry. It does **not** preview what migrations
+would run when you move to the target version. The reason: previewing migrations
+requires materializing the target engine checkout — a full git clone on every
+scripted check. That cost is deliberately deferred.
+
+What the two modes preview:
+
+- `upgrade --check` previews versions (current vs latest). It says "you are
+  behind" but not "here is what will change in your files."
+- `migrate --check` previews migrations on the ref you are **already on**, not
+  the one you are moving to.
+
+The gap is livable because the apply path has the same safety net: nothing
+commits, failed children revert, and the ref flip lands last. If a migration
+leaves the root config invalid the flip is aborted; if a child fails or has a
+dirty tree it is skipped with instructions to re-run. The recorded escape hatch
+is `upgrade --check --migrations` — a clean later addition that previews the
+target ref's migrations without applying them. Nobody should re-litigate this as
+an oversight.
 
 However the edit happens, applying it works the same way:
 
@@ -120,6 +177,143 @@ docker compose --env-file ../.env up -d
 The `--env-file ../.env` is needed because the scaffolded `.env` lives at the
 scaffold root while the compose files live in `container/`; Compose otherwise
 only auto-loads a `.env` sitting next to the compose file.
+
+### `phoebe migrate` — reshaping your files for the current ref
+
+`phoebe migrate` applies every registered migration against the deployment in
+order, detecting whether each one is applicable, staging writes, validating the
+result, and reverting on failure. It is safe to run repeatedly — migrations are
+idempotent by construction (a second run reports all not-applicable).
+
+```bash
+phoebe migrate                    # apply all migrations; list what was written
+phoebe migrate --check            # preview: which migrations would apply? (no writes)
+phoebe migrate --json             # apply, emit machine-readable report
+phoebe migrate --check --json     # preview, machine-readable
+phoebe migrate --config <path>    # specify the root phoebe.config.ts explicitly
+```
+
+**Exit codes:**
+
+| Mode      | Exit 0                                     | Exit 1 (nonzero)                            |
+| --------- | ------------------------------------------ | ------------------------------------------- |
+| apply     | root migrated and valid (or nothing to do) | at least one migration failed — do not flip |
+| `--check` | nothing applicable                         | ≥1 migration is applicable                  |
+
+In apply mode, per-child failures are never reported as the command's exit code:
+a child failing or being held does not set exit 1. Only root-level failure
+(which would make the deployment invalid under the current schema) triggers exit 1
+and blocks the ref flip.
+
+**Per-directory verdicts** (the `verdict` field in `--json`, a fixed closed union):
+
+| Verdict    | When                                                              | What you do                                                         |
+| ---------- | ----------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `clean`    | No applicable migrations; deployment is current                   | Nothing — already done                                              |
+| `migrated` | At least one migration applied; config valid; paths listed        | Review the listed paths and commit in that repo                     |
+| `failed`   | At least one migration's writes were reverted (validation failed) | Read the error, fix the config or re-run when the issue is resolved |
+| `manual`   | At least one migration declined to auto-rewrite                   | Follow the printed instruction; make the edit by hand, then re-run  |
+| `partial`  | Some migrations applied, some failed or manual                    | Commit the applied paths; follow manual instructions; re-run later  |
+| `pending`  | `--check` mode: at least one migration would apply                | Run `phoebe migrate` (without `--check`) when ready                 |
+| `held`     | Child's working tree had uncommitted changes; no migrations ran   | Commit or stash the child's uncommitted work, then re-run `migrate` |
+
+**Clean-tree asymmetry.** A dirty child is skipped (`held`) while the root is
+not gated on a clean tree. The reason: the clean-tree precondition on a child
+makes the on-failure revert precise — every file in the revert set was placed
+there by this run, so reversing it restores exactly the pre-migration state.
+Without that guarantee a revert could clobber the operator's in-progress work.
+The root must be able to land even when a child is dirty — the deployment
+needs to be valid under the new schema before the ref flip — so the root is
+ungated. In practice, run `phoebe migrate` from a clean workspace: stage or
+stash each child's pending work first.
+
+After a run, any paths written are listed with a review command. Phoebe never
+commits: review and commit the changes yourself.
+
+**`--json` contract (not a field table).** The envelope is stable and
+additive-only: fields may be added in later engine releases, never removed or
+repurposed. There is no schema-version field — any bump would strand exactly the
+older CLIs that most need to upgrade. The shape:
+
+```json
+{
+  "report": 1,
+  "mode": "apply",
+  "engine": { "dir": "/data/engine", "sha": "abc123def456", "source": "github" },
+  "root": {
+    "dir": "/etc/phoebe",
+    "role": "solo-root",
+    "verdict": "migrated",
+    "reason": null,
+    "validation": "ok",
+    "migrations": [
+      {
+        "id": "add-research-prompt",
+        "title": "Scaffold missing research-prompt.md",
+        "status": "applied",
+        "detail": "scaffold prompts/research-prompt.md from the shipped default",
+        "paths": ["prompts/research-prompt.md"]
+      },
+      {
+        "id": "add-research-to-workorder",
+        "title": "Add \"research\" to workOrder",
+        "status": "not-applicable",
+        "detail": "",
+        "paths": []
+      }
+    ]
+  },
+  "tenants": [],
+  "counts": { "applied": 1, "not-applicable": 1, "failed": 0, "manual": 0 },
+  "ok": true
+}
+```
+
+Key contract rules:
+
+- `report: 1` — the envelope version; constant.
+- `ok` mirrors the process exit code: `true` → exit 0, `false` → exit nonzero.
+- `mode` discriminates apply/check mode: the union of `migrations[].status` widens
+  (apply: `applied`, `not-applicable`, `failed`, `manual`; check: `applicable`,
+  `not-applicable`) rather than blurs — `applicable` never appears in apply output,
+  `applied` never in check output.
+- Pre-image file contents never appear: the journal holds them for revert only.
+  Echoing operator file contents into logs and CI output is not acceptable.
+- `migrations[].paths` is the single source for written files; there is no
+  top-level `wrote` array. The uncommitted listing derives from this.
+- `not-applicable` migrations are present in the JSON (collapsed in the human
+  render). Suppressing them would deny a script the full picture.
+
+### Upgrading a workspace
+
+The end-to-end ritual for advancing a workspace deployment to a new engine version:
+
+```bash
+# 1. Move the pin
+phoebe upgrade v0.4.0 --engine
+#    boot drains and relaunches onto it within one reconcile interval (default 60s)
+
+# 2. Apply migrations — root first, then every child
+phoebe migrate
+#    lists uncommitted paths Phoebe wrote; root failures abort, child failures are reported
+#    per child but not fatal
+
+# 3. Review what Phoebe wrote in each child
+git -C ./service-a diff -- phoebe.config.ts prompts/research-prompt.md
+git -C ./service-b diff -- phoebe.config.ts
+
+# 4. Commit per-repo
+git -C ./service-a add -p && git -C ./service-a commit -m "chore: apply phoebe v0.4.0 migrations"
+git -C ./service-b add -p && git -C ./service-b commit -m "chore: apply phoebe v0.4.0 migrations"
+
+# 5. Confirm the deployment is healthy
+phoebe doctor
+```
+
+`migrate` prints an uncommitted-paths listing with the exact `git diff` command
+for each directory. Follow that listing rather than guessing which files changed.
+For a child that was `held` (dirty tree), stash or commit its pending work and
+re-run `phoebe migrate` for that child.
 
 ### One-time: chown the volumes when moving to the unprivileged image
 
@@ -218,13 +412,14 @@ A few properties the templates rely on — keep them intact when you customise:
 - **`.gitignore` edits are additive.** `init` only appends; it never rewrites
   your existing ignore rules.
 
-## Upgrading a pre-multi-tenant deployment (clean break)
+## Upgrading a pre-multi-tenant deployment (volume clean break)
 
 Multi-tenant Phoebe changed the on-disk layout: state now nests per repo under
 two named volumes (`phoebe-data` → `/data/repos/<owner>/<repo>/{repo,worktrees,state}`,
 `phoebe-engine` → `/data/engine`) instead of the old four (`phoebe-repo`,
-`phoebe-worktrees`, `phoebe-state`, `phoebe-engine`). There is **no in-place
-migration** — it is a clean break:
+`phoebe-worktrees`, `phoebe-state`, `phoebe-engine`). There is **no volume
+migration** — it is a clean break. Migrations rewrite tracked files in your
+repos; they never touch `/data`, named volumes, or git history.
 
 1. `phoebe init` a fresh deployment (or pull the new `container/` templates) so
    `compose.yml` declares the two volumes and mounts the deployment dir at
@@ -248,4 +443,3 @@ repos in one container means co-locating them in **one trust domain**.
 
 For the full, execute-top-to-bottom install runbook — prerequisites, secrets,
 first one-shot, starting the daemon — see [`ai-install.md`](ai-install.md).
-</content>

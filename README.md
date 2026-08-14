@@ -109,7 +109,8 @@ Docs live under [`docs/`](docs/):
 - [`docs/workspace.md`](docs/workspace.md) — workspace mode topology, two-tier `.env`, operator runbook (plain-clone or submodule children).
 - [`docs/work-kinds.md`](docs/work-kinds.md) — issues / conflicts / checks / reviews / research mechanics, PR-scan scope, poll loop.
 - [`docs/operating.md`](docs/operating.md) — controlling Phoebe as a human (labels, drafts, watermarks).
-- [`docs/upgrading.md`](docs/upgrading.md) — the init / pin / upgrade contract.
+- [`docs/upgrading.md`](docs/upgrading.md) — the init / pin / upgrade contract, `phoebe migrate` verb, and what Phoebe may write in your repos.
+- [`docs/migrations.md`](docs/migrations.md) — engine-contributor guide: the `Migration` interface, roles, detect/describe/apply, refusal semantics, and idempotence tests.
 - [`docs/ai-install.md`](docs/ai-install.md) — a deterministic, agent-followable install runbook.
 - [`docs/releasing.md`](docs/releasing.md) — the Changesets + npm trusted-publishing release flow.
 - [`docs/phoebe-core-onboarding.md`](docs/phoebe-core-onboarding.md) — worked onboarding for `JesusFilm/core` (Nx + pnpm, no vp).
