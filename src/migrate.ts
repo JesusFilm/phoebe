@@ -67,6 +67,7 @@ export type MigrationState = "applied" | "not-applicable" | "failed" | "manual" 
 
 export type MigrationResult = {
   id: string;
+  title?: string;
   state: MigrationState;
   detail: string;
 };
@@ -114,6 +115,7 @@ export type TenantMigrateEntry = {
 export type FleetMigrateReport = {
   rootReport: MigrateReport;
   rootRole: "workspace-root" | "solo-root";
+  rootSlug?: string | null;
   tenantEntries: TenantMigrateEntry[];
 };
 
@@ -210,6 +212,7 @@ export async function runMigrate(opts: RunMigrateOptions): Promise<MigrateReport
     } catch (err) {
       results.push({
         id: migration.id,
+        title: migration.title,
         state: "failed",
         detail: `detect threw: ${err instanceof Error ? err.message : String(err)}`,
       });
@@ -217,13 +220,23 @@ export async function runMigrate(opts: RunMigrateOptions): Promise<MigrateReport
     }
 
     if (data === null) {
-      results.push({ id: migration.id, state: "not-applicable", detail: "" });
+      results.push({
+        id: migration.id,
+        title: migration.title,
+        state: "not-applicable",
+        detail: "",
+      });
       continue;
     }
 
     // check mode: report applicable and skip all writes
     if (opts.check) {
-      results.push({ id: migration.id, state: "applicable", detail: migration.describe(data) });
+      results.push({
+        id: migration.id,
+        title: migration.title,
+        state: "applicable",
+        detail: migration.describe(data),
+      });
       continue;
     }
 
@@ -234,6 +247,7 @@ export async function runMigrate(opts: RunMigrateOptions): Promise<MigrateReport
     } catch (err) {
       results.push({
         id: migration.id,
+        title: migration.title,
         state: "failed",
         detail: `apply threw: ${err instanceof Error ? err.message : String(err)}`,
       });
@@ -274,6 +288,7 @@ export async function runMigrate(opts: RunMigrateOptions): Promise<MigrateReport
       }
       results.push({
         id: migration.id,
+        title: migration.title,
         state: "failed",
         detail: `validation failed (reverted): ${err instanceof Error ? err.message : String(err)}`,
       });
@@ -283,6 +298,7 @@ export async function runMigrate(opts: RunMigrateOptions): Promise<MigrateReport
     journal.push(...entries);
     results.push({
       id: migration.id,
+      title: migration.title,
       state: "applied",
       detail: migration.describe(data),
     });
@@ -316,7 +332,7 @@ function makeDefaultValidate(
   );
 }
 
-function computeTenantVerdict(
+export function computeTenantVerdict(
   report: MigrateReport,
   preexistingInvalid: boolean,
   check = false,
@@ -352,6 +368,7 @@ export async function runFleetMigrate(opts: RunFleetMigrateOptions): Promise<Fle
   const userConfig = await loadUserConfig(configPath);
   const rootRole: "workspace-root" | "solo-root" =
     userConfig.workspace !== undefined ? "workspace-root" : "solo-root";
+  const rootSlug: string | null = userConfig.repoSlug ?? null;
 
   // Migrate root first — no dirty-tree gate for root
   const rootReport = await runMigrate({
@@ -365,7 +382,7 @@ export async function runFleetMigrate(opts: RunFleetMigrateOptions): Promise<Fle
   });
 
   if (rootRole === "solo-root") {
-    return { rootReport, rootRole, tenantEntries: [] };
+    return { rootReport, rootRole, rootSlug, tenantEntries: [] };
   }
 
   const enumerate = opts.enumerateFn ?? enumerateWorkspaceTenants;
@@ -423,7 +440,7 @@ export async function runFleetMigrate(opts: RunFleetMigrateOptions): Promise<Fle
     }
   }
 
-  return { rootReport, rootRole, tenantEntries };
+  return { rootReport, rootRole, rootSlug, tenantEntries };
 }
 
 // ----------------------------------------------------------------- formatter
@@ -594,18 +611,166 @@ export function formatFleetMigrateReport(report: FleetMigrateReport): string {
   return lines.join("\n");
 }
 
+// ----------------------------------------------------------------- JSON envelope
+
+export type MigrateJsonMigration = {
+  id: string;
+  title: string;
+  status: MigrationState;
+  detail: string;
+  paths: string[];
+};
+
+export type MigrateJsonEntry = {
+  dir: string;
+  slug: string | null;
+  role: "solo-root" | "workspace-root" | "tenant";
+  verdict: TenantVerdict;
+  reason?: string;
+  validation: boolean | null;
+  migrations: MigrateJsonMigration[];
+};
+
+export type MigrateJsonCounts = {
+  migrations: {
+    applied: number;
+    applicable: number;
+    failed: number;
+    manual: number;
+    notApplicable: number;
+  };
+  tenants: {
+    migrated: number;
+    pending: number;
+    upToDate: number;
+    invalid: number;
+    failed: number;
+    reverted: number;
+    manual: number;
+    skipped: number;
+  };
+};
+
+export type MigrateJson = {
+  mode: "apply" | "check";
+  report: 1;
+  engine: {
+    dir: string;
+    sha: string | null;
+    source: "git" | "local";
+  };
+  root: MigrateJsonEntry;
+  tenants: MigrateJsonEntry[];
+  counts: MigrateJsonCounts;
+  ok: boolean;
+};
+
+function entryValidation(verdict: TenantVerdict): boolean | null {
+  if (verdict === "migrated" || verdict === "up-to-date") return true;
+  if (verdict === "invalid") return false;
+  return null;
+}
+
+function buildJsonMigrations(report: MigrateReport): MigrateJsonMigration[] {
+  return report.results.map((result) => ({
+    id: result.id,
+    title: result.title ?? result.id,
+    status: result.state,
+    detail: result.detail,
+    paths: report.journal.filter((e) => e.migrationId === result.id).map((e) => e.relPath),
+  }));
+}
+
+export function buildMigrateJson(
+  fleet: FleetMigrateReport,
+  opts: { mode: "apply" | "check" },
+): MigrateJson {
+  const check = opts.mode === "check";
+  const sha = fleet.rootReport.sha;
+  const rootVerdict = computeTenantVerdict(fleet.rootReport, false, check);
+
+  const root: MigrateJsonEntry = {
+    dir: fleet.rootReport.dir,
+    slug: fleet.rootSlug ?? null,
+    role: fleet.rootRole,
+    verdict: rootVerdict,
+    validation: entryValidation(rootVerdict),
+    migrations: buildJsonMigrations(fleet.rootReport),
+  };
+
+  const tenants: MigrateJsonEntry[] = fleet.tenantEntries.map((entry) => {
+    if (entry.verdict === "skipped") {
+      return {
+        dir: entry.dir,
+        slug: entry.slug,
+        role: "tenant" as const,
+        verdict: "skipped" as const,
+        reason: entry.reason,
+        validation: null,
+        migrations: [],
+      };
+    }
+    return {
+      dir: entry.dir,
+      slug: entry.slug,
+      role: "tenant" as const,
+      verdict: entry.verdict,
+      validation: entryValidation(entry.verdict),
+      migrations: buildJsonMigrations(entry.report!),
+    };
+  });
+
+  const allMigrations = [root, ...tenants].flatMap((e) => e.migrations);
+  const counts: MigrateJsonCounts = {
+    migrations: {
+      applied: allMigrations.filter((m) => m.status === "applied").length,
+      applicable: allMigrations.filter((m) => m.status === "applicable").length,
+      failed: allMigrations.filter((m) => m.status === "failed").length,
+      manual: allMigrations.filter((m) => m.status === "manual").length,
+      notApplicable: allMigrations.filter((m) => m.status === "not-applicable").length,
+    },
+    tenants: {
+      migrated: tenants.filter((e) => e.verdict === "migrated").length,
+      pending: tenants.filter((e) => e.verdict === "pending").length,
+      upToDate: tenants.filter((e) => e.verdict === "up-to-date").length,
+      invalid: tenants.filter((e) => e.verdict === "invalid").length,
+      failed: tenants.filter((e) => e.verdict === "failed").length,
+      reverted: tenants.filter((e) => e.verdict === "reverted").length,
+      manual: tenants.filter((e) => e.verdict === "manual").length,
+      skipped: tenants.filter((e) => e.verdict === "skipped").length,
+    },
+  };
+
+  const anyApplicable =
+    fleet.rootReport.results.some((r) => r.state === "applicable") ||
+    fleet.tenantEntries.some((e) => e.report?.results.some((r) => r.state === "applicable"));
+  const ok = check ? !anyApplicable : fleet.rootReport.ok;
+
+  return {
+    mode: opts.mode,
+    report: 1,
+    engine: { dir: engineDir(), sha, source: sha !== null ? "git" : "local" },
+    root,
+    tenants,
+    counts,
+    ok,
+  };
+}
+
 // ----------------------------------------------------------------- CLI
 
 export type ParsedMigrateArgs = {
   configPath: string | undefined;
   help: boolean;
   check: boolean;
+  json: boolean;
 };
 
 export function parseMigrateArgs(argv: readonly string[]): ParsedMigrateArgs {
   let configPath: string | undefined;
   let help = false;
   let check = false;
+  let json = false;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
@@ -615,6 +780,10 @@ export function parseMigrateArgs(argv: readonly string[]): ParsedMigrateArgs {
     }
     if (arg === "--check") {
       check = true;
+      continue;
+    }
+    if (arg === "--json") {
+      json = true;
       continue;
     }
     if (arg === "--config" || arg === "-c") {
@@ -641,7 +810,7 @@ export function parseMigrateArgs(argv: readonly string[]): ParsedMigrateArgs {
     );
   }
 
-  return { configPath, help, check };
+  return { configPath, help, check, json };
 }
 
 const MIGRATE_HELP_TEXT = `phoebe migrate — apply deployment migrations
@@ -664,6 +833,8 @@ Phoebe never commits: review and commit the changes yourself.
 Options:
   --check               Preview mode — detect only, nothing written. Exit 1
                         when ≥1 migration is applicable, 0 when none.
+  --json                Emit a machine-readable JSON envelope to stdout instead
+                        of the human-readable report.
   --config, -c <path>   Path to phoebe.config.ts (default: ./phoebe.config.ts)
   --help, -h            Show this message
 
@@ -681,7 +852,11 @@ export async function runMigrateCli(argv: readonly string[]): Promise<void> {
   const configPath = resolveConfigPath(parsed.configPath, process.cwd());
   const fleet = await runFleetMigrate({ configPath, check: parsed.check });
 
-  if (fleet.rootRole === "solo-root") {
+  if (parsed.json) {
+    process.stdout.write(
+      `${JSON.stringify(buildMigrateJson(fleet, { mode: parsed.check ? "check" : "apply" }))}\n`,
+    );
+  } else if (fleet.rootRole === "solo-root") {
     process.stdout.write(`${formatMigrateReport(fleet.rootReport)}\n`);
   } else {
     process.stdout.write(`${formatFleetMigrateReport(fleet)}\n`);

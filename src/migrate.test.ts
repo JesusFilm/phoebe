@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
 import { researchPromptMigration } from "./migrations/m001-research-prompt.ts";
 import {
+  buildMigrateJson,
   formatFleetMigrateReport,
   formatMigrateReport,
   parseMigrateArgs,
@@ -23,6 +24,7 @@ import {
   runMigrate,
   type FleetMigrateReport,
   type Migration,
+  type MigrateJson,
   type MigrateReport,
 } from "./migrate.ts";
 import type { WorkspaceEnumeration } from "./tenant-commands.ts";
@@ -111,7 +113,12 @@ function makeThrowingMigration(id: string): Migration {
 
 describe("parseMigrateArgs", () => {
   test("empty argv produces defaults", () => {
-    expect(parseMigrateArgs([])).toEqual({ configPath: undefined, help: false, check: false });
+    expect(parseMigrateArgs([])).toEqual({
+      configPath: undefined,
+      help: false,
+      check: false,
+      json: false,
+    });
   });
 
   test("--help and -h set help", () => {
@@ -134,6 +141,7 @@ describe("parseMigrateArgs", () => {
       configPath: "my.config.ts",
       help: false,
       check: false,
+      json: false,
     });
   });
 
@@ -1251,5 +1259,362 @@ describe("runMigrate with real research prompt migration", () => {
     expect(second.results[0]!.state).toBe("not-applicable");
     expect(second.journal).toHaveLength(0);
     expect(second.ok).toBe(true);
+  });
+});
+
+// ----------------------------------------------------------------- parseMigrateArgs --json
+
+describe("parseMigrateArgs --json", () => {
+  test("--json sets json flag", () => {
+    expect(parseMigrateArgs(["--json"]).json).toBe(true);
+  });
+
+  test("defaults to json=false", () => {
+    expect(parseMigrateArgs([]).json).toBe(false);
+  });
+
+  test("--json --check together", () => {
+    const result = parseMigrateArgs(["--json", "--check"]);
+    expect(result.json).toBe(true);
+    expect(result.check).toBe(true);
+  });
+});
+
+// ----------------------------------------------------------------- buildMigrateJson
+
+describe("buildMigrateJson", () => {
+  function makeBaseFleet(overrides?: Partial<FleetMigrateReport>): FleetMigrateReport {
+    return {
+      rootReport: {
+        sha: "abc123def456789012345678901234567890abcd",
+        dir: "/deployments/root",
+        results: [],
+        journal: [],
+        ok: true,
+      },
+      rootRole: "solo-root",
+      rootSlug: "acme/root",
+      tenantEntries: [],
+      ...overrides,
+    };
+  }
+
+  test("envelope shape: report=1, mode, engine, root, tenants, counts, ok; no version field", () => {
+    const json = buildMigrateJson(makeBaseFleet(), { mode: "apply" });
+    expect(json.report).toBe(1);
+    expect(json.mode).toBe("apply");
+    expect(json).toHaveProperty("engine");
+    expect(json).toHaveProperty("root");
+    expect(json).toHaveProperty("tenants");
+    expect(json).toHaveProperty("counts");
+    expect(json).toHaveProperty("ok");
+    expect(json).not.toHaveProperty("version");
+    expect(json).not.toHaveProperty("schemaVersion");
+  });
+
+  test("mode discriminates apply vs check", () => {
+    expect(buildMigrateJson(makeBaseFleet(), { mode: "apply" }).mode).toBe("apply");
+    expect(buildMigrateJson(makeBaseFleet(), { mode: "check" }).mode).toBe("check");
+  });
+
+  test("engine carries dir, sha, source", () => {
+    const json = buildMigrateJson(makeBaseFleet(), { mode: "apply" });
+    expect(typeof json.engine.dir).toBe("string");
+    expect(json.engine.sha).toBe("abc123def456789012345678901234567890abcd");
+    expect(json.engine.source).toBe("git");
+  });
+
+  test("engine.source is 'local' when sha is null", () => {
+    const fleet = makeBaseFleet({
+      rootReport: { sha: null, dir: "/deployments/root", results: [], journal: [], ok: true },
+    });
+    expect(buildMigrateJson(fleet, { mode: "apply" }).engine.source).toBe("local");
+  });
+
+  test("not-applicable migrations appear in JSON (not collapsed)", () => {
+    const fleet = makeBaseFleet({
+      rootReport: {
+        sha: null,
+        dir: "/d",
+        results: [
+          { id: "na-1", title: "NA one", state: "not-applicable", detail: "" },
+          { id: "applied-1", title: "Applied one", state: "applied", detail: "did it" },
+        ],
+        journal: [{ dir: "/d", migrationId: "applied-1", relPath: "foo.md", before: null }],
+        ok: true,
+      },
+    });
+    const json = buildMigrateJson(fleet, { mode: "apply" });
+    expect(json.root.migrations).toHaveLength(2);
+    expect(json.root.migrations[0]!.status).toBe("not-applicable");
+    expect(json.root.migrations[0]!.id).toBe("na-1");
+    expect(json.root.migrations[1]!.status).toBe("applied");
+  });
+
+  test("paths on migrations is the single source of written files", () => {
+    const fleet = makeBaseFleet({
+      rootReport: {
+        sha: null,
+        dir: "/d",
+        results: [
+          { id: "m1", title: "M1", state: "applied", detail: "wrote a.md and b.md" },
+          { id: "m2", title: "M2", state: "not-applicable", detail: "" },
+        ],
+        journal: [
+          { dir: "/d", migrationId: "m1", relPath: "a.md", before: null },
+          { dir: "/d", migrationId: "m1", relPath: "b.md", before: "old" },
+        ],
+        ok: true,
+      },
+    });
+    const json = buildMigrateJson(fleet, { mode: "apply" });
+    const m1 = json.root.migrations.find((m) => m.id === "m1")!;
+    const m2 = json.root.migrations.find((m) => m.id === "m2")!;
+    expect(m1.paths).toEqual(["a.md", "b.md"]);
+    expect(m2.paths).toEqual([]);
+  });
+
+  test("no file contents appear in payload — journal 'before' is absent", () => {
+    const fleet = makeBaseFleet({
+      rootReport: {
+        sha: null,
+        dir: "/d",
+        results: [{ id: "m1", title: "M1", state: "applied", detail: "x" }],
+        journal: [{ dir: "/d", migrationId: "m1", relPath: "f.md", before: "SECRET CONTENTS" }],
+        ok: true,
+      },
+    });
+    const serialized = JSON.stringify(buildMigrateJson(fleet, { mode: "apply" }));
+    expect(serialized).not.toContain("SECRET CONTENTS");
+    expect(serialized).not.toContain("before");
+  });
+
+  test("ok=true in apply mode when root ok=true", () => {
+    const fleet = makeBaseFleet({
+      rootReport: { sha: null, dir: "/d", results: [], journal: [], ok: true },
+    });
+    expect(buildMigrateJson(fleet, { mode: "apply" }).ok).toBe(true);
+  });
+
+  test("ok=false in apply mode when root ok=false", () => {
+    const fleet = makeBaseFleet({
+      rootReport: {
+        sha: null,
+        dir: "/d",
+        results: [{ id: "m1", title: "M1", state: "failed", detail: "bad" }],
+        journal: [],
+        ok: false,
+      },
+    });
+    expect(buildMigrateJson(fleet, { mode: "apply" }).ok).toBe(false);
+  });
+
+  test("ok=false in check mode when applicable migrations exist", () => {
+    const fleet = makeBaseFleet({
+      rootReport: {
+        sha: null,
+        dir: "/d",
+        results: [{ id: "m1", title: "M1", state: "applicable", detail: "would scaffold" }],
+        journal: [],
+        ok: true,
+      },
+    });
+    expect(buildMigrateJson(fleet, { mode: "check" }).ok).toBe(false);
+  });
+
+  test("ok=true in check mode when no applicable migrations", () => {
+    const fleet = makeBaseFleet({
+      rootReport: {
+        sha: null,
+        dir: "/d",
+        results: [{ id: "m1", title: "M1", state: "not-applicable", detail: "" }],
+        journal: [],
+        ok: true,
+      },
+    });
+    expect(buildMigrateJson(fleet, { mode: "check" }).ok).toBe(true);
+  });
+
+  test("root entry carries dir, slug, role, verdict, validation, migrations", () => {
+    const json = buildMigrateJson(makeBaseFleet(), { mode: "apply" });
+    expect(json.root.dir).toBe("/deployments/root");
+    expect(json.root.slug).toBe("acme/root");
+    expect(json.root.role).toBe("solo-root");
+    expect(typeof json.root.verdict).toBe("string");
+    expect("validation" in json.root).toBe(true);
+    expect(Array.isArray(json.root.migrations)).toBe(true);
+  });
+
+  test("root.validation=true when all migrations applied (migrated verdict)", () => {
+    const fleet = makeBaseFleet({
+      rootReport: {
+        sha: null,
+        dir: "/d",
+        results: [{ id: "m1", title: "M1", state: "applied", detail: "x" }],
+        journal: [{ dir: "/d", migrationId: "m1", relPath: "f.md", before: null }],
+        ok: true,
+      },
+    });
+    const json = buildMigrateJson(fleet, { mode: "apply" });
+    expect(json.root.verdict).toBe("migrated");
+    expect(json.root.validation).toBe(true);
+  });
+
+  test("root.validation=true when all not-applicable (up-to-date verdict)", () => {
+    const fleet = makeBaseFleet({
+      rootReport: {
+        sha: null,
+        dir: "/d",
+        results: [{ id: "m1", title: "M1", state: "not-applicable", detail: "" }],
+        journal: [],
+        ok: true,
+      },
+    });
+    const json = buildMigrateJson(fleet, { mode: "apply" });
+    expect(json.root.verdict).toBe("up-to-date");
+    expect(json.root.validation).toBe(true);
+  });
+
+  test("root.validation=null when root failed", () => {
+    const fleet = makeBaseFleet({
+      rootReport: {
+        sha: null,
+        dir: "/d",
+        results: [{ id: "m1", title: "M1", state: "failed", detail: "bad" }],
+        journal: [],
+        ok: false,
+      },
+    });
+    const json = buildMigrateJson(fleet, { mode: "apply" });
+    expect(json.root.validation).toBeNull();
+  });
+
+  test("tenant entry carries slug, role=tenant, verdict for workspace fleet", () => {
+    const fleet: FleetMigrateReport = {
+      rootReport: { sha: null, dir: "/root", results: [], journal: [], ok: true },
+      rootRole: "workspace-root",
+      rootSlug: "acme/root",
+      tenantEntries: [
+        {
+          dir: "/child",
+          slug: "acme/child",
+          verdict: "migrated",
+          report: {
+            sha: null,
+            dir: "/child",
+            results: [{ id: "t1", title: "T1", state: "applied", detail: "x" }],
+            journal: [{ dir: "/child", migrationId: "t1", relPath: "p.md", before: null }],
+            ok: true,
+          },
+        },
+      ],
+    };
+    const json = buildMigrateJson(fleet, { mode: "apply" });
+    expect(json.tenants).toHaveLength(1);
+    const t = json.tenants[0]!;
+    expect(t.slug).toBe("acme/child");
+    expect(t.role).toBe("tenant");
+    expect(t.verdict).toBe("migrated");
+    expect(t.validation).toBe(true);
+    expect(t.migrations[0]!.paths).toEqual(["p.md"]);
+  });
+
+  test("skipped tenant has empty migrations and carries reason", () => {
+    const fleet: FleetMigrateReport = {
+      rootReport: { sha: null, dir: "/root", results: [], journal: [], ok: true },
+      rootRole: "workspace-root",
+      tenantEntries: [
+        { dir: "/child", slug: "acme/child", verdict: "skipped", reason: "uncommitted changes" },
+      ],
+    };
+    const json = buildMigrateJson(fleet, { mode: "apply" });
+    const t = json.tenants[0]!;
+    expect(t.verdict).toBe("skipped");
+    expect(t.reason).toBe("uncommitted changes");
+    expect(t.validation).toBeNull();
+    expect(t.migrations).toEqual([]);
+  });
+
+  test("invalid tenant has validation=false", () => {
+    const fleet: FleetMigrateReport = {
+      rootReport: { sha: null, dir: "/root", results: [], journal: [], ok: true },
+      rootRole: "workspace-root",
+      tenantEntries: [
+        {
+          dir: "/child",
+          slug: "acme/child",
+          verdict: "invalid",
+          report: { sha: null, dir: "/child", results: [], journal: [], ok: true },
+        },
+      ],
+    };
+    const json = buildMigrateJson(fleet, { mode: "apply" });
+    expect(json.tenants[0]!.validation).toBe(false);
+  });
+
+  test("counts.migrations tallies across root and tenants", () => {
+    const fleet: FleetMigrateReport = {
+      rootReport: {
+        sha: null,
+        dir: "/root",
+        results: [
+          { id: "r1", title: "R1", state: "applied", detail: "x" },
+          { id: "r2", title: "R2", state: "not-applicable", detail: "" },
+        ],
+        journal: [{ dir: "/root", migrationId: "r1", relPath: "r.md", before: null }],
+        ok: true,
+      },
+      rootRole: "workspace-root",
+      tenantEntries: [
+        {
+          dir: "/child",
+          slug: "acme/child",
+          verdict: "migrated",
+          report: {
+            sha: null,
+            dir: "/child",
+            results: [{ id: "t1", title: "T1", state: "applied", detail: "x" }],
+            journal: [{ dir: "/child", migrationId: "t1", relPath: "t.md", before: null }],
+            ok: true,
+          },
+        },
+      ],
+    };
+    const json = buildMigrateJson(fleet, { mode: "apply" });
+    expect(json.counts.migrations.applied).toBe(2);
+    expect(json.counts.migrations.notApplicable).toBe(1);
+    expect(json.counts.tenants.migrated).toBe(1);
+  });
+
+  test("migration title falls back to id when title not set on result", () => {
+    const fleet = makeBaseFleet({
+      rootReport: {
+        sha: null,
+        dir: "/d",
+        results: [{ id: "m1", state: "applied", detail: "x" }],
+        journal: [],
+        ok: true,
+      },
+    });
+    const json = buildMigrateJson(fleet, { mode: "apply" });
+    expect(json.root.migrations[0]!.title).toBe("m1");
+  });
+
+  test("serialized JSON can be parsed back to same shape (round-trip)", () => {
+    const fleet = makeBaseFleet({
+      rootReport: {
+        sha: "abc",
+        dir: "/d",
+        results: [{ id: "m1", title: "M1", state: "applied", detail: "x" }],
+        journal: [{ dir: "/d", migrationId: "m1", relPath: "f.md", before: null }],
+        ok: true,
+      },
+    });
+    const json = buildMigrateJson(fleet, { mode: "apply" });
+    const reparsed = JSON.parse(JSON.stringify(json)) as MigrateJson;
+    expect(reparsed.mode).toBe("apply");
+    expect(reparsed.report).toBe(1);
+    expect(reparsed.ok).toBe(true);
+    expect(reparsed.root.migrations[0]!.paths).toEqual(["f.md"]);
   });
 });
