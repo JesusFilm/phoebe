@@ -209,7 +209,11 @@ export async function runMigrate(opts: RunMigrateOptions): Promise<MigrateReport
             // best-effort
           }
         } else {
-          writeInPlace(abs, entry.before);
+          try {
+            writeInPlace(abs, entry.before);
+          } catch {
+            // best-effort
+          }
         }
       }
       results.push({
