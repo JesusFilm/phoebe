@@ -118,7 +118,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedArgs {
       const version = installedVersion();
       throw new Error(
         `Unknown command \`${arg}\` for \`phoebe\`${version === null ? "" : ` (phoebe-agent v${version})`}. ` +
-          `Known commands: boot, init, list, purge, upgrade, doctor, stop, start. If \`${arg}\` was added in a newer ` +
+          `Known commands: boot, init, list, purge, upgrade, doctor, migrate, stop, start. If \`${arg}\` was added in a newer ` +
           `release, upgrade first: \`pnpm dlx phoebe-agent@latest upgrade\`. See \`phoebe --help\`.`,
       );
     }
@@ -257,6 +257,7 @@ Usage:
                                    Advance the pinned engine ref and/or the npm CLI
   phoebe upgrade --check [--json]  Report current vs latest; exit 1 when behind
   phoebe doctor [--json]           Deployment + tenant health checks (report-only)
+  phoebe migrate [--config <path>] Apply deployment migrations (idempotent)
   phoebe stop [--now]              Drain and stop the deployment container (host-side)
   phoebe start [--build]           Bring the deployment container up detached (host-side)
   phoebe [--config <path>] [flags] Run the engine
@@ -533,6 +534,10 @@ export async function runCli(): Promise<void> {
   if (args[0] === "doctor") {
     const { runDoctorCli } = await import("./doctor.ts");
     return await runDoctorCli(args.slice(1));
+  }
+  if (args[0] === "migrate") {
+    const { runMigrateCli } = await import("./migrate.ts");
+    return await runMigrateCli(args.slice(1));
   }
   if (args[0] === "stop") {
     const { runStopCli } = await import("./stop.ts");
