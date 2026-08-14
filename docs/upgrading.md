@@ -344,9 +344,9 @@ Key contract rules:
 - `slug` is the repo slug (`acme/service-a`), or `null` when the config declares
   none.
 - `validation` is tri-state and must not be read as a boolean: `true` = the config
-  was checked and is valid, `false` = checked and invalid, `null` = **not checked**.
-  A root that had no applicable migrations reports `null`, not `true` — nothing
-  validated it, and a script must not infer health from that. See
+  was checked and is valid, `false` = checked and invalid, `null` = **not checked
+  by this run**. Treating `null` as falsy reads "unknown" as "broken"; treating it
+  as truthy reads it as "healthy". Neither is right — branch on all three. See
   [validation is not a health check](#validation-is-not-a-health-check) below.
 - `counts` is nested, not flat: `counts.migrations` tallies migration statuses
   across the root and every tenant combined, while `counts.tenants` tallies
@@ -366,15 +366,27 @@ Key contract rules:
 
 `validation` reports only what this run happened to confirm, and a run confirms a
 config in exactly two places: after a migration applies (post-apply validation,
-which reverts the write on failure), and on a tenant that had nothing applicable
-(a pre-flight probe that distinguishes an already-broken config from a current
-one). Nothing else is checked.
+which reverts the write on failure), and on a directory where nothing was
+applicable (a pre-flight probe that tells an already-broken config apart from a
+current one). Root and tenants are probed alike. Nothing else is checked, so a
+run that ended in failure, a manual instruction, or pending check-mode work
+validated nothing and reports `null`:
 
-The root gets neither probe when nothing applies, so an up-to-date root reports
-`validation: null`. That is deliberate: the alternative — reporting `true` — would
-claim a clean bill of health for a config no code inspected. To actually assert a
-deployment is healthy, run `phoebe doctor`; `validation` answers the narrower
-question of whether migrating left the config loadable.
+| Outcome                                          | `verdict`                        | `validation` |
+| ------------------------------------------------ | -------------------------------- | ------------ |
+| Nothing applicable, config probed and valid      | `up-to-date`                     | `true`       |
+| Nothing applicable, config probed and **broken** | `invalid`                        | `false`      |
+| A migration applied and cleared validation       | `migrated`                       | `true`       |
+| A migration errored, reverted, or declined       | `failed` / `reverted` / `manual` | `null`       |
+| `--check` mode with work outstanding             | `pending`                        | `null`       |
+
+The `invalid` row is the one worth scripting against: a config nobody can migrate
+because it is already broken. It is distinct from `null`, which claims nothing at
+all. Do not collapse them.
+
+Even `true` is narrow — it means the config loaded and satisfied the schema at the
+moment it was checked, not that the deployment is healthy. Run `phoebe doctor` for
+that.
 
 ### Upgrading a workspace
 
