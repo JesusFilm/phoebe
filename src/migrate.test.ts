@@ -841,6 +841,35 @@ describe("runFleetMigrate: solo-root", () => {
     expect(fleet.tenantEntries).toHaveLength(0);
     expect(fleet.rootReport.ok).toBe(true);
   });
+
+  test("valid root with no applicable migrations → rootPreexistingInvalid=false", async () => {
+    const dir = makeTempDir();
+    const configPath = scaffoldDeployment(dir);
+    const fleet = await runFleetMigrate({
+      configPath,
+      migrations: [],
+      validateFn: async () => {},
+    });
+    expect(fleet.rootPreexistingInvalid).toBe(false);
+  });
+
+  test("invalid root with no applicable migrations → rootPreexistingInvalid=true", async () => {
+    // Regression: must not silently report validation=true for an invalid root
+    const dir = makeTempDir();
+    const configPath = scaffoldDeployment(dir);
+    const fleet = await runFleetMigrate({
+      configPath,
+      migrations: [],
+      validateFn: async () => {
+        throw new Error("root config invalid");
+      },
+    });
+    expect(fleet.rootPreexistingInvalid).toBe(true);
+    // JSON envelope must reflect the invalid verdict and false validation
+    const json = buildMigrateJson(fleet, { mode: "apply" });
+    expect(json.root.verdict).toBe("invalid");
+    expect(json.root.validation).toBe(false);
+  });
 });
 
 describe("runFleetMigrate: workspace-root fleet walk", () => {
@@ -1720,12 +1749,25 @@ describe("buildMigrateJson", () => {
     expect(json.root.validation).toBe(true);
   });
 
-  // An up-to-date root is never validated: runMigrate validates only after an
-  // applied migration, and the preexisting-invalid probe covers tenants only.
-  // Reporting `true` here would claim "confirmed valid" for an unchecked config —
-  // an invalid root with no applicable migrations must not read as validated.
-  test("root.validation=null when all not-applicable (up-to-date verdict, unchecked)", () => {
+  test("root.validation=null when all not-applicable and no preexisting check performed", () => {
     const fleet = makeBaseFleet({
+      rootReport: {
+        sha: null,
+        dir: "/d",
+        results: [{ id: "m1", title: "M1", state: "not-applicable", detail: "" }],
+        journal: [],
+        ok: true,
+      },
+      // rootPreexistingInvalid absent: validation was not performed
+    });
+    const json = buildMigrateJson(fleet, { mode: "apply" });
+    expect(json.root.verdict).toBe("up-to-date");
+    expect(json.root.validation).toBeNull();
+  });
+
+  test("root.validation=true when rootPreexistingInvalid=false (up-to-date, preexisting check passed)", () => {
+    const fleet = makeBaseFleet({
+      rootPreexistingInvalid: false,
       rootReport: {
         sha: null,
         dir: "/d",
@@ -1736,7 +1778,7 @@ describe("buildMigrateJson", () => {
     });
     const json = buildMigrateJson(fleet, { mode: "apply" });
     expect(json.root.verdict).toBe("up-to-date");
-    expect(json.root.validation).toBeNull();
+    expect(json.root.validation).toBe(true);
   });
 
   test("root.validation=null in check mode when nothing is applicable", () => {
@@ -1784,6 +1826,23 @@ describe("buildMigrateJson", () => {
     const json = buildMigrateJson(fleet, { mode: "apply" });
     expect(json.root.validation).toBeNull();
     expect(json.tenants[0]!.validation).toBe(true);
+  });
+
+  test("root.validation=false when rootPreexistingInvalid=true (invalid root, no applicable migrations)", () => {
+    // Regression: invalid root with no applicable migrations must not emit validation=true
+    const fleet = makeBaseFleet({
+      rootPreexistingInvalid: true,
+      rootReport: {
+        sha: null,
+        dir: "/d",
+        results: [{ id: "m1", title: "M1", state: "not-applicable", detail: "" }],
+        journal: [],
+        ok: true,
+      },
+    });
+    const json = buildMigrateJson(fleet, { mode: "apply" });
+    expect(json.root.verdict).toBe("invalid");
+    expect(json.root.validation).toBe(false);
   });
 
   test("root.validation=null when root failed", () => {
