@@ -82,6 +82,8 @@ export type StatusSnapshot = {
     runtimeId: string;
     instanceId: string;
     startedAt: string;
+    /** The resolved `github.login()` at boot (#149) — surfaced so a login/marker-author drift is visible without reading GitHub. */
+    login?: string;
   };
   repository: {
     slug: string;
@@ -351,6 +353,7 @@ function isStatusV2(value: unknown): value is StatusSnapshot {
     hasString(runtime, "runtimeId") &&
     hasString(runtime, "instanceId") &&
     hasString(runtime, "startedAt") &&
+    isOptionalString(runtime, "login") &&
     hasString(repository, "slug") &&
     hasString(repository, "url") &&
     hasString(repository, "defaultBranch") &&

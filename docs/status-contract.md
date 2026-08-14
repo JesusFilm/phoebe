@@ -36,6 +36,14 @@ container restarts. `PHOEBE_RUNTIME_ID` can supply it on the first start; a late
 value that conflicts with the persisted identity is rejected rather than
 silently changing the event namespace.
 
+`runtime.login` carries the `github.login()` Phoebe resolved at boot, when
+resolution succeeded — so a drift between that login and the author already on
+Phoebe's own quarantine marker comments is visible on the status rail, not just
+in the boot log. A mismatch there means every one of Phoebe's own marker edits
+now reads as foreign activity, and the `timed-out` counter (`quarantine.ts`)
+can never reach its threshold — Phoebe logs a loud warning at boot when its
+bounded scan for the newest such marker turns one up.
+
 Read the exact projection without starting work or contacting GitHub:
 
 ```bash

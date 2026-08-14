@@ -708,6 +708,124 @@ describe("unscoped methods — installStackExtension / login / updateComment / r
   });
 });
 
+describe("newestUnitMarkerComment (#149)", () => {
+  test("scans the N most recently updated issues and PRs, picking the newest literal marker match", () => {
+    const { run, calls } = fakeRun([
+      JSON.stringify([
+        {
+          comments: [
+            {
+              id: "IC_1",
+              body: "no marker here",
+              createdAt: "2026-08-01T00:00:00Z",
+              author: { login: "human" },
+            },
+          ],
+        },
+        {
+          comments: [
+            {
+              id: "IC_2",
+              body: "<!-- phoebe-unit:issues:no-pr n=1 sig=x ref=42 at=2026-08-02T00:00:00Z -->",
+              createdAt: "2026-08-02T00:00:00Z",
+              author: { login: "phoebe-bot" },
+            },
+          ],
+        },
+      ]),
+      JSON.stringify([
+        {
+          comments: [
+            {
+              id: "IC_3",
+              body: "<!-- phoebe-unit:checks:timed-out n=1 sig=timeout ref=sha1 at=2026-08-03T00:00:00Z -->",
+              createdAt: "2026-08-03T00:00:00Z",
+              author: { login: "phoebe-user" },
+            },
+          ],
+        },
+      ]),
+    ]);
+    const github = createGitHub({ repoSlug: REPO_SLUG, run });
+
+    expect(github.newestUnitMarkerComment()).toEqual({
+      authorLogin: "phoebe-user",
+      createdAt: "2026-08-03T00:00:00Z",
+    });
+    expect(calls[0]!.args).toEqual([
+      "issue",
+      "list",
+      "--state",
+      "all",
+      "--search",
+      "sort:updated-desc",
+      "--limit",
+      "20",
+      "--json",
+      "comments",
+      "-R",
+      REPO_SLUG,
+    ]);
+    expect(calls[1]!.args).toEqual([
+      "pr",
+      "list",
+      "--state",
+      "all",
+      "--search",
+      "sort:updated-desc",
+      "--limit",
+      "20",
+      "--json",
+      "comments",
+      "-R",
+      REPO_SLUG,
+    ]);
+  });
+
+  test("returns null when nothing scanned carries the marker", () => {
+    const { run } = fakeRun([
+      JSON.stringify([
+        {
+          comments: [
+            {
+              id: "IC_1",
+              body: "hi there",
+              createdAt: "2026-08-01T00:00:00Z",
+              author: { login: "human" },
+            },
+          ],
+        },
+      ]),
+      JSON.stringify([]),
+    ]);
+    const github = createGitHub({ repoSlug: REPO_SLUG, run });
+    expect(github.newestUnitMarkerComment()).toBeNull();
+  });
+
+  test("a deleted comment author degrades to an empty login rather than throwing", () => {
+    const { run } = fakeRun([
+      JSON.stringify([
+        {
+          comments: [
+            {
+              id: "IC_1",
+              body: "<!-- phoebe-unit:issues:no-op n=1 sig=x ref=42 at=2026-08-01T00:00:00Z -->",
+              createdAt: "2026-08-01T00:00:00Z",
+              author: null,
+            },
+          ],
+        },
+      ]),
+      JSON.stringify([]),
+    ]);
+    const github = createGitHub({ repoSlug: REPO_SLUG, run });
+    expect(github.newestUnitMarkerComment()).toEqual({
+      authorLogin: "",
+      createdAt: "2026-08-01T00:00:00Z",
+    });
+  });
+});
+
 describe("timeout forwarding", () => {
   test("the factory's timeoutMs default reaches every run() call", () => {
     const { run, calls } = fakeRun([JSON.stringify({ body: "x" })]);

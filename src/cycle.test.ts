@@ -44,6 +44,7 @@ function fakeGithub(overrides: Partial<GitHub> = {}): GitHub {
     linkStack: () => {},
     installStackExtension: () => {},
     login: () => "phoebe-bot",
+    newestUnitMarkerComment: () => null,
     updateComment: () => {},
     ...overrides,
   };

@@ -104,6 +104,9 @@ export type ActivityComment = {
   authorLogin: string;
 };
 
+/** Who authored a Phoebe unit-tracking marker comment, and when (#149's boot-time identity cross-check). */
+export type UnitMarkerAuthor = { authorLogin: string; createdAt: string };
+
 export type IssueActivity = {
   updatedAt: string;
   comments: ActivityComment[];
@@ -178,6 +181,18 @@ export interface GitHub {
   installStackExtension(): void;
   /** Unscoped: the authenticated user's login. */
   login(): string;
+  /**
+   * Author + creation time of the newest comment carrying a Phoebe
+   * unit-tracking marker (`<!-- phoebe-unit:... -->`, quarantine.ts), or
+   * `null` when none is found. Best-effort proxy for "any unit repo-wide"
+   * (#149): scans the `RECENT_UNIT_SCAN_LIMIT` most recently updated issues
+   * and PRs rather than every one ever opened — GitHub's full-text search
+   * tokenizes the hyphenated marker text unreliably, so this reads real
+   * comment bodies off `issue list`/`pr list` (both already return full
+   * comment bodies for a `--json comments` request) and matches the marker
+   * text exactly instead.
+   */
+  newestUnitMarkerComment(): UnitMarkerAuthor | null;
   /** Unscoped: edits a comment in place by its GraphQL node id. */
   updateComment(commentId: string, body: string): void;
 }
@@ -258,6 +273,12 @@ function toOpenPr(row: GhOpenPrRow): OpenPr {
     authorLogin: row.author.login,
   };
 }
+
+/** The literal prefix `quarantine.ts`'s unit markers open with — enough to identify the comment without parsing the marker itself. */
+const UNIT_MARKER_TEXT = "<!-- phoebe-unit:";
+
+/** How many of the most recently updated issues/PRs `newestUnitMarkerComment` scans, each — a boot-time, best-effort proxy for "every unit ever", bounded to keep the scan cheap. */
+const RECENT_UNIT_SCAN_LIMIT = 20;
 
 export function createGitHub(opts: { repoSlug: string; run?: GhRun; timeoutMs?: number }): GitHub {
   const repoSlug = opts.repoSlug;
@@ -609,6 +630,45 @@ export function createGitHub(opts: { repoSlug: string; run?: GhRun; timeoutMs?: 
 
     login(): string {
       return unscopedJson<{ login: string }>(["api", "user"]).login;
+    },
+
+    newestUnitMarkerComment(): UnitMarkerAuthor | null {
+      const rows = [
+        ...scopedJson<Array<{ comments: GhCommentRow[] }>>([
+          "issue",
+          "list",
+          "--state",
+          "all",
+          "--search",
+          "sort:updated-desc",
+          "--limit",
+          String(RECENT_UNIT_SCAN_LIMIT),
+          "--json",
+          "comments",
+        ]),
+        ...scopedJson<Array<{ comments: GhCommentRow[] }>>([
+          "pr",
+          "list",
+          "--state",
+          "all",
+          "--search",
+          "sort:updated-desc",
+          "--limit",
+          String(RECENT_UNIT_SCAN_LIMIT),
+          "--json",
+          "comments",
+        ]),
+      ];
+      let newest: UnitMarkerAuthor | null = null;
+      for (const row of rows) {
+        for (const comment of row.comments) {
+          if (!comment.body.includes(UNIT_MARKER_TEXT)) continue;
+          if (newest === null || comment.createdAt > newest.createdAt) {
+            newest = { authorLogin: comment.author?.login ?? "", createdAt: comment.createdAt };
+          }
+        }
+      }
+      return newest;
     },
 
     updateComment(commentId: string, body: string): void {

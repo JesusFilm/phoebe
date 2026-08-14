@@ -41,6 +41,20 @@ const context = {
 } as const;
 
 describe("runtime status projection", () => {
+  test("surfaces the resolved login on runtime.login when provided (#149)", () => {
+    const reporter = createRuntimeStatusReporter({
+      runtimeId: "runtime-1",
+      login: "phoebe-bot",
+      ...context,
+    });
+    expect(reporter.snapshot().runtime.login).toBe("phoebe-bot");
+  });
+
+  test("omits runtime.login when boot could not resolve one", () => {
+    const reporter = createRuntimeStatusReporter({ runtimeId: "runtime-1", ...context });
+    expect(reporter.snapshot().runtime.login).toBeUndefined();
+  });
+
   test("publishes lifecycle state and a normalized success event before projecting it", () => {
     const stateDir = makeStateDir();
     let second = 0;

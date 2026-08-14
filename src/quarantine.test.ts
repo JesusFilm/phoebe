@@ -341,6 +341,7 @@ function createFakeGithub(
     linkStack: () => {},
     installStackExtension: () => {},
     login: () => login,
+    newestUnitMarkerComment: () => null,
     updateComment: (id, body) => {
       const comment = state.comments.find((c) => c.id === id);
       if (comment) comment.body = body;
@@ -1112,6 +1113,7 @@ function createMultiUnitFakeGithub(
     linkStack: () => {},
     installStackExtension: () => {},
     login: () => "phoebe-bot",
+    newestUnitMarkerComment: () => null,
     updateComment,
   };
   return { github, issues, prs };

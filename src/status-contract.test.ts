@@ -75,6 +75,15 @@ describe("status-v2 contract", () => {
     );
   });
 
+  test("accepts an optional runtime.login and rejects a non-string one (#149)", () => {
+    const withLogin = { ...snapshot(), runtime: { ...snapshot().runtime, login: "phoebe-bot" } };
+    expect(parseStatusSnapshot(withLogin)).toBe(withLogin);
+
+    expect(() =>
+      parseStatusSnapshot({ ...snapshot(), runtime: { ...snapshot().runtime, login: 42 } }),
+    ).toThrow(/invalid status-v2/);
+  });
+
   test("rejects an unsupported future major with an explicit capability error", () => {
     expect(() => parseStatusSnapshot({ ...snapshot(), schemaVersion: "status-v3" })).toThrow(
       /supports status-v2 but received status-v3/,

@@ -58,6 +58,7 @@ import {
 import { buildRuntimeContractContext } from "./runtime-contract-context.ts";
 import { createRuntimeStatusReporter } from "./runtime-status.ts";
 import { createQuarantine } from "./quarantine.ts";
+import { loginMismatchWarning } from "./login-identity.ts";
 import { ghStackExtensionInstallArgs, nativeStackGitConfig, type StackConfig } from "./stack.ts";
 import { gatherCycleContext } from "./cycle.ts";
 import {
@@ -368,9 +369,26 @@ export async function runEngine(opts: {
     runtimeRoot: process.cwd(),
     env: process.env,
   });
+  // Resolved once at boot (#149) rather than per-call like quarantine.ts's
+  // own `github.login()` reads — this copy feeds both the status rail below
+  // and the identity cross-check further down. Best-effort: an unresolved
+  // login degrades the status rail field and skips the cross-check, but
+  // never blocks boot.
+  let resolvedLogin: string | undefined;
+  try {
+    resolvedLogin = github.login();
+  } catch (error) {
+    phoebeError(
+      `Could not resolve the authenticated login at boot — ${
+        error instanceof Error ? error.message : String(error)
+      }. The status rail's login field and the identity cross-check are skipped this run.`,
+    );
+  }
+
   const status = createRuntimeStatusReporter({
     ...(inContainer ? { stateDir: config.paths.stateDir } : {}),
     ...(process.env["PHOEBE_RUNTIME_ID"] ? { runtimeId: process.env["PHOEBE_RUNTIME_ID"] } : {}),
+    ...(resolvedLogin ? { login: resolvedLogin } : {}),
     ...contractContext,
     onWriteError: (error) =>
       phoebeError(
@@ -759,6 +777,24 @@ export async function runEngine(opts: {
       runtimeId: status.snapshot().runtime.runtimeId,
       forceOwnReclaim: true,
     });
+    // #149: a resolved login that disagrees with the login already on
+    // Phoebe's own marker comments freezes the timed-out counter (every one
+    // of Phoebe's own edits reads as foreign activity from then on) — see
+    // login-identity.ts. Only matters for the persistent, write-driving loop
+    // this block already gates on; best-effort, since it's a diagnostic, not
+    // a boot precondition.
+    if (resolvedLogin) {
+      try {
+        const warning = loginMismatchWarning(resolvedLogin, github.newestUnitMarkerComment());
+        if (warning) phoebeError(warning);
+      } catch (error) {
+        phoebeError(
+          `Login identity cross-check failed — ${
+            error instanceof Error ? error.message : String(error)
+          }. Continuing without it.`,
+        );
+      }
+    }
   }
 
   // `phoebe boot` stops the engine with SIGTERM (container shutdown, and later a

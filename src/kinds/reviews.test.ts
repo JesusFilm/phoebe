@@ -463,6 +463,7 @@ function fakeIo(overrides: Partial<Io> = {}): Io {
       linkStack: () => {},
       installStackExtension: () => {},
       login: () => "phoebe-bot",
+      newestUnitMarkerComment: () => null,
       updateComment: () => {},
     },
     git: {

@@ -154,6 +154,8 @@ function outcomeSummary(event: WorkOutcomeEvent): NonNullable<StatusSnapshot["la
 export function createRuntimeStatusReporter(options: {
   stateDir?: string;
   runtimeId?: string;
+  /** The resolved `github.login()` at boot (#149), surfaced on the status rail. Omitted when boot couldn't resolve it. */
+  login?: string;
   repository: StatusSnapshot["repository"];
   digests: StatusSnapshot["digests"];
   provider: WorkOutcomeEvent["provider"];
@@ -207,6 +209,7 @@ export function createRuntimeStatusReporter(options: {
       runtimeId,
       instanceId: randomId(),
       startedAt,
+      ...(options.login ? { login: options.login } : {}),
     },
     repository: options.repository,
     digests: options.digests,

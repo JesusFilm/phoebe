@@ -428,6 +428,7 @@ function fakeIo(overrides: Partial<Io> = {}): Io {
     linkStack: () => {},
     installStackExtension: () => {},
     login: () => "phoebe-bot",
+    newestUnitMarkerComment: () => null,
     updateComment: () => {},
   };
   return {
@@ -658,6 +659,7 @@ function fakeReproIo(opts: {
       linkStack: () => {},
       installStackExtension: () => {},
       login: () => "phoebe-bot",
+      newestUnitMarkerComment: () => null,
       updateComment: () => {},
     },
     quarantine: {
