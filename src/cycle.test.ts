@@ -64,7 +64,12 @@ function fakeIo(overrides: Partial<Io> = {}): Io {
     agent: { run: async () => ({ exitCode: 0 }) },
     prompts: { load: () => "template", defaultArgs: () => ({}), render: (t) => t },
     shell: { run: () => {}, tryRun: () => 0, capture: () => ({ exitCode: 0, output: "" }) },
-    quarantine: { record: () => {}, resolve: () => {}, sweepUnstuck: () => {} },
+    quarantine: {
+      record: () => {},
+      resolve: () => {},
+      recordNoOp: () => {},
+      sweepUnstuck: () => {},
+    },
     ...overrides,
   };
 }

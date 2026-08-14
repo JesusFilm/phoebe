@@ -7,7 +7,6 @@
 // `maxUnitAttempts` config defaults + their `PHOEBE_*` overlay) lives at the
 // config layer (#56) — see src/load-config.test.ts.
 
-import { createHash } from "node:crypto";
 import { describe, expect, test } from "vite-plus/test";
 import { asBranchRef, asPrNumber, asSha } from "./branded.ts";
 import type { ActivityComment, GitHub, LabelRemoval } from "./github.ts";
@@ -17,6 +16,8 @@ import {
   filterBackoffEligible,
   findEscalatedSections,
   findLatestUnitAttemptComment,
+  isNoOpVerdictCurrent,
+  issueContentBaseline,
   parseQuarantineBaseline,
   PHOEBE_QUARANTINE_LABEL,
   PHOEBE_RETRY_LABEL,
@@ -92,6 +93,29 @@ describe("shouldAutoUnstick", () => {
   });
   test("stays quarantined when current still matches baseline", () => {
     expect(shouldAutoUnstick({ baseline: "aaa", current: "aaa" })).toBe(false);
+  });
+});
+
+describe("isNoOpVerdictCurrent (#145)", () => {
+  const marker = (ref: string): UnitMarker => ({
+    trigger: "no-op",
+    n: 1,
+    signature: "no-op",
+    ref,
+    at: "2026-01-01T00:00:00Z",
+  });
+
+  test("still suppresses selection while the current key matches the recorded ref", () => {
+    expect(isNoOpVerdictCurrent(marker("sha256:abc"), "sha256:abc")).toBe(true);
+  });
+
+  test("stops suppressing once the current key differs — a body edit or push", () => {
+    expect(isNoOpVerdictCurrent(marker("sha256:abc"), "sha256:def")).toBe(false);
+  });
+
+  test("no marker at all never suppresses", () => {
+    expect(isNoOpVerdictCurrent(null, "sha256:abc")).toBe(false);
+    expect(isNoOpVerdictCurrent(undefined, "sha256:abc")).toBe(false);
   });
 });
 
@@ -666,6 +690,126 @@ describe("createQuarantine — record()", () => {
   });
 });
 
+describe("createQuarantine — recordNoOp() (#145)", () => {
+  test("first no-op writes one tracking comment, no label, no escalation prose", () => {
+    const { github, state } = createFakeGithub();
+    const quarantine = createQuarantine({
+      github,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: () => {},
+    });
+    quarantine.recordNoOp(
+      { kind: "issues", target: { type: "issue", number: 42 } },
+      "sha256:abc",
+      "found nothing to do",
+    );
+    expect(state.comments).toHaveLength(1);
+    expect(state.comments[0]!.body).toContain("found nothing to do");
+    expect(state.comments[0]!.body).toContain(
+      "<!-- phoebe-unit:issues:no-op n=1 sig=no-op ref=sha256:abc at=",
+    );
+    expect(state.labels).toEqual([]);
+  });
+
+  test("repeated no-op verdicts never escalate — no counter, no threshold", () => {
+    const { github, state } = createFakeGithub();
+    const quarantine = createQuarantine({
+      github,
+      config: { maxUnitTimeouts: 1, maxUnitAttempts: 1 },
+      log: () => {},
+    });
+    const unit: UnitRef = { kind: "issues", target: { type: "issue", number: 42 } };
+    quarantine.recordNoOp(unit, "sha256:abc", "found nothing to do");
+    quarantine.recordNoOp(unit, "sha256:abc", "found nothing to do again");
+    quarantine.recordNoOp(unit, "sha256:abc", "found nothing to do a third time");
+    expect(state.comments).toHaveLength(1);
+    expect(state.labels).toEqual([]);
+    expect(state.comments[0]!.body).toContain("found nothing to do a third time");
+  });
+
+  test("a new key overwrites the previous verdict's ref", () => {
+    const { github, state } = createFakeGithub();
+    const quarantine = createQuarantine({
+      github,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: () => {},
+    });
+    const unit: UnitRef = { kind: "research", target: { type: "issue", number: 355 } };
+    quarantine.recordNoOp(unit, "sha256:abc", "found nothing to do");
+    quarantine.recordNoOp(unit, "sha256:def", "found nothing to do, again, on the new body");
+    expect(state.comments).toHaveLength(1);
+    expect(state.comments[0]!.body).toContain("ref=sha256:def");
+    expect(state.comments[0]!.body).not.toContain("ref=sha256:abc");
+  });
+
+  test("coexists with a no-pr section on the same tracking comment, both preserved", () => {
+    const { github, state } = createFakeGithub();
+    const quarantine = createQuarantine({
+      github,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: () => {},
+    });
+    const unit: UnitRef = { kind: "issues", target: { type: "issue", number: 42 } };
+    quarantine.record(unit, "no-pr", {
+      signature: "verify-failed",
+      reason: "was claimed and released with no PR",
+      belowThresholdNote: noteThreshold,
+    });
+    quarantine.recordNoOp(unit, "sha256:abc", "found nothing to do");
+    expect(state.comments).toHaveLength(1);
+    const body = state.comments[0]!.body;
+    expect(body).toContain("phoebe-unit:issues:no-pr");
+    expect(body).toContain("phoebe-unit:issues:no-op");
+  });
+
+  test("reports a distinct unit-suppressed event, never unit-quarantined", () => {
+    const { github } = createFakeGithub();
+    const reported: unknown[] = [];
+    const quarantine = createQuarantine({
+      github,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: () => {},
+      report: (event) => reported.push(event),
+    });
+    quarantine.recordNoOp(
+      { kind: "research", target: { type: "issue", number: 355 } },
+      "sha256:abc",
+      "found nothing to do",
+    );
+    expect(reported).toEqual([
+      {
+        kind: "unit-suppressed",
+        work: { kind: "research", issueNumber: 355 },
+        reason: "found nothing to do",
+      },
+    ]);
+  });
+
+  test("a GitHub write failure while recording is swallowed and logged, never thrown", () => {
+    const { github } = createFakeGithub();
+    const failing: GitHub = {
+      ...github,
+      commentIssue: () => {
+        throw new Error("boom");
+      },
+    };
+    const logs: string[] = [];
+    const quarantine = createQuarantine({
+      github: failing,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: (m) => logs.push(m),
+    });
+    expect(() =>
+      quarantine.recordNoOp(
+        { kind: "issues", target: { type: "issue", number: 1 } },
+        "sha256:abc",
+        "found nothing to do",
+      ),
+    ).not.toThrow();
+    expect(logs.some((l) => l.includes("Could not record the no-op verdict"))).toBe(true);
+  });
+});
+
 describe("createQuarantine — resolve()", () => {
   test("clears the trigger's section, preserving a co-existing trigger's section", () => {
     const { github, state } = createFakeGithub({
@@ -713,6 +857,25 @@ describe("createQuarantine — resolve()", () => {
       "counter reset",
     );
     expect(state.comments).toHaveLength(0);
+  });
+
+  test("clears a no-op verdict (#145) the same way as any other trigger", () => {
+    const { github, state } = createFakeGithub();
+    const quarantine = createQuarantine({
+      github,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: () => {},
+    });
+    const unit: UnitRef = { kind: "issues", target: { type: "issue", number: 42 } };
+    quarantine.recordNoOp(unit, "sha256:abc", "found nothing to do");
+    quarantine.resolve(
+      unit,
+      "no-op",
+      "produced a PR — the earlier no-op verdict no longer applies.",
+    );
+    const body = state.comments[0]!.body;
+    expect(body).toContain("no longer applies");
+    expect(body).not.toContain("phoebe-unit:issues:no-op");
   });
 });
 
@@ -954,11 +1117,6 @@ function createMultiUnitFakeGithub(
   return { github, issues, prs };
 }
 
-/** Mirrors quarantine.ts's private `issueContentBaseline` so fixtures can construct a matching (or deliberately stale) baseline for an issue body. */
-function issueBaseline(body: string): string {
-  return `sha256:${createHash("sha256").update(body).digest("hex")}`;
-}
-
 function escalatedTrackingComment(opts: {
   id: string;
   kind: string;
@@ -1038,7 +1196,7 @@ describe("createQuarantine — sweepUnstuck()", () => {
               kind: "issues",
               trigger: "no-pr",
               issueOrPrNumber: 42,
-              baseline: issueBaseline("the original body"),
+              baseline: issueContentBaseline("the original body"),
               ref: "42",
             }),
           ],
@@ -1068,7 +1226,7 @@ describe("createQuarantine — sweepUnstuck()", () => {
               kind: "issues",
               trigger: "no-pr",
               issueOrPrNumber: 42,
-              baseline: issueBaseline("same body throughout"),
+              baseline: issueContentBaseline("same body throughout"),
               ref: "42",
             }),
           ],
@@ -1122,7 +1280,7 @@ describe("createQuarantine — sweepUnstuck()", () => {
       kind: "issues",
       id: 42,
       k: 3,
-      baseline: issueBaseline("initial buggy body"),
+      baseline: issueContentBaseline("initial buggy body"),
       reason: "timed out",
     });
     const marker1 = `<!-- phoebe-unit:issues:timed-out n=3 sig=timeout ref=42 at=2026-01-01T00:00:00Z -->`;
@@ -1130,7 +1288,7 @@ describe("createQuarantine — sweepUnstuck()", () => {
       kind: "issues",
       id: 42,
       k: 3,
-      baseline: issueBaseline(currentBody),
+      baseline: issueContentBaseline(currentBody),
       reason: "was claimed and released with no PR",
     });
     const marker2 = `<!-- phoebe-unit:issues:no-pr n=3 sig=sig ref=42 at=2026-01-01T00:00:00Z -->`;
@@ -1354,7 +1512,7 @@ describe("createQuarantine — sweepUnstuck() eager manual-clear via the unlabel
               kind: "issues",
               trigger: "no-pr",
               issueOrPrNumber: 42,
-              baseline: issueBaseline("same body throughout"),
+              baseline: issueContentBaseline("same body throughout"),
               ref: "42",
             }),
           ],
@@ -1438,7 +1596,7 @@ describe("createQuarantine — sweepUnstuck() eager manual-clear via the unlabel
               kind: "issues",
               trigger: "no-pr",
               issueOrPrNumber: 42,
-              baseline: issueBaseline("same body throughout"),
+              baseline: issueContentBaseline("same body throughout"),
               ref: "42",
             }),
           ],
@@ -1629,6 +1787,51 @@ describe("createQuarantine — sweepUnstuck() consumes phoebe:retry", () => {
       },
     ]);
     expect(reported).toEqual([]);
+  });
+
+  test("phoebe:retry on a non-quarantined but no-op-suppressed unit clears the verdict (#145)", () => {
+    const { github: fakeGithub, issues } = createMultiUnitFakeGithub({
+      issues: {
+        355: {
+          labels: [PHOEBE_RETRY_LABEL],
+          comments: [
+            {
+              id: "track1",
+              body: "<!-- phoebe-unit:research:no-op n=1 sig=no-op ref=sha256:abc at=2026-01-01T00:00:00Z -->",
+              createdAt: "2026-01-01T00:00:00Z",
+              authorLogin: "phoebe-bot",
+            },
+          ],
+        },
+      },
+    });
+    const { github, posted } = withCommentCapture(fakeGithub);
+    const reported: unknown[] = [];
+    const quarantine = createQuarantine({
+      github,
+      config: { maxUnitTimeouts: 3, maxUnitAttempts: 3 },
+      log: () => {},
+      report: (event) => reported.push(event),
+    });
+    quarantine.sweepUnstuck();
+
+    const issue = issues.get(355)!;
+    expect(issue.labels).toEqual([]);
+    expect(issue.comments[0]!.body).not.toContain("phoebe-unit:research:no-op");
+    expect(posted).toEqual([
+      {
+        type: "issue",
+        number: 355,
+        body: expect.stringContaining("cleared its no-op verdict"),
+      },
+    ]);
+    expect(reported).toEqual([
+      {
+        kind: "unit-unsuppressed",
+        work: { kind: "research", issueNumber: 355 },
+        reason: `a human applied \`${PHOEBE_RETRY_LABEL}\` — retried as-is`,
+      },
+    ]);
   });
 
   test("a unit escalated on two triggers has both reset by a single phoebe:retry", () => {

@@ -20,6 +20,8 @@ import type { ActivityComment } from "../github.ts";
 import {
   filterBackoffEligible,
   findLatestUnitAttemptComment,
+  isNoOpVerdictCurrent,
+  issueContentBaseline,
   PHOEBE_QUARANTINE_LABEL,
   type UnitMarker,
 } from "../quarantine.ts";
@@ -355,19 +357,31 @@ function createProducerKind(
   async function fetch(ctx: CycleContext): Promise<ProducerData> {
     const pool = spec.name === "issues" ? ctx.pools.ready : ctx.pools.research;
     const nowIso = new Date().toISOString();
-    const withMarkers = pool.map((candidate) => ({
-      issue: candidate,
+    const withMarkers = pool.map((candidate) => {
       // Quarantined issues are filtered downstream by `selectIssue`/`buildIssueQueue`
       // regardless — skip the activity fetch for them rather than burn an API call
       // on a unit that's excluded either way.
-      attemptMarker: candidate.labels.includes(PHOEBE_QUARANTINE_LABEL)
-        ? null
-        : latestIssueAttemptMarker(io.github.issueActivity(candidate.number).comments, spec.name),
-    }));
+      if (candidate.labels.includes(PHOEBE_QUARANTINE_LABEL)) {
+        return { issue: candidate, attemptMarker: null, noOpMarker: null };
+      }
+      const comments = io.github.issueActivity(candidate.number).comments;
+      return {
+        issue: candidate,
+        attemptMarker: latestIssueAttemptMarker(comments, spec.name),
+        noOpMarker: findLatestUnitAttemptComment(comments, spec.name, "no-op")?.marker ?? null,
+      };
+    });
     // #137: a unit still inside its no-pr/timed-out backoff window sits this cycle
     // out — the same growing-gap protection the PR-keyed no-commit trigger already
     // gets (#25), now covering the triggers that previously churned at full cadence.
-    const issues = filterBackoffEligible(withMarkers, nowIso).map((c) => c.issue);
+    const backoffEligible = filterBackoffEligible(withMarkers, nowIso);
+    // #145: a unit whose last run correctly concluded "nothing to do", and
+    // whose body hasn't changed since, costs zero further runs — filtered out
+    // before `selectIssue` ever sees it, unconditionally rather than the
+    // growing-but-bounded gap above.
+    const issues = backoffEligible
+      .filter((c) => !isNoOpVerdictCurrent(c.noOpMarker, issueContentBaseline(c.issue.body)))
+      .map((c) => c.issue);
     return { issues, blockerStates: ctx.blockerStates, nativeBlockers: ctx.nativeBlockers };
   }
 
@@ -415,10 +429,33 @@ function createProducerKind(
 
   /** A run produced a PR (or one already existed) — the no-PR counter (#22) resets, since an issue-keyed `ref` never moves on its own to signal progress. */
   function resetIssueAttemptCounter(issueNumber: number): void {
+    const unitNoun = spec.name === "issues" ? "issue" : "research ticket";
+    const unit = { kind: spec.name, target: { type: "issue" as const, number: issueNumber } };
     io.quarantine.resolve(
-      { kind: spec.name, target: { type: "issue", number: issueNumber } },
+      unit,
       "no-pr",
-      `✅ Phoebe produced a PR for this ${spec.name === "issues" ? "issue" : "research ticket"} — the no-PR attempt counter is reset.`,
+      `✅ Phoebe produced a PR for this ${unitNoun} — the no-PR attempt counter is reset.`,
+    );
+    // A stale no-op verdict (#145) from an earlier cycle no longer applies once
+    // this cycle has produced a PR — cleared for tidiness; selection would
+    // already ignore it once the body moves, but a leftover "found nothing to
+    // do" note reads as wrong once a PR exists.
+    io.quarantine.resolve(
+      unit,
+      "no-op",
+      `✅ Phoebe produced a PR for this ${unitNoun} — the earlier no-op verdict no longer applies.`,
+    );
+  }
+
+  /** A run correctly concluded "nothing to do" (#145): no commits, no verification failure, a clean agent exit. Remembered so the unit costs zero further runs until its body changes or a human retries it. */
+  function recordNoOpVerdict(issueNumber: number, body: string): void {
+    const unitNoun = spec.name === "issues" ? "issue" : "research ticket";
+    io.quarantine.recordNoOp(
+      { kind: spec.name, target: { type: "issue", number: issueNumber } },
+      issueContentBaseline(body),
+      `💤 Phoebe ran this ${unitNoun} and found nothing to do — no commits, no verification ` +
+        `failures. It will not be re-selected until the ${unitNoun} body changes, or a human ` +
+        `applies \`phoebe:retry\`.`,
     );
   }
 
@@ -554,6 +591,7 @@ function createProducerKind(
   async function runOneIssue(opts: {
     issueNumber: number;
     issueTitle: string;
+    issueBody: string;
     issueLabels: readonly string[];
     worktreeBase: string;
     stacked: boolean;
@@ -691,12 +729,20 @@ function createProducerKind(
             reproGateBelowThresholdNote(n, k, weakReproOutcome!.testFiles),
         });
       } else {
+        const signature = issueAttemptFailureSignature({ verification, agentExitCode });
         recordFailedIssueAttempt({
           issueNumber,
-          signature: issueAttemptFailureSignature({ verification, agentExitCode }),
+          signature,
           dependentsPool: opts.dependentsPool,
           nativeBlockersByIssue: opts.nativeBlockersByIssue,
         });
+        // #145: "no-commit" is the one signature that isn't a failure — a
+        // clean exit with no verification failure that genuinely found
+        // nothing to do. Remember it (independent of the no-pr counter above)
+        // so the unit costs zero further runs while its body stays unchanged.
+        if (signature === "no-commit") {
+          recordNoOpVerdict(issueNumber, opts.issueBody);
+        }
       }
 
       return {
@@ -774,6 +820,7 @@ function createProducerKind(
     const runOpts = {
       issueNumber: target.number,
       issueTitle: target.title,
+      issueBody: target.body,
       issueLabels: target.labels,
       worktreeBase: resolution.worktreeBase,
       stacked: resolution.stacked,

@@ -45,6 +45,22 @@
 // section whose label is now absent means a human cleared it — that trigger's
 // counter resets to 0 before recording this new failure.
 //
+// `no-op` (#145) is a fourth trigger, but not a counter: a run that correctly
+// concludes "nothing to do" (a clean exit, no verification failure, no
+// commits) costs a full run every cycle forever unless *that specific
+// conclusion* is remembered, independent of the no-pr/no-commit streak toward
+// quarantine. `recordNoOp()` writes one section carrying the unit's current
+// un-stick baseline as `ref` — no threshold, no label, no escalation comment,
+// just a marker. A selector reads it back with the same
+// `findLatestUnitAttemptComment` any other trigger uses and calls
+// `isNoOpVerdictCurrent()`: while the unit's current baseline still matches
+// the recorded `ref`, it is filtered out of the candidate pool before
+// `select()` ever sees it — cost zero, not a growing backoff window. A body
+// edit / push moves the baseline for free (the same key `shouldAutoUnstick`
+// already compares); `phoebe:retry` clears it explicitly via `resolve()`,
+// same as any other trigger, since the label carries no baseline-advance
+// requirement of its own.
+//
 // The auto-un-stick sweep is the other side of that same escalation comment's
 // promise (#69): `sweepUnstuck()` runs once a cycle, before selection — one
 // `phoebe:quarantined` list query apiece for issues and PRs, then per hit, a
@@ -76,9 +92,9 @@ export const PHOEBE_QUARANTINE_LABEL = "phoebe:quarantined";
  */
 export const PHOEBE_RETRY_LABEL = "phoebe:retry";
 
-export type UnitTrigger = "timed-out" | "no-commit" | "no-pr";
+export type UnitTrigger = "timed-out" | "no-commit" | "no-pr" | "no-op";
 
-const ALL_TRIGGERS: readonly UnitTrigger[] = ["timed-out", "no-commit", "no-pr"];
+const ALL_TRIGGERS: readonly UnitTrigger[] = ["timed-out", "no-commit", "no-pr", "no-op"];
 
 /** One trigger's counter on a unit's tracking comment. `ref` and `sig` are always filled — never optional. */
 export type UnitMarker = {
@@ -86,7 +102,13 @@ export type UnitMarker = {
   n: number;
   /** Bound, marker-safe slug for what went wrong this attempt, e.g. `mergeable-conflicting`; `"timeout"` for `timed-out`. */
   signature: string;
-  /** The unit's identity reference at this attempt — PR head SHA, or the issue number, as carried data. */
+  /**
+   * The unit's identity reference at this attempt — PR head SHA, or the
+   * issue number, as carried data. `no-op` (#145) departs from this: its
+   * `ref` carries the un-stick baseline key itself (the same value
+   * `shouldAutoUnstick` compares), since that key — not an identity number —
+   * is exactly what a selector needs to re-check.
+   */
   ref: string;
   /** ISO timestamp of this attempt — the `timed-out` trigger's staleness clock. */
   at: string;
@@ -170,6 +192,22 @@ export function buildQuarantineComment(opts: {
  */
 export function shouldAutoUnstick(opts: { baseline: string; current: string }): boolean {
   return opts.current !== opts.baseline;
+}
+
+/**
+ * Whether a unit's recorded no-op verdict (#145) still suppresses selection:
+ * `marker` is the unit's latest `no-op`-trigger marker (or `null`/`undefined`
+ * when it has never recorded one), `currentKey` is the same un-stick baseline
+ * `shouldAutoUnstick` compares — issue body hash for issue-keyed units,
+ * `headRefOid` for PR-keyed ones. A body edit or push changes the key for
+ * free, so the verdict stops applying the moment the content actually moves —
+ * no explicit invalidation write needed.
+ */
+export function isNoOpVerdictCurrent(
+  marker: UnitMarker | null | undefined,
+  currentKey: string,
+): boolean {
+  return marker != null && marker.ref === currentKey;
 }
 
 // --- The one tracking comment: up to two trigger-scoped sections -------------
@@ -298,6 +336,28 @@ export function findEscalatedSections(comments: readonly { body: string }[]): Es
   return sections;
 }
 
+/**
+ * Every `no-op` section, across all of a unit's tracking comments — unlike
+ * `findEscalatedSections`, no baseline-marker-in-prose check: a no-op section
+ * never escalates, so its mere presence is what `phoebe:retry` needs to know
+ * to clear it (#145). `kind` is read straight off the marker, same reasoning
+ * as `findEscalatedSections` — this runs from a plain label list with no
+ * kind attached.
+ */
+function findNoOpSections(comments: readonly { body: string }[]): readonly WorkKindName[] {
+  const kinds: WorkKindName[] = [];
+  for (const comment of comments) {
+    for (const match of comment.body.matchAll(ANY_UNIT_MARKER_RE)) {
+      const kind = asWorkKindName(match[1]!);
+      const trigger = asUnitTrigger(match[2]!);
+      if (kind !== null && trigger === "no-op") {
+        kinds.push(kind);
+      }
+    }
+  }
+  return kinds;
+}
+
 // --- No-commit / no-PR backoff (#25) ------------------------------------------
 
 const DEFAULT_UNIT_BACKOFF_BASE_MS = 5 * 60_000;
@@ -369,8 +429,13 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** An issue-keyed unit's baseline (#135): a content hash, not a timestamp — no Phoebe write (comment, label) can move it, only an edit to the body itself. */
-function issueContentBaseline(body: string): string {
+/**
+ * An issue-keyed unit's baseline (#135): a content hash, not a timestamp — no
+ * Phoebe write (comment, label) can move it, only an edit to the body itself.
+ * Exported so a selector (`producer.ts`) can compute a candidate's current
+ * key without going through the façade — the pool already carries `body`.
+ */
+export function issueContentBaseline(body: string): string {
   return `sha256:${createHash("sha256").update(body).digest("hex")}`;
 }
 
@@ -482,7 +547,9 @@ type QuarantineWorkRef = { kind: WorkKindName; issueNumber?: number; pullRequest
 export type QuarantineReport = (
   event:
     | { kind: "unit-quarantined"; work: QuarantineWorkRef; reason: string }
-    | { kind: "unit-unquarantined"; work: QuarantineWorkRef; reason: string },
+    | { kind: "unit-unquarantined"; work: QuarantineWorkRef; reason: string }
+    | { kind: "unit-suppressed"; work: QuarantineWorkRef; reason: string }
+    | { kind: "unit-unsuppressed"; work: QuarantineWorkRef; reason: string },
 ) => void;
 
 export type Quarantine = {
@@ -490,6 +557,15 @@ export type Quarantine = {
   record(unit: UnitRef, trigger: UnitTrigger, detail: QuarantineDetail): void;
   /** Clear a trigger's counter on forward progress (e.g. an issue produced a PR) — `note` replaces its section. */
   resolve(unit: UnitRef, trigger: UnitTrigger, note: string): void;
+  /**
+   * Record a no-op verdict (#145): the unit ran and correctly concluded
+   * "nothing to do", keyed on `key` — its current un-stick baseline. No
+   * counter, no threshold, no label — a selector filters on this directly
+   * (`isNoOpVerdictCurrent`) rather than waiting for a quarantine escalation
+   * that a below-threshold, non-failing run would never reach. Best-effort,
+   * same as `record()`.
+   */
+  recordNoOp(unit: UnitRef, key: string, note: string): void;
   /**
    * Cycle-level, run once before selection (#69): every issue and PR still
    * carrying `phoebe:quarantined`, auto-cleared — counter reset and label
@@ -643,6 +719,44 @@ export function createQuarantine(opts: {
     }
   }
 
+  /**
+   * Write (or overwrite) the unit's `no-op` section — no counter, no
+   * threshold, no label. Unlike `record()`, this never escalates: a run that
+   * correctly found nothing to do is not a failure streak, so there is
+   * nothing here for a human to be paged about. The marker's `ref` carries
+   * `key` — the unit's current un-stick baseline — for a selector to compare
+   * against on the next cycle via `isNoOpVerdictCurrent`.
+   */
+  function recordNoOp(unit: UnitRef, key: string, note: string): void {
+    const { kind, target } = unit;
+    try {
+      const activity = fetchActivity(target);
+      const tracking = findTrackingComment(activity.comments, kind);
+      const marker: UnitMarker = {
+        trigger: "no-op",
+        n: 1,
+        signature: "no-op",
+        ref: key,
+        at: new Date().toISOString(),
+      };
+      const nextSections: TrackingSections = {
+        ...tracking.sections,
+        "no-op": { prose: note, marker },
+      };
+      const body = serializeTrackingSections(nextSections, kind);
+      if (tracking.commentId) {
+        github.updateComment(tracking.commentId, body);
+      } else {
+        writeComment(unit, body);
+      }
+      report({ kind: "unit-suppressed", work: workRefFor(unit), reason: note });
+    } catch (error) {
+      log(
+        `Could not record the no-op verdict for ${kind} #${target.number} — ${errorMessage(error)}`,
+      );
+    }
+  }
+
   function resolve(unit: UnitRef, trigger: UnitTrigger, note: string): void {
     const { kind, target } = unit;
     try {
@@ -715,18 +829,27 @@ export function createQuarantine(opts: {
   function buildRetryAuditComment(opts: {
     wasQuarantined: boolean;
     resetTriggers: readonly UnitTrigger[];
+    /** Whether a no-op verdict (#145) was also cleared — independent of `wasQuarantined`, since suppression carries no label. */
+    clearedNoOp: boolean;
   }): string {
-    if (!opts.wasQuarantined) {
+    if (!opts.wasQuarantined && !opts.clearedNoOp) {
       return (
         `♻️ Phoebe cleared \`${PHOEBE_RETRY_LABEL}\` — this unit wasn't ` +
-        `\`${PHOEBE_QUARANTINE_LABEL}\`, so there was nothing to reset.`
+        `\`${PHOEBE_QUARANTINE_LABEL}\` and had no no-op verdict, so there was nothing to reset.`
       );
     }
-    const triggerList = opts.resetTriggers.map((t) => `\`${t}\``).join(", ");
-    const resetNote = triggerList ? ` and reset its ${triggerList} counter(s) to 0` : "";
+    const clauses: string[] = [];
+    if (opts.wasQuarantined) {
+      const triggerList = opts.resetTriggers.map((t) => `\`${t}\``).join(", ");
+      const resetNote = triggerList ? ` and reset its ${triggerList} counter(s) to 0` : "";
+      clauses.push(`removed \`${PHOEBE_QUARANTINE_LABEL}\`${resetNote}`);
+    }
+    if (opts.clearedNoOp) {
+      clauses.push("cleared its no-op verdict");
+    }
     return (
-      `♻️ Phoebe retried this unit at a human's request (\`${PHOEBE_RETRY_LABEL}\`): removed ` +
-      `\`${PHOEBE_QUARANTINE_LABEL}\`${resetNote}.`
+      `♻️ Phoebe retried this unit at a human's request (\`${PHOEBE_RETRY_LABEL}\`): ` +
+      `${clauses.join(" and ")}.`
     );
   }
 
@@ -743,6 +866,10 @@ export function createQuarantine(opts: {
   function unstickViaRetry(target: UnitRef["target"], activity: UnitActivity): void {
     const wasQuarantined = activity.labels.includes(PHOEBE_QUARANTINE_LABEL);
     const sections = wasQuarantined ? findEscalatedSections(activity.comments) : [];
+    // No-op verdicts (#145) carry no label, so they're found and cleared
+    // unconditionally — same reasoning as the quarantine label check above,
+    // just without a label to gate on.
+    const noOpKinds = findNoOpSections(activity.comments);
 
     for (const section of sections) {
       resolve(
@@ -758,6 +885,19 @@ export function createQuarantine(opts: {
       });
     }
 
+    for (const kind of noOpKinds) {
+      resolve(
+        { kind, target },
+        "no-op",
+        `Phoebe cleared this unit's no-op verdict via \`${PHOEBE_RETRY_LABEL}\` — a human asked to retry as-is.`,
+      );
+      report({
+        kind: "unit-unsuppressed",
+        work: workRefFor({ kind, target }),
+        reason: `a human applied \`${PHOEBE_RETRY_LABEL}\` — retried as-is`,
+      });
+    }
+
     if (wasQuarantined) {
       if (target.type === "issue") {
         github.unlabelIssue(target.number, PHOEBE_QUARANTINE_LABEL);
@@ -769,6 +909,7 @@ export function createQuarantine(opts: {
     const auditBody = buildRetryAuditComment({
       wasQuarantined,
       resetTriggers: sections.map((s) => s.trigger),
+      clearedNoOp: noOpKinds.length > 0,
     });
     if (target.type === "issue") {
       github.unlabelIssue(target.number, PHOEBE_RETRY_LABEL);
@@ -893,5 +1034,5 @@ export function createQuarantine(opts: {
     }
   }
 
-  return { record, resolve, sweepUnstuck };
+  return { record, resolve, recordNoOp, sweepUnstuck };
 }

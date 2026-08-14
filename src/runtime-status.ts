@@ -26,7 +26,7 @@ const CAPABILITIES = [
 
 type VerificationResult = WorkOutcomeEvent["verification"][number];
 
-/** The work a `work-started`/`unit-quarantined`/`unit-unquarantined` transition identifies (#60/#70). */
+/** The work a `work-started`/`unit-quarantined`/`unit-unquarantined`/`unit-suppressed`/`unit-unsuppressed` transition identifies (#60/#70/#145). */
 type WorkRef = {
   kind: WorkKind;
   issueNumber?: number;
@@ -64,6 +64,8 @@ export type RuntimeStatusTransition =
   | { kind: "work-timed-out"; elapsedMs: number }
   | { kind: "unit-quarantined"; work: WorkRef; reason: string }
   | { kind: "unit-unquarantined"; work: WorkRef; reason: string }
+  | { kind: "unit-suppressed"; work: WorkRef; reason: string }
+  | { kind: "unit-unsuppressed"; work: WorkRef; reason: string }
   | { kind: "backoff"; reason: string; until?: string }
   | { kind: "draining"; reason: string }
   | { kind: "engine-failed"; error: unknown }
@@ -477,6 +479,22 @@ export function createRuntimeStatusReporter(options: {
         // GitHub, so this is the one reporting rail for a clear, not a copy.
         const reason = sanitizeTelemetryText(transition.reason, options.secrets);
         line = `${tag} unquarantined ${transition.work.kind} #${workRefLabel(transition.work)} — ${reason}`;
+        break;
+      }
+      case "unit-suppressed": {
+        // Distinct tag from `unit-quarantined` (#145): a suppressed unit
+        // isn't a failure streak needing a human — it correctly found
+        // nothing to do and is skipped until its content changes. Log-only,
+        // same reasoning as the quarantine pair — the GitHub marker is the
+        // durable record.
+        const reason = sanitizeTelemetryText(transition.reason, options.secrets);
+        line = `${tag} suppressed ${transition.work.kind} #${workRefLabel(transition.work)} — ${reason}`;
+        break;
+      }
+      case "unit-unsuppressed": {
+        // `unit-suppressed`'s counterpart — log-only for the same reason.
+        const reason = sanitizeTelemetryText(transition.reason, options.secrets);
+        line = `${tag} unsuppressed ${transition.work.kind} #${workRefLabel(transition.work)} — ${reason}`;
         break;
       }
       case "backoff": {

@@ -6,7 +6,7 @@ import { describe, expect, test } from "vite-plus/test";
 import { asPrNumber } from "../branded.ts";
 import { sampleConfig as config } from "../test-config.ts";
 import type { GitHub } from "../github.ts";
-import { createQuarantine, PHOEBE_QUARANTINE_LABEL } from "../quarantine.ts";
+import { createQuarantine, issueContentBaseline, PHOEBE_QUARANTINE_LABEL } from "../quarantine.ts";
 import type { StackConfig } from "../stack.ts";
 import type { BlockerPrState, Issue } from "../stack.ts";
 import type { CycleContext } from "../cycle.ts";
@@ -665,6 +665,7 @@ function fakeReproIo(opts: {
         quarantineCalls.push({ trigger, signature: detail.signature, reason: detail.reason });
       },
       resolve: () => {},
+      recordNoOp: () => {},
       sweepUnstuck: () => {},
     },
   });
@@ -944,5 +945,154 @@ describe("createIssuesKind / createResearchKind — no-pr/timed-out backoff (#13
     expect(data.issues.map((i) => i.number)).toEqual([99]);
     expect(kind.select(data, fakeCtx())).toBeNull();
     expect(calls).toBe(0);
+  });
+});
+
+// --- No-op verdict suppression (#145) ----------------------------------------
+
+function noOpMarkerComment(kind: "issues" | "research", ref: string, at: string) {
+  return {
+    id: `IC_${kind}_no-op`,
+    body: `<!-- phoebe-unit:${kind}:no-op n=1 sig=no-op ref=${ref} at=${at} -->`,
+    createdAt: at,
+    authorLogin: "phoebe-bot",
+  };
+}
+
+describe("createIssuesKind / createResearchKind — no-op verdict suppression (#145)", () => {
+  test("a no-op verdict whose key matches the current body suppresses the issue outright", async () => {
+    const body = "nothing to do here";
+    const key = issueContentBaseline(body);
+    const deps: KindDeps = {
+      config,
+      io: fakeIoWithIssueActivity({
+        42: [noOpMarkerComment("issues", key, "2020-01-01T00:00:00Z")],
+      }),
+    };
+    const kind = createIssuesKind(deps);
+    const ready = [issue({ number: 42, body })];
+    const data = await kind.fetch(fakeCtx({ pools: { ready, research: [] } }));
+    expect(data.issues).toEqual([]);
+  });
+
+  test("suppression is unconditional on time — an old verdict still holds while the body is unchanged", async () => {
+    const body = "nothing to do here";
+    const key = issueContentBaseline(body);
+    const deps: KindDeps = {
+      config,
+      // Ancient timestamp — well past any backoff window (#137) — but #145's
+      // suppression never expires on its own, only on a content change.
+      io: fakeIoWithIssueActivity({
+        355: [noOpMarkerComment("research", key, "2000-01-01T00:00:00Z")],
+      }),
+    };
+    const kind = createResearchKind(deps);
+    const research = [issue({ number: 355, body })];
+    const data = await kind.fetch(fakeCtx({ pools: { ready: [], research } }));
+    expect(data.issues).toEqual([]);
+  });
+
+  test("a body edit invalidates a stale no-op verdict — the issue is re-picked", async () => {
+    const key = issueContentBaseline("old body");
+    const deps: KindDeps = {
+      config,
+      io: fakeIoWithIssueActivity({
+        42: [noOpMarkerComment("issues", key, "2020-01-01T00:00:00Z")],
+      }),
+    };
+    const kind = createIssuesKind(deps);
+    const ready = [issue({ number: 42, body: "new body" })];
+    const data = await kind.fetch(fakeCtx({ pools: { ready, research: [] } }));
+    expect(data.issues.map((i) => i.number)).toEqual([42]);
+  });
+
+  test("a marker for the other kind's namespace does not suppress — issues and research count separately", async () => {
+    const body = "nothing to do here";
+    const key = issueContentBaseline(body);
+    const deps: KindDeps = {
+      config,
+      io: fakeIoWithIssueActivity({
+        42: [noOpMarkerComment("research", key, "2020-01-01T00:00:00Z")],
+      }),
+    };
+    const kind = createIssuesKind(deps);
+    const ready = [issue({ number: 42, body })];
+    const data = await kind.fetch(fakeCtx({ pools: { ready, research: [] } }));
+    expect(data.issues.map((i) => i.number)).toEqual([42]);
+  });
+
+  test("a run that cleanly finds nothing to do records a no-op verdict keyed on the issue body", async () => {
+    const recordNoOpCalls: Array<{ kind: string; issueNumber: number; key: string }> = [];
+    const body = "please do the thing";
+    const io = fakeIo({
+      quarantine: {
+        record: () => {},
+        resolve: () => {},
+        recordNoOp: (unit, key) => {
+          recordNoOpCalls.push({ kind: unit.kind, issueNumber: unit.target.number, key });
+        },
+        sweepUnstuck: () => {},
+      },
+    });
+    const deps: KindDeps = { config, io };
+    const kind = createIssuesKind(deps);
+    const target = issue({ number: 77, body });
+    const unit = { issue: target, resolution: { worktreeBase: "main", stacked: false } };
+
+    await kind.run(unit, fakeCtx());
+
+    expect(recordNoOpCalls).toEqual([
+      { kind: "issues", issueNumber: 77, key: issueContentBaseline(body) },
+    ]);
+  });
+
+  test("an actual failure (nonzero agent exit) does not record a no-op verdict", async () => {
+    const recordNoOpCalls: unknown[] = [];
+    const io = fakeIo({
+      agent: { run: async () => ({ exitCode: 1 }) },
+      quarantine: {
+        record: () => {},
+        resolve: () => {},
+        recordNoOp: (...args) => recordNoOpCalls.push(args),
+        sweepUnstuck: () => {},
+      },
+    });
+    const deps: KindDeps = { config, io };
+    const kind = createIssuesKind(deps);
+    const target = issue({ number: 78 });
+    const unit = { issue: target, resolution: { worktreeBase: "main", stacked: false } };
+
+    await kind.run(unit, fakeCtx());
+
+    expect(recordNoOpCalls).toEqual([]);
+  });
+
+  test("producing a PR clears a stale no-op verdict alongside the no-PR counter", async () => {
+    const resolveCalls: string[] = [];
+    const io = fakeIo({
+      git: {
+        fetchOrigin: () => {},
+        originBranchSha: () => "" as never,
+        prepareWorktree: () => "/tmp/worktree",
+        removeWorktree: () => {},
+        pushBranch: () => {},
+        commitCount: () => 1,
+        gitInWorktree: () => "",
+      },
+      quarantine: {
+        record: () => {},
+        resolve: (_unit, trigger) => resolveCalls.push(trigger),
+        recordNoOp: () => {},
+        sweepUnstuck: () => {},
+      },
+    });
+    const deps: KindDeps = { config, io };
+    const kind = createIssuesKind(deps);
+    const target = issue({ number: 79 });
+    const unit = { issue: target, resolution: { worktreeBase: "main", stacked: false } };
+
+    await kind.run(unit, fakeCtx());
+
+    expect(resolveCalls).toEqual(["no-pr", "no-op"]);
   });
 });
