@@ -1,8 +1,13 @@
 // `phoebe upgrade` contracts: argv parsing, release-tag discovery over
 // ls-remote output, ref classification, the strict-literal config rewrite (the
-// risky half — every refusal path is pinned here), and the --check verdict.
+// risky half — every refusal path is pinned here), the --check verdict, and the
+// migration ordering guarantee (migrations run from the target checkout before
+// engine.ref is written).
 
-import { describe, expect, test } from "vite-plus/test";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, test } from "vite-plus/test";
 import {
   buildCheckReport,
   classifyRef,
@@ -13,6 +18,7 @@ import {
   redactToken,
   releaseVersion,
   rewriteEngineRef,
+  upgradeEngineHalf,
 } from "./upgrade.ts";
 
 describe("redactToken", () => {
@@ -246,5 +252,134 @@ describe("buildCheckReport", () => {
     expect(report.engine.behind).toBeNull();
     expect(report.cli.behind).toBeNull();
     expect(report.ok).toBe(true);
+  });
+});
+
+// ------------------------------------------------------------------ migration ordering
+
+const SCAFFOLD = `import type { PhoebeUserConfig } from "phoebe-agent";
+
+const config: PhoebeUserConfig = {
+  repoSlug: "acme/widget",
+  engine: { source: "github", ref: "v0.3.1" },
+};
+
+export default config;
+`;
+
+/** ls-remote output that validates a release tag ref. */
+const VALID_LS_REMOTE = "aabb1234cc\trefs/tags/v0.3.2\n";
+
+function makeTempConfig(): string {
+  const dir = mkdtempSync(join(tmpdir(), "phoebe-upgrade-test-"));
+  const configPath = join(dir, "phoebe.config.ts");
+  writeFileSync(configPath, SCAFFOLD);
+  return configPath;
+}
+
+function makeIo(overrides: {
+  runMigrations: (opts: {
+    source: { source: "github"; ref: string; repo: string };
+    configPath: string;
+    token: string | undefined;
+  }) => number | null;
+}) {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  return {
+    git: (_args: readonly string[]) => VALID_LS_REMOTE,
+    npm: (_args: readonly string[]) => "",
+    stdout: (line: string) => {
+      stdout.push(line);
+    },
+    stderr: (line: string) => {
+      stderr.push(line);
+    },
+    runMigrations: overrides.runMigrations,
+    _stdout: stdout,
+    _stderr: stderr,
+  };
+}
+
+describe("upgradeEngineHalf migration ordering", () => {
+  let savedExitCode: number | undefined;
+  afterEach(() => {
+    process.exitCode = savedExitCode;
+  });
+
+  test("no migrations index (runMigrations returns null) — flip proceeds", () => {
+    savedExitCode = process.exitCode as number | undefined;
+    const configPath = makeTempConfig();
+    const io = makeIo({ runMigrations: () => null });
+    const moved = upgradeEngineHalf({
+      configPath,
+      source: { source: "github", ref: "v0.3.1", repo: "JesusFilm/phoebe" },
+      ref: "v0.3.2",
+      refKind: "release-tag",
+      token: undefined,
+      io,
+    });
+    expect(moved).toBe(true);
+    expect(readFileSync(configPath, "utf8")).toContain('ref: "v0.3.2"');
+  });
+
+  test("migrations exit 0 — flip proceeds", () => {
+    savedExitCode = process.exitCode as number | undefined;
+    const configPath = makeTempConfig();
+    const io = makeIo({ runMigrations: () => 0 });
+    const moved = upgradeEngineHalf({
+      configPath,
+      source: { source: "github", ref: "v0.3.1", repo: "JesusFilm/phoebe" },
+      ref: "v0.3.2",
+      refKind: "release-tag",
+      token: undefined,
+      io,
+    });
+    expect(moved).toBe(true);
+    expect(readFileSync(configPath, "utf8")).toContain('ref: "v0.3.2"');
+  });
+
+  test("migrations exit nonzero — flip aborted, engine.ref unchanged", () => {
+    savedExitCode = process.exitCode as number | undefined;
+    const configPath = makeTempConfig();
+    const originalContent = readFileSync(configPath, "utf8");
+    const io = makeIo({ runMigrations: () => 1 });
+    const moved = upgradeEngineHalf({
+      configPath,
+      source: { source: "github", ref: "v0.3.1", repo: "JesusFilm/phoebe" },
+      ref: "v0.3.2",
+      refKind: "release-tag",
+      token: undefined,
+      io,
+    });
+    expect(moved).toBe(false);
+    expect(process.exitCode).toBe(1);
+    expect(readFileSync(configPath, "utf8")).toBe(originalContent);
+    expect(io._stderr.some((line) => line.includes("migrations failed"))).toBe(true);
+  });
+
+  test("migrations are called before the pin moves", () => {
+    savedExitCode = process.exitCode as number | undefined;
+    const configPath = makeTempConfig();
+    let contentAtMigrateTime: string | null = null;
+    const io = makeIo({
+      runMigrations: () => {
+        // Capture the config content at the moment migrations run
+        contentAtMigrateTime = readFileSync(configPath, "utf8");
+        return 0;
+      },
+    });
+    upgradeEngineHalf({
+      configPath,
+      source: { source: "github", ref: "v0.3.1", repo: "JesusFilm/phoebe" },
+      ref: "v0.3.2",
+      refKind: "release-tag",
+      token: undefined,
+      io,
+    });
+    // At migration time, the pin was still at v0.3.1 (pre-flip)
+    expect(contentAtMigrateTime).toContain('ref: "v0.3.1"');
+    // After flip, the config now shows v0.3.2
+    expect(readFileSync(configPath, "utf8")).toContain('ref: "v0.3.2"');
   });
 });

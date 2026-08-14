@@ -115,10 +115,11 @@ phoebe init --tenant widget     # scaffolds widget/phoebe.config.ts + .env.examp
 ```
 
 Registration is then an edit **you** make to the root `phoebe.config.ts` (adding
-the dir to `workspace.tenants`, on the declared arm) — Phoebe never writes that
-file. On the walk arm, the checkout appearing under the root is the
-registration. Either way the running supervisor picks the child up on its next
-poll.
+the dir to `workspace.tenants`, on the declared arm). Phoebe never edits your
+fleet declaration — `workspace.tenants` is yours, and no migration may add,
+remove, or reorder it. On the walk arm, the checkout appearing under the root is
+the registration. Either way the running supervisor picks the child up on its
+next poll.
 
 | Concern                  | Where it lives                                                         |
 | ------------------------ | ---------------------------------------------------------------------- |
@@ -198,7 +199,8 @@ shared `held — <reason>` rendering plus `--json` and `--check`.
 
 **Add a child (delta from the walk arm).** After linking a checkout and running
 `phoebe init --tenant`, paste the line the command prints into the root
-`workspace.tenants` array — Phoebe never edits the root config for you. See
+`workspace.tenants` array — Phoebe never edits your fleet declaration.
+`workspace.tenants` is yours; no migration may add, remove, or reorder it. See
 [runbook step 3](#3-per-child-place-a-checkout-scaffold-secret) for the full
 flow.
 
@@ -326,6 +328,10 @@ must be material before first boot.
 - Log lines tagged `[phoebe:<owner>/<repo>]`.
 - Trust domain: one container = co-locate only mutually trusted repos
   ([`trust.md`](trust.md#one-container--one-trust-domain)).
+- **Phoebe never edits your fleet declaration.** `workspace.tenants` is yours,
+  and no migration may add, remove, or reorder it. Migrations may only rewrite
+  config content (e.g., `workOrder`) and scaffold missing artifacts. See
+  [`upgrading.md` → What Phoebe may write](upgrading.md#what-phoebe-may-write-in-your-repos).
 
 ## Related work
 

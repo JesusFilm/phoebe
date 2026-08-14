@@ -18,6 +18,7 @@ import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { validateUserConfig } from "./config-schema.ts";
+import { ConfigRefusal, isConfigRefusal } from "./config-handle.ts";
 import { defaultGit, type GitRunner } from "./git-model.ts";
 import { loadUserConfig, resolveConfigPath } from "./load-config.ts";
 import { MIGRATIONS } from "./migrations/index.ts";
@@ -55,12 +56,17 @@ export type Migration = {
    * this returns; any throw here leaves no file written. Artifact migrations
    * never overwrite existing files (detect should have returned null in that
    * case, so this is a design invariant, not a runtime guard).
+   *
+   * Config migrations may instead return a `ConfigRefusal` when the config is
+   * too dynamic to rewrite safely. The runner reports the migration as `manual`
+   * and prints the refusal instruction so the operator can make the edit by hand.
+   * The deployment is left unmodified on disk — a refusal is not a failure.
    */
   apply: (
     dir: string,
     data: unknown,
     readFile: (relPath: string) => string | null,
-  ) => Record<string, string>;
+  ) => Record<string, string> | ConfigRefusal;
 };
 
 export type MigrationState = "applied" | "not-applicable" | "failed" | "manual" | "applicable";
@@ -241,7 +247,7 @@ export async function runMigrate(opts: RunMigrateOptions): Promise<MigrateReport
     }
 
     // stage writes (may throw — nothing flushed yet)
-    let staged: Record<string, string>;
+    let staged: Record<string, string> | ConfigRefusal;
     try {
       staged = migration.apply(opts.dir, data, readFile);
     } catch (err) {
@@ -250,6 +256,18 @@ export async function runMigrate(opts: RunMigrateOptions): Promise<MigrateReport
         title: migration.title,
         state: "failed",
         detail: `apply threw: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      continue;
+    }
+
+    // Config migrations return a ConfigRefusal when the config is too dynamic
+    // to rewrite safely. Report manual and leave the deployment unmodified.
+    if (isConfigRefusal(staged)) {
+      results.push({
+        id: migration.id,
+        title: migration.title,
+        state: "manual",
+        detail: staged.instruction,
       });
       continue;
     }

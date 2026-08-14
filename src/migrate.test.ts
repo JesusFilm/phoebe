@@ -14,7 +14,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
+import { ConfigRefusal, isConfigRefusal } from "./config-handle.ts";
 import { researchPromptMigration } from "./migrations/m001-research-prompt.ts";
+import { addResearchToWorkOrderMigration } from "./migrations/m002-add-research-to-workorder.ts";
 import {
   buildMigrateJson,
   formatFleetMigrateReport,
@@ -616,7 +618,7 @@ describe("m001 researchPromptMigration: detect → apply → detect returns null
     expect(data).not.toBeNull();
 
     // 2. apply: get staged writes
-    const staged = researchPromptMigration.apply(dir, data, readFile);
+    const staged = researchPromptMigration.apply(dir, data, readFile) as Record<string, string>;
     expect(staged).toHaveProperty("prompts/research-prompt.md");
     const content = staged["prompts/research-prompt.md"]!;
     expect(typeof content).toBe("string");
@@ -652,11 +654,31 @@ describe("m001 researchPromptMigration: detect → apply → detect returns null
   });
 
   test("shipped content is a non-empty string", () => {
-    const staged = researchPromptMigration.apply("", true, () => null);
+    const staged = researchPromptMigration.apply("", true, () => null) as Record<string, string>;
     const content = staged["prompts/research-prompt.md"]!;
     expect(content.length).toBeGreaterThan(10);
   });
 });
+
+// ----------------------------------------------------------------- ConfigRefusal → manual state
+
+/** A migration whose apply() returns a ConfigRefusal. */
+function makeRefusingMigration(id: string): Migration {
+  return {
+    id,
+    title: `Refusing migration ${id}`,
+    appliesTo: ["solo-root"] as const,
+    detect() {
+      return true;
+    },
+    describe() {
+      return "do something";
+    },
+    apply() {
+      return new ConfigRefusal("add the field manually in phoebe.config.ts");
+    },
+  };
+}
 
 // ----------------------------------------------------------------- fleet walk helpers
 
@@ -719,6 +741,72 @@ function makeTenantMigration(id: string, relPath: string, content: string): Migr
     },
   };
 }
+
+describe("runMigrate — ConfigRefusal", () => {
+  test("ConfigRefusal from apply → manual state, no file written, ok=true", async () => {
+    const dir = makeTempDir();
+    const configPath = scaffoldDeployment(dir);
+    const report = await runMigrate({
+      dir,
+      role: "solo-root",
+      configPath,
+      migrations: [makeRefusingMigration("config-refusal")],
+      validateFn: async () => {},
+    });
+    const result = report.results[0]!;
+    expect(result.state).toBe("manual");
+    expect(result.detail).toContain("add the field manually");
+    // The journal is empty — no files were written
+    expect(report.journal).toHaveLength(0);
+    // ok=true: manual is not a failure
+    expect(report.ok).toBe(true);
+  });
+
+  test("manual result does not halt remaining migrations", async () => {
+    const dir = makeTempDir();
+    const configPath = scaffoldDeployment(dir);
+    const afterMigration: Migration = {
+      id: "after-refusal",
+      title: "After",
+      appliesTo: ["solo-root"] as const,
+      detect() {
+        return true;
+      },
+      describe() {
+        return "scaffold after.md";
+      },
+      apply() {
+        return { "after.md": "# After\n" };
+      },
+    };
+    const report = await runMigrate({
+      dir,
+      role: "solo-root",
+      configPath,
+      migrations: [makeRefusingMigration("first"), afterMigration],
+      validateFn: async () => {},
+    });
+    expect(report.results).toHaveLength(2);
+    expect(report.results[0]!.state).toBe("manual");
+    expect(report.results[1]!.state).toBe("applied");
+    expect(report.ok).toBe(true);
+  });
+
+  test("manual result shows ! mark in formatted report", () => {
+    const report: MigrateReport = {
+      sha: null,
+      dir: "/tmp/x",
+      results: [{ id: "cfg-refusal", state: "manual", detail: "add it by hand" }],
+      journal: [],
+      ok: true,
+    };
+    const out = formatMigrateReport(report);
+    expect(out).toContain("!");
+    expect(out).toContain("cfg-refusal");
+    expect(out).toContain("add it by hand");
+    expect(out).toContain("1 manual");
+  });
+});
 
 /** Migration that only applies when role is "workspace-root". */
 function makeWorkspaceRootMigration(id: string, relPath: string, content: string): Migration {
@@ -1259,6 +1347,178 @@ describe("runMigrate with real research prompt migration", () => {
     expect(second.results[0]!.state).toBe("not-applicable");
     expect(second.journal).toHaveLength(0);
     expect(second.ok).toBe(true);
+  });
+});
+
+// ----------------------------------------------------------------- m002 idempotence
+
+const CONFIG_WITH_EXPLICIT_WORK_ORDER = `export const config = {
+  repoSlug: "acme/test",
+  repoUrl: "https://github.com/acme/test.git",
+  installCommand: "npm ci",
+  checkCommand: "npm run check",
+  testCommand: "npm test",
+  workOrder: ["conflicts", "checks", "reviews", "issues"],
+};
+`;
+
+describe("m002 addResearchToWorkOrderMigration: detect → apply → detect returns null", () => {
+  test("detect returns non-null when workOrder lacks research, null after apply writes it", () => {
+    const dir = makeTempDir();
+    writeFileSync(join(dir, "phoebe.config.ts"), CONFIG_WITH_EXPLICIT_WORK_ORDER);
+
+    const readFile = (relPath: string): string | null => {
+      try {
+        return readFileSync(join(dir, relPath), "utf8");
+      } catch {
+        return null;
+      }
+    };
+
+    // 1. detect: applicable
+    const data = addResearchToWorkOrderMigration.detect(dir, readFile);
+    expect(data).not.toBeNull();
+
+    // 2. apply: get staged writes (not a refusal)
+    const result = addResearchToWorkOrderMigration.apply(dir, data, readFile);
+    expect(isConfigRefusal(result)).toBe(false);
+    const staged = result as Record<string, string>;
+    expect(staged).toHaveProperty("phoebe.config.ts");
+    const newContent = staged["phoebe.config.ts"]!;
+    expect(newContent).toContain('"research"');
+    // Surrounding content is preserved
+    expect(newContent).toContain("repoSlug");
+    expect(newContent).toContain('"conflicts"');
+
+    // flush
+    writeFileSync(join(dir, "phoebe.config.ts"), newContent);
+
+    // 3. detect again → null (not-applicable)
+    expect(addResearchToWorkOrderMigration.detect(dir, readFile)).toBeNull();
+  });
+
+  test("detect returns null when no explicit workOrder (default includes research)", () => {
+    const dir = makeTempDir();
+    writeFileSync(join(dir, "phoebe.config.ts"), MINIMAL_CONFIG);
+
+    const readFile = (relPath: string): string | null => {
+      try {
+        return readFileSync(join(dir, relPath), "utf8");
+      } catch {
+        return null;
+      }
+    };
+    expect(addResearchToWorkOrderMigration.detect(dir, readFile)).toBeNull();
+  });
+
+  test("detect returns null when workOrder already contains research", () => {
+    const dir = makeTempDir();
+    const content = MINIMAL_CONFIG.replace("};", '  workOrder: ["conflicts", "research"],\n};');
+    writeFileSync(join(dir, "phoebe.config.ts"), content);
+
+    const readFile = (relPath: string): string | null => {
+      try {
+        return readFileSync(join(dir, relPath), "utf8");
+      } catch {
+        return null;
+      }
+    };
+    expect(addResearchToWorkOrderMigration.detect(dir, readFile)).toBeNull();
+  });
+
+  test("detect returns null when config file absent", () => {
+    const dir = makeTempDir();
+    const readFile = (): null => null;
+    expect(addResearchToWorkOrderMigration.detect(dir, readFile)).toBeNull();
+  });
+
+  test("apply returns ConfigRefusal for dynamic workOrder", () => {
+    // Config with a computed workOrder (spread) — cannot be rewritten automatically
+    const dynamicContent = MINIMAL_CONFIG.replace(
+      "};",
+      '  workOrder: [...BASE_ORDER, "checks"],\n};',
+    );
+    const result = addResearchToWorkOrderMigration.apply("", dynamicContent, () => null);
+    expect(isConfigRefusal(result)).toBe(true);
+    const refusal = result as import("./config-handle.ts").ConfigRefusal;
+    expect(refusal.instruction).toContain("research");
+    expect(refusal.instruction).toContain("phoebe.config.ts");
+  });
+
+  test("appliesTo includes all three deployment roles", () => {
+    expect(addResearchToWorkOrderMigration.appliesTo).toContain("solo-root");
+    expect(addResearchToWorkOrderMigration.appliesTo).toContain("workspace-root");
+    expect(addResearchToWorkOrderMigration.appliesTo).toContain("tenant");
+  });
+
+  test("runMigrate applies m002 and journals phoebe.config.ts", async () => {
+    const dir = makeTempDir();
+    writeFileSync(join(dir, "phoebe.config.ts"), CONFIG_WITH_EXPLICIT_WORK_ORDER);
+
+    const report = await runMigrate({
+      dir,
+      role: "solo-root",
+      configPath: join(dir, "phoebe.config.ts"),
+      migrations: [addResearchToWorkOrderMigration],
+      validateFn: async () => {},
+    });
+
+    expect(report.results[0]!.state).toBe("applied");
+    expect(report.journal[0]!.relPath).toBe("phoebe.config.ts");
+    expect(report.journal[0]!.before).toBe(CONFIG_WITH_EXPLICIT_WORK_ORDER);
+    const written = readFileSync(join(dir, "phoebe.config.ts"), "utf8");
+    expect(written).toContain('"research"');
+    expect(report.ok).toBe(true);
+  });
+
+  test("runMigrate: m002 not-applicable on second run (idempotent)", async () => {
+    const dir = makeTempDir();
+    writeFileSync(join(dir, "phoebe.config.ts"), CONFIG_WITH_EXPLICIT_WORK_ORDER);
+    const configPath = join(dir, "phoebe.config.ts");
+
+    await runMigrate({
+      dir,
+      role: "solo-root",
+      configPath,
+      migrations: [addResearchToWorkOrderMigration],
+      validateFn: async () => {},
+    });
+
+    const second = await runMigrate({
+      dir,
+      role: "solo-root",
+      configPath,
+      migrations: [addResearchToWorkOrderMigration],
+      validateFn: async () => {},
+    });
+
+    expect(second.results[0]!.state).toBe("not-applicable");
+    expect(second.journal).toHaveLength(0);
+  });
+
+  test("runMigrate: m002 reports manual when workOrder is dynamic, config unchanged", async () => {
+    const dynamicContent = MINIMAL_CONFIG.replace(
+      "};",
+      '  workOrder: [...BASE_ORDER, "checks"],\n};',
+    );
+    const dir = makeTempDir();
+    writeFileSync(join(dir, "phoebe.config.ts"), dynamicContent);
+    const configPath = join(dir, "phoebe.config.ts");
+
+    const report = await runMigrate({
+      dir,
+      role: "solo-root",
+      configPath,
+      migrations: [addResearchToWorkOrderMigration],
+      validateFn: async () => {},
+    });
+
+    expect(report.results[0]!.state).toBe("manual");
+    expect(report.results[0]!.detail).toContain("research");
+    // Config is left unmodified on disk
+    expect(readFileSync(configPath, "utf8")).toBe(dynamicContent);
+    expect(report.journal).toHaveLength(0);
+    expect(report.ok).toBe(true);
   });
 });
 

@@ -24,15 +24,19 @@
 // `--check` is the narrow scriptable probe (stable JSON, exit 1 when behind) —
 // deliberately separate from `phoebe doctor`, the broad health panel.
 
-import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { readEngineSource, type ResolvedEngineSource } from "../bootstrap/engine-source.ts";
 import {
   buildAuthenticatedRepoUrl,
   isPinnedSha,
   LS_REMOTE_TIMEOUT_MS,
+  materializeGithubEngine,
   parseLsRemote,
+  type GithubSource,
 } from "../bootstrap/github-engine.ts";
 import { isInsideContainer } from "./execution-gate.ts";
 import { defaultGit, type GitRunner } from "./git-model.ts";
@@ -441,7 +445,51 @@ type UpgradeIo = {
   npm?: NpmRunner;
   stdout?: (line: string) => void;
   stderr?: (line: string) => void;
+  /**
+   * Materialize the target engine checkout, probe for `src/migrations/index.ts`,
+   * and spawn `phoebe migrate` from that checkout if the index exists. Returns the
+   * migrate exit code, or null when the index is absent (no-op). Injectable for
+   * tests; the default calls materializeGithubEngine then spawnSync.
+   */
+  runMigrations?: (opts: {
+    source: GithubSource;
+    configPath: string;
+    token: string | undefined;
+  }) => number | null;
 };
+
+/**
+ * Base directory for engine checkouts — mirrors the knob `phoebe boot` and
+ * `bin.mjs` use, so upgrade shares the same persistent clone and the materialize
+ * step is a cheap fetch into an existing repo on subsequent runs.
+ */
+function defaultEngineBaseDir(): string {
+  return process.env["PHOEBE_ENGINE_DIR"] ?? join(tmpdir(), "phoebe-agent");
+}
+
+/**
+ * Materialize the target engine checkout, probe for `src/migrations/index.ts`,
+ * and spawn that checkout's own `phoebe migrate --config <configPath>` when the
+ * index is present. Inherited stdio lets the operator see the migration report
+ * verbatim; upgrade parses nothing. Returns the exit code, or null (skipped —
+ * no migrations index in this checkout).
+ */
+function defaultRunMigrations(opts: {
+  source: GithubSource;
+  configPath: string;
+  token: string | undefined;
+}): number | null {
+  const { entry } = materializeGithubEngine(opts.source, {
+    baseDir: defaultEngineBaseDir(),
+    token: opts.token,
+  });
+  const migrationsIndex = join(dirname(entry), "migrations", "index.ts");
+  if (!existsSync(migrationsIndex)) return null;
+  const result = spawnSync(process.execPath, [entry, "migrate", "--config", opts.configPath], {
+    stdio: "inherit",
+  });
+  return result.status;
+}
 
 function lsRemoteLatestTag(
   source: { repo: string },
@@ -464,6 +512,7 @@ export async function runUpgradeCli(argv: readonly string[]): Promise<void> {
     npm: defaultNpm,
     stdout: (line) => process.stdout.write(`${line}\n`),
     stderr: (line) => process.stderr.write(`${line}\n`),
+    runMigrations: defaultRunMigrations,
   };
   if (parsed.help) {
     process.stdout.write(UPGRADE_HELP_TEXT);
@@ -583,7 +632,7 @@ function formatCheckReport(report: UpgradeCheckReport): string {
   return lines.join("\n");
 }
 
-function upgradeEngineHalf(opts: {
+export function upgradeEngineHalf(opts: {
   configPath: string;
   source: ResolvedEngineSource;
   ref: string | null;
@@ -637,6 +686,26 @@ function upgradeEngineHalf(opts: {
       `engine: ${ref} is a commit SHA — existence cannot be pre-validated; ` +
         `a bad SHA will fail at the next engine materialize.`,
     );
+  }
+
+  // Materialize the target engine ref and run its own migrations before the pin
+  // moves. The target's CLI is spawned with inherited stdio so the operator sees
+  // its report verbatim; upgrade parses nothing. A nonzero exit aborts the flip —
+  // a broken upgrade must not land. A target with no src/migrations/index.ts
+  // skips the step (null return) and proceeds. Per-child failures are reflected in
+  // migrate's exit code, not ours: they exit 0 and allow the flip.
+  const migrateExitCode = io.runMigrations({
+    source: source as GithubSource,
+    configPath,
+    token: opts.token,
+  });
+  if (migrateExitCode !== null && migrateExitCode !== 0) {
+    io.stderr(
+      `engine: the target engine's migrations failed (exit ${String(migrateExitCode)}) ` +
+        `— leaving engine.ref unchanged.`,
+    );
+    process.exitCode = 1;
+    return false;
   }
 
   const content = readFileSync(configPath, "utf8");
