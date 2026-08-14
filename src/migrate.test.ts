@@ -16,12 +16,16 @@ import { join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
 import { researchPromptMigration } from "./migrations/m001-research-prompt.ts";
 import {
+  formatFleetMigrateReport,
   formatMigrateReport,
   parseMigrateArgs,
+  runFleetMigrate,
   runMigrate,
+  type FleetMigrateReport,
   type Migration,
   type MigrateReport,
 } from "./migrate.ts";
+import type { WorkspaceEnumeration } from "./tenant-commands.ts";
 
 // ----------------------------------------------------------------- fixtures
 
@@ -521,6 +525,462 @@ describe("m001 researchPromptMigration: detect → apply → detect returns null
     const staged = researchPromptMigration.apply("", true, () => null);
     const content = staged["prompts/research-prompt.md"]!;
     expect(content.length).toBeGreaterThan(10);
+  });
+});
+
+// ----------------------------------------------------------------- fleet walk helpers
+
+const WORKSPACE_CONFIG = `export const config = {
+  repoSlug: "acme/root",
+  repoUrl: "https://github.com/acme/root.git",
+  installCommand: "npm ci",
+  checkCommand: "npm run check",
+  testCommand: "npm test",
+  workspace: { depth: 1 },
+};
+`;
+
+function scaffoldWorkspaceRoot(dir: string): string {
+  const configPath = join(dir, "phoebe.config.ts");
+  writeFileSync(configPath, WORKSPACE_CONFIG);
+  return configPath;
+}
+
+function makeTenant(
+  dir: string,
+  slug: string | null = "acme/child",
+): WorkspaceEnumeration["tenants"][number] {
+  const configPath = join(dir, "phoebe.config.ts");
+  return {
+    id: dir,
+    slug,
+    dir,
+    configPath,
+    envPath: join(dir, ".env"),
+  };
+}
+
+function fakeEnumerate(
+  tenants: WorkspaceEnumeration["tenants"],
+  holds: WorkspaceEnumeration["holds"] = [],
+): NonNullable<Parameters<typeof runFleetMigrate>[0]["enumerateFn"]> {
+  return async () => ({
+    workspace: { depth: 1 } as WorkspaceEnumeration["workspace"],
+    explicit: false,
+    tenants,
+    holds,
+  });
+}
+
+/** Migration that only applies when role is "tenant". */
+function makeTenantMigration(id: string, relPath: string, content: string): Migration {
+  return {
+    id,
+    title: `Tenant migration ${id}`,
+    appliesTo: ["tenant"] as const,
+    detect(_dir, readFile) {
+      return readFile(relPath) === null ? true : null;
+    },
+    describe() {
+      return `scaffold ${relPath}`;
+    },
+    apply() {
+      return { [relPath]: content };
+    },
+  };
+}
+
+/** Migration that only applies when role is "workspace-root". */
+function makeWorkspaceRootMigration(id: string, relPath: string, content: string): Migration {
+  return {
+    id,
+    title: `Workspace-root migration ${id}`,
+    appliesTo: ["workspace-root"] as const,
+    detect(_dir, readFile) {
+      return readFile(relPath) === null ? true : null;
+    },
+    describe() {
+      return `scaffold ${relPath}`;
+    },
+    apply() {
+      return { [relPath]: content };
+    },
+  };
+}
+
+// ----------------------------------------------------------------- runFleetMigrate
+
+describe("runFleetMigrate: solo-root", () => {
+  test("returns empty tenantEntries for a solo deployment", async () => {
+    const dir = makeTempDir();
+    const configPath = scaffoldDeployment(dir);
+    const fleet = await runFleetMigrate({
+      configPath,
+      migrations: [],
+      validateFn: async () => {},
+    });
+    expect(fleet.rootRole).toBe("solo-root");
+    expect(fleet.tenantEntries).toHaveLength(0);
+    expect(fleet.rootReport.ok).toBe(true);
+  });
+});
+
+describe("runFleetMigrate: workspace-root fleet walk", () => {
+  test("clean tenant with applicable migration → migrated verdict", async () => {
+    const rootDir = makeTempDir();
+    const configPath = scaffoldWorkspaceRoot(rootDir);
+    const childDir = makeTempDir();
+    scaffoldDeployment(childDir);
+
+    const migration = makeTenantMigration("t001", "prompts/tenant.md", "# Tenant\n");
+    const fleet = await runFleetMigrate({
+      configPath,
+      migrations: [migration],
+      validateFn: async () => {},
+      isDirtyFn: () => false,
+      enumerateFn: fakeEnumerate([makeTenant(childDir)]),
+    });
+
+    expect(fleet.rootRole).toBe("workspace-root");
+    expect(fleet.tenantEntries).toHaveLength(1);
+    const entry = fleet.tenantEntries[0]!;
+    expect(entry.verdict).toBe("migrated");
+    expect(entry.report?.results[0]?.state).toBe("applied");
+    expect(entry.report?.journal[0]?.relPath).toBe("prompts/tenant.md");
+    expect(existsSync(join(childDir, "prompts/tenant.md"))).toBe(true);
+  });
+
+  test("dirty tenant → skipped verdict with commit-or-stash reason", async () => {
+    const rootDir = makeTempDir();
+    const configPath = scaffoldWorkspaceRoot(rootDir);
+    const childDir = makeTempDir();
+    scaffoldDeployment(childDir);
+
+    const migration = makeTenantMigration("t001", "prompts/tenant.md", "# Tenant\n");
+    const fleet = await runFleetMigrate({
+      configPath,
+      migrations: [migration],
+      validateFn: async () => {},
+      isDirtyFn: (d) => d === childDir,
+      enumerateFn: fakeEnumerate([makeTenant(childDir)]),
+    });
+
+    const entry = fleet.tenantEntries[0]!;
+    expect(entry.verdict).toBe("skipped");
+    expect(entry.reason).toMatch(/commit or stash/);
+    expect(entry.report).toBeUndefined();
+    expect(existsSync(join(childDir, "prompts/tenant.md"))).toBe(false);
+  });
+
+  test("held tenant → skipped verdict with hold reason", async () => {
+    const rootDir = makeTempDir();
+    const configPath = scaffoldWorkspaceRoot(rootDir);
+    const childDir = makeTempDir();
+
+    const fleet = await runFleetMigrate({
+      configPath,
+      migrations: [],
+      validateFn: async () => {},
+      isDirtyFn: () => false,
+      enumerateFn: fakeEnumerate(
+        [],
+        [{ dir: childDir, slug: "acme/held", reason: "origin mismatch" }],
+      ),
+    });
+
+    expect(fleet.tenantEntries).toHaveLength(1);
+    const entry = fleet.tenantEntries[0]!;
+    expect(entry.verdict).toBe("skipped");
+    expect(entry.reason).toBe("origin mismatch");
+  });
+
+  test("workspace-root migration never runs against tenant", async () => {
+    const rootDir = makeTempDir();
+    const configPath = scaffoldWorkspaceRoot(rootDir);
+    const childDir = makeTempDir();
+    scaffoldDeployment(childDir);
+
+    const rootOnlyMigration = makeWorkspaceRootMigration("r001", "root-only.md", "# Root\n");
+    const fleet = await runFleetMigrate({
+      configPath,
+      migrations: [rootOnlyMigration],
+      validateFn: async () => {},
+      isDirtyFn: () => false,
+      enumerateFn: fakeEnumerate([makeTenant(childDir)]),
+    });
+
+    // Root gets the migration
+    expect(fleet.rootReport.results.find((r) => r.id === "r001")?.state).toBe("applied");
+    // Tenant has empty results (role filter skips it entirely)
+    const entry = fleet.tenantEntries[0]!;
+    expect(entry.verdict).toBe("up-to-date");
+    expect(entry.report?.results).toHaveLength(0);
+  });
+
+  test("tenant with no applicable migrations, valid config → up-to-date", async () => {
+    const rootDir = makeTempDir();
+    const configPath = scaffoldWorkspaceRoot(rootDir);
+    const childDir = makeTempDir();
+    scaffoldDeployment(childDir);
+
+    const fleet = await runFleetMigrate({
+      configPath,
+      migrations: [],
+      validateFn: async () => {},
+      isDirtyFn: () => false,
+      enumerateFn: fakeEnumerate([makeTenant(childDir)]),
+    });
+
+    const entry = fleet.tenantEntries[0]!;
+    expect(entry.verdict).toBe("up-to-date");
+  });
+
+  test("tenant with no applicable migrations, broken config → invalid verdict", async () => {
+    const rootDir = makeTempDir();
+    const configPath = scaffoldWorkspaceRoot(rootDir);
+    const childDir = makeTempDir();
+    scaffoldDeployment(childDir);
+
+    const fleet = await runFleetMigrate({
+      configPath,
+      migrations: [],
+      validateFn: async (cp) => {
+        if (cp !== configPath) throw new Error("tenant config broken");
+      },
+      isDirtyFn: () => false,
+      enumerateFn: fakeEnumerate([makeTenant(childDir)]),
+    });
+
+    const entry = fleet.tenantEntries[0]!;
+    expect(entry.verdict).toBe("invalid");
+    expect(entry.report?.ok).toBe(true);
+  });
+
+  test("tenant migration apply failure → failed verdict, root ok unaffected", async () => {
+    const rootDir = makeTempDir();
+    const configPath = scaffoldWorkspaceRoot(rootDir);
+    const childDir = makeTempDir();
+    scaffoldDeployment(childDir);
+
+    const throwingTenantMigration: Migration = {
+      id: "t-throw",
+      title: "Throwing tenant migration",
+      appliesTo: ["tenant"] as const,
+      detect() {
+        return true;
+      },
+      describe() {
+        return "";
+      },
+      apply() {
+        throw new Error("tenant apply exploded");
+      },
+    };
+
+    const fleet = await runFleetMigrate({
+      configPath,
+      migrations: [throwingTenantMigration],
+      validateFn: async () => {},
+      isDirtyFn: () => false,
+      enumerateFn: fakeEnumerate([makeTenant(childDir)]),
+    });
+
+    // Root is fine
+    expect(fleet.rootReport.ok).toBe(true);
+    // Tenant has failed verdict
+    const entry = fleet.tenantEntries[0]!;
+    expect(entry.verdict).toBe("failed");
+    expect(entry.report?.ok).toBe(false);
+  });
+
+  test("tenant validation failure → reverted verdict", async () => {
+    const rootDir = makeTempDir();
+    const configPath = scaffoldWorkspaceRoot(rootDir);
+    const childDir = makeTempDir();
+    scaffoldDeployment(childDir);
+
+    const migration = makeTenantMigration("t-revert", "prompts/revert-me.md", "# Rev\n");
+    const fleet = await runFleetMigrate({
+      configPath,
+      migrations: [migration],
+      validateFn: async (cp, n) => {
+        // Fail the first validation call against the tenant's configPath
+        if (cp !== configPath && n === 1) throw new Error("tenant validation broken");
+      },
+      isDirtyFn: () => false,
+      enumerateFn: fakeEnumerate([makeTenant(childDir)]),
+    });
+
+    const entry = fleet.tenantEntries[0]!;
+    expect(entry.verdict).toBe("reverted");
+    // File should be reverted (deleted since it didn't exist before)
+    expect(existsSync(join(childDir, "prompts/revert-me.md"))).toBe(false);
+  });
+
+  test("multiple tenants: some skipped, some migrated, all processed", async () => {
+    const rootDir = makeTempDir();
+    const configPath = scaffoldWorkspaceRoot(rootDir);
+    const cleanDir = makeTempDir();
+    const dirtyDir = makeTempDir();
+    scaffoldDeployment(cleanDir);
+    scaffoldDeployment(dirtyDir);
+
+    const migration = makeTenantMigration("t-multi", "prompts/multi.md", "# Multi\n");
+    const fleet = await runFleetMigrate({
+      configPath,
+      migrations: [migration],
+      validateFn: async () => {},
+      isDirtyFn: (d) => d === dirtyDir,
+      enumerateFn: fakeEnumerate([
+        makeTenant(cleanDir, "acme/clean"),
+        makeTenant(dirtyDir, "acme/dirty"),
+      ]),
+    });
+
+    expect(fleet.tenantEntries).toHaveLength(2);
+    const cleanEntry = fleet.tenantEntries.find((e) => e.slug === "acme/clean")!;
+    const dirtyEntry = fleet.tenantEntries.find((e) => e.slug === "acme/dirty")!;
+    expect(cleanEntry.verdict).toBe("migrated");
+    expect(dirtyEntry.verdict).toBe("skipped");
+  });
+
+  test("null enumeration (workspace block missing despite role detection) → empty tenants", async () => {
+    const rootDir = makeTempDir();
+    const configPath = scaffoldWorkspaceRoot(rootDir);
+
+    const fleet = await runFleetMigrate({
+      configPath,
+      migrations: [],
+      validateFn: async () => {},
+      isDirtyFn: () => false,
+      enumerateFn: async () => null,
+    });
+
+    expect(fleet.tenantEntries).toHaveLength(0);
+  });
+});
+
+// ----------------------------------------------------------------- formatFleetMigrateReport
+
+describe("formatFleetMigrateReport", () => {
+  function makeFleetReport(overrides?: Partial<FleetMigrateReport>): FleetMigrateReport {
+    return {
+      rootReport: {
+        sha: "abc123def456789",
+        dir: "/deployments/root",
+        results: [],
+        journal: [],
+        ok: true,
+      },
+      rootRole: "workspace-root",
+      tenantEntries: [],
+      ...overrides,
+    };
+  }
+
+  test("header contains sha slice", () => {
+    const out = formatFleetMigrateReport(makeFleetReport());
+    expect(out).toContain("[phoebe] migrate — abc123def456");
+  });
+
+  test("root section shows directory", () => {
+    const out = formatFleetMigrateReport(makeFleetReport());
+    expect(out).toContain("root (/deployments/root):");
+  });
+
+  test("tenant section shows verdicts with correct marks", () => {
+    const out = formatFleetMigrateReport(
+      makeFleetReport({
+        tenantEntries: [
+          {
+            dir: "/d/c1",
+            slug: "acme/c1",
+            verdict: "migrated",
+            report: { sha: null, dir: "/d/c1", results: [], journal: [], ok: true },
+          },
+          {
+            dir: "/d/c2",
+            slug: "acme/c2",
+            verdict: "up-to-date",
+            report: { sha: null, dir: "/d/c2", results: [], journal: [], ok: true },
+          },
+          {
+            dir: "/d/c3",
+            slug: "acme/c3",
+            verdict: "skipped",
+            reason: "commit or stash, then re-run",
+          },
+          {
+            dir: "/d/c4",
+            slug: "acme/c4",
+            verdict: "failed",
+            report: {
+              sha: null,
+              dir: "/d/c4",
+              results: [{ id: "x", state: "failed", detail: "boom" }],
+              journal: [],
+              ok: false,
+            },
+          },
+          {
+            dir: "/d/c5",
+            slug: "acme/c5",
+            verdict: "invalid",
+            report: { sha: null, dir: "/d/c5", results: [], journal: [], ok: true },
+          },
+        ],
+      }),
+    );
+    expect(out).toContain("✓ migrated");
+    expect(out).toContain("✓ up-to-date");
+    expect(out).toContain("— skipped");
+    expect(out).toContain("✗ failed");
+    expect(out).toContain("⚠ invalid");
+    expect(out).toContain("commit or stash, then re-run");
+  });
+
+  test("uncommitted listing grouped by dir with per-dir review command", () => {
+    const out = formatFleetMigrateReport(
+      makeFleetReport({
+        rootReport: {
+          sha: "abc",
+          dir: "/root",
+          results: [],
+          journal: [{ dir: "/root", migrationId: "r1", relPath: "root-file.md", before: null }],
+          ok: true,
+        },
+        tenantEntries: [
+          {
+            dir: "/child",
+            slug: "acme/child",
+            verdict: "migrated",
+            report: {
+              sha: null,
+              dir: "/child",
+              results: [],
+              journal: [
+                { dir: "/child", migrationId: "t1", relPath: "child-file.md", before: null },
+              ],
+              ok: true,
+            },
+          },
+        ],
+      }),
+    );
+    expect(out).toContain("uncommitted paths Phoebe wrote:");
+    expect(out).toContain("/root:");
+    expect(out).toContain("    root-file.md");
+    expect(out).toContain("review: git -C /root diff -- root-file.md");
+    expect(out).toContain("/child:");
+    expect(out).toContain("    child-file.md");
+    expect(out).toContain("review: git -C /child diff -- child-file.md");
+    expect(out).toContain("Phoebe never commits");
+  });
+
+  test("no uncommitted section when no journal entries", () => {
+    const out = formatFleetMigrateReport(makeFleetReport());
+    expect(out).not.toContain("uncommitted");
+    expect(out).not.toContain("Phoebe never commits");
   });
 });
 
