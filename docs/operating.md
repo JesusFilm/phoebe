@@ -146,8 +146,11 @@ surface as failures with their hold reason. `--json` for scripts.
 
 Division of labor: `phoebe upgrade` moves you between versions; `phoebe migrate`
 reshapes your files for the version you are moving to; `phoebe doctor` tells you
-whether the version you are on works. For the per-permission token diagnosis,
-doctor points at the deeper probe below.
+whether the version you are on works. The first two compose: `upgrade` runs the
+target version's `migrate` itself, before it moves the pin, so a normal upgrade
+is one command. Invoke `migrate` directly to reshape without moving the pin, or
+to re-run a child that was held or failed. For the per-permission token
+diagnosis, doctor points at the deeper probe below.
 
 ## Checking a tenant's GitHub token
 
@@ -222,7 +225,7 @@ one trust domain.
 | Add a repo                        | Place the checkout under the root (`git clone` / `git submodule add`), then `phoebe init --tenant <dir>` (host-side) and — on the declared arm — add the dir to `workspace.tenants` yourself. Phoebe never edits your fleet declaration; `workspace.tenants` is yours. The supervisor discovers it next poll. Fill in its `.env`.                                                                                                                                      |
 | Remove a repo                     | Drop the child from `workspace.tenants` and/or delete its config dir (host-side; Phoebe never edits your fleet declaration). Reversible — the tenant's `/data` is retained; re-adding re-uses it.                                                                                                                                                                                                                                                                      |
 | Reclaim a removed repo's disk     | `phoebe purge <owner/repo> --yes` (in-container). Destructive; refuses while a live config still claims the slug.                                                                                                                                                                                                                                                                                                                                                      |
-| Apply deployment migrations       | `phoebe migrate` (host-side, in the deployment dir). Rewrites config content and scaffolds missing artifacts across root and fleet; lists uncommitted paths for you to review and commit per repo. See [`upgrading.md` → phoebe migrate](upgrading.md#phoebe-migrate----reshaping-your-files-for-the-current-ref).                                                                                                                                                     |
+| Apply deployment migrations       | `phoebe migrate` (host-side, in the deployment dir). Rewrites config content and scaffolds missing artifacts across root and fleet; lists uncommitted paths for you to review and commit per repo. See [`upgrading.md` → phoebe migrate](upgrading.md#phoebe-migrate--reshaping-your-files-for-the-current-ref).                                                                                                                                                       |
 | Check every tenant's GitHub token | `node scripts/verify-tenant-token.mjs --all` (host-side, in the deployment dir). One section per tenant; `--check` exits non-zero when any is short a grant. See [Checking a tenant's GitHub token](#checking-a-tenants-github-token).                                                                                                                                                                                                                                 |
 | See every tenant + its health     | `phoebe list` (in-container): config present? `.env` present? retained data? current unit (read from each tenant's `status.json`). Rows that cannot boot show `held — <reason>`. Use `--json` for scriptable output and `--check` to exit non-zero when the declaration is not fully honoured (declared-arm accounting — `N of M`, declared order, `undeclared` — lives in [`workspace.md` → Declaring the fleet](workspace.md#declaring-the-fleet-workspacetenants)). |
 

@@ -3,7 +3,7 @@
 Engine-contributor guide for the `Migration` interface. This is an **internal
 authoring reference** — operators reading `upgrading.md` are never handed this.
 For the operator view of what migrations do to your deployment, see
-[`upgrading.md` → `phoebe migrate`](upgrading.md#phoebe-migrate----reshaping-your-files-for-the-current-ref).
+[`upgrading.md` → `phoebe migrate`](upgrading.md#phoebe-migrate--reshaping-your-files-for-the-current-ref).
 
 ## What a migration is
 
@@ -92,9 +92,10 @@ apply(
 
 Return a map of `{ relPath: content }` for every file to write. The runner
 **stages** these writes — it captures the pre-image of each path, then writes
-all of them — then runs post-apply validation. If validation fails, every write
-from this migration is reverted in-place (same inode, no rename-over) before
-the migration is marked `failed`.
+all of them — then runs post-apply validation. If validation fails, the runner
+reverts this migration's writes in-place (same inode, no rename-over) before
+marking it `failed`. That revert is best-effort rather than transactional — see
+[Stage-and-flush-on-`applied` atomicity](#stage-and-flush-on-applied-atomicity).
 
 Return a `ConfigRefusal` when the config is too dynamic to rewrite safely:
 
@@ -176,9 +177,26 @@ The runner's flush-and-validate loop:
    files are deleted; modified files are written back to their pre-image). Mark
    `failed`. The runner continues with the next migration.
 
-A throw inside `apply` before it returns leaves nothing on disk — there is no
-partial-flush state. A validation failure leaves nothing on disk either, because
-the revert step runs before the failure is recorded.
+A throw inside `apply` before it returns leaves nothing on disk: `apply` is pure
+— it returns staged writes rather than performing them — so nothing has been
+flushed yet.
+
+**The revert is best-effort, not a transaction.** Once the flush begins, the
+runner cannot guarantee it can undo it. Two cases leave files behind:
+
+- A revert step that itself fails — an `unlink` or write-back hitting a
+  permission error or a vanished directory — is swallowed so the remaining
+  entries still get their chance. That file keeps its migrated content.
+- A flush that throws partway through its own loop leaves the writes that already
+  landed on disk, with no revert pass over them.
+
+Both are rare, and neither can produce an _invalid_ deployment silently: post-apply
+validation runs against what is actually on disk, so a config left in a bad state
+is reported as `failed` rather than passing. But do not write a migration whose
+correctness depends on revert being all-or-nothing. When the report says
+`failed`, treat "the tree is back to its pre-migration state" as the expected
+case and not a guarantee — `git status` in the affected repo is the ground truth,
+and it is why Phoebe never commits for you.
 
 ## Registering a migration
 

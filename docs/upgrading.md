@@ -83,9 +83,14 @@ phoebe upgrade --check [--json] # report current vs latest; exit 1 when behind
 - The `engine.ref` string literal in the root `phoebe.config.ts` — written by
   `phoebe upgrade` when it succeeds.
 - Migration-owned config edits (e.g., appending a work kind to `workOrder`) —
-  written by `phoebe migrate` when a migration applies and validation succeeds.
+  written when a migration applies and validation succeeds.
 - Migration-scaffolded artifacts (new prompt files, compose fragments) — written
-  by `phoebe migrate` as create-if-absent; operator overrides are never touched.
+  as create-if-absent; operator overrides are never touched.
+
+The two migration entries are written by `phoebe migrate`, whether you invoke it
+yourself or `phoebe upgrade` runs it for you — `upgrade` spawns the target
+checkout's `migrate` before it moves the pin. Same writes, same closed set,
+either way.
 
 **Four prohibitions — Phoebe never:**
 
@@ -105,15 +110,39 @@ config _content_, but it may never write your _fleet declaration_. See
 
 ### `phoebe upgrade` — moving the engine ref
 
-`phoebe upgrade` is an operator-initiated command that rewrites only the
-`engine.ref` string literal (or inserts the scaffold-shaped `engine` block when
-absent), in place on the same inode so the bind-mount watch keeps working.
-Anything fancier than a plain string literal is refused with the exact one-line
-edit printed — the file stays yours. Refs are validated against the remote
-**before** the pin moves (a typo'd tag changes nothing), and every upgrade prints
-the previous ref plus the exact rollback command. Recommended posture for
-production: **pin to release tags and advance with `phoebe upgrade`**;
-branch-following is the opt-in live mode.
+`phoebe upgrade` is an operator-initiated command that moves you to a new engine
+version in three steps, **in this order**:
+
+1. **Materialize the target ref** — clone or fetch the target engine checkout.
+   Refs are validated against the remote **before** anything else happens, so a
+   typo'd tag changes nothing.
+2. **Run the target checkout's own migrations** — `upgrade` spawns
+   `phoebe migrate` from the checkout it just materialized, not from the CLI you
+   have installed. New code migrates old artifacts, so the facility upgrades
+   itself. A checkout with no migrations index simply has no migrations, and the
+   upgrade proceeds. Output is inherited verbatim; `upgrade` parses nothing and
+   branches on the exit code alone.
+3. **Write `engine.ref` last — or not at all.** Only if step 2 exits 0 does the
+   pin move: the `engine.ref` string literal is rewritten (or the scaffold-shaped
+   `engine` block inserted when absent) in place on the same inode, so the
+   bind-mount watch keeps working. Anything fancier than a plain string literal is
+   refused with the exact one-line edit printed — the file stays yours. Every
+   upgrade prints the previous ref plus the exact rollback command.
+
+This ordering is the safety property: **a broken upgrade cannot land.** If the
+target's migrations leave the root config invalid, the flip is aborted and the
+deployment stays on the ref that was working. Per-child failures never block the
+flip — only root-level failure does.
+
+Because step 2 runs automatically, `phoebe upgrade` can write migration-owned
+config edits and migration-scaffolded artifacts before the pin moves — the second
+and third items of the closed set above, not just the first. Running
+`phoebe migrate` by hand afterwards is therefore not required; it is the same
+work, and is idempotent if you do. Run it directly when you want to migrate
+without moving the pin, or to re-run a child that was held or failed.
+
+Recommended posture for production: **pin to release tags and advance with
+`phoebe upgrade`**; branch-following is the opt-in live mode.
 
 The `--cli` half runs `npm install -g phoebe-agent@<version>` on a host; inside
 the container the launcher is baked into the image, so it prints the rebuild
@@ -195,15 +224,24 @@ phoebe migrate --config <path>    # specify the root phoebe.config.ts explicitly
 
 **Exit codes:**
 
-| Mode      | Exit 0                                     | Exit 1 (nonzero)                            |
-| --------- | ------------------------------------------ | ------------------------------------------- |
-| apply     | root migrated and valid (or nothing to do) | at least one migration failed — do not flip |
-| `--check` | nothing applicable                         | ≥1 migration is applicable                  |
+| Mode      | Exit 0                                                                                                         | Exit 1 (nonzero)                                       |
+| --------- | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| apply     | no root migration `failed` — `clean`, `migrated`, `manual`, and a `partial` of applied plus manual all qualify | at least one **root** migration `failed` — do not flip |
+| `--check` | nothing applicable                                                                                             | ≥1 migration is applicable                             |
 
-In apply mode, per-child failures are never reported as the command's exit code:
-a child failing or being held does not set exit 1. Only root-level failure
-(which would make the deployment invalid under the current schema) triggers exit 1
-and blocks the ref flip.
+**Only `failed` is nonzero.** A root verdict of `manual` — a migration declined
+to auto-rewrite and printed an instruction for you — exits **0**, as does a
+`partial` made up of applied and manual results with no failure. The exit code
+answers "is the deployment valid under the current schema, so the flip is safe?",
+and a manual result leaves it exactly as valid as it was. It does **not** answer
+"is there nothing left for you to do." Read the report, not just `$?`: scripted
+gates that must catch outstanding manual work should check the verdicts rather
+than the exit code.
+
+In apply mode, per-child failures are never reported as the command's exit code
+either: a child failing or being held does not set exit 1. Only root-level
+failure (which would make the deployment invalid under the current schema)
+triggers exit 1 and blocks the ref flip.
 
 **Per-directory verdicts** (the `verdict` field in `--json`, a fixed closed union):
 
@@ -288,32 +326,41 @@ Key contract rules:
 
 The end-to-end ritual for advancing a workspace deployment to a new engine version:
 
+Start from a clean workspace: stage or stash each child's pending work first, or
+those children are skipped as `held`.
+
 ```bash
-# 1. Move the pin
+# 1. Upgrade — one command, three steps
 phoebe upgrade v0.4.0 --engine
-#    boot drains and relaunches onto it within one reconcile interval (default 60s)
+#    materializes v0.4.0, runs *its* migrations across root and fleet, and moves
+#    the pin only if the root migrated cleanly. The migration report prints inline:
+#    it lists uncommitted paths Phoebe wrote. Root failure aborts the flip; child
+#    failures are reported per child but never block it.
+#    Once the pin moves, boot drains and relaunches onto it within one reconcile
+#    interval (default 60s).
 
-# 2. Apply migrations — root first, then every child
-phoebe migrate
-#    lists uncommitted paths Phoebe wrote; root failures abort, child failures are reported
-#    per child but not fatal
-
-# 3. Review what Phoebe wrote in each child
+# 2. Review what Phoebe wrote in each child
 git -C ./service-a diff -- phoebe.config.ts prompts/research-prompt.md
 git -C ./service-b diff -- phoebe.config.ts
 
-# 4. Commit per-repo
+# 3. Commit per-repo
 git -C ./service-a add -p && git -C ./service-a commit -m "chore: apply phoebe v0.4.0 migrations"
 git -C ./service-b add -p && git -C ./service-b commit -m "chore: apply phoebe v0.4.0 migrations"
 
-# 5. Confirm the deployment is healthy
+# 4. Confirm the deployment is healthy
 phoebe doctor
 ```
 
-`migrate` prints an uncommitted-paths listing with the exact `git diff` command
-for each directory. Follow that listing rather than guessing which files changed.
-For a child that was `held` (dirty tree), stash or commit its pending work and
-re-run `phoebe migrate` for that child.
+Step 1 is one command because `upgrade` runs the migrations itself — there is no
+separate `phoebe migrate` step in the normal ritual. Reach for `migrate` directly
+in two cases: to migrate without moving the pin, and to re-run a child that came
+back `held` or `failed` once you have fixed it. It is idempotent, so an extra run
+costs nothing but a report.
+
+The migration report prints an uncommitted-paths listing with the exact `git diff`
+command for each directory. Follow that listing rather than guessing which files
+changed. For a child that was `held` (dirty tree), stash or commit its pending
+work and re-run `phoebe migrate` for that child.
 
 ### One-time: chown the volumes when moving to the unprivileged image
 
