@@ -188,6 +188,15 @@ export const ROSTER = {
     env: "PHOEBE_PRIORITY_LABEL_PREFIX",
     baseAllowed: true,
   },
+  // Landing zone for a structural bail (#143) — provisioned at boot alongside
+  // the other engine-owned labels (`src/ensure-labels.ts`) so a bail
+  // choreography targeting it can never hit a missing label.
+  bailTriageLabel: {
+    kind: { type: "string" },
+    default: "needs-triage",
+    env: "PHOEBE_BAIL_TRIAGE_LABEL",
+    baseAllowed: true,
+  },
   issueAuthors: {
     kind: { type: "string-array" },
     default: [] as readonly string[],

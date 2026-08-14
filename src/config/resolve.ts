@@ -108,6 +108,7 @@ export function resolveConfig(
     researchLabel: user.researchLabel ?? ROSTER.researchLabel.default,
     processingLabel: user.processingLabel ?? ROSTER.processingLabel.default,
     priorityLabelPrefix: user.priorityLabelPrefix ?? ROSTER.priorityLabelPrefix.default,
+    bailTriageLabel: user.bailTriageLabel ?? ROSTER.bailTriageLabel.default,
     issueAuthors: user.issueAuthors ?? ROSTER.issueAuthors.default,
     prScope: user.prScope ?? ROSTER.prScope.default,
     prAuthors: user.prAuthors ?? ROSTER.prAuthors.default,

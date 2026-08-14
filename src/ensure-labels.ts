@@ -6,9 +6,11 @@
 // deliberate un-stick escape hatch), the three `phoebe:tier:*` labels (#155,
 // a human-placed per-ticket model/effort override), and the four
 // `priorityLabelPrefix`-prefixed priority labels (#144, a human-placed
-// override that outranks `classifyPriority`'s title/body keyword cascade) —
-// is a Phoebe-owned constant the user never types and has no reason to know
-// exists. Nothing in this repo ever
+// override that outranks `classifyPriority`'s title/body keyword cascade),
+// and `bailTriageLabel` (#143, the landing zone a structural-bail
+// choreography moves an issue to — `missing-prerequisite` / `external-dep` /
+// `unclear-scope`) — is a Phoebe-owned constant the user never types and has
+// no reason to know exists. Nothing in this repo ever
 // created them: docs/phoebe-core-onboarding.md documented creating three of
 // the five *by hand*, and never mentioned quarantine at all, so a fresh repo
 // silently drops every write against a label that doesn't exist yet
@@ -44,6 +46,7 @@ export function phoebeLabelSet(config: {
   processingLabel: string;
   prOptOutLabel: string;
   priorityLabelPrefix: string;
+  bailTriageLabel: string;
 }): LabelSpec[] {
   return [
     {
@@ -69,6 +72,13 @@ export function phoebeLabelSet(config: {
       name: config.prOptOutLabel,
       description: "Hand this PR back to a human — Phoebe skips it",
       color: "D93F0B",
+    },
+    {
+      repoSlug: config.repoSlug,
+      name: config.bailTriageLabel,
+      description:
+        "Landing zone for a structural bail — missing prerequisite, external dependency, or unclear scope",
+      color: "5319E7",
     },
     {
       repoSlug: config.repoSlug,

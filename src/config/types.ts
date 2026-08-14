@@ -176,6 +176,15 @@ export type PhoebeConfig = {
    * buckets (`bug`/`tracer`/`polish`/`refactor`); anything else is ignored.
    */
   priorityLabelPrefix: string;
+  /**
+   * Landing-zone label for a structural bail (`missing-prerequisite` /
+   * `external-dep` / `unclear-scope`) — see {@link https://github.com/tanflem/phoebe/issues/143 #143}.
+   * The engine provisions it at boot (`src/ensure-labels.ts`) so a bail
+   * choreography targeting it can never fail with "label doesn't exist",
+   * the failure class a forked prompt's hardcoded `needs-triage` hit when a
+   * tenant's vocabulary didn't include that name.
+   */
+  bailTriageLabel: string;
   /** Optional GitHub logins allowed into `ready`/`research` issue selection.
    *  Empty means every author — lets one operator on a multi-operator repo
    *  skip tickets filed for someone else's Phoebe instance. */
@@ -369,6 +378,7 @@ export type PhoebeUserConfig = {
   researchLabel?: string;
   processingLabel?: string;
   priorityLabelPrefix?: string;
+  bailTriageLabel?: string;
   issueAuthors?: readonly string[];
   prScope?: PhoebeConfig["prScope"];
   prAuthors?: readonly string[];

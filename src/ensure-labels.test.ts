@@ -15,6 +15,7 @@ const singleRepoConfig = {
   processingLabel: "processing",
   prOptOutLabel: "ready-for-human",
   priorityLabelPrefix: "priority:",
+  bailTriageLabel: "needs-triage",
 };
 
 describe("phoebeLabelSet", () => {
@@ -25,6 +26,7 @@ describe("phoebeLabelSet", () => {
       "o/r#processing",
       "o/r#wayfinder:research",
       "o/r#ready-for-human",
+      "o/r#needs-triage",
       `o/r#${PHOEBE_QUARANTINE_LABEL}`,
       `o/r#${PHOEBE_RETRY_LABEL}`,
       `o/r#${PHOEBE_TIER_LABEL_PREFIX}basic`,
@@ -51,6 +53,12 @@ describe("phoebeLabelSet", () => {
         "urgency/refactor",
       ]),
     );
+  });
+
+  test("the bail-triage label is built from the configured field, not a hardcoded name (#143)", () => {
+    const specs = phoebeLabelSet({ ...singleRepoConfig, bailTriageLabel: "needs-grilling" });
+    expect(specs.map((s) => s.name)).toEqual(expect.arrayContaining(["needs-grilling"]));
+    expect(specs.map((s) => s.name)).not.toContain("needs-triage");
   });
 });
 
