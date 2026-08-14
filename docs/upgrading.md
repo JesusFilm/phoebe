@@ -224,15 +224,14 @@ phoebe migrate --config <path>    # specify the root phoebe.config.ts explicitly
 
 **Exit codes:**
 
-| Mode      | Exit 0                                                                                                         | Exit 1 (nonzero)                                       |
-| --------- | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| apply     | no root migration `failed` — `clean`, `migrated`, `manual`, and a `partial` of applied plus manual all qualify | at least one **root** migration `failed` — do not flip |
-| `--check` | nothing applicable                                                                                             | ≥1 migration is applicable                             |
+| Mode      | Exit 0                                                                          | Exit 1 (nonzero)                                       |
+| --------- | ------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| apply     | no root migration `failed` — `up-to-date`, `migrated`, and `manual` all qualify | at least one **root** migration `failed` — do not flip |
+| `--check` | nothing applicable                                                              | ≥1 migration is applicable                             |
 
 **Only `failed` is nonzero.** A root verdict of `manual` — a migration declined
-to auto-rewrite and printed an instruction for you — exits **0**, as does a
-`partial` made up of applied and manual results with no failure. The exit code
-answers "is the deployment valid under the current schema, so the flip is safe?",
+to auto-rewrite and printed an instruction for you — exits **0**, even when
+other migrations in the same run applied successfully. The exit code answers "is the deployment valid under the current schema, so the flip is safe?",
 and a manual result leaves it exactly as valid as it was. It does **not** answer
 "is there nothing left for you to do." Read the report, not just `$?`: scripted
 gates that must catch outstanding manual work should check the verdicts rather
@@ -245,18 +244,28 @@ triggers exit 1 and blocks the ref flip.
 
 **Per-directory verdicts** (the `verdict` field in `--json`, a fixed closed union):
 
-| Verdict    | When                                                              | What you do                                                         |
-| ---------- | ----------------------------------------------------------------- | ------------------------------------------------------------------- |
-| `clean`    | No applicable migrations; deployment is current                   | Nothing — already done                                              |
-| `migrated` | At least one migration applied; config valid; paths listed        | Review the listed paths and commit in that repo                     |
-| `failed`   | At least one migration's writes were reverted (validation failed) | Read the error, fix the config or re-run when the issue is resolved |
-| `manual`   | At least one migration declined to auto-rewrite                   | Follow the printed instruction; make the edit by hand, then re-run  |
-| `partial`  | Some migrations applied, some failed or manual                    | Commit the applied paths; follow manual instructions; re-run later  |
-| `pending`  | `--check` mode: at least one migration would apply                | Run `phoebe migrate` (without `--check`) when ready                 |
-| `held`     | Child's working tree had uncommitted changes; no migrations ran   | Commit or stash the child's uncommitted work, then re-run `migrate` |
+| Verdict      | When                                                                     | What you do                                                         |
+| ------------ | ------------------------------------------------------------------------ | ------------------------------------------------------------------- |
+| `up-to-date` | No applicable migrations; deployment is current                          | Nothing — already done                                              |
+| `migrated`   | At least one migration applied; config valid; paths listed               | Review the listed paths and commit in that repo                     |
+| `manual`     | At least one migration declined to auto-rewrite                          | Follow the printed instruction; make the edit by hand, then re-run  |
+| `reverted`   | A migration's writes failed post-apply validation and were rolled back   | Read the error, fix the config, then re-run                         |
+| `failed`     | A migration errored outright (detect or apply threw); nothing written    | Read the error, fix the cause or re-run when the issue is resolved  |
+| `invalid`    | Nothing was applicable, but the config was already broken before the run | Fix the config by hand — no migration addresses it                  |
+| `pending`    | `--check` mode: at least one migration would apply                       | Run `phoebe migrate` (without `--check`) when ready                 |
+| `skipped`    | Child's tree was dirty, or enumeration held it back; no migrations ran   | Commit or stash the child's uncommitted work, then re-run `migrate` |
 
-**Clean-tree asymmetry.** A dirty child is skipped (`held`) while the root is
-not gated on a clean tree. The reason: the clean-tree precondition on a child
+**One verdict per directory, by precedence.** A directory gets exactly one
+verdict even when its migrations disagree — there is no `partial`. In apply mode
+the first match wins, in this order: `manual` → `reverted` → `failed` →
+`migrated` → `invalid` → `up-to-date`. So a run that applied one migration and
+had another decline reports `manual`, and the applied paths are still listed. In
+check mode the order is `failed` → `pending` → `invalid` → `up-to-date`. Read
+`migrations[]` for the per-migration picture; the verdict is a summary, not a
+substitute.
+
+**Clean-tree asymmetry.** A dirty child is passed over — verdict `skipped`, with
+`reason` naming the cause — while the root is not gated on a clean tree. The reason: the clean-tree precondition on a child
 makes the on-failure revert precise — every file in the revert set was placed
 there by this run, so reversing it restores exactly the pre-migration state.
 Without that guarantee a revert could clobber the operator's in-progress work.
@@ -275,15 +284,15 @@ older CLIs that most need to upgrade. The shape:
 
 ```json
 {
-  "report": 1,
   "mode": "apply",
-  "engine": { "dir": "/data/engine", "sha": "abc123def456", "source": "github" },
+  "report": 1,
+  "engine": { "dir": "/data/engine", "sha": "abc123def456", "source": "git" },
   "root": {
     "dir": "/etc/phoebe",
+    "slug": "acme/deployment",
     "role": "solo-root",
     "verdict": "migrated",
-    "reason": null,
-    "validation": "ok",
+    "validation": true,
     "migrations": [
       {
         "id": "add-research-prompt",
@@ -302,7 +311,19 @@ older CLIs that most need to upgrade. The shape:
     ]
   },
   "tenants": [],
-  "counts": { "applied": 1, "not-applicable": 1, "failed": 0, "manual": 0 },
+  "counts": {
+    "migrations": { "applied": 1, "applicable": 0, "failed": 0, "manual": 0, "notApplicable": 1 },
+    "tenants": {
+      "migrated": 0,
+      "pending": 0,
+      "upToDate": 0,
+      "invalid": 0,
+      "failed": 0,
+      "reverted": 0,
+      "manual": 0,
+      "skipped": 0
+    }
+  },
   "ok": true
 }
 ```
@@ -315,6 +336,25 @@ Key contract rules:
   (apply: `applied`, `not-applicable`, `failed`, `manual`; check: `applicable`,
   `not-applicable`) rather than blurs — `applicable` never appears in apply output,
   `applied` never in check output.
+- `root` and each entry in `tenants` share one entry shape, so a single parser
+  handles both. `role` distinguishes them: `solo-root`, `workspace-root`, or
+  `tenant`. A solo root always reports `"tenants": []`.
+- `reason` is present **only** on a `skipped` entry, carrying why it was passed
+  over. It is absent — not null — everywhere else.
+- `slug` is the repo slug (`acme/service-a`), or `null` when the config declares
+  none.
+- `validation` is tri-state and must not be read as a boolean: `true` = the config
+  was checked and is valid, `false` = checked and invalid, `null` = **not checked
+  by this run**. Treating `null` as falsy reads "unknown" as "broken"; treating it
+  as truthy reads it as "healthy". Neither is right — branch on all three. See
+  [validation is not a health check](#validation-is-not-a-health-check) below.
+- `counts` is nested, not flat: `counts.migrations` tallies migration statuses
+  across the root and every tenant combined, while `counts.tenants` tallies
+  per-directory verdicts and excludes the root. A run whose only work was on the
+  root therefore reports all-zero `counts.tenants`.
+- `engine.source` is `git` when the engine is a git checkout (`engine.sha` holds
+  its HEAD), or `local` for a local mount (`engine.sha` is `null`). The two always
+  agree — `source: "local"` implies `sha: null`.
 - Pre-image file contents never appear: the journal holds them for revert only.
   Echoing operator file contents into logs and CI output is not acceptable.
 - `migrations[].paths` is the single source for written files; there is no
@@ -322,12 +362,38 @@ Key contract rules:
 - `not-applicable` migrations are present in the JSON (collapsed in the human
   render). Suppressing them would deny a script the full picture.
 
+#### `validation` is not a health check
+
+`validation` reports only what this run happened to confirm, and a run confirms a
+config in exactly two places: after a migration applies (post-apply validation,
+which reverts the write on failure), and on a directory where nothing was
+applicable (a pre-flight probe that tells an already-broken config apart from a
+current one). Root and tenants are probed alike. Nothing else is checked, so a
+run that ended in failure, a manual instruction, or pending check-mode work
+validated nothing and reports `null`:
+
+| Outcome                                          | `verdict`                        | `validation` |
+| ------------------------------------------------ | -------------------------------- | ------------ |
+| Nothing applicable, config probed and valid      | `up-to-date`                     | `true`       |
+| Nothing applicable, config probed and **broken** | `invalid`                        | `false`      |
+| A migration applied and cleared validation       | `migrated`                       | `true`       |
+| A migration errored, reverted, or declined       | `failed` / `reverted` / `manual` | `null`       |
+| `--check` mode with work outstanding             | `pending`                        | `null`       |
+
+The `invalid` row is the one worth scripting against: a config nobody can migrate
+because it is already broken. It is distinct from `null`, which claims nothing at
+all. Do not collapse them.
+
+Even `true` is narrow — it means the config loaded and satisfied the schema at the
+moment it was checked, not that the deployment is healthy. Run `phoebe doctor` for
+that.
+
 ### Upgrading a workspace
 
 The end-to-end ritual for advancing a workspace deployment to a new engine version:
 
 Start from a clean workspace: stage or stash each child's pending work first, or
-those children are skipped as `held`.
+those children are passed over with verdict `skipped`.
 
 ```bash
 # 1. Upgrade — one command, three steps
@@ -354,12 +420,12 @@ phoebe doctor
 Step 1 is one command because `upgrade` runs the migrations itself — there is no
 separate `phoebe migrate` step in the normal ritual. Reach for `migrate` directly
 in two cases: to migrate without moving the pin, and to re-run a child that came
-back `held` or `failed` once you have fixed it. It is idempotent, so an extra run
+back `skipped` or `failed` once you have fixed it. It is idempotent, so an extra run
 costs nothing but a report.
 
 The migration report prints an uncommitted-paths listing with the exact `git diff`
 command for each directory. Follow that listing rather than guessing which files
-changed. For a child that was `held` (dirty tree), stash or commit its pending
+changed. For a child that was `skipped` (dirty tree), stash or commit its pending
 work and re-run `phoebe migrate` for that child.
 
 ### One-time: chown the volumes when moving to the unprivileged image
