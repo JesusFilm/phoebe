@@ -1720,7 +1720,11 @@ describe("buildMigrateJson", () => {
     expect(json.root.validation).toBe(true);
   });
 
-  test("root.validation=true when all not-applicable (up-to-date verdict)", () => {
+  // An up-to-date root is never validated: runMigrate validates only after an
+  // applied migration, and the preexisting-invalid probe covers tenants only.
+  // Reporting `true` here would claim "confirmed valid" for an unchecked config —
+  // an invalid root with no applicable migrations must not read as validated.
+  test("root.validation=null when all not-applicable (up-to-date verdict, unchecked)", () => {
     const fleet = makeBaseFleet({
       rootReport: {
         sha: null,
@@ -1732,7 +1736,54 @@ describe("buildMigrateJson", () => {
     });
     const json = buildMigrateJson(fleet, { mode: "apply" });
     expect(json.root.verdict).toBe("up-to-date");
-    expect(json.root.validation).toBe(true);
+    expect(json.root.validation).toBeNull();
+  });
+
+  test("root.validation=null in check mode when nothing is applicable", () => {
+    const fleet = makeBaseFleet({
+      rootReport: {
+        sha: null,
+        dir: "/d",
+        results: [{ id: "m1", title: "M1", state: "not-applicable", detail: "" }],
+        journal: [],
+        ok: true,
+      },
+    });
+    const json = buildMigrateJson(fleet, { mode: "check" });
+    expect(json.root.verdict).toBe("up-to-date");
+    expect(json.root.validation).toBeNull();
+  });
+
+  // A tenant that is up-to-date *was* probed, so it keeps validation=true. The
+  // root and tenants must not be collapsed into one rule.
+  test("up-to-date tenant keeps validation=true while up-to-date root reports null", () => {
+    const fleet = makeBaseFleet({
+      rootRole: "workspace-root",
+      rootReport: {
+        sha: null,
+        dir: "/d",
+        results: [{ id: "m1", title: "M1", state: "not-applicable", detail: "" }],
+        journal: [],
+        ok: true,
+      },
+      tenantEntries: [
+        {
+          dir: "/d/t1",
+          slug: "acme/t1",
+          verdict: "up-to-date",
+          report: {
+            sha: null,
+            dir: "/d/t1",
+            results: [{ id: "m1", title: "M1", state: "not-applicable", detail: "" }],
+            journal: [],
+            ok: true,
+          },
+        },
+      ],
+    });
+    const json = buildMigrateJson(fleet, { mode: "apply" });
+    expect(json.root.validation).toBeNull();
+    expect(json.tenants[0]!.validation).toBe(true);
   });
 
   test("root.validation=null when root failed", () => {

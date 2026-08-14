@@ -683,6 +683,10 @@ export type MigrateJson = {
   ok: boolean;
 };
 
+// Maps a verdict to the tri-state `validation` field. `up-to-date` reads as
+// `true` only because the caller confirmed the config validates — runFleetMigrate
+// probes a tenant with nothing applicable before settling on that verdict. Callers
+// that cannot make that claim must not route through here (see the root below).
 function entryValidation(verdict: TenantVerdict): boolean | null {
   if (verdict === "migrated" || verdict === "up-to-date") return true;
   if (verdict === "invalid") return false;
@@ -707,12 +711,19 @@ export function buildMigrateJson(
   const sha = fleet.rootReport.sha;
   const rootVerdict = computeTenantVerdict(fleet.rootReport, false, check);
 
+  // The root gets no pre-flight validation: runMigrate validates only *after* an
+  // applied migration, and runFleetMigrate's preexisting-invalid probe covers
+  // tenants only. So an up-to-date root was never checked — report `null` rather
+  // than claiming `true`. A migrated root did clear post-apply validation, so it
+  // keeps `true`.
+  const rootValidation = rootVerdict === "up-to-date" ? null : entryValidation(rootVerdict);
+
   const root: MigrateJsonEntry = {
     dir: fleet.rootReport.dir,
     slug: fleet.rootSlug ?? null,
     role: fleet.rootRole,
     verdict: rootVerdict,
-    validation: entryValidation(rootVerdict),
+    validation: rootValidation,
     migrations: buildJsonMigrations(fleet.rootReport),
   };
 
