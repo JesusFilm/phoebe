@@ -122,6 +122,8 @@ export type FleetMigrateReport = {
   rootReport: MigrateReport;
   rootRole: "workspace-root" | "solo-root";
   rootSlug?: string | null;
+  /** Set when nothing applied to root: false = validated OK, true = preexisting invalid. Absent when migrations applied (validation ran post-apply inside runMigrate). */
+  rootPreexistingInvalid?: boolean;
   tenantEntries: TenantMigrateEntry[];
 };
 
@@ -399,8 +401,20 @@ export async function runFleetMigrate(opts: RunFleetMigrateOptions): Promise<Fle
     check,
   });
 
+  // Mirror the tenant preexisting-invalid check for the root
+  const rootNothingApplied = rootReport.results.every((r) => r.state === "not-applicable");
+  let rootPreexistingInvalid: boolean | undefined;
+  if (rootNothingApplied) {
+    try {
+      await validate(configPath, 0);
+      rootPreexistingInvalid = false;
+    } catch {
+      rootPreexistingInvalid = true;
+    }
+  }
+
   if (rootRole === "solo-root") {
-    return { rootReport, rootRole, rootSlug, tenantEntries: [] };
+    return { rootReport, rootRole, rootSlug, rootPreexistingInvalid, tenantEntries: [] };
   }
 
   const enumerate = opts.enumerateFn ?? enumerateWorkspaceTenants;
@@ -458,7 +472,7 @@ export async function runFleetMigrate(opts: RunFleetMigrateOptions): Promise<Fle
     }
   }
 
-  return { rootReport, rootRole, rootSlug, tenantEntries };
+  return { rootReport, rootRole, rootSlug, rootPreexistingInvalid, tenantEntries };
 }
 
 // ----------------------------------------------------------------- formatter
@@ -709,21 +723,26 @@ export function buildMigrateJson(
 ): MigrateJson {
   const check = opts.mode === "check";
   const sha = fleet.rootReport.sha;
-  const rootVerdict = computeTenantVerdict(fleet.rootReport, false, check);
-
-  // The root gets no pre-flight validation: runMigrate validates only *after* an
-  // applied migration, and runFleetMigrate's preexisting-invalid probe covers
-  // tenants only. So an up-to-date root was never checked — report `null` rather
-  // than claiming `true`. A migrated root did clear post-apply validation, so it
-  // keeps `true`.
-  const rootValidation = rootVerdict === "up-to-date" ? null : entryValidation(rootVerdict);
+  const rootPreexistingInvalid = fleet.rootPreexistingInvalid;
+  const rootVerdict = computeTenantVerdict(
+    fleet.rootReport,
+    rootPreexistingInvalid ?? false,
+    check,
+  );
 
   const root: MigrateJsonEntry = {
     dir: fleet.rootReport.dir,
     slug: fleet.rootSlug ?? null,
     role: fleet.rootRole,
     verdict: rootVerdict,
-    validation: rootValidation,
+    // migrated → post-apply validation passed; preexisting check performed → use normal logic;
+    // up-to-date without preexisting check → emit null (validation was not performed)
+    validation:
+      rootVerdict === "migrated"
+        ? true
+        : rootPreexistingInvalid !== undefined
+          ? entryValidation(rootVerdict)
+          : null,
     migrations: buildJsonMigrations(fleet.rootReport),
   };
 
