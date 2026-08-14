@@ -78,7 +78,8 @@ v1.4.13 (2024-01-03).
     (measured on actual file)
 - **TypeScript support:** full, including type-only imports, generic annotations,
   `satisfies`. Parser is the reference implementation used by the entire Babel ecosystem.
-- **License:** MIT — no attribution text required
+- **License:** MIT — copy `package/LICENSE` alongside the bundle (MIT requires preserving the
+  copyright notice in redistributed copies)
 - **Pure JS:** yes — no wasm sidecar, no native addon
 - **Prebuilt bundle:** **yes** — `lib/index.js` is already a single self-contained file;
   no build step required to vendor
@@ -98,7 +99,8 @@ v1.4.13 (2024-01-03).
 - **TypeScript support:** acorn-typescript supports `satisfies` (changelog, v1.4.13,
   2024-01-03); `import type`, generic type annotations, Pick<>, union types all parse
   correctly. **Last release: 2024-01-03** — no updates in the 2.5 years since.
-- **License:** MIT (both) — no attribution text required
+- **License:** MIT (both) — copy each package's `LICENSE` alongside the bundle (MIT requires
+  preserving copyright notices)
 - **Pure JS:** yes
 - **Prebuilt bundle:** no — must build with esbuild or similar to merge both packages
 
@@ -141,13 +143,13 @@ v1.4.13 (2024-01-03).
 
 ## Comparison table
 
-| Candidate                  | TS support | Format preservation | Minified KB     | Transitive deps | License | Pure JS |
-| -------------------------- | ---------- | ------------------- | --------------- | --------------- | ------- | ------- |
-| **@babel/parser v8.0.4**   | Full       | range-splice¹       | **287 KB**      | **0**           | MIT     | Yes     |
-| acorn + acorn-typescript   | Full²      | range-splice¹       | **227 KB**      | 0               | MIT     | Yes     |
-| recast 0.24.0 (any parser) | via parser | CST reprinting      | 339 KB + parser | 5               | MIT     | Yes     |
-| ts-morph 28.0.0            | Full       | No                  | ~14 000 KB      | bundled TS      | MIT     | Yes     |
-| putout 42.11.0             | Full       | No                  | large           | 150+            | MIT     | Yes     |
+| Candidate                  | TS support | Format preservation | Bundle size⁴    | Bundle ext. imports³ | License | Pure JS |
+| -------------------------- | ---------- | ------------------- | --------------- | -------------------- | ------- | ------- |
+| **@babel/parser v8.0.4**   | Full       | range-splice¹       | **287 KB**      | **0**                | MIT     | Yes     |
+| acorn + acorn-typescript   | Full²      | range-splice¹       | **227 KB**      | 0                    | MIT     | Yes     |
+| recast 0.24.0 (any parser) | via parser | CST reprinting      | 339 KB + parser | 5                    | MIT     | Yes     |
+| ts-morph 28.0.0            | Full       | No                  | ~14 000 KB      | bundled TS           | MIT     | Yes     |
+| putout 42.11.0             | Full       | No                  | not measured⁵   | 150+                 | MIT     | Yes     |
 
 ¹ "Range-splice" means: use the parser to locate character ranges; perform edits as
 string surgery on those ranges. Untouched bytes are preserved by never touching them,
@@ -155,6 +157,22 @@ not by reprinting.
 
 ² acorn-typescript last released 2024-01-03 (2.5 years ago); all TypeScript features
 present in the current configs are supported, but future syntax coverage is unverified.
+
+³ External imports remaining in the vendored file (post-bundle), not npm declared
+dependencies. @babel/parser declares `@babel/types` in its `dependencies` field, but
+`lib/index.js` (v8) contains zero `import` statements — the types package is compiled
+out and not present at runtime in the vendored file.
+
+⁴ Measurement methodology differs by candidate: @babel/parser and acorn+acorn-typescript
+were measured with `esbuild` on the actual tarballs (see candidate sections); recast uses
+the bundlephobia full-dep-tree estimate (excludes the parser itself); ts-morph includes
+the bundled TypeScript compiler as reported by the npm registry. These are indicative
+comparisons — the top two candidates are measured with the same toolchain; the
+ruled-out candidates are estimates sufficient to establish their disqualifying order of
+magnitude.
+
+⁵ putout was disqualified before size measurement (wrong tool; reformats whole file; 150+
+transitive deps). Bundle size would dwarf the top candidates.
 
 ## Recommendation
 
@@ -179,51 +197,76 @@ the bundle size with no functional gain.
 
 **Version to pin:** `@babel/parser@8.0.4`
 
+**Node version requirement for the bundling step:** `@babel/parser@8.0.4` declares
+`engines: { "node": "^22.18.0 || >=24.11.0" }`. This applies when installing and
+running the package during the one-time bundling step below. The committed vendor file
+is plain JS and carries no Node version constraint of its own — consumers need only
+the version phoebe itself requires. The repo's current `.node-version` (`24.14.1`)
+satisfies this requirement.
+
 `lib/index.js` in this version is a single, self-contained ESM file with no `import`
 statements and a single named `export` line at the bottom. It can be vendored with or
-without a minification step:
+without a minification step. MIT requires preserving the copyright notice, so the
+`LICENSE` file must be committed alongside the bundle in both options.
 
 **Option A — copy unminified (no build tool required, 481 KB):**
 
 ```bash
 pnpm add -D @babel/parser@8.0.4
 cp node_modules/@babel/parser/lib/index.js src/migrations/vendor/babel-parser.js
+cp node_modules/@babel/parser/LICENSE src/migrations/vendor/babel-parser.LICENSE
 pnpm remove @babel/parser
-git add src/migrations/vendor/babel-parser.js
+git add src/migrations/vendor/babel-parser.js src/migrations/vendor/babel-parser.LICENSE
 ```
 
 **Option B — minify with esbuild (287 KB, requires esbuild in devDependencies):**
 
 ```bash
 pnpm add -D @babel/parser@8.0.4 esbuild
-./node_modules/.bin/esbuild node_modules/@babel/parser/lib/index.js \
+vp exec esbuild node_modules/@babel/parser/lib/index.js \
   --bundle=false --format=esm --platform=node --target=node24 \
   --minify --outfile=src/migrations/vendor/babel-parser.js
+cp node_modules/@babel/parser/LICENSE src/migrations/vendor/babel-parser.LICENSE
 pnpm remove @babel/parser esbuild   # or keep if already needed elsewhere
-git add src/migrations/vendor/babel-parser.js
+git add src/migrations/vendor/babel-parser.js src/migrations/vendor/babel-parser.LICENSE
 ```
 
 The committed file is then imported by relative path from migration source:
 
 ```ts
-import { parse } from "../../vendor/babel-parser.js";
+import { parse } from "./vendor/babel-parser.js";
 // parse(content, { sourceType: "module", plugins: ["typescript"] })
 ```
 
-**CI drift check** (regenerate and diff to detect stale vendor):
+**CI drift check** (install temporarily, regenerate, and diff to detect a stale vendor
+file; `pnpm add` is needed because `@babel/parser` is not in `devDependencies`):
+
+For **Option A** (unminified copy):
 
 ```bash
-./node_modules/.bin/esbuild node_modules/@babel/parser/lib/index.js \
+pnpm add -D @babel/parser@8.0.4
+cp node_modules/@babel/parser/lib/index.js /tmp/babel-parser-fresh.js
+diff src/migrations/vendor/babel-parser.js /tmp/babel-parser-fresh.js
+pnpm remove @babel/parser
+```
+
+For **Option B** (esbuild-minified; also install esbuild temporarily):
+
+```bash
+pnpm add -D @babel/parser@8.0.4 esbuild
+vp exec esbuild node_modules/@babel/parser/lib/index.js \
   --bundle=false --format=esm --platform=node --target=node24 \
   --minify --outfile=/tmp/babel-parser-fresh.js
 diff src/migrations/vendor/babel-parser.js /tmp/babel-parser-fresh.js
+pnpm remove @babel/parser esbuild
 ```
 
 ## Capabilities the winner cannot express within the demand — falls to `manual`
 
 The `@babel/parser` substrate is a **parser with position data**; the actual edit
 operations are hand-written range splices on top of it. Within the concrete demand
-(getField / setField / removeField / appendWorkKind, one level deep), the following
+(getField / setField / removeField / appendWorkKind — the ConfigHandle method for
+appending to the workOrder array — one level deep), the following
 shapes cannot be handled automatically and must emit a `ConfigRefusal` (the `manual`
 verdict):
 
