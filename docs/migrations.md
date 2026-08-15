@@ -138,9 +138,11 @@ the manual instruction.
 
 ### What an author may assume
 
-The substrate parses with the vendored `@babel/parser` and splices by byte
-offset. Every byte outside the targeted node is left untouched — this is a
-property of the mechanism, not of a printer's round-trip fidelity.
+The substrate parses with the vendored `@babel/parser` and splices by
+source range (UTF-16 code-unit offsets, as returned by the parser and used by
+`String.slice`). Every character outside the targeted node is left
+untouched — this is a property of the mechanism, not of a printer's
+round-trip fidelity.
 
 An author writing a config migration may assume:
 

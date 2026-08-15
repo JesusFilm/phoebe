@@ -201,8 +201,15 @@ function resolveConfigObject(source: string): ResolvedConfig | ResolveFailure {
 
     let init: BNode | null = null;
     outer: for (const stmt of body) {
-      if (stmt.type === "VariableDeclaration") {
-        for (const decl of stmt.declarations as BNode[]) {
+      const varDecl =
+        stmt.type === "VariableDeclaration"
+          ? stmt
+          : stmt.type === "ExportNamedDeclaration" &&
+              stmt.declaration?.type === "VariableDeclaration"
+            ? stmt.declaration
+            : null;
+      if (varDecl) {
+        for (const decl of varDecl.declarations as BNode[]) {
           if (decl.id?.type === "Identifier" && (decl.id.name as string) === varName) {
             if (!decl.init) {
               return { ok: false, reason: `\`${varName}\` has no initializer` };
@@ -457,7 +464,7 @@ export function editConfigAppendWorkKind(source: string, kind: string): ConfigEd
     } else {
       const hasTrailingComma = innerSource.trimEnd().endsWith(",");
       if (hasTrailingComma) {
-        newArraySource = `[${innerSource}${elemIndent}"${kind}",\n${closingIndent}]`;
+        newArraySource = `[${innerSource.trimEnd()}\n${elemIndent}"${kind}",\n${closingIndent}]`;
       } else {
         const trimmedInner = innerSource.trimEnd();
         newArraySource = `[${trimmedInner},\n${elemIndent}"${kind}"\n${closingIndent}]`;
@@ -543,8 +550,12 @@ function removeProp(source: string, obj: BNode, prop: BNode): string {
     while (lineStart > 0 && source[lineStart - 1] !== "\n") {
       lineStart--;
     }
-    // Include the preceding \n
-    const removeStart = lineStart > 0 ? lineStart - 1 : lineStart;
+    // Only take the whole-line path when the property is the only non-whitespace
+    // content on its line; otherwise splice would delete unrelated source text.
+    const linePrefix = source.slice(lineStart, prop.start as number);
+    const ownLine = linePrefix.trim() === "" && lineStart > (obj.start as number);
+    // Include the preceding \n for own-line properties.
+    const removeStart = ownLine ? lineStart - 1 : (prop.start as number);
 
     // After prop.end: skip whitespace, comma, then newline
     let removeEnd = prop.end as number;

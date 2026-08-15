@@ -96,6 +96,14 @@ describe("resolveConfigObject — supported forms", () => {
     const result = editConfigAppendWorkKind(content, "research");
     expect(result.ok).toBe(true);
   });
+
+  test("export const config = {...}; export default config", () => {
+    const content = `export const config = {\n  repoSlug: "x/y",\n  workOrder: ["checks"],\n};\nexport default config;\n`;
+    const result = editConfigAppendWorkKind(content, "research");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.content).toContain('"research"');
+  });
 });
 
 // ------------------------------------------------------------------ closed refusal set
@@ -288,10 +296,7 @@ describe("editConfigAppendWorkKind — multi-line arrays", () => {
     const result = editConfigAppendWorkKind(content, "research");
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.content).toContain('"research",');
-    expect(result.content).toContain('    "research",');
-    expect(result.content).toContain('"conflicts",');
-    expect(result.content).toContain('"checks",');
+    expect(result.content).toContain('[\n    "conflicts",\n    "checks",\n    "research",\n  ]');
   });
 
   test("appends without trailing-comma style", () => {
@@ -445,9 +450,7 @@ describe("editConfigSetField", () => {
   });
 
   test("refuses to overwrite a shorthand property", () => {
-    const content = `const cmd = "npm ci";\nconst config = { installCommand: cmd, repoSlug: "x/y" };\nexport default config;\n`;
-    // Note: installCommand: cmd is not a shorthand (cmd !== installCommand), so this is an Identifier value.
-    // Use a shorthand:
+    // `{ repoSlug }` is a shorthand: the value node is the identifier itself.
     const shorthand = `const repoSlug = "x/y";\nconst config = { repoSlug };\nexport default config;\n`;
     const result = editConfigSetField(shorthand, "repoSlug", "new/repo");
     expect(result.ok).toBe(false);
@@ -475,6 +478,18 @@ describe("editConfigRemoveField", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.content).toBe(content);
+  });
+
+  test("removes first property when object brace and property share a line", () => {
+    // repoSlug and the opening brace are on the same line — the multiline
+    // whole-line path must not delete the brace and everything before it.
+    const content = `const config = { repoSlug: "x/y",\n  workOrder: ["checks"],\n};\nexport default config;\n`;
+    const result = editConfigRemoveField(content, "repoSlug");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.content).not.toContain("repoSlug");
+    expect(result.content).toContain("workOrder");
+    expect(result.content).toContain("const config");
   });
 });
 
