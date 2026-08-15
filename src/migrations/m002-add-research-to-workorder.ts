@@ -13,7 +13,13 @@
 // Configs with a computed or spread `workOrder` are refused with the exact
 // edit instruction — the operator makes the change by hand.
 
-import { ConfigRefusal, configHandle, workKindInstruction } from "../config-handle.ts";
+import {
+  ConfigRefusal,
+  REASON_WORKORDER_NOT_FOUND,
+  configHandle,
+  editConfigAppendWorkKind,
+  workKindInstruction,
+} from "../config-handle.ts";
 import type { Migration } from "../migrate.ts";
 
 const KIND = "research";
@@ -28,18 +34,13 @@ export const addResearchToWorkOrderMigration: Migration = {
     const content = readFile(CONFIG_REL_PATH);
     if (content === null) return null;
 
-    // No explicit workOrder → the engine default already includes "research".
-    if (!/\bworkOrder\s*:/.test(content)) return null;
-
-    // Explicit workOrder — check if "research" is already present in the array.
-    const match = /\bworkOrder\s*:\s*(\[(?:[^[\]]*)\])/.exec(content);
-    if (match !== null) {
-      const inner = match[1]!;
-      if (inner.includes(`"${KIND}"`) || inner.includes(`'${KIND}'`)) return null;
-    }
-    // match === null means workOrder exists but not as a parseable plain literal
-    // (e.g., computed expression). We still flag it as applicable — apply will
-    // produce a ConfigRefusal, and the operator gets the exact edit instruction.
+    // Use the parser-based append to determine applicability.
+    // "Not found" means the config uses the default workOrder, which already
+    // includes "research" — not applicable.
+    const probe = editConfigAppendWorkKind(content, KIND);
+    if (!probe.ok && probe.reason === REASON_WORKORDER_NOT_FOUND) return null;
+    // Already present (content unchanged after append attempt)
+    if (probe.ok && probe.content === content) return null;
 
     return content;
   },
