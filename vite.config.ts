@@ -10,8 +10,9 @@ export default defineConfig({
   lint: {
     // Consumer-owned template files are not real project sources — they
     // contain unresolved {{PLACEHOLDER}} tokens that only become valid code
-    // after `phoebe init` renders them into a consumer's repo.
-    ignorePatterns: ["templates/**"],
+    // after `phoebe init` renders them into a consumer's repo. Vendored
+    // third-party bundles are pre-minified and not subject to project lint rules.
+    ignorePatterns: ["templates/**", "src/migrations/vendor/**"],
     options: {
       typeAware: true,
       typeCheck: true,
@@ -19,7 +20,8 @@ export default defineConfig({
   },
   fmt: {
     // Vendored agent skill docs keep their upstream formatting; unrendered
-    // templates are shaped for consumers' repos, not this one.
-    ignorePatterns: [".agents/skills/**/*.md", "templates/**"],
+    // templates are shaped for consumers' repos, not this one. Vendored
+    // third-party bundles are pre-minified and must not be reformatted.
+    ignorePatterns: [".agents/skills/**/*.md", "templates/**", "src/migrations/vendor/**"],
   },
 });
