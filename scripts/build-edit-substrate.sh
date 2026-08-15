@@ -20,7 +20,8 @@ npm init -y >/dev/null 2>&1
 # Pin both versions — the committed bundle was produced with these exact versions.
 npm install --no-audit --no-fund \
   "@babel/parser@8.0.4" \
-  "esbuild@0.28.2"
+  "esbuild@0.28.2" \
+  2>/dev/null
 
 # Minimal entry: export only what migrations consume.
 cat > entry.mjs << 'EOF'
