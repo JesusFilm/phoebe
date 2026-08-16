@@ -220,6 +220,13 @@ const GITHUB_SOURCE = /(\bsource\s*:\s*(['"])github\2)/;
  * refusal carrying the exact one-line edit, not a guess. The scaffolded
  * templates satisfy the happy path; everything else is deliberately the
  * advisory fallback.
+ *
+ * Note: this function is intentionally NOT retrofitted onto the parser-based
+ * config-edit substrate from src/config-handle.ts. `rewriteEngineRef` runs in
+ * the OLD CLI before the engine.ref flip, while the substrate lives in the
+ * TARGET checkout. The one process that would consume a parser-based rewrite is
+ * by definition the one that may predate it — they cannot share code at runtime
+ * despite sharing a repo. See docs/migrations.md for the full rationale.
  */
 export function rewriteEngineRef(content: string, newRef: string): RewriteResult {
   const blocks = [...content.matchAll(ENGINE_BLOCK)];

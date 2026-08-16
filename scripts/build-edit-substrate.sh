@@ -52,7 +52,17 @@ mkdir -p "$VENDOR_DIR"
   cat "$TMP_DIR/bundle.mjs"
 } > "$VENDOR_DIR/babel-parser.mjs"
 
-# Copy the MIT license file (required by the MIT license).
-cp node_modules/@babel/parser/LICENSE "$VENDOR_DIR/LICENSE"
+# Copy the MIT license text of every bundled package (required by the MIT license).
+# Write to a temp file first so a partial read never leaves a truncated LICENSE.
+LICENSE_TMP="$TMP_DIR/LICENSE"
+: > "$LICENSE_TMP"
+for pkg in @babel/parser @babel/types @babel/helper-string-parser @babel/helper-validator-identifier; do
+  {
+    echo "===== $pkg ====="
+    cat "node_modules/$pkg/LICENSE"
+    echo
+  } >> "$LICENSE_TMP"
+done
+mv "$LICENSE_TMP" "$VENDOR_DIR/LICENSE"
 
 echo "Built $VENDOR_DIR/babel-parser.mjs ($(wc -c < "$VENDOR_DIR/babel-parser.mjs") bytes)"

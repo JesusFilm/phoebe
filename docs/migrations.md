@@ -112,7 +112,7 @@ makes the edit by hand.
 `apply` must not write to disk directly. Only the runner flushes writes, so an
 exception inside `apply` before it returns leaves nothing on disk.
 
-## `ConfigHandle` and `RewriteResult`
+## `ConfigHandle` — the parser-based config-edit substrate
 
 Config migrations call `configHandle` — the narrow API that bounds what a
 migration may touch:
@@ -135,6 +135,95 @@ may add, remove, or reorder tenants.
 `ConfigEditResult` is `{ ok: true; content: string } | { ok: false; reason: string }`.
 On `ok: false`, the edit is ambiguous or unsafe — return a `ConfigRefusal` with
 the manual instruction.
+
+### What an author may assume
+
+The substrate parses with the vendored `@babel/parser` and splices by
+source range (UTF-16 code-unit offsets, as returned by the parser and used by
+`String.slice`). Every character outside the targeted node is left
+untouched — this is a property of the mechanism, not of a printer's
+round-trip fidelity.
+
+An author writing a config migration may assume:
+
+1. **The config object is a plain object literal.** `resolveConfigObject` refuses
+   anything that is not an `ObjectExpression` at the end of the resolution chain.
+2. **No spread elements in the object.** A key present via `...spread` reads as
+   `undefined`; the substrate refuses early so no migration ever sees it.
+3. **No computed keys.** `[expr]: value` is refused before field lookup.
+4. **No duplicate keys.** The substrate checks the full property list and refuses
+   on the first duplicate.
+5. **No post-declaration mutations.** `config.x = ...` assignments after the
+   object literal are detected and refused — the literal's fields are the
+   canonical shape.
+6. **The config is resolved through the standard forms.** Every scaffolded and
+   example config is supported (see below); anything else is a `ConfigRefusal`
+   with an exact manual instruction.
+
+### Supported config forms
+
+Both resolution paths that `loadUserConfig` accepts are supported:
+
+```ts
+// Templates / examples — the standard form
+import type { PhoebeUserConfig } from "phoebe-agent";
+const config: PhoebeUserConfig = { ... };
+export default config;
+
+// This repo's own config (defineConfig form)
+const config = defineConfig({ ... });
+export default config;
+
+// Inline export
+export default defineConfig({ ... });
+export default { ... };
+
+// Named export (loadUserConfig named form)
+export const config = { ... };
+```
+
+Additionally: `satisfies` / `as` / `as const` type annotations on the expression,
+`let` instead of `const`, and quoted string keys are all supported.
+
+### Closed refusal set
+
+All refusals are AST-shape checks on nodes already in hand — they are cheap,
+precise, and do not require running the config. Each refusal case has one
+fixture test in `src/config-handle.test.ts`.
+
+Two are "silent failure" cases — they must be tested rather than documented as
+prose, because "we forgot to refuse" corrupts a config instead of erroring:
+
+- **`...spread` in the object** — a key present via the spread reads as
+  `undefined`; a naive migration adds a duplicate key.
+- **Shorthand property** — a naive read returns the identifier name, not the
+  runtime value.
+
+The complete closed set:
+
+| Case                                           | Why it refuses                                                                   |
+| ---------------------------------------------- | -------------------------------------------------------------------------------- |
+| `...spread` in the object                      | spread key reads `undefined` → silent duplicate                                  |
+| Shorthand property (write)                     | value is an identifier, not a literal                                            |
+| `export { default } from "..."`                | re-export has no local default to resolve                                        |
+| `defineConfig(reference)`                      | argument must be an inline object literal                                        |
+| Conditional default export                     | ternary/logical expression is not a config object                                |
+| No default export and no `export const config` | neither resolution path applies                                                  |
+| Computed key `[expr]: value`                   | key is not statically known                                                      |
+| Duplicate keys                                 | result of a write would be ambiguous                                             |
+| Non-literal value (for writes)                 | `process.env.X`, call, template, reference — reads OK as `raw`, never writable   |
+| `config.x = ...` mutation after literal        | literal fields are the canonical shape; mutations are invisible to the substrate |
+
+### Why `rewriteEngineRef` does not use this substrate
+
+`rewriteEngineRef` in `src/upgrade.ts` is a regex-based rewriter that predates
+this parser substrate and operates at the **old CLI's** layer — it runs before
+the `engine.ref` flip, which means before the target checkout exists. The
+parser substrate lives in the **target checkout**. The one process that would
+consume a parser-based rewrite (the running `phoebe boot`) is by definition the
+one that may predate it. They cannot share code at runtime despite sharing a
+repo — retrofitting `rewriteEngineRef` onto this substrate would require the
+old CLI to import from the new checkout, which it does not have.
 
 ## Artifact migrations (create-if-absent)
 
