@@ -460,7 +460,7 @@ phoebe start
 everything after the service name is the argument list. To confirm it took:
 
 ```bash
-docker compose -f container/compose.yml --env-file .env run --rm --entrypoint stat phoebe -c '%U' /data/repo
+docker compose -f container/compose.yml --env-file .env run --rm --entrypoint stat phoebe -c '%U' /data/repos
 # phoebe
 ```
 
@@ -546,10 +546,11 @@ repos; they never touch `/data`, named volumes, or git history.
    `compose.yml` declares the two volumes and mounts the deployment dir at
    `/etc/phoebe`. Your `phoebe.config.ts` is unchanged (a `paths` field, if you
    ever set one, is gone — paths are now derived from `repoSlug`).
-2. `phoebe start`. The new volumes start **empty**; the engine re-clones
+2. `phoebe stop`.
+3. `phoebe start`. The new volumes start **empty**; the engine re-clones
    its target lazily on the first work unit (a fresh clone, not a migration of
    the old volume). Nothing is copied across.
-3. **Rollback** is `git revert` of the compose commit: the old differently-named
+4. **Rollback** is `git revert` of the compose commit: the old differently-named
    volumes were never touched and persist until you `docker volume prune` them,
    so reverting brings the previous deployment straight back.
 
