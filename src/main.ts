@@ -791,6 +791,7 @@ async function runAgentInWorktree(opts: {
         cwd: opts.worktreeDir,
         env,
         signal,
+        tenant: config.repoSlug,
       }),
   });
   if (exitCode !== 0) {

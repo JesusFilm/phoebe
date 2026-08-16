@@ -236,7 +236,10 @@ per-repo and parallel.
 
 **Reading the logs.** Every line is tagged `[phoebe:<owner>/<repo>]` (the
 supervisor tags its own `[phoebe:supervisor]`), so a host log collector can
-attribute each line to its tenant. Agent output nests: `[phoebe:<slug>] [cursor] …`.
+attribute each line to its tenant. Agent output uses the combined bracket
+`[<owner>/<repo>:<command>]` (e.g. `[JesusFilm/phoebe:cursor]`) so agent lines
+stay visually distinct from unit-event lines. stderr lines add a further suffix:
+`[<owner>/<repo>:<command>:stderr]`.
 The container writes no log files — stdout is the whole story.
 
 **When a unit hangs.** A work unit that exceeds its wall-clock budget
