@@ -3,17 +3,18 @@
 # One long-lived container. Its main process is `phoebe boot` (pinned into the
 # image's ENTRYPOINT), which materializes the engine named by `engine` in
 # phoebe.config.ts, runs it, and keeps supervising it for the life of the
-# container — so this file describes a daemon, not a one-shot:
+# container — so this file describes a daemon, not a one-shot. From the
+# deployment root (where phoebe.config.ts lives):
 #
-#   docker compose up -d          # run it
-#   docker compose logs -f        # watch it
-#   docker compose stop           # SIGTERM → the engine drains, finishing its
-#                                 # current work unit and starting no new one.
-#                                 # stop_grace_period below is 1h — the same
-#                                 # window the fleet supervisor allows
-#                                 # (DEFAULT_DRAIN_TIMEOUT_MS) — so Compose
-#                                 # does not fall back to its 10s default and
-#                                 # SIGKILL mid-drain.
+#   phoebe start         # bring the container up detached
+#   phoebe stop          # SIGTERM → the engine drains, finishing its current
+#                        # work unit and starting no new one (grace: 1h, matching
+#                        # DEFAULT_DRAIN_TIMEOUT_MS — not Compose's 10s default)
+#   phoebe start --build # rebuild the image then start (when toolchain changes)
+#
+# Follow logs with raw compose (the wrappers cover start/stop, not log tailing):
+#
+#   docker compose logs -f
 #
 # For a scoped, non-daemon invocation, pass engine flags — the image's `CMD []`
 # means anything here is forwarded straight through `boot` to the engine:

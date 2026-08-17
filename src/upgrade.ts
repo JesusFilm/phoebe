@@ -751,8 +751,8 @@ function upgradeCliHalf(opts: { releaseTag: string | null; io: Required<UpgradeI
   if (isInsideContainer()) {
     io.stdout(
       "cli: the launcher inside the container is baked into the image — an in-container " +
-        "npm install would be lost on the next rebuild. On the host:\n" +
-        "  docker compose --env-file ../.env build && docker compose --env-file ../.env up -d",
+        "npm install would be lost on the next rebuild. From the deployment directory on the host:\n" +
+        "  phoebe start --build",
     );
     return;
   }

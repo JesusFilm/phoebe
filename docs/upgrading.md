@@ -199,6 +199,13 @@ Rebuild the image only when the image itself changes — a new provider CLI, a
 different base image, a new system package:
 
 ```bash
+phoebe start --build
+```
+
+Raw compose fallback (e.g. from the `container/` directory, or off the scaffolded
+layout):
+
+```bash
 docker compose --env-file ../.env build
 docker compose --env-file ../.env up -d
 ```
@@ -439,20 +446,21 @@ that volume**. Volumes your old root container already created keep their
 container starts and then fails on the first write — a `git clone` or lock
 acquisition dying with `EACCES`, not an obvious permissions message at startup.
 
-Fix it in place, without losing the clone, watermarks, or logs:
+Fix it in place, without losing the clone, watermarks, or logs (from the
+deployment root — where `phoebe.config.ts` lives):
 
 ```bash
-docker compose --env-file ../.env down
-docker compose --env-file ../.env run --rm --user root \
+phoebe stop
+docker compose -f container/compose.yml --env-file .env run --rm --user root \
   --entrypoint chown phoebe -R phoebe:phoebe /data
-docker compose --env-file ../.env up -d
+phoebe start
 ```
 
 `--entrypoint chown` is needed because the image's `ENTRYPOINT` is `phoebe boot`;
 everything after the service name is the argument list. To confirm it took:
 
 ```bash
-docker compose --env-file ../.env run --rm --entrypoint stat phoebe -c '%U' /data/repo
+docker compose -f container/compose.yml --env-file .env run --rm --entrypoint stat phoebe -c '%U' /data/repos
 # phoebe
 ```
 
@@ -538,10 +546,11 @@ repos; they never touch `/data`, named volumes, or git history.
    `compose.yml` declares the two volumes and mounts the deployment dir at
    `/etc/phoebe`. Your `phoebe.config.ts` is unchanged (a `paths` field, if you
    ever set one, is gone — paths are now derived from `repoSlug`).
-2. `docker compose up -d`. The new volumes start **empty**; the engine re-clones
+2. `phoebe stop`.
+3. `phoebe start`. The new volumes start **empty**; the engine re-clones
    its target lazily on the first work unit (a fresh clone, not a migration of
    the old volume). Nothing is copied across.
-3. **Rollback** is `git revert` of the compose commit: the old differently-named
+4. **Rollback** is `git revert` of the compose commit: the old differently-named
    volumes were never touched and persist until you `docker volume prune` them,
    so reverting brings the previous deployment straight back.
 
