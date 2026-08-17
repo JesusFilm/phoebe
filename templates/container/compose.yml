@@ -76,6 +76,15 @@ services:
       # added/removed tenant dirs and atomic-save/`git pull` renames, so `boot`'s
       # reconcile watch notices them without a `--force-recreate`.
       - ..:/etc/phoebe:ro
+      # The deployment env-file is Compose's input, not the container's. It sits
+      # inside the read-only deployment mount above, where every tenant's engine
+      # child (same uid 10001) could read the deployment GH_TOKEN straight off
+      # disk — defeating the env allowlist in bootstrap/engine-child-env.ts. Mask
+      # it. A child that reads /etc/phoebe/.env gets empty rather than a missing
+      # path. The one shape that would collide is a future "workspace root is also
+      # a tenant of itself" layout whose envPath resolves here — that layout does
+      # not exist today.
+      - /dev/null:/etc/phoebe/.env:ro
     working_dir: /etc/phoebe
 
 volumes:

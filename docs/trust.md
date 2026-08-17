@@ -156,6 +156,12 @@ real at-rest separation would need per-tenant OS users (rootless user
 namespaces — the documented "model B" upgrade), which an unprivileged container
 cannot set up.
 
+The deployment env-file (`/etc/phoebe/.env`) is **not** part of this residual:
+`compose.yml` masks it with a `/dev/null` bind mount, so the file is empty
+inside the container even though the deployment root is mounted read-only. The
+residual is only the per-tenant `.env` files at `/etc/phoebe/<child>/.env` —
+each is readable by sibling tenants sharing the same uid.
+
 **So the constraint is a policy, and it is first-class:**
 
 > **Co-locate in one container only repos whose mutual compromise is already

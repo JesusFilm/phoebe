@@ -578,6 +578,41 @@ on the next poll (see [`workspace.md`](workspace.md),
 [`configuration.md`](configuration.md), and [`operating.md`](operating.md)). Read [`trust.md`](trust.md) first — co-locating
 repos in one container means co-locating them in **one trust domain**.
 
+## One-time: mask the deployment env-file inside the container
+
+**This applies to any deployment whose `container/compose.yml` does not already
+include the `/dev/null:/etc/phoebe/.env:ro` bind mount.** Fresh installs from
+`phoebe init` include it automatically. Skip this step if it is already present.
+
+The deployment env-file (`.env` at the root, next to `phoebe.config.ts`) is
+mounted read-only inside the container via the `..:/etc/phoebe:ro` deployment
+mount. Because all tenant engine children run as the same uid (10001), any child
+can read `/etc/phoebe/.env` off disk and recover the deployment `GH_TOKEN` —
+defeating the env allowlist in the bootstrapper. The fix is one additional mount
+that shadows the file with `/dev/null` inside the container; Compose still reads
+the real file as its `--env-file` input before the container starts.
+
+Add this entry to the `volumes:` list of the `phoebe` service in
+`container/compose.yml`, immediately after the `..:/etc/phoebe:ro` line:
+
+```yaml
+- /dev/null:/etc/phoebe/.env:ro
+```
+
+Then restart the container so the new mount takes effect:
+
+```bash
+phoebe stop
+phoebe start
+```
+
+No volume data is affected. To confirm the mask is active:
+
+```bash
+docker compose -f container/compose.yml --env-file .env run --rm --entrypoint cat phoebe /etc/phoebe/.env
+# should produce no output (empty file)
+```
+
 ## First install
 
 For the full, execute-top-to-bottom install runbook — prerequisites, secrets,
