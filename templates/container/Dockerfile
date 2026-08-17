@@ -144,6 +144,18 @@ RUN set -eux; \
 # Claude Code:  RUN npm install -g @anthropic-ai/claude-code@<version>
 # Codex:        RUN npm install -g @openai/codex@<version>
 
+# The system node — used by the supervisor (`phoebe boot`) and every engine
+# child — is made execute-only, mirroring `chmod 0711 …/node` in the block
+# above. Cursor ships its own vendored `node` (protected there); the supervisor
+# and engine children run on this image node. Those long-lived processes hold
+# the deployment GH_TOKEN and any provider key. Making this binary non-readable
+# to others (root-owned 0711) causes the kernel to mark each exec AT_SECURE and
+# the process non-dumpable — a same-uid sibling cannot read
+# /proc/<pid>/environ to lift those secrets. Execute-only ELFs load fine; the
+# shebang shims (`npm`) are read by the *kernel*, not by node. Together the two
+# chmods cover every Phoebe process in the image.
+RUN chmod 0711 "$(command -v node)"
+
 # Consumer install command, kept as an ARG so it lands in the image metadata
 # and can be inspected with `docker image inspect`. The engine re-runs the
 # command inside each worktree; this is just documentation for operators.
