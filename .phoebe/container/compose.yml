@@ -81,6 +81,12 @@ services:
       # source. The repo *root* is mounted so package.json (`"type": "module"`)
       # sits alongside the `.ts` that Node type-strips.
       - ../..:/opt/phoebe-engine:ro
+      # Mask the deployment env-file inside the container (mirrors the scaffold).
+      # The .phoebe/.env sits inside the read-only mount above at
+      # /opt/phoebe-engine/.phoebe/.env — readable by uid 10001 the same way as
+      # in any consumer deployment. See templates/container/compose.yml for the
+      # full rationale.
+      - /dev/null:/opt/phoebe-engine/.phoebe/.env:ro
 
 volumes:
   phoebe-data:
