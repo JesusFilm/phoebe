@@ -68,18 +68,18 @@ in place of `stopCommand`. When absent, `phoebe stop --now` falls back to `stopC
 
 ### Compose-specific — not generalized to the literal-command path
 
-| Behaviour                                                | Why it stays compose-only                                                                                                                                                                                                                                    |
-| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Env-file discovery (`--env-file`)**                    | An artefact of Compose needing the deployment `.env` to substitute template variables. Other runtimes source their env differently (systemd unit files, podman quadlets, etc.).                                                                              |
-| **`container/compose.yml` path resolution**              | The scaffold layout is a compose convention.                                                                                                                                                                                                                 |
-| **State queries (`docker compose ps -a --format json`)** | Structured JSON probe is Compose-specific. Other runtimes have no equivalent portable probe.                                                                                                                                                                 |
-| **"Already running" pre-check before `phoebe start`**    | Requires the state query above. Lost on the literal-command path — `startCommand` should be idempotent where the operator cares.                                                                                                                             |
-| **"Already stopped" pre-check before `phoebe stop`**     | Same.                                                                                                                                                                                                                                                        |
-| **"Exited immediately" post-start probe**                | Requires the state query and the settle wait. Lost on the literal-command path — `startCommand` should verify the service is up before exiting 0, or the operator accepts that a fast-exit failure is not detected.                                          |
-| **Killed-mid-run detection (exit code 137)**             | SIGKILL on a Docker container produces exit code 137. This is Docker-specific, not a general property of all runtimes. A `systemctl stop` either completes or times out and kills; exit code 137 does not appear.                                            |
-| **`--build` flag for image rebuild**                     | Compose-specific. Makes no sense for a systemd-managed process or a custom runtime that has no image. The `--build` flag is not passed through to `startCommand`. An operator who needs a rebuild encodes it in a pre-start script or a separate build step. |
-| **`MISSING_ENV_MESSAGE` / required-variable detection**  | An artefact of Compose's `required variable` error format. Not emitted on the literal-command path.                                                                                                                                                          |
-| **Drain grace encoding in the stop command**             | For compose the engine passes `-t 3600` to `docker compose stop`. For a literal stop command the operator encodes the timeout themselves (e.g. `systemctl stop --timeout=3600 phoebe`).                                                                      |
+| Behaviour                                                | Why it stays compose-only                                                                                                                                                                                                                                                                                                                                                                        |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Env-file discovery (`--env-file`)**                    | An artefact of Compose needing the deployment `.env` to substitute template variables. Other runtimes source their env differently (systemd unit files, podman quadlets, etc.).                                                                                                                                                                                                                  |
+| **`container/compose.yml` path resolution**              | The scaffold layout is a compose convention.                                                                                                                                                                                                                                                                                                                                                     |
+| **State queries (`docker compose ps -a --format json`)** | Structured JSON probe is Compose-specific. Other runtimes have no equivalent portable probe.                                                                                                                                                                                                                                                                                                     |
+| **"Already running" pre-check before `phoebe start`**    | Requires the state query above. Lost on the literal-command path — `startCommand` should be idempotent where the operator cares.                                                                                                                                                                                                                                                                 |
+| **"Already stopped" pre-check before `phoebe stop`**     | Same.                                                                                                                                                                                                                                                                                                                                                                                            |
+| **"Exited immediately" post-start probe**                | Requires the state query and the settle wait. Lost on the literal-command path — `startCommand` should verify the service is up before exiting 0, or the operator accepts that a fast-exit failure is not detected.                                                                                                                                                                              |
+| **Killed-mid-run detection (exit code 137)**             | SIGKILL on a Docker container produces exit code 137. This is Docker-specific, not a general property of all runtimes. A `systemctl stop` either completes or times out and kills; exit code 137 does not appear.                                                                                                                                                                                |
+| **`--build` flag for image rebuild**                     | Compose-specific. Makes no sense for a systemd-managed process or a custom runtime that has no image. The `--build` flag is not forwarded to `startCommand`; when a literal deployment is active, `--build` is a no-op and the engine logs a warning to that effect. An operator who needs a rebuild encodes it in `startCommand` itself or a separate build step. Ticket B must test this case. |
+| **`MISSING_ENV_MESSAGE` / required-variable detection**  | An artefact of Compose's `required variable` error format. Not emitted on the literal-command path.                                                                                                                                                                                                                                                                                              |
+| **Drain grace encoding in the stop command**             | For compose the engine passes `-t 3600` to `docker compose stop`. For a literal stop command the operator encodes the timeout themselves (e.g. `systemctl stop --timeout=3600 phoebe`).                                                                                                                                                                                                          |
 
 ## In-container refusal
 
@@ -110,8 +110,13 @@ runtime branching.
   (`/bin/sh -c`), inherits stdio, and reports success or failure by exit code.
 - When `deployment` is present, `phoebe stop` spawns `stopCommand` (or `stopNowCommand`
   for `--now`), inherits stdio, and reports success or failure by exit code.
+- Execution context for literal commands: the working directory is the repo root (same
+  as the engine process); the child inherits `process.env` from the engine; no `.env`
+  file is loaded (env-file discovery is compose-specific, see table above).
 - Validation at config load: `startCommand` and `stopCommand` are required together;
-  `stopNowCommand` is optional. Empty strings are rejected.
+  `stopNowCommand` is optional. Blank strings are rejected (`command.trim().length === 0`
+  rejects whitespace-only values, not just empty strings, because `/bin/sh -c "   "`
+  exits 0 and would silently succeed without doing anything).
 
 **Dropped for the literal-command path** (the operator bears responsibility):
 
@@ -131,8 +136,9 @@ Two buildable tickets come out of this design:
 - Add the `deployment?: { startCommand, stopCommand, stopNowCommand? }` block to the
   `PhoebeUserConfig` type in `src/config-schema.ts`.
 - Add validation in `validateUserConfig`: require both `startCommand` and `stopCommand`
-  when the block is present; reject empty strings; validate that `stopNowCommand`, if
-  present, is non-empty.
+  when the block is present; reject blank strings (`command.trim().length === 0` —
+  whitespace-only values must fail, not just empty strings); validate that
+  `stopNowCommand`, if present, is non-blank by the same rule.
 - Document the field in `docs/configuration.md` alongside the other operator-facing
   config fields.
 
@@ -141,15 +147,20 @@ Two buildable tickets come out of this design:
 - In `runStart` / `runStartCli` (`src/start.ts`): when `deployment.startCommand` is
   present in the loaded config, skip the compose resolve path, skip docker-on-PATH
   check, skip all state queries, and invoke `startCommand` via `/bin/sh -c` with
-  inherited stdio. Report started/failed by exit code.
+  inherited stdio. Exit code 0 → return the existing `StartOutcome` success value;
+  non-zero → throw (or return) the established failure result that `runStartCli`
+  already maps to a non-zero CLI exit code. The CLI exit-code mapping is unchanged.
 - In `runStop` / `runStopCli` (`src/stop.ts`): when `deployment.stopCommand` is
   present, skip the compose resolve path, skip docker-on-PATH check, skip all state
   queries, and invoke `stopCommand` (or `stopNowCommand` for `--now`) via
-  `/bin/sh -c`. Report stopped/failed by exit code.
+  `/bin/sh -c`. Exit code 0 → return the existing `StopOutcome` success value;
+  non-zero → throw (or return) the established failure result. The CLI exit-code
+  mapping is unchanged.
 - The in-container refusal guard runs before the runtime branch in both commands.
 - Unit tests cover: literal-command happy path, non-zero exit → failure, in-container
-  refusal still fires, and (for stop) `--now` falling back to `stopCommand` when
-  `stopNowCommand` is absent.
+  refusal still fires, (for stop) `--now` falling back to `stopCommand` when
+  `stopNowCommand` is absent, and `--build` passed with a literal deployment logs a
+  warning and is otherwise a no-op (the command still runs, build is not triggered).
 
 Note: ticket B reads the loaded config, which means both `runStart` and `runStop` need
 to accept the resolved config (or a loaded-config read) as a dependency alongside their
