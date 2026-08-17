@@ -51,10 +51,13 @@ export async function runAgent(opts: {
    * expires; the `close` handler then settles the promise as usual.
    */
   signal?: AbortSignal;
+  /** Repo slug (`owner/repo`) prepended to the bracket: `[owner/repo:cursor]`. */
+  tenant?: string;
 }): Promise<AgentRunResult> {
   const { provider, model, effort, prompt, cwd, env } = opts;
   const spawn = opts.spawn ?? defaultSpawn;
   const log = opts.log ?? ((line: string) => console.log(line));
+  const tag = opts.tenant ? `${opts.tenant}:${provider.name}` : provider.name;
 
   const command = provider.buildCommand({ prompt, model, effort });
   const [file, ...args] = command.argv;
@@ -83,9 +86,9 @@ export async function runAgent(opts: {
       for (const event of provider.parseStreamLine(line)) {
         if (event.type === "text") {
           const text = event.text.trim();
-          if (text) log(`[${provider.name}] ${text}`);
+          if (text) log(`[${tag}] ${text}`);
         } else if (event.type === "tool_call") {
-          log(`[${provider.name}] ${event.name}: ${event.args}`);
+          log(`[${tag}] ${event.name}: ${event.args}`);
         } else {
           resultText = event.result;
         }
@@ -100,7 +103,7 @@ export async function runAgent(opts: {
     });
     child.stderr.on("data", (chunk) => {
       const text = chunk.toString().trim();
-      if (text) log(`[${provider.name}:stderr] ${text}`);
+      if (text) log(`[${tag}:stderr] ${text}`);
     });
     child.on("error", reject);
     child.on("close", (code) => {

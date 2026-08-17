@@ -103,6 +103,67 @@ describe("runAgent", () => {
     expect(result).toEqual({ exitCode: 3, resultText: "partial answer" });
   });
 
+  test("tenant prefixes log brackets as [owner/repo:provider]", async () => {
+    const fake = makeFakeChild();
+    const claudeTextLine = JSON.stringify({
+      type: "assistant",
+      message: { content: [{ type: "text", text: "Reading file" }] },
+    });
+    const claudeToolLine = JSON.stringify({
+      type: "assistant",
+      message: { content: [{ type: "tool_use", name: "Bash", input: { command: "ls" } }] },
+    });
+    const spawn: SpawnAgent = () => {
+      queueMicrotask(() => {
+        fake.emitStdout(`${claudeTextLine}\n`);
+        fake.emitStdout(`${claudeToolLine}\n`);
+        fake.close(0);
+      });
+      return fake.child;
+    };
+    const logged: string[] = [];
+    await runAgent({
+      provider: PROVIDERS.claude,
+      model: "m",
+      prompt: "p",
+      cwd: "/w",
+      env: {},
+      spawn,
+      log: (line) => logged.push(line),
+      tenant: "JesusFilm/phoebe",
+    });
+    expect(logged).toEqual([
+      "[JesusFilm/phoebe:claude] Reading file",
+      "[JesusFilm/phoebe:claude] Bash: ls",
+    ]);
+  });
+
+  test("without tenant, log brackets use bare provider name", async () => {
+    const fake = makeFakeChild();
+    const claudeTextLine = JSON.stringify({
+      type: "assistant",
+      message: { content: [{ type: "text", text: "Reading file" }] },
+    });
+    const spawn: SpawnAgent = () => {
+      queueMicrotask(() => {
+        fake.emitStdout(`${claudeTextLine}\n`);
+        fake.close(0);
+      });
+      return fake.child;
+    };
+    const logged: string[] = [];
+    await runAgent({
+      provider: PROVIDERS.claude,
+      model: "m",
+      prompt: "p",
+      cwd: "/w",
+      env: {},
+      spawn,
+      log: (line) => logged.push(line),
+    });
+    expect(logged).toEqual(["[claude] Reading file"]);
+  });
+
   test("null exit code (signal kill) maps to failure", async () => {
     const fake = makeFakeChild();
     const spawn: SpawnAgent = () => {
