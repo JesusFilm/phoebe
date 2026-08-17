@@ -150,6 +150,17 @@ describe.each(Object.entries(DOCKERFILES))("%s", (_label, relPath) => {
     expect(block).not.toMatch(/chmod 0711 \/opt\/cursor-agent\/cursor-agent/);
   });
 
+  test("makes the system node non-dumpable (secureexec → supervisor + engine children, #196)", () => {
+    // The supervisor (`phoebe boot`) and every engine child run on the image's
+    // system node. Without execute-only mode those long-lived processes stay
+    // dumpable — a same-uid sibling can read /proc/<pid>/environ and lift
+    // GH_TOKEN or a provider key. Root-owned 0711 triggers AT_SECURE on every
+    // exec of this binary, making each process non-dumpable. The shebang shims
+    // (`npm`) are read by the *kernel*, not by node, so they are unaffected.
+    const instructions = instructionsOnly(read(relPath));
+    expect(instructions).toMatch(/RUN chmod 0711 "\$\(command -v node\)"/);
+  });
+
   test("keeps the provider CLI on PATH as `agent` after the privilege drop", () => {
     // The engine spawns the provider CLI by bare name and the agent child
     // inherits only the allowlisted PATH (src/agent-env.ts), so an install

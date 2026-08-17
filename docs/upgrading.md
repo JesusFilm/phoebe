@@ -468,6 +468,23 @@ Deleting the volumes (`down -v`) also works and is simpler, at the cost of
 re-cloning the repo and losing the watermarks that stop already-handled work
 from being reconsidered.
 
+### One-time: rebuild the image to harden the supervisor
+
+**This applies once, to deployments that ran the consumer Dockerfile before
+`chmod 0711 "$(command -v node)"` was added to the template.** Skip it for a
+fresh install or any image already built with that line present.
+
+The supervisor (`phoebe boot`) and every engine child run on the image's system
+node. Before this change, those long-lived processes were ordinary dumpable execs
+— a same-uid sibling could read their `/proc/<pid>/environ` to lift `GH_TOKEN`
+or a provider key. A rebuild bakes the execute-only bit in:
+
+```bash
+phoebe start --build
+```
+
+No data is affected — the volumes are untouched.
+
 New engine defaults land automatically — because your `phoebe.config.ts` only
 names fields you deliberately override, any field you left to the default picks
 up the new default on upgrade. That is the point of the required-vs-optional
