@@ -18,6 +18,7 @@
 // (src/execution-gate.ts).
 
 import { execFileSync, execSync } from "node:child_process";
+import { classifyGhError, describeGhError } from "./gh-error.ts";
 import { config } from "./resolved-config.ts";
 import { PROVIDER_NAMES, type ProviderName } from "./config-schema.ts";
 import { detectAppCredentials, mintInstallationToken } from "./gh-app.ts";
@@ -220,22 +221,74 @@ const workOrder = validateWorkOrder(config.workOrder);
 // gh helpers — always pinned to the configured repo
 // ---------------------------------------------------------------------------
 
+/**
+ * Probe `gh api rate_limit` to get the current reset time for a bucket.
+ * Best-effort: the `/rate_limit` endpoint uses its own quota and succeeds even
+ * when "graphql" or "core" is exhausted, but we swallow any failure rather than
+ * crashing the already-failing path.
+ */
+function tryFetchRateLimitReset(resource: "graphql" | "core"): Date | null {
+  try {
+    type RateLimitResponse = {
+      resources: { core: { reset: number }; graphql: { reset: number } };
+    };
+    const data = JSON.parse(
+      execFileSync("gh", ["api", "rate_limit"], {
+        encoding: "utf8",
+        timeout: CHILD_PROCESS_TIMEOUT_MS,
+      }),
+    ) as RateLimitResponse;
+    const epoch = data.resources[resource].reset;
+    const d = new Date(epoch * 1000);
+    return isNaN(d.getTime()) ? null : d;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Always throws.  Reclassifies a `gh` CLI error as a rate-limit or permission
+ * message when the stderr carries enough signal; otherwise rethrows the original.
+ * A null classification (no signal) also rethrows the original so callers always
+ * see the most informative available error.
+ */
+function rethrowAsGhError(error: unknown, ghArgs: readonly string[]): never {
+  const c = classifyGhError(error, ghArgs);
+  if (c !== null) {
+    if (c.kind === "rate-limit") {
+      const resetAt = c.resource ? tryFetchRateLimitReset(c.resource) : null;
+      throw new Error(describeGhError({ ...c, resetAt }));
+    }
+    throw new Error(describeGhError(c));
+  }
+  throw error instanceof Error ? error : new Error(String(error));
+}
+
 function ghJson<T>(args: string[]): T {
-  return JSON.parse(
-    execFileSync("gh", [...args, "-R", config.repoSlug], {
-      encoding: "utf8",
-      timeout: CHILD_PROCESS_TIMEOUT_MS,
-    }),
-  ) as T;
+  try {
+    return JSON.parse(
+      execFileSync("gh", [...args, "-R", config.repoSlug], {
+        encoding: "utf8",
+        timeout: CHILD_PROCESS_TIMEOUT_MS,
+      }),
+    ) as T;
+  } catch (error) {
+    rethrowAsGhError(error, args);
+  }
 }
 
 function ghApiJson<T>(endpoint: string): T {
-  return JSON.parse(
-    execFileSync("gh", ["api", endpoint], {
-      encoding: "utf8",
-      timeout: CHILD_PROCESS_TIMEOUT_MS,
-    }),
-  ) as T;
+  const args = ["api", endpoint];
+  try {
+    return JSON.parse(
+      execFileSync("gh", args, {
+        encoding: "utf8",
+        timeout: CHILD_PROCESS_TIMEOUT_MS,
+      }),
+    ) as T;
+  } catch (error) {
+    rethrowAsGhError(error, args);
+  }
 }
 
 function gh(args: string[], opts?: { input?: string }): void {
@@ -1182,24 +1235,28 @@ function fetchReviewThreads(prNumber: PrNumber): ReviewThread[] {
     }
   }
 }`;
-    const page = JSON.parse(
-      execFileSync(
-        "gh",
-        [
-          "api",
-          "graphql",
-          "-f",
-          `query=${query}`,
-          "-f",
-          `owner=${owner}`,
-          "-f",
-          `repo=${repo}`,
-          "-F",
-          `pr=${prNumber}`,
-        ],
-        { encoding: "utf8", timeout: CHILD_PROCESS_TIMEOUT_MS },
-      ),
-    ) as GraphQLReviewThreadsPage;
+    const graphqlArgs = [
+      "api",
+      "graphql",
+      "-f",
+      `query=${query}`,
+      "-f",
+      `owner=${owner}`,
+      "-f",
+      `repo=${repo}`,
+      "-F",
+      `pr=${prNumber}`,
+    ];
+    let rawPage: string;
+    try {
+      rawPage = execFileSync("gh", graphqlArgs, {
+        encoding: "utf8",
+        timeout: CHILD_PROCESS_TIMEOUT_MS,
+      });
+    } catch (error) {
+      rethrowAsGhError(error, ["api", "graphql"]);
+    }
+    const page = JSON.parse(rawPage) as GraphQLReviewThreadsPage;
 
     const reviewThreads = page.data.repository.pullRequest.reviewThreads;
     for (const node of reviewThreads.nodes) {
