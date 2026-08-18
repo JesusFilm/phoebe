@@ -186,6 +186,14 @@ describe("resolveConfig", () => {
     expect(resolved.maxUnitTimeouts).toBe(5);
   });
 
+  test("creditIssueAuthor defaults on and can be switched off (#198)", () => {
+    expect(CONFIG_DEFAULTS.creditIssueAuthor).toBe(true);
+    expect(resolveConfig(minimalUserConfig()).creditIssueAuthor).toBe(true);
+    expect(resolveConfig(minimalUserConfig({ creditIssueAuthor: false })).creditIssueAuthor).toBe(
+      false,
+    );
+  });
+
   test("preserves the caller's required-field values verbatim", () => {
     const resolved = resolveConfig(minimalUserConfig());
     expect(resolved.repoSlug).toBe("acme/widget");

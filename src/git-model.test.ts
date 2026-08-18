@@ -17,6 +17,7 @@ import { asBranchRef } from "./branded.ts";
 import {
   addWorktreeForExistingBranch,
   addWorktreeForNewBranch,
+  appendTrailerToCommits,
   commitCount,
   ensureClone,
   fetchOrigin,
@@ -190,5 +191,146 @@ describe("git model", () => {
     const { runner, calls } = spyGit();
     fetchOrigin("/data/repo", runner);
     expect(calls).toEqual([{ args: ["fetch", "origin"], cwd: "/data/repo" }]);
+  });
+});
+
+describe("appendTrailerToCommits", () => {
+  const TRAILER = "Co-authored-by: octocat <583231+octocat@users.noreply.github.com>";
+  let localGit: GitRunner;
+
+  beforeAll(() => {
+    // The rebase `--exec` step spawns its own `git commit`, which sees repo
+    // config but not the `-c` identity flags on the outer runner.
+    git(repoDir, "config", "user.name", "test");
+    git(repoDir, "config", "user.email", "test@example.com");
+    git(repoDir, "config", "commit.gpgsign", "false");
+    localGit = testGit;
+  });
+
+  function freshWorktree(name: string): string {
+    const branch = asBranchRef(`agent/${name}`);
+    const worktreeDir = worktreeDirForBranch(worktreesDir, branch);
+    addWorktreeForNewBranch({ repoDir, worktreeDir, branch, baseRef: "origin/main" }, localGit);
+    return worktreeDir;
+  }
+
+  function commitFile(worktreeDir: string, name: string, message: string): void {
+    writeFileSync(join(worktreeDir, name), `${name}\n`);
+    git(worktreeDir, "add", ".");
+    git(worktreeDir, "commit", "-m", message);
+  }
+
+  test("appends the trailer to every commit since base, leaving trees and authorship intact", () => {
+    const worktreeDir = freshWorktree("trailer-linear");
+    commitFile(worktreeDir, "a.txt", "Phoebe: first\n\nBody line.");
+    commitFile(worktreeDir, "b.txt", "Phoebe: second");
+    const treesBefore = git(worktreeDir, "log", "--format=%T %an %ae %ad", "origin/main..HEAD");
+
+    const outcome = appendTrailerToCommits(
+      { worktreeDir, baseRef: "origin/main", trailer: TRAILER },
+      localGit,
+    );
+
+    expect(outcome).toBe("rewritten");
+    expect(commitCount(worktreeDir, "origin/main..HEAD", localGit)).toBe(2);
+    expect(git(worktreeDir, "log", "--format=%T %an %ae %ad", "origin/main..HEAD")).toBe(
+      treesBefore,
+    );
+    const messages = git(worktreeDir, "log", "--format=%B%x00", "origin/main..HEAD")
+      .split("\0")
+      .map((m) => m.trim())
+      .filter(Boolean);
+    expect(messages).toEqual([
+      `Phoebe: second\n\n${TRAILER}`,
+      `Phoebe: first\n\nBody line.\n\n${TRAILER}`,
+    ]);
+    expect(git(worktreeDir, "status", "--porcelain")).toBe("");
+    removeWorktree(repoDir, worktreeDir, localGit);
+  });
+
+  test("does not duplicate a trailer the agent already wrote", () => {
+    const worktreeDir = freshWorktree("trailer-dup");
+    commitFile(worktreeDir, "a.txt", `Phoebe: first\n\n${TRAILER}`);
+
+    appendTrailerToCommits({ worktreeDir, baseRef: "origin/main", trailer: TRAILER }, localGit);
+
+    const message = git(worktreeDir, "log", "-1", "--format=%B").trim();
+    expect(message).toBe(`Phoebe: first\n\n${TRAILER}`);
+    removeWorktree(repoDir, worktreeDir, localGit);
+  });
+
+  test("survives uncommitted changes the agent left behind", () => {
+    const worktreeDir = freshWorktree("trailer-dirty");
+    commitFile(worktreeDir, "a.txt", "Phoebe: first");
+    writeFileSync(join(worktreeDir, "a.txt"), "modified\n");
+    writeFileSync(join(worktreeDir, "untracked.txt"), "loose\n");
+
+    const outcome = appendTrailerToCommits(
+      { worktreeDir, baseRef: "origin/main", trailer: TRAILER },
+      localGit,
+    );
+
+    expect(outcome).toBe("rewritten");
+    expect(git(worktreeDir, "log", "-1", "--format=%B").trim()).toBe(`Phoebe: first\n\n${TRAILER}`);
+    expect(git(worktreeDir, "status", "--porcelain")).toContain(" M a.txt");
+    expect(git(worktreeDir, "status", "--porcelain")).toContain("?? untracked.txt");
+    removeWorktree(repoDir, worktreeDir, localGit);
+  });
+
+  test("returns 'nothing' when there are no commits since base", () => {
+    const worktreeDir = freshWorktree("trailer-empty");
+    expect(
+      appendTrailerToCommits({ worktreeDir, baseRef: "origin/main", trailer: TRAILER }, localGit),
+    ).toBe("nothing");
+    removeWorktree(repoDir, worktreeDir, localGit);
+  });
+
+  test("leaves history untouched when the range contains a merge commit", () => {
+    const worktreeDir = freshWorktree("trailer-merge");
+    commitFile(worktreeDir, "a.txt", "Phoebe: mainline");
+    git(worktreeDir, "checkout", "-b", "side", "origin/main");
+    commitFile(worktreeDir, "b.txt", "Phoebe: side");
+    git(worktreeDir, "checkout", "agent/trailer-merge");
+    git(worktreeDir, "merge", "--no-ff", "-m", "Phoebe: merge side", "side");
+    const headBefore = git(worktreeDir, "rev-parse", "HEAD");
+
+    const outcome = appendTrailerToCommits(
+      { worktreeDir, baseRef: "origin/main", trailer: TRAILER },
+      localGit,
+    );
+
+    expect(outcome).toBe("skipped-merges");
+    expect(git(worktreeDir, "rev-parse", "HEAD")).toBe(headBefore);
+    removeWorktree(repoDir, worktreeDir, localGit);
+    git(repoDir, "branch", "-D", "side");
+  });
+
+  test("restores the original history when the rewrite fails midway", () => {
+    const worktreeDir = freshWorktree("trailer-abort");
+    commitFile(worktreeDir, "a.txt", "Phoebe: first");
+    const headBefore = git(worktreeDir, "rev-parse", "HEAD");
+    const failingRebase: GitRunner = (args, opts) => {
+      if (args[0] === "rebase" && args.includes("--exec")) {
+        // Simulate the exec step dying: start the real rebase with a failing
+        // command so git leaves the worktree mid-rebase, then surface the throw.
+        return localGit(
+          ["rebase", "--exec", "false", ...args.slice(args.indexOf("--exec") + 2)],
+          opts,
+        );
+      }
+      return localGit(args, opts);
+    };
+
+    const outcome = appendTrailerToCommits(
+      { worktreeDir, baseRef: "origin/main", trailer: TRAILER },
+      failingRebase,
+    );
+
+    expect(outcome).toBe("failed");
+    expect(git(worktreeDir, "rev-parse", "HEAD")).toBe(headBefore);
+    expect(
+      existsSync(join(git(worktreeDir, "rev-parse", "--git-dir").trim(), "rebase-merge")),
+    ).toBe(false);
+    removeWorktree(repoDir, worktreeDir, localGit);
   });
 });

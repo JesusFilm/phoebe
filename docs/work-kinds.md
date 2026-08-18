@@ -75,7 +75,10 @@ issue number).
 2. Run `installCommand`, then the agent with the `issue` prompt
    (`{{ISSUE_NUMBER}}` supplied).
 3. Count commits since the base. If zero, no PR is created.
-4. Push. If no open PR exists for the branch, open one titled
+4. With `creditIssueAuthor` (default on), stamp those commits with a
+   `Co-authored-by:` trailer for the issue's author — see
+   [`configuration.md`](configuration.md#issue-author-credit).
+5. Push. If no open PR exists for the branch, open one titled
    `Phoebe: <issue title> (#<n>)` with body `Closes #<n>` (plus the stacked
    banner when applicable); otherwise post a follow-up note.
 

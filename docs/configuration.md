@@ -107,6 +107,19 @@ inside a worktree (`checkCommand`/`testCommand` are required, above).
 | `blockedByPattern`      | `` String.raw`Blocked by\s+#(\d+)` `` | JS-compatible regex matching a blocker reference in issue body text. **Capture group 1 must yield the blocker issue number** (validated at load; `parseBlockedBy` reads `match[1]`). Compiled with `gi`. |
 | `reviewsSuccessHeading` | `"## Review feedback addressed"`      | Markdown heading the reviews agent includes in its summary comment. The engine detects the summary by substring match, so it must be unique. Prompt arg `{{REVIEWS_SUCCESS_HEADING}}`.                   |
 
+## Issue-author credit
+
+| Field               | Default | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `creditIssueAuthor` | `true`  | On the issue-to-PR path (`issues` and `research` units) the engine appends `Co-authored-by: <login> <id>+<login>@users.noreply.github.com` — the issue author — to every commit it pushes for that unit, so the human who filed the ticket gets contribution-graph credit for the work it produced. Bots and deleted accounts are never credited; the janitor kinds (`conflicts` / `checks` / `reviews`) never add one. Set `false` on a repo where a reporter's name on agent-written code would read as misattribution. |
+
+The credit is best-effort and applied by the engine after the agent runs, before
+the push (`git rebase --exec 'git commit --amend --trailer …'` over the unit's
+own commits — trees and authorship untouched, hooks skipped). If the author
+lookup fails, the range holds a merge commit, or the rewrite fails, the commits
+are pushed exactly as the agent made them and the log says why. Because it does
+not go through the prompt, operator prompt overrides need no change.
+
 ## Work order
 
 | Field       | Default                                                    | Meaning                                                                                                                                                                                                  |

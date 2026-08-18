@@ -144,3 +144,66 @@ export function pushBranch(
 ): void {
   git(["push", "origin", branch], { cwd: worktreeDir, stdio: "inherit" });
 }
+
+export type TrailerRewriteOutcome = "rewritten" | "nothing" | "skipped-merges" | "failed";
+
+/** Single-quote `value` for POSIX `sh` — the only shell `git rebase --exec` runs through. */
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+/**
+ * Append `trailer` to the message of every commit in `baseRef..HEAD` (#198).
+ * The commits are the current unit's own unpushed work — `runOneIssue` resets
+ * the branch to base before the agent runs — so rewriting them is safe. Trees,
+ * authorship, and order are preserved; only messages change.
+ *
+ * Runs `git rebase --exec 'git commit --amend --trailer …'` over the range with
+ * `--autostash` (the agent may leave uncommitted files) and `--no-verify` on
+ * both the rebase and the amend (repo hooks already ran on the original
+ * commit). `trailer.ifexists=addIfDifferent` keeps a trailer the agent already
+ * wrote from being duplicated.
+ *
+ * Never throws: credit is best-effort. A range holding a merge commit is left
+ * alone (a rebase would flatten it) and reported as `skipped-merges`; a rebase
+ * that fails midway is aborted so HEAD is exactly what the agent left, and
+ * reported as `failed`.
+ */
+export function appendTrailerToCommits(
+  opts: { worktreeDir: string; baseRef: string; trailer: string },
+  git: GitRunner = defaultGit,
+): TrailerRewriteOutcome {
+  const { worktreeDir, baseRef, trailer } = opts;
+  const range = `${baseRef}..HEAD`;
+  if (commitCount(worktreeDir, range, git) === 0) return "nothing";
+  const merges = Number(
+    git(["rev-list", "--count", "--merges", range], { cwd: worktreeDir }).trim(),
+  );
+  if (merges > 0) return "skipped-merges";
+
+  const amend = [
+    "git",
+    "-c",
+    "trailer.ifexists=addIfDifferent",
+    "commit",
+    "--amend",
+    "--no-edit",
+    "--no-verify",
+    "--trailer",
+    shellQuote(trailer),
+  ].join(" ");
+  try {
+    git(["rebase", "--no-verify", "--autostash", "--exec", amend, baseRef], {
+      cwd: worktreeDir,
+      stdio: "pipe",
+    });
+    return "rewritten";
+  } catch {
+    try {
+      git(["rebase", "--abort"], { cwd: worktreeDir, stdio: "ignore" });
+    } catch {
+      // Nothing to abort — the rebase never started.
+    }
+    return "failed";
+  }
+}

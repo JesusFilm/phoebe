@@ -152,6 +152,16 @@ export type PhoebeConfig = {
    */
   maxUnitTimeouts: number;
   /**
+   * Credit the issue author on issue-derived work (#198): when true, every
+   * commit Phoebe pushes for an `issues` / `research` unit carries a
+   * `Co-authored-by: <login> <id>+<login>@users.noreply.github.com` trailer
+   * naming the human who filed the ticket, so the work their issue produced
+   * lands on their contribution graph. Bots are never credited. Turn it off on
+   * a repo where a drive-by reporter's name on agent-written code would read
+   * as misattribution rather than credit. Default true.
+   */
+  creditIssueAuthor: boolean;
+  /**
    * Per-tenant filesystem layout. Not user-supplied: derived from `repoSlug`
    * and the deployment data base by `resolveConfig` (see src/paths.ts, #58/#62).
    */
@@ -220,6 +230,8 @@ export type PhoebeUserConfig = {
   runTimeoutMs?: number;
   /** Consecutive timeouts before a unit is quarantined (#75); default 3. */
   maxUnitTimeouts?: number;
+  /** Co-author trailer for the issue author on issue-derived commits (#198); default true. */
+  creditIssueAuthor?: boolean;
 };
 
 /**
@@ -266,6 +278,9 @@ export const CONFIG_DEFAULTS = {
   runTimeoutMs: 2_700_000,
   // Matches the house number for consecutive-failures-before-escalation (#75).
   maxUnitTimeouts: 3,
+  // Applying `readyLabel` is a maintainer's deliberate act, so on by default:
+  // the credit follows work a maintainer already chose to run (#198).
+  creditIssueAuthor: true,
 } as const;
 
 const REQUIRED_USER_FIELDS = [
@@ -408,6 +423,7 @@ export function resolveConfig(
     providerEnv: { ...CONFIG_DEFAULTS.providerEnv, ...user.providerEnv },
     runTimeoutMs: user.runTimeoutMs ?? CONFIG_DEFAULTS.runTimeoutMs,
     maxUnitTimeouts: user.maxUnitTimeouts ?? CONFIG_DEFAULTS.maxUnitTimeouts,
+    creditIssueAuthor: user.creditIssueAuthor ?? CONFIG_DEFAULTS.creditIssueAuthor,
     paths: derivePaths(user.repoSlug, opts.dataBase),
   };
 }
