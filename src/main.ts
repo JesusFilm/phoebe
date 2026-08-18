@@ -182,6 +182,11 @@ const SHELL_COMMAND_TIMEOUT_MS = 600_000;
 const MERGEABLE_RETRY_MS = 5_000;
 const MERGEABLE_RETRY_COUNT = 3;
 
+type CycleCache = {
+  openPrs: OpenPhoebePr[] | null;
+  mergeInfo: Map<PrNumber, PrMergeInfo>;
+};
+
 const PR_BASE = config.defaultBranch;
 const defaultBranchRef = asBranchRef(config.defaultBranch);
 
@@ -619,6 +624,13 @@ function listOpenPhoebePrs(): OpenPhoebePr[] {
     }));
 }
 
+function getOpenPrsCached(cache: CycleCache): OpenPhoebePr[] {
+  if (cache.openPrs === null) {
+    cache.openPrs = listOpenPhoebePrs();
+  }
+  return cache.openPrs;
+}
+
 type PrMergeInfo = {
   number: PrNumber;
   headRefName: BranchRef;
@@ -648,6 +660,19 @@ function viewPrMergeInfo(prNumber: PrNumber): PrMergeInfo {
     mergeable: raw.mergeable,
     mergeStateStatus: raw.mergeStateStatus,
   };
+}
+
+async function getMergeInfoCached(prNumber: PrNumber, cache: CycleCache): Promise<PrMergeInfo> {
+  const hit = cache.mergeInfo.get(prNumber);
+  if (hit !== undefined) return hit;
+  let info = viewPrMergeInfo(prNumber);
+  for (let attempt = 1; attempt < MERGEABLE_RETRY_COUNT; attempt++) {
+    if (info.mergeable !== "UNKNOWN") break;
+    await sleep(MERGEABLE_RETRY_MS);
+    info = viewPrMergeInfo(prNumber);
+  }
+  cache.mergeInfo.set(prNumber, info);
+  return info;
 }
 
 /** All comment bodies on a PR, oldest first — the raw input to every watermark parse. */
@@ -1368,7 +1393,7 @@ type RunContext = {
 
 type WorkKind = {
   name: WorkKindName;
-  fetch: () => Promise<WorkKindFetch>;
+  fetch: (cache: CycleCache) => Promise<WorkKindFetch>;
   runUnit: (unit: WorkUnit["unit"], context: RunContext) => Promise<void>;
 };
 
@@ -1397,34 +1422,27 @@ type WorkKindFetch =
       blockerStates: Map<number, BlockerPrState>;
     };
 
-async function conflictingPrCandidate(pr: OpenPhoebePr): Promise<ConflictingPrCandidate | null> {
-  for (let attempt = 0; attempt < MERGEABLE_RETRY_COUNT; attempt++) {
-    const info = viewPrMergeInfo(pr.number);
-    if (isPrMergeConflicting(info.mergeable, info.mergeStateStatus)) {
-      const issueNumber = parseIssueNumberFromBranch(info.headRefName);
-      return {
-        prNumber: info.number,
-        headRefName: info.headRefName,
-        headSha: info.headRefOid,
-        ...(issueNumber !== null ? { issueNumber } : {}),
-      };
-    }
-    if (info.mergeable !== "UNKNOWN") {
-      return null;
-    }
-    if (attempt < MERGEABLE_RETRY_COUNT - 1) {
-      await sleep(MERGEABLE_RETRY_MS);
-    }
-  }
-  return null;
+async function conflictingPrCandidate(
+  pr: OpenPhoebePr,
+  cache: CycleCache,
+): Promise<ConflictingPrCandidate | null> {
+  const info = await getMergeInfoCached(pr.number, cache);
+  if (!isPrMergeConflicting(info.mergeable, info.mergeStateStatus)) return null;
+  const issueNumber = parseIssueNumberFromBranch(info.headRefName);
+  return {
+    prNumber: info.number,
+    headRefName: info.headRefName,
+    headSha: info.headRefOid,
+    ...(issueNumber !== null ? { issueNumber } : {}),
+  };
 }
 
-async function fetchConflictingPrs(): Promise<ConflictingPrCandidate[]> {
-  const openPrs = listOpenPhoebePrs();
+async function fetchConflictingPrs(cache: CycleCache): Promise<ConflictingPrCandidate[]> {
+  const openPrs = getOpenPrsCached(cache);
   const conflicting: ConflictingPrCandidate[] = [];
   for (const pr of openPrs) {
     try {
-      const candidate = await conflictingPrCandidate(pr);
+      const candidate = await conflictingPrCandidate(pr, cache);
       if (candidate) {
         conflicting.push(candidate);
       }
@@ -1454,12 +1472,13 @@ function listCommitCheckItems(headSha: Sha): StatusCheckItem[] {
   );
 }
 
-async function failingChecksCandidate(pr: OpenPhoebePr): Promise<ChecksCandidate | null> {
+async function failingChecksCandidate(
+  pr: OpenPhoebePr,
+  cache: CycleCache,
+): Promise<ChecksCandidate | null> {
+  const info = await getMergeInfoCached(pr.number, cache);
+  if (isPrMergeConflicting(info.mergeable, info.mergeStateStatus)) return null;
   for (let attempt = 0; attempt < MERGEABLE_RETRY_COUNT; attempt++) {
-    const info = viewPrMergeInfo(pr.number);
-    if (isPrMergeConflicting(info.mergeable, info.mergeStateStatus)) {
-      return null;
-    }
     const checkItems = listCommitCheckItems(info.headRefOid);
     const rollup = statusCheckRollupState(checkItems);
     if (rollup === "FAILURE") {
@@ -1474,9 +1493,7 @@ async function failingChecksCandidate(pr: OpenPhoebePr): Promise<ChecksCandidate
         ...(issueNumber !== null ? { issueNumber } : {}),
       };
     }
-    if (rollup !== "PENDING" && info.mergeable !== "UNKNOWN") {
-      return null;
-    }
+    if (rollup !== "PENDING") return null;
     if (attempt < MERGEABLE_RETRY_COUNT - 1) {
       await sleep(MERGEABLE_RETRY_MS);
     }
@@ -1484,12 +1501,12 @@ async function failingChecksCandidate(pr: OpenPhoebePr): Promise<ChecksCandidate
   return null;
 }
 
-async function fetchFailingCheckPrs(): Promise<ChecksCandidate[]> {
-  const openPrs = listOpenPhoebePrs();
+async function fetchFailingCheckPrs(cache: CycleCache): Promise<ChecksCandidate[]> {
+  const openPrs = getOpenPrsCached(cache);
   const failing: ChecksCandidate[] = [];
   for (const pr of openPrs) {
     try {
-      const candidate = await failingChecksCandidate(pr);
+      const candidate = await failingChecksCandidate(pr, cache);
       if (candidate) {
         failing.push(candidate);
       }
@@ -1520,18 +1537,18 @@ function harvestIssueBodies(
   return new Map(issueNumbers.map((number) => [number, issueBody(number)] as const));
 }
 
-async function fetchReviewsWorkData(): Promise<{
+async function fetchReviewsWorkData(cache: CycleCache): Promise<{
   reviewActivityPrs: ReviewsCandidate[];
   issueBodies: Map<number, string>;
   phoebeLogin: string;
 }> {
   const phoebeLogin = phoebeGhLogin();
-  const openPrs = listOpenPhoebePrs();
+  const openPrs = getOpenPrsCached(cache);
   const reviewActivityPrs: ReviewsCandidate[] = [];
 
   for (const pr of openPrs) {
     try {
-      const info = viewPrMergeInfo(pr.number);
+      const info = await getMergeInfoCached(pr.number, cache);
       if (isPrMergeConflicting(info.mergeable, info.mergeStateStatus)) {
         continue;
       }
@@ -1561,12 +1578,12 @@ async function fetchReviewsWorkData(): Promise<{
   return { reviewActivityPrs, issueBodies, phoebeLogin };
 }
 
-async function fetchConflictWorkData(): Promise<{
+async function fetchConflictWorkData(cache: CycleCache): Promise<{
   conflictingPrs: ConflictingPrCandidate[];
   issueBodies: Map<number, string>;
   currentMainHead: Sha;
 }> {
-  const rawConflictingPrs = await fetchConflictingPrs();
+  const rawConflictingPrs = await fetchConflictingPrs(cache);
   fetchOrigin();
   const currentMainHead = originBranchSha(defaultBranchRef);
   const conflictingPrs = rawConflictingPrs.map((pr) => ({
@@ -1580,11 +1597,11 @@ async function fetchConflictWorkData(): Promise<{
   return { conflictingPrs, issueBodies, currentMainHead };
 }
 
-async function fetchChecksWorkData(): Promise<{
+async function fetchChecksWorkData(cache: CycleCache): Promise<{
   failingCheckPrs: ChecksCandidate[];
   issueBodies: Map<number, string>;
 }> {
-  const rawFailingPrs = await fetchFailingCheckPrs();
+  const rawFailingPrs = await fetchFailingCheckPrs(cache);
   const failingCheckPrs = rawFailingPrs.map((pr) => ({
     ...pr,
     failureWatermark: parseLatestMarker(
@@ -1648,8 +1665,8 @@ async function runResearchUnit(unit: IssueWorkUnit): Promise<void> {
 const KINDS: Record<WorkKindName, WorkKind> = {
   conflicts: {
     name: "conflicts",
-    fetch: async () => {
-      const { conflictingPrs, issueBodies, currentMainHead } = await fetchConflictWorkData();
+    fetch: async (cache) => {
+      const { conflictingPrs, issueBodies, currentMainHead } = await fetchConflictWorkData(cache);
       return { kind: "conflicts", conflictingPrs, issueBodies, currentMainHead };
     },
     runUnit: async (unit, context) => {
@@ -1658,8 +1675,8 @@ const KINDS: Record<WorkKindName, WorkKind> = {
   },
   checks: {
     name: "checks",
-    fetch: async () => {
-      const { failingCheckPrs, issueBodies } = await fetchChecksWorkData();
+    fetch: async (cache) => {
+      const { failingCheckPrs, issueBodies } = await fetchChecksWorkData(cache);
       return { kind: "checks", failingCheckPrs, issueBodies };
     },
     runUnit: async (unit, context) => {
@@ -1668,8 +1685,8 @@ const KINDS: Record<WorkKindName, WorkKind> = {
   },
   reviews: {
     name: "reviews",
-    fetch: async () => {
-      const { reviewActivityPrs, issueBodies, phoebeLogin } = await fetchReviewsWorkData();
+    fetch: async (cache) => {
+      const { reviewActivityPrs, issueBodies, phoebeLogin } = await fetchReviewsWorkData(cache);
       return { kind: "reviews", reviewActivityPrs, issueBodies, phoebeLogin };
     },
     runUnit: async (unit, context) => {
@@ -1721,8 +1738,9 @@ async function fetchCycleWorkData(kinds: readonly WorkKindName[]): Promise<Cycle
   let phoebeLogin: string | undefined;
   let currentMainHead: Sha | undefined;
 
+  const cache: CycleCache = { openPrs: null, mergeInfo: new Map() };
   for (const kind of kinds) {
-    const fetched = await KINDS[kind].fetch();
+    const fetched = await KINDS[kind].fetch(cache);
     if (fetched.kind === "issues") {
       issues = fetched.issues;
       for (const [number, state] of fetched.blockerStates) {
