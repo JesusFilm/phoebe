@@ -2,6 +2,7 @@
 // an injected command runner — no Docker in the test loop.
 
 import { describe, expect, test } from "vite-plus/test";
+import { LIFECYCLE_SHELL } from "./deployment-command.ts";
 import {
   COMPOSE_REL_PATH,
   DRAIN_TIMEOUT_SEC,
@@ -313,5 +314,144 @@ describe("runStop", () => {
     expect(outcome).toEqual({ kind: "stopped-now" });
     expect(log.out.join("\n")).toMatch(/Stopped \(--now\)/);
     expect(log.err).toEqual([]);
+  });
+});
+
+// The literal-command path (#189/#261): a `deployment` block replaces the
+// compose driver entirely. `exists` and `dockerAvailable` are deliberately set
+// to the failing values in these tests — reaching them at all is the bug.
+describe("runStop with a deployment block", () => {
+  const lines = () => {
+    const out: string[] = [];
+    const err: string[] = [];
+    return {
+      out,
+      err,
+      io: {
+        stdout: (line: string) => out.push(line),
+        stderr: (line: string) => err.push(line),
+      },
+    };
+  };
+
+  const literalDeps = (
+    result: CommandResult,
+  ): {
+    runner: CommandRunner;
+    calls: Array<{ file: string; args: readonly string[]; cwd?: string; inheritStdio?: boolean }>;
+  } => {
+    const calls: Array<{
+      file: string;
+      args: readonly string[];
+      cwd?: string;
+      inheritStdio?: boolean;
+    }> = [];
+    return {
+      calls,
+      runner: async (spec) => {
+        calls.push({
+          file: spec.file,
+          args: spec.args,
+          ...(spec.cwd !== undefined ? { cwd: spec.cwd } : {}),
+          ...(spec.inheritStdio !== undefined ? { inheritStdio: spec.inheritStdio } : {}),
+        });
+        return result;
+      },
+    };
+  };
+
+  const commands = {
+    startCommand: "systemctl start phoebe",
+    stopCommand: "systemctl stop phoebe",
+  };
+
+  test("runs stopCommand via /bin/sh -c and skips every compose step", async () => {
+    const { runner, calls } = literalDeps({ code: 0, stdout: "", stderr: "" });
+    const log = lines();
+    const outcome = await runStop({
+      now: false,
+      deps: {
+        cwd: "/deploy",
+        inContainer: false,
+        dockerAvailable: false,
+        exists: () => false,
+        deployment: commands,
+        runner,
+        io: log.io,
+      },
+    });
+    expect(outcome).toEqual({ kind: "stopped" });
+    expect(calls).toEqual([
+      {
+        file: LIFECYCLE_SHELL,
+        args: ["-c", "systemctl stop phoebe"],
+        cwd: "/deploy",
+        inheritStdio: true,
+      },
+    ]);
+    expect(log.out.join("\n")).toMatch(/systemctl stop phoebe/);
+  });
+
+  test("--now uses stopNowCommand when present", async () => {
+    const { runner, calls } = literalDeps({ code: 0, stdout: "", stderr: "" });
+    const outcome = await runStop({
+      now: true,
+      deps: {
+        cwd: "/deploy",
+        inContainer: false,
+        deployment: { ...commands, stopNowCommand: "systemctl kill phoebe" },
+        runner,
+        io: lines().io,
+      },
+    });
+    expect(outcome).toEqual({ kind: "stopped-now" });
+    expect(calls[0]?.args).toEqual(["-c", "systemctl kill phoebe"]);
+  });
+
+  test("--now falls back to stopCommand when stopNowCommand is absent", async () => {
+    const { runner, calls } = literalDeps({ code: 0, stdout: "", stderr: "" });
+    const outcome = await runStop({
+      now: true,
+      deps: {
+        cwd: "/deploy",
+        inContainer: false,
+        deployment: commands,
+        runner,
+        io: lines().io,
+      },
+    });
+    expect(outcome).toEqual({ kind: "stopped-now" });
+    expect(calls[0]?.args).toEqual(["-c", "systemctl stop phoebe"]);
+  });
+
+  test("a non-zero exit is a failure", async () => {
+    const { runner } = literalDeps({ code: 2, stdout: "", stderr: "" });
+    await expect(
+      runStop({
+        now: false,
+        deps: {
+          cwd: "/deploy",
+          inContainer: false,
+          deployment: commands,
+          runner,
+          io: lines().io,
+        },
+      }),
+    ).rejects.toThrow(/exited 2/);
+  });
+
+  test("the in-container refusal still fires", async () => {
+    await expect(
+      runStop({
+        now: false,
+        deps: {
+          inContainer: true,
+          deployment: commands,
+          runner: async () => {
+            throw new Error("must not run");
+          },
+        },
+      }),
+    ).rejects.toThrow(/host/);
   });
 });

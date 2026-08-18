@@ -2,6 +2,7 @@
 // an injected command runner — no Docker in the test loop.
 
 import { describe, expect, test } from "vite-plus/test";
+import { LIFECYCLE_SHELL } from "./deployment-command.ts";
 import {
   COMPOSE_REL_PATH,
   MISSING_ENV_MESSAGE,
@@ -308,5 +309,133 @@ describe("runStart", () => {
     });
     expect(outcome.kind).toBe("exited-immediately");
     expect(log.err.join("\n")).toMatch(/exited immediately/);
+  });
+});
+
+// The literal-command path (#189/#261): a `deployment` block replaces the
+// compose driver entirely. `exists` and `dockerAvailable` are deliberately set
+// to the failing values in these tests — reaching them at all is the bug.
+describe("runStart with a deployment block", () => {
+  const lines = () => {
+    const out: string[] = [];
+    const err: string[] = [];
+    return {
+      out,
+      err,
+      io: {
+        stdout: (line: string) => out.push(line),
+        stderr: (line: string) => err.push(line),
+      },
+    };
+  };
+
+  const literalDeps = (
+    result: CommandResult,
+  ): { runner: CommandRunner; calls: Array<{ file: string; args: readonly string[] }> } => {
+    const calls: Array<{ file: string; args: readonly string[] }> = [];
+    return {
+      calls,
+      runner: async (spec) => {
+        calls.push({ file: spec.file, args: spec.args });
+        return result;
+      },
+    };
+  };
+
+  test("runs startCommand via /bin/sh -c and skips every compose step", async () => {
+    const { runner, calls } = literalDeps({ code: 0, stdout: "", stderr: "" });
+    const log = lines();
+    const waits: number[] = [];
+    const outcome = await runStart({
+      build: false,
+      deps: {
+        cwd: "/deploy",
+        inContainer: false,
+        dockerAvailable: false,
+        exists: () => false,
+        deployment: {
+          startCommand: "systemctl start phoebe",
+          stopCommand: "systemctl stop phoebe",
+        },
+        runner,
+        io: log.io,
+        waitMs: async (ms) => {
+          waits.push(ms);
+        },
+      },
+    });
+    expect(outcome).toEqual({ kind: "started" });
+    expect(calls).toEqual([{ file: LIFECYCLE_SHELL, args: ["-c", "systemctl start phoebe"] }]);
+    expect(waits).toEqual([]);
+    expect(log.out.join("\n")).toMatch(/systemctl start phoebe/);
+  });
+
+  test("inherits stdio and runs in the deployment directory", async () => {
+    const specs: Array<{ cwd?: string; inheritStdio?: boolean }> = [];
+    const outcome = await runStart({
+      build: false,
+      deps: {
+        cwd: "/deploy",
+        inContainer: false,
+        deployment: { startCommand: "up.sh", stopCommand: "down.sh" },
+        runner: async (spec) => {
+          specs.push({ cwd: spec.cwd, inheritStdio: spec.inheritStdio });
+          return { code: 0, stdout: "", stderr: "" };
+        },
+        io: lines().io,
+      },
+    });
+    expect(outcome).toEqual({ kind: "started" });
+    expect(specs).toEqual([{ cwd: "/deploy", inheritStdio: true }]);
+  });
+
+  test("a non-zero exit is a failure", async () => {
+    const { runner } = literalDeps({ code: 3, stdout: "", stderr: "" });
+    await expect(
+      runStart({
+        build: false,
+        deps: {
+          cwd: "/deploy",
+          inContainer: false,
+          deployment: { startCommand: "up.sh", stopCommand: "down.sh" },
+          runner,
+          io: lines().io,
+        },
+      }),
+    ).rejects.toThrow(/exited 3.*up\.sh|up\.sh.*exited 3/s);
+  });
+
+  test("--build warns and is otherwise a no-op", async () => {
+    const { runner, calls } = literalDeps({ code: 0, stdout: "", stderr: "" });
+    const log = lines();
+    const outcome = await runStart({
+      build: true,
+      deps: {
+        cwd: "/deploy",
+        inContainer: false,
+        deployment: { startCommand: "up.sh", stopCommand: "down.sh" },
+        runner,
+        io: log.io,
+      },
+    });
+    expect(outcome).toEqual({ kind: "started" });
+    expect(calls).toEqual([{ file: LIFECYCLE_SHELL, args: ["-c", "up.sh"] }]);
+    expect(log.err.join("\n")).toMatch(/--build/);
+    expect(log.err.join("\n")).toMatch(/deployment/i);
+  });
+
+  test("the in-container refusal still fires", async () => {
+    await expect(
+      runStart({
+        build: false,
+        deps: {
+          inContainer: true,
+          deployment: { startCommand: "up.sh", stopCommand: "down.sh" },
+          runner: async () => {
+            throw new Error("must not run");
+          },
+        },
+      }),
+    ).rejects.toThrow(/host/);
   });
 });
