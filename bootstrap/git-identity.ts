@@ -35,19 +35,6 @@
 /** A repo's declared commit attribution. Both halves, always. */
 export type GitIdentity = { name: string; email: string };
 
-/**
- * The four git identity vars a declared identity sets. Author and committer are
- * deliberately not separable: "how are this repo's commits attributed" is one
- * question, and the author/committer split is git plumbing with no repo-scoped
- * meaning.
- */
-export const GIT_IDENTITY_ENV_KEYS = [
-  "GIT_AUTHOR_NAME",
-  "GIT_AUTHOR_EMAIL",
-  "GIT_COMMITTER_NAME",
-  "GIT_COMMITTER_EMAIL",
-] as const;
-
 function fail(detail: string, got: unknown): never {
   throw new Error(
     `phoebe.config.ts \`gitIdentity\` ${detail} (got ${JSON.stringify(got)}). ` +
@@ -96,7 +83,12 @@ export function readGitIdentity(config: Record<string, unknown>): GitIdentity | 
   return validateGitIdentityField(field);
 }
 
-/** The declared identity as its four env vars, or `{}` when nothing is declared. */
+/**
+ * The declared identity as its four env vars, or `{}` when nothing is declared.
+ * Author and committer are deliberately not separable: "how are this repo's
+ * commits attributed" is one question, and the author/committer split is git
+ * plumbing with no repo-scoped meaning.
+ */
 export function gitIdentityEnv(identity: GitIdentity | null | undefined): Record<string, string> {
   if (!identity) return {};
   return {
@@ -107,21 +99,44 @@ export function gitIdentityEnv(identity: GitIdentity | null | undefined): Record
   };
 }
 
+/** What solo should spawn its engine child with, and what the env overrode. */
+export type SoloIdentityEnv = {
+  /**
+   * The child's env — `base` with the identity vars it left unset filled from
+   * the declaration — or null when nothing is declared, meaning the child
+   * inherits the supervisor's env exactly as it always has.
+   */
+  env: Record<string, string | undefined> | null;
+  /**
+   * Identity vars the ambient env already set, so the declaration did not reach
+   * the child. Boot logs these: a solo deployment that carries a leftover
+   * `GIT_AUTHOR_NAME` would otherwise make a repo's declaration inert with
+   * nothing said about it.
+   */
+  overridden: readonly string[];
+};
+
 /**
- * Solo's arm of the ladder: return a copy of `base` with the identity vars it
- * leaves unset filled from the declared identity. The container's env is the
- * single tenant's own env-file, so it wins every var it names — per var, exactly
- * as a fleet tenant's `.env` overrides only the keys it declares.
+ * Solo's arm of the ladder. There is no deployment-global rung here: solo has
+ * exactly one env-file, and it is *the tenant's* — the same `.env` a fleet
+ * tenant carries co-located, which wins rung 4 there too. So it wins every
+ * identity var it sets, per var (as a fleet tenant's `.env` overrides only the
+ * keys it declares), and the declaration fills the rest.
  */
-export function fillGitIdentityGaps(
+export function soloIdentityEnv(
   base: Record<string, string | undefined>,
   identity: GitIdentity | null | undefined,
-): Record<string, string | undefined> {
+): SoloIdentityEnv {
+  if (!identity) return { env: null, overridden: [] };
   const env = { ...base };
-  if (!identity) return env;
+  const overridden: string[] = [];
   for (const [key, value] of Object.entries(gitIdentityEnv(identity))) {
     const current = env[key];
-    if (current === undefined || current === "") env[key] = value;
+    if (current === undefined || current === "") {
+      env[key] = value;
+    } else if (current !== value) {
+      overridden.push(key);
+    }
   }
-  return env;
+  return { env, overridden };
 }

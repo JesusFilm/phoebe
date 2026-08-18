@@ -313,10 +313,23 @@ attributed exactly as it was before the field existed.
 Collisions are resolved **per variable**, not per identity: a tenant `.env` that
 sets only `GIT_AUTHOR_NAME` takes the other three from `gitIdentity`.
 
-**In solo** there is one tenant and one env-file, so rungs 1 and 4 are the same
-channel: the container's env is the tenant's own statement, wins every variable
-it sets, and `gitIdentity` fills the rest. That is the same rule read from the
-other end.
+**In solo there is no rung 1.** A solo deployment has exactly one env-file, and
+it is _the tenant's_ — the same co-located `.env` a fleet tenant carries, which
+wins rung 4 there too. So it wins every variable it sets and `gitIdentity` fills
+the rest; the same rule, read from the other end. (Rung 2 sits below it there as
+well: the App arm's bot identity is applied as a fallback for vars still unset
+by the time the engine runs.)
+
+The consequence is worth stating plainly: on a solo deployment that already sets
+`GIT_AUTHOR_*` in its `.env`, adding `gitIdentity` changes nothing until those
+vars are removed. Boot says so at every launch rather than leaving the
+declaration quietly inert:
+
+```text
+[phoebe] boot: gitIdentity declares Phoebe <12345+phoebe@users.noreply.github.com>,
+  but this deployment's env already sets GIT_AUTHOR_NAME — the env wins (in solo
+  it is this tenant's own env-file). Unset those vars to use the declaration.
+```
 
 **Editing it takes effect on the relaunch it already causes** — the config is
 part of each tenant's reconcile fingerprint, so the child restarts with the new

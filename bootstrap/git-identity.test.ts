@@ -5,9 +5,9 @@
 
 import { describe, expect, test } from "vite-plus/test";
 import {
-  fillGitIdentityGaps,
   gitIdentityEnv,
   readGitIdentity,
+  soloIdentityEnv,
   validateGitIdentityField,
 } from "./git-identity.ts";
 
@@ -86,35 +86,52 @@ describe("gitIdentityEnv", () => {
   });
 });
 
-describe("fillGitIdentityGaps", () => {
+describe("soloIdentityEnv", () => {
   const identity = { name: "Phoebe", email: "phoebe@acme.dev" };
 
   test("fills only the vars the ambient env leaves unset", () => {
-    const filled = fillGitIdentityGaps(
+    const { env } = soloIdentityEnv(
       { PATH: "/usr/bin", GIT_AUTHOR_NAME: "Operator", GIT_COMMITTER_NAME: "Operator" },
       identity,
     );
     // The env said who; it wins. It said nothing about the address; config fills it.
-    expect(filled.GIT_AUTHOR_NAME).toBe("Operator");
-    expect(filled.GIT_COMMITTER_NAME).toBe("Operator");
-    expect(filled.GIT_AUTHOR_EMAIL).toBe("phoebe@acme.dev");
-    expect(filled.GIT_COMMITTER_EMAIL).toBe("phoebe@acme.dev");
-    expect(filled.PATH).toBe("/usr/bin");
+    expect(env?.GIT_AUTHOR_NAME).toBe("Operator");
+    expect(env?.GIT_COMMITTER_NAME).toBe("Operator");
+    expect(env?.GIT_AUTHOR_EMAIL).toBe("phoebe@acme.dev");
+    expect(env?.GIT_COMMITTER_EMAIL).toBe("phoebe@acme.dev");
+    expect(env?.PATH).toBe("/usr/bin");
+  });
+
+  test("reports the vars the env overrode, so boot can say so", () => {
+    const { overridden } = soloIdentityEnv(
+      { GIT_AUTHOR_NAME: "Operator", GIT_COMMITTER_NAME: "Operator" },
+      identity,
+    );
+    expect(overridden).toEqual(["GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"]);
+  });
+
+  test("an env that agrees with the declaration is not an override", () => {
+    const { overridden } = soloIdentityEnv(
+      { GIT_AUTHOR_NAME: "Phoebe", GIT_AUTHOR_EMAIL: "phoebe@acme.dev" },
+      identity,
+    );
+    expect(overridden).toEqual([]);
   });
 
   test("an empty-string var counts as unset", () => {
-    const filled = fillGitIdentityGaps({ GIT_AUTHOR_NAME: "" }, identity);
-    expect(filled.GIT_AUTHOR_NAME).toBe("Phoebe");
+    const { env, overridden } = soloIdentityEnv({ GIT_AUTHOR_NAME: "" }, identity);
+    expect(env?.GIT_AUTHOR_NAME).toBe("Phoebe");
+    expect(overridden).toEqual([]);
   });
 
-  test("no identity ⇒ the env is passed through untouched", () => {
-    const base = { PATH: "/usr/bin", GIT_AUTHOR_NAME: "Operator" };
-    expect(fillGitIdentityGaps(base, null)).toEqual(base);
+  test("no identity ⇒ no env at all — the child inherits, as it always has", () => {
+    expect(soloIdentityEnv({ PATH: "/usr/bin" }, null)).toEqual({ env: null, overridden: [] });
+    expect(soloIdentityEnv({ PATH: "/usr/bin" }, undefined).env).toBeNull();
   });
 
   test("does not mutate the env it was given", () => {
     const base: Record<string, string | undefined> = { PATH: "/usr/bin" };
-    fillGitIdentityGaps(base, identity);
+    soloIdentityEnv(base, identity);
     expect(base.GIT_AUTHOR_NAME).toBeUndefined();
   });
 });

@@ -14,8 +14,10 @@ the `app` arm's bot fallback < `gitIdentity` < the tenant's own `.env`. The
 config field outranks anything said deployment-wide and is outranked by anything
 said about that tenant specifically, per variable. Nothing moves for existing
 deployments: a `.env` that sets an identity today still wins, and a repo that
-declares nothing gets a byte-for-byte unchanged child env. In solo the container
-env _is_ the single tenant's env-file, so it wins and the field fills the gaps.
+declares nothing gets a byte-for-byte unchanged child env. In solo there is no
+deployment-global rung — the container env _is_ the single tenant's env-file, so
+it wins and the field fills the gaps; where it does, boot logs a line naming the
+vars it overrode, so a declaration cannot go quietly inert.
 
 Both halves are required — #161 established the email must be exact for
 GitHub's commit→account linkage, so a name-only field would look like it worked

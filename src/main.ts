@@ -2043,7 +2043,10 @@ async function runLoop({
       }
       // Inject the minted token as GH_TOKEN so all gh calls this cycle use it,
       // and set PHOEBE_GH_LOGIN so phoebeGhLogin() does not have to shell out.
-      // Bot git identity is applied as a fallback: existing values win.
+      // Bot git identity is applied as a fallback: existing values win. That is
+      // what puts it under the rest of the ladder (#199) — by the time the
+      // engine runs, a declared `gitIdentity` and the deployment's env have
+      // already been resolved into these vars by `phoebe boot`.
       process.env["GH_TOKEN"] = mintResult.token;
       process.env["PHOEBE_GH_LOGIN"] = mintResult.botLogin;
       if (!process.env["GIT_AUTHOR_NAME"]) {

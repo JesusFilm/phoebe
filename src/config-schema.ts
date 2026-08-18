@@ -62,22 +62,9 @@ export type WorkspaceField =
       depth?: never;
     };
 
-/**
- * Bootstrapper-only commit attribution (#199): how this repo's commits are
- * signed, declared by the repo rather than restated in every deployment's
- * `.env`. Both halves are required — #161 established that the email must be
- * exact for GitHub's commit→account linkage, so a name-only declaration would
- * look like it worked and attribute nothing. It sets all four `GIT_AUTHOR_*` /
- * `GIT_COMMITTER_*` vars; author and committer are not separately expressible.
- *
- * The engine never reads it: it lives on `PhoebeUserConfig` so a consumer
- * config that sets it still type-checks, and `resolveConfig` drops it — the
- * `engine`/`workspace`/`configDir` precedent. The supervisor layers it into the
- * engine child's env above every deployment-wide default (the base allowlist,
- * the App-mode bot fallback) and below the tenant's own `.env`
- * (`bootstrap/engine-child-env.ts`).
- */
-export type GitIdentityField = GitIdentity;
+// Re-exported for consumers who want to name the type; the shape is owned by
+// the bootstrapper, which is the only reader (see the field doc below).
+export type { GitIdentity };
 
 export type PromptFilesConfig = {
   issue: string;
@@ -230,13 +217,22 @@ export type PhoebeUserConfig = {
    */
   configDir?: string;
   /**
-   * Bootstrapper-only commit attribution (see {@link GitIdentityField}, #199) —
-   * `{ name, email }`, both required. Omitted ⇒ commits carry whatever identity
-   * the deployment supplies (its env, or the App arm's bot fallback), exactly as
-   * before this field existed. The engine never reads it; `resolveConfig` drops
-   * it the same way it drops `engine`.
+   * Bootstrapper-only commit attribution (#199): how this repo's commits are
+   * signed, declared by the repo rather than restated in every deployment's
+   * `.env`. Both halves are required — #161 established that the email must be
+   * exact for GitHub's commit→account linkage, so a name-only declaration would
+   * look like it worked and attribute nothing — and the pair sets all four
+   * `GIT_AUTHOR_*` / `GIT_COMMITTER_*` vars.
+   *
+   * Omitted ⇒ commits carry whatever identity the deployment supplies (its env,
+   * or the App arm's bot fallback), exactly as before this field existed. The
+   * engine never reads it: it lives here so a consumer config that sets it still
+   * type-checks, and `resolveConfig` drops it — the `engine`/`workspace`/
+   * `configDir` precedent. The supervisor layers it into the engine child's env
+   * above every deployment-wide default and below the tenant's own `.env`
+   * (`bootstrap/engine-child-env.ts`).
    */
-  gitIdentity?: GitIdentityField;
+  gitIdentity?: GitIdentity;
   defaultBranch?: string;
   branchPrefix?: string;
   readyLabel?: string;

@@ -62,7 +62,7 @@ import {
   type TenantSample,
 } from "./tenants.ts";
 import { readConfigDir } from "./config-dir.ts";
-import { fillGitIdentityGaps, readGitIdentity, type GitIdentity } from "./git-identity.ts";
+import { readGitIdentity, soloIdentityEnv, type GitIdentity } from "./git-identity.ts";
 import { superviseFleet, type FleetChild, type FleetDiscoverInput } from "./supervise-fleet.ts";
 import {
   isExplicitWorkspace,
@@ -775,17 +775,27 @@ function formatWorkspaceHoldSummary(
 }
 
 /**
- * Load a workspace child config and return its authoritative `repoSlug`.
- * Throws when the file will not load or the slug is missing — the walker
- * treats that as skip-and-warn + hold.
+ * Load one workspace child's config as the arbitrary record the bootstrapper
+ * treats it as. Throws when the file will not load — the walker turns that into
+ * skip-and-warn + hold. The fingerprint doubles as `loadUserConfig`'s cache key,
+ * so the per-field readers below share one parse per config per poll.
  */
-async function loadTenantRepoSlug(configPath: string): Promise<string> {
+async function loadTenantConfig(configPath: string): Promise<Record<string, unknown>> {
   const fingerprint = configFingerprint(configPath);
   if (fingerprint === null) {
     throw new Error(`config unreadable at ${configPath}`);
   }
   const user = await loadUserConfig(configPath, { reloadKey: fingerprint });
-  const slug = user.repoSlug;
+  return user as unknown as Record<string, unknown>;
+}
+
+/**
+ * Load a workspace child config and return its authoritative `repoSlug`.
+ * Throws when the file will not load or the slug is missing — the walker
+ * treats that as skip-and-warn + hold.
+ */
+async function loadTenantRepoSlug(configPath: string): Promise<string> {
+  const slug = (await loadTenantConfig(configPath))["repoSlug"];
   if (typeof slug !== "string" || slug.trim().length === 0) {
     throw new Error(`missing or empty repoSlug in ${configPath}`);
   }
@@ -794,35 +804,22 @@ async function loadTenantRepoSlug(configPath: string): Promise<string> {
 
 /**
  * Load a tenant config and return its bootstrapper-only `configDir` (#98), or
- * "." when unset. Throws when the config will not load or the value is
- * malformed — the workspace walker treats that as skip-and-warn. Reuses
- * `loadUserConfig`'s fingerprint cache, so this does
- * not re-read a config the slug load already parsed this poll.
+ * "." when unset. A malformed value throws and the workspace walker treats that
+ * as skip-and-warn.
  */
 async function loadTenantConfigDir(configPath: string): Promise<string> {
-  const fingerprint = configFingerprint(configPath);
-  if (fingerprint === null) {
-    throw new Error(`config unreadable at ${configPath}`);
-  }
-  const user = await loadUserConfig(configPath, { reloadKey: fingerprint });
-  return readConfigDir(user as unknown as Record<string, unknown>);
+  return readConfigDir(await loadTenantConfig(configPath));
 }
 
 /**
  * Load a tenant config and return its bootstrapper-only `gitIdentity` (#199),
- * or null when unset. Throws when the config will not load or the value is
- * malformed — the workspace walker treats that as skip-and-warn, because a repo
- * that declared how its commits are attributed and got it wrong must not fall
- * back to committing under the deployment's identity. Reuses `loadUserConfig`'s
- * fingerprint cache, so it does not re-read a config already parsed this poll.
+ * or null when unset. A malformed value throws and the workspace walker treats
+ * that as skip-and-warn — a repo that declared how its commits are attributed
+ * and got it wrong must not fall back to committing under the deployment's
+ * identity.
  */
 async function loadTenantGitIdentity(configPath: string): Promise<GitIdentity | null> {
-  const fingerprint = configFingerprint(configPath);
-  if (fingerprint === null) {
-    throw new Error(`config unreadable at ${configPath}`);
-  }
-  const user = await loadUserConfig(configPath, { reloadKey: fingerprint });
-  return readGitIdentity(user as unknown as Record<string, unknown>);
+  return readGitIdentity(await loadTenantConfig(configPath));
 }
 
 /**
@@ -939,12 +936,16 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
 
   // Solo's arm of the #199 ladder: the root *is* the tenant, so the ambient
   // container env is that tenant's own env-file — it wins every identity var it
-  // sets, and the declared `gitIdentity` fills the rest. Seeded from the config
-  // boot has already loaded, then refreshed on every (re)launch so editing the
-  // field takes effect on the relaunch that edit already triggers, rather than
-  // at the next container restart. A malformed value fails the launch (fatal at
-  // boot, retried next poll on a relaunch) — never a silent fall back to
-  // whatever identity the deployment happens to carry.
+  // sets, and the declared `gitIdentity` fills the rest.
+  //
+  // One mutable cell, written by the launcher and read by the spawner. The
+  // identity must be re-read per launch (editing the field is itself what
+  // relaunches the child, and the new identity is the point of the edit), but
+  // `spawn` is synchronous while the read is not — so it happens in `launch`,
+  // which `superviseEngine` always runs first (reconcile.ts). Seeded from the
+  // config boot already loaded so the cell is never unset. A malformed value
+  // fails the launch (fatal at boot, retried next poll on a relaunch) — never a
+  // silent fall back to whatever identity the deployment happens to carry.
   let soloIdentity: GitIdentity | null = readGitIdentity(rootConfig);
   const launchSolo = async (): Promise<LaunchedEngine> => {
     soloIdentity = readGitIdentity(
@@ -958,10 +959,21 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     const exited = new Promise<EngineExit>((resolve) => {
       settle = resolve;
     });
+    const { env, overridden } = soloIdentityEnv(process.env, soloIdentity);
+    if (soloIdentity !== null && overridden.length > 0) {
+      // The declaration lost, which is the rule — but say so. A leftover
+      // `GIT_AUTHOR_NAME` on the container env would otherwise make a repo's
+      // declared attribution quietly inert (#199).
+      console.warn(
+        `[phoebe] boot: gitIdentity declares ${soloIdentity.name} <${soloIdentity.email}>, ` +
+          `but this deployment's env already sets ${overridden.join(", ")} — the env wins ` +
+          `(in solo it is this tenant's own env-file). Unset those vars to use the declaration.`,
+      );
+    }
     const child = spawnSoloChild(entry, argv, {
-      // Only when something is declared: with no `gitIdentity` the child
-      // inherits the supervisor's env exactly as it always has.
-      ...(soloIdentity === null ? {} : { env: fillGitIdentityGaps(process.env, soloIdentity) }),
+      // `env` is null when nothing is declared: the child then inherits the
+      // supervisor's env exactly as it always has.
+      ...(env === null ? {} : { env }),
       onExit: (code: number | null, signal: NodeJS.Signals | null) => settle({ code, signal }),
       onSpawnError: (error: Error) => {
         console.error(`[phoebe] boot: engine failed to spawn — ${error.message}`);

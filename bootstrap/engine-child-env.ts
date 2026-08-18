@@ -152,7 +152,7 @@ export function buildEngineChildEnv(opts: {
   // The repo's own declaration, over every deployment-wide default and under
   // the tenant's `.env` below.
   for (const [key, value] of Object.entries(gitIdentityEnv(configIdentity))) {
-    env[key] = value;
+    if (value !== "") env[key] = value;
   }
   // Tenant secrets last: they are the tenant's own, and win over any collision.
   for (const [key, value] of Object.entries(tenantEnv)) {
