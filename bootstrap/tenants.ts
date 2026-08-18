@@ -24,6 +24,7 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 
 import { DEFAULT_TENANT_CONFIG_DIR } from "./config-dir.ts";
+import { type GitIdentity } from "./git-identity.ts";
 import { isInsideContainer } from "../src/execution-gate.ts";
 import { isExplicitWorkspace, type ResolvedWorkspace } from "./workspace-source.ts";
 
@@ -74,6 +75,12 @@ export type DiscoveredTenant = {
    * token.
    */
   mintedEnv?: MintedCredentials;
+  /**
+   * The tenant config's declared commit attribution (#199), or null when the
+   * config declares none. Layered into the child env above the deployment-wide
+   * defaults and below the tenant's own `.env` (`buildEngineChildEnv`).
+   */
+  gitIdentity: GitIdentity | null;
 };
 
 /** The solo arm: the deployment root is itself the one tenant, run in place. */
@@ -254,6 +261,9 @@ function tenantAt(
     dir: absDir,
     configPath: join(absDir, TENANT_CONFIG_FILE),
     envPath: join(assetsDir, TENANT_ENV_FILE),
+    // Declared-nothing is the default: the discovery walk overlays what the
+    // child config actually says (#199).
+    gitIdentity: null,
     ...(declaredPath === undefined ? {} : { declaredPath }),
   };
 }
@@ -452,6 +462,15 @@ export type DiscoverWorkspaceDeps = {
    */
   loadConfigDir?: (configPath: string) => string | Promise<string>;
   /**
+   * Load a child `phoebe.config.ts` and return its bootstrapper-only
+   * `gitIdentity` (#199), or null when unset. Throws/rejects on an unreadable
+   * config or a malformed value — the walker then skip-and-warns the dir, the
+   * same as a bad `repoSlug`: a repo that declared an attribution and got it
+   * wrong must not quietly commit under the deployment's identity instead.
+   * Defaults to `() => null`, so existing callers and tests need no change.
+   */
+  loadGitIdentity?: (configPath: string) => GitIdentity | null | Promise<GitIdentity | null>;
+  /**
    * Read the child checkout's `remote.origin.url` for a best-effort cross-check
    * against config `repoSlug` (#92). Never reads `.gitmodules`. Defaults to
    * {@link readTenantOriginUrl}. Return `null` when origin is absent/unreadable.
@@ -617,7 +636,13 @@ export async function discoverWorkspaceTenants(
       const tenantConfigDir = deps.loadConfigDir
         ? (await deps.loadConfigDir(configPath)).trim()
         : DEFAULT_TENANT_CONFIG_DIR;
-      tenants.push(tenantAt(configDir, dir, slug, tenantConfigDir, declaredPath));
+      // Commit attribution (#199), read from the same config and malformed the
+      // same way: a throw here is caught below as skip-and-warn.
+      const gitIdentity = deps.loadGitIdentity ? await deps.loadGitIdentity(configPath) : null;
+      tenants.push({
+        ...tenantAt(configDir, dir, slug, tenantConfigDir, declaredPath),
+        gitIdentity,
+      });
     } catch (error) {
       if (isFatalWorkspaceDiscoveryError(error)) throw error;
       const reason = error instanceof Error ? error.message : String(error);

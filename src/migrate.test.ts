@@ -709,6 +709,7 @@ function makeTenant(
     dir,
     configPath,
     envPath: join(dir, ".env"),
+    gitIdentity: null,
   };
 }
 

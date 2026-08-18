@@ -34,6 +34,14 @@ const config: PhoebeUserConfig = {
   // `repo` defaults to the upstream engine repo; set it to run a fork.
   // For a checkout on your own machine, see container/compose.local.yml.
   engine: { source: "github", ref: "main" },
+
+  // How this repo's commits are attributed (optional). Declaring it here means
+  // every deployment that runs this repo agrees on the attribution, instead of
+  // each one restating it in its `.env` — which still overrides this if it does.
+  // Both halves are required, and the email must be exactly the address GitHub
+  // knows (a noreply address is the usual answer), or the commits link to no
+  // account at all.
+  // gitIdentity: { name: "Phoebe", email: "12345+phoebe@users.noreply.github.com" },
 };
 
 export default config;

@@ -137,6 +137,13 @@ Every commit, PR, and comment is attributed to `<app-name>[bot]` with `type:
 Bot`. The commit identity falls back to a synthesised noreply address
 (`<id>+<app-name>[bot]@users.noreply.github.com`).
 
+It is a **fallback**, and the lowest rung but one: a repo that declares
+`gitIdentity` in its `phoebe.config.ts`, or a tenant `.env` that sets
+`GIT_AUTHOR_*`, commits under that identity instead — under both arms
+identically ([`configuration.md` → Commit attribution](configuration.md#commit-attribution-gitidentity)).
+The API author is still the bot; commit authorship and API authorship are
+independent, as they already are on the `pat` arm.
+
 Vouch reads the `.github/VOUCHED.td` file only for human handles — a bot
 handle ending in `[bot]` resolves automatically to `trusted` without reading
 the file. There is no step to take here.

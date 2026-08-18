@@ -62,6 +62,7 @@ import {
   type TenantSample,
 } from "./tenants.ts";
 import { readConfigDir } from "./config-dir.ts";
+import { fillGitIdentityGaps, readGitIdentity, type GitIdentity } from "./git-identity.ts";
 import { superviseFleet, type FleetChild, type FleetDiscoverInput } from "./supervise-fleet.ts";
 import {
   isExplicitWorkspace,
@@ -418,6 +419,9 @@ function runFleet(opts: {
     const env = buildEngineChildEnv({
       base: process.env,
       mintedEnv: tenant.mintedEnv,
+      // The tenant config's declared attribution (#199) — above the deployment
+      // base and the App bot fallback, below the tenant's own `.env`.
+      configIdentity: tenant.gitIdentity,
       tenantEnv: readTenantEnv(tenant.envPath),
     });
     let settle!: (exit: EngineExit) => void;
@@ -550,6 +554,7 @@ function workspaceDiscover(
   const discoveryDeps = {
     loadRepoSlug: loadTenantRepoSlug,
     loadConfigDir: loadTenantConfigDir,
+    loadGitIdentity: loadTenantGitIdentity,
     warn: (message: string) => console.warn(message),
   };
 
@@ -804,6 +809,23 @@ async function loadTenantConfigDir(configPath: string): Promise<string> {
 }
 
 /**
+ * Load a tenant config and return its bootstrapper-only `gitIdentity` (#199),
+ * or null when unset. Throws when the config will not load or the value is
+ * malformed — the workspace walker treats that as skip-and-warn, because a repo
+ * that declared how its commits are attributed and got it wrong must not fall
+ * back to committing under the deployment's identity. Reuses `loadUserConfig`'s
+ * fingerprint cache, so it does not re-read a config already parsed this poll.
+ */
+async function loadTenantGitIdentity(configPath: string): Promise<GitIdentity | null> {
+  const fingerprint = configFingerprint(configPath);
+  if (fingerprint === null) {
+    throw new Error(`config unreadable at ${configPath}`);
+  }
+  const user = await loadUserConfig(configPath, { reloadKey: fingerprint });
+  return readGitIdentity(user as unknown as Record<string, unknown>);
+}
+
+/**
  * One tenant's reconcile fingerprint: its config *and* its co-located `.env`,
  * so a secrets-only edit relaunches the child (the env scrub reads `.env` at
  * spawn, #61). A null config fingerprint stays null — "unknown", never a change
@@ -914,12 +936,32 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   // child's slot client is properly wired and the env knob is meaningful.
   // Default cap of 1 matches the engine's existing one-unit-at-a-time behaviour.
   const soloBroker = createSlotBroker(resolveMaxConcurrent(process.env));
+
+  // Solo's arm of the #199 ladder: the root *is* the tenant, so the ambient
+  // container env is that tenant's own env-file — it wins every identity var it
+  // sets, and the declared `gitIdentity` fills the rest. Seeded from the config
+  // boot has already loaded, then refreshed on every (re)launch so editing the
+  // field takes effect on the relaunch that edit already triggers, rather than
+  // at the next container restart. A malformed value fails the launch (fatal at
+  // boot, retried next poll on a relaunch) — never a silent fall back to
+  // whatever identity the deployment happens to carry.
+  let soloIdentity: GitIdentity | null = readGitIdentity(rootConfig);
+  const launchSolo = async (): Promise<LaunchedEngine> => {
+    soloIdentity = readGitIdentity(
+      await loadMountedConfig(configPath, configFingerprint(configPath)),
+    );
+    return launchTarget(configPath, guard);
+  };
+
   const spawnSolo = (entry: string): SupervisedChild => {
     let settle!: (exit: EngineExit) => void;
     const exited = new Promise<EngineExit>((resolve) => {
       settle = resolve;
     });
     const child = spawnSoloChild(entry, argv, {
+      // Only when something is declared: with no `gitIdentity` the child
+      // inherits the supervisor's env exactly as it always has.
+      ...(soloIdentity === null ? {} : { env: fillGitIdentityGaps(process.env, soloIdentity) }),
       onExit: (code: number | null, signal: NodeJS.Signals | null) => settle({ code, signal }),
       onSpawnError: (error: Error) => {
         console.error(`[phoebe] boot: engine failed to spawn — ${error.message}`);
@@ -933,7 +975,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   let exit: EngineExit;
   try {
     exit = await superviseEngine({
-      launch: () => launchTarget(configPath, guard),
+      launch: launchSolo,
       spawn: spawnSolo,
       stop,
       intervalMs,

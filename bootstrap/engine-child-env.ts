@@ -21,6 +21,7 @@
 // (the whole container), Docker injects exactly that tenant's secrets, and the
 // child inherits the supervisor env as it does today.
 
+import { gitIdentityEnv, type GitIdentity } from "./git-identity.ts";
 import { type MintedCredentials } from "./tenants.ts";
 
 /**
@@ -109,7 +110,8 @@ export const MINTED_ENV_ALLOWED_KEYS: ReadonlySet<keyof MintedCredentials> = new
  * Layer order (later wins):
  *   1. allowlisted base + deployment knobs  (PATH, HOME, PHOEBE_*, …)
  *   2. mintedEnv  (GH_TOKEN, PHOEBE_GH_LOGIN, git identity from App minting)
- *   3. tenantEnv  (tenant's parsed .env — always wins every collision)
+ *   3. configIdentity  (the tenant config's `gitIdentity`, #199)
+ *   4. tenantEnv  (tenant's parsed .env — always wins every collision)
  */
 export function buildEngineChildEnv(opts: {
   base: Record<string, string | undefined>;
@@ -120,8 +122,16 @@ export function buildEngineChildEnv(opts: {
    * `tenantEnv` so an explicit `GH_TOKEN` in the tenant's file always wins.
    */
   mintedEnv?: MintedCredentials | Record<string, string>;
+  /**
+   * The tenant config's declared `gitIdentity` (#199), applied after
+   * `mintedEnv` and before `tenantEnv`: a repo's own declaration outranks
+   * anything the deployment says fleet-wide (the base allowlist, the App-mode
+   * bot fallback) and is outranked by the tenant's own `.env`. Absent ⇒ the
+   * child env is byte-for-byte what it was before the field existed.
+   */
+  configIdentity?: GitIdentity | null;
 }): Record<string, string> {
-  const { base, tenantEnv, mintedEnv } = opts;
+  const { base, tenantEnv, mintedEnv, configIdentity } = opts;
   const env: Record<string, string> = {};
   for (const key of [...ENGINE_CHILD_BASE_KEYS, ...ENGINE_CHILD_DEPLOYMENT_KNOBS]) {
     const value = base[key];
@@ -138,6 +148,11 @@ export function buildEngineChildEnv(opts: {
       if ((MINTED_ENV_ALLOWED_KEYS as ReadonlySet<string>).has(key) && value !== "")
         env[key] = value;
     }
+  }
+  // The repo's own declaration, over every deployment-wide default and under
+  // the tenant's `.env` below.
+  for (const [key, value] of Object.entries(gitIdentityEnv(configIdentity))) {
+    env[key] = value;
   }
   // Tenant secrets last: they are the tenant's own, and win over any collision.
   for (const [key, value] of Object.entries(tenantEnv)) {

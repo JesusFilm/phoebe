@@ -82,10 +82,16 @@ export function spawnEngine(entry, args, { onSpawnError, onExit } = {}) {
  * so the engine's `createSlotClient` can talk to the supervisor's slot broker
  * (src/slot-client.ts / bootstrap/broker-ipc.ts). Signal forwarding is kept —
  * solo's process-level SIGTERM/SIGINT still reach the engine for graceful drain.
+ *
+ * `env` is optional and, when given, is the supervisor's own env with the
+ * config's declared git identity filling the vars it leaves unset (#199) — solo
+ * is one trust domain, so this is a copy of the parent env, not the fleet's
+ * deny-by-default scrub. Omitted (nothing declared) ⇒ plain inheritance.
  */
-export function spawnSoloChild(entry, args, { onSpawnError, onExit } = {}) {
+export function spawnSoloChild(entry, args, { env, onSpawnError, onExit } = {}) {
   const child = spawn(process.execPath, [entry, ...args], {
     stdio: ["inherit", "inherit", "inherit", "ipc"],
+    ...(env ? { env } : {}),
   });
 
   const forwarders = new Map();
