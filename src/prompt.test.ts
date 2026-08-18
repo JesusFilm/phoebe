@@ -83,7 +83,13 @@ describe("shipped default prompts", () => {
   const promptsDir = join(import.meta.dirname, "..", "prompts");
 
   const cases = [
-    { file: "issues-prompt.md", extra: { ISSUE_NUMBER: "42" } },
+    {
+      file: "issues-prompt.md",
+      extra: {
+        ISSUE_NUMBER: "42",
+        ISSUE_AUTHOR_TRAILER: "Co-authored-by: alice 12345+alice@users.noreply.github.com",
+      },
+    },
     {
       file: "conflict-prompt.md",
       extra: { PR_NUMBER: "12", PR_BRANCH: "phoebe/issue-42", BLOCKER_PR_NUMBERS: "" },

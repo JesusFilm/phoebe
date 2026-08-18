@@ -1219,6 +1219,42 @@ async function fixOnePrReviews(pr: ReviewsCandidate, phoebeLogin: string): Promi
 }
 
 /**
+ * Build a `Co-authored-by` trailer for the issue author, fetching their GitHub
+ * user ID for the noreply address GitHub maps to contribution-graph credit.
+ * Returns `undefined` when either API call fails — the caller falls back to
+ * an empty string so the prompt omits the trailer rather than crashing.
+ */
+function issueAuthorTrailer(issueNumber: number): string | undefined {
+  let login: string;
+  try {
+    const { author } = ghJson<{ author: { login: string } }>([
+      "issue",
+      "view",
+      String(issueNumber),
+      "--json",
+      "author",
+    ]);
+    login = author.login;
+  } catch {
+    console.log(
+      `[phoebe] Could not fetch author for issue #${issueNumber} — skipping Co-authored-by trailer.`,
+    );
+    return undefined;
+  }
+  let id: number;
+  try {
+    const user = ghApiJson<{ id: number }>(`/users/${login}`);
+    id = user.id;
+  } catch {
+    console.log(
+      `[phoebe] Could not fetch GitHub ID for @${login} — skipping Co-authored-by trailer.`,
+    );
+    return undefined;
+  }
+  return `Co-authored-by: ${login} ${id}+${login}@users.noreply.github.com`;
+}
+
+/**
  * Work a single issue-shaped ticket: branch off the resolved base, run the
  * given prompt, and — only when the agent left commits — push and open (or
  * update) a PR. Shared by the `issues` and `research` kinds; the two differ
@@ -1247,7 +1283,10 @@ async function runOneIssue(opts: {
     await runAgentInWorktree({
       worktreeDir,
       promptFile,
-      promptArgs: { ISSUE_NUMBER: String(issueNumber) },
+      promptArgs: {
+        ISSUE_NUMBER: String(issueNumber),
+        ISSUE_AUTHOR_TRAILER: issueAuthorTrailer(issueNumber) ?? "",
+      },
     });
 
     const newCommitCount = commitCount(worktreeDir, `${worktreeBase}..HEAD`);
