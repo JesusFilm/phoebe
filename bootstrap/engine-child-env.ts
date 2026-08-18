@@ -21,6 +21,8 @@
 // (the whole container), Docker injects exactly that tenant's secrets, and the
 // child inherits the supervisor env as it does today.
 
+import { createHash } from "node:crypto";
+
 import { gitIdentityEnv, type GitIdentity } from "./git-identity.ts";
 import { type MintedCredentials } from "./tenants.ts";
 
@@ -81,6 +83,34 @@ export function parseDotenv(contents: string): Record<string, string> {
     out[key] = value;
   }
   return out;
+}
+
+/**
+ * The reconcile identity of one tenant's `.env` *contents*, minus `GH_TOKEN` —
+ * the `.env` half of the fleet's tenant fingerprint (#205).
+ *
+ * Every other `.env` value is frozen into the child env at spawn by
+ * {@link buildEngineChildEnv}, so editing one must keep relaunching the child —
+ * the relaunch is the only delivery those values have. `GH_TOKEN` alone is
+ * excluded: nothing in the engine caches it (gh, git, and the agent-env builder
+ * all read `process.env` live), and the supervisor's credential lease hands the
+ * current value to the running child per request. Counting it here would spend a
+ * full drain-and-respawn on a rotation the lease already delivers in place.
+ *
+ * Digests the *parsed* env (sorted keys), not the bytes, so reordering lines or
+ * editing comments is as invisible to reconcile as it is to the child.
+ */
+export function envReconcileDigest(contents: string): string {
+  const parsed = parseDotenv(contents);
+  delete parsed["GH_TOKEN"];
+  const hash = createHash("sha256");
+  for (const key of Object.keys(parsed).sort()) {
+    hash.update(key);
+    hash.update("\0");
+    hash.update(parsed[key]!);
+    hash.update("\0");
+  }
+  return hash.digest("hex").slice(0, 16);
 }
 
 /**

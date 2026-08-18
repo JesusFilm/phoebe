@@ -5,7 +5,7 @@
 // absent from tenant A's child env — never spread in, so fail-closed.
 
 import { describe, expect, test } from "vite-plus/test";
-import { buildEngineChildEnv, parseDotenv } from "./engine-child-env.ts";
+import { buildEngineChildEnv, envReconcileDigest, parseDotenv } from "./engine-child-env.ts";
 import { GH_APP_CREDENTIAL_PREFIX } from "./github-app.ts";
 
 describe("parseDotenv", () => {
@@ -207,5 +207,41 @@ describe("buildEngineChildEnv", () => {
       expect(withField).toEqual(without);
       expect(without.GIT_AUTHOR_NAME).toBe("Phoebe");
     });
+  });
+});
+
+describe("envReconcileDigest", () => {
+  test("is stable across a GH_TOKEN rotation (#205)", () => {
+    const before = envReconcileDigest("GH_TOKEN=ghp_old\nCURSOR_API_KEY=sk-123\n");
+    const after = envReconcileDigest("GH_TOKEN=ghp_new\nCURSOR_API_KEY=sk-123\n");
+    expect(after).toBe(before);
+  });
+
+  test("moves when any other value changes", () => {
+    const before = envReconcileDigest("GH_TOKEN=ghp_x\nCURSOR_API_KEY=sk-123\n");
+    const after = envReconcileDigest("GH_TOKEN=ghp_x\nCURSOR_API_KEY=sk-456\n");
+    expect(after).not.toBe(before);
+  });
+
+  test("moves when a non-token key is added or removed", () => {
+    const base = envReconcileDigest("GH_TOKEN=ghp_x\n");
+    expect(envReconcileDigest("GH_TOKEN=ghp_x\nNEW_KEY=1\n")).not.toBe(base);
+  });
+
+  test("adding or removing GH_TOKEN itself does not move the digest", () => {
+    // The arm flip is delivered live over the lease channel (pat) or handled by
+    // the mint fingerprint suffix (app) — never by relaunching on the .env edit.
+    expect(envReconcileDigest("GH_TOKEN=ghp_x\nA=1\n")).toBe(envReconcileDigest("A=1\n"));
+  });
+
+  test("is insensitive to line order and comments (content, not bytes)", () => {
+    const a = envReconcileDigest("A=1\nB=2\n");
+    const b = envReconcileDigest("# comment\nB=2\nA=1\n");
+    expect(a).toBe(b);
+  });
+
+  test("distinguishes key/value boundaries unambiguously", () => {
+    // A=1B, B=2 must not collide with A=1, BB=2 under any naive join.
+    expect(envReconcileDigest("A=1B\nB=2\n")).not.toBe(envReconcileDigest("A=1\nBB=2\n"));
   });
 });

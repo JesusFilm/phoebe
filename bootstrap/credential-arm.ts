@@ -34,7 +34,12 @@ import { GH_APP_ID_KEY } from "./github-app.ts";
 
 export type CredentialArm = "pat" | "app";
 
-function isSet(value: string | undefined): boolean {
+/**
+ * Whether a credential value counts as present: non-null and not whitespace.
+ * Shared with the lease handler (credential-ipc.ts) so "does this tenant carry
+ * an explicit token" is one predicate everywhere, not a mirror kept by prose.
+ */
+export function isSet(value: string | null | undefined): boolean {
   return typeof value === "string" && value.trim().length > 0;
 }
 

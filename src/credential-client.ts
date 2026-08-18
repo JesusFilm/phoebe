@@ -25,8 +25,9 @@ export const CREDENTIAL_BLOCKED = "phoebe:credential:blocked";
 export type CredentialClient = {
   /**
    * Request a credential lease; resolves with the fresh token (string) when
-   * the supervisor mints one, or null when the supervisor signals "nothing to
-   * give" (the PAT arm — the child's existing credential is already correct).
+   * the supervisor has one to give — the tenant's current PAT re-read from its
+   * `.env` (#205) or a minted installation token — or null when it signals
+   * "nothing to give" (keep the existing credential).
    *
    * Rejects with `CredentialRefreshBlockedError` when the supervisor cannot
    * provide a usable credential (App arm, mint failed) — the caller must not

@@ -38,7 +38,8 @@ import {
 } from "./crash-loop.ts";
 import { readEngineSource, type ResolvedEngineSource } from "./engine-source.ts";
 import { lsRemoteBranchSha, materializeGithubEngine } from "./github-engine.ts";
-import { buildEngineChildEnv, parseDotenv } from "./engine-child-env.ts";
+import { buildEngineChildEnv, envReconcileDigest, parseDotenv } from "./engine-child-env.ts";
+import { attachCredentialHandler, type CredentialCache } from "./credential-ipc.ts";
 import {
   fetchAppBotIdentity,
   mintInstallationToken,
@@ -414,6 +415,12 @@ function runFleet(opts: {
   discover: () => FleetDiscoverInput;
 }): Promise<EngineExit> {
   const broker = createSlotBroker(resolveMaxConcurrent(process.env));
+  // Fleet-level credential-lease state (#211/#205): the cache and the warn-once
+  // tracker outlive child respawns. Every child's lease must be answered — a
+  // spawned engine requests one at the top of each poll and blocks until the
+  // supervisor replies.
+  const credentialCache: CredentialCache = new Map();
+  const warnedOverBudget = new Set<string>();
 
   const spawnFleetChild = (tenant: DiscoveredTenant, engine: LaunchedEngine): FleetChild => {
     const env = buildEngineChildEnv({
@@ -448,6 +455,20 @@ function runFleet(opts: {
       },
     });
     attachBroker({ owner: tenant.id, broker, child });
+    // The lease answerer (#211/#205). `readPatToken` re-reads this tenant's
+    // `.env` per request, so a rotated PAT lands in the running child at its
+    // next lease call site — no drain, no respawn (the fingerprint above
+    // deliberately ignores `GH_TOKEN` for exactly this reason). App tenants
+    // (no explicit token) get the null no-op: their refreshed installation
+    // token still arrives via the mint-expiry fingerprint relaunch (#209).
+    attachCredentialHandler({
+      tenantId: tenant.id,
+      child,
+      cache: credentialCache,
+      mint: null,
+      readPatToken: () => readTenantEnv(tenant.envPath)["GH_TOKEN"] ?? null,
+      warnedOverBudget,
+    });
     return { kill: (signal) => child.kill(signal), exited };
   };
 
@@ -825,14 +846,25 @@ async function loadTenantGitIdentity(configPath: string): Promise<GitIdentity | 
 /**
  * One tenant's reconcile fingerprint: its config *and* its co-located `.env`,
  * so a secrets-only edit relaunches the child (the env scrub reads `.env` at
- * spawn, #61). A null config fingerprint stays null — "unknown", never a change
- * (`diffFleet`) — so a mid-rewrite config does not churn the child; a present
- * config with an absent `.env` is a stable `"<config>:"`.
+ * spawn, #61) — with one deliberate blind spot: the `.env` half is a content
+ * digest that excludes `GH_TOKEN` (#205), so rotating the PAT alone moves
+ * nothing here. The rotated token is delivered in place by the credential
+ * lease (`attachCredentialHandler`'s live read); every other `.env` value has
+ * no live channel and keeps the relaunch. A null config fingerprint stays
+ * null — "unknown", never a change (`diffFleet`) — so a mid-rewrite config
+ * does not churn the child; a present config with an absent/unreadable `.env`
+ * is a stable `"<config>:"`.
  */
-function tenantFingerprint(configPath: string, envPath: string): string | null {
+export function tenantFingerprint(configPath: string, envPath: string): string | null {
   const config = configFingerprint(configPath);
   if (config === null) return null;
-  return `${config}:${configFingerprint(envPath) ?? ""}`;
+  let envDigest: string;
+  try {
+    envDigest = envReconcileDigest(readFileSync(envPath, "utf8"));
+  } catch {
+    envDigest = "";
+  }
+  return `${config}:${envDigest}`;
 }
 
 /**
@@ -933,6 +965,10 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   // child's slot client is properly wired and the env knob is meaningful.
   // Default cap of 1 matches the engine's existing one-unit-at-a-time behaviour.
   const soloBroker = createSlotBroker(resolveMaxConcurrent(process.env));
+  // Lease bookkeeping shared across engine relaunches (#211): unused while solo
+  // answers the null no-op, but the handler's contract wants both.
+  const soloCredentialCache: CredentialCache = new Map();
+  const soloWarnedOverBudget = new Set<string>();
 
   // Solo's arm of the #199 ladder: the root *is* the tenant, so the ambient
   // container env is that tenant's own env-file — it wins every identity var it
@@ -981,6 +1017,19 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       },
     });
     attachBroker({ owner: "solo", broker: soloBroker, child });
+    // Answer the child's credential lease (#211) with the null no-op: solo is
+    // one trust domain whose secrets arrive on the ambient container env, so
+    // there is no per-tenant `.env` to re-read (#205's rotation-in-place has no
+    // solo arm — #159) and nothing to mint supervisor-side (a solo App-arm
+    // child mints its own token in-loop when the lease yields nothing).
+    // Without an answerer the child would hang forever on its first request.
+    attachCredentialHandler({
+      tenantId: "solo",
+      child,
+      cache: soloCredentialCache,
+      mint: null,
+      warnedOverBudget: soloWarnedOverBudget,
+    });
     return { kill: (signal) => child.kill(signal), exited };
   };
 
