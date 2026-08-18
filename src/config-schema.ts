@@ -66,6 +66,25 @@ export type WorkspaceField =
 // the bootstrapper, which is the only reader (see the field doc below).
 export type { GitIdentity };
 
+/**
+ * Host-CLI-only lifecycle commands (#189/#260). Literal shell strings, like
+ * `installCommand`/`checkCommand`, not a runtime name — `podman compose …`,
+ * `systemctl …`, or a different compose invocation all fit. Read only by
+ * `phoebe start` / `phoebe stop` on the host; the engine never sees it (see the
+ * field doc on {@link PhoebeUserConfig.deployment}).
+ */
+export type DeploymentField = {
+  /** Bring the deployment up. Run by `phoebe start`. */
+  startCommand: string;
+  /** Drain and stop the deployment. Run by `phoebe stop`. */
+  stopCommand: string;
+  /**
+   * Optional short-grace stop for `phoebe stop --now`.
+   * When absent, `--now` falls back to `stopCommand`.
+   */
+  stopNowCommand?: string;
+};
+
 export type PromptFilesConfig = {
   issue: string;
   conflict: string;
@@ -241,6 +260,20 @@ export type PhoebeUserConfig = {
    * (`bootstrap/engine-child-env.ts`).
    */
   gitIdentity?: GitIdentity;
+  /**
+   * Host-CLI-only lifecycle commands (#189/#260): literal shell strings that
+   * bring the deployment up or down from the host. When absent (the default)
+   * `phoebe start` / `phoebe stop` drive the scaffolded docker compose file.
+   * When present, the compose driver is bypassed and the strings run via
+   * `/bin/sh -c` with inherited stdio — exit 0 means success, non-zero means
+   * failure. Compose-specific behaviours (state pre-checks, the
+   * exited-immediately probe, killed-mid-run detection, env-file discovery,
+   * `--build`) are not available on this path; the operator encodes drain grace
+   * in `stopCommand` themselves. The engine never reads it: it lives here so a
+   * consumer config that sets it still type-checks, and `resolveConfig` drops
+   * it — the `engine`/`workspace`/`configDir` precedent.
+   */
+  deployment?: DeploymentField;
   defaultBranch?: string;
   branchPrefix?: string;
   readyLabel?: string;
@@ -393,6 +426,39 @@ export function validateUserConfig(user: PhoebeUserConfig): void {
   }
   if (user.gitIdentity !== undefined) {
     validateGitIdentityField(user.gitIdentity);
+  }
+  if (user.deployment !== undefined) {
+    validateDeploymentField(user.deployment);
+  }
+}
+
+/**
+ * Reject a malformed host-CLI-only `deployment` block. Both lifecycle commands
+ * are required together — a start with no stop (or vice versa) would leave
+ * `phoebe stop` silently falling back to a compose file the operator has
+ * bypassed — and a blank string would run `/bin/sh -c ""` and report success.
+ * Validated here so a mistyped consumer config fails at `resolveConfig` like
+ * `configDir`/`gitIdentity` do, even though only the host CLI reads the value.
+ */
+function validateDeploymentField(deployment: DeploymentField): void {
+  const isBlank = (value: unknown): boolean =>
+    typeof value !== "string" || value.trim().length === 0;
+  const missing = (["startCommand", "stopCommand"] as const).filter((key) =>
+    isBlank(deployment[key]),
+  );
+  if (missing.length > 0) {
+    throw new Error(
+      `phoebe.config.ts \`deployment\` requires non-empty ${missing
+        .map((key) => `\`${key}\``)
+        .join(" and ")} — both are required together ` + `(got ${JSON.stringify(deployment)}).`,
+    );
+  }
+  if (deployment.stopNowCommand !== undefined && isBlank(deployment.stopNowCommand)) {
+    throw new Error(
+      `phoebe.config.ts \`deployment.stopNowCommand\` must be a non-empty command when ` +
+        `present — omit it to have \`phoebe stop --now\` fall back to \`stopCommand\` ` +
+        `(got ${JSON.stringify(deployment.stopNowCommand)}).`,
+    );
   }
 }
 

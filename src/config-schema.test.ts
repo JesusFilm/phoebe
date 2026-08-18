@@ -175,6 +175,64 @@ describe("validateUserConfig", () => {
       validateUserConfig(minimalUserConfig({ gitIdentity: { name: "Bot", email: "nope" } })),
     ).toThrow(/gitIdentity/i);
   });
+
+  test("accepts a well-formed deployment block (#260)", () => {
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({
+          deployment: {
+            startCommand: "systemctl start phoebe",
+            stopCommand: "systemctl stop phoebe",
+          },
+        }),
+      ),
+    ).not.toThrow();
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({
+          deployment: {
+            startCommand: "podman compose up -d",
+            stopCommand: "podman compose stop -t 3600",
+            stopNowCommand: "podman compose stop -t 5",
+          },
+        }),
+      ),
+    ).not.toThrow();
+  });
+
+  test("rejects a deployment block missing or blanking startCommand / stopCommand (#260)", () => {
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({
+          deployment: { stopCommand: "systemctl stop phoebe" } as unknown as never,
+        }),
+      ),
+    ).toThrow(/deployment.*startCommand/i);
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({
+          deployment: { startCommand: "systemctl start phoebe", stopCommand: "   " },
+        }),
+      ),
+    ).toThrow(/deployment.*stopCommand/i);
+    expect(() =>
+      validateUserConfig(minimalUserConfig({ deployment: {} as unknown as never })),
+    ).toThrow(/deployment.*startCommand.*stopCommand/i);
+  });
+
+  test("rejects a deployment block whose stopNowCommand is present but blank (#260)", () => {
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({
+          deployment: {
+            startCommand: "systemctl start phoebe",
+            stopCommand: "systemctl stop phoebe",
+            stopNowCommand: "",
+          },
+        }),
+      ),
+    ).toThrow(/deployment.*stopNowCommand/i);
+  });
 });
 
 describe("resolveConfig", () => {
@@ -322,7 +380,7 @@ describe("resolveConfig", () => {
     expect(resolved.paths.repoDir).toBe("/data/repos/acme/widget/repo");
   });
 
-  test("drops bootstrapper-only engine, workspace, configDir, and gitIdentity from the engine-facing shape", () => {
+  test("drops bootstrapper-only engine, workspace, configDir, gitIdentity, and deployment from the engine-facing shape", () => {
     // Mirrors how `engine` is never on PhoebeConfig: the fields are accepted
     // on the user config so consumers type-check, then discarded by construction.
     const resolved = resolveConfig(
@@ -331,16 +389,22 @@ describe("resolveConfig", () => {
         workspace: { depth: 2 },
         configDir: ".phoebe",
         gitIdentity: { name: "Widget Bot", email: "widget@acme.dev" },
+        deployment: {
+          startCommand: "systemctl start phoebe",
+          stopCommand: "systemctl stop phoebe",
+        },
       }),
     );
     expect(resolved).not.toHaveProperty("engine");
     expect(resolved).not.toHaveProperty("workspace");
     expect(resolved).not.toHaveProperty("configDir");
     expect(resolved).not.toHaveProperty("gitIdentity");
+    expect(resolved).not.toHaveProperty("deployment");
     // A spread snapshot of keys must not sneak them back in under any alias.
     expect(Object.keys(resolved).sort()).not.toContain("engine");
     expect(Object.keys(resolved).sort()).not.toContain("workspace");
     expect(Object.keys(resolved).sort()).not.toContain("configDir");
     expect(Object.keys(resolved).sort()).not.toContain("gitIdentity");
+    expect(Object.keys(resolved).sort()).not.toContain("deployment");
   });
 });

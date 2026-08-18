@@ -339,6 +339,77 @@ identity at the next work-unit boundary, no container restart.
 set by `phoebe boot`; a bare `phoebe run` on your laptop uses your own
 `~/.gitconfig`, which is what you want there.
 
+## Lifecycle commands (`deployment`)
+
+Host-CLI-only. `phoebe start` and `phoebe stop` drive the scaffolded
+`container/compose.yml` with `docker compose` by default. The `deployment` block
+replaces that driver with **literal shell command strings** — the same shape as
+`installCommand` / `checkCommand` / `testCommand`, not a runtime name — for
+deployments that are not plain `docker compose`. Design record:
+[`research/lifecycle-runtime-seam.md`](research/lifecycle-runtime-seam.md) (#189).
+(The block is accepted and validated today; `phoebe start` / `phoebe stop`
+switch over to it in the follow-up wiring ticket.)
+
+| Field            | Required | Run by                                                                        |
+| ---------------- | -------- | ----------------------------------------------------------------------------- |
+| `startCommand`   | yes      | `phoebe start` — bring the deployment up.                                     |
+| `stopCommand`    | yes      | `phoebe stop` — drain and stop the deployment.                                |
+| `stopNowCommand` | no       | `phoebe stop --now` — short-grace stop. Omitted ⇒ `--now` runs `stopCommand`. |
+
+When the block is absent (the default) nothing changes. When present, the
+compose driver is bypassed entirely and each string runs via `/bin/sh -c` on the
+host with inherited stdio — exit 0 is success, non-zero is failure. Both
+`startCommand` and `stopCommand` must be present and non-empty together
+(`resolveConfig` rejects a half-declared block, or a blank `stopNowCommand`), so
+a deployment that has bypassed compose for start can never silently fall back to
+compose for stop. Like `engine`, `workspace`, and `configDir`, it is host-side
+only: `resolveConfig` drops it and the engine never sees it (the engine never
+calls `phoebe start`/`phoebe stop`). The in-container refusal on `phoebe start`
+/ `phoebe stop` still applies — start and stop are host actions in every shape.
+
+It is designed for three shapes: **podman** (or any other compose-compatible
+CLI), **systemd** (a unit that wraps the container or runs the engine directly),
+and **a different compose invocation** (extra `-f` files, a project name, a
+remote context) that the scaffolded driver does not know about.
+
+```ts
+// podman-compose
+deployment: {
+  startCommand: "podman compose -f container/compose.yml up -d",
+  stopCommand: "podman compose -f container/compose.yml stop -t 3600",
+  stopNowCommand: "podman compose -f container/compose.yml stop -t 1",
+},
+```
+
+```ts
+// systemd
+deployment: {
+  startCommand: "systemctl start phoebe",
+  stopCommand: "systemctl stop phoebe", // set TimeoutStopSec in the unit for drain grace
+  stopNowCommand: "systemctl kill --signal=SIGTERM phoebe && systemctl stop phoebe",
+},
+```
+
+**You own the drain grace.** With the compose driver, `phoebe stop` passes
+`-t 3600` so an in-flight work unit can finish; on the literal-command path
+nothing is appended to your string — encode the timeout in `stopCommand`
+yourself (`-t 3600`, `TimeoutStopSec=`, `--timeout=…`), and put the short-grace
+variant in `stopNowCommand` if `--now` should mean something different.
+
+**Not available on the literal-command path** — these are compose-specific and
+are skipped when `deployment` is set:
+
+- state queries, so no "already running" / "already stopped" pre-checks — make
+  `startCommand` idempotent if you care;
+- the "exited immediately" post-start probe — have `startCommand` verify the
+  service is up before it exits 0, or accept that a fast-exit failure goes
+  unnoticed;
+- killed-mid-run detection (Docker's exit code 137);
+- `.env` file discovery — your command reads whatever environment it needs;
+- `--build` — not forwarded; `phoebe start --build` warns and runs
+  `startCommand` unchanged. Encode the rebuild in `startCommand` or run it as a
+  separate step.
+
 ## Engine source (`engine`)
 
 Bootstrapper-only. `phoebe boot` reads this field to decide **where the engine
