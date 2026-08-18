@@ -52,6 +52,7 @@ import {
   buildUnitTimeoutMarker,
   buildUnstickComment,
   decideAutoUnstick,
+  decideDisabledUnstick,
   decideTimeoutRecord,
   issueContentBaseline,
   PHOEBE_QUARANTINE_LABEL,
@@ -629,6 +630,42 @@ function sweepQuarantine(): void {
       console.log(
         `[phoebe] Un-quarantined ${unit.isIssueKind ? "issue" : "PR"} #${id} — its content ` +
           `advanced past the quarantine baseline.`,
+      );
+    } catch (error) {
+      console.error(
+        `[phoebe] Could not un-quarantine ${unit.isIssueKind ? "issue" : "PR"} #${id} — ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+}
+
+/**
+ * Clear all quarantined units for this tenant unconditionally. Called when the
+ * tenant is disabled (#202): `decideDisabledUnstick` always returns true, so
+ * every quarantined unit gets its label removed and the count reset — a
+ * re-enabled tenant should start clean rather than immediately hitting the skip.
+ */
+function sweepDisabledQuarantine(): void {
+  let quarantined: QuarantinedUnit[];
+  try {
+    quarantined = [...listQuarantinedIssues(), ...listQuarantinedPrs()];
+  } catch (error) {
+    console.error(
+      `[phoebe] Could not list quarantined units for the disabled-tenant sweep — ` +
+        `${error instanceof Error ? error.message : String(error)}`,
+    );
+    return;
+  }
+  for (const unit of quarantined) {
+    if (!decideDisabledUnstick()) continue;
+    const id = String(unit.id);
+    try {
+      removeQuarantineLabel(unit.isIssueKind, id);
+      postUnitComment(unit.isIssueKind, id, buildUnstickComment());
+      console.log(
+        `[phoebe] Un-quarantined ${unit.isIssueKind ? "issue" : "PR"} #${id} — ` +
+          `tenant is disabled; cleared so it starts fresh when re-enabled.`,
       );
     } catch (error) {
       console.error(
@@ -2132,6 +2169,28 @@ async function runLoop({
         process.env["GIT_AUTHOR_EMAIL"] = mintResult.botEmail;
         process.env["GIT_COMMITTER_EMAIL"] = mintResult.botEmail;
       }
+    }
+
+    // Disabled short-circuit (#202): if the tenant declares `disabled: true`,
+    // start no new work this cycle. Any run already in flight finished before
+    // looping back here, satisfying the "drain, don't cancel" contract. Clear
+    // any lingering quarantine state so a re-enabled tenant starts clean.
+    if (config.disabled) {
+      if (!dryRun) {
+        sweepDisabledQuarantine();
+      }
+      if (runOnce) {
+        console.log(
+          "[phoebe] Tenant is disabled — no work will be started (`disabled: true` in phoebe.config.ts).",
+        );
+        break;
+      }
+      console.log(
+        "[phoebe] Tenant is disabled — no new work will be started this cycle. " +
+          "Remove `disabled: true` from phoebe.config.ts to re-enable.",
+      );
+      await drain.wait(pollIntervalMs);
+      continue;
     }
 
     // Auto-un-stick before selecting (#153): a unit whose content advanced since

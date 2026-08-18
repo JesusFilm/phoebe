@@ -152,6 +152,21 @@ export function buildUnstickComment(): string {
   ].join("\n");
 }
 
+// --- Disabled-tenant short-circuit -------------------------------------------
+
+/**
+ * Whether a disabled tenant's quarantine state should be cleared. Always
+ * `true` — a disabled tenant generates no timeouts, so any lingering quarantine
+ * label is a carry-over from before it was disabled. Clearing it ensures a
+ * re-enabled tenant starts clean rather than hitting an immediate skip (#202).
+ *
+ * Kept as an exported function (rather than an inline `true`) so quarantine.ts
+ * is the single authoritative home for all quarantine-related policy.
+ */
+export function decideDisabledUnstick(): boolean {
+  return true;
+}
+
 // --- Pure counting + quarantine decision -------------------------------------
 
 /**

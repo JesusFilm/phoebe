@@ -210,6 +210,13 @@ export type TenantListing = {
    * GitHub App key. Shared resolver — never re-derived per surface (#162).
    */
   arm: CredentialArm;
+  /**
+   * Whether the tenant's `phoebe.config.ts` declares `disabled: true` (#202).
+   * A disabled tenant is still discovered and listed, but the engine starts no
+   * new work for it. Distinct from `held` (a discovery error) and quarantine
+   * (Phoebe's own decision): this is the operator's deliberate off-switch.
+   */
+  disabled: boolean;
 };
 
 export type ListTenantsResult = {
@@ -266,6 +273,7 @@ function listingForLive(
   dataBase: string,
   configValid: boolean,
   envPath?: string,
+  disabled = false,
 ): TenantListing {
   const resolvedEnvPath = envPath ?? join(dir, TENANT_ENV_FILE);
   const dataDir = join(dataBase, slug);
@@ -279,6 +287,7 @@ function listingForLive(
     retainedData: existsSync(dataDir),
     status: readStatus(join(dataDir, "state", STATUS_FILE)),
     arm: readTenantArm(resolvedEnvPath),
+    disabled,
   };
 }
 
@@ -302,6 +311,7 @@ function listingForHeld(
     retainedData: dataDir !== null && existsSync(dataDir),
     status: dataDir !== null ? readStatus(join(dataDir, "state", STATUS_FILE)) : null,
     arm: readTenantArm(join(dir, TENANT_ENV_FILE)),
+    disabled: false,
   };
 }
 
@@ -357,6 +367,20 @@ async function defaultLoadConfigDir(configPath: string): Promise<string> {
   return readConfigDir(user as unknown as Record<string, unknown>);
 }
 
+/**
+ * Read `disabled` from a tenant config (#202). Returns `false` when the file
+ * cannot be loaded or the field is absent — safe default matches the engine's
+ * CONFIG_DEFAULTS.
+ */
+async function defaultLoadDisabled(configPath: string): Promise<boolean> {
+  try {
+    const user = await loadUserConfig(configPath);
+    return (user as { disabled?: unknown }).disabled === true;
+  } catch {
+    return false;
+  }
+}
+
 export type WorkspaceEnumeration = {
   workspace: ResolvedWorkspace;
   explicit: boolean;
@@ -376,6 +400,8 @@ export type TenantDiscoverySeams = {
   loadRepoSlug?: (configPath: string) => string | Promise<string>;
   loadConfigDir?: (configPath: string) => string | Promise<string>;
   readOriginUrl?: (tenantDir: string) => string | null | Promise<string | null>;
+  /** Read `disabled` from a tenant config; defaults to reading `phoebe.config.ts`. */
+  loadDisabled?: (configPath: string) => boolean | Promise<boolean>;
 };
 
 /** Drop the unset seams, so an absent override never shadows a default. */
@@ -384,6 +410,7 @@ function definedSeams(seams: TenantDiscoverySeams): TenantDiscoverySeams {
     ...(seams.loadRepoSlug !== undefined ? { loadRepoSlug: seams.loadRepoSlug } : {}),
     ...(seams.loadConfigDir !== undefined ? { loadConfigDir: seams.loadConfigDir } : {}),
     ...(seams.readOriginUrl !== undefined ? { readOriginUrl: seams.readOriginUrl } : {}),
+    ...(seams.loadDisabled !== undefined ? { loadDisabled: seams.loadDisabled } : {}),
   };
 }
 
@@ -420,12 +447,14 @@ export async function enumerateWorkspaceTenants(
  * keeps its slug sort. Held dirs surface a first-class `held — <reason>` row
  * rather than a line of ✗s.
  */
-function listWorkspaceTenants(opts: {
+async function listWorkspaceTenants(opts: {
   configDir: string;
   dataBase: string;
   enumeration: WorkspaceEnumeration;
-}): ListTenantsResult {
+  loadDisabled?: TenantDiscoverySeams["loadDisabled"];
+}): Promise<ListTenantsResult> {
   const { explicit, workspace, ...discovery } = opts.enumeration;
+  const loadDisabledFn = opts.loadDisabled ?? defaultLoadDisabled;
 
   // Discovery keys both tenants and holds by normalized absolute dir (#139), so
   // the declared spelling is resolved the same way before either lookup.
@@ -438,8 +467,17 @@ function listWorkspaceTenants(opts: {
       const dir = resolveDeclaredTenantDir(opts.configDir, entry);
       const tenant = tenantByDir.get(dir);
       if (tenant !== undefined) {
+        const disabled = await loadDisabledFn(tenant.configPath);
         listings.push(
-          listingForLive(entry, tenant.slug!, tenant.dir, opts.dataBase, true, tenant.envPath),
+          listingForLive(
+            entry,
+            tenant.slug!,
+            tenant.dir,
+            opts.dataBase,
+            true,
+            tenant.envPath,
+            disabled,
+          ),
         );
         continue;
       }
@@ -454,6 +492,7 @@ function listWorkspaceTenants(opts: {
     }
   } else {
     for (const tenant of discovery.tenants) {
+      const disabled = await loadDisabledFn(tenant.configPath);
       listings.push(
         listingForLive(
           relativeTenantPath(opts.configDir, tenant.dir),
@@ -462,6 +501,7 @@ function listWorkspaceTenants(opts: {
           opts.dataBase,
           true,
           tenant.envPath,
+          disabled,
         ),
       );
     }
@@ -499,6 +539,7 @@ export async function listTenants(
       configDir: opts.configDir,
       dataBase: opts.dataBase,
       enumeration,
+      loadDisabled: opts.loadDisabled,
     });
   }
   // Solo: exactly one tenant, and it is the deployment root itself — there is

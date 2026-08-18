@@ -213,6 +213,12 @@ describe("resolveConfig", () => {
     );
   });
 
+  test("disabled defaults false and can be switched on (#202)", () => {
+    expect(CONFIG_DEFAULTS.disabled).toBe(false);
+    expect(resolveConfig(minimalUserConfig()).disabled).toBe(false);
+    expect(resolveConfig(minimalUserConfig({ disabled: true })).disabled).toBe(true);
+  });
+
   test("preserves the caller's required-field values verbatim", () => {
     const resolved = resolveConfig(minimalUserConfig());
     expect(resolved.repoSlug).toBe("acme/widget");

@@ -381,6 +381,51 @@ describe("listTenants", () => {
     expect(await withAppKey(listArm)).toBe("app");
     expect(await listArm()).toBe("pat");
   });
+
+  test("disabled column: false by default, true via loadDisabled seam (#202)", async () => {
+    writeFileSync(
+      join(configDir, "phoebe.config.ts"),
+      `export default { workspace: { tenants: ["on", "off"] } };\n`,
+    );
+    mkdirSync(join(configDir, "on"), { recursive: true });
+    mkdirSync(join(configDir, "off"), { recursive: true });
+    writeFileSync(join(configDir, "on", "phoebe.config.ts"), "export default {};\n");
+    writeFileSync(
+      join(configDir, "off", "phoebe.config.ts"),
+      "export default { disabled: true };\n",
+    );
+
+    const { listings } = await listTenants({
+      configDir,
+      dataBase,
+      loadRepoSlug: (path) => (path.includes("/on/") ? "acme/on" : "acme/off"),
+      loadDisabled: (path) => Promise.resolve(path.includes("/off/")),
+    });
+
+    expect(listings.find((l) => l.slug === "acme/on")?.disabled).toBe(false);
+    expect(listings.find((l) => l.slug === "acme/off")?.disabled).toBe(true);
+  });
+
+  test("held rows always have disabled: false (#202)", async () => {
+    writeFileSync(
+      join(configDir, "phoebe.config.ts"),
+      `export default { workspace: { depth: 1 }, engine: { source: "local" } };\n`,
+    );
+    mkdirSync(join(configDir, "broken"), { recursive: true });
+    writeFileSync(join(configDir, "broken", "phoebe.config.ts"), "export default {};\n");
+
+    const { listings } = await listTenants({
+      configDir,
+      dataBase,
+      loadRepoSlug: () => {
+        throw new Error("parse failure");
+      },
+    });
+
+    const held = listings.find((l) => l.path === "broken");
+    expect(held?.held).toBe(true);
+    expect(held?.disabled).toBe(false);
+  });
 });
 
 describe("enumerateWorkspaceTenants", () => {

@@ -169,6 +169,14 @@ export type PhoebeConfig = {
    */
   creditIssueAuthor: boolean;
   /**
+   * Human off-switch for this tenant (#202). When `true`, the engine starts no
+   * new work units; a unit already in flight finishes. Quarantine state is
+   * cleared when disabled — no work means nothing to get stuck on, and a
+   * re-enabled tenant should start clean. Distinct from quarantine, which is
+   * Phoebe's own decision; this is the operator's.
+   */
+  disabled: boolean;
+  /**
    * Per-tenant filesystem layout. Not user-supplied: derived from `repoSlug`
    * and the deployment data base by `resolveConfig` (see src/paths.ts, #58/#62).
    */
@@ -256,6 +264,13 @@ export type PhoebeUserConfig = {
   maxUnitTimeouts?: number;
   /** Co-author trailer for the issue author on issue-derived commits (#198); default true. */
   creditIssueAuthor?: boolean;
+  /**
+   * Human off-switch for this tenant (#202). When `true`, the engine starts no
+   * new work. Hot — takes effect on the next engine cycle without a restart. A
+   * run in flight finishes; existing quarantine state is cleared. Distinct from
+   * quarantine (Phoebe's own decision). Default `false`.
+   */
+  disabled?: boolean;
 };
 
 /**
@@ -305,6 +320,7 @@ export const CONFIG_DEFAULTS = {
   // Applying `readyLabel` is a maintainer's deliberate act, so on by default:
   // the credit follows work a maintainer already chose to run (#198).
   creditIssueAuthor: true,
+  disabled: false,
 } as const;
 
 const REQUIRED_USER_FIELDS = [
@@ -451,6 +467,7 @@ export function resolveConfig(
     runTimeoutMs: user.runTimeoutMs ?? CONFIG_DEFAULTS.runTimeoutMs,
     maxUnitTimeouts: user.maxUnitTimeouts ?? CONFIG_DEFAULTS.maxUnitTimeouts,
     creditIssueAuthor: user.creditIssueAuthor ?? CONFIG_DEFAULTS.creditIssueAuthor,
+    disabled: user.disabled ?? CONFIG_DEFAULTS.disabled,
     paths: derivePaths(user.repoSlug, opts.dataBase),
   };
 }
