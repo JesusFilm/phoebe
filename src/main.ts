@@ -106,11 +106,13 @@ import {
   parseReviewsHandledWatermark,
   parseIssueNumberFromBranch,
   getMergedBlockerPrNumbers,
+  isCompletedBlockerIssue,
   oneShotWorkKinds,
   stackedCatchUpRetractionComment,
   RUN_ONCE_NOTHING_MESSAGE,
   selectFirstWorkUnit,
   selectIssue,
+  unresolvedBlockerNumbers,
   summarizeChecksSelection,
   summarizeConflictSelection,
   summarizeReviewsSelection,
@@ -359,11 +361,28 @@ function blockerPrState(blockerIssueNumber: number): BlockerPrState {
     "--limit",
     "1",
   ]);
+  if (open.length > 0 || merged.length > 0) {
+    return {
+      hasOpenPr: open.length > 0,
+      openPrNumber: open[0] ? asPrNumber(open[0].number) : undefined,
+      hasMergedPr: merged.length > 0,
+      mergedPrNumber: merged[0] ? asPrNumber(merged[0].number) : undefined,
+    };
+  }
+
+  // Only when no Phoebe PR answers for the blocker is the third call worth it:
+  // the work may have landed outside `branchPrefix` and closed the issue (#219).
+  const view = ghJson<{ state: string; stateReason?: string | null }>([
+    "issue",
+    "view",
+    String(blockerIssueNumber),
+    "--json",
+    "state,stateReason",
+  ]);
   return {
-    hasOpenPr: open.length > 0,
-    openPrNumber: open[0] ? asPrNumber(open[0].number) : undefined,
-    hasMergedPr: merged.length > 0,
-    mergedPrNumber: merged[0] ? asPrNumber(merged[0].number) : undefined,
+    hasOpenPr: false,
+    hasMergedPr: false,
+    blockerCompleted: isCompletedBlockerIssue(view),
   };
 }
 
@@ -1884,11 +1903,26 @@ async function fetchCycleWorkData(kinds: readonly WorkKindName[]): Promise<Cycle
   };
 }
 
+/**
+ * Why nothing was workable, naming the blockers when there are any — the bare
+ * count is indistinguishable from a legitimate wait (#219).
+ */
+function idleBlockerReason(
+  issues: readonly Issue[],
+  blockerStates: ReadonlyMap<number, BlockerPrState>,
+  phoebeBase?: string,
+): string {
+  const waiting = unresolvedBlockerNumbers(issues, blockerStates, phoebeBase);
+  return waiting.length > 0
+    ? `(waiting on blockers ${waiting.map((n) => `#${n}`).join(", ")})`
+    : "(blocked or waiting on blocker PR)";
+}
+
 function logIdleCycle(data: CycleWorkData): void {
   const phoebeBase = process.env["PHOEBE_BASE"];
   if (data.issues.length > 0 && !selectIssue(data.issues, data.blockerStates, phoebeBase)) {
     console.log(
-      `[phoebe] ${data.issues.length} ${config.readyLabel} issue(s) but none workable this cycle (blocked or waiting on blocker PR).`,
+      `[phoebe] ${data.issues.length} ${config.readyLabel} issue(s) but none workable this cycle ${idleBlockerReason(data.issues, data.blockerStates, phoebeBase)}.`,
     );
     return;
   }
@@ -1897,7 +1931,7 @@ function logIdleCycle(data: CycleWorkData): void {
     !selectIssue(data.researchIssues, data.blockerStates, phoebeBase)
   ) {
     console.log(
-      `[phoebe] ${data.researchIssues.length} ${config.researchLabel} ticket(s) but none workable this cycle (blocked or waiting on blocker PR).`,
+      `[phoebe] ${data.researchIssues.length} ${config.researchLabel} ticket(s) but none workable this cycle ${idleBlockerReason(data.researchIssues, data.blockerStates, phoebeBase)}.`,
     );
     return;
   }

@@ -18,6 +18,13 @@ export type BlockerPrState = {
   openPrNumber?: PrNumber;
   hasMergedPr: boolean;
   mergedPrNumber?: PrNumber;
+  /**
+   * Blocker issue is closed as `COMPLETED` — the work landed, whoever did it and
+   * on whatever branch. Only fetched when both PR lookups miss, so it is
+   * `undefined` whenever an open or merged Phoebe PR already answered the
+   * question. `false` covers `NOT_PLANNED`, which does *not* satisfy the block.
+   */
+  blockerCompleted?: boolean;
 };
 
 export type BaseResolution = {
@@ -117,7 +124,52 @@ export function resolveWorktreeBase(
     return { worktreeBase: "origin/main", stacked: false };
   }
 
+  // Work that landed outside `branchPrefix` leaves no Phoebe PR to find; a
+  // blocker issue closed as completed is the signal that it is done anyway.
+  if (state.blockerCompleted) {
+    return { worktreeBase: "origin/main", stacked: false };
+  }
+
   return null;
+}
+
+/**
+ * Does a blocker `gh issue view --json state,stateReason` payload mean "done"?
+ * `CLOSED`/`COMPLETED` does; `NOT_PLANNED` (abandoned) leaves dependents on
+ * unbuilt ground and does not.
+ */
+export function isCompletedBlockerIssue(view: {
+  state: string;
+  stateReason?: string | null;
+}): boolean {
+  return (
+    view.state.toUpperCase() === "CLOSED" && (view.stateReason ?? "").toUpperCase() === "COMPLETED"
+  );
+}
+
+/**
+ * Blocker issue numbers that are holding back otherwise-eligible issues this
+ * cycle, ascending. Names in the idle log what the bare skip count cannot: a
+ * blocker with no Phoebe PR looks identical to one nobody has started.
+ *
+ * Reports the same blocker `resolveWorktreeBase` gated on — the first — so the
+ * log never names a blocker that is not actually what is holding the issue.
+ */
+export function unresolvedBlockerNumbers(
+  issues: readonly Issue[],
+  blockerStates: ReadonlyMap<number, BlockerPrState>,
+  phoebeBase?: string,
+): number[] {
+  const waiting = new Set<number>();
+  for (const issue of issues) {
+    if (issue.labels.includes(PHOEBE_QUARANTINE_LABEL)) continue;
+    if (resolveWorktreeBase(issue, blockerStates, phoebeBase)) continue;
+    const gating = parseBlockedBy(issue.body)[0];
+    if (gating !== undefined) {
+      waiting.add(gating);
+    }
+  }
+  return [...waiting].sort((a, b) => a - b);
 }
 
 /** Pick the highest-priority workable issue, or `null` when none qualify. */

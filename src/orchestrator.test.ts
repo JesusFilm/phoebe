@@ -27,6 +27,8 @@ import {
   parseReviewsHandledWatermark,
   parseIssueNumberFromBranch,
   resolveWorktreeBase,
+  isCompletedBlockerIssue,
+  unresolvedBlockerNumbers,
   getMergedBlockerPrNumbers,
   oneShotWorkKinds,
   selectChecksUnit,
@@ -168,6 +170,120 @@ describe("resolveWorktreeBase", () => {
   test("skips when blocker state is unknown", () => {
     const blocked = issue({ number: 102, body: "Blocked by #98" });
     expect(resolveWorktreeBase(blocked, emptyStates)).toBeNull();
+  });
+
+  test("uses origin/main when the blocker issue is closed as completed", () => {
+    const blocked = issue({ number: 102, body: "Blocked by #98" });
+    const states = new Map<number, BlockerPrState>([
+      [98, { hasOpenPr: false, hasMergedPr: false, blockerCompleted: true }],
+    ]);
+    expect(resolveWorktreeBase(blocked, states)).toEqual({
+      worktreeBase: "origin/main",
+      stacked: false,
+    });
+  });
+
+  test("skips when the blocker issue is closed as not planned", () => {
+    const blocked = issue({ number: 102, body: "Blocked by #98" });
+    const states = new Map<number, BlockerPrState>([
+      [98, { hasOpenPr: false, hasMergedPr: false, blockerCompleted: false }],
+    ]);
+    expect(resolveWorktreeBase(blocked, states)).toBeNull();
+  });
+
+  test("an open blocker PR still wins over blocker issue closure", () => {
+    const blocked = issue({ number: 102, body: "Blocked by #98" });
+    const states = new Map<number, BlockerPrState>([
+      [
+        98,
+        {
+          hasOpenPr: true,
+          openPrNumber: asPrNumber(104),
+          hasMergedPr: false,
+          blockerCompleted: true,
+        },
+      ],
+    ]);
+    expect(resolveWorktreeBase(blocked, states)).toEqual({
+      worktreeBase: `origin/${issueBranch(98)}`,
+      stacked: true,
+      blockerIssueNumber: 98,
+      blockerPrNumber: 104,
+    });
+  });
+
+  test("a merged blocker PR still resolves to origin/main and reports its PR number", () => {
+    const blocked = issue({ number: 102, body: "Blocked by #98" });
+    const states = new Map<number, BlockerPrState>([
+      [98, { hasOpenPr: false, hasMergedPr: true, mergedPrNumber: asPrNumber(104) }],
+    ]);
+    expect(resolveWorktreeBase(blocked, states)).toEqual({
+      worktreeBase: "origin/main",
+      stacked: false,
+    });
+    expect(getMergedBlockerPrNumbers(blocked.body, states)).toEqual([104]);
+  });
+});
+
+describe("isCompletedBlockerIssue", () => {
+  test("closed as completed satisfies the blocker", () => {
+    expect(isCompletedBlockerIssue({ state: "CLOSED", stateReason: "COMPLETED" })).toBe(true);
+  });
+
+  test("closed as not planned does not", () => {
+    expect(isCompletedBlockerIssue({ state: "CLOSED", stateReason: "NOT_PLANNED" })).toBe(false);
+  });
+
+  test("an open issue does not, whatever the reason field says", () => {
+    expect(isCompletedBlockerIssue({ state: "OPEN", stateReason: null })).toBe(false);
+    expect(isCompletedBlockerIssue({ state: "OPEN", stateReason: "COMPLETED" })).toBe(false);
+  });
+
+  test("tolerates lowercase and missing reason", () => {
+    expect(isCompletedBlockerIssue({ state: "closed", stateReason: "completed" })).toBe(true);
+    expect(isCompletedBlockerIssue({ state: "CLOSED" })).toBe(false);
+  });
+});
+
+describe("unresolvedBlockerNumbers", () => {
+  test("names the distinct blockers that skipped issues are waiting on", () => {
+    const issues = [
+      issue({ number: 498, body: "Blocked by #497" }),
+      issue({ number: 524, body: "Blocked by #497" }),
+      issue({ number: 499, body: "Blocked by #498" }),
+    ];
+    const states = new Map<number, BlockerPrState>([
+      [497, { hasOpenPr: false, hasMergedPr: false, blockerCompleted: false }],
+      [498, { hasOpenPr: false, hasMergedPr: false, blockerCompleted: false }],
+    ]);
+    expect(unresolvedBlockerNumbers(issues, states)).toEqual([497, 498]);
+  });
+
+  test("includes blockers whose state could not be fetched", () => {
+    const issues = [issue({ number: 102, body: "Blocked by #98" })];
+    expect(unresolvedBlockerNumbers(issues, new Map<number, BlockerPrState>())).toEqual([98]);
+  });
+
+  test("omits satisfied blockers and workable issues", () => {
+    const issues = [
+      issue({ number: 102, body: "Blocked by #98" }),
+      issue({ number: 103, body: "Blocked by #99" }),
+      issue({ number: 104 }),
+    ];
+    const states = new Map<number, BlockerPrState>([
+      [98, { hasOpenPr: false, hasMergedPr: true }],
+      [99, { hasOpenPr: false, hasMergedPr: false }],
+    ]);
+    expect(unresolvedBlockerNumbers(issues, states)).toEqual([99]);
+  });
+
+  test("names only the gating blocker when an issue lists several", () => {
+    const issues = [issue({ number: 102, body: "Blocked by #98\nBlocked by #99" })];
+    const states = new Map<number, BlockerPrState>([
+      [98, { hasOpenPr: false, hasMergedPr: false, blockerCompleted: false }],
+      [99, { hasOpenPr: false, hasMergedPr: false, blockerCompleted: false }],
+    ]);
+    expect(unresolvedBlockerNumbers(issues, states)).toEqual([98]);
   });
 });
 
