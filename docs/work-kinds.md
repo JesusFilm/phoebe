@@ -64,7 +64,14 @@ The producer. Selection (`selectIssue`):
   opened PR gets a ⛓️ banner warning not to merge before the blocker.
 - Blocked, blocker PR **merged** → base `origin/main` (blocker work is already
   in the base).
-- Blocked, blocker has **no** open or merged PR → **skip** this cycle.
+- Blocked, no blocker PR either way, but the blocker **issue is closed as
+  completed** → base `origin/main`, unstacked. The work landed outside
+  `branchPrefix` (a human's branch, another tool's) and who built it is not
+  Phoebe's business. The `gh issue view` that answers this fires only when both
+  PR lookups come back empty. Closed as **not planned** does not count — an
+  abandoned blocker leaves the dependent on unbuilt ground.
+- Blocked, blocker has **no** open or merged PR and is not closed as completed →
+  **skip** this cycle. The idle log names the blockers it is waiting on.
 
 Blocker references are parsed with `blockedByPattern` (capture group 1 = blocker
 issue number).

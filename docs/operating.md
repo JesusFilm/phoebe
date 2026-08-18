@@ -55,7 +55,13 @@ Write a blocker reference in the issue body — by default `Blocked by #123`
 - **skips** the issue while the blocker has no PR yet,
 - **stacks** the new branch on the blocker's branch while the blocker's PR is
   open (the resulting PR carries a ⛓️ "do not merge before #123" banner), and
-- bases on the default branch normally once the blocker's PR has **merged**.
+- bases on the default branch normally once the blocker's PR has **merged**, and
+- likewise once the blocker **issue is closed as completed**, even with no
+  Phoebe-branch PR at all — that covers a blocker a human landed on their own
+  branch. Closing a blocker as **not planned** does not unblock anything.
+
+When everything is skipped, the cycle log names the blockers
+(`waiting on blockers #497, #498`) so a stalled queue is a five-second read.
 
 This lets you queue a dependent chain of issues at once and let Phoebe sequence
 them.
