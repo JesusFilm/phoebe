@@ -65,6 +65,7 @@ import {
 import {
   addWorktreeForExistingBranch,
   addWorktreeForNewBranch,
+  appendTrailerToCommits,
   commitCount,
   ensureClone,
   fetchOrigin as gitFetchOrigin,
@@ -74,6 +75,7 @@ import {
   worktreeDirForBranch,
 } from "./git-model.ts";
 import { PROVIDERS } from "./providers/providers.ts";
+import { resolveIssueCoAuthorTrailer, type GitHubUser } from "./co-author.ts";
 import { runAgent } from "./providers/run-agent.ts";
 import type { Provider } from "./providers/types.ts";
 import {
@@ -669,6 +671,50 @@ function phoebeGhLogin(): string {
   return ghApiJson<{ login: string }>("user").login;
 }
 
+/**
+ * The `Co-authored-by:` trailer crediting `issueNumber`'s author (#198), or
+ * null when there is nobody to credit or the lookups fail. `gh issue view`
+ * reports a deleted author as `null`; `gh api users/<login>` supplies the
+ * numeric id the noreply address needs.
+ */
+function issueCoAuthorTrailer(issueNumber: number): string | null {
+  return resolveIssueCoAuthorTrailer(issueNumber, {
+    issueAuthorLogin: (n) =>
+      ghJson<{ author: { login: string } | null }>(["issue", "view", String(n), "--json", "author"])
+        .author?.login ?? null,
+    lookupUser: (login) => ghApiJson<GitHubUser>(`users/${encodeURIComponent(login)}`),
+  });
+}
+
+/**
+ * Stamp the unit's fresh commits with the issue author's co-author trailer
+ * before they are pushed. Best-effort by design: whatever happens here, the
+ * commits the agent made are pushed as they stand.
+ */
+function stampIssueAuthorCredit(opts: {
+  issueNumber: number;
+  worktreeDir: string;
+  baseRef: string;
+}): void {
+  const trailer = issueCoAuthorTrailer(opts.issueNumber);
+  if (trailer === null) {
+    console.log(`[phoebe] No co-author credit for #${opts.issueNumber} (no creditable author).`);
+    return;
+  }
+  const outcome = appendTrailerToCommits({
+    worktreeDir: opts.worktreeDir,
+    baseRef: opts.baseRef,
+    trailer,
+  });
+  const detail = {
+    rewritten: `added "${trailer}"`,
+    nothing: "no commits to credit",
+    "skipped-merges": "range holds a merge commit; commits left as the agent made them",
+    failed: "rewrite failed and was aborted; commits left as the agent made them",
+  }[outcome];
+  console.log(`[phoebe] Co-author trailer for #${opts.issueNumber}: ${detail}.`);
+}
+
 function issueBody(issueNumber: number): string {
   return ghJson<{ body: string }>(["issue", "view", String(issueNumber), "--json", "body"]).body;
 }
@@ -1253,6 +1299,9 @@ async function runOneIssue(opts: {
     const newCommitCount = commitCount(worktreeDir, `${worktreeBase}..HEAD`);
 
     if (newCommitCount > 0) {
+      if (config.creditIssueAuthor) {
+        stampIssueAuthorCredit({ issueNumber, worktreeDir, baseRef: worktreeBase });
+      }
       pushBranch(worktreeDir, agentBranch);
       const existingPrRow = ghJson<Array<{ number: number }>>([
         "pr",

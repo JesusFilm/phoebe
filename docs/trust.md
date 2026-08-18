@@ -126,6 +126,15 @@ The interaction to remember:
 - If a denounced author's ticket somehow carries `ready-for-agent`, that is a
   maintainer mistake, not a workflow failure. Remove the label to stop the agent;
   removing `readyLabel` is the documented pause lever.
+- The same reasoning sets the default for issue-author credit (#198): Phoebe
+  stamps the commits it pushes for an issue with a `Co-authored-by:` trailer for
+  the issue's author, and does so for every issue it works rather than only
+  vouched ones — the label that queued it (`ready-for-agent`, or the research
+  label) already needed triage permission, so a maintainer vouched for the
+  ticket by applying it. On
+  a repo where that credit would read as misattribution, the operator turns it
+  off with `creditIssueAuthor: false` (see
+  [`configuration.md`](configuration.md#issue-author-credit)).
 - The vouch label on a **PR** is a review signal only. Phoebe's PR janitors scan
   by branch prefix and skip cross-repository PRs entirely (`isPrInScope` in
   `src/orchestrator.ts`), so a fork PR is already outside its reach.
