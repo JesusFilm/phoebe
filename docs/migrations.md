@@ -230,7 +230,10 @@ old CLI to import from the new checkout, which it does not have.
 Artifact migrations scaffold files that may be missing from older deployments.
 The invariant is create-if-absent: **never overwrite an operator file**. `detect`
 must return `null` when the target file already exists, so `apply` is never
-called if the file is present.
+called if the file is present. The flush enforces this at write time too: for
+entries whose pre-image was absent (`before=null`), it uses an atomic no-clobber
+create (`open` with `wx`) so that a file appearing after `detect` fails with
+EEXIST rather than being silently overwritten.
 
 ```ts
 export const myMigration: Migration = {
@@ -271,15 +274,18 @@ A throw inside `apply` before it returns leaves nothing on disk: `apply` is pure
 flushed yet.
 
 **The revert is best-effort, not a transaction.** Once the flush begins, the
-runner cannot guarantee it can undo it. Two cases leave files behind:
+runner cannot guarantee it can undo it. One case leaves files behind:
 
 - A revert step that itself fails — an `unlink` or write-back hitting a
   permission error or a vanished directory — is swallowed so the remaining
   entries still get their chance. That file keeps its migrated content.
-- A flush that throws partway through its own loop leaves the writes that already
-  landed on disk, with no revert pass over them.
 
-Both are rare, and neither can produce an _invalid_ deployment silently: post-apply
+A throw partway through the flush loop (EACCES, ENOSPC, a vanished directory, or
+EEXIST from the no-clobber create for new files) triggers a revert pass over the
+entries already written in that migration before recording `failed`. The runner
+then continues to the next migration.
+
+Neither failure mode can produce an _invalid_ deployment silently: post-apply
 validation runs against what is actually on disk, so a config left in a bad state
 is reported as `failed` rather than passing. But do not write a migration whose
 correctness depends on revert being all-or-nothing. When the report says
