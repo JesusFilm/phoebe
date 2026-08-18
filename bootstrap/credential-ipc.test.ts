@@ -344,7 +344,7 @@ describe("attachCredentialHandler", () => {
       expect(child.sent).toEqual([{ type: CREDENTIAL_ANSWER, token: "ghs_minted" }]);
     });
 
-    test("a null read with no mint answers the null no-op", async () => {
+    test("a null read with no mint blocks — the retained PAT must not stand", async () => {
       const child = fakeChild();
       attachCredentialHandler({
         tenantId: "acme/widget",
@@ -357,10 +357,10 @@ describe("attachCredentialHandler", () => {
 
       child.emitMessage({ type: CREDENTIAL_REQUEST, budgetMs: 120_000 });
       await tick();
-      expect(child.sent).toEqual([{ type: CREDENTIAL_ANSWER, token: null }]);
+      expect(child.sent).toEqual([{ type: CREDENTIAL_BLOCKED }]);
     });
 
-    test("an empty or whitespace-only read is treated as absent", async () => {
+    test("an empty or whitespace-only read blocks like a null read", async () => {
       const child = fakeChild();
       attachCredentialHandler({
         tenantId: "acme/widget",
@@ -373,7 +373,32 @@ describe("attachCredentialHandler", () => {
 
       child.emitMessage({ type: CREDENTIAL_REQUEST, budgetMs: 120_000 });
       await tick();
-      expect(child.sent).toEqual([{ type: CREDENTIAL_ANSWER, token: null }]);
+      expect(child.sent).toEqual([{ type: CREDENTIAL_BLOCKED }]);
+    });
+
+    test("PAT removed after rotation: subsequent requests block, not the old token", async () => {
+      const child = fakeChild();
+      let currentToken: string | null = "ghp_initial";
+      attachCredentialHandler({
+        tenantId: "acme/widget",
+        child,
+        cache: new Map(),
+        mint: null,
+        readPatToken: () => currentToken,
+        warnedOverBudget: new Set(),
+      });
+
+      child.emitMessage({ type: CREDENTIAL_REQUEST, budgetMs: 120_000 });
+      await tick();
+      expect(child.sent).toEqual([{ type: CREDENTIAL_ANSWER, token: "ghp_initial" }]);
+
+      currentToken = null;
+      child.emitMessage({ type: CREDENTIAL_REQUEST, budgetMs: 120_000 });
+      await tick();
+      expect(child.sent).toEqual([
+        { type: CREDENTIAL_ANSWER, token: "ghp_initial" },
+        { type: CREDENTIAL_BLOCKED },
+      ]);
     });
   });
 

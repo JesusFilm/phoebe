@@ -11,8 +11,9 @@
 // at each request (#205): the handler answers with the token currently in the
 // file, so a rotated PAT reaches the running child at its next lease call site
 // — an assignment in place, not a drain-and-respawn. When the read yields
-// nothing and there is no mint fn, the answer is a null token (a no-op; the
-// child's existing GH_TOKEN stands).
+// nothing (PAT removed), CREDENTIAL_BLOCKED is sent so the child cannot
+// proceed on the retained token; the no-op null answer is reserved for the
+// supervised solo arm, which has no per-tenant file to re-read.
 //
 // The cache is memory-only (one record per tenant) and is created outside the
 // per-child handler so it outlives child crashes — a respawned child reuses the
@@ -133,8 +134,16 @@ export function attachCredentialHandler(opts: {
     }
 
     if (!mint) {
-      // No explicit token and nothing to mint — the child keeps what it has.
-      child.send?.({ type: CREDENTIAL_ANSWER, token: null });
+      if (opts.readPatToken !== undefined) {
+        // PAT mode: readPatToken is set but returned absent/empty — the
+        // tenant's PAT was removed. Block work so the child cannot proceed
+        // on the retained GH_TOKEN it received at spawn.
+        child.send?.({ type: CREDENTIAL_BLOCKED });
+      } else {
+        // Supervised solo: no per-tenant file to re-read (#159), keep the
+        // ambient credential unchanged.
+        child.send?.({ type: CREDENTIAL_ANSWER, token: null });
+      }
       return;
     }
 

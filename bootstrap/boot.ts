@@ -864,7 +864,7 @@ export function tenantFingerprint(configPath: string, envPath: string): string |
   try {
     envDigest = envReconcileDigest(readFileSync(envPath, "utf8"));
   } catch {
-    envDigest = "";
+    envDigest = envReconcileDigest("");
   }
   return `${config}:${envDigest}`;
 }
