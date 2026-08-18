@@ -10,7 +10,16 @@
 //     to trailing count, uncommitted listing only includes journal paths.
 //   * Pre-existing dirt absent from uncommitted listing.
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
@@ -391,6 +400,176 @@ describe("runMigrate", () => {
     });
     // sha is either a 40-char hex string or null — never undefined
     expect(report.sha === null || /^[0-9a-f]{40}$/.test(report.sha)).toBe(true);
+  });
+});
+
+// ----------------------------------------------------------------- runMigrate flush-loop gaps (#248)
+
+describe("runMigrate — flush-loop gaps", () => {
+  test("mid-flush write failure reverts already-written entries, records failed, continues to next migration", async () => {
+    const dir = makeTempDir();
+    const configPath = scaffoldDeployment(dir);
+
+    // 'first.md' will be written OK; 'locked/second.md' will fail because
+    // locked/ is read-only — simulating any mid-flush I/O error.
+    const lockedDir = join(dir, "locked");
+    mkdirSync(lockedDir, { recursive: true });
+    chmodSync(lockedDir, 0o555);
+
+    const flushFailMigration: Migration = {
+      id: "flush-fail",
+      title: "Flush fail migration",
+      appliesTo: ["solo-root"] as const,
+      detect(_dir, readFile) {
+        return readFile("first.md") === null ? true : null;
+      },
+      describe() {
+        return "flush fail test";
+      },
+      apply() {
+        return {
+          "first.md": "# First\n",
+          "locked/second.md": "# Second\n",
+        };
+      },
+    };
+    const afterMigration = makeApplyingMigration(
+      "after-flush-fail",
+      "prompts/after.md",
+      "# After\n",
+    );
+
+    try {
+      const report = await runMigrate({
+        dir,
+        role: "solo-root",
+        configPath,
+        migrations: [flushFailMigration, afterMigration],
+        validateFn: async () => {},
+      });
+
+      const ffResult = report.results.find((r) => r.id === "flush-fail")!;
+      expect(ffResult.state).toBe("failed");
+      expect(ffResult.detail).toMatch(/flush failed/);
+
+      // first.md was written then reverted (deleted, since before was null)
+      expect(existsSync(join(dir, "first.md"))).toBe(false);
+
+      // next migration still ran and applied
+      const afterResult = report.results.find((r) => r.id === "after-flush-fail")!;
+      expect(afterResult.state).toBe("applied");
+
+      expect(report.ok).toBe(false);
+    } finally {
+      chmodSync(lockedDir, 0o755);
+    }
+  });
+
+  test("mid-flush failure in one tenant does not abort the fleet walk", async () => {
+    const rootDir = makeTempDir();
+    const configPath = scaffoldWorkspaceRoot(rootDir);
+    const childDir = makeTempDir();
+    scaffoldDeployment(childDir);
+
+    const lockedDir = join(childDir, "locked");
+    mkdirSync(lockedDir, { recursive: true });
+    chmodSync(lockedDir, 0o555);
+
+    const flushFailMigration: Migration = {
+      id: "tenant-flush-fail",
+      title: "Tenant flush fail",
+      appliesTo: ["tenant"] as const,
+      detect(_dir, readFile) {
+        return readFile("locked/target.md") === null ? true : null;
+      },
+      describe() {
+        return "flush fail";
+      },
+      apply() {
+        return { "locked/target.md": "# Target\n" };
+      },
+    };
+
+    try {
+      const fleet = await runFleetMigrate({
+        configPath,
+        migrations: [flushFailMigration],
+        validateFn: async () => {},
+        isDirtyFn: () => false,
+        enumerateFn: fakeEnumerate([makeTenant(childDir)]),
+      });
+
+      // Root is unaffected
+      expect(fleet.rootReport.ok).toBe(true);
+      // Tenant records failed verdict
+      const entry = fleet.tenantEntries[0]!;
+      expect(entry.verdict).toBe("failed");
+      expect(entry.report?.ok).toBe(false);
+    } finally {
+      chmodSync(lockedDir, 0o755);
+    }
+  });
+
+  test("create-if-absent TOCTOU: openSync wx fails when file appears, migration records failed not clobbered", async () => {
+    // Verify the primitive: openSync with 'wx' (used when before=null) throws
+    // EEXIST if the file exists, preventing an overwrite.
+    const dir = makeTempDir();
+    const abs = join(dir, "target.md");
+    writeFileSync(abs, "operator content\n");
+
+    expect(() => {
+      const fd = openSync(abs, "wx");
+      closeSync(fd);
+    }).toThrow(/EEXIST/);
+
+    // Operator file unchanged
+    expect(readFileSync(abs, "utf8")).toBe("operator content\n");
+  });
+
+  test("create-if-absent: before=null write failure records failed and does not leave partial writes", async () => {
+    // When before=null and writeNoClobber throws (e.g. EACCES on a read-only
+    // directory, or EEXIST in the actual TOCTOU race), the same catch path runs:
+    // the migration is recorded as failed and no partial writes remain.
+    const dir = makeTempDir();
+    const configPath = scaffoldDeployment(dir);
+
+    const protectedDir = join(dir, "prompts");
+    mkdirSync(protectedDir, { recursive: true });
+    chmodSync(protectedDir, 0o555);
+
+    const migration: Migration = {
+      id: "toctou-guard",
+      title: "TOCTOU guard",
+      appliesTo: ["solo-root"] as const,
+      detect(_dir, readFile) {
+        return readFile("prompts/target.md") === null ? true : null;
+      },
+      describe() {
+        return "create prompts/target.md";
+      },
+      apply() {
+        return { "prompts/target.md": "migration content\n" };
+      },
+    };
+
+    try {
+      const report = await runMigrate({
+        dir,
+        role: "solo-root",
+        configPath,
+        migrations: [migration],
+        validateFn: async () => {},
+      });
+
+      const result = report.results[0]!;
+      expect(result.state).toBe("failed");
+      expect(result.detail).toMatch(/flush failed/);
+      // Target file was not created
+      expect(existsSync(join(dir, "prompts", "target.md"))).toBe(false);
+      expect(report.ok).toBe(false);
+    } finally {
+      chmodSync(protectedDir, 0o755);
+    }
   });
 });
 

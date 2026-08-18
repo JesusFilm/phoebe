@@ -14,7 +14,15 @@
 //   Engine SHA           — from git HEAD on this checkout, not engine.ref.
 //   Uncommitted listing  — only paths from the journal (pre-existing dirt excluded).
 
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { validateUserConfig } from "./config-schema.ts";
@@ -175,6 +183,20 @@ function writeInPlace(abs: string, content: string): void {
   writeFileSync(abs, content);
 }
 
+/**
+ * Create `abs` and write `content`, failing with EEXIST if the path already
+ * exists. Used for create-if-absent entries (before=null) so that a file
+ * appearing after detect but before the flush is not silently overwritten.
+ */
+function writeNoClobber(abs: string, content: string): void {
+  const fd = openSync(abs, "wx");
+  try {
+    writeFileSync(fd, content);
+  } finally {
+    closeSync(fd);
+  }
+}
+
 // ----------------------------------------------------------------- runner
 
 export type RunMigrateOptions = {
@@ -276,12 +298,45 @@ export async function runMigrate(opts: RunMigrateOptions): Promise<MigrateReport
 
     // flush: capture pre-images, then write all
     const entries: JournalEntry[] = [];
-    for (const [relPath, content] of Object.entries(staged)) {
-      const abs = join(opts.dir, relPath);
-      const before = existsSync(abs) ? readFileSync(abs, "utf8") : null;
-      mkdirSync(dirname(abs), { recursive: true });
-      writeInPlace(abs, content);
-      entries.push({ dir: opts.dir, migrationId: migration.id, relPath, before });
+    try {
+      for (const [relPath, content] of Object.entries(staged)) {
+        const abs = join(opts.dir, relPath);
+        const before = existsSync(abs) ? readFileSync(abs, "utf8") : null;
+        mkdirSync(dirname(abs), { recursive: true });
+        // Use no-clobber create for new files so that a file appearing after
+        // detect (TOCTOU) fails with EEXIST rather than silently overwriting.
+        if (before === null) {
+          writeNoClobber(abs, content);
+        } else {
+          writeInPlace(abs, content);
+        }
+        entries.push({ dir: opts.dir, migrationId: migration.id, relPath, before });
+      }
+    } catch (err) {
+      // Revert entries written so far and record the failure.
+      for (const entry of entries) {
+        const abs = join(entry.dir, entry.relPath);
+        if (entry.before === null) {
+          try {
+            unlinkSync(abs);
+          } catch {
+            // best-effort
+          }
+        } else {
+          try {
+            writeInPlace(abs, entry.before);
+          } catch {
+            // best-effort
+          }
+        }
+      }
+      results.push({
+        id: migration.id,
+        title: migration.title,
+        state: "failed",
+        detail: `flush failed (reverted): ${err instanceof Error ? err.message : String(err)}`,
+      });
+      continue;
     }
 
     // post-apply validation — only a validation failure triggers revert
