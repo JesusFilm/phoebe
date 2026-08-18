@@ -276,6 +276,15 @@ describe("unresolvedBlockerNumbers", () => {
     ]);
     expect(unresolvedBlockerNumbers(issues, states)).toEqual([99]);
   });
+
+  test("names only the gating blocker when an issue lists several", () => {
+    const issues = [issue({ number: 102, body: "Blocked by #98\nBlocked by #99" })];
+    const states = new Map<number, BlockerPrState>([
+      [98, { hasOpenPr: false, hasMergedPr: false, blockerCompleted: false }],
+      [99, { hasOpenPr: false, hasMergedPr: false, blockerCompleted: false }],
+    ]);
+    expect(unresolvedBlockerNumbers(issues, states)).toEqual([98]);
+  });
 });
 
 describe("selectIssue", () => {

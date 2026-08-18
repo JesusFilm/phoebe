@@ -147,16 +147,13 @@ export function isCompletedBlockerIssue(view: {
   );
 }
 
-function isBlockerSatisfied(state: BlockerPrState | undefined): boolean {
-  return (
-    state !== undefined && (state.hasOpenPr || state.hasMergedPr || state.blockerCompleted === true)
-  );
-}
-
 /**
  * Blocker issue numbers that are holding back otherwise-eligible issues this
  * cycle, ascending. Names in the idle log what the bare skip count cannot: a
  * blocker with no Phoebe PR looks identical to one nobody has started.
+ *
+ * Reports the same blocker `resolveWorktreeBase` gated on — the first — so the
+ * log never names a blocker that is not actually what is holding the issue.
  */
 export function unresolvedBlockerNumbers(
   issues: readonly Issue[],
@@ -167,10 +164,9 @@ export function unresolvedBlockerNumbers(
   for (const issue of issues) {
     if (issue.labels.includes(PHOEBE_QUARANTINE_LABEL)) continue;
     if (resolveWorktreeBase(issue, blockerStates, phoebeBase)) continue;
-    for (const blocker of parseBlockedBy(issue.body)) {
-      if (!isBlockerSatisfied(blockerStates.get(blocker))) {
-        waiting.add(blocker);
-      }
+    const gating = parseBlockedBy(issue.body)[0];
+    if (gating !== undefined) {
+      waiting.add(gating);
     }
   }
   return [...waiting].sort((a, b) => a - b);

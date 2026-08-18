@@ -12,9 +12,10 @@ after the open- and merged-PR arms: `CLOSED`/`COMPLETED` blocker → base
 abandoned blocker leaves the dependent on unbuilt ground.
 
 The `gh issue view` behind it is lazy — it fires only when both PR lookups come
-back empty, so the common path stays at the two calls per blocker per cycle it
-costs today, and a failure is caught the way `buildBlockerStates` already
-catches blocker-state failures (warn, treat as unsatisfied, retry next cycle).
+back empty, so every blocker with a Phoebe PR keeps the two calls per cycle it
+costs today and only a blocker Phoebe cannot see pays a third. A failure on it
+is caught the way `buildBlockerStates` already catches blocker-state failures
+(warn, treat as unsatisfied, retry next cycle).
 
 The idle line also names the blockers now — `3 ready-for-agent issue(s) but none
 workable this cycle (waiting on blockers #497, #498)` — instead of a bare count
