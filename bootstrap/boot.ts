@@ -458,7 +458,9 @@ function runFleet(opts: {
     // The lease answerer (#211/#205). `readPatToken` re-reads this tenant's
     // `.env` per request, so a rotated PAT lands in the running child at its
     // next lease call site — no drain, no respawn (the fingerprint above
-    // deliberately ignores `GH_TOKEN` for exactly this reason). App tenants
+    // deliberately ignores `GH_TOKEN`'s value for exactly this reason; its
+    // *removal* still relaunches, since a lease cannot deliver an absence).
+    // App tenants
     // (no explicit token) get the null no-op: their refreshed installation
     // token still arrives via the mint-expiry fingerprint relaunch (#209).
     attachCredentialHandler({

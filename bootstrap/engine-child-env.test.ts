@@ -228,10 +228,21 @@ describe("envReconcileDigest", () => {
     expect(envReconcileDigest("GH_TOKEN=ghp_x\nNEW_KEY=1\n")).not.toBe(base);
   });
 
-  test("adding or removing GH_TOKEN itself does not move the digest", () => {
-    // The arm flip is delivered live over the lease channel (pat) or handled by
-    // the mint fingerprint suffix (app) — never by relaunching on the .env edit.
-    expect(envReconcileDigest("GH_TOKEN=ghp_x\nA=1\n")).toBe(envReconcileDigest("A=1\n"));
+  test("adding or removing GH_TOKEN itself moves the digest", () => {
+    // Only the token's *value* is rotation-invisible. Its presence is counted:
+    // the lease can deliver a new value but not an absence (null means "keep
+    // what you have"), so a removed PAT must relaunch the child — the respawn
+    // is what actually stops the deleted token being used.
+    expect(envReconcileDigest("GH_TOKEN=ghp_x\nA=1\n")).not.toBe(envReconcileDigest("A=1\n"));
+  });
+
+  test("a blank GH_TOKEN= counts as absent, not present", () => {
+    // Matches isSet everywhere else: the arm resolver and the lease handler
+    // both read a whitespace-only token as "carries none".
+    expect(envReconcileDigest("GH_TOKEN=\nA=1\n")).toBe(envReconcileDigest("A=1\n"));
+    expect(envReconcileDigest("GH_TOKEN=\nA=1\n")).not.toBe(
+      envReconcileDigest("GH_TOKEN=ghp_x\nA=1\n"),
+    );
   });
 
   test("is insensitive to line order and comments (content, not bytes)", () => {

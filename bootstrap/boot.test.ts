@@ -182,13 +182,29 @@ describe("tenantFingerprint", () => {
   });
 
   test("an absent .env and one that only carries GH_TOKEN differ", () => {
-    // Presence of the file itself is still counted — only the token's value
-    // (and the token key) is rotation-invisible.
+    // Presence of the file — and of the token itself — is still counted; only
+    // the token's value is rotation-invisible.
     const { configPath, envPath } = setup();
     const absent = tenantFingerprint(configPath, envPath);
     writeFileSync(envPath, "GH_TOKEN=ghp_x\n");
     const present = tenantFingerprint(configPath, envPath);
     expect(present).not.toBeNull();
     expect(present).not.toBe(absent);
+  });
+});
+
+describe("tenantFingerprint — token removal (retention regression)", () => {
+  test("removing the GH_TOKEN line moves the fingerprint — removal must relaunch", () => {
+    // A lease answer can deliver a new token but not an absence (null means
+    // "keep what you have"), so the only way a deleted PAT stops being used is
+    // the relaunch: the respawned child's scrubbed env genuinely lacks it.
+    const dir = mkdtempSync(join(tmpdir(), "phoebe-fp-"));
+    const configPath = join(dir, "phoebe.config.ts");
+    const envPath = join(dir, ".env");
+    writeFileSync(configPath, "export default { repoSlug: 'acme/widget' };\n");
+    writeFileSync(envPath, "GH_TOKEN=ghp_x\nCURSOR_API_KEY=sk-1\n");
+    const withToken = tenantFingerprint(configPath, envPath);
+    writeFileSync(envPath, "CURSOR_API_KEY=sk-1\n");
+    expect(tenantFingerprint(configPath, envPath)).not.toBe(withToken);
   });
 });
