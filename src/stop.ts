@@ -4,7 +4,13 @@
 // from cwd, drives `docker compose stop` against container/compose.yml with a
 // grace matching the fleet supervisor's drain timeout, streams Compose output,
 // and checks afterwards whether the container was SIGKILLed mid-run.
+//
+// A config carrying a `deployment` block takes the other arm instead (#261):
+// `deployment.stopCommand` runs literally via /bin/sh and every compose-specific
+// step here is skipped. See src/deployment-command.ts.
 
+import type { DeploymentField } from "./config-schema.ts";
+import { resolveDeploymentCommands, runLifecycleStep } from "./deployment-command.ts";
 import {
   assertHostLifecycle,
   composeFailureError,
@@ -57,6 +63,10 @@ Usage:
 Resolves the deployment from the current directory (the one holding
 phoebe.config.ts and container/compose.yml). Passes the deployment .env to
 Compose only when it exists. Refuses inside the container — run this on the host.
+
+When phoebe.config.ts carries a "deployment" block, deployment.stopCommand
+(or stopNowCommand for --now) runs instead and none of the Compose plumbing
+above applies — you own the drain grace. See docs/configuration.md.
 `;
 
 type StopIo = {
@@ -70,6 +80,14 @@ type StopDeps = {
   dockerAvailable?: boolean;
   inContainer?: boolean;
   exists?: (path: string) => boolean;
+  /**
+   * Literal lifecycle commands from the config (#261). Present ⇒ the compose
+   * driver is bypassed entirely. Named apart from the `deployment` local below,
+   * which is the resolved *Compose* deployment. {@link runStopCli} reads it off
+   * the config; `runStop` only ever consults the dep, which is what keeps it
+   * filesystem-free.
+   */
+  deploymentCommands?: DeploymentField;
   io?: Partial<StopIo>;
 };
 
@@ -111,7 +129,31 @@ export async function runStop(opts: { now: boolean; deps?: StopDeps }): Promise<
     stderr: opts.deps?.io?.stderr ?? ((line) => process.stderr.write(`${line}\n`)),
   };
 
+  // The guard is runtime-general: stop is a host action in every topology, so
+  // it fires before the branch below (#189).
   assertHostLifecycle("stop", opts.deps?.inContainer);
+
+  const deploymentCommands = opts.deps?.deploymentCommands;
+  if (deploymentCommands !== undefined) {
+    // `--now` without a `stopNowCommand` is the plain stop command: the operator
+    // has said their runtime has one way down, so honour the flag by running it
+    // rather than refusing.
+    const nowCommand = opts.now ? deploymentCommands.stopNowCommand : undefined;
+    await runLifecycleStep({
+      field: nowCommand !== undefined ? "stopNowCommand" : "stopCommand",
+      command: nowCommand ?? deploymentCommands.stopCommand,
+      cwd,
+      announce: io.stdout,
+      ...(opts.deps?.runner !== undefined ? { runner: opts.deps.runner } : {}),
+    });
+    if (opts.now) {
+      io.stdout("[phoebe] Stopped (--now).");
+      return { kind: "stopped-now" };
+    }
+    io.stdout("[phoebe] Stopped.");
+    return { kind: "stopped" };
+  }
+
   const dockerOk = opts.deps?.dockerAvailable ?? dockerOnPath();
   if (!dockerOk) {
     throw new Error(noDockerMessage("stop"));
@@ -194,7 +236,20 @@ export async function runStopCli(argv: readonly string[], deps?: StopDeps): Prom
     process.stdout.write(STOP_HELP_TEXT);
     return;
   }
-  const outcome = await runStop({ now: parsed.now, ...(deps !== undefined ? { deps } : {}) });
+  // Reading the config is the CLI's job, not `runStop`'s: the run function stays
+  // injectable-only so tests never touch a config file. A caller that already
+  // has the block passes it through deps and no config is read.
+  const cwd = deps?.cwd ?? process.cwd();
+  const deploymentCommands = await resolveDeploymentCommands({
+    command: "stop",
+    cwd,
+    inContainer: deps?.inContainer,
+    provided: deps?.deploymentCommands,
+  });
+  const outcome = await runStop({
+    now: parsed.now,
+    deps: { ...deps, ...(deploymentCommands !== undefined ? { deploymentCommands } : {}) },
+  });
   if (outcome.kind === "killed-mid-run") {
     process.exitCode = 1;
   }

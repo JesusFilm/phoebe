@@ -5,7 +5,13 @@
 // container/compose.yml (optional `--build`), then briefly re-probes so a
 // container that exits seconds later is reported as a failure rather than a
 // silent success. Returns to the prompt and points at how to follow the logs.
+//
+// A config carrying a `deployment` block takes the other arm instead (#261):
+// `deployment.startCommand` runs literally via /bin/sh and every compose-specific
+// step here is skipped. See src/deployment-command.ts.
 
+import type { DeploymentField } from "./config-schema.ts";
+import { resolveDeploymentCommands, runLifecycleStep } from "./deployment-command.ts";
 import {
   assertHostLifecycle,
   composeFailureError,
@@ -63,6 +69,10 @@ Compose only when it exists. Confirms the container stayed up briefly after
 start — a boot that exits immediately is reported as a failure. Returns to the
 prompt; follow logs with docker compose rather than tailing from this command.
 Refuses inside the container — run this on the host.
+
+When phoebe.config.ts carries a "deployment" block, deployment.startCommand
+runs instead and none of the Compose plumbing above applies (--build is then a
+no-op). See docs/configuration.md.
 `;
 
 type StartIo = {
@@ -78,6 +88,14 @@ type StartDeps = {
   exists?: (path: string) => boolean;
   /** Injectable settle wait — tests skip the real delay. */
   waitMs?: (ms: number) => Promise<void>;
+  /**
+   * Literal lifecycle commands from the config (#261). Present ⇒ the compose
+   * driver is bypassed entirely. Named apart from the `deployment` local below,
+   * which is the resolved *Compose* deployment. {@link runStartCli} reads it off
+   * the config; `runStart` only ever consults the dep, which is what keeps it
+   * filesystem-free.
+   */
+  deploymentCommands?: DeploymentField;
   io?: Partial<StartIo>;
 };
 
@@ -125,7 +143,32 @@ export async function runStart(opts: { build: boolean; deps?: StartDeps }): Prom
   };
   const waitMs = opts.deps?.waitMs ?? defaultWaitMs;
 
+  // The guard is runtime-general: start is a host action in every topology, so
+  // it fires before the branch below (#189).
   assertHostLifecycle("start", opts.deps?.inContainer);
+
+  const deploymentCommands = opts.deps?.deploymentCommands;
+  if (deploymentCommands !== undefined) {
+    if (opts.build) {
+      // Not an error — the operator asked for the deployment's own start command
+      // and got it. But silently swallowing --build would let them believe a
+      // rebuild happened.
+      io.stderr(
+        "[phoebe] --build is a no-op with a `deployment` block — there is no image to " +
+          "rebuild here. Encode the rebuild in `deployment.startCommand` or run it separately.",
+      );
+    }
+    await runLifecycleStep({
+      field: "startCommand",
+      command: deploymentCommands.startCommand,
+      cwd,
+      announce: io.stdout,
+      ...(opts.deps?.runner !== undefined ? { runner: opts.deps.runner } : {}),
+    });
+    io.stdout("[phoebe] Started.");
+    return { kind: "started" };
+  }
+
   const dockerOk = opts.deps?.dockerAvailable ?? dockerOnPath();
   if (!dockerOk) {
     throw new Error(noDockerMessage("start"));
@@ -191,9 +234,20 @@ export async function runStartCli(argv: readonly string[], deps?: StartDeps): Pr
     process.stdout.write(START_HELP_TEXT);
     return;
   }
+  // Reading the config is the CLI's job, not `runStart`'s: the run function
+  // stays injectable-only so tests never touch a config file. A caller that
+  // already has the block (the tests, a future embedder) passes it through deps
+  // and no config is read.
+  const cwd = deps?.cwd ?? process.cwd();
+  const deploymentCommands = await resolveDeploymentCommands({
+    command: "start",
+    cwd,
+    inContainer: deps?.inContainer,
+    provided: deps?.deploymentCommands,
+  });
   const outcome = await runStart({
     build: parsed.build,
-    ...(deps !== undefined ? { deps } : {}),
+    deps: { ...deps, ...(deploymentCommands !== undefined ? { deploymentCommands } : {}) },
   });
   if (outcome.kind === "exited-immediately") {
     process.exitCode = 1;

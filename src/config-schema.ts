@@ -433,6 +433,21 @@ export function validateUserConfig(user: PhoebeUserConfig): void {
 }
 
 /**
+ * Read the validated host-CLI-only `deployment` block off a loaded user config,
+ * or `undefined` when there is none. `phoebe start` / `phoebe stop` run before
+ * `resolveConfig` — and `resolveConfig` drops the block anyway — so they read it
+ * through here and get the same validation a resolved config would have applied.
+ * The `readEngineSource` precedent for the other host-side-only field.
+ */
+export function readDeploymentField(user: {
+  deployment?: DeploymentField;
+}): DeploymentField | undefined {
+  if (user.deployment === undefined) return undefined;
+  validateDeploymentField(user.deployment);
+  return user.deployment;
+}
+
+/**
  * Reject a malformed host-CLI-only `deployment` block. Both lifecycle commands
  * are required together — a start with no stop (or vice versa) would leave
  * `phoebe stop` silently falling back to a compose file the operator has

@@ -347,8 +347,6 @@ replaces that driver with **literal shell command strings** — the same shape a
 `installCommand` / `checkCommand` / `testCommand`, not a runtime name — for
 deployments that are not plain `docker compose`. Design record:
 [`research/lifecycle-runtime-seam.md`](research/lifecycle-runtime-seam.md) (#189).
-(The block is accepted and validated today; `phoebe start` / `phoebe stop`
-switch over to it in the follow-up wiring ticket.)
 
 | Field            | Required | Run by                                                                        |
 | ---------------- | -------- | ----------------------------------------------------------------------------- |

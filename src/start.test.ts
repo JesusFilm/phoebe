@@ -1,14 +1,18 @@
 // `phoebe start` (#187): argument construction and every behaviour branch with
 // an injected command runner — no Docker in the test loop.
 
-import { describe, expect, test } from "vite-plus/test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
+import { LIFECYCLE_SHELL } from "./deployment-command.ts";
 import {
   COMPOSE_REL_PATH,
   MISSING_ENV_MESSAGE,
   type CommandRunner,
   type CommandResult,
 } from "./deployment-compose.ts";
-import { parseStartArgs, runStart, START_SETTLE_MS } from "./start.ts";
+import { parseStartArgs, runStart, runStartCli, START_SETTLE_MS } from "./start.ts";
 
 function deploymentExists(envPresent: boolean): (path: string) => boolean {
   return (path) => {
@@ -50,6 +54,23 @@ function psJson(row: { State: string; ExitCode?: number }): CommandResult {
   };
 }
 
+function lines(): {
+  out: string[];
+  err: string[];
+  io: { stdout: (line: string) => void; stderr: (line: string) => void };
+} {
+  const out: string[] = [];
+  const err: string[] = [];
+  return {
+    out,
+    err,
+    io: {
+      stdout: (line: string) => out.push(line),
+      stderr: (line: string) => err.push(line),
+    },
+  };
+}
+
 describe("parseStartArgs", () => {
   test("defaults and --build / --help", () => {
     expect(parseStartArgs([])).toEqual({ help: false, build: false });
@@ -63,19 +84,6 @@ describe("parseStartArgs", () => {
 });
 
 describe("runStart", () => {
-  const lines = () => {
-    const out: string[] = [];
-    const err: string[] = [];
-    return {
-      out,
-      err,
-      io: {
-        stdout: (line: string) => out.push(line),
-        stderr: (line: string) => err.push(line),
-      },
-    };
-  };
-
   const noWait = { waitMs: async () => undefined };
 
   test("refuses inside the container", async () => {
@@ -308,5 +316,154 @@ describe("runStart", () => {
     });
     expect(outcome.kind).toBe("exited-immediately");
     expect(log.err.join("\n")).toMatch(/exited immediately/);
+  });
+});
+
+// The literal-command path (#189/#261): a `deployment` block replaces the
+// compose driver entirely. `exists` and `dockerAvailable` are deliberately set
+// to the failing values in these tests — reaching them at all is the bug.
+describe("runStart with a deployment block", () => {
+  const literalDeps = (
+    result: CommandResult,
+  ): { runner: CommandRunner; calls: Array<{ file: string; args: readonly string[] }> } => {
+    const calls: Array<{ file: string; args: readonly string[] }> = [];
+    return {
+      calls,
+      runner: async (spec) => {
+        calls.push({ file: spec.file, args: spec.args });
+        return result;
+      },
+    };
+  };
+
+  test("runs startCommand via /bin/sh -c and skips every compose step", async () => {
+    const { runner, calls } = literalDeps({ code: 0, stdout: "", stderr: "" });
+    const log = lines();
+    const waits: number[] = [];
+    const outcome = await runStart({
+      build: false,
+      deps: {
+        cwd: "/deploy",
+        inContainer: false,
+        dockerAvailable: false,
+        exists: () => false,
+        deploymentCommands: {
+          startCommand: "systemctl start phoebe",
+          stopCommand: "systemctl stop phoebe",
+        },
+        runner,
+        io: log.io,
+        waitMs: async (ms) => {
+          waits.push(ms);
+        },
+      },
+    });
+    expect(outcome).toEqual({ kind: "started" });
+    expect(calls).toEqual([{ file: LIFECYCLE_SHELL, args: ["-c", "systemctl start phoebe"] }]);
+    expect(waits).toEqual([]);
+    expect(log.out.join("\n")).toMatch(/systemctl start phoebe/);
+  });
+
+  test("inherits stdio and runs in the deployment directory", async () => {
+    const specs: Array<{ cwd?: string; inheritStdio?: boolean }> = [];
+    const outcome = await runStart({
+      build: false,
+      deps: {
+        cwd: "/deploy",
+        inContainer: false,
+        deploymentCommands: { startCommand: "up.sh", stopCommand: "down.sh" },
+        runner: async (spec) => {
+          specs.push({ cwd: spec.cwd, inheritStdio: spec.inheritStdio });
+          return { code: 0, stdout: "", stderr: "" };
+        },
+        io: lines().io,
+      },
+    });
+    expect(outcome).toEqual({ kind: "started" });
+    expect(specs).toEqual([{ cwd: "/deploy", inheritStdio: true }]);
+  });
+
+  test("a non-zero exit is a failure", async () => {
+    const { runner } = literalDeps({ code: 3, stdout: "", stderr: "" });
+    await expect(
+      runStart({
+        build: false,
+        deps: {
+          cwd: "/deploy",
+          inContainer: false,
+          deploymentCommands: { startCommand: "up.sh", stopCommand: "down.sh" },
+          runner,
+          io: lines().io,
+        },
+      }),
+    ).rejects.toThrow(/exited 3.*up\.sh|up\.sh.*exited 3/s);
+  });
+
+  test("--build warns and is otherwise a no-op", async () => {
+    const { runner, calls } = literalDeps({ code: 0, stdout: "", stderr: "" });
+    const log = lines();
+    const outcome = await runStart({
+      build: true,
+      deps: {
+        cwd: "/deploy",
+        inContainer: false,
+        deploymentCommands: { startCommand: "up.sh", stopCommand: "down.sh" },
+        runner,
+        io: log.io,
+      },
+    });
+    expect(outcome).toEqual({ kind: "started" });
+    expect(calls).toEqual([{ file: LIFECYCLE_SHELL, args: ["-c", "up.sh"] }]);
+    expect(log.err.join("\n")).toMatch(/--build/);
+    expect(log.err.join("\n")).toMatch(/deployment/i);
+  });
+
+  test("the in-container refusal still fires", async () => {
+    await expect(
+      runStart({
+        build: false,
+        deps: {
+          inContainer: true,
+          deploymentCommands: { startCommand: "up.sh", stopCommand: "down.sh" },
+          runner: async () => {
+            throw new Error("must not run");
+          },
+        },
+      }),
+    ).rejects.toThrow(/host/);
+  });
+});
+
+describe("runStartCli config threading", () => {
+  let workDir: string;
+
+  beforeEach(() => {
+    workDir = mkdtempSync(join(tmpdir(), "phoebe-start-cli-"));
+  });
+
+  afterEach(() => {
+    rmSync(workDir, { recursive: true, force: true });
+  });
+
+  test("reads the deployment block off the config on disk and runs it", async () => {
+    writeFileSync(
+      join(workDir, "phoebe.config.ts"),
+      "export default { deployment: { startCommand: 'up.sh', stopCommand: 'down.sh' } };",
+      "utf8",
+    );
+    const calls: Array<readonly string[]> = [];
+    const log = lines();
+    await runStartCli([], {
+      cwd: workDir,
+      inContainer: false,
+      dockerAvailable: false,
+      io: log.io,
+      runner: async (spec) => {
+        calls.push(spec.args);
+        return { code: 0, stdout: "", stderr: "" };
+      },
+    });
+    expect(calls).toEqual([["-c", "up.sh"]]);
+    expect(log.out.join("\n")).toMatch(/Started\./);
   });
 });
