@@ -156,6 +156,25 @@ describe("validateUserConfig", () => {
     );
     expect(() => validateUserConfig(minimalUserConfig({ configDir: "" }))).toThrow(/configDir/i);
   });
+
+  test("accepts a well-formed gitIdentity (#199)", () => {
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({ gitIdentity: { name: "Widget Bot", email: "widget@acme.dev" } }),
+      ),
+    ).not.toThrow();
+  });
+
+  test("rejects a half-declared or malformed gitIdentity (#199)", () => {
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({ gitIdentity: { name: "Widget Bot" } as unknown as never }),
+      ),
+    ).toThrow(/gitIdentity/i);
+    expect(() =>
+      validateUserConfig(minimalUserConfig({ gitIdentity: { name: "Bot", email: "nope" } })),
+    ).toThrow(/gitIdentity/i);
+  });
 });
 
 describe("resolveConfig", () => {
@@ -297,22 +316,25 @@ describe("resolveConfig", () => {
     expect(resolved.paths.repoDir).toBe("/data/repos/acme/widget/repo");
   });
 
-  test("drops bootstrapper-only engine, workspace, and configDir from the engine-facing shape", () => {
-    // Mirrors how `engine` is never on PhoebeConfig: both fields are accepted
+  test("drops bootstrapper-only engine, workspace, configDir, and gitIdentity from the engine-facing shape", () => {
+    // Mirrors how `engine` is never on PhoebeConfig: the fields are accepted
     // on the user config so consumers type-check, then discarded by construction.
     const resolved = resolveConfig(
       minimalUserConfig({
         engine: { source: "local" },
         workspace: { depth: 2 },
         configDir: ".phoebe",
+        gitIdentity: { name: "Widget Bot", email: "widget@acme.dev" },
       }),
     );
     expect(resolved).not.toHaveProperty("engine");
     expect(resolved).not.toHaveProperty("workspace");
     expect(resolved).not.toHaveProperty("configDir");
+    expect(resolved).not.toHaveProperty("gitIdentity");
     // A spread snapshot of keys must not sneak them back in under any alias.
     expect(Object.keys(resolved).sort()).not.toContain("engine");
     expect(Object.keys(resolved).sort()).not.toContain("workspace");
     expect(Object.keys(resolved).sort()).not.toContain("configDir");
+    expect(Object.keys(resolved).sort()).not.toContain("gitIdentity");
   });
 });

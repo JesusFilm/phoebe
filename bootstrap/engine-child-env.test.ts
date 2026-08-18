@@ -152,4 +152,60 @@ describe("buildEngineChildEnv", () => {
     });
     expect(env.GH_TOKEN).toBe("ghp_tenant_own");
   });
+
+  // The `gitIdentity` rung (#199): above everything said deployment-wide (the
+  // base allowlist and the App-mode bot fallback), below anything said about
+  // this tenant specifically (its own `.env`).
+  describe("configIdentity", () => {
+    const configIdentity = { name: "Widget Bot", email: "widget@acme.dev" };
+
+    test("outranks the deployment-global base identity", () => {
+      const env = buildEngineChildEnv({ base, configIdentity, tenantEnv: {} });
+      expect(env.GIT_AUTHOR_NAME).toBe("Widget Bot");
+      expect(env.GIT_AUTHOR_EMAIL).toBe("widget@acme.dev");
+      expect(env.GIT_COMMITTER_NAME).toBe("Widget Bot");
+      expect(env.GIT_COMMITTER_EMAIL).toBe("widget@acme.dev");
+    });
+
+    test("outranks the App-mode bot fallback", () => {
+      const env = buildEngineChildEnv({
+        base,
+        mintedEnv: {
+          GH_TOKEN: "ghs_minted",
+          PHOEBE_GH_LOGIN: "phoebe-app[bot]",
+          GIT_AUTHOR_NAME: "phoebe-app[bot]",
+          GIT_AUTHOR_EMAIL: "12345+phoebe-app[bot]@users.noreply.github.com",
+          GIT_COMMITTER_NAME: "phoebe-app[bot]",
+          GIT_COMMITTER_EMAIL: "12345+phoebe-app[bot]@users.noreply.github.com",
+        },
+        configIdentity,
+        tenantEnv: {},
+      });
+      expect(env.GIT_AUTHOR_NAME).toBe("Widget Bot");
+      expect(env.GIT_COMMITTER_EMAIL).toBe("widget@acme.dev");
+      // Only the identity moves — the minted token is untouched.
+      expect(env.GH_TOKEN).toBe("ghs_minted");
+      expect(env.PHOEBE_GH_LOGIN).toBe("phoebe-app[bot]");
+    });
+
+    test("loses to the tenant's own .env, per var", () => {
+      const env = buildEngineChildEnv({
+        base,
+        configIdentity,
+        tenantEnv: { GIT_AUTHOR_NAME: "Operator", GIT_COMMITTER_NAME: "Operator" },
+      });
+      expect(env.GIT_AUTHOR_NAME).toBe("Operator");
+      expect(env.GIT_COMMITTER_NAME).toBe("Operator");
+      // The `.env` said nothing about the address, so the repo's declaration stands.
+      expect(env.GIT_AUTHOR_EMAIL).toBe("widget@acme.dev");
+      expect(env.GIT_COMMITTER_EMAIL).toBe("widget@acme.dev");
+    });
+
+    test("no declared identity leaves today's env byte-for-byte", () => {
+      const withField = buildEngineChildEnv({ base, configIdentity: null, tenantEnv: {} });
+      const without = buildEngineChildEnv({ base, tenantEnv: {} });
+      expect(withField).toEqual(without);
+      expect(without.GIT_AUTHOR_NAME).toBe("Phoebe");
+    });
+  });
 });

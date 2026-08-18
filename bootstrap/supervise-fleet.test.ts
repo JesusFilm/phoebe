@@ -22,6 +22,7 @@ function tenant(slug: string): DiscoveredTenant {
     dir: `/etc/phoebe/repos/${slug}`,
     configPath: `/etc/phoebe/repos/${slug}/phoebe.config.ts`,
     envPath: `/etc/phoebe/repos/${slug}/.env`,
+    gitIdentity: null,
   };
 }
 

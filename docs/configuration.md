@@ -267,6 +267,78 @@ export default config;
   Like `engine`, it is bootstrapper-only and `resolveConfig`
   drops it (the engine never sees it).
 
+## Commit attribution (`gitIdentity`)
+
+Bootstrapper-only, per tenant. Declares how **this repo's** commits are signed,
+so the answer travels with the repo instead of being restated in every
+deployment's `.env`:
+
+```ts
+const config: PhoebeUserConfig = {
+  repoSlug: "acme/widget",
+  // …
+  gitIdentity: { name: "Phoebe", email: "12345+phoebe@users.noreply.github.com" },
+};
+```
+
+- **Both halves, always.** A name without the exact email is a trap: GitHub
+  links a commit to an account by the _email_, so a name-only declaration would
+  look like it worked and attribute the commits to nobody. A malformed value
+  fails the tenant (skip-and-warn in a fleet, a hard boot error in solo) rather
+  than silently falling back.
+- **It sets all four vars** — `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` /
+  `GIT_COMMITTER_NAME` / `GIT_COMMITTER_EMAIL`. Author and committer are not
+  separately expressible; "how are this repo's commits attributed" is one
+  question.
+- Like `engine` and `configDir`, it is bootstrapper-only: `resolveConfig` drops
+  it and the engine never sees the field, only the env vars the supervisor sets
+  from it.
+
+### The precedence ladder
+
+Four channels can name a git identity. Later wins:
+
+| Rung | Channel                                             | Scope                        |
+| ---- | --------------------------------------------------- | ---------------------------- |
+| 1    | The supervisor's own `GIT_*` (deployment env-file)  | Every tenant it supervises   |
+| 2    | The `app` arm's bot fallback (`<id>+<slug>[bot]@…`) | Every minted tenant          |
+| 3    | **`gitIdentity`**                                   | This repo, every deployment  |
+| 4    | The tenant's co-located `.env`                      | This tenant, this deployment |
+
+In one sentence: **the config field outranks anything said deployment-wide and
+is outranked by anything said about this tenant specifically.** So a `.env` that
+sets `GIT_AUTHOR_*` today keeps winning, and a repo that declares nothing is
+attributed exactly as it was before the field existed.
+
+Collisions are resolved **per variable**, not per identity: a tenant `.env` that
+sets only `GIT_AUTHOR_NAME` takes the other three from `gitIdentity`.
+
+**In solo there is no rung 1.** A solo deployment has exactly one env-file, and
+it is _the tenant's_ — the same co-located `.env` a fleet tenant carries, which
+wins rung 4 there too. So it wins every variable it sets and `gitIdentity` fills
+the rest; the same rule, read from the other end. (Rung 2 sits below it there as
+well: the App arm's bot identity is applied as a fallback for vars still unset
+by the time the engine runs.)
+
+The consequence is worth stating plainly: on a solo deployment that already sets
+`GIT_AUTHOR_*` in its `.env`, adding `gitIdentity` changes nothing until those
+vars are removed. Boot says so at every launch rather than leaving the
+declaration quietly inert:
+
+```text
+[phoebe] boot: gitIdentity declares Phoebe <12345+phoebe@users.noreply.github.com>,
+  but this deployment's env already sets GIT_AUTHOR_NAME — the env wins (in solo
+  it is this tenant's own env-file). Unset those vars to use the declaration.
+```
+
+**Editing it takes effect on the relaunch it already causes** — the config is
+part of each tenant's reconcile fingerprint, so the child restarts with the new
+identity at the next work-unit boundary, no container restart.
+
+**Host-side runs are not covered.** The identity reaches the engine as env vars
+set by `phoebe boot`; a bare `phoebe run` on your laptop uses your own
+`~/.gitconfig`, which is what you want there.
+
 ## Engine source (`engine`)
 
 Bootstrapper-only. `phoebe boot` reads this field to decide **where the engine

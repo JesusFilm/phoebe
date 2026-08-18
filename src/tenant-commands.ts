@@ -120,6 +120,13 @@ const config: PhoebeUserConfig = {
   installCommand: ${JSON.stringify(fields.installCommand)},
   checkCommand: ${JSON.stringify(fields.checkCommand)},
   testCommand: ${JSON.stringify(fields.testCommand)},
+
+  // How this repo's commits are attributed (optional, #199). Declaring it here
+  // means every deployment that adopts this repo agrees, instead of each one
+  // restating it in a \`.env\`. This tenant's own \`.env\` still overrides it.
+  // The email must be exactly the address GitHub knows, or the commits link to
+  // no account at all.
+  // gitIdentity: { name: "Phoebe", email: "12345+phoebe@users.noreply.github.com" },
 };
 
 export default config;

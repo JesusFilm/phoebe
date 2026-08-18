@@ -97,6 +97,12 @@ in-process and builds a deny-by-default env for that engine child
 spreads into children; sibling tenants never receive each other's secrets in
 env.
 
+**Git identity is layered, not scrubbed.** A child's declared `gitIdentity`
+(`phoebe.config.ts`) is applied above the supervisor's own `GIT_*` and the App
+arm's bot fallback, and below that child's `.env` — so a repo can carry its own
+commit attribution into any deployment, and a deployment can still override it
+per tenant ([`configuration.md` → Commit attribution](configuration.md#commit-attribution-gitidentity)).
+
 **On-disk residual:** all children share one container uid, so
 a prompt-injected agent can still _read_ another child's `.env` file off the
 shared `/etc/phoebe` mount. Env-scrub is the runtime isolation boundary, not

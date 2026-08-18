@@ -445,6 +445,64 @@ describe("configDir asset relocation (#98)", () => {
     expect(warnings.some((w) => /bad/.test(w) && /configDir/.test(w))).toBe(true);
   });
 
+  test("carries each child's declared gitIdentity onto the tenant (#199)", async () => {
+    writeSlugConfig(join(dir, "widget"), "acme/widget");
+    writeSlugConfig(join(dir, "gadget"), "acme/gadget");
+
+    const discovery = await discoverWorkspaceTenants(
+      dir,
+      { depth: 1 },
+      {
+        loadRepoSlug: (path) => (path.includes("widget") ? "acme/widget" : "acme/gadget"),
+        loadGitIdentity: (path) =>
+          path.includes("widget") ? { name: "Widget Bot", email: "widget@acme.dev" } : null,
+        readOriginUrl: () => null,
+      },
+    );
+
+    const widget = discovery.tenants.find((t) => t.slug === "acme/widget");
+    const gadget = discovery.tenants.find((t) => t.slug === "acme/gadget");
+    expect(widget?.gitIdentity).toEqual({ name: "Widget Bot", email: "widget@acme.dev" });
+    // Declaring nothing stays null — the child env is what it was before #199.
+    expect(gadget?.gitIdentity).toBeNull();
+  });
+
+  test("a malformed gitIdentity skip-and-warns the child, like a bad repoSlug", async () => {
+    writeSlugConfig(join(dir, "good"), "acme/good");
+    writeSlugConfig(join(dir, "bad"), "acme/bad");
+    const warnings: string[] = [];
+
+    const discovery = await discoverWorkspaceTenants(
+      dir,
+      { depth: 1 },
+      {
+        loadRepoSlug: (path) => (path.includes("bad") ? "acme/bad" : "acme/good"),
+        loadGitIdentity: (path) => {
+          if (path.includes("bad")) throw new Error("`gitIdentity` needs a non-empty `email`");
+          return null;
+        },
+        readOriginUrl: () => null,
+        warn: (m) => warnings.push(m),
+      },
+    );
+
+    expect(discovery.tenants.map((t) => t.slug)).toEqual(["acme/good"]);
+    expect(discovery.holds).toEqual([
+      { dir: join(dir, "bad"), reason: "`gitIdentity` needs a non-empty `email`", slug: null },
+    ]);
+    expect(warnings.some((w) => /bad/.test(w) && /gitIdentity/.test(w))).toBe(true);
+  });
+
+  test("no loadGitIdentity dep leaves the tenant identity-free (back-compat)", async () => {
+    writeSlugConfig(join(dir, "widget"), "acme/widget");
+    const discovery = await discoverWorkspaceTenants(
+      dir,
+      { depth: 1 },
+      { loadRepoSlug: () => "acme/widget", readOriginUrl: () => null },
+    );
+    expect(discovery.tenants[0]?.gitIdentity).toBeNull();
+  });
+
   test("no loadConfigDir dep keeps .env co-located (back-compat)", async () => {
     writeSlugConfig(join(dir, "widget"), "acme/widget");
     const discovery = await discoverWorkspaceTenants(
@@ -721,6 +779,7 @@ describe("diffFleet", () => {
     dir: id,
     configPath: `${id}/phoebe.config.ts`,
     envPath: `${id}/.env`,
+    gitIdentity: null,
   });
 
   test("classifies added, removed, changed, and unchanged", () => {
