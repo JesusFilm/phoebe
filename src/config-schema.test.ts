@@ -232,6 +232,25 @@ describe("validateUserConfig", () => {
         }),
       ),
     ).toThrow(/deployment.*stopNowCommand/i);
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({
+          deployment: {
+            startCommand: "systemctl start phoebe",
+            stopCommand: "systemctl stop phoebe",
+            stopNowCommand: "   ",
+          },
+        }),
+      ),
+    ).toThrow(/deployment.*stopNowCommand/i);
+  });
+
+  test("rejects a deployment value that is not an object (#260)", () => {
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({ deployment: "systemctl start phoebe" as unknown as never }),
+      ),
+    ).toThrow(/deployment.*must be an object/i);
   });
 });
 

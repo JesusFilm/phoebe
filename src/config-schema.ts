@@ -441,16 +441,22 @@ export function validateUserConfig(user: PhoebeUserConfig): void {
  * `configDir`/`gitIdentity` do, even though only the host CLI reads the value.
  */
 function validateDeploymentField(deployment: DeploymentField): void {
+  if (typeof deployment !== "object" || deployment === null || Array.isArray(deployment)) {
+    throw new Error(
+      `phoebe.config.ts \`deployment\` must be an object with \`startCommand\` and ` +
+        `\`stopCommand\` (got ${JSON.stringify(deployment)}).`,
+    );
+  }
   const isBlank = (value: unknown): boolean =>
     typeof value !== "string" || value.trim().length === 0;
   const missing = (["startCommand", "stopCommand"] as const).filter((key) =>
     isBlank(deployment[key]),
   );
   if (missing.length > 0) {
+    const named = missing.map((key) => `\`${key}\``).join(" and ");
     throw new Error(
-      `phoebe.config.ts \`deployment\` requires non-empty ${missing
-        .map((key) => `\`${key}\``)
-        .join(" and ")} — both are required together ` + `(got ${JSON.stringify(deployment)}).`,
+      `phoebe.config.ts \`deployment\` requires non-empty ${named} — both are required ` +
+        `together (got ${JSON.stringify(deployment)}).`,
     );
   }
   if (deployment.stopNowCommand !== undefined && isBlank(deployment.stopNowCommand)) {
