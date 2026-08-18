@@ -691,7 +691,7 @@ function issueCoAuthorTrailer(issueNumber: number): string | null {
  * before they are pushed. Best-effort by design: whatever happens here, the
  * commits the agent made are pushed as they stand.
  */
-function creditIssueAuthor(opts: {
+function stampIssueAuthorCredit(opts: {
   issueNumber: number;
   worktreeDir: string;
   baseRef: string;
@@ -707,7 +707,7 @@ function creditIssueAuthor(opts: {
     trailer,
   });
   const detail = {
-    rewritten: `credited ${trailer.slice("Co-authored-by: ".length)}`,
+    rewritten: `added "${trailer}"`,
     nothing: "no commits to credit",
     "skipped-merges": "range holds a merge commit; commits left as the agent made them",
     failed: "rewrite failed and was aborted; commits left as the agent made them",
@@ -1300,7 +1300,7 @@ async function runOneIssue(opts: {
 
     if (newCommitCount > 0) {
       if (config.creditIssueAuthor) {
-        creditIssueAuthor({ issueNumber, worktreeDir, baseRef: worktreeBase });
+        stampIssueAuthorCredit({ issueNumber, worktreeDir, baseRef: worktreeBase });
       }
       pushBranch(worktreeDir, agentBranch);
       const existingPrRow = ghJson<Array<{ number: number }>>([

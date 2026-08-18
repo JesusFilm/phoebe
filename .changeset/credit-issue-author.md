@@ -19,4 +19,5 @@ exactly as the agent made them and logs why.
 
 New config field `creditIssueAuthor` (default `true`). Set it to `false` on a
 repo where a drive-by reporter's name on agent-written code would read as
-misattribution rather than credit.
+misattribution rather than credit. The opt-out is the operator's only — there
+is deliberately no per-issue or per-author switch.

@@ -128,8 +128,10 @@ The interaction to remember:
   removing `readyLabel` is the documented pause lever.
 - The same reasoning sets the default for issue-author credit (#198): Phoebe
   stamps the commits it pushes for an issue with a `Co-authored-by:` trailer for
-  the issue's author, and does so for every `ready-for-agent` issue rather than
-  only vouched ones — the maintainer's label already vouched for the ticket. On
+  the issue's author, and does so for every issue it works rather than only
+  vouched ones — the label that queued it (`ready-for-agent`, or the research
+  label) already needed triage permission, so a maintainer vouched for the
+  ticket by applying it. On
   a repo where that credit would read as misattribution, the operator turns it
   off with `creditIssueAuthor: false` (see
   [`configuration.md`](configuration.md#issue-author-credit)).

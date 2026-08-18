@@ -120,6 +120,11 @@ lookup fails, the range holds a merge commit, or the rewrite fails, the commits
 are pushed exactly as the agent made them and the log says why. Because it does
 not go through the prompt, operator prompt overrides need no change.
 
+The opt-out is the operator's, deliberately: there is no per-issue or per-author
+switch. Whether a repo credits its reporters is a repo-wide stance, and the
+person who can turn it off is the one who labelled the ticket for Phoebe in the
+first place. An author who does not want the credit asks the operator.
+
 ## Work order
 
 | Field       | Default                                                    | Meaning                                                                                                                                                                                                  |
