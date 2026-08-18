@@ -277,8 +277,31 @@ async function tenantRow(fields: {
   envLabel: string;
   fetchFn: typeof fetch;
   inContainer: boolean;
+  /** Path to this tenant's phoebe.config.ts, for reading `disabled` (#202). */
+  configPath?: string;
 }): Promise<TenantDoctorRow> {
   const checks: DoctorCheck[] = [];
+
+  // Disabled informational note (#202): report-only, does not fail the report.
+  // The tenant's other checks still run — a re-enabled tenant should not be
+  // surprised by drift that doctor was hiding while it was paused.
+  if (fields.configPath !== undefined) {
+    let disabled = false;
+    try {
+      const user = await loadUserConfig(fields.configPath);
+      disabled = (user as { disabled?: unknown }).disabled === true;
+    } catch {
+      disabled = false;
+    }
+    if (disabled) {
+      checks.push({
+        id: "disabled",
+        state: "ok",
+        detail: "tenant is disabled — no agent work will start until `disabled` is removed",
+      });
+    }
+  }
+
   const tokenCheck = tenantTokenCheck(fields);
   checks.push(tokenCheck);
 
@@ -522,6 +545,7 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
           envLabel: tenant.envPath,
           fetchFn,
           inContainer,
+          configPath: tenant.configPath,
         });
       })),
     );
@@ -546,6 +570,7 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
         envLabel: "the environment",
         fetchFn,
         inContainer,
+        configPath,
       }),
     );
   }

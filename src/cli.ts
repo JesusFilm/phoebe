@@ -364,8 +364,9 @@ function formatHealthColumns(listing: TenantListing): string {
 }
 
 function formatTenantListing(listing: TenantListing): string {
-  const header =
-    listing.slug !== null ? `  ${listing.path}  (${listing.slug})` : `  ${listing.path}`;
+  const slugSuffix = listing.slug !== null ? `  (${listing.slug})` : "";
+  const disabledSuffix = listing.disabled ? "  (disabled)" : "";
+  const header = `  ${listing.path}${slugSuffix}${disabledSuffix}`;
   if (listing.held) {
     const held = `held — ${listing.reason ?? "held"}`;
     const detail = listing.slug !== null ? `${held}  ${formatHealthColumns(listing)}` : held;
@@ -396,6 +397,7 @@ async function runListCli(argv: readonly string[]): Promise<void> {
           configValid: listing.configValid,
           envPresent: listing.envPresent,
           retainedData: listing.retainedData,
+          disabled: listing.disabled,
           status: listing.status,
         })),
         undeclared: result.undeclared,
