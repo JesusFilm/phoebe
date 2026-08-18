@@ -5,11 +5,12 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
+import type { CommandRunner } from "./deployment-compose.ts";
 import {
-  lifecycleFailureError,
   LIFECYCLE_SHELL,
   readDeploymentCommands,
-  runLifecycleCommand,
+  resolveDeploymentCommands,
+  runLifecycleStep,
 } from "./deployment-command.ts";
 
 describe("readDeploymentCommands", () => {
@@ -54,38 +55,92 @@ describe("readDeploymentCommands", () => {
   });
 });
 
-describe("runLifecycleCommand", () => {
-  test("spawns the command under the shell with stdio inherited", async () => {
+describe("runLifecycleStep", () => {
+  const record = (result: {
+    code: number;
+  }): { runner: CommandRunner; specs: Array<Record<string, unknown>> } => {
     const specs: Array<Record<string, unknown>> = [];
-    const result = await runLifecycleCommand({
-      command: "echo hi",
-      cwd: "/deploy",
+    return {
+      specs,
       runner: async (spec) => {
         specs.push({ ...spec });
-        return { code: 0, stdout: "", stderr: "" };
+        return { stdout: "", stderr: "", ...result };
       },
+    };
+  };
+
+  test("announces the field, then spawns under the shell with stdio inherited", async () => {
+    const { runner, specs } = record({ code: 0 });
+    const announced: string[] = [];
+    await runLifecycleStep({
+      field: "startCommand",
+      command: "up.sh",
+      cwd: "/deploy",
+      announce: (line) => announced.push(line),
+      runner,
     });
-    expect(result.code).toBe(0);
     expect(specs).toEqual([
-      { file: LIFECYCLE_SHELL, args: ["-c", "echo hi"], cwd: "/deploy", inheritStdio: true },
+      { file: LIFECYCLE_SHELL, args: ["-c", "up.sh"], cwd: "/deploy", inheritStdio: true },
     ]);
+    expect(announced).toEqual(["[phoebe] Starting via `deployment.startCommand`: up.sh"]);
   });
 
-  test("really runs the string through a shell", async () => {
-    const result = await runLifecycleCommand({ command: "exit 7", cwd: process.cwd() });
-    expect(result.code).toBe(7);
+  test("stop fields announce with the stopping verb", async () => {
+    const { runner } = record({ code: 0 });
+    const announced: string[] = [];
+    await runLifecycleStep({
+      field: "stopNowCommand",
+      command: "kill.sh",
+      cwd: "/deploy",
+      announce: (line) => announced.push(line),
+      runner,
+    });
+    expect(announced).toEqual(["[phoebe] Stopping via `deployment.stopNowCommand`: kill.sh"]);
+  });
+
+  test("a non-zero exit throws, naming the field and the command", async () => {
+    const { runner } = record({ code: 4 });
+    await expect(
+      runLifecycleStep({
+        field: "stopCommand",
+        command: "systemctl stop phoebe",
+        cwd: "/deploy",
+        announce: () => undefined,
+        runner,
+      }),
+    ).rejects.toThrow(/`deployment\.stopCommand` exited 4: systemctl stop phoebe/);
+  });
+
+  test("really runs the string through a shell when no runner is injected", async () => {
+    await expect(
+      runLifecycleStep({
+        field: "startCommand",
+        command: "exit 7",
+        cwd: process.cwd(),
+        announce: () => undefined,
+      }),
+    ).rejects.toThrow(/exited 7/);
   });
 });
 
-describe("lifecycleFailureError", () => {
-  test("names the config field and the command", () => {
-    const error = lifecycleFailureError({
-      field: "stopNowCommand",
-      command: "systemctl kill phoebe",
-      result: { code: 4, stdout: "", stderr: "" },
-    });
-    expect(error.message).toMatch(/deployment\.stopNowCommand/);
-    expect(error.message).toMatch(/exited 4/);
-    expect(error.message).toMatch(/systemctl kill phoebe/);
+describe("resolveDeploymentCommands", () => {
+  const block = { startCommand: "up.sh", stopCommand: "down.sh" };
+
+  test("refuses in-container before the config is ever read", async () => {
+    // cwd is deliberately unreadable — reaching the config at all is the bug.
+    await expect(
+      resolveDeploymentCommands({ command: "start", cwd: "/nope", inContainer: true }),
+    ).rejects.toThrow(/host/);
+  });
+
+  test("a provided block short-circuits the config read", async () => {
+    await expect(
+      resolveDeploymentCommands({
+        command: "stop",
+        cwd: "/nope",
+        inContainer: false,
+        provided: block,
+      }),
+    ).resolves.toEqual(block);
   });
 });

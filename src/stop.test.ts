@@ -1,7 +1,10 @@
 // `phoebe stop` (#186): argument construction and every behaviour branch with
 // an injected command runner — no Docker in the test loop.
 
-import { describe, expect, test } from "vite-plus/test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
 import { LIFECYCLE_SHELL } from "./deployment-command.ts";
 import {
   COMPOSE_REL_PATH,
@@ -10,7 +13,7 @@ import {
   type CommandRunner,
   type CommandResult,
 } from "./deployment-compose.ts";
-import { parseStopArgs, runStop, STOP_NOW_TIMEOUT_SEC } from "./stop.ts";
+import { parseStopArgs, runStop, runStopCli, STOP_NOW_TIMEOUT_SEC } from "./stop.ts";
 
 function deploymentExists(envPresent: boolean): (path: string) => boolean {
   return (path) => {
@@ -52,6 +55,23 @@ function psJson(row: { State: string; ExitCode?: number }): CommandResult {
   };
 }
 
+function lines(): {
+  out: string[];
+  err: string[];
+  io: { stdout: (line: string) => void; stderr: (line: string) => void };
+} {
+  const out: string[] = [];
+  const err: string[] = [];
+  return {
+    out,
+    err,
+    io: {
+      stdout: (line: string) => out.push(line),
+      stderr: (line: string) => err.push(line),
+    },
+  };
+}
+
 describe("parseStopArgs", () => {
   test("defaults and --now / --help", () => {
     expect(parseStopArgs([])).toEqual({ help: false, now: false });
@@ -65,19 +85,6 @@ describe("parseStopArgs", () => {
 });
 
 describe("runStop", () => {
-  const lines = () => {
-    const out: string[] = [];
-    const err: string[] = [];
-    return {
-      out,
-      err,
-      io: {
-        stdout: (line: string) => out.push(line),
-        stderr: (line: string) => err.push(line),
-      },
-    };
-  };
-
   test("refuses inside the container", async () => {
     await expect(
       runStop({
@@ -321,19 +328,6 @@ describe("runStop", () => {
 // compose driver entirely. `exists` and `dockerAvailable` are deliberately set
 // to the failing values in these tests — reaching them at all is the bug.
 describe("runStop with a deployment block", () => {
-  const lines = () => {
-    const out: string[] = [];
-    const err: string[] = [];
-    return {
-      out,
-      err,
-      io: {
-        stdout: (line: string) => out.push(line),
-        stderr: (line: string) => err.push(line),
-      },
-    };
-  };
-
   const literalDeps = (
     result: CommandResult,
   ): {
@@ -375,7 +369,7 @@ describe("runStop with a deployment block", () => {
         inContainer: false,
         dockerAvailable: false,
         exists: () => false,
-        deployment: commands,
+        deploymentCommands: commands,
         runner,
         io: log.io,
       },
@@ -399,7 +393,7 @@ describe("runStop with a deployment block", () => {
       deps: {
         cwd: "/deploy",
         inContainer: false,
-        deployment: { ...commands, stopNowCommand: "systemctl kill phoebe" },
+        deploymentCommands: { ...commands, stopNowCommand: "systemctl kill phoebe" },
         runner,
         io: lines().io,
       },
@@ -415,7 +409,7 @@ describe("runStop with a deployment block", () => {
       deps: {
         cwd: "/deploy",
         inContainer: false,
-        deployment: commands,
+        deploymentCommands: commands,
         runner,
         io: lines().io,
       },
@@ -432,7 +426,7 @@ describe("runStop with a deployment block", () => {
         deps: {
           cwd: "/deploy",
           inContainer: false,
-          deployment: commands,
+          deploymentCommands: commands,
           runner,
           io: lines().io,
         },
@@ -446,12 +440,47 @@ describe("runStop with a deployment block", () => {
         now: false,
         deps: {
           inContainer: true,
-          deployment: commands,
+          deploymentCommands: commands,
           runner: async () => {
             throw new Error("must not run");
           },
         },
       }),
     ).rejects.toThrow(/host/);
+  });
+});
+
+describe("runStopCli config threading", () => {
+  let workDir: string;
+
+  beforeEach(() => {
+    workDir = mkdtempSync(join(tmpdir(), "phoebe-stop-cli-"));
+  });
+
+  afterEach(() => {
+    rmSync(workDir, { recursive: true, force: true });
+  });
+
+  test("reads the deployment block off the config on disk and runs it", async () => {
+    writeFileSync(
+      join(workDir, "phoebe.config.ts"),
+      "export default { deployment: { startCommand: 'up.sh', stopCommand: 'down.sh', " +
+        "stopNowCommand: 'kill.sh' } };",
+      "utf8",
+    );
+    const calls: Array<readonly string[]> = [];
+    const log = lines();
+    await runStopCli(["--now"], {
+      cwd: workDir,
+      inContainer: false,
+      dockerAvailable: false,
+      io: log.io,
+      runner: async (spec) => {
+        calls.push(spec.args);
+        return { code: 0, stdout: "", stderr: "" };
+      },
+    });
+    expect(calls).toEqual([["-c", "kill.sh"]]);
+    expect(log.out.join("\n")).toMatch(/Stopped \(--now\)/);
   });
 });

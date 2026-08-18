@@ -10,11 +10,7 @@
 // step here is skipped. See src/deployment-command.ts.
 
 import type { DeploymentField } from "./config-schema.ts";
-import {
-  lifecycleFailureError,
-  readDeploymentCommands,
-  runLifecycleCommand,
-} from "./deployment-command.ts";
+import { resolveDeploymentCommands, runLifecycleStep } from "./deployment-command.ts";
 import {
   assertHostLifecycle,
   composeFailureError,
@@ -86,10 +82,12 @@ type StopDeps = {
   exists?: (path: string) => boolean;
   /**
    * Literal lifecycle commands from the config (#261). Present ⇒ the compose
-   * driver is bypassed entirely. {@link runStopCli} reads it off the config;
-   * `runStop` only ever consults the dep, which is what keeps it filesystem-free.
+   * driver is bypassed entirely. Named apart from the `deployment` local below,
+   * which is the resolved *Compose* deployment. {@link runStopCli} reads it off
+   * the config; `runStop` only ever consults the dep, which is what keeps it
+   * filesystem-free.
    */
-  deployment?: DeploymentField;
+  deploymentCommands?: DeploymentField;
   io?: Partial<StopIo>;
 };
 
@@ -135,23 +133,19 @@ export async function runStop(opts: { now: boolean; deps?: StopDeps }): Promise<
   // it fires before the branch below (#189).
   assertHostLifecycle("stop", opts.deps?.inContainer);
 
-  const deploymentCommands = opts.deps?.deployment;
+  const deploymentCommands = opts.deps?.deploymentCommands;
   if (deploymentCommands !== undefined) {
     // `--now` without a `stopNowCommand` is the plain stop command: the operator
     // has said their runtime has one way down, so honour the flag by running it
     // rather than refusing.
     const nowCommand = opts.now ? deploymentCommands.stopNowCommand : undefined;
-    const field = nowCommand !== undefined ? "stopNowCommand" : "stopCommand";
-    const command = nowCommand ?? deploymentCommands.stopCommand;
-    io.stdout(`[phoebe] Stopping via \`deployment.${field}\`: ${command}`);
-    const result = await runLifecycleCommand({
-      command,
+    await runLifecycleStep({
+      field: nowCommand !== undefined ? "stopNowCommand" : "stopCommand",
+      command: nowCommand ?? deploymentCommands.stopCommand,
       cwd,
+      announce: io.stdout,
       ...(opts.deps?.runner !== undefined ? { runner: opts.deps.runner } : {}),
     });
-    if (result.code !== 0) {
-      throw lifecycleFailureError({ field, command, result });
-    }
     if (opts.now) {
       io.stdout("[phoebe] Stopped (--now).");
       return { kind: "stopped-now" };
@@ -242,18 +236,19 @@ export async function runStopCli(argv: readonly string[], deps?: StopDeps): Prom
     process.stdout.write(STOP_HELP_TEXT);
     return;
   }
-  // Refuse in-container before touching the config: reading it means importing
-  // (and running) a TS module, which a refused command must not do. `runStop`
-  // asserts again on its own — it is the guard for direct callers too.
-  assertHostLifecycle("stop", deps?.inContainer);
   // Reading the config is the CLI's job, not `runStop`'s: the run function stays
   // injectable-only so tests never touch a config file. A caller that already
   // has the block passes it through deps and no config is read.
   const cwd = deps?.cwd ?? process.cwd();
-  const deployment = deps?.deployment ?? (await readDeploymentCommands(cwd));
+  const deploymentCommands = await resolveDeploymentCommands({
+    command: "stop",
+    cwd,
+    inContainer: deps?.inContainer,
+    provided: deps?.deploymentCommands,
+  });
   const outcome = await runStop({
     now: parsed.now,
-    deps: { ...deps, ...(deployment !== undefined ? { deployment } : {}) },
+    deps: { ...deps, ...(deploymentCommands !== undefined ? { deploymentCommands } : {}) },
   });
   if (outcome.kind === "killed-mid-run") {
     process.exitCode = 1;

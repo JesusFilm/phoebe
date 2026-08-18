@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { TENANT_CONFIG_FILE } from "../bootstrap/tenants.ts";
 import { readDeploymentField, type DeploymentField } from "./config-schema.ts";
 import {
+  assertHostLifecycle,
   defaultCommandRunner,
   type CommandResult,
   type CommandRunner,
@@ -21,6 +22,36 @@ import { loadUserConfig } from "./load-config.ts";
 
 /** The shell literal lifecycle commands run under. */
 export const LIFECYCLE_SHELL = "/bin/sh";
+
+/** Which config string a lifecycle step is running. */
+export type LifecycleField = "startCommand" | "stopCommand" | "stopNowCommand";
+
+/** Present participle for the announce line, so the field is the only argument. */
+const LIFECYCLE_VERB: Record<LifecycleField, string> = {
+  startCommand: "Starting",
+  stopCommand: "Stopping",
+  stopNowCommand: "Stopping",
+};
+
+/**
+ * Resolve the `deployment` block a CLI entry point should hand its run
+ * function: refuse in-container first, then read the config unless the caller
+ * already supplied the block.
+ *
+ * The refusal comes before the read on purpose — reading the config means
+ * importing, and so *executing*, the consumer's TS module, which a command that
+ * is about to refuse must not do. The run functions assert again on their own;
+ * they are the guard for direct callers.
+ */
+export async function resolveDeploymentCommands(opts: {
+  command: "start" | "stop";
+  cwd: string;
+  inContainer?: boolean;
+  provided?: DeploymentField;
+}): Promise<DeploymentField | undefined> {
+  assertHostLifecycle(opts.command, opts.inContainer);
+  return opts.provided ?? (await readDeploymentCommands(opts.cwd));
+}
 
 /**
  * Read the `deployment` block for the deployment rooted at `cwd`, or
@@ -39,22 +70,30 @@ export async function readDeploymentCommands(cwd: string): Promise<DeploymentFie
 }
 
 /**
- * Run one literal lifecycle command. stdio is inherited — a drain that takes an
- * hour has the operator's own command output as its only evidence of life — so
- * the result carries an exit code and nothing else.
+ * Announce, run, and check one literal lifecycle command. Announcing first is
+ * the operator's only way to tell which config string owns whatever the
+ * inherited stdio then prints; stdio is inherited because a drain that takes an
+ * hour has that output as its sole evidence of life. Returns nothing — a clean
+ * exit is the entire success signal, and a non-zero one throws.
  */
-export async function runLifecycleCommand(opts: {
+export async function runLifecycleStep(opts: {
+  field: LifecycleField;
   command: string;
   cwd: string;
+  announce: (line: string) => void;
   runner?: CommandRunner;
-}): Promise<CommandResult> {
+}): Promise<void> {
+  opts.announce(
+    `[phoebe] ${LIFECYCLE_VERB[opts.field]} via \`deployment.${opts.field}\`: ${opts.command}`,
+  );
   const runner = opts.runner ?? defaultCommandRunner;
-  return await runner({
+  const result = await runner({
     file: LIFECYCLE_SHELL,
     args: ["-c", opts.command],
     cwd: opts.cwd,
     inheritStdio: true,
   });
+  if (result.code !== 0) throw lifecycleFailureError(opts.field, opts.command, result);
 }
 
 /**
@@ -62,13 +101,13 @@ export async function runLifecycleCommand(opts: {
  * operator knows which string to fix; there is no captured output to quote
  * (stdio was inherited, so they have already seen it).
  */
-export function lifecycleFailureError(opts: {
-  field: string;
-  command: string;
-  result: CommandResult;
-}): Error {
+function lifecycleFailureError(
+  field: LifecycleField,
+  command: string,
+  result: CommandResult,
+): Error {
   return new Error(
-    `\`deployment.${opts.field}\` exited ${opts.result.code}: ${opts.command} — ` +
+    `\`deployment.${field}\` exited ${result.code}: ${command} — ` +
       `see that command's output above.`,
   );
 }

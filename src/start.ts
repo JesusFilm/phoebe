@@ -11,11 +11,7 @@
 // step here is skipped. See src/deployment-command.ts.
 
 import type { DeploymentField } from "./config-schema.ts";
-import {
-  lifecycleFailureError,
-  readDeploymentCommands,
-  runLifecycleCommand,
-} from "./deployment-command.ts";
+import { resolveDeploymentCommands, runLifecycleStep } from "./deployment-command.ts";
 import {
   assertHostLifecycle,
   composeFailureError,
@@ -94,10 +90,12 @@ type StartDeps = {
   waitMs?: (ms: number) => Promise<void>;
   /**
    * Literal lifecycle commands from the config (#261). Present ⇒ the compose
-   * driver is bypassed entirely. {@link runStartCli} reads it off the config;
-   * `runStart` only ever consults the dep, which is what keeps it filesystem-free.
+   * driver is bypassed entirely. Named apart from the `deployment` local below,
+   * which is the resolved *Compose* deployment. {@link runStartCli} reads it off
+   * the config; `runStart` only ever consults the dep, which is what keeps it
+   * filesystem-free.
    */
-  deployment?: DeploymentField;
+  deploymentCommands?: DeploymentField;
   io?: Partial<StartIo>;
 };
 
@@ -149,7 +147,7 @@ export async function runStart(opts: { build: boolean; deps?: StartDeps }): Prom
   // it fires before the branch below (#189).
   assertHostLifecycle("start", opts.deps?.inContainer);
 
-  const deploymentCommands = opts.deps?.deployment;
+  const deploymentCommands = opts.deps?.deploymentCommands;
   if (deploymentCommands !== undefined) {
     if (opts.build) {
       // Not an error — the operator asked for the deployment's own start command
@@ -160,21 +158,13 @@ export async function runStart(opts: { build: boolean; deps?: StartDeps }): Prom
           "rebuild here. Encode the rebuild in `deployment.startCommand` or run it separately.",
       );
     }
-    io.stdout(
-      `[phoebe] Starting via \`deployment.startCommand\`: ${deploymentCommands.startCommand}`,
-    );
-    const result = await runLifecycleCommand({
+    await runLifecycleStep({
+      field: "startCommand",
       command: deploymentCommands.startCommand,
       cwd,
+      announce: io.stdout,
       ...(opts.deps?.runner !== undefined ? { runner: opts.deps.runner } : {}),
     });
-    if (result.code !== 0) {
-      throw lifecycleFailureError({
-        field: "startCommand",
-        command: deploymentCommands.startCommand,
-        result,
-      });
-    }
     io.stdout("[phoebe] Started.");
     return { kind: "started" };
   }
@@ -244,19 +234,20 @@ export async function runStartCli(argv: readonly string[], deps?: StartDeps): Pr
     process.stdout.write(START_HELP_TEXT);
     return;
   }
-  // Refuse in-container before touching the config: reading it means importing
-  // (and running) a TS module, which a refused command must not do. `runStart`
-  // asserts again on its own — it is the guard for direct callers too.
-  assertHostLifecycle("start", deps?.inContainer);
   // Reading the config is the CLI's job, not `runStart`'s: the run function
   // stays injectable-only so tests never touch a config file. A caller that
   // already has the block (the tests, a future embedder) passes it through deps
   // and no config is read.
   const cwd = deps?.cwd ?? process.cwd();
-  const deployment = deps?.deployment ?? (await readDeploymentCommands(cwd));
+  const deploymentCommands = await resolveDeploymentCommands({
+    command: "start",
+    cwd,
+    inContainer: deps?.inContainer,
+    provided: deps?.deploymentCommands,
+  });
   const outcome = await runStart({
     build: parsed.build,
-    deps: { ...deps, ...(deployment !== undefined ? { deployment } : {}) },
+    deps: { ...deps, ...(deploymentCommands !== undefined ? { deploymentCommands } : {}) },
   });
   if (outcome.kind === "exited-immediately") {
     process.exitCode = 1;
