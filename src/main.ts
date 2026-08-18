@@ -2057,11 +2057,14 @@ export async function runEngine(argv: readonly string[] = process.argv.slice(2))
     connected: process.connected,
   };
   const slotClient = createSlotClient(ipcChannel);
-  // The credential lease client (#211): when this engine was forked with an IPC
-  // channel (App arm, fleet mode), `credentialClient` refreshes the installation
-  // token before each poll and again before each agent spawn. A standalone engine
-  // or a PAT tenant (no channel) gets null here and runs with its existing
-  // GH_TOKEN unchanged — the PAT arm is a strict no-op.
+  // The credential lease client (#211/#205): when this engine was forked with
+  // an IPC channel (fleet or supervised solo), `credentialClient` refreshes the
+  // credential before each poll and again after each slot grant — a rotated
+  // PAT re-read from the tenant's `.env`, or a minted installation token. A
+  // null answer means "keep what you have"; only the top-of-poll site backs
+  // that with an inline App mint (site 2 then reuses this cycle's token). A
+  // standalone engine (no channel) gets null here and runs with its existing
+  // GH_TOKEN unchanged.
   const credentialClient = createCredentialClient(ipcChannel);
 
   // Per-repo observability (#73): one tagged `[phoebe:<slug>]` line per unit
@@ -2119,10 +2122,16 @@ async function runLoop({
     const arm = resolveArm();
     logArmIfChanged(arm);
 
+    // A non-null lease answer is the supervisor handing over the current
+    // credential — a rotated PAT re-read from the tenant's `.env` (#205) or a
+    // minted installation token. A null answer means "nothing to give: keep
+    // what you have" — for an App-arm engine with no supervisor-side mint
+    // (solo under boot), fall through to minting inline below.
+    let leasedToken: string | null = null;
     if (credentialClient) {
       try {
-        const token = await credentialClient.requestLease(CREDENTIAL_BUDGET_MS);
-        if (token !== null) process.env["GH_TOKEN"] = token;
+        leasedToken = await credentialClient.requestLease(CREDENTIAL_BUDGET_MS);
+        if (leasedToken !== null) process.env["GH_TOKEN"] = leasedToken;
       } catch (error) {
         if (error instanceof BrokerDisconnectedError) {
           console.error(`[phoebe] ${error.message} — stopping this engine.`);
@@ -2135,7 +2144,8 @@ async function runLoop({
         }
         throw error;
       }
-    } else if (arm === "app" && !dryRun) {
+    }
+    if (leasedToken === null && arm === "app" && !dryRun) {
       const creds = detectAppCredentials(process.env);
       if (!creds) {
         console.error(

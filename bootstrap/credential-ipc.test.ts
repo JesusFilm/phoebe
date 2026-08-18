@@ -279,6 +279,104 @@ describe("attachCredentialHandler", () => {
     expect(warnings).toHaveLength(0);
   });
 
+  // The PAT arm's live read (#205): the handler re-reads the tenant's `.env` at
+  // each request and answers with the current token, so a rotated PAT reaches
+  // the running child at the next lease call site instead of via a relaunch.
+  describe("readPatToken", () => {
+    test("answers with the live PAT and never touches mint or the cache", async () => {
+      const child = fakeChild();
+      const cache: CredentialCache = new Map();
+      const mint = vi.fn(makeMint());
+      attachCredentialHandler({
+        tenantId: "acme/widget",
+        child,
+        cache,
+        mint,
+        readPatToken: () => "ghp_rotated",
+        warnedOverBudget: new Set(),
+      });
+
+      child.emitMessage({ type: CREDENTIAL_REQUEST, budgetMs: 120_000 });
+      await tick();
+      expect(child.sent).toEqual([{ type: CREDENTIAL_ANSWER, token: "ghp_rotated" }]);
+      expect(mint).not.toHaveBeenCalled();
+      expect(cache.size).toBe(0);
+    });
+
+    test("re-reads per request — a rotation between requests answers the new token", async () => {
+      const child = fakeChild();
+      let token = "ghp_before";
+      attachCredentialHandler({
+        tenantId: "acme/widget",
+        child,
+        cache: new Map(),
+        mint: null,
+        readPatToken: () => token,
+        warnedOverBudget: new Set(),
+      });
+
+      child.emitMessage({ type: CREDENTIAL_REQUEST, budgetMs: 120_000 });
+      await tick();
+      token = "ghp_after";
+      child.emitMessage({ type: CREDENTIAL_REQUEST, budgetMs: 120_000 });
+      await tick();
+      expect(child.sent).toEqual([
+        { type: CREDENTIAL_ANSWER, token: "ghp_before" },
+        { type: CREDENTIAL_ANSWER, token: "ghp_after" },
+      ]);
+    });
+
+    test("a null read falls through to the mint path (App arm)", async () => {
+      const child = fakeChild();
+      const mint = vi.fn(makeMint({ token: "ghs_minted" }));
+      attachCredentialHandler({
+        tenantId: "acme/repo",
+        child,
+        cache: new Map(),
+        mint,
+        readPatToken: () => null,
+        warnedOverBudget: new Set(),
+      });
+
+      child.emitMessage({ type: CREDENTIAL_REQUEST, budgetMs: 120_000 });
+      await tick();
+      expect(mint).toHaveBeenCalledOnce();
+      expect(child.sent).toEqual([{ type: CREDENTIAL_ANSWER, token: "ghs_minted" }]);
+    });
+
+    test("a null read with no mint answers the null no-op", async () => {
+      const child = fakeChild();
+      attachCredentialHandler({
+        tenantId: "acme/widget",
+        child,
+        cache: new Map(),
+        mint: null,
+        readPatToken: () => null,
+        warnedOverBudget: new Set(),
+      });
+
+      child.emitMessage({ type: CREDENTIAL_REQUEST, budgetMs: 120_000 });
+      await tick();
+      expect(child.sent).toEqual([{ type: CREDENTIAL_ANSWER, token: null }]);
+    });
+
+    test("an empty or whitespace-only read is treated as absent", async () => {
+      const child = fakeChild();
+      attachCredentialHandler({
+        tenantId: "acme/widget",
+        child,
+        cache: new Map(),
+        mint: null,
+        readPatToken: () => "  ",
+        warnedOverBudget: new Set(),
+      });
+
+      child.emitMessage({ type: CREDENTIAL_REQUEST, budgetMs: 120_000 });
+      await tick();
+      expect(child.sent).toEqual([{ type: CREDENTIAL_ANSWER, token: null }]);
+    });
+  });
+
   test("ignores unrelated IPC messages", async () => {
     const child = fakeChild();
     const cache: CredentialCache = new Map();

@@ -97,6 +97,19 @@ in-process and builds a deny-by-default env for that engine child
 spreads into children; sibling tenants never receive each other's secrets in
 env.
 
+**Rotating a tenant's `GH_TOKEN` lands in place — no relaunch.** Editing only
+the `GH_TOKEN` line in a child's `.env` does not drain-and-respawn that child:
+the supervisor re-reads the file when the running engine next asks for its
+credential lease (top of each poll, and again just before each agent spawn), and
+the engine assigns the fresh value into its live environment. Nothing in the
+engine caches the token, so the rotation takes effect at the next unit boundary.
+Only the token's **value** is invisible to reconcile: _removing_ (or blanking)
+the `GH_TOKEN` line still relaunches the child — the lease cannot deliver an
+absence, and the respawn is what stops a deleted token being used. Any **other**
+`.env` edit (provider keys, identity vars) also still relaunches the child —
+those values are frozen into the scrubbed child env at spawn and a relaunch is
+the only way to deliver them.
+
 **Git identity is layered, not scrubbed.** A child's declared `gitIdentity`
 (`phoebe.config.ts`) is applied above the supervisor's own `GIT_*` and the App
 arm's bot fallback, and below that child's `.env` — so a repo can carry its own

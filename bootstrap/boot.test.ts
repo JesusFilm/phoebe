@@ -4,6 +4,8 @@
 // source is materialized separately (github-engine.ts) and tested there, and the
 // fallback policy itself lives in crash-loop.ts.
 
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
 import {
@@ -11,6 +13,7 @@ import {
   LOCAL_ENGINE_DIR,
   resolveEngineEntry,
   setupGitCredentials,
+  tenantFingerprint,
 } from "./boot.ts";
 
 describe("resolveEngineEntry", () => {
@@ -135,5 +138,73 @@ describe("setupGitCredentials", () => {
     });
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toMatch(/could not configure git credentials.*gh not found/);
+  });
+});
+
+describe("tenantFingerprint", () => {
+  const setup = (): { dir: string; configPath: string; envPath: string } => {
+    const dir = mkdtempSync(join(tmpdir(), "phoebe-fp-"));
+    const configPath = join(dir, "phoebe.config.ts");
+    const envPath = join(dir, ".env");
+    writeFileSync(configPath, "export default { repoSlug: 'acme/widget' };\n");
+    return { dir, configPath, envPath };
+  };
+
+  test("a GH_TOKEN-only rotation does not move the fingerprint (#205)", () => {
+    const { configPath, envPath } = setup();
+    writeFileSync(envPath, "GH_TOKEN=ghp_old\nCURSOR_API_KEY=sk-1\n");
+    const before = tenantFingerprint(configPath, envPath);
+    writeFileSync(envPath, "GH_TOKEN=ghp_new\nCURSOR_API_KEY=sk-1\n");
+    expect(tenantFingerprint(configPath, envPath)).toBe(before);
+    expect(before).not.toBeNull();
+  });
+
+  test("any other .env edit still moves the fingerprint (relaunch delivers it)", () => {
+    const { configPath, envPath } = setup();
+    writeFileSync(envPath, "GH_TOKEN=ghp_x\nCURSOR_API_KEY=sk-1\n");
+    const before = tenantFingerprint(configPath, envPath);
+    writeFileSync(envPath, "GH_TOKEN=ghp_x\nCURSOR_API_KEY=sk-2\n");
+    expect(tenantFingerprint(configPath, envPath)).not.toBe(before);
+  });
+
+  test("an unreadable config stays the null 'unknown' sentinel", () => {
+    const { dir, envPath } = setup();
+    writeFileSync(envPath, "GH_TOKEN=ghp_x\n");
+    expect(tenantFingerprint(join(dir, "missing.config.ts"), envPath)).toBeNull();
+  });
+
+  test("an absent .env is a stable non-null fingerprint", () => {
+    const { configPath, envPath } = setup();
+    const a = tenantFingerprint(configPath, envPath);
+    const b = tenantFingerprint(configPath, envPath);
+    expect(a).not.toBeNull();
+    expect(a).toBe(b);
+  });
+
+  test("an absent .env and one that only carries GH_TOKEN differ", () => {
+    // Presence of the file — and of the token itself — is still counted; only
+    // the token's value is rotation-invisible.
+    const { configPath, envPath } = setup();
+    const absent = tenantFingerprint(configPath, envPath);
+    writeFileSync(envPath, "GH_TOKEN=ghp_x\n");
+    const present = tenantFingerprint(configPath, envPath);
+    expect(present).not.toBeNull();
+    expect(present).not.toBe(absent);
+  });
+});
+
+describe("tenantFingerprint — token removal (retention regression)", () => {
+  test("removing the GH_TOKEN line moves the fingerprint — removal must relaunch", () => {
+    // A lease answer can deliver a new token but not an absence (null means
+    // "keep what you have"), so the only way a deleted PAT stops being used is
+    // the relaunch: the respawned child's scrubbed env genuinely lacks it.
+    const dir = mkdtempSync(join(tmpdir(), "phoebe-fp-"));
+    const configPath = join(dir, "phoebe.config.ts");
+    const envPath = join(dir, ".env");
+    writeFileSync(configPath, "export default { repoSlug: 'acme/widget' };\n");
+    writeFileSync(envPath, "GH_TOKEN=ghp_x\nCURSOR_API_KEY=sk-1\n");
+    const withToken = tenantFingerprint(configPath, envPath);
+    writeFileSync(envPath, "CURSOR_API_KEY=sk-1\n");
+    expect(tenantFingerprint(configPath, envPath)).not.toBe(withToken);
   });
 });

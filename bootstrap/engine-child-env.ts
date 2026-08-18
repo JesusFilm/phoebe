@@ -21,6 +21,9 @@
 // (the whole container), Docker injects exactly that tenant's secrets, and the
 // child inherits the supervisor env as it does today.
 
+import { createHash } from "node:crypto";
+
+import { isSet } from "./credential-arm.ts";
 import { gitIdentityEnv, type GitIdentity } from "./git-identity.ts";
 import { type MintedCredentials } from "./tenants.ts";
 
@@ -81,6 +84,45 @@ export function parseDotenv(contents: string): Record<string, string> {
     out[key] = value;
   }
   return out;
+}
+
+/**
+ * The reconcile identity of one tenant's `.env` *contents*, minus `GH_TOKEN`'s
+ * value — the `.env` half of the fleet's tenant fingerprint (#205).
+ *
+ * Every other `.env` value is frozen into the child env at spawn by
+ * {@link buildEngineChildEnv}, so editing one must keep relaunching the child —
+ * the relaunch is the only delivery those values have. `GH_TOKEN`'s *value*
+ * alone is excluded: nothing in the engine caches it (gh, git, and the
+ * agent-env builder all read `process.env` live), and the supervisor's
+ * credential lease hands the current value to the running child per request.
+ * Counting it here would spend a full drain-and-respawn on a rotation the
+ * lease already delivers in place.
+ *
+ * The token's *presence* is still counted. The lease can deliver a new value
+ * but not an absence — its null answer means "keep what you have" — so
+ * removing (or blanking) the token must land on the relaunch axis: the
+ * respawned child's scrubbed env then genuinely lacks it, and a PAT the
+ * operator deleted stops being used. A blank `GH_TOKEN=` counts as absent,
+ * matching the arm resolver's and the lease handler's `isSet` reading.
+ *
+ * Digests the *parsed* env (sorted keys), not the bytes, so reordering lines or
+ * editing comments is as invisible to reconcile as it is to the child.
+ */
+export function envReconcileDigest(contents: string): string {
+  const parsed = parseDotenv(contents);
+  const hasToken = isSet(parsed["GH_TOKEN"]);
+  delete parsed["GH_TOKEN"];
+  const hash = createHash("sha256");
+  hash.update(hasToken ? "token" : "no-token");
+  hash.update("\0");
+  for (const key of Object.keys(parsed).sort()) {
+    hash.update(key);
+    hash.update("\0");
+    hash.update(parsed[key]!);
+    hash.update("\0");
+  }
+  return hash.digest("hex").slice(0, 16);
 }
 
 /**

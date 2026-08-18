@@ -304,7 +304,10 @@ export type FleetDiscoverResult = {
  * poll's fingerprint map and the current discovered set.
  * - `added`: a tenant dir that appeared → the supervisor spawns a child.
  * - `removed`: a tenant id that vanished → the supervisor drains + reaps it.
- * - `changed`: a tenant whose config/`.env` fingerprint moved → relaunch it.
+ * - `changed`: a tenant whose config/`.env` fingerprint moved → relaunch it
+ *   (a `GH_TOKEN`-only rotation deliberately never lands here — the fingerprint
+ *   excludes the token's value and the credential lease delivers it in place,
+ *   #205 — but removing the token does: a lease cannot deliver an absence).
  * A null fingerprint on either side is "unknown" and never counts as a change,
  * mirroring the single-engine `detectChange` (a mid-rewrite/unreadable config
  * must not churn the child).

@@ -7,9 +7,12 @@
 // and answers CREDENTIAL_BLOCKED when a mint fails — the child then skips that
 // cycle's work unit rather than proceeding on a credential it cannot renew.
 //
-// On the PAT arm `mint` is null: the handler always answers CREDENTIAL_ANSWER
-// with a null token (a no-op; the child's existing GH_TOKEN is the PAT and does
-// not expire on the same 60-minute clock).
+// On the PAT arm `mint` is null and `readPatToken` re-reads the tenant's `.env`
+// at each request (#205): the handler answers with the token currently in the
+// file, so a rotated PAT reaches the running child at its next lease call site
+// — an assignment in place, not a drain-and-respawn. When the read yields
+// nothing and there is no mint fn, the answer is a null token (a no-op; the
+// child's existing GH_TOKEN stands).
 //
 // The cache is memory-only (one record per tenant) and is created outside the
 // per-child handler so it outlives child crashes — a respawned child reuses the
@@ -20,6 +23,7 @@ import {
   CREDENTIAL_BLOCKED,
   CREDENTIAL_REQUEST,
 } from "../src/credential-client.ts";
+import { isSet } from "./credential-arm.ts";
 
 /** The subset of a child process this handler needs — injectable for tests. */
 export type CredentialChild = {
@@ -71,8 +75,10 @@ function messageType(message: unknown): unknown {
  * Wire one child's credential requests to the shared cache and (on the App arm)
  * the mint function. Call once at spawn; idempotent per child.
  *
- * On the PAT arm (`mint` is null) the handler always answers with a null token —
- * the child leaves its env value alone and proceeds normally.
+ * On the PAT arm (`readPatToken` yields a token, or `mint` is null) the handler
+ * answers with the tenant's current explicit token — the live `.env` read that
+ * lands a rotation in place (#205) — or with a null token when there is none,
+ * which the child reads as "keep what you have".
  *
  * On the App arm the handler checks whether the cached token covers
  * `budgetMs + CACHE_MARGIN_MS`; if so it answers from cache. If not it calls
@@ -87,6 +93,15 @@ export function attachCredentialHandler(opts: {
   child: CredentialChild;
   cache: CredentialCache;
   mint: MintFn | null;
+  /**
+   * Live PAT read (#205): returns the tenant's current explicit `GH_TOKEN`
+   * (its `.env` re-read at request time), or null when it carries none. A
+   * non-empty value answers immediately — an explicit token always wins over
+   * minting, mirroring `resolveCredentialArm` — so the arm is resolved per
+   * request from the same source of truth rather than frozen at spawn.
+   * Omitted ⇒ pre-#205 behaviour (mint or the null no-op).
+   */
+  readPatToken?: () => string | null;
   /** One-shot warning tracker shared at fleet level to survive child respawns. */
   warnedOverBudget: Set<string>;
   /** Injectable clock for tests. */
@@ -108,8 +123,17 @@ export function attachCredentialHandler(opts: {
     if (typeof raw.budgetMs !== "number") return;
     const budgetMs = raw.budgetMs;
 
+    // PAT arm, resolved per request: an explicit token in the tenant's `.env`
+    // is handed over as-is — the live read is what makes a rotation land
+    // without a relaunch (#205). The value is never logged.
+    const pat = opts.readPatToken?.() ?? null;
+    if (isSet(pat)) {
+      child.send?.({ type: CREDENTIAL_ANSWER, token: pat });
+      return;
+    }
+
     if (!mint) {
-      // PAT arm: nothing to give — the child's existing GH_TOKEN is the PAT.
+      // No explicit token and nothing to mint — the child keeps what it has.
       child.send?.({ type: CREDENTIAL_ANSWER, token: null });
       return;
     }
