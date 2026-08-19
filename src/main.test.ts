@@ -438,14 +438,13 @@ describe("work order", () => {
   });
 });
 
-// Each skip test asserts twice on purpose, because two implementations answer
-// "what is workable this cycle?": `selectFirstWorkUnit` decides, and
-// `logIdleCycle` explains. `selection()` pins the first; the reported line pins
-// the second. The record (docs/research/engine-runtime-seam.md, ticket D) has
-// the two diverging on the books already, so neither assertion stands in for
-// the other. The checks message names three causes at once, so the pair of
-// tests below — one skipped, one workable off the same fixture — is what says
-// *which* cause bit.
+// The idle report is rendered from the record `selectFirstWorkUnit` returns, so
+// there is one answer to "what is workable this cycle?" rather than two. These
+// tests still assert twice — `selection()` for the pick, the reported line for
+// the explanation — because the two are different observations of that one
+// answer. The checks message names three causes at once, so the pair of tests
+// below — one skipped, one workable off the same fixture — is what says *which*
+// cause bit.
 describe("watermark skips", () => {
   const conflictedPr: PrFixture = {
     number: 21,
@@ -560,6 +559,71 @@ describe("stacked-blocker skips", () => {
     expect(result.lines).toContain(
       "[phoebe] 1 conflicting PR(s) skipped (stacked on open blocker).",
     );
+  });
+});
+
+// The idle report walks this engine's `workOrder`, not an order of its own. The
+// two used to be separate walks and could name different kinds — the report
+// reaching a kind the loop would never have got to, or stopping before the kind
+// it actually chose (docs/research/engine-runtime-seam.md, ticket D).
+describe("the idle report follows workOrder", () => {
+  /**
+   * Two kinds with work waiting and neither workable, for opposite reasons: the
+   * conflicting PR is stacked on a blocker that has an open PR, and the ready
+   * ticket waits on a blocker nobody has started.
+   */
+  function blockedWorld(): GitHubStubOverrides {
+    return {
+      ...prWorld([{ number: 21, issueNumber: 7, mergeable: "CONFLICTING" }]),
+      issueBody: () => "Blocked by #10",
+      listReadyIssues: () => [anIssue(30, { body: "Blocked by #11" })],
+      blockerPrState: (blocker) =>
+        blocker === 10
+          ? { hasOpenPr: true, openPrNumber: asPrNumber(20), hasMergedPr: false }
+          : { hasOpenPr: false, hasMergedPr: false, blockerCompleted: false },
+    };
+  }
+
+  test("conflicts first: the conflicts skip is what the operator is told", async () => {
+    const result = await runCycle({
+      config: { workOrder: ["conflicts", "issues"] },
+      shas: { main: MAIN_HEAD },
+      github: blockedWorld(),
+    });
+
+    expect(selection(result)).toBeUndefined();
+    expect(result.lines).toContain(
+      "[phoebe] 1 conflicting PR(s) skipped (stacked on open blocker).",
+    );
+    expect(result.lines).toContain("[phoebe] 1 conflicting PR(s) but none fixable this cycle.");
+    expect(result.lines.join("\n")).not.toContain("issue(s) but none workable");
+  });
+
+  test("issues first: the same world reports the issues skip instead", async () => {
+    const result = await runCycle({
+      config: { workOrder: ["issues", "conflicts"] },
+      shas: { main: MAIN_HEAD },
+      github: blockedWorld(),
+    });
+
+    expect(selection(result)).toBeUndefined();
+    expect(result.lines).toContain(
+      "[phoebe] 1 ready-for-agent issue(s) but none workable this cycle (waiting on blockers #11).",
+    );
+    expect(result.lines.join("\n")).not.toContain("conflicting PR(s)");
+  });
+
+  test("a kind left out of workOrder is never reported on", async () => {
+    const result = await runCycle({
+      config: { workOrder: ["issues"] },
+      github: {
+        listReadyIssues: () => [],
+        // `conflicts` is absent from workOrder, so nothing may reach the PR
+        // surface at all — every method here is unstubbed and would throw.
+      },
+    });
+
+    expect(result.lines).toContain("[phoebe] No work this cycle — idle.");
   });
 });
 

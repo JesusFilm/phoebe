@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vite-plus/test";
 import { config as sampleUserConfig } from "../phoebe.config.ts";
-import { asBranchRef, asPrNumber, asSha } from "./branded.ts";
+import { asBranchRef, asPrNumber, asSha, type Sha } from "./branded.ts";
 import { resolveConfig } from "./config-schema.ts";
 import { config as installedConfig, setResolvedConfig } from "./resolved-config.ts";
 import {
@@ -34,15 +34,9 @@ import {
   unresolvedBlockerNumbers,
   getMergedBlockerPrNumbers,
   oneShotWorkKinds,
-  selectChecksUnit,
   selectConflictFixCandidates,
-  selectConflictUnit,
   selectFirstWorkUnit,
   selectIssue,
-  selectReviewsUnit,
-  summarizeChecksSelection,
-  summarizeConflictSelection,
-  summarizeReviewsSelection,
   shouldPostChecksFixFailure,
   statusCheckRollupState,
   validateWorkOrder,
@@ -62,7 +56,9 @@ import {
   type Issue,
   type ReviewThread,
   type ReviewsCandidate,
+  type StackContext,
   type StatusCheckItem,
+  type WorkSelectionData,
 } from "./orchestrator.ts";
 
 function issue(overrides: Partial<Issue> & Pick<Issue, "number">): Issue {
@@ -569,7 +565,59 @@ describe("validateWorkOrder", () => {
   });
 });
 
-describe("selectConflictUnit", () => {
+// ---------------------------------------------------------------------------
+// One selection entry point
+//
+// `selectFirstWorkUnit` is the only way into selection, so the per-kind tests
+// below go through it rather than through a wrapper the loop does not call.
+// These three helpers restore the per-kind reading — "given these PRs and this
+// stack context, which one would the `conflicts` kind take?" — by asking the one
+// walk for a `workOrder` of exactly that kind.
+// ---------------------------------------------------------------------------
+
+const NO_WORK: WorkSelectionData = {
+  issues: [],
+  blockerStates: new Map(),
+  conflictingPrs: [],
+  failingCheckPrs: [],
+  reviewActivityPrs: [],
+  issueBodies: new Map(),
+};
+
+function conflictPick(
+  prs: readonly ConflictingPrCandidate[],
+  ctx: StackContext,
+  opts?: { currentMainHead: Sha },
+): ConflictingPrCandidate | null {
+  const { unit } = selectFirstWorkUnit(["conflicts"], {
+    ...NO_WORK,
+    ...ctx,
+    conflictingPrs: prs,
+    ...opts,
+  });
+  return unit?.kind === "conflicts" ? unit.unit : null;
+}
+
+function checksPick(prs: readonly ChecksCandidate[], ctx: StackContext): ChecksCandidate | null {
+  const { unit } = selectFirstWorkUnit(["checks"], { ...NO_WORK, ...ctx, failingCheckPrs: prs });
+  return unit?.kind === "checks" ? unit.unit : null;
+}
+
+function reviewsPick(
+  prs: readonly ReviewsCandidate[],
+  ctx: StackContext,
+  phoebeLogin: string,
+): ReviewsCandidate | null {
+  const { unit } = selectFirstWorkUnit(["reviews"], {
+    ...NO_WORK,
+    ...ctx,
+    reviewActivityPrs: prs,
+    phoebeLogin,
+  });
+  return unit?.kind === "reviews" ? unit.unit : null;
+}
+
+describe("the conflicts pick", () => {
   const pr = (
     overrides: Omit<Partial<ConflictingPrCandidate>, "prNumber"> & { prNumber: number },
   ) =>
@@ -583,9 +631,7 @@ describe("selectConflictUnit", () => {
     const prs = [pr({ prNumber: 120 }), pr({ prNumber: 115 }), pr({ prNumber: 118 })];
     const bodies = new Map<number, string>();
     const states = new Map<number, BlockerPrState>();
-    expect(selectConflictUnit(prs, { issueBodies: bodies, blockerStates: states })?.prNumber).toBe(
-      115,
-    );
+    expect(conflictPick(prs, { issueBodies: bodies, blockerStates: states })?.prNumber).toBe(115);
   });
 
   test("selects stacked follow-up when blocker merged (catch-up eligible)", () => {
@@ -594,9 +640,7 @@ describe("selectConflictUnit", () => {
     const states = new Map<number, BlockerPrState>([
       [108, { hasOpenPr: false, hasMergedPr: true, mergedPrNumber: asPrNumber(112) }],
     ]);
-    expect(selectConflictUnit(prs, { issueBodies: bodies, blockerStates: states })?.prNumber).toBe(
-      115,
-    );
+    expect(conflictPick(prs, { issueBodies: bodies, blockerStates: states })?.prNumber).toBe(115);
   });
 
   test("returns null when every conflict is stacked on open blocker", () => {
@@ -605,7 +649,7 @@ describe("selectConflictUnit", () => {
     const states = new Map<number, BlockerPrState>([
       [108, { hasOpenPr: true, openPrNumber: asPrNumber(112), hasMergedPr: false }],
     ]);
-    expect(selectConflictUnit(prs, { issueBodies: bodies, blockerStates: states })).toBeNull();
+    expect(conflictPick(prs, { issueBodies: bodies, blockerStates: states })).toBeNull();
   });
 });
 
@@ -617,7 +661,7 @@ describe("selectFirstWorkUnit", () => {
 
   test("prefers conflicts before issues when both have work", () => {
     const issues = [issue({ number: 135, title: "New feature" })];
-    const picked = selectFirstWorkUnit(["conflicts", "issues"], {
+    const { unit: picked } = selectFirstWorkUnit(["conflicts", "issues"], {
       issues,
       blockerStates: new Map(),
       conflictingPrs: [pr(200)],
@@ -631,7 +675,7 @@ describe("selectFirstWorkUnit", () => {
 
   test("takes issues when conflicts kind is omitted from order", () => {
     const issues = [issue({ number: 135, title: "New feature" })];
-    const picked = selectFirstWorkUnit(["issues"], {
+    const { unit: picked } = selectFirstWorkUnit(["issues"], {
       issues,
       blockerStates: new Map(),
       conflictingPrs: [pr(200)],
@@ -644,7 +688,7 @@ describe("selectFirstWorkUnit", () => {
   });
 
   test("takes conflicts only when issues kind is omitted", () => {
-    const picked = selectFirstWorkUnit(["conflicts"], {
+    const { unit: picked } = selectFirstWorkUnit(["conflicts"], {
       issues: [issue({ number: 135 })],
       blockerStates: new Map(),
       conflictingPrs: [pr(200)],
@@ -657,7 +701,7 @@ describe("selectFirstWorkUnit", () => {
 
   test("under oneShotOnly skips conflicts and takes the first eligible kind", () => {
     const issues = [issue({ number: 137, title: "Run-once respects WORK_ORDER" })];
-    const picked = selectFirstWorkUnit(
+    const { unit: picked } = selectFirstWorkUnit(
       ["conflicts", "issues"],
       {
         issues,
@@ -674,7 +718,7 @@ describe("selectFirstWorkUnit", () => {
   });
 
   test("under oneShotOnly returns null for conflict-only WORK_ORDER even when conflicts exist", () => {
-    const picked = selectFirstWorkUnit(
+    const { unit: picked } = selectFirstWorkUnit(
       ["conflicts"],
       {
         issues: [],
@@ -690,7 +734,7 @@ describe("selectFirstWorkUnit", () => {
   });
 
   test("under oneShotOnly never selects conflicts when issues are absent", () => {
-    const picked = selectFirstWorkUnit(
+    const { unit: picked } = selectFirstWorkUnit(
       ["conflicts", "issues"],
       {
         issues: [],
@@ -711,7 +755,7 @@ describe("selectFirstWorkUnit research ordering", () => {
     issue({ number, title: `Research ${number}`, labels: ["wayfinder:research"], ...overrides });
 
   test("selects a research ticket via the reused issues path", () => {
-    const picked = selectFirstWorkUnit(["research"], {
+    const { unit: picked } = selectFirstWorkUnit(["research"], {
       issues: [],
       researchIssues: [researchIssue(140)],
       blockerStates: new Map(),
@@ -725,7 +769,7 @@ describe("selectFirstWorkUnit research ordering", () => {
   });
 
   test("prefers issues before research when both have work", () => {
-    const picked = selectFirstWorkUnit(["issues", "research"], {
+    const { unit: picked } = selectFirstWorkUnit(["issues", "research"], {
       issues: [issue({ number: 150, title: "New feature" })],
       researchIssues: [researchIssue(140)],
       blockerStates: new Map(),
@@ -739,7 +783,7 @@ describe("selectFirstWorkUnit research ordering", () => {
   });
 
   test("skips a research ticket blocked by an issue with no blocker PR", () => {
-    const picked = selectFirstWorkUnit(["research"], {
+    const { unit: picked } = selectFirstWorkUnit(["research"], {
       issues: [],
       researchIssues: [researchIssue(141, { body: "Blocked by #108" })],
       blockerStates: new Map<number, BlockerPrState>([
@@ -754,7 +798,7 @@ describe("selectFirstWorkUnit research ordering", () => {
   });
 
   test("under oneShotOnly selects research when it is the eligible kind", () => {
-    const picked = selectFirstWorkUnit(
+    const { unit: picked } = selectFirstWorkUnit(
       ["conflicts", "research"],
       {
         issues: [],
@@ -771,7 +815,7 @@ describe("selectFirstWorkUnit research ordering", () => {
   });
 
   test("selects nothing for research when researchIssues is absent", () => {
-    const picked = selectFirstWorkUnit(["research"], {
+    const { unit: picked } = selectFirstWorkUnit(["research"], {
       issues: [issue({ number: 150 })],
       blockerStates: new Map(),
       conflictingPrs: [],
@@ -928,7 +972,7 @@ describe("selectConflictFixCandidates", () => {
   });
 });
 
-describe("selectConflictUnit watermark skip", () => {
+describe("the conflicts pick, watermark skip", () => {
   const pr = (
     overrides: Omit<Partial<ConflictingPrCandidate>, "prNumber"> & { prNumber: number },
   ) =>
@@ -948,7 +992,7 @@ describe("selectConflictUnit watermark skip", () => {
       }),
       pr({ prNumber: 101, headSha: asSha("pr101"), failureWatermark: null }),
     ];
-    const unit = selectConflictUnit(
+    const unit = conflictPick(
       prs,
       { issueBodies: new Map(), blockerStates: new Map() },
       { currentMainHead: asSha("main1") },
@@ -1240,7 +1284,7 @@ describe("listFailingChecks", () => {
   });
 });
 
-describe("selectChecksUnit", () => {
+describe("the checks pick", () => {
   const checksPr = (
     overrides: Omit<Partial<ChecksCandidate>, "prNumber"> & { prNumber: number },
   ): ChecksCandidate => ({
@@ -1258,9 +1302,9 @@ describe("selectChecksUnit", () => {
       checksPr({ prNumber: 115 }),
       checksPr({ prNumber: 118 }),
     ];
-    expect(
-      selectChecksUnit(prs, { issueBodies: new Map(), blockerStates: new Map() })?.prNumber,
-    ).toBe(115);
+    expect(checksPick(prs, { issueBodies: new Map(), blockerStates: new Map() })?.prNumber).toBe(
+      115,
+    );
   });
 
   test("skips conflicting PRs", () => {
@@ -1268,9 +1312,9 @@ describe("selectChecksUnit", () => {
       checksPr({ prNumber: 110, mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" }),
       checksPr({ prNumber: 111 }),
     ];
-    expect(
-      selectChecksUnit(prs, { issueBodies: new Map(), blockerStates: new Map() })?.prNumber,
-    ).toBe(111);
+    expect(checksPick(prs, { issueBodies: new Map(), blockerStates: new Map() })?.prNumber).toBe(
+      111,
+    );
   });
 
   test("skips stacked PRs with open blocker", () => {
@@ -1279,7 +1323,7 @@ describe("selectChecksUnit", () => {
     const states = new Map<number, BlockerPrState>([
       [108, { hasOpenPr: true, openPrNumber: asPrNumber(112), hasMergedPr: false }],
     ]);
-    expect(selectChecksUnit(prs, { issueBodies: bodies, blockerStates: states })).toBeNull();
+    expect(checksPick(prs, { issueBodies: bodies, blockerStates: states })).toBeNull();
   });
 
   test("skips PRs with unchanged failure watermark", () => {
@@ -1291,9 +1335,9 @@ describe("selectChecksUnit", () => {
       }),
       checksPr({ prNumber: 101, headSha: asSha("pr101"), failureWatermark: null }),
     ];
-    expect(
-      selectChecksUnit(prs, { issueBodies: new Map(), blockerStates: new Map() })?.prNumber,
-    ).toBe(101);
+    expect(checksPick(prs, { issueBodies: new Map(), blockerStates: new Map() })?.prNumber).toBe(
+      101,
+    );
   });
 });
 
@@ -1312,7 +1356,7 @@ describe("selectFirstWorkUnit checks ordering", () => {
 
   test("prefers conflicts before checks before issues", () => {
     const issues = [issue({ number: 135, title: "New feature" })];
-    const picked = selectFirstWorkUnit(["conflicts", "checks", "issues"], {
+    const { unit: picked } = selectFirstWorkUnit(["conflicts", "checks", "issues"], {
       issues,
       blockerStates: new Map(),
       conflictingPrs: [conflictPr(200)],
@@ -1325,7 +1369,7 @@ describe("selectFirstWorkUnit checks ordering", () => {
 
   test("takes checks when no conflicts but failing CI exists", () => {
     const issues = [issue({ number: 135, title: "New feature" })];
-    const picked = selectFirstWorkUnit(["conflicts", "checks", "issues"], {
+    const { unit: picked } = selectFirstWorkUnit(["conflicts", "checks", "issues"], {
       issues,
       blockerStates: new Map(),
       conflictingPrs: [],
@@ -1339,7 +1383,7 @@ describe("selectFirstWorkUnit checks ordering", () => {
 
   test("under oneShotOnly skips checks", () => {
     const issues = [issue({ number: 137 })];
-    const picked = selectFirstWorkUnit(
+    const { unit: picked } = selectFirstWorkUnit(
       ["conflicts", "checks", "issues"],
       {
         issues,
@@ -1615,7 +1659,7 @@ describe("isReviewSummaryComment", () => {
   });
 });
 
-describe("selectReviewsUnit", () => {
+describe("the reviews pick", () => {
   const phoebeLogin = "phoebe-bot";
 
   test("picks oldest PR with new non-Phoebe review activity", () => {
@@ -1627,8 +1671,7 @@ describe("selectReviewsUnit", () => {
       reviewsPr({ prNumber: 115, threads: [thread] }),
     ];
     expect(
-      selectReviewsUnit(prs, { issueBodies: new Map(), blockerStates: new Map() }, phoebeLogin)
-        ?.prNumber,
+      reviewsPick(prs, { issueBodies: new Map(), blockerStates: new Map() }, phoebeLogin)?.prNumber,
     ).toBe(115);
   });
 
@@ -1646,8 +1689,7 @@ describe("selectReviewsUnit", () => {
       reviewsPr({ prNumber: 111, threads: [thread] }),
     ];
     expect(
-      selectReviewsUnit(prs, { issueBodies: new Map(), blockerStates: new Map() }, phoebeLogin)
-        ?.prNumber,
+      reviewsPick(prs, { issueBodies: new Map(), blockerStates: new Map() }, phoebeLogin)?.prNumber,
     ).toBe(111);
   });
 
@@ -1661,7 +1703,7 @@ describe("selectReviewsUnit", () => {
       [108, { hasOpenPr: true, openPrNumber: asPrNumber(112), hasMergedPr: false }],
     ]);
     expect(
-      selectReviewsUnit(prs, { issueBodies: bodies, blockerStates: states }, phoebeLogin),
+      reviewsPick(prs, { issueBodies: bodies, blockerStates: states }, phoebeLogin),
     ).toBeNull();
   });
 
@@ -1677,7 +1719,7 @@ describe("selectReviewsUnit", () => {
       }),
     ];
     expect(
-      selectReviewsUnit(prs, { issueBodies: new Map(), blockerStates: new Map() }, phoebeLogin),
+      reviewsPick(prs, { issueBodies: new Map(), blockerStates: new Map() }, phoebeLogin),
     ).toBeNull();
   });
 
@@ -1694,8 +1736,7 @@ describe("selectReviewsUnit", () => {
       }),
     ];
     expect(
-      selectReviewsUnit(prs, { issueBodies: new Map(), blockerStates: new Map() }, phoebeLogin)
-        ?.prNumber,
+      reviewsPick(prs, { issueBodies: new Map(), blockerStates: new Map() }, phoebeLogin)?.prNumber,
     ).toBe(130);
   });
 });
@@ -1717,7 +1758,7 @@ describe("selectFirstWorkUnit reviews ordering", () => {
 
   test("prefers checks before reviews when both match", () => {
     const issues = [issue({ number: 135 })];
-    const picked = selectFirstWorkUnit(["conflicts", "checks", "reviews", "issues"], {
+    const { unit: picked } = selectFirstWorkUnit(["conflicts", "checks", "reviews", "issues"], {
       issues,
       blockerStates: new Map(),
       conflictingPrs: [],
@@ -1731,7 +1772,7 @@ describe("selectFirstWorkUnit reviews ordering", () => {
 
   test("takes reviews when no conflicts or checks", () => {
     const issues = [issue({ number: 135 })];
-    const picked = selectFirstWorkUnit(["conflicts", "checks", "reviews", "issues"], {
+    const { unit: picked } = selectFirstWorkUnit(["conflicts", "checks", "reviews", "issues"], {
       issues,
       blockerStates: new Map(),
       conflictingPrs: [],
@@ -1746,7 +1787,7 @@ describe("selectFirstWorkUnit reviews ordering", () => {
 
   test("under oneShotOnly skips reviews", () => {
     const issues = [issue({ number: 137 })];
-    const picked = selectFirstWorkUnit(
+    const { unit: picked } = selectFirstWorkUnit(
       ["conflicts", "checks", "reviews", "issues"],
       {
         issues,
@@ -1769,7 +1810,7 @@ describe("shouldSkipStackedReviewsFix", () => {
   });
 });
 
-describe("selection summaries", () => {
+describe("the skip record selection returns", () => {
   const conflictPr = (
     overrides: Omit<Partial<ConflictingPrCandidate>, "prNumber"> & { prNumber: number },
   ) =>
@@ -1780,7 +1821,16 @@ describe("selection summaries", () => {
       headRefName: overrides.headRefName ?? asBranchRef(`phoebe/issue-${overrides.prNumber}`),
     }) satisfies ConflictingPrCandidate;
 
-  test("summarizeConflictSelection reports stacked and watermark skips with the picked unit", () => {
+  const emptyData = {
+    issues: [],
+    blockerStates: new Map(),
+    conflictingPrs: [],
+    failingCheckPrs: [],
+    reviewActivityPrs: [],
+    issueBodies: new Map(),
+  } satisfies WorkSelectionData;
+
+  test("conflicts separates the stacked skips from the watermarked ones", () => {
     const prs = [
       // Stacked on an open blocker → skipped as stacked.
       conflictPr({ prNumber: 100, issueNumber: 100 }),
@@ -1793,26 +1843,25 @@ describe("selection summaries", () => {
       // Fixable.
       conflictPr({ prNumber: 102, headSha: asSha("pr102"), failureWatermark: null }),
     ];
-    const ctx = {
+    const selection = selectFirstWorkUnit(["conflicts"], {
+      ...emptyData,
+      conflictingPrs: prs,
       issueBodies: new Map([[100, "Blocked by #98"]]),
       blockerStates: new Map([
         [98, { hasOpenPr: true, openPrNumber: asPrNumber(200), hasMergedPr: false }],
       ]),
-    };
-    const summary = summarizeConflictSelection(prs, ctx, { currentMainHead: asSha("main1") });
-    expect(summary.skippedStacked).toBe(1);
-    expect(summary.skippedWatermark).toBe(1);
-    expect(summary.unit?.prNumber).toBe(102);
+      currentMainHead: asSha("main1"),
+    });
+
+    expect(selection.unit?.kind === "conflicts" && selection.unit.unit.prNumber).toBe(102);
+    expect(selection.skipped).toEqual([
+      { kind: "conflicts", reason: "stacked-on-blocker", count: 1 },
+      { kind: "conflicts", reason: "unchanged-watermark", count: 1 },
+    ]);
   });
 
-  test("summarizeChecksSelection counts skips and picks the oldest fixable PR", () => {
+  test("checks records one ineligible count and the total when nothing is fixable", () => {
     const prs: ChecksCandidate[] = [
-      {
-        prNumber: asPrNumber(110),
-        headRefName: asBranchRef("phoebe/issue-110"),
-        mergeable: "MERGEABLE",
-        failingChecks: [],
-      },
       {
         prNumber: asPrNumber(111),
         headRefName: asBranchRef("phoebe/issue-111"),
@@ -1821,15 +1870,16 @@ describe("selection summaries", () => {
         failingChecks: [],
       },
     ];
-    const summary = summarizeChecksSelection(prs, {
-      issueBodies: new Map(),
-      blockerStates: new Map(),
-    });
-    expect(summary.skipped).toBe(1);
-    expect(summary.unit?.prNumber).toBe(110);
+    const selection = selectFirstWorkUnit(["checks"], { ...emptyData, failingCheckPrs: prs });
+
+    expect(selection.unit).toBeNull();
+    expect(selection.skipped).toEqual([
+      { kind: "checks", reason: "ineligible", count: 1 },
+      { kind: "checks", reason: "none-workable", count: 1 },
+    ]);
   });
 
-  test("summarizeReviewsSelection counts PRs with no new activity as skipped", () => {
+  test("reviews counts a PR with no new activity as ineligible", () => {
     const phoebeLogin = "phoebe-bot";
     const prs: ReviewsCandidate[] = [
       {
@@ -1857,12 +1907,63 @@ describe("selection summaries", () => {
         ],
       },
     ];
-    const summary = summarizeReviewsSelection(
-      prs,
-      { issueBodies: new Map(), blockerStates: new Map() },
+    const selection = selectFirstWorkUnit(["reviews"], {
+      ...emptyData,
+      reviewActivityPrs: prs,
       phoebeLogin,
-    );
-    expect(summary.skipped).toBe(1);
-    expect(summary.unit?.prNumber).toBe(120);
+    });
+
+    expect(selection.unit?.kind === "reviews" && selection.unit.unit.prNumber).toBe(120);
+    expect(selection.skipped).toEqual([{ kind: "reviews", reason: "ineligible", count: 1 }]);
+  });
+
+  test("the record follows workOrder, and stops at the kind that was picked", () => {
+    const selection = selectFirstWorkUnit(["checks", "conflicts", "issues"], {
+      ...emptyData,
+      // Conflicting, so the checks kind turns it away; the conflicts kind takes it.
+      failingCheckPrs: [
+        {
+          prNumber: asPrNumber(130),
+          headRefName: asBranchRef("phoebe/issue-130"),
+          mergeable: "CONFLICTING",
+          mergeStateStatus: "DIRTY",
+          failingChecks: [],
+        },
+      ],
+      conflictingPrs: [conflictPr({ prNumber: 130 })],
+      issues: [issue({ number: 131 })],
+    });
+
+    expect(selection.unit?.kind).toBe("conflicts");
+    // `issues` had a workable ticket too, but the walk never reached it — so the
+    // record says nothing about it either.
+    expect(selection.skipped).toEqual([
+      { kind: "checks", reason: "ineligible", count: 1 },
+      { kind: "checks", reason: "none-workable", count: 1 },
+    ]);
+  });
+
+  test("a kind with no units at all leaves no trace in the record", () => {
+    const selection = selectFirstWorkUnit(["conflicts", "checks", "reviews", "issues"], emptyData);
+
+    expect(selection.unit).toBeNull();
+    expect(selection.skipped).toEqual([]);
+  });
+
+  test("reviews with no resolved login does not report its PRs as skipped", () => {
+    const selection = selectFirstWorkUnit(["reviews"], {
+      ...emptyData,
+      reviewActivityPrs: [
+        {
+          prNumber: asPrNumber(140),
+          headRefName: asBranchRef("phoebe/issue-140"),
+          mergeable: "MERGEABLE",
+          threads: [],
+        },
+      ],
+    });
+
+    expect(selection.unit).toBeNull();
+    expect(selection.skipped).toEqual([]);
   });
 });

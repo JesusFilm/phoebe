@@ -128,7 +128,8 @@ happen inside the prompt. Disable the kind for a repo by omitting `research` fro
 
 ## `conflicts` — reconcile PRs that conflict with the base
 
-Selection (`selectConflictUnit` → oldest eligible PR number):
+Selection (`selectFirstWorkUnit`, via `selectConflictFixCandidates` → oldest
+eligible PR number):
 
 1. Scan in-scope open PRs; a PR is a candidate when `mergeable` is
    `CONFLICTING`, or `UNKNOWN` while `mergeStateStatus` is `DIRTY` (GitHub may
@@ -162,7 +163,8 @@ single code path for both credential arms.) Only the
 newest run per workflow counts; a rollup is `FAILURE` only when at least one
 check failed and **none are pending**.
 
-Selection (`selectChecksUnit` → oldest eligible PR number):
+Selection (`selectFirstWorkUnit`, via `selectChecksCandidates` → oldest eligible
+PR number):
 
 1. Scan in-scope open PRs; candidate when the combined rollup is `FAILURE`.
 2. Skip conflicting PRs (those belong to `conflicts`).
@@ -181,7 +183,8 @@ Selection (`selectChecksUnit` → oldest eligible PR number):
 
 ## `reviews` — address review-thread feedback
 
-Selection (`selectReviewsUnit` → oldest eligible PR number). This kind needs the
+Selection (`selectFirstWorkUnit`, via `selectReviewsCandidates` → oldest eligible
+PR number). This kind needs the
 bot's own GitHub login (`phoebeLogin`), fetched once per cycle:
 
 1. Scan in-scope open PRs, page through all `reviewThreads`.

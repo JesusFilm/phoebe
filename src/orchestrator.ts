@@ -393,32 +393,64 @@ function pickOldestPr<T extends { prNumber: number }>(candidates: readonly T[]):
   return candidates.reduce((oldest, pr) => (pr.prNumber < oldest.prNumber ? pr : oldest));
 }
 
+/**
+ * The conflicting PRs worth fixing, and a count for each rule that turned one
+ * away. Both come out of the same walk: the counts used to be backed out by
+ * running the filter twice and subtracting, which is a second selector — and a
+ * second selector is a second answer to "what would run this cycle?".
+ */
+function partitionConflictFixCandidates(
+  prs: readonly ConflictingPrCandidate[],
+  ctx: StackContext,
+  opts?: { currentMainHead: Sha },
+): KindPartition<ConflictingPrCandidate> {
+  const candidates: ConflictingPrCandidate[] = [];
+  let stacked = 0;
+  let watermarked = 0;
+  for (const pr of prs) {
+    const issueNumber = pr.issueNumber ?? parseIssueNumberFromBranch(pr.headRefName);
+    if (issueNumber !== null) {
+      const body = ctx.issueBodies.get(issueNumber) ?? "";
+      if (shouldSkipStackedConflictFix(body, ctx.blockerStates)) {
+        stacked++;
+        continue;
+      }
+    }
+    if (
+      opts?.currentMainHead &&
+      pr.headSha &&
+      shouldSkipWatermarkConflictFix({
+        watermark: pr.failureWatermark ?? null,
+        currentPrHead: pr.headSha,
+        currentMainHead: opts.currentMainHead,
+      })
+    ) {
+      watermarked++;
+      continue;
+    }
+    candidates.push(pr);
+  }
+  return {
+    candidates,
+    skipped: countedSkips([
+      ["stacked-on-blocker", stacked],
+      ["unchanged-watermark", watermarked],
+    ]),
+  };
+}
+
+/**
+ * Just the candidates, for callers with no use for the counts. Conflicts is the
+ * one kind whose filter has to be a partition rather than a `filter` — it is the
+ * only one that reports two skip rules apart — so this is the projection that
+ * puts it back in line with `selectChecksCandidates` and `selectReviewsCandidates`.
+ */
 export function selectConflictFixCandidates(
   prs: readonly ConflictingPrCandidate[],
   ctx: StackContext,
   opts?: { currentMainHead: Sha },
 ): ConflictingPrCandidate[] {
-  return prs.filter((pr) => {
-    const issueNumber = pr.issueNumber ?? parseIssueNumberFromBranch(pr.headRefName);
-    if (issueNumber !== null) {
-      const body = ctx.issueBodies.get(issueNumber) ?? "";
-      if (shouldSkipStackedConflictFix(body, ctx.blockerStates)) {
-        return false;
-      }
-    }
-    if (opts?.currentMainHead && pr.headSha) {
-      if (
-        shouldSkipWatermarkConflictFix({
-          watermark: pr.failureWatermark ?? null,
-          currentPrHead: pr.headSha,
-          currentMainHead: opts.currentMainHead,
-        })
-      ) {
-        return false;
-      }
-    }
-    return true;
-  });
+  return partitionConflictFixCandidates(prs, ctx, opts).candidates;
 }
 
 export type StatusCheckItem = {
@@ -593,14 +625,6 @@ export function selectChecksCandidates(
   });
 }
 
-/** Pick the single checks unit — oldest PR number among eligible failing-CI candidates. */
-export function selectChecksUnit(
-  prs: readonly ChecksCandidate[],
-  ctx: StackContext,
-): ChecksCandidate | null {
-  return pickOldestPr(selectChecksCandidates(prs, ctx));
-}
-
 export type ReviewThreadComment = {
   createdAt: string;
   /** `null` when the comment has no author — a deleted account, so never Phoebe. */
@@ -727,15 +751,6 @@ export function selectReviewsCandidates(
   });
 }
 
-/** Pick the single reviews unit — oldest PR number among eligible review-feedback candidates. */
-export function selectReviewsUnit(
-  prs: readonly ReviewsCandidate[],
-  ctx: StackContext,
-  phoebeLogin: string,
-): ReviewsCandidate | null {
-  return pickOldestPr(selectReviewsCandidates(prs, ctx, phoebeLogin));
-}
-
 export function buildReviewsHandledComment(opts: {
   latestActivityAt: string | null;
   failed: boolean;
@@ -789,15 +804,6 @@ export function validateWorkOrder(order: readonly string[]): readonly WorkKindNa
   return validated;
 }
 
-/** Pick the single conflict unit — oldest PR number among unblocked candidates. */
-export function selectConflictUnit(
-  prs: readonly ConflictingPrCandidate[],
-  ctx: StackContext,
-  opts?: { currentMainHead: Sha },
-): ConflictingPrCandidate | null {
-  return pickOldestPr(selectConflictFixCandidates(prs, ctx, opts));
-}
-
 export type IssueWorkUnit = { issue: Issue; resolution: BaseResolution };
 
 export type WorkUnit =
@@ -830,113 +836,140 @@ function conflictSelectionOpts(currentMainHead?: Sha): { currentMainHead: Sha } 
   return currentMainHead ? { currentMainHead } : undefined;
 }
 
-/** Walk `workOrder` and return the first kind that has a unit of work. */
+// ---------------------------------------------------------------------------
+// One selection, and the record of what it passed over
+//
+// Selection and the idle report are the same walk. They used to be two — the
+// loop asking `selectFirstWorkUnit` and the reporter re-walking the kinds in an
+// order of its own — and the two could disagree about which kind would run.
+// `selectFirstWorkUnit` now answers both questions at once: the unit it picked,
+// and a record of every kind it passed over on the way, in `workOrder` order.
+// The record names reasons, not sentences; the wording (and this tenant's label
+// names) belong to whoever renders it.
+// ---------------------------------------------------------------------------
+
+/** Why a kind passed over units it had. */
+export type WorkUnitSkipReason =
+  /** The unit's issue is stacked on a blocker that still has an open PR. */
+  | "stacked-on-blocker"
+  /** A failure watermark says nothing has changed since the last attempt. */
+  | "unchanged-watermark"
+  /** Turned away by rules the kind does not tell apart (see its selector). */
+  | "ineligible"
+  /** The kind had units and selection produced none of them. */
+  | "none-workable";
+
+export type WorkUnitSkip = {
+  kind: WorkKindName;
+  reason: WorkUnitSkipReason;
+  count: number;
+};
+
+export type WorkSelection = {
+  /** The unit to work this cycle, or null when no kind had one. */
+  unit: WorkUnit | null;
+  /** What each kind walked passed over, in `workOrder` order. */
+  skipped: WorkUnitSkip[];
+};
+
+type KindSkip = { reason: WorkUnitSkipReason; count: number };
+
+type KindPartition<T> = { candidates: T[]; skipped: KindSkip[] };
+
+/** Skip counts with the zeros dropped — an unskipped rule is not a record. */
+function countedSkips(counts: ReadonlyArray<[WorkUnitSkipReason, number]>): KindSkip[] {
+  return counts.filter(([, count]) => count > 0).map(([reason, count]) => ({ reason, count }));
+}
+
+/** What one kind offers this cycle: its pick, why it turned the rest away, and how many it had. */
+type KindSelection = {
+  unit: WorkUnit | null;
+  skipped: KindSkip[];
+  /** Units this kind had to choose from; 0 when the kind did not run at all. */
+  total: number;
+};
+
+function selectForKind(
+  kind: WorkKindName,
+  data: WorkSelectionData,
+  ctx: StackContext,
+): KindSelection {
+  if (kind === "conflicts") {
+    const { candidates, skipped } = partitionConflictFixCandidates(
+      data.conflictingPrs,
+      ctx,
+      conflictSelectionOpts(data.currentMainHead),
+    );
+    const pick = pickOldestPr(candidates);
+    return {
+      unit: pick ? { kind: "conflicts", unit: pick } : null,
+      skipped,
+      total: data.conflictingPrs.length,
+    };
+  }
+  if (kind === "checks") {
+    const candidates = selectChecksCandidates(data.failingCheckPrs, ctx);
+    const pick = pickOldestPr(candidates);
+    return {
+      unit: pick ? { kind: "checks", unit: pick } : null,
+      skipped: countedSkips([["ineligible", data.failingCheckPrs.length - candidates.length]]),
+      total: data.failingCheckPrs.length,
+    };
+  }
+  if (kind === "reviews") {
+    // Without Phoebe's own login there is no telling her comments from anyone
+    // else's, so the kind does not run — and reports nothing, rather than
+    // reporting every PR as skipped.
+    if (!data.phoebeLogin) {
+      return { unit: null, skipped: [], total: 0 };
+    }
+    const candidates = selectReviewsCandidates(data.reviewActivityPrs, ctx, data.phoebeLogin);
+    const pick = pickOldestPr(candidates);
+    return {
+      unit: pick ? { kind: "reviews", unit: pick } : null,
+      skipped: countedSkips([["ineligible", data.reviewActivityPrs.length - candidates.length]]),
+      total: data.reviewActivityPrs.length,
+    };
+  }
+  // Research reuses the issues selection path (blocker + priority ordering)
+  // against the researchLabel-tagged tickets gathered separately this cycle.
+  const issues = kind === "issues" ? data.issues : (data.researchIssues ?? []);
+  const pick = selectIssue(issues, data.blockerStates, data.phoebeBase);
+  const unit: WorkUnit | null = pick ? { kind, unit: pick } : null;
+  return { unit, skipped: [], total: issues.length };
+}
+
+/**
+ * Walk `workOrder`, take the first kind that has a workable unit, and record what
+ * every kind walked passed over on the way. The walk stops at the pick, so the
+ * record covers exactly the kinds that were actually considered.
+ */
 export function selectFirstWorkUnit(
   workOrder: readonly WorkKindName[],
   data: WorkSelectionData,
   opts?: WorkSelectionOptions,
-): WorkUnit | null {
+): WorkSelection {
   const ctx: StackContext = {
     issueBodies: data.issueBodies,
     blockerStates: data.blockerStates,
   };
+  const skipped: WorkUnitSkip[] = [];
   for (const kind of workOrder) {
     if (opts?.oneShotOnly && !WORK_KIND_ONE_SHOT_ELIGIBLE[kind]) {
       continue;
     }
-    if (kind === "conflicts") {
-      const unit = selectConflictUnit(
-        data.conflictingPrs,
-        ctx,
-        conflictSelectionOpts(data.currentMainHead),
-      );
-      if (unit) {
-        return { kind: "conflicts", unit };
-      }
-    } else if (kind === "checks") {
-      const unit = selectChecksUnit(data.failingCheckPrs, ctx);
-      if (unit) {
-        return { kind: "checks", unit };
-      }
-    } else if (kind === "reviews") {
-      if (!data.phoebeLogin) {
-        continue;
-      }
-      const unit = selectReviewsUnit(data.reviewActivityPrs, ctx, data.phoebeLogin);
-      if (unit) {
-        return { kind: "reviews", unit };
-      }
-    } else if (kind === "issues") {
-      const unit = selectIssue(data.issues, data.blockerStates, data.phoebeBase);
-      if (unit) {
-        return { kind: "issues", unit };
-      }
-    } else if (kind === "research") {
-      // Research reuses the issues selection path (blocker + priority ordering)
-      // against the researchLabel-tagged tickets gathered separately this cycle.
-      const unit = selectIssue(data.researchIssues ?? [], data.blockerStates, data.phoebeBase);
-      if (unit) {
-        return { kind: "research", unit };
-      }
+    const selected = selectForKind(kind, data, ctx);
+    for (const skip of selected.skipped) {
+      skipped.push({ kind, ...skip });
+    }
+    if (selected.unit) {
+      return { unit: selected.unit, skipped };
+    }
+    if (selected.total > 0) {
+      skipped.push({ kind, reason: "none-workable", count: selected.total });
     }
   }
-  return null;
-}
-
-// ---------------------------------------------------------------------------
-// Idle-cycle selection summaries
-//
-// These sit beside the selectors so main's idle logging asks "what did you skip,
-// and why?" instead of rebuilding blocker maps and re-running every selector. The
-// `unit` field is the same pick the live loop would make; the skip counts explain
-// an idle cycle to the operator.
-// ---------------------------------------------------------------------------
-
-export type ConflictSelectionSummary = {
-  unit: ConflictingPrCandidate | null;
-  skippedStacked: number;
-  skippedWatermark: number;
-};
-
-export function summarizeConflictSelection(
-  prs: readonly ConflictingPrCandidate[],
-  ctx: StackContext,
-  opts?: { currentMainHead: Sha },
-): ConflictSelectionSummary {
-  const withoutWatermark = selectConflictFixCandidates(prs, ctx);
-  const candidates = selectConflictFixCandidates(prs, ctx, opts);
-  return {
-    unit: pickOldestPr(candidates),
-    skippedStacked: prs.length - withoutWatermark.length,
-    skippedWatermark: withoutWatermark.length - candidates.length,
-  };
-}
-
-export type ChecksSelectionSummary = {
-  unit: ChecksCandidate | null;
-  skipped: number;
-};
-
-export function summarizeChecksSelection(
-  prs: readonly ChecksCandidate[],
-  ctx: StackContext,
-): ChecksSelectionSummary {
-  const candidates = selectChecksCandidates(prs, ctx);
-  return { unit: pickOldestPr(candidates), skipped: prs.length - candidates.length };
-}
-
-export type ReviewsSelectionSummary = {
-  unit: ReviewsCandidate | null;
-  skipped: number;
-};
-
-export function summarizeReviewsSelection(
-  prs: readonly ReviewsCandidate[],
-  ctx: StackContext,
-  phoebeLogin: string,
-): ReviewsSelectionSummary {
-  const candidates = selectReviewsCandidates(prs, ctx, phoebeLogin);
-  return { unit: pickOldestPr(candidates), skipped: prs.length - candidates.length };
+  return { unit: null, skipped };
 }
 
 export function conflictFixFailureComment(
