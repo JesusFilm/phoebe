@@ -20,10 +20,10 @@ depends on an operator reading the changelog and editing by hand.
   exits 1 when anything is pending, for scripted pipelines.
 - `phoebe migrate --json` (with or without `--check`) emits a stable,
   additive-only envelope — documented in `docs/upgrading.md`.
-- `phoebe upgrade` now materialises the **target** checkout and runs *its*
+- `phoebe upgrade` now materialises the **target** checkout and runs _its_
   `migrate` before flipping `engine.ref`, so new code migrates old artifacts and
   a failed migration aborts the upgrade with the pin untouched. `upgrade
-  --check` is unchanged.
+--check` is unchanged.
 
 **What changes for existing deployments.** `phoebe upgrade` may now leave
 uncommitted, reviewable edits in your deployment repos (a scaffolded prompt
