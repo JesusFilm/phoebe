@@ -261,7 +261,14 @@ export function shouldSkipWatermarkConflictFix(opts: {
 
 const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-const ISSUE_BRANCH_RE = new RegExp(`^${escapeRegExp(config.branchPrefix)}issue-(\\d+)$`);
+/**
+ * Built per call rather than once at module load: `config` is installed by the
+ * CLI *after* this module is imported (src/cli.ts imports the engine
+ * statically), so reading `branchPrefix` at import time would throw before the
+ * install ever happened.
+ */
+const issueBranchRe = (): RegExp =>
+  new RegExp(`^${escapeRegExp(config.branchPrefix)}issue-(\\d+)$`);
 
 export function isPhoebeHeadBranch(branch: BranchRef): boolean {
   return branch.startsWith(config.branchPrefix);
@@ -321,7 +328,7 @@ export function isPrInScope(
 }
 
 export function parseIssueNumberFromBranch(branch: BranchRef): number | null {
-  const match = ISSUE_BRANCH_RE.exec(branch);
+  const match = issueBranchRe().exec(branch);
   return match ? Number(match[1]) : null;
 }
 
