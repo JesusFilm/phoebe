@@ -18,18 +18,17 @@
 // (src/execution-gate.ts).
 
 import { execFileSync, execSync } from "node:child_process";
-import { classifyGhError, describeGhError } from "./gh-error.ts";
 import { config } from "./resolved-config.ts";
 import { PROVIDER_NAMES, type ProviderName } from "./config-schema.ts";
 import { detectAppCredentials, mintInstallationToken } from "./gh-app.ts";
+import { asBranchRef, asPrNumber, type BranchRef, type PrNumber, type Sha } from "./branded.ts";
 import {
-  asBranchRef,
-  asPrNumber,
-  asSha,
-  type BranchRef,
-  type PrNumber,
-  type Sha,
-} from "./branded.ts";
+  createGitHubClient,
+  type CycleGitHubClient,
+  type OpenPhoebePr,
+  type QuarantinedUnit,
+  type UnitTarget,
+} from "./github-client.ts";
 import { buildAgentEnv } from "./agent-env.ts";
 import { buildShellCommandEnv } from "./shell-env.ts";
 import { installDrainSignal, type DrainSignal } from "./drain.ts";
@@ -54,7 +53,6 @@ import {
   decideAutoUnstick,
   decideDisabledUnstick,
   decideTimeoutRecord,
-  issueContentBaseline,
   PHOEBE_QUARANTINE_LABEL,
   resolveMaxUnitTimeouts,
 } from "./quarantine.ts";
@@ -77,7 +75,7 @@ import {
   worktreeDirForBranch,
 } from "./git-model.ts";
 import { PROVIDERS } from "./providers/providers.ts";
-import { resolveIssueCoAuthorTrailer, type GitHubUser } from "./co-author.ts";
+import { resolveIssueCoAuthorTrailer } from "./co-author.ts";
 import { runAgent } from "./providers/run-agent.ts";
 import type { Provider } from "./providers/types.ts";
 import {
@@ -95,7 +93,6 @@ import {
   formatFailingChecksForPrompt,
   isReviewSummaryComment,
   issueBranch,
-  isPrInScope,
   isPrMergeConflicting,
   listFailingChecks,
   newestReviewThreadCommentCreatedAt,
@@ -106,7 +103,6 @@ import {
   parseReviewsHandledWatermark,
   parseIssueNumberFromBranch,
   getMergedBlockerPrNumbers,
-  isCompletedBlockerIssue,
   oneShotWorkKinds,
   stackedCatchUpRetractionComment,
   RUN_ONCE_NOTHING_MESSAGE,
@@ -131,8 +127,6 @@ import {
   type ReviewThread,
   type ReviewsCandidate,
   type StackContext,
-  type StatusCheckItem,
-  type WorkflowRunItem,
   type WorkKindName,
   type WorkUnit,
 } from "./orchestrator.ts";
@@ -183,13 +177,12 @@ const CREDENTIAL_BUDGET_MS = RUN_TIMEOUT_MS + 10 * 60 * 1000;
 // (install/test) get a longer leash.
 const CHILD_PROCESS_TIMEOUT_MS = 120_000;
 const SHELL_COMMAND_TIMEOUT_MS = 600_000;
-const MERGEABLE_RETRY_MS = 5_000;
-const MERGEABLE_RETRY_COUNT = 3;
-
-type CycleCache = {
-  openPrs: OpenPhoebePr[] | null;
-  mergeInfo: Map<PrNumber, PrMergeInfo>;
-};
+// The `checks` kind re-reads a check rollup that is still PENDING a few times
+// before it concludes there is nothing to fix — CI that has not reported yet is
+// not CI that passed. (The merge-state UNKNOWN retry that used to share these
+// numbers now lives in the GitHub client, where that quirk belongs.)
+const CHECKS_PENDING_RETRY_MS = 5_000;
+const CHECKS_PENDING_RETRY_COUNT = 3;
 
 const PR_BASE = config.defaultBranch;
 const defaultBranchRef = asBranchRef(config.defaultBranch);
@@ -221,170 +214,16 @@ function selectProvider(): { provider: Provider; model: string; effort: string |
 const workOrder = validateWorkOrder(config.workOrder);
 
 // ---------------------------------------------------------------------------
-// gh helpers — always pinned to the configured repo
+// GitHub
+//
+// Every `gh` call the engine makes goes through this client (src/github-client.ts):
+// argv, the `-R <repoSlug>` pin, GraphQL pagination, the merge-state retry and
+// `gh`-error enrichment are all its business, not the loop's. Built here from
+// the module-level `config` for now — ticket B (#280) moves it into the engine
+// factory with the rest of the module state.
 // ---------------------------------------------------------------------------
 
-/**
- * Probe `gh api rate_limit` to get the current reset time for a bucket.
- * Best-effort: the `/rate_limit` endpoint uses its own quota and succeeds even
- * when "graphql" or "core" is exhausted, but we swallow any failure rather than
- * crashing the already-failing path.
- */
-function tryFetchRateLimitReset(resource: "graphql" | "core"): Date | null {
-  try {
-    type RateLimitResponse = {
-      resources: { core: { reset: number }; graphql: { reset: number } };
-    };
-    const data = JSON.parse(
-      execFileSync("gh", ["api", "rate_limit"], {
-        encoding: "utf8",
-        timeout: CHILD_PROCESS_TIMEOUT_MS,
-      }),
-    ) as RateLimitResponse;
-    const epoch = data.resources[resource].reset;
-    const d = new Date(epoch * 1000);
-    return isNaN(d.getTime()) ? null : d;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Always throws.  Reclassifies a `gh` CLI error as a rate-limit or permission
- * message when the stderr carries enough signal; otherwise rethrows the original.
- * A null classification (no signal) also rethrows the original so callers always
- * see the most informative available error.
- */
-function rethrowAsGhError(error: unknown, ghArgs: readonly string[]): never {
-  const c = classifyGhError(error, ghArgs);
-  if (c !== null) {
-    if (c.kind === "rate-limit") {
-      const resetAt = c.resource ? tryFetchRateLimitReset(c.resource) : null;
-      throw new Error(describeGhError({ ...c, resetAt }));
-    }
-    throw new Error(describeGhError(c));
-  }
-  throw error instanceof Error ? error : new Error(String(error));
-}
-
-function ghJson<T>(args: string[]): T {
-  try {
-    return JSON.parse(
-      execFileSync("gh", [...args, "-R", config.repoSlug], {
-        encoding: "utf8",
-        timeout: CHILD_PROCESS_TIMEOUT_MS,
-      }),
-    ) as T;
-  } catch (error) {
-    rethrowAsGhError(error, args);
-  }
-}
-
-function ghApiJson<T>(endpoint: string): T {
-  const args = ["api", endpoint];
-  try {
-    return JSON.parse(
-      execFileSync("gh", args, {
-        encoding: "utf8",
-        timeout: CHILD_PROCESS_TIMEOUT_MS,
-      }),
-    ) as T;
-  } catch (error) {
-    rethrowAsGhError(error, args);
-  }
-}
-
-function gh(args: string[], opts?: { input?: string }): void {
-  execFileSync("gh", [...args, "-R", config.repoSlug], {
-    stdio: opts?.input !== undefined ? ["pipe", "inherit", "inherit"] : "inherit",
-    timeout: CHILD_PROCESS_TIMEOUT_MS,
-    ...(opts?.input !== undefined ? { input: opts.input } : {}),
-  });
-}
-
-/** Open issues carrying `label`, oldest-created first. Shared by `issues` and `research`. */
-function listIssuesWithLabel(label: string): Issue[] {
-  type GhIssue = Omit<Issue, "labels"> & { labels: Array<{ name: string }> };
-  return ghJson<GhIssue[]>([
-    "issue",
-    "list",
-    "--state",
-    "open",
-    "--label",
-    label,
-    "--limit",
-    "100",
-    "--search",
-    "sort:created-asc",
-    "--json",
-    "number,title,body,labels,createdAt",
-  ]).map((row) => ({
-    number: row.number,
-    title: row.title,
-    body: row.body,
-    createdAt: row.createdAt,
-    labels: row.labels.map((l) => l.name),
-  }));
-}
-
-function listReadyIssues(): Issue[] {
-  return listIssuesWithLabel(config.readyLabel);
-}
-
-function listResearchIssues(): Issue[] {
-  return listIssuesWithLabel(config.researchLabel);
-}
-
-function blockerPrState(blockerIssueNumber: number): BlockerPrState {
-  const branch: BranchRef = issueBranch(blockerIssueNumber);
-  const open = ghJson<Array<{ number: number }>>([
-    "pr",
-    "list",
-    "--head",
-    branch,
-    "--state",
-    "open",
-    "--json",
-    "number",
-    "--limit",
-    "1",
-  ]);
-  const merged = ghJson<Array<{ number: number }>>([
-    "pr",
-    "list",
-    "--head",
-    branch,
-    "--state",
-    "merged",
-    "--json",
-    "number",
-    "--limit",
-    "1",
-  ]);
-  if (open.length > 0 || merged.length > 0) {
-    return {
-      hasOpenPr: open.length > 0,
-      openPrNumber: open[0] ? asPrNumber(open[0].number) : undefined,
-      hasMergedPr: merged.length > 0,
-      mergedPrNumber: merged[0] ? asPrNumber(merged[0].number) : undefined,
-    };
-  }
-
-  // Only when no Phoebe PR answers for the blocker is the third call worth it:
-  // the work may have landed outside `branchPrefix` and closed the issue (#219).
-  const view = ghJson<{ state: string; stateReason?: string | null }>([
-    "issue",
-    "view",
-    String(blockerIssueNumber),
-    "--json",
-    "state,stateReason",
-  ]);
-  return {
-    hasOpenPr: false,
-    hasMergedPr: false,
-    blockerCompleted: isCompletedBlockerIssue(view),
-  };
-}
+const github = createGitHubClient({ config, env: process.env });
 
 function buildBlockerStates(issues: readonly Issue[]): Map<number, BlockerPrState> {
   const blockerNumbers = new Set<number>();
@@ -396,7 +235,7 @@ function buildBlockerStates(issues: readonly Issue[]): Map<number, BlockerPrStat
   const states = new Map<number, BlockerPrState>();
   for (const n of blockerNumbers) {
     try {
-      states.set(n, blockerPrState(n));
+      states.set(n, github.blockerPrState(n));
     } catch (error) {
       // Absent entries are treated as unmerged blockers — safe to retry next cycle.
       console.warn(
@@ -421,84 +260,13 @@ function buildBlockerStatesFromBodies(
   );
 }
 
-function postPrComment(prNumber: PrNumber, body: string): void {
-  gh(["pr", "comment", String(prNumber), "--body", body]);
-}
-
 // --- Poison-unit quarantine write path (#75) ---------------------------------
 // The read/skip half ships in orchestrator.ts (it filters `phoebe:quarantined`
 // out of selection). This is the missing write half: on a whole-unit timeout,
 // count consecutive timeouts on the unit itself (a GitHub marker) and, at K,
 // apply the label + escalation comment so the poisonous unit stops being
-// re-picked. Kept thin over `gh`; the count/threshold policy is pure in
-// quarantine.ts (`decideTimeoutRecord`).
-
-type TimeoutComment = { body: string; createdAt: string; authorLogin: string };
-
-type UnitTimeoutInputs = {
-  /** Comments (body + createdAt + authorLogin), oldest-first — fed to `decideTimeoutRecord`. */
-  comments: TimeoutComment[];
-  /** Extra external-activity instant (a PR head push), or null — a further reset signal. */
-  extraActivityAt: string | null;
-  /** Recorded in the escalation comment for the future auto-un-stick sweep. */
-  baseline: string;
-};
-
-type GhTimeoutComment = { body: string; createdAt: string; author: { login: string } | null };
-
-function toTimeoutComments(comments: readonly GhTimeoutComment[]): TimeoutComment[] {
-  // `author` is null for a deleted account; coerce to "" (a foreign author, never
-  // Phoebe) rather than letting the deref throw and skip the whole timeout record.
-  return comments.map((c) => ({
-    body: c.body,
-    createdAt: c.createdAt,
-    authorLogin: c.author?.login ?? "",
-  }));
-}
-
-function fetchIssueTimeoutInputs(issueNumber: number): UnitTimeoutInputs {
-  const raw = ghJson<{ body: string; comments: GhTimeoutComment[] }>([
-    "issue",
-    "view",
-    String(issueNumber),
-    "--json",
-    "comments,body",
-  ]);
-  // Issues have no commits, so a new human comment is the only reset signal. The
-  // un-stick baseline is a fingerprint of the body, never `updatedAt`: GitHub
-  // bumps that on any comment, label, or reaction — including the quarantine
-  // comment + label Phoebe writes moments later — so a timestamp baseline would
-  // make every quarantine clear itself on the first sweep (#153).
-  return {
-    comments: toTimeoutComments(raw.comments),
-    extraActivityAt: null,
-    baseline: issueContentBaseline(raw.body),
-  };
-}
-
-function fetchPrTimeoutInputs(prNumber: PrNumber): UnitTimeoutInputs {
-  const raw = ghJson<{
-    headRefOid: string;
-    comments: GhTimeoutComment[];
-    commits: Array<{ committedDate: string }>;
-  }>(["pr", "view", String(prNumber), "--json", "comments,commits,headRefOid"]);
-  // A new push (head commit) or human comment resets; head SHA is the baseline.
-  const headCommitAt =
-    raw.commits.length > 0 ? raw.commits[raw.commits.length - 1]!.committedDate : null;
-  return {
-    comments: toTimeoutComments(raw.comments),
-    extraActivityAt: headCommitAt,
-    baseline: raw.headRefOid,
-  };
-}
-
-function postUnitComment(isIssueKind: boolean, id: string, body: string): void {
-  gh([isIssueKind ? "issue" : "pr", "comment", id, "--body", body]);
-}
-
-function addQuarantineLabel(isIssueKind: boolean, id: string): void {
-  gh([isIssueKind ? "issue" : "pr", "edit", id, "--add-label", PHOEBE_QUARANTINE_LABEL]);
-}
+// re-picked. Kept thin over the GitHub client; the count/threshold policy is
+// pure in quarantine.ts (`decideTimeoutRecord`).
 
 /**
  * Record one whole-unit timeout toward the poison-unit quarantine (#75): read the
@@ -510,32 +278,32 @@ function addQuarantineLabel(isIssueKind: boolean, id: string): void {
 function recordUnitTimeout(picked: WorkUnit, phoebeLogin: string, emit: EmitUnitEvent): void {
   const ref = unitRef(picked);
   const isIssueKind = picked.kind === "issues" || picked.kind === "research";
+  const target: UnitTarget = { objectType: isIssueKind ? "issue" : "pr", id: Number(ref.id) };
   try {
     // `data.phoebeLogin` is only populated when the `reviews` kind was fetched
     // this cycle, but any kind can time out — resolve it directly when absent so
     // Phoebe's own timeout markers are never mistaken for reset-triggering
     // foreign activity (which would reset the count every rotation and never
-    // quarantine). Timeouts are rare, so the extra `gh api user` is cheap.
-    const login = phoebeLogin || phoebeGhLogin();
+    // quarantine). Timeouts are rare, so the extra login lookup is cheap.
+    const login = phoebeLogin || github.resolveLogin(process.env["PHOEBE_GH_LOGIN"]);
     const k = resolveMaxUnitTimeouts(process.env, config.maxUnitTimeouts);
     const inputs = isIssueKind
-      ? fetchIssueTimeoutInputs(Number(ref.id))
-      : fetchPrTimeoutInputs(asPrNumber(Number(ref.id)));
+      ? github.issueTimeoutInputs(target.id)
+      : github.prTimeoutInputs(asPrNumber(target.id));
     const { count, quarantine } = decideTimeoutRecord({
       comments: inputs.comments,
       phoebeLogin: login,
       extraActivityAt: inputs.extraActivityAt,
       k,
     });
-    postUnitComment(isIssueKind, ref.id, buildUnitTimeoutMarker(count));
+    github.postUnitComment(target, buildUnitTimeoutMarker(count));
     if (quarantine) {
-      addQuarantineLabel(isIssueKind, ref.id);
-      postUnitComment(
-        isIssueKind,
-        ref.id,
+      github.addQuarantineLabel(target);
+      github.postUnitComment(
+        target,
         buildQuarantineComment({
           kind: ref.kind,
-          id: Number(ref.id),
+          id: target.id,
           k: count,
           baseline: inputs.baseline,
         }),
@@ -563,58 +331,9 @@ function recordUnitTimeout(picked: WorkUnit, phoebeLogin: string, emit: EmitUnit
 // two `gh` calls per cycle and no per-unit fetch. The decision itself is pure, in
 // quarantine.ts (`decideAutoUnstick`).
 
-type QuarantinedUnit = {
-  isIssueKind: boolean;
-  id: number;
-  /** The unit's content right now — a PR head SHA, or an issue body fingerprint. */
-  currentBaseline: string;
-  comments: Array<{ body: string }>;
-};
-
-function listQuarantinedIssues(): QuarantinedUnit[] {
-  type Row = { number: number; body: string; comments: Array<{ body: string }> };
-  return ghJson<Row[]>([
-    "issue",
-    "list",
-    "--state",
-    "open",
-    "--label",
-    PHOEBE_QUARANTINE_LABEL,
-    "--limit",
-    "100",
-    "--json",
-    "number,body,comments",
-  ]).map((row) => ({
-    isIssueKind: true,
-    id: row.number,
-    currentBaseline: issueContentBaseline(row.body),
-    comments: row.comments,
-  }));
-}
-
-function listQuarantinedPrs(): QuarantinedUnit[] {
-  type Row = { number: number; headRefOid: string; comments: Array<{ body: string }> };
-  return ghJson<Row[]>([
-    "pr",
-    "list",
-    "--state",
-    "open",
-    "--label",
-    PHOEBE_QUARANTINE_LABEL,
-    "--limit",
-    "100",
-    "--json",
-    "number,headRefOid,comments",
-  ]).map((row) => ({
-    isIssueKind: false,
-    id: row.number,
-    currentBaseline: row.headRefOid,
-    comments: row.comments,
-  }));
-}
-
-function removeQuarantineLabel(isIssueKind: boolean, id: string): void {
-  gh([isIssueKind ? "issue" : "pr", "edit", id, "--remove-label", PHOEBE_QUARANTINE_LABEL]);
+/** How a quarantined unit is named in the sweep's log lines. */
+function describeUnitTarget(target: UnitTarget): string {
+  return `${target.objectType === "issue" ? "issue" : "PR"} #${target.id}`;
 }
 
 /**
@@ -627,7 +346,7 @@ function removeQuarantineLabel(isIssueKind: boolean, id: string): void {
 function sweepQuarantine(): void {
   let quarantined: QuarantinedUnit[];
   try {
-    quarantined = [...listQuarantinedIssues(), ...listQuarantinedPrs()];
+    quarantined = [...github.listQuarantinedIssues(), ...github.listQuarantinedPrs()];
   } catch (error) {
     console.error(
       `[phoebe] Could not list quarantined units for the auto-un-stick sweep — ` +
@@ -639,20 +358,20 @@ function sweepQuarantine(): void {
     if (!decideAutoUnstick({ comments: unit.comments, currentBaseline: unit.currentBaseline })) {
       continue;
     }
-    const id = String(unit.id);
+    const label = describeUnitTarget(unit.target);
     try {
       // Label first: the comment is the audit trail, but the label is what
       // actually re-arms the unit, and a half-applied un-stick should err toward
       // the unit being workable again rather than silently stuck.
-      removeQuarantineLabel(unit.isIssueKind, id);
-      postUnitComment(unit.isIssueKind, id, buildUnstickComment());
+      github.removeQuarantineLabel(unit.target);
+      github.postUnitComment(unit.target, buildUnstickComment());
       console.log(
-        `[phoebe] Un-quarantined ${unit.isIssueKind ? "issue" : "PR"} #${id} — its content ` +
+        `[phoebe] Un-quarantined ${label} — its content ` +
           `advanced past the quarantine baseline.`,
       );
     } catch (error) {
       console.error(
-        `[phoebe] Could not un-quarantine ${unit.isIssueKind ? "issue" : "PR"} #${id} — ` +
+        `[phoebe] Could not un-quarantine ${label} — ` +
           `${error instanceof Error ? error.message : String(error)}`,
       );
     }
@@ -668,7 +387,7 @@ function sweepQuarantine(): void {
 function sweepDisabledQuarantine(): void {
   let quarantined: QuarantinedUnit[];
   try {
-    quarantined = [...listQuarantinedIssues(), ...listQuarantinedPrs()];
+    quarantined = [...github.listQuarantinedIssues(), ...github.listQuarantinedPrs()];
   } catch (error) {
     console.error(
       `[phoebe] Could not list quarantined units for the disabled-tenant sweep — ` +
@@ -678,145 +397,33 @@ function sweepDisabledQuarantine(): void {
   }
   for (const unit of quarantined) {
     if (!decideDisabledUnstick()) continue;
-    const id = String(unit.id);
+    const label = describeUnitTarget(unit.target);
     try {
-      removeQuarantineLabel(unit.isIssueKind, id);
-      postUnitComment(unit.isIssueKind, id, buildUnstickComment());
+      github.removeQuarantineLabel(unit.target);
+      github.postUnitComment(unit.target, buildUnstickComment());
       console.log(
-        `[phoebe] Un-quarantined ${unit.isIssueKind ? "issue" : "PR"} #${id} — ` +
+        `[phoebe] Un-quarantined ${label} — ` +
           `tenant is disabled; cleared so it starts fresh when re-enabled.`,
       );
     } catch (error) {
       console.error(
-        `[phoebe] Could not un-quarantine ${unit.isIssueKind ? "issue" : "PR"} #${id} — ` +
+        `[phoebe] Could not un-quarantine ${label} — ` +
           `${error instanceof Error ? error.message : String(error)}`,
       );
     }
   }
 }
 
-type OpenPhoebePr = { number: PrNumber; headRefName: BranchRef; authorLogin: string };
-
-function listOpenPhoebePrs(): OpenPhoebePr[] {
-  type GhOpenPr = {
-    number: number;
-    headRefName: string;
-    isDraft: boolean;
-    isCrossRepository: boolean;
-    labels: Array<{ name: string }>;
-    author: { login: string };
-  };
-  return ghJson<GhOpenPr[]>([
-    "pr",
-    "list",
-    "--base",
-    PR_BASE,
-    "--state",
-    "open",
-    "--json",
-    "number,headRefName,isDraft,isCrossRepository,labels,author",
-    "--limit",
-    "100",
-  ])
-    .filter((pr) =>
-      isPrInScope({
-        headRefName: asBranchRef(pr.headRefName),
-        isDraft: pr.isDraft,
-        isCrossRepository: pr.isCrossRepository,
-        labels: pr.labels.map((label) => label.name),
-      }),
-    )
-    .map((pr) => ({
-      number: asPrNumber(pr.number),
-      headRefName: asBranchRef(pr.headRefName),
-      authorLogin: pr.author.login,
-    }));
-}
-
-function getOpenPrsCached(cache: CycleCache): OpenPhoebePr[] {
-  if (cache.openPrs === null) {
-    cache.openPrs = listOpenPhoebePrs();
-  }
-  return cache.openPrs;
-}
-
-type PrMergeInfo = {
-  number: PrNumber;
-  headRefName: BranchRef;
-  headRefOid: Sha;
-  mergeable: string;
-  mergeStateStatus: string;
-};
-
-function viewPrMergeInfo(prNumber: PrNumber): PrMergeInfo {
-  const raw = ghJson<{
-    number: number;
-    headRefName: string;
-    headRefOid: string;
-    mergeable: string;
-    mergeStateStatus: string;
-  }>([
-    "pr",
-    "view",
-    String(prNumber),
-    "--json",
-    "number,headRefName,headRefOid,mergeable,mergeStateStatus",
-  ]);
-  return {
-    number: asPrNumber(raw.number),
-    headRefName: asBranchRef(raw.headRefName),
-    headRefOid: asSha(raw.headRefOid),
-    mergeable: raw.mergeable,
-    mergeStateStatus: raw.mergeStateStatus,
-  };
-}
-
-async function getMergeInfoCached(prNumber: PrNumber, cache: CycleCache): Promise<PrMergeInfo> {
-  const hit = cache.mergeInfo.get(prNumber);
-  if (hit !== undefined) return hit;
-  let info = viewPrMergeInfo(prNumber);
-  for (let attempt = 1; attempt < MERGEABLE_RETRY_COUNT; attempt++) {
-    if (info.mergeable !== "UNKNOWN") break;
-    await sleep(MERGEABLE_RETRY_MS);
-    info = viewPrMergeInfo(prNumber);
-  }
-  cache.mergeInfo.set(prNumber, info);
-  return info;
-}
-
-/** All comment bodies on a PR, oldest first — the raw input to every watermark parse. */
-function fetchPrCommentBodies(prNumber: PrNumber): string[] {
-  const { comments } = ghJson<{ comments: Array<{ body: string }> }>([
-    "pr",
-    "view",
-    String(prNumber),
-    "--json",
-    "comments",
-  ]);
-  return comments.map((comment) => comment.body);
-}
-
-function phoebeGhLogin(): string {
-  // Prefer the explicitly injected login (set during App-mode mint or by the
-  // operator) — `gh api user` 403s under an installation token, so we must
-  // not attempt the API call when PHOEBE_GH_LOGIN is already known.
-  const envLogin = process.env["PHOEBE_GH_LOGIN"];
-  if (envLogin) return envLogin;
-  return ghApiJson<{ login: string }>("user").login;
-}
-
 /**
  * The `Co-authored-by:` trailer crediting `issueNumber`'s author (#198), or
- * null when there is nobody to credit or the lookups fail. `gh issue view`
- * reports a deleted author as `null`; `gh api users/<login>` supplies the
- * numeric id the noreply address needs.
+ * null when there is nobody to credit or the lookups fail. A deleted author
+ * reads as `null`; the user lookup supplies the numeric id the noreply address
+ * needs.
  */
 function issueCoAuthorTrailer(issueNumber: number): string | null {
   return resolveIssueCoAuthorTrailer(issueNumber, {
-    issueAuthorLogin: (n) =>
-      ghJson<{ author: { login: string } | null }>(["issue", "view", String(n), "--json", "author"])
-        .author?.login ?? null,
-    lookupUser: (login) => ghApiJson<GitHubUser>(`users/${encodeURIComponent(login)}`),
+    issueAuthorLogin: (n) => github.issueAuthorLogin(n),
+    lookupUser: (login) => github.lookupUser(login),
   });
 }
 
@@ -847,10 +454,6 @@ function stampIssueAuthorCredit(opts: {
     failed: "rewrite failed and was aborted; commits left as the agent made them",
   }[outcome];
   console.log(`[phoebe] Co-author trailer for #${opts.issueNumber}: ${detail}.`);
-}
-
-function issueBody(issueNumber: number): string {
-  return ghJson<{ body: string }>(["issue", "view", String(issueNumber), "--json", "body"]).body;
 }
 
 // ---------------------------------------------------------------------------
@@ -1108,7 +711,7 @@ async function runConflictResolutionAgent(
     },
     beforeAgent: (worktreeDir) => attemptBlockerFirstMerges(worktreeDir, mergedBlockerPrNumbers),
     onResult: ({ worktreeDir, branch, originShaBefore, originShaAfter, localCommitCount }) => {
-      const prInfo = viewPrMergeInfo(pr.prNumber);
+      const prInfo = github.currentMergeInfo(pr.prNumber);
       if (
         shouldPostConflictFixFailure({
           hostCommitCount: localCommitCount,
@@ -1121,7 +724,7 @@ async function runConflictResolutionAgent(
         console.log(
           `[phoebe] Conflict fix for PR #${pr.prNumber} produced no commits — leaving PR unchanged.`,
         );
-        postPrComment(
+        github.postPrComment(
           pr.prNumber,
           conflictFixFailureComment(pr.prNumber, currentConflictFailureWatermark(pr.headRefName)),
         );
@@ -1152,13 +755,13 @@ async function fixOnePrConflict(pr: ConflictingPrCandidate, ctx: StackContext): 
   if (cleanResult === "pushed") {
     console.log(`[phoebe] Clean merge for PR #${pr.prNumber} — pushed.`);
     if (mergedBlockerPrNumbers.length > 0) {
-      postPrComment(pr.prNumber, stackedCatchUpRetractionComment(mergedBlockerPrNumbers));
+      github.postPrComment(pr.prNumber, stackedCatchUpRetractionComment(mergedBlockerPrNumbers));
     }
     return;
   }
   if (cleanResult === "failed") {
     console.log(`[phoebe] Could not start merge for PR #${pr.prNumber} — skipping.`);
-    postPrComment(
+    github.postPrComment(
       pr.prNumber,
       conflictFixFailureComment(pr.prNumber, currentConflictFailureWatermark(pr.headRefName)),
     );
@@ -1188,7 +791,7 @@ async function runChecksResolutionAgent(pr: ChecksCandidate): Promise<void> {
         console.log(
           `[phoebe] Checks fix for PR #${pr.prNumber} produced no commits — leaving PR unchanged.`,
         );
-        postPrComment(
+        github.postPrComment(
           pr.prNumber,
           checksFixFailureComment(pr.prNumber, currentChecksFailureWatermark(pr.headRefName)),
         );
@@ -1227,7 +830,7 @@ async function fixOnePrChecks(pr: ChecksCandidate, ctx: StackContext): Promise<v
         `[phoebe] Catch-up merge for PR #${pr.prNumber} — pushed; waiting for CI on next cycle.`,
       );
       if (mergedBlockerPrNumbers.length > 0) {
-        postPrComment(pr.prNumber, stackedCatchUpRetractionComment(mergedBlockerPrNumbers));
+        github.postPrComment(pr.prNumber, stackedCatchUpRetractionComment(mergedBlockerPrNumbers));
       }
       return;
     }
@@ -1242,113 +845,19 @@ async function fixOnePrChecks(pr: ChecksCandidate, ctx: StackContext): Promise<v
   await runChecksResolutionAgent(pr);
 }
 
-type GraphQLReviewThreadsPage = {
-  data: {
-    repository: {
-      pullRequest: {
-        reviewThreads: {
-          pageInfo: { hasNextPage: boolean; endCursor: string | null };
-          nodes: Array<{
-            isResolved: boolean;
-            isOutdated: boolean;
-            comments: {
-              nodes: Array<{
-                createdAt: string;
-                author: { login: string } | null;
-              }>;
-            };
-          }>;
-        };
-      };
-    };
-  };
-};
-
-function fetchReviewThreads(prNumber: PrNumber): ReviewThread[] {
-  const [owner, repo] = config.repoSlug.split("/");
-  const threads: ReviewThread[] = [];
-  let cursor: string | null = null;
-  let hasNextPage = true;
-
-  while (hasNextPage) {
-    const afterArg = cursor ? `, after:"${cursor}"` : "";
-    const query = `query($owner:String!,$repo:String!,$pr:Int!) {
-  repository(owner:$owner,name:$repo) {
-    pullRequest(number:$pr) {
-      reviewThreads(first:100${afterArg}) {
-        pageInfo { hasNextPage endCursor }
-        nodes {
-          isResolved
-          isOutdated
-          comments(first:30) {
-            nodes {
-              createdAt
-              author { login }
-            }
-          }
-        }
-      }
-    }
-  }
-}`;
-    const graphqlArgs = [
-      "api",
-      "graphql",
-      "-f",
-      `query=${query}`,
-      "-f",
-      `owner=${owner}`,
-      "-f",
-      `repo=${repo}`,
-      "-F",
-      `pr=${prNumber}`,
-    ];
-    let rawPage: string;
-    try {
-      rawPage = execFileSync("gh", graphqlArgs, {
-        encoding: "utf8",
-        timeout: CHILD_PROCESS_TIMEOUT_MS,
-      });
-    } catch (error) {
-      rethrowAsGhError(error, ["api", "graphql"]);
-    }
-    const page = JSON.parse(rawPage) as GraphQLReviewThreadsPage;
-
-    const reviewThreads = page.data.repository.pullRequest.reviewThreads;
-    for (const node of reviewThreads.nodes) {
-      threads.push({
-        isResolved: node.isResolved,
-        isOutdated: node.isOutdated,
-        comments: node.comments.nodes.map((comment) => ({
-          createdAt: comment.createdAt,
-          authorLogin: comment.author?.login ?? "",
-        })),
-      });
-    }
-    hasNextPage = reviewThreads.pageInfo.hasNextPage;
-    cursor = reviewThreads.pageInfo.endCursor;
-    if (!hasNextPage) {
-      break;
-    }
-  }
-
-  return threads;
-}
-
 function hasNewReviewSummaryComment(
   prNumber: PrNumber,
   phoebeLogin: string,
   since: string,
 ): boolean {
-  const { comments } = ghJson<{
-    comments: Array<{ body: string; createdAt: string; author: { login: string } }>;
-  }>(["pr", "view", String(prNumber), "--json", "comments"]);
-  return comments.some(
-    (comment) =>
-      comment.author.login === phoebeLogin &&
-      comment.createdAt > since &&
-      isReviewSummaryComment(comment.body),
-  );
+  return github
+    .reviewSummaryComments(prNumber)
+    .some(
+      (comment) =>
+        comment.authorLogin === phoebeLogin &&
+        comment.createdAt > since &&
+        isReviewSummaryComment(comment.body),
+    );
 }
 
 async function runReviewsResolutionAgent(pr: ReviewsCandidate, phoebeLogin: string): Promise<void> {
@@ -1385,7 +894,7 @@ async function runReviewsResolutionAgent(pr: ReviewsCandidate, phoebeLogin: stri
         console.log(`[phoebe] Review handling for PR #${pr.prNumber} produced no summary or push.`);
       }
 
-      postPrComment(
+      github.postPrComment(
         pr.prNumber,
         buildReviewsHandledComment({
           latestActivityAt,
@@ -1441,18 +950,8 @@ async function runOneIssue(opts: {
         stampIssueAuthorCredit({ issueNumber, worktreeDir, baseRef: worktreeBase });
       }
       pushBranch(worktreeDir, agentBranch);
-      const existingPrRow = ghJson<Array<{ number: number }>>([
-        "pr",
-        "list",
-        "--head",
-        agentBranch,
-        "--state",
-        "open",
-        "--json",
-        "number",
-      ])[0];
-      const existingPr = existingPrRow ? asPrNumber(existingPrRow.number) : undefined;
-      if (existingPr === undefined) {
+      const existingPr = github.findIssuePr(issueNumber);
+      if (existingPr === null) {
         const prTitle = `Phoebe: ${issueTitle} (#${issueNumber})`;
         const prBody = buildInitialPrBody({
           issueNumber,
@@ -1461,26 +960,12 @@ async function runOneIssue(opts: {
             ? { stacked: { blockerIssueNumber, blockerPrNumber } }
             : {}),
         });
-        gh(
-          [
-            "pr",
-            "create",
-            "--head",
-            agentBranch,
-            "--base",
-            PR_BASE,
-            "--title",
-            prTitle,
-            "--body-file",
-            "-",
-          ],
-          { input: prBody },
-        );
+        github.createPr({ head: agentBranch, base: PR_BASE, title: prTitle, body: prBody });
       } else {
         console.log(
           `[phoebe] PR #${existingPr} already exists for ${agentBranch} — posting follow-up note.`,
         );
-        postPrComment(existingPr, followUpPrComment(issueNumber, newCommitCount));
+        github.postPrComment(existingPr, followUpPrComment(issueNumber, newCommitCount));
       }
     } else {
       console.log("[phoebe] No commits — skipping PR creation.");
@@ -1506,7 +991,7 @@ type RunContext = {
 
 type WorkKind = {
   name: WorkKindName;
-  fetch: (cache: CycleCache) => Promise<WorkKindFetch>;
+  fetch: (cycle: CycleGitHubClient) => Promise<WorkKindFetch>;
   runUnit: (unit: WorkUnit["unit"], context: RunContext) => Promise<void>;
 };
 
@@ -1537,9 +1022,9 @@ type WorkKindFetch =
 
 async function conflictingPrCandidate(
   pr: OpenPhoebePr,
-  cache: CycleCache,
+  cycle: CycleGitHubClient,
 ): Promise<ConflictingPrCandidate | null> {
-  const info = await getMergeInfoCached(pr.number, cache);
+  const info = await cycle.mergeInfo(pr.number);
   if (!isPrMergeConflicting(info.mergeable, info.mergeStateStatus)) return null;
   const issueNumber = parseIssueNumberFromBranch(info.headRefName);
   return {
@@ -1550,12 +1035,12 @@ async function conflictingPrCandidate(
   };
 }
 
-async function fetchConflictingPrs(cache: CycleCache): Promise<ConflictingPrCandidate[]> {
-  const openPrs = getOpenPrsCached(cache);
+async function fetchConflictingPrs(cycle: CycleGitHubClient): Promise<ConflictingPrCandidate[]> {
+  const openPrs = cycle.openPrs();
   const conflicting: ConflictingPrCandidate[] = [];
   for (const pr of openPrs) {
     try {
-      const candidate = await conflictingPrCandidate(pr, cache);
+      const candidate = await conflictingPrCandidate(pr, cycle);
       if (candidate) {
         conflicting.push(candidate);
       }
@@ -1568,31 +1053,14 @@ async function fetchConflictingPrs(cache: CycleCache): Promise<ConflictingPrCand
   return conflicting;
 }
 
-// GraphQL statusCheckRollup is not readable by fine-grained PATs (GitHub-App/
-// OAuth only), so check state comes from the REST Actions API instead.
-function listCommitCheckItems(headSha: Sha): StatusCheckItem[] {
-  return workflowRunsToCheckItems(
-    ghJson<WorkflowRunItem[]>([
-      "run",
-      "list",
-      "--commit",
-      headSha,
-      "--json",
-      "workflowName,status,conclusion",
-      "--limit",
-      "50",
-    ]),
-  );
-}
-
 async function failingChecksCandidate(
   pr: OpenPhoebePr,
-  cache: CycleCache,
+  cycle: CycleGitHubClient,
 ): Promise<ChecksCandidate | null> {
-  const info = await getMergeInfoCached(pr.number, cache);
+  const info = await cycle.mergeInfo(pr.number);
   if (isPrMergeConflicting(info.mergeable, info.mergeStateStatus)) return null;
-  for (let attempt = 0; attempt < MERGEABLE_RETRY_COUNT; attempt++) {
-    const checkItems = listCommitCheckItems(info.headRefOid);
+  for (let attempt = 0; attempt < CHECKS_PENDING_RETRY_COUNT; attempt++) {
+    const checkItems = workflowRunsToCheckItems(github.commitCheckItems(info.headRefOid));
     const rollup = statusCheckRollupState(checkItems);
     if (rollup === "FAILURE") {
       const issueNumber = parseIssueNumberFromBranch(info.headRefName);
@@ -1607,19 +1075,19 @@ async function failingChecksCandidate(
       };
     }
     if (rollup !== "PENDING") return null;
-    if (attempt < MERGEABLE_RETRY_COUNT - 1) {
-      await sleep(MERGEABLE_RETRY_MS);
+    if (attempt < CHECKS_PENDING_RETRY_COUNT - 1) {
+      await sleep(CHECKS_PENDING_RETRY_MS);
     }
   }
   return null;
 }
 
-async function fetchFailingCheckPrs(cache: CycleCache): Promise<ChecksCandidate[]> {
-  const openPrs = getOpenPrsCached(cache);
+async function fetchFailingCheckPrs(cycle: CycleGitHubClient): Promise<ChecksCandidate[]> {
+  const openPrs = cycle.openPrs();
   const failing: ChecksCandidate[] = [];
   for (const pr of openPrs) {
     try {
-      const candidate = await failingChecksCandidate(pr, cache);
+      const candidate = await failingChecksCandidate(pr, cycle);
       if (candidate) {
         failing.push(candidate);
       }
@@ -1647,25 +1115,25 @@ function harvestIssueBodies(
         .filter((n): n is number => n !== null),
     ),
   ];
-  return new Map(issueNumbers.map((number) => [number, issueBody(number)] as const));
+  return new Map(issueNumbers.map((number) => [number, github.issueBody(number)] as const));
 }
 
-async function fetchReviewsWorkData(cache: CycleCache): Promise<{
+async function fetchReviewsWorkData(cycle: CycleGitHubClient): Promise<{
   reviewActivityPrs: ReviewsCandidate[];
   issueBodies: Map<number, string>;
   phoebeLogin: string;
 }> {
-  const phoebeLogin = phoebeGhLogin();
-  const openPrs = getOpenPrsCached(cache);
+  const phoebeLogin = cycle.resolveLogin(process.env["PHOEBE_GH_LOGIN"]);
+  const openPrs = cycle.openPrs();
   const reviewActivityPrs: ReviewsCandidate[] = [];
 
   for (const pr of openPrs) {
     try {
-      const info = await getMergeInfoCached(pr.number, cache);
+      const info = await cycle.mergeInfo(pr.number);
       if (isPrMergeConflicting(info.mergeable, info.mergeStateStatus)) {
         continue;
       }
-      const threads = fetchReviewThreads(pr.number);
+      const threads = cycle.reviewThreads(pr.number);
       const issueNumber = parseIssueNumberFromBranch(info.headRefName);
       reviewActivityPrs.push({
         prNumber: info.number,
@@ -1675,7 +1143,7 @@ async function fetchReviewsWorkData(cache: CycleCache): Promise<{
         mergeStateStatus: info.mergeStateStatus,
         threads,
         handledWatermark: parseLatestMarker(
-          fetchPrCommentBodies(pr.number),
+          cycle.prCommentBodies(pr.number),
           parseReviewsHandledWatermark,
         ),
         ...(issueNumber !== null ? { issueNumber } : {}),
@@ -1691,18 +1159,18 @@ async function fetchReviewsWorkData(cache: CycleCache): Promise<{
   return { reviewActivityPrs, issueBodies, phoebeLogin };
 }
 
-async function fetchConflictWorkData(cache: CycleCache): Promise<{
+async function fetchConflictWorkData(cycle: CycleGitHubClient): Promise<{
   conflictingPrs: ConflictingPrCandidate[];
   issueBodies: Map<number, string>;
   currentMainHead: Sha;
 }> {
-  const rawConflictingPrs = await fetchConflictingPrs(cache);
+  const rawConflictingPrs = await fetchConflictingPrs(cycle);
   fetchOrigin();
   const currentMainHead = originBranchSha(defaultBranchRef);
   const conflictingPrs = rawConflictingPrs.map((pr) => ({
     ...pr,
     failureWatermark: parseLatestMarker(
-      fetchPrCommentBodies(pr.prNumber),
+      cycle.prCommentBodies(pr.prNumber),
       parseConflictFailWatermark,
     ),
   }));
@@ -1710,15 +1178,15 @@ async function fetchConflictWorkData(cache: CycleCache): Promise<{
   return { conflictingPrs, issueBodies, currentMainHead };
 }
 
-async function fetchChecksWorkData(cache: CycleCache): Promise<{
+async function fetchChecksWorkData(cycle: CycleGitHubClient): Promise<{
   failingCheckPrs: ChecksCandidate[];
   issueBodies: Map<number, string>;
 }> {
-  const rawFailingPrs = await fetchFailingCheckPrs(cache);
+  const rawFailingPrs = await fetchFailingCheckPrs(cycle);
   const failingCheckPrs = rawFailingPrs.map((pr) => ({
     ...pr,
     failureWatermark: parseLatestMarker(
-      fetchPrCommentBodies(pr.prNumber),
+      cycle.prCommentBodies(pr.prNumber),
       parseChecksFailWatermark,
     ),
   }));
@@ -1727,7 +1195,7 @@ async function fetchChecksWorkData(cache: CycleCache): Promise<{
 }
 
 function fetchIssueWorkData(): { issues: Issue[]; blockerStates: Map<number, BlockerPrState> } {
-  const issues = listReadyIssues();
+  const issues = github.listReadyIssues();
   return { issues, blockerStates: buildBlockerStates(issues) };
 }
 
@@ -1735,7 +1203,7 @@ function fetchResearchWorkData(): {
   researchIssues: Issue[];
   blockerStates: Map<number, BlockerPrState>;
 } {
-  const researchIssues = listResearchIssues();
+  const researchIssues = github.listResearchIssues();
   return { researchIssues, blockerStates: buildBlockerStates(researchIssues) };
 }
 
@@ -1778,8 +1246,8 @@ async function runResearchUnit(unit: IssueWorkUnit): Promise<void> {
 const KINDS: Record<WorkKindName, WorkKind> = {
   conflicts: {
     name: "conflicts",
-    fetch: async (cache) => {
-      const { conflictingPrs, issueBodies, currentMainHead } = await fetchConflictWorkData(cache);
+    fetch: async (cycle) => {
+      const { conflictingPrs, issueBodies, currentMainHead } = await fetchConflictWorkData(cycle);
       return { kind: "conflicts", conflictingPrs, issueBodies, currentMainHead };
     },
     runUnit: async (unit, context) => {
@@ -1788,8 +1256,8 @@ const KINDS: Record<WorkKindName, WorkKind> = {
   },
   checks: {
     name: "checks",
-    fetch: async (cache) => {
-      const { failingCheckPrs, issueBodies } = await fetchChecksWorkData(cache);
+    fetch: async (cycle) => {
+      const { failingCheckPrs, issueBodies } = await fetchChecksWorkData(cycle);
       return { kind: "checks", failingCheckPrs, issueBodies };
     },
     runUnit: async (unit, context) => {
@@ -1798,8 +1266,8 @@ const KINDS: Record<WorkKindName, WorkKind> = {
   },
   reviews: {
     name: "reviews",
-    fetch: async (cache) => {
-      const { reviewActivityPrs, issueBodies, phoebeLogin } = await fetchReviewsWorkData(cache);
+    fetch: async (cycle) => {
+      const { reviewActivityPrs, issueBodies, phoebeLogin } = await fetchReviewsWorkData(cycle);
       return { kind: "reviews", reviewActivityPrs, issueBodies, phoebeLogin };
     },
     runUnit: async (unit, context) => {
@@ -1851,9 +1319,12 @@ async function fetchCycleWorkData(kinds: readonly WorkKindName[]): Promise<Cycle
   let phoebeLogin: string | undefined;
   let currentMainHead: Sha | undefined;
 
-  const cache: CycleCache = { openPrs: null, mergeInfo: new Map() };
+  // One cycle-scoped client for the whole pass: the open-PR list and each PR's
+  // merge state are read once and reused by every kind that asks, and the memo
+  // dies with this local rather than leaking into the next poll.
+  const cycle = github.forCycle();
   for (const kind of kinds) {
-    const fetched = await KINDS[kind].fetch(cache);
+    const fetched = await KINDS[kind].fetch(cycle);
     if (fetched.kind === "issues") {
       issues = fetched.issues;
       for (const [number, state] of fetched.blockerStates) {
@@ -2196,7 +1667,8 @@ async function runLoop({
         continue;
       }
       // Inject the minted token as GH_TOKEN so all gh calls this cycle use it,
-      // and set PHOEBE_GH_LOGIN so phoebeGhLogin() does not have to shell out.
+      // and set PHOEBE_GH_LOGIN so resolving Phoebe's login does not have to
+      // shell out.
       // Bot git identity is applied as a fallback: existing values win. That is
       // what puts it under the rest of the ladder (#199) — by the time the
       // engine runs, a declared `gitIdentity` and the deployment's env have
