@@ -94,11 +94,12 @@ describe("newestForeignCommentAt", () => {
     ).toBeNull();
     expect(newestForeignCommentAt([], phoebe)).toBeNull();
   });
-  test("a deleted author (empty login) still counts as foreign activity", () => {
-    // main.ts coerces a null GitHub author to "" — never Phoebe (whose login is
-    // always non-empty here), so such a comment must count toward the reset.
+  test("a comment with no author still counts as foreign activity", () => {
+    // A deleted account has no login at all, which reads as `null` — the one
+    // value that is nobody's login, so it can never be read as Phoebe's own and
+    // must count toward the reset.
     expect(
-      newestForeignCommentAt([{ createdAt: "2026-01-03T00:00:00Z", authorLogin: "" }], phoebe),
+      newestForeignCommentAt([{ createdAt: "2026-01-03T00:00:00Z", authorLogin: null }], phoebe),
     ).toBe("2026-01-03T00:00:00Z");
   });
   test("ignores Phoebe's own comments and returns the newest foreign instant", () => {

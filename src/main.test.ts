@@ -74,7 +74,7 @@ function anIssue(number: number, overrides: Partial<Issue> = {}): Issue {
 type PrFixture = {
   number: number;
   issueNumber: number;
-  authorLogin?: string;
+  authorLogin?: string | null;
   mergeable?: string;
   mergeStateStatus?: string;
   headSha?: Sha;
@@ -104,7 +104,7 @@ function prWorld(prs: readonly PrFixture[]): GitHubStubOverrides {
       prs.map((pr) => ({
         number: asPrNumber(pr.number),
         headRefName: issueBranch(pr.issueNumber),
-        authorLogin: pr.authorLogin ?? PHOEBE_LOGIN,
+        authorLogin: pr.authorLogin === undefined ? PHOEBE_LOGIN : pr.authorLogin,
       })),
     mergeInfo: (prNumber) => {
       const pr = byNumber(prNumber);
@@ -138,6 +138,15 @@ function humanThread(createdAt: string): ReviewThread {
     isResolved: false,
     isOutdated: false,
     comments: [{ createdAt, authorLogin: "a-reviewer" }],
+  };
+}
+
+/** The same, from a reviewer whose account has since been deleted. */
+function ghostThread(createdAt: string): ReviewThread {
+  return {
+    isResolved: false,
+    isOutdated: false,
+    comments: [{ createdAt, authorLogin: null }],
   };
 }
 
@@ -323,6 +332,58 @@ describe("selecting one unit, per work kind", () => {
     expect(selection(result)).toBe(
       `[phoebe] Would execute: review feedback for PR #23 (${issueBranch(9)}).`,
     );
+  });
+});
+
+// A deleted account has no login. Nothing else in the cycle has no login either
+// — Phoebe's own is always resolved before it is compared against — so `null` is
+// nobody, and the selectors must read it that way rather than as "the same
+// author as whoever else is missing one".
+describe("comments with no author", () => {
+  test("reviews: a ghost reviewer's comment is feedback, not the PR author's own", async () => {
+    const result = await runCycle({
+      config: { workOrder: ["reviews"] },
+      github: {
+        ...prWorld([
+          {
+            number: 23,
+            issueNumber: 9,
+            authorLogin: null,
+            threads: [ghostThread("2026-08-01T00:00:00Z")],
+          },
+        ]),
+        issueBody: () => "",
+      },
+    });
+
+    expect(selection(result)).toBe(
+      `[phoebe] Would execute: review feedback for PR #23 (${issueBranch(9)}).`,
+    );
+  });
+
+  test("reviews: the PR author's own comment is still not feedback", async () => {
+    const result = await runCycle({
+      config: { workOrder: ["reviews"] },
+      github: {
+        ...prWorld([
+          {
+            number: 23,
+            issueNumber: 9,
+            authorLogin: "a-contributor",
+            threads: [
+              {
+                isResolved: false,
+                isOutdated: false,
+                comments: [{ createdAt: "2026-08-01T00:00:00Z", authorLogin: "a-contributor" }],
+              },
+            ],
+          },
+        ]),
+        issueBody: () => "",
+      },
+    });
+
+    expect(selection(result)).toBeUndefined();
   });
 });
 
