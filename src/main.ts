@@ -195,7 +195,8 @@ type AgentWorkflowResult = {
  */
 type RunContext = {
   stack: StackContext;
-  phoebeLogin: string;
+  /** Resolved only when the `reviews` kind was fetched this cycle. */
+  phoebeLogin: string | undefined;
 };
 
 type WorkKind = {
@@ -515,6 +516,21 @@ export function createEngine(options: EngineOptions): Engine {
     );
   }
 
+  /**
+   * Phoebe's own login, resolved when this cycle has not already. Only the
+   * `reviews` kind's fetch resolves it, but any kind can reach a comparison
+   * against it, and there is deliberately no placeholder to stand in: `""` would
+   * be a login like any other, and the login a deleted account does not have used
+   * to be `""` too — so Phoebe's own timeout markers could read as foreign
+   * activity, or a ghost's comment as Phoebe's. The lookups this covers are rare,
+   * so paying for one is cheaper than carrying a value that can lie.
+   */
+  function resolvePhoebeLogin(cycleLogin: string | undefined): string {
+    // `||`, not `??`: an empty login is exactly the placeholder this exists to
+    // keep out of a comparison, so it counts as unresolved too.
+    return cycleLogin || github.resolveLogin(env["PHOEBE_GH_LOGIN"]);
+  }
+
   // --- Poison-unit quarantine write path (#75) ---------------------------------
   // The read/skip half ships in orchestrator.ts (it filters `phoebe:quarantined`
   // out of selection). This is the missing write half: on a whole-unit timeout,
@@ -530,17 +546,16 @@ export function createEngine(options: EngineOptions): Engine {
    * Best-effort — a GitHub write failure here is logged and swallowed so it can
    * never take the daemon down (the timeout itself is already recorded).
    */
-  function recordUnitTimeout(picked: WorkUnit, phoebeLogin: string, emit: EmitUnitEvent): void {
+  function recordUnitTimeout(
+    picked: WorkUnit,
+    cycleLogin: string | undefined,
+    emit: EmitUnitEvent,
+  ): void {
     const ref = unitRef(picked);
     const isIssueKind = picked.kind === "issues" || picked.kind === "research";
     const target: UnitTarget = { objectType: isIssueKind ? "issue" : "pr", id: Number(ref.id) };
     try {
-      // `data.phoebeLogin` is only populated when the `reviews` kind was fetched
-      // this cycle, but any kind can time out — resolve it directly when absent so
-      // Phoebe's own timeout markers are never mistaken for reset-triggering
-      // foreign activity (which would reset the count every rotation and never
-      // quarantine). Timeouts are rare, so the extra login lookup is cheap.
-      const login = phoebeLogin || github.resolveLogin(env["PHOEBE_GH_LOGIN"]);
+      const login = resolvePhoebeLogin(cycleLogin);
       const k = resolveMaxUnitTimeouts(env, config.maxUnitTimeouts);
       const inputs = isIssueKind
         ? github.issueTimeoutInputs(target.id)
@@ -1445,7 +1460,7 @@ export function createEngine(options: EngineOptions): Engine {
         return { kind: "reviews", reviewActivityPrs, issueBodies, phoebeLogin };
       },
       runUnit: async (unit, context) => {
-        await fixOnePrReviews(unit as ReviewsCandidate, context.phoebeLogin);
+        await fixOnePrReviews(unit as ReviewsCandidate, resolvePhoebeLogin(context.phoebeLogin));
       },
     },
     issues: {
@@ -1833,7 +1848,7 @@ export function createEngine(options: EngineOptions): Engine {
       try {
         await KINDS[picked.kind].runUnit(picked.unit, {
           stack: { issueBodies: data.issueBodies, blockerStates: data.blockerStates },
-          phoebeLogin: data.phoebeLogin ?? "",
+          phoebeLogin: data.phoebeLogin,
         });
         emitUnitEvent({ unit: ref, event: "completed" });
       } catch (error) {
@@ -1848,7 +1863,7 @@ export function createEngine(options: EngineOptions): Engine {
           });
           // Count this timeout on the unit and, at K consecutive, quarantine it so
           // a genuinely poisonous unit stops being re-picked forever (#75).
-          recordUnitTimeout(picked, data.phoebeLogin ?? "", emitUnitEvent);
+          recordUnitTimeout(picked, data.phoebeLogin, emitUnitEvent);
         } else {
           // A non-timeout failure: clear the current unit and record the error so
           // `phoebe list` shows it (the durable record is still the per-work-kind

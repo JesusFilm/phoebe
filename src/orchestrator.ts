@@ -603,7 +603,8 @@ export function selectChecksUnit(
 
 export type ReviewThreadComment = {
   createdAt: string;
-  authorLogin: string;
+  /** `null` when the comment has no author — a deleted account, so never Phoebe. */
+  authorLogin: string | null;
 };
 
 export type ReviewThread = {
@@ -616,7 +617,8 @@ export type ReviewsCandidate = {
   prNumber: PrNumber;
   headRefName: BranchRef;
   issueNumber?: number;
-  authorLogin?: string;
+  /** The PR's own author, or `null` when it has none. */
+  authorLogin?: string | null;
   mergeable: string;
   mergeStateStatus?: string;
   threads: readonly ReviewThread[];
@@ -672,7 +674,7 @@ export function newestReviewThreadCommentCreatedAt(
 export function hasNewNonPhoebeReviewActivity(opts: {
   threads: readonly ReviewThread[];
   phoebeLogin: string;
-  authorLogin?: string;
+  authorLogin?: string | null;
   watermark: ReviewsHandledWatermark | null;
 }): boolean {
   for (const thread of opts.threads) {
@@ -683,7 +685,10 @@ export function hasNewNonPhoebeReviewActivity(opts: {
       if (comment.authorLogin === opts.phoebeLogin) {
         continue;
       }
-      if (opts.authorLogin !== undefined && comment.authorLogin === opts.authorLogin) {
+      // `authorLogin` and the comment's are both nullable, and two missing
+      // authors are two different nobodies — a ghost reviewer's comment on a
+      // ghost-authored PR is still feedback someone left.
+      if (opts.authorLogin != null && comment.authorLogin === opts.authorLogin) {
         continue;
       }
       if (isActivityNewerThanWatermark(comment.createdAt, opts.watermark)) {

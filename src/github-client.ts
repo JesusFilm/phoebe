@@ -57,8 +57,15 @@ const MERGEABLE_RETRY_COUNT = 3;
  */
 export type UnitTarget = { objectType: "issue" | "pr"; id: number };
 
-/** An open PR inside this tenant's configured scope. */
-export type OpenPhoebePr = { number: PrNumber; headRefName: BranchRef; authorLogin: string };
+/**
+ * An open PR inside this tenant's configured scope. `authorLogin` is `null` when
+ * the PR has no author — a deleted account, which `gh` reports as an empty login.
+ */
+export type OpenPhoebePr = {
+  number: PrNumber;
+  headRefName: BranchRef;
+  authorLogin: string | null;
+};
 
 export type PrMergeInfo = {
   number: PrNumber;
@@ -70,9 +77,12 @@ export type PrMergeInfo = {
 
 /**
  * One comment on an issue or PR. A deleted account has no login, which reads
- * here as `""` — a foreign author, never Phoebe.
+ * here as `null`: nobody's login, so it can never compare equal to Phoebe's own
+ * (which is always a resolved, non-empty string wherever the two meet). The
+ * placeholder `""` this used to carry could not make that promise — it read as a
+ * login, and an unresolved Phoebe login was the same `""`.
  */
-export type GhComment = { body: string; createdAt: string; authorLogin: string };
+export type GhComment = { body: string; createdAt: string; authorLogin: string | null };
 
 export type UnitTimeoutInputs = {
   /** Comments (body + createdAt + authorLogin), oldest-first — fed to `decideTimeoutRecord`. */
@@ -159,6 +169,17 @@ export type CycleGitHubClient = Omit<
   /** Merge state, memoized for this cycle and retried while GitHub says UNKNOWN. */
   mergeInfo(prNumber: PrNumber): Promise<PrMergeInfo>;
 };
+
+/**
+ * The one reading of a GitHub author this client makes: `null` for nobody.
+ * `gh` reports a deleted account either as a null `author` object (comments) or
+ * as an author whose login is `""` (pull requests), and both mean the same
+ * thing — there is no account to name. Collapsing them here is what lets every
+ * caller compare a login with `===` and be right.
+ */
+function noLoginAsNull(author: { login: string } | null | undefined): string | null {
+  return author?.login ? author.login : null;
+}
 
 // ---------------------------------------------------------------------------
 // Transport
@@ -329,12 +350,12 @@ export function createGitHubClient({
   type GhTimeoutComment = { body: string; createdAt: string; author: { login: string } | null };
 
   function toTimeoutComments(comments: readonly GhTimeoutComment[]): GhComment[] {
-    // `author` is null for a deleted account; coerce to "" (a foreign author, never
-    // Phoebe) rather than letting the deref throw and skip the whole timeout record.
+    // `author` is null for a deleted account; keep that as `null` rather than
+    // letting the deref throw and skip the whole timeout record.
     return comments.map((c) => ({
       body: c.body,
       createdAt: c.createdAt,
-      authorLogin: c.author?.login ?? "",
+      authorLogin: noLoginAsNull(c.author),
     }));
   }
 
@@ -437,7 +458,7 @@ export function createGitHubClient({
           isOutdated: node.isOutdated,
           comments: node.comments.nodes.map((comment) => ({
             createdAt: comment.createdAt,
-            authorLogin: comment.author?.login ?? "",
+            authorLogin: noLoginAsNull(comment.author),
           })),
         });
       }
@@ -517,7 +538,7 @@ export function createGitHubClient({
         isDraft: boolean;
         isCrossRepository: boolean;
         labels: Array<{ name: string }>;
-        author: { login: string };
+        author: { login: string } | null;
       };
       return ghJson<GhOpenPr[]>([
         "pr",
@@ -542,7 +563,7 @@ export function createGitHubClient({
         .map((pr) => ({
           number: asPrNumber(pr.number),
           headRefName: asBranchRef(pr.headRefName),
-          authorLogin: pr.author.login,
+          authorLogin: noLoginAsNull(pr.author),
         }));
     },
 
@@ -579,14 +600,14 @@ export function createGitHubClient({
       const { comments } = ghJson<{
         comments: Array<{ body: string; createdAt: string; author: { login: string } | null }>;
       }>(["pr", "view", String(prNumber), "--json", "comments"]);
-      // A deleted account reads as `""`, as everywhere else a login is read here.
-      // The pre-port code derefed `author.login` bare, so one comment from a
+      // A deleted account reads as `null`, as everywhere else a login is read
+      // here. The pre-port code derefed `author.login` bare, so one comment from a
       // deleted account threw inside the reviews result handler — which skipped
       // the handled-watermark write, leaving that PR re-selected every cycle.
       return comments.map((comment) => ({
         body: comment.body,
         createdAt: comment.createdAt,
-        authorLogin: comment.author?.login ?? "",
+        authorLogin: noLoginAsNull(comment.author),
       }));
     },
 

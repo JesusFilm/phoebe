@@ -8,6 +8,7 @@ import { describe, expect, test } from "vite-plus/test";
 import { asBranchRef, asPrNumber, asSha } from "./branded.ts";
 import { resolveConfig, type PhoebeUserConfig } from "./config-schema.ts";
 import { createGitHubClient, type GhExecutor, type GitHubClient } from "./github-client.ts";
+import { buildUnitTimeoutMarker, decideTimeoutRecord } from "./quarantine.ts";
 
 function minimalUser(): PhoebeUserConfig {
   return {
@@ -127,7 +128,7 @@ describe("GraphQL review-thread pagination", () => {
     ]);
   });
 
-  test("a null comment author reads as an empty login rather than throwing", () => {
+  test("a null comment author reads as no login rather than throwing", () => {
     const { github } = clientWith([
       JSON.stringify({
         data: {
@@ -149,7 +150,7 @@ describe("GraphQL review-thread pagination", () => {
       }),
     ]);
 
-    expect(github.reviewThreads(asPrNumber(1))[0]?.comments[0]?.authorLogin).toBe("");
+    expect(github.reviewThreads(asPrNumber(1))[0]?.comments[0]?.authorLogin).toBeNull();
   });
 });
 
@@ -349,9 +350,10 @@ describe("--json field lists", () => {
 
 describe("deleted comment authors", () => {
   // `gh` reports a comment from a deleted account with a null author. Every login
-  // read in the client coerces that to "" — a foreign author, never Phoebe — so a
-  // single ghost comment cannot take a work unit down with a TypeError.
-  test("reviewSummaryComments reads a null author as an empty login", () => {
+  // read in the client keeps that `null` — nobody's login, and so never Phoebe's —
+  // so a single ghost comment cannot take a work unit down with a TypeError, and
+  // cannot be mistaken for a comment Phoebe posted either.
+  test("reviewSummaryComments reads a null author as no login", () => {
     const { github } = clientWith([
       JSON.stringify({
         comments: [
@@ -362,12 +364,12 @@ describe("deleted comment authors", () => {
     ]);
 
     expect(github.reviewSummaryComments(asPrNumber(1)).map((c) => c.authorLogin)).toEqual([
-      "",
+      null,
       "phoebe-bot",
     ]);
   });
 
-  test("issueTimeoutInputs reads a null author as an empty login", () => {
+  test("issueTimeoutInputs reads a null author as no login", () => {
     const { github } = clientWith([
       JSON.stringify({
         body: "issue body",
@@ -375,7 +377,35 @@ describe("deleted comment authors", () => {
       }),
     ]);
 
-    expect(github.issueTimeoutInputs(1).comments[0]?.authorLogin).toBe("");
+    expect(github.issueTimeoutInputs(1).comments[0]?.authorLogin).toBeNull();
+  });
+
+  // The two halves of the divergence the design record named, asserted together
+  // for the first time: the client's read of a missing author, and the pure
+  // comparison that read feeds. Before this, one file coerced the login and a
+  // different file's test documented the coercion in prose.
+  test("a ghost comment reaches decideTimeoutRecord as foreign activity", () => {
+    const { github } = clientWith([
+      JSON.stringify({
+        body: "issue body",
+        comments: [
+          { body: buildUnitTimeoutMarker(1), createdAt: "2026-01-01T00:00:00Z", author: null },
+          { body: "still broken?", createdAt: "2026-01-02T00:00:00Z", author: null },
+        ],
+      }),
+    ]);
+
+    const inputs = github.issueTimeoutInputs(1);
+    const record = decideTimeoutRecord({
+      comments: inputs.comments,
+      phoebeLogin: "phoebe-bot",
+      extraActivityAt: inputs.extraActivityAt,
+      k: 3,
+    });
+
+    // The ghost comment is newer than the timeout marker, so the count resets to
+    // this timeout alone rather than carrying the marker's 1.
+    expect(record).toEqual({ count: 1, quarantine: false });
   });
 });
 

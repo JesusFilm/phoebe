@@ -210,9 +210,13 @@ export function latestTimeoutMarker(
  * signal for a hung unit: a human comment counts, but Phoebe's own timeout
  * markers must not — otherwise every rotation's marker would look like fresh
  * activity and the count could never climb to K.
+ *
+ * A comment whose author has been deleted carries `null`, which is nobody's
+ * login and so never Phoebe's; `phoebeLogin` is always a resolved login, never a
+ * placeholder, so the two cannot meet in the middle.
  */
 export function newestForeignCommentAt(
-  comments: readonly { createdAt: string; authorLogin: string }[],
+  comments: readonly { createdAt: string; authorLogin: string | null }[],
   phoebeLogin: string,
 ): string | null {
   let newest: string | null = null;
@@ -245,7 +249,7 @@ function maxIso(a: string | null, b: string | null): string | null {
  * starts counting afresh.
  */
 export function decideTimeoutRecord(opts: {
-  comments: readonly { body: string; createdAt: string; authorLogin: string }[];
+  comments: readonly { body: string; createdAt: string; authorLogin: string | null }[];
   phoebeLogin: string;
   extraActivityAt?: string | null;
   k: number;
