@@ -23,13 +23,13 @@ GitHub author to `""` … so such a comment must count toward the reset." The co
 
 **Nothing can.** Module-level constants bind the world at import time:
 
-| Line | Binding |
-| ---- | ------- |
-| 143  | `STARTUP_GH_TOKEN = process.env["GH_TOKEN"]` — the credential arm is frozen for the process's life |
-| 165  | `RUN_TIMEOUT_MS = resolveRunTimeoutMs(process.env, config.runTimeoutMs)` |
-| 169  | `CREDENTIAL_BUDGET_MS = RUN_TIMEOUT_MS + 10 * 60 * 1000` |
-| 181–186 | `PR_BASE`, `defaultBranchRef`, `inContainer`, `repoDir`, `worktreesDir` |
-| 210  | `workOrder = validateWorkOrder(config.workOrder)` |
+| Line    | Binding                                                                                            |
+| ------- | -------------------------------------------------------------------------------------------------- |
+| 143     | `STARTUP_GH_TOKEN = process.env["GH_TOKEN"]` — the credential arm is frozen for the process's life |
+| 165     | `RUN_TIMEOUT_MS = resolveRunTimeoutMs(process.env, config.runTimeoutMs)`                           |
+| 169     | `CREDENTIAL_BUDGET_MS = RUN_TIMEOUT_MS + 10 * 60 * 1000`                                           |
+| 181–186 | `PR_BASE`, `defaultBranchRef`, `inContainer`, `repoDir`, `worktreesDir`                            |
+| 210     | `workOrder = validateWorkOrder(config.workOrder)`                                                  |
 
 `src/cli.ts:569` records the constraint this creates: "Import after the config is installed
 — main.ts's module-level constants read `config` at import time via the Proxy in
@@ -105,7 +105,7 @@ quirk — merge state is computed server-side and is briefly unknown — and the
 knowledge, not loop knowledge.
 
 The threading was never the problem. The problem is that `cache` and the `gh` functions are
-two halves of one thing, so a caller has to know both. Making the threaded value *be* the
+two halves of one thing, so a caller has to know both. Making the threaded value _be_ the
 client keeps the memo's lifetime unforgettable: there is no `beginCycle()` to omit, because
 the scope is the object's lifetime. The 12 sites keep a parameter; it is now
 `CycleGitHubClient` rather than `CycleCache`.
@@ -153,7 +153,7 @@ type GitHubClient = {
   listOpenPhoebePrs(): OpenPhoebePr[];
   prCommentBodies(prNumber: PrNumber): string[];
   commitCheckItems(headSha: Sha): WorkflowRunItem[];
-  reviewThreads(prNumber: PrNumber): ReviewThread[];      // paginates internally
+  reviewThreads(prNumber: PrNumber): ReviewThread[]; // paginates internally
   reviewSummaryComments(prNumber: PrNumber): GhComment[];
   findIssuePr(issueNumber: number): PrNumber | null;
   createPr(opts: { head: BranchRef; base: string; title: string; body: string }): void;
@@ -181,8 +181,8 @@ type GitHubClient = {
 
 // Adds the per-poll memo; everything else is inherited.
 type CycleGitHubClient = GitHubClient & {
-  openPrs(): OpenPhoebePr[];                 // memoized listOpenPhoebePrs
-  mergeInfo(prNumber: PrNumber): Promise<PrMergeInfo>;  // memoized, UNKNOWN-retry
+  openPrs(): OpenPhoebePr[]; // memoized listOpenPhoebePrs
+  mergeInfo(prNumber: PrNumber): Promise<PrMergeInfo>; // memoized, UNKNOWN-retry
 };
 ```
 
