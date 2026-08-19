@@ -1,6 +1,6 @@
 // GitHub App token minting for App-mode deployments.
 //
-// When a deployment supplies PHOEBE_GH_APP_ID and PHOEBE_GH_APP_PRIVATE_KEY
+// When a deployment supplies GH_APP_ID and GH_APP_PRIVATE_KEY
 // but no explicit GH_TOKEN, the engine mints a short-lived installation token
 // before each poll cycle and injects it as GH_TOKEN. The App credentials
 // themselves never reach child processes (only the minted token does).
@@ -10,7 +10,7 @@
 import { createSign } from "node:crypto";
 
 /** Shared prefix for every GitHub App env var the engine reads. */
-export const GH_APP_ENV_PREFIX = "PHOEBE_GH_APP_";
+export const GH_APP_ENV_PREFIX = "GH_APP_";
 
 export type AppCredentials = {
   appId: string;

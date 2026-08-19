@@ -60,7 +60,7 @@ describe("buildAgentEnv", () => {
     expect(env).toEqual({ CI: "true", PATH: "/usr/bin" });
   });
 
-  test("PHOEBE_GH_APP_* keys never reach the agent even if present in parentEnv", () => {
+  test("GH_APP_* keys never reach the agent even if present in parentEnv", () => {
     const env = buildAgentEnv({
       parentEnv: {
         ...parentEnv,
