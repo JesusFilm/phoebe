@@ -347,6 +347,38 @@ describe("--json field lists", () => {
   });
 });
 
+describe("deleted comment authors", () => {
+  // `gh` reports a comment from a deleted account with a null author. Every login
+  // read in the client coerces that to "" — a foreign author, never Phoebe — so a
+  // single ghost comment cannot take a work unit down with a TypeError.
+  test("reviewSummaryComments reads a null author as an empty login", () => {
+    const { github } = clientWith([
+      JSON.stringify({
+        comments: [
+          { body: "gone", createdAt: "2026-01-01T00:00:00Z", author: null },
+          { body: "here", createdAt: "2026-01-02T00:00:00Z", author: { login: "phoebe-bot" } },
+        ],
+      }),
+    ]);
+
+    expect(github.reviewSummaryComments(asPrNumber(1)).map((c) => c.authorLogin)).toEqual([
+      "",
+      "phoebe-bot",
+    ]);
+  });
+
+  test("issueTimeoutInputs reads a null author as an empty login", () => {
+    const { github } = clientWith([
+      JSON.stringify({
+        body: "issue body",
+        comments: [{ body: "gone", createdAt: "2026-01-01T00:00:00Z", author: null }],
+      }),
+    ]);
+
+    expect(github.issueTimeoutInputs(1).comments[0]?.authorLogin).toBe("");
+  });
+});
+
 describe("the per-cycle client", () => {
   const openPrsReply = JSON.stringify([
     {

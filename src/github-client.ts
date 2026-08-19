@@ -150,7 +150,10 @@ export type GitHubClient = {
  * `CycleCache`: its lifetime is this object's lifetime, so there is no
  * `beginCycle()` to forget and no way to read one cycle's answers in the next.
  */
-export type CycleGitHubClient = Omit<GitHubClient, "listOpenPhoebePrs" | "currentMergeInfo"> & {
+export type CycleGitHubClient = Omit<
+  GitHubClient,
+  "listOpenPhoebePrs" | "currentMergeInfo" | "forCycle"
+> & {
   /** `listOpenPhoebePrs`, listed once per cycle. */
   openPrs(): OpenPhoebePr[];
   /** Merge state, memoized for this cycle and retried while GitHub says UNKNOWN. */
@@ -573,12 +576,16 @@ export function createGitHubClient({
 
     reviewSummaryComments: (prNumber) => {
       const { comments } = ghJson<{
-        comments: Array<{ body: string; createdAt: string; author: { login: string } }>;
+        comments: Array<{ body: string; createdAt: string; author: { login: string } | null }>;
       }>(["pr", "view", String(prNumber), "--json", "comments"]);
+      // A deleted account reads as `""`, as everywhere else a login is read here.
+      // The pre-port code derefed `author.login` bare, so one comment from a
+      // deleted account threw inside the reviews result handler — which skipped
+      // the handled-watermark write, leaving that PR re-selected every cycle.
       return comments.map((comment) => ({
         body: comment.body,
         createdAt: comment.createdAt,
-        authorLogin: comment.author.login,
+        authorLogin: comment.author?.login ?? "",
       }));
     },
 

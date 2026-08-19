@@ -169,6 +169,7 @@ type GitHubClient = {
 
   // Pull requests
   listOpenPhoebePrs(): OpenPhoebePr[];
+  currentMergeInfo(prNumber: PrNumber): PrMergeInfo; // uncached; for the post-agent re-check
   prCommentBodies(prNumber: PrNumber): string[];
   commitCheckItems(headSha: Sha): WorkflowRunItem[];
   reviewThreads(prNumber: PrNumber): ReviewThread[]; // paginates internally
@@ -198,8 +199,12 @@ type GitHubClient = {
 };
 
 // Adds the per-poll memo; everything else is inherited. The two uncached reads it
-// replaces are omitted, so a cycle caller cannot reach past the memo by accident.
-type CycleGitHubClient = Omit<GitHubClient, "listOpenPhoebePrs" | "currentMergeInfo"> & {
+// replaces are omitted, and so is `forCycle` — a cycle caller can neither reach past
+// this memo nor open a second one inside it.
+type CycleGitHubClient = Omit<
+  GitHubClient,
+  "listOpenPhoebePrs" | "currentMergeInfo" | "forCycle"
+> & {
   openPrs(): OpenPhoebePr[]; // memoized listOpenPhoebePrs
   mergeInfo(prNumber: PrNumber): Promise<PrMergeInfo>; // memoized, UNKNOWN-retry
 };
