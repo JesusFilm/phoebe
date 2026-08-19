@@ -42,7 +42,7 @@ repo root while the compose files live in `container/`, so pass
 cd container
 docker compose --env-file ../.env build
 docker compose --env-file ../.env run --rm phoebe --dry-run --run-once   # preview one unit
-docker compose --env-file ../.env up -d                                  # start the daemon
+docker compose --env-file ../.env up -d                                  # start Phoebe
 ```
 
 The container's main process is `phoebe boot`: it checks the engine out at the
@@ -101,6 +101,9 @@ See [`docs/configuration.md`](docs/configuration.md) for the complete field
 reference and the `PHOEBE_*` environment overlay.
 
 ## Documentation
+
+[`CONTEXT.md`](CONTEXT.md) is the glossary — the words this project uses for its own
+concepts, and the ones it deliberately avoids.
 
 Docs live under [`docs/`](docs/):
 

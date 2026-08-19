@@ -1,0 +1,772 @@
+// The engine's GitHub client — every `gh` spawn the loop makes, behind methods
+// named for what the loop wants rather than for the transport underneath.
+//
+// The loop asks for `listReadyIssues()` or `reviewThreads(pr)`; argv, the
+// `-R <repoSlug>` pin, `--json` field lists, GraphQL pagination, the merge-state
+// retry and error enrichment are all implementation. That is what makes the
+// cycle testable: a test hands `main.ts` an object literal holding only the
+// methods it touches, with no canned `gh` output anywhere. See
+// docs/research/engine-runtime-seam.md for the seam's rationale, the rejected
+// shapes (thin transport, loop-shaped `WorkSource`) and why it stays synchronous.
+//
+// Two things deliberately stay outside:
+//   • src/gh-error.ts — pure classification, usable by anything that shells out.
+//   • the executor seam below — internal, for this module's own tests only.
+
+import { execFileSync } from "node:child_process";
+import {
+  asBranchRef,
+  asPrNumber,
+  asSha,
+  type BranchRef,
+  type PrNumber,
+  type Sha,
+} from "./branded.ts";
+import type { GitHubUser } from "./co-author.ts";
+import type { PhoebeConfig } from "./config-schema.ts";
+import { classifyGhError, describeGhError } from "./gh-error.ts";
+import {
+  isCompletedBlockerIssue,
+  isPrInScope,
+  issueBranch,
+  type BlockerPrState,
+  type Issue,
+  type ReviewThread,
+  type WorkflowRunItem,
+} from "./orchestrator.ts";
+import { issueContentBaseline, PHOEBE_QUARANTINE_LABEL } from "./quarantine.ts";
+
+// Never let a `gh` child block the loop forever (rate-limit backoff, credential
+// prompt, network partition). Mirrors the git-side bound in main.ts; the two are
+// separate knobs because a `gh` call and a `git` call fail differently.
+const CHILD_PROCESS_TIMEOUT_MS = 120_000;
+// GitHub computes mergeability server-side and answers UNKNOWN while it works,
+// so a first read on a freshly-pushed PR routinely says nothing useful. That is
+// a GitHub quirk, not loop knowledge, which is why the retry lives here.
+const MERGEABLE_RETRY_MS = 5_000;
+const MERGEABLE_RETRY_COUNT = 3;
+
+// ---------------------------------------------------------------------------
+// Data the loop reads
+// ---------------------------------------------------------------------------
+
+/**
+ * Which GitHub object a write addresses — `gh issue …` vs `gh pr …`. Deliberately
+ * not called a "kind": that word is taken by the work kinds (CONTEXT.md), and a
+ * `conflicts` unit and a `checks` unit are both a `pr` here.
+ */
+export type UnitTarget = { objectType: "issue" | "pr"; id: number };
+
+/** An open PR inside this tenant's configured scope. */
+export type OpenPhoebePr = { number: PrNumber; headRefName: BranchRef; authorLogin: string };
+
+export type PrMergeInfo = {
+  number: PrNumber;
+  headRefName: BranchRef;
+  headRefOid: Sha;
+  mergeable: string;
+  mergeStateStatus: string;
+};
+
+/**
+ * One comment on an issue or PR. A deleted account has no login, which reads
+ * here as `""` — a foreign author, never Phoebe.
+ */
+export type GhComment = { body: string; createdAt: string; authorLogin: string };
+
+export type UnitTimeoutInputs = {
+  /** Comments (body + createdAt + authorLogin), oldest-first — fed to `decideTimeoutRecord`. */
+  comments: GhComment[];
+  /** Extra external-activity instant (a PR head push), or null — a further reset signal. */
+  extraActivityAt: string | null;
+  /** Recorded in the escalation comment for the future auto-un-stick sweep. */
+  baseline: string;
+};
+
+export type QuarantinedUnit = {
+  target: UnitTarget;
+  /** The unit's content right now — a PR head SHA, or an issue body fingerprint. */
+  currentBaseline: string;
+  comments: Array<{ body: string }>;
+};
+
+// ---------------------------------------------------------------------------
+// The interface
+// ---------------------------------------------------------------------------
+
+export type GitHubClient = {
+  // Issues
+  listReadyIssues(): Issue[];
+  listResearchIssues(): Issue[];
+  issueBody(issueNumber: number): string;
+  blockerPrState(blockerIssueNumber: number): BlockerPrState;
+
+  // Pull requests
+  listOpenPhoebePrs(): OpenPhoebePr[];
+  /**
+   * A PR's merge state, read fresh every call. The cycle client's `mergeInfo` is
+   * the one to use during discovery; this is for the re-check after an agent has
+   * run, where a memo taken before the run would answer the wrong question.
+   */
+  currentMergeInfo(prNumber: PrNumber): PrMergeInfo;
+  /** Every comment body on a PR, oldest first — the raw input to every watermark parse. */
+  prCommentBodies(prNumber: PrNumber): string[];
+  commitCheckItems(headSha: Sha): WorkflowRunItem[];
+  /** Every review thread on a PR — paginated internally, so callers see one list. */
+  reviewThreads(prNumber: PrNumber): ReviewThread[];
+  reviewSummaryComments(prNumber: PrNumber): GhComment[];
+  /** The open PR on this issue's Phoebe branch, or null when there is none. */
+  findIssuePr(issueNumber: number): PrNumber | null;
+  createPr(opts: { head: BranchRef; base: string; title: string; body: string }): void;
+
+  // Quarantine + timeouts
+  listQuarantinedIssues(): QuarantinedUnit[];
+  listQuarantinedPrs(): QuarantinedUnit[];
+  issueTimeoutInputs(issueNumber: number): UnitTimeoutInputs;
+  prTimeoutInputs(prNumber: PrNumber): UnitTimeoutInputs;
+
+  // Writes
+  postPrComment(prNumber: PrNumber, body: string): void;
+  postUnitComment(target: UnitTarget, body: string): void;
+  addQuarantineLabel(target: UnitTarget): void;
+  removeQuarantineLabel(target: UnitTarget): void;
+
+  // Identity
+  /**
+   * Phoebe's own login. `envLogin` (PHOEBE_GH_LOGIN) wins whenever it is set —
+   * `gh api user` 403s under an installation token, so the call is a fallback
+   * for the PAT arm, never the primary source.
+   */
+  resolveLogin(envLogin: string | undefined): string;
+  issueAuthorLogin(issueNumber: number): string | null;
+  lookupUser(login: string): GitHubUser;
+
+  // Cycle scope
+  forCycle(): CycleGitHubClient;
+};
+
+/**
+ * The client scoped to one poll. Adds the memo that used to be a hand-threaded
+ * `CycleCache`: its lifetime is this object's lifetime, so there is no
+ * `beginCycle()` to forget and no way to read one cycle's answers in the next.
+ */
+export type CycleGitHubClient = Omit<
+  GitHubClient,
+  "listOpenPhoebePrs" | "currentMergeInfo" | "forCycle"
+> & {
+  /** `listOpenPhoebePrs`, listed once per cycle. */
+  openPrs(): OpenPhoebePr[];
+  /** Merge state, memoized for this cycle and retried while GitHub says UNKNOWN. */
+  mergeInfo(prNumber: PrNumber): Promise<PrMergeInfo>;
+};
+
+// ---------------------------------------------------------------------------
+// Transport
+// ---------------------------------------------------------------------------
+
+/**
+ * How the client spawns `gh`. Internal: it is not reachable through
+ * `GitHubClient`, and only src/github-client.test.ts substitutes it — the loop's
+ * tests double the interface above, where no argv exists to get wrong.
+ *
+ * `inherit` streams the child's output to the engine's own stdio and yields no
+ * captured stdout; without it the call is captured and its stderr is available
+ * on the thrown error for classification.
+ */
+export type GhExecutor = (
+  args: readonly string[],
+  opts?: { input?: string; inherit?: boolean },
+) => string;
+
+function createGhExecutor(env: NodeJS.ProcessEnv): GhExecutor {
+  return (args, opts) => {
+    if (opts?.inherit) {
+      execFileSync("gh", [...args], {
+        env,
+        stdio: opts.input !== undefined ? ["pipe", "inherit", "inherit"] : "inherit",
+        timeout: CHILD_PROCESS_TIMEOUT_MS,
+        ...(opts.input !== undefined ? { input: opts.input } : {}),
+      });
+      return "";
+    }
+    return execFileSync("gh", [...args], {
+      env,
+      encoding: "utf8",
+      timeout: CHILD_PROCESS_TIMEOUT_MS,
+    }) as unknown as string;
+  };
+}
+
+/**
+ * Probe `gh api rate_limit` to get the current reset time for a bucket.
+ * Best-effort: the `/rate_limit` endpoint uses its own quota and succeeds even
+ * when "graphql" or "core" is exhausted, but we swallow any failure rather than
+ * crashing the already-failing path.
+ */
+function tryFetchRateLimitReset(resource: "graphql" | "core", exec: GhExecutor): Date | null {
+  try {
+    type RateLimitResponse = {
+      resources: { core: { reset: number }; graphql: { reset: number } };
+    };
+    const data = JSON.parse(exec(["api", "rate_limit"])) as RateLimitResponse;
+    const epoch = data.resources[resource].reset;
+    const d = new Date(epoch * 1000);
+    return isNaN(d.getTime()) ? null : d;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Always throws.  Reclassifies a `gh` CLI error as a rate-limit or permission
+ * message when the stderr carries enough signal; otherwise rethrows the original.
+ * A null classification (no signal) also rethrows the original so callers always
+ * see the most informative available error.
+ */
+function rethrowAsGhError(error: unknown, ghArgs: readonly string[], exec: GhExecutor): never {
+  const c = classifyGhError(error, ghArgs);
+  if (c !== null) {
+    if (c.kind === "rate-limit") {
+      const resetAt = c.resource ? tryFetchRateLimitReset(c.resource, exec) : null;
+      throw new Error(describeGhError({ ...c, resetAt }));
+    }
+    throw new Error(describeGhError(c));
+  }
+  throw error instanceof Error ? error : new Error(String(error));
+}
+
+const defaultSleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+export type CreateGitHubClientOptions = {
+  /**
+   * This tenant's resolved config — the source of `repoSlug`, the work labels and
+   * the PR base. Note that two pure helpers the client calls (`issueBranch`,
+   * `isPrInScope`) still read the `resolved-config.ts` Proxy for `branchPrefix`
+   * and the PR scope rather than this value; in production they are the same
+   * object, and ticket B (#280) retires the Proxy.
+   */
+  config: PhoebeConfig;
+  /**
+   * Environment handed to every `gh` child. Pass the live `process.env` (or a
+   * superset of it): the loop rewrites `GH_TOKEN` in place on each credential
+   * lease, and `gh` needs the ambient `PATH`/`HOME` to run and find its config.
+   */
+  env: NodeJS.ProcessEnv;
+  /**
+   * Internal seam for src/github-client.test.ts. Not part of `GitHubClient` and
+   * not for production callers: the whole point of the interface above is that
+   * a caller never has to know a subprocess is involved.
+   */
+  internal?: { exec?: GhExecutor; sleep?: (ms: number) => Promise<void> };
+};
+
+export function createGitHubClient({
+  config,
+  env,
+  internal,
+}: CreateGitHubClientOptions): GitHubClient {
+  const exec = internal?.exec ?? createGhExecutor(env);
+  const sleep = internal?.sleep ?? defaultSleep;
+
+  /** A repo-scoped read: `-R <repoSlug>` is appended so no caller can forget it. */
+  function ghJson<T>(args: readonly string[]): T {
+    try {
+      return JSON.parse(exec([...args, "-R", config.repoSlug])) as T;
+    } catch (error) {
+      rethrowAsGhError(error, args, exec);
+    }
+  }
+
+  /** A REST call. The endpoint names the resource, so these carry no `-R`. */
+  function ghApiJson<T>(endpoint: string): T {
+    const args = ["api", endpoint];
+    try {
+      return JSON.parse(exec(args)) as T;
+    } catch (error) {
+      rethrowAsGhError(error, args, exec);
+    }
+  }
+
+  /**
+   * A repo-scoped write. Output streams through to the engine's log, which means
+   * no stderr is captured — so, as before the extraction, a failed write throws
+   * the raw `gh` error rather than a classified one.
+   */
+  function ghWrite(args: readonly string[], opts?: { input?: string }): void {
+    exec([...args, "-R", config.repoSlug], {
+      inherit: true,
+      ...(opts?.input !== undefined ? { input: opts.input } : {}),
+    });
+  }
+
+  /** Open issues carrying `label`, oldest-created first. Shared by `issues` and `research`. */
+  function listIssuesWithLabel(label: string): Issue[] {
+    type GhIssue = Omit<Issue, "labels"> & { labels: Array<{ name: string }> };
+    return ghJson<GhIssue[]>([
+      "issue",
+      "list",
+      "--state",
+      "open",
+      "--label",
+      label,
+      "--limit",
+      "100",
+      "--search",
+      "sort:created-asc",
+      "--json",
+      "number,title,body,labels,createdAt",
+    ]).map((row) => ({
+      number: row.number,
+      title: row.title,
+      body: row.body,
+      createdAt: row.createdAt,
+      labels: row.labels.map((l) => l.name),
+    }));
+  }
+
+  type GhTimeoutComment = { body: string; createdAt: string; author: { login: string } | null };
+
+  function toTimeoutComments(comments: readonly GhTimeoutComment[]): GhComment[] {
+    // `author` is null for a deleted account; coerce to "" (a foreign author, never
+    // Phoebe) rather than letting the deref throw and skip the whole timeout record.
+    return comments.map((c) => ({
+      body: c.body,
+      createdAt: c.createdAt,
+      authorLogin: c.author?.login ?? "",
+    }));
+  }
+
+  function currentMergeInfo(prNumber: PrNumber): PrMergeInfo {
+    const raw = ghJson<{
+      number: number;
+      headRefName: string;
+      headRefOid: string;
+      mergeable: string;
+      mergeStateStatus: string;
+    }>([
+      "pr",
+      "view",
+      String(prNumber),
+      "--json",
+      "number,headRefName,headRefOid,mergeable,mergeStateStatus",
+    ]);
+    return {
+      number: asPrNumber(raw.number),
+      headRefName: asBranchRef(raw.headRefName),
+      headRefOid: asSha(raw.headRefOid),
+      mergeable: raw.mergeable,
+      mergeStateStatus: raw.mergeStateStatus,
+    };
+  }
+
+  type GraphQLReviewThreadsPage = {
+    data: {
+      repository: {
+        pullRequest: {
+          reviewThreads: {
+            pageInfo: { hasNextPage: boolean; endCursor: string | null };
+            nodes: Array<{
+              isResolved: boolean;
+              isOutdated: boolean;
+              comments: {
+                nodes: Array<{
+                  createdAt: string;
+                  author: { login: string } | null;
+                }>;
+              };
+            }>;
+          };
+        };
+      };
+    };
+  };
+
+  function reviewThreads(prNumber: PrNumber): ReviewThread[] {
+    const [owner, repo] = config.repoSlug.split("/");
+    const threads: ReviewThread[] = [];
+    let cursor: string | null = null;
+    let hasNextPage = true;
+
+    while (hasNextPage) {
+      const afterArg = cursor ? `, after:"${cursor}"` : "";
+      const query = `query($owner:String!,$repo:String!,$pr:Int!) {
+  repository(owner:$owner,name:$repo) {
+    pullRequest(number:$pr) {
+      reviewThreads(first:100${afterArg}) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          isResolved
+          isOutdated
+          comments(first:30) {
+            nodes {
+              createdAt
+              author { login }
+            }
+          }
+        }
+      }
+    }
+  }
+}`;
+      const graphqlArgs = [
+        "api",
+        "graphql",
+        "-f",
+        `query=${query}`,
+        "-f",
+        `owner=${owner}`,
+        "-f",
+        `repo=${repo}`,
+        "-F",
+        `pr=${prNumber}`,
+      ];
+      let rawPage: string;
+      try {
+        rawPage = exec(graphqlArgs);
+      } catch (error) {
+        rethrowAsGhError(error, ["api", "graphql"], exec);
+      }
+      const page = JSON.parse(rawPage) as GraphQLReviewThreadsPage;
+
+      const pageThreads = page.data.repository.pullRequest.reviewThreads;
+      for (const node of pageThreads.nodes) {
+        threads.push({
+          isResolved: node.isResolved,
+          isOutdated: node.isOutdated,
+          comments: node.comments.nodes.map((comment) => ({
+            createdAt: comment.createdAt,
+            authorLogin: comment.author?.login ?? "",
+          })),
+        });
+      }
+      hasNextPage = pageThreads.pageInfo.hasNextPage;
+      cursor = pageThreads.pageInfo.endCursor;
+      if (!hasNextPage) {
+        break;
+      }
+    }
+
+    return threads;
+  }
+
+  const client: GitHubClient = {
+    listReadyIssues: () => listIssuesWithLabel(config.readyLabel),
+
+    listResearchIssues: () => listIssuesWithLabel(config.researchLabel),
+
+    issueBody: (issueNumber) =>
+      ghJson<{ body: string }>(["issue", "view", String(issueNumber), "--json", "body"]).body,
+
+    blockerPrState: (blockerIssueNumber) => {
+      const branch: BranchRef = issueBranch(blockerIssueNumber);
+      const open = ghJson<Array<{ number: number }>>([
+        "pr",
+        "list",
+        "--head",
+        branch,
+        "--state",
+        "open",
+        "--json",
+        "number",
+        "--limit",
+        "1",
+      ]);
+      const merged = ghJson<Array<{ number: number }>>([
+        "pr",
+        "list",
+        "--head",
+        branch,
+        "--state",
+        "merged",
+        "--json",
+        "number",
+        "--limit",
+        "1",
+      ]);
+      if (open.length > 0 || merged.length > 0) {
+        return {
+          hasOpenPr: open.length > 0,
+          openPrNumber: open[0] ? asPrNumber(open[0].number) : undefined,
+          hasMergedPr: merged.length > 0,
+          mergedPrNumber: merged[0] ? asPrNumber(merged[0].number) : undefined,
+        };
+      }
+
+      // Only when no Phoebe PR answers for the blocker is the third call worth it:
+      // the work may have landed outside `branchPrefix` and closed the issue (#219).
+      const view = ghJson<{ state: string; stateReason?: string | null }>([
+        "issue",
+        "view",
+        String(blockerIssueNumber),
+        "--json",
+        "state,stateReason",
+      ]);
+      return {
+        hasOpenPr: false,
+        hasMergedPr: false,
+        blockerCompleted: isCompletedBlockerIssue(view),
+      };
+    },
+
+    listOpenPhoebePrs: () => {
+      type GhOpenPr = {
+        number: number;
+        headRefName: string;
+        isDraft: boolean;
+        isCrossRepository: boolean;
+        labels: Array<{ name: string }>;
+        author: { login: string };
+      };
+      return ghJson<GhOpenPr[]>([
+        "pr",
+        "list",
+        "--base",
+        config.defaultBranch,
+        "--state",
+        "open",
+        "--json",
+        "number,headRefName,isDraft,isCrossRepository,labels,author",
+        "--limit",
+        "100",
+      ])
+        .filter((pr) =>
+          isPrInScope({
+            headRefName: asBranchRef(pr.headRefName),
+            isDraft: pr.isDraft,
+            isCrossRepository: pr.isCrossRepository,
+            labels: pr.labels.map((label) => label.name),
+          }),
+        )
+        .map((pr) => ({
+          number: asPrNumber(pr.number),
+          headRefName: asBranchRef(pr.headRefName),
+          authorLogin: pr.author.login,
+        }));
+    },
+
+    currentMergeInfo,
+
+    prCommentBodies: (prNumber) => {
+      const { comments } = ghJson<{ comments: Array<{ body: string }> }>([
+        "pr",
+        "view",
+        String(prNumber),
+        "--json",
+        "comments",
+      ]);
+      return comments.map((comment) => comment.body);
+    },
+
+    // GraphQL statusCheckRollup is not readable by fine-grained PATs (GitHub-App/
+    // OAuth only), so check state comes from the REST Actions API instead.
+    commitCheckItems: (headSha) =>
+      ghJson<WorkflowRunItem[]>([
+        "run",
+        "list",
+        "--commit",
+        headSha,
+        "--json",
+        "workflowName,status,conclusion",
+        "--limit",
+        "50",
+      ]),
+
+    reviewThreads,
+
+    reviewSummaryComments: (prNumber) => {
+      const { comments } = ghJson<{
+        comments: Array<{ body: string; createdAt: string; author: { login: string } | null }>;
+      }>(["pr", "view", String(prNumber), "--json", "comments"]);
+      // A deleted account reads as `""`, as everywhere else a login is read here.
+      // The pre-port code derefed `author.login` bare, so one comment from a
+      // deleted account threw inside the reviews result handler — which skipped
+      // the handled-watermark write, leaving that PR re-selected every cycle.
+      return comments.map((comment) => ({
+        body: comment.body,
+        createdAt: comment.createdAt,
+        authorLogin: comment.author?.login ?? "",
+      }));
+    },
+
+    findIssuePr: (issueNumber) => {
+      const row = ghJson<Array<{ number: number }>>([
+        "pr",
+        "list",
+        "--head",
+        issueBranch(issueNumber),
+        "--state",
+        "open",
+        "--json",
+        "number",
+      ])[0];
+      return row ? asPrNumber(row.number) : null;
+    },
+
+    createPr: (opts) => {
+      ghWrite(
+        [
+          "pr",
+          "create",
+          "--head",
+          opts.head,
+          "--base",
+          opts.base,
+          "--title",
+          opts.title,
+          "--body-file",
+          "-",
+        ],
+        { input: opts.body },
+      );
+    },
+
+    listQuarantinedIssues: () => {
+      type Row = { number: number; body: string; comments: Array<{ body: string }> };
+      return ghJson<Row[]>([
+        "issue",
+        "list",
+        "--state",
+        "open",
+        "--label",
+        PHOEBE_QUARANTINE_LABEL,
+        "--limit",
+        "100",
+        "--json",
+        "number,body,comments",
+      ]).map((row) => ({
+        target: { objectType: "issue", id: row.number },
+        currentBaseline: issueContentBaseline(row.body),
+        comments: row.comments,
+      }));
+    },
+
+    listQuarantinedPrs: () => {
+      type Row = { number: number; headRefOid: string; comments: Array<{ body: string }> };
+      return ghJson<Row[]>([
+        "pr",
+        "list",
+        "--state",
+        "open",
+        "--label",
+        PHOEBE_QUARANTINE_LABEL,
+        "--limit",
+        "100",
+        "--json",
+        "number,headRefOid,comments",
+      ]).map((row) => ({
+        target: { objectType: "pr", id: row.number },
+        currentBaseline: row.headRefOid,
+        comments: row.comments,
+      }));
+    },
+
+    issueTimeoutInputs: (issueNumber) => {
+      const raw = ghJson<{ body: string; comments: GhTimeoutComment[] }>([
+        "issue",
+        "view",
+        String(issueNumber),
+        "--json",
+        "comments,body",
+      ]);
+      // Issues have no commits, so a new human comment is the only reset signal. The
+      // un-stick baseline is a fingerprint of the body, never `updatedAt`: GitHub
+      // bumps that on any comment, label, or reaction — including the quarantine
+      // comment + label Phoebe writes moments later — so a timestamp baseline would
+      // make every quarantine clear itself on the first sweep (#153).
+      return {
+        comments: toTimeoutComments(raw.comments),
+        extraActivityAt: null,
+        baseline: issueContentBaseline(raw.body),
+      };
+    },
+
+    prTimeoutInputs: (prNumber) => {
+      const raw = ghJson<{
+        headRefOid: string;
+        comments: GhTimeoutComment[];
+        commits: Array<{ committedDate: string }>;
+      }>(["pr", "view", String(prNumber), "--json", "comments,commits,headRefOid"]);
+      // A new push (head commit) or human comment resets; head SHA is the baseline.
+      const headCommitAt =
+        raw.commits.length > 0 ? raw.commits[raw.commits.length - 1]!.committedDate : null;
+      return {
+        comments: toTimeoutComments(raw.comments),
+        extraActivityAt: headCommitAt,
+        baseline: raw.headRefOid,
+      };
+    },
+
+    postPrComment: (prNumber, body) => {
+      ghWrite(["pr", "comment", String(prNumber), "--body", body]);
+    },
+
+    postUnitComment: (target, body) => {
+      ghWrite([target.objectType, "comment", String(target.id), "--body", body]);
+    },
+
+    addQuarantineLabel: (target) => {
+      ghWrite([
+        target.objectType,
+        "edit",
+        String(target.id),
+        "--add-label",
+        PHOEBE_QUARANTINE_LABEL,
+      ]);
+    },
+
+    removeQuarantineLabel: (target) => {
+      ghWrite([
+        target.objectType,
+        "edit",
+        String(target.id),
+        "--remove-label",
+        PHOEBE_QUARANTINE_LABEL,
+      ]);
+    },
+
+    resolveLogin: (envLogin) => {
+      if (envLogin) return envLogin;
+      return ghApiJson<{ login: string }>("user").login;
+    },
+
+    issueAuthorLogin: (issueNumber) =>
+      ghJson<{ author: { login: string } | null }>([
+        "issue",
+        "view",
+        String(issueNumber),
+        "--json",
+        "author",
+      ]).author?.login ?? null,
+
+    lookupUser: (login) => ghApiJson<GitHubUser>(`users/${encodeURIComponent(login)}`),
+
+    forCycle: () => {
+      let openPrs: OpenPhoebePr[] | null = null;
+      const merges = new Map<PrNumber, PrMergeInfo>();
+      return {
+        ...client,
+        openPrs: () => {
+          if (openPrs === null) {
+            openPrs = client.listOpenPhoebePrs();
+          }
+          return openPrs;
+        },
+        mergeInfo: async (prNumber) => {
+          const hit = merges.get(prNumber);
+          if (hit !== undefined) return hit;
+          let info = currentMergeInfo(prNumber);
+          for (let attempt = 1; attempt < MERGEABLE_RETRY_COUNT; attempt++) {
+            if (info.mergeable !== "UNKNOWN") break;
+            await sleep(MERGEABLE_RETRY_MS);
+            info = currentMergeInfo(prNumber);
+          }
+          merges.set(prNumber, info);
+          return info;
+        },
+      };
+    },
+  };
+
+  return client;
+}
