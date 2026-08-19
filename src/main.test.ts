@@ -19,15 +19,18 @@ import { describe, expect, test } from "vite-plus/test";
 import { asPrNumber, asSha, type PrNumber, type Sha } from "./branded.ts";
 import { resolveConfig, type PhoebeUserConfig } from "./config-schema.ts";
 import type { GitRunner } from "./git-model.ts";
+import type { QuarantinedUnit } from "./github-client.ts";
 import { stubGitHub, type GitHubStubOverrides } from "./github-stub.ts";
 import {
   buildChecksFailWatermarkMarker,
   buildConflictFailWatermarkMarker,
   issueBranch,
+  RUN_ONCE_NOTHING_MESSAGE,
   type Issue,
   type ReviewThread,
   type WorkflowRunItem,
 } from "./orchestrator.ts";
+import { buildQuarantineBaselineMarker, buildUnstickComment } from "./quarantine.ts";
 import { createEngine, type EngineRunOptions } from "./main.ts";
 import type { UnitRef } from "./unit-event.ts";
 
@@ -642,6 +645,108 @@ describe("an empty cycle", () => {
     expect(selection(result)).toBeUndefined();
     expect(result.lines).toContain("[phoebe] No work this cycle — idle.");
     expect(result.events).toEqual([]);
+  });
+});
+
+// The un-stick sweep is the one part of a cycle a dry run must not reach, so
+// these run wet: `--run-once` with no work waiting, which sweeps, finds nothing
+// to do, and exits before any execution gate. The two callers of the sweep — a
+// live tenant and a disabled one — differ only in which units they clear and
+// what they say, so both are pinned here.
+describe("the un-stick sweep", () => {
+  /** A wet `--run-once` cycle: it sweeps, finds no work, and exits. */
+  function sweepCycle(github: GitHubStubOverrides, config?: Partial<PhoebeUserConfig>) {
+    return runCycle({
+      // A PAT arm, so the cycle does not try to mint an App token on its way in.
+      env: { GH_TOKEN: "a-token" },
+      config: { workOrder: ["issues"], ...config },
+      github: { listReadyIssues: () => [], ...github },
+      run: { runOnce: true, dryRun: false },
+    });
+  }
+
+  /** One quarantined unit, with the escalation comment that recorded `baseline`. */
+  function quarantined(id: number, baseline: string, currentBaseline: string): QuarantinedUnit {
+    return {
+      target: { objectType: "issue", id },
+      currentBaseline,
+      comments: [{ body: buildQuarantineBaselineMarker(baseline) }],
+    };
+  }
+
+  /** Records the writes the sweep makes; anything it does not stub still throws. */
+  function writeRecorder(): { writes: string[]; overrides: GitHubStubOverrides } {
+    const writes: string[] = [];
+    return {
+      writes,
+      overrides: {
+        removeQuarantineLabel: (target) => {
+          writes.push(`remove-label ${target.objectType} #${target.id}`);
+        },
+        postUnitComment: (target, body) => {
+          writes.push(`comment ${target.objectType} #${target.id} ${body.split("\n")[0]}`);
+        },
+      },
+    };
+  }
+
+  test("a unit whose content advanced loses the label and is told why", async () => {
+    const { writes, overrides } = writeRecorder();
+    const result = await sweepCycle({
+      ...overrides,
+      listQuarantinedIssues: () => [quarantined(7, "body:old", "body:new")],
+      listQuarantinedPrs: () => [],
+    });
+
+    expect(writes).toEqual([
+      "remove-label issue #7",
+      `comment issue #7 ${buildUnstickComment().split("\n")[0]}`,
+    ]);
+    expect(result.lines).toContain(
+      "[phoebe] Un-quarantined issue #7 — its content advanced past the quarantine baseline.",
+    );
+  });
+
+  test("a unit whose content has not moved keeps its label", async () => {
+    // Every write method is unstubbed, so touching this unit at all would throw.
+    const result = await sweepCycle({
+      listQuarantinedIssues: () => [quarantined(7, "body:same", "body:same")],
+      listQuarantinedPrs: () => [],
+    });
+
+    expect(result.lines).toContain(RUN_ONCE_NOTHING_MESSAGE);
+  });
+
+  test("a disabled tenant clears the same unit the live sweep would leave", async () => {
+    const { writes, overrides } = writeRecorder();
+    const result = await sweepCycle(
+      {
+        ...overrides,
+        listQuarantinedIssues: () => [quarantined(7, "body:same", "body:same")],
+        listQuarantinedPrs: () => [],
+      },
+      { disabled: true },
+    );
+
+    expect(writes).toEqual([
+      "remove-label issue #7",
+      `comment issue #7 ${buildUnstickComment().split("\n")[0]}`,
+    ]);
+    expect(result.lines).toContain(
+      "[phoebe] Un-quarantined issue #7 — tenant is disabled; cleared so it starts fresh when re-enabled.",
+    );
+  });
+
+  test("a failed listing is reported and the cycle carries on", async () => {
+    const result = await sweepCycle({
+      listQuarantinedIssues: () => {
+        throw new Error("gh exploded");
+      },
+      listQuarantinedPrs: () => [],
+    });
+
+    expect(result.lines.join("\n")).toContain("gh exploded");
+    expect(result.lines).toContain(RUN_ONCE_NOTHING_MESSAGE);
   });
 });
 

@@ -9,7 +9,6 @@ import {
   buildUnitTimeoutMarker,
   buildUnstickComment,
   decideAutoUnstick,
-  decideDisabledUnstick,
   decideTimeoutRecord,
   DEFAULT_MAX_UNIT_TIMEOUTS,
   issueContentBaseline,
@@ -357,12 +356,6 @@ describe("buildUnstickComment", () => {
     const comment = buildUnstickComment();
     expect(comment).toContain(PHOEBE_QUARANTINE_LABEL);
     expect(parseUnitTimeoutMarker(comment)).toEqual({ n: 0 });
-  });
-});
-
-describe("decideDisabledUnstick (#202)", () => {
-  test("always returns true — a disabled tenant clears all quarantine state", () => {
-    expect(decideDisabledUnstick()).toBe(true);
   });
 });
 

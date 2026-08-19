@@ -58,7 +58,6 @@ import {
   buildUnitTimeoutMarker,
   buildUnstickComment,
   decideAutoUnstick,
-  decideDisabledUnstick,
   decideTimeoutRecord,
   PHOEBE_QUARANTINE_LABEL,
   resolveMaxUnitTimeouts,
@@ -604,25 +603,51 @@ export function createEngine(options: EngineOptions): Engine {
   }
 
   /**
-   * Clear the quarantine label from every unit whose content has advanced past its
-   * recorded baseline. Best-effort, like the write path: one unit's failure is
-   * logged and the rest of the sweep continues, and a failure of the whole sweep
-   * never stops the cycle — the worst case is a unit staying quarantined a cycle
-   * longer, which a human can still fix by hand.
+   * Why the sweep is running. It decides one thing — which quarantined units are
+   * cleared — and the two strings that say so. `content-advanced` is the exit the
+   * escalation comment promises; `tenant-disabled` is the blanket clear a disabled
+   * tenant gets (#202), because a disabled tenant generates no timeouts, so a
+   * label still on a unit is a carry-over from before it was disabled and a
+   * re-enabled tenant should start clean rather than hit an immediate skip.
    */
-  function sweepQuarantine(): void {
+  type UnstickReason = "content-advanced" | "tenant-disabled";
+
+  const UNSTICK_WORDING: Record<UnstickReason, { sweepName: string; because: string }> = {
+    "content-advanced": {
+      sweepName: "auto-un-stick",
+      because: "its content advanced past the quarantine baseline.",
+    },
+    "tenant-disabled": {
+      sweepName: "disabled-tenant",
+      because: "tenant is disabled; cleared so it starts fresh when re-enabled.",
+    },
+  };
+
+  /**
+   * Clear the quarantine label from every unit `reason` says has earned it — the
+   * ones whose content advanced past their recorded baseline, or all of them when
+   * the tenant is disabled. Best-effort, like the write path: one unit's failure
+   * is logged and the rest of the sweep continues, and a failure of the whole
+   * sweep never stops the cycle — the worst case is a unit staying quarantined a
+   * cycle longer, which a human can still fix by hand.
+   */
+  function sweepQuarantine(reason: UnstickReason): void {
+    const { sweepName, because } = UNSTICK_WORDING[reason];
     let quarantined: QuarantinedUnit[];
     try {
       quarantined = [...github.listQuarantinedIssues(), ...github.listQuarantinedPrs()];
     } catch (error) {
       console.error(
-        `[phoebe] Could not list quarantined units for the auto-un-stick sweep — ` +
+        `[phoebe] Could not list quarantined units for the ${sweepName} sweep — ` +
           `${error instanceof Error ? error.message : String(error)}`,
       );
       return;
     }
     for (const unit of quarantined) {
-      if (!decideAutoUnstick({ comments: unit.comments, currentBaseline: unit.currentBaseline })) {
+      if (
+        reason === "content-advanced" &&
+        !decideAutoUnstick({ comments: unit.comments, currentBaseline: unit.currentBaseline })
+      ) {
         continue;
       }
       const label = describeUnitTarget(unit.target);
@@ -632,46 +657,7 @@ export function createEngine(options: EngineOptions): Engine {
         // the unit being workable again rather than silently stuck.
         github.removeQuarantineLabel(unit.target);
         github.postUnitComment(unit.target, buildUnstickComment());
-        console.log(
-          `[phoebe] Un-quarantined ${label} — its content ` +
-            `advanced past the quarantine baseline.`,
-        );
-      } catch (error) {
-        console.error(
-          `[phoebe] Could not un-quarantine ${label} — ` +
-            `${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    }
-  }
-
-  /**
-   * Clear all quarantined units for this tenant unconditionally. Called when the
-   * tenant is disabled (#202): `decideDisabledUnstick` always returns true, so
-   * every quarantined unit gets its label removed and the count reset — a
-   * re-enabled tenant should start clean rather than immediately hitting the skip.
-   */
-  function sweepDisabledQuarantine(): void {
-    let quarantined: QuarantinedUnit[];
-    try {
-      quarantined = [...github.listQuarantinedIssues(), ...github.listQuarantinedPrs()];
-    } catch (error) {
-      console.error(
-        `[phoebe] Could not list quarantined units for the disabled-tenant sweep — ` +
-          `${error instanceof Error ? error.message : String(error)}`,
-      );
-      return;
-    }
-    for (const unit of quarantined) {
-      if (!decideDisabledUnstick()) continue;
-      const label = describeUnitTarget(unit.target);
-      try {
-        github.removeQuarantineLabel(unit.target);
-        github.postUnitComment(unit.target, buildUnstickComment());
-        console.log(
-          `[phoebe] Un-quarantined ${label} — ` +
-            `tenant is disabled; cleared so it starts fresh when re-enabled.`,
-        );
+        console.log(`[phoebe] Un-quarantined ${label} — ${because}`);
       } catch (error) {
         console.error(
           `[phoebe] Could not un-quarantine ${label} — ` +
@@ -1690,7 +1676,7 @@ export function createEngine(options: EngineOptions): Engine {
       // any lingering quarantine state so a re-enabled tenant starts clean.
       if (config.disabled) {
         if (!dryRun) {
-          sweepDisabledQuarantine();
+          sweepQuarantine("tenant-disabled");
         }
         if (runOnce) {
           console.log(
@@ -1711,7 +1697,7 @@ export function createEngine(options: EngineOptions): Engine {
       // cycle's fetch rather than the next one. Skipped under `--dry-run`, which
       // must not write to GitHub.
       if (!dryRun) {
-        sweepQuarantine();
+        sweepQuarantine("content-advanced");
       }
       const fetchKinds = runOnce ? oneShotWorkKinds(workOrder) : workOrder;
       const data = await fetchCycleWorkData(fetchKinds);
