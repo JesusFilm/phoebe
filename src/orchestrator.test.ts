@@ -2,7 +2,7 @@ import { describe, expect, test } from "vite-plus/test";
 import { config as sampleUserConfig } from "../phoebe.config.ts";
 import { asBranchRef, asPrNumber, asSha } from "./branded.ts";
 import { resolveConfig } from "./config-schema.ts";
-import { setResolvedConfig } from "./resolved-config.ts";
+import { config as installedConfig, setResolvedConfig } from "./resolved-config.ts";
 import {
   buildChecksFailWatermarkMarker,
   buildConflictFailWatermarkMarker,
@@ -461,13 +461,16 @@ describe("parseIssueNumberFromBranch", () => {
   // import time it would either throw (nothing installed yet) or answer for the
   // wrong tenant.
   test("follows a config installed after this module was imported", () => {
-    const installed = resolveConfig(sampleUserConfig);
+    // Snapshot what is installed rather than rebuilding the sample: this test
+    // has to leave the holder as it found it, whoever filled it. The spread
+    // reads through the Proxy, so `previous` is a plain copy of that value.
+    const previous = { ...installedConfig };
     setResolvedConfig(resolveConfig({ ...sampleUserConfig, branchPrefix: "bot/" }));
     try {
       expect(parseIssueNumberFromBranch(asBranchRef("bot/issue-7"))).toBe(7);
       expect(parseIssueNumberFromBranch(asBranchRef("phoebe/issue-7"))).toBeNull();
     } finally {
-      setResolvedConfig(installed);
+      setResolvedConfig(previous);
     }
   });
 });
