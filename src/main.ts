@@ -116,11 +116,7 @@ import {
   stackedCatchUpRetractionComment,
   RUN_ONCE_NOTHING_MESSAGE,
   selectFirstWorkUnit,
-  selectIssue,
   unresolvedBlockerNumbers,
-  summarizeChecksSelection,
-  summarizeConflictSelection,
-  summarizeReviewsSelection,
   shouldPostChecksFixFailure,
   shouldPostConflictFixFailure,
   statusCheckRollupState,
@@ -138,6 +134,7 @@ import {
   type StackContext,
   type WorkKindName,
   type WorkUnit,
+  type WorkUnitSkip,
 } from "./orchestrator.ts";
 
 // ---------------------------------------------------------------------------
@@ -1551,82 +1548,59 @@ export function createEngine(options: EngineOptions): Engine {
     };
   }
 
-  function logIdleCycle(data: CycleWorkData): void {
-    const phoebeBase = env["PHOEBE_BASE"];
-    if (data.issues.length > 0 && !selectIssue(data.issues, data.blockerStates, phoebeBase)) {
-      console.log(
-        `[phoebe] ${data.issues.length} ${config.readyLabel} issue(s) but none workable this cycle ${idleBlockerReason(data.issues, data.blockerStates, phoebeBase)}.`,
-      );
-      return;
+  /**
+   * How the idle report speaks about each kind: what this tenant calls its units,
+   * and — for the kinds whose selector lumps every skip rule into one `ineligible`
+   * count — which rules that count covers. `conflicts` reports its two rules apart
+   * and so needs no such phrase; `issues` and `research` have no `ineligible`
+   * count at all.
+   */
+  const KIND_REPORT: Record<WorkKindName, { noun: string; ineligibleCause?: string }> = {
+    conflicts: { noun: "conflicting PR(s)" },
+    checks: {
+      noun: "failing-CI PR(s)",
+      ineligibleCause: "conflicting, stacked, or watermarked",
+    },
+    reviews: {
+      noun: "review-feedback PR(s)",
+      ineligibleCause: "stacked, watermarked, or no new activity",
+    },
+    issues: { noun: `${config.readyLabel} issue(s)` },
+    research: { noun: `${config.researchLabel} ticket(s)` },
+  };
+
+  /** One line of the idle report, rendered from one entry of the selection's record. */
+  function idleSkipLine(skip: WorkUnitSkip, data: CycleWorkData): string {
+    const { noun, ineligibleCause } = KIND_REPORT[skip.kind];
+    if (skip.reason === "none-workable") {
+      if (skip.kind === "issues" || skip.kind === "research") {
+        const issues = skip.kind === "issues" ? data.issues : data.researchIssues;
+        const reason = idleBlockerReason(issues, data.blockerStates, env["PHOEBE_BASE"]);
+        return `${skip.count} ${noun} but none workable this cycle ${reason}.`;
+      }
+      return `${skip.count} ${noun} but none fixable this cycle.`;
     }
-    if (
-      data.researchIssues.length > 0 &&
-      !selectIssue(data.researchIssues, data.blockerStates, phoebeBase)
-    ) {
-      console.log(
-        `[phoebe] ${data.researchIssues.length} ${config.researchLabel} ticket(s) but none workable this cycle ${idleBlockerReason(data.researchIssues, data.blockerStates, phoebeBase)}.`,
-      );
-      return;
-    }
-    const stack: StackContext = {
-      issueBodies: data.issueBodies,
-      blockerStates: data.blockerStates,
-    };
-    if (data.conflictingPrs.length > 0) {
-      const conflictOpts = data.currentMainHead
-        ? { currentMainHead: data.currentMainHead }
-        : undefined;
-      const { unit, skippedStacked, skippedWatermark } = summarizeConflictSelection(
-        data.conflictingPrs,
-        stack,
-        conflictOpts,
-      );
-      if (skippedStacked > 0) {
-        console.log(
-          `[phoebe] ${skippedStacked} conflicting PR(s) skipped (stacked on open blocker).`,
-        );
-      }
-      if (skippedWatermark > 0) {
-        console.log(
-          `[phoebe] ${skippedWatermark} conflicting PR(s) skipped (unchanged failure watermark).`,
-        );
-      }
-      if (!unit) {
-        console.log(
-          `[phoebe] ${data.conflictingPrs.length} conflicting PR(s) but none fixable this cycle.`,
-        );
-        return;
-      }
-    }
-    if (data.failingCheckPrs.length > 0) {
-      const { unit, skipped } = summarizeChecksSelection(data.failingCheckPrs, stack);
-      if (skipped > 0) {
-        console.log(
-          `[phoebe] ${skipped} failing-CI PR(s) skipped (conflicting, stacked, or watermarked).`,
-        );
-      }
-      if (!unit) {
-        console.log(
-          `[phoebe] ${data.failingCheckPrs.length} failing-CI PR(s) but none fixable this cycle.`,
-        );
-        return;
-      }
-    }
-    if (data.reviewActivityPrs.length > 0 && data.phoebeLogin) {
-      const { unit, skipped } = summarizeReviewsSelection(
-        data.reviewActivityPrs,
-        stack,
-        data.phoebeLogin,
-      );
-      if (skipped > 0) {
-        console.log(
-          `[phoebe] ${skipped} review-feedback PR(s) skipped (stacked, watermarked, or no new activity).`,
-        );
-      }
-      if (!unit) {
-        console.log(
-          `[phoebe] ${data.reviewActivityPrs.length} review-feedback PR(s) but none fixable this cycle.`,
-        );
+    const cause =
+      skip.reason === "stacked-on-blocker"
+        ? "stacked on open blocker"
+        : skip.reason === "unchanged-watermark"
+          ? "unchanged failure watermark"
+          : // A kind that has not spelled its rules out names the reason itself.
+            (ineligibleCause ?? skip.reason);
+    return `${skip.count} ${noun} skipped (${cause}).`;
+  }
+
+  /**
+   * Explain an idle cycle from the record the selection walk produced, so the
+   * report can only ever describe the walk the loop actually made. It stops at
+   * the first kind that had units and could work none of them: that kind is why
+   * this cycle is idle, and the kinds behind it in `workOrder` would not have run
+   * anyway.
+   */
+  function logIdleCycle(data: CycleWorkData, skipped: readonly WorkUnitSkip[]): void {
+    for (const skip of skipped) {
+      console.log(`[phoebe] ${idleSkipLine(skip, data)}`);
+      if (skip.reason === "none-workable") {
         return;
       }
     }
@@ -1741,7 +1715,7 @@ export function createEngine(options: EngineOptions): Engine {
       }
       const fetchKinds = runOnce ? oneShotWorkKinds(workOrder) : workOrder;
       const data = await fetchCycleWorkData(fetchKinds);
-      const picked = selectFirstWorkUnit(
+      const { unit: picked, skipped } = selectFirstWorkUnit(
         workOrder,
         {
           issues: data.issues,
@@ -1762,7 +1736,7 @@ export function createEngine(options: EngineOptions): Engine {
         if (runOnce) {
           console.log(RUN_ONCE_NOTHING_MESSAGE);
         } else {
-          logIdleCycle(data);
+          logIdleCycle(data, skipped);
         }
         if (runOnce || dryRun) break;
         // Interruptible idle poll — a SIGTERM mid-sleep wakes it, the next
