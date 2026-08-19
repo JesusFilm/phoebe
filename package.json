@@ -20,7 +20,8 @@
     "prompts",
     "templates",
     "!**/*.test.ts",
-    "!src/test-setup.ts"
+    "!src/test-setup.ts",
+    "!src/github-stub.ts"
   ],
   "type": "module",
   "main": "./bootstrap/index.mjs",
