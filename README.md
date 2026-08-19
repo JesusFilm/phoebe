@@ -102,6 +102,9 @@ reference and the `PHOEBE_*` environment overlay.
 
 ## Documentation
 
+[`CONTEXT.md`](CONTEXT.md) is the glossary — the words this project uses for its own
+concepts, and the ones it deliberately avoids.
+
 Docs live under [`docs/`](docs/):
 
 - [`docs/architecture.md`](docs/architecture.md) — topology, worktree isolation, engine updates and crash-loop fallback, named volumes.
