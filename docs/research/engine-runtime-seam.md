@@ -82,6 +82,13 @@ and their transitive callers, turning a port into a rewrite. The loop works one 
 time and gains nothing from concurrency. This is not a one-way door: going async later is
 mechanical once a test proves the cycle still works.
 
+One method is the exception, and it is not a hole in this decision: `mergeInfo` returns a
+promise because the `UNKNOWN` retry it absorbs sleeps between attempts, exactly as
+`getMergeInfoCached` (`main.ts:774`) does today. Its callers — `fetchConflictingPrs`,
+`failingChecksCandidate`, `fetchReviewsWorkData` — are already `async` for that reason.
+Making it synchronous would mean blocking the loop through the sleep, which is a behaviour
+change, not a port.
+
 ### `gh` is the transport, and the second adapter is the test double
 
 **Decision: no REST adapter is planned.**
@@ -123,6 +130,17 @@ learn which mechanism carries what. `runLoop()` takes no arguments.
 `src/cli.ts` builds the engine after `setResolvedConfig` as it does today; the dynamic
 `import()` and the comment at `cli.ts:569` are deleted. `resolved-config.ts` stays for the
 modules not yet converted.
+
+Collapsing `runLoop`'s parameters is not the same as making them disappear. Seven values
+reach it today, and `runEngine` (`main.ts:2043–2127`) derives them from argv, env and the
+IPC channel: `runOnce` and `dryRun` from argv, `pollIntervalMs` from
+`PHOEBE_POLL_INTERVAL_MS`, and `drain`, `slotClient`, `credentialClient` and
+`emitUnitEvent` from four constructors. They become the factory's inputs, not process
+state the factory reads for itself — `createEngine` takes the four collaborators
+alongside `github`/`git`/`clock`, and the two flags plus the interval come from an
+explicit run-options argument. Ticket B fixes the exact split; what it may not do is have
+the factory reach `process.argv` or `process.env` internally, because a cycle test must be
+able to say "run once, dry, with this drain signal" without touching either.
 
 ### The client has an internal seam for its own tests
 
@@ -179,8 +197,9 @@ type GitHubClient = {
   forCycle(): CycleGitHubClient;
 };
 
-// Adds the per-poll memo; everything else is inherited.
-type CycleGitHubClient = GitHubClient & {
+// Adds the per-poll memo; everything else is inherited. The two uncached reads it
+// replaces are omitted, so a cycle caller cannot reach past the memo by accident.
+type CycleGitHubClient = Omit<GitHubClient, "listOpenPhoebePrs" | "currentMergeInfo"> & {
   openPrs(): OpenPhoebePr[]; // memoized listOpenPhoebePrs
   mergeInfo(prNumber: PrNumber): Promise<PrMergeInfo>; // memoized, UNKNOWN-retry
 };
@@ -209,7 +228,7 @@ it never needs tests of its own and cannot become a second thing to keep correct
 
 After ticket A:
 
-```
+```text
 grep -n "execFileSync\|execSync" src/main.ts
 ```
 
@@ -217,8 +236,10 @@ returns only the git caller (`:886`) and the two shell executors (`:895`, `:906`
 spawn remains in `main.ts` — including the raw GraphQL page fetch at `:1308` and the
 rate-limit probe at `:239`.
 
-There are 24 `gh` call sites to move: 17 `ghJson`, 3 `ghApiJson`, 6 `gh`, plus the two raw
-`execFileSync` calls.
+There are 25 `gh` call sites to move: 16 `ghJson`, 2 `ghApiJson`, 5 `gh`, plus the two raw
+`execFileSync` calls that bypass those wrappers (the GraphQL page fetch at `:1308` and the
+rate-limit probe at `:239`). The three `execFileSync` calls _inside_ `ghJson`, `ghApiJson`
+and `gh` are not call sites — they move with the wrappers.
 
 ## Non-goals
 
@@ -253,11 +274,14 @@ would throw them away a week later.
 
 ## Follow-up tickets
 
-**Ticket A — extract `src/github-client.ts`.** Move the 24 `gh` call sites,
+**Ticket A — extract `src/github-client.ts`.** Move the 25 `gh` call sites,
 `rethrowAsGhError`, `tryFetchRateLimitReset` and the GraphQL pagination loop behind the
 interface above. Delete `CycleCache` in favour of `forCycle()`; the 12 threading sites take
 `CycleGitHubClient`. Add the internal executor seam and `github-client.test.ts` covering
-argv for pagination, the `-R` suffix and the `--json` field lists. `main.ts` builds one
+argv for pagination, the `-R` suffix and the `--json` field lists — plus the two behaviours
+`forCycle()` adds that no argv assertion would catch: one `pr list` per cycle and none
+across cycles, and the `UNKNOWN` retry giving up at its budget. The loop's own tests use
+`stubGitHub`, so this file is the only thing that exercises the production adapter. `main.ts` builds one
 client from `config` for now. Done when the acceptance criterion holds and `vp check` /
 `vp test` pass.
 

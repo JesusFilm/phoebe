@@ -150,7 +150,7 @@ export type GitHubClient = {
  * `CycleCache`: its lifetime is this object's lifetime, so there is no
  * `beginCycle()` to forget and no way to read one cycle's answers in the next.
  */
-export type CycleGitHubClient = GitHubClient & {
+export type CycleGitHubClient = Omit<GitHubClient, "listOpenPhoebePrs" | "currentMergeInfo"> & {
   /** `listOpenPhoebePrs`, listed once per cycle. */
   openPrs(): OpenPhoebePr[];
   /** Merge state, memoized for this cycle and retried while GitHub says UNKNOWN. */
