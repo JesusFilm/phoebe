@@ -10,7 +10,9 @@ short-lived installation token for that tenant's repo — narrowed to that one
 repository and the five onboarding permissions — and hands it to the engine
 child. Tokens are refreshed before expiry and re-delivered at the next
 work-unit boundary; a mint failure puts that tenant on hold without touching
-its siblings. The App's private key never reaches any child env. See
+its siblings. The App's private key never reaches an agent process, and in a
+fleet never reaches an engine child; a solo engine child holds it by design,
+since it mints its own token. See
 `docs/github-app-mode.md` for registration, cost, and the per-tenant rate-limit
 budget.
 
