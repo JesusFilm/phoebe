@@ -1,5 +1,261 @@
 # phoebe-agent
 
+## 0.7.0
+
+### Minor Changes
+
+- e23cbd0: Credit the issue author on Phoebe's commits (#198). On the issue-to-PR path
+  (`issues` and `research` units) the engine now appends
+  `Co-authored-by: <login> <id>+<login>@users.noreply.github.com` — the issue's
+  author — to every commit it pushes for that unit, so the human who filed the
+  ticket gets contribution-graph credit for the work it produced. The trailer is
+  applied by the engine after the agent runs and before the push (a message-only
+  rewrite of the unit's own commits), so operator prompt overrides need no change.
+
+  Policy, decided here: it applies to every issue Phoebe works — applying
+  `readyLabel` is already a maintainer's deliberate act — and never to the janitor
+  kinds (`conflicts` / `checks` / `reviews`), which have no single requester. Bots
+  and deleted accounts are never credited. Credit is best-effort: a failed author
+  lookup, a merge commit in the range, or a failed rewrite leaves the commits
+  exactly as the agent made them and logs why.
+
+  New config field `creditIssueAuthor` (default `true`). Set it to `false` on a
+  repo where a drive-by reporter's name on agent-written code would read as
+  misattribution rather than credit. The opt-out is the operator's only — there
+  is deliberately no per-issue or per-author switch.
+
+- b988d95: New bootstrapper-only config block `deployment` (#260, #261) for deployments
+  that do not run under Phoebe's Compose driver — Podman, a systemd unit, a
+  remote host, anything with its own start/stop incantation:
+
+  ```ts
+  deployment: {
+    startCommand: "podman compose -f container/compose.yml up -d",
+    stopCommand: "podman compose -f container/compose.yml down",
+    stopNowCommand: "podman compose -f container/compose.yml down -t 1", // optional
+  }
+  ```
+
+  When the block is present, `phoebe start` runs `startCommand` and `phoebe stop`
+  runs `stopCommand` (`--now` runs `stopNowCommand`, falling back to
+  `stopCommand`) via `/bin/sh` with inherited stdio, and skips the docker-on-PATH
+  check, Compose discovery, settle wait, and killed-mid-run detection that belong
+  to the Compose path. `--build` warns and is a no-op. `startCommand` and
+  `stopCommand` must be declared together; a half-declared block or a blank
+  `stopNowCommand` is a config error. Like `engine` / `workspace` / `configDir`,
+  `resolveConfig` drops the block — the engine never sees it.
+
+  **Nothing changes when the block is absent** — `phoebe start` / `phoebe stop`
+  drive `container/compose.yml` exactly as in 0.6.0.
+
+- b988d95: New config field `disabled` (default `false`) — the human off-switch for a
+  tenant (#202). Set `disabled: true` in a repo's `phoebe.config.ts` and its
+  engine stops dispatching work at the top of the next poll: a run already in
+  flight finishes, nothing new starts, and any quarantined work units are
+  cleared so the tenant comes back clean when re-enabled. The child keeps
+  running (so re-enabling is a config edit, not a restart), and `phoebe list`
+  shows a `(disabled)` suffix (`disabled: boolean` in `--json`) while
+  `phoebe doctor` reports it as an informational `ok` check.
+- 52eaec2: New bootstrapper-only config field `gitIdentity` (#199): a repo declares how its
+  commits are attributed — `gitIdentity: { name, email }` in `phoebe.config.ts` —
+  instead of every deployment that adopts it restating the four `GIT_AUTHOR_*` /
+  `GIT_COMMITTER_*` vars in a `.env`. A name and an email are not secrets and are
+  repo-scoped, which is exactly the class of fact `phoebe.config.ts` is for.
+
+  **The precedence ladder, decided here** (the objection #161 raised when it
+  declined the field). Later wins: the supervisor's deployment-global `GIT_*` <
+  the `app` arm's bot fallback < `gitIdentity` < the tenant's own `.env`. The
+  config field outranks anything said deployment-wide and is outranked by anything
+  said about that tenant specifically, per variable. Nothing moves for existing
+  deployments: a `.env` that sets an identity today still wins, and a repo that
+  declares nothing gets a byte-for-byte unchanged child env. In solo there is no
+  deployment-global rung — the container env _is_ the single tenant's env-file, so
+  it wins and the field fills the gaps; where it does, boot logs a line naming the
+  vars it overrode, so a declaration cannot go quietly inert.
+
+  Both halves are required — #161 established the email must be exact for
+  GitHub's commit→account linkage, so a name-only field would look like it worked
+  and attribute nothing — and the pair sets all four vars; author and committer
+  are not separately expressible. A malformed value fails the tenant
+  (skip-and-warn in a fleet, a hard boot error in solo) rather than silently
+  falling back to the deployment's identity.
+
+  Read by the bootstrapper only, like `engine` / `workspace` / `configDir`:
+  `resolveConfig` drops it and the engine sees only the env vars the supervisor
+  sets from it. Editing the field relaunches that tenant's child with the new
+  identity at the next work-unit boundary, no container restart.
+
+- b988d95: GitHub App mode: a deployment can now authenticate to GitHub as an installed
+  GitHub App instead of carrying a fine-grained PAT per tenant (#155). Set
+  `GH_APP_ID` and `GH_APP_PRIVATE_KEY` (base64-encoded PEM) in the
+  deployment `.env` and leave a tenant's `GH_TOKEN` blank; the supervisor mints a
+  short-lived installation token for that tenant's repo — narrowed to that one
+  repository and the five onboarding permissions — and hands it to the engine
+  child. Tokens are refreshed before expiry and re-delivered at the next
+  work-unit boundary; a mint failure puts that tenant on hold without touching
+  its siblings. The App's private key never reaches an agent process, and in a
+  fleet never reaches an engine child; a solo engine child holds it by design,
+  since it mints its own token. See
+  `docs/github-app-mode.md` for registration, cost, and the per-tenant rate-limit
+  budget.
+
+  Every tenant resolves to one of two **credential arms** — `pat` (its own
+  `GH_TOKEN`) or `app` — and mixed fleets are supported. The arm is now visible
+  across the CLI: `phoebe boot` logs a per-arm tally, `phoebe list` shows an
+  `arm:` column (also in `--json`), `phoebe doctor` checks each tenant by its arm
+  (an App-arm tenant with no `GH_TOKEN` is healthy, not broken; the arm is only
+  determinable inside the container, so an unverifiable check reports `unknown`
+  and never fails `--check`), and `scripts/verify-tenant-token.mjs` verifies App
+  installations by their granted permissions.
+
+  Along the way, solo deployments gain what fleets already had: the engine child
+  runs on an IPC channel with a slot broker, so `PHOEBE_MAX_CONCURRENT_AGENTS`
+  now has its documented meaning in solo (default cap 1 — no behaviour change
+  unless you raise it), and the engine leases its credential over that channel at
+  the top of each poll instead of reading a fixed env var.
+
+  **Nothing changes for existing PAT deployments.** A tenant with a `GH_TOKEN`
+  never mints; the PAT arm remains the recommended solo default and is not
+  deprecated. App mode is new in this release and has not yet been run in
+  Phoebe's own dogfood deployment — treat it accordingly. Existing deployments that want the App arm need the two new
+  variables in the deployment `.env` — see `docs/github-app-mode.md` §7 for the
+  migration and `docs/configuration.md` for the variable reference.
+
+- b988d95: New verb `phoebe migrate`, and `phoebe upgrade` runs migrations for you (#177).
+  A **deployment migration** is a small, idempotent, engine-owned reshaping of
+  the files a deployment carries — a prompt file the engine now expects, a work
+  kind that should be in `workOrder` — so that moving to a newer engine no longer
+  depends on an operator reading the changelog and editing by hand.
+
+  - `phoebe migrate` walks the deployment (solo root, or workspace root plus
+    every tenant), applies each registered migration that detects as applicable,
+    and prints per-directory verdicts (`migrated` · `up-to-date` · `manual` ·
+    `failed` · `reverted` · `skipped` · `invalid`) with the paths it wrote so
+    you can review and commit them. Writes are staged and flushed only after a
+    migration succeeds, create-if-absent files are written no-clobber, and a
+    failure mid-flush or in post-apply validation reverts what was written.
+    Dirty tenant trees are skipped, not overwritten.
+  - `phoebe migrate --check` previews the walk with every write suppressed and
+    exits 1 when anything is pending, for scripted pipelines.
+  - `phoebe migrate --json` (with or without `--check`) emits a stable,
+    additive-only envelope — documented in `docs/upgrading.md`.
+  - `phoebe upgrade` now materialises the **target** checkout and runs _its_
+    `migrate` before flipping `engine.ref`, so new code migrates old artifacts and
+    a failed migration aborts the upgrade with the pin untouched. `upgrade
+--check` is unchanged.
+
+  **What changes for existing deployments.** `phoebe upgrade` may now leave
+  uncommitted, reviewable edits in your deployment repos (a scaffolded prompt
+  file, a `workOrder` entry) — review and commit them; nothing is pushed for you.
+  A migration that fails aborts the upgrade with `engine.ref` untouched. This
+  runs only for `engine.source: "github"` deployments: a `source: "local"`
+  deployment does not go through the materialise-and-migrate step and must run
+  `phoebe migrate` by hand after moving its checkout.
+
+  Two migrations ship in this release: scaffold a missing
+  `prompts/research-prompt.md`, and append `"research"` to `workOrder` where it
+  is absent. Both are no-ops on a deployment that already has them.
+
+  Config edits are made by a parser-based substrate (a vendored `@babel/parser`
+  bundle, MIT) that splices only the bytes it changes and refuses — rather than
+  guesses — on config shapes it cannot edit safely (spread, shorthand,
+  computed keys, non-literal values, and so on); a refusal reports `manual` with
+  the reason. `docs/migrations.md` covers writing migrations, the supported
+  config forms, and the closed refusal set.
+
+### Patch Changes
+
+- b988d95: Agent log lines now carry the repo slug in a multi-tenant container:
+  `[owner/repo:provider]` (and `[owner/repo:provider:stderr]`) instead of the
+  bare `[provider]`, so interleaved agent output is attributable to a tenant.
+  `docs/operating.md` is corrected to describe the actual `[<slug>:<command>]`
+  prefix shape.
+- a25a428: A blocker issue closed as **completed** now satisfies the block (#219). Blocker
+  resolution used to ask only "is there a PR on `<branchPrefix>issue-<N>`?", so
+  work that landed outside the prefix — a human's `wheat/issue-497`, another
+  tool's branch — was indistinguishable from work nobody had started, and every
+  dependent issue was skipped forever. `resolveWorktreeBase` gains a third arm
+  after the open- and merged-PR arms: `CLOSED`/`COMPLETED` blocker → base
+  `origin/main`, unstacked. `NOT_PLANNED` deliberately does not count; an
+  abandoned blocker leaves the dependent on unbuilt ground.
+
+  The `gh issue view` behind it is lazy — it fires only when both PR lookups come
+  back empty, so every blocker with a Phoebe PR keeps the two calls per cycle it
+  costs today and only a blocker Phoebe cannot see pays a third. A failure on it
+  is caught the way `buildBlockerStates` already catches blocker-state failures
+  (warn, treat as unsatisfied, retry next cycle).
+
+  The idle line also names the blockers now — `3 ready-for-agent issue(s) but none
+workable this cycle (waiting on blockers #497, #498)` — instead of a bare count
+  that read the same whether the wait was legitimate or a permanent stall.
+
+- b988d95: A GitHub rate-limit 403 is now reported as one, not as a permission failure
+  (#201). Failed `gh` calls are classified from their stderr — `rate limit` vs
+  `Resource not accessible by …` — and a rate-limit hit is rethrown as
+  `GitHub rate limit exhausted (graphql|core) — resets at <time>`, with the reset
+  time fetched from `/rate_limit` (which does not count against the primary
+  quota). Operators reading
+  the log can now tell "wait" from "fix the token".
+- eec9021: Mask the deployment env-file inside the container so tenant engine children
+  cannot read the deployment `GH_TOKEN` off disk.
+
+  The deployment root is mounted read-only at `/etc/phoebe`, which includes the
+  `.env` Compose uses as its `--env-file` input. Every tenant engine child (same
+  uid 10001) could `cat /etc/phoebe/.env` and recover the credential, defeating
+  the deny-by-default env allowlist in `bootstrap/engine-child-env.ts`.
+
+  Fix: add `- /dev/null:/etc/phoebe/.env:ro` to `container/compose.yml`. Compose
+  reads the real file before the container starts; inside the container the path
+  resolves to empty. The dogfood compose (`/.phoebe/container/compose.yml`) gets
+  the equivalent mask at `/opt/phoebe-engine/.phoebe/.env`.
+
+  - `docs/trust.md`: clarify the deployment env-file is not part of the accepted
+    at-rest residual — only sibling tenant `.env` files remain readable.
+  - `docs/upgrading.md`: add a one-time step for existing deployments to add the
+    mount by hand and restart.
+
+- b988d95: Rotate a tenant's PAT without a relaunch (#205). Editing only `GH_TOKEN` in a
+  tenant's `.env` no longer drains and respawns that tenant's engine child: the
+  supervisor answers each credential lease with the token as it currently is on
+  disk, and the engine picks it up at its next poll. Every other `.env` value
+  still triggers the relaunch (they are frozen into the child's env at spawn).
+  Removing or blanking `GH_TOKEN` also relaunches, so an absent token cannot
+  linger in a running child.
+- 95cc93c: Teach `phoebe start` / `phoebe stop` at the three sites where the long compose
+  incantations lived.
+
+  - `phoebe upgrade --cli` now tells operators to run `phoebe start --build` instead
+    of the raw `docker compose --env-file ../.env build && docker compose --env-file
+../.env up -d` pair.
+  - `docs/upgrading.md` leads with `phoebe start [--build]` / `phoebe stop` for
+    image rebuilds, the one-time chown step, and the multi-tenant clean-break
+    upgrade. Raw compose is kept as a documented fallback with the `--env-file`
+    explanation intact.
+  - The `container/compose.yml` template header teaches `phoebe start`,
+    `phoebe stop`, and `phoebe start --build` as the primary lifecycle commands.
+
+- b988d95: Fewer GitHub calls per poll cycle (#200). The open-PR list is fetched once per
+  cycle and shared by the `conflicts`, `checks`, and `reviews` kinds, and each
+  PR's merge-info is fetched once (with the existing `UNKNOWN`-mergeability retry)
+  instead of once per kind. Behaviour is unchanged; a fleet's per-tenant API
+  budget stretches further, which matters most under App-installation rate
+  limits.
+- 4349cc9: Make the supervisor non-dumpable in the consumer image — chmod 0711 the system node.
+
+  `templates/container/Dockerfile` now applies `chmod 0711 "$(command -v node)"` unconditionally,
+  matching the dogfood image's long-standing deviation. The supervisor (`phoebe boot`) and every
+  engine child run on this system node; without the execute-only bit, those long-lived processes
+  holding `GH_TOKEN` stayed dumpable and a same-uid sibling could read `/proc/<pid>/environ`. The
+  dogfood has run exactly this in production — evidence it does not break the shebang shims or
+  execute-only ELF loading.
+
+  `docs/trust.md` updated: the "what is isolated" list now names both the vendored cursor node
+  (protecting the agent process) and the system node (protecting the supervisor and engine
+  children), so the full non-dumpable set is documented.
+
+  `docs/upgrading.md` adds a one-time image-rebuild note for existing deployments that predate
+  this change.
+
 ## 0.6.0
 
 ### Minor Changes
