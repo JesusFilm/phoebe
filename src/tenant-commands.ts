@@ -139,7 +139,7 @@ export const TENANT_ENV_EXAMPLE = `# Per-tenant secrets — copy to \`.env\`. Re
 
 # --- Required (pat arm) ---
 # Leave blank when the deployment uses the app credential arm
-# (PHOEBE_GH_APP_ID / PHOEBE_GH_APP_PRIVATE_KEY set on the deployment env-file).
+# (GH_APP_ID / GH_APP_PRIVATE_KEY set on the deployment env-file).
 GH_TOKEN=
 
 # --- Provider key (set the one this repo's defaultProvider uses) ---

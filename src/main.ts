@@ -2182,9 +2182,7 @@ async function runLoop({
     if (leasedToken === null && arm === "app" && !dryRun) {
       const creds = detectAppCredentials(process.env);
       if (!creds) {
-        console.error(
-          "[phoebe] App mode active but PHOEBE_GH_APP_ID or PHOEBE_GH_APP_PRIVATE_KEY is missing.",
-        );
+        console.error("[phoebe] App mode active but GH_APP_ID or GH_APP_PRIVATE_KEY is missing.");
         if (runOnce) break;
         await drain.wait(pollIntervalMs);
         continue;

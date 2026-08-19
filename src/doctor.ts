@@ -228,7 +228,7 @@ function tenantToken(envPath: string): string | undefined {
  * - App arm: absent GH_TOKEN is expected — returns `ok`.
  * - PAT arm, token present: returns `ok`.
  * - PAT arm, no token, outside the container: returns `unknown` (unverifiable —
- *   PHOEBE_GH_APP_ID is only visible inside the container, so doctor cannot
+ *   GH_APP_ID is only visible inside the container, so doctor cannot
  *   tell whether this is an unconfigured PAT or a healthy App-arm deployment).
  * - PAT arm, no token, inside the container: returns `fail` (genuine shortfall).
  */
@@ -249,7 +249,7 @@ export function tenantTokenCheck(fields: {
     return { id: "token", state: "ok", detail: `GH_TOKEN present in ${fields.envLabel}` };
   }
   if (!fields.inContainer) {
-    // Outside the container: PHOEBE_GH_APP_ID is only visible inside, so we cannot
+    // Outside the container: GH_APP_ID is only visible inside, so we cannot
     // tell whether this is a broken PAT arm or an App arm whose credential is
     // simply not reachable from the host. Never fail --check on this.
     return {

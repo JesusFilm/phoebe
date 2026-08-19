@@ -566,10 +566,10 @@ Two variables in the **deployment** env-file select the `app` credential arm —
 boot mints a per-tenant installation token from the App instead of reading each
 tenant's `GH_TOKEN`. The App arm is available in solo and workspace deployments.
 
-| Env var                     | Form               | Meaning                                                                                              |
-| --------------------------- | ------------------ | ---------------------------------------------------------------------------------------------------- |
-| `PHOEBE_GH_APP_ID`          | integer as string  | GitHub App id — visible on the App's settings page under "General".                                  |
-| `PHOEBE_GH_APP_PRIVATE_KEY` | base64-encoded PEM | App private key encoded as a single line (`base64 -w0 key.pem` on Linux, `base64 key.pem` on macOS). |
+| Env var              | Form               | Meaning                                                                                              |
+| -------------------- | ------------------ | ---------------------------------------------------------------------------------------------------- |
+| `GH_APP_ID`          | integer as string  | GitHub App id — visible on the App's settings page under "General".                                  |
+| `GH_APP_PRIVATE_KEY` | base64-encoded PEM | App private key encoded as a single line (`base64 -w0 key.pem` on Linux, `base64 key.pem` on macOS). |
 
 Both must be set together; a partial declaration (one without the other) is a fatal boot error.
 Set neither to stay on the `pat` arm.

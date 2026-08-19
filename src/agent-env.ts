@@ -1,7 +1,7 @@
 // Explicit env allowlist for agent child processes. The agent sees PATH, HOME,
 // git identity, the GitHub token, the bot login, and the *active* provider's
 // API key — never the other providers' keys, so a prompt-injected agent can't
-// exfiltrate the whole keyring. PHOEBE_GH_APP_* vars are deliberately absent:
+// exfiltrate the whole keyring. GH_APP_* vars are deliberately absent:
 // only the minted GH_TOKEN reaches the child, not the App credentials that
 // minted it.
 
