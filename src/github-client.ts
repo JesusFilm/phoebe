@@ -244,7 +244,8 @@ export type CreateGitHubClientOptions = {
    * the PR base. Note that two pure helpers the client calls (`issueBranch`,
    * `isPrInScope`) still read the `resolved-config.ts` Proxy for `branchPrefix`
    * and the PR scope rather than this value; in production they are the same
-   * object, and ticket B (#280) retires the Proxy.
+   * object. `main.ts` no longer reads the Proxy (#280); orchestrator.ts is what
+   * keeps it alive.
    */
   config: PhoebeConfig;
   /**

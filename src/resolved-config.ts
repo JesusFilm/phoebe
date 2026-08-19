@@ -1,9 +1,11 @@
 // Runtime handle to the resolved, defaults-filled config the engine reads.
 //
-// The engine (everything else under src/) imports `config` from here and stays
-// repo-agnostic; the CLI (src/cli.ts) loads the consumer's `phoebe.config.ts`,
-// applies the `PHOEBE_*` env overlay, resolves defaults, and installs the
-// result via `setResolvedConfig` before importing the engine entry point.
+// Modules that have not yet been converted to take their config as an argument
+// import `config` from here and stay repo-agnostic; the CLI (src/cli.ts) loads
+// the consumer's `phoebe.config.ts`, applies the `PHOEBE_*` env overlay,
+// resolves defaults, and installs the result via `setResolvedConfig` before
+// running anything. The engine itself is no longer one of them: `createEngine`
+// (src/main.ts) is handed the same resolved config as an argument (#280).
 // Tests install a sample config via the setup file wired in `vite.config.ts`.
 //
 // A `Proxy` gates every field read: reading before install throws with a

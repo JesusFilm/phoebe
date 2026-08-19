@@ -28,6 +28,7 @@ import {
 } from "./init.ts";
 import { formatInitTenantRegistrationAdviceForRoot } from "./init-tenant-advice.ts";
 import { applyEnvOverlay, loadUserConfig, resolveConfigPath } from "./load-config.ts";
+import { runEngine } from "./main.ts";
 import { resolveDataBase } from "./paths.ts";
 import { setResolvedConfig } from "./resolved-config.ts";
 import {
@@ -564,12 +565,12 @@ export async function runCli(): Promise<void> {
   const userConfig = await loadUserConfig(configPath);
   assertNotWorkspaceRoot(userConfig, configPath);
   const overlaid = applyEnvOverlay(userConfig, process.env);
-  setResolvedConfig(resolveConfig(overlaid, { dataBase: resolveDataBase(process.env) }));
-
-  // Import after the config is installed — main.ts's module-level constants
-  // read `config` at import time via the Proxy in resolved-config.ts.
-  const { runEngine } = await import("./main.ts");
-  await runEngine(parsed.forward);
+  const resolved = resolveConfig(overlaid, { dataBase: resolveDataBase(process.env) });
+  // The engine takes the config as an argument (#280); the holder is still
+  // installed because `orchestrator.ts` — which the engine and the `gh` client
+  // both call into — still reads its fields through the Proxy.
+  setResolvedConfig(resolved);
+  await runEngine(resolved, parsed.forward);
 }
 
 // Run the engine only when this module is invoked directly (`node …/src/cli.ts`)
