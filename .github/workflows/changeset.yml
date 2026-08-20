@@ -1,0 +1,102 @@
+name: changeset
+
+# Release-note gate for `phoebe-agent`. Every PR that changes published
+# behaviour has to carry a changeset, because `release.yml` has nothing else to
+# release from: a merge with no changeset silently ships nothing, and the change
+# lands on `main` with no line in CHANGELOG.md and no version bump.
+#
+# The check is the Changesets CLI itself — `changeset status --since` — not a
+# third-party action. It is the same tool `release.yml` consumes the changesets
+# with, so "the gate passed" and "the release workflow will pick this up" cannot
+# drift apart. `status` resolves the files changed since the base branch to
+# packages, then fails if any changed package has no pending changeset naming
+# it. This repo is a single package rooted at the repo tree, so in practice the
+# rule reads: any file change needs a changeset unless it is deliberately
+# exempted below.
+#
+# Two exemptions, both intentional:
+#
+#   skip-changeset label — docs-only, CI-only, or test-only PRs. Note that an
+#                          *empty* changeset does not satisfy `status` (it
+#                          releases no package), so the label is the only way
+#                          past this gate.
+#   changeset-release/*  — the "chore: version packages" PR opened by
+#                          `release.yml`. It exists precisely to *consume* the
+#                          pending changesets, so it has none by construction.
+
+on:
+  pull_request:
+    # `labeled`/`unlabeled` are here so applying `skip-changeset` re-runs the
+    # gate and turns the check green without an empty push.
+    types: [opened, reopened, synchronize, labeled, unlabeled, ready_for_review]
+
+# Least privilege: this gate only reads the repo. It runs on `pull_request`
+# (not `pull_request_target`), so the fork code it checks out is untrusted and
+# holds a read-only token — it must stay that way.
+permissions:
+  contents: read
+
+concurrency:
+  group: changeset-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changeset:
+    # Both exemptions are evaluated here rather than inside a step so an exempt
+    # PR reports a skipped job instead of a green one that did nothing.
+    if: >-
+      !startsWith(github.head_ref, 'changeset-release/') &&
+      !contains(github.event.pull_request.labels.*.name, 'skip-changeset')
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth: 0 is what makes `--since` work: at full depth
+      # actions/checkout fetches every head into `refs/remotes/origin/*`, so the
+      # base branch exists locally for the diff. At the default depth of 1 only
+      # the PR merge ref is fetched and `origin/<base>` would not resolve.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Same toolchain as the ready gate: installs `vp` and the Node version
+      # pinned in .node-version, and caches the pnpm store.
+      - uses: voidzero-dev/setup-vp@v1
+        with:
+          cache: true
+
+      # `changeset` is a devDependency, so it has to be installed before it can
+      # be run. Nothing here needs postinstall scripts.
+      - run: vp install --frozen-lockfile --ignore-scripts
+
+      # The base ref is passed through `env:` rather than interpolated into the
+      # script body — same rule the vouch workflow follows for values that come
+      # off the event payload.
+      - name: Require a changeset
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          if vp exec changeset status --since "origin/$BASE_REF"; then
+            exit 0
+          fi
+          cat >&2 <<'MSG'
+
+          ── This PR changes phoebe-agent but has no changeset ──────────────
+
+          Release notes and the version bump both come from changesets, so a
+          merge without one ships nothing. Add one on your branch:
+
+              pnpm changeset
+
+          Pick patch / minor / major, write a one-line summary aimed at someone
+          reading the CHANGELOG, and commit the generated .changeset/*.md file.
+
+          If this PR genuinely changes nothing a consumer would notice — docs,
+          CI, tests, internal refactors with no behaviour change — a maintainer
+          can label it `skip-changeset` instead. Applying the label re-runs
+          this check.
+
+          See docs/releasing.md.
+          ───────────────────────────────────────────────────────────────────
+
+          MSG
+          exit 1
