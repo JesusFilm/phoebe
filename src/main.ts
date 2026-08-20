@@ -1475,7 +1475,10 @@ export function createEngine(options: EngineOptions): Engine {
     let conflictingPrs: ConflictingPrCandidate[] = [];
     let failingCheckPrs: ChecksCandidate[] = [];
     let reviewActivityPrs: ReviewsCandidate[] = [];
-    let issueBodies = new Map<number, string>();
+    // `const` is load-bearing: every kind that gathers bodies merges into this
+    // one map. Assigning over it discards what the kinds before it gathered, and
+    // a body the stack selectors cannot find reads as "not stacked".
+    const issueBodies = new Map<number, string>();
     let phoebeLogin: string | undefined;
     let currentMainHead: Sha | undefined;
 
@@ -1497,7 +1500,9 @@ export function createEngine(options: EngineOptions): Engine {
         }
       } else if (fetched.kind === "conflicts") {
         conflictingPrs = fetched.conflictingPrs;
-        issueBodies = fetched.issueBodies;
+        for (const [number, body] of fetched.issueBodies) {
+          issueBodies.set(number, body);
+        }
         currentMainHead = fetched.currentMainHead;
       } else if (fetched.kind === "checks") {
         failingCheckPrs = fetched.failingCheckPrs;
