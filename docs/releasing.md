@@ -15,8 +15,17 @@ automatically.
    ```
 
    Pick the bump (`patch` / `minor` / `major`) and write a one-line summary. This
-   drops a Markdown file under `.changeset/`; commit it with your PR. Docs-only or
-   CI-only PRs don't need one.
+   drops a Markdown file under `.changeset/`; commit it with your PR.
+
+   The [`changeset`](../.github/workflows/changeset.yml) workflow enforces this
+   on every PR: it runs `changeset status` against the base branch and fails the
+   check if the package changed with no pending changeset. Docs-only, CI-only,
+   or test-only PRs still don't need one — a maintainer labels those
+   `skip-changeset` and the gate skips itself (applying the label re-runs it).
+   An _empty_ changeset does **not** get past the gate, despite what the CLI's
+   error text suggests: it releases no package, so `changeset status` keeps
+   failing. The "chore: version packages" PR is exempt by branch name, since
+   consuming the pending changesets is its whole job.
 
 2. **Merge to `main`.** On push to `main`, the [`release`](../.github/workflows/release.yml)
    workflow sees the pending changeset(s) and opens (or updates) a
