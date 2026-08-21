@@ -44,14 +44,18 @@ npm straight from a feature branch.
 
 ## After the release: the pinned tags in the docs
 
-Two documents carry a concrete engine tag that readers copy verbatim, and both go
-stale the moment a release lands:
+Three places carry a concrete engine tag that readers copy verbatim, and all
+three go stale the moment a release lands:
 
 - the Quickstart in [`README.md`](../README.md#quickstart)
+- the "Configuration at a glance" block in [`README.md`](../README.md#configuration-at-a-glance)
 - the config block in [`ai-install.md`](ai-install.md)
 
-Bump both to the tag you just published. Everywhere else the docs use the
-`vX.Y.Z` placeholder on purpose, so nothing else needs touching.
+Bump all three to the tag you just published. The rule for which sites are
+concrete: an example a reader can copy and run has to carry a real tag, so those
+three do. Everywhere else the docs are explaining a mechanism rather than handing
+over a command, so they use the `vX.Y.Z` placeholder on purpose and need no
+touching.
 
 ## How trusted publishing was set up
 

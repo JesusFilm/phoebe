@@ -247,7 +247,7 @@ Copy and fill the root `.env`, and pin the engine:
 ```bash
 cp .env.example .env
 # Edit .env: GH_TOKEN for the engine clone, optional PHOEBE_* toggles
-# Edit phoebe.config.ts: engine.ref (a released tag such as "vX.Y.Z", or "main")
+# Edit phoebe.config.ts: engine.ref (replace "vX.Y.Z" with a released tag, or use "main")
 ```
 
 ### 2. Make the root a git repo (if using submodules)

@@ -13,7 +13,7 @@ lives behind one config file, so the same engine drives any repository.
 
 Phoebe is published on npm as [`phoebe-agent`](https://www.npmjs.com/package/phoebe-agent)
 and runs against repositories inside and outside JesusFilm. It also works this
-one: about half the pull requests merged here were opened by Phoebe, from this
+one: most of the pull requests merged here were opened by Phoebe, from this
 repository's own issue tracker.
 
 ## Distribution
