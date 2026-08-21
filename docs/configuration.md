@@ -82,7 +82,9 @@ does not force you to supply the rest.
 | `processingLabel` | `"processing"`         | The agent applies this to an issue it has claimed.                  |
 | `prOptOutLabel`   | `"ready-for-human"`    | PRs with this label are excluded from every PR scan.                |
 
-See [`operating.md`](operating.md) for how a human drives Phoebe with these.
+See [`operating.md`](operating.md) for how a human drives Phoebe with these,
+and [`preparing-work.md`](preparing-work.md) for why `researchLabel` defaults to a
+wayfinder-shaped value and what to set it to if you use something else.
 
 ## PR-scan scope
 
