@@ -42,45 +42,36 @@ automatically.
 So publishing is always gated on a human merging the version PR — nothing reaches
 npm straight from a feature branch.
 
-## One-time npm setup (trusted publisher)
+## After the release: the pinned tags in the docs
 
-A trusted publisher can only be attached to a package that already exists on
-npm, so the very first publish can't come from CI. Break the chicken-and-egg with
-a one-time manual seed whose only job is to **register the package name** — the
-real `0.1.0` is then published by CI through the normal changesets flow:
+Two documents carry a concrete engine tag that readers copy verbatim, and both go
+stale the moment a release lands:
 
-1. **Seed the package name once, manually,** from a maintainer machine with an npm
-   account that has publish rights. This publishes whatever version is in
-   `package.json` on your checkout (currently `0.0.0`) — the version doesn't
-   matter; the point is only that `phoebe-agent` starts existing so the
-   trusted-publisher form has something to attach to:
+- the Quickstart in [`README.md`](../README.md#quickstart)
+- the config block in [`ai-install.md`](ai-install.md)
 
-   ```sh
-   npm publish
-   ```
+Bump both to the tag you just published. Everywhere else the docs use the
+`vX.Y.Z` placeholder on purpose, so nothing else needs touching.
 
-   `phoebe-agent` is unscoped, so it's public by default — no `--access` flag is
-   needed (that flag is only required when first publishing a _scoped_ package as
-   public). Don't pass `--provenance` either: provenance can only be generated
-   inside a supported CI provider (it needs an OIDC token), so a local run fails
-   with `Automatic provenance generation not supported for provider: null`.
-   Provenance isn't lost — CI attaches it automatically on every real release.
+## How trusted publishing was set up
 
-2. **Add the trusted publisher.** On the package's **Settings → Publishing access
-   → Trusted publishers** page on npmjs.com, add a GitHub Actions publisher:
+Already done, recorded here so nobody repeats it. A trusted publisher can only be
+attached to a package that already exists on npm, so the first publish could not
+come from CI. The package name was seeded once by hand with a `0.0.0` placeholder,
+purely so `phoebe-agent` existed for the trusted-publisher form to attach to, and
+every release since has flowed through the workflow.
 
-   - **Repository:** `JesusFilm/phoebe`
-   - **Workflow filename:** `release.yml` (filename only — not the full path)
-   - **Environment:** leave blank (this workflow uses none)
+The publisher registered on npm's **Settings → Publishing access → Trusted
+publishers** page is:
 
-3. **Let CI publish `0.1.0`.** Merge this PR, then merge the "version packages" PR
-   the release workflow opens — that bumps `package.json` to `0.1.0` and publishes
-   it tokenless via OIDC, with provenance, moving `latest` off the `0.0.0` seed.
-   From here on the manual seed is never needed again; every release flows through
-   the workflow.
+- **Repository:** `JesusFilm/phoebe`
+- **Workflow filename:** `release.yml` (filename only, not the full path)
+- **Environment:** blank (this workflow uses none)
 
-> Optional tidy-up: `npm deprecate phoebe-agent@0.0.0 "placeholder — use >=0.1.0"`
-> so the seed version isn't installed by accident.
+Two flags that trip people up if this ever has to be redone: `phoebe-agent` is
+unscoped, so it is public by default and needs no `--access`, and `--provenance`
+fails outside CI because it needs an OIDC token. CI attaches provenance on every
+real release regardless.
 
 ## Requirements baked into the workflow
 

@@ -47,8 +47,13 @@ The engine version is a single knob, and it lives in `phoebe.config.ts` — not 
 `.env` and not in the image:
 
 ```ts
-engine: { source: "github", ref: "v0.1.0" },
+engine: { source: "github", ref: "vX.Y.Z" },
 ```
+
+`vX.Y.Z` stands for a released tag. Pick one from
+[the releases page](https://github.com/JesusFilm/phoebe/releases); the
+[Quickstart](../README.md#quickstart) and [`ai-install.md`](ai-install.md) carry a
+concrete one you can copy.
 
 `phoebe boot` reads that field, checks the engine out at that ref, and runs it.
 Two shapes, with deliberately different guarantees:

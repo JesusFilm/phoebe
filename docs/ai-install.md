@@ -56,7 +56,7 @@ const config: PhoebeUserConfig = {
   installCommand: "npm ci",
   checkCommand: "npm run check",
   testCommand: "npm test",
-  engine: { source: "github", ref: "v0.1.0" },
+  engine: { source: "github", ref: "v0.7.1" },
 };
 
 export default config;
