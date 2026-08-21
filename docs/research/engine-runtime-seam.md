@@ -254,7 +254,8 @@ missed:
 - **No async.** Decided above.
 - **No `WorkSource` reshape.** `fetchCycleWorkData`, the `WorkKindFetch` union and
   `CycleWorkData` keep their current shape. Collapsing the four representations of one
-  cycle's data is separate work, enabled by this one.
+  cycle's data is separate work, enabled by this one. This non-goal is superseded by
+  [the cycle record seam](cycle-record-seam.md).
 - **No git or shell seam yet.** `git-model.ts` already accepts `git: GitRunner = defaultGit`
   on every function; `main.ts:860–866` simply never passes one. Ticket C threads it. The
   toolchain shell (`runShellCommand`, `promptShell`) has no seam and does not get one here.

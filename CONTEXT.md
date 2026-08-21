@@ -63,6 +63,16 @@ it or idle.
 _Avoid_: iteration, tick, poll (the interval between empty cycles is the poll interval —
 the cycle is the pass itself)
 
+**Work source**:
+What gathers one cycle's work data. It owns the cycle-scoped issue-body cache and returns a
+cycle record. Selection is not its concern.
+_Avoid_: fetcher, gatherer, data source
+
+**Cycle record**:
+What the work source returns: the units each kind offered, the order they were gathered in,
+and one unified issue-body map. Nothing in it needs merging after the fact.
+_Avoid_: cycle data, fetch result
+
 **Quarantined unit**:
 A work unit labelled so the engine skips it, because working it timed out. The label lapses
 once the unit's content advances.
