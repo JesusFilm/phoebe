@@ -12,8 +12,8 @@ run the container files that `phoebe init` scaffolds for them. In the container
 `phoebe boot` is the long-lived main process — it checks the engine out at the
 git ref the consumer's `engine` config field names, runs it, and relaunches it
 when that ref or the config moves.
-`JesusFilm/youtube-studio` is the reference consumer and where the design record
-lives.
+`JesusFilm/youtube-studio` incubated Phoebe. Design decisions are recorded on this
+repository's own tracker and under `docs/research/`.
 
 ## Toolchain
 
@@ -69,5 +69,5 @@ denounce a handle.
 
 ## Status
 
-Early scaffold. The engine port, CLI packaging, `phoebe init`, CI, and the first
-release land as tracked issues on this repo. See the README for the doc map.
+Published on npm as `phoebe-agent` and running against repositories inside and
+outside JesusFilm, including this one. See the README for the doc map.

@@ -18,11 +18,16 @@ const config: PhoebeUserConfig = {
   installCommand: "npm ci",
   checkCommand: "npm run check",
   testCommand: "npm test",
-  engine: { source: "github", ref: "v0.1.0" },
+  engine: { source: "github", ref: "vX.Y.Z" },
 };
 
 export default config;
 ```
+
+`vX.Y.Z` stands for a released tag. Pick one from
+[the releases page](https://github.com/JesusFilm/phoebe/releases); the
+[Quickstart](../README.md#quickstart) and [`ai-install.md`](ai-install.md) carry a
+concrete one you can copy.
 
 **Keep every import in this file type-only.** In the container the file is
 mounted into `/etc/phoebe` and read by `phoebe boot`, from a directory with no

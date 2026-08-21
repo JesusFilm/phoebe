@@ -11,11 +11,10 @@ execution environment. Your host checkout is never touched: the container owns a
 private clone and pushes branches directly to origin. Every repo-specific value
 lives behind one config file, so the same engine drives any repository.
 
-> ⚠️ **Early scaffold.** This repository is being stood up as the public home of
-> Phoebe's engine, extracted from [`JesusFilm/youtube-studio`](https://github.com/JesusFilm/youtube-studio).
-> The engine, CLI packaging, `phoebe init` scaffolder, CI, and first npm release
-> land as the tracked execution issues on this repo. Until `phoebe-agent@0.1.0`
-> is published, treat everything here as work in progress.
+Phoebe is published on npm as [`phoebe-agent`](https://www.npmjs.com/package/phoebe-agent)
+and runs against repositories inside and outside JesusFilm. It also works this
+one: most of the pull requests merged here were opened by Phoebe, from this
+repository's own issue tracker.
 
 ## Distribution
 
@@ -33,7 +32,7 @@ npx --yes phoebe-agent init      # scaffold config, prompts, .env.example, conta
 ```
 
 Then edit the five required fields in `phoebe.config.ts`, pin the engine with
-`engine: { source: "github", ref: "v0.1.0" }`, and copy `.env.example` to `.env`
+`engine: { source: "github", ref: "v0.7.1" }`, and copy `.env.example` to `.env`
 and fill in your `GH_TOKEN` and provider key. The scaffolded `.env` lives at the
 repo root while the compose files live in `container/`, so pass
 `--env-file ../.env` when you run Compose from there:
@@ -76,7 +75,7 @@ const config: PhoebeUserConfig = {
   installCommand: "npm ci",
   checkCommand: "npm run check",
   testCommand: "npm test",
-  engine: { source: "github", ref: "v0.1.0" },
+  engine: { source: "github", ref: "v0.7.1" },
 };
 
 export default config;
@@ -125,13 +124,19 @@ Agents landing in this repo should start at [`AGENTS.md`](AGENTS.md).
 
 Phoebe was designed, built, and dogfooded inside
 [`JesusFilm/youtube-studio`](https://github.com/JesusFilm/youtube-studio), which
-remains its reference consumer. Its execution loop was first prototyped on
+incubated it. Phoebe has since outgrown that one repository and now runs against
+several, so youtube-studio is where it started rather than what it serves.
+
+Its execution loop was first prototyped on
 [Sandcastle](https://github.com/mattpocock/sandcastle) (`@ai-hero/sandcastle`, by
-Matt Pocock) — the sandbox-per-run design proved the loop end-to-end and its
+Matt Pocock). The sandbox-per-run design proved the loop end-to-end, and its
 provider wrappers are the design ancestor of `src/providers/`. The dependency was
 removed when the host-spawns-sandboxes topology was replaced by the single
-persistable container. This repository starts with fresh history; the full design
-record lives in the youtube-studio issue tracker.
+persistable container.
+
+This repository starts with fresh history. Design decisions made here are
+recorded here, as issues on this tracker and as design records under
+[`docs/research/`](docs/research/).
 
 ## License
 
