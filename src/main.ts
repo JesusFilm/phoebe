@@ -31,8 +31,6 @@ import { asBranchRef, asPrNumber, type BranchRef, type PrNumber, type Sha } from
 import {
   createGitHubClient,
   type GitHubClient,
-  type CycleGitHubClient,
-  type OpenPhoebePr,
   type QuarantinedUnit,
   type UnitTarget,
 } from "./github-client.ts";
@@ -89,14 +87,7 @@ import {
   formatFailingChecksForPrompt,
   isReviewSummaryComment,
   issueBranch,
-  isPrMergeConflicting,
-  listFailingChecks,
   newestReviewThreadCommentCreatedAt,
-  parseBlockedBy,
-  parseLatestMarker,
-  parseChecksFailWatermark,
-  parseConflictFailWatermark,
-  parseReviewsHandledWatermark,
   parseIssueNumberFromBranch,
   getMergedBlockerPrNumbers,
   oneShotWorkKinds,
@@ -106,9 +97,7 @@ import {
   unresolvedBlockerNumbers,
   shouldPostChecksFixFailure,
   shouldPostConflictFixFailure,
-  statusCheckRollupState,
   validateWorkOrder,
-  workflowRunsToCheckItems,
   type BlockerPrState,
   type ChecksCandidate,
   type ChecksFailWatermark,
@@ -116,13 +105,18 @@ import {
   type ConflictFailWatermark,
   type Issue,
   type IssueWorkUnit,
-  type ReviewThread,
   type ReviewsCandidate,
   type StackContext,
   type WorkKindName,
   type WorkUnit,
   type WorkUnitSkip,
 } from "./orchestrator.ts";
+import {
+  createWorkSource,
+  type Clock,
+  type CycleRecord,
+  type WorkSource,
+} from "./cycle-work-source.ts";
 
 // ---------------------------------------------------------------------------
 // Credential arm selection
@@ -146,12 +140,6 @@ const DEFAULT_POLL_INTERVAL_MS = 300_000;
 // (install/test) get a longer leash.
 const CHILD_PROCESS_TIMEOUT_MS = 120_000;
 const SHELL_COMMAND_TIMEOUT_MS = 600_000;
-// The `checks` kind re-reads a check rollup that is still PENDING a few times
-// before it concludes there is nothing to fix — CI that has not reported yet is
-// not CI that passed. (The merge-state UNKNOWN retry that used to share these
-// numbers now lives in the GitHub client, where that quirk belongs.)
-const CHECKS_PENDING_RETRY_MS = 5_000;
-const CHECKS_PENDING_RETRY_COUNT = 3;
 
 // ---------------------------------------------------------------------------
 // The shapes the engine speaks in
@@ -185,45 +173,7 @@ type RunContext = {
 
 type WorkKind = {
   name: WorkKindName;
-  fetch: (cycle: CycleGitHubClient) => Promise<WorkKindFetch>;
   runUnit: (unit: WorkUnit["unit"], context: RunContext) => Promise<void>;
-};
-
-type WorkKindFetch =
-  | {
-      kind: "conflicts";
-      conflictingPrs: ConflictingPrCandidate[];
-      issueBodies: Map<number, string>;
-      currentMainHead: Sha;
-    }
-  | {
-      kind: "checks";
-      failingCheckPrs: ChecksCandidate[];
-      issueBodies: Map<number, string>;
-    }
-  | {
-      kind: "reviews";
-      reviewActivityPrs: ReviewsCandidate[];
-      issueBodies: Map<number, string>;
-      phoebeLogin: string;
-    }
-  | { kind: "issues"; issues: Issue[]; blockerStates: Map<number, BlockerPrState> }
-  | {
-      kind: "research";
-      researchIssues: Issue[];
-      blockerStates: Map<number, BlockerPrState>;
-    };
-
-type CycleWorkData = {
-  issues: Issue[];
-  researchIssues: Issue[];
-  blockerStates: Map<number, BlockerPrState>;
-  conflictingPrs: ConflictingPrCandidate[];
-  failingCheckPrs: ChecksCandidate[];
-  reviewActivityPrs: ReviewsCandidate[];
-  issueBodies: Map<number, string>;
-  phoebeLogin?: string;
-  currentMainHead?: Sha;
 };
 
 // ---------------------------------------------------------------------------
@@ -318,16 +268,6 @@ function describeUnit(picked: WorkUnit): string {
 // ---------------------------------------------------------------------------
 // What an engine is built from
 // ---------------------------------------------------------------------------
-
-/**
- * The engine's view of time — the two reads that are not `drain.wait`: the
- * pause between check-rollup re-reads, and the instant a reviews run is
- * watermarked from.
- */
-export type Clock = {
-  sleep: (ms: number) => Promise<void>;
-  now: () => Date;
-};
 
 const defaultClock: Clock = {
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -460,41 +400,6 @@ export function createEngine(options: EngineOptions): Engine {
   }
 
   const workOrder = validateWorkOrder(config.workOrder);
-
-  function buildBlockerStates(issues: readonly Issue[]): Map<number, BlockerPrState> {
-    const blockerNumbers = new Set<number>();
-    for (const issue of issues) {
-      for (const n of parseBlockedBy(issue.body)) {
-        blockerNumbers.add(n);
-      }
-    }
-    const states = new Map<number, BlockerPrState>();
-    for (const n of blockerNumbers) {
-      try {
-        states.set(n, github.blockerPrState(n));
-      } catch (error) {
-        // Absent entries are treated as unmerged blockers — safe to retry next cycle.
-        console.warn(
-          `[phoebe] Skipping blocker state for #${n} this cycle — ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    }
-    return states;
-  }
-
-  function buildBlockerStatesFromBodies(
-    bodies: ReadonlyArray<{ number: number; body: string }>,
-  ): Map<number, BlockerPrState> {
-    return buildBlockerStates(
-      bodies.map(({ number, body }) => ({
-        number,
-        title: "",
-        body,
-        labels: [],
-        createdAt: "",
-      })),
-    );
-  }
 
   /**
    * Phoebe's own login, resolved when this cycle has not already. Only the
@@ -1067,7 +972,7 @@ export function createEngine(options: EngineOptions): Engine {
         const hasSummary = hasNewReviewSummaryComment(pr.prNumber, phoebeLogin, runStartedAt);
         const pushed = localCommitCount > 0 || originShaAfter !== originShaBefore;
         // Watermark only the activity captured before the agent ran (pr.threads is
-        // the pre-run snapshot from fetchReviewsWorkData). Re-fetching here could
+        // the pre-run snapshot from gatherCycle). Re-fetching here could
         // absorb feedback posted concurrently with the run — marking it handled
         // even though the agent never observed it, so it would never trigger another
         // cycle. Any activity newer than this snapshot correctly re-selects the PR.
@@ -1163,195 +1068,8 @@ export function createEngine(options: EngineOptions): Engine {
   }
 
   // ---------------------------------------------------------------------------
-  // Work kinds + cycle data
+  // Work kinds
   // ---------------------------------------------------------------------------
-
-  async function conflictingPrCandidate(
-    pr: OpenPhoebePr,
-    cycle: CycleGitHubClient,
-  ): Promise<ConflictingPrCandidate | null> {
-    const info = await cycle.mergeInfo(pr.number);
-    if (!isPrMergeConflicting(info.mergeable, info.mergeStateStatus)) return null;
-    const issueNumber = parseIssueNumberFromBranch(info.headRefName);
-    return {
-      prNumber: info.number,
-      headRefName: info.headRefName,
-      headSha: info.headRefOid,
-      ...(issueNumber !== null ? { issueNumber } : {}),
-    };
-  }
-
-  async function fetchConflictingPrs(cycle: CycleGitHubClient): Promise<ConflictingPrCandidate[]> {
-    const openPrs = cycle.openPrs();
-    const conflicting: ConflictingPrCandidate[] = [];
-    for (const pr of openPrs) {
-      try {
-        const candidate = await conflictingPrCandidate(pr, cycle);
-        if (candidate) {
-          conflicting.push(candidate);
-        }
-      } catch (error) {
-        console.warn(
-          `[phoebe] Skipping PR #${pr.number} for conflicts this cycle — ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    }
-    return conflicting;
-  }
-
-  async function failingChecksCandidate(
-    pr: OpenPhoebePr,
-    cycle: CycleGitHubClient,
-  ): Promise<ChecksCandidate | null> {
-    const info = await cycle.mergeInfo(pr.number);
-    if (isPrMergeConflicting(info.mergeable, info.mergeStateStatus)) return null;
-    for (let attempt = 0; attempt < CHECKS_PENDING_RETRY_COUNT; attempt++) {
-      const checkItems = workflowRunsToCheckItems(github.commitCheckItems(info.headRefOid));
-      const rollup = statusCheckRollupState(checkItems);
-      if (rollup === "FAILURE") {
-        const issueNumber = parseIssueNumberFromBranch(info.headRefName);
-        return {
-          prNumber: info.number,
-          headRefName: info.headRefName,
-          headSha: info.headRefOid,
-          mergeable: info.mergeable,
-          mergeStateStatus: info.mergeStateStatus,
-          failingChecks: listFailingChecks(checkItems),
-          ...(issueNumber !== null ? { issueNumber } : {}),
-        };
-      }
-      if (rollup !== "PENDING") return null;
-      if (attempt < CHECKS_PENDING_RETRY_COUNT - 1) {
-        await clock.sleep(CHECKS_PENDING_RETRY_MS);
-      }
-    }
-    return null;
-  }
-
-  async function fetchFailingCheckPrs(cycle: CycleGitHubClient): Promise<ChecksCandidate[]> {
-    const openPrs = cycle.openPrs();
-    const failing: ChecksCandidate[] = [];
-    for (const pr of openPrs) {
-      try {
-        const candidate = await failingChecksCandidate(pr, cycle);
-        if (candidate) {
-          failing.push(candidate);
-        }
-      } catch (error) {
-        console.warn(
-          `[phoebe] Skipping PR #${pr.number} for checks this cycle — ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    }
-    return failing;
-  }
-
-  /**
-   * Fetch the issue body behind every PR that maps to a Phoebe issue branch, keyed
-   * by issue number. Dedupes so each issue is fetched once even when several PRs
-   * share it. The stack selectors read these bodies for `blocked by` references.
-   */
-  function harvestIssueBodies(
-    prs: ReadonlyArray<{ issueNumber?: number; headRefName: BranchRef }>,
-  ): Map<number, string> {
-    const issueNumbers = [
-      ...new Set(
-        prs
-          .map((pr) => pr.issueNumber ?? parseIssueNumberFromBranch(pr.headRefName))
-          .filter((n): n is number => n !== null),
-      ),
-    ];
-    return new Map(issueNumbers.map((number) => [number, github.issueBody(number)] as const));
-  }
-
-  async function fetchReviewsWorkData(cycle: CycleGitHubClient): Promise<{
-    reviewActivityPrs: ReviewsCandidate[];
-    issueBodies: Map<number, string>;
-    phoebeLogin: string;
-  }> {
-    const phoebeLogin = cycle.resolveLogin(env["PHOEBE_GH_LOGIN"]);
-    const openPrs = cycle.openPrs();
-    const reviewActivityPrs: ReviewsCandidate[] = [];
-
-    for (const pr of openPrs) {
-      try {
-        const info = await cycle.mergeInfo(pr.number);
-        if (isPrMergeConflicting(info.mergeable, info.mergeStateStatus)) {
-          continue;
-        }
-        const threads = cycle.reviewThreads(pr.number);
-        const issueNumber = parseIssueNumberFromBranch(info.headRefName);
-        reviewActivityPrs.push({
-          prNumber: info.number,
-          headRefName: info.headRefName,
-          authorLogin: pr.authorLogin,
-          mergeable: info.mergeable,
-          mergeStateStatus: info.mergeStateStatus,
-          threads,
-          handledWatermark: parseLatestMarker(
-            cycle.prCommentBodies(pr.number),
-            parseReviewsHandledWatermark,
-          ),
-          ...(issueNumber !== null ? { issueNumber } : {}),
-        });
-      } catch (error) {
-        console.warn(
-          `[phoebe] Skipping PR #${pr.number} for reviews this cycle — ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    }
-
-    const issueBodies = harvestIssueBodies(reviewActivityPrs);
-    return { reviewActivityPrs, issueBodies, phoebeLogin };
-  }
-
-  async function fetchConflictWorkData(cycle: CycleGitHubClient): Promise<{
-    conflictingPrs: ConflictingPrCandidate[];
-    issueBodies: Map<number, string>;
-    currentMainHead: Sha;
-  }> {
-    const rawConflictingPrs = await fetchConflictingPrs(cycle);
-    hub.fetch();
-    const currentMainHead = hub.branchHead(defaultBranchRef);
-    const conflictingPrs = rawConflictingPrs.map((pr) => ({
-      ...pr,
-      failureWatermark: parseLatestMarker(
-        cycle.prCommentBodies(pr.prNumber),
-        parseConflictFailWatermark,
-      ),
-    }));
-    const issueBodies = harvestIssueBodies(conflictingPrs);
-    return { conflictingPrs, issueBodies, currentMainHead };
-  }
-
-  async function fetchChecksWorkData(cycle: CycleGitHubClient): Promise<{
-    failingCheckPrs: ChecksCandidate[];
-    issueBodies: Map<number, string>;
-  }> {
-    const rawFailingPrs = await fetchFailingCheckPrs(cycle);
-    const failingCheckPrs = rawFailingPrs.map((pr) => ({
-      ...pr,
-      failureWatermark: parseLatestMarker(
-        cycle.prCommentBodies(pr.prNumber),
-        parseChecksFailWatermark,
-      ),
-    }));
-    const issueBodies = harvestIssueBodies(failingCheckPrs);
-    return { failingCheckPrs, issueBodies };
-  }
-
-  function fetchIssueWorkData(): { issues: Issue[]; blockerStates: Map<number, BlockerPrState> } {
-    const issues = github.listReadyIssues();
-    return { issues, blockerStates: buildBlockerStates(issues) };
-  }
-
-  function fetchResearchWorkData(): {
-    researchIssues: Issue[];
-    blockerStates: Map<number, BlockerPrState>;
-  } {
-    const researchIssues = github.listResearchIssues();
-    return { researchIssues, blockerStates: buildBlockerStates(researchIssues) };
-  }
 
   async function runIssueUnit(unit: IssueWorkUnit): Promise<void> {
     const { issue: target, resolution } = unit;
@@ -1392,121 +1110,43 @@ export function createEngine(options: EngineOptions): Engine {
   const KINDS: Record<WorkKindName, WorkKind> = {
     conflicts: {
       name: "conflicts",
-      fetch: async (cycle) => {
-        const { conflictingPrs, issueBodies, currentMainHead } = await fetchConflictWorkData(cycle);
-        return { kind: "conflicts", conflictingPrs, issueBodies, currentMainHead };
-      },
       runUnit: async (unit, context) => {
         await fixOnePrConflict(unit as ConflictingPrCandidate, context.stack);
       },
     },
     checks: {
       name: "checks",
-      fetch: async (cycle) => {
-        const { failingCheckPrs, issueBodies } = await fetchChecksWorkData(cycle);
-        return { kind: "checks", failingCheckPrs, issueBodies };
-      },
       runUnit: async (unit, context) => {
         await fixOnePrChecks(unit as ChecksCandidate, context.stack);
       },
     },
     reviews: {
       name: "reviews",
-      fetch: async (cycle) => {
-        const { reviewActivityPrs, issueBodies, phoebeLogin } = await fetchReviewsWorkData(cycle);
-        return { kind: "reviews", reviewActivityPrs, issueBodies, phoebeLogin };
-      },
       runUnit: async (unit, context) => {
         await fixOnePrReviews(unit as ReviewsCandidate, resolvePhoebeLogin(context.phoebeLogin));
       },
     },
     issues: {
       name: "issues",
-      fetch: async () => {
-        const { issues, blockerStates } = fetchIssueWorkData();
-        return { kind: "issues", issues, blockerStates };
-      },
       runUnit: async (unit) => {
         await runIssueUnit(unit as IssueWorkUnit);
       },
     },
     research: {
       name: "research",
-      fetch: async () => {
-        const { researchIssues, blockerStates } = fetchResearchWorkData();
-        return { kind: "research", researchIssues, blockerStates };
-      },
       runUnit: async (unit) => {
         await runResearchUnit(unit as IssueWorkUnit);
       },
     },
   };
 
-  async function fetchCycleWorkData(kinds: readonly WorkKindName[]): Promise<CycleWorkData> {
-    let issues: Issue[] = [];
-    let researchIssues: Issue[] = [];
-    let blockerStates = new Map<number, BlockerPrState>();
-    let conflictingPrs: ConflictingPrCandidate[] = [];
-    let failingCheckPrs: ChecksCandidate[] = [];
-    let reviewActivityPrs: ReviewsCandidate[] = [];
-    let issueBodies = new Map<number, string>();
-    let phoebeLogin: string | undefined;
-    let currentMainHead: Sha | undefined;
-
-    // One cycle-scoped client for the whole pass: the open-PR list and each PR's
-    // merge state are read once and reused by every kind that asks, and the memo
-    // dies with this local rather than leaking into the next poll.
-    const cycle = github.forCycle();
-    for (const kind of kinds) {
-      const fetched = await KINDS[kind].fetch(cycle);
-      if (fetched.kind === "issues") {
-        issues = fetched.issues;
-        for (const [number, state] of fetched.blockerStates) {
-          blockerStates.set(number, state);
-        }
-      } else if (fetched.kind === "research") {
-        researchIssues = fetched.researchIssues;
-        for (const [number, state] of fetched.blockerStates) {
-          blockerStates.set(number, state);
-        }
-      } else if (fetched.kind === "conflicts") {
-        conflictingPrs = fetched.conflictingPrs;
-        issueBodies = fetched.issueBodies;
-        currentMainHead = fetched.currentMainHead;
-      } else if (fetched.kind === "checks") {
-        failingCheckPrs = fetched.failingCheckPrs;
-        for (const [number, body] of fetched.issueBodies) {
-          issueBodies.set(number, body);
-        }
-      } else {
-        reviewActivityPrs = fetched.reviewActivityPrs;
-        phoebeLogin = fetched.phoebeLogin;
-        for (const [number, body] of fetched.issueBodies) {
-          issueBodies.set(number, body);
-        }
-      }
-    }
-
-    const allBodies = [...issueBodies.entries()].map(([number, body]) => ({ number, body }));
-    if (allBodies.length > 0) {
-      const mergedBlockerStates = buildBlockerStatesFromBodies(allBodies);
-      for (const [blockerIssue, state] of mergedBlockerStates) {
-        blockerStates.set(blockerIssue, state);
-      }
-    }
-
-    return {
-      issues,
-      researchIssues,
-      blockerStates,
-      conflictingPrs,
-      failingCheckPrs,
-      reviewActivityPrs,
-      issueBodies,
-      phoebeLogin,
-      currentMainHead,
-    };
-  }
+  const workSource: WorkSource = createWorkSource({
+    github,
+    originHub: hub,
+    clock,
+    env,
+    defaultBranchRef,
+  });
 
   /**
    * How the idle report speaks about each kind: what this tenant calls its units,
@@ -1530,12 +1170,12 @@ export function createEngine(options: EngineOptions): Engine {
   };
 
   /** One line of the idle report, rendered from one entry of the selection's record. */
-  function idleSkipLine(skip: WorkUnitSkip, data: CycleWorkData): string {
+  function idleSkipLine(skip: WorkUnitSkip, record: CycleRecord): string {
     const { noun, ineligibleCause } = KIND_REPORT[skip.kind];
     if (skip.reason === "none-workable") {
       if (skip.kind === "issues" || skip.kind === "research") {
-        const issues = skip.kind === "issues" ? data.issues : data.researchIssues;
-        const reason = idleBlockerReason(issues, data.blockerStates, env["PHOEBE_BASE"]);
+        const issues = skip.kind === "issues" ? record.issues : record.researchIssues;
+        const reason = idleBlockerReason(issues, record.blockerStates, env["PHOEBE_BASE"]);
         return `${skip.count} ${noun} but none workable this cycle ${reason}.`;
       }
       return `${skip.count} ${noun} but none fixable this cycle.`;
@@ -1557,9 +1197,9 @@ export function createEngine(options: EngineOptions): Engine {
    * this cycle is idle, and the kinds behind it in `workOrder` would not have run
    * anyway.
    */
-  function logIdleCycle(data: CycleWorkData, skipped: readonly WorkUnitSkip[]): void {
+  function logIdleCycle(record: CycleRecord, skipped: readonly WorkUnitSkip[]): void {
     for (const skip of skipped) {
-      console.log(`[phoebe] ${idleSkipLine(skip, data)}`);
+      console.log(`[phoebe] ${idleSkipLine(skip, record)}`);
       if (skip.reason === "none-workable") {
         return;
       }
@@ -1674,29 +1314,25 @@ export function createEngine(options: EngineOptions): Engine {
         sweepQuarantine("content-advanced");
       }
       const fetchKinds = runOnce ? oneShotWorkKinds(workOrder) : workOrder;
-      const data = await fetchCycleWorkData(fetchKinds);
-      const { unit: picked, skipped } = selectFirstWorkUnit(
-        workOrder,
-        {
-          issues: data.issues,
-          researchIssues: data.researchIssues,
-          blockerStates: data.blockerStates,
-          conflictingPrs: data.conflictingPrs,
-          failingCheckPrs: data.failingCheckPrs,
-          reviewActivityPrs: data.reviewActivityPrs,
-          issueBodies: data.issueBodies,
-          phoebeBase: env["PHOEBE_BASE"],
-          phoebeLogin: data.phoebeLogin,
-          currentMainHead: data.currentMainHead,
-        },
-        { oneShotOnly: runOnce },
-      );
+      const record = await workSource.gatherCycle(fetchKinds);
+      const { unit: picked, skipped } = selectFirstWorkUnit(record.kindsGathered, {
+        issues: record.issues,
+        researchIssues: record.researchIssues,
+        blockerStates: record.blockerStates,
+        conflictingPrs: record.conflictingPrs,
+        failingCheckPrs: record.failingCheckPrs,
+        reviewActivityPrs: record.reviewActivityPrs,
+        issueBodies: record.issueBodies,
+        phoebeBase: env["PHOEBE_BASE"],
+        phoebeLogin: record.phoebeLogin,
+        currentMainHead: record.currentMainHead,
+      });
 
       if (!picked) {
         if (runOnce) {
           console.log(RUN_ONCE_NOTHING_MESSAGE);
         } else {
-          logIdleCycle(data, skipped);
+          logIdleCycle(record, skipped);
         }
         if (runOnce || dryRun) break;
         // Interruptible idle poll — a SIGTERM mid-sleep wakes it, the next
@@ -1781,8 +1417,8 @@ export function createEngine(options: EngineOptions): Engine {
       emitUnitEvent({ unit: ref, event: "started" });
       try {
         await KINDS[picked.kind].runUnit(picked.unit, {
-          stack: { issueBodies: data.issueBodies, blockerStates: data.blockerStates },
-          phoebeLogin: data.phoebeLogin,
+          stack: { issueBodies: record.issueBodies, blockerStates: record.blockerStates },
+          phoebeLogin: record.phoebeLogin,
         });
         emitUnitEvent({ unit: ref, event: "completed" });
       } catch (error) {
@@ -1797,7 +1433,7 @@ export function createEngine(options: EngineOptions): Engine {
           });
           // Count this timeout on the unit and, at K consecutive, quarantine it so
           // a genuinely poisonous unit stops being re-picked forever (#75).
-          recordUnitTimeout(picked, data.phoebeLogin, emitUnitEvent);
+          recordUnitTimeout(picked, record.phoebeLogin, emitUnitEvent);
         } else {
           // A non-timeout failure: clear the current unit and record the error so
           // `phoebe list` shows it (the durable record is still the per-work-kind
