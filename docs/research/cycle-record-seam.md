@@ -59,8 +59,8 @@ maps, and the merge is where the ordering constraint lives.
 
 Under this design the work source maintains one `Map<number, string>` for the cycle and
 reads an issue body exactly once, caching the result. Any kind that needs a body asks the
-cache; the cache fetches on first access. Nothing is returned per kind and nothing is merged
-after the fact. The `CycleRecord` carries one map, already complete.
+cache; the cache fetches on first access. No `issueBodies` map is returned per kind and no
+body maps are merged after the gather. The `CycleRecord` carries one map, already complete.
 
 ### The record carries its walk order
 
@@ -188,7 +188,7 @@ propagate). `vp check` / `vp test` are the gate.
 into a new module behind the `WorkSource` interface above. Replace per-kind `issueBodies`
 fields with one cycle-scoped read-through cache on the work source instance. Return
 `CycleRecord` with `kindsGathered`. The constructor takes `originHub`, `github`, and
-`KINDS`. Add `cycle-work-source.test.ts` covering the cache invariant and the failure
+`KINDS`. Add `src/cycle-work-source.test.ts` covering the cache invariant and the failure
 contract. `CycleWorkData` is deleted. Done when `vp check` / `vp test` pass and no
 `issueBodies` merge logic remains in `main.ts`.
 
