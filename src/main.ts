@@ -165,17 +165,6 @@ type AgentWorkflowResult = {
  * cycle's fetch results and passed into `runUnit` — so the runners hold no
  * module-level state between selection and execution.
  */
-type RunContext = {
-  stack: StackContext;
-  /** Resolved only when the `reviews` kind was fetched this cycle. */
-  phoebeLogin: string | undefined;
-};
-
-type WorkKind = {
-  name: WorkKindName;
-  runUnit: (unit: WorkUnit["unit"], context: RunContext) => Promise<void>;
-};
-
 // ---------------------------------------------------------------------------
 // Helpers that hold no engine state
 // ---------------------------------------------------------------------------
@@ -1068,7 +1057,7 @@ export function createEngine(options: EngineOptions): Engine {
   }
 
   // ---------------------------------------------------------------------------
-  // Work kinds
+  // Work-unit runners
   // ---------------------------------------------------------------------------
 
   async function runIssueUnit(unit: IssueWorkUnit): Promise<void> {
@@ -1106,39 +1095,6 @@ export function createEngine(options: EngineOptions): Engine {
       blockerPrNumber: resolution.blockerPrNumber,
     });
   }
-
-  const KINDS: Record<WorkKindName, WorkKind> = {
-    conflicts: {
-      name: "conflicts",
-      runUnit: async (unit, context) => {
-        await fixOnePrConflict(unit as ConflictingPrCandidate, context.stack);
-      },
-    },
-    checks: {
-      name: "checks",
-      runUnit: async (unit, context) => {
-        await fixOnePrChecks(unit as ChecksCandidate, context.stack);
-      },
-    },
-    reviews: {
-      name: "reviews",
-      runUnit: async (unit, context) => {
-        await fixOnePrReviews(unit as ReviewsCandidate, resolvePhoebeLogin(context.phoebeLogin));
-      },
-    },
-    issues: {
-      name: "issues",
-      runUnit: async (unit) => {
-        await runIssueUnit(unit as IssueWorkUnit);
-      },
-    },
-    research: {
-      name: "research",
-      runUnit: async (unit) => {
-        await runResearchUnit(unit as IssueWorkUnit);
-      },
-    },
-  };
 
   const workSource: WorkSource = createWorkSource({
     github,
@@ -1416,10 +1372,24 @@ export function createEngine(options: EngineOptions): Engine {
       const ref = unitRef(picked);
       emitUnitEvent({ unit: ref, event: "started" });
       try {
-        await KINDS[picked.kind].runUnit(picked.unit, {
-          stack: { issueBodies: record.issueBodies, blockerStates: record.blockerStates },
-          phoebeLogin: record.phoebeLogin,
-        });
+        const stack = { issueBodies: record.issueBodies, blockerStates: record.blockerStates };
+        switch (picked.kind) {
+          case "conflicts":
+            await fixOnePrConflict(picked.unit, stack);
+            break;
+          case "checks":
+            await fixOnePrChecks(picked.unit, stack);
+            break;
+          case "reviews":
+            await fixOnePrReviews(picked.unit, resolvePhoebeLogin(record.phoebeLogin));
+            break;
+          case "issues":
+            await runIssueUnit(picked.unit);
+            break;
+          case "research":
+            await runResearchUnit(picked.unit);
+            break;
+        }
         emitUnitEvent({ unit: ref, event: "completed" });
       } catch (error) {
         if (error instanceof RunTimeoutError) {
