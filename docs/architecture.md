@@ -1,5 +1,8 @@
 # Architecture
 
+**Who this is for:** anyone who needs to know how the pieces fit before changing
+one. It answers where each moving part lives and what owns what.
+
 How Phoebe is put together: one container that is both orchestrator and
 execution environment, an origin-hub git model with per-unit worktrees, a
 locked-down agent child, and a bootstrapper that keeps the engine up to date.
@@ -12,9 +15,9 @@ For the day-to-day mechanics of each work kind, see
 
 Phoebe ships as a **single Docker container** that is simultaneously:
 
-- the **orchestrator** — the polling loop that picks the next unit of work
+- the **orchestrator**, the polling loop that picks the next unit of work
   (`src/main.ts`), and
-- the **execution environment** — where the chosen agent CLI runs, installs
+- the **execution environment**, where the chosen agent CLI runs, installs
   dependencies, edits files, runs your gates, and pushes.
 
 There is no host-spawns-sandboxes layer. Your host checkout is never touched:
@@ -68,7 +71,7 @@ runbook.
 
 All four mount points are created and chowned to the unprivileged `phoebe` user
 **in the image**, because Docker seeds a fresh named volume from the image's
-contents at that path — ownership included. A mount point the image does not
+contents at that path, ownership included. A mount point the image does not
 declare is created `root:root` and is unwritable to the workload. See the
 scaffolded-file invariants in [`upgrading.md`](upgrading.md#scaffolded-file-invariants).
 
@@ -82,9 +85,9 @@ clone (`src/git-model.ts`):
 2. Each cycle `git fetch origin` refreshes the clone.
 3. For a unit, `prepareWorktree` removes any stale worktree for the branch and
    adds a fresh one:
-   - **Issues** — a new branch `<branchPrefix>issue-<n>` reset to the resolved
+   - **Issues.** A new branch `<branchPrefix>issue-<n>` reset to the resolved
      base ref (`origin/main`, a blocker's branch when stacked, etc.).
-   - **Conflicts / checks / reviews** — a worktree on the PR's existing head
+   - **Conflicts, checks, and reviews.** A worktree on the PR's existing head
      branch (local first, falling back to `origin/<branch>`).
 4. The agent works inside the worktree; the engine counts new commits with
    `git rev-list --count <base>..HEAD`.
@@ -93,14 +96,14 @@ clone (`src/git-model.ts`):
 
 Worktree directory names are derived from the branch, lowercased with
 non-alphanumerics collapsed to `-`, so they are filesystem-safe and collision-
-resistant. A failed unit never kills the daemon: `prepareWorktree` clears any
+resistant. A failed unit never kills the engine: `prepareWorktree` clears any
 stale worktree on the next attempt.
 
 ## The agent child and its locked-down environment
 
 The chosen provider runs as a **direct child process** of the engine, not a
-nested container. Providers live in `src/providers/`; three are supported —
-`cursor`, `claude`, and `codex` — each wrapping its CLI's argv and stream-JSON
+nested container. Providers live in `src/providers/`, and three are supported:
+`cursor`, `claude`, and `codex`. Each wraps its CLI's argv and stream-JSON
 output schema (`src/providers/providers.ts`). Provider and model are chosen per
 run from `config.defaultProvider` / `config.defaultModels`, overridable with
 `PHOEBE_AGENT` / `PHOEBE_MODEL`.
@@ -116,19 +119,20 @@ Prompts are rendered from templates (`src/prompt.ts`): `{{KEY}}` placeholders
 are substituted from config-derived args plus per-callsite args, and `` !`cmd` ``
 shell blocks that appear in the _raw_ template are executed in the worktree and
 spliced in. Shell blocks arriving via substituted values are treated as data,
-never executed — a marker pass runs before substitution to guarantee it.
+never executed. A marker pass runs before substitution to guarantee it.
 
 ## Engine updates and crash-loop fallback
 
 `phoebe boot` (`bootstrap/boot.ts`) is the container's long-lived main process,
 and it stays in charge for the life of the container. There is no shell
-supervisor and no engine self-update: the process that _chooses_ which engine
+bootstrapper and no engine self-update: the process that _chooses_ which engine
 commit runs is the one that watches for a better one, so both live in the
 bootstrapper.
 
 **Reconcile.** Every `PHOEBE_RECONCILE_INTERVAL_MS` (default 60s) boot samples
-two things: the mounted config's fingerprint, and — for a `github` source
-tracking a branch — where that branch points now (`git ls-remote`). When either
+two things. The first is the mounted config's fingerprint. The second, for a
+`github` source tracking a branch, is where that branch points now
+(`git ls-remote`). When either
 has moved away from what the running engine was launched from, boot `SIGTERM`s
 the engine, which drains (finishes the current work unit, starts no new one,
 exits 0), then re-resolves the source and relaunches. Same container, no
@@ -138,27 +142,27 @@ means a missed poll still converges and one change never relaunches twice.
 **Crash-loop fallback.** Following a branch means eventually following it onto a
 commit that will not boot, so every launch passes the crash-loop guard
 (`bootstrap/crash-loop.ts`). After `CRASH_LOOP_THRESHOLD` (3) consecutive _fast_
-crashes of one engine SHA — a run that exits non-zero inside `HEALTHY_RUN_MS`
-(60s) — boot quarantines that commit and materializes the **last SHA that ran
-healthily** instead; the ref-watch then stops reading the branch tip as a change
+crashes of one engine SHA, meaning a run that exits non-zero inside
+`HEALTHY_RUN_MS` (60s), boot quarantines that commit and materializes the last
+SHA that ran healthily instead. The ref-watch then stops reading the branch tip as a change
 for as long as it still points at the bad commit. Once the branch advances past
 it (a fix landed), the quarantine lapses and reconcile resumes normally.
 
 A finished run is judged three ways, not two: **healthy** (it outlived the
 window, or exited 0 unprompted), **crash** (a fast non-zero exit of its own
-accord), or **inconclusive** — boot cut it short for a reconcile or a container
-stop, or a signal killed it. An inconclusive run moves nothing; treating one as
+accord), or **inconclusive**, meaning boot cut it short for a reconcile or a
+container stop, or a signal killed it. An inconclusive run moves nothing. Treating one as
 healthy would let a container stop landing mid-crash-loop promote the bad commit
 and disarm the fallback for good. A commit that outlives the window is banked as
 last-good **while it is still running**, so an engine up for weeks that is then
 killed outright still leaves a fallback target behind.
 
-The record — last-good SHA, quarantined SHA, crash count — is JSON in
-`paths.stateDir` (`engine-crash-loop.json`), so it survives the container restart
+The record holds the last-good SHA, the quarantined SHA, and the crash count. It
+is JSON in `paths.stateDir` (`engine-crash-loop.json`), so it survives the container restart
 a crash-looping engine causes. The guard is inert unless the engine ref is a
 **moving branch** (a local mount has no commit to pin; a pinned SHA or tag means
 the operator chose that exact commit, and quietly serving a different one would
-be worse than crash-looping visibly) and inert with nothing known-good yet — a
+be worse than crash-looping visibly) and inert with nothing known-good yet. A
 first boot straight onto a broken ref exits and lets the container's restart
 policy make the failure visible. See
 [`configuration.md`](configuration.md#crash-loop-fallback).
@@ -183,9 +187,9 @@ prepare worktree ─► install ─► run agent ─► count commits ─► pus
 --run-once: exit · daemon: repeat
 ```
 
-The persistent daemon repeats this forever, idling `PHOEBE_POLL_INTERVAL_MS`
+The engine repeats this forever, idling `PHOEBE_POLL_INTERVAL_MS`
 (default 300000) between empty cycles. `--run-once` works at most one unit of
-the first one-shot-eligible kind (only `issues`) and exits — the janitor kinds
+the first one-shot-eligible kind (only `issues`) and exits. The janitor kinds
 (`conflicts`, `checks`, `reviews`) are persistent-mode only.
 
 ## Provenance: the port and its hardening commits
@@ -197,14 +201,14 @@ ported verbatim (behaviour-preserving)".
 
 That "verbatim" framing is not literally true, and this note records why so the
 history reads honestly. Two commits landed on the port branch during review as
-responses to CodeRabbit findings — legitimate fixes, but genuine behaviour
-changes on top of the verbatim copy:
+responses to CodeRabbit findings. Both are legitimate fixes, and both are genuine
+behaviour changes on top of the verbatim copy:
 
-- **`3b7951b`** — _fix: harden daemon against hangs, leaks, and bad input (PR #9
-  review)_ — child-process timeouts, prompt-template resolution, and other
+- **`3b7951b`**, _fix: harden daemon against hangs, leaks, and bad input (PR #9
+  review)_. Child-process timeouts, prompt-template resolution, and other
   hang/leak fixes rewriting ~470 lines of `src/main.ts`.
-- **`86f2fce`** — _fix: bound resource resolution and watermark only observed
-  review activity (PR #9 review)_ — bounds `resolvePackageFile`'s ancestor walk
+- **`86f2fce`**, _fix: bound resource resolution and watermark only observed
+  review activity (PR #9 review)_. Bounds `resolvePackageFile`'s ancestor walk
   at the `node_modules` package boundary, and watermarks the pre-run thread
   snapshot so review feedback posted concurrently with a run is not silently
   marked handled.

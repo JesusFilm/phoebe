@@ -1,5 +1,8 @@
 # Work kinds
 
+**Who this is for:** anyone asking why Phoebe picked the unit it picked. It
+answers how each of the five kinds selects and executes one unit.
+
 Every cycle Phoebe walks `config.workOrder` and runs **one** unit of the first
 kind that has workable work. There are five kinds: three **janitors** that keep
 open PRs moving (`conflicts`, `checks`, `reviews`) and two **producers** that
@@ -29,7 +32,7 @@ keeps already-open work flowing rather than piling up new branches.
   Phoebe prints "Nothing to do" and exits.
 - **`--dry-run`** prints the unit it would pick without executing (host-safe).
 
-A failed unit in persistent mode is logged and skipped; the daemon continues to
+A failed unit in persistent mode is logged and skipped; the engine continues to
 the next cycle. Under `--run-once`, a failure throws.
 
 ## Which PRs the janitors scan
@@ -45,7 +48,7 @@ All three janitors scan open PRs based on the same scope rules (`isPrInScope`):
 
 Only PRs whose base is `defaultBranch` are listed.
 
-## `issues` — start new work
+## `issues`, start new work
 
 The producer. Selection (`selectIssue`):
 
@@ -68,8 +71,8 @@ The producer. Selection (`selectIssue`):
   completed** → base `origin/main`, unstacked. The work landed outside
   `branchPrefix` (a human's branch, another tool's) and who built it is not
   Phoebe's business. The `gh issue view` that answers this fires only when both
-  PR lookups come back empty. Closed as **not planned** does not count — an
-  abandoned blocker leaves the dependent on unbuilt ground.
+  PR lookups come back empty. Closed as **not planned** does not count, because
+  an abandoned blocker leaves the dependent on unbuilt ground.
 - Blocked, blocker has **no** open or merged PR and is not closed as completed →
   **skip** this cycle. The idle log names the blockers it is waiting on.
 
@@ -83,21 +86,21 @@ issue number).
    (`{{ISSUE_NUMBER}}` supplied).
 3. Count commits since the base. If zero, no PR is created.
 4. With `creditIssueAuthor` (default on), stamp those commits with a
-   `Co-authored-by:` trailer for the issue's author — see
+   `Co-authored-by:` trailer for the issue's author. See
    [`configuration.md`](configuration.md#issue-author-credit).
 5. Push. If no open PR exists for the branch, open one titled
    `Phoebe: <issue title> (#<n>)` with body `Closes #<n>` (plus the stacked
    banner when applicable); otherwise post a follow-up note.
 
-The issue prompt has the agent **claim** the issue first — swap `readyLabel` for
-`processingLabel` — so parallel operators and humans see it is in flight.
+The issue prompt has the agent claim the issue first, swapping `readyLabel` for
+`processingLabel`, so parallel operators and humans see it is in flight.
 
-## `research` — resolve wayfinder research tickets
+## `research`, resolve wayfinder research tickets
 
-The second producer. It picks up **wayfinder research tickets** — open issues
+The second producer. It picks up wayfinder research tickets, meaning open issues
 labelled `researchLabel` (default `wayfinder:research`), which in wayfinder are
-child issues of a `wayfinder:map` (the engine keys off the label alone, not the
-parent-map relationship) — and follows
+child issues of a `wayfinder:map`. The engine keys off the label alone, not the
+parent-map relationship. It then follows
 [wayfinder's](../.agents/skills/wayfinder/SKILL.md) resolution protocol:
 investigate primary sources, produce a Markdown summary, post a resolution
 comment, close the ticket, and append a pointer to the map's _Decisions so far_.
@@ -106,8 +109,8 @@ Selection **reuses the `issues` path** (`selectIssue`) against the
 `researchLabel`-tagged open issues rather than the `readyLabel` set: same
 priority/age ordering, same `Blocked by #N` handling and base resolution
 (blocked tickets with no blocker PR are skipped this cycle). It is _not_ full
-wayfinder-native selection — no querying of map children, no GitHub native
-`blocked-by`, no assignment-as-claim; those are follow-ups. Double-work
+wayfinder-native selection. There is no querying of map children, no GitHub
+native `blocked-by`, and no assignment-as-claim. Those are follow-ups. Double-work
 avoidance relies on branch/PR existence, same as `issues`.
 
 This kind was built against wayfinder's protocol on purpose: research tickets are
@@ -116,8 +119,8 @@ though, and the default is only a default. See
 [`preparing-work.md`](preparing-work.md) for the pipeline this sits at the end of.
 
 **Execution** reuses `runOneIssue` with the `research` prompt: branch off the
-resolved base, run the agent, and — **only when the agent left commits** — push
-and open a PR. The output shape is adaptive, decided by the prompt rather than
+resolved base, run the agent, and push and open a PR, but **only when the agent
+left commits**. The output shape is adaptive, decided by the prompt rather than
 the engine:
 
 - **Issue-level artifact (default):** the prompt posts the summary/answer as a
@@ -126,23 +129,23 @@ the engine:
   prompt writes and commits the doc; the engine pushes and opens a PR whose body
   closes the ticket on merge.
 
-The engine stays **map-agnostic** — it only selects the ticket, allocates the
-worktree, and runs the prompt; the resolution comment, close, and map update all
+The engine stays map-agnostic. It only selects the ticket, allocates the
+worktree, and runs the prompt. The resolution comment, close, and map update all
 happen inside the prompt. Disable the kind for a repo by omitting `research` from
 `workOrder`.
 
-## `conflicts` — reconcile PRs that conflict with the base
+## `conflicts`, reconcile PRs that conflict with the base
 
 Selection (`selectFirstWorkUnit`, via `selectConflictFixCandidates` → oldest
 eligible PR number):
 
 1. Scan in-scope open PRs; a PR is a candidate when `mergeable` is
    `CONFLICTING`, or `UNKNOWN` while `mergeStateStatus` is `DIRTY` (GitHub may
-   still be computing mergeability — the engine retries a few times).
-2. Skip PRs whose issue is **stacked on an open blocker** — divergence from the
-   base is expected there, not a real conflict.
+   still be computing mergeability, so the engine retries a few times).
+2. Skip PRs whose issue is **stacked on an open blocker**, where divergence from
+   the base is expected rather than a real conflict.
 3. Skip PRs whose latest **failure watermark** matches the current PR head _and_
-   base head — a prior fix attempt already failed against this exact pair, so
+   base head. A prior fix attempt already failed against this exact pair, so
    retrying would loop until either side moves.
 
 **Execution** (`fixOnePrConflict`):
@@ -159,12 +162,12 @@ eligible PR number):
    conflicts, post a failure comment carrying a fresh watermark
    (`prHead` + `mainHead`) and leave the branch untouched for a human.
 
-## `checks` — fix failing CI
+## `checks`, fix failing CI
 
 Check state comes from the REST Actions API (`gh run list`), not GraphQL
 `statusCheckRollup`, because fine-grained PATs cannot read the rollup. (The App
-arm does not share this limitation, but Phoebe uses REST regardless — it is the
-single code path for both credential arms.) Only the
+arm does not share this limitation, but Phoebe uses REST regardless, keeping one
+code path for both credential arms.) Only the
 newest run per workflow counts; a rollup is `FAILURE` only when at least one
 check failed and **none are pending**.
 
@@ -186,7 +189,7 @@ PR number):
 3. Push new commits. If the agent produced nothing and origin is unchanged, post
    a failure comment with a `prHead` watermark.
 
-## `reviews` — address review-thread feedback
+## `reviews`, address review-thread feedback
 
 Selection (`selectFirstWorkUnit`, via `selectReviewsCandidates` → oldest eligible
 PR number). This kind needs the
@@ -205,7 +208,7 @@ bot's own GitHub login (`phoebeLogin`), fetched once per cycle:
    `reviewsSuccessHeading`.
 2. Push new commits (or detect the agent already pushed).
 3. Post a `handled` watermark comment stamped with the newest activity time from
-   the **pre-run** snapshot — so feedback posted _during_ the run is not marked
+   the **pre-run** snapshot, so feedback posted _during_ the run is not marked
    handled and correctly re-selects the PR next cycle. If the agent produced no
    summary and no push, the comment notes the failure and Phoebe retries on new
    activity.
@@ -213,10 +216,10 @@ bot's own GitHub login (`phoebeLogin`), fetched once per cycle:
 ## Watermarks
 
 Janitors record their progress as **hidden HTML-comment markers** on the PR so
-state survives across daemon restarts (nothing is kept in memory between
+state survives across engine restarts (nothing is kept in memory between
 cycles). The parser reads comments newest-first and takes the first marker it
-finds, so **the latest matching marker wins** when several exist — deleting the
-newest one falls back to the next-newest, not to a clean slate. To reset state,
+finds, so the latest matching marker wins when several exist. Deleting the newest
+one falls back to the next-newest rather than to a clean slate. To reset state,
 move whatever the marker is keyed on (see the table below) or remove the newest
 matching comment. See [`operating.md`](operating.md#watermark-comments) for the
 operator's view.

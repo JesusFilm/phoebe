@@ -1,8 +1,11 @@
-# releasing
+# Releasing
+
+**Who this is for:** a maintainer cutting a release of `phoebe-agent`. It answers
+what to do per PR, what CI does on merge, and what to bump afterwards.
 
 `phoebe-agent` is released with [Changesets](https://github.com/changesets/changesets)
-and published to npm with **trusted publishing (OIDC)** — no long-lived
-`NPM_TOKEN` lives in the repo or in CI. Publish provenance is attached
+and published to npm with trusted publishing over OIDC. No long-lived
+`NPM_TOKEN` lives in the repo or in CI, and npm attaches publish provenance
 automatically.
 
 ## The everyday flow
@@ -20,8 +23,8 @@ automatically.
    The [`changeset`](../.github/workflows/changeset.yml) workflow enforces this
    on every PR: it runs `changeset status` against the base branch and fails the
    check if the package changed with no pending changeset. Docs-only, CI-only,
-   or test-only PRs still don't need one — a maintainer labels those
-   `skip-changeset` and the gate skips itself (applying the label re-runs it).
+   or test-only PRs still don't need one. A maintainer labels those
+   `skip-changeset` and the gate skips itself, and applying the label re-runs it.
    An _empty_ changeset does **not** get past the gate, despite what the CLI's
    error text suggests: it releases no package, so `changeset status` keeps
    failing. The "chore: version packages" PR is exempt by branch name, since
@@ -35,12 +38,12 @@ automatically.
 
 3. **Merge the version PR.** That is the release trigger. On that merge the
    workflow finds no pending changesets, runs the `release` script
-   (`changeset publish` — the package ships raw `.ts`, there is no build step),
+   (`changeset publish`, since the package ships raw `.ts` with no build step),
    publishes the new version to npm, and pushes the matching `phoebe-agent@x.y.z`
    git tag.
 
-So publishing is always gated on a human merging the version PR — nothing reaches
-npm straight from a feature branch.
+So publishing always waits on a human merging the version PR. Nothing reaches npm
+straight from a feature branch.
 
 ## After the release: the pinned tags in the docs
 
@@ -79,10 +82,11 @@ real release regardless.
 
 ## Requirements baked into the workflow
 
-- **`id-token: write`** permission — mints the OIDC token npm exchanges for auth.
-- **npm ≥ 11.5.1** — trusted publishing and automatic provenance need it; the
-  workflow runs `npm install -g npm@latest` because the pinned Node ships an older
-  npm. `changeset publish` shells out to `npm publish` (not `pnpm publish`), so
-  this global npm is the one that authenticates — which also sidesteps the pnpm
-  11.x OIDC regression ([pnpm/pnpm#11513](https://github.com/pnpm/pnpm/issues/11513)).
-- **No `NPM_TOKEN`** — intentionally absent. Auth is OIDC-only.
+- **`id-token: write`** permission. This mints the OIDC token npm exchanges for auth.
+- **npm 11.5.1 or newer.** Trusted publishing and automatic provenance both need
+  it, and the workflow runs `npm install -g npm@latest` because the pinned Node
+  ships an older npm. `changeset publish` shells out to `npm publish` rather than
+  `pnpm publish`, so this global npm is the one that authenticates. That also
+  sidesteps the pnpm 11.x OIDC regression
+  ([pnpm/pnpm#11513](https://github.com/pnpm/pnpm/issues/11513)).
+- **No `NPM_TOKEN`.** Absent on purpose. Auth is OIDC only.

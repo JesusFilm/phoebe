@@ -1,96 +1,101 @@
 # Core-repo onboarding
 
+**Who this is for:** an owner-operator onboarding `JesusFilm/core` specifically.
+It is a worked example of the general runbooks, useful to read even if your repo
+is a different shape.
+
 How an **owner-operator** in [`JesusFilm/core`](https://github.com/JesusFilm/core)
 runs a local Phoebe container against the **published** `phoebe-agent` engine.
 
 `core` is an **Nx monorepo** built with **pnpm**, and it does **not** carry
-`vp` — so this is the plain "install the CLI, scaffold a runtime, point it at the
+`vp`. So this is the plain "install the CLI, scaffold a runtime, point it at the
 repo" path, with the toolchain commands filled in for Nx-affected. Nothing here
 overrides engine behaviour beyond the toolchain: the **full default `workOrder`**
 runs, PR maintenance stays at **phoebe-only scope**, the **engine-default labels**
 are used verbatim, and the **shipped prompts** are left untouched.
 
-This document is a worked instance of the general runbooks — read it alongside
+This document is a worked instance of the general runbooks. Read it alongside
 [`ai-install.md`](ai-install.md) (the generic install), [`upgrading.md`](upgrading.md)
 (the init/pin/upgrade contract), and [`configuration.md`](configuration.md) (every
 field). It only pins down the `core`-specific choices.
 
 ## The shape of this deployment
 
-Every decision below maps to a config field (or to a deliberate non-choice — a
-field left at its shipped default). See [`configuration.md`](configuration.md) for
+Every decision below maps to a config field, or to a deliberate non-choice,
+meaning a field left at its shipped default. See [`configuration.md`](configuration.md) for
 the field reference.
 
 | Decision                            | Field                                              | Value for `core`                                                                    |
 | ----------------------------------- | -------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| Target repo                         | `repoSlug`                                         | `JesusFilm/core` (override — required)                                              |
-| Clone URL                           | `repoUrl`                                          | `https://github.com/JesusFilm/core.git` (override — required)                       |
-| Install                             | `installCommand`                                   | pnpm frozen install (override — required)                                           |
-| Check gate (prettier-fix)           | `checkCommand`                                     | Nx-affected lint + typecheck, prettier in **write** mode (override — required)      |
-| Test gate                           | `testCommand`                                      | Nx-affected test (override — required)                                              |
-| Ready gate                          | `readyCommand`                                     | check + test (override — default is npm-shaped)                                     |
+| Target repo                         | `repoSlug`                                         | `JesusFilm/core` (override, required)                                               |
+| Clone URL                           | `repoUrl`                                          | `https://github.com/JesusFilm/core.git` (override, required)                        |
+| Install                             | `installCommand`                                   | pnpm frozen install (override, required)                                            |
+| Check gate (prettier-fix)           | `checkCommand`                                     | Nx-affected lint + typecheck, prettier in **write** mode (override, required)       |
+| Test gate                           | `testCommand`                                      | Nx-affected test (override, required)                                               |
+| Ready gate                          | `readyCommand`                                     | check + test (override, default is npm-shaped)                                      |
 | Work order                          | `workOrder`                                        | **default** `["conflicts","checks","reviews","issues","research"]`                  |
-| PR-scan scope                       | `prScope`                                          | **default** `"phoebe"` — Phoebe maintains only its own branches                     |
+| PR-scan scope                       | `prScope`                                          | **default** `"phoebe"`, so Phoebe maintains only its own branches                   |
 | Ready / processing / opt-out labels | `readyLabel` / `processingLabel` / `prOptOutLabel` | **defaults** `ready-for-agent` / `processing` / `ready-for-human`, created verbatim |
-| Research label                      | `researchLabel`                                    | **default** `wayfinder:research` — the `research` kind's ticket label               |
-| Provider + model                    | `defaultProvider` / `defaultModels`                | operator-chosen at runtime via `.env` (see below) — config left at defaults         |
-| Prompts                             | `promptFiles`                                      | **defaults** — the scaffolded `prompts/` are left unedited                          |
+| Research label                      | `researchLabel`                                    | **default** `wayfinder:research`, the `research` kind's ticket label                |
+| Provider + model                    | `defaultProvider` / `defaultModels`                | operator-chosen at runtime via `.env` (see below), config left at defaults          |
+| Prompts                             | `promptFiles`                                      | **defaults**, the scaffolded `prompts/` are left unedited                           |
 
 Net effect: the committed `phoebe.config.ts` names **only the toolchain fields**.
-Everything that governs _what Phoebe does_ — order of work kinds, which PRs it
-touches, the labels it reads, the prompts it runs — stays on the engine defaults,
+Everything that governs _what Phoebe does_ stays on the engine defaults: the
+order of work kinds, which PRs it touches, the labels it reads, the prompts it
+runs. So
 so a `phoebe-agent` upgrade picks up any new defaults automatically
 ([why a minimal config stays current](upgrading.md#upgrading)).
 
 ## 1. Prerequisites
 
-Same as [`ai-install.md`](ai-install.md#prerequisites) — on the host that will run
+Same as [`ai-install.md`](ai-install.md#prerequisites), on the host that will run
 the container:
 
 - Node.js ≥ 24 and `git`, `gh`, Docker + Docker Compose.
 - A GitHub token in `GH_TOKEN` (the fine-grained PAT below).
 - The API key for the provider you choose (§4).
 
-No pnpm or Nx is needed **on the host** — the install/check/test commands run
+No pnpm or Nx is needed **on the host**. The install, check, and test commands run
 _inside_ the container, which installs its own toolchain from the repo.
 
-## 2. Operator GitHub token — a fine-grained PAT
+## 2. Operator GitHub token, a fine-grained PAT
 
 Phoebe acts entirely as the token's identity: it clones, pushes `phoebe/`
 branches, opens/updates PRs, and reads/writes issue labels and comments. Mint a
 **fine-grained** personal access token scoped to the single repo. Phoebe is built
-to work under a fine-grained PAT — it reads check state from the REST Actions API
+to work under a fine-grained PAT. It reads check state from the REST Actions API
 rather than the GraphQL rollup precisely because fine-grained PATs cannot read the
-rollup ([work-kinds.md](work-kinds.md#checks--fix-failing-ci)). This section
+rollup ([work-kinds.md](work-kinds.md#checks-fix-failing-ci)). This section
 mints one token by hand; if the deployment grows into several repos under one
 owner, the App arm ([`github-app-mode.md`](github-app-mode.md)) replaces this
-ceremony — but for a single repo a fine-grained PAT is the recommendation.
+ceremony, but for a single repo a fine-grained PAT is the recommendation.
 
 Create it at **Settings → Developer settings → Fine-grained tokens**:
 
-- **Resource owner:** `JesusFilm` (the token must be **approved by an org owner** —
-  fine-grained PATs against org repos require organization approval before they
+- **Resource owner:** `JesusFilm` (the token must be **approved by an org owner**,
+  because fine-grained PATs against org repos require organization approval before they
   work).
 - **Repository access:** _Only select repositories_ → `JesusFilm/core`.
 - **Repository permissions:**
 
-  | Permission    | PAT access            | App permission        | Why                                                              |
-  | ------------- | --------------------- | --------------------- | ---------------------------------------------------------------- |
-  | Metadata      | Read-only (automatic) | Read-only (automatic) | Mandatory for every other permission.                            |
-  | Contents      | Read and write        | Read and write        | Clone the repo, push branches.                                   |
-  | Pull requests | Read and write        | Read and write        | Open/update PRs, post PR comments & watermarks.                  |
-  | Issues        | Read and write        | Read and write        | Read `readyLabel`, swap in `processingLabel`, comment.           |
-  | Actions       | Read-only             | Read-only             | `gh run list` — the check-state source for the `checks` janitor. |
+  | Permission    | PAT access            | App permission        | Why                                                             |
+  | ------------- | --------------------- | --------------------- | --------------------------------------------------------------- |
+  | Metadata      | Read-only (automatic) | Read-only (automatic) | Mandatory for every other permission.                           |
+  | Contents      | Read and write        | Read and write        | Clone the repo, push branches.                                  |
+  | Pull requests | Read and write        | Read and write        | Open/update PRs, post PR comments & watermarks.                 |
+  | Issues        | Read and write        | Read and write        | Read `readyLabel`, swap in `processingLabel`, comment.          |
+  | Actions       | Read-only             | Read-only             | `gh run list`, the check-state source for the `checks` janitor. |
 
   Leave everything else _No access_. Add **Workflows: Read and write** only if you
   expect the agent to edit files under `.github/workflows/` (GitHub blocks pushing
   workflow changes otherwise).
 
 Set an expiry you can live with and rotate it into `.env` when it lapses. Store it
-only in `GH_TOKEN` (§5) — never commit it.
+only in `GH_TOKEN` (§5), and never commit it.
 
 **Check the token before you trust it.** Every step above is a browser click, and
-a missed checkbox — or an org approval that never landed — does not fail at boot.
+a missed checkbox, or an org approval that never landed, does not fail at boot.
 It fails later, mid-run, as a 403 from whichever API hop needed the grant. Verify
 it up front:
 
@@ -103,10 +108,10 @@ node scripts/verify-tenant-token.mjs
 It reports each of the five permissions above as granted / missing / unknown,
 names the missing ones as the GitHub UI spells them (the Access column above), tells "no access at all"
 (the usual sign of a token still awaiting org approval) apart from one missing
-checkbox, and surfaces the expiry date — warning inside 14 days. No probe
-changes anything: the three write grants are proven by aiming a `POST`/`PATCH`
+checkbox, and reports the expiry date, warning inside 14 days. No probe changes
+anything: the three write grants are proven by aiming a `POST`/`PATCH`
 at a resource that cannot exist, so GitHub answers with the permission verdict
-and there is nothing to mutate. It is safe against a production repo — though it
+and there is nothing to mutate. It is safe against a production repo, though it
 does issue write-method requests, which is worth knowing if you are approving it
 through a network policy. It never prints the token.
 
@@ -127,15 +132,15 @@ gh label create ready-for-human --repo JesusFilm/core \
 ```
 
 Colors and descriptions are cosmetic; the **names must match** the config values.
-`gh label create` is idempotent-ish — if a label already exists it errors; add
-`--force` to overwrite, or skip it. See [`operating.md`](operating.md) for how a
+`gh label create` is almost idempotent. If a label already exists it errors, so
+add `--force` to overwrite, or skip it. See [`operating.md`](operating.md) for how a
 human then drives Phoebe with these labels.
 
 ## 4. Scaffold the runtime into a committed `phoebe/`
 
-Keep the runtime out of the repo root — scaffold it into a `phoebe/`
-subdirectory and **commit it** (it is consumer-owned by design,
-[upgrading.md](upgrading.md#phoebe-init--scaffold-a-consumer-owned-runtime)):
+Keep the runtime out of the repo root. Scaffold it into a `phoebe/` subdirectory
+and **commit it** (it is consumer-owned by design,
+[upgrading.md](upgrading.md#phoebe-init-scaffold-a-consumer-owned-runtime)):
 
 ```bash
 cd core                      # repo root
@@ -158,14 +163,14 @@ core/
 ```
 
 Commit `phoebe.config.ts`, the untouched `prompts/`, `container/`, and the
-appended `.gitignore`. **Do not edit `prompts/`** — leaving the shipped copies in
+appended `.gitignore`. **Do not edit `prompts/`.** Leaving the shipped copies in
 place is the "zero prompt overrides" posture, and it means prompt improvements
 shipped by future engine releases are the ones you'd copy in deliberately, not a
 stale fork you have to reconcile.
 
 `init` never touches existing files, so re-running it later only fills gaps.
 
-## 5. `phoebe.config.ts` — Nx-affected toolchain, nothing else
+## 5. `phoebe.config.ts`, Nx-affected toolchain and nothing else
 
 Edit `core/phoebe/phoebe.config.ts` to name **only the toolchain fields**. The
 check step runs prettier in **write** mode so formatting drift is auto-fixed and
@@ -215,15 +220,14 @@ Notes:
   `test` are the conventional names; confirm them against `core`'s project
   configuration and swap in whatever the repo actually defines.
 - **Toolchain fields plus `engine`, nothing else.** `engine` is not a toolchain
-  setting — it is the deployment's lifecycle knob (which engine commit runs, and
-  how you upgrade), so it is named deliberately. Everything else — `workOrder`,
-  `prScope`, the three labels, providers/models, paths, `promptFiles` — is
-  omitted and resolves to the engine defaults shown in the
+  setting. It is the deployment's lifecycle knob, naming which engine commit runs
+  and how you upgrade, so it is set deliberately. Everything else is omitted and
+  resolves to the engine defaults shown in the
   [shape table](#the-shape-of-this-deployment).
 
 ## 6. Provider selection and secrets (`.env`)
 
-Provider is an **operator-local** choice, not a repo-wide one — so make it in
+Provider is an operator-local choice rather than a repo-wide one, so make it in
 `.env` rather than the committed config. Copy the scaffolded example and fill it
 in:
 
@@ -234,10 +238,10 @@ cp .env.example .env
 
 Set:
 
-- **`GH_TOKEN`** — the fine-grained PAT from §2.
-- **The provider key** matching the provider you pick — only that one is read; the
-  agent child never sees the others ([architecture.md](architecture.md#the-agent-child-and-its-locked-down-environment)).
-- **`PHOEBE_AGENT` + `PHOEBE_MODEL`** — the operator's provider choice, without
+- **`GH_TOKEN`**, the fine-grained PAT from §2.
+- **The provider key** matching the provider you pick. Only that one is read, and
+  the agent child never sees the others ([architecture.md](architecture.md#the-agent-child-and-its-locked-down-environment)).
+- **`PHOEBE_AGENT` and `PHOEBE_MODEL`**, the operator's provider choice, without
   touching the committed config:
 
   | Provider | `PHOEBE_AGENT` | Key env var (`providerEnv`) | Example `PHOEBE_MODEL` (`defaultModels`) |
@@ -247,14 +251,14 @@ Set:
   | Codex    | `codex`        | `OPENAI_KEY`                | `gpt-5.4-mini`                           |
 
   Leaving `PHOEBE_AGENT` unset falls back to `defaultProvider` (`cursor`). Setting
-  it in `.env` keeps the choice local to this operator's box — a different operator
-  can run the same committed runtime under a different provider.
+  it in `.env` keeps the choice local to this operator's box, so a different
+  operator can run the same committed runtime under a different provider.
 
 The engine version is **not** an env var: it is `engine.ref` in
 `phoebe.config.ts`. Pin an explicit released tag for a real deployment
 ([upgrading.md](upgrading.md#pinning-the-engine-version)).
 
-`.env` is gitignored by the scaffolded `.gitignore` — keep it that way.
+`.env` is gitignored by the scaffolded `.gitignore`. Keep it that way.
 
 ## 7. Build, preview, and run
 
@@ -275,7 +279,7 @@ docker compose --env-file ../.env up -d
 
 `--dry-run --run-once` is the safe first step: it prints the selected unit without
 booting execution. The janitor kinds (`conflicts`, `checks`, `reviews`) only run
-in the **persistent daemon**; `--run-once` handles at most one `issues` unit
+in **persistent mode**; `--run-once` handles at most one `issues` unit
 ([work-kinds.md](work-kinds.md#the-poll-loop-and-workorder)).
 
 ## 8. Day-to-day and upgrades
@@ -283,8 +287,8 @@ in the **persistent daemon**; `--run-once` handles at most one `issues` unit
 - **Drive it from GitHub.** Add `ready-for-agent` to queue an issue; `Blocked by
 #N` in a body to sequence dependents; `ready-for-human` (or mark a non-Phoebe PR
   draft) to take a PR back. Full operator manual: [`operating.md`](operating.md).
-- **Upgrade** by editing `engine.ref` in `phoebe.config.ts` — the running
-  container drains the engine and relaunches on the new ref within a reconcile
+- **Upgrade** by editing `engine.ref` in `phoebe.config.ts`. The running container
+  drains the engine and relaunches on the new ref within a reconcile
   interval, no rebuild and no restart. Edit it **in place**: the config is
   bind-mounted as a single file, so a save-by-rename (or a `git pull`) needs
   `docker compose --env-file ../.env up -d --force-recreate` to be picked up. The

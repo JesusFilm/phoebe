@@ -3,7 +3,7 @@
 **Phoebe is an AFK coding agent.** It polls a GitHub repository for ready-to-work
 issues, works each one on its own branch in an isolated git worktree, runs your
 project's gates, and opens a pull request. Between new issues it sweeps open PRs
-for merge conflicts, failing CI, and unresolved review feedback — so work keeps
+for merge conflicts, failing CI, and unresolved review feedback, so work keeps
 moving without a human babysitting every branch.
 
 Phoebe runs as a **single Docker container** that is both orchestrator and
@@ -26,7 +26,7 @@ repository's own issue tracker.
 ## Distribution
 
 The engine is published to npm as **`phoebe-agent`** (unscoped) and consumed as a
-pinned CLI — you never vendor the engine source into your repo, only a small
+pinned CLI. You never vendor the engine source into your repo, only a small
 config file, your prompt overrides, and the container files `phoebe init`
 scaffolds for you.
 
@@ -53,21 +53,22 @@ docker compose --env-file ../.env up -d                                  # start
 
 The container's main process is `phoebe boot`: it checks the engine out at the
 ref your config names, runs it, and keeps supervising it. Upgrading is an edit to
-`engine.ref` — no rebuild, no restart. (The deployment dir is bind-mounted as a
-directory, so an in-place edit or a `git pull` is picked up on the next poll.)
+`engine.ref`, with no rebuild and no restart. The deployment dir is bind-mounted
+as a directory, so an in-place edit or a `git pull` is picked up on the next
+poll.
 
 **Multiple repos in one container.** You don't need one Phoebe per repo: run at
-a workspace root whose child repos are checked out as child directories — plain
-clones or submodules (`phoebe init --workspace` / `init --tenant`; see
-[`docs/workspace.md`](docs/workspace.md)). Read [`docs/trust.md`](docs/trust.md) first: co-locating repos
-means co-locating them in one trust domain. See
+a workspace root whose child repos are checked out as child directories, either
+plain clones or submodules (`phoebe init --workspace` / `init --tenant`; see
+[`docs/workspace.md`](docs/workspace.md)). Read [`docs/trust.md`](docs/trust.md)
+first, because co-locating repos means co-locating them in one trust domain. See
 [`docs/configuration.md`](docs/configuration.md) and
 [`docs/operating.md`](docs/operating.md). For deployments spanning several repos
-under one org owner, the GitHub App arm replaces the per-repo token ceremony —
-see [`docs/github-app-mode.md`](docs/github-app-mode.md).
+under one org owner, the GitHub App arm replaces the per-repo token ceremony. See
+[`docs/github-app-mode.md`](docs/github-app-mode.md).
 
-The full, execute-top-to-bottom version — prerequisites, secrets, verification —
-is [`docs/ai-install.md`](docs/ai-install.md).
+The full version, covering prerequisites, secrets, and verification, is
+[`docs/ai-install.md`](docs/ai-install.md). It runs top to bottom.
 
 ## Configuration at a glance
 
@@ -108,31 +109,31 @@ reference and the `PHOEBE_*` environment overlay.
 
 ## Documentation
 
-[`CONTEXT.md`](CONTEXT.md) is the glossary — the words this project uses for its own
-concepts, and the ones it deliberately avoids.
+[`CONTEXT.md`](CONTEXT.md) is the glossary. It holds the words this project uses
+for its own concepts, and the ones it avoids on purpose.
 
 Docs live under [`docs/`](docs/), in two groups.
 
-**Using Phoebe** — running it against your own repositories:
+**Using Phoebe**, running it against your own repositories:
 
-- [`docs/preparing-work.md`](docs/preparing-work.md) — what an issue needs before Phoebe can work it, and the planning pipeline that produces one.
-- [`docs/ai-install.md`](docs/ai-install.md) — a deterministic, agent-followable install runbook.
-- [`docs/configuration.md`](docs/configuration.md) — full config-field reference and env overlay.
-- [`docs/work-kinds.md`](docs/work-kinds.md) — issues / conflicts / checks / reviews / research mechanics, PR-scan scope, poll loop.
-- [`docs/operating.md`](docs/operating.md) — controlling Phoebe as a human (labels, drafts, watermarks).
-- [`docs/upgrading.md`](docs/upgrading.md) — the init / pin / upgrade contract, `phoebe migrate` verb, and what Phoebe may write in your repos.
-- [`docs/workspace.md`](docs/workspace.md) — workspace mode topology, two-tier `.env`, operator runbook (plain-clone or submodule children).
-- [`docs/github-app-mode.md`](docs/github-app-mode.md) — the GitHub App credential arm, for deployments spanning several repos under one org owner.
-- [`docs/claude-subscription-auth.md`](docs/claude-subscription-auth.md) — driving the `claude` provider from a subscription rather than an API key.
-- [`docs/phoebe-core-onboarding.md`](docs/phoebe-core-onboarding.md) — worked onboarding for `JesusFilm/core` (Nx + pnpm, no vp).
+- [`docs/preparing-work.md`](docs/preparing-work.md), what an issue needs before Phoebe can work it, and the planning pipeline that produces one.
+- [`docs/ai-install.md`](docs/ai-install.md), a deterministic, agent-followable install runbook.
+- [`docs/configuration.md`](docs/configuration.md), full config-field reference and env overlay.
+- [`docs/work-kinds.md`](docs/work-kinds.md), issues / conflicts / checks / reviews / research mechanics, PR-scan scope, poll loop.
+- [`docs/operating.md`](docs/operating.md), controlling Phoebe as a human (labels, drafts, watermarks).
+- [`docs/upgrading.md`](docs/upgrading.md), the init / pin / upgrade contract, `phoebe migrate` verb, and what Phoebe may write in your repos.
+- [`docs/workspace.md`](docs/workspace.md), workspace mode topology, two-tier `.env`, operator runbook (plain-clone or submodule children).
+- [`docs/github-app-mode.md`](docs/github-app-mode.md), the GitHub App credential arm, for deployments spanning several repos under one org owner.
+- [`docs/claude-subscription-auth.md`](docs/claude-subscription-auth.md), driving the `claude` provider from a subscription rather than an API key.
+- [`docs/phoebe-core-onboarding.md`](docs/phoebe-core-onboarding.md), worked onboarding for `JesusFilm/core` (Nx + pnpm, no vp).
 
-**Working on Phoebe** — changing the engine itself:
+**Working on Phoebe**, changing the engine itself:
 
-- [`docs/architecture.md`](docs/architecture.md) — topology, worktree isolation, engine updates and crash-loop fallback, named volumes.
-- [`docs/migrations.md`](docs/migrations.md) — the `Migration` interface, roles, detect/describe/apply, refusal semantics, and idempotence tests.
-- [`docs/releasing.md`](docs/releasing.md) — the Changesets + npm trusted-publishing release flow.
-- [`docs/trust.md`](docs/trust.md) — contributor trust list (`vouch`) for this repo, and how it relates to `ready-for-agent`. Governance for this repository, not a package feature.
-- [`docs/research/`](docs/research/) — design records: the decision behind a seam, what was considered, and why.
+- [`docs/architecture.md`](docs/architecture.md), topology, worktree isolation, engine updates and crash-loop fallback, named volumes.
+- [`docs/migrations.md`](docs/migrations.md), the `Migration` interface, roles, detect/describe/apply, refusal semantics, and idempotence tests.
+- [`docs/releasing.md`](docs/releasing.md), the Changesets + npm trusted-publishing release flow.
+- [`docs/trust.md`](docs/trust.md), contributor trust list (`vouch`) for this repo, and how it relates to `ready-for-agent`. Governance for this repository, not a package feature.
+- [`docs/research/`](docs/research/), design records: the decision behind a seam, what was considered, and why.
 
 Agents landing in this repo should start at [`AGENTS.md`](AGENTS.md).
 

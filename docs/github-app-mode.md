@@ -1,13 +1,17 @@
 # GitHub App mode
 
+**Who this is for:** an operator deciding between the PAT and App credential
+arms, or moving a deployment from one to the other. It answers what each arm
+costs to provision and what it buys.
+
 Phoebe's credential arm is set at deployment time. The **PAT arm** uses a
 fine-grained personal access token you mint per tenant and store in each
 tenant's `GH_TOKEN`. The **App arm** replaces that with a GitHub App whose
 installation tokens Phoebe mints at runtime, one per tenant, over the
-supervisor-to-child IPC channel.
+bootstrapper-to-child IPC channel.
 
-Both arms ship. Neither is newer, and neither is more secure than the other —
-the choice is about **provisioning**, not permissions.
+Both arms ship. Neither is newer, and neither is more secure than the other. The
+choice is about provisioning rather than permissions.
 
 ## 1. Which arm to use
 
@@ -21,10 +25,10 @@ One test:
 - **Several repos under one owner** → **App arm** may make sense,
   subject to [the costs below](#2-what-the-app-arm-costs-you).
 
-PAT is the recommended default for solo deployments. At the edges — a single
-repo, or a fleet large enough that the shared rate budget becomes a planning
-problem — PAT is likely the better choice. App mode's payoff window is a
-fleet; and a _very_ large fleet is where it starts hurting again (see
+PAT is the recommended default for solo deployments, and it is likely the better
+choice at both edges: a single repo, or a fleet large enough that the shared rate
+budget becomes a planning problem. App mode pays off for a fleet, and a _very_
+large fleet is where it starts hurting again (see
 [Capacity](#5-capacity)).
 
 ## 2. What the App arm costs you
@@ -58,8 +62,8 @@ after the fact.
 ### App-key blast radius
 
 The App private key authenticates the App itself, not a single tenant. Anyone
-who holds it can mint tokens for **every** installation of that App — across
-every tenant you have given it access to. A leaked PAT covers one tenant's
+who holds it can mint tokens for every installation of that App, across every
+tenant you have given it access to. A leaked PAT covers one tenant's
 scope; a leaked App key covers the whole installation set. See
 [Revoking](#6-revoking) for the floor on damage control.
 
@@ -68,8 +72,8 @@ scope; a leaked App key covers the whole installation set. See
 When you add a permission to the App after the initial install, the new
 permission takes effect only after each installation approves it. Until an
 installation approves, minting a token with the new permission fails with a
-422 — loudly, not silently. But if you run a fleet of N tenants, a permission
-change walks the fleet through a mixed period where some tenants have the new
+422, loudly rather than silently. But if you run a fleet of N tenants, a
+permission change walks the fleet through a mixed period where some tenants have the new
 grant and others do not. Any preflight must read the **installation's** grants,
 not the App's. See [Registering the App](#3-registering-the-app) for the
 five-permission table.
@@ -79,16 +83,16 @@ five-permission table.
 ### Permissions
 
 The App needs the same five grants that §2 of
-[`phoebe-core-onboarding.md`](phoebe-core-onboarding.md#2-operator-github-token--a-fine-grained-pat)
+[`phoebe-core-onboarding.md`](phoebe-core-onboarding.md#2-operator-github-token-a-fine-grained-pat)
 requires for a fine-grained PAT:
 
-| Permission    | Access         | Why                                                              |
-| ------------- | -------------- | ---------------------------------------------------------------- |
-| Metadata      | Read-only      | Mandatory for every other permission.                            |
-| Contents      | Read and write | Clone the repo, push branches.                                   |
-| Pull requests | Read and write | Open/update PRs, post PR comments and watermarks.                |
-| Issues        | Read and write | Read `readyLabel`, swap in `processingLabel`, comment.           |
-| Actions       | Read-only      | `gh run list` — the check-state source for the `checks` janitor. |
+| Permission    | Access         | Why                                                             |
+| ------------- | -------------- | --------------------------------------------------------------- |
+| Metadata      | Read-only      | Mandatory for every other permission.                           |
+| Contents      | Read and write | Clone the repo, push branches.                                  |
+| Pull requests | Read and write | Open/update PRs, post PR comments and watermarks.               |
+| Issues        | Read and write | Read `readyLabel`, swap in `processingLabel`, comment.          |
+| Actions       | Read-only      | `gh run list`, the check-state source for the `checks` janitor. |
 
 Leave everything else at _No access_. Add _Workflows: Read and write_ only if
 the agent will edit `.github/workflows/` files.
@@ -97,7 +101,7 @@ the agent will edit `.github/workflows/` files.
 
 Install the App on exactly the repos your tenants point at. Installing it on
 repos outside your fleet widens the blast radius of the App key with no
-operational benefit — Phoebe only reads the tenants it is configured to serve.
+operational benefit. Phoebe only reads the tenants it is configured to serve.
 
 ### Generate and base64 the private key
 
@@ -117,9 +121,9 @@ Add to the deployment `.env`:
 | `PHOEBE_APP_ID`      | The App's numeric id (shown on the App settings page). |
 | `PHOEBE_APP_KEY_B64` | The base64-encoded private key from above.             |
 
-Do **not** set `GH_TOKEN` in the deployment-level `.env` — that is now a
+Do **not** set `GH_TOKEN` in the deployment-level `.env`. That is now a
 per-tenant field (see [Migrating](#7-moving-an-existing-deployment-to-the-app-arm)).
-Each tenant's `GH_TOKEN` is left blank; the supervisor mints a fresh token
+Each tenant's `GH_TOKEN` is left blank; the bootstrapper mints a fresh token
 from the App credentials and hands it to the engine child at boot time.
 
 ### Install only what you serve
@@ -139,13 +143,13 @@ Bot`. The commit identity falls back to a synthesised noreply address
 
 It is a **fallback**, and the lowest rung but one: a repo that declares
 `gitIdentity` in its `phoebe.config.ts`, or a tenant `.env` that sets
-`GIT_AUTHOR_*`, commits under that identity instead — under both arms
-identically ([`configuration.md` → Commit attribution](configuration.md#commit-attribution-gitidentity)).
+`GIT_AUTHOR_*`, commits under that identity instead, identically under both arms
+([`configuration.md` → Commit attribution](configuration.md#commit-attribution-gitidentity)).
 The API author is still the bot; commit authorship and API authorship are
 independent, as they already are on the `pat` arm.
 
-Vouch reads the `.github/VOUCHED.td` file only for human handles — a bot
-handle ending in `[bot]` resolves automatically to `trusted` without reading
+Vouch reads the `.github/VOUCHED.td` file only for human handles. A bot handle
+ending in `[bot]` resolves to `trusted` on its own, without reading
 the file. There is no step to take here.
 
 ### Reviews and branch protection
@@ -160,8 +164,8 @@ PR.
 Two configuration-dependent caveats:
 
 - With `dismiss_stale_reviews_on_push` set to true, a bot push after an
-  approval dismisses that approval — which is the shape of a fixup commit on
-  an already-approved PR.
+  approval dismisses that approval, which is the shape of a fixup commit on an
+  already-approved PR.
 - With `require_last_push_approval` set to true, the bot being the last
   pusher requires a further approval.
 
@@ -170,13 +174,13 @@ your repo's branch protection before relying on the flow above.
 
 ### What you see
 
-At boot, the supervisor's log line includes the arm tally (`app: N tenants`).
+At boot, the bootstrapper's log line includes the arm tally (`app: N tenants`).
 `phoebe list` shows an `arm` column; tenants on the App arm show `app`. A
 tenant that failed to mint a token shows `held — mint failed: <reason>` in
 place of the current unit.
 
 To diagnose a tenant's token before a 403 lands mid-run, use
-`scripts/verify-tenant-token.mjs` — on the App arm it reports a third verdict,
+`scripts/verify-tenant-token.mjs`. On the App arm it reports a third verdict,
 `unverifiable`, for grants the probe cannot confirm without a live write.
 
 ## 5. Capacity
@@ -192,7 +196,7 @@ An App installation holds **two** independent rate-limit pools:
 
 Phoebe's poll path is overwhelmingly GraphQL. **`graphql` is the binding
 budget**, not `core`. Minting is JWT-authenticated and carries no rate-limit
-headers at all — minting is free and does not draw from either pool.
+headers at all, so minting is free and draws from neither pool.
 
 ### The formula
 
@@ -237,14 +241,14 @@ against the same per-tenant cost. An org installation at the default interval
 supports roughly 25 active tenants (2 PRs each) before hitting the ceiling.
 
 **Splitting across installations.** Tenants under different owners already land
-on different installations for free — rate budgets are per-installation, so a
-multi-owner fleet is naturally partitioned. Running deliberately separate
+on different installations for free. Rate budgets are per-installation, so a
+multi-owner fleet partitions itself. Running deliberately separate
 installations for same-owner tenants is possible but not supported: past that
 point you are running multiple independent deployments.
 
-**Rotation** happens over the supervisor-to-child channel with no restart and
-nothing to configure — it is not operator-facing, and it does **not** reset the
-rate budget. The budget belongs to the installation; a rotated key mints tokens
+**Rotation** happens over the bootstrapper-to-child channel with no restart and
+nothing to configure. It is not operator-facing, and it does **not** reset the
+rate budget. The budget belongs to the installation, so a rotated key mints tokens
 against the same installation.
 
 ## 6. Revoking
@@ -254,8 +258,8 @@ Three levers, each with a different blast radius:
 **Uninstall from one repo.** The installation stays on sibling repos; only
 that tenant's tokens die. Existing tokens live up to sixty minutes. After that,
 the tenant's next poll fails to resolve the installation, the tenant does not
-spawn, and the log explains why. No config edit is needed — revocation is
-self-healing. The next restart picks up the updated installation set.
+spawn, and the log explains why. No config edit is needed, because revocation
+heals itself. The next restart picks up the updated installation set.
 
 **Regenerate the App key and update the deployment env-file.** Minting new
 tokens becomes possible again only with the new key. Existing tokens live up to
@@ -267,8 +271,8 @@ it expires within the hour. Nothing restarts on its own after this; the
 deployment needs a new credential before it can serve any tenant.
 
 **The sixty-minute TTL is the floor on any revocation response.** There is no
-revoke-now for an already-minted token — once minted, a token's expiry is
-fixed at sixty minutes from issue time. Plan incident response around the
+revoke-now for an already-minted token. Once minted, a token's expiry is fixed at
+sixty minutes from issue time. Plan incident response around the
 possibility of up to an hour of residual access.
 
 ## 7. Moving an existing deployment to the App arm
@@ -282,8 +286,8 @@ Migration steps:
 1. Register the App and install it on the repos already supervised
    (§[3](#3-registering-the-app)).
 2. Add `PHOEBE_APP_ID` and `PHOEBE_APP_KEY_B64` to the deployment `.env`.
-3. Blank each tenant's `GH_TOKEN` in its `.env` — leave the key present but
-   empty. The supervisor treats a blank `GH_TOKEN` on the App arm as "mint one
+3. Blank each tenant's `GH_TOKEN` in its `.env`, leaving the key present but
+   empty. The bootstrapper treats a blank `GH_TOKEN` on the App arm as "mint one
    for me".
 4. Restart the deployment.
 
@@ -296,7 +300,7 @@ Migration steps:
   installation.
 
 This is **not** an engine-version migration and has no entry in
-[`upgrading.md`](upgrading.md) — nothing about the engine changes.
+[`upgrading.md`](upgrading.md), because nothing about the engine changes.
 
 ## 8. Related work
 

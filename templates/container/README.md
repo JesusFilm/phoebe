@@ -1,7 +1,10 @@
-# Container mount — workspace root
+# Container mount, workspace root
 
-The compose file binds the **entire deployment directory** (the parent of
-`container/`) into the container at `/etc/phoebe` **read-only**:
+**Who this is for:** anyone running a workspace deployment, where one container
+serves several repositories. It explains what the mount has to contain and why.
+
+The compose file binds the entire deployment directory, meaning the parent of
+`container/`, into the container at `/etc/phoebe` read-only:
 
 ```yaml
 volumes:
@@ -9,7 +12,7 @@ volumes:
 working_dir: /etc/phoebe
 ```
 
-That mount model is deliberate: one directory mount, so `phoebe boot` re-walks
+One directory mount rather than one per child. That way `phoebe boot` re-walks
 the tree every poll and sees children come and go without a recreate.
 
 ## Workspace specifics
@@ -17,8 +20,8 @@ the tree every poll and sees children come and go without a recreate.
 ### Keep each child's `.git` on the mount
 
 The child-origin cross-check reads each child's `remote.origin.url`, so keep
-`.git` on the mounted path — don't exclude it (e.g. no bind that stops at the
-working tree only). Where the origin lives depends on how the child is checked
+`.git` on the mounted path. Do not exclude it, and do not use a bind that stops
+at the working tree. Where the origin lives depends on how the child is checked
 out:
 
 ```text
@@ -26,16 +29,16 @@ out:
 .git/modules/<child>/config      # submodule
 ```
 
-This check is a **best-effort** safety net, not a hard requirement: with no
-`.git` on the mount, the child's config `repoSlug` is taken as authoritative.
-Keeping `.git` present just lets Phoebe catch a checkout pointed at the wrong
-remote.
+The check is a safety net rather than a requirement. With no `.git` on the
+mount, the child's config `repoSlug` is taken as authoritative. Keeping `.git`
+present lets Phoebe catch a checkout pointed at the wrong remote.
 
 ### Materialize child checkouts before boot
 
-Phoebe never runs `git` in the workspace tree — you place each child checkout on
-disk. Empty or unmaterialized child directories are **skip-and-warned** tenants:
-boot continues, that child is not supervised until the checkout exists.
+Phoebe never runs `git` in the workspace tree. You place each child checkout on
+disk yourself. An empty or unmaterialized child directory is a **skip-and-warn**
+tenant: boot carries on, and that child goes unsupervised until the checkout
+exists.
 
 A plain clone is material the moment you `git clone` it. If your children are
 submodules, populate them before `docker compose up`:
@@ -44,7 +47,7 @@ submodules, populate them before `docker compose up`:
 git submodule update --init --recursive
 ```
 
-Then start the container from `container/` as usual (with `--env-file ../.env`).
+Then start the container from `container/` as usual, with `--env-file ../.env`.
 
 ### What lands on the mount
 
@@ -56,12 +59,12 @@ Then start the container from `container/` as usual (with `--env-file ../.env`).
 | `<child>/.git/` (or root `.git/modules/` for submodules) | Origin metadata for the best-effort cross-check |
 | `container/` | Image + compose (this directory) |
 
-The root `.env` holds **deployment** secrets (`GH_TOKEN` for the engine
-checkout, default provider keys, runtime toggles). Per-child secrets live in
-each child's `.env`; the fleet env-scrub hands each engine child only its own.
+The root `.env` holds deployment secrets: `GH_TOKEN` for the engine checkout,
+default provider keys, and runtime toggles. Per-child secrets live in each
+child's `.env`, and the fleet env-scrub hands each engine child only its own.
 
 ### Read-only means host checkouts are never written
 
-The local checkout tree is discovery + config only. Each tenant is still
-cloned privately under `/data/repos/<owner>/<repo>/`. The `:ro` flag is the
-hard guarantee that the host workspace is never a working copy.
+The local checkout tree is for discovery and config, nothing else. Phoebe still
+clones each tenant privately under `/data/repos/<owner>/<repo>/`. The `:ro` flag
+is what guarantees the host workspace is never a working copy.
