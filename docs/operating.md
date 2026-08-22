@@ -172,9 +172,16 @@ App installation.
 
 **Branch-protection note (both arms).** If the repo enables
 `dismiss_stale_reviews_on_push` or `require_last_push_approval`, Phoebe's push
-after the agent commits voids any review approval on the PR, because the pusher
-and reviewer resolve to the same identity. This is inherent to how GitHub applies
-those settings and is not specific to either credential arm.
+after the agent commits interacts with each one differently.
+`dismiss_stale_reviews_on_push` dismisses the existing approvals outright, so the
+PR needs a fresh one. `require_last_push_approval` keeps them, but requires
+someone other than the last pusher to approve the newest push. Under the PAT arm
+Phoebe pushes as the `GH_TOKEN` owner, so an operator who approved earlier cannot
+satisfy that themselves. Under the App arm Phoebe pushes as the bot, which is a
+separate identity from the operator, so a human approval still counts.
+
+Either way this is GitHub applying its own settings, not Phoebe doing something
+unusual.
 
 `node scripts/verify-tenant-token.mjs` says which grant is missing, before
 Phoebe runs.

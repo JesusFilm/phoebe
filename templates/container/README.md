@@ -25,13 +25,19 @@ at the working tree. Where the origin lives depends on how the child is checked
 out:
 
 ```text
-<child>/.git/config              # plain clone / worktree
-.git/modules/<child>/config      # submodule
+<child>/.git/config              # plain clone: .git is a directory
+<child>/.git  ->  ../.git/modules/<child>/config   # submodule: .git is a file pointing at the root
+<child>/.git  ->  <main-checkout>/.git/config      # linked worktree: .git is a file, resolved via commondir
 ```
 
-The check is a safety net rather than a requirement. With no `.git` on the
-mount, the child's config `repoSlug` is taken as authoritative. Keeping `.git`
-present lets Phoebe catch a checkout pointed at the wrong remote.
+Only the plain clone keeps `config` under `<child>/.git/` directly. A submodule
+and a linked worktree both have a `.git` **file** that points elsewhere, so the
+directory it resolves to has to be on the mount too, or the lookup fails.
+
+The check is a safety net rather than a requirement. If the resolved git
+directory is not visible in the container, the child's config `repoSlug` is taken
+as authoritative. Keeping it present lets Phoebe catch a checkout pointed at the
+wrong remote.
 
 ### Materialize child checkouts before boot
 
@@ -56,12 +62,16 @@ Then start the container from `container/` as usual, with `--env-file ../.env`.
 | `phoebe.config.ts` | Root only: `engine` + `workspace: { depth }` |
 | `<child>/phoebe.config.ts` | Authoritative per-tenant config (`repoSlug`, …) |
 | `<child>/.env` | Per-tenant secrets (gitignored on the host) |
-| `<child>/.git/` (or root `.git/modules/` for submodules) | Origin metadata for the best-effort cross-check |
+| `<child>/.git` and whatever it resolves to | Origin metadata for the best-effort cross-check. A directory for a plain clone, a file pointing at the root `.git/modules/` or the main checkout otherwise |
 | `container/` | Image + compose (this directory) |
 
-The root `.env` holds deployment secrets: `GH_TOKEN` for the engine checkout,
-default provider keys, and runtime toggles. Per-child secrets live in each
-child's `.env`, and the fleet env-scrub hands each engine child only its own.
+The root `.env` holds deployment secrets: `GH_TOKEN` for the engine checkout and
+the `PHOEBE_*` runtime toggles.
+
+**Put each child's provider key in that child's own `.env`.** The env-scrub builds
+every engine child's environment from its co-located `.env`, so a provider key
+sitting only at the root never reaches a tenant, and a child without one has no
+key for its provider.
 
 ### Read-only means host checkouts are never written
 

@@ -43,8 +43,7 @@ the field reference.
 Net effect: the committed `phoebe.config.ts` names **only the toolchain fields**.
 Everything that governs _what Phoebe does_ stays on the engine defaults: the
 order of work kinds, which PRs it touches, the labels it reads, the prompts it
-runs. So
-so a `phoebe-agent` upgrade picks up any new defaults automatically
+runs. So a `phoebe-agent` upgrade picks up any new defaults automatically
 ([why a minimal config stays current](upgrading.md#upgrading)).
 
 ## 1. Prerequisites
@@ -288,9 +287,9 @@ in **persistent mode**; `--run-once` handles at most one `issues` unit
 #N` in a body to sequence dependents; `ready-for-human` (or mark a non-Phoebe PR
   draft) to take a PR back. Full operator manual: [`operating.md`](operating.md).
 - **Upgrade** by editing `engine.ref` in `phoebe.config.ts`. The running container
-  drains the engine and relaunches on the new ref within a reconcile
-  interval, no rebuild and no restart. Edit it **in place**: the config is
-  bind-mounted as a single file, so a save-by-rename (or a `git pull`) needs
-  `docker compose --env-file ../.env up -d --force-recreate` to be picked up. The
-  minimal config means new engine defaults land automatically
+  drains the engine and relaunches on the new ref within a reconcile interval,
+  without rebuilding or restarting the container. The whole deployment directory
+  is mounted, so it does not matter how you write the file: an in-place edit, a
+  save-by-rename, and a `git pull` are all picked up. The minimal config means
+  new engine defaults land automatically
   ([upgrading.md](upgrading.md#upgrading)).

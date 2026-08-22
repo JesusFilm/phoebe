@@ -84,8 +84,8 @@ real release regardless.
 
 - **`id-token: write`** permission. This mints the OIDC token npm exchanges for auth.
 - **npm 11.5.1 or newer.** Trusted publishing and automatic provenance both need
-  it, and the workflow runs `npm install -g npm@latest` because the pinned Node
-  ships an older npm. `changeset publish` shells out to `npm publish` rather than
+  it, and the workflow runs `npm install -g npm@11` because the pinned Node ships
+  an older npm. `changeset publish` shells out to `npm publish` rather than
   `pnpm publish`, so this global npm is the one that authenticates. That also
   sidesteps the pnpm 11.x OIDC regression
   ([pnpm/pnpm#11513](https://github.com/pnpm/pnpm/issues/11513)).

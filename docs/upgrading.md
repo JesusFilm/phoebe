@@ -182,9 +182,11 @@ The gap is livable because the apply path has the same safety net: nothing
 commits, failed children revert, and the ref flip lands last. If a migration
 leaves the root config invalid the flip is aborted; if a child fails or has a
 dirty tree it is skipped with instructions to re-run. The recorded escape hatch
-is `upgrade --check --migrations`, a clean later addition that previews the
-target ref's migrations without applying them. Nobody should re-litigate this as
-an oversight.
+would be a preview flag on `upgrade` that ran the target ref's migrations without
+applying them. No such flag exists today: `upgrade` accepts `--engine`, `--cli`,
+`--both`, `--check`, `--json`, and `--config`, and rejects anything else.
+`migrate --check` previews migrations for the ref you are already on, not the
+target.
 
 However the edit happens, applying it works the same way:
 
@@ -193,13 +195,12 @@ running `boot` notices the config changed and `SIGTERM`s the engine, which
 finishes its current work unit and starts no new one. Boot then checks out the new ref, and
 relaunches. Same container, no rebuild, no restart, no interrupted work unit.
 
-> **How you write the file matters.** `compose.yml` bind-mounts
-> `phoebe.config.ts` as a single file, which pins the host **inode**. A write
-> that replaces the file, which covers most editors' atomic save and what `git pull` does,
-> leaves the container looking at the old inode forever, so the watch never
-> fires. Either edit in place, or follow the write with
-> `docker compose --env-file ../.env up -d --force-recreate`, which is a normal
-> deploy step anyway. Editing in place is what makes the no-restart path work.
+> **How you write the file no longer matters.** `compose.yml` mounts the whole
+> deployment directory at `/etc/phoebe`, not `phoebe.config.ts` on its own. An
+> in-place edit, an editor's atomic save, and a `git pull` are all visible inside
+> the container, and all of them fire the reconcile watch. The single-file mount
+> this used to describe pinned the host inode and did need a
+> `--force-recreate`; the directory mount is what replaced it.
 
 Tracking a branch upgrades the same way with no edit at all: boot polls
 `git ls-remote` and relaunches when the tip moves.
@@ -519,12 +520,11 @@ A few properties the templates rely on. Keep them intact when you customise:
 - **The config is type-only.** The scaffolded `phoebe.config.ts` is imported by
   `boot` from a container mount with no reachable `node_modules`, so every
   import in it must be `import type`, because a value import cannot resolve there.
-- **Config + prompts are mounted read-only.** `compose.yml` mounts
-  `phoebe.config.ts` and `prompts/` into `/etc/phoebe` read-only, so boot
-  re-reads edits **without a rebuild**. Note that a single-file bind mount pins
-  the host inode: an editor that saves by renaming a new file over the old one
-  is invisible inside the container, so edit in place or
-  `docker compose up -d --force-recreate` afterwards.
+- **Config + prompts are mounted read-only.** `compose.yml` mounts the whole
+  deployment directory into `/etc/phoebe` read-only, so boot re-reads edits
+  **without a rebuild**. Because it is a directory mount rather than a
+  single-file one, a save-by-rename and a `git pull` are both picked up, with no
+  `--force-recreate`.
 - **The workload runs unprivileged.** The image creates a `phoebe` user
   (uid 10001) and ends with `USER phoebe`, so `boot`, the engine, the agent
   child, and your repo's install/check/test commands all run as it. Two things

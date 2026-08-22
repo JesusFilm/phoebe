@@ -53,9 +53,10 @@ docker compose --env-file ../.env up -d                                  # start
 
 The container's main process is `phoebe boot`: it checks the engine out at the
 ref your config names, runs it, and keeps supervising it. Upgrading is an edit to
-`engine.ref`, with no rebuild and no restart. The deployment dir is bind-mounted
-as a directory, so an in-place edit or a `git pull` is picked up on the next
-poll.
+`engine.ref`, without rebuilding or restarting the container. Boot drains the
+running engine and relaunches it on the new ref. The deployment dir is
+bind-mounted as a directory, so an in-place edit or a `git pull` is picked up on
+the next poll.
 
 **Multiple repos in one container.** You don't need one Phoebe per repo: run at
 a workspace root whose child repos are checked out as child directories, either

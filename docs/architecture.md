@@ -52,15 +52,17 @@ _would_ do (`phoebe --dry-run --run-once`) without booting the container.
 
 ## Named volumes
 
-Four named volumes hold all persistent state (declared in `compose.yml`; the
-first three are defaulted in `config.paths`):
+Two named volumes hold all persistent state, declared in `compose.yml`. Tenant
+paths under `phoebe-data` are derived from `repoSlug` rather than configured:
 
-| Volume             | Mount             | Config field         | Holds                                                            |
-| ------------------ | ----------------- | -------------------- | ---------------------------------------------------------------- |
-| `phoebe-repo`      | `/data/repo`      | `paths.repoDir`      | The private clone (the origin hub).                              |
-| `phoebe-worktrees` | `/data/worktrees` | `paths.worktreesDir` | Per-work-unit git worktrees.                                     |
-| `phoebe-state`     | `/data/state`     | `paths.stateDir`     | Lock, watermarks, crash-loop state, logs.                        |
-| `phoebe-engine`    | `/data/engine`    | `PHOEBE_ENGINE_DIR`  | Engine checkouts, so a restart re-fetches instead of re-cloning. |
+| Volume          | Mount          | Holds                                                                                                |
+| --------------- | -------------- | ---------------------------------------------------------------------------------------------------- |
+| `phoebe-data`   | `/data/repos`  | Every tenant's state, nested as `/data/repos/<owner>/<repo>/{repo,worktrees,state}`.                 |
+| `phoebe-engine` | `/data/engine` | The shared engine checkout and the crash-loop record, so a restart re-fetches instead of re-cloning. |
+
+`PHOEBE_DATA_DIR` overrides the `/data/repos` base for host and dev runs. See
+[`configuration.md`](configuration.md#container-paths-derived-not-configured)
+for the full derived layout.
 
 The consumer's deployment directory (config, optional `prompts/`, and in
 multi-tenant layouts the whole tenant tree) is mounted **read-only** into
@@ -69,7 +71,7 @@ and workspace (child checkouts) both use that directory mount; see
 [`workspace.md`](workspace.md) for workspace topology and the operator
 runbook.
 
-All four mount points are created and chowned to the unprivileged `phoebe` user
+Both mount points are created and chowned to the unprivileged `phoebe` user
 **in the image**, because Docker seeds a fresh named volume from the image's
 contents at that path, ownership included. A mount point the image does not
 declare is created `root:root` and is unwritable to the workload. See the
@@ -81,7 +83,7 @@ All local git state lives in the private clone; work units never operate on it
 directly. Instead, each unit runs in its own **git worktree** created off the
 clone (`src/git-model.ts`):
 
-1. `ensureClone` clones `repoUrl` into `/data/repo` once; later cycles reuse it.
+1. `ensureClone` clones `repoUrl` into `/data/repos/<owner>/<repo>/repo` once; later cycles reuse it.
 2. Each cycle `git fetch origin` refreshes the clone.
 3. For a unit, `prepareWorktree` removes any stale worktree for the branch and
    adds a fresh one:
@@ -158,7 +160,8 @@ last-good **while it is still running**, so an engine up for weeks that is then
 killed outright still leaves a fallback target behind.
 
 The record holds the last-good SHA, the quarantined SHA, and the crash count. It
-is JSON in `paths.stateDir` (`engine-crash-loop.json`), so it survives the container restart
+is JSON at `/data/engine/engine-crash-loop.json` on the `phoebe-engine` volume,
+deployment-global rather than per-tenant, so it survives the container restart
 a crash-looping engine causes. The guard is inert unless the engine ref is a
 **moving branch** (a local mount has no commit to pin; a pinned SHA or tag means
 the operator chose that exact commit, and quietly serving a different one would

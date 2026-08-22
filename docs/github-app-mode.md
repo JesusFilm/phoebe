@@ -189,14 +189,19 @@ To diagnose a tenant's token before a 403 lands mid-run, use
 
 An App installation holds **two** independent rate-limit pools:
 
-| Resource  | Limit    | What uses it                   |
-| --------- | -------- | ------------------------------ |
-| `core`    | 5 000/hr | REST endpoints, minting tokens |
-| `graphql` | 5 000/hr | GraphQL queries                |
+| Resource  | Limit    | What uses it    |
+| --------- | -------- | --------------- |
+| `core`    | 5 000/hr | REST endpoints  |
+| `graphql` | 5 000/hr | GraphQL queries |
 
-Phoebe's poll path is overwhelmingly GraphQL. **`graphql` is the binding
-budget**, not `core`. Minting is JWT-authenticated and carries no rate-limit
-headers at all, so minting is free and draws from neither pool.
+Phoebe's poll path is overwhelmingly GraphQL, so `graphql` is the binding budget
+rather than `core`.
+
+Minting an installation token is authenticated with the App's JWT rather than
+with an installation token, so it is billed against the App's own limit and not
+against either pool above. Treat it as cheap rather than free: the numbers below
+count poll traffic only, and if you are sizing a very large fleet, measure
+minting separately rather than assuming it is unmetered.
 
 ### The formula
 

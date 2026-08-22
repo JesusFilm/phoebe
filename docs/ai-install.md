@@ -28,7 +28,7 @@ npx --yes phoebe-agent init
 ```
 
 That drops these files into place. Re-running is safe, because existing files are
-skipped):
+skipped:
 
 - `phoebe.config.ts`, the consumer config. Edit `repoSlug`, `repoUrl`, and the
   three toolchain commands.
@@ -122,12 +122,11 @@ credentials from `GH_TOKEN` so private-repo clones and pushes authenticate.
 
 Edit `engine.ref` in `phoebe.config.ts`. The running container picks it up within
 a reconcile interval (default 60s) and relaunches the engine at the next
-work-unit boundary, with no rebuild and no restart. Rebuild only when the _image_
-changes.
+work-unit boundary, without rebuilding or restarting the container. Rebuild only
+when the _image_ changes.
 
-Edit the file **in place**. `compose.yml` bind-mounts it as a single file, which
-pins the host inode, so a write that replaces the file is invisible inside the
-container and the watch never fires. Most editors' atomic save does that, and so
-does `git pull`. After that kind of write, run
-`docker compose --env-file ../.env up -d --force-recreate`. See
-[`upgrading.md`](upgrading.md#upgrading).
+How you write the file does not matter. `compose.yml` mounts the whole deployment
+directory at `/etc/phoebe`, so an in-place edit, an editor's atomic save, and a
+`git pull` are all visible inside the container and all fire the reconcile watch.
+No `--force-recreate` is needed, and running one would interrupt whatever work
+unit is in flight. See [`upgrading.md`](upgrading.md#upgrading).
