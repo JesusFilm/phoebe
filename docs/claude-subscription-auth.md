@@ -1,23 +1,27 @@
 # Running Claude under a subscription (Pro / Max)
 
+**Who this is for:** an operator with a Claude Pro or Max plan who would rather
+not pay per token. It answers how to point the `claude` provider at a
+subscription, and what that costs you in sharp edges.
+
 By default Phoebe authenticates the `claude` provider with an Anthropic **API
 key** (`ANTHROPIC_API_KEY`), billed pay-as-you-go per token. If you have a
 Claude **Pro or Max subscription**, you can instead have the containerised
-Claude Code CLI run under that subscription — the same plan you use
-interactively — so agent runs draw on your subscription's usage limits rather
+Claude Code CLI run under that subscription, the same plan you use
+interactively, so agent runs draw on your subscription's usage limits rather
 than API billing.
 
 This needs **no engine code change**. Phoebe already forwards exactly one env
-var per provider to the agent child — `providerEnv[provider]` in
-`src/agent-env.ts` — so switching Claude from an API key to a subscription token
-is a config + env-file change, plus making sure the Claude CLI is in your image.
+var per provider to the agent child, `providerEnv[provider]` in
+`src/agent-env.ts`, so switching Claude from an API key to a subscription token
+is a config and env-file change, plus making sure the Claude CLI is in your image.
 
 > **Which auth wins.** The container's Claude CLI accepts a subscription in two
 > forms: a long-lived OAuth **token** in `CLAUDE_CODE_OAUTH_TOKEN`, or the
 > **credentials file** it writes at login (`~/.claude/.credentials.json`).
 > Because Phoebe forwards only the single var named in `providerEnv.claude`,
 > pointing that at `CLAUDE_CODE_OAUTH_TOKEN` means `ANTHROPIC_API_KEY` is never
-> handed to the agent at all — no ambiguity about which credential is used.
+> handed to the agent at all, so there is no ambiguity about which credential is used.
 > Do **not** run the provider with `claude --bare`: bare mode ignores OAuth and
 > keychain and accepts only `ANTHROPIC_API_KEY`. Phoebe's `claude` provider
 > (`src/providers/providers.ts`) does not use `--bare`, so OAuth is honoured.
@@ -28,7 +32,7 @@ existing on-disk login) is documented for completeness and for air-gapped cases.
 
 ---
 
-## Approach A — a long-lived subscription token (recommended)
+## Approach A, a long-lived subscription token (recommended)
 
 The Claude CLI can mint a long-lived OAuth token for exactly this purpose:
 
@@ -38,7 +42,7 @@ claude setup-token   # "Set up a long-lived authentication token (requires Claud
 
 You run this **once on your workstation**, sign in with your Pro/Max account,
 and it prints a token (`sk-ant-oat01-…`). That token then travels into the
-container as an ordinary environment variable — the same delivery path Phoebe
+container as an ordinary environment variable, the same delivery path Phoebe
 already uses for every provider secret (compose `--env-file` → `process.env` →
 the per-provider allowlist).
 
@@ -96,7 +100,7 @@ under your subscription.
 
 ---
 
-## Approach B — hoist your existing on-disk login
+## Approach B, hoist your existing on-disk login
 
 If you'd rather reuse the login the CLI already holds on your machine instead of
 minting a token, you can carry its credential file into the container. When you
@@ -104,7 +108,7 @@ minting a token, you can carry its credential file into the container. When you
 OAuth grant to:
 
 ```
-~/.claude/.credentials.json      # mode 0600 — access token, refresh token, expiry, scopes
+~/.claude/.credentials.json      # mode 0600: access token, refresh token, expiry, scopes
 ```
 
 The container's Claude CLI looks for that file under **its** `$HOME`, which the
@@ -112,15 +116,15 @@ image sets to `/home/phoebe` (`ENV HOME=/home/phoebe`, user `phoebe`, uid
 `10001`). So the file has to land at `/home/phoebe/.claude/.credentials.json`,
 readable by uid `10001`.
 
-This is workable but has sharper edges than Approach A — read these before
-choosing it:
+This works, but it has sharper edges than Approach A. Read these before choosing
+it:
 
 - **Ownership.** A straight bind-mount of `~/.claude/.credentials.json` carries
   your **host** uid (e.g. `1000`), while the container runs as `phoebe`
   (`10001`). At mode `0600` the container user then can't read it. You must
   either copy the file into a location the image chowns to `phoebe`, or seed it
-  into a named volume with the right ownership — not just `-v
-~/.claude:/home/phoebe/.claude`.
+  into a named volume with the right ownership. A bare `-v
+~/.claude:/home/phoebe/.claude` is not enough.
 - **Short-lived token + refresh.** The access token in that file expires in
   hours; the CLI refreshes it in place using the refresh token. In a container
   that refresh only survives if `/home/phoebe/.claude` is writable **and
@@ -139,7 +143,7 @@ If you accept those, the delivery shapes are:
   a correctly-owned `.credentials.json` into `/home/phoebe/.claude` inside it,
   and mount it there for the container.
 
-Because refresh-in-place makes this fragile for a long-lived daemon, prefer
+Because refresh-in-place makes this fragile for a long-lived deployment, prefer
 Approach A for anything you're not actively babysitting.
 
 ---
@@ -154,16 +158,16 @@ Approach A for anything you're not actively babysitting.
   reading another's `/proc/<pid>/environ` covers this token too.
 - **Never bake it into the image.** Both the token and the credentials file are
   secrets and belong on the env-file / a runtime mount, delivered via compose
-  `--env-file` — never a `COPY` or build `ARG`.
+  `--env-file`, never a `COPY` or build `ARG`.
 - **Rotation.** To revoke, remove the token from the env-file (and revoke it in
   your Claude account) and restart. A `setup-token` token is long-lived but not
   eternal; if agent runs start failing auth, mint a fresh one and re-run the
   helper.
 - **Terms of use.** Subscription auth is intended for individual use. A
-  persistent, unattended Phoebe deployment — especially multi-tenant or on
-  shared infrastructure — is squarely what the API tier exists for; keep the
+  persistent, unattended Phoebe deployment is what the API tier exists for, and
+  that goes double for multi-tenant or shared infrastructure. Keep the
   subscription path for your own single-operator instances and use an API key
-  where the API tier is the right fit.
+  everywhere else.
 
 ## Verify it worked
 

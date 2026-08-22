@@ -1,7 +1,11 @@
-# ai install
+# AI install
+
+**Who this is for:** an agent or a person installing Phoebe into a repository
+for the first time. It answers what to run, in what order, to get from nothing to
+a running container.
 
 Deterministic runbook for installing Phoebe into a target repository. Execute
-top to bottom — no `vp` is assumed on the target side.
+top to bottom. It assumes no `vp` on the target side.
 
 ## Prerequisites
 
@@ -9,7 +13,7 @@ top to bottom — no `vp` is assumed on the target side.
 - `git`, `gh` (GitHub CLI), Docker + Docker Compose on the host that will run
   the container.
 - A GitHub token in `GH_TOKEN`: a fine-grained PAT (the five grants listed in
-  [onboarding §2](phoebe-core-onboarding.md#2-operator-github-token--a-fine-grained-pat)),
+  [onboarding §2](phoebe-core-onboarding.md#2-operator-github-token-a-fine-grained-pat)),
   or a GitHub App installation token for multi-repo deployments
   ([`github-app-mode.md`](github-app-mode.md)).
 - An API key for whichever agent provider you plan to use
@@ -23,17 +27,17 @@ From the root of the repo that Phoebe will work:
 npx --yes phoebe-agent init
 ```
 
-That drops these files into place (safe to re-run — existing files are
-skipped):
+That drops these files into place. Re-running is safe, because existing files are
+skipped:
 
-- `phoebe.config.ts` — consumer config. Edit `repoSlug`, `repoUrl`, and the
+- `phoebe.config.ts`, the consumer config. Edit `repoSlug`, `repoUrl`, and the
   three toolchain commands.
-- `prompts/` — copies of the shipped agent prompts. Edit any of them to
+- `prompts/`, copies of the shipped agent prompts. Edit any of them to
   override; leave them as-is to use the defaults.
-- `.env.example` — copy to `.env` and fill in secrets.
-- `.gitignore` — Phoebe entries appended additively.
+- `.env.example`, which you copy to `.env` and fill in with secrets.
+- `.gitignore`, with Phoebe entries appended rather than replacing what is there.
 - `container/Dockerfile`, `container/compose.yml`,
-  `container/compose.local.yml` — the runtime image and its compose files.
+  `container/compose.local.yml`, the runtime image and its compose files.
   Consumer-owned; commit them.
 
 Point `phoebe init` at a subdirectory when you want the runtime out of the
@@ -70,7 +74,7 @@ cannot resolve.
 
 ## 3. Pin the engine version
 
-`engine.ref` above is the pin, and it is the only one — the image carries the
+`engine.ref` above is the pin, and it is the only one. The image carries the
 bootstrapper, not the engine. Use a released tag (or a full SHA) in a real
 deployment; `main` follows the tip and relies on the crash-loop fallback as its
 safety net. See [`upgrading.md`](upgrading.md#pinning-the-engine-version).
@@ -79,7 +83,7 @@ safety net. See [`upgrading.md`](upgrading.md#pinning-the-engine-version).
 
 The scaffolded `.env` lives at the repo root while the compose files live in
 `container/`, so pass `--env-file ../.env` on every Compose command run from
-there — otherwise Compose only auto-loads a `.env` sitting beside the compose
+there. Otherwise Compose only auto-loads a `.env` sitting beside the compose
 file and misses `GH_TOKEN` and the provider keys.
 
 ```bash
@@ -101,7 +105,7 @@ somewhere with `0600`, is not.
 chmod o+r ../phoebe.config.ts && chmod -R o+rX ../prompts
 ```
 
-## 5. Start the persistent daemon
+## 5. Start persistent mode
 
 ```bash
 docker compose --env-file ../.env up -d
@@ -118,12 +122,11 @@ credentials from `GH_TOKEN` so private-repo clones and pushes authenticate.
 
 Edit `engine.ref` in `phoebe.config.ts`. The running container picks it up within
 a reconcile interval (default 60s) and relaunches the engine at the next
-work-unit boundary — no rebuild and no restart. Rebuild only when the _image_
-changes.
+work-unit boundary, without rebuilding or restarting the container. Rebuild only
+when the _image_ changes.
 
-Edit the file **in place**. `compose.yml` bind-mounts it as a single file, which
-pins the host inode, so a write that replaces the file — most editors' atomic
-save, and what `git pull` does — is invisible inside the container and the watch
-never fires. After that kind of write, run
-`docker compose --env-file ../.env up -d --force-recreate`. See
-[`upgrading.md`](upgrading.md#upgrading).
+How you write the file does not matter. `compose.yml` mounts the whole deployment
+directory at `/etc/phoebe`, so an in-place edit, an editor's atomic save, and a
+`git pull` are all visible inside the container and all fire the reconcile watch.
+No `--force-recreate` is needed, and running one would interrupt whatever work
+unit is in flight. See [`upgrading.md`](upgrading.md#upgrading).
