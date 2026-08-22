@@ -111,11 +111,15 @@ export function createWorkSource(opts: {
    * Each issue number is fetched at most once per cycle: already-cached
    * entries are skipped, so the same body is never fetched twice even when
    * several kinds reference the same PR.
+   *
+   * Returns the set of issue numbers whose body could not be read. The
+   * caller must drop any candidate whose issue number appears in this set.
    */
   function populateIssueBodies(
     prs: ReadonlyArray<{ issueNumber?: number; headRefName: BranchRef }>,
     cache: Map<number, string>,
-  ): void {
+  ): Set<number> {
+    const failed = new Set<number>();
     const issueNumbers = [
       ...new Set(
         prs
@@ -125,9 +129,28 @@ export function createWorkSource(opts: {
     ];
     for (const number of issueNumbers) {
       if (!cache.has(number)) {
-        cache.set(number, github.issueBody(number));
+        try {
+          cache.set(number, github.issueBody(number));
+        } catch (error) {
+          console.warn(
+            `[phoebe] Skipping issue body for #${number} this cycle — ${error instanceof Error ? error.message : String(error)}`,
+          );
+          failed.add(number);
+        }
       }
     }
+    return failed;
+  }
+
+  function withReadableBodies<T extends { issueNumber?: number; headRefName: BranchRef }>(
+    candidates: T[],
+    failed: Set<number>,
+  ): T[] {
+    if (failed.size === 0) return candidates;
+    return candidates.filter((pr) => {
+      const n = pr.issueNumber ?? parseIssueNumberFromBranch(pr.headRefName);
+      return n === null || !failed.has(n);
+    });
   }
 
   async function conflictingPrCandidate(
@@ -311,16 +334,25 @@ export function createWorkSource(opts: {
         const result = await gatherConflicts(cycle);
         conflictingPrs = result.conflictingPrs;
         currentMainHead = result.currentMainHead;
-        populateIssueBodies(conflictingPrs, issueBodies);
+        conflictingPrs = withReadableBodies(
+          conflictingPrs,
+          populateIssueBodies(conflictingPrs, issueBodies),
+        );
       } else if (kind === "checks") {
         const result = await gatherChecks(cycle);
         failingCheckPrs = result.failingCheckPrs;
-        populateIssueBodies(failingCheckPrs, issueBodies);
+        failingCheckPrs = withReadableBodies(
+          failingCheckPrs,
+          populateIssueBodies(failingCheckPrs, issueBodies),
+        );
       } else if (kind === "reviews") {
         const result = await gatherReviews(cycle);
         reviewActivityPrs = result.reviewActivityPrs;
         phoebeLogin = result.phoebeLogin;
-        populateIssueBodies(reviewActivityPrs, issueBodies);
+        reviewActivityPrs = withReadableBodies(
+          reviewActivityPrs,
+          populateIssueBodies(reviewActivityPrs, issueBodies),
+        );
       } else if (kind === "issues") {
         const result = gatherIssues();
         issues = result.issues;

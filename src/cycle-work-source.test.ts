@@ -137,7 +137,9 @@ describe("cycle-scoped issue-body cache", () => {
       return "shared body";
     };
 
-    // checks and conflicts kind both reference the same issue number 55.
+    // Both checks and reviews reference the same issue number 55 via the same branch.
+    // The PR is MERGEABLE/CLEAN so both gatherers produce a candidate and both try to
+    // populate the issue body — the cache must prevent the second fetch.
     const branch = issueBranch(55);
     const sha = asSha("c".padEnd(40, "0"));
 
@@ -148,8 +150,8 @@ describe("cycle-scoped issue-body cache", () => {
           number: prNumber,
           headRefName: branch,
           headRefOid: sha,
-          mergeable: "CONFLICTING",
-          mergeStateStatus: "DIRTY",
+          mergeable: "MERGEABLE",
+          mergeStateStatus: "CLEAN",
         }),
       prCommentBodies: () => [],
       resolveLogin: () => "phoebe-bot",
@@ -174,10 +176,62 @@ describe("cycle-scoped issue-body cache", () => {
       defaultBranchRef: issueBranch(99),
     });
 
-    // conflicts will gather PR #10 (CONFLICTING → candidate) and populate issue body 55.
-    // checks will try to gather the same PR but mergeInfo says CONFLICTING so it's skipped.
-    // The issue body for 55 should only be fetched once.
-    await workSource.gatherCycle(["conflicts", "checks"]);
+    // checks produces PR #10 as a failing-check candidate (populates body 55).
+    // reviews also produces PR #10 as a candidate but the cache blocks a second fetch.
+    await workSource.gatherCycle(["checks", "reviews"]);
     expect(bodyCallCount).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Body-read error isolation: unreadable body drops only that candidate
+// ---------------------------------------------------------------------------
+
+describe("issue-body error isolation", () => {
+  test("unreadable body drops the candidate but gather completes", async () => {
+    const branch = issueBranch(77);
+    const sha = (n: number) => asSha(`${"e" + n}`.padEnd(40, "0"));
+
+    const cycle: CycleGitHubClient = {
+      openPrs: () => [
+        { number: asPrNumber(20), headRefName: branch, authorLogin: "phoebe-bot" },
+        { number: asPrNumber(21), headRefName: issueBranch(78), authorLogin: "phoebe-bot" },
+      ],
+      mergeInfo: (prNumber: PrNumber) =>
+        Promise.resolve({
+          number: prNumber,
+          headRefName: Number(prNumber) === 20 ? branch : issueBranch(78),
+          headRefOid: sha(Number(prNumber)),
+          mergeable: "MERGEABLE",
+          mergeStateStatus: "CLEAN",
+        }),
+      prCommentBodies: () => [],
+      resolveLogin: () => "phoebe-bot",
+      reviewThreads: () => [],
+    } as unknown as CycleGitHubClient;
+
+    const github: GitHubClient = {
+      forCycle: () => cycle,
+      issueBody: (n: number) => {
+        if (n === 77) throw new Error("not found");
+        return "body for 78";
+      },
+      commitCheckItems: () => failingCheckItems(),
+      blockerPrState: () => ({ open: false, merged: true }),
+      listReadyIssues: () => [],
+      listResearchIssues: () => [],
+    } as unknown as GitHubClient;
+
+    const workSource = createWorkSource({
+      github,
+      originHub: noopOriginHub(),
+      clock: stubClock,
+      env: {},
+      defaultBranchRef: issueBranch(99),
+    });
+
+    const record = await workSource.gatherCycle(["checks"]);
+    // PR #20 (issue 77, unreadable body) is dropped; PR #21 (issue 78) survives.
+    expect(record.failingCheckPrs.map((p) => Number(p.prNumber))).toEqual([21]);
   });
 });
