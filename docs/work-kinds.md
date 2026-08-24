@@ -110,6 +110,11 @@ wayfinder-native selection — no querying of map children, no GitHub native
 `blocked-by`, no assignment-as-claim; those are follow-ups. Double-work
 avoidance relies on branch/PR existence, same as `issues`.
 
+This kind was built against wayfinder's protocol on purpose: research tickets are
+the part of planning that is itself AFK-able. The coupling stops at the label,
+though, and the default is only a default. See
+[`preparing-work.md`](preparing-work.md) for the pipeline this sits at the end of.
+
 **Execution** reuses `runOneIssue` with the `research` prompt: branch off the
 resolved base, run the agent, and — **only when the agent left commits** — push
 and open a PR. The output shape is adaptive, decided by the prompt rather than

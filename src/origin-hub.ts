@@ -97,8 +97,6 @@ export function ensureOriginClone(
   inContainer: boolean,
   git: GitRunner = defaultGit,
 ): void {
-  if (!inContainer) {
-    return;
-  }
-  ensureClone({ repoUrl: config.repoUrl, repoDir: config.paths.repoDir }, git);
+  const repo = inContainer ? config.paths.repoDir : process.cwd();
+  ensureClone({ repoUrl: config.repoUrl, repoDir: repo }, git);
 }
