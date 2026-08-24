@@ -68,20 +68,8 @@ import {
   executionDecision,
   isInsideContainer,
 } from "./execution-gate.ts";
-import {
-  addWorktreeForExistingBranch,
-  addWorktreeForNewBranch,
-  appendTrailerToCommits,
-  commitCount,
-  defaultGit,
-  ensureClone,
-  fetchOrigin as gitFetchOrigin,
-  originBranchSha as gitOriginBranchSha,
-  pushBranch,
-  removeWorktree,
-  worktreeDirForBranch,
-  type GitRunner,
-} from "./git-model.ts";
+import { defaultGit, type GitRunner } from "./git-model.ts";
+import { createOriginHub, ensureOriginClone, type OriginHub } from "./origin-hub.ts";
 import { PROVIDERS } from "./providers/providers.ts";
 import { resolveIssueCoAuthorTrailer } from "./co-author.ts";
 import { runAgent } from "./providers/run-agent.ts";
@@ -278,15 +266,6 @@ function promptShell(cwd: string, parentEnv: NodeJS.ProcessEnv): (command: strin
     });
 }
 
-/**
- * Where this engine's git state lives: in the container, the private clone on
- * the named volume; on the host — where only selection and `--dry-run` run —
- * the current checkout, which is already a repo.
- */
-function resolveRepoDir(config: PhoebeConfig, inContainer: boolean): string {
-  return inContainer ? config.paths.repoDir : process.cwd();
-}
-
 /** Load a `promptFiles.*` template from the runtime root (process cwd). */
 function loadPromptTemplate(relativePath: string): string {
   return loadPromptTemplateFromRoot(relativePath, process.cwd());
@@ -377,11 +356,17 @@ export type EngineOptions = {
   /** Defaults to a `gh`-backed client; a cycle test hands in a double instead. */
   github?: GitHubClient;
   /**
-   * Defaults to the real `git` subprocess runner (src/git-model.ts). Threaded
-   * through every `git-model` call the loop makes, so the two failure
-   * watermarks a cycle test has to fake are substitutable.
+   * Defaults to the real `git` subprocess runner (src/git-model.ts). A cycle
+   * test hands in a stub so the two failure watermarks are substitutable
+   * without touching git paths directly. Ignored when `originHub` is given.
    */
   git?: GitRunner;
+  /**
+   * The origin hub for this tenant. Defaults to one built from `config` and
+   * `git`. A caller that has already constructed the hub (e.g. to ensure the
+   * clone before handing off) passes it here to avoid a second construction.
+   */
+  originHub?: OriginHub;
   /** Defaults to real time. */
   clock?: Clock;
   /** The SIGTERM drain: finish the unit in flight, start no new one. */
@@ -454,8 +439,7 @@ export function createEngine(options: EngineOptions): Engine {
   const defaultBranchRef = asBranchRef(config.defaultBranch);
 
   const inContainer = isInsideContainer();
-  const repoDir = resolveRepoDir(config, inContainer);
-  const worktreesDir = config.paths.worktreesDir;
+  const hub = options.originHub ?? createOriginHub(config, inContainer, git);
 
   // ---------------------------------------------------------------------------
   // Provider selection (multi-provider ready)
@@ -695,10 +679,11 @@ export function createEngine(options: EngineOptions): Engine {
       console.log(`[phoebe] No co-author credit for #${opts.issueNumber} (no creditable author).`);
       return;
     }
-    const outcome = appendTrailerToCommits(
-      { worktreeDir: opts.worktreeDir, baseRef: opts.baseRef, trailer },
-      git,
-    );
+    const outcome = hub.appendTrailerToCommits({
+      worktreeDir: opts.worktreeDir,
+      baseRef: opts.baseRef,
+      trailer,
+    });
     const detail = {
       rewritten: `added "${trailer}"`,
       nothing: "no commits to credit",
@@ -709,28 +694,20 @@ export function createEngine(options: EngineOptions): Engine {
   }
 
   // ---------------------------------------------------------------------------
-  // git helpers bound to the clone
+  // Failure watermarks — snapshot origin state around an agent run
   // ---------------------------------------------------------------------------
 
-  function fetchOrigin(): void {
-    gitFetchOrigin(repoDir, git);
-  }
-
-  function originBranchSha(branch: BranchRef): Sha {
-    return gitOriginBranchSha(repoDir, branch, git);
-  }
-
   function currentConflictFailureWatermark(branch: BranchRef): ConflictFailWatermark {
-    fetchOrigin();
+    hub.fetch();
     return {
-      prHead: originBranchSha(branch),
-      mainHead: originBranchSha(defaultBranchRef),
+      prHead: hub.branchHead(branch),
+      mainHead: hub.branchHead(defaultBranchRef),
     };
   }
 
   function currentChecksFailureWatermark(branch: BranchRef): ChecksFailWatermark {
-    fetchOrigin();
-    return { prHead: originBranchSha(branch) };
+    hub.fetch();
+    return { prHead: hub.branchHead(branch) };
   }
 
   // ---------------------------------------------------------------------------
@@ -738,15 +715,12 @@ export function createEngine(options: EngineOptions): Engine {
   // ---------------------------------------------------------------------------
 
   function prepareWorktree(opts: { branch: BranchRef; baseRef?: string }): string {
-    const worktreeDir = worktreeDirForBranch(worktreesDir, opts.branch);
-    removeWorktree(repoDir, worktreeDir, git);
+    const worktreeDir = hub.worktreeDirFor(opts.branch);
+    hub.removeWorktree(worktreeDir);
     if (opts.baseRef) {
-      addWorktreeForNewBranch(
-        { repoDir, worktreeDir, branch: opts.branch, baseRef: opts.baseRef },
-        git,
-      );
+      hub.addWorktreeForNew({ worktreeDir, branch: opts.branch, baseRef: opts.baseRef });
     } else {
-      addWorktreeForExistingBranch({ repoDir, worktreeDir, branch: opts.branch }, git);
+      hub.addWorktreeForExisting({ worktreeDir, branch: opts.branch });
     }
     return worktreeDir;
   }
@@ -814,15 +788,15 @@ export function createEngine(options: EngineOptions): Engine {
       }
       gitInWorktree(worktreeDir, ["fetch", "origin", config.defaultBranch], { stdio: "inherit" });
       gitInWorktree(worktreeDir, ["merge", `origin/${config.defaultBranch}`], { stdio: "pipe" });
-      pushBranch(worktreeDir, branch, git);
-      removeWorktree(repoDir, worktreeDir, git);
+      hub.pushBranch(worktreeDir, branch);
+      hub.removeWorktree(worktreeDir);
       return "pushed";
     } catch {
       try {
         const unmerged = gitInWorktree(worktreeDir, ["diff", "--name-only", "--diff-filter=U"]);
         if (unmerged.trim()) {
           gitInWorktree(worktreeDir, ["merge", "--abort"], { stdio: "ignore" });
-          removeWorktree(repoDir, worktreeDir, git);
+          hub.removeWorktree(worktreeDir);
           return "conflicted";
         }
       } catch {
@@ -833,7 +807,7 @@ export function createEngine(options: EngineOptions): Engine {
       } catch {
         // Best-effort.
       }
-      removeWorktree(repoDir, worktreeDir, git);
+      hub.removeWorktree(worktreeDir);
       return "failed";
     }
   }
@@ -870,8 +844,8 @@ export function createEngine(options: EngineOptions): Engine {
   }): Promise<void> {
     const branch = opts.pr.headRefName;
 
-    fetchOrigin();
-    const originShaBefore = originBranchSha(branch);
+    hub.fetch();
+    const originShaBefore = hub.branchHead(branch);
 
     const worktreeDir = prepareWorktree({ branch });
     try {
@@ -884,9 +858,9 @@ export function createEngine(options: EngineOptions): Engine {
         promptArgs: opts.promptArgs,
       });
 
-      fetchOrigin();
-      const originShaAfter = originBranchSha(branch);
-      const localCommitCount = commitCount(worktreeDir, `origin/${branch}..HEAD`, git);
+      hub.fetch();
+      const originShaAfter = hub.branchHead(branch);
+      const localCommitCount = hub.commitCount(worktreeDir, `origin/${branch}..HEAD`);
 
       await opts.onResult({
         worktreeDir,
@@ -896,7 +870,7 @@ export function createEngine(options: EngineOptions): Engine {
         localCommitCount,
       });
     } finally {
-      removeWorktree(repoDir, worktreeDir, git);
+      hub.removeWorktree(worktreeDir);
     }
   }
 
@@ -932,7 +906,7 @@ export function createEngine(options: EngineOptions): Engine {
             conflictFixFailureComment(pr.prNumber, currentConflictFailureWatermark(pr.headRefName)),
           );
         } else if (localCommitCount > 0) {
-          pushBranch(worktreeDir, branch, git);
+          hub.pushBranch(worktreeDir, branch);
           console.log(`[phoebe] Conflict resolved for PR #${pr.prNumber} — pushed.`);
         } else {
           console.log(
@@ -945,7 +919,7 @@ export function createEngine(options: EngineOptions): Engine {
 
   async function fixOnePrConflict(pr: ConflictingPrCandidate, ctx: StackContext): Promise<void> {
     console.log(`[phoebe] Conflict fix: PR #${pr.prNumber} (${pr.headRefName}).`);
-    fetchOrigin();
+    hub.fetch();
 
     const issueNumber = pr.issueNumber ?? parseIssueNumberFromBranch(pr.headRefName);
     const body = issueNumber !== null ? (ctx.issueBodies.get(issueNumber) ?? "") : "";
@@ -1001,7 +975,7 @@ export function createEngine(options: EngineOptions): Engine {
             checksFixFailureComment(pr.prNumber, currentChecksFailureWatermark(pr.headRefName)),
           );
         } else if (localCommitCount > 0) {
-          pushBranch(worktreeDir, branch, git);
+          hub.pushBranch(worktreeDir, branch);
           console.log(`[phoebe] Checks fixed for PR #${pr.prNumber} — pushed.`);
         } else {
           console.log(`[phoebe] Checks fixed for PR #${pr.prNumber} — already pushed by agent.`);
@@ -1015,7 +989,7 @@ export function createEngine(options: EngineOptions): Engine {
       `[phoebe] Checks fix: PR #${pr.prNumber} (${pr.headRefName}) — ` +
         `${pr.failingChecks.map((c) => c.name).join(", ")}.`,
     );
-    fetchOrigin();
+    hub.fetch();
 
     if (pr.mergeStateStatus === "BEHIND") {
       const issueNumber = pr.issueNumber ?? parseIssueNumberFromBranch(pr.headRefName);
@@ -1082,7 +1056,7 @@ export function createEngine(options: EngineOptions): Engine {
       },
       onResult: ({ worktreeDir, branch, originShaBefore, originShaAfter, localCommitCount }) => {
         if (localCommitCount > 0) {
-          pushBranch(worktreeDir, branch, git);
+          hub.pushBranch(worktreeDir, branch);
           console.log(`[phoebe] Review feedback handled for PR #${pr.prNumber} — pushed.`);
         } else if (originShaAfter !== originShaBefore) {
           console.log(
@@ -1120,7 +1094,7 @@ export function createEngine(options: EngineOptions): Engine {
 
   async function fixOnePrReviews(pr: ReviewsCandidate, phoebeLogin: string): Promise<void> {
     console.log(`[phoebe] Reviews fix: PR #${pr.prNumber} (${pr.headRefName}).`);
-    fetchOrigin();
+    hub.fetch();
     await runReviewsResolutionAgent(pr, phoebeLogin);
   }
 
@@ -1145,7 +1119,7 @@ export function createEngine(options: EngineOptions): Engine {
     const { blockerIssueNumber, blockerPrNumber } = opts;
     const agentBranch = issueBranch(issueNumber);
 
-    fetchOrigin();
+    hub.fetch();
     const worktreeDir = prepareWorktree({ branch: agentBranch, baseRef: worktreeBase });
     try {
       runShellCommand(config.installCommand, worktreeDir, env);
@@ -1156,13 +1130,13 @@ export function createEngine(options: EngineOptions): Engine {
         promptArgs: { ISSUE_NUMBER: String(issueNumber) },
       });
 
-      const newCommitCount = commitCount(worktreeDir, `${worktreeBase}..HEAD`, git);
+      const newCommitCount = hub.commitCount(worktreeDir, `${worktreeBase}..HEAD`);
 
       if (newCommitCount > 0) {
         if (config.creditIssueAuthor) {
           stampIssueAuthorCredit({ issueNumber, worktreeDir, baseRef: worktreeBase });
         }
-        pushBranch(worktreeDir, agentBranch, git);
+        hub.pushBranch(worktreeDir, agentBranch);
         const existingPr = github.findIssuePr(issueNumber);
         if (existingPr === null) {
           const prTitle = `Phoebe: ${issueTitle} (#${issueNumber})`;
@@ -1184,7 +1158,7 @@ export function createEngine(options: EngineOptions): Engine {
         console.log("[phoebe] No commits — skipping PR creation.");
       }
     } finally {
-      removeWorktree(repoDir, worktreeDir, git);
+      hub.removeWorktree(worktreeDir);
     }
   }
 
@@ -1337,8 +1311,8 @@ export function createEngine(options: EngineOptions): Engine {
     currentMainHead: Sha;
   }> {
     const rawConflictingPrs = await fetchConflictingPrs(cycle);
-    fetchOrigin();
-    const currentMainHead = originBranchSha(defaultBranchRef);
+    hub.fetch();
+    const currentMainHead = hub.branchHead(defaultBranchRef);
     const conflictingPrs = rawConflictingPrs.map((pr) => ({
       ...pr,
       failureWatermark: parseLatestMarker(
@@ -1909,15 +1883,15 @@ export async function runEngine(
   }
 
   // Bootstrap the private clone every work unit fetches/worktrees against. Only
-  // in the container (on the host repoDir is the cwd, already a repo) and never
-  // for --dry-run (selection uses the GitHub API, not a local clone). No-op once
+  // in the container (on the host the cwd is already a repo) and never for
+  // --dry-run (selection uses the GitHub API, not a local clone). No-op once
   // the clone exists, so it's safe on every daemon restart. Ahead of the drain
   // latch below, as it was before the engine became a factory: until that latch
   // exists, a SIGTERM mid-clone still kills the process rather than being held
   // until the clone finishes.
   const inContainer = isInsideContainer();
   if (inContainer && !dryRun) {
-    ensureClone({ repoUrl: config.repoUrl, repoDir: resolveRepoDir(config, inContainer) });
+    ensureOriginClone(config, inContainer);
   }
 
   // `phoebe boot` stops the engine with SIGTERM (container shutdown, and later a
