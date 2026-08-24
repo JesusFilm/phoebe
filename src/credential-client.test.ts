@@ -8,8 +8,10 @@ import {
   CREDENTIAL_ANSWER,
   CREDENTIAL_BLOCKED,
   CREDENTIAL_REQUEST,
+  CredentialLeaseTimedOutError,
   CredentialRefreshBlockedError,
   type CredentialClient,
+  type LeaseTimer,
 } from "./credential-client.ts";
 import type { ParentChannel } from "./slot-client.ts";
 
@@ -145,5 +147,61 @@ describe("createCredentialClient", () => {
     channel.emit({ type: CREDENTIAL_ANSWER, token: "ghs_y" });
     await pending;
     expect(resolved).toBe(true);
+  });
+
+  test("rejects with CredentialLeaseTimedOutError when the deadline fires", async () => {
+    const channel = mockChannel();
+    let fireExpiry!: () => void;
+    const leaseTimer: LeaseTimer = () => {
+      let cancel = (): void => {};
+      const expired = new Promise<void>((resolve) => {
+        fireExpiry = resolve;
+        cancel = () => {};
+      });
+      return { expired, cancel };
+    };
+    const client = createCredentialClient(channel, { leaseTimer }) as CredentialClient;
+
+    const pending = client.requestLease(120_000);
+    fireExpiry();
+    await expect(pending).rejects.toBeInstanceOf(CredentialLeaseTimedOutError);
+  });
+
+  test("removes both listeners once the deadline fires (no leak)", async () => {
+    const channel = mockChannel();
+    let fireExpiry!: () => void;
+    const leaseTimer: LeaseTimer = () => {
+      const expired = new Promise<void>((resolve) => {
+        fireExpiry = resolve;
+      });
+      return { expired, cancel: () => {} };
+    };
+    const client = createCredentialClient(channel, { leaseTimer }) as CredentialClient;
+
+    const pending = client.requestLease(120_000);
+    expect(channel.listenerCount()).toBe(2);
+    fireExpiry();
+    await expect(pending).rejects.toBeInstanceOf(CredentialLeaseTimedOutError);
+    expect(channel.listenerCount()).toBe(0);
+  });
+
+  test("deadline is cancelled when the answer arrives first", async () => {
+    const channel = mockChannel();
+    let cancelled = false;
+    const leaseTimer: LeaseTimer = () => {
+      const expired = new Promise<void>(() => {});
+      return {
+        expired,
+        cancel: () => {
+          cancelled = true;
+        },
+      };
+    };
+    const client = createCredentialClient(channel, { leaseTimer }) as CredentialClient;
+
+    const pending = client.requestLease(120_000);
+    channel.emit({ type: CREDENTIAL_ANSWER, token: "ghs_z" });
+    await pending;
+    expect(cancelled).toBe(true);
   });
 });

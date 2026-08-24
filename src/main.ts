@@ -40,6 +40,7 @@ import { installDrainSignal, type DrainSignal } from "./drain.ts";
 import {
   BrokerDisconnectedError,
   createCredentialClient,
+  CredentialLeaseTimedOutError,
   CredentialRefreshBlockedError,
   type CredentialClient,
 } from "./credential-client.ts";
@@ -1197,6 +1198,11 @@ export function createEngine(options: EngineOptions): Engine {
             await drain.wait(pollIntervalMs);
             continue;
           }
+          if (error instanceof CredentialLeaseTimedOutError) {
+            console.warn("[phoebe] Credential lease timed out — skipping work this cycle.");
+            await drain.wait(pollIntervalMs);
+            continue;
+          }
           throw error;
         }
       }
@@ -1348,6 +1354,13 @@ export function createEngine(options: EngineOptions): Engine {
           if (error instanceof CredentialRefreshBlockedError) {
             console.warn(
               `[phoebe] Credential refresh unavailable after slot grant — unit admission blocked.`,
+            );
+            await drain.wait(pollIntervalMs);
+            continue;
+          }
+          if (error instanceof CredentialLeaseTimedOutError) {
+            console.warn(
+              `[phoebe] Credential lease timed out after slot grant — unit admission skipped.`,
             );
             await drain.wait(pollIntervalMs);
             continue;

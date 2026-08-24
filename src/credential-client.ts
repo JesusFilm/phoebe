@@ -57,6 +57,38 @@ export class CredentialRefreshBlockedError extends Error {
   }
 }
 
+/**
+ * The supervisor was connected but did not answer the credential lease request
+ * within the deadline. The engine skips this cycle rather than parking forever.
+ */
+export class CredentialLeaseTimedOutError extends Error {
+  constructor() {
+    super(
+      "supervisor did not answer the credential lease request within the deadline — skipping this cycle",
+    );
+    this.name = "CredentialLeaseTimedOutError";
+  }
+}
+
+/**
+ * A cancelable one-shot timer backing the lease deadline. Injected so the
+ * timeout path can be tested without real timers — following the same pattern
+ * as `DrainTimer` in `bootstrap/supervise-fleet.ts`.
+ */
+export type LeaseTimer = (ms: number) => { expired: Promise<void>; cancel: () => void };
+
+const defaultLeaseTimer: LeaseTimer = (ms) => {
+  let cancel = (): void => {};
+  const expired = new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    timer.unref?.();
+    cancel = () => clearTimeout(timer);
+  });
+  return { expired, cancel };
+};
+
+const DEFAULT_LEASE_TIMEOUT_MS = 60_000;
+
 function isAnswer(message: unknown): boolean {
   return (
     typeof message === "object" &&
@@ -82,8 +114,15 @@ function isBlocked(message: unknown): boolean {
  * On `disconnect` while a request is outstanding: rejects with
  * `BrokerDisconnectedError`. The engine stops rather than proceeding on a
  * credential it could not renew — the supervisor is gone.
+ *
+ * On deadline expiry: rejects with `CredentialLeaseTimedOutError` so a
+ * supervisor that is connected but never replies produces a logged, recoverable
+ * cycle skip rather than a permanently parked tenant.
  */
-export function createCredentialClient(proc: ParentChannel): CredentialClient | null {
+export function createCredentialClient(
+  proc: ParentChannel,
+  deps?: { leaseTimeoutMs?: number; leaseTimer?: LeaseTimer },
+): CredentialClient | null {
   if (
     typeof proc.send !== "function" ||
     typeof proc.on !== "function" ||
@@ -95,18 +134,24 @@ export function createCredentialClient(proc: ParentChannel): CredentialClient | 
   return {
     requestLease(budgetMs: number): Promise<string | null> {
       return new Promise<string | null>((resolve, reject) => {
+        const { expired, cancel } = (deps?.leaseTimer ?? defaultLeaseTimer)(
+          deps?.leaseTimeoutMs ?? DEFAULT_LEASE_TIMEOUT_MS,
+        );
         const onMessage = (message: unknown): void => {
           if (isBlocked(message)) {
+            cancel();
             cleanup();
             reject(new CredentialRefreshBlockedError());
             return;
           }
           if (!isAnswer(message)) return;
+          cancel();
           cleanup();
           const token = (message as { token?: unknown }).token;
           resolve(typeof token === "string" ? token : null);
         };
         const onDisconnect = (): void => {
+          cancel();
           cleanup();
           reject(new BrokerDisconnectedError());
         };
@@ -116,6 +161,10 @@ export function createCredentialClient(proc: ParentChannel): CredentialClient | 
         };
         proc.on?.("message", onMessage);
         proc.on?.("disconnect", onDisconnect);
+        void expired.then(() => {
+          cleanup();
+          reject(new CredentialLeaseTimedOutError());
+        });
         send({ type: CREDENTIAL_REQUEST, budgetMs });
       });
     },
