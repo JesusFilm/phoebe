@@ -160,11 +160,6 @@ type AgentWorkflowResult = {
   localCommitCount: number;
 };
 
-/**
- * Everything a work-unit runner needs beyond the unit itself, assembled from the
- * cycle's fetch results and passed into `runUnit` — so the runners hold no
- * module-level state between selection and execution.
- */
 // ---------------------------------------------------------------------------
 // Helpers that hold no engine state
 // ---------------------------------------------------------------------------
