@@ -23,6 +23,7 @@ import {
   fetchOrigin,
   originBranchSha,
   pushBranch,
+  pushBranchWithLease,
   removeWorktree,
   worktreeDirForBranch,
   type GitRunner,
@@ -184,6 +185,17 @@ describe("git model", () => {
     pushBranch("/data/worktrees/x", asBranchRef("agent/issue-12"), runner);
     expect(calls).toEqual([
       { args: ["push", "origin", "agent/issue-12"], cwd: "/data/worktrees/x" },
+    ]);
+  });
+
+  test("pushBranchWithLease pushes with --force-with-lease from the worktree", () => {
+    const { runner, calls } = spyGit();
+    pushBranchWithLease("/data/worktrees/x", asBranchRef("phoebe/issue-12"), runner);
+    expect(calls).toEqual([
+      {
+        args: ["push", "--force-with-lease", "origin", "phoebe/issue-12"],
+        cwd: "/data/worktrees/x",
+      },
     ]);
   });
 

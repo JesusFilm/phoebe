@@ -17,6 +17,7 @@ import {
   fetchOrigin,
   originBranchSha,
   pushBranch,
+  pushBranchWithLease,
   removeWorktree,
   worktreeDirForBranch,
   type GitRunner,
@@ -34,6 +35,7 @@ export type OriginHub = {
   removeWorktree(worktreeDir: string): void;
   commitCount(worktreeDir: string, range: string): number;
   pushBranch(worktreeDir: string, branch: BranchRef): void;
+  pushBranchWithLease(worktreeDir: string, branch: BranchRef): void;
   appendTrailerToCommits(opts: {
     worktreeDir: string;
     baseRef: string;
@@ -80,6 +82,9 @@ export function createOriginHub(
     },
     pushBranch(worktreeDir, branch) {
       pushBranch(worktreeDir, branch, git);
+    },
+    pushBranchWithLease(worktreeDir, branch) {
+      pushBranchWithLease(worktreeDir, branch, git);
     },
     appendTrailerToCommits(opts) {
       return appendTrailerToCommits(opts, git);
