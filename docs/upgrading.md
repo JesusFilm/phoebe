@@ -73,6 +73,43 @@ environments where you want every push, and accept the guard as the safety net.
 `repo` defaults to the upstream engine repo; set it to run a fork. For an engine
 checkout on your own machine, see `container/compose.local.yml`.
 
+## The launcher floor
+
+A deployment has a second version pin: the bootstrapper, installed from npm. In
+a container it is `ARG PHOEBE_AGENT_VERSION` in `container/Dockerfile`; on a
+host it is the npm-global install. The two pins move independently, which means
+they can drift apart, and some engine versions need supervisor behaviour an
+older launcher does not have. The engine's per-cycle credential lease is one:
+the engine asks over the IPC channel, and a launcher that does not answer leaves
+the child waiting.
+
+The engine states the oldest launcher it can run under, in its own
+`package.json`:
+
+```json
+"phoebe": { "minBootstrap": "0.7.0" }
+```
+
+`phoebe boot` reads that field from the engine checkout and throws before
+launching anything if the running launcher is below it, naming both versions and
+the fix. Refusing to start is the point: the skew it prevents otherwise shows up
+as a container that boots, logs normally, and then does nothing.
+
+To fix a violation, move the launcher pin and rebuild:
+
+```bash
+# container: edit container/Dockerfile, or let upgrade do it
+phoebe upgrade --cli
+phoebe start --build
+
+# host
+npm install -g phoebe-agent@<version>
+```
+
+`phoebe doctor` reports the same comparison as its `launcher-floor` check, so
+you can see the skew before it bites. An engine whose `package.json` has no
+`phoebe.minBootstrap` declares no floor and runs under any launcher.
+
 ## Upgrading
 
 Edit `engine.ref` in `phoebe.config.ts`, by hand or with the command that does
@@ -153,10 +190,14 @@ without moving the pin, or to re-run a child that was held or failed.
 Recommended posture for production: **pin to release tags and advance with
 `phoebe upgrade`**; branch-following is the opt-in live mode.
 
-The `--cli` half runs `npm install -g phoebe-agent@<version>` on a host; inside
-the container the launcher is baked into the image, so it prints the rebuild
-step instead. A commit SHA or branch ref is engine-only, because the npm package has
-no version for it.
+The `--cli` half moves whichever launcher pin the deployment actually has. On a
+host that is `npm install -g phoebe-agent@<version>`. For a container deployment
+the launcher is baked into the image, so the pin that decides the version is
+`ARG PHOEBE_AGENT_VERSION` in `container/Dockerfile`: `upgrade` rewrites that
+line and prints `phoebe start --build` as the step that makes it active. A
+Dockerfile with no such pin is left alone — that build already pulls the latest
+published version. A commit SHA or branch ref is engine-only, because the npm
+package has no version for it.
 
 **Two-voices output.** `phoebe upgrade` writes success lines and informational
 notes to stdout and diagnostic warnings or refusal details to stderr. A script
@@ -166,10 +207,13 @@ the engine-success message (`v0.3.0 → v0.4.0 written to …`) goes to stdout.
 
 **`upgrade --check` and its gap.** `phoebe upgrade --check [--json]` reports
 versions only: the configured engine ref versus the latest release tag, and the
-installed CLI versus the npm registry. It does **not** preview what migrations
-would run when you move to the target version. The reason: previewing migrations
-requires materializing the target engine checkout, a full git clone on every
-scripted check. That cost is deliberately deferred.
+installed CLI versus the npm registry. For a container deployment the effective
+CLI version is the Dockerfile pin rather than whatever `npm ls -g` reports on
+the host, and `--json` marks it `cli.source: "dockerfile"`. It does **not**
+preview what migrations would run when you move to the target version. The
+reason: previewing migrations requires materializing the target engine
+checkout, a full git clone on every scripted check. That cost is deliberately
+deferred.
 
 What the two modes preview:
 
