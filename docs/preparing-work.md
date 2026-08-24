@@ -18,9 +18,9 @@ resting on a wrong call made in the first ten minutes, which is expensive to spo
 and worse to unpick. Matt Pocock's [AI Coding Dictionary](https://www.aihero.dev/ai-coding-dictionary/afk)
 makes the same point about AFK sessions generally.
 
-So the leverage is not in the prompt or the model. It is in the issue. Ambiguity
-has to die before the `ready-for-agent` label goes on, because after that there
-is nobody left to resolve it.
+Tuning the prompt or the model will not fix that. The issue is what decides it.
+Ambiguity has to die before the `ready-for-agent` label goes on, because after
+that there is nobody left to resolve it.
 
 **Front-loading** is the name for that work: creating the issues, maps, and
 grilling sessions that turn into `ready-for-agent` or research issues for Phoebe.
@@ -100,7 +100,7 @@ Two videos, if you would rather watch than read:
 
 ## Where Phoebe meets wayfinder directly
 
-The [`research` work kind](work-kinds.md#research--resolve-wayfinder-research-tickets)
+The [`research` work kind](work-kinds.md#research-resolve-wayfinder-research-tickets)
 exists for this pipeline specifically. It picks up open issues labelled
 `researchLabel`, which defaults to `wayfinder:research`, and follows wayfinder's
 resolution protocol: investigate primary sources, produce a Markdown summary,
@@ -120,8 +120,8 @@ not. Phoebe can burn those down in parallel while you keep thinking.
 
 ## Related reading
 
-- [`operating.md`](operating.md) — the labels and levers for steering Phoebe once
+- [`operating.md`](operating.md), the labels and levers for steering Phoebe once
   work is in flight.
-- [`work-kinds.md`](work-kinds.md) — how each kind selects and executes a unit.
-- [The AI Hero skills index](https://www.aihero.dev/skills) — the full set,
+- [`work-kinds.md`](work-kinds.md), how each kind selects and executes a unit.
+- [The AI Hero skills index](https://www.aihero.dev/skills), the full set,
   including the ones that never touch Phoebe.

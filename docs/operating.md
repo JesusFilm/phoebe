@@ -1,7 +1,10 @@
 # Operating Phoebe as a human
 
-The canonical operator manual: how a person steers Phoebe using GitHub itself —
-labels, draft state, and the comment watermarks it leaves behind. There is no
+**Who this is for:** anyone with Phoebe already running who needs to steer it. It
+answers which labels, drafts, and comments change what Phoebe does next.
+
+The canonical operator manual. It covers how a person steers Phoebe using GitHub
+itself: labels, draft state, and the comment watermarks it leaves behind. There is no
 separate control plane; **you drive Phoebe by changing the issues and PRs it
 looks at.**
 
@@ -24,7 +27,7 @@ in `workOrder`. It only ever acts on:
 So every lever below is just a way of adding or removing an issue/PR from those
 sets, or of telling Phoebe "a human has this now." Research tickets are selected
 the same way as ready issues (priority, age, `Blocked by #N`); see
-[`work-kinds.md`](work-kinds.md#research--resolve-wayfinder-research-tickets).
+[`work-kinds.md`](work-kinds.md#research-resolve-wayfinder-research-tickets).
 
 ## Starting a unit of work: `readyLabel`
 
@@ -44,12 +47,12 @@ touches an unlabelled issue.
 
 When Phoebe claims an issue it swaps `readyLabel` for `processingLabel` (default
 `processing`) as its first action. If you see `processingLabel`, a run is (or
-was) working that issue — don't start on it yourself. If a run dies and leaves
+was) working that issue, so don't start on it yourself. If a run dies and leaves
 the label stranded, remove `processingLabel` and re-add `readyLabel` to requeue.
 
 ## Blocking one issue on another: `blockedByPattern`
 
-Write a blocker reference in the issue body — by default `Blocked by #123`
+Write a blocker reference in the issue body, by default `Blocked by #123`
 (matched by `blockedByPattern`). Phoebe then:
 
 - **skips** the issue while the blocker has no PR yet,
@@ -57,7 +60,7 @@ Write a blocker reference in the issue body — by default `Blocked by #123`
   open (the resulting PR carries a ⛓️ "do not merge before #123" banner), and
 - bases on the default branch normally once the blocker's PR has **merged**, and
 - likewise once the blocker **issue is closed as completed**, even with no
-  Phoebe-branch PR at all — that covers a blocker a human landed on their own
+  Phoebe-branch PR at all, which covers a blocker a human landed on their own
   branch. Closing a blocker as **not planned** does not unblock anything.
 
 When everything is skipped, the cycle log names the blockers
@@ -69,7 +72,7 @@ them.
 ## Taking a PR back: `prOptOutLabel`
 
 Add `prOptOutLabel` (default `ready-for-human`) to any PR and Phoebe drops it
-from **all** janitor scans — no conflict fixes, no CI fixes, no review handling.
+from **all** janitor scans, so no conflict fixes, no CI fixes, no review handling.
 This is the "I've got this one" switch. Remove the label to hand it back.
 
 ## Draft PRs as hands-off: `draftPrs`
@@ -88,9 +91,9 @@ back.
 
 ## Which PRs Phoebe considers at all: `prScope`
 
-- `prScope: "phoebe"` (default) — Phoebe only maintains its own
+- `prScope: "phoebe"` (default). Phoebe only maintains its own
   `branchPrefix` (default `phoebe/`) branches.
-- `prScope: "all"` — Phoebe maintains _every_ same-repo PR (still honouring
+- `prScope: "all"`. Phoebe maintains _every_ same-repo PR (still honouring
   `prOptOutLabel`, `draftPrs`, and the fork exclusion).
 
 Cross-repository PRs from forks are **always** excluded.
@@ -109,8 +112,8 @@ HTML-comment markers on the PR. You normally never see them, but they explain
 
 **To force a retry**, move the thing the watermark is keyed on: push a commit
 (new PR head), merge/advance the base branch, or post fresh review activity.
-Because the marker lives in a PR comment, you can also delete it — but the
-parser takes the **newest** matching marker, so deleting a failure comment only
+Because the marker lives in a PR comment, you can also delete it. But the parser
+takes the **newest** matching marker, so deleting a failure comment only
 resets state when it removes that newest one; an older matching marker still
 underneath it will keep applying. When a janitor gives up it posts a **visible**
 failure comment too, so a human knows to step in.
@@ -125,7 +128,7 @@ failure comment too, so a human knows to step in.
 
 Flags go after the compose service name (`docker compose run --rm phoebe
 --run-once`); `phoebe boot` forwards them to the engine it launches. No flags is
-the deployed shape — `docker compose up -d` runs the persistent loop.
+the deployed shape, and `docker compose up -d` runs the persistent loop.
 
 `--dry-run` is the safe way to preview selection on your host without booting
 the container. See [`upgrading.md`](upgrading.md) for start/stop/upgrade
@@ -135,18 +138,18 @@ commands and [`work-kinds.md`](work-kinds.md) for the full selection rules.
 
 `phoebe doctor` (report-only) runs six checks and exits 1 when any fails:
 
-- **cli** — installed `phoebe-agent` vs the npm registry's latest.
-- **engine** — the configured pin vs the latest release tag, plus the commit
+- **cli.** Installed `phoebe-agent` against the npm registry's latest.
+- **engine.** The configured pin against the latest release tag, plus the commit
   actually materialized in the engine checkout.
-- **config** — the root `phoebe.config.ts` loads and its `engine` field parses.
-- **repo** — the engine repo answers `ls-remote` with the current `GH_TOKEN`.
-- **crash-loop** — whether a quarantine is in force, i.e. the container is
+- **config.** The root `phoebe.config.ts` loads and its `engine` field parses.
+- **repo.** The engine repo answers `ls-remote` with the current `GH_TOKEN`.
+- **crash-loop.** Whether a quarantine is in force, meaning the container is
   silently running the last-known-good commit instead of the tracked tip.
-- **supervisor** — whether `phoebe boot` is the container's main process
+- **supervisor.** Whether `phoebe boot` is the container's main process
   (answerable in-container only: `docker compose exec phoebe phoebe doctor`).
 
-In workspace mode it also sweeps every tenant — the same enumeration boot
-supervises with — checking each tenant's `GH_TOKEN` is present the way its
+In workspace mode it also sweeps every tenant, using the same enumeration boot
+supervises with, checking each tenant's `GH_TOKEN` is present the way its
 engine child reads it, and that its repo answers to that token. Held tenants
 surface as failures with their hold reason. `--json` for scripts.
 
@@ -161,92 +164,99 @@ diagnosis, doctor points at the deeper probe below.
 ## Checking a tenant's GitHub token
 
 Under the PAT arm, Phoebe acts entirely as `GH_TOKEN`'s identity. When that
-token is short a permission — or its org approval never landed — nothing fails at
-boot; it fails mid-run as a 403 from whichever API hop needed the grant. Under
+token is short a permission, or its org approval never landed, nothing fails at
+boot. It fails mid-run as a 403 from whichever API hop needed the grant. Under
 the App arm, `GH_TOKEN` is a synthesized installation token minted at startup;
 org approval does not apply, but the same five permissions must be granted to the
 App installation.
 
 **Branch-protection note (both arms).** If the repo enables
 `dismiss_stale_reviews_on_push` or `require_last_push_approval`, Phoebe's push
-after the agent commits voids any review approval on the PR — the pusher and
-reviewer resolve to the same identity. This is inherent to how GitHub applies
-those settings and is not specific to either credential arm.
+after the agent commits interacts with each one differently.
+`dismiss_stale_reviews_on_push` dismisses the existing approvals outright, so the
+PR needs a fresh one. `require_last_push_approval` keeps them, but requires
+someone other than the last pusher to approve the newest push. Under the PAT arm
+Phoebe pushes as the `GH_TOKEN` owner, so an operator who approved earlier cannot
+satisfy that themselves. Under the App arm Phoebe pushes as the bot, which is a
+separate identity from the operator, so a human approval still counts.
+
+Either way this is GitHub applying its own settings, not Phoebe doing something
+unusual.
 
 `node scripts/verify-tenant-token.mjs` says which grant is missing, before
 Phoebe runs.
 
 | Invocation                                         | Verifies                                                            |
 | -------------------------------------------------- | ------------------------------------------------------------------- |
-| `verify-tenant-token.mjs`                          | The cwd's tenant — its `phoebe.config.ts` and its `.env`.           |
+| `verify-tenant-token.mjs`                          | The cwd's tenant, its `phoebe.config.ts` and its `.env`.            |
 | `verify-tenant-token.mjs ./core`                   | A specific tenant directory (repeatable).                           |
 | `verify-tenant-token.mjs --all`                    | Every tenant of the deployment rooted here, one section each.       |
 | `verify-tenant-token.mjs --slug o/r --token ghp_…` | A token you have not written to a file yet.                         |
 | `--json` / `--check`                               | Machine-readable output / exit 1 on any finding (as `phoebe list`). |
 
 It reports each of the five permissions
-[onboarding §2](phoebe-core-onboarding.md#2-operator-github-token--a-fine-grained-pat)
+[onboarding §2](phoebe-core-onboarding.md#2-operator-github-token-a-fine-grained-pat)
 asks for as granted / missing / unknown, distinguishes "no access at all" (the
 usual sign of a fine-grained PAT still awaiting org approval) from one missing
 checkbox, and warns when the token expires inside 14 days. No probe changes
 anything: the three write grants are proven by aiming a `POST`/`PATCH` at a
 resource that cannot exist, so GitHub answers with the permission verdict and
-there is nothing to mutate. It is safe against production — but note that it
-does issue write-method requests, which matters if you are approving it through
+there is nothing to mutate. It is safe against production, but note that it does
+issue write-method requests, which matters if you are approving it through
 a network policy. It never prints the token, and `--all` does not abort when one
 tenant fails.
 
 ## One-off overrides without editing config
 
-Most scalar fields have a `PHOEBE_*` env override for a single run — e.g.
-`PHOEBE_AGENT=claude`, `PHOEBE_PR_SCOPE=all`, `PHOEBE_POLL_INTERVAL_MS=60000`.
+Most scalar fields have a `PHOEBE_*` env override for a single run, such as
+`PHOEBE_AGENT=claude`, `PHOEBE_PR_SCOPE=all`, or `PHOEBE_POLL_INTERVAL_MS=60000`.
 See the [environment overlay table](configuration.md#environment-overlay-phoebe_).
 
 ## Quick reference
 
-| I want to…                                    | Do this                                                                                                                                       |
-| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| Queue an issue for Phoebe                     | Add `readyLabel` (`ready-for-agent`).                                                                                                         |
-| Pause a queued issue                          | Remove `readyLabel`.                                                                                                                          |
-| Bump an issue up the queue                    | Word it as a bug/fix, or it waits its turn by age.                                                                                            |
-| Sequence-dependent issues                     | `Blocked by #N` in the body.                                                                                                                  |
-| Take a PR away from Phoebe                    | Add `prOptOutLabel` (`ready-for-human`) — works for any PR. Under the default `draftPrs`, marking a **non-Phoebe** PR draft also opts it out. |
-| Hand a PR back                                | Remove the label / mark ready-for-review.                                                                                                     |
-| Force a janitor to retry                      | Push, advance the base, post new review feedback, or delete the newest failure comment.                                                       |
-| Let Phoebe maintain all PRs, not just its own | `prScope: "all"`.                                                                                                                             |
+| I want to…                                    | Do this                                                                                                                                            |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Queue an issue for Phoebe                     | Add `readyLabel` (`ready-for-agent`).                                                                                                              |
+| Pause a queued issue                          | Remove `readyLabel`.                                                                                                                               |
+| Bump an issue up the queue                    | Word it as a bug/fix, or it waits its turn by age.                                                                                                 |
+| Sequence-dependent issues                     | `Blocked by #N` in the body.                                                                                                                       |
+| Take a PR away from Phoebe                    | Add `prOptOutLabel` (`ready-for-human`), which works for any PR. Under the default `draftPrs`, marking a **non-Phoebe** PR draft also opts it out. |
+| Hand a PR back                                | Remove the label / mark ready-for-review.                                                                                                          |
+| Force a janitor to retry                      | Push, advance the base, post new review feedback, or delete the newest failure comment.                                                            |
+| Let Phoebe maintain all PRs, not just its own | `prScope: "all"`.                                                                                                                                  |
 
 ## Running many repos in one container
 
-One container can serve several repos as **tenants**. The supervisor runs one
-engine child per tenant and reconciles the set on every poll — **no restart** to
-add or remove one. The layout is **workspace**: child checkouts under a root
+One container can serve several repos as **tenants**. The bootstrapper runs one
+engine child per tenant and reconciles the set on every poll, with **no restart**
+needed to add or remove one. The layout is **workspace**: child checkouts under a root
 that declares `workspace: { depth }` (walk) or `workspace: { tenants: [...] }`
 (declare). Full topology + runbook: [`workspace.md`](workspace.md).
 
 Read [`trust.md`](trust.md) first: co-locating repos means co-locating them in
 one trust domain.
 
-| Action                            | How                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Add a repo                        | Place the checkout under the root (`git clone` / `git submodule add`), then `phoebe init --tenant <dir>` (host-side) and — on the declared arm — add the dir to `workspace.tenants` yourself. Phoebe never edits your fleet declaration; `workspace.tenants` is yours. The supervisor discovers it next poll. Fill in its `.env`.                                                                                                                                      |
-| Remove a repo                     | Drop the child from `workspace.tenants` and/or delete its config dir (host-side; Phoebe never edits your fleet declaration). Reversible — the tenant's `/data` is retained; re-adding re-uses it.                                                                                                                                                                                                                                                                      |
-| Reclaim a removed repo's disk     | `phoebe purge <owner/repo> --yes` (in-container). Destructive; refuses while a live config still claims the slug.                                                                                                                                                                                                                                                                                                                                                      |
-| Apply deployment migrations       | `phoebe migrate` (host-side, in the deployment dir). Rewrites config content and scaffolds missing artifacts across root and fleet; lists uncommitted paths for you to review and commit per repo. See [`upgrading.md` → phoebe migrate](upgrading.md#phoebe-migrate--reshaping-your-files-for-the-current-ref).                                                                                                                                                       |
-| Check every tenant's GitHub token | `node scripts/verify-tenant-token.mjs --all` (host-side, in the deployment dir). One section per tenant; `--check` exits non-zero when any is short a grant. See [Checking a tenant's GitHub token](#checking-a-tenants-github-token).                                                                                                                                                                                                                                 |
-| See every tenant + its health     | `phoebe list` (in-container): config present? `.env` present? retained data? current unit (read from each tenant's `status.json`). Rows that cannot boot show `held — <reason>`. Use `--json` for scriptable output and `--check` to exit non-zero when the declaration is not fully honoured (declared-arm accounting — `N of M`, declared order, `undeclared` — lives in [`workspace.md` → Declaring the fleet](workspace.md#declaring-the-fleet-workspacetenants)). |
+| Action                            | How                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Add a repo                        | Place the checkout under the root (`git clone` / `git submodule add`), then `phoebe init --tenant <dir>` (host-side) and, on the declared arm, add the dir to `workspace.tenants` yourself. Phoebe never edits your fleet declaration; `workspace.tenants` is yours. The bootstrapper discovers it next poll. Fill in its `.env`.                                                                                                                                                |
+| Remove a repo                     | Drop the child from `workspace.tenants` and/or delete its config dir (host-side; Phoebe never edits your fleet declaration). Reversible, because the tenant's `/data` is retained and re-adding re-uses it.                                                                                                                                                                                                                                                                      |
+| Reclaim a removed repo's disk     | `phoebe purge <owner/repo> --yes` (in-container). Destructive; refuses while a live config still claims the slug.                                                                                                                                                                                                                                                                                                                                                                |
+| Apply deployment migrations       | `phoebe migrate` (host-side, in the deployment dir). Rewrites config content and scaffolds missing artifacts across root and fleet; lists uncommitted paths for you to review and commit per repo. See [`upgrading.md` → phoebe migrate](upgrading.md#phoebe-migrate-reshaping-your-files-for-the-current-ref).                                                                                                                                                                  |
+| Check every tenant's GitHub token | `node scripts/verify-tenant-token.mjs --all` (host-side, in the deployment dir). One section per tenant; `--check` exits non-zero when any is short a grant. See [Checking a tenant's GitHub token](#checking-a-tenants-github-token).                                                                                                                                                                                                                                           |
+| See every tenant + its health     | `phoebe list` (in-container): config present? `.env` present? retained data? current unit (read from each tenant's `status.json`). Rows that cannot boot show `held — <reason>`. Use `--json` for scriptable output and `--check` to exit non-zero when the declaration is not fully honoured (declared-arm accounting, meaning `N of M`, declared order, and `undeclared`, lives in [`workspace.md` → Declaring the fleet](workspace.md#declaring-the-fleet-workspacetenants)). |
 
 **Concurrency across tenants.** Only `PHOEBE_MAX_CONCURRENT_AGENTS` work units
-(default **1**) execute at once across the whole fleet — a supervisor-brokered,
+(default **1**) execute at once across the whole fleet. It is a bootstrapper-brokered,
 FIFO round-robin cap so N repos don't thrash the host. Idle polling stays
 per-repo and parallel.
 
-**Reading the logs.** Every line is tagged `[phoebe:<owner>/<repo>]` (the
-supervisor tags its own `[phoebe:supervisor]`), so a host log collector can
+**Reading the logs.** Every tenant line is tagged `[phoebe:<owner>/<repo>]`, and
+the bootstrapper's own lines are tagged `[phoebe]`, so a host log collector can
 attribute each line to its tenant. Agent output uses the combined bracket
 `[<owner>/<repo>:<command>]` (e.g. `[JesusFilm/phoebe:cursor]`) so agent lines
 stay visually distinct from unit-event lines. stderr lines add a further suffix:
 `[<owner>/<repo>:<command>:stderr]`.
-The container writes no log files — stdout is the whole story.
+The container writes no log files. Stdout is the whole story.
 
 **When a unit hangs.** A work unit that exceeds its wall-clock budget
 (`PHOEBE_RUN_TIMEOUT_MS`, default 45 min) is aborted so it can't starve the
@@ -259,8 +269,8 @@ There are two ways out, and both give the unit a **fresh** allowance of
 
 - **Change the content.** Push to the PR, or edit the issue body. Each cycle
   Phoebe sweeps the quarantined units and compares them against the baseline
-  recorded in the escalation comment — the PR's head SHA, or a fingerprint of the
-  issue body. When that has moved, Phoebe removes the label itself and says so in
+  recorded in the escalation comment, either the PR's head SHA or a fingerprint of
+  the issue body. When that has moved, Phoebe removes the label itself and says so in
   a comment. A bare comment or reaction does **not** count: it can't re-arm a unit
   nobody has actually fixed.
 - **Remove the label by hand.** Phoebe treats that as a deliberate "try again"
