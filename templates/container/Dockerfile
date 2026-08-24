@@ -63,22 +63,23 @@ RUN useradd --create-home --shell /bin/bash --uid 10001 --user-group phoebe \
  && mkdir -p /data/repos /data/engine \
  && chown -R phoebe:phoebe /data
 
-# The bootstrapper. Unpinned here so every rebuild pulls the latest launcher
-# automatically — because `engine.ref` in phoebe.config.ts controls which engine
-# runs, and the launcher version must keep pace with it. The engine declares the
-# minimum launcher it needs in its own package.json (`phoebe.minBootstrap`);
-# `phoebe boot` checks this and refuses to start if the launcher is too old.
+# The bootstrapper. Pinned to a named ARG so it is machine-editable: a plain
+# `ARG` line is trivially and safely rewritable, overridable at build time with
+# `--build-arg PHOEBE_AGENT_VERSION=x.y.z`, and visible in image metadata via
+# `docker image inspect` — which answers "which launcher is in this image?"
+# with no need to run the container.
 #
-# If you pin the launcher (`{{CLI_BIN}}@<version>`), that floor check is the
-# thing to watch: a frozen launcher against a moving `engine.ref` deadlocks
-# the fleet the moment the engine advances past what that launcher supports —
-# children park on `requestLease` with no error and no exit.
+# The engine declares the minimum launcher it needs in its own package.json
+# (`phoebe.minBootstrap`); `phoebe boot` checks this on start and refuses to
+# run if the launcher is too old. Bump this version together with the engine
+# ref in phoebe.config.ts whenever a new engine requires a newer launcher.
 #
 # Installed as root into /usr/local, which `phoebe` only ever reads: at boot it
 # copies itself out to PHOEBE_ENGINE_DIR (/data/engine, owned by us) before
 # running anything, because Node 24 refuses to type-strip TypeScript under a
 # `node_modules/` path segment.
-RUN npm install -g {{CLI_BIN}}
+ARG PHOEBE_AGENT_VERSION=0.7.1
+RUN npm install -g {{CLI_BIN}}@${PHOEBE_AGENT_VERSION}
 
 # Provider agent CLI. The engine spawns the selected provider's CLI as a child
 # (`agent` for cursor, `claude`, or `codex`), so the one matching your

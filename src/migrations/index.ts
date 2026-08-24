@@ -7,8 +7,10 @@
 import type { Migration } from "../migrate.ts";
 import { researchPromptMigration } from "./m001-research-prompt.ts";
 import { addResearchToWorkOrderMigration } from "./m002-add-research-to-workorder.ts";
+import { containerLauncherArgMigration } from "./m003-container-launcher-arg.ts";
 
 export const MIGRATIONS: readonly Migration[] = [
   researchPromptMigration,
   addResearchToWorkOrderMigration,
+  containerLauncherArgMigration,
 ];
