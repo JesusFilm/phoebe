@@ -40,10 +40,11 @@ the field reference.
 | Provider + model                    | `defaultProvider` / `defaultModels`                | operator-chosen at runtime via `.env` (see below), config left at defaults          |
 | Prompts                             | `promptFiles`                                      | **defaults**, the scaffolded `prompts/` are left unedited                           |
 
-Net effect: the committed `phoebe.config.ts` names **only the toolchain fields**.
-Everything that governs _what Phoebe does_ stays on the engine defaults: the
-order of work kinds, which PRs it touches, the labels it reads, the prompts it
-runs. So a `phoebe-agent` upgrade picks up any new defaults automatically
+Net effect: the committed `phoebe.config.ts` names **only the toolchain fields
+plus the engine pin**. Everything that governs _what Phoebe does_ stays on the
+engine defaults: the order of work kinds, which PRs it touches, the labels it
+reads, the prompts it runs. So a `phoebe-agent` upgrade picks up any new
+defaults automatically
 ([why a minimal config stays current](upgrading.md#upgrading)).
 
 ## 1. Prerequisites

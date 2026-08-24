@@ -183,8 +183,9 @@ commits, failed children revert, and the ref flip lands last. If a migration
 leaves the root config invalid the flip is aborted; if a child fails or has a
 dirty tree it is skipped with instructions to re-run. The recorded escape hatch
 would be a preview flag on `upgrade` that ran the target ref's migrations without
-applying them. No such flag exists today: `upgrade` accepts `--engine`, `--cli`,
-`--both`, `--check`, `--json`, and `--config`, and rejects anything else.
+applying them. No such flag exists today, and no flag spelling gets you one:
+`upgrade` takes an optional ref plus `--engine`, `--cli`, `--both`, `--check`,
+`--json`, `--config`, and `--help`, and rejects every other flag.
 `migrate --check` previews migrations for the ref you are already on, not the
 target.
 
