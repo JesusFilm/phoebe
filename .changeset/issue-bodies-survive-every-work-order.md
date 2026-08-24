@@ -14,5 +14,5 @@ its divergence from the base branch treated as something to fix. The shipped
 default order hides this, because conflicts fetches first into a map that is
 empty anyway; only a reordered `workOrder` reaches it.
 
-Every kind now merges, and the map is a `const` so assigning over it is a
-compile error rather than a silent loss.
+Every kind that gathers issue bodies now merges, and the map is a `const` so
+assigning over it is a compile error rather than a silent loss.
