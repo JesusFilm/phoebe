@@ -63,9 +63,16 @@ RUN useradd --create-home --shell /bin/bash --uid 10001 --user-group phoebe \
  && mkdir -p /data/repos /data/engine \
  && chown -R phoebe:phoebe /data
 
-# The bootstrapper. Unpinned on purpose: which *engine* you run is `engine.ref`
-# in phoebe.config.ts, and this package is only the thin launcher around it.
-# Pin it (`{{CLI_BIN}}@<version>`) if you want the launcher itself frozen too.
+# The bootstrapper. Unpinned here so every rebuild pulls the latest launcher
+# automatically — because `engine.ref` in phoebe.config.ts controls which engine
+# runs, and the launcher version must keep pace with it. The engine declares the
+# minimum launcher it needs in its own package.json (`phoebe.minBootstrap`);
+# `phoebe boot` checks this and refuses to start if the launcher is too old.
+#
+# If you pin the launcher (`{{CLI_BIN}}@<version>`), that floor check is the
+# thing to watch: a frozen launcher against a moving `engine.ref` deadlocks
+# the fleet the moment the engine advances past what that launcher supports —
+# children park on `requestLease` with no error and no exit.
 #
 # Installed as root into /usr/local, which `phoebe` only ever reads: at boot it
 # copies itself out to PHOEBE_ENGINE_DIR (/data/engine, owned by us) before

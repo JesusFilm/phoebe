@@ -91,6 +91,85 @@ import { propagateExit, spawnEngineChild, spawnSoloChild } from "./spawn-engine.
 export const LOCAL_ENGINE_DIR = "/opt/phoebe-engine";
 
 /**
+ * The launcher's own semver version, read once at module load.
+ *
+ * In the deployed package flow (bin.mjs → materialize.mjs → outside
+ * node_modules), the `.materialized` marker written by ensureEngine() holds the
+ * version string. In a dev git checkout there is no marker, so the package.json
+ * one level up from this file is the fallback. Falls back to "0.0.0" only when
+ * both reads fail (e.g. unit tests that call checkMinBootstrap directly — those
+ * pass launcherVersion explicitly and never read this constant).
+ */
+const LAUNCHER_VERSION: string = (() => {
+  try {
+    return readFileSync(join(import.meta.dirname, "..", ".materialized"), "utf8").trim();
+  } catch {
+    try {
+      const pkg = JSON.parse(
+        readFileSync(join(import.meta.dirname, "..", "package.json"), "utf8"),
+      ) as Record<string, unknown>;
+      return typeof pkg["version"] === "string" ? pkg["version"] : "0.0.0";
+    } catch {
+      return "0.0.0";
+    }
+  }
+})();
+
+/**
+ * Read `phoebe.minBootstrap` from the materialized engine checkout's
+ * `package.json` and refuse when the running launcher is below that floor.
+ *
+ * Absence of the file, absence of the field, or an unparseable value all
+ * mean "no floor" — engines that predate the field keep working with any
+ * launcher version. The check is pure given two version strings and a
+ * `readFile`, so it tests without processes.
+ */
+export function checkMinBootstrap(opts: {
+  launcherVersion: string;
+  engineDir: string;
+  readFile?: (path: string) => string;
+}): void {
+  const readFile = opts.readFile ?? ((p: string) => readFileSync(p, "utf8"));
+  let raw: string;
+  try {
+    raw = readFile(join(opts.engineDir, "package.json"));
+  } catch {
+    return;
+  }
+  let minBootstrap: unknown;
+  try {
+    const pkg = JSON.parse(raw) as unknown;
+    if (typeof pkg !== "object" || pkg === null) return;
+    const phoebe = (pkg as Record<string, unknown>)["phoebe"];
+    if (typeof phoebe !== "object" || phoebe === null) return;
+    minBootstrap = (phoebe as Record<string, unknown>)["minBootstrap"];
+  } catch {
+    return;
+  }
+  if (typeof minBootstrap !== "string" || !/^\d+\.\d+\.\d+/.test(minBootstrap)) return;
+  if (semverLt(opts.launcherVersion, minBootstrap)) {
+    throw new Error(
+      `engine requires launcher >= ${minBootstrap}, but this launcher is ` +
+        `${opts.launcherVersion}. ` +
+        `Pin the bootstrapper in your Dockerfile (\`npm install -g phoebe-agent@${minBootstrap}\` ` +
+        `or higher), then rebuild the image.`,
+    );
+  }
+}
+
+function semverLt(a: string, b: string): boolean {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < 3; i++) {
+    const na = pa[i] ?? 0;
+    const nb = pb[i] ?? 0;
+    if (na < nb) return true;
+    if (na > nb) return false;
+  }
+  return false;
+}
+
+/**
  * Runs `gh` with the given argv. Injectable so boot's credential-helper setup is
  * unit-tested without a real `gh` binary or a writable `~/.gitconfig`.
  */
@@ -238,6 +317,9 @@ async function launchTarget(configPath: string, guard: CrashGuard): Promise<Laun
     quarantinedSha = sha;
     ({ entry, sha } = materializeGithubEngine({ ...source, ref: pin }, { baseDir, token }));
   }
+
+  // dirname twice: entry is <checkout>/src/cli.ts, so two levels up is the root.
+  checkMinBootstrap({ launcherVersion: LAUNCHER_VERSION, engineDir: dirname(dirname(entry)) });
 
   const provenance =
     quarantinedSha !== null

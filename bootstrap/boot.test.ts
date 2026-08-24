@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
 import {
+  checkMinBootstrap,
   isMovingBranch,
   LOCAL_ENGINE_DIR,
   resolveEngineEntry,
@@ -190,6 +191,105 @@ describe("tenantFingerprint", () => {
     const present = tenantFingerprint(configPath, envPath);
     expect(present).not.toBeNull();
     expect(present).not.toBe(absent);
+  });
+});
+
+// --- minBootstrap floor ------------------------------------------------------
+
+describe("checkMinBootstrap", () => {
+  const pkg = (minBootstrap: unknown) =>
+    JSON.stringify({
+      name: "phoebe-agent",
+      version: "0.8.0",
+      phoebe: { minBootstrap },
+    });
+
+  test("no package.json in the engine checkout — no floor", () => {
+    expect(() =>
+      checkMinBootstrap({
+        launcherVersion: "0.3.0",
+        engineDir: "/fake/engine",
+        readFile: () => {
+          throw new Error("ENOENT");
+        },
+      }),
+    ).not.toThrow();
+  });
+
+  test("package.json present but no phoebe.minBootstrap field — no floor", () => {
+    expect(() =>
+      checkMinBootstrap({
+        launcherVersion: "0.3.0",
+        engineDir: "/fake/engine",
+        readFile: () => JSON.stringify({ name: "phoebe-agent", version: "0.8.0" }),
+      }),
+    ).not.toThrow();
+  });
+
+  test("phoebe.minBootstrap is an unparseable type — no floor", () => {
+    expect(() =>
+      checkMinBootstrap({
+        launcherVersion: "0.3.0",
+        engineDir: "/fake/engine",
+        readFile: () => pkg(42),
+      }),
+    ).not.toThrow();
+  });
+
+  test("floor met — launcher exactly at the floor", () => {
+    expect(() =>
+      checkMinBootstrap({
+        launcherVersion: "0.7.0",
+        engineDir: "/fake/engine",
+        readFile: () => pkg("0.7.0"),
+      }),
+    ).not.toThrow();
+  });
+
+  test("floor met — launcher above the floor", () => {
+    expect(() =>
+      checkMinBootstrap({
+        launcherVersion: "0.8.1",
+        engineDir: "/fake/engine",
+        readFile: () => pkg("0.7.0"),
+      }),
+    ).not.toThrow();
+  });
+
+  test("floor violated — error names both versions and the two fixes", () => {
+    expect(() =>
+      checkMinBootstrap({
+        launcherVersion: "0.3.0",
+        engineDir: "/fake/engine",
+        readFile: () => pkg("0.7.0"),
+      }),
+    ).toThrow(/0\.7\.0.*0\.3\.0|0\.3\.0.*0\.7\.0/);
+  });
+
+  test("floor violated — error mentions the Dockerfile pin", () => {
+    let message = "";
+    try {
+      checkMinBootstrap({
+        launcherVersion: "0.3.0",
+        engineDir: "/fake/engine",
+        readFile: () => pkg("0.7.0"),
+      });
+    } catch (e) {
+      message = e instanceof Error ? e.message : String(e);
+    }
+    expect(message).toMatch(/Dockerfile/);
+    expect(message).toMatch(/rebuild/i);
+  });
+
+  test("floor violated — minor version comparison is numeric, not lexicographic", () => {
+    // "0.9.0" > "0.10.0" lexicographically, but 9 < 10 numerically.
+    expect(() =>
+      checkMinBootstrap({
+        launcherVersion: "0.9.0",
+        engineDir: "/fake/engine",
+        readFile: () => pkg("0.10.0"),
+      }),
+    ).toThrow();
   });
 });
 
