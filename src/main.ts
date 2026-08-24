@@ -1384,6 +1384,12 @@ export function createEngine(options: EngineOptions): Engine {
           case "research":
             await runResearchUnit(picked.unit);
             break;
+          default: {
+            const _exhaustive: never = picked;
+            throw new Error(
+              `Unhandled work kind: ${String((_exhaustive as { kind: string }).kind)}`,
+            );
+          }
         }
         emitUnitEvent({ unit: ref, event: "completed" });
       } catch (error) {
