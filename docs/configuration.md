@@ -18,11 +18,16 @@ const config: PhoebeUserConfig = {
   installCommand: "npm ci",
   checkCommand: "npm run check",
   testCommand: "npm test",
-  engine: { source: "github", ref: "v0.1.0" },
+  engine: { source: "github", ref: "vX.Y.Z" },
 };
 
 export default config;
 ```
+
+`vX.Y.Z` stands for a released tag. Pick one from
+[the releases page](https://github.com/JesusFilm/phoebe/releases); the
+[Quickstart](../README.md#quickstart) and [`ai-install.md`](ai-install.md) carry a
+concrete one you can copy.
 
 **Keep every import in this file type-only.** In the container the file is
 mounted into `/etc/phoebe` and read by `phoebe boot`, from a directory with no
@@ -77,7 +82,9 @@ does not force you to supply the rest.
 | `processingLabel` | `"processing"`         | The agent applies this to an issue it has claimed.                  |
 | `prOptOutLabel`   | `"ready-for-human"`    | PRs with this label are excluded from every PR scan.                |
 
-See [`operating.md`](operating.md) for how a human drives Phoebe with these.
+See [`operating.md`](operating.md) for how a human drives Phoebe with these,
+and [`preparing-work.md`](preparing-work.md) for why `researchLabel` defaults to a
+wayfinder-shaped value and what to set it to if you use something else.
 
 ## PR-scan scope
 

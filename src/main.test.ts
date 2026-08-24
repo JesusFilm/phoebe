@@ -565,6 +565,62 @@ describe("stacked-blocker skips", () => {
   });
 });
 
+// One cycle's issue bodies are gathered per work kind and merged into a single
+// map, and the stack selectors read that map to tell a real conflict from an
+// expected divergence. `conflicts` *assigned* the map where `checks` and
+// `reviews` merged into it, so any workOrder fetching conflicts second threw
+// away every body gathered before it — and a body the selectors cannot find
+// reads as "not stacked" (orchestrator.ts:609 coerces a miss to ""). The
+// default order hides it: conflicts fetches first, into a map that is empty
+// anyway.
+describe("issue bodies survive every work order", () => {
+  /**
+   * Two PRs, both stacked on the same blocker and neither workable for it: #21
+   * conflicts, #22 fails CI. Fetching conflicts last must not cost #22 the body
+   * that makes it stacked.
+   */
+  function stackedWorld(): GitHubStubOverrides {
+    return {
+      ...prWorld([
+        { number: 21, issueNumber: 7, mergeable: "CONFLICTING" },
+        { number: 22, issueNumber: 8, headSha: sha("d1"), checkRuns: RED_CI },
+      ]),
+      issueBody: () => "Blocked by #10",
+      blockerPrState: () => ({
+        hasOpenPr: true,
+        openPrNumber: asPrNumber(20),
+        hasMergedPr: false,
+      }),
+    };
+  }
+
+  test("checks before conflicts: the checks PR is still seen as stacked", async () => {
+    const result = await runCycle({
+      config: { workOrder: ["checks", "conflicts"] },
+      shas: { main: MAIN_HEAD },
+      github: stackedWorld(),
+    });
+
+    expect(selection(result)).toBeUndefined();
+    expect(result.lines).toContain(
+      "[phoebe] 1 failing-CI PR(s) skipped (conflicting, stacked, or watermarked).",
+    );
+  });
+
+  test("conflicts before checks: the same world reaches the same verdict", async () => {
+    const result = await runCycle({
+      config: { workOrder: ["conflicts", "checks"] },
+      shas: { main: MAIN_HEAD },
+      github: stackedWorld(),
+    });
+
+    expect(selection(result)).toBeUndefined();
+    expect(result.lines).toContain(
+      "[phoebe] 1 conflicting PR(s) skipped (stacked on open blocker).",
+    );
+  });
+});
+
 // The idle report walks this engine's `workOrder`, not an order of its own. The
 // two used to be separate walks and could name different kinds — the report
 // reaching a kind the loop would never have got to, or stopping before the kind

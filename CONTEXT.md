@@ -42,6 +42,14 @@ credential arms are **PAT** (an operator-supplied token) and **App** (a minted G
 installation token).
 _Avoid_: mode, variant, flavour
 
+### Preparing work
+
+**Front-loading**:
+Creating the issues, maps, and grilling sessions that become `ready-for-agent` or
+research issues. The work a person does before Phoebe can start, because an AFK agent
+has nobody to ask.
+_Avoid_: grooming, refinement, backlog prep
+
 ### Work
 
 **Work unit**:

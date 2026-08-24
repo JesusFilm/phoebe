@@ -11,11 +11,17 @@ execution environment. Your host checkout is never touched: the container owns a
 private clone and pushes branches directly to origin. Every repo-specific value
 lives behind one config file, so the same engine drives any repository.
 
-> ⚠️ **Early scaffold.** This repository is being stood up as the public home of
-> Phoebe's engine, extracted from [`JesusFilm/youtube-studio`](https://github.com/JesusFilm/youtube-studio).
-> The engine, CLI packaging, `phoebe init` scaffolder, CI, and first npm release
-> land as the tracked execution issues on this repo. Until `phoebe-agent@0.1.0`
-> is published, treat everything here as work in progress.
+Phoebe sits at the end of a planning pipeline, not in place of one. A pipeline
+handles every decision that needs a person; Phoebe handles the automated work
+that follows. So the quality of what comes out depends on the quality of the
+issue that goes in, which is what
+[`docs/preparing-work.md`](docs/preparing-work.md) is about. Start there if you
+are deciding what to hand Phoebe.
+
+Phoebe is published on npm as [`phoebe-agent`](https://www.npmjs.com/package/phoebe-agent)
+and runs against repositories inside and outside JesusFilm. It also works this
+one: most of the pull requests merged here were opened by Phoebe, from this
+repository's own issue tracker.
 
 ## Distribution
 
@@ -33,7 +39,7 @@ npx --yes phoebe-agent init      # scaffold config, prompts, .env.example, conta
 ```
 
 Then edit the five required fields in `phoebe.config.ts`, pin the engine with
-`engine: { source: "github", ref: "v0.1.0" }`, and copy `.env.example` to `.env`
+`engine: { source: "github", ref: "v0.7.1" }`, and copy `.env.example` to `.env`
 and fill in your `GH_TOKEN` and provider key. The scaffolded `.env` lives at the
 repo root while the compose files live in `container/`, so pass
 `--env-file ../.env` when you run Compose from there:
@@ -76,7 +82,7 @@ const config: PhoebeUserConfig = {
   installCommand: "npm ci",
   checkCommand: "npm run check",
   testCommand: "npm test",
-  engine: { source: "github", ref: "v0.1.0" },
+  engine: { source: "github", ref: "v0.7.1" },
 };
 
 export default config;
@@ -105,19 +111,28 @@ reference and the `PHOEBE_*` environment overlay.
 [`CONTEXT.md`](CONTEXT.md) is the glossary — the words this project uses for its own
 concepts, and the ones it deliberately avoids.
 
-Docs live under [`docs/`](docs/):
+Docs live under [`docs/`](docs/), in two groups.
 
-- [`docs/architecture.md`](docs/architecture.md) — topology, worktree isolation, engine updates and crash-loop fallback, named volumes.
+**Using Phoebe** — running it against your own repositories:
+
+- [`docs/preparing-work.md`](docs/preparing-work.md) — what an issue needs before Phoebe can work it, and the planning pipeline that produces one.
+- [`docs/ai-install.md`](docs/ai-install.md) — a deterministic, agent-followable install runbook.
 - [`docs/configuration.md`](docs/configuration.md) — full config-field reference and env overlay.
-- [`docs/workspace.md`](docs/workspace.md) — workspace mode topology, two-tier `.env`, operator runbook (plain-clone or submodule children).
 - [`docs/work-kinds.md`](docs/work-kinds.md) — issues / conflicts / checks / reviews / research mechanics, PR-scan scope, poll loop.
 - [`docs/operating.md`](docs/operating.md) — controlling Phoebe as a human (labels, drafts, watermarks).
 - [`docs/upgrading.md`](docs/upgrading.md) — the init / pin / upgrade contract, `phoebe migrate` verb, and what Phoebe may write in your repos.
-- [`docs/migrations.md`](docs/migrations.md) — engine-contributor guide: the `Migration` interface, roles, detect/describe/apply, refusal semantics, and idempotence tests.
-- [`docs/ai-install.md`](docs/ai-install.md) — a deterministic, agent-followable install runbook.
-- [`docs/releasing.md`](docs/releasing.md) — the Changesets + npm trusted-publishing release flow.
+- [`docs/workspace.md`](docs/workspace.md) — workspace mode topology, two-tier `.env`, operator runbook (plain-clone or submodule children).
+- [`docs/github-app-mode.md`](docs/github-app-mode.md) — the GitHub App credential arm, for deployments spanning several repos under one org owner.
+- [`docs/claude-subscription-auth.md`](docs/claude-subscription-auth.md) — driving the `claude` provider from a subscription rather than an API key.
 - [`docs/phoebe-core-onboarding.md`](docs/phoebe-core-onboarding.md) — worked onboarding for `JesusFilm/core` (Nx + pnpm, no vp).
+
+**Working on Phoebe** — changing the engine itself:
+
+- [`docs/architecture.md`](docs/architecture.md) — topology, worktree isolation, engine updates and crash-loop fallback, named volumes.
+- [`docs/migrations.md`](docs/migrations.md) — the `Migration` interface, roles, detect/describe/apply, refusal semantics, and idempotence tests.
+- [`docs/releasing.md`](docs/releasing.md) — the Changesets + npm trusted-publishing release flow.
 - [`docs/trust.md`](docs/trust.md) — contributor trust list (`vouch`) for this repo, and how it relates to `ready-for-agent`. Governance for this repository, not a package feature.
+- [`docs/research/`](docs/research/) — design records: the decision behind a seam, what was considered, and why.
 
 Agents landing in this repo should start at [`AGENTS.md`](AGENTS.md).
 
@@ -125,13 +140,26 @@ Agents landing in this repo should start at [`AGENTS.md`](AGENTS.md).
 
 Phoebe was designed, built, and dogfooded inside
 [`JesusFilm/youtube-studio`](https://github.com/JesusFilm/youtube-studio), which
-remains its reference consumer. Its execution loop was first prototyped on
-[Sandcastle](https://github.com/mattpocock/sandcastle) (`@ai-hero/sandcastle`, by
-Matt Pocock) — the sandbox-per-run design proved the loop end-to-end and its
-provider wrappers are the design ancestor of `src/providers/`. The dependency was
-removed when the host-spawns-sandboxes topology was replaced by the single
-persistable container. This repository starts with fresh history; the full design
-record lives in the youtube-studio issue tracker.
+incubated it. Phoebe has since outgrown that one repository and now runs against
+several, so youtube-studio is where it started rather than what it serves.
+
+Two pieces of Matt Pocock's work are woven through it. Its execution loop was
+first prototyped on [Sandcastle](https://github.com/mattpocock/sandcastle)
+(`@ai-hero/sandcastle`): the sandbox-per-run design proved the loop end-to-end,
+and its provider wrappers are the design ancestor of `src/providers/`. That
+dependency was removed when the host-spawns-sandboxes topology was replaced by
+the single persistable container.
+
+The [AI Hero skills](https://github.com/mattpocock/skills) are the planning
+pipeline Phoebe was built to sit behind. They are vendored under
+[`.agents/skills/`](.agents/skills) and pinned by content hash in
+[`skills-lock.json`](skills-lock.json), and the `research` work kind implements
+wayfinder's resolution protocol directly. See
+[`docs/preparing-work.md`](docs/preparing-work.md).
+
+This repository starts with fresh history. Design decisions made here are
+recorded here, as issues on this tracker and as design records under
+[`docs/research/`](docs/research/).
 
 ## License
 

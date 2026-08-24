@@ -196,7 +196,7 @@ const config: PhoebeUserConfig = {
     "pnpm nx format:write --base=origin/main && pnpm nx affected -t lint typecheck test --base=origin/main",
 
   // Which engine `phoebe boot` checks out and runs. Pin a released tag.
-  engine: { source: "github", ref: "v0.1.0" },
+  engine: { source: "github", ref: "vX.Y.Z" },
 };
 
 export default config;
