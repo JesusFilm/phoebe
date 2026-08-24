@@ -10,6 +10,7 @@ import {
   crashLoopCheck,
   describeRepoProbe,
   formatDoctorReport,
+  launcherFloorCheck,
   tenantTokenCheck,
 } from "./doctor.ts";
 
@@ -150,6 +151,98 @@ describe("tenantTokenCheck", () => {
       ],
     );
     expect(report.ok).toBe(true);
+  });
+});
+
+describe("launcherFloorCheck", () => {
+  test("no floor declared — ok, says check does not apply", () => {
+    const check = launcherFloorCheck({
+      minBootstrap: null,
+      launcherVersion: "0.3.0",
+      launcherSource: "dockerfile",
+    });
+    expect(check.state).toBe("ok");
+    expect(check.detail).toMatch(/does not apply/);
+  });
+
+  test("launcher below floor (Dockerfile source) — fail with deadlock warning and fix hint", () => {
+    const check = launcherFloorCheck({
+      minBootstrap: "0.5.0",
+      launcherVersion: "0.3.0",
+      launcherSource: "dockerfile",
+    });
+    expect(check.state).toBe("fail");
+    expect(check.detail).toContain("0.3.0");
+    expect(check.detail).toContain("0.5.0");
+    expect(check.detail).toMatch(/not a staleness warning/);
+    expect(check.detail).toMatch(/does no work/);
+    expect(check.detail).toMatch(/ARG PHOEBE_AGENT_VERSION=0\.5\.0/);
+    expect(check.detail).toMatch(/Dockerfile/);
+  });
+
+  test("launcher below floor (npm-global source) — fail with npm install fix hint", () => {
+    const check = launcherFloorCheck({
+      minBootstrap: "0.5.0",
+      launcherVersion: "0.3.0",
+      launcherSource: "npm-global",
+    });
+    expect(check.state).toBe("fail");
+    expect(check.detail).toMatch(/npm install -g phoebe-agent@0\.5\.0/);
+  });
+
+  test("launcher exactly at floor — ok", () => {
+    const check = launcherFloorCheck({
+      minBootstrap: "0.5.0",
+      launcherVersion: "0.5.0",
+      launcherSource: "dockerfile",
+    });
+    expect(check.state).toBe("ok");
+    expect(check.detail).toMatch(/meets the engine floor/);
+  });
+
+  test("launcher above floor — ok", () => {
+    const check = launcherFloorCheck({
+      minBootstrap: "0.5.0",
+      launcherVersion: "0.7.1",
+      launcherSource: "npm-global",
+    });
+    expect(check.state).toBe("ok");
+  });
+
+  test("floor declared but launcher version unknown (unpinned Dockerfile) — unknown", () => {
+    const check = launcherFloorCheck({
+      minBootstrap: "0.5.0",
+      launcherVersion: null,
+      launcherSource: "dockerfile",
+    });
+    expect(check.state).toBe("unknown");
+    expect(check.detail).toMatch(/0\.5\.0/);
+    expect(check.detail).toMatch(/ARG PHOEBE_AGENT_VERSION/);
+  });
+
+  test("floor declared but launcher unknown (no npm global) — unknown", () => {
+    const check = launcherFloorCheck({
+      minBootstrap: "0.5.0",
+      launcherVersion: null,
+      launcherSource: "npm-global",
+    });
+    expect(check.state).toBe("unknown");
+    expect(check.detail).toMatch(/not installed globally/);
+  });
+
+  test("a floor-violating launcher fails the whole doctor report", () => {
+    const report = buildDoctorReport(
+      [
+        { id: "config", state: "ok", detail: "loads" },
+        {
+          id: "launcher-floor",
+          state: "fail",
+          detail: "launcher 0.3.0 is below the engine floor 0.5.0 — ...",
+        },
+      ],
+      [],
+    );
+    expect(report.ok).toBe(false);
   });
 });
 

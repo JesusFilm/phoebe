@@ -3,15 +3,18 @@
 // is actually working. (A `--fix` mode that repairs at the current pin is a
 // mapped follow-up.)
 //
-// Six checks, all reads of state that already exists:
-//   1. cli       — installed bootstrapper vs the npm registry's latest
-//   2. engine    — configured pin vs the latest release tag, plus the commit
-//                  actually materialized in the engine checkout
-//   3. config    — the root phoebe.config.ts loads and its engine field parses
-//   4. repo      — the engine repo answers ls-remote with the current GH_TOKEN
-//   5. crash-loop— whether the deployment is silently running last-known-good
-//                  (the single most confusing failure mode this system has)
-//   6. supervisor— is `phoebe boot` actually the container's main process
+// Seven checks, all reads of state that already exists:
+//   1. cli            — installed bootstrapper vs the npm registry's latest
+//   2. engine         — configured pin vs the latest release tag, plus the commit
+//                       actually materialized in the engine checkout
+//   3. config         — the root phoebe.config.ts loads and its engine field parses
+//   4. repo           — the engine repo answers ls-remote with the current GH_TOKEN
+//   5. crash-loop     — whether the deployment is silently running last-known-good
+//                       (the single most confusing failure mode this system has)
+//   6. supervisor     — is `phoebe boot` actually the container's main process
+//   7. launcher-floor — is the launcher at or above the engine's declared minBootstrap
+//                       floor? A violation deadlocks the deployment outright, not
+//                       merely slows it — the two checks are not the same thing.
 //
 // In workspace mode it also sweeps tenants — the same enumeration boot
 // supervises with (#91/#154), so doctor can never report a different fleet from
@@ -50,6 +53,7 @@ import {
   redactToken,
   releaseVersion,
   compareVersions,
+  readDockerfilePin,
 } from "./upgrade.ts";
 import { enumerateWorkspaceTenants } from "./tenant-commands.ts";
 
@@ -119,6 +123,98 @@ export function crashLoopCheck(
       state.lastGoodSha !== null
         ? `no quarantine; last-good fallback target is ${state.lastGoodSha.slice(0, 12)}`
         : "no quarantine (no fallback target recorded yet)",
+  };
+}
+
+/** Parse a bare semver string ("0.5.0") into [major, minor, patch]. */
+function parseBareVersion(v: string): [number, number, number] | null {
+  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(v);
+  if (!m) return null;
+  return [Number(m[1]), Number(m[2]), Number(m[3])];
+}
+
+/**
+ * Read `phoebe.minBootstrap` from the materialized engine checkout's
+ * `package.json`. Returns null when the checkout, the file, or the field is
+ * absent — all three map to "no floor declared", not "check failed".
+ */
+function readMinBootstrap(engineDir: string): string | null {
+  try {
+    const raw = readFileSync(join(engineDir, "package.json"), "utf8");
+    const pkg = JSON.parse(raw) as unknown;
+    if (typeof pkg !== "object" || pkg === null) return null;
+    const phoebe = (pkg as Record<string, unknown>)["phoebe"];
+    if (typeof phoebe !== "object" || phoebe === null) return null;
+    const floor = (phoebe as Record<string, unknown>)["minBootstrap"];
+    if (typeof floor !== "string" || !/^\d+\.\d+\.\d+/.test(floor)) return null;
+    return floor;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Check whether the effective launcher version meets the engine's declared
+ * `phoebe.minBootstrap` floor. A floor violation deadlocks the deployment
+ * outright — no work runs until the launcher is updated. Pure, for tests.
+ *
+ * `minBootstrap === null` means no floor is declared (the engine predates
+ * #293, or no checkout is materialized yet); the check reports "does not
+ * apply" rather than passing silently, matching the local-mount engine check.
+ */
+export function launcherFloorCheck(fields: {
+  /** null when no floor is declared or the checkout is not yet materialized. */
+  minBootstrap: string | null;
+  /** null when the launcher version cannot be determined. */
+  launcherVersion: string | null;
+  launcherSource: "dockerfile" | "npm-global" | "unknown";
+}): DoctorCheck {
+  if (fields.minBootstrap === null) {
+    return {
+      id: "launcher-floor",
+      state: "ok",
+      detail: "no floor declared — check does not apply (engine predates minBootstrap)",
+    };
+  }
+  if (fields.launcherVersion === null) {
+    const why =
+      fields.launcherSource === "dockerfile"
+        ? "Dockerfile has no ARG PHOEBE_AGENT_VERSION pin"
+        : fields.launcherSource === "npm-global"
+          ? "phoebe-agent is not installed globally here"
+          : "launcher version is not readable";
+    return {
+      id: "launcher-floor",
+      state: "unknown",
+      detail: `engine floor is ${fields.minBootstrap} but the launcher version is unknown — ${why}`,
+    };
+  }
+  const floor = parseBareVersion(fields.minBootstrap);
+  const actual = parseBareVersion(fields.launcherVersion);
+  if (floor === null || actual === null) {
+    return {
+      id: "launcher-floor",
+      state: "unknown",
+      detail: `could not compare versions — floor: ${fields.minBootstrap}, launcher: ${fields.launcherVersion}`,
+    };
+  }
+  if (compareVersions(actual, floor) < 0) {
+    const fix =
+      fields.launcherSource === "dockerfile"
+        ? `set \`ARG PHOEBE_AGENT_VERSION=${fields.minBootstrap}\` in container/Dockerfile and rebuild the image`
+        : `run \`npm install -g phoebe-agent@${fields.minBootstrap}\` and restart`;
+    return {
+      id: "launcher-floor",
+      state: "fail",
+      detail:
+        `launcher ${fields.launcherVersion} is below the engine floor ${fields.minBootstrap} — ` +
+        `this is not a staleness warning: the deployment does no work in this state. Fix: ${fix}`,
+    };
+  }
+  return {
+    id: "launcher-floor",
+    state: "ok",
+    detail: `launcher ${fields.launcherVersion} meets the engine floor ${fields.minBootstrap}`,
   };
 }
 
@@ -521,6 +617,45 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
     });
   }
 
+  // 7. Launcher floor — is the bootstrapper at or above the engine's declared floor?
+  // A violation means boot throws immediately on startup: the deployment is not
+  // "mildly stale" but fully deadlocked. Only meaningful when the engine is a
+  // github checkout (local mounts manage their own launcher; config-failed means
+  // we have no checkout to read from).
+  if (source === null) {
+    checks.push({
+      id: "launcher-floor",
+      state: "unknown",
+      detail: "not probed — config resolution failed (see the config check)",
+    });
+  } else if (source.source !== "github") {
+    checks.push({
+      id: "launcher-floor",
+      state: "ok",
+      detail: "local mount — floor check does not apply",
+    });
+  } else {
+    const floorEngineDir = githubEngineDir(engineBaseDir(deps.env), source.repo);
+    const minBootstrap = existsSync(join(floorEngineDir, ".git"))
+      ? readMinBootstrap(floorEngineDir)
+      : null;
+    const dockerfilePath = join(deps.configDir, "container", "Dockerfile");
+    let launcherVersion: string | null = null;
+    let launcherSource: "dockerfile" | "npm-global" | "unknown" = "unknown";
+    if (existsSync(dockerfilePath)) {
+      const pin = readDockerfilePin(readFileSync(dockerfilePath, "utf8"));
+      launcherSource = "dockerfile";
+      if (pin.kind === "pinned") launcherVersion = pin.version;
+    } else {
+      const inst = installedCliVersion(npm);
+      if (inst !== null) {
+        launcherVersion = inst;
+        launcherSource = "npm-global";
+      }
+    }
+    checks.push(launcherFloorCheck({ minBootstrap, launcherVersion, launcherSource }));
+  }
+
   // Tenant sweep: workspace mode enumerates the same fleet boot supervises;
   // solo probes the root itself (the deployment root IS the tenant there).
   const tenants: TenantDoctorRow[] = [];
@@ -611,8 +746,10 @@ Usage:
 Checks: cli version vs npm latest; engine pin vs latest release (+ the commit
 actually materialized); root config loads; engine repo reachable with GH_TOKEN;
 crash-loop/quarantine state (are you silently on last-known-good?); supervisor
-liveness (in-container only). In workspace mode every tenant is swept — token
-present the way its child reads it, and its repo reachable with that token.
+liveness (in-container only); launcher version vs the engine's minBootstrap floor
+(a floor violation deadlocks the deployment — not the same as being merely stale).
+In workspace mode every tenant is swept — token present the way its child reads
+it, and its repo reachable with that token.
 
 The full five-permission token probe is scripts/verify-tenant-token.mjs.
 Exit code is 1 when any check fails. \`phoebe upgrade\` moves versions;
