@@ -12,12 +12,16 @@ import {
   buildCheckReport,
   classifyRef,
   compareVersions,
+  dockerfileEditInstruction,
   engineEditInstruction,
   latestReleaseTag,
   parseUpgradeArgs,
+  readDockerfilePin,
   redactToken,
   releaseVersion,
+  rewriteDockerfilePin,
   rewriteEngineRef,
+  upgradeCliHalf,
   upgradeEngineHalf,
 } from "./upgrade.ts";
 
@@ -283,6 +287,8 @@ function makeIo(overrides: {
     configPath: string;
     token: string | undefined;
   }) => number | null;
+  readDockerfile?: () => string | null;
+  writeDockerfile?: (content: string) => void;
 }) {
   const stdout: string[] = [];
   const stderr: string[] = [];
@@ -296,6 +302,9 @@ function makeIo(overrides: {
       stderr.push(line);
     },
     runMigrations: overrides.runMigrations,
+    readDockerfile: overrides.readDockerfile ?? (() => null),
+    writeDockerfile: overrides.writeDockerfile ?? (() => {}),
+    isInContainer: () => false,
     _stdout: stdout,
     _stderr: stderr,
   };
@@ -381,5 +390,193 @@ describe("upgradeEngineHalf migration ordering", () => {
     expect(contentAtMigrateTime).toContain('ref: "v0.3.1"');
     // After flip, the config now shows v0.3.2
     expect(readFileSync(configPath, "utf8")).toContain('ref: "v0.3.2"');
+  });
+});
+
+// --------------------------------------------------------- Dockerfile pin helpers
+
+const DOCKERFILE_PINNED = `FROM node:24\nARG PHOEBE_AGENT_VERSION=0.7.1\nRUN npm install -g phoebe-agent@\${PHOEBE_AGENT_VERSION}\n`;
+const DOCKERFILE_UNPINNED = `FROM node:24\nRUN npm install -g phoebe-agent\n`;
+
+describe("readDockerfilePin", () => {
+  test("pinned ARG line returns the version", () => {
+    expect(readDockerfilePin(DOCKERFILE_PINNED)).toEqual({ kind: "pinned", version: "0.7.1" });
+  });
+
+  test("absent ARG line returns unpinned", () => {
+    expect(readDockerfilePin(DOCKERFILE_UNPINNED)).toEqual({ kind: "unpinned" });
+  });
+
+  test("non-semver ARG value returns unpinned", () => {
+    const content = "ARG PHOEBE_AGENT_VERSION=latest\nRUN npm install -g phoebe-agent\n";
+    expect(readDockerfilePin(content)).toEqual({ kind: "unpinned" });
+  });
+});
+
+describe("rewriteDockerfilePin", () => {
+  test("rewrites the version in place", () => {
+    const result = rewriteDockerfilePin(DOCKERFILE_PINNED, "0.7.2");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.previousVersion).toBe("0.7.1");
+    expect(result.content).toContain("ARG PHOEBE_AGENT_VERSION=0.7.2");
+    expect(result.content).not.toContain("ARG PHOEBE_AGENT_VERSION=0.7.1");
+    expect(result.content.replace("0.7.2", "0.7.1")).toBe(DOCKERFILE_PINNED);
+  });
+
+  test("refuses when there is no ARG line to rewrite", () => {
+    const result = rewriteDockerfilePin(DOCKERFILE_UNPINNED, "0.7.2");
+    expect(result.ok).toBe(false);
+  });
+
+  test("refuses when multiple ARG PHOEBE_AGENT_VERSION lines are present", () => {
+    const doubled = DOCKERFILE_PINNED + "ARG PHOEBE_AGENT_VERSION=0.7.0\n";
+    const result = rewriteDockerfilePin(doubled, "0.7.2");
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/multiple/);
+  });
+
+  test("dockerfileEditInstruction is the exact one-line edit", () => {
+    expect(dockerfileEditInstruction("0.7.2")).toBe("ARG PHOEBE_AGENT_VERSION=0.7.2");
+  });
+});
+
+// --------------------------------------------------- buildCheckReport with Dockerfile
+
+describe("buildCheckReport with Dockerfile pin", () => {
+  const SOURCE = { source: "github" as const, ref: "v0.4.0", repo: "JesusFilm/phoebe" };
+
+  test("pinned Dockerfile: cli.installed is the pin, source is dockerfile", () => {
+    const report = buildCheckReport({
+      source: SOURCE,
+      latestTag: "v0.4.0",
+      installedCli: "0.3.0",
+      latestCli: "0.4.0",
+      dockerfilePin: { kind: "pinned", version: "0.3.0" },
+    });
+    expect(report.cli.installed).toBe("0.3.0");
+    expect(report.cli.source).toBe("dockerfile");
+    expect(report.cli.behind).toBe(true);
+    expect(report.ok).toBe(false);
+  });
+
+  test("pinned Dockerfile at latest: not behind", () => {
+    const report = buildCheckReport({
+      source: SOURCE,
+      latestTag: "v0.4.0",
+      installedCli: null,
+      latestCli: "0.4.0",
+      dockerfilePin: { kind: "pinned", version: "0.4.0" },
+    });
+    expect(report.cli.installed).toBe("0.4.0");
+    expect(report.cli.source).toBe("dockerfile");
+    expect(report.cli.behind).toBe(false);
+    expect(report.ok).toBe(true);
+  });
+
+  test("unpinned Dockerfile: installed is null, source is dockerfile, behind is null", () => {
+    const report = buildCheckReport({
+      source: SOURCE,
+      latestTag: "v0.4.0",
+      installedCli: "0.4.0",
+      latestCli: "0.4.0",
+      dockerfilePin: { kind: "unpinned" },
+    });
+    expect(report.cli.installed).toBeNull();
+    expect(report.cli.source).toBe("dockerfile");
+    expect(report.cli.behind).toBeNull();
+    expect(report.ok).toBe(true);
+  });
+
+  test("null dockerfilePin (host deployment): falls back to npm-global, no source field", () => {
+    const report = buildCheckReport({
+      source: SOURCE,
+      latestTag: "v0.4.0",
+      installedCli: "0.3.0",
+      latestCli: "0.4.0",
+      dockerfilePin: null,
+    });
+    expect(report.cli.installed).toBe("0.3.0");
+    expect(report.cli.source).toBeUndefined();
+    expect(report.cli.behind).toBe(true);
+  });
+});
+
+// ------------------------------------------------------- upgradeCliHalf Dockerfile
+
+function makeCliIo(overrides: {
+  dockerfileContent?: string | null;
+  writtenContent?: { value: string | null };
+  npm?: (args: readonly string[]) => string;
+}) {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const dockerfileRef = overrides.writtenContent ?? { value: null };
+  return {
+    git: (_args: readonly string[]) => "",
+    npm: overrides.npm ?? ((_args: readonly string[]) => ""),
+    stdout: (line: string) => {
+      stdout.push(line);
+    },
+    stderr: (line: string) => {
+      stderr.push(line);
+    },
+    runMigrations: () => null,
+    readDockerfile: () =>
+      overrides.dockerfileContent !== undefined ? overrides.dockerfileContent : null,
+    writeDockerfile: (content: string) => {
+      dockerfileRef.value = content;
+    },
+    isInContainer: () => false,
+    _stdout: stdout,
+    _stderr: stderr,
+  };
+}
+
+describe("upgradeCliHalf — container deployment", () => {
+  let savedExitCode: number | undefined;
+  afterEach(() => {
+    process.exitCode = savedExitCode;
+  });
+
+  test("rewrites the Dockerfile pin and prints the rebuild step", () => {
+    savedExitCode = process.exitCode as number | undefined;
+    const written = { value: null as string | null };
+    const io = makeCliIo({ dockerfileContent: DOCKERFILE_PINNED, writtenContent: written });
+    upgradeCliHalf({ releaseTag: "v0.7.2", io });
+    expect(written.value).toContain("ARG PHOEBE_AGENT_VERSION=0.7.2");
+    expect(io._stdout.some((l) => l.includes("0.7.1") && l.includes("0.7.2"))).toBe(true);
+    expect(io._stdout.some((l) => l.includes("phoebe start --build"))).toBe(true);
+  });
+
+  test("already at desired version — nothing to do", () => {
+    savedExitCode = process.exitCode as number | undefined;
+    const written = { value: null as string | null };
+    const io = makeCliIo({ dockerfileContent: DOCKERFILE_PINNED, writtenContent: written });
+    upgradeCliHalf({ releaseTag: "v0.7.1", io });
+    expect(written.value).toBeNull();
+    expect(io._stdout.some((l) => l.includes("nothing to do"))).toBe(true);
+  });
+
+  test("unpinned Dockerfile — reports nothing to move", () => {
+    savedExitCode = process.exitCode as number | undefined;
+    const io = makeCliIo({ dockerfileContent: DOCKERFILE_UNPINNED });
+    upgradeCliHalf({ releaseTag: "v0.7.2", io });
+    expect(io._stdout.some((l) => l.includes("Nothing to move"))).toBe(true);
+  });
+
+  test("no container/Dockerfile — falls through to npm install", () => {
+    savedExitCode = process.exitCode as number | undefined;
+    const npmCalls: string[][] = [];
+    const io = makeCliIo({
+      dockerfileContent: null,
+      npm: (args) => {
+        npmCalls.push([...args]);
+        return "0.7.1\n";
+      },
+    });
+    upgradeCliHalf({ releaseTag: "v0.7.2", io });
+    expect(npmCalls.some((args) => args.includes("phoebe-agent@0.7.2"))).toBe(true);
   });
 });

@@ -27,7 +27,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { readEngineSource, type ResolvedEngineSource } from "../bootstrap/engine-source.ts";
 import {
@@ -332,6 +332,55 @@ export function latestCliVersion(npm: NpmRunner = defaultNpm): string | null {
   }
 }
 
+// -------------------------------------------- container/Dockerfile launcher pin
+
+const ARG_PHOEBE_VERSION_RE = /^ARG[ \t]+PHOEBE_AGENT_VERSION=(\d+\.\d+\.\d+)[ \t]*$/m;
+const ARG_PHOEBE_VERSION_GLOBAL_RE = /^ARG[ \t]+PHOEBE_AGENT_VERSION=(\d+\.\d+\.\d+)[ \t]*$/gm;
+
+export type DockerfilePin = { kind: "pinned"; version: string } | { kind: "unpinned" };
+
+/**
+ * Read the PHOEBE_AGENT_VERSION ARG pin from a Dockerfile's content.
+ * Returns "pinned" with the version string when the machine-editable seam
+ * (added by migration m003) is present; "unpinned" when it is absent — the
+ * build pulls whatever npm publishes and there is nothing to move.
+ */
+export function readDockerfilePin(content: string): DockerfilePin {
+  const m = ARG_PHOEBE_VERSION_RE.exec(content);
+  return m !== null ? { kind: "pinned", version: m[1]! } : { kind: "unpinned" };
+}
+
+/**
+ * Rewrite ARG PHOEBE_AGENT_VERSION=<old> to ARG PHOEBE_AGENT_VERSION=<new>.
+ * Strict-literal only — refuses when more than one match exists.
+ */
+export function rewriteDockerfilePin(
+  content: string,
+  newVersion: string,
+): { ok: true; content: string; previousVersion: string } | { ok: false; reason: string } {
+  const matches = [...content.matchAll(ARG_PHOEBE_VERSION_GLOBAL_RE)];
+  if (matches.length === 0) {
+    return { ok: false, reason: "ARG PHOEBE_AGENT_VERSION not found" };
+  }
+  if (matches.length > 1) {
+    return {
+      ok: false,
+      reason: "multiple ARG PHOEBE_AGENT_VERSION lines — cannot rewrite unambiguously",
+    };
+  }
+  const previousVersion = matches[0]![1]!;
+  const newContent = content.replace(
+    ARG_PHOEBE_VERSION_RE,
+    `ARG PHOEBE_AGENT_VERSION=${newVersion}`,
+  );
+  return { ok: true, content: newContent, previousVersion };
+}
+
+/** The exact one-line edit to make in container/Dockerfile when the rewrite is refused. */
+export function dockerfileEditInstruction(newVersion: string): string {
+  return `ARG PHOEBE_AGENT_VERSION=${newVersion}`;
+}
+
 // ---------------------------------------------------------------- check mode
 
 export type UpgradeCheckReport = {
@@ -350,6 +399,8 @@ export type UpgradeCheckReport = {
     installed: string | null;
     latest: string | null;
     behind: boolean | null;
+    /** Present when `installed` reflects the container/Dockerfile ARG pin rather than npm ls -g. */
+    source?: "dockerfile";
   };
   /** False when either half is known to be behind. */
   ok: boolean;
@@ -361,6 +412,8 @@ export function buildCheckReport(fields: {
   latestTag: string | null;
   installedCli: string | null;
   latestCli: string | null;
+  /** Pin read from container/Dockerfile; null when no container/ present (host deployment). */
+  dockerfilePin?: DockerfilePin | null;
 }): UpgradeCheckReport {
   const { source, latestTag } = fields;
   let engine: UpgradeCheckReport["engine"];
@@ -376,21 +429,45 @@ export function buildCheckReport(fields: {
         : null;
     engine = { source: "github", ref: source.ref, latest: latestTag, tracking, behind };
   }
+
+  // Determine the effective CLI version: the Dockerfile pin when the deployment
+  // is container-based (the npm-global version does not run there), or the
+  // npm-global version for host deployments.
+  let cliInstalled: string | null;
+  let cliSource: "dockerfile" | undefined;
+  if (fields.dockerfilePin?.kind === "pinned") {
+    cliInstalled = fields.dockerfilePin.version;
+    cliSource = "dockerfile";
+  } else if (fields.dockerfilePin?.kind === "unpinned") {
+    cliInstalled = null;
+    cliSource = "dockerfile";
+  } else {
+    cliInstalled = fields.installedCli;
+    cliSource = undefined;
+  }
+
   // Ordering, not string inequality: an installed CLI *newer* than the
   // registry's latest (a prerelease install, a dist-tag rollback) is not
   // "behind". Non-X.Y.Z versions fall back to inequality.
   let cliBehind: boolean | null = null;
-  if (fields.installedCli !== null && fields.latestCli !== null) {
-    const installedVersion = releaseVersion(`v${fields.installedCli}`);
+  if (cliInstalled !== null && fields.latestCli !== null) {
+    const installedVersion = releaseVersion(`v${cliInstalled}`);
     const latestVersion = releaseVersion(`v${fields.latestCli}`);
     cliBehind =
       installedVersion !== null && latestVersion !== null
         ? compareVersions(installedVersion, latestVersion) < 0
-        : fields.installedCli !== fields.latestCli;
+        : cliInstalled !== fields.latestCli;
   }
+
+  const cli: UpgradeCheckReport["cli"] = {
+    installed: cliInstalled,
+    latest: fields.latestCli,
+    behind: cliBehind,
+    ...(cliSource !== undefined ? { source: cliSource } : {}),
+  };
   return {
     engine,
-    cli: { installed: fields.installedCli, latest: fields.latestCli, behind: cliBehind },
+    cli,
     ok: engine.behind !== true && cliBehind !== true,
   };
 }
@@ -463,6 +540,12 @@ type UpgradeIo = {
     configPath: string;
     token: string | undefined;
   }) => number | null;
+  /** Read container/Dockerfile; returns null when the deployment has no container/. */
+  readDockerfile?: () => string | null;
+  /** Write container/Dockerfile after a pin rewrite. */
+  writeDockerfile?: (content: string) => void;
+  /** Whether this process is running inside the Phoebe container. Injectable for tests. */
+  isInContainer?: () => boolean;
 };
 
 /**
@@ -514,12 +597,26 @@ function lsRemoteLatestTag(
 /** `phoebe upgrade` entry — parses, prompts if needed, runs the chosen halves. */
 export async function runUpgradeCli(argv: readonly string[]): Promise<void> {
   const parsed = parseUpgradeArgs(argv);
+
+  // Compute the Dockerfile path from the config path (or default) without calling
+  // resolveConfigPath yet — it throws for absent configs, but `phoebe upgrade --cli`
+  // on a host with no config.ts must still work. We just check existence ourselves.
+  const configFilename = parsed.configPath ?? "phoebe.config.ts";
+  const deploymentRoot = dirname(
+    isAbsolute(configFilename) ? configFilename : join(process.cwd(), configFilename),
+  );
+  const dockerfilePath = join(deploymentRoot, "container", "Dockerfile");
+
   const io: Required<UpgradeIo> = {
     git: defaultGit,
     npm: defaultNpm,
     stdout: (line) => process.stdout.write(`${line}\n`),
     stderr: (line) => process.stderr.write(`${line}\n`),
     runMigrations: defaultRunMigrations,
+    readDockerfile: () =>
+      existsSync(dockerfilePath) ? readFileSync(dockerfilePath, "utf8") : null,
+    writeDockerfile: (content) => writeFileSync(dockerfilePath, content, "utf8"),
+    isInContainer: isInsideContainer,
   };
   if (parsed.help) {
     process.stdout.write(UPGRADE_HELP_TEXT);
@@ -545,11 +642,14 @@ export async function runUpgradeCli(argv: readonly string[]): Promise<void> {
 
   if (parsed.check) {
     const { source } = await engineConfig();
+    const dockerfileContent = io.readDockerfile();
+    const dockerfilePin = dockerfileContent !== null ? readDockerfilePin(dockerfileContent) : null;
     const report = buildCheckReport({
       source,
       latestTag: source.source === "github" ? lsRemoteLatestTag(source, token, io.git) : null,
       installedCli: installedCliVersion(io.npm),
       latestCli: latestCliVersion(io.npm),
+      dockerfilePin,
     });
     if (parsed.json) {
       io.stdout(JSON.stringify(report));
@@ -632,10 +732,22 @@ function formatCheckReport(report: UpgradeCheckReport): string {
     const verdict = engine.behind === true ? "BEHIND" : engine.behind === false ? "current" : "?";
     lines.push(`engine: pinned ${engine.ref} — latest ${latest} (${verdict})`);
   }
-  const cliInstalled = cli.installed ?? "not npm-installed globally";
-  const cliLatest = cli.latest ?? "unknown (registry unreachable)";
-  const cliVerdict = cli.behind === true ? "BEHIND" : cli.behind === false ? "current" : "?";
-  lines.push(`cli:    ${cliInstalled} — latest ${cliLatest} (${cliVerdict})`);
+  if (cli.source === "dockerfile") {
+    if (cli.installed !== null) {
+      const cliLatest = cli.latest ?? "unknown (registry unreachable)";
+      const cliVerdict = cli.behind === true ? "BEHIND" : cli.behind === false ? "current" : "?";
+      lines.push(
+        `cli:    ${cli.installed} (container/Dockerfile) — latest ${cliLatest} (${cliVerdict})`,
+      );
+    } else {
+      lines.push("cli:    container/Dockerfile — no PHOEBE_AGENT_VERSION pin (build pulls latest)");
+    }
+  } else {
+    const cliInstalled = cli.installed ?? "not npm-installed globally";
+    const cliLatest = cli.latest ?? "unknown (registry unreachable)";
+    const cliVerdict = cli.behind === true ? "BEHIND" : cli.behind === false ? "current" : "?";
+    lines.push(`cli:    ${cliInstalled} — latest ${cliLatest} (${cliVerdict})`);
+  }
   return lines.join("\n");
 }
 
@@ -746,20 +858,20 @@ export function upgradeEngineHalf(opts: {
   return true;
 }
 
-function upgradeCliHalf(opts: { releaseTag: string | null; io: Required<UpgradeIo> }): void {
+export function upgradeCliHalf(opts: { releaseTag: string | null; io: Required<UpgradeIo> }): void {
   const { io } = opts;
-  if (isInsideContainer()) {
+
+  if (io.isInContainer()) {
     io.stdout(
-      "cli: the launcher inside the container is baked into the image — an in-container " +
-        "npm install would be lost on the next rebuild. From the deployment directory on the host:\n" +
-        "  phoebe start --build",
+      "cli: the launcher is baked into the image. Run this from the deployment directory on the host:\n" +
+        "  phoebe upgrade --cli  # rewrites container/Dockerfile\n" +
+        "  phoebe start --build  # rebuilds the image with the new pin",
     );
     return;
   }
 
-  const installed = installedCliVersion(io.npm);
-  const registryLatest = latestCliVersion(io.npm);
   // Release tag vX.Y.Z ⇔ phoebe-agent@X.Y.Z — one number line.
+  const registryLatest = latestCliVersion(io.npm);
   const desired = opts.releaseTag !== null ? opts.releaseTag.slice(1) : registryLatest;
   if (desired === null) {
     throw new Error(
@@ -767,11 +879,53 @@ function upgradeCliHalf(opts: { releaseTag: string | null; io: Required<UpgradeI
         "is it reachable? Name a release explicitly: phoebe upgrade v0.4.0 --cli",
     );
   }
+
+  const dockerfileContent = io.readDockerfile();
+  if (dockerfileContent !== null) {
+    // Container deployment — the launcher pin lives in container/Dockerfile, not in
+    // the global npm prefix. Rewrite the ARG line and print the rebuild step.
+    const pin = readDockerfilePin(dockerfileContent);
+    if (pin.kind === "unpinned") {
+      io.stdout(
+        "cli: container/Dockerfile has no PHOEBE_AGENT_VERSION pin — " +
+          "the build pulls the latest published version. Nothing to move.",
+      );
+      return;
+    }
+    if (registryLatest !== null && desired !== registryLatest && opts.releaseTag !== null) {
+      io.stderr(
+        `cli: note — npm's latest is ${registryLatest}, but ${desired} was requested; ` +
+          `pinning ${desired} in container/Dockerfile.`,
+      );
+    }
+    if (pin.version === desired) {
+      io.stdout(`cli: container/Dockerfile already pins ${desired} — nothing to do.`);
+      return;
+    }
+    const result = rewriteDockerfilePin(dockerfileContent, desired);
+    if (!result.ok) {
+      io.stderr(
+        `cli: refusing to rewrite container/Dockerfile — ${result.reason}.\n` +
+          `Apply the edit yourself:\n  ${dockerfileEditInstruction(desired)}`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+    io.writeDockerfile(result.content);
+    io.stdout(`cli: container/Dockerfile ${result.previousVersion} → ${desired}.`);
+    io.stdout("Rebuild the image to make the new launcher active:");
+    io.stdout("  phoebe start --build");
+    io.stdout(`To roll back: phoebe upgrade v${result.previousVersion} --cli`);
+    return;
+  }
+
+  // Host deployment — no container/Dockerfile. Install into the global npm prefix.
   if (registryLatest !== null && desired !== registryLatest && opts.releaseTag !== null) {
     io.stderr(
       `cli: note — npm's latest is ${registryLatest}, but ${desired} was requested; installing ${desired}.`,
     );
   }
+  const installed = installedCliVersion(io.npm);
   if (installed === null) {
     io.stderr(
       "cli: phoebe-agent is not npm-installed globally here (npx run, or a repo checkout?) — " +
