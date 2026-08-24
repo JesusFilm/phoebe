@@ -145,6 +145,23 @@ export function pushBranch(
   git(["push", "origin", branch], { cwd: worktreeDir, stdio: "inherit" });
 }
 
+/**
+ * Push `branch` to origin with `--force-with-lease`.
+ *
+ * Use this after `appendTrailerToCommits`: Phoebe owns the branch exclusively,
+ * but the agent may have already published it before control returned to the
+ * daemon. The trailer rewrite changes every SHA in the range, so a plain push
+ * is rejected as non-fast-forward. `--force-with-lease` republishes safely —
+ * it still fails loudly if any writer other than this run touched the ref.
+ */
+export function pushBranchWithLease(
+  worktreeDir: string,
+  branch: BranchRef,
+  git: GitRunner = defaultGit,
+): void {
+  git(["push", "--force-with-lease", "origin", branch], { cwd: worktreeDir, stdio: "inherit" });
+}
+
 export type TrailerRewriteOutcome = "rewritten" | "nothing" | "skipped-merges" | "failed";
 
 /** Single-quote `value` for POSIX `sh` — the only shell `git rebase --exec` runs through. */
@@ -154,9 +171,11 @@ function shellQuote(value: string): string {
 
 /**
  * Append `trailer` to the message of every commit in `baseRef..HEAD` (#198).
- * The commits are the current unit's own unpushed work — `runOneIssue` resets
- * the branch to base before the agent runs — so rewriting them is safe. Trees,
- * authorship, and order are preserved; only messages change.
+ * Phoebe is the sole writer on issue branches, but the agent prompt includes a
+ * `gh pr create` step — so the branch may already be published by the time
+ * control returns here. The push that follows must use `pushBranchWithLease`
+ * rather than `pushBranch`. Trees, authorship, and order are preserved; only
+ * messages change.
  *
  * Runs `git rebase --exec 'git commit --amend --trailer …'` over the range with
  * `--autostash` (the agent may leave uncommitted files) and `--no-verify` on

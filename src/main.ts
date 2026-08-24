@@ -1026,7 +1026,7 @@ export function createEngine(options: EngineOptions): Engine {
         if (config.creditIssueAuthor) {
           stampIssueAuthorCredit({ issueNumber, worktreeDir, baseRef: worktreeBase });
         }
-        hub.pushBranch(worktreeDir, agentBranch);
+        hub.pushBranchWithLease(worktreeDir, agentBranch);
         const existingPr = github.findIssuePr(issueNumber);
         if (existingPr === null) {
           const prTitle = `Phoebe: ${issueTitle} (#${issueNumber})`;

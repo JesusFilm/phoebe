@@ -88,6 +88,7 @@ function noopOriginHub(): OriginHub {
     removeWorktree: () => {},
     commitCount: () => 0,
     pushBranch: () => {},
+    pushBranchWithLease: () => {},
     appendTrailerToCommits: () => "nothing" as const,
   };
 }
