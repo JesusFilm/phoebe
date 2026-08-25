@@ -280,6 +280,9 @@ Runtime toggles (read directly by the engine, not overlaid onto the config):
   PHOEBE_AGENT           Provider name to use for this run (cursor|claude|codex)
   PHOEBE_MODEL           Model to use for this run
   PHOEBE_EFFORT          Reasoning effort for this run (claude: low|medium|high|xhigh|max)
+  PHOEBE_<KIND>_AGENT    Per-work-kind variants of the trio above, where <KIND> is
+  PHOEBE_<KIND>_MODEL    one of CONFLICTS|CHECKS|REVIEWS|ISSUES|RESEARCH
+  PHOEBE_<KIND>_EFFORT   (e.g. PHOEBE_REVIEWS_MODEL); outrank the workKinds config block
   PHOEBE_POLL_INTERVAL_MS Persistent-mode poll interval (default 300000)
 `;
 

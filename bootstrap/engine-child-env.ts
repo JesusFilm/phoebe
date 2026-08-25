@@ -26,6 +26,8 @@ import { createHash } from "node:crypto";
 import { isSet } from "./credential-arm.ts";
 import { gitIdentityEnv, type GitIdentity } from "./git-identity.ts";
 import { type MintedCredentials } from "./tenants.ts";
+import { WORK_KIND_NAMES } from "../src/config-schema.ts";
+import { workKindEnvVar } from "../src/provider-selection.ts";
 
 /**
  * Hardcoded base allowlist: process essentials plus the deployment-global git
@@ -58,6 +60,11 @@ export const ENGINE_CHILD_DEPLOYMENT_KNOBS = [
   "PHOEBE_AGENT",
   "PHOEBE_MODEL",
   "PHOEBE_EFFORT",
+  // The per-work-kind variants of the trio above (#300), e.g.
+  // PHOEBE_REVIEWS_MODEL — generated so the list tracks the closed kind set.
+  ...WORK_KIND_NAMES.flatMap((kind) =>
+    (["AGENT", "MODEL", "EFFORT"] as const).map((knob) => workKindEnvVar(kind, knob)),
+  ),
 ] as const;
 
 /**

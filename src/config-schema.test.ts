@@ -137,6 +137,62 @@ describe("validateUserConfig", () => {
     ).toThrow(/exactly one of/i);
   });
 
+  test("accepts a well-formed workKinds block (#300)", () => {
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({
+          workKinds: {
+            reviews: { provider: "claude", model: "claude-haiku-4-5", effort: "low" },
+            issues: { effort: "high" },
+          },
+        }),
+      ),
+    ).not.toThrow();
+  });
+
+  test("accepts a workKinds block for a kind absent from workOrder — allowed and inert", () => {
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({
+          workOrder: ["issues"],
+          workKinds: { reviews: { effort: "low" } },
+        }),
+      ),
+    ).not.toThrow();
+  });
+
+  test("rejects an unknown workKinds kind key", () => {
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({ workKinds: { review: { effort: "low" } } as unknown as never }),
+      ),
+    ).toThrow(/unknown work kind "review"/i);
+  });
+
+  test("rejects an unknown workKinds provider value", () => {
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({ workKinds: { reviews: { provider: "gemini" } } as unknown as never }),
+      ),
+    ).toThrow(/workKinds\.reviews\.provider/);
+  });
+
+  test("rejects an unknown knob inside a workKinds block", () => {
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({ workKinds: { reviews: { timeout: 5000 } } as unknown as never }),
+      ),
+    ).toThrow(/unknown knob "timeout"/i);
+  });
+
+  test("rejects a non-object workKinds block", () => {
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({ workKinds: { reviews: "claude" } as unknown as never }),
+      ),
+    ).toThrow(/workKinds\.reviews/);
+  });
+
   test("accepts a relative configDir", () => {
     expect(() => validateUserConfig(minimalUserConfig({ configDir: ".phoebe" }))).not.toThrow();
     expect(() =>
@@ -348,6 +404,15 @@ describe("resolveConfig", () => {
     const resolved = resolveConfig(minimalUserConfig({ defaultEfforts: { claude: "low" } }));
     expect(resolved.defaultEfforts.claude).toBe("low");
     expect(resolved.defaultEfforts.cursor).toBeUndefined();
+  });
+
+  test("workKinds defaults to empty and passes user blocks through (#300)", () => {
+    expect(resolveConfig(minimalUserConfig()).workKinds).toEqual({});
+    const resolved = resolveConfig(
+      minimalUserConfig({ workKinds: { reviews: { provider: "claude", effort: "low" } } }),
+    );
+    expect(resolved.workKinds.reviews).toEqual({ provider: "claude", effort: "low" });
+    expect(resolved.workKinds.issues).toBeUndefined();
   });
 
   test("shallow-merges provider env vars the same way", () => {

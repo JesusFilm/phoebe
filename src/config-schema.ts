@@ -23,6 +23,28 @@ import { derivePaths } from "./paths.ts";
 export const PROVIDER_NAMES = ["cursor", "claude", "codex"] as const;
 export type ProviderName = (typeof PROVIDER_NAMES)[number];
 
+// The closed work-kind set. Owned here (rather than by the orchestrator, which
+// re-exports it) because the `workKinds` config field is keyed by it and the
+// orchestrator imports this module's resolved shape — the reverse import would
+// be a cycle.
+export const WORK_KIND_NAMES = ["conflicts", "checks", "reviews", "issues", "research"] as const;
+export type WorkKindName = (typeof WORK_KIND_NAMES)[number];
+
+/**
+ * One work kind's agent override (#300): exactly these three knobs, each
+ * optional, each falling back to the repo-level defaults when unset. The block
+ * speaks for one provider — its own `provider`, else `defaultProvider` — and
+ * its `model`/`effort` stay silent when a run's effective provider differs
+ * (a `PHOEBE_AGENT` flip of a providerless block, or a `PHOEBE_<KIND>_AGENT`
+ * flip of any block), so provider-specific model names never reach the wrong
+ * CLI.
+ */
+export type WorkKindOverride = {
+  provider?: ProviderName;
+  model?: string;
+  effort?: string;
+};
+
 /**
  * Selects where the thin `phoebe boot` bootstrapper materializes the engine
  * from — a GitHub ref (branch/tag/SHA, defaulting to `main` on the shipped
@@ -163,6 +185,18 @@ export type PhoebeConfig = {
    * Env-overridable for the active provider via `PHOEBE_EFFORT`.
    */
   defaultEfforts: Partial<Record<ProviderName, string>>;
+  /**
+   * Per-work-kind agent overrides (#300), e.g.
+   * `{ reviews: { provider: "claude", model: "claude-haiku-4-5", effort: "low" } }`.
+   * Each knob resolves independently, most specific wins: per-kind env
+   * (`PHOEBE_REVIEWS_MODEL`) → this block → global env (`PHOEBE_MODEL`) → the
+   * repo defaults above. A kind's block deliberately outranks the *global* env
+   * vars: it is durable policy that survives a blanket `PHOEBE_AGENT` /
+   * `PHOEBE_MODEL` override; only the kind-specific env var pushes it aside.
+   * Blocks for kinds absent from `workOrder` are allowed and inert. `model` and
+   * `effort` are unvalidated pass-through strings — the CLIs are the authority.
+   */
+  workKinds: Partial<Record<WorkKindName, WorkKindOverride>>;
   /** Env var holding each provider's API key — the only key the agent child inherits. */
   providerEnv: Record<ProviderName, string>;
   /**
@@ -290,6 +324,8 @@ export type PhoebeUserConfig = {
   defaultProvider?: ProviderName;
   defaultModels?: Partial<Record<ProviderName, string>>;
   defaultEfforts?: Partial<Record<ProviderName, string>>;
+  /** Per-work-kind provider/model/effort overrides (#300); see {@link PhoebeConfig.workKinds}. */
+  workKinds?: Partial<Record<WorkKindName, WorkKindOverride>>;
   providerEnv?: Partial<Record<ProviderName, string>>;
   /** Whole-unit wall-clock timeout in ms (#72); default 45 min. */
   runTimeoutMs?: number;
@@ -340,6 +376,9 @@ export const CONFIG_DEFAULTS = {
   // Empty on purpose: no effort flag is passed unless a consumer asks for one,
   // so every provider CLI keeps its own default until told otherwise.
   defaultEfforts: {} satisfies Partial<Record<ProviderName, string>>,
+  // Empty on purpose too: every kind runs on the repo-level defaults until a
+  // consumer singles one out (#300).
+  workKinds: {} satisfies Partial<Record<WorkKindName, WorkKindOverride>>,
   providerEnv: {
     cursor: "CURSOR_API_KEY",
     claude: "ANTHROPIC_API_KEY",
@@ -418,6 +457,9 @@ export function validateUserConfig(user: PhoebeUserConfig): void {
       );
     }
   }
+  if (user.workKinds !== undefined) {
+    validateWorkKindsField(user.workKinds);
+  }
   if (user.workspace !== undefined) {
     validateWorkspaceField(user.workspace);
   }
@@ -445,6 +487,55 @@ export function readDeploymentField(user: {
   if (user.deployment === undefined) return undefined;
   validateDeploymentField(user.deployment);
   return user.deployment;
+}
+
+/**
+ * Reject a malformed `workKinds` block (#300) at boot, the same throw-and-exit
+ * moment as every other config error: an unknown kind key would sit inert
+ * forever (looking configured while doing nothing), and an unknown provider
+ * value would bind the block to a provider that can never match. `model` and
+ * `effort` are deliberately not validated — they are pass-through strings and
+ * the provider CLIs are the authority on what they accept.
+ */
+function validateWorkKindsField(workKinds: NonNullable<PhoebeUserConfig["workKinds"]>): void {
+  if (typeof workKinds !== "object" || workKinds === null || Array.isArray(workKinds)) {
+    throw new Error(
+      `phoebe.config.ts \`workKinds\` must be an object keyed by work kind ` +
+        `(${WORK_KIND_NAMES.join(", ")}) — got ${JSON.stringify(workKinds)}.`,
+    );
+  }
+  for (const [kind, block] of Object.entries(workKinds)) {
+    if (!(WORK_KIND_NAMES as readonly string[]).includes(kind)) {
+      throw new Error(
+        `phoebe.config.ts \`workKinds\` names unknown work kind "${kind}". ` +
+          `Use one of: ${WORK_KIND_NAMES.join(", ")}.`,
+      );
+    }
+    if (typeof block !== "object" || block === null || Array.isArray(block)) {
+      throw new Error(
+        `phoebe.config.ts \`workKinds.${kind}\` must be an object with optional ` +
+          `\`provider\`, \`model\`, \`effort\` — got ${JSON.stringify(block)}.`,
+      );
+    }
+    // A block holds exactly the three knobs — an unknown key (a typo'd knob, a
+    // hoped-for per-kind timeout) would sit inert forever, same failure mode as
+    // an unknown kind key.
+    for (const knob of Object.keys(block)) {
+      if (!["provider", "model", "effort"].includes(knob)) {
+        throw new Error(
+          `phoebe.config.ts \`workKinds.${kind}\` names unknown knob "${knob}". ` +
+            `Each block holds only \`provider\`, \`model\`, \`effort\`.`,
+        );
+      }
+    }
+    const provider = (block as WorkKindOverride).provider;
+    if (provider !== undefined && !(PROVIDER_NAMES as readonly string[]).includes(provider)) {
+      throw new Error(
+        `phoebe.config.ts \`workKinds.${kind}.provider\` must be one of ` +
+          `${PROVIDER_NAMES.join(", ")} (got ${JSON.stringify(provider)}).`,
+      );
+    }
+  }
 }
 
 /**
@@ -550,6 +641,7 @@ export function resolveConfig(
     defaultProvider: user.defaultProvider ?? CONFIG_DEFAULTS.defaultProvider,
     defaultModels: { ...CONFIG_DEFAULTS.defaultModels, ...user.defaultModels },
     defaultEfforts: { ...CONFIG_DEFAULTS.defaultEfforts, ...user.defaultEfforts },
+    workKinds: { ...CONFIG_DEFAULTS.workKinds, ...user.workKinds },
     providerEnv: { ...CONFIG_DEFAULTS.providerEnv, ...user.providerEnv },
     runTimeoutMs: user.runTimeoutMs ?? CONFIG_DEFAULTS.runTimeoutMs,
     maxUnitTimeouts: user.maxUnitTimeouts ?? CONFIG_DEFAULTS.maxUnitTimeouts,
