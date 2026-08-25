@@ -53,6 +53,15 @@ describe("buildEngineChildEnv", () => {
     expect(env.PHOEBE_POLL_INTERVAL_MS).toBe("300000");
   });
 
+  test("passes the per-work-kind agent knobs through (#300)", () => {
+    const env = buildEngineChildEnv({
+      base: { ...base, PHOEBE_REVIEWS_MODEL: "claude-haiku-4-5", PHOEBE_ISSUES_EFFORT: "high" },
+      tenantEnv: {},
+    });
+    expect(env.PHOEBE_REVIEWS_MODEL).toBe("claude-haiku-4-5");
+    expect(env.PHOEBE_ISSUES_EFFORT).toBe("high");
+  });
+
   test("gives the child its own tenant's secrets", () => {
     const env = buildEngineChildEnv({
       base,

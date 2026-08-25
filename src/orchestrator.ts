@@ -2,6 +2,7 @@
 // Kept separate from main.ts so it can be unit-tested without Docker/gh.
 
 import { asBranchRef, asSha, type BranchRef, type PrNumber, type Sha } from "./branded.ts";
+import { WORK_KIND_NAMES, type WorkKindName } from "./config-schema.ts";
 import { config } from "./resolved-config.ts";
 import { PHOEBE_QUARANTINE_LABEL } from "./quarantine.ts";
 
@@ -766,8 +767,10 @@ export function buildReviewsHandledComment(opts: {
   return marker;
 }
 
-export const WORK_KIND_NAMES = ["conflicts", "checks", "reviews", "issues", "research"] as const;
-export type WorkKindName = (typeof WORK_KIND_NAMES)[number];
+// The closed set lives in config-schema.ts (the `workKinds` field is keyed by
+// it, #300); re-exported here because the orchestrator is its historical home
+// and the module the engine reads it from.
+export { WORK_KIND_NAMES, type WorkKindName };
 
 /** Whether a work-kind may run under `--run-once`. Janitor kinds are persistent-mode only. */
 export const WORK_KIND_ONE_SHOT_ELIGIBLE: Record<WorkKindName, boolean> = {

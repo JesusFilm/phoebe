@@ -25,7 +25,8 @@
 // (src/execution-gate.ts).
 
 import { execFileSync, execSync } from "node:child_process";
-import { PROVIDER_NAMES, type PhoebeConfig, type ProviderName } from "./config-schema.ts";
+import type { PhoebeConfig } from "./config-schema.ts";
+import { selectProviderForKind } from "./provider-selection.ts";
 import { detectAppCredentials, mintInstallationToken } from "./gh-app.ts";
 import { asBranchRef, asPrNumber, type BranchRef, type PrNumber, type Sha } from "./branded.ts";
 import {
@@ -370,18 +371,15 @@ export function createEngine(options: EngineOptions): Engine {
   // Provider selection (multi-provider ready)
   // ---------------------------------------------------------------------------
 
-  function selectProvider(): { provider: Provider; model: string; effort: string | undefined } {
-    const name = env["PHOEBE_AGENT"] ?? config.defaultProvider;
-    if (!(PROVIDER_NAMES as readonly string[]).includes(name)) {
-      throw new Error(`Unknown PHOEBE_AGENT "${name}". Use one of: ${PROVIDER_NAMES.join(", ")}.`);
-    }
-    const provider = PROVIDERS[name as ProviderName];
-    const model = env["PHOEBE_MODEL"] ?? config.defaultModels[name as ProviderName];
-    // Unset (or empty) means "pass no effort flag" — the provider CLI's own
-    // default stands. An empty `PHOEBE_EFFORT` is treated as unset so compose's
-    // `"${PHOEBE_EFFORT:-}"` passthrough doesn't silently force a blank level.
-    const effort = env["PHOEBE_EFFORT"] || config.defaultEfforts[name as ProviderName];
-    return { provider, model, effort: effort === "" ? undefined : effort };
+  // The resolution ladder — per-kind env → per-kind config (`workKinds`) →
+  // global env → repo defaults — is pure, in provider-selection.ts (#300).
+  function selectProvider(kind: WorkKindName): {
+    provider: Provider;
+    model: string;
+    effort: string | undefined;
+  } {
+    const picked = selectProviderForKind({ kind, env, config });
+    return { provider: PROVIDERS[picked.provider], model: picked.model, effort: picked.effort };
   }
 
   const workOrder = validateWorkOrder(config.workOrder);
@@ -616,11 +614,12 @@ export function createEngine(options: EngineOptions): Engine {
   }
 
   async function runAgentInWorktree(opts: {
+    kind: WorkKindName;
     worktreeDir: string;
     promptFile: string;
     promptArgs: Record<string, string>;
   }): Promise<void> {
-    const { provider, model, effort } = selectProvider();
+    const { provider, model, effort } = selectProvider(opts.kind);
     // Caller-supplied per-callsite args (ISSUE_NUMBER, PR_NUMBER, …) override
     // the standard config-derived set by key.
     const prompt = renderPrompt(
@@ -726,6 +725,7 @@ export function createEngine(options: EngineOptions): Engine {
    * (push vs. failure comment vs. watermark); the worktree is always removed.
    */
   async function runAgentWorkflow(opts: {
+    kind: WorkKindName;
     pr: { prNumber: PrNumber; headRefName: BranchRef };
     promptFile: string;
     promptArgs: Record<string, string>;
@@ -743,6 +743,7 @@ export function createEngine(options: EngineOptions): Engine {
       opts.beforeAgent?.(worktreeDir);
 
       await runAgentInWorktree({
+        kind: opts.kind,
         worktreeDir,
         promptFile: opts.promptFile,
         promptArgs: opts.promptArgs,
@@ -769,6 +770,7 @@ export function createEngine(options: EngineOptions): Engine {
     mergedBlockerPrNumbers: readonly PrNumber[],
   ): Promise<void> {
     await runAgentWorkflow({
+      kind: "conflicts",
       pr,
       promptFile: config.promptFiles.conflict,
       promptArgs: {
@@ -842,6 +844,7 @@ export function createEngine(options: EngineOptions): Engine {
 
   async function runChecksResolutionAgent(pr: ChecksCandidate): Promise<void> {
     await runAgentWorkflow({
+      kind: "checks",
       pr,
       promptFile: config.promptFiles.checks,
       promptArgs: {
@@ -938,6 +941,7 @@ export function createEngine(options: EngineOptions): Engine {
   ): Promise<void> {
     const runStartedAt = clock.now().toISOString();
     await runAgentWorkflow({
+      kind: "reviews",
       pr,
       promptFile: config.promptFiles.reviews,
       promptArgs: {
@@ -997,6 +1001,7 @@ export function createEngine(options: EngineOptions): Engine {
    * commits, so no PR is opened; one that produces a committed doc does.
    */
   async function runOneIssue(opts: {
+    kind: WorkKindName;
     issueNumber: number;
     issueTitle: string;
     worktreeBase: string;
@@ -1015,6 +1020,7 @@ export function createEngine(options: EngineOptions): Engine {
       runShellCommand(config.installCommand, worktreeDir, env);
 
       await runAgentInWorktree({
+        kind: opts.kind,
         worktreeDir,
         promptFile,
         promptArgs: { ISSUE_NUMBER: String(issueNumber) },
@@ -1064,6 +1070,7 @@ export function createEngine(options: EngineOptions): Engine {
         ".",
     );
     await runOneIssue({
+      kind: "issues",
       issueNumber: target.number,
       issueTitle: target.title,
       worktreeBase: resolution.worktreeBase,
@@ -1082,6 +1089,7 @@ export function createEngine(options: EngineOptions): Engine {
         ".",
     );
     await runOneIssue({
+      kind: "research",
       issueNumber: target.number,
       issueTitle: target.title,
       worktreeBase: resolution.worktreeBase,

@@ -154,10 +154,39 @@ tickets. Omit `research` to disable it for a repo. See
 | `defaultModels`   | `{ cursor: "composer-2.5", claude: "claude-sonnet-4-6", codex: "gpt-5.4-mini" }` | Per-provider model. Merged key-by-key.                                                                                                                                                                                                                   |
 | `defaultEfforts`  | `{}`                                                                             | Per-provider reasoning effort, merged key-by-key. Only `claude` honours it today (`--effort`, one of `low`, `medium`, `high`, `xhigh`, `max`); `cursor` and `codex` ignore it. A provider left unset gets **no** effort flag, so its CLI default stands. |
 | `providerEnv`     | `{ cursor: "CURSOR_API_KEY", claude: "ANTHROPIC_API_KEY", codex: "OPENAI_KEY" }` | Env var holding each provider's API key. This is the only key the agent child inherits for the active provider.                                                                                                                                          |
+| `workKinds`       | `{}`                                                                             | Per-work-kind overrides of the three knobs above, e.g. `{ reviews: { provider: "claude", model: "claude-haiku-4-5", effort: "low" } }`. Keys are the work kinds; each block holds only optional `provider`, `model`, `effort`. See below.                |
 
 `PHOEBE_AGENT`, `PHOEBE_MODEL`, and `PHOEBE_EFFORT` override `defaultProvider`
 and the active provider's entry in `defaultModels` / `defaultEfforts` for one
-run, without editing the config. To run the `claude` provider under a Claude
+run, without editing the config.
+
+### Per-work-kind overrides
+
+`workKinds` gives a single work kind its own provider, model, or reasoning
+effort — say, a cheap fast model for review feedback while issues keep the
+repo default. Each knob resolves independently, most specific wins:
+
+1. per-kind env (`PHOEBE_REVIEWS_MODEL`)
+2. per-kind config (`workKinds.reviews.model`)
+3. global env (`PHOEBE_MODEL`)
+4. repo defaults (`defaultProvider` / `defaultModels` / `defaultEfforts`)
+
+Per-kind _config_ deliberately outranks global _env_: a kind's block is
+durable policy that survives a blanket `PHOEBE_MODEL` / `PHOEBE_AGENT`
+override; only the kind-specific env var pushes it aside. The env vars are for
+testing and agent diagnosis; config is the durable policy.
+
+A kind block speaks for one provider — its explicit `provider`, else
+`defaultProvider`. When the run's effective provider differs (e.g.
+`PHOEBE_AGENT=cursor` flips a run away from a block bound to `claude`), the
+block's `model` / `effort` stay silent and the per-provider defaults apply, so
+provider-specific model names never reach the wrong CLI.
+
+Unknown kind keys and unknown provider values are boot-time config errors;
+`model` and `effort` are unvalidated pass-through strings — the CLIs are the
+authority. Blocks for kinds absent from `workOrder` are allowed and inert.
+
+To run the `claude` provider under a Claude
 Pro/Max subscription instead of API-key billing, point `providerEnv.claude` at
 `CLAUDE_CODE_OAUTH_TOKEN`. See
 [`claude-subscription-auth.md`](claude-subscription-auth.md).
@@ -550,19 +579,20 @@ config-file territory.
 
 ### Runtime toggles (read directly, not overlaid onto config)
 
-| Env var                        | Default              | Meaning                                                                                                                                                                                                                                                        |
-| ------------------------------ | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PHOEBE_AGENT`                 | _none_               | Provider for this run (`cursor` \| `claude` \| `codex`).                                                                                                                                                                                                       |
-| `PHOEBE_MODEL`                 | _none_               | Model for this run.                                                                                                                                                                                                                                            |
-| `PHOEBE_EFFORT`                | _none_               | Reasoning effort for this run, overriding the active provider's `defaultEfforts` entry. Only `claude` honours it (`low` \| `medium` \| `high` \| `xhigh` \| `max`).                                                                                            |
-| `PHOEBE_POLL_INTERVAL_MS`      | `300000`             | Persistent-mode idle poll interval. Under the App arm this is the capacity lever, since a shorter interval raises the per-tenant request rate ([github-app-mode.md §5](github-app-mode.md#5-capacity)).                                                        |
-| `PHOEBE_ENGINE_DIR`            | `<tmp>/phoebe-agent` | Base dir `phoebe boot` clones a `github` engine source into (and bin.mjs materializes under). Put it on a persistent volume so github boots fetch instead of re-cloning.                                                                                       |
-| `PHOEBE_RECONCILE_INTERVAL_MS` | `60000`              | How often `phoebe boot` polls the mounted config and the tracked ref for a drain-and-relaunch (see Engine source → Reconcile).                                                                                                                                 |
-| `PHOEBE_BASE`                  | _none_               | Force the worktree base ref for issues (bypasses blocker resolution).                                                                                                                                                                                          |
-| `PHOEBE_DATA_DIR`              | `/data/repos`        | Base dir for derived tenant paths (host/dev override). Each tenant nests under `<base>/<owner>/<repo>/`.                                                                                                                                                       |
-| `PHOEBE_MAX_CONCURRENT_AGENTS` | `1`                  | Cap on concurrently-executing work units (the bootstrapper's FIFO broker), in solo and fleet alike. Raise deliberately.                                                                                                                                        |
-| `PHOEBE_RUN_TIMEOUT_MS`        | `2700000` (45 min)   | Whole-unit wall-clock budget; a unit that exceeds it is aborted so it can't hold the concurrency slot forever. Under the App arm the effective ceiling is ≈50 min (installation tokens expire after 60 min). Also settable as the `runTimeoutMs` config field. |
-| `PHOEBE_MAX_UNIT_TIMEOUTS`     | `3`                  | Consecutive per-unit timeouts before the unit is quarantined (`phoebe:quarantined` label + escalation comment). Also the `maxUnitTimeouts` config field.                                                                                                       |
+| Env var                                      | Default              | Meaning                                                                                                                                                                                                                                                        |
+| -------------------------------------------- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PHOEBE_AGENT`                               | _none_               | Provider for this run (`cursor` \| `claude` \| `codex`).                                                                                                                                                                                                       |
+| `PHOEBE_MODEL`                               | _none_               | Model for this run.                                                                                                                                                                                                                                            |
+| `PHOEBE_EFFORT`                              | _none_               | Reasoning effort for this run, overriding the active provider's `defaultEfforts` entry. Only `claude` honours it (`low` \| `medium` \| `high` \| `xhigh` \| `max`).                                                                                            |
+| `PHOEBE_<KIND>_AGENT` / `_MODEL` / `_EFFORT` | _none_               | Per-work-kind variants of the trio above, where `<KIND>` is `CONFLICTS`, `CHECKS`, `REVIEWS`, `ISSUES`, or `RESEARCH` (e.g. `PHOEBE_REVIEWS_MODEL`). Outrank everything, including the kind's `workKinds` block. Empty string reads as unset.                  |
+| `PHOEBE_POLL_INTERVAL_MS`                    | `300000`             | Persistent-mode idle poll interval. Under the App arm this is the capacity lever, since a shorter interval raises the per-tenant request rate ([github-app-mode.md §5](github-app-mode.md#5-capacity)).                                                        |
+| `PHOEBE_ENGINE_DIR`                          | `<tmp>/phoebe-agent` | Base dir `phoebe boot` clones a `github` engine source into (and bin.mjs materializes under). Put it on a persistent volume so github boots fetch instead of re-cloning.                                                                                       |
+| `PHOEBE_RECONCILE_INTERVAL_MS`               | `60000`              | How often `phoebe boot` polls the mounted config and the tracked ref for a drain-and-relaunch (see Engine source → Reconcile).                                                                                                                                 |
+| `PHOEBE_BASE`                                | _none_               | Force the worktree base ref for issues (bypasses blocker resolution).                                                                                                                                                                                          |
+| `PHOEBE_DATA_DIR`                            | `/data/repos`        | Base dir for derived tenant paths (host/dev override). Each tenant nests under `<base>/<owner>/<repo>/`.                                                                                                                                                       |
+| `PHOEBE_MAX_CONCURRENT_AGENTS`               | `1`                  | Cap on concurrently-executing work units (the bootstrapper's FIFO broker), in solo and fleet alike. Raise deliberately.                                                                                                                                        |
+| `PHOEBE_RUN_TIMEOUT_MS`                      | `2700000` (45 min)   | Whole-unit wall-clock budget; a unit that exceeds it is aborted so it can't hold the concurrency slot forever. Under the App arm the effective ceiling is ≈50 min (installation tokens expire after 60 min). Also settable as the `runTimeoutMs` config field. |
+| `PHOEBE_MAX_UNIT_TIMEOUTS`                   | `3`                  | Consecutive per-unit timeouts before the unit is quarantined (`phoebe:quarantined` label + escalation comment). Also the `maxUnitTimeouts` config field.                                                                                                       |
 
 Secrets (`GH_TOKEN` and the active provider's key) are also read from the
 environment. See [`ai-install.md`](ai-install.md) and `.env.example`. In a
