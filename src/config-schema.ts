@@ -35,8 +35,9 @@ export type WorkKindName = (typeof WORK_KIND_NAMES)[number];
  * optional, each falling back to the repo-level defaults when unset. The block
  * speaks for one provider — its own `provider`, else `defaultProvider` — and
  * its `model`/`effort` stay silent when a run's effective provider differs
- * (e.g. a `PHOEBE_AGENT` flip), so provider-specific model names never reach
- * the wrong CLI.
+ * (a `PHOEBE_AGENT` flip of a providerless block, or a `PHOEBE_<KIND>_AGENT`
+ * flip of any block), so provider-specific model names never reach the wrong
+ * CLI.
  */
 export type WorkKindOverride = {
   provider?: ProviderName;

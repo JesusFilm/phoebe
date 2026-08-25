@@ -177,10 +177,14 @@ override; only the kind-specific env var pushes it aside. The env vars are for
 testing and agent diagnosis; config is the durable policy.
 
 A kind block speaks for one provider — its explicit `provider`, else
-`defaultProvider`. When the run's effective provider differs (e.g.
-`PHOEBE_AGENT=cursor` flips a run away from a block bound to `claude`), the
-block's `model` / `effort` stay silent and the per-provider defaults apply, so
-provider-specific model names never reach the wrong CLI.
+`defaultProvider`. When the run's effective provider differs, the block's
+`model` / `effort` stay silent and the per-provider defaults apply, so
+provider-specific model names never reach the wrong CLI. That flip can come
+from `PHOEBE_AGENT=cursor` when the block omits `provider` (the block then
+speaks for `defaultProvider`, which the global env var outranks), or from the
+per-kind `PHOEBE_<KIND>_AGENT`, which outranks even an explicit `provider`. An
+explicitly-bound block is _not_ flipped by the global `PHOEBE_AGENT` — per-kind
+config outranks global env, per the ladder above.
 
 Unknown kind keys and unknown provider values are boot-time config errors;
 `model` and `effort` are unvalidated pass-through strings — the CLIs are the
