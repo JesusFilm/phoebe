@@ -177,6 +177,14 @@ describe("validateUserConfig", () => {
     ).toThrow(/workKinds\.reviews\.provider/);
   });
 
+  test("rejects an unknown knob inside a workKinds block", () => {
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({ workKinds: { reviews: { timeout: 5000 } } as unknown as never }),
+      ),
+    ).toThrow(/unknown knob "timeout"/i);
+  });
+
   test("rejects a non-object workKinds block", () => {
     expect(() =>
       validateUserConfig(

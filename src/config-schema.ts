@@ -516,6 +516,17 @@ function validateWorkKindsField(workKinds: NonNullable<PhoebeUserConfig["workKin
           `\`provider\`, \`model\`, \`effort\` — got ${JSON.stringify(block)}.`,
       );
     }
+    // A block holds exactly the three knobs — an unknown key (a typo'd knob, a
+    // hoped-for per-kind timeout) would sit inert forever, same failure mode as
+    // an unknown kind key.
+    for (const knob of Object.keys(block)) {
+      if (!["provider", "model", "effort"].includes(knob)) {
+        throw new Error(
+          `phoebe.config.ts \`workKinds.${kind}\` names unknown knob "${knob}". ` +
+            `Each block holds only \`provider\`, \`model\`, \`effort\`.`,
+        );
+      }
+    }
     const provider = (block as WorkKindOverride).provider;
     if (provider !== undefined && !(PROVIDER_NAMES as readonly string[]).includes(provider)) {
       throw new Error(
