@@ -136,7 +136,7 @@ commands and [`work-kinds.md`](work-kinds.md) for the full selection rules.
 
 ## Checking the deployment's health: `phoebe doctor`
 
-`phoebe doctor` (report-only) runs six checks and exits 1 when any fails:
+`phoebe doctor` (report-only) runs seven checks and exits 1 when any fails:
 
 - **cli.** Installed `phoebe-agent` against the npm registry's latest.
 - **engine.** The configured pin against the latest release tag, plus the commit
@@ -147,6 +147,12 @@ commands and [`work-kinds.md`](work-kinds.md) for the full selection rules.
   silently running the last-known-good commit instead of the tracked tip.
 - **supervisor.** Whether `phoebe boot` is the container's main process
   (answerable in-container only: `docker compose exec phoebe phoebe doctor`).
+- **launcher-floor.** Whether the launcher meets the floor the engine declares
+  in `phoebe.minBootstrap`. Below the floor is not staleness: `phoebe boot`
+  refuses to start, so the deployment does no work at all. Reads the
+  `ARG PHOEBE_AGENT_VERSION` pin in `container/Dockerfile` for a container
+  deployment and the npm-global install for a host one. An engine that declares
+  no floor, or a local-mount engine, reports "does not apply".
 
 In workspace mode it also sweeps every tenant, using the same enumeration boot
 supervises with, checking each tenant's `GH_TOKEN` is present the way its
