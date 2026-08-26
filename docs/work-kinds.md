@@ -64,7 +64,12 @@ The producer. Selection (`selectIssue`):
 - `PHOEBE_BASE` set → use it verbatim (escape hatch, no blocker logic).
 - No `Blocked by #N` reference → base `origin/main`.
 - Blocked, blocker PR **open** → **stack** on `origin/<blocker branch>`; the
-  opened PR gets a ⛓️ banner warning not to merge before the blocker.
+  opened PR targets the blocker's branch and is added to the blocker's native
+  GitHub stack (created if the blocker has none), so merge ordering and
+  post-merge rebase/retarget are GitHub's job. When the Stacks API is
+  unavailable (it is a public preview), the PR is retargeted to the default
+  branch instead and gets a ⛓️ banner comment warning not to merge before the
+  blocker.
 - Blocked, blocker PR **merged** → base `origin/main` (blocker work is already
   in the base).
 - Blocked, no blocker PR either way, but the blocker **issue is closed as
@@ -89,8 +94,13 @@ issue number).
    `Co-authored-by:` trailer for the issue's author. See
    [`configuration.md`](configuration.md#issue-author-credit).
 5. Push. If no open PR exists for the branch, open one titled
-   `Phoebe: <issue title> (#<n>)` with body `Closes #<n>` (plus the stacked
-   banner when applicable); otherwise post a follow-up note.
+   `Phoebe: <issue title> (#<n>)` with body `Closes #<n>` (plus a "stacked on"
+   note when applicable); otherwise post a follow-up note.
+6. For stacked work, put the PR into the blocker PR's native stack
+   (`stackPrOnto`): join the blocker's stack when the blocker is its top open
+   layer, found a stack when it has none. When the PR cannot be stacked — the
+   preview API is absent, or the blocker is buried under another layer — post
+   the ⛓️ banner comment (once) and retarget the PR onto the default branch.
 
 The issue prompt has the agent claim the issue first, swapping `readyLabel` for
 `processingLabel`, so parallel operators and humans see it is in flight.
@@ -151,6 +161,11 @@ eligible PR number):
 **Execution** (`fixOnePrConflict`):
 
 1. Compute merged-blocker PR numbers for stacked catch-up (bottom-up order).
+   This is the fallback path's machinery: a natively stacked PR is rebased and
+   retargeted by GitHub when its blocker merges, so it rarely reaches here.
+   When one does (later divergence, and a blocker that was squash-merged), the
+   blocker-head merge can itself conflict — which lands in the agent's lap like
+   any other conflict, one step later than it needed to be.
 2. Try a **clean, agent-free merge** first: merge each merged-blocker PR head,
    then `origin/<defaultBranch>`, and push. If it succeeds, done (a stacked
    catch-up posts a retraction comment noting the branch is now independently

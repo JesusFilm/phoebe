@@ -522,3 +522,126 @@ describe("error enrichment", () => {
     expect(() => github.listReadyIssues()).toThrow("spawn gh ENOENT");
   });
 });
+
+describe("native PR stacking", () => {
+  // The Stacks API is a public preview: every call may 404 on a host that has
+  // not enabled it, so `stackPrOnto` reports an outcome instead of throwing —
+  // the loop degrades to the do-not-merge banner, it does not lose the unit.
+  const STACK_LIST_PATH = "repos/acme/widget/stacks?pull_request=9";
+
+  type StackResourceFixture = {
+    number: number;
+    base: { ref: string };
+    open: boolean;
+    pull_requests: Array<{ number: number; state: string }>;
+  };
+
+  function stackResource(
+    number: number,
+    prNumbers: readonly number[],
+    states: readonly string[] = [],
+  ): StackResourceFixture {
+    return {
+      number,
+      base: { ref: "main" },
+      open: true,
+      pull_requests: prNumbers.map((n, i) => ({ number: n, state: states[i] ?? "open" })),
+    };
+  }
+
+  test("adds the PR to the blocker's existing stack", () => {
+    const { github, calls } = clientWith([JSON.stringify([stackResource(4, [9])]), ""]);
+
+    const outcome = github.stackPrOnto(asPrNumber(12), asPrNumber(9));
+
+    expect(outcome).toEqual({ stacked: true, stackNumber: 4 });
+    expect(calls[0]!.args).toEqual(["api", STACK_LIST_PATH]);
+    expect(calls[1]!.args).toEqual([
+      "api",
+      "--method",
+      "POST",
+      "repos/acme/widget/stacks/4/add",
+      "--input",
+      "-",
+    ]);
+    expect(calls[1]!.input).toBe(JSON.stringify({ pull_requests: [12] }));
+  });
+
+  test("creates a stack, blocker first, when the blocker has none", () => {
+    const { github, calls } = clientWith(["[]", JSON.stringify({ number: 7 })]);
+
+    const outcome = github.stackPrOnto(asPrNumber(12), asPrNumber(9));
+
+    expect(outcome).toEqual({ stacked: true, stackNumber: 7 });
+    expect(calls[1]!.args).toEqual([
+      "api",
+      "--method",
+      "POST",
+      "repos/acme/widget/stacks",
+      "--input",
+      "-",
+    ]);
+    expect(calls[1]!.input).toBe(JSON.stringify({ pull_requests: [9, 12] }));
+  });
+
+  test("joins over a merged bottom layer when the blocker is the top open entry", () => {
+    const { github, calls } = clientWith([
+      JSON.stringify([stackResource(4, [3, 9], ["merged", "open"])]),
+      "",
+    ]);
+
+    const outcome = github.stackPrOnto(asPrNumber(12), asPrNumber(9));
+
+    expect(outcome).toEqual({ stacked: true, stackNumber: 4 });
+    expect(calls).toHaveLength(2);
+  });
+
+  test("a blocker buried under another open layer reports unstackable", () => {
+    // `/add` appends to the top of the stack, so joining here would put the PR
+    // above a sibling it does not build on — base and stack position would lie.
+    const { github, calls } = clientWith([JSON.stringify([stackResource(4, [9, 11])])]);
+
+    const outcome = github.stackPrOnto(asPrNumber(12), asPrNumber(9));
+
+    expect(outcome).toEqual({
+      stacked: false,
+      reason: "blocker PR #9 is not the top of stack #4",
+    });
+    expect(calls).toHaveLength(1);
+  });
+
+  test("a PR already in the blocker's stack is left alone", () => {
+    const { github, calls } = clientWith([JSON.stringify([stackResource(4, [9, 12])])]);
+
+    const outcome = github.stackPrOnto(asPrNumber(12), asPrNumber(9));
+
+    expect(outcome).toEqual({ stacked: true, stackNumber: 4 });
+    expect(calls).toHaveLength(1);
+  });
+
+  test("any Stacks API failure reports unavailable instead of throwing", () => {
+    const github = createGitHubClient({
+      config: resolveConfig(minimalUser()),
+      env: {},
+      internal: {
+        exec: () => {
+          throw new Error("HTTP 404: Not Found");
+        },
+        sleep: async () => {},
+      },
+    });
+
+    const outcome = github.stackPrOnto(asPrNumber(12), asPrNumber(9));
+
+    expect(outcome).toEqual({ stacked: false, reason: "HTTP 404: Not Found" });
+  });
+
+  test("retargetPr rewrites the PR base through `gh pr edit`", () => {
+    const { github, calls } = clientWith([]);
+
+    github.retargetPr(asPrNumber(12), "main");
+
+    expect(calls[0]!.args).toEqual(["pr", "edit", "12", "--base", "main", "-R", "acme/widget"]);
+    expect(calls[0]!.inherit).toBe(true);
+  });
+});

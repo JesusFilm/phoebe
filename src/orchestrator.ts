@@ -192,6 +192,9 @@ export function selectIssue(
   return null;
 }
 
+/** The blocker a stacked PR sits on: the blocking issue and its open PR. */
+export type StackedOn = { blockerIssueNumber: number; blockerPrNumber: PrNumber };
+
 export function stackedPrComment(blockerIssueNumber: number, blockerPrNumber: PrNumber): string {
   return (
     `⛓️ Blocked by #${blockerIssueNumber} (PR #${blockerPrNumber}). ` +
@@ -1047,11 +1050,17 @@ export function formatFailingChecksForPrompt(checks: readonly FailingCheck[]): s
 export function buildInitialPrBody(opts: {
   issueNumber: number;
   commitCount: number;
-  stacked?: { blockerIssueNumber: number; blockerPrNumber: PrNumber };
+  stacked?: StackedOn;
 }): string {
   const parts = [`Closes #${opts.issueNumber}`, "", "Automated PR from Phoebe.", ""];
+  // A neutral note only: whether the do-not-merge warning applies is decided
+  // after creation (native stacking may take the ordering problem over), so the
+  // warning travels as a comment on the fallback path, never in the body.
   if (opts.stacked) {
-    parts.push(stackedPrComment(opts.stacked.blockerIssueNumber, opts.stacked.blockerPrNumber), "");
+    parts.push(
+      `Stacked on PR #${opts.stacked.blockerPrNumber} (blocked by #${opts.stacked.blockerIssueNumber}).`,
+      "",
+    );
   }
   parts.push(`Commits: ${opts.commitCount}`);
   return parts.join("\n");
