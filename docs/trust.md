@@ -157,7 +157,7 @@ Every Phoebe process runs on a node binary shipped non-readable at mode `0711`:
 the vendored cursor node covers the agent process, and the image's system node
 covers the bootstrapper and every engine child. Executing a binary the running
 uid cannot read makes the new process **non-dumpable** (the kernel's
-unreadable-interpreter check in `fs/exec.c`, `would_dump()`) — and a
+unreadable-binary check in `fs/exec.c`, `would_dump()`) — and a
 non-dumpable process's `/proc/<pid>/environ` is root-owned and unreadable even
 to processes of the same uid. So a prompt-injected agent in one tenant cannot
 read a sibling node process's environ to lift its secrets from memory. This is
@@ -166,8 +166,9 @@ environ fails with `EACCES`. It is **not** `AT_SECURE`, which the kernel sets
 only for setuid/setgid/file-capability execs and which stays `0` here; the
 guard is the unreadable-binary path alone. (It also assumes the host's
 `fs.suid_dumpable` sysctl is `0` or `2` — both deny the read; `1` would not —
-and `0` is the default everywhere we know of.) Runtime blast radius is the same
-as a single-repo deployment.
+and `0` is the default everywhere we know of.) For these long-lived node
+processes, runtime blast radius is the same as a single-repo deployment; the
+next paragraph and the residual below are what a second tenant adds.
 
 The environ guard covers only processes exec'd from a `0711` node. Helper
 processes they spawn — `git`, `gh`, a shell — are ordinary readable binaries,
