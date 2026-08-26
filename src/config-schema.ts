@@ -42,7 +42,13 @@ export type WorkKindName = (typeof WORK_KIND_NAMES)[number];
 export type WorkKindOverride = {
   provider?: ProviderName;
   model?: string;
-  effort?: string;
+  /**
+   * String: pass that effort flag to the provider CLI.
+   * `null`: clear any inherited effort — the kind runs with no effort flag even
+   * when `defaultEfforts` names one for this provider.
+   * Absent / `undefined`: fall through to the next rung of the resolution ladder.
+   */
+  effort?: string | null;
 };
 
 /**
@@ -193,8 +199,10 @@ export type PhoebeConfig = {
    * repo defaults above. A kind's block deliberately outranks the *global* env
    * vars: it is durable policy that survives a blanket `PHOEBE_AGENT` /
    * `PHOEBE_MODEL` override; only the kind-specific env var pushes it aside.
-   * Blocks for kinds absent from `workOrder` are allowed and inert. `model` and
-   * `effort` are unvalidated pass-through strings — the CLIs are the authority.
+   * Blocks for kinds absent from `workOrder` are allowed and inert. `model` is an
+   * unvalidated pass-through string. `effort` accepts a string (pass-through) or
+   * `null` (explicit clear: suppress the effort flag even when `defaultEfforts`
+   * names one for this provider) — the CLIs are the authority on string values.
    */
   workKinds: Partial<Record<WorkKindName, WorkKindOverride>>;
   /** Env var holding each provider's API key — the only key the agent child inherits. */
@@ -519,7 +527,9 @@ function validateWorkKindsField(workKinds: NonNullable<PhoebeUserConfig["workKin
     }
     // A block holds exactly the three knobs — an unknown key (a typo'd knob, a
     // hoped-for per-kind timeout) would sit inert forever, same failure mode as
-    // an unknown kind key.
+    // an unknown kind key. `model` and `effort` values are not validated here:
+    // `model` is a pass-through string, and `effort` accepts a string or null
+    // (the explicit clear) — the provider CLIs are the authority on string values.
     for (const knob of Object.keys(block)) {
       if (!["provider", "model", "effort"].includes(knob)) {
         throw new Error(

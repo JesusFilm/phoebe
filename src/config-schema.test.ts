@@ -150,6 +150,16 @@ describe("validateUserConfig", () => {
     ).not.toThrow();
   });
 
+  test("accepts effort: null as an explicit clear in a workKinds block (#335)", () => {
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({
+          workKinds: { reviews: { model: "claude-haiku-4-5", effort: null } },
+        }),
+      ),
+    ).not.toThrow();
+  });
+
   test("accepts a workKinds block for a kind absent from workOrder — allowed and inert", () => {
     expect(() =>
       validateUserConfig(
