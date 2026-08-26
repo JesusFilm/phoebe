@@ -60,6 +60,7 @@ import {
   buildUnstickComment,
   decideAutoUnstick,
   decideTimeoutRecord,
+  loginMismatchWarning,
   PHOEBE_QUARANTINE_LABEL,
   resolveMaxUnitTimeouts,
 } from "./quarantine.ts";
@@ -1329,6 +1330,25 @@ export function createEngine(options: EngineOptions): Engine {
    * tenant's config are all closed over.
    */
   async function runLoop(): Promise<void> {
+    // Boot-time login identity cross-check (#346): warn when the resolved login
+    // differs from the author on Phoebe's own newest unit-marker comment. An
+    // identity drift silently resets the quarantine counter every rotation —
+    // every marker Phoebe posts reads as foreign activity. Best-effort: any
+    // failure logs and the loop starts normally.
+    try {
+      const resolvedLogin = github.resolveLogin(env["PHOEBE_GH_LOGIN"]);
+      const historicalAuthor = github.newestUnitMarkerAuthor();
+      const warning = loginMismatchWarning(resolvedLogin, historicalAuthor);
+      if (warning) {
+        console.warn(warning);
+      }
+    } catch (error) {
+      console.warn(
+        `[phoebe] Boot-time login identity cross-check failed — ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
     while (true) {
       if (drain.requested) {
         console.log("[phoebe] Drain requested — starting no new work unit; exiting 0.");
