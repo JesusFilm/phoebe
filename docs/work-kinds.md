@@ -97,10 +97,10 @@ issue number).
    `Phoebe: <issue title> (#<n>)` with body `Closes #<n>` (plus a "stacked on"
    note when applicable); otherwise post a follow-up note.
 6. For stacked work, put the PR into the blocker PR's native stack
-   (`stackPrOnto`). On the fallback path, only a PR Phoebe created this run is
-   retargeted and gets the banner comment; a pre-existing PR (an earlier
-   cycle's, or one the agent opened against the default branch itself) is left
-   as it was.
+   (`stackPrOnto`): join the blocker's stack when the blocker is its top open
+   layer, found a stack when it has none. When the PR cannot be stacked — the
+   preview API is absent, or the blocker is buried under another layer — post
+   the ⛓️ banner comment (once) and retarget the PR onto the default branch.
 
 The issue prompt has the agent claim the issue first, swapping `readyLabel` for
 `processingLabel`, so parallel operators and humans see it is in flight.
@@ -162,9 +162,10 @@ eligible PR number):
 
 1. Compute merged-blocker PR numbers for stacked catch-up (bottom-up order).
    This is the fallback path's machinery: a natively stacked PR is rebased and
-   retargeted by GitHub when its blocker merges, so it rarely reaches here —
-   and when it later falls behind, the blocker-head merges are no-ops or
-   content-identical merges.
+   retargeted by GitHub when its blocker merges, so it rarely reaches here.
+   When one does (later divergence, and a blocker that was squash-merged), the
+   blocker-head merge can itself conflict — which lands in the agent's lap like
+   any other conflict, one step later than it needed to be.
 2. Try a **clean, agent-free merge** first: merge each merged-blocker PR head,
    then `origin/<defaultBranch>`, and push. If it succeeds, done (a stacked
    catch-up posts a retraction comment noting the branch is now independently

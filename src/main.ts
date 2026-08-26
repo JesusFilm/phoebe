@@ -107,6 +107,7 @@ import {
   type ConflictingPrCandidate,
   type ConflictFailWatermark,
   type Issue,
+  type StackedOn,
   type IssueWorkUnit,
   type ReviewsCandidate,
   type StackContext,
@@ -1036,40 +1037,39 @@ export function createEngine(options: EngineOptions): Engine {
   /**
    * Put an issue's PR into its blocker PR's native GitHub stack (#311), so
    * merge ordering and post-merge rebase/retarget are GitHub's job. When the
-   * Stacks API is unavailable (public preview), fall back to the pre-native
-   * flow: a PR that Phoebe just created gets retargeted back onto the default
-   * branch and carries the do-not-merge banner as a comment; a PR that already
-   * existed (an earlier cycle's, or one the agent opened itself against the
-   * default branch) is left exactly as it was.
+   * PR cannot be stacked — the Stacks API is a public preview and may be
+   * absent, or the blocker is not the top of its stack — fall back to the
+   * pre-native flow: post the ⛓️ do-not-merge banner (once; follow-up pushes
+   * find it in the comments) and retarget the PR onto the default branch.
+   * Banner before retarget: if the retarget throws, a PR still targeting the
+   * blocker branch with a warning beats one silently mis-based.
    */
   function ensureNativeStack(opts: {
     issueNumber: number;
     existingPr: PrNumber | null;
-    blockerIssueNumber: number;
-    blockerPrNumber: PrNumber;
+    stackedOn: StackedOn;
   }): void {
+    const { blockerIssueNumber, blockerPrNumber } = opts.stackedOn;
     const prNumber = opts.existingPr ?? github.findIssuePr(opts.issueNumber);
     if (prNumber === null) {
       console.log(`[phoebe] No open PR found for #${opts.issueNumber} — skipping stack setup.`);
       return;
     }
-    const outcome = github.stackPrOnto(prNumber, opts.blockerPrNumber);
+    const outcome = github.stackPrOnto(prNumber, blockerPrNumber);
     if (outcome.stacked) {
       console.log(
-        `[phoebe] PR #${prNumber} stacked on PR #${opts.blockerPrNumber} (stack #${outcome.stackNumber}).`,
+        `[phoebe] PR #${prNumber} stacked on PR #${blockerPrNumber} (stack #${outcome.stackNumber}).`,
       );
       return;
     }
     console.log(
       `[phoebe] Native PR stacking unavailable (${outcome.reason}) — using the do-not-merge banner.`,
     );
-    if (opts.existingPr === null) {
-      github.retargetPr(prNumber, prBase);
-      github.postPrComment(
-        prNumber,
-        stackedPrComment(opts.blockerIssueNumber, opts.blockerPrNumber),
-      );
+    const banner = stackedPrComment(blockerIssueNumber, blockerPrNumber);
+    if (!github.prCommentBodies(prNumber).includes(banner)) {
+      github.postPrComment(prNumber, banner);
     }
+    github.retargetPr(prNumber, prBase);
   }
 
   /**
@@ -1093,6 +1093,15 @@ export function createEngine(options: EngineOptions): Engine {
     const { issueNumber, issueTitle, worktreeBase, stacked, promptFile } = opts;
     const { blockerIssueNumber, blockerPrNumber } = opts;
     const agentBranch = issueBranch(issueNumber);
+    const stackedOn: StackedOn | null =
+      stacked && blockerIssueNumber !== undefined && blockerPrNumber !== undefined
+        ? { blockerIssueNumber, blockerPrNumber }
+        : null;
+    // A stacked PR targets the layer beneath it — the blocker's branch — which
+    // is native stacking's shape; `ensureNativeStack` retargets it back onto
+    // the default branch when the Stacks API turns out to be unavailable. The
+    // agent's own `gh pr create` (issues prompt, step 7) uses the same base.
+    const intendedPrBase = stackedOn ? issueBranch(stackedOn.blockerIssueNumber) : prBase;
 
     hub.fetch();
     const worktreeDir = prepareWorktree({ branch: agentBranch, baseRef: worktreeBase });
@@ -1103,7 +1112,7 @@ export function createEngine(options: EngineOptions): Engine {
         kind: opts.kind,
         worktreeDir,
         promptFile,
-        promptArgs: { ISSUE_NUMBER: String(issueNumber) },
+        promptArgs: { ISSUE_NUMBER: String(issueNumber), PR_BASE: intendedPrBase },
       });
 
       const newCommitCount = hub.commitCount(worktreeDir, `${worktreeBase}..HEAD`);
@@ -1113,10 +1122,6 @@ export function createEngine(options: EngineOptions): Engine {
           stampIssueAuthorCredit({ issueNumber, worktreeDir, baseRef: worktreeBase });
         }
         hub.pushBranchWithLease(worktreeDir, agentBranch);
-        const stackedOn =
-          stacked && blockerIssueNumber !== undefined && blockerPrNumber !== undefined
-            ? { blockerIssueNumber, blockerPrNumber }
-            : null;
         const existingPr = github.findIssuePr(issueNumber);
         if (existingPr === null) {
           const prTitle = `Phoebe: ${issueTitle} (#${issueNumber})`;
@@ -1125,11 +1130,12 @@ export function createEngine(options: EngineOptions): Engine {
             commitCount: newCommitCount,
             ...(stackedOn ? { stacked: stackedOn } : {}),
           });
-          // A stacked PR targets the layer beneath it — the blocker's branch —
-          // which is native stacking's shape; the fallback below retargets it
-          // to the default branch when the Stacks API is unavailable.
-          const base = stackedOn ? issueBranch(stackedOn.blockerIssueNumber) : prBase;
-          github.createPr({ head: agentBranch, base, title: prTitle, body: prBody });
+          github.createPr({
+            head: agentBranch,
+            base: intendedPrBase,
+            title: prTitle,
+            body: prBody,
+          });
         } else {
           console.log(
             `[phoebe] PR #${existingPr} already exists for ${agentBranch} — posting follow-up note.`,
@@ -1137,7 +1143,7 @@ export function createEngine(options: EngineOptions): Engine {
           github.postPrComment(existingPr, followUpPrComment(issueNumber, newCommitCount));
         }
         if (stackedOn) {
-          ensureNativeStack({ issueNumber, existingPr, ...stackedOn });
+          ensureNativeStack({ issueNumber, existingPr, stackedOn });
         }
       } else {
         console.log("[phoebe] No commits — skipping PR creation.");

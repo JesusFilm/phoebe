@@ -83,7 +83,7 @@ describe("shipped default prompts", () => {
   const promptsDir = join(import.meta.dirname, "..", "prompts");
 
   const cases = [
-    { file: "issues-prompt.md", extra: { ISSUE_NUMBER: "42" } },
+    { file: "issues-prompt.md", extra: { ISSUE_NUMBER: "42", PR_BASE: "main" } },
     {
       file: "conflict-prompt.md",
       extra: { PR_NUMBER: "12", PR_BRANCH: "phoebe/issue-42", BLOCKER_PR_NUMBERS: "" },
@@ -114,7 +114,9 @@ describe("shipped default prompts", () => {
     expect(template).toContain("{{TEST_COMMAND}}");
     expect(template).toContain("{{PROCESSING_LABEL}}");
     expect(template).toContain("{{READY_LABEL}}");
-    expect(template).toContain("{{DEFAULT_BRANCH}}");
+    // The PR base is per-callsite, not the default branch literal: stacked work
+    // targets the blocker's branch (#311).
+    expect(template).toContain("{{PR_BASE}}");
   });
 
   test("checks + conflict prompts document the baseline-breakage branch", () => {

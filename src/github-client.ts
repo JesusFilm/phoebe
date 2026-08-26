@@ -664,7 +664,10 @@ export function createGitHubClient({
       // Raw `exec`, not the ghJson/ghApiJson wrappers: those rethrow enriched
       // errors, and here every failure — preview not enabled (404), token
       // scope, rate limit — has the same right answer, the banner fallback.
-      type StackResource = { number: number; pull_requests?: Array<{ number: number }> };
+      type StackResource = {
+        number: number;
+        pull_requests?: Array<{ number: number; state: string }>;
+      };
       const slug = config.repoSlug;
       try {
         const stacks = JSON.parse(
@@ -672,21 +675,23 @@ export function createGitHubClient({
         ) as StackResource[];
         const stack = stacks[0];
         if (stack) {
-          if (!stack.pull_requests?.some((pr) => pr.number === prNumber)) {
-            exec(
-              [
-                "api",
-                "--method",
-                "POST",
-                `repos/${slug}/stacks/${stack.number}/add`,
-                "--input",
-                "-",
-              ],
-              {
-                input: JSON.stringify({ pull_requests: [prNumber] }),
-              },
-            );
+          if (stack.pull_requests?.some((pr) => pr.number === prNumber)) {
+            return { stacked: true, stackNumber: stack.number };
           }
+          // `/add` appends to the top of the stack. If another open layer
+          // already sits above the blocker, joining would stack this PR on a
+          // sibling it does not build on — the banner fallback orders it right.
+          const topOpen = stack.pull_requests?.filter((pr) => pr.state === "open").at(-1);
+          if (topOpen?.number !== blockerPrNumber) {
+            return {
+              stacked: false,
+              reason: `blocker PR #${blockerPrNumber} is not the top of stack #${stack.number}`,
+            };
+          }
+          exec(
+            ["api", "--method", "POST", `repos/${slug}/stacks/${stack.number}/add`, "--input", "-"],
+            { input: JSON.stringify({ pull_requests: [prNumber] }) },
+          );
           return { stacked: true, stackNumber: stack.number };
         }
         const created = JSON.parse(
