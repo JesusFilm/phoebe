@@ -134,8 +134,9 @@ RUN set -eux; \
 # one binary that actually holds the agent's environment — GH_TOKEN and the
 # active provider's API key (src/agent-env.ts) — in a long-lived process. Making
 # it execute-only-to-others (root-owned 0711) means the unprivileged uid can
-# exec it but not read it, so the kernel marks the exec AT_SECURE and the
-# process non-dumpable: a same-uid sibling tenant cannot read its
+# exec it but not read it, and the kernel makes an exec of an unreadable binary
+# non-dumpable (fs/exec.c would_dump(); note this is not AT_SECURE, which stays
+# 0 for a plain unprivileged exec): a same-uid sibling tenant cannot read its
 # /proc/<pid>/environ and lift the keyring. One chmod covers all three entry
 # points, since they funnel through this same `node`. Execute-only ELFs run
 # fine (the loader maps the image; the readable .node addons load normally).
@@ -157,9 +158,9 @@ RUN set -eux; \
 # above. Cursor ships its own vendored `node` (protected there); the supervisor
 # and engine children run on this image node. Those long-lived processes hold
 # the deployment GH_TOKEN and any provider key. Making this binary non-readable
-# to others (root-owned 0711) causes the kernel to mark each exec AT_SECURE and
-# the process non-dumpable — a same-uid sibling cannot read
-# /proc/<pid>/environ to lift those secrets. Execute-only ELFs load fine; the
+# to others (root-owned 0711) causes the kernel to make each exec non-dumpable
+# (the unreadable-binary path in fs/exec.c, not AT_SECURE) — a same-uid sibling
+# cannot read /proc/<pid>/environ to lift those secrets. Execute-only ELFs load fine; the
 # shebang shims (`npm`) are read by the *kernel*, not by node. Together the two
 # chmods cover every Phoebe process in the image.
 RUN chmod 0711 "$(command -v node)"

@@ -99,7 +99,8 @@ RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
 # this one, so without this the long-lived process holding GH_TOKEN and
 # CLAUDE_CODE_OAUTH_TOKEN is an ordinary exec and stays dumpable — a same-uid
 # sibling tenant could read its /proc/<pid>/environ (#61). Non-readable is
-# enough: exec still maps the image (secureexec), and the shebang shims
+# enough: the exec still maps the image, the kernel marks it non-dumpable
+# (would_dump() in fs/exec.c — not AT_SECURE), and the shebang shims
 # (`npm`, `corepack`, `claude`) are read by the *kernel*, not by node.
 RUN chmod 0711 "$(command -v node)"
 

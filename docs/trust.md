@@ -153,13 +153,29 @@ that is a deliberate isolation boundary with one sharp edge.
 **deny-by-default, tenant-only environment** (`buildEngineChildEnv`): it holds
 that tenant's `GH_TOKEN` and provider key and nothing else. It never holds
 another tenant's secrets, and never the deployment's engine-clone credential.
-Every Phoebe process runs on a node binary shipped non-readable at mode `0711`,
-and that covers the bootstrapper, every engine child, and the agent itself. The vendored cursor
-node (protecting the agent process) and the image's system node (protecting the
-bootstrapper and engine children). Non-readable + root-owned triggers `AT_SECURE`,
-making every exec **non-dumpable**: a prompt-injected agent in one tenant cannot
-read any sibling's `/proc/<pid>/environ` to lift its secrets from memory. Runtime
-blast radius is the same as a single-repo deployment.
+Every Phoebe process runs on a node binary shipped non-readable at mode `0711`:
+the vendored cursor node covers the agent process, and the image's system node
+covers the bootstrapper and every engine child. Executing a binary the running
+uid cannot read makes the new process **non-dumpable** (the kernel's
+unreadable-binary check in `fs/exec.c`, `would_dump()`) — and a
+non-dumpable process's `/proc/<pid>/environ` is root-owned and unreadable even
+to processes of the same uid. So a prompt-injected agent in one tenant cannot
+read a sibling node process's environ to lift its secrets from memory. This is
+verified against the shipped image: a same-uid read of a `0711`-node process's
+environ fails with `EACCES`. It is **not** `AT_SECURE`, which the kernel sets
+only for setuid/setgid/file-capability execs and which stays `0` here; the
+guard is the unreadable-binary path alone. (It also assumes the host's
+`fs.suid_dumpable` sysctl is `0` or `2` — both deny the read; `1` would not —
+and `0` is the default everywhere we know of.) For these long-lived node
+processes, runtime blast radius is the same as a single-repo deployment; the
+next paragraph and the residual below are what a second tenant adds.
+
+The environ guard covers only processes exec'd from a `0711` node. Helper
+processes they spawn — `git`, `gh`, a shell — are ordinary readable binaries,
+so they run dumpable, and they inherit whatever secrets are in their
+environment. While such a helper runs, a same-uid sibling **can** read that
+helper's `/proc/<pid>/environ`. The guard therefore narrows in-memory secret
+exposure to those short helper windows; it does not eliminate it.
 
 **What is _not_ isolated (the accepted residual).** Because all tenants share one
 uid, filesystem permissions cannot distinguish them at rest: a prompt-injected

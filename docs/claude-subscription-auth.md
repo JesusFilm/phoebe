@@ -155,7 +155,9 @@ Approach A for anything you're not actively babysitting.
   (`src/agent-env.ts`): a Claude tenant gets only its own token, and a
   same-machine sibling tenant on a different provider never sees it. The `node`
   execute-only guard (`chmod 0711`, Dockerfile) that keeps one tenant from
-  reading another's `/proc/<pid>/environ` covers this token too.
+  reading another's `/proc/<pid>/environ` covers this token too (see
+  [`trust.md`](trust.md#one-container--one-trust-domain) for the mechanism and
+  its limits).
 - **Never bake it into the image.** Both the token and the credentials file are
   secrets and belong on the env-file / a runtime mount, delivered via compose
   `--env-file`, never a `COPY` or build `ARG`.

@@ -129,10 +129,10 @@ describe.each(Object.entries(DOCKERFILES))("%s", (_label, relPath) => {
     }
   });
 
-  test("ships the vendored node 0711 (secureexec → non-dumpable, #61)", () => {
+  test("ships the vendored node 0711 (unreadable exec → non-dumpable, #61)", () => {
     // The agent runs as the same uid 10001 as every tenant's engine child. A
-    // process that execs a binary it cannot *read* becomes a secureexec, so the
-    // kernel sets it non-dumpable — a same-uid sibling can't read its
+    // process that execs a binary it cannot *read* is made non-dumpable by the
+    // kernel (would_dump() in fs/exec.c) — a same-uid sibling can't read its
     // /proc/<pid>/environ and lift another tenant's secrets. Enforced by shipping
     // the binary root:root mode 0711 (executable, not readable by others), inside
     // the pinned install block so it can't drift.
@@ -150,12 +150,13 @@ describe.each(Object.entries(DOCKERFILES))("%s", (_label, relPath) => {
     expect(block).not.toMatch(/chmod 0711 \/opt\/cursor-agent\/cursor-agent/);
   });
 
-  test("makes the system node non-dumpable (secureexec → supervisor + engine children, #196)", () => {
+  test("makes the system node non-dumpable (supervisor + engine children, #196)", () => {
     // The supervisor (`phoebe boot`) and every engine child run on the image's
     // system node. Without execute-only mode those long-lived processes stay
     // dumpable — a same-uid sibling can read /proc/<pid>/environ and lift
-    // GH_TOKEN or a provider key. Root-owned 0711 triggers AT_SECURE on every
-    // exec of this binary, making each process non-dumpable. The shebang shims
+    // GH_TOKEN or a provider key. Root-owned 0711 makes every exec of this
+    // binary non-dumpable (the kernel's unreadable-binary path in fs/exec.c,
+    // not AT_SECURE, which stays 0 here). The shebang shims
     // (`npm`) are read by the *kernel*, not by node, so they are unaffected.
     const instructions = instructionsOnly(read(relPath));
     expect(instructions).toMatch(/RUN chmod 0711 "\$\(command -v node\)"/);
