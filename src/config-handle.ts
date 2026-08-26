@@ -32,7 +32,14 @@ export type ConfigEditResult = { ok: true; content: string } | { ok: false; reas
  * dynamic to rewrite safely, and the deployment is left unmodified on disk.
  */
 export class ConfigRefusal {
-  constructor(public readonly instruction: string) {}
+  // An explicit field, not a constructor parameter property: `phoebe migrate`
+  // loads this module under Node's strip-only type stripping, which rejects
+  // parameter properties.
+  readonly instruction: string;
+
+  constructor(instruction: string) {
+    this.instruction = instruction;
+  }
 }
 
 export function isConfigRefusal(v: Record<string, string> | ConfigRefusal): v is ConfigRefusal {
