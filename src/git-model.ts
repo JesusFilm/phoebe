@@ -6,6 +6,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { withBackoffSync, type SleepSync } from "./backoff.ts";
 import { asSha, type BranchRef, type Sha } from "./branded.ts";
 
 export type GitRunner = (
@@ -66,8 +67,29 @@ export function ensureClone(
   git(["clone", opts.repoUrl, opts.repoDir], { stdio: "inherit" });
 }
 
-export function fetchOrigin(repoDir: string, git: GitRunner = defaultGit): void {
-  git(["fetch", "origin"], { cwd: repoDir, stdio: "inherit" });
+// GitHub's git endpoint blips too (HTTP 504 mid-negotiation reads as
+// `fatal: expected 'acknowledgments'`). The runner inherits stdio, so there is
+// no stderr to tell a blip from a real failure — but a fetch is idempotent, so
+// every failure is worth the same two retries. A persistent cause (auth, a
+// gone remote) still fails ~10s later into the caller's existing recovery.
+const FETCH_RETRY_SCHEDULE_MS = [2_000, 8_000];
+
+export function fetchOrigin(
+  repoDir: string,
+  git: GitRunner = defaultGit,
+  sleepSync?: SleepSync,
+): void {
+  withBackoffSync(() => git(["fetch", "origin"], { cwd: repoDir, stdio: "inherit" }), {
+    scheduleMs: FETCH_RETRY_SCHEDULE_MS,
+    isRetryable: () => true,
+    onRetry: (_error, delayMs, retry) => {
+      console.warn(
+        `[phoebe] \`git fetch origin\` failed — retrying in ${delayMs / 1000}s ` +
+          `(retry ${retry}/${FETCH_RETRY_SCHEDULE_MS.length}).`,
+      );
+    },
+    ...(sleepSync ? { sleepSync } : {}),
+  });
 }
 
 export function originBranchSha(

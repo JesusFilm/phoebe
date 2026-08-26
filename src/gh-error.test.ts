@@ -2,7 +2,7 @@
 // permission not granted (#201).
 
 import { describe, expect, test } from "vite-plus/test";
-import { classifyGhError, describeGhError } from "./gh-error.ts";
+import { classifyGhError, describeGhError, isTransientGhError } from "./gh-error.ts";
 
 // Build a mock error object that resembles the SpawnSyncError thrown by
 // execFileSync when the child exits non-zero with encoding:"utf8" set.
@@ -187,5 +187,63 @@ describe("describeGhError", () => {
     expect(describeGhError({ kind: "permission" })).toBe(
       "GitHub 403: permission not granted — check the token's repository access and scope",
     );
+  });
+});
+
+describe("isTransientGhError", () => {
+  test("HTTP 5xx status lines are transient", () => {
+    expect(isTransientGhError(makeGhError("gh: Bad gateway (HTTP 502)"))).toBe(true);
+    expect(isTransientGhError(makeGhError("gh: Service unavailable (HTTP 503)"))).toBe(true);
+    expect(isTransientGhError(makeGhError("gh: Gateway timeout (HTTP 504)"))).toBe(true);
+    expect(isTransientGhError(makeGhError("gh: Internal server error (HTTP 500)"))).toBe(true);
+  });
+
+  test("HTTP 501 (not implemented) is not transient", () => {
+    expect(isTransientGhError(makeGhError("gh: Not implemented (HTTP 501)"))).toBe(false);
+  });
+
+  test("the GraphQL server-side catch-all is transient", () => {
+    expect(
+      isTransientGhError(
+        makeGhError(
+          "GraphQL: Something went wrong while executing your query. This may be the result of a timeout",
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  test("network-level failures are transient", () => {
+    expect(isTransientGhError(makeGhError("dial tcp 140.82.112.6:443: connection refused"))).toBe(
+      true,
+    );
+    expect(isTransientGhError(makeGhError("read tcp: connection reset by peer"))).toBe(true);
+    expect(isTransientGhError(makeGhError("dial tcp: i/o timeout"))).toBe(true);
+    expect(isTransientGhError(makeGhError("net/http: TLS handshake timeout"))).toBe(true);
+    expect(isTransientGhError(makeGhError('Post "https://api.github.com": unexpected EOF'))).toBe(
+      true,
+    );
+    expect(isTransientGhError(makeGhError("dial tcp: lookup api.github.com: no such host"))).toBe(
+      true,
+    );
+  });
+
+  test("rate-limit and permission failures are not transient", () => {
+    expect(
+      isTransientGhError(makeGhError("gh: API rate limit exceeded for installation ID 12345.")),
+    ).toBe(false);
+    expect(
+      isTransientGhError(makeGhError("gh: Resource not accessible by integration (HTTP 403)")),
+    ).toBe(false);
+  });
+
+  test("plain client errors are not transient", () => {
+    expect(isTransientGhError(makeGhError("gh: Not Found (HTTP 404)"))).toBe(false);
+    expect(isTransientGhError(makeGhError("gh: Validation failed (HTTP 422)"))).toBe(false);
+  });
+
+  test("no stderr (inherited stdio or a spawn timeout) is not transient", () => {
+    expect(isTransientGhError(new Error("Command failed: gh pr list"))).toBe(false);
+    expect(isTransientGhError(Object.assign(new Error("ETIMEDOUT"), { stderr: null }))).toBe(false);
+    expect(isTransientGhError(makeGhError(""))).toBe(false);
   });
 });
