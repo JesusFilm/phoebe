@@ -1,5 +1,72 @@
 # phoebe-agent
 
+## 0.8.0
+
+### Minor Changes
+
+- 7f8f1f6: `phoebe upgrade --cli` and `--both` now rewrite the `ARG PHOEBE_AGENT_VERSION` pin in `container/Dockerfile` for container deployments and print the `docker build` command to apply it. `npm install -g` on the host does nothing to the baked image, so the pin has to change in the Dockerfile. `--check` and `--json` report the Dockerfile pin as the effective CLI version (`cli.source: "dockerfile"`). Unpinned Dockerfiles and host deployments are unchanged.
+- b2baac5: `phoebe doctor` now checks the launcher version against `phoebe.minBootstrap`. A launcher below the engine's declared floor deadlocks the deployment — boot throws on startup and no work runs. Doctor names both versions, explains the situation plainly, and gives the one-line fix. No floor declared means the check does not apply.
+- e1bb94f: Engines can now declare a minimum bootstrapper version via `phoebe.minBootstrap` in their `package.json`. Boot reads the field after checkout and throws immediately if the running launcher falls below the floor, naming both versions and the steps to fix it. Engines whose `package.json` is absent, unparseable, or missing the field keep working with any launcher.
+- c488285: Stacked work rides GitHub's native stacked pull requests (#311). A PR opened
+  for an issue blocked by an open blocker PR now targets the blocker's branch and
+  is added to the blocker's stack — created when the blocker has none — so merge
+  ordering, post-merge rebase, and retargeting are GitHub's job instead of a
+  ⛓️ do-not-merge banner and a lazy catch-up merge.
+
+  The agent's own `gh pr create` (issues prompt, step 7) targets the same base
+  via a new `{{PR_BASE}}` placeholder, so both creation routes produce the
+  stack's shape. A blocker buried under another open layer is not joined —
+  `/add` appends to the top, which would stack the PR on a sibling it does not
+  build on — and falls back instead.
+
+  The Stacks API is a public preview, so unavailability is an outcome rather
+  than an error: when the PR cannot be stacked, the ⛓️ do-not-merge banner is
+  posted as a comment (once) and the PR is retargeted onto the default branch,
+  which is the flow as it was. The PR body's strong warning became a neutral
+  "stacked on" note either way, because the body is written before the outcome
+  is known.
+
+- d9684bc: New `workKinds` config field (#300): each work kind can carry its own `provider`, `model`, and `effort`, falling back to the repo-level defaults when unset, plus per-kind env variants of the runtime trio (`PHOEBE_<KIND>_AGENT` / `_MODEL` / `_EFFORT`). Each knob resolves independently — per-kind env → per-kind config → global env → repo defaults — and a provider-mismatch guard keeps a block's `model`/`effort` silent when the run's effective provider differs from the one the block speaks for. Unknown kind keys, provider values, and knob names are boot-time config errors.
+
+### Patch Changes
+
+- d36116d: Adds migration m003: lifts the bootstrapper version pin in `container/Dockerfile` from a hardcoded install line to a named `ARG PHOEBE_AGENT_VERSION`, making it overridable at build time with `--build-arg` and reachable by bump automation without a regex over prose.
+- 856dd71: Credential lease requests now time out after 60 seconds. A supervisor that connects but never responds no longer stalls its tenant indefinitely — the affected cycle is skipped and normal polling resumes.
+- 5f63082: Adds the `WorkSource`/`CycleRecord` seam design record (`docs/research/cycle-record-seam.md`):
+  motivating defect (#290), five-to-three representation count, failure contract, and origin-hub
+  collaborator. `CONTEXT.md` gains **Work source** and **Cycle record** glossary entries;
+  `docs/research/engine-runtime-seam.md` notes that its "No WorkSource reshape" non-goal is now
+  superseded by the new record.
+- 9b98cae: Extracts all cycle-gather logic from `src/main.ts` into `src/cycle-work-source.ts`
+  (`WorkSource` / `CycleRecord`) and wires `workSource.gatherCycle(fetchKinds)` into
+  `createEngine`'s run loop. The only behaviour change: issue bodies are now fetched through
+  a single cycle-scoped read-through cache (`Map<number, string>` local to each `gatherCycle`
+  call) instead of per-kind maps merged after the fact — fixing the duplicate-fetch bug (#290)
+  so the same body is never requested twice in one cycle regardless of how many kinds reference
+  the same PR.
+- bea02f7: The post-stamp push after `appendTrailerToCommits` now uses `--force-with-lease`. The rebase that stamps co-author trailers rewrites every SHA, so the plain push that followed was always rejected as non-fast-forward — the co-author credit was silently lost. The lease still surfaces any concurrent writer rather than silently overwriting them.
+- 57178b7: Replaces the `KINDS` registry object in `src/main.ts` with a `switch` on `picked.kind`, letting the compiler narrow each branch to the concrete payload type and eliminating five unchecked casts. No behaviour change.
+- efa94c6: Issue bodies survive every work order. A cycle gathers issue bodies per work
+  kind and merges them into one map, which the stack selectors then read to tell a
+  real conflict or a real CI failure from an expected divergence. The `conflicts`
+  kind assigned that map where `checks` and `reviews` merged into it, so any
+  `workOrder` fetching conflicts second discarded every body gathered before it.
+
+  A body the selectors cannot find reads as "not stacked", so the effect was a
+  pull request stacked on an open blocker being worked instead of left alone —
+  its divergence from the base branch treated as something to fix. The shipped
+  default order hides this, because conflicts fetches first into a map that is
+  empty anyway; only a reordered `workOrder` reaches it.
+
+  Every kind that gathers issue bodies now merges, and the map is a `const` so
+  assigning over it is a compile error rather than a silent loss.
+
+- deab09f: Correct the PAT rate-limit model in github-app-mode.md. Fine-grained PATs share
+  their owner's 5,000 req/hr budget rather than each carrying an independent
+  allowance. The App arm's GraphQL budget scales to 12,500 points/hr for standard
+  installations (REST also 12,500 req/hr) and 10,000 points/hr for Enterprise
+  Cloud (REST 15,000 req/hr), making it the better choice for multi-tenant fleets.
+
 ## 0.7.1
 
 ### Patch Changes
