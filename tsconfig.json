@@ -12,7 +12,8 @@
     "allowJs": true,
     "checkJs": false,
     "esModuleInterop": true,
-    "verbatimModuleSyntax": true
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true
   },
   "include": ["src", "bootstrap", "examples", "scripts", "phoebe.config.ts", "vite.config.ts"]
 }

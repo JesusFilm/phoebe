@@ -814,7 +814,9 @@ export function upgradeEngineHalf(opts: {
   // skips the step (null return) and proceeds. Per-child failures are reflected in
   // migrate's exit code, not ours: they exit 0 and allow the flip.
   const migrateExitCode = io.runMigrations({
-    source: source as GithubSource,
+    // The target ref, not the config's current pin: the whole point is running
+    // the *incoming* checkout's migrate so the facility self-upgrades.
+    source: { ...(source as GithubSource), ref },
     configPath,
     token: opts.token,
   });
