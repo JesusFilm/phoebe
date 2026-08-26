@@ -367,6 +367,27 @@ describe("upgradeEngineHalf migration ordering", () => {
     expect(io._stderr.some((line) => line.includes("migrations failed"))).toBe(true);
   });
 
+  test("migrations run the target ref's checkout, not the current pin", () => {
+    savedExitCode = process.exitCode as number | undefined;
+    const configPath = makeTempConfig();
+    let migratedRef: string | null = null;
+    const io = makeIo({
+      runMigrations: (opts) => {
+        migratedRef = opts.source.ref;
+        return 0;
+      },
+    });
+    upgradeEngineHalf({
+      configPath,
+      source: { source: "github", ref: "v0.3.1", repo: "JesusFilm/phoebe" },
+      ref: "v0.3.2",
+      refKind: "release-tag",
+      token: undefined,
+      io,
+    });
+    expect(migratedRef).toBe("v0.3.2");
+  });
+
   test("migrations are called before the pin moves", () => {
     savedExitCode = process.exitCode as number | undefined;
     const configPath = makeTempConfig();
