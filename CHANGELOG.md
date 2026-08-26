@@ -1,5 +1,12 @@
 # phoebe-agent
 
+## 0.8.1
+
+### Patch Changes
+
+- 61f24eb: Replaces the constructor parameter property in `ConfigRefusal` with an explicit field so `phoebe migrate` loads under Node's strip-only type stripping. Parameter properties are the one TypeScript construct in the codebase strip-only mode rejects, and `config-handle.ts` sits on the migrate import path — so every `phoebe upgrade` failed its migration gate with "TypeScript parameter property is not supported in strip-only mode" and refused to flip `engine.ref`.
+- 462b07e: Corrects the documented mechanism behind the `chmod 0711` node guard: the kernel makes an exec of an unreadable binary non-dumpable (`would_dump()` in `fs/exec.c`), not `AT_SECURE`, which stays `0` for a plain unprivileged exec. Verified against the shipped image — the same-uid environ read really is denied. `trust.md` now also states the residual the old text omitted: readable helpers (`git`, `gh`, shells) spawned with secrets in their environment run dumpable, so the guard narrows in-memory exposure to those helper windows rather than eliminating it.
+
 ## 0.8.0
 
 ### Minor Changes
