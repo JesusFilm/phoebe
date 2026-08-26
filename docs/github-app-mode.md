@@ -26,9 +26,10 @@ One test:
   subject to [the costs below](#2-what-the-app-arm-costs-you).
 
 PAT is the recommended default for solo deployments. App mode pays off for a
-multi-tenant fleet. The App arm's installation budget scales with repo and user
-count; the PAT arm's user budget is capped at 5,000 requests per hour no matter
-how many tokens that user mints. See [Capacity](#5-capacity).
+multi-tenant fleet within one installation. The App arm's installation budget
+scales with repo and user count; the PAT arm's user budget is capped at 5,000
+requests per hour no matter how many tokens that user mints.
+See [Capacity](#5-capacity).
 
 ## 2. What the App arm costs you
 
@@ -37,15 +38,18 @@ price them in before registering the App.
 
 ### One shared rate budget
 
-Both arms pool their tenants under one budget. Fine-grained PATs minted by the
-same operator user all draw from that user's 5,000-request-per-hour allowance;
-each token does not carry an independent budget. A fleet of N tenants on N PATs
-minted by one operator shares one budget, not N. An App installation also pools
-all its tenants under one installation budget, but that budget scales with
-installed repos and users up to 12,500 requests/hour for a standard installation
-and 15,000 for an Enterprise Cloud organisation. The per-user PAT ceiling does
-not scale. A busy tenant spends from the same pool as its siblings on either arm.
-See [Capacity](#5-capacity) for the arithmetic.
+Both arms pool tenants under one budget per credential scope — one user budget
+for the PAT arm, one installation budget per App installation. Fine-grained PATs
+minted by the same operator user all draw from that user's 5,000-request-per-hour
+allowance; each token does not carry an independent budget. A fleet of N tenants
+on N PATs minted by one operator shares one budget, not N. An App installation
+also pools all its tenants under one installation budget, but that budget scales
+with installed repos and users — up to 12,500 GraphQL points/hour for a standard
+installation (REST also scales to 12,500 req/hr) and 10,000 GraphQL points/hour
+for an Enterprise Cloud organisation (REST 15,000 req/hr). Fleets spanning
+multiple owners land on separate installations with separate budgets. The
+per-user PAT ceiling does not scale. A busy tenant spends from the same pool as
+its siblings on either arm. See [Capacity](#5-capacity) for the arithmetic.
 
 ### Roughly fifty-minute effective run timeout
 
@@ -245,8 +249,9 @@ The same formula applies to a fleet on the PAT arm. Fine-grained PATs minted by
 one operator user all draw from that user's personal GraphQL budget of 5,000
 points/hr, and that budget does not scale with repo or user count. A
 single-operator PAT fleet is bounded by the same 5,000/hr ceiling as the base
-App arm, with none of the scaling levers below. For any fleet beyond a few
-tenants, use the App arm.
+App arm, with no repo- or user-count-based scaling. The poll-interval lever
+below does apply: a longer interval raises the tenant ceiling proportionally. For
+any fleet beyond a few tenants, use the App arm.
 
 ### Levers
 
