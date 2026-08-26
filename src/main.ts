@@ -94,6 +94,7 @@ import {
   getMergedBlockerPrNumbers,
   oneShotWorkKinds,
   stackedCatchUpRetractionComment,
+  stackedPrComment,
   RUN_ONCE_NOTHING_MESSAGE,
   selectFirstWorkUnit,
   unresolvedBlockerNumbers,
@@ -1033,6 +1034,45 @@ export function createEngine(options: EngineOptions): Engine {
   }
 
   /**
+   * Put an issue's PR into its blocker PR's native GitHub stack (#311), so
+   * merge ordering and post-merge rebase/retarget are GitHub's job. When the
+   * Stacks API is unavailable (public preview), fall back to the pre-native
+   * flow: a PR that Phoebe just created gets retargeted back onto the default
+   * branch and carries the do-not-merge banner as a comment; a PR that already
+   * existed (an earlier cycle's, or one the agent opened itself against the
+   * default branch) is left exactly as it was.
+   */
+  function ensureNativeStack(opts: {
+    issueNumber: number;
+    existingPr: PrNumber | null;
+    blockerIssueNumber: number;
+    blockerPrNumber: PrNumber;
+  }): void {
+    const prNumber = opts.existingPr ?? github.findIssuePr(opts.issueNumber);
+    if (prNumber === null) {
+      console.log(`[phoebe] No open PR found for #${opts.issueNumber} — skipping stack setup.`);
+      return;
+    }
+    const outcome = github.stackPrOnto(prNumber, opts.blockerPrNumber);
+    if (outcome.stacked) {
+      console.log(
+        `[phoebe] PR #${prNumber} stacked on PR #${opts.blockerPrNumber} (stack #${outcome.stackNumber}).`,
+      );
+      return;
+    }
+    console.log(
+      `[phoebe] Native PR stacking unavailable (${outcome.reason}) — using the do-not-merge banner.`,
+    );
+    if (opts.existingPr === null) {
+      github.retargetPr(prNumber, prBase);
+      github.postPrComment(
+        prNumber,
+        stackedPrComment(opts.blockerIssueNumber, opts.blockerPrNumber),
+      );
+    }
+  }
+
+  /**
    * Work a single issue-shaped ticket: branch off the resolved base, run the
    * given prompt, and — only when the agent left commits — push and open (or
    * update) a PR. Shared by the `issues` and `research` kinds; the two differ
@@ -1073,22 +1113,31 @@ export function createEngine(options: EngineOptions): Engine {
           stampIssueAuthorCredit({ issueNumber, worktreeDir, baseRef: worktreeBase });
         }
         hub.pushBranchWithLease(worktreeDir, agentBranch);
+        const stackedOn =
+          stacked && blockerIssueNumber !== undefined && blockerPrNumber !== undefined
+            ? { blockerIssueNumber, blockerPrNumber }
+            : null;
         const existingPr = github.findIssuePr(issueNumber);
         if (existingPr === null) {
           const prTitle = `Phoebe: ${issueTitle} (#${issueNumber})`;
           const prBody = buildInitialPrBody({
             issueNumber,
             commitCount: newCommitCount,
-            ...(stacked && blockerIssueNumber !== undefined && blockerPrNumber !== undefined
-              ? { stacked: { blockerIssueNumber, blockerPrNumber } }
-              : {}),
+            ...(stackedOn ? { stacked: stackedOn } : {}),
           });
-          github.createPr({ head: agentBranch, base: prBase, title: prTitle, body: prBody });
+          // A stacked PR targets the layer beneath it — the blocker's branch —
+          // which is native stacking's shape; the fallback below retargets it
+          // to the default branch when the Stacks API is unavailable.
+          const base = stackedOn ? issueBranch(stackedOn.blockerIssueNumber) : prBase;
+          github.createPr({ head: agentBranch, base, title: prTitle, body: prBody });
         } else {
           console.log(
             `[phoebe] PR #${existingPr} already exists for ${agentBranch} — posting follow-up note.`,
           );
           github.postPrComment(existingPr, followUpPrComment(issueNumber, newCommitCount));
+        }
+        if (stackedOn) {
+          ensureNativeStack({ issueNumber, existingPr, ...stackedOn });
         }
       } else {
         console.log("[phoebe] No commits — skipping PR creation.");

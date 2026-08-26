@@ -1050,8 +1050,14 @@ export function buildInitialPrBody(opts: {
   stacked?: { blockerIssueNumber: number; blockerPrNumber: PrNumber };
 }): string {
   const parts = [`Closes #${opts.issueNumber}`, "", "Automated PR from Phoebe.", ""];
+  // A neutral note only: whether the do-not-merge warning applies is decided
+  // after creation (native stacking may take the ordering problem over), so the
+  // warning travels as a comment on the fallback path, never in the body.
   if (opts.stacked) {
-    parts.push(stackedPrComment(opts.stacked.blockerIssueNumber, opts.stacked.blockerPrNumber), "");
+    parts.push(
+      `Stacked on PR #${opts.stacked.blockerPrNumber} (blocked by #${opts.stacked.blockerIssueNumber}).`,
+      "",
+    );
   }
   parts.push(`Commits: ${opts.commitCount}`);
   return parts.join("\n");

@@ -67,6 +67,15 @@ export type OpenPhoebePr = {
   authorLogin: string | null;
 };
 
+/**
+ * What came of asking GitHub to stack a PR natively. `stacked: false` is an
+ * outcome, not an error: the Stacks API is a public preview (2026-07) and a
+ * host without it answers 404 — the caller falls back to the banner flow.
+ */
+export type StackPrOutcome =
+  | { stacked: true; stackNumber: number }
+  | { stacked: false; reason: string };
+
 export type PrMergeInfo = {
   number: PrNumber;
   headRefName: BranchRef;
@@ -128,6 +137,14 @@ export type GitHubClient = {
   /** The open PR on this issue's Phoebe branch, or null when there is none. */
   findIssuePr(issueNumber: number): PrNumber | null;
   createPr(opts: { head: BranchRef; base: string; title: string; body: string }): void;
+  /**
+   * Put a PR into its blocker PR's native stack — joining the blocker's
+   * existing stack, or founding one (blocker at the bottom) when it has none.
+   * Never throws: an unavailable Stacks API is a `stacked: false` outcome.
+   */
+  stackPrOnto(prNumber: PrNumber, blockerPrNumber: PrNumber): StackPrOutcome;
+  /** Rewrite a PR's base branch (`gh pr edit --base`). */
+  retargetPr(prNumber: PrNumber, base: string): void;
 
   // Quarantine + timeouts
   listQuarantinedIssues(): QuarantinedUnit[];
@@ -641,6 +658,50 @@ export function createGitHubClient({
         ],
         { input: opts.body },
       );
+    },
+
+    stackPrOnto: (prNumber, blockerPrNumber) => {
+      // Raw `exec`, not the ghJson/ghApiJson wrappers: those rethrow enriched
+      // errors, and here every failure — preview not enabled (404), token
+      // scope, rate limit — has the same right answer, the banner fallback.
+      type StackResource = { number: number; pull_requests?: Array<{ number: number }> };
+      const slug = config.repoSlug;
+      try {
+        const stacks = JSON.parse(
+          exec(["api", `repos/${slug}/stacks?pull_request=${blockerPrNumber}`]),
+        ) as StackResource[];
+        const stack = stacks[0];
+        if (stack) {
+          if (!stack.pull_requests?.some((pr) => pr.number === prNumber)) {
+            exec(
+              [
+                "api",
+                "--method",
+                "POST",
+                `repos/${slug}/stacks/${stack.number}/add`,
+                "--input",
+                "-",
+              ],
+              {
+                input: JSON.stringify({ pull_requests: [prNumber] }),
+              },
+            );
+          }
+          return { stacked: true, stackNumber: stack.number };
+        }
+        const created = JSON.parse(
+          exec(["api", "--method", "POST", `repos/${slug}/stacks`, "--input", "-"], {
+            input: JSON.stringify({ pull_requests: [blockerPrNumber, prNumber] }),
+          }),
+        ) as { number: number };
+        return { stacked: true, stackNumber: created.number };
+      } catch (error) {
+        return { stacked: false, reason: error instanceof Error ? error.message : String(error) };
+      }
+    },
+
+    retargetPr: (prNumber, base) => {
+      ghWrite(["pr", "edit", String(prNumber), "--base", base]);
     },
 
     listQuarantinedIssues: () => {

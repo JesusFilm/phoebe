@@ -1141,15 +1141,24 @@ describe("shouldPostConflictFixFailure", () => {
 });
 
 describe("buildInitialPrBody", () => {
-  test("includes stacked banner on initial PR only", () => {
+  test("notes the stacked base on the initial PR only", () => {
     const body = buildInitialPrBody({
       issueNumber: 103,
       commitCount: 2,
       stacked: { blockerIssueNumber: 98, blockerPrNumber: asPrNumber(104) },
     });
     expect(body).toContain("Closes #103");
-    expect(body).toContain("Blocked by #98");
+    expect(body).toContain("Stacked on PR #104");
+    expect(body).toContain("#98");
     expect(body).toContain("Commits: 2");
+    // The do-not-merge warning is the fallback comment's job (native stacking
+    // may succeed, and then the warning would be wrong), not the body's.
+    expect(body).not.toContain("Do not merge");
+  });
+
+  test("carries no stack note when the issue is unblocked", () => {
+    const body = buildInitialPrBody({ issueNumber: 103, commitCount: 2 });
+    expect(body).not.toContain("Stacked");
   });
 });
 
