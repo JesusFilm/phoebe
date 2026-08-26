@@ -14,6 +14,7 @@
 //   • the executor seam below — internal, for this module's own tests only.
 
 import { execFileSync } from "node:child_process";
+import { withBackoffSync, type SleepSync } from "./backoff.ts";
 import {
   asBranchRef,
   asPrNumber,
@@ -24,7 +25,7 @@ import {
 } from "./branded.ts";
 import type { GitHubUser } from "./co-author.ts";
 import type { PhoebeConfig } from "./config-schema.ts";
-import { classifyGhError, describeGhError } from "./gh-error.ts";
+import { classifyGhError, describeGhError, isTransientGhError } from "./gh-error.ts";
 import {
   isCompletedBlockerIssue,
   isPrInScope,
@@ -45,6 +46,11 @@ const CHILD_PROCESS_TIMEOUT_MS = 120_000;
 // a GitHub quirk, not loop knowledge, which is why the retry lives here.
 const MERGEABLE_RETRY_MS = 5_000;
 const MERGEABLE_RETRY_COUNT = 3;
+// GitHub 5xx / network blips heal in seconds, and without a retry one costs a
+// whole cycle (a failed unit) or an engine restart (a failed gather). Two
+// retries, 2s then 8s: enough to outlive a blip, short enough that a real
+// outage still fails this cycle rather than stalling the loop.
+const TRANSIENT_RETRY_SCHEDULE_MS = [2_000, 8_000];
 
 // ---------------------------------------------------------------------------
 // Data the loop reads
@@ -297,7 +303,7 @@ export type CreateGitHubClientOptions = {
    * not for production callers: the whole point of the interface above is that
    * a caller never has to know a subprocess is involved.
    */
-  internal?: { exec?: GhExecutor; sleep?: (ms: number) => Promise<void> };
+  internal?: { exec?: GhExecutor; sleep?: (ms: number) => Promise<void>; sleepSync?: SleepSync };
 };
 
 export function createGitHubClient({
@@ -305,8 +311,33 @@ export function createGitHubClient({
   env,
   internal,
 }: CreateGitHubClientOptions): GitHubClient {
-  const exec = internal?.exec ?? createGhExecutor(env);
+  const rawExec = internal?.exec ?? createGhExecutor(env);
   const sleep = internal?.sleep ?? defaultSleep;
+
+  /**
+   * The transport every method below actually calls: `rawExec` plus a retry on
+   * transient GitHub failures. Only captured calls retry — an inherited-stdio
+   * call yields no stderr to classify, and those are exactly the writes
+   * (comments, labels, `pr create`) where a blind retry after an ambiguous
+   * failure could double-post. Synchronous sleep, like the seam itself.
+   */
+  const exec: GhExecutor = (args, opts) => {
+    if (opts?.inherit) {
+      return rawExec(args, opts);
+    }
+    return withBackoffSync(() => rawExec(args, opts), {
+      scheduleMs: TRANSIENT_RETRY_SCHEDULE_MS,
+      isRetryable: isTransientGhError,
+      onRetry: (error, delayMs, retry) => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `[phoebe] Transient GitHub failure on \`gh ${args[0] ?? ""}\` — retrying in ${delayMs / 1000}s ` +
+            `(retry ${retry}/${TRANSIENT_RETRY_SCHEDULE_MS.length}): ${message}`,
+        );
+      },
+      ...(internal?.sleepSync ? { sleepSync: internal.sleepSync } : {}),
+    });
+  };
 
   /** A repo-scoped read: `-R <repoSlug>` is appended so no caller can forget it. */
   function ghJson<T>(args: readonly string[]): T {

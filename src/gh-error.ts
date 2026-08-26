@@ -92,6 +92,38 @@ export function describeGhError(c: GhErrorClassification): string {
   return parts.join(" — ");
 }
 
+// Server-side blips and network-level failures that a short retry genuinely
+// heals. Deliberately narrow: rate-limit (self-healing only at the hourly
+// reset) and permission (needs an operator) never match, and a child killed by
+// the spawn timeout carries no stderr at all, so a hung `gh` is never retried
+// into a triple-length hang.
+const TRANSIENT_RES = [
+  // gh's REST error line: "gh: <message> (HTTP 502)". 501 is excluded — "not
+  // implemented" does not heal.
+  /HTTP 50[0234]\b/i,
+  /\b(?:bad gateway|service unavailable|gateway time-?out|internal server error)\b/i,
+  // GraphQL's catch-all for a server-side failure or query timeout.
+  /Something went wrong while executing your query/i,
+  // Go's net errors as gh surfaces them.
+  /connection (?:reset|refused)/i,
+  /i\/o timeout/i,
+  /TLS handshake timeout/i,
+  /unexpected EOF/i,
+  /no such host/i,
+];
+
+/**
+ * Whether a failed `gh` invocation looks like a transient transport or server
+ * error — the class worth an in-process retry with backoff, as opposed to the
+ * classifications above, which need waiting out or an operator. False whenever
+ * stderr is unreadable (inherited stdio): with no signal, don't retry.
+ */
+export function isTransientGhError(error: unknown): boolean {
+  const stderr = stderrText(error);
+  if (stderr === null) return false;
+  return TRANSIENT_RES.some((re) => re.test(stderr));
+}
+
 function stderrText(error: unknown): string | null {
   if (error == null || typeof error !== "object") return null;
   const s = (error as Record<string, unknown>).stderr;

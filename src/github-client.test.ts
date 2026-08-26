@@ -645,3 +645,75 @@ describe("native PR stacking", () => {
     expect(calls[0]!.inherit).toBe(true);
   });
 });
+
+describe("transient-failure retry", () => {
+  /** An executor whose replies may be `{throws}` markers, recorded like stubExec. */
+  function flakyExec(replies: ReadonlyArray<string | { throws: string | null }>): {
+    exec: GhExecutor;
+    calls: Call[];
+  } {
+    const calls: Call[] = [];
+    let n = 0;
+    return {
+      calls,
+      exec: (args, opts) => {
+        calls.push({ args, ...opts });
+        const reply = replies[n++] ?? "";
+        if (typeof reply === "object") {
+          throw Object.assign(new Error("Command failed: gh"), { stderr: reply.throws });
+        }
+        return reply;
+      },
+    };
+  }
+
+  function clientOver(replies: ReadonlyArray<string | { throws: string | null }>) {
+    const { exec, calls } = flakyExec(replies);
+    const slept: number[] = [];
+    const github = createGitHubClient({
+      config: resolveConfig(minimalUser()),
+      env: {},
+      internal: { exec, sleep: async () => {}, sleepSync: (ms) => slept.push(ms) },
+    });
+    return { github, calls, slept };
+  }
+
+  test("a captured read retries through a transient failure and answers", () => {
+    const { github, calls, slept } = clientOver([
+      { throws: "gh: Gateway timeout (HTTP 504)" },
+      JSON.stringify({ body: "hello" }),
+    ]);
+    expect(github.issueBody(7)).toBe("hello");
+    expect(calls).toHaveLength(2);
+    expect(slept).toEqual([2_000]);
+  });
+
+  test("a persistent transient failure exhausts the schedule then throws", () => {
+    const { github, calls, slept } = clientOver([
+      { throws: "read tcp: connection reset by peer" },
+      { throws: "read tcp: connection reset by peer" },
+      { throws: "read tcp: connection reset by peer" },
+    ]);
+    expect(() => github.issueBody(7)).toThrow("Command failed: gh");
+    expect(calls).toHaveLength(3);
+    expect(slept).toEqual([2_000, 8_000]);
+  });
+
+  test("a non-transient failure is not retried and still enriches", () => {
+    const { github, calls, slept } = clientOver([
+      { throws: "gh: API rate limit exceeded for installation ID 12345." },
+      // The enrichment's follow-up `gh api rate_limit` probe.
+      JSON.stringify({ resources: { core: { reset: 0 }, graphql: { reset: 0 } } }),
+    ]);
+    expect(() => github.issueBody(7)).toThrow(/rate limit/i);
+    expect(slept).toEqual([]);
+    expect(calls[0]?.args[0]).toBe("issue");
+  });
+
+  test("an inherited-stdio write is never retried (no stderr to classify)", () => {
+    const { github, calls, slept } = clientOver([{ throws: null }]);
+    expect(() => github.postPrComment(asPrNumber(9), "hi")).toThrow("Command failed: gh");
+    expect(calls).toHaveLength(1);
+    expect(slept).toEqual([]);
+  });
+});
