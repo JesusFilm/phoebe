@@ -53,6 +53,13 @@ Three things it does not touch:
 - Quoted material — log output, error text, upstream wording, anything you are
   reproducing rather than writing.
 
+## Every PR carries a changeset
+
+The `changeset` CI check fails any PR that touches `phoebe-agent` without a
+Markdown file under `.changeset/` — write one before pushing. Format, the
+`skip-changeset` label for no-release PRs, and why empty changesets don't pass:
+[`docs/releasing.md`](docs/releasing.md).
+
 ## Installing Phoebe into a target repo
 
 If you are here to install Phoebe into another repository, follow the deterministic
