@@ -222,6 +222,27 @@ describe("resolveWorktreeBase", () => {
     });
     expect(getMergedBlockerPrNumbers(blocked.body, states)).toEqual([104]);
   });
+
+  test("uses config.defaultBranch instead of origin/main when configured", () => {
+    const previous = { ...installedConfig };
+    setResolvedConfig(resolveConfig({ ...sampleUserConfig, defaultBranch: "trunk" }));
+    try {
+      expect(resolveWorktreeBase(issue({ number: 108 }), emptyStates)).toEqual({
+        worktreeBase: "origin/trunk",
+        stacked: false,
+      });
+      const blocked = issue({ number: 102, body: "Blocked by #98" });
+      const mergedStates = new Map<number, BlockerPrState>([
+        [98, { hasOpenPr: false, hasMergedPr: true }],
+      ]);
+      expect(resolveWorktreeBase(blocked, mergedStates)).toEqual({
+        worktreeBase: "origin/trunk",
+        stacked: false,
+      });
+    } finally {
+      setResolvedConfig(previous);
+    }
+  });
 });
 
 describe("isCompletedBlockerIssue", () => {
@@ -327,6 +348,17 @@ describe("stackedPrComment", () => {
     expect(comment).toContain("#98");
     expect(comment).toContain("PR #104");
     expect(comment).toContain("Do not merge");
+  });
+
+  test("uses config.defaultBranch in the warning text", () => {
+    const previous = { ...installedConfig };
+    setResolvedConfig(resolveConfig({ ...sampleUserConfig, defaultBranch: "trunk" }));
+    try {
+      const comment = stackedPrComment(98, asPrNumber(104));
+      expect(comment).toContain("`trunk`");
+    } finally {
+      setResolvedConfig(previous);
+    }
   });
 });
 
@@ -530,6 +562,17 @@ describe("stackedCatchUpRetractionComment", () => {
     const comment = stackedCatchUpRetractionComment([asPrNumber(110), asPrNumber(111)]);
     expect(comment).toContain("#110");
     expect(comment).toContain("#111");
+  });
+
+  test("uses config.defaultBranch in the catch-up text", () => {
+    const previous = { ...installedConfig };
+    setResolvedConfig(resolveConfig({ ...sampleUserConfig, defaultBranch: "trunk" }));
+    try {
+      const comment = stackedCatchUpRetractionComment([asPrNumber(112)]);
+      expect(comment).toContain("`trunk`");
+    } finally {
+      setResolvedConfig(previous);
+    }
   });
 });
 
@@ -1075,6 +1118,17 @@ describe("conflictFixFailureComment", () => {
     const comment = conflictFixFailureComment(asPrNumber(42));
     expect(comment).toContain("PR #42");
     expect(comment).toContain("merge --abort");
+  });
+
+  test("uses config.defaultBranch in the merge description", () => {
+    const previous = { ...installedConfig };
+    setResolvedConfig(resolveConfig({ ...sampleUserConfig, defaultBranch: "trunk" }));
+    try {
+      const comment = conflictFixFailureComment(asPrNumber(42));
+      expect(comment).toContain("origin/trunk");
+    } finally {
+      setResolvedConfig(previous);
+    }
   });
 
   test("embeds SHA watermark marker when provided", () => {
