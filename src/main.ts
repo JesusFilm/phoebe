@@ -827,8 +827,9 @@ export function createEngine(options: EngineOptions): Engine {
   /**
    * Work one `conflicts` unit end to end: try the no-agent clean merge first
    * (blockers, then the default branch), and only bring in the agent when real
-   * conflicts remain. A merge that cannot even start posts the failure comment
-   * and skips.
+   * conflicts remain. A merge that fails without unresolved paths — worktree
+   * setup died, or the merge broke for some other reason — posts the failure
+   * comment and skips: there is nothing there for the agent to resolve.
    */
   async function fixOnePrConflict(pr: ConflictingPrCandidate, ctx: StackContext): Promise<void> {
     console.log(`[phoebe] Conflict fix: PR #${pr.prNumber} (${pr.headRefName}).`);
@@ -905,9 +906,9 @@ export function createEngine(options: EngineOptions): Engine {
 
   /**
    * Work one `checks` unit end to end: a PR that is merely BEHIND gets a
-   * catch-up merge first (CI may pass once caught up, no agent needed); one
-   * that conflicts defers to the `conflicts` kind; otherwise the checks agent
-   * runs.
+   * catch-up merge first (CI may pass once caught up, no agent needed). A
+   * catch-up that conflicts — or fails outright — defers to the `conflicts`
+   * kind instead of running the checks agent; otherwise the checks agent runs.
    */
   async function fixOnePrChecks(pr: ChecksCandidate, ctx: StackContext): Promise<void> {
     console.log(
