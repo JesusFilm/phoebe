@@ -371,8 +371,12 @@ export function createEngine(options: EngineOptions): Engine {
   // Provider selection (multi-provider ready)
   // ---------------------------------------------------------------------------
 
-  // The resolution ladder — per-kind env → per-kind config (`workKinds`) →
-  // global env → repo defaults — is pure, in provider-selection.ts (#300).
+  /**
+   * Which provider CLI, model, and effort one unit of `kind` runs with. The
+   * resolution ladder — per-kind env → per-kind config (`workKinds`) → global
+   * env → repo defaults — is pure, in provider-selection.ts (#300); this
+   * wrapper only maps the resolved name to the actual `Provider`.
+   */
   function selectProvider(kind: WorkKindName): {
     provider: Provider;
     model: string;
@@ -613,6 +617,12 @@ export function createEngine(options: EngineOptions): Engine {
     return worktreeDir;
   }
 
+  /**
+   * The one place an agent child is actually spawned: select the provider for
+   * `opts.kind`, render the prompt, build the allowlisted env, and run the
+   * agent inside `opts.worktreeDir` under the #72 run deadline. Every work
+   * kind's runner funnels through here.
+   */
   async function runAgentInWorktree(opts: {
     kind: WorkKindName;
     worktreeDir: string;
@@ -765,6 +775,11 @@ export function createEngine(options: EngineOptions): Engine {
     }
   }
 
+  /**
+   * The `conflicts` agent pass: prime the worktree with blocker-first merges,
+   * let the agent resolve what remains, then push — or post the failure
+   * comment with a fresh watermark when it produced nothing.
+   */
   async function runConflictResolutionAgent(
     pr: ConflictingPrCandidate,
     mergedBlockerPrNumbers: readonly PrNumber[],
@@ -809,6 +824,13 @@ export function createEngine(options: EngineOptions): Engine {
     });
   }
 
+  /**
+   * Work one `conflicts` unit end to end: try the no-agent clean merge first
+   * (blockers, then the default branch), and only bring in the agent when real
+   * conflicts remain. A merge that fails without unresolved paths — worktree
+   * setup died, or the merge broke for some other reason — posts the failure
+   * comment and skips: there is nothing there for the agent to resolve.
+   */
   async function fixOnePrConflict(pr: ConflictingPrCandidate, ctx: StackContext): Promise<void> {
     console.log(`[phoebe] Conflict fix: PR #${pr.prNumber} (${pr.headRefName}).`);
     hub.fetch();
@@ -842,6 +864,11 @@ export function createEngine(options: EngineOptions): Engine {
     await runConflictResolutionAgent(pr, mergedBlockerPrNumbers);
   }
 
+  /**
+   * The `checks` agent pass: hand the failing checks to the agent, push what
+   * it committed — or post the failure comment with a fresh watermark when it
+   * produced nothing, so the PR is not re-picked until something changes.
+   */
   async function runChecksResolutionAgent(pr: ChecksCandidate): Promise<void> {
     await runAgentWorkflow({
       kind: "checks",
@@ -877,6 +904,12 @@ export function createEngine(options: EngineOptions): Engine {
     });
   }
 
+  /**
+   * Work one `checks` unit end to end: a PR that is merely BEHIND gets a
+   * catch-up merge first (CI may pass once caught up, no agent needed). A
+   * catch-up that conflicts — or fails outright — defers to the `conflicts`
+   * kind instead of running the checks agent; otherwise the checks agent runs.
+   */
   async function fixOnePrChecks(pr: ChecksCandidate, ctx: StackContext): Promise<void> {
     console.log(
       `[phoebe] Checks fix: PR #${pr.prNumber} (${pr.headRefName}) — ` +
@@ -935,6 +968,12 @@ export function createEngine(options: EngineOptions): Engine {
       );
   }
 
+  /**
+   * The `reviews` agent pass: run the agent over the feedback, push any
+   * commits, then post the handled-watermark comment — built from the pre-run
+   * activity snapshot, so feedback posted mid-run still re-selects the PR —
+   * marking the unit failed when there was neither a push nor a summary.
+   */
   async function runReviewsResolutionAgent(
     pr: ReviewsCandidate,
     phoebeLogin: string,
@@ -986,6 +1025,7 @@ export function createEngine(options: EngineOptions): Engine {
     });
   }
 
+  /** Work one `reviews` unit: freshen origin, then run the reviews agent pass. */
   async function fixOnePrReviews(pr: ReviewsCandidate, phoebeLogin: string): Promise<void> {
     console.log(`[phoebe] Reviews fix: PR #${pr.prNumber} (${pr.headRefName}).`);
     hub.fetch();
@@ -1062,6 +1102,7 @@ export function createEngine(options: EngineOptions): Engine {
   // Work-unit runners
   // ---------------------------------------------------------------------------
 
+  /** Work one `issues` unit: `runOneIssue` under the issue prompt. */
   async function runIssueUnit(unit: IssueWorkUnit): Promise<void> {
     const { issue: target, resolution } = unit;
     console.log(
@@ -1081,6 +1122,7 @@ export function createEngine(options: EngineOptions): Engine {
     });
   }
 
+  /** Work one `research` unit: `runOneIssue` under the research prompt. */
   async function runResearchUnit(unit: IssueWorkUnit): Promise<void> {
     const { issue: target, resolution } = unit;
     console.log(
