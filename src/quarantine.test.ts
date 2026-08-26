@@ -14,6 +14,7 @@ import {
   issueContentBaseline,
   latestQuarantineBaseline,
   latestTimeoutMarker,
+  loginMismatchWarning,
   newestForeignCommentAt,
   nextTimeoutCount,
   parseQuarantineBaseline,
@@ -356,6 +357,29 @@ describe("buildUnstickComment", () => {
     const comment = buildUnstickComment();
     expect(comment).toContain(PHOEBE_QUARANTINE_LABEL);
     expect(parseUnitTimeoutMarker(comment)).toEqual({ n: 0 });
+  });
+});
+
+describe("loginMismatchWarning", () => {
+  test("null when no marker history exists (historical is null)", () => {
+    expect(loginMismatchWarning("bot-login", null)).toBeNull();
+  });
+
+  test("null when resolved and historical match", () => {
+    expect(loginMismatchWarning("bot-login", "bot-login")).toBeNull();
+  });
+
+  test("a warning string naming both logins when they differ", () => {
+    const warning = loginMismatchWarning("new-bot", "old-bot");
+    expect(warning).not.toBeNull();
+    expect(warning).toContain("new-bot");
+    expect(warning).toContain("old-bot");
+  });
+
+  test("null for a deleted/null historical author — treated as no history", () => {
+    // A deleted account has no login on GitHub; newestUnitMarkerAuthor()
+    // collapses it to null. No comparison is possible, so no warning fires.
+    expect(loginMismatchWarning("bot-login", null)).toBeNull();
   });
 });
 

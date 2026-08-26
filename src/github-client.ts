@@ -35,7 +35,11 @@ import {
   type ReviewThread,
   type WorkflowRunItem,
 } from "./orchestrator.ts";
-import { issueContentBaseline, PHOEBE_QUARANTINE_LABEL } from "./quarantine.ts";
+import {
+  issueContentBaseline,
+  parseUnitTimeoutMarker,
+  PHOEBE_QUARANTINE_LABEL,
+} from "./quarantine.ts";
 
 // Never let a `gh` child block the loop forever (rate-limit backoff, credential
 // prompt, network partition). Mirrors the git-side bound in main.ts; the two are
@@ -204,6 +208,13 @@ export type GitHubClient = {
    * for the PAT arm, never the primary source.
    */
   resolveLogin(envLogin: string | undefined): string;
+  /**
+   * The author login on the newest comment that carries a phoebe-unit-timeout
+   * marker anywhere in this repo — Phoebe's clearest historical fingerprint.
+   * Used at boot to check for login identity drift (#346). Returns `null` when
+   * no such comment exists or the comment's author account was deleted.
+   */
+  newestUnitMarkerAuthor(): string | null;
   issueAuthorLogin(issueNumber: number): string | null;
   lookupUser(login: string): GitHubUser;
 
@@ -935,6 +946,19 @@ export function createGitHubClient({
     resolveLogin: (envLogin) => {
       if (envLogin) return envLogin;
       return ghApiJson<{ login: string }>("user").login;
+    },
+
+    newestUnitMarkerAuthor: () => {
+      // GitHub's issue/PR comments share one REST endpoint. Fetch the 100 most
+      // recently created, scan client-side for the timeout marker (full-text
+      // search tokenizes the hyphenated name unreliably — #346), and return
+      // the author of the first hit.
+      type RepoComment = { body: string; created_at: string; user: { login: string } | null };
+      const comments = ghApiJson<RepoComment[]>(
+        `repos/${config.repoSlug}/issues/comments?per_page=100&sort=created&direction=desc`,
+      );
+      const hit = comments.find((c) => parseUnitTimeoutMarker(c.body) !== null);
+      return hit ? noLoginAsNull(hit.user) : null;
     },
 
     issueAuthorLogin: (issueNumber) =>
