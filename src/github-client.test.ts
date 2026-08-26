@@ -644,4 +644,94 @@ describe("native PR stacking", () => {
     expect(calls[0]!.args).toEqual(["pr", "edit", "12", "--base", "main", "-R", "acme/widget"]);
     expect(calls[0]!.inherit).toBe(true);
   });
+
+  describe("unstackPr", () => {
+    const UNSTACK_LIST_PATH = "repos/acme/widget/stacks?pull_request=12";
+
+    test("removes the PR from its stack and returns the stack number", () => {
+      const { github, calls } = clientWith([JSON.stringify([stackResource(4, [9, 12])]), ""]);
+
+      const outcome = github.unstackPr(asPrNumber(12));
+
+      expect(outcome).toEqual({ unstacked: true, stackNumber: 4 });
+      expect(calls[0]!.args).toEqual(["api", UNSTACK_LIST_PATH]);
+      expect(calls[1]!.args).toEqual([
+        "api",
+        "--method",
+        "POST",
+        "repos/acme/widget/stacks/4/unstack",
+      ]);
+    });
+
+    test("reports not-in-stack when no stack contains the PR", () => {
+      const { github, calls } = clientWith(["[]"]);
+
+      const outcome = github.unstackPr(asPrNumber(12));
+
+      expect(outcome).toEqual({ unstacked: false, reason: "not-in-stack" });
+      expect(calls).toHaveLength(1);
+    });
+
+    test("any Stacks API failure reports unavailable instead of throwing", () => {
+      const github = createGitHubClient({
+        config: resolveConfig(minimalUser()),
+        env: {},
+        internal: {
+          exec: () => {
+            throw new Error("HTTP 404: Not Found");
+          },
+          sleep: async () => {},
+        },
+      });
+
+      const outcome = github.unstackPr(asPrNumber(12));
+
+      expect(outcome).toEqual({ unstacked: false, reason: "HTTP 404: Not Found" });
+    });
+  });
+
+  describe("listNativelyStackedPrs", () => {
+    test("returns PRs whose head and base both start with the branch prefix", () => {
+      const rows = [
+        {
+          number: 22,
+          headRefName: "phoebe/issue-8",
+          baseRefName: "phoebe/issue-5",
+          isCrossRepository: false,
+        },
+        {
+          number: 23,
+          headRefName: "phoebe/issue-9",
+          baseRefName: "main",
+          isCrossRepository: false,
+        },
+        {
+          number: 24,
+          headRefName: "other/branch",
+          baseRefName: "phoebe/issue-5",
+          isCrossRepository: false,
+        },
+        {
+          number: 25,
+          headRefName: "phoebe/issue-10",
+          baseRefName: "phoebe/issue-5",
+          isCrossRepository: true,
+        },
+      ];
+      const { github } = clientWith([JSON.stringify(rows)]);
+
+      const result = github.listNativelyStackedPrs();
+
+      expect(result).toHaveLength(1);
+      expect(result[0]).toMatchObject({ number: 22 });
+    });
+
+    test("includes the correct --json fields in the request", () => {
+      const { github, calls } = clientWith(["[]"]);
+
+      github.listNativelyStackedPrs();
+
+      expect(jsonFields(calls[0]!.args)).toBe("number,headRefName,baseRefName,isCrossRepository");
+    });
+  });
 });

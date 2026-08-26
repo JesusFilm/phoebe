@@ -76,6 +76,26 @@ export type StackPrOutcome =
   | { stacked: true; stackNumber: number }
   | { stacked: false; reason: string };
 
+/**
+ * What came of asking GitHub to remove a PR from its native stack.
+ * `unstacked: false` with `reason: "not-in-stack"` is the normal result for a
+ * PR that was never stacked or was already removed; other reasons are errors.
+ */
+export type UnstackPrOutcome =
+  | { unstacked: true; stackNumber: number }
+  | { unstacked: false; reason: string };
+
+/**
+ * An open Phoebe PR whose base targets another Phoebe issue branch — a PR in a
+ * native stack. Returned by `listNativelyStackedPrs` for the stale-stack sweep.
+ */
+export type StackedPhoebePr = {
+  number: PrNumber;
+  headRefName: BranchRef;
+  /** The Phoebe issue branch this PR sits on top of in the stack. */
+  baseRefName: BranchRef;
+};
+
 export type PrMergeInfo = {
   number: PrNumber;
   headRefName: BranchRef;
@@ -145,6 +165,19 @@ export type GitHubClient = {
   stackPrOnto(prNumber: PrNumber, blockerPrNumber: PrNumber): StackPrOutcome;
   /** Rewrite a PR's base branch (`gh pr edit --base`). */
   retargetPr(prNumber: PrNumber, base: string): void;
+  /**
+   * Open Phoebe PRs whose base is another Phoebe issue branch — the ones that
+   * are natively stacked and have not yet been retargeted to the default branch.
+   * Used by the stale-stack sweep to find PRs whose blocker completed without
+   * merging.
+   */
+  listNativelyStackedPrs(): StackedPhoebePr[];
+  /**
+   * Remove a PR from its native stack. Returns the stack number when the PR was
+   * in a stack and was removed, or a reason when it was not.
+   * Never throws: an unavailable Stacks API is an `unstacked: false` outcome.
+   */
+  unstackPr(prNumber: PrNumber): UnstackPrOutcome;
 
   // Quarantine + timeouts
   listQuarantinedIssues(): QuarantinedUnit[];
@@ -707,6 +740,61 @@ export function createGitHubClient({
 
     retargetPr: (prNumber, base) => {
       ghWrite(["pr", "edit", String(prNumber), "--base", base]);
+    },
+
+    listNativelyStackedPrs: () => {
+      type GhPr = {
+        number: number;
+        headRefName: string;
+        baseRefName: string;
+        isCrossRepository: boolean;
+      };
+      const prefix = config.branchPrefix;
+      return ghJson<GhPr[]>([
+        "pr",
+        "list",
+        "--state",
+        "open",
+        "--json",
+        "number,headRefName,baseRefName,isCrossRepository",
+        "--limit",
+        "100",
+      ])
+        .filter(
+          (pr) =>
+            !pr.isCrossRepository &&
+            pr.headRefName.startsWith(prefix) &&
+            pr.baseRefName.startsWith(prefix),
+        )
+        .map((pr) => ({
+          number: asPrNumber(pr.number),
+          headRefName: asBranchRef(pr.headRefName),
+          baseRefName: asBranchRef(pr.baseRefName),
+        }));
+    },
+
+    unstackPr: (prNumber) => {
+      type StackResource = {
+        number: number;
+        pull_requests?: Array<{ number: number; state: string }>;
+      };
+      const slug = config.repoSlug;
+      try {
+        const stacks = JSON.parse(
+          exec(["api", `repos/${slug}/stacks?pull_request=${prNumber}`]),
+        ) as StackResource[];
+        const stack = stacks[0];
+        if (!stack) {
+          return { unstacked: false, reason: "not-in-stack" };
+        }
+        exec(["api", "--method", "POST", `repos/${slug}/stacks/${stack.number}/unstack`]);
+        return { unstacked: true, stackNumber: stack.number };
+      } catch (error) {
+        return {
+          unstacked: false,
+          reason: error instanceof Error ? error.message : String(error),
+        };
+      }
     },
 
     listQuarantinedIssues: () => {
