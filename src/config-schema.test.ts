@@ -306,6 +306,35 @@ describe("validateUserConfig", () => {
     ).toThrow(/options must be a plain object/);
   });
 
+  test("rejects wrapper options that are objects but not plain records", () => {
+    for (const options of [new Date(), new Map(), Object.create({ inherited: true })]) {
+      expect(() =>
+        validateUserConfig(
+          minimalUserConfig({
+            workKinds: {
+              custom: { nudge: { module: "./kinds/nudge.ts", options } as unknown as never },
+            },
+          }),
+        ),
+      ).toThrow(/options must be a plain object/);
+    }
+    // A null-prototype record is still a plain record.
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({
+          workKinds: {
+            custom: {
+              nudge: {
+                module: "./kinds/nudge.ts",
+                options: Object.create(null),
+              } as unknown as never,
+            },
+          },
+        }),
+      ),
+    ).not.toThrow();
+  });
+
   test("accepts a relative configDir", () => {
     expect(() => validateUserConfig(minimalUserConfig({ configDir: ".phoebe" }))).not.toThrow();
     expect(() =>

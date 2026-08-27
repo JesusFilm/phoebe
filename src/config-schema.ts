@@ -633,10 +633,14 @@ function validateCustomKindEntry(name: string, entry: CustomKindEntry): void {
     }
     assertModulePath((entry as { module: unknown }).module);
     const options = (entry as { options?: unknown }).options;
-    if (
-      options !== undefined &&
-      (typeof options !== "object" || options === null || Array.isArray(options))
-    ) {
+    // A plain record, as documented: class instances (a Date, a Map) would
+    // survive this boot check only to surprise the kind reading `ctx.options`.
+    const isPlainObject =
+      typeof options === "object" &&
+      options !== null &&
+      !Array.isArray(options) &&
+      [Object.prototype, null].includes(Object.getPrototypeOf(options) as object | null);
+    if (options !== undefined && !isPlainObject) {
       throw new Error(
         `${at}.options must be a plain object when present — got ${JSON.stringify(options)}.`,
       );
