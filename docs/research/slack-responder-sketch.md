@@ -33,7 +33,7 @@ type Thread = {
   channel: string;
   threadTs: string;
   transcript: string; // rendered thread so far, for the prompt
-  state: "new" | "awaiting-phoebe";
+  state: "awaiting-phoebe" | "awaiting-user";
 };
 
 export default {
@@ -43,7 +43,7 @@ export default {
   workspace: "worktree", // ← bend #1: wants "none"; see extension points
   report: {
     noun: "bug-channel thread(s)",
-    describe: (t) => `Slack thread ${t.threadTs} in #bugs`,
+    describe: (t) => `Slack thread ${t.threadTs} in ${t.channel}`,
   },
   async fetch(ctx) {
     // Read recent threads in the channel via the Slack Web API — plain global
@@ -56,12 +56,13 @@ export default {
     return readActionableThreads(ctx.options.channel); // Thread[]
   },
   select(gathered, ctx) {
-    // Oldest un-answered thread first; skip threads already carrying the
-    // awaiting-user marker (free-string skip reason, rendered verbatim).
-    const unit = gathered.find((t) => t.state !== "awaiting-phoebe") ?? null;
+    // Oldest thread waiting on Phoebe first; threads carrying the awaiting-user
+    // marker are skipped under a free-string reason, rendered verbatim.
+    const unit = gathered.find((t) => t.state === "awaiting-phoebe") ?? null;
+    const awaitingUser = gathered.filter((t) => t.state === "awaiting-user").length;
     return {
       unit,
-      skipped: [{ reason: "awaiting reporter reply", count: gathered.length - (unit ? 1 : 0) }],
+      skipped: awaitingUser > 0 ? [{ reason: "awaiting reporter reply", count: awaitingUser }] : [],
       total: gathered.length,
     };
   },
@@ -177,12 +178,21 @@ type WorkUnitShape = {
 ```
 
 When present, the engine's timeout/quarantine write path uses it exactly as today. When
-absent — a Slack thread — the unit still gets in-memory timeout counting and the
-quarantined-state skip, but no GitHub escalation; the engine logs that the unit has no
-escalation surface, a defined degraded behavior instead of a crash. Quarantine's
-marker/baseline logic stays engine-owned — it is subtle enough that per-kind
-reimplementation (a definition-level `escalate` hook) was rejected. All five built-ins
-set the field in `select`; it costs one line each.
+absent — a Slack thread — the unit gets in-memory timeout counting only: the engine logs
+that the unit carries no GitHub target and therefore no escalation surface, a defined
+degraded behavior instead of a crash.
+
+The skip half does not follow, and the sketch should not pretend otherwise. Quarantine's
+read/skip path is a GitHub label filter, so nothing stops a timed-out non-GitHub unit
+from being selected again on the next cycle. A kind whose units are not GitHub objects
+carries its own guard in the external system — for this responder, the marker reaction it
+already uses as its watermark. A source-agnostic quarantine state that the engine itself
+could filter on is **un-designed**; naming it here rather than inventing it, it belongs
+to whichever map first ships a non-GitHub kind for real.
+
+Quarantine's marker/baseline logic stays engine-owned — it is subtle enough that per-kind
+reimplementation (a definition-level `escalate` hook) was rejected. All five built-ins set
+the field in `select`; it costs one line each.
 
 ## Verdict
 
