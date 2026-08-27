@@ -346,3 +346,32 @@ describe("appendTrailerToCommits", () => {
     removeWorktree(repoDir, worktreeDir, localGit);
   });
 });
+
+describe("fetchOrigin retry", () => {
+  test("retries a failed fetch through the schedule, then succeeds", () => {
+    const slept: number[] = [];
+    let calls = 0;
+    const runner: GitRunner = () => {
+      calls++;
+      if (calls === 1) throw new Error("fatal: expected 'acknowledgments'");
+      return "";
+    };
+    fetchOrigin("/data/repo", runner, (ms) => slept.push(ms));
+    expect(calls).toBe(2);
+    expect(slept).toEqual([2_000]);
+  });
+
+  test("a fetch that keeps failing throws after the schedule is spent", () => {
+    const slept: number[] = [];
+    let calls = 0;
+    const runner: GitRunner = () => {
+      calls++;
+      throw new Error("fatal: unable to access");
+    };
+    expect(() => fetchOrigin("/data/repo", runner, (ms) => slept.push(ms))).toThrow(
+      "unable to access",
+    );
+    expect(calls).toBe(3);
+    expect(slept).toEqual([2_000, 8_000]);
+  });
+});

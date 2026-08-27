@@ -91,6 +91,12 @@ describe("validateUserConfig", () => {
     expect(() => validateUserConfig(minimalUserConfig({ workspace: { depth: 3 } }))).not.toThrow();
   });
 
+  test("workspace-root config (workspace block, no tenant fields) does not throw", () => {
+    // A workspace-root config carries workspace instead of the five tenant fields (#354).
+    // validateUserConfig must not demand repoSlug/repoUrl/etc. from a workspace root.
+    expect(() => validateUserConfig({ workspace: { depth: 1 } } as PhoebeUserConfig)).not.toThrow();
+  });
+
   test("rejects workspace.depth < 1", () => {
     expect(() => validateUserConfig(minimalUserConfig({ workspace: { depth: 0 } }))).toThrow(
       /workspace\.depth.*integer ≥ 1/i,
@@ -145,6 +151,16 @@ describe("validateUserConfig", () => {
             reviews: { provider: "claude", model: "claude-haiku-4-5", effort: "low" },
             issues: { effort: "high" },
           },
+        }),
+      ),
+    ).not.toThrow();
+  });
+
+  test("accepts effort: null as an explicit clear in a workKinds block (#335)", () => {
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({
+          workKinds: { reviews: { model: "claude-haiku-4-5", effort: null } },
         }),
       ),
     ).not.toThrow();

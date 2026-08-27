@@ -213,6 +213,48 @@ describe("per-kind config vs global env", () => {
   });
 });
 
+describe("effort: null — explicit clear (#335)", () => {
+  test("null clears a defaultEfforts value for that kind", () => {
+    const config = selectionConfig({
+      defaultProvider: "claude",
+      defaultEfforts: { claude: "low" },
+      workKinds: { reviews: { model: "claude-haiku-4-5", effort: null } },
+    });
+    const picked = selectProviderForKind({ kind: "reviews", env: {}, config });
+    expect(picked.effort).toBeUndefined();
+    // Other kinds still get the default effort
+    expect(selectProviderForKind({ kind: "issues", env: {}, config }).effort).toBe("low");
+  });
+
+  test("a per-kind env var still wins over a null block", () => {
+    const config = selectionConfig({
+      defaultProvider: "claude",
+      defaultEfforts: { claude: "low" },
+      workKinds: { reviews: { effort: null } },
+    });
+    const picked = selectProviderForKind({
+      kind: "reviews",
+      env: { PHOEBE_REVIEWS_EFFORT: "max" },
+      config,
+    });
+    expect(picked.effort).toBe("max");
+  });
+
+  test("null does not fall through to PHOEBE_EFFORT or defaultEfforts", () => {
+    const config = selectionConfig({
+      defaultProvider: "claude",
+      defaultEfforts: { claude: "high" },
+      workKinds: { reviews: { effort: null } },
+    });
+    const picked = selectProviderForKind({
+      kind: "reviews",
+      env: { PHOEBE_EFFORT: "medium" },
+      config,
+    });
+    expect(picked.effort).toBeUndefined();
+  });
+});
+
 describe("the provider-mismatch guard", () => {
   test("a providerless block goes silent when PHOEBE_AGENT flips the run away from defaultProvider", () => {
     const config = selectionConfig({

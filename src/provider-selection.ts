@@ -97,12 +97,21 @@ export function selectProviderForKind(opts: {
     (definitionSpeaks ? opts.definitionDefaults?.model : undefined) ??
     config.defaultModels[provider];
 
-  const effort =
-    readEnv(workKindEnvVar(kind, "EFFORT")) ??
-    (blockSpeaks ? block.effort : undefined) ??
-    readEnv("PHOEBE_EFFORT") ??
-    (definitionSpeaks ? opts.definitionDefaults?.effort : undefined) ??
-    config.defaultEfforts[provider];
+  // `null` is an explicit clear — stop the ladder and pass no effort flag.
+  // `undefined` (absent) falls through to global env / definition defaults /
+  // repo defaults.
+  const effortFromKindEnv = readEnv(workKindEnvVar(kind, "EFFORT"));
+  const blockEffort = blockSpeaks ? block?.effort : undefined;
+  const effort: string | undefined =
+    effortFromKindEnv !== undefined
+      ? effortFromKindEnv
+      : blockEffort !== undefined
+        ? blockEffort === null
+          ? undefined
+          : blockEffort
+        : (readEnv("PHOEBE_EFFORT") ??
+          (definitionSpeaks ? opts.definitionDefaults?.effort : undefined) ??
+          config.defaultEfforts[provider]);
 
   return { provider, model, effort };
 }

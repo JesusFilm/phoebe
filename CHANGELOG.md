@@ -1,5 +1,19 @@
 # phoebe-agent
 
+## 0.9.0
+
+### Minor Changes
+
+- 15c20b3: Add a stale-stack sweep that unblocks a natively stacked PR when its blocker issue closes as completed without merging a Phoebe PR. The sweep detects the dead stack layer each cycle, calls the GitHub Stacks unstack endpoint, and retargets the dependent PR onto the default branch.
+- 2ee8825: Upgrade TypeScript from 5.x to 7.0.2, the stable native Go compiler. The typecheck CI gate now runs the Go-based `tsc`, which is ~10× faster than the old compiler. No source changes were needed — `erasableSyntaxOnly`, which the codebase already enforced, is exactly what TypeScript 7 assumes. `vite-plus` is bumped to `0.3.0` alongside it, as that release adds TypeScript 7 to the peer-dependency range.
+
+### Patch Changes
+
+- dac8c9b: Warn at boot when the resolved login differs from the author on Phoebe's own newest unit-marker comment. A token swap, GitHub App identity change, or misconfigured `PHOEBE_GH_LOGIN` makes every marker Phoebe posts read as foreign activity, silently resetting the quarantine counter every rotation so quarantine never fires. The cross-check is best-effort — a lookup failure logs and boot continues. The mismatch decision is a pure function (`loginMismatchWarning`) with direct unit tests covering match, mismatch, no marker history, and deleted author.
+- b43ee63: Retry transient GitHub failures with backoff instead of failing the cycle. Captured `gh` calls that die with a 5xx or a network-level error (connection reset, TLS timeout, the GraphQL server-error catch-all) now retry twice, 2s then 8s, before the error propagates; rate-limit and permission failures still fail immediately, since a few seconds of waiting can't fix either. `git fetch origin` retries on any failure — a fetch is idempotent, and a GitHub 504 mid-negotiation used to cost a whole cycle or an engine restart. Writes with inherited stdio (comments, labels, `pr create`) are deliberately not retried: there is no captured stderr to classify, and a blind re-send after an ambiguous failure could double-post.
+- 6a1af83: Base resolution and comment templates now use `config.defaultBranch` instead of hardcoded `origin/main`.
+- 4bbf508: `workKinds` blocks can now set `effort: null` to suppress the effort flag for that kind even when `defaultEfforts` names one for the active provider. Previously the only escape from a global effort default was to drop `defaultEfforts` entirely and repeat the setting in every other block — an impossible tradeoff when one kind runs a model that has no effort knob (e.g. `claude-haiku-4-5`). A per-kind env var (`PHOEBE_<KIND>_EFFORT`) still wins over the null clear.
+
 ## 0.8.2
 
 ### Patch Changes

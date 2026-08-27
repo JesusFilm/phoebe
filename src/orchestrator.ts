@@ -103,7 +103,7 @@ export function resolveWorktreeBase(
 
   const blockers = parseBlockedBy(issue.body);
   if (blockers.length === 0) {
-    return { worktreeBase: "origin/main", stacked: false };
+    return { worktreeBase: `origin/${config.defaultBranch}`, stacked: false };
   }
 
   const blockerIssueNumber = blockers[0]!;
@@ -122,13 +122,13 @@ export function resolveWorktreeBase(
   }
 
   if (state.hasMergedPr) {
-    return { worktreeBase: "origin/main", stacked: false };
+    return { worktreeBase: `origin/${config.defaultBranch}`, stacked: false };
   }
 
   // Work that landed outside `branchPrefix` leaves no Phoebe PR to find; a
   // blocker issue closed as completed is the signal that it is done anyway.
   if (state.blockerCompleted) {
-    return { worktreeBase: "origin/main", stacked: false };
+    return { worktreeBase: `origin/${config.defaultBranch}`, stacked: false };
   }
 
   return null;
@@ -200,7 +200,7 @@ export function stackedPrComment(blockerIssueNumber: number, blockerPrNumber: Pr
     `⛓️ Blocked by #${blockerIssueNumber} (PR #${blockerPrNumber}). ` +
     `Its commits appear in this diff until #${blockerPrNumber} merges. ` +
     `**Do not merge this PR before #${blockerPrNumber}** — doing so would pull ` +
-    `#${blockerIssueNumber}'s work into \`main\` ahead of its own review.`
+    `#${blockerIssueNumber}'s work into \`${config.defaultBranch}\` ahead of its own review.`
   );
 }
 
@@ -378,13 +378,13 @@ export function getMergedBlockerPrNumbers(
 export function stackedCatchUpRetractionComment(blockerPrNumbers: readonly PrNumber[]): string {
   if (blockerPrNumbers.length === 1) {
     return (
-      `Blocker #${blockerPrNumbers[0]} merged; this branch has been caught up to \`main\` ` +
+      `Blocker #${blockerPrNumbers[0]} merged; this branch has been caught up to \`${config.defaultBranch}\` ` +
       `and is now independently mergeable.`
     );
   }
   const list = blockerPrNumbers.map((n) => `#${n}`).join(", ");
   return (
-    `Blockers ${list} merged; this branch has been caught up to \`main\` ` +
+    `Blockers ${list} merged; this branch has been caught up to \`${config.defaultBranch}\` ` +
     `and is now independently mergeable.`
   );
 }
@@ -804,7 +804,7 @@ export function conflictFixFailureComment(
   watermark?: ConflictFailWatermark,
 ): string {
   const parts = [
-    `Phoebe attempted an idle merge-conflict fix (merge \`origin/main\` into this branch) ` +
+    `Phoebe attempted an idle merge-conflict fix (merge \`origin/${config.defaultBranch}\` into this branch) ` +
       `for PR #${prNumber} but could not resolve it cleanly. The branch was left unchanged ` +
       `(\`git merge --abort\`). A human should resolve the conflicts manually.`,
   ];

@@ -812,6 +812,93 @@ describe("the un-stick sweep", () => {
   });
 });
 
+describe("the stale-stack sweep", () => {
+  /** A wet `--run-once` cycle: it sweeps, finds no work, and exits. */
+  function sweepCycle(github: GitHubStubOverrides) {
+    return runCycle({
+      env: { GH_TOKEN: "a-token" },
+      config: { workOrder: ["issues"] },
+      github: { listReadyIssues: () => [], ...github },
+      run: { runOnce: true, dryRun: false },
+    });
+  }
+
+  test("a natively stacked PR whose blocker completed is unstacked and retargeted", async () => {
+    const writes: string[] = [];
+    const result = await sweepCycle({
+      listNativelyStackedPrs: () => [
+        {
+          number: asPrNumber(22),
+          headRefName: issueBranch(8),
+          baseRefName: issueBranch(5),
+        },
+      ],
+      blockerPrState: (n) =>
+        n === 5
+          ? { hasOpenPr: false, hasMergedPr: false, blockerCompleted: true }
+          : { hasOpenPr: false, hasMergedPr: false, blockerCompleted: false },
+      unstackPr: (prNumber) => {
+        writes.push(`unstack ${prNumber}`);
+        return { unstacked: true, stackNumber: 3 };
+      },
+      retargetPr: (prNumber, base) => {
+        writes.push(`retarget ${prNumber} ${base}`);
+      },
+    });
+
+    expect(writes).toEqual(["unstack 22", "retarget 22 main"]);
+    expect(result.lines).toContain(
+      "[phoebe] PR #22 removed from stack #3 — blocker #5 completed without merging its PR.",
+    );
+    expect(result.lines).toContain("[phoebe] PR #22 retargeted onto main.");
+  });
+
+  test("a stacked PR whose blocker still has an open PR is left alone", async () => {
+    // unstackPr and retargetPr not stubbed — any call would throw.
+    await sweepCycle({
+      listNativelyStackedPrs: () => [
+        {
+          number: asPrNumber(22),
+          headRefName: issueBranch(8),
+          baseRefName: issueBranch(5),
+        },
+      ],
+      blockerPrState: () => ({
+        hasOpenPr: true,
+        openPrNumber: asPrNumber(21),
+        hasMergedPr: false,
+      }),
+    });
+  });
+
+  test("a stacked PR whose blocker completed but is not in a stack is skipped silently", async () => {
+    const result = await sweepCycle({
+      listNativelyStackedPrs: () => [
+        {
+          number: asPrNumber(22),
+          headRefName: issueBranch(8),
+          baseRefName: issueBranch(5),
+        },
+      ],
+      blockerPrState: () => ({ hasOpenPr: false, hasMergedPr: false, blockerCompleted: true }),
+      unstackPr: () => ({ unstacked: false, reason: "not-in-stack" }),
+    });
+
+    expect(result.lines.filter((l) => l.includes("PR #22"))).toHaveLength(0);
+  });
+
+  test("a failed listing is reported and the cycle carries on", async () => {
+    const result = await sweepCycle({
+      listNativelyStackedPrs: () => {
+        throw new Error("stacks API exploded");
+      },
+    });
+
+    expect(result.lines.join("\n")).toContain("stacks API exploded");
+    expect(result.lines).toContain(RUN_ONCE_NOTHING_MESSAGE);
+  });
+});
+
 describe("--dry-run", () => {
   test("prints the selection and executes nothing", async () => {
     const result = await runCycle({

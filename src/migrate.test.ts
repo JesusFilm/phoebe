@@ -24,6 +24,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
 import { ConfigRefusal, isConfigRefusal } from "./config-handle.ts";
+import { validateUserConfig, type PhoebeUserConfig } from "./config-schema.ts";
 import { researchPromptMigration } from "./migrations/m001-research-prompt.ts";
 import { addResearchToWorkOrderMigration } from "./migrations/m002-add-research-to-workorder.ts";
 import {
@@ -1284,6 +1285,64 @@ describe("runFleetMigrate: workspace-root fleet walk", () => {
     });
 
     expect(fleet.tenantEntries).toHaveLength(0);
+  });
+});
+
+// ----------------------------------------------------------------- workspace-root validation regression (#354)
+
+const WORKSPACE_ROOT_ONLY_CONFIG = `export const config = {
+  workspace: { depth: 1 },
+};
+`;
+
+function scaffoldWorkspaceRootOnly(dir: string): string {
+  const configPath = join(dir, "phoebe.config.ts");
+  writeFileSync(configPath, WORKSPACE_ROOT_ONLY_CONFIG);
+  return configPath;
+}
+
+describe("runFleetMigrate: workspace-root without tenant fields (#354)", () => {
+  test("root migration applies and validates — not reverted — when workspace-root has no tenant fields", async () => {
+    const rootDir = makeTempDir();
+    const configPath = scaffoldWorkspaceRootOnly(rootDir);
+
+    const rootMigration = makeWorkspaceRootMigration(
+      "r-docker",
+      "container/Dockerfile",
+      "FROM ubuntu:22.04\n",
+    );
+    const fleet = await runFleetMigrate({
+      configPath,
+      migrations: [rootMigration],
+      // validateFn mirrors the fixed validateUserConfig: passes for workspace-root configs.
+      // Before the fix this would throw ("missing required field(s): repoSlug…") and revert.
+      validateFn: async () => {
+        validateUserConfig({ workspace: { depth: 1 } } as PhoebeUserConfig);
+      },
+      isDirtyFn: () => false,
+      enumerateFn: fakeEnumerate([]),
+    });
+
+    expect(fleet.rootReport.results[0]?.state).toBe("applied");
+    expect(existsSync(join(rootDir, "container/Dockerfile"))).toBe(true);
+  });
+
+  test("workspace root with no applicable migrations reports rootPreexistingInvalid=false, not invalid", async () => {
+    const rootDir = makeTempDir();
+    const configPath = scaffoldWorkspaceRootOnly(rootDir);
+
+    const fleet = await runFleetMigrate({
+      configPath,
+      migrations: [],
+      // Same fixed validator: workspace-root passes without tenant fields.
+      validateFn: async () => {
+        validateUserConfig({ workspace: { depth: 1 } } as PhoebeUserConfig);
+      },
+      isDirtyFn: () => false,
+      enumerateFn: fakeEnumerate([]),
+    });
+
+    expect(fleet.rootPreexistingInvalid).toBe(false);
   });
 });
 

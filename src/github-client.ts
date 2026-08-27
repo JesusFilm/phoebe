@@ -14,6 +14,7 @@
 //   • the executor seam below — internal, for this module's own tests only.
 
 import { execFileSync } from "node:child_process";
+import { withBackoffSync, type SleepSync } from "./backoff.ts";
 import {
   asBranchRef,
   asPrNumber,
@@ -24,7 +25,7 @@ import {
 } from "./branded.ts";
 import type { GitHubUser } from "./co-author.ts";
 import type { PhoebeConfig } from "./config-schema.ts";
-import { classifyGhError, describeGhError } from "./gh-error.ts";
+import { classifyGhError, describeGhError, isTransientGhError } from "./gh-error.ts";
 import {
   isCompletedBlockerIssue,
   isPrInScope,
@@ -34,7 +35,11 @@ import {
   type ReviewThread,
   type WorkflowRunItem,
 } from "./orchestrator.ts";
-import { issueContentBaseline, PHOEBE_QUARANTINE_LABEL } from "./quarantine.ts";
+import {
+  issueContentBaseline,
+  parseUnitTimeoutMarker,
+  PHOEBE_QUARANTINE_LABEL,
+} from "./quarantine.ts";
 
 // Never let a `gh` child block the loop forever (rate-limit backoff, credential
 // prompt, network partition). Mirrors the git-side bound in main.ts; the two are
@@ -45,6 +50,11 @@ const CHILD_PROCESS_TIMEOUT_MS = 120_000;
 // a GitHub quirk, not loop knowledge, which is why the retry lives here.
 const MERGEABLE_RETRY_MS = 5_000;
 const MERGEABLE_RETRY_COUNT = 3;
+// GitHub 5xx / network blips heal in seconds, and without a retry one costs a
+// whole cycle (a failed unit) or an engine restart (a failed gather). Two
+// retries, 2s then 8s: enough to outlive a blip, short enough that a real
+// outage still fails this cycle rather than stalling the loop.
+const TRANSIENT_RETRY_SCHEDULE_MS = [2_000, 8_000];
 
 // ---------------------------------------------------------------------------
 // Data the loop reads
@@ -75,6 +85,26 @@ export type OpenPhoebePr = {
 export type StackPrOutcome =
   | { stacked: true; stackNumber: number }
   | { stacked: false; reason: string };
+
+/**
+ * What came of asking GitHub to remove a PR from its native stack.
+ * `unstacked: false` with `reason: "not-in-stack"` is the normal result for a
+ * PR that was never stacked or was already removed; other reasons are errors.
+ */
+export type UnstackPrOutcome =
+  | { unstacked: true; stackNumber: number }
+  | { unstacked: false; reason: string };
+
+/**
+ * An open Phoebe PR whose base targets another Phoebe issue branch — a PR in a
+ * native stack. Returned by `listNativelyStackedPrs` for the stale-stack sweep.
+ */
+export type StackedPhoebePr = {
+  number: PrNumber;
+  headRefName: BranchRef;
+  /** The Phoebe issue branch this PR sits on top of in the stack. */
+  baseRefName: BranchRef;
+};
 
 export type PrMergeInfo = {
   number: PrNumber;
@@ -148,6 +178,19 @@ export type GitHubClient = {
   stackPrOnto(prNumber: PrNumber, blockerPrNumber: PrNumber): StackPrOutcome;
   /** Rewrite a PR's base branch (`gh pr edit --base`). */
   retargetPr(prNumber: PrNumber, base: string): void;
+  /**
+   * Open Phoebe PRs whose base is another Phoebe issue branch — the ones that
+   * are natively stacked and have not yet been retargeted to the default branch.
+   * Used by the stale-stack sweep to find PRs whose blocker completed without
+   * merging.
+   */
+  listNativelyStackedPrs(): StackedPhoebePr[];
+  /**
+   * Remove a PR from its native stack. Returns the stack number when the PR was
+   * in a stack and was removed, or a reason when it was not.
+   * Never throws: an unavailable Stacks API is an `unstacked: false` outcome.
+   */
+  unstackPr(prNumber: PrNumber): UnstackPrOutcome;
 
   // Quarantine + timeouts
   listQuarantinedIssues(): QuarantinedUnit[];
@@ -168,6 +211,13 @@ export type GitHubClient = {
    * for the PAT arm, never the primary source.
    */
   resolveLogin(envLogin: string | undefined): string;
+  /**
+   * The author login on the newest comment that carries a phoebe-unit-timeout
+   * marker anywhere in this repo — Phoebe's clearest historical fingerprint.
+   * Used at boot to check for login identity drift (#346). Returns `null` when
+   * no such comment exists or the comment's author account was deleted.
+   */
+  newestUnitMarkerAuthor(): string | null;
   issueAuthorLogin(issueNumber: number): string | null;
   lookupUser(login: string): GitHubUser;
 
@@ -300,7 +350,7 @@ export type CreateGitHubClientOptions = {
    * not for production callers: the whole point of the interface above is that
    * a caller never has to know a subprocess is involved.
    */
-  internal?: { exec?: GhExecutor; sleep?: (ms: number) => Promise<void> };
+  internal?: { exec?: GhExecutor; sleep?: (ms: number) => Promise<void>; sleepSync?: SleepSync };
 };
 
 export function createGitHubClient({
@@ -308,8 +358,33 @@ export function createGitHubClient({
   env,
   internal,
 }: CreateGitHubClientOptions): GitHubClient {
-  const exec = internal?.exec ?? createGhExecutor(env);
+  const rawExec = internal?.exec ?? createGhExecutor(env);
   const sleep = internal?.sleep ?? defaultSleep;
+
+  /**
+   * The transport every method below actually calls: `rawExec` plus a retry on
+   * transient GitHub failures. Only captured calls retry — an inherited-stdio
+   * call yields no stderr to classify, and those are exactly the writes
+   * (comments, labels, `pr create`) where a blind retry after an ambiguous
+   * failure could double-post. Synchronous sleep, like the seam itself.
+   */
+  const exec: GhExecutor = (args, opts) => {
+    if (opts?.inherit) {
+      return rawExec(args, opts);
+    }
+    return withBackoffSync(() => rawExec(args, opts), {
+      scheduleMs: TRANSIENT_RETRY_SCHEDULE_MS,
+      isRetryable: isTransientGhError,
+      onRetry: (error, delayMs, retry) => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `[phoebe] Transient GitHub failure on \`gh ${args[0] ?? ""}\` — retrying in ${delayMs / 1000}s ` +
+            `(retry ${retry}/${TRANSIENT_RETRY_SCHEDULE_MS.length}): ${message}`,
+        );
+      },
+      ...(internal?.sleepSync ? { sleepSync: internal.sleepSync } : {}),
+    });
+  };
 
   /** A repo-scoped read: `-R <repoSlug>` is appended so no caller can forget it. */
   function ghJson<T>(args: readonly string[]): T {
@@ -714,6 +789,61 @@ export function createGitHubClient({
       ghWrite(["pr", "edit", String(prNumber), "--base", base]);
     },
 
+    listNativelyStackedPrs: () => {
+      type GhPr = {
+        number: number;
+        headRefName: string;
+        baseRefName: string;
+        isCrossRepository: boolean;
+      };
+      const prefix = config.branchPrefix;
+      return ghJson<GhPr[]>([
+        "pr",
+        "list",
+        "--state",
+        "open",
+        "--json",
+        "number,headRefName,baseRefName,isCrossRepository",
+        "--limit",
+        "100",
+      ])
+        .filter(
+          (pr) =>
+            !pr.isCrossRepository &&
+            pr.headRefName.startsWith(prefix) &&
+            pr.baseRefName.startsWith(prefix),
+        )
+        .map((pr) => ({
+          number: asPrNumber(pr.number),
+          headRefName: asBranchRef(pr.headRefName),
+          baseRefName: asBranchRef(pr.baseRefName),
+        }));
+    },
+
+    unstackPr: (prNumber) => {
+      type StackResource = {
+        number: number;
+        pull_requests?: Array<{ number: number; state: string }>;
+      };
+      const slug = config.repoSlug;
+      try {
+        const stacks = JSON.parse(
+          exec(["api", `repos/${slug}/stacks?pull_request=${prNumber}`]),
+        ) as StackResource[];
+        const stack = stacks[0];
+        if (!stack) {
+          return { unstacked: false, reason: "not-in-stack" };
+        }
+        exec(["api", "--method", "POST", `repos/${slug}/stacks/${stack.number}/unstack`]);
+        return { unstacked: true, stackNumber: stack.number };
+      } catch (error) {
+        return {
+          unstacked: false,
+          reason: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
+
     listQuarantinedIssues: () => {
       type Row = { number: number; body: string; comments: Array<{ body: string }> };
       return ghJson<Row[]>([
@@ -821,6 +951,19 @@ export function createGitHubClient({
     resolveLogin: (envLogin) => {
       if (envLogin) return envLogin;
       return ghApiJson<{ login: string }>("user").login;
+    },
+
+    newestUnitMarkerAuthor: () => {
+      // GitHub's issue/PR comments share one REST endpoint. Fetch the 100 most
+      // recently created, scan client-side for the timeout marker (full-text
+      // search tokenizes the hyphenated name unreliably — #346), and return
+      // the author of the first hit.
+      type RepoComment = { body: string; created_at: string; user: { login: string } | null };
+      const comments = ghApiJson<RepoComment[]>(
+        `repos/${config.repoSlug}/issues/comments?per_page=100&sort=created&direction=desc`,
+      );
+      const hit = comments.find((c) => parseUnitTimeoutMarker(c.body) !== null);
+      return hit ? noLoginAsNull(hit.user) : null;
     },
 
     issueAuthorLogin: (issueNumber) =>

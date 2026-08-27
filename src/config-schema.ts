@@ -45,7 +45,13 @@ export type WorkKindName = (typeof WORK_KIND_NAMES)[number];
 export type WorkKindOverride = {
   provider?: ProviderName;
   model?: string;
-  effort?: string;
+  /**
+   * String: pass that effort flag to the provider CLI.
+   * `null`: clear any inherited effort — the kind runs with no effort flag even
+   * when `defaultEfforts` names one for this provider.
+   * Absent / `undefined`: fall through to the next rung of the resolution ladder.
+   */
+  effort?: string | null;
 };
 
 /**
@@ -259,8 +265,10 @@ export type PhoebeConfig = {
    * repo defaults above. A kind's block deliberately outranks the *global* env
    * vars: it is durable policy that survives a blanket `PHOEBE_AGENT` /
    * `PHOEBE_MODEL` override; only the kind-specific env var pushes it aside.
-   * Blocks for kinds absent from `workOrder` are allowed and inert. `model` and
-   * `effort` are unvalidated pass-through strings — the CLIs are the authority.
+   * Blocks for kinds absent from `workOrder` are allowed and inert. `model` is an
+   * unvalidated pass-through string. `effort` accepts a string (pass-through) or
+   * `null` (explicit clear: suppress the effort flag even when `defaultEfforts`
+   * names one for this provider) — the CLIs are the authority on string values.
    *
    * `workKinds.custom.<name>` declares tenant-authored kinds (#303); see
    * {@link CustomKindEntry}. Custom kinds are tuned by sibling blocks and
@@ -500,17 +508,23 @@ function countCaptureGroups(source: string): number {
  * group would silently break the entire blocker-detection path — reject it up
  * front. Kept separate from `resolveConfig` so consumers or tests can validate
  * a config independent of the defaults merge.
+ *
+ * Workspace-root configs carry a `workspace` block in place of the five tenant
+ * fields and are exempt from that check — the block's presence is the canonical
+ * mode selector, and declaring both is rejected by `validateWorkspaceField`.
  */
 export function validateUserConfig(user: PhoebeUserConfig): void {
-  const missing = REQUIRED_USER_FIELDS.filter((key) => {
-    const value = user[key];
-    return typeof value !== "string" || value.trim().length === 0;
-  });
-  if (missing.length > 0) {
-    throw new Error(
-      `phoebe.config.ts is missing required field(s): ${missing.join(", ")}. ` +
-        `Only these five fields are required — the engine fills the rest from its defaults.`,
-    );
+  if (user.workspace === undefined) {
+    const missing = REQUIRED_USER_FIELDS.filter((key) => {
+      const value = user[key];
+      return typeof value !== "string" || value.trim().length === 0;
+    });
+    if (missing.length > 0) {
+      throw new Error(
+        `phoebe.config.ts is missing required field(s): ${missing.join(", ")}. ` +
+          `Only these five fields are required — the engine fills the rest from its defaults.`,
+      );
+    }
   }
   if (user.blockedByPattern !== undefined) {
     try {
@@ -686,7 +700,9 @@ function validateWorkKindsField(workKinds: NonNullable<PhoebeUserConfig["workKin
     }
     // A block holds exactly the three knobs — an unknown key (a typo'd knob, a
     // hoped-for per-kind timeout) would sit inert forever, same failure mode as
-    // an unknown kind key.
+    // an unknown kind key. `model` and `effort` values are not validated here:
+    // `model` is a pass-through string, and `effort` accepts a string or null
+    // (the explicit clear) — the provider CLIs are the authority on string values.
     for (const knob of Object.keys(block)) {
       if (!["provider", "model", "effort"].includes(knob)) {
         throw new Error(

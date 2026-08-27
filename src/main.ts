@@ -33,6 +33,7 @@ import {
   createGitHubClient,
   type GitHubClient,
   type QuarantinedUnit,
+  type StackedPhoebePr,
   type UnitTarget,
 } from "./github-client.ts";
 import { buildAgentEnv } from "./agent-env.ts";
@@ -59,6 +60,7 @@ import {
   buildUnstickComment,
   decideAutoUnstick,
   decideTimeoutRecord,
+  loginMismatchWarning,
   PHOEBE_QUARANTINE_LABEL,
   resolveMaxUnitTimeouts,
 } from "./quarantine.ts";
@@ -84,9 +86,11 @@ import {
   buildInitialPrBody,
   followUpPrComment,
   issueBranch,
+  parseIssueNumberFromBranch,
   stackedPrComment,
   RUN_ONCE_NOTHING_MESSAGE,
   validateWorkOrder,
+  type BlockerPrState,
   type StackedOn,
 } from "./orchestrator.ts";
 import {
@@ -520,6 +524,64 @@ export function createEngine(options: EngineOptions): Engine {
       } catch (error) {
         console.error(
           `[phoebe] Could not un-quarantine ${label} — ` +
+            `${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Remove each open Phoebe PR that is natively stacked on a blocker branch
+   * whose issue closed as completed without the blocker's PR merging. Once
+   * that issue is done the stack's bottom layer is dead: GitHub will never
+   * merge-and-retarget through it. The fix is to leave the stack and retarget
+   * the PR onto the default branch so it can merge on its own terms.
+   *
+   * Mirrors `sweepQuarantine` in style: best-effort, one PR's failure does not
+   * stop the rest, never runs under `--dry-run`.
+   */
+  function sweepStaleNativeStacks(): void {
+    let stackedPrs: StackedPhoebePr[];
+    try {
+      stackedPrs = github.listNativelyStackedPrs();
+    } catch (error) {
+      console.error(
+        `[phoebe] Could not list natively stacked PRs for the stale-stack sweep — ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+      return;
+    }
+    for (const pr of stackedPrs) {
+      const blockerIssueNumber = parseIssueNumberFromBranch(pr.baseRefName);
+      if (blockerIssueNumber === null) continue;
+      let blockerState: BlockerPrState;
+      try {
+        blockerState = github.blockerPrState(blockerIssueNumber);
+      } catch (error) {
+        console.error(
+          `[phoebe] Could not read blocker state for #${blockerIssueNumber} (stale-stack sweep) — ` +
+            `${error instanceof Error ? error.message : String(error)}`,
+        );
+        continue;
+      }
+      if (!blockerState.blockerCompleted) continue;
+      try {
+        const outcome = github.unstackPr(pr.number);
+        if (!outcome.unstacked) {
+          if (outcome.reason !== "not-in-stack") {
+            console.error(`[phoebe] Could not unstack PR #${pr.number} — ${outcome.reason}`);
+          }
+          continue;
+        }
+        console.log(
+          `[phoebe] PR #${pr.number} removed from stack #${outcome.stackNumber} — ` +
+            `blocker #${blockerIssueNumber} completed without merging its PR.`,
+        );
+        github.retargetPr(pr.number, prBase);
+        console.log(`[phoebe] PR #${pr.number} retargeted onto ${prBase}.`);
+      } catch (error) {
+        console.error(
+          `[phoebe] Could not unstack or retarget PR #${pr.number} — ` +
             `${error instanceof Error ? error.message : String(error)}`,
         );
       }
@@ -990,6 +1052,25 @@ export function createEngine(options: EngineOptions): Engine {
    * tenant's config are all closed over.
    */
   async function runLoop(): Promise<void> {
+    // Boot-time login identity cross-check (#346): warn when the resolved login
+    // differs from the author on Phoebe's own newest unit-marker comment. An
+    // identity drift silently resets the quarantine counter every rotation —
+    // every marker Phoebe posts reads as foreign activity. Best-effort: any
+    // failure logs and the loop starts normally.
+    try {
+      const resolvedLogin = github.resolveLogin(env["PHOEBE_GH_LOGIN"]);
+      const historicalAuthor = github.newestUnitMarkerAuthor();
+      const warning = loginMismatchWarning(resolvedLogin, historicalAuthor);
+      if (warning) {
+        console.warn(warning);
+      }
+    } catch (error) {
+      console.warn(
+        `[phoebe] Boot-time login identity cross-check failed — ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
     while (true) {
       if (drain.requested) {
         console.log("[phoebe] Drain requested — starting no new work unit; exiting 0.");
@@ -1094,6 +1175,7 @@ export function createEngine(options: EngineOptions): Engine {
       // must not write to GitHub.
       if (!dryRun) {
         sweepQuarantine("content-advanced");
+        sweepStaleNativeStacks();
       }
       const fetchKinds = runOnce ? oneShotWorkKinds(workOrder, registry) : workOrder;
       const cycle = await workSource.gatherCycle(fetchKinds);

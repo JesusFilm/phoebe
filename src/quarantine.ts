@@ -259,6 +259,23 @@ export function decideTimeoutRecord(opts: {
 }
 
 /**
+ * A warning when the boot-resolved login differs from the author on Phoebe's
+ * own newest unit-marker comment, `null` when they match or no marker history
+ * exists. Both identities are named so the drift is actionable.
+ * Handles deleted authors (historical === null) silently — no author means
+ * no comparison can be made, which is not a mismatch.
+ */
+export function loginMismatchWarning(resolved: string, historical: string | null): string | null {
+  if (historical === null || resolved === historical) return null;
+  return (
+    `[phoebe] ⚠️  Login identity mismatch: the boot-resolved login is "${resolved}" ` +
+    `but the newest phoebe-unit-timeout marker was posted by "${historical}". ` +
+    `Quarantine timeout counts may reset silently every rotation. ` +
+    `Check PHOEBE_GH_LOGIN and the bot/user token in use.`
+  );
+}
+
+/**
  * The auto-un-stick sweep's decision for one quarantined unit: someone changed
  * the thing that hung. `currentBaseline` is the unit's content fingerprint right
  * now — a PR's head SHA, an issue's `issueContentBaseline` — and any difference
