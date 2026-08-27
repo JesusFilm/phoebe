@@ -100,10 +100,7 @@ const CUSTOM_WORK_KIND_NAME_MAX = 32;
 export const CUSTOM_WORK_KINDS_KEY = "custom";
 
 /** Keys no custom kind may claim: the built-ins plus the `custom` block itself. */
-const RESERVED_WORK_KIND_KEYS: readonly string[] = [
-  ...WORK_KIND_NAMES,
-  CUSTOM_WORK_KINDS_KEY,
-];
+const RESERVED_WORK_KIND_KEYS: readonly string[] = [...WORK_KIND_NAMES, CUSTOM_WORK_KINDS_KEY];
 
 /** The validated `custom` block of a `workKinds` field, or an empty record. */
 export function customKindEntries(
