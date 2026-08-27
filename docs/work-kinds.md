@@ -266,8 +266,8 @@ One limit worth knowing before you write a `run`: the run deadline wraps the
 `ctx.agent.*` — a network call, a poll loop, a `while (true)` — is unbounded,
 and a `run` that hangs there holds its concurrency slot until the engine
 restarts, never reaching the timeout and quarantine path. Put your own timeout
-on any wait you introduce. Bounding arbitrary kind code is tracked as future
-work.
+on any wait you introduce. Bounding arbitrary kind code is tracked as
+[#359](https://github.com/JesusFilm/phoebe/issues/359).
 
 Start from [`examples/custom-kind/`](../examples/custom-kind/) — a full-form
 kind (a stale-PR nudger) beside the inline prompt-only-producer cheap case.
