@@ -437,17 +437,23 @@ function countCaptureGroups(source: string): number {
  * group would silently break the entire blocker-detection path — reject it up
  * front. Kept separate from `resolveConfig` so consumers or tests can validate
  * a config independent of the defaults merge.
+ *
+ * Workspace-root configs carry a `workspace` block in place of the five tenant
+ * fields and are exempt from that check — the block's presence is the canonical
+ * mode selector, and declaring both is rejected by `validateWorkspaceField`.
  */
 export function validateUserConfig(user: PhoebeUserConfig): void {
-  const missing = REQUIRED_USER_FIELDS.filter((key) => {
-    const value = user[key];
-    return typeof value !== "string" || value.trim().length === 0;
-  });
-  if (missing.length > 0) {
-    throw new Error(
-      `phoebe.config.ts is missing required field(s): ${missing.join(", ")}. ` +
-        `Only these five fields are required — the engine fills the rest from its defaults.`,
-    );
+  if (user.workspace === undefined) {
+    const missing = REQUIRED_USER_FIELDS.filter((key) => {
+      const value = user[key];
+      return typeof value !== "string" || value.trim().length === 0;
+    });
+    if (missing.length > 0) {
+      throw new Error(
+        `phoebe.config.ts is missing required field(s): ${missing.join(", ")}. ` +
+          `Only these five fields are required — the engine fills the rest from its defaults.`,
+      );
+    }
   }
   if (user.blockedByPattern !== undefined) {
     try {
