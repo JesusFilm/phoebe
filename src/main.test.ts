@@ -33,6 +33,8 @@ import {
 import { buildQuarantineBaselineMarker, buildUnstickComment } from "./quarantine.ts";
 import { createEngine, type EngineRunOptions } from "./main.ts";
 import type { UnitRef } from "./unit-event.ts";
+import type { AnyWorkKindDefinition } from "./work-kinds/definition.ts";
+import { buildRegistry, type LoadedCustomKind } from "./work-kinds/registry.ts";
 
 // ---------------------------------------------------------------------------
 // The world a cycle runs against
@@ -219,11 +221,15 @@ async function runCycle(opts: {
   shas?: Record<string, Sha>;
   env?: NodeJS.ProcessEnv;
   run?: Partial<EngineRunOptions>;
+  /** Custom kinds to register beside the built-ins (#303). */
+  customKinds?: LoadedCustomKind[];
 }): Promise<CycleResult> {
   const { git, calls: gitCalls } = stubGit(opts.shas ?? {});
   const events: UnitRef[] = [];
+  const config = resolveConfig({ ...minimalUser(), ...opts.config });
   const engine = createEngine({
-    config: resolveConfig({ ...minimalUser(), ...opts.config }),
+    config,
+    registry: buildRegistry(config, opts.customKinds ?? []),
     env: opts.env ?? {},
     github: stubGitHub(opts.github),
     git,
@@ -827,5 +833,85 @@ describe("--dry-run", () => {
     expect(result.gitCalls.map((args) => args[0])).toEqual(["fetch", "rev-parse"]);
     // Nothing was started, so nothing was observed as started.
     expect(result.events).toEqual([]);
+  });
+});
+
+// The map's invariant (#303): after boot-time registration, the engine cannot
+// tell built-in from custom. These cycles drive a tenant-authored kind through
+// the same walk the built-ins use — same selection line, same idle report,
+// same free-string skip rendering — with nothing in the engine special-cased.
+describe("a custom kind in the walk", () => {
+  /** A stale-PR nudger: selects the oldest open PR, or reports why not. */
+  function nudgeKind(opts: { workable: boolean }): LoadedCustomKind {
+    const definition: AnyWorkKindDefinition = {
+      name: "nudge",
+      oneShotEligible: false,
+      promptFile: "prompts/nudge.md",
+      workspace: "worktree",
+      report: {
+        noun: "stale PR(s)",
+        describe: (unit: { prNumber: number }) => `stale-PR nudge for PR #${unit.prNumber}`,
+      },
+      fetch: (ctx) => Promise.resolve({ prs: ctx.github.openPrs() }),
+      select: (gathered: { prs: { number: number }[] }) => {
+        if (!opts.workable) {
+          return {
+            unit: null,
+            skipped:
+              gathered.prs.length > 0
+                ? [{ reason: "already nudged", count: gathered.prs.length }]
+                : [],
+            total: gathered.prs.length,
+          };
+        }
+        const pick = gathered.prs[0] ?? null;
+        return {
+          unit: pick
+            ? {
+                ref: `pr:${pick.number}`,
+                github: { objectType: "pr" as const, id: Number(pick.number) },
+                prNumber: Number(pick.number),
+              }
+            : null,
+          skipped: [],
+          total: gathered.prs.length,
+        };
+      },
+      run: () => Promise.resolve(),
+    };
+    return { name: "nudge", definition, options: undefined };
+  }
+
+  test("a workable custom unit wins the cycle through the one walk", async () => {
+    const result = await runCycle({
+      config: { workOrder: ["nudge", "issues"] },
+      customKinds: [nudgeKind({ workable: true })],
+      github: { ...prWorld([{ number: 44, issueNumber: 4 }]), listReadyIssues: () => [] },
+    });
+
+    expect(selection(result)).toBe("[phoebe] Would execute: stale-PR nudge for PR #44.");
+  });
+
+  test("its free-string skip reason and noun render in the idle report", async () => {
+    const result = await runCycle({
+      config: { workOrder: ["nudge"] },
+      customKinds: [nudgeKind({ workable: false })],
+      github: {
+        ...prWorld([
+          { number: 44, issueNumber: 4 },
+          { number: 45, issueNumber: 5 },
+        ]),
+      },
+    });
+
+    expect(selection(result)).toBeUndefined();
+    expect(result.lines).toContain("[phoebe] 2 stale PR(s) skipped (already nudged).");
+    expect(result.lines).toContain("[phoebe] 2 stale PR(s) but none workable this cycle.");
+  });
+
+  test("workOrder rejects a kind nobody registered", async () => {
+    await expect(runCycle({ config: { workOrder: ["nudge"] }, github: {} })).rejects.toThrow(
+      /Unknown work kind "nudge"/,
+    );
   });
 });

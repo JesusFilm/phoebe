@@ -258,3 +258,86 @@ describe("the provider-mismatch guard", () => {
     expect(picked.model).toBe("composer-x");
   });
 });
+
+// --- Modular kinds (#303): custom names and definition-level defaults --------
+
+describe("custom kind names", () => {
+  test("hyphens map to underscores in the env var names", () => {
+    expect(workKindEnvVar("stale-pr-nudger", "MODEL")).toBe("PHOEBE_STALE_PR_NUDGER_MODEL");
+    expect(workKindEnvVar("my-kind", "AGENT")).toBe("PHOEBE_MY_KIND_AGENT");
+  });
+
+  test("a sibling workKinds block tunes a custom kind like a built-in", () => {
+    const config = selectionConfig({
+      workKinds: {
+        custom: { "my-kind": "./kinds/my-kind.ts" },
+        "my-kind": { model: "composer-mini" },
+      },
+    });
+    const picked = selectProviderForKind({ kind: "my-kind", env: {}, config });
+    expect(picked.model).toBe("composer-mini");
+  });
+
+  test("the per-kind env var outranks the custom kind's block", () => {
+    const config = selectionConfig({
+      workKinds: {
+        custom: { "my-kind": "./kinds/my-kind.ts" },
+        "my-kind": { model: "composer-mini" },
+      },
+    });
+    const picked = selectProviderForKind({
+      kind: "my-kind",
+      env: { PHOEBE_MY_KIND_MODEL: "composer-max" },
+      config,
+    });
+    expect(picked.model).toBe("composer-max");
+  });
+});
+
+describe("definition-level defaults (#303)", () => {
+  test("sit above the repo defaults when nothing else speaks", () => {
+    const config = selectionConfig();
+    const picked = selectProviderForKind({
+      kind: "my-kind",
+      env: {},
+      config,
+      definitionDefaults: { model: "composer-lite", effort: "low" },
+    });
+    expect(picked.model).toBe("composer-lite");
+    expect(picked.effort).toBe("low");
+  });
+
+  test("lose to a sibling workKinds block and to the global env", () => {
+    const config = selectionConfig({
+      workKinds: { custom: { "my-kind": "./k.ts" }, "my-kind": { model: "from-block" } },
+    });
+    expect(
+      selectProviderForKind({
+        kind: "my-kind",
+        env: {},
+        config,
+        definitionDefaults: { model: "from-definition" },
+      }).model,
+    ).toBe("from-block");
+    expect(
+      selectProviderForKind({
+        kind: "other-kind",
+        env: { PHOEBE_MODEL: "from-global-env" },
+        config: selectionConfig(),
+        definitionDefaults: { model: "from-definition" },
+      }).model,
+    ).toBe("from-global-env");
+  });
+
+  test("go silent when an env flip moved the run off the default provider", () => {
+    const config = selectionConfig();
+    const picked = selectProviderForKind({
+      kind: "my-kind",
+      env: { PHOEBE_AGENT: "claude" },
+      config,
+      definitionDefaults: { model: "cursor-specific-model" },
+    });
+    expect(picked.provider).toBe("claude");
+    expect(picked.model).toBe(config.defaultModels.claude);
+  });
+});

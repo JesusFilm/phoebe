@@ -193,6 +193,103 @@ describe("validateUserConfig", () => {
     ).toThrow(/workKinds\.reviews/);
   });
 
+  // --- workKinds.custom (#303/#350): the declaration surface's shape --------
+
+  /** A syntactically plausible inline definition (members validated later). */
+  const inlineKind = { name: "nudge", fetch: () => {} } as unknown as never;
+
+  test("accepts the three custom-entry arms", () => {
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({
+          workKinds: {
+            custom: {
+              inline: inlineKind,
+              pathed: "./kinds/pathed.ts",
+              wrapped: { module: "../kinds/wrapped.ts", options: { staleDays: 7 } },
+            },
+          },
+        }),
+      ),
+    ).not.toThrow();
+  });
+
+  test("a sibling override block may tune a declared custom kind", () => {
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({
+          workKinds: {
+            custom: { nudge: "./kinds/nudge.ts" },
+            nudge: { model: "claude-haiku-4-5", effort: "low" },
+          },
+        }),
+      ),
+    ).not.toThrow();
+  });
+
+  test("a sibling key outside built-ins ∪ declared customs still rejects, naming both", () => {
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({
+          workKinds: {
+            custom: { nudge: "./kinds/nudge.ts" },
+            nudgee: { effort: "low" },
+          },
+        }),
+      ),
+    ).toThrow(/unknown work kind "nudgee".*nudge/s);
+  });
+
+  test("rejects an illegal custom kind name", () => {
+    for (const bad of ["Nudge", "1nudge", "nudge_thing", "x".repeat(33)]) {
+      expect(() =>
+        validateUserConfig(minimalUserConfig({ workKinds: { custom: { [bad]: inlineKind } } })),
+      ).toThrow(/illegal kind/);
+    }
+  });
+
+  test("rejects a custom kind claiming a reserved name", () => {
+    for (const reserved of ["issues", "custom"]) {
+      expect(() =>
+        validateUserConfig(
+          minimalUserConfig({ workKinds: { custom: { [reserved]: inlineKind } } }),
+        ),
+      ).toThrow(/reserved/);
+    }
+  });
+
+  test("rejects a bare-specifier module path, explaining the constraint", () => {
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({ workKinds: { custom: { nudge: "some-package/kind" } } }),
+      ),
+    ).toThrow(/bare specifier.*node_modules/s);
+  });
+
+  test("rejects an unknown wrapper field", () => {
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({
+          workKinds: {
+            custom: { nudge: { module: "./kinds/nudge.ts", option: {} } as unknown as never },
+          },
+        }),
+      ),
+    ).toThrow(/unknown wrapper field "option"/);
+  });
+
+  test("rejects non-object wrapper options", () => {
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({
+          workKinds: {
+            custom: { nudge: { module: "./kinds/nudge.ts", options: 7 } as unknown as never },
+          },
+        }),
+      ),
+    ).toThrow(/options must be a plain object/);
+  });
+
   test("accepts a relative configDir", () => {
     expect(() => validateUserConfig(minimalUserConfig({ configDir: ".phoebe" }))).not.toThrow();
     expect(() =>
