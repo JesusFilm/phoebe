@@ -200,11 +200,6 @@ function unitRefOf(picked: PickedWorkUnit): UnitRef {
   return { kind: picked.kind, id: picked.unit.ref };
 }
 
-/** How the kind itself names this unit — the definition owns the words. */
-function describeUnit(picked: PickedWorkUnit): string {
-  return picked.definition.report.describe(picked.unit);
-}
-
 // ---------------------------------------------------------------------------
 // What an engine is built from
 // ---------------------------------------------------------------------------
@@ -362,18 +357,6 @@ export function createEngine(options: EngineOptions): Engine {
 
   const workOrder = validateWorkOrder(config.workOrder, [...registry.keys()]);
 
-  /**
-   * Phoebe's own login, for the quarantine write path. There is deliberately
-   * no placeholder to stand in for an unresolved login: `""` would be a login
-   * like any other, and the login a deleted account does not have used to be
-   * `""` too — so Phoebe's own timeout markers could read as foreign activity,
-   * or a ghost's comment as Phoebe's. The lookups this covers are rare, so
-   * paying for one is cheaper than carrying a value that can lie.
-   */
-  function resolvePhoebeLogin(): string {
-    return github.resolveLogin(env["PHOEBE_GH_LOGIN"]);
-  }
-
   // --- Poison-unit quarantine write path (#75) ---------------------------------
   // The read/skip half ships in orchestrator.ts (it filters `phoebe:quarantined`
   // out of selection). This is the missing write half: on a whole-unit timeout,
@@ -402,7 +385,7 @@ export function createEngine(options: EngineOptions): Engine {
     const ref = unitRefOf(picked);
     const ghTarget: WorkUnitGitHubTarget | undefined = picked.unit.github;
     if (!ghTarget) {
-      const key = `${ref.kind} ${ref.id}`;
+      const key = `${ref.kind}:${ref.id}`;
       const count = (inMemoryTimeoutCounts.get(key) ?? 0) + 1;
       inMemoryTimeoutCounts.set(key, count);
       console.warn(
@@ -413,7 +396,13 @@ export function createEngine(options: EngineOptions): Engine {
     }
     const target: UnitTarget = ghTarget;
     try {
-      const login = resolvePhoebeLogin();
+      // Phoebe's own login, resolved per write rather than cached: there is
+      // deliberately no placeholder for an unresolved login (`""` would be a
+      // login like any other, and is what a deleted account's login used to
+      // read as), so Phoebe's own timeout markers cannot read as foreign
+      // activity, nor a ghost's comment as Phoebe's. The lookups this covers
+      // are rare, so paying for one beats carrying a value that can lie.
+      const login = github.resolveLogin(env["PHOEBE_GH_LOGIN"]);
       const k = resolveMaxUnitTimeouts(env, config.maxUnitTimeouts);
       const inputs =
         target.objectType === "issue"
@@ -939,13 +928,13 @@ export function createEngine(options: EngineOptions): Engine {
    * low-level spawn (`run`), the two shared skeletons, and the no-agent clean
    * merge. Prompt files default to the definition's own.
    */
-  function createAgentHelpers(picked: PickedWorkUnit, workspaceDir: string): AgentHelpers {
+  function createAgentHelpers(picked: PickedWorkUnit, workspaceDir: () => string): AgentHelpers {
     const defaultPromptFile = picked.definition.promptFile;
     return {
       run: (opts = {}) =>
         runAgentInWorktree({
           picked,
-          worktreeDir: opts.worktreeDir ?? workspaceDir,
+          worktreeDir: opts.worktreeDir ?? workspaceDir(),
           promptFile: opts.promptFile ?? defaultPromptFile,
           promptArgs: opts.promptArgs ?? {},
         }),
@@ -979,29 +968,45 @@ export function createEngine(options: EngineOptions): Engine {
   }
 
   /**
-   * Execute one picked unit through its definition's `run`: prepare the
-   * declared workspace (a scratch worktree off the default branch — the
-   * default cwd for a bare `agent.run`; the skeletons make their own
-   * branch-specific worktrees), widen the cycle ctx with the workspace and the
-   * agent helpers, and hand over. The workspace is always removed.
+   * Execute one picked unit through its definition's `run`: widen the cycle ctx
+   * with the declared workspace and the agent helpers, and hand over.
+   *
+   * The workspace — a scratch worktree off the default branch, the default cwd
+   * for a bare `agent.run` — is materialized on first read, not up front. All
+   * five built-ins build their own branch-specific worktrees and never touch
+   * `ctx.workspace.dir`, so they pay no fetch-and-worktree churn per unit; a
+   * kind that does read it gets the worktree then, and only a materialized
+   * workspace is removed afterwards.
    */
   async function runPickedUnit(picked: PickedWorkUnit, ctx: WorkKindCtx): Promise<void> {
-    const workspaceBranch = asBranchRef(`${config.branchPrefix}workspace`);
-    hub.fetch();
-    const workspaceDir = prepareWorktree({
-      branch: workspaceBranch,
-      baseRef: `origin/${config.defaultBranch}`,
-    });
+    let workspaceDir: string | null = null;
+    const workspace = (): string => {
+      if (workspaceDir === null) {
+        hub.fetch();
+        workspaceDir = prepareWorktree({
+          branch: asBranchRef(`${config.branchPrefix}workspace`),
+          baseRef: `origin/${config.defaultBranch}`,
+        });
+      }
+      return workspaceDir;
+    };
     try {
       const runCtx: WorkKindRunCtx = {
         ...ctx,
         log: (message) => console.log(`[phoebe][${picked.kind} ${picked.unit.ref}] ${message}`),
-        workspace: { mode: "worktree", dir: workspaceDir },
-        agent: createAgentHelpers(picked, workspaceDir),
+        workspace: {
+          mode: "worktree",
+          get dir(): string {
+            return workspace();
+          },
+        },
+        agent: createAgentHelpers(picked, workspace),
       };
       await picked.definition.run(picked.unit, runCtx);
     } finally {
-      hub.removeWorktree(workspaceDir);
+      if (workspaceDir !== null) {
+        hub.removeWorktree(workspaceDir);
+      }
     }
   }
 
@@ -1016,17 +1021,15 @@ export function createEngine(options: EngineOptions): Engine {
 
   /** One line of the idle report, rendered from one entry of the selection's record. */
   function idleSkipLine(skip: WorkUnitSkip, cycle: GatheredCycle): string {
-    const registered = registry.get(skip.kind);
-    const report = registered?.definition.report;
-    const noun = report?.noun ?? skip.kind;
+    const { report } = registeredKind(registry, skip.kind).definition;
     if (skip.reason === NONE_WORKABLE) {
       return (
-        report?.idle?.(cycle.record.gathered.get(skip.kind), skip.count, cycle.ctxFor(skip.kind)) ??
-        `${skip.count} ${noun} but none workable this cycle.`
+        report.idle?.(cycle.record.gathered.get(skip.kind), skip.count, cycle.ctxFor(skip.kind)) ??
+        `${skip.count} ${report.noun} but none workable this cycle.`
       );
     }
     // Kind-owned free-string reasons render verbatim (#348 Q5).
-    return `${skip.count} ${noun} skipped (${skip.reason}).`;
+    return `${skip.count} ${report.noun} skipped (${skip.reason}).`;
   }
 
   /**
@@ -1209,7 +1212,7 @@ export function createEngine(options: EngineOptions): Engine {
 
       const decision = executionDecision({ dryRun, inContainer });
       if (decision === "dry-run") {
-        console.log(`[phoebe] Would execute: ${describeUnit(picked)}.`);
+        console.log(`[phoebe] Would execute: ${picked.definition.report.describe(picked.unit)}.`);
         break;
       }
       if (decision === "refuse") {
@@ -1312,7 +1315,8 @@ export function createEngine(options: EngineOptions): Engine {
         // A failed unit must not kill the daemon — prepareWorktree clears any
         // stale worktree on the next attempt.
         console.error(
-          `[phoebe] Failed executing ${describeUnit(picked)} — ${error instanceof Error ? error.message : String(error)}`,
+          `[phoebe] Failed executing ${picked.definition.report.describe(picked.unit)} — ` +
+            `${error instanceof Error ? error.message : String(error)}`,
         );
         await drain.wait(pollIntervalMs);
         continue;

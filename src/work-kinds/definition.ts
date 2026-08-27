@@ -146,7 +146,9 @@ export type WorkKindCtx = {
  * The workspace `run` receives, keyed by the definition's declared `workspace`
  * field. A discriminated member so future `none`/`readonly` modes arrive as
  * new members without retyping existing kinds. The engine prepares and removes
- * it; kinds never create workspaces themselves.
+ * it; kinds never create workspaces themselves. The worktree is materialized
+ * the first time `dir` is read, so a kind that builds its own worktrees (as
+ * all five built-ins do) pays nothing for one it never uses.
  */
 export type WorkspaceHandle = { mode: "worktree"; dir: string };
 
@@ -170,6 +172,12 @@ export type AgentWorkflowOutcome = {
  * engine-fixed — and the two skeletons the built-ins share cross the boundary
  * as conveniences in the same namespace, so a prompt-only producer is a kind
  * whose `run` is one `issueWorkflow` call.
+ *
+ * The deadline bounds the **agent spawn**, not the kind's whole `run`: work a
+ * kind does outside these helpers is unbounded, and a `run` that hangs there
+ * holds its concurrency slot without ever reaching the timeout and quarantine
+ * path. Kinds time out their own waits; bounding arbitrary kind code is
+ * future work.
  */
 export type AgentHelpers = {
   /**

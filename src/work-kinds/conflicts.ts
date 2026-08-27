@@ -22,7 +22,14 @@ import {
   type WorkKindCtx,
   type WorkUnitGitHubTarget,
 } from "./definition.ts";
-import { collectIssueBodies, issueNumberOf, mergedBlockersFor } from "./pr-stack.ts";
+import {
+  collectIssueBodies,
+  collectPrCandidates,
+  freshPrHeadWatermark,
+  issueNumberOf,
+  mergedBlockersFor,
+  stackContextFor,
+} from "./pr-stack.ts";
 
 type ConflictsGathered = {
   candidates: readonly ConflictingPrCandidate[];
@@ -37,11 +44,14 @@ type ConflictsUnit = {
   mergedBlockerPrNumbers: readonly PrNumber[];
 };
 
-/** Fresh origin snapshot for the failure-comment watermark. */
+/**
+ * Fresh origin snapshot for the failure-comment watermark. The conflicts
+ * watermark pins the default-branch head as well as the PR's, read off the
+ * same snapshot the shared helper fetched.
+ */
 function currentWatermark(ctx: WorkKindCtx, pr: ConflictingPrCandidate): ConflictFailWatermark {
-  ctx.origin.fetch();
   return {
-    prHead: ctx.origin.branchHead(pr.headRefName),
+    ...freshPrHeadWatermark(ctx, pr),
     mainHead: ctx.origin.branchHead(ctx.config.defaultBranch),
   };
 }
@@ -59,25 +69,16 @@ export function conflictsKind(config: PhoebeConfig): AnyWorkKindDefinition {
       idle: (_gathered, total) => `${total} ${noun} but none fixable this cycle.`,
     },
     async fetch(ctx) {
-      const raw: ConflictingPrCandidate[] = [];
-      for (const pr of ctx.github.openPrs()) {
-        try {
-          const info = await ctx.github.mergeInfo(pr.number);
-          if (!isPrMergeConflicting(info.mergeable, info.mergeStateStatus)) continue;
-          const issueNumber = issueNumberOf({ headRefName: info.headRefName });
-          raw.push({
-            prNumber: info.number,
-            headRefName: info.headRefName,
-            headSha: info.headRefOid,
-            ...(issueNumber !== null ? { issueNumber } : {}),
-          });
-        } catch (error) {
-          console.warn(
-            `[phoebe] Skipping PR #${pr.number} for conflicts this cycle — ` +
-              `${error instanceof Error ? error.message : String(error)}`,
-          );
-        }
-      }
+      const raw = await collectPrCandidates<ConflictingPrCandidate>(ctx, (info) => {
+        if (!isPrMergeConflicting(info.mergeable, info.mergeStateStatus)) return null;
+        const issueNumber = issueNumberOf({ headRefName: info.headRefName });
+        return {
+          prNumber: info.number,
+          headRefName: info.headRefName,
+          headSha: info.headRefOid,
+          ...(issueNumber !== null ? { issueNumber } : {}),
+        };
+      });
       ctx.origin.fetch();
       const currentMainHead = ctx.origin.branchHead(ctx.config.defaultBranch);
       const withWatermarks = raw.map((pr) => ({
@@ -91,10 +92,7 @@ export function conflictsKind(config: PhoebeConfig): AnyWorkKindDefinition {
       return { candidates, issueBodies, currentMainHead };
     },
     select(gathered, ctx) {
-      const stack = {
-        issueBodies: gathered.issueBodies,
-        blockerStates: ctx.cycle.blockerStates(),
-      };
+      const stack = stackContextFor(gathered, ctx);
       const { candidates, stacked, watermarked } = partitionConflictFixCandidates(
         gathered.candidates,
         stack,

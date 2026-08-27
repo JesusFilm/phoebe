@@ -261,6 +261,14 @@ kind: `workOrder`, `workKinds` tuning blocks, `PHOEBE_<KIND>_*` env vars
 (hyphens in the name become underscores), quarantine, concurrency slots, the
 run deadline, and the prompt-existence check all apply uniformly.
 
+One limit worth knowing before you write a `run`: the run deadline wraps the
+**agent spawn**, not your whole `run`. Anything your kind does outside
+`ctx.agent.*` — a network call, a poll loop, a `while (true)` — is unbounded,
+and a `run` that hangs there holds its concurrency slot until the engine
+restarts, never reaching the timeout and quarantine path. Put your own timeout
+on any wait you introduce. Bounding arbitrary kind code is tracked as future
+work.
+
 Start from [`examples/custom-kind/`](../examples/custom-kind/) — a full-form
 kind (a stale-PR nudger) beside the inline prompt-only-producer cheap case.
 Copy-from-example is the supported path; there is no scaffold command.
@@ -301,7 +309,8 @@ engine gathers every kind before selecting any, so a select that re-fetches
 would see a different world than its neighbours (`select` receives `ctx`, but
 must not touch `ctx.github`). **Run** owns every consequence of the unit —
 pushes, comments, watermarks; the engine's interest is limited to success
-(return) vs. failure (throw), the run deadline, and quarantine accounting.
+(return) vs. failure (throw), the run deadline **on the agent spawn**, and
+quarantine accounting.
 
 ### The unit and its `ref`
 
@@ -343,11 +352,13 @@ resolve. Everything arrives on `ctx` (types via `import type` from
 
 - `ctx.workspace` — `{ mode: "worktree", dir }`: a scratch worktree of the
   default branch, prepared and removed by the engine. It is the default cwd for
-  a bare `ctx.agent.run(...)`.
+  a bare `ctx.agent.run(...)`. The worktree is created the first time `dir` is
+  read, so a kind that builds its own worktrees (as all five built-ins do)
+  never pays for one.
 - `ctx.agent` — the sanctioned agent machinery: `run` (the low-level spawn:
   provider ladder, prompt render, env allowlist and the run deadline are
-  engine-fixed; you supply `promptArgs` and optionally a `promptFile`
-  override), the two skeletons the built-ins share — `prWorkflow` (the PR-fix
+  engine-fixed — the deadline covers this spawn, not the rest of your `run`;
+  you supply `promptArgs` and optionally a `promptFile` override), the two skeletons the built-ins share — `prWorkflow` (the PR-fix
   shape) and `issueWorkflow` (the issue-producer shape; a prompt-only producer
   is a kind whose `run` is one call to it) — and `cleanMerge` (the no-agent
   catch-up merge).

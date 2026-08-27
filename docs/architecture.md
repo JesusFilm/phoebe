@@ -179,7 +179,7 @@ and `run` do the work; the engine supplies the walk, the workspace, and the
 agent machinery.
 
 ```
-each kind in workOrder: KINDS[kind].fetch(ctx) ──► gathered slot
+each kind in workOrder: registry kind.fetch(ctx) ──► gathered slot
       │
       ▼
 selectFirstWorkUnit ──► first kind whose select(gathered, ctx) yields a unit
@@ -190,7 +190,7 @@ selectFirstWorkUnit ──► first kind whose select(gathered, ctx) yields a un
 execution gate (host = refuse · --dry-run = print · container = execute)
       │
       ▼
-KINDS[kind].run(unit, ctx) — e.g. prepare worktree ─► install ─► agent ─► push ─► PR
+kind.run(unit, ctx) — e.g. prepare worktree ─► install ─► agent ─► push ─► PR
       │
       ▼
 --run-once: exit · daemon: repeat

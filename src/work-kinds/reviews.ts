@@ -21,7 +21,12 @@ import {
   type WorkKindRunCtx,
   type WorkUnitGitHubTarget,
 } from "./definition.ts";
-import { collectIssueBodies, issueNumberOf } from "./pr-stack.ts";
+import {
+  collectIssueBodies,
+  collectPrCandidates,
+  issueNumberOf,
+  stackContextFor,
+} from "./pr-stack.ts";
 
 type ReviewsGathered = {
   candidates: readonly ReviewsCandidate[];
@@ -66,33 +71,23 @@ export function reviewsKind(config: PhoebeConfig): AnyWorkKindDefinition {
     },
     async fetch(ctx) {
       const phoebeLogin = ctx.github.resolveLogin(ctx.env["PHOEBE_GH_LOGIN"]);
-      const candidates: ReviewsCandidate[] = [];
-      for (const pr of ctx.github.openPrs()) {
-        try {
-          const info = await ctx.github.mergeInfo(pr.number);
-          if (isPrMergeConflicting(info.mergeable, info.mergeStateStatus)) continue;
-          const threads = ctx.github.reviewThreads(pr.number);
-          const issueNumber = issueNumberOf({ headRefName: info.headRefName });
-          candidates.push({
-            prNumber: info.number,
-            headRefName: info.headRefName,
-            authorLogin: pr.authorLogin,
-            mergeable: info.mergeable,
-            mergeStateStatus: info.mergeStateStatus,
-            threads,
-            handledWatermark: parseLatestMarker(
-              ctx.github.prCommentBodies(pr.number),
-              parseReviewsHandledWatermark,
-            ),
-            ...(issueNumber !== null ? { issueNumber } : {}),
-          });
-        } catch (error) {
-          console.warn(
-            `[phoebe] Skipping PR #${pr.number} for reviews this cycle — ` +
-              `${error instanceof Error ? error.message : String(error)}`,
-          );
-        }
-      }
+      const candidates = await collectPrCandidates<ReviewsCandidate>(ctx, (info, pr) => {
+        if (isPrMergeConflicting(info.mergeable, info.mergeStateStatus)) return null;
+        const issueNumber = issueNumberOf({ headRefName: info.headRefName });
+        return {
+          prNumber: info.number,
+          headRefName: info.headRefName,
+          authorLogin: pr.authorLogin,
+          mergeable: info.mergeable,
+          mergeStateStatus: info.mergeStateStatus,
+          threads: ctx.github.reviewThreads(pr.number),
+          handledWatermark: parseLatestMarker(
+            ctx.github.prCommentBodies(pr.number),
+            parseReviewsHandledWatermark,
+          ),
+          ...(issueNumber !== null ? { issueNumber } : {}),
+        };
+      });
       const collected = collectIssueBodies(candidates, ctx);
       return { candidates: collected.candidates, issueBodies: collected.issueBodies, phoebeLogin };
     },
@@ -103,10 +98,7 @@ export function reviewsKind(config: PhoebeConfig): AnyWorkKindDefinition {
       if (!gathered.phoebeLogin) {
         return { unit: null, skipped: [], total: 0 };
       }
-      const stack = {
-        issueBodies: gathered.issueBodies,
-        blockerStates: ctx.cycle.blockerStates(),
-      };
+      const stack = stackContextFor(gathered, ctx);
       const candidates = selectReviewsCandidates(gathered.candidates, stack, gathered.phoebeLogin);
       const pick = pickOldestPr(candidates);
       const turnedAway = gathered.candidates.length - candidates.length;

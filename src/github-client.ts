@@ -572,7 +572,7 @@ export function createGitHubClient({
 
     listResearchIssues: () => listIssuesWithLabel(config.researchLabel),
 
-    listLabeledIssues: (label) => listIssuesWithLabel(label),
+    listLabeledIssues: listIssuesWithLabel,
 
     issueBody: (issueNumber) =>
       ghJson<{ body: string }>(["issue", "view", String(issueNumber), "--json", "body"]).body,

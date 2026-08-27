@@ -92,14 +92,24 @@ export type WorkKindsField = {
 export const CUSTOM_WORK_KIND_NAME_RE = /^[a-z][a-z0-9-]*$/;
 const CUSTOM_WORK_KIND_NAME_MAX = 32;
 
+/**
+ * The one reserved `workKinds` key that holds custom-kind declarations rather
+ * than an override block. Named once so every read, guard, and validation pass
+ * agrees on the spelling.
+ */
+export const CUSTOM_WORK_KINDS_KEY = "custom";
+
 /** Keys no custom kind may claim: the built-ins plus the `custom` block itself. */
-const RESERVED_WORK_KIND_KEYS: readonly string[] = [...WORK_KIND_NAMES, "custom"];
+const RESERVED_WORK_KIND_KEYS: readonly string[] = [
+  ...WORK_KIND_NAMES,
+  CUSTOM_WORK_KINDS_KEY,
+];
 
 /** The validated `custom` block of a `workKinds` field, or an empty record. */
 export function customKindEntries(
   workKinds: WorkKindsField | undefined,
 ): Record<string, CustomKindEntry> {
-  const custom = workKinds?.["custom"];
+  const custom = workKinds?.[CUSTOM_WORK_KINDS_KEY];
   if (custom === undefined) return {};
   return custom as Record<string, CustomKindEntry>;
 }
@@ -113,7 +123,7 @@ export function workKindOverride(
   workKinds: WorkKindsField,
   kind: string,
 ): WorkKindOverride | undefined {
-  if (kind === "custom") return undefined;
+  if (kind === CUSTOM_WORK_KINDS_KEY) return undefined;
   return workKinds[kind] as WorkKindOverride | undefined;
 }
 
@@ -671,7 +681,7 @@ function validateWorkKindsField(workKinds: NonNullable<PhoebeUserConfig["workKin
   }
 
   // Pass 1: the `custom` block's shape.
-  const custom = workKinds["custom"];
+  const custom = workKinds[CUSTOM_WORK_KINDS_KEY];
   const customNames: string[] = [];
   if (custom !== undefined) {
     if (typeof custom !== "object" || custom === null || Array.isArray(custom)) {
@@ -689,7 +699,7 @@ function validateWorkKindsField(workKinds: NonNullable<PhoebeUserConfig["workKin
   // Pass 2: sibling override blocks, against the widened name set.
   const legalKinds = [...WORK_KIND_NAMES, ...customNames];
   for (const [kind, block] of Object.entries(workKinds)) {
-    if (kind === "custom") continue;
+    if (kind === CUSTOM_WORK_KINDS_KEY) continue;
     if (!legalKinds.includes(kind)) {
       throw new Error(
         `phoebe.config.ts \`workKinds\` names unknown work kind "${kind}". ` +

@@ -1,10 +1,10 @@
 // The work source: runs one cycle's gather across the configured work kinds —
-// `KINDS[kind].fetch(ctx)` into each kind's opaque record slot — and owns the
-// engine-side shared stack facility the kinds contribute to and read from: the
-// cycle-scoped issue-body read-through cache and the blocker-state index
-// (#348 Q6). Bodies are fetched through one cache, never merged after the
-// fact, so the #290 ordering bug cannot recur; the cross-kind body-derived
-// blocker merge runs here, engine-owned, after every fetch.
+// `registry.get(kind).definition.fetch(ctx)` into each kind's opaque record
+// slot — and owns the engine-side shared stack facility the kinds contribute
+// to and read from: the cycle-scoped issue-body read-through cache and the
+// blocker-state index (#348 Q6). Bodies are fetched through one cache, never
+// merged after the fact, so the #290 ordering bug cannot recur; the cross-kind
+// body-derived blocker merge runs here, engine-owned, after every fetch.
 //
 // This module also builds the per-kind `WorkKindCtx` the engine hands to
 // `fetch`/`select` (and widens for `run`): the ctx is per-cycle, so it lives
