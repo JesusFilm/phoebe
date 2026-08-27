@@ -149,10 +149,18 @@ export function checksKind(config: PhoebeConfig): AnyWorkKindDefinition {
           }
           return;
         }
-        if (cleanResult === "conflicted" || cleanResult === "failed") {
+        if (cleanResult === "conflicted") {
           ctx.log(
             `Catch-up merge conflicted for PR #${pr.prNumber} — deferring to the conflicts kind.`,
           );
+          return;
+        }
+        // `failed` is the merge never starting, which is not a conflict: GitHub
+        // will not report the PR as conflicting, so the `conflicts` kind will
+        // not pick it up. Say so rather than claiming a handoff that will not
+        // happen.
+        if (cleanResult === "failed") {
+          ctx.log(`Could not start the catch-up merge for PR #${pr.prNumber} — skipping.`);
           return;
         }
       }

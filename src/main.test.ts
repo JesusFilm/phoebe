@@ -1008,6 +1008,40 @@ describe("a custom kind in the walk", () => {
       /Unknown work kind "nudge"/,
     );
   });
+
+  // Reporting is outside the failure contract that makes `fetch` and `run`
+  // cycle-fatal: a custom kind is authored code, and words it failed to produce
+  // must not take the engine down.
+  test("a report.idle that throws falls back to the engine's wording", async () => {
+    const kind = nudgeKind({ workable: false });
+    kind.definition.report.idle = () => {
+      throw new Error("idle reporter exploded");
+    };
+
+    const result = await runCycle({
+      config: { workOrder: ["nudge"] },
+      customKinds: [kind],
+      github: { ...prWorld([{ number: 44, issueNumber: 4 }]) },
+    });
+
+    expect(result.lines).toContain("[phoebe] 1 stale PR(s) but none workable this cycle.");
+    expect(result.lines.join("\n")).toContain("idle reporter exploded");
+  });
+
+  test("a report.describe that throws falls back to the unit's (kind, ref)", async () => {
+    const kind = nudgeKind({ workable: true });
+    kind.definition.report.describe = () => {
+      throw new Error("describe exploded");
+    };
+
+    const result = await runCycle({
+      config: { workOrder: ["nudge"] },
+      customKinds: [kind],
+      github: { ...prWorld([{ number: 44, issueNumber: 4 }]), listReadyIssues: () => [] },
+    });
+
+    expect(selection(result)).toBe("[phoebe] Would execute: nudge pr:44.");
+  });
 });
 
 // The scratch workspace is prepared on first read of `ctx.workspace.dir`, not

@@ -1027,13 +1027,46 @@ export function createEngine(options: EngineOptions): Engine {
     registry,
   });
 
+  /**
+   * Words a kind's own `report` produced, or the engine's fallback if the kind
+   * threw. Reporting sits deliberately outside the failure contract that makes
+   * `fetch` and `run` cycle-fatal (src/work-kinds/definition.ts): a custom kind
+   * is authored code, and a reporter that throws must not take the engine down.
+   * The idle path is the sharpest case — it runs on every quiet cycle, so an
+   * unguarded throw there is a restart loop until an operator edits the module,
+   * and nothing about an idle cycle needed to fail. The describe path matters
+   * for a subtler reason: one of its call sites is inside the handler for a
+   * unit that already failed, where a throw would escape carrying the wrong
+   * error.
+   */
+  function kindReported(kind: string, fallback: string, produce: () => string | undefined): string {
+    try {
+      return produce() ?? fallback;
+    } catch (error) {
+      console.warn(
+        `[phoebe] ${kind}: report failed, falling back to the engine's wording — ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+      return fallback;
+    }
+  }
+
+  /** How the kind names this unit, or `<kind> <ref>` if its `describe` throws. */
+  function describeUnit(picked: PickedWorkUnit): string {
+    return kindReported(picked.kind, `${picked.kind} ${picked.unit.ref}`, () =>
+      picked.definition.report.describe(picked.unit),
+    );
+  }
+
   /** One line of the idle report, rendered from one entry of the selection's record. */
   function idleSkipLine(skip: WorkUnitSkip, cycle: GatheredCycle): string {
     const { report } = registeredKind(registry, skip.kind).definition;
     if (skip.reason === NONE_WORKABLE) {
-      return (
-        report.idle?.(cycle.record.gathered.get(skip.kind), skip.count, cycle.ctxFor(skip.kind)) ??
-        `${skip.count} ${report.noun} but none workable this cycle.`
+      return kindReported(
+        skip.kind,
+        `${skip.count} ${report.noun} but none workable this cycle.`,
+        () =>
+          report.idle?.(cycle.record.gathered.get(skip.kind), skip.count, cycle.ctxFor(skip.kind)),
       );
     }
     // Kind-owned free-string reasons render verbatim (#348 Q5).
@@ -1220,7 +1253,7 @@ export function createEngine(options: EngineOptions): Engine {
 
       const decision = executionDecision({ dryRun, inContainer });
       if (decision === "dry-run") {
-        console.log(`[phoebe] Would execute: ${picked.definition.report.describe(picked.unit)}.`);
+        console.log(`[phoebe] Would execute: ${describeUnit(picked)}.`);
         break;
       }
       if (decision === "refuse") {
@@ -1323,7 +1356,7 @@ export function createEngine(options: EngineOptions): Engine {
         // A failed unit must not kill the daemon — prepareWorktree clears any
         // stale worktree on the next attempt.
         console.error(
-          `[phoebe] Failed executing ${picked.definition.report.describe(picked.unit)} — ` +
+          `[phoebe] Failed executing ${describeUnit(picked)} — ` +
             `${error instanceof Error ? error.message : String(error)}`,
         );
         await drain.wait(pollIntervalMs);
