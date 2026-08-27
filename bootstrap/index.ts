@@ -30,6 +30,7 @@ export type {
 // needs, type-only — kind code can never value-import the engine (no
 // node_modules is reachable from the container mount), so modules type
 // themselves with `satisfies WorkKindDefinition<G, U>` under `import type`.
+export type { BlockerPrState, Issue } from "../src/orchestrator.ts";
 export type {
   AgentHelpers,
   AgentWorkflowOutcome,

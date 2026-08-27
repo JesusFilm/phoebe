@@ -120,7 +120,7 @@ Docs live under [`docs/`](docs/), in two groups.
 - [`docs/preparing-work.md`](docs/preparing-work.md), what an issue needs before Phoebe can work it, and the planning pipeline that produces one.
 - [`docs/ai-install.md`](docs/ai-install.md), a deterministic, agent-followable install runbook.
 - [`docs/configuration.md`](docs/configuration.md), full config-field reference and env overlay.
-- [`docs/work-kinds.md`](docs/work-kinds.md), issues / conflicts / checks / reviews / research mechanics, PR-scan scope, poll loop.
+- [`docs/work-kinds.md`](docs/work-kinds.md), issues / conflicts / checks / reviews / research mechanics, PR-scan scope, poll loop, and writing your own kind.
 - [`docs/operating.md`](docs/operating.md), controlling Phoebe as a human (labels, drafts, watermarks).
 - [`docs/upgrading.md`](docs/upgrading.md), the init / pin / upgrade contract, `phoebe migrate` verb, and what Phoebe may write in your repos.
 - [`docs/workspace.md`](docs/workspace.md), workspace mode topology, two-tier `.env`, operator runbook (plain-clone or submodule children).

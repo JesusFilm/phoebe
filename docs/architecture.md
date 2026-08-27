@@ -172,11 +172,17 @@ policy make the failure visible. See
 
 ## One cycle, end to end
 
+Every step below is one walk over the **work-kind registry** — the built-in
+definitions plus any custom kinds the tenant declared (`workKinds.custom`),
+indistinguishable to the engine after boot. Each kind's own `fetch`, `select`,
+and `run` do the work; the engine supplies the walk, the workspace, and the
+agent machinery.
+
 ```
-gather work data for each kind in workOrder
+each kind in workOrder: KINDS[kind].fetch(ctx) ──► gathered slot
       │
       ▼
-selectFirstWorkUnit(workOrder) ──► first kind with a workable unit wins
+selectFirstWorkUnit ──► first kind whose select(gathered, ctx) yields a unit
       │
       ├─ nothing  ──► --run-once: exit · daemon: sleep pollInterval, repeat
       │
@@ -184,7 +190,7 @@ selectFirstWorkUnit(workOrder) ──► first kind with a workable unit wins
 execution gate (host = refuse · --dry-run = print · container = execute)
       │
       ▼
-prepare worktree ─► install ─► run agent ─► count commits ─► push ─► open/update PR
+KINDS[kind].run(unit, ctx) — e.g. prepare worktree ─► install ─► agent ─► push ─► PR
       │
       ▼
 --run-once: exit · daemon: repeat
@@ -192,8 +198,9 @@ prepare worktree ─► install ─► run agent ─► count commits ─► pus
 
 The engine repeats this forever, idling `PHOEBE_POLL_INTERVAL_MS`
 (default 300000) between empty cycles. `--run-once` works at most one unit of
-the first one-shot-eligible kind (only `issues`) and exits. The janitor kinds
-(`conflicts`, `checks`, `reviews`) are persistent-mode only.
+the first one-shot-eligible kind and exits. The built-in janitor kinds
+(`conflicts`, `checks`, `reviews`) are persistent-mode only; eligibility is a
+field on each kind's definition.
 
 ## Provenance: the port and its hardening commits
 

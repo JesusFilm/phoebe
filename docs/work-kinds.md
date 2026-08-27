@@ -1,15 +1,21 @@
 # Work kinds
 
-**Who this is for:** anyone asking why Phoebe picked the unit it picked. It
-answers how each of the five kinds selects and executes one unit.
+**Who this is for:** anyone asking why Phoebe picked the unit it picked — and,
+at the end, anyone writing a kind of their own. It answers how each of the five
+built-in kinds selects and executes one unit, then documents the contract every
+kind (built-in or custom) implements.
 
 Every cycle Phoebe walks `config.workOrder` and runs **one** unit of the first
-kind that has workable work. There are five kinds: three **janitors** that keep
-open PRs moving (`conflicts`, `checks`, `reviews`) and two **producers** that
-start new work (`issues`, and `research` for wayfinder research tickets). This
-file documents how each selects and executes a unit. Field references point at
+kind that has workable work. A kind is one registered **definition** — name,
+prompt, eligibility, reporting, and a `fetch`/`select`/`run` triple. Five ship
+built-in: three **janitors** that keep open PRs moving (`conflicts`, `checks`,
+`reviews`) and two **producers** that start new work (`issues`, and `research`
+for wayfinder research tickets); a tenant may register more under
+[`workKinds.custom`](configuration.md#workkinds) (see
+[Writing your own kind](#writing-your-own-kind)). This file documents how each
+built-in selects and executes a unit. Field references point at
 [`configuration.md`](configuration.md); the runtime plumbing is
-`src/orchestrator.ts` and `src/main.ts`.
+`src/work-kinds/`, `src/orchestrator.ts` and `src/main.ts`.
 
 ## The poll loop and `workOrder`
 
@@ -245,4 +251,141 @@ operator's view.
 | `checks`    | `phoebe-checks-fail`     | `prHead`                    | Skip re-fixing until the PR head moves.               |
 | `reviews`   | `phoebe-reviews-handled` | `latest` activity timestamp | Only re-run on review activity newer than this.       |
 
-</content>
+## Writing your own kind
+
+A custom kind is authored code implementing the same contract as the five
+built-ins, declared under `workKinds.custom.<name>` (field syntax and the
+declaration arms live in [`configuration.md` → workKinds](configuration.md#workkinds)).
+After boot-time registration the engine cannot tell a built-in from a custom
+kind: `workOrder`, `workKinds` tuning blocks, `PHOEBE_<KIND>_*` env vars
+(hyphens in the name become underscores), quarantine, concurrency slots, the
+run deadline, and the prompt-existence check all apply uniformly.
+
+Start from [`examples/custom-kind/`](../examples/custom-kind/) — a full-form
+kind (a stale-PR nudger) beside the inline prompt-only-producer cheap case.
+Copy-from-example is the supported path; there is no scaffold command.
+
+### The definition object
+
+```ts
+import type { WorkKindDefinition } from "phoebe-agent";
+
+type Gathered = /* whatever your fetch collects */;
+type Unit = { ref: string; github?: { objectType: "issue" | "pr"; id: number }; /* … */ };
+
+export default {
+  name: "my-kind",              // must match the workKinds.custom key
+  oneShotEligible: false,       // may a unit run under --run-once?
+  promptFile: "prompts/my-kind-prompt.md",
+  workspace: "worktree",        // the one implemented mode (see edges below)
+  model: "…", effort: "…",      // optional agent defaults (see tuning below)
+  report: {
+    noun: "…(s)",               // idle-report noun
+    describe: (unit) => "…",    // one line naming a unit in logs
+  },
+  async fetch(ctx) { /* gather this cycle's candidates */ },
+  select(gathered, ctx) { /* { unit, skipped, total } */ },
+  async run(unit, ctx) { /* work the unit; throw = failure */ },
+} satisfies WorkKindDefinition<Gathered, Unit>;
+```
+
+A module may instead default-export a factory `(config) => definition` — the
+shape the built-ins themselves use — to bake resolved-config values in.
+
+**Fetch** gathers everything `select` will need; its return value is opaque to
+the engine and handed back to your `select` (and only yours). Per-unit read
+failures should be absorbed (warn and drop the candidate); a _thrown_ fetch
+kills the whole cycle, and the bootstrapper's restart loop is the recovery.
+**Select** must be pure over the gathered data plus the cycle services — the
+engine gathers every kind before selecting any, so a select that re-fetches
+would see a different world than its neighbours (`select` receives `ctx`, but
+must not touch `ctx.github`). **Run** owns every consequence of the unit —
+pushes, comments, watermarks; the engine's interest is limited to success
+(return) vs. failure (throw), the run deadline, and quarantine accounting.
+
+### The unit and its `ref`
+
+Units are kind-defined payloads with one structural obligation: a `ref` string
+— non-empty, single-line, stable across cycles for the same logical unit, and
+unique within the kind. Every engine consumer (quarantine, logs, status
+snapshots, idle reports) keys `(kind, ref)`; nothing ever parses a ref.
+Built-ins use `pr:123` / `issue:88` as convention. The optional `github` field
+is the timeout-escalation target: with it set, a unit that repeatedly times out
+gets the timeout marker, the `phoebe:quarantined` label and the escalation
+comment exactly like a built-in unit; without it, timeouts are counted in
+memory only and the engine logs that the unit has no escalation surface.
+
+### The `ctx` surface
+
+Kind code can never import the engine — configs and kind modules load from a
+container mount with no reachable `node_modules`, so value imports cannot
+resolve. Everything arrives on `ctx` (types via `import type` from
+`phoebe-agent`):
+
+- `ctx.kind` — this kind's registered name.
+- `ctx.config` — the full resolved config, read-only. A kind is trusted as the
+  tenant; depend on what you need, sparingly.
+- `ctx.options` — the `options` object from a `{ module, options }` declaration
+  (`unknown`; validate it yourself). Inline definitions close over their values
+  instead.
+- `ctx.env` — the engine's environment. Custom knobs ride the tenant `.env`.
+- `ctx.github` — the cycle-scoped GitHub client (memoized `openPrs`/`mergeInfo`
+  per cycle) plus the always-fresh `currentMergeInfo` for post-run re-checks.
+- `ctx.origin` — read-only views of the private clone: `fetch()` and
+  `branchHead(branch)` for watermark snapshots.
+- `ctx.cycle` — the shared stack facility: `issueBody(n)` (cycle-cached; `null`
+  means unreadable — drop that candidate), `registerIssues(issues)` (feed the
+  blocker index during fetch), `blockerStates()` (read it during select).
+- `ctx.clock` — `now()` / `sleep(ms)`, injected so time is testable.
+- `ctx.log(message)` — logs with the uniform `[phoebe][<kind> <ref>]` prefix.
+
+`run` receives the same surface widened with:
+
+- `ctx.workspace` — `{ mode: "worktree", dir }`: a scratch worktree of the
+  default branch, prepared and removed by the engine. It is the default cwd for
+  a bare `ctx.agent.run(...)`.
+- `ctx.agent` — the sanctioned agent machinery: `run` (the low-level spawn:
+  provider ladder, prompt render, env allowlist and the run deadline are
+  engine-fixed; you supply `promptArgs` and optionally a `promptFile`
+  override), the two skeletons the built-ins share — `prWorkflow` (the PR-fix
+  shape) and `issueWorkflow` (the issue-producer shape; a prompt-only producer
+  is a kind whose `run` is one call to it) — and `cleanMerge` (the no-agent
+  catch-up merge).
+
+### Reporting
+
+`report.noun` names your units in the idle report; skip reasons returned from
+`select` are free strings rendered verbatim as
+`"<count> <noun> skipped (<reason>)"`. When your kind had units and selected
+none, the engine renders `"<total> <noun> but none workable this cycle."` —
+supply `report.idle` to override that line. `report.describe(unit)` is the
+one-line name used in logs and `--dry-run` output.
+
+### Names, prompts, and tuning
+
+- **Names** are lowercase `[a-z][a-z0-9-]*`, at most 32 characters. The five
+  built-in names and `custom` are reserved; colliding with a built-in is a boot
+  error (overriding built-ins is not supported).
+- **`promptFile` resolves against the runtime root**, exactly like the
+  built-ins' prompts, and joins the boot-time existence check when the kind is
+  scheduled. Note the wart: _module_ paths in `workKinds.custom` resolve
+  against the config file's directory, prompt paths against the runtime root —
+  in a `configDir` deployment those differ.
+- **`model` / `effort` defaults** on the definition sit at the repo-defaults
+  rung of the resolution ladder: per-kind env → the kind's `workKinds` block →
+  global env → definition defaults → repo defaults. Like a providerless block,
+  definition defaults stay silent when an env flip moves the run off the
+  default provider.
+- **Editing a kind module requires a restart**: the reconcile watch fingerprints
+  the config file only, so it does not see kind-module edits.
+
+### The edges are edges
+
+Four capabilities are deliberately absent from v1, each a named extension point
+with a designed attachment — not an oversight. The design record is
+[`docs/research/slack-responder-sketch.md`](research/slack-responder-sketch.md):
+workspace modes `none`/`readonly` (new members of the `workspace` union),
+kind-declared credentials (`requiredEnv` punching kind-scoped holes in the
+agent env allowlist), non-GitHub work sources (already possible by construction
+— your fetch may call anything reachable; ctx owes it no HTTP convenience), and
+a kind-extended agent tool surface (kind-declared MCP servers).
