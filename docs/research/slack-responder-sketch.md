@@ -50,9 +50,14 @@ export default {
     // fetch(); ctx.github is a convenience, not the frame. The thread itself is
     // the state store, per the house watermark pattern: a marker reaction set by
     // the agent distinguishes handled threads (✅ filed, 💤 awaiting-user) from
-    // threads whose newest message Phoebe has not yet answered. Per-thread read
-    // errors are warned and dropped; a failed channel read throws and the cycle
-    // dies — the same failure contract as every kind.
+    // threads whose newest message Phoebe has not yet answered. A marker only
+    // counts as Phoebe's when Phoebe set it — `reactions.get` names who reacted,
+    // and anyone else's ✅ is ignored. Slack reactions are open to every channel
+    // member, so an unauthenticated marker would let any member silence the
+    // responder on a thread; the GitHub kinds have the same rule, matching
+    // watermark comments on author login. Per-thread read errors are warned and
+    // dropped; a failed channel read throws and the cycle dies — the same
+    // failure contract as every kind.
     return readActionableThreads(ctx.options.channel); // Thread[]
   },
   select(gathered, ctx) {
