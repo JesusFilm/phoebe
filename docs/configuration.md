@@ -137,9 +137,9 @@ first place. An author who does not want the credit asks the operator.
 
 ## Work order
 
-| Field       | Default                                                    | Meaning                                                                                                                                                                                                    |
-| ----------- | ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `workOrder` | `["conflicts", "checks", "reviews", "issues", "research"]` | Ordered work kinds; the first kind with a workable unit each cycle wins. Validated at startup: it must be non-empty and contain only known kinds (`conflicts`, `checks`, `reviews`, `issues`, `research`). |
+| Field       | Default                                                    | Meaning                                                                                                                                                                                                                                                                                                               |
+| ----------- | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `workOrder` | `["conflicts", "checks", "reviews", "issues", "research"]` | Ordered work kinds; the first kind with a workable unit each cycle wins. Validated at startup: it must be non-empty and contain only registered kinds — the five built-ins (`conflicts`, `checks`, `reviews`, `issues`, `research`) plus any [custom kinds](#custom-work-kinds-workkindscustom) this tenant declares. |
 
 Order is priority: put janitor kinds first so open PRs are unblocked before new
 issues are started, and `research` last so net-new code advances before research
@@ -148,13 +148,13 @@ tickets. Omit `research` to disable it for a repo. See
 
 ## Providers & models
 
-| Field             | Default                                                                          | Meaning                                                                                                                                                                                                                                                  |
-| ----------------- | -------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `defaultProvider` | `"cursor"`                                                                       | Which agent CLI to drive: `cursor`, `claude`, or `codex`.                                                                                                                                                                                                |
-| `defaultModels`   | `{ cursor: "composer-2.5", claude: "claude-sonnet-4-6", codex: "gpt-5.4-mini" }` | Per-provider model. Merged key-by-key.                                                                                                                                                                                                                   |
-| `defaultEfforts`  | `{}`                                                                             | Per-provider reasoning effort, merged key-by-key. Only `claude` honours it today (`--effort`, one of `low`, `medium`, `high`, `xhigh`, `max`); `cursor` and `codex` ignore it. A provider left unset gets **no** effort flag, so its CLI default stands. |
-| `providerEnv`     | `{ cursor: "CURSOR_API_KEY", claude: "ANTHROPIC_API_KEY", codex: "OPENAI_KEY" }` | Env var holding each provider's API key. This is the only key the agent child inherits for the active provider.                                                                                                                                          |
-| `workKinds`       | `{}`                                                                             | Per-work-kind overrides of the three knobs above, e.g. `{ reviews: { provider: "claude", model: "claude-haiku-4-5", effort: "low" } }`. Keys are the work kinds; each block holds only optional `provider`, `model`, `effort`. See below.                |
+| Field             | Default                                                                          | Meaning                                                                                                                                                                                                                                                                                                                   |
+| ----------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `defaultProvider` | `"cursor"`                                                                       | Which agent CLI to drive: `cursor`, `claude`, or `codex`.                                                                                                                                                                                                                                                                 |
+| `defaultModels`   | `{ cursor: "composer-2.5", claude: "claude-sonnet-4-6", codex: "gpt-5.4-mini" }` | Per-provider model. Merged key-by-key.                                                                                                                                                                                                                                                                                    |
+| `defaultEfforts`  | `{}`                                                                             | Per-provider reasoning effort, merged key-by-key. Only `claude` honours it today (`--effort`, one of `low`, `medium`, `high`, `xhigh`, `max`); `cursor` and `codex` ignore it. A provider left unset gets **no** effort flag, so its CLI default stands.                                                                  |
+| `providerEnv`     | `{ cursor: "CURSOR_API_KEY", claude: "ANTHROPIC_API_KEY", codex: "OPENAI_KEY" }` | Env var holding each provider's API key. This is the only key the agent child inherits for the active provider.                                                                                                                                                                                                           |
+| `workKinds`       | `{}`                                                                             | Per-work-kind overrides of the three knobs above, e.g. `{ reviews: { provider: "claude", model: "claude-haiku-4-5", effort: "low" } }`. Keys are the work kinds (built-in or custom); each block holds only optional `provider`, `model`, `effort`. The reserved `custom` key declares tenant-authored kinds — see below. |
 
 `PHOEBE_AGENT`, `PHOEBE_MODEL`, and `PHOEBE_EFFORT` override `defaultProvider`
 and the active provider's entry in `defaultModels` / `defaultEfforts` for one
@@ -190,20 +190,73 @@ Unknown kind keys and unknown provider values are boot-time config errors;
 `model` and `effort` are unvalidated pass-through strings — the CLIs are the
 authority. Blocks for kinds absent from `workOrder` are allowed and inert.
 
+A kind's definition may also carry its own `model` / `effort` defaults; they
+sit at the repo-defaults rung (between global env and `defaultModels` /
+`defaultEfforts`) and, like a providerless block, stay silent when an env flip
+moves the run off the default provider.
+
 To run the `claude` provider under a Claude
 Pro/Max subscription instead of API-key billing, point `providerEnv.claude` at
 `CLAUDE_CODE_OAUTH_TOKEN`. See
 [`claude-subscription-auth.md`](claude-subscription-auth.md).
 
+### Custom work kinds (`workKinds.custom`)
+
+`workKinds.custom.<name>` registers a tenant-authored work kind beside the
+built-ins. This section owns the field's syntax; what a kind _is_ — the
+definition object, the `ctx` surface, the `ref` contract — lives in
+[`work-kinds.md` → Writing your own kind](work-kinds.md#writing-your-own-kind),
+and a runnable reference in [`examples/custom-kind/`](../examples/custom-kind/).
+
+Each entry takes one of three forms:
+
+```ts
+workKinds: {
+  custom: {
+    // 1. Inline definition object — close over any values you need.
+    "docs-request": { name: "docs-request", /* … */ },
+    // 2. Path sugar for the zero-knob module case.
+    "label-echo": "./kinds/label-echo.ts",
+    // 3. Module plus tenant knobs, delivered to the kind as `ctx.options`.
+    "stale-pr-nudger": { module: "./kinds/stale-pr-nudger.ts", options: { staleDays: 7 } },
+  },
+  // Custom kinds are tuned by sibling blocks exactly like built-ins.
+  "stale-pr-nudger": { effort: "low" },
+},
+```
+
+- **Names** are lowercase `[a-z][a-z0-9-]*`, at most 32 characters. The five
+  built-in names and `custom` itself are reserved; a collision is a boot error.
+- **Module paths** resolve against the config file's directory and must start
+  with `./`, `../`, or `/`. Bare specifiers are rejected at validation: kind
+  modules load from the tenant checkout, where no `node_modules` is reachable —
+  which is also why kind code uses only _type_ imports from `phoebe-agent`.
+  The module's `default` export is the definition or a `(config) => definition`
+  factory.
+- **`options`** must be a plain object; it reaches the kind unvalidated as
+  `ctx.options` (the kind validates). Inline entries carry no `options` —
+  close over values instead. Unknown wrapper fields are boot errors.
+- **Env knobs** (`PHOEBE_<KIND>_AGENT/_MODEL/_EFFORT`, hyphens →
+  underscores) work through the tenant `.env`, which is forwarded to the
+  engine wholesale. The _deployment-global_ allowlist the bootstrapper applies
+  stays built-ins-only — a deployment-wide knob naming one tenant's kind is a
+  category smell.
+- A declared kind not listed in `workOrder` boots with a **warning** and never
+  runs — declare-first-schedule-later is allowed, but forgetting the schedule
+  is the likelier story.
+- **Editing a kind module requires a restart.** The reconcile watch
+  fingerprints the config file only, so a module edit is invisible until the
+  deployment restarts (a documented v1 limitation).
+
 ## Prompt files
 
-| Field         | Default keys                                                                                                                                                                                      | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `promptFiles` | `{ issue: "prompts/issues-prompt.md", conflict: "prompts/conflict-prompt.md", checks: "prompts/checks-prompt.md", reviews: "prompts/reviews-prompt.md", research: "prompts/research-prompt.md" }` | Prompt template paths, relative to the **runtime root** (the process working directory, which is the consumer checkout on the host, or `/etc/phoebe` in the container where compose mounts `phoebe.config.ts` and `prompts/`). Resolved only from that base, never from the installed package. `phoebe init` copies the shipped defaults into `prompts/`. Edit them to override, or point a key at another runtime-root-relative path. |
+| Field         | Default keys                                                                                                                                                                                      | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `promptFiles` | `{ issue: "prompts/issues-prompt.md", conflict: "prompts/conflict-prompt.md", checks: "prompts/checks-prompt.md", reviews: "prompts/reviews-prompt.md", research: "prompts/research-prompt.md" }` | **Overrides for the built-in kinds' prompt paths** — each kind's definition owns its prompt, and these keys re-point the built-ins'. Paths are relative to the **runtime root** (the process working directory, which is the consumer checkout on the host, or `/etc/phoebe` in the container where compose mounts `phoebe.config.ts` and `prompts/`). Resolved only from that base, never from the installed package. `phoebe init` copies the shipped defaults into `prompts/`. Edit them to override, or point a key at another runtime-root-relative path. A [custom kind](#custom-work-kinds-workkindscustom)'s prompt lives in its own definition's `promptFile` (same runtime-root resolution, no override key here). |
 
-Every key a tenant can dispatch is checked **at engine startup**: if one names a
-file that does not exist, the engine refuses to start and names the tenant and
-every missing kind at once. Prompt loading used to be fail-at-use, so a tenant
+Every kind a tenant can dispatch — built-in or custom — is checked **at engine
+startup**: if its prompt names a file that does not exist, the engine refuses to
+start and names the tenant and every missing kind at once. Prompt loading used to be fail-at-use, so a tenant
 missing one kind booted clean and only died when the first unit of that kind was
 dispatched, which could be weeks later if that kind was rare (#164). The check follows
 [`workOrder`](#work-order), so a kind you dropped there needs no prompt file.
@@ -583,20 +636,20 @@ config-file territory.
 
 ### Runtime toggles (read directly, not overlaid onto config)
 
-| Env var                                      | Default              | Meaning                                                                                                                                                                                                                                                        |
-| -------------------------------------------- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PHOEBE_AGENT`                               | _none_               | Provider for this run (`cursor` \| `claude` \| `codex`).                                                                                                                                                                                                       |
-| `PHOEBE_MODEL`                               | _none_               | Model for this run.                                                                                                                                                                                                                                            |
-| `PHOEBE_EFFORT`                              | _none_               | Reasoning effort for this run, overriding the active provider's `defaultEfforts` entry. Only `claude` honours it (`low` \| `medium` \| `high` \| `xhigh` \| `max`).                                                                                            |
-| `PHOEBE_<KIND>_AGENT` / `_MODEL` / `_EFFORT` | _none_               | Per-work-kind variants of the trio above, where `<KIND>` is `CONFLICTS`, `CHECKS`, `REVIEWS`, `ISSUES`, or `RESEARCH` (e.g. `PHOEBE_REVIEWS_MODEL`). Outrank everything, including the kind's `workKinds` block. Empty string reads as unset.                  |
-| `PHOEBE_POLL_INTERVAL_MS`                    | `300000`             | Persistent-mode idle poll interval. Under the App arm this is the capacity lever, since a shorter interval raises the per-tenant request rate ([github-app-mode.md §5](github-app-mode.md#5-capacity)).                                                        |
-| `PHOEBE_ENGINE_DIR`                          | `<tmp>/phoebe-agent` | Base dir `phoebe boot` clones a `github` engine source into (and bin.mjs materializes under). Put it on a persistent volume so github boots fetch instead of re-cloning.                                                                                       |
-| `PHOEBE_RECONCILE_INTERVAL_MS`               | `60000`              | How often `phoebe boot` polls the mounted config and the tracked ref for a drain-and-relaunch (see Engine source → Reconcile).                                                                                                                                 |
-| `PHOEBE_BASE`                                | _none_               | Force the worktree base ref for issues (bypasses blocker resolution).                                                                                                                                                                                          |
-| `PHOEBE_DATA_DIR`                            | `/data/repos`        | Base dir for derived tenant paths (host/dev override). Each tenant nests under `<base>/<owner>/<repo>/`.                                                                                                                                                       |
-| `PHOEBE_MAX_CONCURRENT_AGENTS`               | `1`                  | Cap on concurrently-executing work units (the bootstrapper's FIFO broker), in solo and fleet alike. Raise deliberately.                                                                                                                                        |
-| `PHOEBE_RUN_TIMEOUT_MS`                      | `2700000` (45 min)   | Whole-unit wall-clock budget; a unit that exceeds it is aborted so it can't hold the concurrency slot forever. Under the App arm the effective ceiling is ≈50 min (installation tokens expire after 60 min). Also settable as the `runTimeoutMs` config field. |
-| `PHOEBE_MAX_UNIT_TIMEOUTS`                   | `3`                  | Consecutive per-unit timeouts before the unit is quarantined (`phoebe:quarantined` label + escalation comment). Also the `maxUnitTimeouts` config field.                                                                                                       |
+| Env var                                      | Default              | Meaning                                                                                                                                                                                                                                                                                                                                        |
+| -------------------------------------------- | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PHOEBE_AGENT`                               | _none_               | Provider for this run (`cursor` \| `claude` \| `codex`).                                                                                                                                                                                                                                                                                       |
+| `PHOEBE_MODEL`                               | _none_               | Model for this run.                                                                                                                                                                                                                                                                                                                            |
+| `PHOEBE_EFFORT`                              | _none_               | Reasoning effort for this run, overriding the active provider's `defaultEfforts` entry. Only `claude` honours it (`low` \| `medium` \| `high` \| `xhigh` \| `max`).                                                                                                                                                                            |
+| `PHOEBE_<KIND>_AGENT` / `_MODEL` / `_EFFORT` | _none_               | Per-work-kind variants of the trio above, where `<KIND>` is the upcased kind name — `CONFLICTS`, `CHECKS`, `REVIEWS`, `ISSUES`, `RESEARCH`, or a custom kind's name with hyphens as underscores (`stale-pr-nudger` → `PHOEBE_STALE_PR_NUDGER_MODEL`). Outrank everything, including the kind's `workKinds` block. Empty string reads as unset. |
+| `PHOEBE_POLL_INTERVAL_MS`                    | `300000`             | Persistent-mode idle poll interval. Under the App arm this is the capacity lever, since a shorter interval raises the per-tenant request rate ([github-app-mode.md §5](github-app-mode.md#5-capacity)).                                                                                                                                        |
+| `PHOEBE_ENGINE_DIR`                          | `<tmp>/phoebe-agent` | Base dir `phoebe boot` clones a `github` engine source into (and bin.mjs materializes under). Put it on a persistent volume so github boots fetch instead of re-cloning.                                                                                                                                                                       |
+| `PHOEBE_RECONCILE_INTERVAL_MS`               | `60000`              | How often `phoebe boot` polls the mounted config and the tracked ref for a drain-and-relaunch (see Engine source → Reconcile).                                                                                                                                                                                                                 |
+| `PHOEBE_BASE`                                | _none_               | Force the worktree base ref for issues (bypasses blocker resolution).                                                                                                                                                                                                                                                                          |
+| `PHOEBE_DATA_DIR`                            | `/data/repos`        | Base dir for derived tenant paths (host/dev override). Each tenant nests under `<base>/<owner>/<repo>/`.                                                                                                                                                                                                                                       |
+| `PHOEBE_MAX_CONCURRENT_AGENTS`               | `1`                  | Cap on concurrently-executing work units (the bootstrapper's FIFO broker), in solo and fleet alike. Raise deliberately.                                                                                                                                                                                                                        |
+| `PHOEBE_RUN_TIMEOUT_MS`                      | `2700000` (45 min)   | Whole-unit wall-clock budget; a unit that exceeds it is aborted so it can't hold the concurrency slot forever. Under the App arm the effective ceiling is ≈50 min (installation tokens expire after 60 min). Also settable as the `runTimeoutMs` config field.                                                                                 |
+| `PHOEBE_MAX_UNIT_TIMEOUTS`                   | `3`                  | Consecutive per-unit timeouts before the unit is quarantined (`phoebe:quarantined` label + escalation comment). Also the `maxUnitTimeouts` config field.                                                                                                                                                                                       |
 
 Secrets (`GH_TOKEN` and the active provider's key) are also read from the
 environment. See [`ai-install.md`](ai-install.md) and `.env.example`. In a

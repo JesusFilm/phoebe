@@ -1,0 +1,65 @@
+// Definition validation (#350 Q5/Q7): required members present, functions are
+// functions, `workspace` a known value. Built-in definitions pass through this
+// too at registration — cheap, and it enforces the can't-tell-built-in-from-
+// custom invariant mechanically. `at` carries the error voice: config-path for
+// custom kinds (`workKinds.custom.<name>`), the built-in's name otherwise.
+
+import type { AnyWorkKindDefinition } from "./definition.ts";
+
+const WORKSPACE_VALUES = ["worktree"] as const;
+
+function fail(at: string, problem: string): never {
+  throw new Error(`${at}: ${problem}`);
+}
+
+export function validateWorkKindDefinition(candidate: unknown, at: string): AnyWorkKindDefinition {
+  if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) {
+    fail(at, `a work-kind definition must be an object (got ${JSON.stringify(candidate)}).`);
+  }
+  const def = candidate as Record<string, unknown>;
+
+  if (typeof def["name"] !== "string" || def["name"].length === 0) {
+    fail(at, "the definition's `name` must be a non-empty string.");
+  }
+  if (typeof def["oneShotEligible"] !== "boolean") {
+    fail(at, "the definition's `oneShotEligible` must be a boolean.");
+  }
+  if (typeof def["promptFile"] !== "string" || def["promptFile"].trim().length === 0) {
+    fail(at, "the definition's `promptFile` must be a non-empty path string.");
+  }
+  if (!(WORKSPACE_VALUES as readonly string[]).includes(def["workspace"] as string)) {
+    fail(
+      at,
+      `the definition's \`workspace\` must be one of: ${WORKSPACE_VALUES.join(", ")} ` +
+        `(got ${JSON.stringify(def["workspace"])}).`,
+    );
+  }
+  for (const knob of ["model", "effort"] as const) {
+    if (def[knob] !== undefined && typeof def[knob] !== "string") {
+      fail(at, `the definition's \`${knob}\` must be a string when present.`);
+    }
+  }
+
+  const report = def["report"];
+  if (typeof report !== "object" || report === null) {
+    fail(at, "the definition's `report` must be an object with `noun` and `describe`.");
+  }
+  const reportRecord = report as Record<string, unknown>;
+  if (typeof reportRecord["noun"] !== "string" || reportRecord["noun"].length === 0) {
+    fail(at, "the definition's `report.noun` must be a non-empty string.");
+  }
+  if (typeof reportRecord["describe"] !== "function") {
+    fail(at, "the definition's `report.describe` must be a function of the unit.");
+  }
+  if (reportRecord["idle"] !== undefined && typeof reportRecord["idle"] !== "function") {
+    fail(at, "the definition's `report.idle` must be a function when present.");
+  }
+
+  for (const fn of ["fetch", "select", "run"] as const) {
+    if (typeof def[fn] !== "function") {
+      fail(at, `the definition's \`${fn}\` must be a function.`);
+    }
+  }
+
+  return candidate as AnyWorkKindDefinition;
+}

@@ -12,8 +12,7 @@
 
 import { readFileSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
-import type { PhoebeConfig, PromptFilesConfig } from "./config-schema.ts";
-import { validateWorkOrder, type WorkKindName } from "./orchestrator.ts";
+import type { PhoebeConfig } from "./config-schema.ts";
 
 export type PromptArgs = Record<string, string>;
 
@@ -38,19 +37,6 @@ function isLoadablePromptFile(absolute: string): boolean {
 }
 
 /**
- * The `promptFiles` key each work kind dispatches with — the pairing main.ts
- * makes at every `promptFile:` call site, named once so the startup check can
- * ask "which prompts does this tenant's `workOrder` actually need?".
- */
-const PROMPT_KEY_FOR_WORK_KIND: Record<WorkKindName, keyof PromptFilesConfig> = {
-  conflicts: "conflict",
-  checks: "checks",
-  reviews: "reviews",
-  issues: "issue",
-  research: "research",
-};
-
-/**
  * Boot-time check that every prompt this tenant can dispatch names a file the
  * engine could load.
  *
@@ -61,32 +47,36 @@ const PROMPT_KEY_FOR_WORK_KIND: Record<WorkKindName, keyof PromptFilesConfig> = 
  * engine startup, this turns that into a startup failure naming the tenant and
  * every missing kind at once.
  *
- * Scoped to `workOrder`, because that is what makes it a *caught* failure rather
- * than a new one: a kind the tenant dropped is never dispatched, so its prompt
- * being absent breaks nothing and must not refuse a boot.
+ * `kinds` is the scheduled work order paired with each kind's definition-owned
+ * `promptFile` (#303) — built-in and custom kinds check identically. Scoped to
+ * `workOrder`, because that is what makes it a *caught* failure rather than a
+ * new one: a kind the tenant dropped is never dispatched, so its prompt being
+ * absent breaks nothing and must not refuse a boot.
  *
  * Being a loadable file is the whole rule — an entry is free to point outside
  * the runtime root (`../prompts/…` is how a `configDir` tenant reaches its
  * repo's own prompts instead of duplicating them), and absolute entries are
  * checked as-is.
  */
-export function assertPromptFilesExist(
-  config: PhoebeConfig,
-  runtimeRoot: string,
-  workKinds: readonly WorkKindName[] = validateWorkOrder(config.workOrder),
-): void {
+export function assertPromptFilesExist(opts: {
+  repoSlug: string;
+  runtimeRoot: string;
+  kinds: ReadonlyArray<{ name: string; promptFile: string }>;
+}): void {
+  const { repoSlug, runtimeRoot, kinds } = opts;
   const missing: string[] = [];
-  for (const kind of workKinds) {
-    const key = PROMPT_KEY_FOR_WORK_KIND[kind];
-    const promptPath = config.promptFiles[key];
-    const absolute = promptFilePath(promptPath, runtimeRoot);
-    if (!isLoadablePromptFile(absolute)) missing.push(`  ${key}: ${promptPath} → ${absolute}`);
+  for (const kind of kinds) {
+    const absolute = promptFilePath(kind.promptFile, runtimeRoot);
+    if (!isLoadablePromptFile(absolute)) {
+      missing.push(`  ${kind.name}: ${kind.promptFile} → ${absolute}`);
+    }
   }
   if (missing.length === 0) return;
   throw new Error(
-    `Tenant ${config.repoSlug} is missing ${missing.length} prompt file(s), resolved from ` +
+    `Tenant ${repoSlug} is missing ${missing.length} prompt file(s), resolved from ` +
       `runtime root ${runtimeRoot}:\n${missing.join("\n")}\n` +
-      `Add the file(s), or point the matching \`promptFiles\` key at a readable file.`,
+      `Add the file(s), or point the kind's prompt path (a built-in's \`promptFiles\` ` +
+      `key, or a custom kind's \`promptFile\`) at a readable file.`,
   );
 }
 

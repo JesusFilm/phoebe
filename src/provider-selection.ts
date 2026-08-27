@@ -15,9 +15,9 @@
 
 import {
   PROVIDER_NAMES,
+  workKindOverride,
   type PhoebeConfig,
   type ProviderName,
-  type WorkKindName,
 } from "./config-schema.ts";
 
 export type ProviderSelection = {
@@ -27,9 +27,13 @@ export type ProviderSelection = {
   effort: string | undefined;
 };
 
-/** The name of one per-kind runtime toggle, e.g. `PHOEBE_REVIEWS_MODEL`. */
-export function workKindEnvVar(kind: WorkKindName, knob: "AGENT" | "MODEL" | "EFFORT"): string {
-  return `PHOEBE_${kind.toUpperCase()}_${knob}`;
+/**
+ * The name of one per-kind runtime toggle, e.g. `PHOEBE_REVIEWS_MODEL`.
+ * Hyphens in a (custom) kind name map to underscores — collision-free, since
+ * `_` is outside the kind-name charset (#350).
+ */
+export function workKindEnvVar(kind: string, knob: "AGENT" | "MODEL" | "EFFORT"): string {
+  return `PHOEBE_${kind.toUpperCase().replaceAll("-", "_")}_${knob}`;
 }
 
 /**
@@ -40,13 +44,19 @@ export function workKindEnvVar(kind: WorkKindName, knob: "AGENT" | "MODEL" | "EF
  * side was already validated at boot.
  */
 export function selectProviderForKind(opts: {
-  kind: WorkKindName;
+  kind: string;
   env: NodeJS.ProcessEnv;
   config: Pick<PhoebeConfig, "defaultProvider" | "defaultModels" | "defaultEfforts" | "workKinds">;
+  /**
+   * The kind definition's own `model`/`effort` defaults (#303): they sit at
+   * the repo-defaults rung — above `defaultModels`/`defaultEfforts`, below
+   * everything the tenant or the environment says.
+   */
+  definitionDefaults?: { model?: string; effort?: string };
 }): ProviderSelection {
   const { kind, env, config } = opts;
   const readEnv = (key: string): string | undefined => env[key] || undefined;
-  const block = config.workKinds[kind];
+  const block = workKindOverride(config.workKinds, kind);
 
   const assertProvider = (name: string, source: string): ProviderName => {
     if (!(PROVIDER_NAMES as readonly string[]).includes(name)) {
@@ -73,14 +83,23 @@ export function selectProviderForKind(opts: {
   const blockSpeaks =
     block !== undefined && (block.provider ?? config.defaultProvider) === provider;
 
+  // A definition's defaults speak for the repo's default provider — a
+  // definition has no `provider` knob, so like a providerless block they stay
+  // silent when an env flip moved the run to a different CLI, keeping
+  // provider-specific model names away from the wrong one.
+  const definitionSpeaks =
+    opts.definitionDefaults !== undefined && provider === config.defaultProvider;
+
   const model =
     readEnv(workKindEnvVar(kind, "MODEL")) ??
     (blockSpeaks ? block.model : undefined) ??
     readEnv("PHOEBE_MODEL") ??
+    (definitionSpeaks ? opts.definitionDefaults?.model : undefined) ??
     config.defaultModels[provider];
 
   // `null` is an explicit clear — stop the ladder and pass no effort flag.
-  // `undefined` (absent) falls through to global env / repo defaults.
+  // `undefined` (absent) falls through to global env / definition defaults /
+  // repo defaults.
   const effortFromKindEnv = readEnv(workKindEnvVar(kind, "EFFORT"));
   const blockEffort = blockSpeaks ? block?.effort : undefined;
   const effort: string | undefined =
@@ -90,7 +109,9 @@ export function selectProviderForKind(opts: {
         ? blockEffort === null
           ? undefined
           : blockEffort
-        : (readEnv("PHOEBE_EFFORT") ?? config.defaultEfforts[provider]);
+        : (readEnv("PHOEBE_EFFORT") ??
+          (definitionSpeaks ? opts.definitionDefaults?.effort : undefined) ??
+          config.defaultEfforts[provider]);
 
   return { provider, model, effort };
 }

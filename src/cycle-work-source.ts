@@ -1,33 +1,28 @@
-// The work source: assembles one cycle's work data across the configured
-// work kinds and returns a CycleRecord. Extracted from fetchCycleWorkData in
-// main.ts so the per-kind issue-body merge step (and the ordering bug it
-// harboured, #290) cannot recur: bodies are fetched through one cycle-scoped
-// cache, never merged after the fact.
+// The work source: runs one cycle's gather across the configured work kinds —
+// `registry.get(kind).definition.fetch(ctx)` into each kind's opaque record
+// slot — and owns the engine-side shared stack facility the kinds contribute
+// to and read from: the cycle-scoped issue-body read-through cache and the
+// blocker-state index (#348 Q6). Bodies are fetched through one cache, never
+// merged after the fact, so the #290 ordering bug cannot recur; the cross-kind
+// body-derived blocker merge runs here, engine-owned, after every fetch.
+//
+// This module also builds the per-kind `WorkKindCtx` the engine hands to
+// `fetch`/`select` (and widens for `run`): the ctx is per-cycle, so it lives
+// with the cycle state it closes over.
 
-import {
-  isPrMergeConflicting,
-  listFailingChecks,
-  parseBlockedBy,
-  parseChecksFailWatermark,
-  parseConflictFailWatermark,
-  parseIssueNumberFromBranch,
-  parseLatestMarker,
-  parseReviewsHandledWatermark,
-  statusCheckRollupState,
-  workflowRunsToCheckItems,
-  type BlockerPrState,
-  type ChecksCandidate,
-  type ConflictingPrCandidate,
-  type Issue,
-  type ReviewsCandidate,
-  type WorkKindName,
-} from "./orchestrator.ts";
-import { type CycleGitHubClient, type GitHubClient, type OpenPhoebePr } from "./github-client.ts";
+import { asBranchRef } from "./branded.ts";
+import type { PhoebeConfig } from "./config-schema.ts";
+import { parseBlockedBy, type BlockerPrState, type Issue } from "./orchestrator.ts";
+import type { GitHubClient } from "./github-client.ts";
 import type { OriginHub } from "./origin-hub.ts";
-import { type BranchRef, type Sha } from "./branded.ts";
-
-const CHECKS_PENDING_RETRY_MS = 5_000;
-const CHECKS_PENDING_RETRY_COUNT = 3;
+import type {
+  CycleServices,
+  WorkKindCtx,
+  WorkKindGitHub,
+  WorkKindOrigin,
+} from "./work-kinds/definition.ts";
+import type { WorkKindRegistry } from "./work-kinds/registry.ts";
+import { registeredKind } from "./work-kinds/walk.ts";
 
 export type Clock = {
   sleep: (ms: number) => Promise<void>;
@@ -36,31 +31,32 @@ export type Clock = {
 
 export type CycleRecord = {
   /** The kinds that were gathered, in gather order. */
-  kindsGathered: readonly WorkKindName[];
-  issues: readonly Issue[];
-  researchIssues: readonly Issue[];
-  blockerStates: ReadonlyMap<number, BlockerPrState>;
-  conflictingPrs: readonly ConflictingPrCandidate[];
-  failingCheckPrs: readonly ChecksCandidate[];
-  reviewActivityPrs: readonly ReviewsCandidate[];
+  kindsGathered: readonly string[];
   /**
-   * One cycle-scoped map, populated as a side effect of the gather.
-   * Never merged; nothing left to get wrong.
+   * Each kind's fetch result, keyed by kind — opaque to the engine; only the
+   * kind's own `select` (and `report.idle`) read it back.
    */
-  issueBodies: ReadonlyMap<number, string>;
-  phoebeLogin?: string;
-  currentMainHead?: Sha;
+  gathered: ReadonlyMap<string, unknown>;
+};
+
+export type GatheredCycle = {
+  record: CycleRecord;
+  /**
+   * The per-kind cycle context, cached per kind — the same object `fetch` saw,
+   * handed to `select` and widened for `run`.
+   */
+  ctxFor: (kind: string) => WorkKindCtx;
 };
 
 export type WorkSource = {
   /**
    * Gather one cycle's work data across the given kinds in order.
    *
-   * A single unreadable pull request is warned and dropped from that kind's
-   * results; the gather continues. A whole kind failing to fetch throws — the
+   * A single unreadable unit is warned and dropped inside that kind's fetch;
+   * the gather continues. A whole kind failing to fetch throws — the
    * bootstrapper's restart loop is the recovery path.
    */
-  gatherCycle(kinds: readonly WorkKindName[]): Promise<CycleRecord>;
+  gatherCycle(kinds: readonly string[]): Promise<GatheredCycle>;
 };
 
 export function createWorkSource(opts: {
@@ -68,320 +64,115 @@ export function createWorkSource(opts: {
   originHub: OriginHub;
   clock: Clock;
   env: NodeJS.ProcessEnv;
-  defaultBranchRef: BranchRef;
+  config: PhoebeConfig;
+  registry: WorkKindRegistry;
 }): WorkSource {
-  const { github, originHub, clock, env, defaultBranchRef } = opts;
+  const { github, originHub, clock, env, config, registry } = opts;
 
-  function buildBlockerStates(issues: readonly Issue[]): Map<number, BlockerPrState> {
+  function buildBlockerStates(issues: readonly Issue[], into: Map<number, BlockerPrState>): void {
     const blockerNumbers = new Set<number>();
     for (const issue of issues) {
       for (const n of parseBlockedBy(issue.body)) {
         blockerNumbers.add(n);
       }
     }
-    const states = new Map<number, BlockerPrState>();
     for (const n of blockerNumbers) {
+      if (into.has(n)) continue;
       try {
-        states.set(n, github.blockerPrState(n));
+        into.set(n, github.blockerPrState(n));
       } catch (error) {
         console.warn(
           `[phoebe] Skipping blocker state for #${n} this cycle — ${error instanceof Error ? error.message : String(error)}`,
         );
       }
     }
-    return states;
   }
 
-  function buildBlockerStatesFromBodies(
-    bodies: ReadonlyArray<{ number: number; body: string }>,
-  ): Map<number, BlockerPrState> {
-    return buildBlockerStates(
-      bodies.map(({ number, body }) => ({
-        number,
-        title: "",
-        body,
-        labels: [],
-        createdAt: "",
-      })),
-    );
-  }
+  async function gatherCycle(kinds: readonly string[]): Promise<GatheredCycle> {
+    const cycle = github.forCycle();
+    // The kind-facing GitHub surface: the cycle-scoped memoizing client, plus
+    // the one deliberately fresh read the run phase needs. A forwarding proxy
+    // rather than a spread: the cycle client may itself be a Proxy (the test
+    // stub is), whose members a spread would not see.
+    const workGitHub = new Proxy(cycle, {
+      get(target, prop, receiver) {
+        if (prop === "currentMergeInfo") {
+          return (prNumber: Parameters<GitHubClient["currentMergeInfo"]>[0]) =>
+            github.currentMergeInfo(prNumber);
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    }) as WorkKindGitHub;
 
-  /**
-   * Fetch issue bodies for the given PRs into the cycle-scoped cache.
-   * Each issue number is fetched at most once per cycle: already-cached
-   * entries are skipped, so the same body is never fetched twice even when
-   * several kinds reference the same PR.
-   *
-   * Returns the set of issue numbers whose body could not be read. The
-   * caller must drop any candidate whose issue number appears in this set.
-   */
-  function populateIssueBodies(
-    prs: ReadonlyArray<{ issueNumber?: number; headRefName: BranchRef }>,
-    cache: Map<number, string>,
-  ): Set<number> {
-    const failed = new Set<number>();
-    const issueNumbers = [
-      ...new Set(
-        prs
-          .map((pr) => pr.issueNumber ?? parseIssueNumberFromBranch(pr.headRefName))
-          .filter((n): n is number => n !== null),
-      ),
-    ];
-    for (const number of issueNumbers) {
-      if (!cache.has(number)) {
+    // The stack facility. `null` records a failed body read, so the failure is
+    // remembered too — a candidate whose body cannot be read is dropped by its
+    // kind, once, instead of re-fetched by every kind that shares the issue.
+    const issueBodies = new Map<number, string | null>();
+    const blockerStates = new Map<number, BlockerPrState>();
+    const services: CycleServices = {
+      issueBody(issueNumber) {
+        if (issueBodies.has(issueNumber)) {
+          return issueBodies.get(issueNumber) ?? null;
+        }
         try {
-          cache.set(number, github.issueBody(number));
+          const body = github.issueBody(issueNumber);
+          issueBodies.set(issueNumber, body);
+          return body;
         } catch (error) {
           console.warn(
-            `[phoebe] Skipping issue body for #${number} this cycle — ${error instanceof Error ? error.message : String(error)}`,
+            `[phoebe] Skipping issue body for #${issueNumber} this cycle — ${error instanceof Error ? error.message : String(error)}`,
           );
-          failed.add(number);
+          issueBodies.set(issueNumber, null);
+          return null;
         }
-      }
-    }
-    return failed;
-  }
-
-  function withReadableBodies<T extends { issueNumber?: number; headRefName: BranchRef }>(
-    candidates: T[],
-    failed: Set<number>,
-  ): T[] {
-    if (failed.size === 0) return candidates;
-    return candidates.filter((pr) => {
-      const n = pr.issueNumber ?? parseIssueNumberFromBranch(pr.headRefName);
-      return n === null || !failed.has(n);
-    });
-  }
-
-  async function conflictingPrCandidate(
-    pr: OpenPhoebePr,
-    cycle: CycleGitHubClient,
-  ): Promise<ConflictingPrCandidate | null> {
-    const info = await cycle.mergeInfo(pr.number);
-    if (!isPrMergeConflicting(info.mergeable, info.mergeStateStatus)) return null;
-    const issueNumber = parseIssueNumberFromBranch(info.headRefName);
-    return {
-      prNumber: info.number,
-      headRefName: info.headRefName,
-      headSha: info.headRefOid,
-      ...(issueNumber !== null ? { issueNumber } : {}),
+      },
+      registerIssues(issues) {
+        buildBlockerStates(issues, blockerStates);
+      },
+      blockerStates: () => blockerStates,
     };
-  }
 
-  async function fetchConflictingPrs(cycle: CycleGitHubClient): Promise<ConflictingPrCandidate[]> {
-    const openPrs = cycle.openPrs();
-    const conflicting: ConflictingPrCandidate[] = [];
-    for (const pr of openPrs) {
-      try {
-        const candidate = await conflictingPrCandidate(pr, cycle);
-        if (candidate) {
-          conflicting.push(candidate);
-        }
-      } catch (error) {
-        console.warn(
-          `[phoebe] Skipping PR #${pr.number} for conflicts this cycle — ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    }
-    return conflicting;
-  }
+    const origin: WorkKindOrigin = {
+      fetch: () => originHub.fetch(),
+      branchHead: (branch) => originHub.branchHead(asBranchRef(branch)),
+    };
 
-  async function failingChecksCandidate(
-    pr: OpenPhoebePr,
-    cycle: CycleGitHubClient,
-  ): Promise<ChecksCandidate | null> {
-    const info = await cycle.mergeInfo(pr.number);
-    if (isPrMergeConflicting(info.mergeable, info.mergeStateStatus)) return null;
-    for (let attempt = 0; attempt < CHECKS_PENDING_RETRY_COUNT; attempt++) {
-      const checkItems = workflowRunsToCheckItems(github.commitCheckItems(info.headRefOid));
-      const rollup = statusCheckRollupState(checkItems);
-      if (rollup === "FAILURE") {
-        const issueNumber = parseIssueNumberFromBranch(info.headRefName);
-        return {
-          prNumber: info.number,
-          headRefName: info.headRefName,
-          headSha: info.headRefOid,
-          mergeable: info.mergeable,
-          mergeStateStatus: info.mergeStateStatus,
-          failingChecks: listFailingChecks(checkItems),
-          ...(issueNumber !== null ? { issueNumber } : {}),
-        };
-      }
-      if (rollup !== "PENDING") return null;
-      if (attempt < CHECKS_PENDING_RETRY_COUNT - 1) {
-        await clock.sleep(CHECKS_PENDING_RETRY_MS);
-      }
-    }
-    return null;
-  }
+    const ctxCache = new Map<string, WorkKindCtx>();
+    const ctxFor = (kind: string): WorkKindCtx => {
+      const cached = ctxCache.get(kind);
+      if (cached) return cached;
+      const registered = registeredKind(registry, kind);
+      const ctx: WorkKindCtx = {
+        kind,
+        config,
+        options: registered.options,
+        env,
+        github: workGitHub,
+        origin,
+        cycle: services,
+        clock,
+        log: (message) => console.log(`[phoebe][${kind}] ${message}`),
+      };
+      ctxCache.set(kind, ctx);
+      return ctx;
+    };
 
-  async function fetchFailingCheckPrs(cycle: CycleGitHubClient): Promise<ChecksCandidate[]> {
-    const openPrs = cycle.openPrs();
-    const failing: ChecksCandidate[] = [];
-    for (const pr of openPrs) {
-      try {
-        const candidate = await failingChecksCandidate(pr, cycle);
-        if (candidate) {
-          failing.push(candidate);
-        }
-      } catch (error) {
-        console.warn(
-          `[phoebe] Skipping PR #${pr.number} for checks this cycle — ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    }
-    return failing;
-  }
-
-  async function gatherConflicts(cycle: CycleGitHubClient): Promise<{
-    conflictingPrs: ConflictingPrCandidate[];
-    currentMainHead: Sha;
-  }> {
-    const rawConflictingPrs = await fetchConflictingPrs(cycle);
-    originHub.fetch();
-    const currentMainHead = originHub.branchHead(defaultBranchRef);
-    const conflictingPrs = rawConflictingPrs.map((pr) => ({
-      ...pr,
-      failureWatermark: parseLatestMarker(
-        cycle.prCommentBodies(pr.prNumber),
-        parseConflictFailWatermark,
-      ),
-    }));
-    return { conflictingPrs, currentMainHead };
-  }
-
-  async function gatherChecks(cycle: CycleGitHubClient): Promise<{
-    failingCheckPrs: ChecksCandidate[];
-  }> {
-    const rawFailingPrs = await fetchFailingCheckPrs(cycle);
-    const failingCheckPrs = rawFailingPrs.map((pr) => ({
-      ...pr,
-      failureWatermark: parseLatestMarker(
-        cycle.prCommentBodies(pr.prNumber),
-        parseChecksFailWatermark,
-      ),
-    }));
-    return { failingCheckPrs };
-  }
-
-  async function gatherReviews(cycle: CycleGitHubClient): Promise<{
-    reviewActivityPrs: ReviewsCandidate[];
-    phoebeLogin: string;
-  }> {
-    const phoebeLogin = cycle.resolveLogin(env["PHOEBE_GH_LOGIN"]);
-    const openPrs = cycle.openPrs();
-    const reviewActivityPrs: ReviewsCandidate[] = [];
-
-    for (const pr of openPrs) {
-      try {
-        const info = await cycle.mergeInfo(pr.number);
-        if (isPrMergeConflicting(info.mergeable, info.mergeStateStatus)) {
-          continue;
-        }
-        const threads = cycle.reviewThreads(pr.number);
-        const issueNumber = parseIssueNumberFromBranch(info.headRefName);
-        reviewActivityPrs.push({
-          prNumber: info.number,
-          headRefName: info.headRefName,
-          authorLogin: pr.authorLogin,
-          mergeable: info.mergeable,
-          mergeStateStatus: info.mergeStateStatus,
-          threads,
-          handledWatermark: parseLatestMarker(
-            cycle.prCommentBodies(pr.number),
-            parseReviewsHandledWatermark,
-          ),
-          ...(issueNumber !== null ? { issueNumber } : {}),
-        });
-      } catch (error) {
-        console.warn(
-          `[phoebe] Skipping PR #${pr.number} for reviews this cycle — ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    }
-
-    return { reviewActivityPrs, phoebeLogin };
-  }
-
-  function gatherIssues(): { issues: Issue[]; blockerStates: Map<number, BlockerPrState> } {
-    const issues = github.listReadyIssues();
-    return { issues, blockerStates: buildBlockerStates(issues) };
-  }
-
-  function gatherResearch(): {
-    researchIssues: Issue[];
-    blockerStates: Map<number, BlockerPrState>;
-  } {
-    const researchIssues = github.listResearchIssues();
-    return { researchIssues, blockerStates: buildBlockerStates(researchIssues) };
-  }
-
-  async function gatherCycle(kinds: readonly WorkKindName[]): Promise<CycleRecord> {
-    let issues: Issue[] = [];
-    let researchIssues: Issue[] = [];
-    let blockerStates = new Map<number, BlockerPrState>();
-    let conflictingPrs: ConflictingPrCandidate[] = [];
-    let failingCheckPrs: ChecksCandidate[] = [];
-    let reviewActivityPrs: ReviewsCandidate[] = [];
-    const issueBodies = new Map<number, string>();
-    let phoebeLogin: string | undefined;
-    let currentMainHead: Sha | undefined;
-
-    const cycle = github.forCycle();
-
+    const gathered = new Map<string, unknown>();
     for (const kind of kinds) {
-      if (kind === "conflicts") {
-        const result = await gatherConflicts(cycle);
-        conflictingPrs = result.conflictingPrs;
-        currentMainHead = result.currentMainHead;
-        conflictingPrs = withReadableBodies(
-          conflictingPrs,
-          populateIssueBodies(conflictingPrs, issueBodies),
-        );
-      } else if (kind === "checks") {
-        const result = await gatherChecks(cycle);
-        failingCheckPrs = result.failingCheckPrs;
-        failingCheckPrs = withReadableBodies(
-          failingCheckPrs,
-          populateIssueBodies(failingCheckPrs, issueBodies),
-        );
-      } else if (kind === "reviews") {
-        const result = await gatherReviews(cycle);
-        reviewActivityPrs = result.reviewActivityPrs;
-        phoebeLogin = result.phoebeLogin;
-        reviewActivityPrs = withReadableBodies(
-          reviewActivityPrs,
-          populateIssueBodies(reviewActivityPrs, issueBodies),
-        );
-      } else if (kind === "issues") {
-        const result = gatherIssues();
-        issues = result.issues;
-        for (const [n, s] of result.blockerStates) blockerStates.set(n, s);
-      } else {
-        const result = gatherResearch();
-        researchIssues = result.researchIssues;
-        for (const [n, s] of result.blockerStates) blockerStates.set(n, s);
-      }
+      gathered.set(kind, await registeredKind(registry, kind).definition.fetch(ctxFor(kind)));
     }
 
-    const allBodies = [...issueBodies.entries()].map(([number, body]) => ({ number, body }));
-    if (allBodies.length > 0) {
-      const bodiesBlockerStates = buildBlockerStatesFromBodies(allBodies);
-      for (const [n, s] of bodiesBlockerStates) blockerStates.set(n, s);
+    // The engine-owned cross-kind step: blocker states derived from every body
+    // read this cycle, whatever kind read it. Order-insensitive by
+    // construction — it runs after all fetches, over the whole cache.
+    const readableBodies: Issue[] = [...issueBodies.entries()]
+      .filter((entry): entry is [number, string] => entry[1] !== null)
+      .map(([number, body]) => ({ number, title: "", body, labels: [], createdAt: "" }));
+    if (readableBodies.length > 0) {
+      buildBlockerStates(readableBodies, blockerStates);
     }
 
-    return {
-      kindsGathered: kinds,
-      issues,
-      researchIssues,
-      blockerStates,
-      conflictingPrs,
-      failingCheckPrs,
-      reviewActivityPrs,
-      issueBodies,
-      phoebeLogin,
-      currentMainHead,
-    };
+    return { record: { kindsGathered: kinds, gathered }, ctxFor };
   }
 
   return { gatherCycle };

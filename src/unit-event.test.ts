@@ -30,9 +30,9 @@ describe("tagging", () => {
     expect(unitTag("acme/widget")).toBe("[phoebe:acme/widget]");
   });
   test("formats an event line with optional detail", () => {
-    expect(formatUnitEventLine(event())).toBe("[phoebe:acme/widget] started issues #42");
+    expect(formatUnitEventLine(event())).toBe("[phoebe:acme/widget] started issues 42");
     expect(formatUnitEventLine(event({ event: "timed-out", detail: "exceeded 45m" }))).toBe(
-      "[phoebe:acme/widget] timed-out issues #42 — exceeded 45m",
+      "[phoebe:acme/widget] timed-out issues 42 — exceeded 45m",
     );
   });
 });
@@ -110,7 +110,7 @@ describe("createEmitUnitEvent", () => {
     });
 
     emit({ unit: { kind: "issues", id: "42" }, event: "started" });
-    expect(lines).toEqual(["[phoebe:acme/widget] started issues #42"]);
+    expect(lines).toEqual(["[phoebe:acme/widget] started issues 42"]);
     expect(written).not.toBeNull();
     expect(written!.currentUnit).toEqual({ kind: "issues", id: "42" });
 

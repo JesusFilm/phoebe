@@ -14,7 +14,7 @@ changes underneath them, these examples fail CI instead of rotting quietly. The
 fictional `acme/widget` and `acme/gadget` naming is shared across both, so they
 read as one progression: the same repos alone first, then as workspace children.
 
-The two supported topologies, simplest first.
+The two supported topologies, simplest first — then one feature illustration.
 
 ## [`solo/`](solo/), one repo, one deployment
 
@@ -34,6 +34,14 @@ the repos you want served are already checked out under one root.
 
 A deployment is solo or workspace, never both. See
 [`docs/workspace.md` → Mode selection](../docs/workspace.md#mode-selection).
+
+## [`custom-kind/`](custom-kind/), writing your own work kind
+
+Not a topology — a feature illustration on a solo-shaped config: a full-form
+custom work kind (a stale-PR nudger, loaded from a module in the repo) beside
+the inline prompt-only-producer cheap case, both registered under
+`workKinds.custom` and treated by the engine exactly like the built-ins. Start
+here when the five built-in kinds don't cover the work you want Phoebe to do.
 
 ## Learn more
 

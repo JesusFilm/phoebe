@@ -147,6 +147,9 @@ export type GitHubClient = {
   // Issues
   listReadyIssues(): Issue[];
   listResearchIssues(): Issue[];
+  /** Open issues carrying `label` — the general listing custom issue-keyed
+   *  producers build on; the two methods above are its fixed-label views. */
+  listLabeledIssues(label: string): Issue[];
   issueBody(issueNumber: number): string;
   blockerPrState(blockerIssueNumber: number): BlockerPrState;
 
@@ -568,6 +571,8 @@ export function createGitHubClient({
     listReadyIssues: () => listIssuesWithLabel(config.readyLabel),
 
     listResearchIssues: () => listIssuesWithLabel(config.researchLabel),
+
+    listLabeledIssues: listIssuesWithLabel,
 
     issueBody: (issueNumber) =>
       ghJson<{ body: string }>(["issue", "view", String(issueNumber), "--json", "body"]).body,

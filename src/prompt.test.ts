@@ -3,8 +3,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
 import { resolveConfig, type PhoebeUserConfig } from "./config-schema.ts";
+import { buildRegistry } from "./work-kinds/registry.ts";
 import {
-  assertPromptFilesExist,
+  assertPromptFilesExist as assertPromptFilesExistRaw,
   buildDefaultPromptArgs,
   loadPromptTemplate,
   renderPrompt,
@@ -25,6 +26,26 @@ function minimalUser(): PhoebeUserConfig {
 
 function fixtureConfig(): ReturnType<typeof resolveConfig> {
   return resolveConfig(minimalUser());
+}
+
+/**
+ * The engine's boot check, driven the way `runEngine` drives it: the scheduled
+ * kinds paired with their definition-owned prompt paths — which for built-ins
+ * come from the tenant's `promptFiles` keys.
+ */
+function assertPromptFilesExist(
+  config: ReturnType<typeof resolveConfig>,
+  runtimeRoot: string,
+): void {
+  const registry = buildRegistry(config);
+  assertPromptFilesExistRaw({
+    repoSlug: config.repoSlug,
+    runtimeRoot,
+    kinds: config.workOrder.map((kind) => ({
+      name: kind,
+      promptFile: registry.get(kind)!.definition.promptFile,
+    })),
+  });
 }
 
 describe("substitutePromptArgs", () => {

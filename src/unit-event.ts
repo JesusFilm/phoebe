@@ -39,9 +39,10 @@ export function unitTag(tenant: string): string {
   return `[phoebe:${tenant}]`;
 }
 
-/** A tagged, human-readable stdout line for one event. */
+/** A tagged, human-readable stdout line for one event. `id` is the unit's
+ *  kind-owned ref (`pr:123`, `issue:88`) and prints as-is (#348). */
 export function formatUnitEventLine(event: UnitEvent): string {
-  const head = `${unitTag(event.tenant)} ${event.event} ${event.unit.kind} #${event.unit.id}`;
+  const head = `${unitTag(event.tenant)} ${event.event} ${event.unit.kind} ${event.unit.id}`;
   return event.detail ? `${head} — ${event.detail}` : head;
 }
 

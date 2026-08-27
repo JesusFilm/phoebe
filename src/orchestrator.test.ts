@@ -33,15 +33,13 @@ import {
   isCompletedBlockerIssue,
   unresolvedBlockerNumbers,
   getMergedBlockerPrNumbers,
-  oneShotWorkKinds,
   selectConflictFixCandidates,
-  selectFirstWorkUnit,
   selectIssue,
   shouldPostChecksFixFailure,
   statusCheckRollupState,
   validateWorkOrder,
   workflowRunsToCheckItems,
-  WORK_KIND_ONE_SHOT_ELIGIBLE,
+  WORK_KIND_NAMES,
   shouldPostConflictFixFailure,
   shouldSkipStackedChecksFix,
   shouldSkipStackedConflictFix,
@@ -58,8 +56,14 @@ import {
   type ReviewsCandidate,
   type StackContext,
   type StatusCheckItem,
-  type WorkSelectionData,
 } from "./orchestrator.ts";
+import type { WorkKindCtx } from "./work-kinds/definition.ts";
+import { buildRegistry } from "./work-kinds/registry.ts";
+import {
+  oneShotWorkKinds,
+  selectFirstWorkUnit as walkSelectFirstWorkUnit,
+  type WorkUnitSkip,
+} from "./work-kinds/walk.ts";
 
 function issue(overrides: Partial<Issue> & Pick<Issue, "number">): Issue {
   return {
@@ -577,48 +581,72 @@ describe("stackedCatchUpRetractionComment", () => {
 });
 
 describe("validateWorkOrder", () => {
+  const validate = (order: readonly string[]) => validateWorkOrder(order, WORK_KIND_NAMES);
+
   test("accepts known kinds", () => {
-    expect(validateWorkOrder(["conflicts", "checks", "reviews", "issues"])).toEqual([
+    expect(validate(["conflicts", "checks", "reviews", "issues"])).toEqual([
       "conflicts",
       "checks",
       "reviews",
       "issues",
     ]);
-    expect(validateWorkOrder(["conflicts", "issues"])).toEqual(["conflicts", "issues"]);
-    expect(validateWorkOrder(["issues"])).toEqual(["issues"]);
+    expect(validate(["conflicts", "issues"])).toEqual(["conflicts", "issues"]);
+    expect(validate(["issues"])).toEqual(["issues"]);
   });
 
   test("accepts research", () => {
-    expect(validateWorkOrder(["conflicts", "checks", "reviews", "issues", "research"])).toEqual([
+    expect(validate(["conflicts", "checks", "reviews", "issues", "research"])).toEqual([
       "conflicts",
       "checks",
       "reviews",
       "issues",
       "research",
     ]);
-    expect(validateWorkOrder(["research"])).toEqual(["research"]);
+    expect(validate(["research"])).toEqual(["research"]);
+  });
+
+  test("accepts a registered custom kind in the legal set", () => {
+    expect(validateWorkOrder(["issues", "my-kind"], [...WORK_KIND_NAMES, "my-kind"])).toEqual([
+      "issues",
+      "my-kind",
+    ]);
   });
 
   test("throws on empty order", () => {
-    expect(() => validateWorkOrder([])).toThrow(/must not be empty/);
+    expect(() => validate([])).toThrow(/must not be empty/);
   });
 
   test("throws on unknown kind", () => {
-    expect(() => validateWorkOrder(["conflicts", "bogus"])).toThrow(/Unknown work kind/);
+    expect(() => validate(["conflicts", "bogus"])).toThrow(/Unknown work kind/);
   });
 });
 
 // ---------------------------------------------------------------------------
 // One selection entry point
 //
-// `selectFirstWorkUnit` is the only way into selection, so the per-kind tests
-// below go through it rather than through a wrapper the loop does not call.
-// These three helpers restore the per-kind reading — "given these PRs and this
-// stack context, which one would the `conflicts` kind take?" — by asking the one
-// walk for a `workOrder` of exactly that kind.
+// The registry walk (src/work-kinds/walk.ts) is the only way into selection,
+// so the per-kind tests below go through it rather than through a wrapper the
+// loop does not call. `selectFirstWorkUnit` here is a thin shim that lays a
+// flat fixture out into the built-in kinds' gathered slots and stubs the cycle
+// ctx — `github`/`origin` are poisoned, so a `select` that reaches beyond its
+// gathered slot and the cycle services crashes the test. Picked PR units are
+// unwrapped back to their candidate for the assertions.
 // ---------------------------------------------------------------------------
 
-const NO_WORK: WorkSelectionData = {
+type WalkData = {
+  issues: readonly Issue[];
+  researchIssues?: readonly Issue[];
+  blockerStates: ReadonlyMap<number, BlockerPrState>;
+  conflictingPrs: readonly ConflictingPrCandidate[];
+  failingCheckPrs: readonly ChecksCandidate[];
+  reviewActivityPrs: readonly ReviewsCandidate[];
+  issueBodies: ReadonlyMap<number, string>;
+  phoebeBase?: string;
+  phoebeLogin?: string;
+  currentMainHead?: Sha;
+};
+
+const NO_WORK: WalkData = {
   issues: [],
   blockerStates: new Map(),
   conflictingPrs: [],
@@ -626,6 +654,68 @@ const NO_WORK: WorkSelectionData = {
   reviewActivityPrs: [],
   issueBodies: new Map(),
 };
+
+const walkRegistry = buildRegistry(resolveConfig(sampleUserConfig));
+
+function walkCtx(kind: string, data: WalkData): WorkKindCtx {
+  return {
+    kind,
+    config: installedConfig,
+    options: undefined,
+    env: data.phoebeBase !== undefined ? { PHOEBE_BASE: data.phoebeBase } : {},
+    // Poisoned on purpose: select must be pure over gathered + cycle services.
+    github: null as never,
+    origin: null as never,
+    cycle: {
+      issueBody: (n) => data.issueBodies.get(n) ?? null,
+      registerIssues: () => {},
+      blockerStates: () => data.blockerStates,
+    },
+    clock: { now: () => new Date(0), sleep: () => Promise.resolve() },
+    log: () => {},
+  };
+}
+
+function selectFirstWorkUnit(
+  order: readonly string[],
+  data: WalkData,
+  opts?: { oneShotOnly?: boolean },
+): { unit: { kind: string; unit: any } | null; skipped: WorkUnitSkip[] } {
+  if (opts?.oneShotOnly) {
+    order = oneShotWorkKinds(order, walkRegistry);
+  }
+  const gathered = new Map<string, unknown>([
+    [
+      "conflicts",
+      {
+        candidates: data.conflictingPrs,
+        issueBodies: data.issueBodies,
+        currentMainHead: data.currentMainHead,
+      },
+    ],
+    ["checks", { candidates: data.failingCheckPrs, issueBodies: data.issueBodies }],
+    [
+      "reviews",
+      {
+        candidates: data.reviewActivityPrs,
+        issueBodies: data.issueBodies,
+        phoebeLogin: data.phoebeLogin ?? "",
+      },
+    ],
+    ["issues", { issues: data.issues }],
+    ["research", { issues: data.researchIssues ?? [] }],
+  ]);
+  const { unit, skipped } = walkSelectFirstWorkUnit({
+    registry: walkRegistry,
+    kinds: order,
+    gathered,
+    ctxFor: (kind) => walkCtx(kind, data),
+  });
+  if (!unit) return { unit: null, skipped };
+  const raw = unit.unit as Record<string, unknown>;
+  const flattened = "pr" in raw ? raw["pr"] : raw;
+  return { unit: { kind: unit.kind, unit: flattened }, skipped };
+}
 
 function conflictPick(
   prs: readonly ConflictingPrCandidate[],
@@ -870,33 +960,38 @@ describe("selectFirstWorkUnit research ordering", () => {
   });
 });
 
-describe("WORK_KIND_ONE_SHOT_ELIGIBLE", () => {
+describe("one-shot eligibility", () => {
+  const eligible = (kind: string): boolean => walkRegistry.get(kind)!.definition.oneShotEligible;
+
   test("janitor kinds are persistent-mode only", () => {
-    expect(WORK_KIND_ONE_SHOT_ELIGIBLE.conflicts).toBe(false);
-    expect(WORK_KIND_ONE_SHOT_ELIGIBLE.checks).toBe(false);
-    expect(WORK_KIND_ONE_SHOT_ELIGIBLE.reviews).toBe(false);
-    expect(WORK_KIND_ONE_SHOT_ELIGIBLE.issues).toBe(true);
+    expect(eligible("conflicts")).toBe(false);
+    expect(eligible("checks")).toBe(false);
+    expect(eligible("reviews")).toBe(false);
+    expect(eligible("issues")).toBe(true);
   });
 
   test("research is one-shot-eligible like issues", () => {
-    expect(WORK_KIND_ONE_SHOT_ELIGIBLE.research).toBe(true);
+    expect(eligible("research")).toBe(true);
   });
 });
 
 describe("oneShotWorkKinds", () => {
+  const oneShot = (order: readonly string[]): readonly string[] =>
+    oneShotWorkKinds(order, walkRegistry);
+
   test("filters to one-shot-eligible kinds in WORK_ORDER order", () => {
-    expect(oneShotWorkKinds(["conflicts", "checks", "reviews", "issues"])).toEqual(["issues"]);
-    expect(oneShotWorkKinds(["conflicts", "issues"])).toEqual(["issues"]);
-    expect(oneShotWorkKinds(["conflicts"])).toEqual([]);
-    expect(oneShotWorkKinds(["issues"])).toEqual(["issues"]);
+    expect(oneShot(["conflicts", "checks", "reviews", "issues"])).toEqual(["issues"]);
+    expect(oneShot(["conflicts", "issues"])).toEqual(["issues"]);
+    expect(oneShot(["conflicts"])).toEqual([]);
+    expect(oneShot(["issues"])).toEqual(["issues"]);
   });
 
   test("keeps research alongside issues", () => {
-    expect(oneShotWorkKinds(["conflicts", "checks", "reviews", "issues", "research"])).toEqual([
+    expect(oneShot(["conflicts", "checks", "reviews", "issues", "research"])).toEqual([
       "issues",
       "research",
     ]);
-    expect(oneShotWorkKinds(["conflicts", "research"])).toEqual(["research"]);
+    expect(oneShot(["conflicts", "research"])).toEqual(["research"]);
   });
 });
 
@@ -1891,7 +1986,7 @@ describe("the skip record selection returns", () => {
     failingCheckPrs: [],
     reviewActivityPrs: [],
     issueBodies: new Map(),
-  } satisfies WorkSelectionData;
+  } satisfies WalkData;
 
   test("conflicts separates the stacked skips from the watermarked ones", () => {
     const prs = [
@@ -1918,8 +2013,8 @@ describe("the skip record selection returns", () => {
 
     expect(selection.unit?.kind === "conflicts" && selection.unit.unit.prNumber).toBe(102);
     expect(selection.skipped).toEqual([
-      { kind: "conflicts", reason: "stacked-on-blocker", count: 1 },
-      { kind: "conflicts", reason: "unchanged-watermark", count: 1 },
+      { kind: "conflicts", reason: "stacked on open blocker", count: 1 },
+      { kind: "conflicts", reason: "unchanged failure watermark", count: 1 },
     ]);
   });
 
@@ -1937,7 +2032,7 @@ describe("the skip record selection returns", () => {
 
     expect(selection.unit).toBeNull();
     expect(selection.skipped).toEqual([
-      { kind: "checks", reason: "ineligible", count: 1 },
+      { kind: "checks", reason: "conflicting, stacked, or watermarked", count: 1 },
       { kind: "checks", reason: "none-workable", count: 1 },
     ]);
   });
@@ -1977,7 +2072,9 @@ describe("the skip record selection returns", () => {
     });
 
     expect(selection.unit?.kind === "reviews" && selection.unit.unit.prNumber).toBe(120);
-    expect(selection.skipped).toEqual([{ kind: "reviews", reason: "ineligible", count: 1 }]);
+    expect(selection.skipped).toEqual([
+      { kind: "reviews", reason: "stacked, watermarked, or no new activity", count: 1 },
+    ]);
   });
 
   test("the record follows workOrder, and stops at the kind that was picked", () => {
@@ -2001,7 +2098,7 @@ describe("the skip record selection returns", () => {
     // `issues` had a workable ticket too, but the walk never reached it — so the
     // record says nothing about it either.
     expect(selection.skipped).toEqual([
-      { kind: "checks", reason: "ineligible", count: 1 },
+      { kind: "checks", reason: "conflicting, stacked, or watermarked", count: 1 },
       { kind: "checks", reason: "none-workable", count: 1 },
     ]);
   });

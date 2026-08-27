@@ -1,5 +1,14 @@
 # Cycle record seam: design record
 
+> **Partially superseded (2026-08-26, map #303).** The modular work-kinds
+> contract replaced the flat `CycleRecord` with kind-keyed opaque slots plus an
+> engine-owned stack facility, and deleted `WorkSelectionData` along with the
+> per-kind fetch arms this record describes — expressly superseding the "No
+> per-kind sub-records" non-goal below (its reason, shared merge logic, expired
+> once slots became opaque and unmerged). The issue-body read-through cache,
+> `kindsGathered`, the origin-hub collaborator, and the failure contract all
+> stand, now stated on `WorkKindDefinition` (`src/work-kinds/definition.ts`).
+
 Design record, 2026-08-21. Context: `engine-runtime-seam.md` deferred the `WorkSource`
 reshape as a non-goal because it would have made a behaviour-risk change indistinguishable
 from a code move, with no test to hold it still. The tickets on that chain have since
