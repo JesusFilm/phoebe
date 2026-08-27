@@ -106,6 +106,7 @@ import { buildRegistry, type WorkKindRegistry } from "./work-kinds/registry.ts";
 import {
   NONE_WORKABLE,
   oneShotWorkKinds,
+  registeredKind,
   selectFirstWorkUnit,
   type PickedWorkUnit,
   type WorkUnitSkip,
@@ -1279,11 +1280,10 @@ export async function runEngine(
   assertPromptFilesExist({
     repoSlug: config.repoSlug,
     runtimeRoot: process.cwd(),
-    kinds: workOrder.map((kind) => {
-      const registered = registry.get(kind);
-      if (!registered) throw new Error(`Work kind "${kind}" is not registered.`);
-      return { name: kind, promptFile: registered.definition.promptFile };
-    }),
+    kinds: workOrder.map((kind) => ({
+      name: kind,
+      promptFile: registeredKind(registry, kind).definition.promptFile,
+    })),
   });
 
   const runOnce = argv.includes("--run-once");

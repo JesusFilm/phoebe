@@ -22,6 +22,7 @@ import type {
   WorkKindOrigin,
 } from "./work-kinds/definition.ts";
 import type { WorkKindRegistry } from "./work-kinds/registry.ts";
+import { registeredKind } from "./work-kinds/walk.ts";
 
 export type Clock = {
   sleep: (ms: number) => Promise<void>;
@@ -140,10 +141,7 @@ export function createWorkSource(opts: {
     const ctxFor = (kind: string): WorkKindCtx => {
       const cached = ctxCache.get(kind);
       if (cached) return cached;
-      const registered = registry.get(kind);
-      if (!registered) {
-        throw new Error(`Work kind "${kind}" is not registered.`);
-      }
+      const registered = registeredKind(registry, kind);
       const ctx: WorkKindCtx = {
         kind,
         config,
@@ -161,11 +159,7 @@ export function createWorkSource(opts: {
 
     const gathered = new Map<string, unknown>();
     for (const kind of kinds) {
-      const registered = registry.get(kind);
-      if (!registered) {
-        throw new Error(`Work kind "${kind}" is not registered.`);
-      }
-      gathered.set(kind, await registered.definition.fetch(ctxFor(kind)));
+      gathered.set(kind, await registeredKind(registry, kind).definition.fetch(ctxFor(kind)));
     }
 
     // The engine-owned cross-kind step: blocker states derived from every body

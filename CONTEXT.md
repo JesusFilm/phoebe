@@ -65,9 +65,11 @@ _Avoid_: work type, category
 **Work kind definition**:
 The contract object a kind is: name, prompt, eligibility, reporting, and the
 fetch/select/run triple (`WorkKindDefinition` in `src/work-kinds/`).
+_Avoid_: kind spec, kind config
 
 **Custom kind**:
 A tenant-registered work kind, indistinguishable from a built-in after boot.
+_Avoid_: plugin kind, user-defined kind
 
 **Work order**:
 The configured priority of work kinds. The first kind with a workable unit wins the cycle.

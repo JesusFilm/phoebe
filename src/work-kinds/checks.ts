@@ -166,7 +166,7 @@ export function checksKind(config: PhoebeConfig): AnyWorkKindDefinition {
         }
         if (cleanResult === "conflicted" || cleanResult === "failed") {
           ctx.log(
-            `Catch-up merge conflicted for PR #${pr.prNumber} — deferring to conflicts mode.`,
+            `Catch-up merge conflicted for PR #${pr.prNumber} — deferring to the conflicts kind.`,
           );
           return;
         }

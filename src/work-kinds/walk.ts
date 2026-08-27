@@ -11,7 +11,7 @@ import type {
   WorkKindSelection,
   WorkUnitShape,
 } from "./definition.ts";
-import type { WorkKindRegistry } from "./registry.ts";
+import type { RegisteredWorkKind, WorkKindRegistry } from "./registry.ts";
 
 /** The one engine-synthesized skip reason: units existed, none were picked. */
 export const NONE_WORKABLE = "none-workable";
@@ -43,10 +43,13 @@ export function oneShotWorkKinds(
   return order.filter((kind) => registeredKind(registry, kind).definition.oneShotEligible);
 }
 
-function registeredKind(registry: WorkKindRegistry, kind: string) {
+/**
+ * The registry lookup every walk-adjacent consumer shares. Unreachable after
+ * boot validation; a loud throw beats a silent no-op walk.
+ */
+export function registeredKind(registry: WorkKindRegistry, kind: string): RegisteredWorkKind {
   const registered = registry.get(kind);
   if (!registered) {
-    // Unreachable after boot validation; a loud throw beats a silent no-op walk.
     throw new Error(`Work kind "${kind}" is not registered.`);
   }
   return registered;
