@@ -266,7 +266,7 @@ describe("the stub's declared surface", () => {
   test("a method the test did not stub throws, naming itself", async () => {
     // The `issues` kind reaches `listReadyIssues`; nothing here supplies it.
     await expect(runCycle({ github: {}, config: { workOrder: ["issues"] } })).rejects.toThrow(
-      /github\.listReadyIssues\(\) was called, but this test did not stub it/,
+      /listReadyIssues\(\) was called, but this test did not stub it/,
     );
   });
 });

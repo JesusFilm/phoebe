@@ -21,7 +21,24 @@ import { describe, expect, test } from "vite-plus/test";
 import { readConfigDir } from "../bootstrap/config-dir.ts";
 import { resolveConfig } from "./config-schema.ts";
 import { loadUserConfig } from "./load-config.ts";
-import { assertPromptFilesExist } from "./prompt.ts";
+import { assertPromptFilesExist as assertPromptFilesExistRaw } from "./prompt.ts";
+import { buildRegistry } from "./work-kinds/registry.ts";
+
+/** The engine's boot check, driven the way `runEngine` drives it. */
+function assertPromptFilesExist(
+  config: ReturnType<typeof resolveConfig>,
+  runtimeRoot: string,
+): void {
+  const registry = buildRegistry(config);
+  assertPromptFilesExistRaw({
+    repoSlug: config.repoSlug,
+    runtimeRoot,
+    kinds: config.workOrder.map((kind) => ({
+      name: kind,
+      promptFile: registry.get(kind)!.definition.promptFile,
+    })),
+  });
+}
 
 const repoRoot = join(import.meta.dirname, "..");
 const SHIPPED_PROMPTS = join(repoRoot, "prompts");

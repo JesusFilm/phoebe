@@ -15,11 +15,31 @@
 
 export { defineConfig } from "./define-config.ts";
 export type {
+  CustomKindEntry,
   EngineSourceField,
   PhoebeConfig,
   PhoebeUserConfig,
   PathsConfig,
   PromptFilesConfig,
   ProviderName,
+  WorkKindOverride,
+  WorkKindsField,
   WorkspaceField,
 } from "../src/config-schema.ts";
+// The work-kind authoring surface (#303): everything a tenant kind module
+// needs, type-only — kind code can never value-import the engine (no
+// node_modules is reachable from the container mount), so modules type
+// themselves with `satisfies WorkKindDefinition<G, U>` under `import type`.
+export type {
+  AgentHelpers,
+  AgentWorkflowOutcome,
+  CycleServices,
+  WorkKindCtx,
+  WorkKindDefinition,
+  WorkKindRunCtx,
+  WorkKindSelection,
+  WorkKindSkip,
+  WorkspaceHandle,
+  WorkUnitGitHubTarget,
+  WorkUnitShape,
+} from "../src/work-kinds/definition.ts";

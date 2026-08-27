@@ -8,7 +8,19 @@ import { asPrNumber, asSha, type PrNumber } from "./branded.ts";
 import type { CycleGitHubClient, GitHubClient } from "./github-client.ts";
 import type { OriginHub } from "./origin-hub.ts";
 import { issueBranch } from "./orchestrator.ts";
+import { resolveConfig } from "./config-schema.ts";
 import { createWorkSource } from "./cycle-work-source.ts";
+import { buildRegistry } from "./work-kinds/registry.ts";
+import type { ChecksCandidate } from "./orchestrator.ts";
+
+const TEST_CONFIG = resolveConfig({
+  repoSlug: "acme/widget",
+  repoUrl: "https://github.com/acme/widget.git",
+  installCommand: "npm ci",
+  checkCommand: "npm run check",
+  testCommand: "npm test",
+});
+const TEST_REGISTRY = buildRegistry(TEST_CONFIG);
 
 // ---------------------------------------------------------------------------
 // Minimal stubs
@@ -66,6 +78,7 @@ function checksGitHub(opts: {
     prCommentBodies: () => [],
     resolveLogin: () => "phoebe-bot",
     reviewThreads: () => [],
+    commitCheckItems: () => failingCheckItems(),
   } as unknown as CycleGitHubClient;
 
   return {
@@ -108,7 +121,8 @@ describe("cycle-scoped issue-body cache", () => {
       originHub: noopOriginHub(),
       clock: stubClock,
       env: {},
-      defaultBranchRef: issueBranch(99),
+      config: TEST_CONFIG,
+      registry: TEST_REGISTRY,
     });
 
     await workSource.gatherCycle(["checks"]);
@@ -123,7 +137,8 @@ describe("cycle-scoped issue-body cache", () => {
       originHub: noopOriginHub(),
       clock: stubClock,
       env: {},
-      defaultBranchRef: issueBranch(99),
+      config: TEST_CONFIG,
+      registry: TEST_REGISTRY,
     });
 
     await workSource.gatherCycle(["checks"]);
@@ -157,6 +172,7 @@ describe("cycle-scoped issue-body cache", () => {
       prCommentBodies: () => [],
       resolveLogin: () => "phoebe-bot",
       reviewThreads: () => [],
+      commitCheckItems: () => failingCheckItems(),
     } as unknown as CycleGitHubClient;
 
     const github: GitHubClient = {
@@ -174,7 +190,8 @@ describe("cycle-scoped issue-body cache", () => {
       originHub,
       clock: stubClock,
       env: {},
-      defaultBranchRef: issueBranch(99),
+      config: TEST_CONFIG,
+      registry: TEST_REGISTRY,
     });
 
     // checks produces PR #10 as a failing-check candidate (populates body 55).
@@ -209,6 +226,7 @@ describe("issue-body error isolation", () => {
       prCommentBodies: () => [],
       resolveLogin: () => "phoebe-bot",
       reviewThreads: () => [],
+      commitCheckItems: () => failingCheckItems(),
     } as unknown as CycleGitHubClient;
 
     const github: GitHubClient = {
@@ -228,11 +246,13 @@ describe("issue-body error isolation", () => {
       originHub: noopOriginHub(),
       clock: stubClock,
       env: {},
-      defaultBranchRef: issueBranch(99),
+      config: TEST_CONFIG,
+      registry: TEST_REGISTRY,
     });
 
-    const record = await workSource.gatherCycle(["checks"]);
+    const { record } = await workSource.gatherCycle(["checks"]);
     // PR #20 (issue 77, unreadable body) is dropped; PR #21 (issue 78) survives.
-    expect(record.failingCheckPrs.map((p) => Number(p.prNumber))).toEqual([21]);
+    const checks = record.gathered.get("checks") as { candidates: ChecksCandidate[] };
+    expect(checks.candidates.map((p) => Number(p.prNumber))).toEqual([21]);
   });
 });

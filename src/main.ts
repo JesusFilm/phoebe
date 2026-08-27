@@ -28,7 +28,7 @@ import { execFileSync, execSync } from "node:child_process";
 import type { PhoebeConfig } from "./config-schema.ts";
 import { selectProviderForKind } from "./provider-selection.ts";
 import { detectAppCredentials, mintInstallationToken } from "./gh-app.ts";
-import { asBranchRef, asPrNumber, type BranchRef, type PrNumber, type Sha } from "./branded.ts";
+import { asBranchRef, asPrNumber, type BranchRef, type PrNumber } from "./branded.ts";
 import {
   createGitHubClient,
   type GitHubClient,
@@ -82,45 +82,34 @@ import {
 } from "./prompt.ts";
 import {
   buildInitialPrBody,
-  buildReviewsHandledComment,
-  checksFixFailureComment,
-  conflictFixFailureComment,
   followUpPrComment,
-  formatFailingChecksForPrompt,
-  isReviewSummaryComment,
   issueBranch,
-  newestReviewThreadCommentCreatedAt,
-  parseIssueNumberFromBranch,
-  getMergedBlockerPrNumbers,
-  oneShotWorkKinds,
-  stackedCatchUpRetractionComment,
   stackedPrComment,
   RUN_ONCE_NOTHING_MESSAGE,
-  selectFirstWorkUnit,
-  unresolvedBlockerNumbers,
-  shouldPostChecksFixFailure,
-  shouldPostConflictFixFailure,
   validateWorkOrder,
-  type BlockerPrState,
-  type ChecksCandidate,
-  type ChecksFailWatermark,
-  type ConflictingPrCandidate,
-  type ConflictFailWatermark,
-  type Issue,
   type StackedOn,
-  type IssueWorkUnit,
-  type ReviewsCandidate,
-  type StackContext,
-  type WorkKindName,
-  type WorkUnit,
-  type WorkUnitSkip,
 } from "./orchestrator.ts";
 import {
   createWorkSource,
   type Clock,
-  type CycleRecord,
+  type GatheredCycle,
   type WorkSource,
 } from "./cycle-work-source.ts";
+import type {
+  AgentHelpers,
+  AgentWorkflowOutcome,
+  WorkKindCtx,
+  WorkKindRunCtx,
+  WorkUnitGitHubTarget,
+} from "./work-kinds/definition.ts";
+import { buildRegistry, type WorkKindRegistry } from "./work-kinds/registry.ts";
+import {
+  NONE_WORKABLE,
+  oneShotWorkKinds,
+  selectFirstWorkUnit,
+  type PickedWorkUnit,
+  type WorkUnitSkip,
+} from "./work-kinds/walk.ts";
 
 // ---------------------------------------------------------------------------
 // Credential arm selection
@@ -155,14 +144,6 @@ const SHELL_COMMAND_TIMEOUT_MS = 600_000;
 //   "failed"     — could not even start/finish the merge (e.g. worktree setup);
 //                  no conflicts were observed.
 type CleanMergeOutcome = "pushed" | "conflicted" | "failed";
-
-type AgentWorkflowResult = {
-  worktreeDir: string;
-  branch: BranchRef;
-  originShaBefore: Sha;
-  originShaAfter: Sha;
-  localCommitCount: number;
-};
 
 // ---------------------------------------------------------------------------
 // Helpers that hold no engine state
@@ -209,48 +190,14 @@ function loadPromptTemplate(relativePath: string): string {
   return loadPromptTemplateFromRoot(relativePath, process.cwd());
 }
 
-/**
- * Why nothing was workable, naming the blockers when there are any — the bare
- * count is indistinguishable from a legitimate wait (#219).
- */
-function idleBlockerReason(
-  issues: readonly Issue[],
-  blockerStates: ReadonlyMap<number, BlockerPrState>,
-  phoebeBase?: string,
-): string {
-  const waiting = unresolvedBlockerNumbers(issues, blockerStates, phoebeBase);
-  return waiting.length > 0
-    ? `(waiting on blockers ${waiting.map((n) => `#${n}`).join(", ")})`
-    : "(blocked or waiting on blocker PR)";
+/** The observability identity of a picked unit: (kind, ref) (#73/#75/#348). */
+function unitRefOf(picked: PickedWorkUnit): UnitRef {
+  return { kind: picked.kind, id: picked.unit.ref };
 }
 
-/** The observability identity of a picked unit: (kind, id) (#73/#75). */
-function unitRef(picked: WorkUnit): UnitRef {
-  if (picked.kind === "issues" || picked.kind === "research") {
-    return { kind: picked.kind, id: String(picked.unit.issue.number) };
-  }
-  return { kind: picked.kind, id: String(picked.unit.prNumber) };
-}
-
-function describeUnit(picked: WorkUnit): string {
-  if (picked.kind === "conflicts") {
-    const unit = picked.unit;
-    return `conflict fix for PR #${unit.prNumber} (${unit.headRefName})`;
-  }
-  if (picked.kind === "checks") {
-    const unit = picked.unit;
-    return `checks fix for PR #${unit.prNumber} (${unit.headRefName})`;
-  }
-  if (picked.kind === "reviews") {
-    const unit = picked.unit;
-    return `review feedback for PR #${unit.prNumber} (${unit.headRefName})`;
-  }
-  if (picked.kind === "research") {
-    const unit = picked.unit;
-    return `research ticket #${unit.issue.number} — base ${unit.resolution.worktreeBase}`;
-  }
-  const unit = picked.unit;
-  return `issue #${unit.issue.number} — base ${unit.resolution.worktreeBase}`;
+/** How the kind itself names this unit — the definition owns the words. */
+function describeUnit(picked: PickedWorkUnit): string {
+  return picked.definition.report.describe(picked.unit);
 }
 
 // ---------------------------------------------------------------------------
@@ -275,6 +222,12 @@ export type EngineRunOptions = {
 export type EngineOptions = {
   /** This tenant's resolved config — passed in, never read from a module-level holder. */
   config: PhoebeConfig;
+  /**
+   * The assembled work-kind registry (#303): built-ins plus this tenant's
+   * custom kinds. Defaults to built-ins only — the CLI path assembles the full
+   * registry (custom kind modules load asynchronously) and passes it in.
+   */
+  registry?: WorkKindRegistry;
   /**
    * The engine's environment. Pass the live `process.env` in production: the
    * loop rewrites `GH_TOKEN` on it in place at each credential lease, and the
@@ -329,6 +282,7 @@ export type Engine = {
 export function createEngine(options: EngineOptions): Engine {
   const { config, env, drain, slotClient, credentialClient, emitUnitEvent } = options;
   const { runOnce, dryRun, pollIntervalMs } = options.run;
+  const registry = options.registry ?? buildRegistry(config);
   const git = options.git ?? defaultGit;
   const clock = options.clock ?? defaultClock;
   // Every `gh` call the engine makes goes through this client
@@ -364,7 +318,6 @@ export function createEngine(options: EngineOptions): Engine {
   const credentialBudgetMs = runTimeoutMs + 10 * 60 * 1000;
 
   const prBase = config.defaultBranch;
-  const defaultBranchRef = asBranchRef(config.defaultBranch);
 
   const inContainer = isInsideContainer();
   const hub = options.originHub ?? createOriginHub(config, inContainer, git);
@@ -376,33 +329,44 @@ export function createEngine(options: EngineOptions): Engine {
   /**
    * Which provider CLI, model, and effort one unit of `kind` runs with. The
    * resolution ladder — per-kind env → per-kind config (`workKinds`) → global
-   * env → repo defaults — is pure, in provider-selection.ts (#300); this
-   * wrapper only maps the resolved name to the actual `Provider`.
+   * env → definition defaults → repo defaults — is pure, in
+   * provider-selection.ts (#300/#303); this wrapper only maps the resolved
+   * name to the actual `Provider`.
    */
-  function selectProvider(kind: WorkKindName): {
+  function selectProvider(picked: PickedWorkUnit): {
     provider: Provider;
     model: string;
     effort: string | undefined;
   } {
-    const picked = selectProviderForKind({ kind, env, config });
-    return { provider: PROVIDERS[picked.provider], model: picked.model, effort: picked.effort };
+    const { definition } = picked;
+    const selection = selectProviderForKind({
+      kind: picked.kind,
+      env,
+      config,
+      definitionDefaults: {
+        ...(definition.model !== undefined ? { model: definition.model } : {}),
+        ...(definition.effort !== undefined ? { effort: definition.effort } : {}),
+      },
+    });
+    return {
+      provider: PROVIDERS[selection.provider],
+      model: selection.model,
+      effort: selection.effort,
+    };
   }
 
-  const workOrder = validateWorkOrder(config.workOrder);
+  const workOrder = validateWorkOrder(config.workOrder, [...registry.keys()]);
 
   /**
-   * Phoebe's own login, resolved when this cycle has not already. Only the
-   * `reviews` kind's fetch resolves it, but any kind can reach a comparison
-   * against it, and there is deliberately no placeholder to stand in: `""` would
-   * be a login like any other, and the login a deleted account does not have used
-   * to be `""` too — so Phoebe's own timeout markers could read as foreign
-   * activity, or a ghost's comment as Phoebe's. The lookups this covers are rare,
-   * so paying for one is cheaper than carrying a value that can lie.
+   * Phoebe's own login, for the quarantine write path. There is deliberately
+   * no placeholder to stand in for an unresolved login: `""` would be a login
+   * like any other, and the login a deleted account does not have used to be
+   * `""` too — so Phoebe's own timeout markers could read as foreign activity,
+   * or a ghost's comment as Phoebe's. The lookups this covers are rare, so
+   * paying for one is cheaper than carrying a value that can lie.
    */
-  function resolvePhoebeLogin(cycleLogin: string | undefined): string {
-    // `||`, not `??`: an empty login is exactly the placeholder this exists to
-    // keep out of a comparison, so it counts as unresolved too.
-    return cycleLogin || github.resolveLogin(env["PHOEBE_GH_LOGIN"]);
+  function resolvePhoebeLogin(): string {
+    return github.resolveLogin(env["PHOEBE_GH_LOGIN"]);
   }
 
   // --- Poison-unit quarantine write path (#75) ---------------------------------
@@ -413,27 +377,43 @@ export function createEngine(options: EngineOptions): Engine {
   // re-picked. Kept thin over the GitHub client; the count/threshold policy is
   // pure in quarantine.ts (`decideTimeoutRecord`).
 
+  // Timeout counts for units with no GitHub escalation surface (no `github`
+  // target on the unit): counted in memory, keyed `(kind, ref)`, so the
+  // degraded path still notices a repeat offender within this process's life.
+  const inMemoryTimeoutCounts = new Map<string, number>();
+
   /**
    * Record one whole-unit timeout toward the poison-unit quarantine (#75): read the
    * latest timeout marker on the unit, post the incremented count, and at K apply
    * `phoebe:quarantined` + the escalation comment so selection starts skipping it.
    * Best-effort — a GitHub write failure here is logged and swallowed so it can
    * never take the daemon down (the timeout itself is already recorded).
+   *
+   * The write target is the unit's structural `github` field (#352): a unit
+   * without one gets in-memory counting and a logged no-escalation-surface
+   * degraded behavior instead of a crash.
    */
-  function recordUnitTimeout(
-    picked: WorkUnit,
-    cycleLogin: string | undefined,
-    emit: EmitUnitEvent,
-  ): void {
-    const ref = unitRef(picked);
-    const isIssueKind = picked.kind === "issues" || picked.kind === "research";
-    const target: UnitTarget = { objectType: isIssueKind ? "issue" : "pr", id: Number(ref.id) };
+  function recordUnitTimeout(picked: PickedWorkUnit, emit: EmitUnitEvent): void {
+    const ref = unitRefOf(picked);
+    const ghTarget: WorkUnitGitHubTarget | undefined = picked.unit.github;
+    if (!ghTarget) {
+      const key = `${ref.kind} ${ref.id}`;
+      const count = (inMemoryTimeoutCounts.get(key) ?? 0) + 1;
+      inMemoryTimeoutCounts.set(key, count);
+      console.warn(
+        `[phoebe] ${ref.kind} ${ref.id} timed out ${count}× — the unit carries no GitHub ` +
+          `target, so there is no escalation surface; counting in memory only.`,
+      );
+      return;
+    }
+    const target: UnitTarget = ghTarget;
     try {
-      const login = resolvePhoebeLogin(cycleLogin);
+      const login = resolvePhoebeLogin();
       const k = resolveMaxUnitTimeouts(env, config.maxUnitTimeouts);
-      const inputs = isIssueKind
-        ? github.issueTimeoutInputs(target.id)
-        : github.prTimeoutInputs(asPrNumber(target.id));
+      const inputs =
+        target.objectType === "issue"
+          ? github.issueTimeoutInputs(target.id)
+          : github.prTimeoutInputs(asPrNumber(target.id));
       const { count, quarantine } = decideTimeoutRecord({
         comments: inputs.comments,
         phoebeLogin: login,
@@ -460,7 +440,7 @@ export function createEngine(options: EngineOptions): Engine {
       }
     } catch (error) {
       console.error(
-        `[phoebe] Could not record timeout toward quarantine for ${ref.kind} #${ref.id} — ` +
+        `[phoebe] Could not record timeout toward quarantine for ${ref.kind} ${ref.id} — ` +
           `${error instanceof Error ? error.message : String(error)}`,
       );
     }
@@ -588,23 +568,6 @@ export function createEngine(options: EngineOptions): Engine {
   }
 
   // ---------------------------------------------------------------------------
-  // Failure watermarks — snapshot origin state around an agent run
-  // ---------------------------------------------------------------------------
-
-  function currentConflictFailureWatermark(branch: BranchRef): ConflictFailWatermark {
-    hub.fetch();
-    return {
-      prHead: hub.branchHead(branch),
-      mainHead: hub.branchHead(defaultBranchRef),
-    };
-  }
-
-  function currentChecksFailureWatermark(branch: BranchRef): ChecksFailWatermark {
-    hub.fetch();
-    return { prHead: hub.branchHead(branch) };
-  }
-
-  // ---------------------------------------------------------------------------
   // Work-unit execution
   // ---------------------------------------------------------------------------
 
@@ -626,12 +589,12 @@ export function createEngine(options: EngineOptions): Engine {
    * kind's runner funnels through here.
    */
   async function runAgentInWorktree(opts: {
-    kind: WorkKindName;
+    picked: PickedWorkUnit;
     worktreeDir: string;
     promptFile: string;
     promptArgs: Record<string, string>;
   }): Promise<void> {
-    const { provider, model, effort } = selectProvider(opts.kind);
+    const { provider, model, effort } = selectProvider(opts.picked);
     // Caller-supplied per-callsite args (ISSUE_NUMBER, PR_NUMBER, …) override
     // the standard config-derived set by key.
     const prompt = renderPrompt(
@@ -731,18 +694,20 @@ export function createEngine(options: EngineOptions): Engine {
   }
 
   /**
-   * The shared skeleton behind every PR-fix agent: snapshot origin, prepare a
-   * worktree, install, optionally prime the tree, run the agent, then re-snapshot
-   * origin and count the host-side commits. Only `onResult` differs per work kind
-   * (push vs. failure comment vs. watermark); the worktree is always removed.
+   * The shared skeleton behind every PR-fix agent (`agent.prWorkflow`):
+   * snapshot origin, prepare a worktree on the PR branch, install, optionally
+   * prime the tree, run the agent, then re-snapshot origin and count the
+   * host-side commits. Only `onResult` differs per work kind (push vs. failure
+   * comment vs. watermark); the worktree is always removed.
    */
   async function runAgentWorkflow(opts: {
-    kind: WorkKindName;
+    picked: PickedWorkUnit;
     pr: { prNumber: PrNumber; headRefName: BranchRef };
     promptFile: string;
     promptArgs: Record<string, string>;
+    primeBlockerMerges?: readonly PrNumber[];
     beforeAgent?: (worktreeDir: string) => void;
-    onResult: (result: AgentWorkflowResult) => void | Promise<void>;
+    onResult: (outcome: AgentWorkflowOutcome) => void | Promise<void>;
   }): Promise<void> {
     const branch = opts.pr.headRefName;
 
@@ -752,10 +717,15 @@ export function createEngine(options: EngineOptions): Engine {
     const worktreeDir = prepareWorktree({ branch });
     try {
       runShellCommand(config.installCommand, worktreeDir, env);
+      // Presence, not length: an empty list still primes the tree with the
+      // default-branch merge (reproducing the conflict for the agent to solve).
+      if (opts.primeBlockerMerges !== undefined) {
+        attemptBlockerFirstMerges(worktreeDir, opts.primeBlockerMerges);
+      }
       opts.beforeAgent?.(worktreeDir);
 
       await runAgentInWorktree({
-        kind: opts.kind,
+        picked: opts.picked,
         worktreeDir,
         promptFile: opts.promptFile,
         promptArgs: opts.promptArgs,
@@ -771,267 +741,11 @@ export function createEngine(options: EngineOptions): Engine {
         originShaBefore,
         originShaAfter,
         localCommitCount,
+        push: () => hub.pushBranch(worktreeDir, branch),
       });
     } finally {
       hub.removeWorktree(worktreeDir);
     }
-  }
-
-  /**
-   * The `conflicts` agent pass: prime the worktree with blocker-first merges,
-   * let the agent resolve what remains, then push — or post the failure
-   * comment with a fresh watermark when it produced nothing.
-   */
-  async function runConflictResolutionAgent(
-    pr: ConflictingPrCandidate,
-    mergedBlockerPrNumbers: readonly PrNumber[],
-  ): Promise<void> {
-    await runAgentWorkflow({
-      kind: "conflicts",
-      pr,
-      promptFile: config.promptFiles.conflict,
-      promptArgs: {
-        PR_NUMBER: String(pr.prNumber),
-        PR_BRANCH: pr.headRefName,
-        BLOCKER_PR_NUMBERS: mergedBlockerPrNumbers.join(","),
-      },
-      beforeAgent: (worktreeDir) => attemptBlockerFirstMerges(worktreeDir, mergedBlockerPrNumbers),
-      onResult: ({ worktreeDir, branch, originShaBefore, originShaAfter, localCommitCount }) => {
-        const prInfo = github.currentMergeInfo(pr.prNumber);
-        if (
-          shouldPostConflictFixFailure({
-            hostCommitCount: localCommitCount,
-            originShaBefore,
-            originShaAfter,
-            mergeable: prInfo.mergeable,
-            mergeStateStatus: prInfo.mergeStateStatus,
-          })
-        ) {
-          console.log(
-            `[phoebe] Conflict fix for PR #${pr.prNumber} produced no commits — leaving PR unchanged.`,
-          );
-          github.postPrComment(
-            pr.prNumber,
-            conflictFixFailureComment(pr.prNumber, currentConflictFailureWatermark(pr.headRefName)),
-          );
-        } else if (localCommitCount > 0) {
-          hub.pushBranch(worktreeDir, branch);
-          console.log(`[phoebe] Conflict resolved for PR #${pr.prNumber} — pushed.`);
-        } else {
-          console.log(
-            `[phoebe] Conflict resolved for PR #${pr.prNumber} — already pushed by agent.`,
-          );
-        }
-      },
-    });
-  }
-
-  /**
-   * Work one `conflicts` unit end to end: try the no-agent clean merge first
-   * (blockers, then the default branch), and only bring in the agent when real
-   * conflicts remain. A merge that fails without unresolved paths — worktree
-   * setup died, or the merge broke for some other reason — posts the failure
-   * comment and skips: there is nothing there for the agent to resolve.
-   */
-  async function fixOnePrConflict(pr: ConflictingPrCandidate, ctx: StackContext): Promise<void> {
-    console.log(`[phoebe] Conflict fix: PR #${pr.prNumber} (${pr.headRefName}).`);
-    hub.fetch();
-
-    const issueNumber = pr.issueNumber ?? parseIssueNumberFromBranch(pr.headRefName);
-    const body = issueNumber !== null ? (ctx.issueBodies.get(issueNumber) ?? "") : "";
-    const mergedBlockerPrNumbers = getMergedBlockerPrNumbers(body, ctx.blockerStates);
-    if (mergedBlockerPrNumbers.length > 0) {
-      console.log(
-        `[phoebe] Stacked catch-up: merging blocker PR(s) ${mergedBlockerPrNumbers.map((n) => `#${n}`).join(", ")} before ${config.defaultBranch}.`,
-      );
-    }
-
-    const cleanResult = tryCleanMerge(pr.headRefName, mergedBlockerPrNumbers);
-    if (cleanResult === "pushed") {
-      console.log(`[phoebe] Clean merge for PR #${pr.prNumber} — pushed.`);
-      if (mergedBlockerPrNumbers.length > 0) {
-        github.postPrComment(pr.prNumber, stackedCatchUpRetractionComment(mergedBlockerPrNumbers));
-      }
-      return;
-    }
-    if (cleanResult === "failed") {
-      console.log(`[phoebe] Could not start merge for PR #${pr.prNumber} — skipping.`);
-      github.postPrComment(
-        pr.prNumber,
-        conflictFixFailureComment(pr.prNumber, currentConflictFailureWatermark(pr.headRefName)),
-      );
-      return;
-    }
-
-    await runConflictResolutionAgent(pr, mergedBlockerPrNumbers);
-  }
-
-  /**
-   * The `checks` agent pass: hand the failing checks to the agent, push what
-   * it committed — or post the failure comment with a fresh watermark when it
-   * produced nothing, so the PR is not re-picked until something changes.
-   */
-  async function runChecksResolutionAgent(pr: ChecksCandidate): Promise<void> {
-    await runAgentWorkflow({
-      kind: "checks",
-      pr,
-      promptFile: config.promptFiles.checks,
-      promptArgs: {
-        PR_NUMBER: String(pr.prNumber),
-        PR_BRANCH: pr.headRefName,
-        FAILING_CHECKS: formatFailingChecksForPrompt(pr.failingChecks),
-      },
-      onResult: ({ worktreeDir, branch, originShaBefore, originShaAfter, localCommitCount }) => {
-        if (
-          shouldPostChecksFixFailure({
-            hostCommitCount: localCommitCount,
-            originShaBefore,
-            originShaAfter,
-          })
-        ) {
-          console.log(
-            `[phoebe] Checks fix for PR #${pr.prNumber} produced no commits — leaving PR unchanged.`,
-          );
-          github.postPrComment(
-            pr.prNumber,
-            checksFixFailureComment(pr.prNumber, currentChecksFailureWatermark(pr.headRefName)),
-          );
-        } else if (localCommitCount > 0) {
-          hub.pushBranch(worktreeDir, branch);
-          console.log(`[phoebe] Checks fixed for PR #${pr.prNumber} — pushed.`);
-        } else {
-          console.log(`[phoebe] Checks fixed for PR #${pr.prNumber} — already pushed by agent.`);
-        }
-      },
-    });
-  }
-
-  /**
-   * Work one `checks` unit end to end: a PR that is merely BEHIND gets a
-   * catch-up merge first (CI may pass once caught up, no agent needed). A
-   * catch-up that conflicts — or fails outright — defers to the `conflicts`
-   * kind instead of running the checks agent; otherwise the checks agent runs.
-   */
-  async function fixOnePrChecks(pr: ChecksCandidate, ctx: StackContext): Promise<void> {
-    console.log(
-      `[phoebe] Checks fix: PR #${pr.prNumber} (${pr.headRefName}) — ` +
-        `${pr.failingChecks.map((c) => c.name).join(", ")}.`,
-    );
-    hub.fetch();
-
-    if (pr.mergeStateStatus === "BEHIND") {
-      const issueNumber = pr.issueNumber ?? parseIssueNumberFromBranch(pr.headRefName);
-      const body = issueNumber !== null ? (ctx.issueBodies.get(issueNumber) ?? "") : "";
-      const mergedBlockerPrNumbers = getMergedBlockerPrNumbers(body, ctx.blockerStates);
-      if (mergedBlockerPrNumbers.length > 0) {
-        console.log(
-          `[phoebe] Behind main — catch-up merging blocker PR(s) ${mergedBlockerPrNumbers.map((n) => `#${n}`).join(", ")} before ${config.defaultBranch}.`,
-        );
-      } else {
-        console.log(`[phoebe] Behind main — catch-up merge for PR #${pr.prNumber}.`);
-      }
-
-      const cleanResult = tryCleanMerge(pr.headRefName, mergedBlockerPrNumbers);
-      if (cleanResult === "pushed") {
-        console.log(
-          `[phoebe] Catch-up merge for PR #${pr.prNumber} — pushed; waiting for CI on next cycle.`,
-        );
-        if (mergedBlockerPrNumbers.length > 0) {
-          github.postPrComment(
-            pr.prNumber,
-            stackedCatchUpRetractionComment(mergedBlockerPrNumbers),
-          );
-        }
-        return;
-      }
-      if (cleanResult === "conflicted" || cleanResult === "failed") {
-        console.log(
-          `[phoebe] Catch-up merge conflicted for PR #${pr.prNumber} — deferring to conflicts mode.`,
-        );
-        return;
-      }
-    }
-
-    await runChecksResolutionAgent(pr);
-  }
-
-  function hasNewReviewSummaryComment(
-    prNumber: PrNumber,
-    phoebeLogin: string,
-    since: string,
-  ): boolean {
-    return github
-      .reviewSummaryComments(prNumber)
-      .some(
-        (comment) =>
-          comment.authorLogin === phoebeLogin &&
-          comment.createdAt > since &&
-          isReviewSummaryComment(comment.body),
-      );
-  }
-
-  /**
-   * The `reviews` agent pass: run the agent over the feedback, push any
-   * commits, then post the handled-watermark comment — built from the pre-run
-   * activity snapshot, so feedback posted mid-run still re-selects the PR —
-   * marking the unit failed when there was neither a push nor a summary.
-   */
-  async function runReviewsResolutionAgent(
-    pr: ReviewsCandidate,
-    phoebeLogin: string,
-  ): Promise<void> {
-    const runStartedAt = clock.now().toISOString();
-    await runAgentWorkflow({
-      kind: "reviews",
-      pr,
-      promptFile: config.promptFiles.reviews,
-      promptArgs: {
-        PR_NUMBER: String(pr.prNumber),
-        PR_BRANCH: pr.headRefName,
-      },
-      onResult: ({ worktreeDir, branch, originShaBefore, originShaAfter, localCommitCount }) => {
-        if (localCommitCount > 0) {
-          hub.pushBranch(worktreeDir, branch);
-          console.log(`[phoebe] Review feedback handled for PR #${pr.prNumber} — pushed.`);
-        } else if (originShaAfter !== originShaBefore) {
-          console.log(
-            `[phoebe] Review feedback handled for PR #${pr.prNumber} — already pushed by agent.`,
-          );
-        }
-
-        const hasSummary = hasNewReviewSummaryComment(pr.prNumber, phoebeLogin, runStartedAt);
-        const pushed = localCommitCount > 0 || originShaAfter !== originShaBefore;
-        // Watermark only the activity captured before the agent ran (pr.threads is
-        // the pre-run snapshot from gatherCycle). Re-fetching here could
-        // absorb feedback posted concurrently with the run — marking it handled
-        // even though the agent never observed it, so it would never trigger another
-        // cycle. Any activity newer than this snapshot correctly re-selects the PR.
-        const latestActivityAt = newestReviewThreadCommentCreatedAt(pr.threads);
-
-        if (hasSummary) {
-          console.log(`[phoebe] Review summary posted for PR #${pr.prNumber}.`);
-        } else if (!pushed) {
-          console.log(
-            `[phoebe] Review handling for PR #${pr.prNumber} produced no summary or push.`,
-          );
-        }
-
-        github.postPrComment(
-          pr.prNumber,
-          buildReviewsHandledComment({
-            latestActivityAt,
-            failed: !hasSummary && !pushed,
-          }),
-        );
-      },
-    });
-  }
-
-  /** Work one `reviews` unit: freshen origin, then run the reviews agent pass. */
-  async function fixOnePrReviews(pr: ReviewsCandidate, phoebeLogin: string): Promise<void> {
-    console.log(`[phoebe] Reviews fix: PR #${pr.prNumber} (${pr.headRefName}).`);
-    hub.fetch();
-    await runReviewsResolutionAgent(pr, phoebeLogin);
   }
 
   /**
@@ -1081,7 +795,7 @@ export function createEngine(options: EngineOptions): Engine {
    * commits, so no PR is opened; one that produces a committed doc does.
    */
   async function runOneIssue(opts: {
-    kind: WorkKindName;
+    picked: PickedWorkUnit;
     issueNumber: number;
     issueTitle: string;
     worktreeBase: string;
@@ -1109,7 +823,7 @@ export function createEngine(options: EngineOptions): Engine {
       runShellCommand(config.installCommand, worktreeDir, env);
 
       await runAgentInWorktree({
-        kind: opts.kind,
+        picked: opts.picked,
         worktreeDir,
         promptFile,
         promptArgs: { ISSUE_NUMBER: String(issueNumber), PR_BASE: intendedPrBase },
@@ -1154,47 +868,78 @@ export function createEngine(options: EngineOptions): Engine {
   }
 
   // ---------------------------------------------------------------------------
-  // Work-unit runners
+  // The run-ctx machinery: workspace + agent helpers for one picked unit
   // ---------------------------------------------------------------------------
 
-  /** Work one `issues` unit: `runOneIssue` under the issue prompt. */
-  async function runIssueUnit(unit: IssueWorkUnit): Promise<void> {
-    const { issue: target, resolution } = unit;
-    console.log(
-      `[phoebe] Working #${target.number} — base ${resolution.worktreeBase}` +
-        (resolution.stacked ? ` (stacked on #${resolution.blockerIssueNumber})` : "") +
-        ".",
-    );
-    await runOneIssue({
-      kind: "issues",
-      issueNumber: target.number,
-      issueTitle: target.title,
-      worktreeBase: resolution.worktreeBase,
-      stacked: resolution.stacked,
-      promptFile: config.promptFiles.issue,
-      blockerIssueNumber: resolution.blockerIssueNumber,
-      blockerPrNumber: resolution.blockerPrNumber,
-    });
+  /**
+   * The sanctioned agent machinery, scoped to one picked unit (#349): the
+   * low-level spawn (`run`), the two shared skeletons, and the no-agent clean
+   * merge. Prompt files default to the definition's own.
+   */
+  function createAgentHelpers(picked: PickedWorkUnit, workspaceDir: string): AgentHelpers {
+    const defaultPromptFile = picked.definition.promptFile;
+    return {
+      run: (opts = {}) =>
+        runAgentInWorktree({
+          picked,
+          worktreeDir: opts.worktreeDir ?? workspaceDir,
+          promptFile: opts.promptFile ?? defaultPromptFile,
+          promptArgs: opts.promptArgs ?? {},
+        }),
+      prWorkflow: (opts) =>
+        runAgentWorkflow({
+          picked,
+          pr: opts.pr,
+          promptFile: opts.promptFile ?? defaultPromptFile,
+          promptArgs: opts.promptArgs,
+          ...(opts.primeBlockerMerges !== undefined
+            ? { primeBlockerMerges: opts.primeBlockerMerges }
+            : {}),
+          ...(opts.beforeAgent !== undefined ? { beforeAgent: opts.beforeAgent } : {}),
+          onResult: opts.onResult,
+        }),
+      issueWorkflow: (opts) =>
+        runOneIssue({
+          picked,
+          issueNumber: opts.issueNumber,
+          issueTitle: opts.issueTitle,
+          worktreeBase: opts.worktreeBase,
+          stacked: opts.stacked,
+          promptFile: opts.promptFile ?? defaultPromptFile,
+          ...(opts.blockerIssueNumber !== undefined
+            ? { blockerIssueNumber: opts.blockerIssueNumber }
+            : {}),
+          ...(opts.blockerPrNumber !== undefined ? { blockerPrNumber: opts.blockerPrNumber } : {}),
+        }),
+      cleanMerge: (branch, blockerPrNumbers = []) => tryCleanMerge(branch, blockerPrNumbers),
+    };
   }
 
-  /** Work one `research` unit: `runOneIssue` under the research prompt. */
-  async function runResearchUnit(unit: IssueWorkUnit): Promise<void> {
-    const { issue: target, resolution } = unit;
-    console.log(
-      `[phoebe] Researching #${target.number} — base ${resolution.worktreeBase}` +
-        (resolution.stacked ? ` (stacked on #${resolution.blockerIssueNumber})` : "") +
-        ".",
-    );
-    await runOneIssue({
-      kind: "research",
-      issueNumber: target.number,
-      issueTitle: target.title,
-      worktreeBase: resolution.worktreeBase,
-      stacked: resolution.stacked,
-      promptFile: config.promptFiles.research,
-      blockerIssueNumber: resolution.blockerIssueNumber,
-      blockerPrNumber: resolution.blockerPrNumber,
+  /**
+   * Execute one picked unit through its definition's `run`: prepare the
+   * declared workspace (a scratch worktree off the default branch — the
+   * default cwd for a bare `agent.run`; the skeletons make their own
+   * branch-specific worktrees), widen the cycle ctx with the workspace and the
+   * agent helpers, and hand over. The workspace is always removed.
+   */
+  async function runPickedUnit(picked: PickedWorkUnit, ctx: WorkKindCtx): Promise<void> {
+    const workspaceBranch = asBranchRef(`${config.branchPrefix}workspace`);
+    hub.fetch();
+    const workspaceDir = prepareWorktree({
+      branch: workspaceBranch,
+      baseRef: `origin/${config.defaultBranch}`,
     });
+    try {
+      const runCtx: WorkKindRunCtx = {
+        ...ctx,
+        log: (message) => console.log(`[phoebe][${picked.kind} ${picked.unit.ref}] ${message}`),
+        workspace: { mode: "worktree", dir: workspaceDir },
+        agent: createAgentHelpers(picked, workspaceDir),
+      };
+      await picked.definition.run(picked.unit, runCtx);
+    } finally {
+      hub.removeWorktree(workspaceDir);
+    }
   }
 
   const workSource: WorkSource = createWorkSource({
@@ -1202,49 +947,23 @@ export function createEngine(options: EngineOptions): Engine {
     originHub: hub,
     clock,
     env,
-    defaultBranchRef,
+    config,
+    registry,
   });
 
-  /**
-   * How the idle report speaks about each kind: what this tenant calls its units,
-   * and — for the kinds whose selector lumps every skip rule into one `ineligible`
-   * count — which rules that count covers. `conflicts` reports its two rules apart
-   * and so needs no such phrase; `issues` and `research` have no `ineligible`
-   * count at all.
-   */
-  const KIND_REPORT: Record<WorkKindName, { noun: string; ineligibleCause?: string }> = {
-    conflicts: { noun: "conflicting PR(s)" },
-    checks: {
-      noun: "failing-CI PR(s)",
-      ineligibleCause: "conflicting, stacked, or watermarked",
-    },
-    reviews: {
-      noun: "review-feedback PR(s)",
-      ineligibleCause: "stacked, watermarked, or no new activity",
-    },
-    issues: { noun: `${config.readyLabel} issue(s)` },
-    research: { noun: `${config.researchLabel} ticket(s)` },
-  };
-
   /** One line of the idle report, rendered from one entry of the selection's record. */
-  function idleSkipLine(skip: WorkUnitSkip, record: CycleRecord): string {
-    const { noun, ineligibleCause } = KIND_REPORT[skip.kind];
-    if (skip.reason === "none-workable") {
-      if (skip.kind === "issues" || skip.kind === "research") {
-        const issues = skip.kind === "issues" ? record.issues : record.researchIssues;
-        const reason = idleBlockerReason(issues, record.blockerStates, env["PHOEBE_BASE"]);
-        return `${skip.count} ${noun} but none workable this cycle ${reason}.`;
-      }
-      return `${skip.count} ${noun} but none fixable this cycle.`;
+  function idleSkipLine(skip: WorkUnitSkip, cycle: GatheredCycle): string {
+    const registered = registry.get(skip.kind);
+    const report = registered?.definition.report;
+    const noun = report?.noun ?? skip.kind;
+    if (skip.reason === NONE_WORKABLE) {
+      return (
+        report?.idle?.(cycle.record.gathered.get(skip.kind), skip.count, cycle.ctxFor(skip.kind)) ??
+        `${skip.count} ${noun} but none workable this cycle.`
+      );
     }
-    const cause =
-      skip.reason === "stacked-on-blocker"
-        ? "stacked on open blocker"
-        : skip.reason === "unchanged-watermark"
-          ? "unchanged failure watermark"
-          : // A kind that has not spelled its rules out names the reason itself.
-            (ineligibleCause ?? skip.reason);
-    return `${skip.count} ${noun} skipped (${cause}).`;
+    // Kind-owned free-string reasons render verbatim (#348 Q5).
+    return `${skip.count} ${noun} skipped (${skip.reason}).`;
   }
 
   /**
@@ -1254,10 +973,10 @@ export function createEngine(options: EngineOptions): Engine {
    * this cycle is idle, and the kinds behind it in `workOrder` would not have run
    * anyway.
    */
-  function logIdleCycle(record: CycleRecord, skipped: readonly WorkUnitSkip[]): void {
+  function logIdleCycle(cycle: GatheredCycle, skipped: readonly WorkUnitSkip[]): void {
     for (const skip of skipped) {
-      console.log(`[phoebe] ${idleSkipLine(skip, record)}`);
-      if (skip.reason === "none-workable") {
+      console.log(`[phoebe] ${idleSkipLine(skip, cycle)}`);
+      if (skip.reason === NONE_WORKABLE) {
         return;
       }
     }
@@ -1375,26 +1094,20 @@ export function createEngine(options: EngineOptions): Engine {
       if (!dryRun) {
         sweepQuarantine("content-advanced");
       }
-      const fetchKinds = runOnce ? oneShotWorkKinds(workOrder) : workOrder;
-      const record = await workSource.gatherCycle(fetchKinds);
-      const { unit: picked, skipped } = selectFirstWorkUnit(record.kindsGathered, {
-        issues: record.issues,
-        researchIssues: record.researchIssues,
-        blockerStates: record.blockerStates,
-        conflictingPrs: record.conflictingPrs,
-        failingCheckPrs: record.failingCheckPrs,
-        reviewActivityPrs: record.reviewActivityPrs,
-        issueBodies: record.issueBodies,
-        phoebeBase: env["PHOEBE_BASE"],
-        phoebeLogin: record.phoebeLogin,
-        currentMainHead: record.currentMainHead,
+      const fetchKinds = runOnce ? oneShotWorkKinds(workOrder, registry) : workOrder;
+      const cycle = await workSource.gatherCycle(fetchKinds);
+      const { unit: picked, skipped } = selectFirstWorkUnit({
+        registry,
+        kinds: cycle.record.kindsGathered,
+        gathered: cycle.record.gathered,
+        ctxFor: cycle.ctxFor,
       });
 
       if (!picked) {
         if (runOnce) {
           console.log(RUN_ONCE_NOTHING_MESSAGE);
         } else {
-          logIdleCycle(record, skipped);
+          logIdleCycle(cycle, skipped);
         }
         if (runOnce || dryRun) break;
         // Interruptible idle poll — a SIGTERM mid-sleep wakes it, the next
@@ -1482,33 +1195,10 @@ export function createEngine(options: EngineOptions): Engine {
         break;
       }
 
-      const ref = unitRef(picked);
+      const ref = unitRefOf(picked);
       emitUnitEvent({ unit: ref, event: "started" });
       try {
-        const stack = { issueBodies: record.issueBodies, blockerStates: record.blockerStates };
-        switch (picked.kind) {
-          case "conflicts":
-            await fixOnePrConflict(picked.unit, stack);
-            break;
-          case "checks":
-            await fixOnePrChecks(picked.unit, stack);
-            break;
-          case "reviews":
-            await fixOnePrReviews(picked.unit, resolvePhoebeLogin(record.phoebeLogin));
-            break;
-          case "issues":
-            await runIssueUnit(picked.unit);
-            break;
-          case "research":
-            await runResearchUnit(picked.unit);
-            break;
-          default: {
-            const _exhaustive: never = picked;
-            throw new Error(
-              `Unhandled work kind: ${String((_exhaustive as { kind: string }).kind)}`,
-            );
-          }
-        }
+        await runPickedUnit(picked, cycle.ctxFor(picked.kind));
         emitUnitEvent({ unit: ref, event: "completed" });
       } catch (error) {
         if (error instanceof RunTimeoutError) {
@@ -1522,7 +1212,7 @@ export function createEngine(options: EngineOptions): Engine {
           });
           // Count this timeout on the unit and, at K consecutive, quarantine it so
           // a genuinely poisonous unit stops being re-picked forever (#75).
-          recordUnitTimeout(picked, record.phoebeLogin, emitUnitEvent);
+          recordUnitTimeout(picked, emitUnitEvent);
         } else {
           // A non-timeout failure: clear the current unit and record the error so
           // `phoebe list` shows it (the durable record is still the per-work-kind
@@ -1577,13 +1267,24 @@ export function createEngine(options: EngineOptions): Engine {
 export async function runEngine(
   config: PhoebeConfig,
   argv: readonly string[] = process.argv.slice(2),
+  registry: WorkKindRegistry = buildRegistry(config),
 ): Promise<void> {
   // Before anything else, and before a dry run too: a prompt this tenant cannot
   // load is a startup failure, not a surprise weeks later when the first unit of
   // that kind is dispatched (#164). Scoped to the validated work order — only
-  // the kinds this tenant can actually dispatch need a prompt. The engine
-  // validates the same order again as its own local; both calls are pure.
-  assertPromptFilesExist(config, process.cwd(), validateWorkOrder(config.workOrder));
+  // the kinds this tenant can actually dispatch need a prompt — and uniform
+  // across built-in and custom kinds: each scheduled definition's `promptFile`
+  // is checked against the runtime root.
+  const workOrder = validateWorkOrder(config.workOrder, [...registry.keys()]);
+  assertPromptFilesExist({
+    repoSlug: config.repoSlug,
+    runtimeRoot: process.cwd(),
+    kinds: workOrder.map((kind) => {
+      const registered = registry.get(kind);
+      if (!registered) throw new Error(`Work kind "${kind}" is not registered.`);
+      return { name: kind, promptFile: registered.definition.promptFile };
+    }),
+  });
 
   const runOnce = argv.includes("--run-once");
   const dryRun = argv.includes("--dry-run");
@@ -1656,6 +1357,7 @@ export async function runEngine(
   try {
     const engine = createEngine({
       config,
+      registry,
       env: process.env,
       drain,
       slotClient,

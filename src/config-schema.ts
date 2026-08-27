@@ -19,6 +19,9 @@ import { validateWorkspaceField } from "../bootstrap/workspace-source.ts";
 // the engine exists, and the engine re-validates the consumer's config here.
 import { validateGitIdentityField, type GitIdentity } from "../bootstrap/git-identity.ts";
 import { derivePaths } from "./paths.ts";
+// Type-only (erased at runtime, so no import cycle): the definition contract
+// lives beside the registry in src/work-kinds/.
+import type { AnyWorkKindDefinition } from "./work-kinds/definition.ts";
 
 export const PROVIDER_NAMES = ["cursor", "claude", "codex"] as const;
 export type ProviderName = (typeof PROVIDER_NAMES)[number];
@@ -44,6 +47,69 @@ export type WorkKindOverride = {
   model?: string;
   effort?: string;
 };
+
+/**
+ * One `workKinds.custom.<name>` declaration (#303/#350) — a tenant-authored
+ * work kind the engine registers beside the built-ins. Three arms:
+ *
+ *   - an inline definition object (close over values in the config file;
+ *     inline entries carry no `options`),
+ *   - a path string — sugar for the zero-knob module case,
+ *   - `{ module, options? }` — a module path plus tenant knobs, passed through
+ *     unvalidated as `ctx.options` (the kind validates them).
+ *
+ * Module paths resolve against the config file's directory and must be
+ * relative (`./`, `../`) or absolute: tenant configs load from a container
+ * mount with no reachable `node_modules`, so a bare specifier can never
+ * resolve. The module's `default` export is the definition, or a
+ * `(config) => definition` factory — the same shape the built-ins use.
+ */
+export type CustomKindEntry =
+  | AnyWorkKindDefinition
+  | string
+  | { module: string; options?: Record<string, unknown> };
+
+/**
+ * The `workKinds` field, widened for custom kinds (#350 Q10): `custom` stays
+ * precisely typed; sibling keys loosen to an index signature so a tenant can
+ * tune a custom kind with the same override block as a built-in without casts.
+ * Runtime two-pass validation (`validateWorkKindsField`) remains the
+ * authoritative typo net.
+ */
+export type WorkKindsField = {
+  [kind: string]: WorkKindOverride | Record<string, CustomKindEntry> | undefined;
+} & {
+  custom?: Record<string, CustomKindEntry>;
+};
+
+/** Legal custom-kind names: env-safe lowercase, hyphens allowed, ≤32 chars. */
+export const CUSTOM_WORK_KIND_NAME_RE = /^[a-z][a-z0-9-]*$/;
+const CUSTOM_WORK_KIND_NAME_MAX = 32;
+
+/** Keys no custom kind may claim: the built-ins plus the `custom` block itself. */
+const RESERVED_WORK_KIND_KEYS: readonly string[] = [...WORK_KIND_NAMES, "custom"];
+
+/** The validated `custom` block of a `workKinds` field, or an empty record. */
+export function customKindEntries(
+  workKinds: WorkKindsField | undefined,
+): Record<string, CustomKindEntry> {
+  const custom = workKinds?.["custom"];
+  if (custom === undefined) return {};
+  return custom as Record<string, CustomKindEntry>;
+}
+
+/**
+ * The override block declared for `kind`, typed past the widened field. Safe
+ * because `custom` is a reserved key — no kind is ever named `custom`, so a
+ * kind-keyed read can only land on an override block (or nothing).
+ */
+export function workKindOverride(
+  workKinds: WorkKindsField,
+  kind: string,
+): WorkKindOverride | undefined {
+  if (kind === "custom") return undefined;
+  return workKinds[kind] as WorkKindOverride | undefined;
+}
 
 /**
  * Selects where the thin `phoebe boot` bootstrapper materializes the engine
@@ -195,8 +261,13 @@ export type PhoebeConfig = {
    * `PHOEBE_MODEL` override; only the kind-specific env var pushes it aside.
    * Blocks for kinds absent from `workOrder` are allowed and inert. `model` and
    * `effort` are unvalidated pass-through strings — the CLIs are the authority.
+   *
+   * `workKinds.custom.<name>` declares tenant-authored kinds (#303); see
+   * {@link CustomKindEntry}. Custom kinds are tuned by sibling blocks and
+   * `PHOEBE_<KIND>_*` env vars exactly like built-ins (hyphens in a kind name
+   * map to underscores in its env vars).
    */
-  workKinds: Partial<Record<WorkKindName, WorkKindOverride>>;
+  workKinds: WorkKindsField;
   /** Env var holding each provider's API key — the only key the agent child inherits. */
   providerEnv: Record<ProviderName, string>;
   /**
@@ -324,8 +395,8 @@ export type PhoebeUserConfig = {
   defaultProvider?: ProviderName;
   defaultModels?: Partial<Record<ProviderName, string>>;
   defaultEfforts?: Partial<Record<ProviderName, string>>;
-  /** Per-work-kind provider/model/effort overrides (#300); see {@link PhoebeConfig.workKinds}. */
-  workKinds?: Partial<Record<WorkKindName, WorkKindOverride>>;
+  /** Per-work-kind overrides + custom kinds (#300/#303); see {@link PhoebeConfig.workKinds}. */
+  workKinds?: WorkKindsField;
   providerEnv?: Partial<Record<ProviderName, string>>;
   /** Whole-unit wall-clock timeout in ms (#72); default 45 min. */
   runTimeoutMs?: number;
@@ -378,7 +449,7 @@ export const CONFIG_DEFAULTS = {
   defaultEfforts: {} satisfies Partial<Record<ProviderName, string>>,
   // Empty on purpose too: every kind runs on the repo-level defaults until a
   // consumer singles one out (#300).
-  workKinds: {} satisfies Partial<Record<WorkKindName, WorkKindOverride>>,
+  workKinds: {} satisfies WorkKindsField,
   providerEnv: {
     cursor: "CURSOR_API_KEY",
     claude: "ANTHROPIC_API_KEY",
@@ -490,12 +561,88 @@ export function readDeploymentField(user: {
 }
 
 /**
- * Reject a malformed `workKinds` block (#300) at boot, the same throw-and-exit
- * moment as every other config error: an unknown kind key would sit inert
- * forever (looking configured while doing nothing), and an unknown provider
- * value would bind the block to a provider that can never match. `model` and
- * `effort` are deliberately not validated — they are pass-through strings and
- * the provider CLIs are the authority on what they accept.
+ * Reject a malformed custom-kind declaration's *shape* (#350): its name, which
+ * of the three entry arms it is, wrapper fields, and path form. Definition
+ * members (functions present, workspace known) are validated later, at
+ * registry assembly, where path modules have been loaded too — this runs
+ * synchronously inside `resolveConfig`, before any module import.
+ */
+function validateCustomKindEntry(name: string, entry: CustomKindEntry): void {
+  const at = `phoebe.config.ts \`workKinds.custom.${name}\``;
+  if (!CUSTOM_WORK_KIND_NAME_RE.test(name) || name.length > CUSTOM_WORK_KIND_NAME_MAX) {
+    throw new Error(
+      `phoebe.config.ts \`workKinds.custom\` names illegal kind "${name}". ` +
+        `Custom kind names are lowercase \`[a-z][a-z0-9-]*\`, at most ` +
+        `${CUSTOM_WORK_KIND_NAME_MAX} characters.`,
+    );
+  }
+  if (RESERVED_WORK_KIND_KEYS.includes(name)) {
+    throw new Error(
+      `${at} collides with a reserved name. The built-in kinds ` +
+        `(${WORK_KIND_NAMES.join(", ")}) and \`custom\` cannot be redeclared.`,
+    );
+  }
+
+  const assertModulePath = (path: unknown): void => {
+    if (typeof path !== "string" || path.trim().length === 0) {
+      throw new Error(`${at} must name a module path — got ${JSON.stringify(path)}.`);
+    }
+    if (!path.startsWith("./") && !path.startsWith("../") && !isAbsolute(path)) {
+      throw new Error(
+        `${at} names module "${path}", which is a bare specifier. Kind modules load ` +
+          `from the tenant checkout, where no \`node_modules\` is reachable — use a ` +
+          `path starting with \`./\`, \`../\`, or \`/\`, resolved against the config ` +
+          `file's directory.`,
+      );
+    }
+  };
+
+  if (typeof entry === "string") {
+    assertModulePath(entry);
+    return;
+  }
+  if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+    throw new Error(
+      `${at} must be an inline definition object, a module path string, or ` +
+        `\`{ module, options? }\` — got ${JSON.stringify(entry)}.`,
+    );
+  }
+  if ("module" in entry) {
+    // The wrapper arm. Unknown wrapper fields are boot errors — no inert keys.
+    for (const key of Object.keys(entry)) {
+      if (key !== "module" && key !== "options") {
+        throw new Error(
+          `${at} names unknown wrapper field "${key}". A module entry holds only ` +
+            `\`module\` and \`options\`.`,
+        );
+      }
+    }
+    assertModulePath((entry as { module: unknown }).module);
+    const options = (entry as { options?: unknown }).options;
+    if (
+      options !== undefined &&
+      (typeof options !== "object" || options === null || Array.isArray(options))
+    ) {
+      throw new Error(
+        `${at}.options must be a plain object when present — got ${JSON.stringify(options)}.`,
+      );
+    }
+    return;
+  }
+  // The inline-definition arm: member validation happens at registry assembly.
+}
+
+/**
+ * Reject a malformed `workKinds` block (#300/#350) at boot, the same
+ * throw-and-exit moment as every other config error: an unknown kind key would
+ * sit inert forever (looking configured while doing nothing), and an unknown
+ * provider value would bind the block to a provider that can never match.
+ * `model` and `effort` are deliberately not validated — they are pass-through
+ * strings and the provider CLIs are the authority on what they accept.
+ *
+ * Two-pass (#350 Q2): parse the `custom` block first, then validate sibling
+ * keys against built-ins ∪ the declared custom names — so a custom kind is
+ * tuned by a sibling override block exactly like a built-in.
  */
 function validateWorkKindsField(workKinds: NonNullable<PhoebeUserConfig["workKinds"]>): void {
   if (typeof workKinds !== "object" || workKinds === null || Array.isArray(workKinds)) {
@@ -504,11 +651,31 @@ function validateWorkKindsField(workKinds: NonNullable<PhoebeUserConfig["workKin
         `(${WORK_KIND_NAMES.join(", ")}) — got ${JSON.stringify(workKinds)}.`,
     );
   }
+
+  // Pass 1: the `custom` block's shape.
+  const custom = workKinds["custom"];
+  const customNames: string[] = [];
+  if (custom !== undefined) {
+    if (typeof custom !== "object" || custom === null || Array.isArray(custom)) {
+      throw new Error(
+        `phoebe.config.ts \`workKinds.custom\` must be an object keyed by kind name — ` +
+          `got ${JSON.stringify(custom)}.`,
+      );
+    }
+    for (const [name, entry] of Object.entries(custom)) {
+      validateCustomKindEntry(name, entry as CustomKindEntry);
+      customNames.push(name);
+    }
+  }
+
+  // Pass 2: sibling override blocks, against the widened name set.
+  const legalKinds = [...WORK_KIND_NAMES, ...customNames];
   for (const [kind, block] of Object.entries(workKinds)) {
-    if (!(WORK_KIND_NAMES as readonly string[]).includes(kind)) {
+    if (kind === "custom") continue;
+    if (!legalKinds.includes(kind)) {
       throw new Error(
         `phoebe.config.ts \`workKinds\` names unknown work kind "${kind}". ` +
-          `Use one of: ${WORK_KIND_NAMES.join(", ")}.`,
+          `Use one of: ${legalKinds.join(", ")}.`,
       );
     }
     if (typeof block !== "object" || block === null || Array.isArray(block)) {

@@ -17,8 +17,10 @@
 // scaffolding, log formatting) without breaking a library API.
 
 import { readFileSync, realpathSync } from "node:fs";
+import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 import { resolveConfig } from "./config-schema.ts";
+import { createWorkKindRegistry } from "./work-kinds/load-custom.ts";
 import {
   copyShippedPromptsInto,
   formatInitReport,
@@ -360,7 +362,7 @@ function parseCommandArgs(argv: readonly string[]): {
 function formatHealthColumns(listing: TenantListing): string {
   const flag = (label: string, on: boolean): string => `${on ? "✓" : "✗"} ${label}`;
   const unit = listing.status?.currentUnit;
-  const state = unit ? `working ${unit.kind} #${unit.id}` : listing.status ? "idle" : "no status";
+  const state = unit ? `working ${unit.kind} ${unit.id}` : listing.status ? "idle" : "no status";
   return (
     `${flag("config", listing.configValid)}  ${flag("env", listing.envPresent)}  ` +
     `${flag("data", listing.retainedData)}  arm: ${listing.arm}  ${state}`
@@ -573,7 +575,12 @@ export async function runCli(): Promise<void> {
   // installed because `orchestrator.ts` — which the engine and the `gh` client
   // both call into — still reads its fields through the Proxy.
   setResolvedConfig(resolved);
-  await runEngine(resolved, parsed.forward);
+  // Assemble the work-kind registry (#303): built-ins plus this tenant's
+  // custom kinds, whose module paths resolve against the config's directory.
+  // Installed after the config holder — kind modules may not import it, but
+  // built-in factories read pure orchestrator helpers that do.
+  const registry = await createWorkKindRegistry(resolved, dirname(configPath));
+  await runEngine(resolved, parsed.forward, registry);
 }
 
 // Run the engine only when this module is invoked directly (`node …/src/cli.ts`)
