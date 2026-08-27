@@ -202,6 +202,10 @@ function stubGit(shas: Record<string, Sha>): { git: GitRunner; calls: string[][]
   const git: GitRunner = (args) => {
     calls.push([...args]);
     if (args[0] === "fetch") return "";
+    // Worktree plumbing answers emptily rather than throwing: an executing
+    // cycle (the workspace tests below) reaches it, and a stub that threw here
+    // would send `removeWorktree` down its rmSync fallback against a real path.
+    if (args[0] === "worktree") return "";
     if (args[0] === "rev-parse") {
       const ref = (args[1] ?? "").replace(/^origin\//, "");
       const found = shas[ref];
@@ -223,6 +227,8 @@ async function runCycle(opts: {
   run?: Partial<EngineRunOptions>;
   /** Custom kinds to register beside the built-ins (#303). */
   customKinds?: LoadedCustomKind[];
+  /** Drive an executing cycle (with `run.dryRun: false`) rather than a dry one. */
+  inContainer?: boolean;
 }): Promise<CycleResult> {
   const { git, calls: gitCalls } = stubGit(opts.shas ?? {});
   const events: UnitRef[] = [];
@@ -231,6 +237,7 @@ async function runCycle(opts: {
     config,
     registry: buildRegistry(config, opts.customKinds ?? []),
     env: opts.env ?? {},
+    ...(opts.inContainer !== undefined ? { inContainer: opts.inContainer } : {}),
     github: stubGitHub(opts.github),
     git,
     clock: { sleep: () => Promise.resolve(), now: () => new Date("2026-08-19T00:00:00Z") },
@@ -1000,5 +1007,95 @@ describe("a custom kind in the walk", () => {
     await expect(runCycle({ config: { workOrder: ["nudge"] }, github: {} })).rejects.toThrow(
       /Unknown work kind "nudge"/,
     );
+  });
+});
+
+// The scratch workspace is prepared on first read of `ctx.workspace.dir`, not
+// up front. These are the only tests that let a unit actually execute — the
+// container marker is injected rather than read — because "was a worktree
+// built?" is a question about the run path, not the selection path.
+describe("the run workspace", () => {
+  /** A custom kind that executes, recording whether it read `workspace.dir`. */
+  function workspaceKind(opts: { readsDir: boolean }): {
+    kind: LoadedCustomKind;
+    dirsSeen: string[];
+  } {
+    const dirsSeen: string[] = [];
+    const definition: AnyWorkKindDefinition = {
+      name: "nudge",
+      oneShotEligible: true,
+      promptFile: "prompts/nudge.md",
+      workspace: "worktree",
+      report: {
+        noun: "stale PR(s)",
+        describe: (unit: { prNumber: number }) => `stale-PR nudge for PR #${unit.prNumber}`,
+      },
+      fetch: (ctx) => Promise.resolve({ prs: ctx.github.openPrs() }),
+      select: (gathered: { prs: { number: number }[] }) => {
+        const pick = gathered.prs[0] ?? null;
+        return {
+          unit: pick ? { ref: `pr:${pick.number}`, prNumber: Number(pick.number) } : null,
+          skipped: [],
+          total: gathered.prs.length,
+        };
+      },
+      run: (_unit, ctx) => {
+        if (opts.readsDir) dirsSeen.push(ctx.workspace.dir);
+        return Promise.resolve();
+      },
+    };
+    return { kind: { name: "nudge", definition, options: undefined }, dirsSeen };
+  }
+
+  async function executeNudge(readsDir: boolean): Promise<{
+    result: CycleResult;
+    dirsSeen: string[];
+  }> {
+    const { kind, dirsSeen } = workspaceKind({ readsDir });
+    const result = await runCycle({
+      config: { workOrder: ["nudge"] },
+      customKinds: [kind],
+      github: {
+        ...prWorld([{ number: 44, issueNumber: 4 }]),
+        // The boot-time login cross-check (#346) runs on an executing cycle.
+        resolveLogin: () => PHOEBE_LOGIN,
+        newestUnitMarkerAuthor: () => PHOEBE_LOGIN,
+      },
+      // A token puts the engine on the PAT arm; without one it takes the app
+      // arm and refuses the cycle for want of GH_APP_ID.
+      env: { GH_TOKEN: "t" },
+      inContainer: true,
+      run: { runOnce: true, dryRun: false },
+    });
+    return { result, dirsSeen };
+  }
+
+  test("a run that never reads the dir builds no worktree", async () => {
+    const { result, dirsSeen } = await executeNudge(false);
+
+    expect(result.events).toEqual([
+      { kind: "nudge", id: "pr:44" },
+      { kind: "nudge", id: "pr:44" },
+    ]);
+    expect(dirsSeen).toEqual([]);
+    // The unit ran to completion without a single worktree command — the churn
+    // the eager workspace used to cost every unit, built-ins included.
+    expect(result.gitCalls.filter((args) => args[0] === "worktree")).toEqual([]);
+  });
+
+  test("reading the dir materializes the worktree, and it is removed after", async () => {
+    const { dirsSeen } = await executeNudge(true);
+
+    expect(dirsSeen).toHaveLength(1);
+    expect(dirsSeen[0]).toContain("phoebe-workspace");
+  });
+
+  test("the materialized worktree is added off the default branch and removed", async () => {
+    const { result } = await executeNudge(true);
+    const worktreeCalls = result.gitCalls.filter((args) => args[0] === "worktree");
+
+    expect(worktreeCalls.some((args) => args[1] === "add")).toBe(true);
+    expect(worktreeCalls.some((args) => args[1] === "remove")).toBe(true);
+    expect(worktreeCalls.find((args) => args[1] === "add")?.at(-1)).toBe("origin/main");
   });
 });

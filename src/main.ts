@@ -250,6 +250,13 @@ export type EngineOptions = {
   originHub?: OriginHub;
   /** Defaults to real time. */
   clock?: Clock;
+  /**
+   * Whether this process may execute work units — the container-marker check
+   * (src/execution-gate.ts), which is also what decides whether the origin hub
+   * works a private clone or the host repo. Defaults to reading the real
+   * marker; a cycle test overrides it to drive an executing run on the host.
+   */
+  inContainer?: boolean;
   /** The SIGTERM drain: finish the unit in flight, start no new one. */
   drain: DrainSignal;
   /** The bootstrapper's concurrency broker (#59), or null when unbrokered. */
@@ -277,7 +284,8 @@ export type Engine = {
  * environment but the `env` it is handed — which reaches the `gh` client, the
  * agent children and the toolchain shells alike. What it does still read from
  * the ambient process is the pair that locates the working tree: the container
- * marker, and `process.cwd()` (the host repo dir and the prompt root).
+ * marker (unless `inContainer` is given) and `process.cwd()` (the host repo dir
+ * and the prompt root).
  */
 export function createEngine(options: EngineOptions): Engine {
   const { config, env, drain, slotClient, credentialClient, emitUnitEvent } = options;
@@ -319,7 +327,7 @@ export function createEngine(options: EngineOptions): Engine {
 
   const prBase = config.defaultBranch;
 
-  const inContainer = isInsideContainer();
+  const inContainer = options.inContainer ?? isInsideContainer();
   const hub = options.originHub ?? createOriginHub(config, inContainer, git);
 
   // ---------------------------------------------------------------------------
