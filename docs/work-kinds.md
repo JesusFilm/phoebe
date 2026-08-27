@@ -261,13 +261,15 @@ kind: `workOrder`, `workKinds` tuning blocks, `PHOEBE_<KIND>_*` env vars
 (hyphens in the name become underscores), quarantine, concurrency slots, the
 run deadline, and the prompt-existence check all apply uniformly.
 
-One limit worth knowing before you write a `run`: the run deadline wraps the
-**agent spawn**, not your whole `run`. Anything your kind does outside
-`ctx.agent.*` — a network call, a poll loop, a `while (true)` — is unbounded,
-and a `run` that hangs there holds its concurrency slot until the engine
-restarts, never reaching the timeout and quarantine path. Put your own timeout
-on any wait you introduce. Bounding arbitrary kind code is tracked as
-[#359](https://github.com/JesusFilm/phoebe/issues/359).
+The run deadline wraps your whole `run`, not just the agent spawn. When the
+budget expires, the engine races the deadline against `definition.run`,
+propagates `RunTimeoutError`, releases the concurrency slot, and counts the
+timeout toward quarantine — regardless of where in `run` execution is. Your
+`run` receives `ctx.signal`, an `AbortSignal` that fires on expiry; a
+cooperative kind passes it to async operations (network calls, `sleep` loops)
+or polls `signal.aborted` to stop early. The engine races the deadline
+regardless, so an uncooperative `run` still hits the same accounting path — it
+just keeps executing as an orphan until it finishes or errors on its own.
 
 Start from [`examples/custom-kind/`](../examples/custom-kind/) — a full-form
 kind (a stale-PR nudger) beside the inline prompt-only-producer cheap case.
@@ -309,8 +311,7 @@ engine gathers every kind before selecting any, so a select that re-fetches
 would see a different world than its neighbours (`select` receives `ctx`, but
 must not touch `ctx.github`). **Run** owns every consequence of the unit —
 pushes, comments, watermarks; the engine's interest is limited to success
-(return) vs. failure (throw), the run deadline **on the agent spawn**, and
-quarantine accounting.
+(return) vs. failure (throw), the run deadline, and quarantine accounting.
 
 ### The unit and its `ref`
 
@@ -355,13 +356,18 @@ resolve. Everything arrives on `ctx` (types via `import type` from
   a bare `ctx.agent.run(...)`. The worktree is created the first time `dir` is
   read, so a kind that builds its own worktrees (as all five built-ins do)
   never pays for one.
+- `ctx.signal` — an `AbortSignal` that fires when the unit's wall-clock budget
+  expires. Pass it to async operations (fetch, sleep, agent helpers) or poll
+  `signal.aborted` to stop early and let the slot release cleanly. The engine
+  races the deadline regardless, so honouring the signal is cooperative rather
+  than required.
 - `ctx.agent` — the sanctioned agent machinery: `run` (the low-level spawn:
-  provider ladder, prompt render, env allowlist and the run deadline are
-  engine-fixed — the deadline covers this spawn, not the rest of your `run`;
-  you supply `promptArgs` and optionally a `promptFile` override), the two skeletons the built-ins share — `prWorkflow` (the PR-fix
-  shape) and `issueWorkflow` (the issue-producer shape; a prompt-only producer
-  is a kind whose `run` is one call to it) — and `cleanMerge` (the no-agent
-  catch-up merge).
+  provider ladder, prompt render, and env allowlist are engine-fixed; you supply
+  `promptArgs` and optionally a `promptFile` override), the two skeletons the
+  built-ins share — `prWorkflow` (the PR-fix shape) and `issueWorkflow` (the
+  issue-producer shape; a prompt-only producer is a kind whose `run` is one
+  call to it) — and `cleanMerge` (the no-agent catch-up merge). Each helper
+  passes `ctx.signal` to the agent subprocess automatically.
 
 ### Reporting
 

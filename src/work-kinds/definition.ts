@@ -174,18 +174,16 @@ export type AgentWorkflowOutcome = {
  * as conveniences in the same namespace, so a prompt-only producer is a kind
  * whose `run` is one `issueWorkflow` call.
  *
- * The deadline bounds the **agent spawn**, not the kind's whole `run`: work a
- * kind does outside these helpers is unbounded, and a `run` that hangs there
- * holds its concurrency slot without ever reaching the timeout and quarantine
- * path. Kinds time out their own waits; bounding arbitrary kind code is #359.
+ * The deadline covers the whole `run` (#359): each helper passes the outer
+ * `ctx.signal` to the agent subprocess, so the process is killed when the
+ * budget expires wherever in the `run` the call sits.
  */
 export type AgentHelpers = {
   /**
    * Spawn one agent child: select the provider for this kind, render the
    * prompt (`promptFile` defaults to the definition's), build the allowlisted
-   * env, and run inside `worktreeDir` (defaults to the prepared workspace)
-   * under the run deadline. `promptArgs` merge over the standard
-   * config-derived set.
+   * env, and run inside `worktreeDir` (defaults to the prepared workspace).
+   * `promptArgs` merge over the standard config-derived set.
    */
   run(opts?: {
     worktreeDir?: string;
@@ -238,6 +236,13 @@ export type AgentHelpers = {
 export type WorkKindRunCtx = WorkKindCtx & {
   workspace: WorkspaceHandle;
   agent: AgentHelpers;
+  /**
+   * Fires when the unit's wall-clock budget expires (#359). Cooperative kinds
+   * poll `signal.aborted` or pass it to async operations to stop early; the
+   * engine races the budget against `run` regardless, so the slot is released
+   * and quarantine accounting runs even when a kind does not honour the signal.
+   */
+  signal: AbortSignal;
 };
 
 export type WorkKindReport<G, U> = {
