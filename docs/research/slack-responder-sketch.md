@@ -3,7 +3,7 @@
 Design record, 2026-08-26. Context: the modular work-kinds map (#303) set its generality
 bar at "the five built-ins plus simple custom kinds" and deliberately kept one harder case
 as a paper exercise: a Slack bug-channel responder. This record is that exercise. Nothing
-here is implemented or scheduled — the sketch exists to prove the v1 contract's *shape*
+here is implemented or scheduled — the sketch exists to prove the v1 contract's _shape_
 can host a kind like this, and to give each capability v1 lacks a name and a documented
 attachment point, so a future kind author reads the edges as designed edges rather than
 oversights.
@@ -29,10 +29,10 @@ pipeline; it never touches the repo itself.
 import type { WorkKindDefinition } from "phoebe-agent";
 
 type Thread = {
-  ref: string;               // "slack:C0123BUGS/1724712345.001200"
+  ref: string; // "slack:C0123BUGS/1724712345.001200"
   channel: string;
   threadTs: string;
-  transcript: string;        // rendered thread so far, for the prompt
+  transcript: string; // rendered thread so far, for the prompt
   state: "new" | "awaiting-phoebe";
 };
 
@@ -40,7 +40,7 @@ export default {
   name: "slack-responder",
   oneShotEligible: true,
   promptFile: "phoebe-prompts/slack-responder.md",
-  workspace: "worktree",     // ← bend #1: wants "none"; see extension points
+  workspace: "worktree", // ← bend #1: wants "none"; see extension points
   report: {
     noun: "bug-channel thread(s)",
     describe: (t) => `Slack thread ${t.threadTs} in #bugs`,
@@ -53,7 +53,7 @@ export default {
     // threads whose newest message Phoebe has not yet answered. Per-thread read
     // errors are warned and dropped; a failed channel read throws and the cycle
     // dies — the same failure contract as every kind.
-    return readActionableThreads(ctx.options.channel);  // Thread[]
+    return readActionableThreads(ctx.options.channel); // Thread[]
   },
   select(gathered, ctx) {
     // Oldest un-answered thread first; skip threads already carrying the
@@ -71,7 +71,7 @@ export default {
     // and marks the thread filed. Throw = failure, as everywhere.
     await ctx.agent.run({
       promptArgs: { transcript: unit.transcript, channel: unit.channel },
-    });                       // ← bends #2–#4: credentials, tools, workspace
+    }); // ← bends #2–#4: credentials, tools, workspace
   },
 } satisfies WorkKindDefinition<Thread[], Thread>;
 ```
@@ -129,7 +129,7 @@ like every secret.
 **Future shape.** One definition field, `requiredEnv: string[]`. Declaring a name means
 two things at once: boot fails fast if the var is absent or empty (the
 `assertPromptFilesExist` spirit — a misconfigured kind dies at boot, not mid-cycle), and
-the var is forwarded to *this kind's* agent children only, as a per-kind union onto the
+the var is forwarded to _this kind's_ agent children only, as a per-kind union onto the
 allowlist in `buildAgentEnv`. The trust posture covers it — a kind is trusted as the
 tenant — but the cost should be named honestly: every declared var punches a deliberate,
 kind-scoped hole in the exfiltration barrier; scoping per kind keeps the Slack token out
