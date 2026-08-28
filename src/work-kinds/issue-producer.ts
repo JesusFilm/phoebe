@@ -11,10 +11,12 @@ import {
   type BaseResolution,
   type Issue,
 } from "../orchestrator.ts";
+import { isLabelNotFoundError } from "../gh-error.ts";
 import {
   defineWorkKind,
   type WorkKindCtx,
   type WorkKindDefinition,
+  type WorkKindRunCtx,
   type WorkUnitGitHubTarget,
 } from "./definition.ts";
 
@@ -36,10 +38,31 @@ function idleBlockerReason(issues: readonly Issue[], ctx: WorkKindCtx): string {
     issues,
     ctx.cycle.blockerStates(),
     ctx.env["PHOEBE_BASE"],
+    ctx.config.processingLabel,
   );
   return waiting.length > 0
     ? `(waiting on blockers ${waiting.map((n) => `#${n}`).join(", ")})`
     : "(blocked or waiting on blocker PR)";
+}
+
+/**
+ * Apply `config.processingLabel` to `issueNumber` before the agent runs (#365).
+ * A missing label is self-healed once — created, then the add retried. Any
+ * other failure propagates, aborting the unit without running the agent.
+ */
+function claimIssue(issueNumber: number, ctx: WorkKindRunCtx): void {
+  const label = ctx.config.processingLabel;
+  try {
+    ctx.github.addIssueLabel(issueNumber, label);
+  } catch (err) {
+    if (isLabelNotFoundError(err)) {
+      ctx.log(`Label "${label}" not found — creating it and retrying the claim.`);
+      ctx.github.createLabel(label);
+      ctx.github.addIssueLabel(issueNumber, label);
+    } else {
+      throw err;
+    }
+  }
 }
 
 /**
@@ -77,7 +100,12 @@ export function issueProducerKind(opts: {
       return { issues };
     },
     select(gathered, ctx) {
-      const pick = selectIssue(gathered.issues, ctx.cycle.blockerStates(), ctx.env["PHOEBE_BASE"]);
+      const pick = selectIssue(
+        gathered.issues,
+        ctx.cycle.blockerStates(),
+        ctx.env["PHOEBE_BASE"],
+        ctx.config.processingLabel,
+      );
       return {
         unit: pick
           ? {
@@ -98,6 +126,7 @@ export function issueProducerKind(opts: {
           (resolution.stacked ? ` (stacked on #${resolution.blockerIssueNumber})` : "") +
           ".",
       );
+      claimIssue(issue.number, ctx);
       await ctx.agent.issueWorkflow({
         issueNumber: issue.number,
         issueTitle: issue.title,

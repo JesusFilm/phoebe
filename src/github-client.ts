@@ -203,6 +203,19 @@ export type GitHubClient = {
   postUnitComment(target: UnitTarget, body: string): void;
   addQuarantineLabel(target: UnitTarget): void;
   removeQuarantineLabel(target: UnitTarget): void;
+  /**
+   * Add `label` to an issue. Uses a captured (non-inherited) exec so the
+   * caller can inspect the error with `isLabelNotFoundError` when the label
+   * does not exist in the repository.
+   */
+  addIssueLabel(issueNumber: number, label: string): void;
+  /**
+   * Create `label` in the repository with the defaults Phoebe uses for its
+   * own markers — yellow (`FBCA04`) and a "Phoebe is working this issue"
+   * description. Called only after a `isLabelNotFoundError` to self-heal a
+   * missing `processingLabel` before retrying the add.
+   */
+  createLabel(name: string): void;
 
   // Identity
   /**
@@ -945,6 +958,24 @@ export function createGitHubClient({
         String(target.id),
         "--remove-label",
         PHOEBE_QUARANTINE_LABEL,
+      ]);
+    },
+
+    addIssueLabel: (issueNumber, label) => {
+      // Captured exec (not ghWrite/inherit) so callers can inspect the error
+      // with `isLabelNotFoundError` when the label does not exist yet.
+      exec(["issue", "edit", String(issueNumber), "--add-label", label, "-R", config.repoSlug]);
+    },
+
+    createLabel: (name) => {
+      ghWrite([
+        "label",
+        "create",
+        name,
+        "--description",
+        "Phoebe is working this issue",
+        "--color",
+        "FBCA04",
       ]);
     },
 

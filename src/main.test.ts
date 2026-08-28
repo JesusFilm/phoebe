@@ -351,6 +351,49 @@ describe("selecting one unit, per work kind", () => {
   });
 });
 
+describe("processingLabel skips", () => {
+  test("issues: a ticket carrying processingLabel is invisible to selection", async () => {
+    const result = await runCycle({
+      config: { workOrder: ["issues"] },
+      github: {
+        listReadyIssues: () => [
+          anIssue(7, { labels: ["ready-for-agent", "processing"] }),
+          anIssue(8),
+        ],
+      },
+    });
+
+    expect(selection(result)).toBe("[phoebe] Would execute: issue #8 — base origin/main.");
+  });
+
+  test("research: a ticket carrying processingLabel is invisible to selection", async () => {
+    const result = await runCycle({
+      config: { workOrder: ["research"] },
+      github: {
+        listResearchIssues: () => [
+          anIssue(9, { labels: ["wayfinder:research", "processing"] }),
+          anIssue(10, { labels: ["wayfinder:research"] }),
+        ],
+      },
+    });
+
+    expect(selection(result)).toBe(
+      "[phoebe] Would execute: research ticket #10 — base origin/main.",
+    );
+  });
+
+  test("all processing: nothing selected, idle report shown", async () => {
+    const result = await runCycle({
+      config: { workOrder: ["issues"] },
+      github: {
+        listReadyIssues: () => [anIssue(7, { labels: ["ready-for-agent", "processing"] })],
+      },
+    });
+
+    expect(selection(result)).toBeUndefined();
+  });
+});
+
 // A deleted account has no login. Nothing else in the cycle has no login either
 // — Phoebe's own is always resolved before it is compared against — so `null` is
 // nobody, and the selectors must read it that way rather than as "the same
