@@ -1025,10 +1025,10 @@ describe("--dry-run", () => {
 // silently when their methods go unstubbed.
 describe("the stranded-unit sweep", () => {
   /** A wet `--run-once` cycle: sweeps, finds no work to select, then exits. */
-  function sweepCycle(github: GitHubStubOverrides) {
+  function sweepCycle(github: GitHubStubOverrides, config?: Partial<PhoebeUserConfig>) {
     return runCycle({
       env: { GH_TOKEN: "a-token" },
-      config: { workOrder: ["issues"] },
+      config: { workOrder: ["issues"], ...config },
       github: { listReadyIssues: () => [], ...github },
       run: { runOnce: true, dryRun: false },
     });
@@ -1045,11 +1045,15 @@ describe("the stranded-unit sweep", () => {
     return {
       writes,
       overrides: {
+        resolveLogin: () => PHOEBE_LOGIN,
         removeIssueLabel: (issueNumber, label) => {
           writes.push(`remove-label issue #${issueNumber} ${label}`);
         },
         addIssueLabel: (issueNumber, label) => {
           writes.push(`add-label issue #${issueNumber} ${label}`);
+        },
+        addQuarantineLabel: (target) => {
+          writes.push(`quarantine-label ${target.objectType} #${target.id}`);
         },
         issueTimeoutInputs: () => ({
           comments: [],
@@ -1086,7 +1090,7 @@ describe("the stranded-unit sweep", () => {
         {
           body: buildUnitTimeoutMarker(2),
           createdAt: "2026-01-01T00:00:00Z",
-          authorLogin: "phoebe-bot",
+          authorLogin: PHOEBE_LOGIN,
         },
       ],
       extraActivityAt: null,
@@ -1099,6 +1103,63 @@ describe("the stranded-unit sweep", () => {
     });
 
     expect(writes).toContain(`comment issue #7 ${buildUnitTimeoutMarker(3)}`);
+  });
+
+  test("at K runs the issue is quarantined with an unproductive-runs comment", async () => {
+    const { writes, overrides } = writeRecorder();
+    overrides.issueTimeoutInputs = () => ({
+      comments: [
+        {
+          body: buildUnitTimeoutMarker(2),
+          createdAt: "2026-01-01T00:00:00Z",
+          authorLogin: PHOEBE_LOGIN,
+        },
+      ],
+      extraActivityAt: null,
+      baseline: "body:aabbcc",
+    });
+    await sweepCycle(
+      {
+        ...overrides,
+        listLabeledIssues: () => [claimed(7)],
+        blockerPrState: () => ({ hasOpenPr: false, hasMergedPr: false }),
+      },
+      { maxUnproductiveRuns: 3 },
+    );
+
+    expect(writes).toContain(`quarantine-label issue #7`);
+    const quarantineComment = writes.find((w) => w.includes("produced no PR"));
+    expect(quarantineComment).toBeDefined();
+    expect(quarantineComment).not.toContain("timed out");
+  });
+
+  test("a foreign comment resets the counter via decideTimeoutRecord", async () => {
+    const { writes, overrides } = writeRecorder();
+    overrides.issueTimeoutInputs = () => ({
+      comments: [
+        {
+          body: buildUnitTimeoutMarker(2),
+          createdAt: "2026-01-01T00:00:00Z",
+          authorLogin: PHOEBE_LOGIN,
+        },
+        {
+          body: "looks broken",
+          createdAt: "2026-06-01T00:00:00Z",
+          authorLogin: "human",
+        },
+      ],
+      extraActivityAt: null,
+      baseline: "body:aabbcc",
+    });
+    await sweepCycle({
+      ...overrides,
+      listLabeledIssues: () => [claimed(7)],
+      blockerPrState: () => ({ hasOpenPr: false, hasMergedPr: false }),
+    });
+
+    // Count resets to 1 — newer foreign activity is treated as fresh start
+    expect(writes).toContain(`comment issue #7 ${buildUnitTimeoutMarker(1)}`);
+    expect(writes).not.toContain("quarantine-label issue #7");
   });
 
   test("readyLabel already present: not added again", async () => {

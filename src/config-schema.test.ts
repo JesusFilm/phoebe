@@ -469,15 +469,29 @@ describe("resolveConfig", () => {
     expect(resolved.workOrder).toEqual(CONFIG_DEFAULTS.workOrder);
     expect(resolved.defaultProvider).toBe(CONFIG_DEFAULTS.defaultProvider);
     expect(resolved.runTimeoutMs).toBe(CONFIG_DEFAULTS.runTimeoutMs);
-    expect(resolved.maxUnitTimeouts).toBe(CONFIG_DEFAULTS.maxUnitTimeouts);
+    expect(resolved.maxUnproductiveRuns).toBe(CONFIG_DEFAULTS.maxUnproductiveRuns);
   });
 
   test("run-protection knobs carry sane shipped defaults", () => {
     expect(CONFIG_DEFAULTS.runTimeoutMs).toBe(2_700_000);
-    expect(CONFIG_DEFAULTS.maxUnitTimeouts).toBe(3);
-    const resolved = resolveConfig(minimalUserConfig({ runTimeoutMs: 60_000, maxUnitTimeouts: 5 }));
+    expect(CONFIG_DEFAULTS.maxUnproductiveRuns).toBe(3);
+    const resolved = resolveConfig(
+      minimalUserConfig({ runTimeoutMs: 60_000, maxUnproductiveRuns: 5 }),
+    );
     expect(resolved.runTimeoutMs).toBe(60_000);
-    expect(resolved.maxUnitTimeouts).toBe(5);
+    expect(resolved.maxUnproductiveRuns).toBe(5);
+  });
+
+  test("maxUnitTimeouts is a deprecated alias for maxUnproductiveRuns", () => {
+    const resolved = resolveConfig(minimalUserConfig({ maxUnitTimeouts: 7 }));
+    expect(resolved.maxUnproductiveRuns).toBe(7);
+  });
+
+  test("maxUnproductiveRuns takes precedence over deprecated maxUnitTimeouts", () => {
+    const resolved = resolveConfig(
+      minimalUserConfig({ maxUnproductiveRuns: 4, maxUnitTimeouts: 9 }),
+    );
+    expect(resolved.maxUnproductiveRuns).toBe(4);
   });
 
   test("creditIssueAuthor defaults on and can be switched off (#198)", () => {

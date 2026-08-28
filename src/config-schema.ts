@@ -293,10 +293,11 @@ export type PhoebeConfig = {
    */
   runTimeoutMs: number;
   /**
-   * Consecutive per-unit timeouts before a unit is quarantined and escalated to
-   * a human (#75). Env-overridable via `PHOEBE_MAX_UNIT_TIMEOUTS`. Default 3.
+   * Consecutive unproductive runs before a unit is quarantined and escalated to
+   * a human (#75, #367). Env-overridable via `PHOEBE_MAX_UNPRODUCTIVE_RUNS`
+   * (or the deprecated alias `PHOEBE_MAX_UNIT_TIMEOUTS`). Default 3.
    */
-  maxUnitTimeouts: number;
+  maxUnproductiveRuns: number;
   /**
    * Credit the issue author on issue-derived work (#198): when true, every
    * commit Phoebe pushes for an `issues` / `research` unit carries a
@@ -415,7 +416,9 @@ export type PhoebeUserConfig = {
   providerEnv?: Partial<Record<ProviderName, string>>;
   /** Whole-unit wall-clock timeout in ms (#72); default 45 min. */
   runTimeoutMs?: number;
-  /** Consecutive timeouts before a unit is quarantined (#75); default 3. */
+  /** Consecutive unproductive runs before a unit is quarantined (#75, #367); default 3. */
+  maxUnproductiveRuns?: number;
+  /** @deprecated Use maxUnproductiveRuns. */
   maxUnitTimeouts?: number;
   /** Co-author trailer for the issue author on issue-derived commits (#198); default true. */
   creditIssueAuthor?: boolean;
@@ -474,7 +477,7 @@ export const CONFIG_DEFAULTS = {
   // so hitting it means "actually stuck", not "slow" (#72).
   runTimeoutMs: 2_700_000,
   // Matches the house number for consecutive-failures-before-escalation (#75).
-  maxUnitTimeouts: 3,
+  maxUnproductiveRuns: 3,
   // Applying `readyLabel` is a maintainer's deliberate act, so on by default:
   // the credit follows work a maintainer already chose to run (#198).
   creditIssueAuthor: true,
@@ -838,7 +841,8 @@ export function resolveConfig(
     workKinds: { ...CONFIG_DEFAULTS.workKinds, ...user.workKinds },
     providerEnv: { ...CONFIG_DEFAULTS.providerEnv, ...user.providerEnv },
     runTimeoutMs: user.runTimeoutMs ?? CONFIG_DEFAULTS.runTimeoutMs,
-    maxUnitTimeouts: user.maxUnitTimeouts ?? CONFIG_DEFAULTS.maxUnitTimeouts,
+    maxUnproductiveRuns:
+      user.maxUnproductiveRuns ?? user.maxUnitTimeouts ?? CONFIG_DEFAULTS.maxUnproductiveRuns,
     creditIssueAuthor: user.creditIssueAuthor ?? CONFIG_DEFAULTS.creditIssueAuthor,
     disabled: user.disabled ?? CONFIG_DEFAULTS.disabled,
     paths: derivePaths(user.repoSlug, opts.dataBase),

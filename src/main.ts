@@ -60,10 +60,9 @@ import {
   buildUnstickComment,
   decideAutoUnstick,
   decideTimeoutRecord,
-  latestTimeoutMarker,
   loginMismatchWarning,
   PHOEBE_QUARANTINE_LABEL,
-  resolveMaxUnitTimeouts,
+  resolveMaxUnproductiveRuns,
 } from "./quarantine.ts";
 import { join } from "node:path";
 import {
@@ -391,11 +390,11 @@ export function createEngine(options: EngineOptions): Engine {
   const inMemoryTimeoutCounts = new Map<string, number>();
 
   /**
-   * Record one whole-unit timeout toward the poison-unit quarantine (#75): read the
-   * latest timeout marker on the unit, post the incremented count, and at K apply
-   * `phoebe:quarantined` + the escalation comment so selection starts skipping it.
-   * Best-effort — a GitHub write failure here is logged and swallowed so it can
-   * never take the daemon down (the timeout itself is already recorded).
+   * Record one whole-unit timeout toward the poison-unit quarantine (#75) for
+   * PR-shaped units (`conflicts`, `checks`, `reviews`). Issue-shaped units are
+   * counted by the stranded-unit sweep instead (#367), which owns the counter
+   * for anything that carries a queue label. Best-effort — a GitHub write
+   * failure here is logged and swallowed so it can never take the daemon down.
    *
    * The write target is the unit's structural `github` field (#352): a unit
    * without one gets in-memory counting and a logged no-escalation-surface
@@ -415,6 +414,10 @@ export function createEngine(options: EngineOptions): Engine {
       return;
     }
     const target: UnitTarget = ghTarget;
+    // Issue-shaped units (issues/research) carry processingLabel, which the
+    // stranded-unit sweep detects and counts. PR-shaped units do not, so they
+    // are counted here on timeout.
+    if (target.objectType === "issue") return;
     try {
       // Phoebe's own login, resolved per write rather than cached: there is
       // deliberately no placeholder for an unresolved login (`""` would be a
@@ -423,11 +426,8 @@ export function createEngine(options: EngineOptions): Engine {
       // activity, nor a ghost's comment as Phoebe's. The lookups this covers
       // are rare, so paying for one beats carrying a value that can lie.
       const login = github.resolveLogin(env["PHOEBE_GH_LOGIN"]);
-      const k = resolveMaxUnitTimeouts(env, config.maxUnitTimeouts);
-      const inputs =
-        target.objectType === "issue"
-          ? github.issueTimeoutInputs(target.id)
-          : github.prTimeoutInputs(asPrNumber(target.id));
+      const k = resolveMaxUnproductiveRuns(env, config.maxUnproductiveRuns);
+      const inputs = github.prTimeoutInputs(asPrNumber(target.id));
       const { count, quarantine } = decideTimeoutRecord({
         comments: inputs.comments,
         phoebeLogin: login,
@@ -642,13 +642,30 @@ export function createEngine(options: EngineOptions): Engine {
         if (!issue.labels.includes(config.readyLabel)) {
           github.addIssueLabel(issue.number, config.readyLabel);
         }
+        const target: UnitTarget = { objectType: "issue", id: issue.number };
+        const login = github.resolveLogin(env["PHOEBE_GH_LOGIN"]);
+        const k = resolveMaxUnproductiveRuns(env, config.maxUnproductiveRuns);
         const inputs = github.issueTimeoutInputs(issue.number);
-        const prior = latestTimeoutMarker(inputs.comments);
-        const n = (prior?.n ?? 0) + 1;
-        github.postUnitComment(
-          { objectType: "issue", id: issue.number },
-          buildUnitTimeoutMarker(n),
-        );
+        const { count, quarantine } = decideTimeoutRecord({
+          comments: inputs.comments,
+          phoebeLogin: login,
+          extraActivityAt: inputs.extraActivityAt,
+          k,
+        });
+        github.postUnitComment(target, buildUnitTimeoutMarker(count));
+        if (quarantine) {
+          github.addQuarantineLabel(target);
+          github.postUnitComment(
+            target,
+            buildQuarantineComment({
+              kind: "issues",
+              id: issue.number,
+              k: count,
+              baseline: inputs.baseline,
+              cause: "unproductive",
+            }),
+          );
+        }
         console.log(`[phoebe] Re-armed ${label} — stranded with no PR.`);
       } catch (error) {
         console.error(
