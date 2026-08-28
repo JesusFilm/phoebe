@@ -309,6 +309,18 @@ describe("unresolvedBlockerNumbers", () => {
     ]);
     expect(unresolvedBlockerNumbers(issues, states)).toEqual([98]);
   });
+
+  test("excludes processing issues from the unresolved-blocker report", () => {
+    const issues = [
+      issue({ number: 102, body: "Blocked by #98", labels: ["ready-for-agent", "processing"] }),
+      issue({ number: 103, body: "Blocked by #99" }),
+    ];
+    const states = new Map<number, BlockerPrState>([
+      [98, { hasOpenPr: false, hasMergedPr: false, blockerCompleted: false }],
+      [99, { hasOpenPr: false, hasMergedPr: false, blockerCompleted: false }],
+    ]);
+    expect(unresolvedBlockerNumbers(issues, states, undefined, "processing")).toEqual([99]);
+  });
 });
 
 describe("selectIssue", () => {
@@ -343,6 +355,23 @@ describe("selectIssue", () => {
       [98, { hasOpenPr: false, hasMergedPr: false }],
     ]);
     expect(selectIssue(issues, states)).toBeNull();
+  });
+
+  test("skips issues carrying processingLabel", () => {
+    const issues = [
+      issue({ number: 10, labels: ["ready-for-agent", "processing"] }),
+      issue({ number: 11, labels: ["ready-for-agent"] }),
+    ];
+    const picked = selectIssue(issues, new Map(), undefined, "processing");
+    expect(picked?.issue.number).toBe(11);
+  });
+
+  test("returns null when all issues carry processingLabel", () => {
+    const issues = [
+      issue({ number: 10, labels: ["ready-for-agent", "processing"] }),
+      issue({ number: 11, labels: ["ready-for-agent", "processing"] }),
+    ];
+    expect(selectIssue(issues, new Map(), undefined, "processing")).toBeNull();
   });
 });
 

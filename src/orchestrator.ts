@@ -160,10 +160,12 @@ export function unresolvedBlockerNumbers(
   issues: readonly Issue[],
   blockerStates: ReadonlyMap<number, BlockerPrState>,
   phoebeBase?: string,
+  processingLabel?: string,
 ): number[] {
   const waiting = new Set<number>();
   for (const issue of issues) {
     if (issue.labels.includes(PHOEBE_QUARANTINE_LABEL)) continue;
+    if (processingLabel && issue.labels.includes(processingLabel)) continue;
     if (resolveWorktreeBase(issue, blockerStates, phoebeBase)) continue;
     const gating = parseBlockedBy(issue.body)[0];
     if (gating !== undefined) {
@@ -178,10 +180,17 @@ export function selectIssue(
   issues: readonly Issue[],
   blockerStates: ReadonlyMap<number, BlockerPrState>,
   phoebeBase?: string,
+  processingLabel?: string,
 ): { issue: Issue; resolution: BaseResolution } | null {
   // Quarantined issues/research tickets (#75) are skipped for work until a human
   // clears the label or the issue is edited (the auto-un-stick sweep).
-  const eligible = issues.filter((issue) => !issue.labels.includes(PHOEBE_QUARANTINE_LABEL));
+  // Already-claimed issues (carrying processingLabel) are skipped so the engine
+  // never double-picks an issue that another run is already working (#365).
+  const eligible = issues.filter(
+    (issue) =>
+      !issue.labels.includes(PHOEBE_QUARANTINE_LABEL) &&
+      (!processingLabel || !issue.labels.includes(processingLabel)),
+  );
   const sorted = [...eligible].sort(compareIssues);
   for (const issue of sorted) {
     const resolution = resolveWorktreeBase(issue, blockerStates, phoebeBase);
