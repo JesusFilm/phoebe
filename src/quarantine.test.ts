@@ -10,6 +10,7 @@ import {
   buildUnstickComment,
   decideAutoUnstick,
   decideTimeoutRecord,
+  DEFAULT_MAX_UNPRODUCTIVE_RUNS,
   DEFAULT_MAX_UNIT_TIMEOUTS,
   issueContentBaseline,
   latestQuarantineBaseline,
@@ -20,21 +21,43 @@ import {
   parseQuarantineBaseline,
   parseUnitTimeoutMarker,
   PHOEBE_QUARANTINE_LABEL,
+  resolveMaxUnproductiveRuns,
   resolveMaxUnitTimeouts,
   shouldQuarantine,
 } from "./quarantine.ts";
 import { isPrInScope, selectIssue, type Issue } from "./orchestrator.ts";
 import { asBranchRef } from "./branded.ts";
 
-describe("resolveMaxUnitTimeouts", () => {
+describe("resolveMaxUnproductiveRuns", () => {
   test("defaults to 3", () => {
-    expect(resolveMaxUnitTimeouts({})).toBe(DEFAULT_MAX_UNIT_TIMEOUTS);
-    expect(DEFAULT_MAX_UNIT_TIMEOUTS).toBe(3);
+    expect(resolveMaxUnproductiveRuns({})).toBe(DEFAULT_MAX_UNPRODUCTIVE_RUNS);
+    expect(DEFAULT_MAX_UNPRODUCTIVE_RUNS).toBe(3);
   });
   test("env overrides config overrides default", () => {
+    expect(resolveMaxUnproductiveRuns({}, 5)).toBe(5);
+    expect(resolveMaxUnproductiveRuns({ PHOEBE_MAX_UNPRODUCTIVE_RUNS: "2" }, 5)).toBe(2);
+    expect(resolveMaxUnproductiveRuns({ PHOEBE_MAX_UNPRODUCTIVE_RUNS: "0" }, 5)).toBe(5);
+  });
+  test("PHOEBE_MAX_UNIT_TIMEOUTS is a deprecated alias", () => {
+    expect(resolveMaxUnproductiveRuns({ PHOEBE_MAX_UNIT_TIMEOUTS: "4" }, 5)).toBe(4);
+    expect(resolveMaxUnproductiveRuns({ PHOEBE_MAX_UNIT_TIMEOUTS: "0" }, 5)).toBe(5);
+  });
+  test("PHOEBE_MAX_UNPRODUCTIVE_RUNS takes precedence over deprecated alias", () => {
+    expect(
+      resolveMaxUnproductiveRuns(
+        { PHOEBE_MAX_UNPRODUCTIVE_RUNS: "7", PHOEBE_MAX_UNIT_TIMEOUTS: "4" },
+        5,
+      ),
+    ).toBe(7);
+  });
+});
+
+describe("resolveMaxUnitTimeouts (deprecated alias)", () => {
+  test("delegates to resolveMaxUnproductiveRuns", () => {
+    expect(resolveMaxUnitTimeouts({})).toBe(DEFAULT_MAX_UNIT_TIMEOUTS);
+    expect(DEFAULT_MAX_UNIT_TIMEOUTS).toBe(3);
     expect(resolveMaxUnitTimeouts({}, 5)).toBe(5);
     expect(resolveMaxUnitTimeouts({ PHOEBE_MAX_UNIT_TIMEOUTS: "2" }, 5)).toBe(2);
-    expect(resolveMaxUnitTimeouts({ PHOEBE_MAX_UNIT_TIMEOUTS: "0" }, 5)).toBe(5);
   });
 });
 
@@ -44,11 +67,26 @@ describe("markers", () => {
     expect(parseUnitTimeoutMarker("no marker here")).toBeNull();
   });
 
-  test("escalation comment embeds the baseline marker and names the label", () => {
-    const comment = buildQuarantineComment({ kind: "issues", id: 42, k: 3, baseline: "abc123" });
+  test("timeout escalation comment embeds the baseline marker and names the label", () => {
+    const comment = buildQuarantineComment({ kind: "conflicts", id: 42, k: 3, baseline: "abc123" });
     expect(comment).toContain(PHOEBE_QUARANTINE_LABEL);
     expect(comment).toContain("timed out 3 times");
     expect(parseQuarantineBaseline(comment)).toBe("abc123");
+  });
+
+  test("unproductive escalation comment says N runs produced no PR", () => {
+    const comment = buildQuarantineComment({
+      kind: "issues",
+      id: 42,
+      k: 3,
+      baseline: "body:aabbcc",
+      cause: "unproductive",
+    });
+    expect(comment).toContain(PHOEBE_QUARANTINE_LABEL);
+    expect(comment).toContain("3 consecutive runs");
+    expect(comment).toContain("produced no PR");
+    expect(comment).not.toContain("timed out");
+    expect(parseQuarantineBaseline(comment)).toBe("body:aabbcc");
   });
 });
 
@@ -353,9 +391,10 @@ describe("decideAutoUnstick (the sweep's core)", () => {
 });
 
 describe("buildUnstickComment", () => {
-  test("names the label it removed and resets the timeout counter to zero", () => {
+  test("names the label it removed and resets the quarantine counter to zero", () => {
     const comment = buildUnstickComment();
     expect(comment).toContain(PHOEBE_QUARANTINE_LABEL);
+    expect(comment).toContain("quarantine count");
     expect(parseUnitTimeoutMarker(comment)).toEqual({ n: 0 });
   });
 });

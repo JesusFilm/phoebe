@@ -24,23 +24,36 @@ import { createHash } from "node:crypto";
 /** Phoebe-owned skip label — distinct from the user-supplied `prOptOutLabel`. */
 export const PHOEBE_QUARANTINE_LABEL = "phoebe:quarantined";
 
-/** Consecutive timeouts before quarantine; the #75 house number. */
-export const DEFAULT_MAX_UNIT_TIMEOUTS = 3;
+/** Consecutive unproductive runs before quarantine; the #75 house number. */
+export const DEFAULT_MAX_UNPRODUCTIVE_RUNS = 3;
+/** @deprecated Use DEFAULT_MAX_UNPRODUCTIVE_RUNS */
+export const DEFAULT_MAX_UNIT_TIMEOUTS = DEFAULT_MAX_UNPRODUCTIVE_RUNS;
 
 /**
- * Resolve K: `PHOEBE_MAX_UNIT_TIMEOUTS` (a positive integer) wins, else the
- * config field, else the default 3. A fleet-protection backstop, not a per-repo
- * tuning knob (mirrors #72's timeout resolution).
+ * Resolve K: `PHOEBE_MAX_UNPRODUCTIVE_RUNS` (a positive integer) wins, else
+ * `PHOEBE_MAX_UNIT_TIMEOUTS` (deprecated alias), else the config field, else
+ * the default 3. A fleet-protection backstop, not a per-repo tuning knob
+ * (mirrors #72's timeout resolution).
  */
-export function resolveMaxUnitTimeouts(
+export function resolveMaxUnproductiveRuns(
   env: NodeJS.ProcessEnv,
-  configValue: number = DEFAULT_MAX_UNIT_TIMEOUTS,
+  configValue: number = DEFAULT_MAX_UNPRODUCTIVE_RUNS,
 ): number {
-  const raw = Number(env["PHOEBE_MAX_UNIT_TIMEOUTS"]);
-  if (Number.isInteger(raw) && raw >= 1) return raw;
+  const rawNew = Number(env["PHOEBE_MAX_UNPRODUCTIVE_RUNS"]);
+  if (Number.isInteger(rawNew) && rawNew >= 1) return rawNew;
+  const rawOld = Number(env["PHOEBE_MAX_UNIT_TIMEOUTS"]);
+  if (Number.isInteger(rawOld) && rawOld >= 1) return rawOld;
   return Number.isInteger(configValue) && configValue >= 1
     ? configValue
-    : DEFAULT_MAX_UNIT_TIMEOUTS;
+    : DEFAULT_MAX_UNPRODUCTIVE_RUNS;
+}
+
+/** @deprecated Use resolveMaxUnproductiveRuns */
+export function resolveMaxUnitTimeouts(
+  env: NodeJS.ProcessEnv,
+  configValue: number = DEFAULT_MAX_UNPRODUCTIVE_RUNS,
+): number {
+  return resolveMaxUnproductiveRuns(env, configValue);
 }
 
 // --- Timeout counter marker (posted on every timeout; embeds n) --------------
@@ -112,20 +125,25 @@ export function latestQuarantineBaseline(comments: readonly { body: string }[]):
 }
 
 /**
- * The one escalation comment posted at threshold: says the unit timed out K
- * times and needs a human, and records the baseline (PR head SHA for
- * conflicts/checks/reviews; `issueContentBaseline` for issues/research) so the
- * auto-un-stick sweep can tell when someone has actually changed the thing.
+ * The one escalation comment posted at threshold. `cause` selects the
+ * description: `"timeout"` (default, for PR-shaped units) says the work timed
+ * out K times; `"unproductive"` (for issue-shaped units counted by the
+ * stranded-unit sweep) says K runs produced no PR. Both record the baseline so
+ * the auto-un-stick sweep can tell when someone has actually changed the thing.
  */
 export function buildQuarantineComment(opts: {
   kind: string;
   id: number;
   k: number;
   baseline: string;
+  cause?: "timeout" | "unproductive";
 }): string {
+  const detail =
+    opts.cause === "unproductive"
+      ? `${opts.k} consecutive runs of the \`${opts.kind}\` work on #${opts.id} produced no PR`
+      : `the \`${opts.kind}\` work on #${opts.id} timed out ${opts.k} times in a row without completing`;
   return [
-    `⚠️ Phoebe quarantined this unit: the \`${opts.kind}\` work on #${opts.id} timed out ` +
-      `${opts.k} times in a row without completing. It has been labelled ` +
+    `⚠️ Phoebe quarantined this unit: ${detail}. It has been labelled ` +
       `\`${PHOEBE_QUARANTINE_LABEL}\` and skipped so it stops burning the run budget. ` +
       `A human should take a look.`,
     "",
@@ -144,7 +162,7 @@ export function buildQuarantineComment(opts: {
 export function buildUnstickComment(): string {
   return [
     `♻️ This has changed since it was quarantined, so Phoebe removed the ` +
-      `\`${PHOEBE_QUARANTINE_LABEL}\` label and reset its timeout count. It is eligible ` +
+      `\`${PHOEBE_QUARANTINE_LABEL}\` label and reset its quarantine count. It is eligible ` +
       `for work again.`,
     "",
     buildUnitTimeoutMarker(0),
