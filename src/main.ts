@@ -567,13 +567,17 @@ export function createEngine(options: EngineOptions): Engine {
         if (!outcome.unstacked) {
           if (outcome.reason !== "not-in-stack") {
             console.error(`[phoebe] Could not unstack PR #${pr.number} — ${outcome.reason}`);
+            continue;
           }
-          continue;
+          // PR has a Phoebe-branch base but is no longer in a native stack — its
+          // stack was dissolved earlier this cycle (by processing another member)
+          // or in a prior cycle. Fall through and retarget it anyway.
+        } else {
+          console.log(
+            `[phoebe] PR #${pr.number} removed from stack #${outcome.stackNumber} — ` +
+              `blocker #${blockerIssueNumber} completed without merging its PR.`,
+          );
         }
-        console.log(
-          `[phoebe] PR #${pr.number} removed from stack #${outcome.stackNumber} — ` +
-            `blocker #${blockerIssueNumber} completed without merging its PR.`,
-        );
         github.retargetPr(pr.number, prBase);
         console.log(`[phoebe] PR #${pr.number} retargeted onto ${prBase}.`);
       } catch (error) {
