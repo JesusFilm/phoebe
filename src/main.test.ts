@@ -878,7 +878,8 @@ describe("the stale-stack sweep", () => {
     });
   });
 
-  test("a stacked PR whose blocker completed but is not in a stack is skipped silently", async () => {
+  test("a stacked PR whose blocker completed but is not in a stack is still retargeted", async () => {
+    const writes: string[] = [];
     const result = await sweepCycle({
       listNativelyStackedPrs: () => [
         {
@@ -889,9 +890,49 @@ describe("the stale-stack sweep", () => {
       ],
       blockerPrState: () => ({ hasOpenPr: false, hasMergedPr: false, blockerCompleted: true }),
       unstackPr: () => ({ unstacked: false, reason: "not-in-stack" }),
+      retargetPr: (prNumber, base) => {
+        writes.push(`retarget ${prNumber} ${base}`);
+      },
     });
 
-    expect(result.lines.filter((l) => l.includes("PR #22"))).toHaveLength(0);
+    expect(writes).toEqual(["retarget 22 main"]);
+    expect(result.lines).toContain("[phoebe] PR #22 retargeted onto main.");
+  });
+
+  test("dissolving one stack retargets all members whose blocker completed in the same sweep", async () => {
+    // Two PRs in the same stack: PR #23 (deeper, base = issue-8) and PR #22
+    // (above it, base = issue-5). Both blockers completed. The stack is dissolved
+    // when PR #22 is processed first; PR #23 comes back not-in-stack and must
+    // still be retargeted.
+    const writes: string[] = [];
+    await sweepCycle({
+      listNativelyStackedPrs: () => [
+        {
+          number: asPrNumber(22),
+          headRefName: issueBranch(8),
+          baseRefName: issueBranch(5),
+        },
+        {
+          number: asPrNumber(23),
+          headRefName: issueBranch(9),
+          baseRefName: issueBranch(8),
+        },
+      ],
+      blockerPrState: () => ({ hasOpenPr: false, hasMergedPr: false, blockerCompleted: true }),
+      unstackPr: (prNumber) => {
+        if (prNumber === 22) {
+          writes.push(`unstack ${prNumber}`);
+          return { unstacked: true, stackNumber: 3 };
+        }
+        // Stack already dissolved when PR #23 is processed.
+        return { unstacked: false, reason: "not-in-stack" };
+      },
+      retargetPr: (prNumber, base) => {
+        writes.push(`retarget ${prNumber} ${base}`);
+      },
+    });
+
+    expect(writes).toEqual(["unstack 22", "retarget 22 main", "retarget 23 main"]);
   });
 
   test("a failed listing is reported and the cycle carries on", async () => {
