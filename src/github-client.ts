@@ -208,6 +208,8 @@ export type GitHubClient = {
    * caller can inspect the error with `isLabelNotFoundError` when the label
    * does not exist in the repository.
    */
+  /** Current label names on an issue, fetched fresh. Used by `claimIssue` to detect a prior claim. */
+  issueLabels(issueNumber: number): string[];
   addIssueLabel(issueNumber: number, label: string): void;
   /** Remove `label` from an issue. */
   removeIssueLabel(issueNumber: number, label: string): void;
@@ -962,6 +964,15 @@ export function createGitHubClient({
         PHOEBE_QUARANTINE_LABEL,
       ]);
     },
+
+    issueLabels: (issueNumber) =>
+      ghJson<{ labels: Array<{ name: string }> }>([
+        "issue",
+        "view",
+        String(issueNumber),
+        "--json",
+        "labels",
+      ]).labels.map((l) => l.name),
 
     addIssueLabel: (issueNumber, label) => {
       // Captured exec (not ghWrite/inherit) so callers can inspect the error
