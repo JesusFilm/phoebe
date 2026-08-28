@@ -45,10 +45,20 @@ touches an unlabelled issue.
 
 ### `processingLabel` means "in flight"
 
-When Phoebe claims an issue it swaps `readyLabel` for `processingLabel` (default
-`processing`) as its first action. If you see `processingLabel`, a run is (or
-was) working that issue, so don't start on it yourself. If a run dies and leaves
-the label stranded, remove `processingLabel` and re-add `readyLabel` to requeue.
+The engine swaps `readyLabel` for `processingLabel` (default `processing`) before
+starting the agent. If you see `processingLabel`, a run is (or was) working that
+issue — don't start on it yourself. If a run dies and leaves the label stranded,
+the stale-label sweep reconciles it automatically; you do not need to requeue by
+hand.
+
+**Label ownership.** `readyLabel` is yours to apply and remove; `processingLabel`
+is Phoebe's. To pause a queued issue, remove `readyLabel`. Applying
+`processingLabel` by hand is not a pause — the sweep will treat it as a stale
+claim and remove it.
+
+When an agent identifies a blocker, it records `Blocked by #N` in the issue body
+and exits. The `blockedByPattern` section below describes how the engine reads
+that and what happens next.
 
 ## Blocking one issue on another: `blockedByPattern`
 
