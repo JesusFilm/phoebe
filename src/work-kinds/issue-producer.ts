@@ -31,27 +31,41 @@ export type IssueProducerUnit = {
 
 /**
  * Why nothing was workable, naming the blockers when there are any — the bare
- * count is indistinguishable from a legitimate wait (#219).
+ * count is indistinguishable from a legitimate wait (#219). When all
+ * unblocked issues carry processingLabel the queue is temporarily full, not
+ * stuck (#365).
  */
 function idleBlockerReason(issues: readonly Issue[], ctx: WorkKindCtx): string {
+  const label = ctx.config.processingLabel;
+  const processingCount = label ? issues.filter((i) => i.labels.includes(label)).length : 0;
   const waiting = unresolvedBlockerNumbers(
     issues,
     ctx.cycle.blockerStates(),
     ctx.env["PHOEBE_BASE"],
     ctx.config.processingLabel,
   );
-  return waiting.length > 0
-    ? `(waiting on blockers ${waiting.map((n) => `#${n}`).join(", ")})`
-    : "(blocked or waiting on blocker PR)";
+  if (waiting.length > 0) return `(waiting on blockers ${waiting.map((n) => `#${n}`).join(", ")})`;
+  if (processingCount > 0) return `(${processingCount} already in progress)`;
+  return "(blocked or waiting on blocker PR)";
 }
 
 /**
  * Apply `config.processingLabel` to `issueNumber` before the agent runs (#365).
- * A missing label is self-healed once — created, then the add retried. Any
- * other failure propagates, aborting the unit without running the agent.
+ *
+ * Returns `false` when a fresh label fetch shows the issue is already claimed
+ * by another run — the caller should skip the workflow. Returns `true` when
+ * the label was successfully applied.
+ *
+ * A pre-check before the add tightens the race window to the network round-trip
+ * of a single API call; it is not atomic (GitHub labels have no test-and-set),
+ * but it gives the caller a reliable skip signal when another instance already
+ * owns the issue. A missing label is self-healed once — created, then the add
+ * retried. Any other failure propagates, aborting the unit without running the
+ * agent.
  */
-function claimIssue(issueNumber: number, ctx: WorkKindRunCtx): void {
+function claimIssue(issueNumber: number, ctx: WorkKindRunCtx): boolean {
   const label = ctx.config.processingLabel;
+  if (ctx.github.issueLabels(issueNumber).includes(label)) return false;
   try {
     ctx.github.addIssueLabel(issueNumber, label);
   } catch (err) {
@@ -63,6 +77,7 @@ function claimIssue(issueNumber: number, ctx: WorkKindRunCtx): void {
       throw err;
     }
   }
+  return true;
 }
 
 /**
@@ -126,7 +141,12 @@ export function issueProducerKind(opts: {
           (resolution.stacked ? ` (stacked on #${resolution.blockerIssueNumber})` : "") +
           ".",
       );
-      claimIssue(issue.number, ctx);
+      if (!claimIssue(issue.number, ctx)) {
+        ctx.log(
+          `Issue #${issue.number} already carries processingLabel — another run owns it; skipping.`,
+        );
+        return;
+      }
       await ctx.agent.issueWorkflow({
         issueNumber: issue.number,
         issueTitle: issue.title,
