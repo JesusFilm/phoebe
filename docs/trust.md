@@ -212,3 +212,53 @@ This is the same kind of statement as the co-location constraint above: both are
 first-class policies because the runtime boundary is not a full security boundary.
 See [`github-app-mode.md` §2](github-app-mode.md#2-what-the-app-arm-costs-you) for
 the full blast-radius accounting.
+
+## The config is code
+
+Loading `phoebe.config.ts` is executing it: it is a TypeScript module the
+engine `import()`s, and so is every custom work-kind module it names (a factory
+export is additionally _called_ with the resolved config at registry build).
+None of this is sandboxed, and that is by design — the config is trusted as
+the operator, a kind is trusted as the tenant
+([`work-kinds.md` → The `ctx` surface](work-kinds.md#the-ctx-surface)).
+
+The boundary is _where these files live_, not what they may do. They sit on the
+read-only deployment mount and are imported once per engine process. Nothing
+that runs inside the container can change them: a pull request cannot smuggle a
+kind in — worktrees are never a resolution base for kind modules or prompt
+templates — and neither can a prompt-injected agent, whose writable world is
+the data volume, disjoint from the mount. New kind code reaches a running
+deployment only through merge **plus** an operator pulling the deployment dir
+on the host.
+
+Two policies follow, first-class like the co-location constraint above:
+
+> **Never point the engine at a config you would not run as a script.** In
+> particular, never run `phoebe` in a CI workflow that checks out pull-request
+> code (`pull_request`, and doubly `pull_request_target`): the engine imports
+> the config before the container-only execution gate is consulted, so a
+> PR-authored config executes with every secret the runner holds.
+
+> **Review a config or kind-module PR as privileged code.** Once merged and
+> pulled, it runs with the tenant's credentials. Mind the asymmetry between
+> the two halves: with `engine.source: "github"` tracking a branch, _engine_
+> code follows a merge automatically at the next reconcile poll, while the
+> config half waits for the host-side pull.
+
+### PR branches do run code — through `installCommand`
+
+Custom kinds are not how an unmerged PR gets code executed; `installCommand`
+is. The janitor kinds check out a PR's head branch into a worktree, and the
+engine runs `installCommand` there before any agent starts — so the branch's
+install hooks (`postinstall` scripts, pnpm patches, `.npmrc`) execute as the
+engine's own child, one poll cycle after a push. What bounds this is scope,
+not sandboxing: fork PRs are always excluded, and the default
+`prScope: "phoebe"` sweeps only `branchPrefix` branches, so the reach is
+"anyone with push access to the same repo" — which the co-location policy
+already treats as inside the trust domain. Setting `prScope: "all"` widens
+that to every same-repo branch; set it knowing that is what it means.
+
+The engine strips its own credentials — `GH_TOKEN`, the `GH_APP_*` pair, and
+every configured provider API key — from the `installCommand` environment
+(`src/shell-env.ts`), so an install hook lands in the operator's toolchain
+env, not the engine's keyring.

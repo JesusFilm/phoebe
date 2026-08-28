@@ -271,6 +271,11 @@ or polls `signal.aborted` to stop early. The engine races the deadline
 regardless, so an uncooperative `run` still hits the same accounting path — it
 just keeps executing as an orphan until it finishes or errors on its own.
 
+A kind is ordinary code in the engine process — nothing sandboxes it, and the
+`ctx` surface is an ergonomics contract, not a capability boundary.
+Registering one is the same trust decision as editing the config itself:
+see [`trust.md` → The config is code](trust.md#the-config-is-code).
+
 Start from [`examples/custom-kind/`](../examples/custom-kind/) — a full-form
 kind (a stale-PR nudger) beside the inline prompt-only-producer cheap case.
 Copy-from-example is the supported path; there is no scaffold command.
@@ -338,7 +343,9 @@ resolve. Everything arrives on `ctx` (types via `import type` from
 - `ctx.options` — the `options` object from a `{ module, options }` declaration
   (`unknown`; validate it yourself). Inline definitions close over their values
   instead.
-- `ctx.env` — the engine's environment. Custom knobs ride the tenant `.env`.
+- `ctx.env` — the engine's environment, credentials included (`GH_TOKEN`, the
+  provider key). A kind is trusted with them. Custom knobs ride the tenant
+  `.env`.
 - `ctx.github` — the cycle-scoped GitHub client (memoized `openPrs`/`mergeInfo`
   per cycle) plus the always-fresh `currentMergeInfo` for post-run re-checks.
 - `ctx.origin` — read-only views of the private clone: `fetch()` and

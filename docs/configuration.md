@@ -101,10 +101,22 @@ bound what they touch:
 
 Cross-repository PRs (from forks) are always excluded, regardless of scope.
 
+Widening `prScope` is a trust decision, not a tuning knob: a scanned PR's
+branch gets its install hooks executed by the engine
+([`trust.md` → PR branches do run code](trust.md#pr-branches-do-run-code--through-installcommand)).
+
 ## Toolchain commands
 
 Toolchains differ per repo, so these are plain shell strings the engine runs
 inside a worktree (`checkCommand`/`testCommand` are required, above).
+
+`installCommand` runs in a worktree that may sit at a PR branch head, where the
+branch's install hooks execute as the engine's child — so its environment is
+the engine's minus the engine's own credentials: no `GH_TOKEN`, no `GH_APP_*`,
+no provider API keys (`src/shell-env.ts`). An install that needs GitHub auth of
+its own — private git dependencies, GitHub Packages — must bring a dedicated
+token. The prompt `` !`…` `` expansions keep `GH_TOKEN` (the shipped templates
+open with `gh` calls) but likewise never see provider keys.
 
 | Field          | Default           | Meaning                                                                            |
 | -------------- | ----------------- | ---------------------------------------------------------------------------------- |
@@ -236,6 +248,13 @@ workKinds: {
 - **`options`** must be a plain object; it reaches the kind unvalidated as
   `ctx.options` (the kind validates). Inline entries carry no `options` —
   close over values instead. Unknown wrapper fields are boot errors.
+- **Prefer the module arms for real logic.** The bootstrapper imports every
+  tenant's config on boot and each reconcile, so an inline definition's code
+  runs in the supervisor process too — the one holding the deployment's
+  credentials. A `module:` path is imported only by the engine child, after
+  the per-child env scrub. Keep inline for closing over a few values, and
+  remember either way that registering a kind is executing it: see
+  [`trust.md` → The config is code](trust.md#the-config-is-code).
 - **Env knobs** (`PHOEBE_<KIND>_AGENT/_MODEL/_EFFORT`, hyphens →
   underscores) work through the tenant `.env`, which is forwarded to the
   engine wholesale. The _deployment-global_ allowlist the bootstrapper applies

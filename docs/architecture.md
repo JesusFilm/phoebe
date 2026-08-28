@@ -123,6 +123,13 @@ shell blocks that appear in the _raw_ template are executed in the worktree and
 spliced in. Shell blocks arriving via substituted values are treated as data,
 never executed. A marker pass runs before substitution to guarantee it.
 
+The toolchain spawns get the inverse treatment (`src/shell-env.ts`): they
+inherit the parent env whole — registry tokens, proxies, `NODE_OPTIONS` —
+minus the engine's own credentials. `installCommand` runs in a worktree that
+may sit at a PR branch head, so it never sees `GH_TOKEN`, `GH_APP_*`, or a
+provider key; the `` !`cmd` `` expansions keep `GH_TOKEN` for their `gh` calls
+but drop the rest.
+
 ## Engine updates and crash-loop fallback
 
 `phoebe boot` (`bootstrap/boot.ts`) is the container's long-lived main process,

@@ -4,8 +4,16 @@
 // Unlike the agent's env (see agent-env.ts) this is NOT an allowlist: a
 // toolchain command is the consumer's own, runs before any agent is involved,
 // and legitimately needs whatever the operator put in the image — registry
-// tokens, proxy settings, NODE_OPTIONS. It inherits the parent env whole. The
-// only thing added is the answer to a question nobody is here to answer.
+// tokens, proxy settings, NODE_OPTIONS. It inherits the parent env whole,
+// minus the engine's own credentials. installCommand runs inside a worktree
+// checked out at a PR branch head, so the branch's install hooks (postinstall
+// scripts, pnpm patches) execute as the engine's child — the credentials the
+// engine holds for itself and its agents must not ride along. The prompt `!`
+// expansions keep GH_TOKEN because the shipped templates call `gh`, but the
+// commands themselves come from the read-only config mount, never the branch;
+// no toolchain command needs a provider API key, so those never ride along.
+
+const ENGINE_CREDENTIAL_KEYS = ["GH_TOKEN", "GH_APP_ID", "GH_APP_PRIVATE_KEY"] as const;
 
 /**
  * The parent env plus a default answer for Corepack's download confirmation.
@@ -33,11 +41,46 @@
  * repo's own `packageManager` field, so this suppresses the confirmation, not
  * the pin. An operator who set the variable themselves keeps their value.
  */
-export function buildShellCommandEnv(
-  parentEnv: NodeJS.ProcessEnv = process.env,
-): NodeJS.ProcessEnv {
+function withCorepackAnswer(parentEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return {
     ...parentEnv,
     COREPACK_ENABLE_DOWNLOAD_PROMPT: parentEnv.COREPACK_ENABLE_DOWNLOAD_PROMPT ?? "0",
   };
+}
+
+function without(env: NodeJS.ProcessEnv, keys: readonly string[]): NodeJS.ProcessEnv {
+  for (const key of keys) {
+    delete env[key];
+  }
+  return env;
+}
+
+/**
+ * Env for `installCommand`: the parent env minus GH_TOKEN, the GH_APP_*
+ * credentials, and every configured provider API key (`providerKeys` — the
+ * values of `config.providerEnv`). An install that needs GitHub auth of its
+ * own (private git dependencies, GitHub Packages) must bring a dedicated
+ * token; the engine's minted credential is not it.
+ */
+export function buildInstallCommandEnv(
+  parentEnv: NodeJS.ProcessEnv,
+  providerKeys: readonly string[],
+): NodeJS.ProcessEnv {
+  return without(withCorepackAnswer(parentEnv), [...ENGINE_CREDENTIAL_KEYS, ...providerKeys]);
+}
+
+/**
+ * Env for prompt `!`...`` expansions: keeps GH_TOKEN — the shipped templates
+ * open with `gh pr view` / `gh issue view` — but drops the GH_APP_*
+ * credentials and every provider API key, which no expansion has a use for.
+ */
+export function buildPromptShellEnv(
+  parentEnv: NodeJS.ProcessEnv,
+  providerKeys: readonly string[],
+): NodeJS.ProcessEnv {
+  return without(withCorepackAnswer(parentEnv), [
+    "GH_APP_ID",
+    "GH_APP_PRIVATE_KEY",
+    ...providerKeys,
+  ]);
 }
