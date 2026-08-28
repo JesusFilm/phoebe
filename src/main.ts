@@ -60,6 +60,7 @@ import {
   buildUnstickComment,
   decideAutoUnstick,
   decideTimeoutRecord,
+  latestTimeoutMarker,
   loginMismatchWarning,
   PHOEBE_QUARANTINE_LABEL,
   resolveMaxUnproductiveRuns,
