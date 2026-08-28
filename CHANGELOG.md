@@ -1,5 +1,22 @@
 # phoebe-agent
 
+## 0.10.0
+
+### Minor Changes
+
+- e9fbafa: Modular work kinds (map #303): a work kind is now one self-contained definition object — name, prompt, eligibility, reporting, and a `fetch`/`select`/`run` triple — registered in a single registry the engine walks. The five built-ins are re-expressed on the contract, and a tenant can author its own kinds under `workKinds.custom.<name>` (inline, a module path, or `{ module, options }`), which the engine treats identically to built-ins: `workOrder`, `workKinds` tuning blocks, `PHOEBE_<KIND>_*` env vars, quarantine, slots, deadlines, and the prompt-existence check all apply uniformly (the run deadline bounds the agent spawn, not arbitrary kind code — a kind times out its own waits). Kind modules use type-only imports from `phoebe-agent` (`satisfies WorkKindDefinition`); everything a kind can do arrives on `ctx`. Work units are now opaque with a structural `ref` (`pr:123` / `issue:88`) — unit event lines and `phoebe list` show `conflicts pr:123` where they used to show `conflicts #123`. See `docs/work-kinds.md` → "Writing your own kind" and `examples/custom-kind/`. The scratch workspace `ctx.workspace.dir` is prepared on first read, so a kind that builds its own worktrees pays nothing for one it never uses.
+- 23d889b: Bound a work kind's `run` under the whole-unit deadline (#359): the run budget now races against the entire `definition.run`, not just the agent spawn. A custom kind that hangs outside `ctx.agent.*` — an unbounded fetch, a poll loop, a `while (true)` — now triggers `RunTimeoutError`, releases its concurrency slot, and reaches the quarantine accounting path exactly like a built-in timeout. `WorkKindRunCtx` gains `signal: AbortSignal`, which fires when the budget expires; cooperative kinds pass it to async operations or poll `signal.aborted` to stop early. Each `ctx.agent.*` helper automatically passes the signal to the agent subprocess, so the child process is killed on expiry wherever in `run` the call sits.
+- cf96006: The engine's credentials no longer ride into toolchain spawns. `installCommand` runs in a worktree that may sit at a PR branch head, where the branch's install hooks execute as the engine's child — its environment now drops `GH_TOKEN`, `GH_APP_ID`/`GH_APP_PRIVATE_KEY`, and every configured provider API key while still inheriting the operator's toolchain env whole (registry tokens, proxies, `NODE_OPTIONS`). The prompt `` !`cmd` `` expansions keep `GH_TOKEN` — the shipped templates open with `gh` calls — but likewise stop seeing provider keys. An install that needs GitHub auth of its own (private git dependencies, GitHub Packages) must bring a dedicated token; the engine's minted credential is not it. `docs/trust.md` gains "The config is code": loading the config or a custom kind module is executing it, why an unmerged PR can't smuggle a kind in, and what `prScope` actually bounds.
+
+### Patch Changes
+
+- e8ad7b3: Fix migrate post-apply validation falsely reverting workspace-root migrations.
+
+  `validateUserConfig` now skips the five tenant-field checks (`repoSlug`, `repoUrl`, `installCommand`, `checkCommand`, `testCommand`) when a `workspace` block is present. A workspace-root config carries that block instead of those fields by design, so demanding them was always wrong. The root preexisting-invalid probe is fixed as a consequence.
+
+- 29cec29: Design record: the Slack bug-channel responder sketch (docs/research/slack-responder-sketch.md). A paper exercise against the modular work-kinds contract (map #303) that names the v1 extension points — workspace `none`/`readonly`, kind-declared credentials, non-GitHub work sources, and the agent tool surface — and feeds one amendment back into the contract: work units gain an optional structural `github` target so the engine's timeout/quarantine write path survives opaque units without parsing refs.
+- 55f8886: Fix stale-stack sweep to retarget every orphaned stack member, not only the PR whose blocker completed (#360): the GitHub stacks `unstack` endpoint dissolves the whole stack, leaving all other members with stale Phoebe-branch bases. The sweep now falls through to `retargetPr` when `unstackPr` reports `not-in-stack`, so a PR whose stack was dissolved earlier in the same cycle (or in a prior one) still gets moved onto the default branch when its blocker has completed.
+
 ## 0.9.0
 
 ### Minor Changes
