@@ -37,7 +37,7 @@ import {
   type UnitTarget,
 } from "./github-client.ts";
 import { buildAgentEnv } from "./agent-env.ts";
-import { buildShellCommandEnv } from "./shell-env.ts";
+import { buildInstallCommandEnv, buildPromptShellEnv } from "./shell-env.ts";
 import { installDrainSignal, type DrainSignal } from "./drain.ts";
 import {
   BrokerDisconnectedError,
@@ -167,24 +167,34 @@ function gitInWorktree(
 }
 
 /**
- * Run a configured toolchain command (a shell string) inside a worktree, under
- * the engine's own environment — the same one the agent children are built from.
+ * Run a configured toolchain command (a shell string) inside a worktree. The
+ * worktree may sit at a PR branch head, so the env drops the engine's own
+ * credentials — the branch's install hooks run as this child (see shell-env.ts).
  */
-function runShellCommand(command: string, cwd: string, parentEnv: NodeJS.ProcessEnv): void {
+function runShellCommand(
+  command: string,
+  cwd: string,
+  parentEnv: NodeJS.ProcessEnv,
+  providerKeys: readonly string[],
+): void {
   execSync(command, {
     cwd,
-    env: buildShellCommandEnv(parentEnv),
+    env: buildInstallCommandEnv(parentEnv, providerKeys),
     stdio: "inherit",
     timeout: SHELL_COMMAND_TIMEOUT_MS,
   });
 }
 
 /** Shell executor for prompt !`...` expansion — captures stdout. */
-function promptShell(cwd: string, parentEnv: NodeJS.ProcessEnv): (command: string) => string {
+function promptShell(
+  cwd: string,
+  parentEnv: NodeJS.ProcessEnv,
+  providerKeys: readonly string[],
+): (command: string) => string {
   return (command) =>
     execSync(command, {
       cwd,
-      env: buildShellCommandEnv(parentEnv),
+      env: buildPromptShellEnv(parentEnv, providerKeys),
       encoding: "utf8",
       timeout: SHELL_COMMAND_TIMEOUT_MS,
     });
@@ -661,7 +671,7 @@ export function createEngine(options: EngineOptions): Engine {
     const prompt = renderPrompt(
       loadPromptTemplate(opts.promptFile),
       { ...buildDefaultPromptArgs(config), ...opts.promptArgs },
-      promptShell(opts.worktreeDir, env),
+      promptShell(opts.worktreeDir, env, Object.values(config.providerEnv)),
     );
     const agentEnv = buildAgentEnv({
       parentEnv: env,
@@ -771,7 +781,7 @@ export function createEngine(options: EngineOptions): Engine {
 
     const worktreeDir = prepareWorktree({ branch });
     try {
-      runShellCommand(config.installCommand, worktreeDir, env);
+      runShellCommand(config.installCommand, worktreeDir, env, Object.values(config.providerEnv));
       // Presence, not length: an empty list still primes the tree with the
       // default-branch merge (reproducing the conflict for the agent to solve).
       if (opts.primeBlockerMerges !== undefined) {
@@ -877,7 +887,7 @@ export function createEngine(options: EngineOptions): Engine {
     hub.fetch();
     const worktreeDir = prepareWorktree({ branch: agentBranch, baseRef: worktreeBase });
     try {
-      runShellCommand(config.installCommand, worktreeDir, env);
+      runShellCommand(config.installCommand, worktreeDir, env, Object.values(config.providerEnv));
 
       await runAgentInWorktree({
         picked: opts.picked,
