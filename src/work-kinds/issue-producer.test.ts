@@ -39,11 +39,12 @@ function anIssueUnit(number: number): IssueProducerUnit {
 
 /** Minimal WorkKindRunCtx for testing the claim path. */
 function makeCtx(overrides: {
+  issueLabels?: (issueNumber: number) => string[];
   addIssueLabel?: (issueNumber: number, label: string) => void;
   createLabel?: (name: string) => void;
   issueWorkflow?: () => Promise<void>;
 }): WorkKindRunCtx {
-  const { addIssueLabel, createLabel, issueWorkflow } = overrides;
+  const { issueLabels, addIssueLabel, createLabel, issueWorkflow } = overrides;
   return {
     kind: "issues",
     config: BASE_CONFIG,
@@ -59,9 +60,10 @@ function makeCtx(overrides: {
       sleep: () => Promise.resolve(),
     },
     log: () => {},
-    // WorkKindGitHub — we only need addIssueLabel and createLabel
+    // WorkKindGitHub — we only need issueLabels, addIssueLabel, and createLabel
     github: new Proxy({} as WorkKindRunCtx["github"], {
       get(_target, prop) {
+        if (prop === "issueLabels") return issueLabels ?? (() => []);
         if (prop === "addIssueLabel") return addIssueLabel ?? (() => {});
         if (prop === "createLabel") return createLabel ?? (() => {});
         if (typeof prop !== "string" || prop === "then") return undefined;
@@ -220,5 +222,27 @@ describe("claim write in issueProducerKind.run", () => {
     await run(unit, ctx);
 
     expect(order).toEqual(["claim", "agent"]);
+  });
+
+  test("overlapping invocation: issue already carries processingLabel — workflow is skipped", async () => {
+    const run = buildRun(() => []);
+    const unit = anIssueUnit(22);
+    let agentRan = false;
+    let addLabelCalled = false;
+    const ctx = makeCtx({
+      // Simulate: another run already claimed the issue before we enter run()
+      issueLabels: () => [BASE_CONFIG.processingLabel],
+      addIssueLabel: () => {
+        addLabelCalled = true;
+      },
+      issueWorkflow: async () => {
+        agentRan = true;
+      },
+    });
+
+    await run(unit, ctx);
+
+    expect(agentRan).toBe(false);
+    expect(addLabelCalled).toBe(false);
   });
 });
