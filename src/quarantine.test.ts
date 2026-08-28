@@ -391,9 +391,10 @@ describe("decideAutoUnstick (the sweep's core)", () => {
 });
 
 describe("buildUnstickComment", () => {
-  test("names the label it removed and resets the timeout counter to zero", () => {
+  test("names the label it removed and resets the quarantine counter to zero", () => {
     const comment = buildUnstickComment();
     expect(comment).toContain(PHOEBE_QUARANTINE_LABEL);
+    expect(comment).toContain("quarantine count");
     expect(parseUnitTimeoutMarker(comment)).toEqual({ n: 0 });
   });
 });

@@ -8,10 +8,14 @@
 //
 // detect returns null for:
 //   - no config file
-//   - already migrated (maxUnproductiveRuns present)
-//   - maxUnitTimeouts absent (using the default — nothing to rename)
+//   - maxUnproductiveRuns already present AND maxUnitTimeouts absent (fully migrated)
+//   - maxUnitTimeouts absent and maxUnproductiveRuns absent (using the default — nothing to rename)
 //
-// When maxUnitTimeouts has a non-literal value (computed, identifier, etc.),
+// When both keys are present, the migration removes maxUnitTimeouts (the new key
+// wins). If maxUnitTimeouts has a non-literal value in that case, a ConfigRefusal
+// asks the operator to remove the deprecated key by hand.
+//
+// When only maxUnitTimeouts is present with a non-literal value (no new key yet),
 // a ConfigRefusal tells the operator the exact two-field edit to make by hand.
 
 import {
@@ -26,7 +30,7 @@ const CONFIG_REL_PATH = "phoebe.config.ts";
 const OLD_KEY = "maxUnitTimeouts";
 const NEW_KEY = "maxUnproductiveRuns";
 
-type DetectData = { content: string; value: number };
+type DetectData = { content: string; value: number; removeOnly: boolean };
 
 export const renameMaxUnitTimeoutsMigration: Migration = {
   id: "rename-max-unit-timeouts",
@@ -37,24 +41,35 @@ export const renameMaxUnitTimeoutsMigration: Migration = {
     const content = readFile(CONFIG_REL_PATH);
     if (content === null) return null;
 
-    // Already migrated
     const newField = editConfigGetField(content, NEW_KEY);
-    if (newField.ok && newField.found) return null;
+    const oldField = editConfigGetField(content, OLD_KEY);
+
+    if (newField.ok && newField.found) {
+      // New key is already present. If old key is also present, remove it.
+      if (!oldField.ok || !oldField.found) return null;
+      const oldValue = oldField.literal === undefined ? NaN : (oldField.literal as number);
+      return { content, value: oldValue, removeOnly: true } satisfies DetectData;
+    }
 
     // Not explicitly set — using the default, nothing to rename
-    const oldField = editConfigGetField(content, OLD_KEY);
     if (!oldField.ok || !oldField.found) return null;
 
     // Non-literal value: the field is set but we cannot safely rewrite it
     if (oldField.literal === undefined) {
-      return { content, value: NaN } satisfies DetectData;
+      return { content, value: NaN, removeOnly: false } satisfies DetectData;
     }
 
-    return { content, value: oldField.literal as number } satisfies DetectData;
+    return { content, value: oldField.literal as number, removeOnly: false } satisfies DetectData;
   },
 
   describe(data) {
-    const { value } = data as DetectData;
+    const { value, removeOnly } = data as DetectData;
+    if (removeOnly) {
+      if (Number.isNaN(value)) {
+        return `remove deprecated ${OLD_KEY} (manual — non-literal value; ${NEW_KEY} already present)`;
+      }
+      return `remove deprecated ${OLD_KEY}: ${String(value)} (${NEW_KEY} already present)`;
+    }
     if (Number.isNaN(value)) {
       return `rename ${OLD_KEY} to ${NEW_KEY} (manual — non-literal value)`;
     }
@@ -62,20 +77,25 @@ export const renameMaxUnitTimeoutsMigration: Migration = {
   },
 
   apply(_dir, data, _readFile) {
-    const { content, value } = data as DetectData;
+    const { content, value, removeOnly } = data as DetectData;
 
     if (Number.isNaN(value)) {
-      return new ConfigRefusal(
-        `In ${CONFIG_REL_PATH}, rename \`${OLD_KEY}\` to \`${NEW_KEY}\` by hand.`,
-      );
+      const message = removeOnly
+        ? `In ${CONFIG_REL_PATH}, remove the deprecated \`${OLD_KEY}\` field by hand (\`${NEW_KEY}\` already present).`
+        : `In ${CONFIG_REL_PATH}, rename \`${OLD_KEY}\` to \`${NEW_KEY}\` by hand.`;
+      return new ConfigRefusal(message);
     }
 
     const removed = editConfigRemoveField(content, OLD_KEY);
     if (!removed.ok) {
       return new ConfigRefusal(
-        `In ${CONFIG_REL_PATH}, rename \`${OLD_KEY}\` to \`${NEW_KEY}\` by hand ` +
+        `In ${CONFIG_REL_PATH}, remove the deprecated \`${OLD_KEY}\` field by hand ` +
           `(could not remove automatically: ${removed.reason}).`,
       );
+    }
+
+    if (removeOnly) {
+      return { [CONFIG_REL_PATH]: removed.content };
     }
 
     const set = editConfigSetField(removed.content, NEW_KEY, value);

@@ -162,7 +162,7 @@ export function buildQuarantineComment(opts: {
 export function buildUnstickComment(): string {
   return [
     `♻️ This has changed since it was quarantined, so Phoebe removed the ` +
-      `\`${PHOEBE_QUARANTINE_LABEL}\` label and reset its timeout count. It is eligible ` +
+      `\`${PHOEBE_QUARANTINE_LABEL}\` label and reset its quarantine count. It is eligible ` +
       `for work again.`,
     "",
     buildUnitTimeoutMarker(0),
