@@ -60,6 +60,7 @@ import {
   buildUnstickComment,
   decideAutoUnstick,
   decideTimeoutRecord,
+  latestTimeoutMarker,
   loginMismatchWarning,
   PHOEBE_QUARANTINE_LABEL,
   resolveMaxUnitTimeouts,
@@ -91,6 +92,7 @@ import {
   RUN_ONCE_NOTHING_MESSAGE,
   validateWorkOrder,
   type BlockerPrState,
+  type Issue,
   type StackedOn,
 } from "./orchestrator.ts";
 import {
@@ -593,6 +595,64 @@ export function createEngine(options: EngineOptions): Engine {
       } catch (error) {
         console.error(
           `[phoebe] Could not unstack or retarget PR #${pr.number} — ` +
+            `${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Re-arm every open issue that carries `processingLabel` but has no open or
+   * merged Phoebe PR — an issue whose run ended without producing one, whether
+   * by crash, kill, or timeout. Best-effort: one issue's failure does not stop
+   * the sweep, and a failure of the whole sweep never stops the cycle.
+   *
+   * Quarantined issues are swept unconditionally — `selectIssue` still filters
+   * them, so a re-armed quarantined issue is not picked. By the time
+   * `sweepQuarantine` lifts the quarantine label the issue already carries
+   * `readyLabel`, so `sweepQuarantine` needs no change.
+   */
+  function sweepStrandedUnits(): void {
+    let claimed: Issue[];
+    try {
+      claimed = github.listLabeledIssues(config.processingLabel);
+    } catch (error) {
+      console.error(
+        `[phoebe] Could not list claimed issues for the stranded-unit sweep — ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+      return;
+    }
+    for (const issue of claimed) {
+      const label = `issue #${issue.number}`;
+      let hasPr: boolean;
+      try {
+        const state = github.blockerPrState(issue.number);
+        hasPr = state.hasOpenPr || state.hasMergedPr;
+      } catch (error) {
+        console.error(
+          `[phoebe] Could not check PR state for ${label} in the stranded-unit sweep — ` +
+            `${error instanceof Error ? error.message : String(error)}`,
+        );
+        continue;
+      }
+      if (hasPr) continue;
+      try {
+        github.removeIssueLabel(issue.number, config.processingLabel);
+        if (!issue.labels.includes(config.readyLabel)) {
+          github.addIssueLabel(issue.number, config.readyLabel);
+        }
+        const inputs = github.issueTimeoutInputs(issue.number);
+        const prior = latestTimeoutMarker(inputs.comments);
+        const n = (prior?.n ?? 0) + 1;
+        github.postUnitComment(
+          { objectType: "issue", id: issue.number },
+          buildUnitTimeoutMarker(n),
+        );
+        console.log(`[phoebe] Re-armed ${label} — stranded with no PR.`);
+      } catch (error) {
+        console.error(
+          `[phoebe] Could not re-arm ${label} in the stranded-unit sweep — ` +
             `${error instanceof Error ? error.message : String(error)}`,
         );
       }
@@ -1247,11 +1307,10 @@ export function createEngine(options: EngineOptions): Engine {
         continue;
       }
 
-      // Auto-un-stick before selecting (#153): a unit whose content advanced since
-      // it was quarantined loses the label here, so it is eligible in *this*
-      // cycle's fetch rather than the next one. Skipped under `--dry-run`, which
+      // Sweeps before selecting (#153, #366): skipped under `--dry-run`, which
       // must not write to GitHub.
       if (!dryRun) {
+        sweepStrandedUnits();
         sweepQuarantine("content-advanced");
         sweepStaleNativeStacks();
       }
