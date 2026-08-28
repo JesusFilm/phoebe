@@ -1133,3 +1133,57 @@ describe("the run workspace", () => {
     expect(worktreeCalls.find((args) => args[1] === "add")?.at(-1)).toBe("origin/main");
   });
 });
+
+// The whole-unit run deadline (#359): the budget now races against the whole
+// `definition.run`, not just the agent spawn. `ctx.signal` carries the
+// AbortSignal so cooperative kinds can stop early; the engine races regardless.
+describe("the run deadline signal", () => {
+  /** A custom kind that records whatever signal it received on `ctx`. */
+  function signalCapturingKind(): { kind: LoadedCustomKind; signals: AbortSignal[] } {
+    const signals: AbortSignal[] = [];
+    const definition: AnyWorkKindDefinition = {
+      name: "nudge",
+      oneShotEligible: true,
+      promptFile: "prompts/nudge.md",
+      workspace: "worktree",
+      report: {
+        noun: "stale PR(s)",
+        describe: (unit: { prNumber: number }) => `stale-PR nudge for PR #${unit.prNumber}`,
+      },
+      fetch: (ctx) => Promise.resolve({ prs: ctx.github.openPrs() }),
+      select: (gathered: { prs: { number: number }[] }) => {
+        const pick = gathered.prs[0] ?? null;
+        return {
+          unit: pick ? { ref: `pr:${pick.number}`, prNumber: Number(pick.number) } : null,
+          skipped: [],
+          total: gathered.prs.length,
+        };
+      },
+      run: (_unit, ctx) => {
+        signals.push(ctx.signal);
+        return Promise.resolve();
+      },
+    };
+    return { kind: { name: "nudge", definition, options: undefined }, signals };
+  }
+
+  test("ctx.signal is an AbortSignal and is not yet aborted during normal execution", async () => {
+    const { kind, signals } = signalCapturingKind();
+    await runCycle({
+      config: { workOrder: ["nudge"] },
+      customKinds: [kind],
+      github: {
+        ...prWorld([{ number: 44, issueNumber: 4 }]),
+        resolveLogin: () => PHOEBE_LOGIN,
+        newestUnitMarkerAuthor: () => PHOEBE_LOGIN,
+      },
+      env: { GH_TOKEN: "t" },
+      inContainer: true,
+      run: { runOnce: true, dryRun: false },
+    });
+
+    expect(signals).toHaveLength(1);
+    expect(signals[0]).toBeInstanceOf(AbortSignal);
+    expect(signals[0]?.aborted).toBe(false);
+  });
+});

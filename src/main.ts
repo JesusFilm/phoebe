@@ -653,6 +653,7 @@ export function createEngine(options: EngineOptions): Engine {
     worktreeDir: string;
     promptFile: string;
     promptArgs: Record<string, string>;
+    signal: AbortSignal;
   }): Promise<void> {
     const { provider, model, effort } = selectProvider(opts.picked);
     // Caller-supplied per-callsite args (ISSUE_NUMBER, PR_NUMBER, …) override
@@ -667,25 +668,18 @@ export function createEngine(options: EngineOptions): Engine {
       provider: provider.name,
       providerEnv: config.providerEnv,
     });
-    // Bound the *agent phase* by the run budget (#72) — the one phase where a hang
-    // is abortable (the agent respects the `AbortSignal`); install/test run via
-    // `execSync` outside this deadline. On expiry the deadline aborts the signal,
-    // `runAgent` kills the child, and a `RunTimeoutError` propagates — caught at
-    // the unit boundary (the daemon logs it, releases the #59 slot in `finally`,
-    // and continues; #75 counts it toward quarantine).
-    const { exitCode } = await runWithDeadline({
-      ms: runTimeoutMs,
-      work: (signal) =>
-        runAgent({
-          provider,
-          model,
-          effort,
-          prompt,
-          cwd: opts.worktreeDir,
-          env: agentEnv,
-          signal,
-          tenant: config.repoSlug,
-        }),
+    // The deadline is held by the outer `runPickedUnit` (#359): the signal
+    // already fires when the whole-unit budget expires, killing the child and
+    // propagating `RunTimeoutError` at the unit boundary.
+    const { exitCode } = await runAgent({
+      provider,
+      model,
+      effort,
+      prompt,
+      cwd: opts.worktreeDir,
+      env: agentEnv,
+      signal: opts.signal,
+      tenant: config.repoSlug,
     });
     if (exitCode !== 0) {
       console.log(`[phoebe] Agent exited with code ${exitCode}.`);
@@ -768,6 +762,7 @@ export function createEngine(options: EngineOptions): Engine {
     primeBlockerMerges?: readonly PrNumber[];
     beforeAgent?: (worktreeDir: string) => void;
     onResult: (outcome: AgentWorkflowOutcome) => void | Promise<void>;
+    signal: AbortSignal;
   }): Promise<void> {
     const branch = opts.pr.headRefName;
 
@@ -789,6 +784,7 @@ export function createEngine(options: EngineOptions): Engine {
         worktreeDir,
         promptFile: opts.promptFile,
         promptArgs: opts.promptArgs,
+        signal: opts.signal,
       });
 
       hub.fetch();
@@ -863,6 +859,7 @@ export function createEngine(options: EngineOptions): Engine {
     promptFile: string;
     blockerIssueNumber?: number;
     blockerPrNumber?: PrNumber;
+    signal: AbortSignal;
   }): Promise<void> {
     const { issueNumber, issueTitle, worktreeBase, stacked, promptFile } = opts;
     const { blockerIssueNumber, blockerPrNumber } = opts;
@@ -887,6 +884,7 @@ export function createEngine(options: EngineOptions): Engine {
         worktreeDir,
         promptFile,
         promptArgs: { ISSUE_NUMBER: String(issueNumber), PR_BASE: intendedPrBase },
+        signal: opts.signal,
       });
 
       const newCommitCount = hub.commitCount(worktreeDir, `${worktreeBase}..HEAD`);
@@ -936,7 +934,11 @@ export function createEngine(options: EngineOptions): Engine {
    * low-level spawn (`run`), the two shared skeletons, and the no-agent clean
    * merge. Prompt files default to the definition's own.
    */
-  function createAgentHelpers(picked: PickedWorkUnit, workspaceDir: () => string): AgentHelpers {
+  function createAgentHelpers(
+    picked: PickedWorkUnit,
+    workspaceDir: () => string,
+    signal: AbortSignal,
+  ): AgentHelpers {
     const defaultPromptFile = picked.definition.promptFile;
     return {
       run: (opts = {}) =>
@@ -945,6 +947,7 @@ export function createEngine(options: EngineOptions): Engine {
           worktreeDir: opts.worktreeDir ?? workspaceDir(),
           promptFile: opts.promptFile ?? defaultPromptFile,
           promptArgs: opts.promptArgs ?? {},
+          signal,
         }),
       prWorkflow: (opts) =>
         runAgentWorkflow({
@@ -957,6 +960,7 @@ export function createEngine(options: EngineOptions): Engine {
             : {}),
           ...(opts.beforeAgent !== undefined ? { beforeAgent: opts.beforeAgent } : {}),
           onResult: opts.onResult,
+          signal,
         }),
       issueWorkflow: (opts) =>
         runOneIssue({
@@ -970,6 +974,7 @@ export function createEngine(options: EngineOptions): Engine {
             ? { blockerIssueNumber: opts.blockerIssueNumber }
             : {}),
           ...(opts.blockerPrNumber !== undefined ? { blockerPrNumber: opts.blockerPrNumber } : {}),
+          signal,
         }),
       cleanMerge: (branch, blockerPrNumbers = []) => tryCleanMerge(branch, blockerPrNumbers),
     };
@@ -977,7 +982,16 @@ export function createEngine(options: EngineOptions): Engine {
 
   /**
    * Execute one picked unit through its definition's `run`: widen the cycle ctx
-   * with the declared workspace and the agent helpers, and hand over.
+   * with the declared workspace and the agent helpers, and hand over under the
+   * whole-unit run deadline (#359).
+   *
+   * The deadline races the budget against the whole `definition.run` — not just
+   * the agent spawn — so kind-owned code that hangs outside `ctx.agent.*` still
+   * triggers `RunTimeoutError`, releases the slot, and reaches quarantine
+   * accounting. The `signal` carried on `ctx` fires on expiry; cooperative kinds
+   * poll `signal.aborted` or pass it to async operations to stop early. On
+   * expiry the engine abandons the floating `run` promise: an orphaned `run`
+   * keeps executing but cannot hold the slot or prevent quarantine.
    *
    * The workspace — a scratch worktree off the default branch, the default cwd
    * for a bare `agent.run` — is materialized on first read, not up front. All
@@ -999,18 +1013,24 @@ export function createEngine(options: EngineOptions): Engine {
       return workspaceDir;
     };
     try {
-      const runCtx: WorkKindRunCtx = {
-        ...ctx,
-        log: (message) => console.log(`[phoebe][${picked.kind} ${picked.unit.ref}] ${message}`),
-        workspace: {
-          mode: "worktree",
-          get dir(): string {
-            return workspace();
-          },
+      await runWithDeadline({
+        ms: runTimeoutMs,
+        work: (signal) => {
+          const runCtx: WorkKindRunCtx = {
+            ...ctx,
+            log: (message) => console.log(`[phoebe][${picked.kind} ${picked.unit.ref}] ${message}`),
+            workspace: {
+              mode: "worktree",
+              get dir(): string {
+                return workspace();
+              },
+            },
+            signal,
+            agent: createAgentHelpers(picked, workspace, signal),
+          };
+          return picked.definition.run(picked.unit, runCtx);
         },
-        agent: createAgentHelpers(picked, workspace),
-      };
-      await picked.definition.run(picked.unit, runCtx);
+      });
     } finally {
       if (workspaceDir !== null) {
         hub.removeWorktree(workspaceDir);
