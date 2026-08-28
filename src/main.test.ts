@@ -30,7 +30,11 @@ import {
   type ReviewThread,
   type WorkflowRunItem,
 } from "./orchestrator.ts";
-import { buildQuarantineBaselineMarker, buildUnstickComment } from "./quarantine.ts";
+import {
+  buildQuarantineBaselineMarker,
+  buildUnitTimeoutMarker,
+  buildUnstickComment,
+} from "./quarantine.ts";
 import { createEngine, type EngineRunOptions } from "./main.ts";
 import type { UnitRef } from "./unit-event.ts";
 import type { AnyWorkKindDefinition } from "./work-kinds/definition.ts";
@@ -1011,6 +1015,160 @@ describe("--dry-run", () => {
     expect(result.gitCalls.map((args) => args[0])).toEqual(["fetch", "rev-parse"]);
     // Nothing was started, so nothing was observed as started.
     expect(result.events).toEqual([]);
+  });
+});
+
+// The stranded-unit sweep runs wet, before selection, and re-arms any issue
+// that carries processingLabel but has no open or merged Phoebe PR — issues
+// whose run ended without producing one (crash, kill, timeout). Like the
+// un-stick and stale-stack sweeps, the other two sweeps are allowed to fail
+// silently when their methods go unstubbed.
+describe("the stranded-unit sweep", () => {
+  /** A wet `--run-once` cycle: sweeps, finds no work to select, then exits. */
+  function sweepCycle(github: GitHubStubOverrides) {
+    return runCycle({
+      env: { GH_TOKEN: "a-token" },
+      config: { workOrder: ["issues"] },
+      github: { listReadyIssues: () => [], ...github },
+      run: { runOnce: true, dryRun: false },
+    });
+  }
+
+  /** A claimed issue carrying processingLabel (and optionally readyLabel). */
+  function claimed(number: number, extraLabels: string[] = []): Issue {
+    return anIssue(number, { labels: ["processing", ...extraLabels] });
+  }
+
+  /** Records the writes the sweep makes; any un-declared method still throws. */
+  function writeRecorder(): { writes: string[]; overrides: GitHubStubOverrides } {
+    const writes: string[] = [];
+    return {
+      writes,
+      overrides: {
+        removeIssueLabel: (issueNumber, label) => {
+          writes.push(`remove-label issue #${issueNumber} ${label}`);
+        },
+        addIssueLabel: (issueNumber, label) => {
+          writes.push(`add-label issue #${issueNumber} ${label}`);
+        },
+        issueTimeoutInputs: () => ({
+          comments: [],
+          extraActivityAt: null,
+          baseline: "body:aabbcc",
+        }),
+        postUnitComment: (target, body) => {
+          writes.push(`comment issue #${target.id} ${body}`);
+        },
+      },
+    };
+  }
+
+  test("a claimed issue with no PR is re-armed and logged", async () => {
+    const { writes, overrides } = writeRecorder();
+    const result = await sweepCycle({
+      ...overrides,
+      listLabeledIssues: () => [claimed(7)],
+      blockerPrState: () => ({ hasOpenPr: false, hasMergedPr: false }),
+    });
+
+    expect(writes).toEqual([
+      "remove-label issue #7 processing",
+      "add-label issue #7 ready-for-agent",
+      `comment issue #7 ${buildUnitTimeoutMarker(1)}`,
+    ]);
+    expect(result.lines).toContain("[phoebe] Re-armed issue #7 — stranded with no PR.");
+  });
+
+  test("the counter increments from the last recorded value", async () => {
+    const { writes, overrides } = writeRecorder();
+    overrides.issueTimeoutInputs = () => ({
+      comments: [
+        {
+          body: buildUnitTimeoutMarker(2),
+          createdAt: "2026-01-01T00:00:00Z",
+          authorLogin: "phoebe-bot",
+        },
+      ],
+      extraActivityAt: null,
+      baseline: "body:aabbcc",
+    });
+    await sweepCycle({
+      ...overrides,
+      listLabeledIssues: () => [claimed(7)],
+      blockerPrState: () => ({ hasOpenPr: false, hasMergedPr: false }),
+    });
+
+    expect(writes).toContain(`comment issue #7 ${buildUnitTimeoutMarker(3)}`);
+  });
+
+  test("readyLabel already present: not added again", async () => {
+    const { writes, overrides } = writeRecorder();
+    await sweepCycle({
+      ...overrides,
+      listLabeledIssues: () => [claimed(7, ["ready-for-agent"])],
+      blockerPrState: () => ({ hasOpenPr: false, hasMergedPr: false }),
+    });
+
+    expect(writes).not.toContain("add-label issue #7 ready-for-agent");
+    expect(writes).toContain("remove-label issue #7 processing");
+  });
+
+  test("a claimed issue whose run opened a PR is left alone", async () => {
+    // removeIssueLabel not stubbed — any call would throw.
+    await sweepCycle({
+      listLabeledIssues: () => [claimed(7)],
+      blockerPrState: () => ({ hasOpenPr: true, openPrNumber: asPrNumber(99), hasMergedPr: false }),
+    });
+  });
+
+  test("a claimed issue whose run merged a PR is left alone", async () => {
+    await sweepCycle({
+      listLabeledIssues: () => [claimed(7)],
+      blockerPrState: () => ({
+        hasOpenPr: false,
+        hasMergedPr: true,
+        mergedPrNumber: asPrNumber(99),
+      }),
+    });
+  });
+
+  test("a failed listing is reported and the cycle carries on", async () => {
+    const result = await sweepCycle({
+      listLabeledIssues: () => {
+        throw new Error("gh listing exploded");
+      },
+    });
+
+    expect(result.lines.join("\n")).toContain("gh listing exploded");
+    expect(result.lines).toContain(RUN_ONCE_NOTHING_MESSAGE);
+  });
+
+  test("a failed PR check is reported and the sweep continues with other issues", async () => {
+    const { overrides } = writeRecorder();
+    const result = await sweepCycle({
+      ...overrides,
+      listLabeledIssues: () => [claimed(7), claimed(8)],
+      blockerPrState: (n) => {
+        if (n === 7) throw new Error("PR check failed");
+        return { hasOpenPr: false, hasMergedPr: false };
+      },
+    });
+
+    expect(result.lines.join("\n")).toContain("PR check failed");
+    expect(result.lines).toContain("[phoebe] Re-armed issue #8 — stranded with no PR.");
+  });
+
+  test("a quarantined claimed issue is re-armed unconditionally", async () => {
+    const { writes, overrides } = writeRecorder();
+    const result = await sweepCycle({
+      ...overrides,
+      listLabeledIssues: () => [claimed(7, ["phoebe:quarantined"])],
+      blockerPrState: () => ({ hasOpenPr: false, hasMergedPr: false }),
+    });
+
+    expect(writes).toContain("remove-label issue #7 processing");
+    expect(writes).toContain("add-label issue #7 ready-for-agent");
+    expect(result.lines).toContain("[phoebe] Re-armed issue #7 — stranded with no PR.");
   });
 });
 

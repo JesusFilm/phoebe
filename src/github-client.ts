@@ -211,6 +211,8 @@ export type GitHubClient = {
   /** Current label names on an issue, fetched fresh. Used by `claimIssue` to detect a prior claim. */
   issueLabels(issueNumber: number): string[];
   addIssueLabel(issueNumber: number, label: string): void;
+  /** Remove `label` from an issue. */
+  removeIssueLabel(issueNumber: number, label: string): void;
   /**
    * Create `label` in the repository with the defaults Phoebe uses for its
    * own markers — yellow (`FBCA04`) and a "Phoebe is working this issue"
@@ -976,6 +978,10 @@ export function createGitHubClient({
       // Captured exec (not ghWrite/inherit) so callers can inspect the error
       // with `isLabelNotFoundError` when the label does not exist yet.
       exec(["issue", "edit", String(issueNumber), "--add-label", label, "-R", config.repoSlug]);
+    },
+
+    removeIssueLabel: (issueNumber, label) => {
+      ghWrite(["issue", "edit", String(issueNumber), "--remove-label", label]);
     },
 
     createLabel: (name) => {
