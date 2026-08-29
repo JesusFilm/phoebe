@@ -25,7 +25,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import {
   CRASH_LOOP_THRESHOLD,
   crashLoopStatePath,
@@ -55,6 +55,7 @@ import {
   compareVersions,
   readDockerfilePin,
 } from "./upgrade.ts";
+import { CONFIG_DEFAULTS } from "./config-schema.ts";
 import { enumerateWorkspaceTenants } from "./tenant-commands.ts";
 
 export type CheckState = "ok" | "warn" | "fail" | "unknown";
@@ -258,6 +259,126 @@ export function describeRepoProbe(status: number, slug: string): { ok: boolean; 
 }
 
 /**
+ * Check whether a single label exists in the repo. Returns `true` (exists),
+ * `false` (404 — does not exist), or `null` (unexpected status or network
+ * error — caller treats as unknown). Pure network call, no side effects.
+ */
+async function probeLabelExists(
+  slug: string,
+  token: string,
+  name: string,
+  fetchFn: typeof fetch,
+): Promise<boolean | null> {
+  try {
+    const res = await fetchFn(
+      `https://api.github.com/repos/${slug}/labels/${encodeURIComponent(name)}`,
+      {
+        signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+        headers: {
+          accept: "application/vnd.github+json",
+          "x-github-api-version": "2022-11-28",
+          "user-agent": "phoebe-doctor",
+          authorization: `Bearer ${token}`,
+        },
+      },
+    );
+    if (res.status === 200) return true;
+    if (res.status === 404) return false;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Verify that `readyLabel`, `processingLabel`, and `prOptOutLabel` exist in
+ * the tenant's repo. Fails and names each missing label with the exact
+ * `gh label create` command to fix it. Pure, for tests.
+ */
+export function labelsCheck(fields: {
+  /** Label names confirmed absent from the repo. */
+  missing: string[];
+  /** Label names confirmed present in the repo. */
+  present: string[];
+  /** `owner/repo` slug, used to name the fix command's `--repo` flag. */
+  slug: string;
+}): DoctorCheck {
+  if (fields.missing.length === 0) {
+    return {
+      id: "labels",
+      state: "ok",
+      detail: `readyLabel, processingLabel, and prOptOutLabel all exist in ${fields.slug}`,
+    };
+  }
+  const fixes = fields.missing
+    .map((name) => `gh label create ${JSON.stringify(name)} --repo ${fields.slug}`)
+    .join("  ");
+  return {
+    id: "labels",
+    state: "fail",
+    detail: `label(s) missing from ${fields.slug}: ${fields.missing.join(", ")}. Fix: ${fixes}`,
+  };
+}
+
+/**
+ * Warn when a tenant has overridden `promptFiles.issue` with a vendored file
+ * that lacks the blocker-recording rule added in #368. When a blocked issue
+ * has no such rule, the agent burns runs and quarantines instead of parking.
+ *
+ * Skips entirely when the tenant uses the shipped default prompt. Passes when
+ * the vendored file contains "blocked by" (case-insensitive) — the phrase the
+ * agent must write to the issue body, stable enough that a reworded-but-correct
+ * prompt still passes. Pure, for tests.
+ */
+export function promptDriftCheck(fields: {
+  /** The tenant's effective promptFiles.issue path. */
+  issuePromptPath: string;
+  /** The shipped default promptFiles.issue path. */
+  defaultIssuePromptPath: string;
+  /**
+   * Content of the vendored file. `null` when the file cannot be read, or
+   * when the path equals the default (skip the check entirely in that case).
+   */
+  promptContent: string | null;
+}): DoctorCheck {
+  if (fields.issuePromptPath === fields.defaultIssuePromptPath) {
+    return {
+      id: "prompt-drift",
+      state: "ok",
+      detail: "issues prompt: using the shipped default",
+    };
+  }
+  if (fields.promptContent === null) {
+    return {
+      id: "prompt-drift",
+      state: "warn",
+      detail:
+        `vendored issues prompt at ${fields.issuePromptPath} could not be read — ` +
+        `verify the file exists and is readable`,
+    };
+  }
+  // Key on "blocked by" (the phrase the agent writes to the issue body) rather
+  // than exact prose — any correctly-updated prompt will include this phrase.
+  const hasBlockerRule = /\bblocked\s+by\b/i.test(fields.promptContent);
+  if (hasBlockerRule) {
+    return {
+      id: "prompt-drift",
+      state: "ok",
+      detail: `vendored issues prompt at ${fields.issuePromptPath} includes a blocker-recording rule`,
+    };
+  }
+  return {
+    id: "prompt-drift",
+    state: "warn",
+    detail:
+      `vendored issues prompt at ${fields.issuePromptPath} has no blocker-recording rule — ` +
+      `without it, blocked issues burn runs and quarantine instead of parking cleanly. ` +
+      `The shipped prompt says: "edit the body to include \`Blocked by #N\`" ` +
+      `(see prompts/issues-prompt.md for the current text).`,
+  };
+}
+
+/**
  * GET /repos/<slug> with a token — the reachability slice of #154's probe
  * ladder. 200 proves the token sees the repo; 401/403/404 all mean the child
  * would fail its first API hop.
@@ -378,17 +499,38 @@ async function tenantRow(fields: {
 }): Promise<TenantDoctorRow> {
   const checks: DoctorCheck[] = [];
 
-  // Disabled informational note (#202): report-only, does not fail the report.
-  // The tenant's other checks still run — a re-enabled tenant should not be
-  // surprised by drift that doctor was hiding while it was paused.
+  // Load the user config once: captures `disabled`, the three label names,
+  // and the issues prompt path override — all from a single file read.
+  let issuePromptPath: string | undefined;
+  let readyLabel: string = CONFIG_DEFAULTS.readyLabel;
+  let processingLabel: string = CONFIG_DEFAULTS.processingLabel;
+  let prOptOutLabel: string = CONFIG_DEFAULTS.prOptOutLabel;
+
   if (fields.configPath !== undefined) {
     let disabled = false;
     try {
       const user = await loadUserConfig(fields.configPath);
-      disabled = (user as { disabled?: unknown }).disabled === true;
+      const anyUser = user as {
+        disabled?: unknown;
+        promptFiles?: { issue?: unknown };
+        readyLabel?: unknown;
+        processingLabel?: unknown;
+        prOptOutLabel?: unknown;
+      };
+      disabled = anyUser.disabled === true;
+      if (typeof anyUser.readyLabel === "string") readyLabel = anyUser.readyLabel;
+      if (typeof anyUser.processingLabel === "string") processingLabel = anyUser.processingLabel;
+      if (typeof anyUser.prOptOutLabel === "string") prOptOutLabel = anyUser.prOptOutLabel;
+      const rawIssuePath = anyUser.promptFiles?.issue;
+      if (typeof rawIssuePath === "string" && rawIssuePath.trim().length > 0) {
+        issuePromptPath = rawIssuePath;
+      }
     } catch {
       disabled = false;
     }
+    // Disabled informational note (#202): report-only, does not fail the report.
+    // The tenant's other checks still run — a re-enabled tenant should not be
+    // surprised by drift that doctor was hiding while it was paused.
     if (disabled) {
       checks.push({
         id: "disabled",
@@ -401,6 +543,7 @@ async function tenantRow(fields: {
   const tokenCheck = tenantTokenCheck(fields);
   checks.push(tokenCheck);
 
+  let repoPassed = false;
   if (fields.arm === "app") {
     // Probing the repo requires minting a token, which doctor does not do.
     // Repo access is verified at runtime when the token is minted.
@@ -412,6 +555,7 @@ async function tenantRow(fields: {
   } else if (fields.token !== undefined) {
     if (fields.slug !== null) {
       const probe = await probeRepo(fields.slug, fields.token, fields.fetchFn);
+      repoPassed = probe.ok;
       checks.push({ id: "repo", state: probe.ok ? "ok" : "fail", detail: probe.detail });
     } else {
       checks.push({ id: "repo", state: "unknown", detail: "not probed (no repoSlug)" });
@@ -426,6 +570,61 @@ async function tenantRow(fields: {
           : "not probed (no token)",
     });
   }
+
+  // Labels check: verify the three workflow labels exist in the tenant's repo.
+  // Only runs when the repo check passed (token works) and a slug is known.
+  if (fields.slug !== null && repoPassed && fields.token !== undefined) {
+    const labelNames = [readyLabel, processingLabel, prOptOutLabel];
+    const probeResults = await Promise.all(
+      labelNames.map((name) => probeLabelExists(fields.slug!, fields.token!, name, fields.fetchFn)),
+    );
+    const missing = labelNames.filter((_, i) => probeResults[i] === false);
+    const present = labelNames.filter((_, i) => probeResults[i] === true);
+    const errored = labelNames.filter((_, i) => probeResults[i] === null);
+    if (errored.length > 0 && missing.length === 0) {
+      checks.push({
+        id: "labels",
+        state: "unknown",
+        detail: `could not probe label(s): ${errored.join(", ")} — GitHub API error; retry to confirm`,
+      });
+    } else {
+      checks.push(labelsCheck({ missing, present, slug: fields.slug }));
+    }
+  } else {
+    const reason =
+      fields.slug === null
+        ? "no repoSlug"
+        : fields.token === undefined
+          ? "no token"
+          : "repo check did not pass";
+    checks.push({ id: "labels", state: "unknown", detail: `not probed (${reason})` });
+  }
+
+  // Prompt-drift check: warn when a vendored issues prompt lacks the
+  // blocker-recording rule that keeps blocked issues from burning runs.
+  if (fields.configPath !== undefined) {
+    const defaultPath = CONFIG_DEFAULTS.promptFiles.issue;
+    const effectivePath = issuePromptPath ?? defaultPath;
+    let promptContent: string | null = null;
+    if (effectivePath !== defaultPath) {
+      try {
+        const resolvedPath = isAbsolute(effectivePath)
+          ? effectivePath
+          : join(dirname(fields.configPath), effectivePath);
+        promptContent = readFileSync(resolvedPath, "utf8");
+      } catch {
+        promptContent = null;
+      }
+    }
+    checks.push(
+      promptDriftCheck({
+        issuePromptPath: effectivePath,
+        defaultIssuePromptPath: defaultPath,
+        promptContent,
+      }),
+    );
+  }
+
   return { path: fields.path, slug: fields.slug, checks };
 }
 
@@ -749,7 +948,9 @@ crash-loop/quarantine state (are you silently on last-known-good?); supervisor
 liveness (in-container only); launcher version vs the engine's minBootstrap floor
 (a floor violation deadlocks the deployment — not the same as being merely stale).
 In workspace mode every tenant is swept — token present the way its child reads
-it, and its repo reachable with that token.
+it, repo reachable with that token, the three workflow labels present in the
+repo, and (when the issues prompt is overridden) that it includes the
+blocker-recording rule.
 
 The full five-permission token probe is scripts/verify-tenant-token.mjs.
 Exit code is 1 when any check fails. \`phoebe upgrade\` moves versions;
