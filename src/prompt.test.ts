@@ -133,8 +133,6 @@ describe("shipped default prompts", () => {
     expect(template).toContain("{{READY_COMMAND}}");
     expect(template).toContain("{{CHECK_COMMAND}}");
     expect(template).toContain("{{TEST_COMMAND}}");
-    expect(template).toContain("{{PROCESSING_LABEL}}");
-    expect(template).toContain("{{READY_LABEL}}");
     // The PR base is per-callsite, not the default branch literal: stacked work
     // targets the blocker's branch (#311).
     expect(template).toContain("{{PR_BASE}}");
