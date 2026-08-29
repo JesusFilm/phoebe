@@ -259,20 +259,22 @@ export function describeRepoProbe(status: number, slug: string): { ok: boolean; 
 }
 
 /**
- * Check whether a single label exists in the repo. Returns `true` (exists),
- * `false` (404 — does not exist), or `null` (unexpected status or network
- * error — caller treats as unknown). Pure network call, no side effects.
+ * Fetch all label names for a repo via `GET /repos/{slug}/labels`. Returns the
+ * full list on success, or `null` when the request fails or is denied. A non-200
+ * response means the token lacks Issues:read — map that to `unknown` rather than
+ * reporting labels as missing and emitting a spurious `gh label create` fix.
+ * Paginates up to 5 pages (500 labels) to handle repos with many labels.
  */
-async function probeLabelExists(
+export async function fetchRepoLabels(
   slug: string,
   token: string,
-  name: string,
   fetchFn: typeof fetch,
-): Promise<boolean | null> {
-  try {
-    const res = await fetchFn(
-      `https://api.github.com/repos/${slug}/labels/${encodeURIComponent(name)}`,
-      {
+): Promise<string[] | null> {
+  const names: string[] = [];
+  for (let page = 1; page <= 5; page++) {
+    let res: Response;
+    try {
+      res = await fetchFn(`https://api.github.com/repos/${slug}/labels?per_page=100&page=${page}`, {
         signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
         headers: {
           accept: "application/vnd.github+json",
@@ -280,14 +282,25 @@ async function probeLabelExists(
           "user-agent": "phoebe-doctor",
           authorization: `Bearer ${token}`,
         },
-      },
-    );
-    if (res.status === 200) return true;
-    if (res.status === 404) return false;
-    return null;
-  } catch {
-    return null;
+      });
+    } catch {
+      return null;
+    }
+    if (res.status !== 200) return null;
+    const body: unknown = await res.json();
+    if (!Array.isArray(body)) return null;
+    const pageNames = (body as unknown[])
+      .filter(
+        (item): item is { name: string } =>
+          typeof item === "object" &&
+          item !== null &&
+          typeof (item as Record<string, unknown>)["name"] === "string",
+      )
+      .map((item) => item.name);
+    names.push(...pageNames);
+    if (pageNames.length < 100) break;
   }
+  return names;
 }
 
 /**
@@ -486,7 +499,7 @@ export function tenantTokenCheck(fields: {
   };
 }
 
-async function tenantRow(fields: {
+export async function tenantRow(fields: {
   path: string;
   slug: string | null;
   arm: CredentialArm;
@@ -501,6 +514,7 @@ async function tenantRow(fields: {
 
   // Load the user config once: captures `disabled`, the three label names,
   // and the issues prompt path override — all from a single file read.
+  let configLoaded = false;
   let issuePromptPath: string | undefined;
   let readyLabel: string = CONFIG_DEFAULTS.readyLabel;
   let processingLabel: string = CONFIG_DEFAULTS.processingLabel;
@@ -525,8 +539,9 @@ async function tenantRow(fields: {
       if (typeof rawIssuePath === "string" && rawIssuePath.trim().length > 0) {
         issuePromptPath = rawIssuePath;
       }
+      configLoaded = true;
     } catch {
-      disabled = false;
+      // Labels and prompt-drift depend on config values; emit unknown for both.
     }
     // Disabled informational note (#202): report-only, does not fail the report.
     // The tenant's other checks still run — a re-enabled tenant should not be
@@ -572,22 +587,26 @@ async function tenantRow(fields: {
   }
 
   // Labels check: verify the three workflow labels exist in the tenant's repo.
-  // Only runs when the repo check passed (token works) and a slug is known.
-  if (fields.slug !== null && repoPassed && fields.token !== undefined) {
-    const labelNames = [readyLabel, processingLabel, prOptOutLabel];
-    const probeResults = await Promise.all(
-      labelNames.map((name) => probeLabelExists(fields.slug!, fields.token!, name, fields.fetchFn)),
-    );
-    const missing = labelNames.filter((_, i) => probeResults[i] === false);
-    const present = labelNames.filter((_, i) => probeResults[i] === true);
-    const errored = labelNames.filter((_, i) => probeResults[i] === null);
-    if (errored.length > 0 && missing.length === 0) {
+  // Only runs when the repo check passed (token works), a slug is known, and
+  // the config was loaded (label names are tenant-specific).
+  if (fields.configPath !== undefined && !configLoaded) {
+    checks.push({ id: "labels", state: "unknown", detail: "not evaluated (config load failed)" });
+  } else if (fields.slug !== null && repoPassed && fields.token !== undefined) {
+    const allLabels = await fetchRepoLabels(fields.slug, fields.token, fields.fetchFn);
+    if (allLabels === null) {
+      // Non-200 from the label list endpoint means access denied, not labels
+      // missing — avoid emitting a spurious `gh label create` remediation.
       checks.push({
         id: "labels",
         state: "unknown",
-        detail: `could not probe label(s): ${errored.join(", ")} — GitHub API error; retry to confirm`,
+        detail:
+          `could not list labels for ${fields.slug} — token may lack Issues:read permission. ` +
+          `Grant it and re-run \`phoebe doctor\`.`,
       });
     } else {
+      const labelNames = [readyLabel, processingLabel, prOptOutLabel];
+      const missing = labelNames.filter((name) => !allLabels.includes(name));
+      const present = labelNames.filter((name) => allLabels.includes(name));
       checks.push(labelsCheck({ missing, present, slug: fields.slug }));
     }
   } else {
@@ -603,26 +622,34 @@ async function tenantRow(fields: {
   // Prompt-drift check: warn when a vendored issues prompt lacks the
   // blocker-recording rule that keeps blocked issues from burning runs.
   if (fields.configPath !== undefined) {
-    const defaultPath = CONFIG_DEFAULTS.promptFiles.issue;
-    const effectivePath = issuePromptPath ?? defaultPath;
-    let promptContent: string | null = null;
-    if (effectivePath !== defaultPath) {
-      try {
-        const resolvedPath = isAbsolute(effectivePath)
-          ? effectivePath
-          : join(dirname(fields.configPath), effectivePath);
-        promptContent = readFileSync(resolvedPath, "utf8");
-      } catch {
-        promptContent = null;
+    if (!configLoaded) {
+      checks.push({
+        id: "prompt-drift",
+        state: "unknown",
+        detail: "not evaluated (config load failed)",
+      });
+    } else {
+      const defaultPath = CONFIG_DEFAULTS.promptFiles.issue;
+      const effectivePath = issuePromptPath ?? defaultPath;
+      let promptContent: string | null = null;
+      if (effectivePath !== defaultPath) {
+        try {
+          const resolvedPath = isAbsolute(effectivePath)
+            ? effectivePath
+            : join(dirname(fields.configPath), effectivePath);
+          promptContent = readFileSync(resolvedPath, "utf8");
+        } catch {
+          promptContent = null;
+        }
       }
+      checks.push(
+        promptDriftCheck({
+          issuePromptPath: effectivePath,
+          defaultIssuePromptPath: defaultPath,
+          promptContent,
+        }),
+      );
     }
-    checks.push(
-      promptDriftCheck({
-        issuePromptPath: effectivePath,
-        defaultIssuePromptPath: defaultPath,
-        promptContent,
-      }),
-    );
   }
 
   return { path: fields.path, slug: fields.slug, checks };

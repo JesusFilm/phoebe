@@ -9,10 +9,12 @@ import {
   buildDoctorReport,
   crashLoopCheck,
   describeRepoProbe,
+  fetchRepoLabels,
   formatDoctorReport,
   labelsCheck,
   launcherFloorCheck,
   promptDriftCheck,
+  tenantRow,
   tenantTokenCheck,
 } from "./doctor.ts";
 
@@ -409,5 +411,76 @@ describe("promptDriftCheck", () => {
       ],
     );
     expect(report.ok).toBe(true);
+  });
+});
+
+describe("fetchRepoLabels", () => {
+  test("returns label names on 200", async () => {
+    const mockFetch = async () =>
+      new Response(JSON.stringify([{ name: "ready-for-agent" }, { name: "processing" }]), {
+        status: 200,
+      });
+    const names = await fetchRepoLabels("acme/widget", "ghp_tok", mockFetch as typeof fetch);
+    expect(names).toEqual(["ready-for-agent", "processing"]);
+  });
+
+  test("returns null when label list is denied (403)", async () => {
+    const mockFetch = async () => new Response(null, { status: 403 });
+    const names = await fetchRepoLabels("acme/widget", "ghp_tok", mockFetch as typeof fetch);
+    expect(names).toBeNull();
+  });
+
+  test("returns null on network error", async () => {
+    const mockFetch = async (): Promise<Response> => {
+      throw new Error("ECONNREFUSED");
+    };
+    const names = await fetchRepoLabels("acme/widget", "ghp_tok", mockFetch as typeof fetch);
+    expect(names).toBeNull();
+  });
+});
+
+describe("tenantRow label access regression", () => {
+  test("repo probe ok but label list denied — labels unknown with permission guidance", async () => {
+    const mockFetch = async (url: string | URL | Request) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+      if (urlStr.includes("/labels")) return new Response(null, { status: 403 });
+      return new Response(JSON.stringify({ id: 1, name: "widget" }), { status: 200 });
+    };
+    const row = await tenantRow({
+      path: "tenant",
+      slug: "acme/widget",
+      arm: "pat",
+      token: "ghp_tok",
+      envLabel: "/etc/phoebe/.env",
+      fetchFn: mockFetch as typeof fetch,
+      inContainer: false,
+    });
+    const labelsResult = row.checks.find((c) => c.id === "labels");
+    expect(labelsResult?.state).toBe("unknown");
+    expect(labelsResult?.detail).toMatch(/Issues:read/);
+  });
+});
+
+describe("tenantRow config load failure regression", () => {
+  test("config import failure — labels and prompt-drift both unknown", async () => {
+    const mockFetch = async () =>
+      new Response(JSON.stringify({ id: 1, name: "widget" }), { status: 200 });
+    const row = await tenantRow({
+      path: "tenant",
+      slug: "acme/widget",
+      arm: "pat",
+      token: "ghp_tok",
+      envLabel: "/etc/phoebe/.env",
+      fetchFn: mockFetch as typeof fetch,
+      inContainer: false,
+      // Non-existent path causes loadUserConfig (dynamic import) to throw.
+      configPath: `/tmp/phoebe-nonexistent-config-${Date.now()}.ts`,
+    });
+    const labelsResult = row.checks.find((c) => c.id === "labels");
+    const driftResult = row.checks.find((c) => c.id === "prompt-drift");
+    expect(labelsResult?.state).toBe("unknown");
+    expect(labelsResult?.detail).toMatch(/config load failed/);
+    expect(driftResult?.state).toBe("unknown");
+    expect(driftResult?.detail).toMatch(/config load failed/);
   });
 });
