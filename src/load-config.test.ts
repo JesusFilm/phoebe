@@ -1,7 +1,7 @@
 // Tests for the consumer-facing config plumbing in ./load-config.ts:
 //
-//   - `applyEnvOverlay` overlays scalar `PHOEBE_*` keys, validates the enum
-//     ones, and leaves the input object untouched.
+//   - `applyEnvOverlay` overlays scalar `PHOEBE_*` keys, validates the enum and
+//     boolean ones, and leaves the input object untouched.
 //   - `resolveConfigPath` returns absolute paths and rejects missing files
 //     with a message that distinguishes an explicit --config from the default.
 //   - `loadUserConfig` accepts both `export default` and named `export const
@@ -73,6 +73,26 @@ describe("applyEnvOverlay", () => {
     expect(() => applyEnvOverlay(baseUser(), { PHOEBE_DRAFT_PRS: "bogus" })).toThrow(
       /PHOEBE_DRAFT_PRS/,
     );
+  });
+
+  test("PHOEBE_FEATURE_BRANCH_CATCH_UP overlays a boolean and rejects anything else", () => {
+    expect(
+      applyEnvOverlay(baseUser(), { PHOEBE_FEATURE_BRANCH_CATCH_UP: "false" }).featureBranchCatchUp,
+    ).toBe(false);
+    expect(
+      applyEnvOverlay(baseUser({ featureBranchCatchUp: false }), {
+        PHOEBE_FEATURE_BRANCH_CATCH_UP: "true",
+      }).featureBranchCatchUp,
+    ).toBe(true);
+    // A typo must not read as `false` and silently disable the catch-up.
+    expect(() => applyEnvOverlay(baseUser(), { PHOEBE_FEATURE_BRANCH_CATCH_UP: "0" })).toThrow(
+      /PHOEBE_FEATURE_BRANCH_CATCH_UP/,
+    );
+    expect(
+      applyEnvOverlay(baseUser({ featureBranchCatchUp: false }), {
+        PHOEBE_FEATURE_BRANCH_CATCH_UP: "",
+      }).featureBranchCatchUp,
+    ).toBe(false);
   });
 
   test("PHOEBE_DEFAULT_PROVIDER overlays and validates the enum", () => {

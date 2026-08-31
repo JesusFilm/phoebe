@@ -16,7 +16,9 @@ import { PROVIDER_NAMES } from "./config-schema.ts";
 
 /**
  * Scalar-only overlay: each `PHOEBE_*` env var, when set to a non-empty
- * string, replaces the corresponding user-config field. Nested records
+ * string, replaces the corresponding user-config field. Most are strings taken
+ * verbatim; the enum and boolean fields are validated and rejected on a bad
+ * value. Nested records
  * (`promptFiles`, `paths`, `defaultModels`, `defaultEfforts`, `providerEnv`, `workOrder`) stay
  * config-file territory — env vars are for one-off run overrides where the
  * consumer doesn't want to edit `phoebe.config.ts`, and expanding structured
@@ -34,6 +36,7 @@ export const ENV_OVERLAY_KEYS = [
   { env: "PHOEBE_READY_LABEL", key: "readyLabel" },
   { env: "PHOEBE_RESEARCH_LABEL", key: "researchLabel" },
   { env: "PHOEBE_PROCESSING_LABEL", key: "processingLabel" },
+  { env: "PHOEBE_FEATURE_LABEL", key: "featureLabel" },
   { env: "PHOEBE_PR_OPT_OUT_LABEL", key: "prOptOutLabel" },
   { env: "PHOEBE_INSTALL_COMMAND", key: "installCommand" },
   { env: "PHOEBE_CHECK_COMMAND", key: "checkCommand" },
@@ -41,6 +44,17 @@ export const ENV_OVERLAY_KEYS = [
   { env: "PHOEBE_READY_COMMAND", key: "readyCommand" },
   { env: "PHOEBE_BLOCKED_BY_PATTERN", key: "blockedByPattern" },
   { env: "PHOEBE_REVIEWS_SUCCESS_HEADING", key: "reviewsSuccessHeading" },
+] as const satisfies ReadonlyArray<{ env: string; key: keyof PhoebeUserConfig }>;
+
+/**
+ * Boolean fields the overlay covers. Kept as strict `"true"`/`"false"` rather
+ * than accepting `1`/`yes`/`on`: an env var that silently reads a typo as
+ * `false` would turn a janitor off without saying so, and the validated-enum
+ * fields (`PHOEBE_PR_SCOPE`, `PHOEBE_DRAFT_PRS`) already set the precedent
+ * that a bad value is an error, not a default.
+ */
+const BOOLEAN_OVERLAY_KEYS = [
+  { env: "PHOEBE_FEATURE_BRANCH_CATCH_UP", key: "featureBranchCatchUp" },
 ] as const satisfies ReadonlyArray<{ env: string; key: keyof PhoebeUserConfig }>;
 
 const PR_SCOPE_VALUES = ["phoebe", "all"] as const;
@@ -65,6 +79,15 @@ export function applyEnvOverlay(user: PhoebeUserConfig, env: NodeJS.ProcessEnv):
     if (value !== undefined) {
       (overlaid as Record<string, unknown>)[key] = value;
     }
+  }
+
+  for (const { env: envKey, key } of BOOLEAN_OVERLAY_KEYS) {
+    const value = readNonEmpty(env, envKey);
+    if (value === undefined) continue;
+    if (value !== "true" && value !== "false") {
+      throw new Error(`${envKey} must be "true" or "false" (got "${value}").`);
+    }
+    (overlaid as Record<string, unknown>)[key] = value === "true";
   }
 
   const prScope = readNonEmpty(env, "PHOEBE_PR_SCOPE");

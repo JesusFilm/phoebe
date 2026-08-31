@@ -83,11 +83,17 @@ does not force you to supply the rest.
 | `readyLabel`      | `"ready-for-agent"`    | Only issues carrying this label are picked up by the `issues` kind. |
 | `researchLabel`   | `"wayfinder:research"` | Open issues with this label are picked up by the `research` kind.   |
 | `processingLabel` | `"processing"`         | The engine applies this to an issue it has claimed.                 |
+| `featureLabel`    | `"phoebe:feature"`     | A **parent** issue wearing this puts its children on one branch.    |
 | `prOptOutLabel`   | `"ready-for-human"`    | PRs with this label are excluded from every PR scan.                |
 
 See [`operating.md`](operating.md) for how a human drives Phoebe with these,
 and [`preparing-work.md`](preparing-work.md) for why `researchLabel` defaults to a
 wayfinder-shaped value and what to set it to if you use something else.
+
+`featureLabel` is opt-in and Phoebe never creates it: like `readyLabel` it is a
+human's deliberate gesture. A repo that never adds the label simply has no
+feature branches, which is the correct behaviour rather than an error — so the
+`labels` doctor check does not look for it.
 
 ## PR-scan scope
 
@@ -146,6 +152,16 @@ The opt-out is the operator's, deliberately: there is no per-issue or per-author
 switch. Whether a repo credits its reporters is a repo-wide stance, and the
 person who can turn it off is the one who labelled the ticket for Phoebe in the
 first place. An author who does not want the credit asks the operator.
+
+## Feature-branch catch-up
+
+| Field                  | Default | Meaning                                                                                                                                                                                                   |
+| ---------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `featureBranchCatchUp` | `true`  | Whether the `conflicts` kind keeps a live feature branch current with `defaultBranch`. Off means the branch drifts until a human catches it up, and is likely unmergeable by the time anyone looks at it. |
+
+The knob is global. There is no per-feature override: a specific feature comes
+out of janitor scope by putting `prOptOutLabel` on its integration PR, so a
+second label or an issue-keyed config map would buy nothing but proliferation.
 
 ## Work order
 
@@ -642,6 +658,7 @@ config-file territory.
 | `PHOEBE_READY_LABEL`             | `readyLabel`            |                                                         |
 | `PHOEBE_RESEARCH_LABEL`          | `researchLabel`         |                                                         |
 | `PHOEBE_PROCESSING_LABEL`        | `processingLabel`       |                                                         |
+| `PHOEBE_FEATURE_LABEL`           | `featureLabel`          |                                                         |
 | `PHOEBE_PR_OPT_OUT_LABEL`        | `prOptOutLabel`         |                                                         |
 | `PHOEBE_INSTALL_COMMAND`         | `installCommand`        |                                                         |
 | `PHOEBE_CHECK_COMMAND`           | `checkCommand`          |                                                         |
@@ -652,6 +669,7 @@ config-file territory.
 | `PHOEBE_PR_SCOPE`                | `prScope`               | Validated: must be `phoebe` or `all`.                   |
 | `PHOEBE_DRAFT_PRS`               | `draftPrs`              | Validated: `skip-non-phoebe`, `skip-all`, or `include`. |
 | `PHOEBE_DEFAULT_PROVIDER`        | `defaultProvider`       | Validated: `cursor`, `claude`, or `codex`.              |
+| `PHOEBE_FEATURE_BRANCH_CATCH_UP` | `featureBranchCatchUp`  | Validated: must be `true` or `false`.                   |
 
 ### Runtime toggles (read directly, not overlaid onto config)
 
