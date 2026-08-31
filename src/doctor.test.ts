@@ -9,8 +9,12 @@ import {
   buildDoctorReport,
   crashLoopCheck,
   describeRepoProbe,
+  fetchRepoLabels,
   formatDoctorReport,
+  labelsCheck,
   launcherFloorCheck,
+  promptDriftCheck,
+  tenantRow,
   tenantTokenCheck,
 } from "./doctor.ts";
 
@@ -274,5 +278,209 @@ describe("crashLoopCheck", () => {
     expect(crashLoopCheck({ lastGoodSha: null, failingSha: null, failureCount: 0 }).state).toBe(
       "ok",
     );
+  });
+});
+
+describe("labelsCheck", () => {
+  test("all labels present — ok, names the repo", () => {
+    const check = labelsCheck({
+      missing: [],
+      present: ["ready-for-agent", "processing", "ready-for-human"],
+      slug: "acme/widget",
+    });
+    expect(check.state).toBe("ok");
+    expect(check.detail).toMatch(/acme\/widget/);
+  });
+
+  test("one label missing — fail, names the label and the fix command", () => {
+    const check = labelsCheck({
+      missing: ["processing"],
+      present: ["ready-for-agent", "ready-for-human"],
+      slug: "acme/widget",
+    });
+    expect(check.state).toBe("fail");
+    expect(check.detail).toMatch(/processing/);
+    expect(check.detail).toMatch(/gh label create/);
+    expect(check.detail).toMatch(/--repo acme\/widget/);
+  });
+
+  test("multiple labels missing — fail, fix command for each", () => {
+    const check = labelsCheck({
+      missing: ["processing", "ready-for-human"],
+      present: ["ready-for-agent"],
+      slug: "acme/widget",
+    });
+    expect(check.state).toBe("fail");
+    expect(check.detail).toMatch(/processing/);
+    expect(check.detail).toMatch(/ready-for-human/);
+    expect(check.detail).toMatch(/gh label create/);
+  });
+
+  test("a missing-labels fail fails the tenant row", () => {
+    const report = buildDoctorReport(
+      [{ id: "config", state: "ok", detail: "loads" }],
+      [
+        {
+          path: "tenant",
+          slug: "acme/widget",
+          checks: [
+            { id: "token", state: "ok", detail: "present" },
+            { id: "repo", state: "ok", detail: "reachable" },
+            labelsCheck({
+              missing: ["processing"],
+              present: ["ready-for-agent", "ready-for-human"],
+              slug: "acme/widget",
+            }),
+          ],
+        },
+      ],
+    );
+    expect(report.ok).toBe(false);
+  });
+});
+
+describe("promptDriftCheck", () => {
+  test("shipped default path — ok, says using shipped default", () => {
+    const check = promptDriftCheck({
+      issuePromptPath: "prompts/issues-prompt.md",
+      defaultIssuePromptPath: "prompts/issues-prompt.md",
+      promptContent: null,
+    });
+    expect(check.state).toBe("ok");
+    expect(check.detail).toMatch(/shipped default/);
+  });
+
+  test("override with blocker rule — ok", () => {
+    const check = promptDriftCheck({
+      issuePromptPath: "vendor/prompts/issues.md",
+      defaultIssuePromptPath: "prompts/issues-prompt.md",
+      promptContent: "If blocked by another issue, edit the body to include `Blocked by #N`.",
+    });
+    expect(check.state).toBe("ok");
+    expect(check.detail).toMatch(/blocker-recording rule/);
+  });
+
+  test("override with 'Blocked By' (mixed case) — ok", () => {
+    const check = promptDriftCheck({
+      issuePromptPath: "vendor/issues.md",
+      defaultIssuePromptPath: "prompts/issues-prompt.md",
+      promptContent: "Record blocker: Blocked By #N in the body.",
+    });
+    expect(check.state).toBe("ok");
+  });
+
+  test("override without blocker rule — warn, explains consequence and fix", () => {
+    const check = promptDriftCheck({
+      issuePromptPath: "vendor/prompts/issues.md",
+      defaultIssuePromptPath: "prompts/issues-prompt.md",
+      promptContent: "You are a coding agent. Work on the issue assigned to you.",
+    });
+    expect(check.state).toBe("warn");
+    expect(check.detail).toMatch(/no blocker-recording rule/);
+    expect(check.detail).toMatch(/quarantine/);
+    expect(check.detail).toMatch(/Blocked by #N/);
+    expect(check.detail).toMatch(/prompts\/issues-prompt\.md/);
+  });
+
+  test("override but file unreadable — warn", () => {
+    const check = promptDriftCheck({
+      issuePromptPath: "vendor/prompts/issues.md",
+      defaultIssuePromptPath: "prompts/issues-prompt.md",
+      promptContent: null,
+    });
+    expect(check.state).toBe("warn");
+    expect(check.detail).toMatch(/could not be read/);
+  });
+
+  test("prompt-drift warn does not fail the report (warn is not fail)", () => {
+    const report = buildDoctorReport(
+      [{ id: "config", state: "ok", detail: "loads" }],
+      [
+        {
+          path: "tenant",
+          slug: "acme/widget",
+          checks: [
+            { id: "token", state: "ok", detail: "present" },
+            promptDriftCheck({
+              issuePromptPath: "vendor/issues.md",
+              defaultIssuePromptPath: "prompts/issues-prompt.md",
+              promptContent: "no blocker rule here",
+            }),
+          ],
+        },
+      ],
+    );
+    expect(report.ok).toBe(true);
+  });
+});
+
+describe("fetchRepoLabels", () => {
+  test("returns label names on 200", async () => {
+    const mockFetch = async () =>
+      new Response(JSON.stringify([{ name: "ready-for-agent" }, { name: "processing" }]), {
+        status: 200,
+      });
+    const names = await fetchRepoLabels("acme/widget", "ghp_tok", mockFetch as typeof fetch);
+    expect(names).toEqual(["ready-for-agent", "processing"]);
+  });
+
+  test("returns null when label list is denied (403)", async () => {
+    const mockFetch = async () => new Response(null, { status: 403 });
+    const names = await fetchRepoLabels("acme/widget", "ghp_tok", mockFetch as typeof fetch);
+    expect(names).toBeNull();
+  });
+
+  test("returns null on network error", async () => {
+    const mockFetch = async (): Promise<Response> => {
+      throw new Error("ECONNREFUSED");
+    };
+    const names = await fetchRepoLabels("acme/widget", "ghp_tok", mockFetch as typeof fetch);
+    expect(names).toBeNull();
+  });
+});
+
+describe("tenantRow label access regression", () => {
+  test("repo probe ok but label list denied — labels unknown with permission guidance", async () => {
+    const mockFetch = async (url: string | URL | Request) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+      if (urlStr.includes("/labels")) return new Response(null, { status: 403 });
+      return new Response(JSON.stringify({ id: 1, name: "widget" }), { status: 200 });
+    };
+    const row = await tenantRow({
+      path: "tenant",
+      slug: "acme/widget",
+      arm: "pat",
+      token: "ghp_tok",
+      envLabel: "/etc/phoebe/.env",
+      fetchFn: mockFetch as typeof fetch,
+      inContainer: false,
+    });
+    const labelsResult = row.checks.find((c) => c.id === "labels");
+    expect(labelsResult?.state).toBe("unknown");
+    expect(labelsResult?.detail).toMatch(/Issues:read/);
+  });
+});
+
+describe("tenantRow config load failure regression", () => {
+  test("config import failure — labels and prompt-drift both unknown", async () => {
+    const mockFetch = async () =>
+      new Response(JSON.stringify({ id: 1, name: "widget" }), { status: 200 });
+    const row = await tenantRow({
+      path: "tenant",
+      slug: "acme/widget",
+      arm: "pat",
+      token: "ghp_tok",
+      envLabel: "/etc/phoebe/.env",
+      fetchFn: mockFetch as typeof fetch,
+      inContainer: false,
+      // Non-existent path causes loadUserConfig (dynamic import) to throw.
+      configPath: `/tmp/phoebe-nonexistent-config-${Date.now()}.ts`,
+    });
+    const labelsResult = row.checks.find((c) => c.id === "labels");
+    const driftResult = row.checks.find((c) => c.id === "prompt-drift");
+    expect(labelsResult?.state).toBe("unknown");
+    expect(labelsResult?.detail).toMatch(/config load failed/);
+    expect(driftResult?.state).toBe("unknown");
+    expect(driftResult?.detail).toMatch(/config load failed/);
   });
 });
