@@ -221,10 +221,10 @@ export type PhoebeConfig = {
   /**
    * Label a **parent** issue carries to say "my children land on one branch"
    * (#341). Children of an issue wearing it base off `<branchPrefix>feature-<n>`
-   * instead of the default branch, and land on `main` through a single
-   * human-owned integration PR. Phoebe never creates this label: like
-   * `readyLabel` it is a human's deliberate gesture, so a repo that never adds
-   * it simply has no feature branches.
+   * instead of `defaultBranch`, and reach it through a single human-owned
+   * integration PR. Phoebe never creates this label: like `readyLabel` it is a
+   * human's deliberate gesture, so a repo that never adds it simply has no
+   * feature branches.
    */
   featureLabel: string;
   /** Which open PRs the conflicts/checks/reviews work-kinds scan.
@@ -318,8 +318,8 @@ export type PhoebeConfig = {
    */
   creditIssueAuthor: boolean;
   /**
-   * Whether the `conflicts` kind keeps a live feature branch current with the
-   * default branch (#341), by merging `main` into the branch behind its
+   * Whether the `conflicts` kind keeps a live feature branch current with
+   * `defaultBranch` (#341), by merging it into the branch behind the feature's
    * integration PR. Off means a feature branch drifts until a human catches it
    * up. Global, not per-feature: `prOptOutLabel` on an integration PR already
    * takes one specific feature out of janitor scope. Default true.
