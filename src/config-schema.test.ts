@@ -460,6 +460,8 @@ describe("resolveConfig", () => {
     expect(resolved.readyLabel).toBe(CONFIG_DEFAULTS.readyLabel);
     expect(resolved.researchLabel).toBe(CONFIG_DEFAULTS.researchLabel);
     expect(resolved.processingLabel).toBe(CONFIG_DEFAULTS.processingLabel);
+    expect(resolved.featureLabel).toBe(CONFIG_DEFAULTS.featureLabel);
+    expect(resolved.featureBranchCatchUp).toBe(CONFIG_DEFAULTS.featureBranchCatchUp);
     expect(resolved.readyCommand).toBe(CONFIG_DEFAULTS.readyCommand);
     expect(resolved.blockedByPattern).toBe(CONFIG_DEFAULTS.blockedByPattern);
     expect(resolved.reviewsSuccessHeading).toBe(CONFIG_DEFAULTS.reviewsSuccessHeading);
@@ -500,6 +502,20 @@ describe("resolveConfig", () => {
     expect(resolveConfig(minimalUserConfig({ creditIssueAuthor: false })).creditIssueAuthor).toBe(
       false,
     );
+  });
+
+  test("featureLabel defaults to phoebe:feature and is overridable (#341)", () => {
+    expect(CONFIG_DEFAULTS.featureLabel).toBe("phoebe:feature");
+    expect(resolveConfig(minimalUserConfig()).featureLabel).toBe("phoebe:feature");
+    expect(resolveConfig(minimalUserConfig({ featureLabel: "epic" })).featureLabel).toBe("epic");
+  });
+
+  test("featureBranchCatchUp defaults on and can be switched off (#341)", () => {
+    expect(CONFIG_DEFAULTS.featureBranchCatchUp).toBe(true);
+    expect(resolveConfig(minimalUserConfig()).featureBranchCatchUp).toBe(true);
+    expect(
+      resolveConfig(minimalUserConfig({ featureBranchCatchUp: false })).featureBranchCatchUp,
+    ).toBe(false);
   });
 
   test("disabled defaults false and can be switched on (#202)", () => {

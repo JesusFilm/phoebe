@@ -218,6 +218,15 @@ export type PhoebeConfig = {
   researchLabel: string;
   /** Label the agent applies to an issue it has claimed and is working. */
   processingLabel: string;
+  /**
+   * Label a **parent** issue carries to say "my children land on one branch"
+   * (#341). Children of an issue wearing it base off `<branchPrefix>feature-<n>`
+   * instead of the default branch, and land on `main` through a single
+   * human-owned integration PR. Phoebe never creates this label: like
+   * `readyLabel` it is a human's deliberate gesture, so a repo that never adds
+   * it simply has no feature branches.
+   */
+  featureLabel: string;
   /** Which open PRs the conflicts/checks/reviews work-kinds scan.
    *  "phoebe" = only branchPrefix branches. "all" = any same-repo PR. */
   prScope: "phoebe" | "all";
@@ -308,6 +317,14 @@ export type PhoebeConfig = {
    * as misattribution rather than credit. Default true.
    */
   creditIssueAuthor: boolean;
+  /**
+   * Whether the `conflicts` kind keeps a live feature branch current with the
+   * default branch (#341), by merging `main` into the branch behind its
+   * integration PR. Off means a feature branch drifts until a human catches it
+   * up. Global, not per-feature: `prOptOutLabel` on an integration PR already
+   * takes one specific feature out of janitor scope. Default true.
+   */
+  featureBranchCatchUp: boolean;
   /**
    * Human off-switch for this tenant (#202). When `true`, the engine starts no
    * new work units; a unit already in flight finishes. Quarantine state is
@@ -400,6 +417,8 @@ export type PhoebeUserConfig = {
   readyLabel?: string;
   researchLabel?: string;
   processingLabel?: string;
+  /** Opt-in label on a parent issue whose children share a feature branch (#341); default `phoebe:feature`. */
+  featureLabel?: string;
   prScope?: PhoebeConfig["prScope"];
   draftPrs?: PhoebeConfig["draftPrs"];
   prOptOutLabel?: string;
@@ -422,6 +441,8 @@ export type PhoebeUserConfig = {
   maxUnitTimeouts?: number;
   /** Co-author trailer for the issue author on issue-derived commits (#198); default true. */
   creditIssueAuthor?: boolean;
+  /** Keep live feature branches current with the default branch (#341); default true. */
+  featureBranchCatchUp?: boolean;
   /**
    * Human off-switch for this tenant (#202). When `true`, the engine starts no
    * new work. Hot — takes effect on the next engine cycle without a restart. A
@@ -442,6 +463,7 @@ export const CONFIG_DEFAULTS = {
   readyLabel: "ready-for-agent",
   researchLabel: "wayfinder:research",
   processingLabel: "processing",
+  featureLabel: "phoebe:feature",
   prScope: "phoebe" as const,
   draftPrs: "skip-non-phoebe" as const,
   prOptOutLabel: "ready-for-human",
@@ -481,6 +503,7 @@ export const CONFIG_DEFAULTS = {
   // Applying `readyLabel` is a maintainer's deliberate act, so on by default:
   // the credit follows work a maintainer already chose to run (#198).
   creditIssueAuthor: true,
+  featureBranchCatchUp: true,
   disabled: false,
 } as const;
 
@@ -827,6 +850,7 @@ export function resolveConfig(
     readyLabel: user.readyLabel ?? CONFIG_DEFAULTS.readyLabel,
     researchLabel: user.researchLabel ?? CONFIG_DEFAULTS.researchLabel,
     processingLabel: user.processingLabel ?? CONFIG_DEFAULTS.processingLabel,
+    featureLabel: user.featureLabel ?? CONFIG_DEFAULTS.featureLabel,
     prScope: user.prScope ?? CONFIG_DEFAULTS.prScope,
     draftPrs: user.draftPrs ?? CONFIG_DEFAULTS.draftPrs,
     prOptOutLabel: user.prOptOutLabel ?? CONFIG_DEFAULTS.prOptOutLabel,
@@ -844,6 +868,7 @@ export function resolveConfig(
     maxUnproductiveRuns:
       user.maxUnproductiveRuns ?? user.maxUnitTimeouts ?? CONFIG_DEFAULTS.maxUnproductiveRuns,
     creditIssueAuthor: user.creditIssueAuthor ?? CONFIG_DEFAULTS.creditIssueAuthor,
+    featureBranchCatchUp: user.featureBranchCatchUp ?? CONFIG_DEFAULTS.featureBranchCatchUp,
     disabled: user.disabled ?? CONFIG_DEFAULTS.disabled,
     paths: derivePaths(user.repoSlug, opts.dataBase),
   };
