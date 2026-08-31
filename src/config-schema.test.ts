@@ -74,6 +74,19 @@ describe("validateUserConfig", () => {
     ).toThrow(/capture group 1/);
   });
 
+  test("rejects a partOfPattern that is not a valid regex", () => {
+    expect(() => validateUserConfig(minimalUserConfig({ partOfPattern: "Part of [" }))).toThrow(
+      /partOfPattern/,
+    );
+  });
+
+  test("rejects a partOfPattern with no capture group", () => {
+    // parsePartOf reads match[1]; without a group every membership read is NaN.
+    expect(() =>
+      validateUserConfig(minimalUserConfig({ partOfPattern: String.raw`Part of #\d+` })),
+    ).toThrow(/capture group 1/);
+  });
+
   test("accepts a pattern that uses non-capturing groups plus a real capture group", () => {
     expect(() =>
       validateUserConfig(
@@ -464,6 +477,7 @@ describe("resolveConfig", () => {
     expect(resolved.featureBranchCatchUp).toBe(CONFIG_DEFAULTS.featureBranchCatchUp);
     expect(resolved.readyCommand).toBe(CONFIG_DEFAULTS.readyCommand);
     expect(resolved.blockedByPattern).toBe(CONFIG_DEFAULTS.blockedByPattern);
+    expect(resolved.partOfPattern).toBe(CONFIG_DEFAULTS.partOfPattern);
     expect(resolved.reviewsSuccessHeading).toBe(CONFIG_DEFAULTS.reviewsSuccessHeading);
     expect(resolved.prScope).toBe(CONFIG_DEFAULTS.prScope);
     expect(resolved.draftPrs).toBe(CONFIG_DEFAULTS.draftPrs);
@@ -613,6 +627,11 @@ describe("resolveConfig", () => {
       expect(CONFIG_DEFAULTS.defaultModels[provider]).toBeTruthy();
       expect(CONFIG_DEFAULTS.providerEnv[provider]).toBeTruthy();
     }
+  });
+
+  test("default partOfPattern compiles and captures the parent issue number", () => {
+    const match = new RegExp(CONFIG_DEFAULTS.partOfPattern, "i").exec("Part of #341.");
+    expect(Number(match?.[1])).toBe(341);
   });
 
   test("default blockedByPattern compiles and captures the issue number", () => {

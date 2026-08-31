@@ -54,6 +54,7 @@ function makeCtx(overrides: {
       issueBody: () => null,
       registerIssues: () => {},
       blockerStates: () => new Map(),
+      feature: () => null,
     },
     clock: {
       now: () => new Date(),

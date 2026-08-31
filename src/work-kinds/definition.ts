@@ -17,6 +17,7 @@
 
 import type { BranchRef, PrNumber, Sha } from "../branded.ts";
 import type { PhoebeConfig } from "../config-schema.ts";
+import type { Feature } from "../feature-branch.ts";
 import type { CycleGitHubClient, GitHubClient } from "../github-client.ts";
 import type { BlockerPrState, Issue } from "../orchestrator.ts";
 
@@ -84,6 +85,13 @@ export type CycleServices = {
   registerIssues(issues: readonly Issue[]): void;
   /** Select-time read of the merged blocker-state index. */
   blockerStates(): ReadonlyMap<number, BlockerPrState>;
+  /**
+   * The live feature this issue belongs to (#341), or `null` when it belongs to
+   * none — no opted-in ancestor, a retired feature, or a failed read, which a
+   * caller treats alike: an ordinary ticket bound for the default branch. The
+   * parent chain is walked at most once per issue per cycle.
+   */
+  feature(issueNumber: number): Feature | null;
 };
 
 /**

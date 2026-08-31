@@ -43,6 +43,7 @@ export const ENV_OVERLAY_KEYS = [
   { env: "PHOEBE_TEST_COMMAND", key: "testCommand" },
   { env: "PHOEBE_READY_COMMAND", key: "readyCommand" },
   { env: "PHOEBE_BLOCKED_BY_PATTERN", key: "blockedByPattern" },
+  { env: "PHOEBE_PART_OF_PATTERN", key: "partOfPattern" },
   { env: "PHOEBE_REVIEWS_SUCCESS_HEADING", key: "reviewsSuccessHeading" },
 ] as const satisfies ReadonlyArray<{ env: string; key: keyof PhoebeUserConfig }>;
 
