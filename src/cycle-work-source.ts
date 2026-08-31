@@ -6,12 +6,23 @@
 // merged after the fact, so the #290 ordering bug cannot recur; the cross-kind
 // body-derived blocker merge runs here, engine-owned, after every fetch.
 //
+// The feature facility (#341) is the same idea one layer up: `cycle.feature(n)`
+// answers which live feature an issue belongs to, walking the issue graph
+// through cycle-scoped memos so siblings under one feature share the reads.
+//
 // This module also builds the per-kind `WorkKindCtx` the engine hands to
 // `fetch`/`select` (and widens for `run`): the ctx is per-cycle, so it lives
 // with the cycle state it closes over.
 
 import { asBranchRef } from "./branded.ts";
 import type { PhoebeConfig } from "./config-schema.ts";
+import {
+  resolveFeature,
+  type Feature,
+  type FeatureGraphReader,
+  type IntegrationPr,
+  type IssueGraphNode,
+} from "./feature-branch.ts";
 import { parseBlockedBy, type BlockerPrState, type Issue } from "./orchestrator.ts";
 import type { GitHubClient } from "./github-client.ts";
 import type { OriginHub } from "./origin-hub.ts";
@@ -69,6 +80,11 @@ export function createWorkSource(opts: {
 }): WorkSource {
   const { github, originHub, clock, env, config, registry } = opts;
 
+  /** The message every per-unit warning below prints, whatever was thrown. */
+  function errorText(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+  }
+
   function buildBlockerStates(issues: readonly Issue[], into: Map<number, BlockerPrState>): void {
     const blockerNumbers = new Set<number>();
     for (const issue of issues) {
@@ -81,9 +97,7 @@ export function createWorkSource(opts: {
       try {
         into.set(n, github.blockerPrState(n));
       } catch (error) {
-        console.warn(
-          `[phoebe] Skipping blocker state for #${n} this cycle — ${error instanceof Error ? error.message : String(error)}`,
-        );
+        console.warn(`[phoebe] Skipping blocker state for #${n} this cycle — ${errorText(error)}`);
       }
     }
   }
@@ -109,6 +123,51 @@ export function createWorkSource(opts: {
     // kind, once, instead of re-fetched by every kind that shares the issue.
     const issueBodies = new Map<number, string | null>();
     const blockerStates = new Map<number, BlockerPrState>();
+
+    // The feature facility (#341). Three memos, all cycle-scoped: the issue
+    // graph nodes a membership walk climbs, the integration PR that says whether
+    // a feature is still live, and the answers themselves — so siblings under
+    // one feature share every read the first of them paid for. A failed read is
+    // remembered as `null` too, so a repo where the sub-issue endpoint is
+    // unavailable costs one call per issue, not one per walk.
+    const graphNodes = new Map<number, IssueGraphNode | null>();
+    const integrationPrs = new Map<number, { pr: IntegrationPr | null } | null>();
+    const features = new Map<number, Feature | null>();
+    const featureReader: FeatureGraphReader = {
+      issueGraphNode(issueNumber) {
+        if (graphNodes.has(issueNumber)) {
+          return graphNodes.get(issueNumber) ?? null;
+        }
+        try {
+          const node = github.issueGraphNode(issueNumber);
+          graphNodes.set(issueNumber, node);
+          return node;
+        } catch (error) {
+          console.warn(
+            `[phoebe] Skipping feature membership at #${issueNumber} this cycle — ${errorText(error)}`,
+          );
+          graphNodes.set(issueNumber, null);
+          return null;
+        }
+      },
+      featureIntegrationPr(featureIssueNumber) {
+        if (integrationPrs.has(featureIssueNumber)) {
+          return integrationPrs.get(featureIssueNumber) ?? null;
+        }
+        try {
+          const read = { pr: github.featureIntegrationPr(featureIssueNumber) };
+          integrationPrs.set(featureIssueNumber, read);
+          return read;
+        } catch (error) {
+          console.warn(
+            `[phoebe] Skipping feature #${featureIssueNumber} this cycle — its integration PR ` +
+              `could not be read: ${errorText(error)}`,
+          );
+          integrationPrs.set(featureIssueNumber, null);
+          return null;
+        }
+      },
+    };
     const services: CycleServices = {
       issueBody(issueNumber) {
         if (issueBodies.has(issueNumber)) {
@@ -120,7 +179,7 @@ export function createWorkSource(opts: {
           return body;
         } catch (error) {
           console.warn(
-            `[phoebe] Skipping issue body for #${issueNumber} this cycle — ${error instanceof Error ? error.message : String(error)}`,
+            `[phoebe] Skipping issue body for #${issueNumber} this cycle — ${errorText(error)}`,
           );
           issueBodies.set(issueNumber, null);
           return null;
@@ -130,6 +189,14 @@ export function createWorkSource(opts: {
         buildBlockerStates(issues, blockerStates);
       },
       blockerStates: () => blockerStates,
+      feature(issueNumber) {
+        if (features.has(issueNumber)) {
+          return features.get(issueNumber) ?? null;
+        }
+        const resolved = resolveFeature(issueNumber, featureReader);
+        features.set(issueNumber, resolved);
+        return resolved;
+      },
     };
 
     const origin: WorkKindOrigin = {

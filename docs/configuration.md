@@ -128,12 +128,13 @@ open with `gh` calls) but likewise never see provider keys.
 | -------------- | ----------------- | ---------------------------------------------------------------------------------- |
 | `readyCommand` | `"npm run ready"` | The all-in-one gate the agent runs before pushing. Prompt arg `{{READY_COMMAND}}`. |
 
-## Blocker detection & review summary
+## Issue-graph patterns & review summary
 
-| Field                   | Default                               | Meaning                                                                                                                                                                                                  |
-| ----------------------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `blockedByPattern`      | `` String.raw`Blocked by\s+#(\d+)` `` | JS-compatible regex matching a blocker reference in issue body text. **Capture group 1 must yield the blocker issue number** (validated at load; `parseBlockedBy` reads `match[1]`). Compiled with `gi`. |
-| `reviewsSuccessHeading` | `"## Review feedback addressed"`      | Markdown heading the reviews agent includes in its summary comment. The engine detects the summary by substring match, so it must be unique. Prompt arg `{{REVIEWS_SUCCESS_HEADING}}`.                   |
+| Field                   | Default                               | Meaning                                                                                                                                                                                                                                                                                                                      |
+| ----------------------- | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `blockedByPattern`      | `` String.raw`Blocked by\s+#(\d+)` `` | JS-compatible regex matching a blocker reference in issue body text. **Capture group 1 must yield the blocker issue number** (validated at load; `parseBlockedBy` reads `match[1]`). Compiled with `gi`.                                                                                                                     |
+| `partOfPattern`         | `` String.raw`Part of\s+#(\d+)` ``    | JS-compatible regex matching a hand-authored feature-membership declaration in issue body text — the fallback used when GitHub's native sub-issue link is absent. **Capture group 1 must yield the parent issue number** (validated at load). Compiled case-insensitively; a native parent link wins where both are present. |
+| `reviewsSuccessHeading` | `"## Review feedback addressed"`      | Markdown heading the reviews agent includes in its summary comment. The engine detects the summary by substring match, so it must be unique. Prompt arg `{{REVIEWS_SUCCESS_HEADING}}`.                                                                                                                                       |
 
 ## Issue-author credit
 
@@ -665,6 +666,7 @@ config-file territory.
 | `PHOEBE_TEST_COMMAND`            | `testCommand`           |                                                         |
 | `PHOEBE_READY_COMMAND`           | `readyCommand`          |                                                         |
 | `PHOEBE_BLOCKED_BY_PATTERN`      | `blockedByPattern`      |                                                         |
+| `PHOEBE_PART_OF_PATTERN`         | `partOfPattern`         |                                                         |
 | `PHOEBE_REVIEWS_SUCCESS_HEADING` | `reviewsSuccessHeading` |                                                         |
 | `PHOEBE_PR_SCOPE`                | `prScope`               | Validated: must be `phoebe` or `all`.                   |
 | `PHOEBE_DRAFT_PRS`               | `draftPrs`              | Validated: `skip-non-phoebe`, `skip-all`, or `include`. |

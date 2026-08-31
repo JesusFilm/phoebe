@@ -699,6 +699,7 @@ function walkCtx(kind: string, data: WalkData): WorkKindCtx {
       issueBody: (n) => data.issueBodies.get(n) ?? null,
       registerIssues: () => {},
       blockerStates: () => data.blockerStates,
+      feature: () => null,
     },
     clock: { now: () => new Date(0), sleep: () => Promise.resolve() },
     log: () => {},

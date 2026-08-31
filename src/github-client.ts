@@ -25,6 +25,7 @@ import {
 } from "./branded.ts";
 import type { GitHubUser } from "./co-author.ts";
 import type { PhoebeConfig } from "./config-schema.ts";
+import { featureBranch, type IntegrationPr, type IssueGraphNode } from "./feature-branch.ts";
 import { classifyGhError, describeGhError, isTransientGhError } from "./gh-error.ts";
 import {
   isCompletedBlockerIssue,
@@ -152,6 +153,19 @@ export type GitHubClient = {
   listLabeledIssues(label: string): Issue[];
   issueBody(issueNumber: number): string;
   blockerPrState(blockerIssueNumber: number): BlockerPrState;
+  /**
+   * One issue as the feature-membership walk reads it (#341): its labels, body,
+   * open/closed state, and its native sub-issue parent. REST rather than
+   * `gh issue view` — the parent link is `parent_issue_url` on the REST payload
+   * and `--json` exposes no field for it.
+   */
+  issueGraphNode(issueNumber: number): IssueGraphNode;
+  /**
+   * The PR on a feature's integration branch, or `null` when there is none yet.
+   * An open one always wins: a feature is live while a PR on its branch is open,
+   * whatever closed PRs the branch accumulated before it.
+   */
+  featureIntegrationPr(featureIssueNumber: number): IntegrationPr | null;
 
   // Pull requests
   listOpenPhoebePrs(): OpenPhoebePr[];
@@ -266,6 +280,46 @@ export type CycleGitHubClient = Omit<
  */
 function noLoginAsNull(author: { login: string } | null | undefined): string | null {
   return author?.login ? author.login : null;
+}
+
+/**
+ * The issue number in a REST `parent_issue_url`, or `null` when there is no
+ * parent. A parent in another repository also reads as `null`: Phoebe works one
+ * repo, so it could neither branch from nor open a PR against the other one,
+ * and treating that link as membership would route work onto a branch that does
+ * not exist here.
+ */
+export function parseParentIssueUrl(
+  url: string | null | undefined,
+  repoSlug: string,
+): number | null {
+  if (!url) {
+    return null;
+  }
+  const match = /\/repos\/([^/]+\/[^/]+)\/issues\/(\d+)$/.exec(url);
+  if (!match || match[1]!.toLowerCase() !== repoSlug.toLowerCase()) {
+    return null;
+  }
+  return Number(match[2]);
+}
+
+/**
+ * The integration PR among the PRs a feature branch has carried: the open one
+ * if there is one, else the newest. `gh` reports states as OPEN/CLOSED/MERGED.
+ */
+export function pickIntegrationPr(
+  rows: ReadonlyArray<{ number: number; state: string }>,
+): IntegrationPr | null {
+  const byNewest = [...rows].sort((a, b) => b.number - a.number);
+  const chosen = byNewest.find((row) => row.state.toUpperCase() === "OPEN") ?? byNewest[0];
+  if (!chosen) {
+    return null;
+  }
+  const state = chosen.state.toUpperCase();
+  return {
+    number: asPrNumber(chosen.number),
+    state: state === "OPEN" || state === "MERGED" ? state : "CLOSED",
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -593,6 +647,40 @@ export function createGitHubClient({
 
     issueBody: (issueNumber) =>
       ghJson<{ body: string }>(["issue", "view", String(issueNumber), "--json", "body"]).body,
+
+    issueGraphNode: (issueNumber) => {
+      type RestIssue = {
+        number: number;
+        state: string;
+        body: string | null;
+        labels: Array<{ name: string }>;
+        parent_issue_url?: string | null;
+      };
+      const raw = ghApiJson<RestIssue>(`repos/${config.repoSlug}/issues/${issueNumber}`);
+      return {
+        number: raw.number,
+        labels: raw.labels.map((label) => label.name),
+        body: raw.body ?? "",
+        closed: raw.state.toLowerCase() === "closed",
+        parentNumber: parseParentIssueUrl(raw.parent_issue_url, config.repoSlug),
+      };
+    },
+
+    featureIntegrationPr: (featureIssueNumber) =>
+      pickIntegrationPr(
+        ghJson<Array<{ number: number; state: string }>>([
+          "pr",
+          "list",
+          "--head",
+          featureBranch(featureIssueNumber),
+          "--state",
+          "all",
+          "--json",
+          "number,state",
+          "--limit",
+          "10",
+        ]),
+      ),
 
     blockerPrState: (blockerIssueNumber) => {
       const branch: BranchRef = issueBranch(blockerIssueNumber);

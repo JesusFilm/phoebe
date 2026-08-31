@@ -807,3 +807,102 @@ describe("transient-failure retry", () => {
     expect(slept).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Feature membership reads (#341): the REST parent link and the integration PR
+// ---------------------------------------------------------------------------
+
+describe("issueGraphNode", () => {
+  function restIssue(overrides: Record<string, unknown> = {}): string {
+    return JSON.stringify({
+      number: 12,
+      state: "open",
+      body: "Part of #341.",
+      labels: [{ name: "enhancement" }],
+      parent_issue_url: "https://api.github.com/repos/acme/widget/issues/341",
+      ...overrides,
+    });
+  }
+
+  test("reads the issue through the REST API — `--json` exposes no parent field", () => {
+    const { github, calls } = clientWith([restIssue()]);
+    github.issueGraphNode(12);
+    expect(calls[0]!.args).toEqual(["api", "repos/acme/widget/issues/12"]);
+  });
+
+  test("maps labels, body, state and the native parent", () => {
+    const { github } = clientWith([restIssue()]);
+    expect(github.issueGraphNode(12)).toEqual({
+      number: 12,
+      labels: ["enhancement"],
+      body: "Part of #341.",
+      closed: false,
+      parentNumber: 341,
+    });
+  });
+
+  test("a closed issue reads as closed", () => {
+    const { github } = clientWith([restIssue({ state: "closed" })]);
+    expect(github.issueGraphNode(12).closed).toBe(true);
+  });
+
+  test("an issue with no parent and a null body reads as parentless and empty", () => {
+    const { github } = clientWith([restIssue({ parent_issue_url: null, body: null })]);
+    const node = github.issueGraphNode(12);
+    expect(node.parentNumber).toBeNull();
+    expect(node.body).toBe("");
+  });
+
+  test("a parent in another repository is no parent — Phoebe works one repo", () => {
+    const { github } = clientWith([
+      restIssue({ parent_issue_url: "https://api.github.com/repos/other/repo/issues/5" }),
+    ]);
+    expect(github.issueGraphNode(12).parentNumber).toBeNull();
+  });
+});
+
+describe("featureIntegrationPr", () => {
+  test("lists every PR on the feature branch, in every state", () => {
+    const { github, calls } = clientWith(["[]"]);
+    github.featureIntegrationPr(341);
+    expect(calls[0]!.args).toEqual([
+      "pr",
+      "list",
+      "--head",
+      "phoebe/feature-341",
+      "--state",
+      "all",
+      "--json",
+      "number,state",
+      "--limit",
+      "10",
+      "-R",
+      "acme/widget",
+    ]);
+  });
+
+  test("is null when the branch has carried no PR", () => {
+    const { github } = clientWith(["[]"]);
+    expect(github.featureIntegrationPr(341)).toBeNull();
+  });
+
+  test("an open PR wins over a newer closed one — an open PR means the feature is live", () => {
+    const { github } = clientWith([
+      JSON.stringify([
+        { number: 9, state: "CLOSED" },
+        { number: 7, state: "OPEN" },
+      ]),
+    ]);
+    expect(github.featureIntegrationPr(341)).toEqual({ number: 7, state: "OPEN" });
+  });
+
+  test("with no open PR, the newest terminal one answers", () => {
+    const { github } = clientWith([
+      JSON.stringify([
+        { number: 7, state: "CLOSED" },
+        { number: 9, state: "MERGED" },
+      ]),
+    ]);
+    expect(github.featureIntegrationPr(341)).toEqual({ number: 9, state: "MERGED" });
+  });
+});

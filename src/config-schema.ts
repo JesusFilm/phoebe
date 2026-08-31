@@ -249,6 +249,15 @@ export type PhoebeConfig = {
    */
   blockedByPattern: string;
   /**
+   * JavaScript-compatible regex source that matches a hand-authored membership
+   * declaration in issue body text — the fallback for `featureLabel` (#341)
+   * when GitHub's native sub-issue link is absent, so an issue typed in a
+   * browser can still join a feature. Must expose the parent issue number as
+   * capture group 1. Compiled case-insensitively; the first match wins, and a
+   * native parent link beats it wherever both are present.
+   */
+  partOfPattern: string;
+  /**
    * Markdown heading the reviews agent must include when it posts its summary
    * comment. The orchestrator detects the summary by substring match on this
    * exact string, so it must be unique enough not to collide with other
@@ -424,6 +433,8 @@ export type PhoebeUserConfig = {
   prOptOutLabel?: string;
   readyCommand?: string;
   blockedByPattern?: string;
+  /** Regex for the `Part of #M` feature-membership fallback (#341); default `` String.raw`Part of\s+#(\d+)` ``. */
+  partOfPattern?: string;
   reviewsSuccessHeading?: string;
   promptFiles?: Partial<PromptFilesConfig>;
   workOrder?: readonly string[];
@@ -469,6 +480,7 @@ export const CONFIG_DEFAULTS = {
   prOptOutLabel: "ready-for-human",
   readyCommand: "npm run ready",
   blockedByPattern: String.raw`Blocked by\s+#(\d+)`,
+  partOfPattern: String.raw`Part of\s+#(\d+)`,
   reviewsSuccessHeading: "## Review feedback addressed",
   promptFiles: {
     issue: "prompts/issues-prompt.md",
@@ -535,12 +547,38 @@ function countCaptureGroups(source: string): number {
 }
 
 /**
+ * Both issue-reference patterns are read the same way — compiled from the
+ * consumer's string, with `match[1]` taken as an issue number — so both are
+ * rejected the same way: an uncompilable source, or one with no capture group,
+ * would silently break the path that reads it rather than failing at load.
+ */
+function validateIssueRefPattern(
+  field: "blockedByPattern" | "partOfPattern",
+  pattern: string,
+  detail: { reads: string; example: string },
+): void {
+  try {
+    new RegExp(pattern, "gi");
+  } catch (err) {
+    throw new Error(`phoebe.config.ts ${field} is not a valid regex: ${(err as Error).message}`);
+  }
+  if (countCaptureGroups(pattern) < 1) {
+    throw new Error(
+      `phoebe.config.ts ${field} must define capture group 1 for the ` +
+        `${detail.reads}. Wrap the number portion in parentheses, ` +
+        `e.g. String.raw\`${detail.example}\`.`,
+    );
+  }
+}
+
+/**
  * Throw when a required field is missing or blank, or when `blockedByPattern`
- * is not a valid regex or fails to expose the blocker issue number as capture
- * group 1. `parseBlockedBy` reads `match[1]`, so a pattern without a capture
- * group would silently break the entire blocker-detection path — reject it up
- * front. Kept separate from `resolveConfig` so consumers or tests can validate
- * a config independent of the defaults merge.
+ * or `partOfPattern` is not a valid regex or fails to expose an issue number as
+ * capture group 1. Both are read as `match[1]`, so a pattern without a capture
+ * group would silently break the path that reads it — the blocker walk, or
+ * feature membership — rather than failing here. Kept separate from
+ * `resolveConfig` so consumers or tests can validate a config independent of
+ * the defaults merge.
  *
  * Workspace-root configs carry a `workspace` block in place of the five tenant
  * fields and are exempt from that check — the block's presence is the canonical
@@ -560,20 +598,16 @@ export function validateUserConfig(user: PhoebeUserConfig): void {
     }
   }
   if (user.blockedByPattern !== undefined) {
-    try {
-      new RegExp(user.blockedByPattern, "gi");
-    } catch (err) {
-      throw new Error(
-        `phoebe.config.ts blockedByPattern is not a valid regex: ${(err as Error).message}`,
-      );
-    }
-    if (countCaptureGroups(user.blockedByPattern) < 1) {
-      throw new Error(
-        `phoebe.config.ts blockedByPattern must define capture group 1 for the ` +
-          `blocker issue number (parseBlockedBy reads match[1]). Wrap the number ` +
-          `portion in parentheses, e.g. String.raw\`Blocked by\\s+#(\\d+)\`.`,
-      );
-    }
+    validateIssueRefPattern("blockedByPattern", user.blockedByPattern, {
+      reads: "blocker issue number (parseBlockedBy reads match[1])",
+      example: String.raw`Blocked by\s+#(\d+)`,
+    });
+  }
+  if (user.partOfPattern !== undefined) {
+    validateIssueRefPattern("partOfPattern", user.partOfPattern, {
+      reads: "parent issue number (parsePartOf reads match[1])",
+      example: String.raw`Part of\s+#(\d+)`,
+    });
   }
   if (user.workKinds !== undefined) {
     validateWorkKindsField(user.workKinds);
@@ -856,6 +890,7 @@ export function resolveConfig(
     prOptOutLabel: user.prOptOutLabel ?? CONFIG_DEFAULTS.prOptOutLabel,
     readyCommand: user.readyCommand ?? CONFIG_DEFAULTS.readyCommand,
     blockedByPattern: user.blockedByPattern ?? CONFIG_DEFAULTS.blockedByPattern,
+    partOfPattern: user.partOfPattern ?? CONFIG_DEFAULTS.partOfPattern,
     reviewsSuccessHeading: user.reviewsSuccessHeading ?? CONFIG_DEFAULTS.reviewsSuccessHeading,
     promptFiles: { ...CONFIG_DEFAULTS.promptFiles, ...user.promptFiles },
     workOrder: user.workOrder ?? CONFIG_DEFAULTS.workOrder,
