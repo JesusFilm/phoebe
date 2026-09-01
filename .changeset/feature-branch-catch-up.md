@@ -1,0 +1,5 @@
+---
+"phoebe-agent": minor
+---
+
+`conflicts` now keeps a live feature branch current with the default branch (#341). A feature branch is long-lived by construction, so `main` moves under it — and a branch that has merely fallen behind conflicts with nothing yet, which means no mergeability read would ever nominate it. The kind therefore selects a feature's integration PR on distance from the default branch instead, then works it down the path it already had: the agent-free clean merge, the `conflict` prompt when that dirties, the `prHead` + `mainHead` watermark when neither resolves it. A caught-up branch is zero commits behind, so it drops out the moment the merge lands. `featureBranchCatchUp: false` retires the catch-up tenant-wide; `ready-for-human` on one integration PR takes that feature out of scope on its own. `reviews`, meanwhile, never selects an integration PR at all: review activity there is a human reviewing the whole feature, and answering it would be Phoebe reviewing the human's review of Phoebe.

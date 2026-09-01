@@ -77,6 +77,7 @@ function makeCtx(overrides: {
     origin: {
       fetch: () => {},
       branchHead: () => "abc".padEnd(40, "0") as ReturnType<WorkKindRunCtx["origin"]["branchHead"]>,
+      commitsBehind: () => 0,
     },
     workspace: {
       mode: "worktree",
@@ -297,6 +298,7 @@ function makeSelectCtx(featureFor: (n: number) => Feature | null): WorkKindCtx {
     origin: {
       fetch: () => {},
       branchHead: () => "abc".padEnd(40, "0") as ReturnType<WorkKindCtx["origin"]["branchHead"]>,
+      commitsBehind: () => 0,
     },
   };
 }
@@ -408,6 +410,7 @@ describe("issueProducerKind.run — feature branch and draft PR creation", () =>
         fetch: () => {},
         branchHead: () =>
           "abc".padEnd(40, "0") as ReturnType<WorkKindRunCtx["origin"]["branchHead"]>,
+        commitsBehind: () => 0,
       },
       workspace: { mode: "worktree", dir: "/tmp/test-worktree" },
       signal: new AbortController().signal,

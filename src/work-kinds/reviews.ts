@@ -2,8 +2,14 @@
 // works the feedback; the kind pushes any commits and posts the
 // handled-watermark comment — built from the pre-run activity snapshot, so
 // feedback posted mid-run still re-selects the PR.
+//
+// A feature's integration PR is never a unit here (#341, ticket #382). Review
+// activity on it is a human reviewing the whole feature, so Phoebe answering it
+// would be Phoebe reviewing the human's review of Phoebe. `conflicts` and
+// `checks` still work it; only this kind stands off.
 
 import type { PhoebeConfig } from "../config-schema.ts";
+import { parseFeatureIssueNumber } from "../feature-branch.ts";
 import {
   buildReviewsHandledComment,
   isPrMergeConflicting,
@@ -72,6 +78,7 @@ export function reviewsKind(config: PhoebeConfig): AnyWorkKindDefinition {
     async fetch(ctx) {
       const phoebeLogin = ctx.github.resolveLogin(ctx.env["PHOEBE_GH_LOGIN"]);
       const candidates = await collectPrCandidates<ReviewsCandidate>(ctx, (info, pr) => {
+        if (parseFeatureIssueNumber(info.headRefName) !== null) return null;
         if (isPrMergeConflicting(info.mergeable, info.mergeStateStatus)) return null;
         const issueNumber = issueNumberOf({ headRefName: info.headRefName });
         return {

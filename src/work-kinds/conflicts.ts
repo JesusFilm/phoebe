@@ -1,8 +1,18 @@
 // The `conflicts` kind: catch conflicted PRs up with their blockers and the
 // default branch — a clean no-agent merge when possible, an agent pass when
 // real conflicts remain, and a watermarked failure comment when neither works.
+//
+// A feature's integration PR (#341, ticket #382) is a unit here on a different
+// trigger. A feature branch is long-lived by construction, so `main` moves under
+// it; a branch that has merely fallen behind conflicts with nothing yet, and no
+// mergeability read would ever nominate it. Left alone it drifts until the PR a
+// human opens at the end of the feature is a conflict pile instead of a review.
+// So the integration PR is selected on distance from the default branch, and
+// then travels the ordinary run path: `cleanMerge`, the `conflict` prompt when
+// that dirties, the `phoebe-conflict-fail` watermark when neither resolves it.
 
 import type { PhoebeConfig } from "../config-schema.ts";
+import { parseFeatureIssueNumber } from "../feature-branch.ts";
 import {
   conflictFixFailureComment,
   isPrMergeConflicting,
@@ -15,7 +25,7 @@ import {
   type ConflictFailWatermark,
   type ConflictingPrCandidate,
 } from "../orchestrator.ts";
-import type { PrNumber, Sha } from "../branded.ts";
+import type { BranchRef, PrNumber, Sha } from "../branded.ts";
 import {
   defineWorkKind,
   type AnyWorkKindDefinition,
@@ -56,6 +66,29 @@ function currentWatermark(ctx: WorkKindCtx, pr: ConflictingPrCandidate): Conflic
   };
 }
 
+/** Whether this PR's head is a feature integration branch. */
+function isIntegrationBranch(branch: BranchRef): boolean {
+  return parseFeatureIssueNumber(branch) !== null;
+}
+
+/**
+ * Whether the feature branch behind an integration PR needs catching up: only
+ * while `featureBranchCatchUp` is on, and only when the default branch actually
+ * carries commits the branch lacks.
+ *
+ * Distance, not mergeability, is the trigger — but it is also what keeps the
+ * unit from recurring. A caught-up branch is zero commits behind, so it drops
+ * out the moment the merge lands; were the test `mergeable === "CONFLICTING"`,
+ * a branch already level with the default branch would be nominated forever by
+ * a merge that could resolve nothing.
+ */
+function needsFeatureCatchUp(ctx: WorkKindCtx, branch: BranchRef): boolean {
+  if (!ctx.config.featureBranchCatchUp) {
+    return false;
+  }
+  return ctx.origin.commitsBehind(branch, ctx.config.defaultBranch) > 0;
+}
+
 export function conflictsKind(config: PhoebeConfig): AnyWorkKindDefinition {
   const noun = "conflicting PR(s)";
   return defineWorkKind<ConflictsGathered, ConflictsUnit>({
@@ -65,12 +98,23 @@ export function conflictsKind(config: PhoebeConfig): AnyWorkKindDefinition {
     workspace: "worktree",
     report: {
       noun,
-      describe: (unit) => `conflict fix for PR #${unit.pr.prNumber} (${unit.pr.headRefName})`,
+      describe: (unit) =>
+        isIntegrationBranch(unit.pr.headRefName)
+          ? `feature-branch catch-up for PR #${unit.pr.prNumber} (${unit.pr.headRefName})`
+          : `conflict fix for PR #${unit.pr.prNumber} (${unit.pr.headRefName})`,
       idle: (_gathered, total) => `${total} ${noun} but none fixable this cycle.`,
     },
     async fetch(ctx) {
+      // Fetched before the walk, not after it: the integration PR's candidacy is
+      // a git question, and asking it against a stale clone would call a branch
+      // current with a default branch it has never seen.
+      ctx.origin.fetch();
+      const currentMainHead = ctx.origin.branchHead(ctx.config.defaultBranch);
       const raw = await collectPrCandidates<ConflictingPrCandidate>(ctx, (info) => {
-        if (!isPrMergeConflicting(info.mergeable, info.mergeStateStatus)) return null;
+        const wanted = isIntegrationBranch(info.headRefName)
+          ? needsFeatureCatchUp(ctx, info.headRefName)
+          : isPrMergeConflicting(info.mergeable, info.mergeStateStatus);
+        if (!wanted) return null;
         const issueNumber = issueNumberOf({ headRefName: info.headRefName });
         return {
           prNumber: info.number,
@@ -79,8 +123,6 @@ export function conflictsKind(config: PhoebeConfig): AnyWorkKindDefinition {
           ...(issueNumber !== null ? { issueNumber } : {}),
         };
       });
-      ctx.origin.fetch();
-      const currentMainHead = ctx.origin.branchHead(ctx.config.defaultBranch);
       const withWatermarks = raw.map((pr) => ({
         ...pr,
         failureWatermark: parseLatestMarker(
@@ -124,7 +166,8 @@ export function conflictsKind(config: PhoebeConfig): AnyWorkKindDefinition {
     async run(unit, ctx) {
       const pr = unit.pr;
       const merged = unit.mergedBlockerPrNumbers;
-      ctx.log(`Conflict fix: PR #${pr.prNumber} (${pr.headRefName}).`);
+      const what = isIntegrationBranch(pr.headRefName) ? "Feature-branch catch-up" : "Conflict fix";
+      ctx.log(`${what}: PR #${pr.prNumber} (${pr.headRefName}).`);
       ctx.origin.fetch();
       if (merged.length > 0) {
         ctx.log(

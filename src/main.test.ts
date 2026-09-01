@@ -11,12 +11,20 @@
 // Two doubles carry the tests. `stubGitHub` (src/github-stub.ts) throws for
 // any method a test did not declare, so a cycle that reaches further than the
 // test says fails loudly instead of quietly finding no work. `stubGit` below
-// answers the two commands the selection path issues — `fetch origin` and
-// `rev-parse origin/<branch>` — and records every call, so "no worktree, no
-// push" is an assertion rather than a hope.
+// answers the three commands the selection path issues — `fetch origin`,
+// `rev-parse origin/<branch>` and the `rev-list --count` behind-check — and
+// records every call, so "no worktree, no push" is an assertion rather than a
+// hope.
 
 import { describe, expect, test } from "vite-plus/test";
-import { asBranchRef, asPrNumber, asSha, type PrNumber, type Sha } from "./branded.ts";
+import {
+  asBranchRef,
+  asPrNumber,
+  asSha,
+  type BranchRef,
+  type PrNumber,
+  type Sha,
+} from "./branded.ts";
 import { resolveConfig, type PhoebeUserConfig } from "./config-schema.ts";
 import type { GitRunner } from "./git-model.ts";
 import { featureBranch } from "./feature-branch.ts";
@@ -85,6 +93,8 @@ function anIssue(number: number, overrides: Partial<Issue> = {}): Issue {
 type PrFixture = {
   number: number;
   issueNumber: number;
+  /** Overrides the derived `issueBranch` — how a feature's integration PR is declared. */
+  headRefName?: BranchRef;
   authorLogin?: string | null;
   mergeable?: string;
   mergeStateStatus?: string;
@@ -97,6 +107,10 @@ type PrFixture = {
 
 function headOf(pr: PrFixture): Sha {
   return pr.headSha ?? sha(`f${pr.number}`);
+}
+
+function branchOf(pr: PrFixture): BranchRef {
+  return pr.headRefName ?? issueBranch(pr.issueNumber);
 }
 
 /**
@@ -114,14 +128,14 @@ function prWorld(prs: readonly PrFixture[]): GitHubStubOverrides {
     openPrs: () =>
       prs.map((pr) => ({
         number: asPrNumber(pr.number),
-        headRefName: issueBranch(pr.issueNumber),
+        headRefName: branchOf(pr),
         authorLogin: pr.authorLogin === undefined ? PHOEBE_LOGIN : pr.authorLogin,
       })),
     mergeInfo: (prNumber) => {
       const pr = byNumber(prNumber);
       return Promise.resolve({
         number: asPrNumber(pr.number),
-        headRefName: issueBranch(pr.issueNumber),
+        headRefName: branchOf(pr),
         headRefOid: headOf(pr),
         mergeable: pr.mergeable ?? "MERGEABLE",
         mergeStateStatus: pr.mergeStateStatus ?? "CLEAN",
@@ -203,11 +217,21 @@ function captureConsole(): { lines: string[]; restore: () => void } {
  * the double and its recording are one object, so a test can both answer git
  * and assert what git was asked to do.
  */
-function stubGit(shas: Record<string, Sha>): { git: GitRunner; calls: string[][] } {
+function stubGit(
+  shas: Record<string, Sha>,
+  behind: Record<string, number> = {},
+): { git: GitRunner; calls: string[][] } {
   const calls: string[][] = [];
   const git: GitRunner = (args) => {
     calls.push([...args]);
     if (args[0] === "fetch") return "";
+    // `rev-list --count origin/<branch>..origin/<upstream>` — how far a branch
+    // has fallen behind. Undeclared branches are current, which is what every
+    // test that never mentions a feature wants.
+    if (args[0] === "rev-list") {
+      const branch = (args[2] ?? "").split("..")[0]?.replace(/^origin\//, "") ?? "";
+      return `${behind[branch] ?? 0}\n`;
+    }
     // Worktree plumbing answers emptily rather than throwing: an executing
     // cycle (the workspace tests below) reaches it, and a stub that threw here
     // would send `removeWorktree` down its rmSync fallback against a real path.
@@ -235,8 +259,10 @@ async function runCycle(opts: {
   customKinds?: LoadedCustomKind[];
   /** Drive an executing cycle (with `run.dryRun: false`) rather than a dry one. */
   inContainer?: boolean;
+  /** How many commits the default branch is ahead of each branch, keyed by branch. */
+  behind?: Record<string, number>;
 }): Promise<CycleResult> {
-  const { git, calls: gitCalls } = stubGit(opts.shas ?? {});
+  const { git, calls: gitCalls } = stubGit(opts.shas ?? {}, opts.behind ?? {});
   const events: UnitRef[] = [];
   const config = resolveConfig({ ...minimalUser(), ...opts.config });
   const engine = createEngine({
@@ -993,6 +1019,113 @@ describe("the stale-stack sweep", () => {
 
     expect(result.lines.join("\n")).toContain("stacks API exploded");
     expect(result.lines).toContain(RUN_ONCE_NOTHING_MESSAGE);
+  });
+});
+
+// A feature branch is long-lived by construction, so `main` moves under it and
+// nothing about GitHub's mergeability read says so until the drift has already
+// become a conflict pile. `conflicts` therefore selects the integration PR on
+// distance from the default branch, and `reviews` stands off it entirely (#382).
+describe("keeping the feature branch current with the default branch", () => {
+  /** The integration PR for feature #341, as the janitors' listing returns it. */
+  const integrationPr: PrFixture = {
+    number: 99,
+    issueNumber: 341,
+    headRefName: featureBranch(341),
+    headSha: sha("e1"),
+  };
+
+  test("a default branch that has moved ahead makes the integration PR the unit", async () => {
+    const result = await runCycle({
+      config: { workOrder: ["conflicts"] },
+      shas: { main: MAIN_HEAD },
+      behind: { [featureBranch(341)]: 3 },
+      github: prWorld([integrationPr]),
+    });
+
+    expect(selection(result)).toBe(
+      `[phoebe] Would execute: feature-branch catch-up for PR #99 (${featureBranch(341)}).`,
+    );
+  });
+
+  test("a branch already level with the default branch is not a unit at all", async () => {
+    const result = await runCycle({
+      config: { workOrder: ["conflicts"] },
+      shas: { main: MAIN_HEAD },
+      github: prWorld([integrationPr]),
+    });
+
+    expect(selection(result)).toBeUndefined();
+    // Zero candidates, so the kind reports nothing rather than reporting a skip:
+    // a caught-up feature is not news.
+    expect(result.lines.join("\n")).not.toContain("conflicting PR(s)");
+  });
+
+  test("`featureBranchCatchUp: false` leaves the branch untouched", async () => {
+    const result = await runCycle({
+      config: { workOrder: ["conflicts"], featureBranchCatchUp: false },
+      shas: { main: MAIN_HEAD },
+      behind: { [featureBranch(341)]: 3 },
+      github: prWorld([integrationPr]),
+    });
+
+    expect(selection(result)).toBeUndefined();
+    // The knob is read before git is: a tenant that switched the catch-up off
+    // does not pay for the distance question either.
+    expect(result.gitCalls.map((args) => args[0])).not.toContain("rev-list");
+  });
+
+  test("a failed catch-up watermarks rather than looping", async () => {
+    const world = {
+      ...integrationPr,
+      comments: [buildConflictFailWatermarkMarker({ prHead: sha("e1"), mainHead: MAIN_HEAD })],
+    };
+    const skipped = await runCycle({
+      config: { workOrder: ["conflicts"] },
+      shas: { main: MAIN_HEAD },
+      behind: { [featureBranch(341)]: 3 },
+      github: prWorld([world]),
+    });
+
+    expect(selection(skipped)).toBeUndefined();
+    expect(skipped.lines).toContain(
+      "[phoebe] 1 conflicting PR(s) skipped (unchanged failure watermark).",
+    );
+
+    // The same branch is workable again the moment the default branch moves.
+    const retried = await runCycle({
+      config: { workOrder: ["conflicts"] },
+      shas: { main: MAIN_HEAD_MOVED },
+      behind: { [featureBranch(341)]: 3 },
+      github: prWorld([world]),
+    });
+
+    expect(selection(retried)).toBe(
+      `[phoebe] Would execute: feature-branch catch-up for PR #99 (${featureBranch(341)}).`,
+    );
+  });
+
+  test("the integration PR is never a reviews unit", async () => {
+    const result = await runCycle({
+      config: { workOrder: ["reviews"] },
+      github: prWorld([{ ...integrationPr, threads: [humanThread("2026-08-18T00:00:00Z")] }]),
+    });
+
+    expect(selection(result)).toBeUndefined();
+    // Not "skipped" either: reviewing the human's review of the feature is not
+    // work Phoebe declines this cycle, it is work that is never hers.
+    expect(result.lines.join("\n")).not.toContain("review-feedback PR(s)");
+  });
+
+  test("`checks` still works the integration PR", async () => {
+    const result = await runCycle({
+      config: { workOrder: ["checks"] },
+      github: prWorld([{ ...integrationPr, checkRuns: RED_CI }]),
+    });
+
+    expect(selection(result)).toBe(
+      `[phoebe] Would execute: checks fix for PR #99 (${featureBranch(341)}).`,
+    );
   });
 });
 

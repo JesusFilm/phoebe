@@ -202,6 +202,7 @@ export function createWorkSource(opts: {
     const origin: WorkKindOrigin = {
       fetch: () => originHub.fetch(),
       branchHead: (branch) => originHub.branchHead(asBranchRef(branch)),
+      commitsBehind: (branch, upstream) => originHub.commitsBehind(asBranchRef(branch), upstream),
     };
 
     const ctxCache = new Map<string, WorkKindCtx>();

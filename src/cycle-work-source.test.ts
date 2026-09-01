@@ -98,6 +98,7 @@ function noopOriginHub(): OriginHub {
   return {
     fetch: () => {},
     branchHead: () => asSha("a".padEnd(40, "0")),
+    commitsBehind: () => 0,
     worktreeDirFor: () => "/tmp/stub",
     addWorktreeForNew: () => {},
     addWorktreeForExisting: () => {},

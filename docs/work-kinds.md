@@ -164,9 +164,13 @@ eligible PR number):
 1. Scan in-scope open PRs; a PR is a candidate when `mergeable` is
    `CONFLICTING`, or `UNKNOWN` while `mergeStateStatus` is `DIRTY` (GitHub may
    still be computing mergeability, so the engine retries a few times).
-2. Skip PRs whose issue is **stacked on an open blocker**, where divergence from
+2. A feature's **integration PR** is a candidate on a different test: whether
+   `defaultBranch` carries commits its branch does not
+   ([#341](https://github.com/JesusFilm/phoebe/issues/341)). See
+   [the feature-branch catch-up](#the-feature-branch-catch-up) below.
+3. Skip PRs whose issue is **stacked on an open blocker**, where divergence from
    the base is expected rather than a real conflict.
-3. Skip PRs whose latest **failure watermark** matches the current PR head _and_
+4. Skip PRs whose latest **failure watermark** matches the current PR head _and_
    base head. A prior fix attempt already failed against this exact pair, so
    retrying would loop until either side moves.
 
@@ -188,6 +192,29 @@ eligible PR number):
 4. If neither the agent nor the merge produced commits and the PR still
    conflicts, post a failure comment carrying a fresh watermark
    (`prHead` + `mainHead`) and leave the branch untouched for a human.
+
+### The feature-branch catch-up
+
+A feature branch is long-lived by construction — it exists because its members
+are not landing on `defaultBranch` one at a time. So `defaultBranch` moves under
+it, and a branch that has merely fallen behind conflicts with nothing yet:
+nothing in a mergeability read would ever nominate it. Left alone it drifts
+until the PR a human opens at the end of the feature is a conflict pile instead
+of a review.
+
+`conflicts` therefore selects a feature's integration PR whenever
+`origin/<defaultBranch>` carries commits its branch does not, and then works it
+down the ordinary execution path above: the clean merge first, the `conflict`
+prompt when that dirties, the `prHead` + `mainHead` watermark when neither
+resolves it. A caught-up branch is zero commits behind, so it drops out of the
+listing the moment the merge lands.
+
+`featureBranchCatchUp: false` retires the catch-up tenant-wide.
+`prOptOutLabel` (default `ready-for-human`) on one integration PR takes that
+feature out of janitor scope entirely, members included — which is why the
+config knob is global-only. And the integration PR is a draft, so a tenant on
+`draftPrs: "skip-all"` never sees it and gets no catch-up whatever the knob
+says.
 
 ## `checks`, fix failing CI
 
@@ -227,6 +254,10 @@ bot's own GitHub login (`phoebeLogin`), fetched once per cycle:
    from someone **other than Phoebe and other than the PR author**, newer than
    the PR's `handled` watermark.
 3. Skip conflicting PRs and stacked-on-open-blocker PRs.
+4. A feature's **integration PR is never a unit here**. Review activity on it is
+   a human reviewing the whole feature, so Phoebe answering it would be Phoebe
+   reviewing the human's review of Phoebe. `conflicts` and `checks` still work
+   it.
 
 **Execution** (`fixOnePrReviews`):
 
