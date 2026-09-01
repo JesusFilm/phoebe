@@ -1019,7 +1019,7 @@ describe("the feature-closes sweep", () => {
   }): GitHubStubOverrides {
     return {
       listFeatureIntegrationPrs: () => [
-        { number: asPrNumber(99), featureIssueNumber: 341, body: opts.body },
+        { number: asPrNumber(99), featureIssueNumber: 341, body: opts.body, labels: [] },
       ],
       listMergedMemberPrs: (featureIssueNumber) =>
         featureIssueNumber === 341
@@ -1062,7 +1062,7 @@ describe("the feature-closes sweep", () => {
     // updatePrBody is stubbed to fail the test if it is reached.
     await sweepCycle({
       listFeatureIntegrationPrs: () => [
-        { number: asPrNumber(99), featureIssueNumber: 341, body: "Part of #341." },
+        { number: asPrNumber(99), featureIssueNumber: 341, body: "Part of #341.", labels: [] },
       ],
       listMergedMemberPrs: () => [],
     });
@@ -1071,7 +1071,7 @@ describe("the feature-closes sweep", () => {
   test("a merged PR Phoebe did not branch earns no line", async () => {
     await sweepCycle({
       listFeatureIntegrationPrs: () => [
-        { number: asPrNumber(99), featureIssueNumber: 341, body: "Part of #341." },
+        { number: asPrNumber(99), featureIssueNumber: 341, body: "Part of #341.", labels: [] },
       ],
       listMergedMemberPrs: () => [
         { number: asPrNumber(22), headRefName: asBranchRef("contributor/typo-fix") },
@@ -1083,8 +1083,8 @@ describe("the feature-closes sweep", () => {
     const bodies: string[] = [];
     const result = await sweepCycle({
       listFeatureIntegrationPrs: () => [
-        { number: asPrNumber(98), featureIssueNumber: 7, body: "" },
-        { number: asPrNumber(99), featureIssueNumber: 341, body: "Part of #341." },
+        { number: asPrNumber(98), featureIssueNumber: 7, body: "", labels: [] },
+        { number: asPrNumber(99), featureIssueNumber: 341, body: "Part of #341.", labels: [] },
       ],
       listMergedMemberPrs: (featureIssueNumber) => {
         if (featureIssueNumber === 7) throw new Error("gh exploded");

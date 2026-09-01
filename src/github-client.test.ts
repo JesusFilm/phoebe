@@ -188,7 +188,8 @@ const ARGV_CASES: ArgvCase[] = [
   {
     name: "listOpenPhoebePrs",
     call: (g) => void g.listOpenPhoebePrs(),
-    replies: ["[]"],
+    // Two listings: the default branch, then the live-feature enumeration.
+    replies: ["[]", "[]"],
     fields: "number,headRefName,isDraft,isCrossRepository,labels,author",
   },
   {
@@ -430,20 +431,20 @@ describe("the per-cycle client", () => {
     });
 
   test("openPrs() lists once per cycle and serves the memo thereafter", () => {
-    const { github, calls } = clientWith([openPrsReply]);
+    const { github, calls } = clientWith([openPrsReply, "[]"]);
     const cycle = github.forCycle();
 
     expect(cycle.openPrs()).toEqual(cycle.openPrs());
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2);
   });
 
   test("a second cycle re-lists rather than inheriting the first cycle's memo", () => {
-    const { github, calls } = clientWith([openPrsReply, openPrsReply]);
+    const { github, calls } = clientWith([openPrsReply, "[]", openPrsReply, "[]"]);
 
     github.forCycle().openPrs();
     github.forCycle().openPrs();
 
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(4);
   });
 
   test("mergeInfo() retries while GitHub still reports UNKNOWN, then memoizes", async () => {
@@ -999,24 +1000,27 @@ describe("listFeatureIntegrationPrs", () => {
           headRefName: "phoebe/feature-341",
           body: "Part of #341.",
           isCrossRepository: false,
+          labels: [{ name: "enhancement" }],
         },
         {
           number: 22,
           headRefName: "phoebe/issue-380",
           body: "Closes #380",
           isCrossRepository: false,
+          labels: [],
         },
         {
           number: 23,
           headRefName: "phoebe/feature-7",
           body: "",
           isCrossRepository: true,
+          labels: [],
         },
       ]),
     ]);
 
     expect(github.listFeatureIntegrationPrs()).toEqual([
-      { number: 99, featureIssueNumber: 341, body: "Part of #341." },
+      { number: 99, featureIssueNumber: 341, body: "Part of #341.", labels: ["enhancement"] },
     ]);
     expect(calls[0]!.args).toEqual([
       "pr",
@@ -1026,7 +1030,7 @@ describe("listFeatureIntegrationPrs", () => {
       "--base",
       "main",
       "--json",
-      "number,headRefName,body,isCrossRepository",
+      "number,headRefName,body,isCrossRepository,labels",
       "--limit",
       "1000",
       "-R",
@@ -1037,10 +1041,161 @@ describe("listFeatureIntegrationPrs", () => {
   test("reads a null body as empty", () => {
     const { github } = clientWith([
       JSON.stringify([
-        { number: 99, headRefName: "phoebe/feature-341", body: null, isCrossRepository: false },
+        {
+          number: 99,
+          headRefName: "phoebe/feature-341",
+          body: null,
+          isCrossRepository: false,
+          labels: [],
+        },
       ]),
     ]);
     expect(github.listFeatureIntegrationPrs()[0]?.body).toBe("");
+  });
+});
+
+describe("listOpenPhoebePrs", () => {
+  /** One `gh pr list` row, defaulted to a PR every scope admits. */
+  function prRow(over: Record<string, unknown>): Record<string, unknown> {
+    return {
+      number: 1,
+      headRefName: "phoebe/issue-1",
+      isDraft: false,
+      isCrossRepository: false,
+      labels: [],
+      author: { login: "phoebe-bot" },
+      ...over,
+    };
+  }
+
+  /** The reply `listFeatureIntegrationPrs` reads: one row per live feature. */
+  function integrationPrs(featureIssueNumbers: readonly number[]): string {
+    return JSON.stringify(
+      featureIssueNumbers.map((n) => ({
+        number: 900 + n,
+        headRefName: `phoebe/feature-${n}`,
+        body: `Part of #${n}.`,
+        isCrossRepository: false,
+        labels: [],
+      })),
+    );
+  }
+
+  /** The `--base` of every `pr list` in a recorded argv, in call order. */
+  function listedBases(calls: readonly Call[]): string[] {
+    return calls
+      .filter((call) => call.args[0] === "pr" && call.args[1] === "list")
+      .map((call) => call.args[call.args.indexOf("--base") + 1]!);
+  }
+
+  test("lists the default branch, then one base per live feature branch", () => {
+    const { github, calls } = clientWith([
+      JSON.stringify([prRow({ number: 5 })]),
+      integrationPrs([341, 7]),
+      JSON.stringify([prRow({ number: 12, headRefName: "phoebe/issue-12" })]),
+      JSON.stringify([prRow({ number: 13, headRefName: "phoebe/issue-13" })]),
+    ]);
+
+    expect(github.listOpenPhoebePrs().map((pr) => pr.number)).toEqual([5, 12, 13]);
+    expect(listedBases(calls)).toEqual(["main", "main", "phoebe/feature-341", "phoebe/feature-7"]);
+  });
+
+  test("a member PR is asked for with the same fields and window as any other", () => {
+    const { github, calls } = clientWith([
+      "[]",
+      integrationPrs([341]),
+      JSON.stringify([prRow({ number: 12, headRefName: "phoebe/issue-12" })]),
+    ]);
+
+    github.listOpenPhoebePrs();
+
+    expect(calls[2]!.args).toEqual([
+      "pr",
+      "list",
+      "--base",
+      "phoebe/feature-341",
+      "--state",
+      "open",
+      "--json",
+      "number,headRefName,isDraft,isCrossRepository,labels,author",
+      "--limit",
+      "100",
+      "-R",
+      "acme/widget",
+    ]);
+  });
+
+  test("a retired feature contributes no listing", () => {
+    // A merged or closed integration PR never reaches this reply, so the
+    // feature it retired is never listed.
+    const { github, calls } = clientWith([JSON.stringify([prRow({ number: 5 })]), "[]"]);
+
+    expect(github.listOpenPhoebePrs().map((pr) => pr.number)).toEqual([5]);
+    expect(listedBases(calls)).toEqual(["main", "main"]);
+  });
+
+  test("prOptOutLabel on the integration PR takes the whole feature out of scope", () => {
+    const { github, calls } = clientWith([
+      JSON.stringify([prRow({ number: 5 })]),
+      JSON.stringify([
+        {
+          number: 941,
+          headRefName: "phoebe/feature-341",
+          body: "Part of #341.",
+          isCrossRepository: false,
+          labels: [{ name: "ready-for-human" }],
+        },
+      ]),
+    ]);
+
+    expect(github.listOpenPhoebePrs().map((pr) => pr.number)).toEqual([5]);
+    expect(listedBases(calls)).toEqual(["main", "main"]);
+  });
+
+  test("prOptOutLabel takes a member PR out of scope exactly as any other PR", () => {
+    const { github } = clientWith([
+      "[]",
+      integrationPrs([341]),
+      JSON.stringify([
+        prRow({
+          number: 12,
+          headRefName: "phoebe/issue-12",
+          labels: [{ name: "ready-for-human" }],
+        }),
+        prRow({ number: 13, headRefName: "phoebe/issue-13" }),
+      ]),
+    ]);
+
+    expect(github.listOpenPhoebePrs().map((pr) => pr.number)).toEqual([13]);
+  });
+
+  test("one feature's listing failing keeps the other bases' PRs", () => {
+    const calls: Call[] = [];
+    const replies = [JSON.stringify([prRow({ number: 5 })]), integrationPrs([341, 7])];
+    let n = 0;
+    const exec: GhExecutor = (args, opts) => {
+      calls.push({ args, ...opts });
+      if (args.includes("phoebe/feature-341")) {
+        throw new Error("boom");
+      }
+      return (
+        replies[n++] ?? JSON.stringify([prRow({ number: 13, headRefName: "phoebe/issue-13" })])
+      );
+    };
+    const github = createGitHubClient({
+      config: resolveConfig(minimalUser()),
+      env: {},
+      internal: { exec, sleep: async () => {} },
+    });
+
+    expect(github.listOpenPhoebePrs().map((pr) => pr.number)).toEqual([5, 13]);
+  });
+
+  test("an unreadable feature enumeration still yields the default branch's PRs", () => {
+    const { github, calls } = clientWith([JSON.stringify([prRow({ number: 5 })]), "not json"]);
+
+    expect(github.listOpenPhoebePrs().map((pr) => pr.number)).toEqual([5]);
+    expect(listedBases(calls)).toEqual(["main", "main"]);
   });
 });
 

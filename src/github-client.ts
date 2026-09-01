@@ -112,6 +112,8 @@ export type FeatureIntegrationPr = {
   /** The feature's parent issue number, read back out of the head branch. */
   featureIssueNumber: number;
   body: string;
+  /** Label names, read so `prOptOutLabel` here can take the whole feature out of janitor scope. */
+  labels: readonly string[];
 };
 
 /**
@@ -210,6 +212,11 @@ export type GitHubClient = {
   listMergedMemberPrs(featureIssueNumber: number): MergedMemberPr[];
 
   // Pull requests
+  /**
+   * Every open PR the janitors may work: the ones based on `defaultBranch`,
+   * plus the members of each live feature branch — one listing per feature, all
+   * of them through the same `isPrInScope` filter.
+   */
   listOpenPhoebePrs(): OpenPhoebePr[];
   /**
    * A PR's merge state, read fresh every call. The cycle client's `mergeInfo` is
@@ -324,6 +331,11 @@ export type CycleGitHubClient = Omit<
  */
 function noLoginAsNull(author: { login: string } | null | undefined): string | null {
   return author?.login ? author.login : null;
+}
+
+/** What a caught `unknown` reads as in a warning line. */
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /**
@@ -682,6 +694,79 @@ export function createGitHubClient({
     return threads;
   }
 
+  /**
+   * Every open PR based on one branch, narrowed to what this tenant janitors.
+   * The cycle calls it once per base: the default branch, then one live feature
+   * branch at a time.
+   */
+  function openPrsBasedOn(base: string): OpenPhoebePr[] {
+    type GhOpenPr = {
+      number: number;
+      headRefName: string;
+      isDraft: boolean;
+      isCrossRepository: boolean;
+      labels: Array<{ name: string }>;
+      author: { login: string } | null;
+    };
+    return ghJson<GhOpenPr[]>([
+      "pr",
+      "list",
+      "--base",
+      base,
+      "--state",
+      "open",
+      "--json",
+      "number,headRefName,isDraft,isCrossRepository,labels,author",
+      "--limit",
+      "100",
+    ])
+      .filter((pr) =>
+        isPrInScope({
+          headRefName: asBranchRef(pr.headRefName),
+          isDraft: pr.isDraft,
+          isCrossRepository: pr.isCrossRepository,
+          labels: pr.labels.map((label) => label.name),
+        }),
+      )
+      .map((pr) => ({
+        number: asPrNumber(pr.number),
+        headRefName: asBranchRef(pr.headRefName),
+        authorLogin: noLoginAsNull(pr.author),
+      }));
+  }
+
+  /**
+   * The branch of every feature that is still live — the extra bases the
+   * janitors' listing covers (#341, ticket #381). A member PR targets its
+   * feature branch, so without this it is invisible to `conflicts`, `checks`
+   * and `reviews`: red CI would sit red, nothing would merge it, and the
+   * feature would stall in silence. That is a deliberate departure from the
+   * natively-stacked PRs the janitors skip — GitHub maintains a stack, but
+   * nothing maintains a feature branch's members.
+   *
+   * Liveness is the open integration PR, which is what `listFeatureIntegrationPrs`
+   * returns one of per feature: a merged or closed integration PR retires the
+   * feature and contributes no listing. `prOptOutLabel` on that PR is the
+   * documented per-feature opt-out, so it takes the members out too — otherwise
+   * the label would only quiet the integration PR while the janitors kept
+   * working everything underneath it. Failing to enumerate the features costs
+   * the feature branches this cycle, not the default branch's PRs.
+   */
+  function liveFeatureBranches(): BranchRef[] {
+    try {
+      return client
+        .listFeatureIntegrationPrs()
+        .filter((pr) => !pr.labels.includes(config.prOptOutLabel))
+        .map((pr) => featureBranch(pr.featureIssueNumber));
+    } catch (error) {
+      console.warn(
+        `[phoebe] Skipping feature-branch PRs this cycle — the integration PRs ` +
+          `could not be listed: ${errorText(error)}`,
+      );
+      return [];
+    }
+  }
+
   const client: GitHubClient = {
     listReadyIssues: () => listIssuesWithLabel(config.readyLabel),
 
@@ -776,6 +861,7 @@ export function createGitHubClient({
         headRefName: string;
         body: string | null;
         isCrossRepository: boolean;
+        labels: Array<{ name: string }>;
       };
       return ghJson<GhPr[]>([
         "pr",
@@ -785,7 +871,7 @@ export function createGitHubClient({
         "--base",
         config.defaultBranch,
         "--json",
-        "number,headRefName,body,isCrossRepository",
+        "number,headRefName,body,isCrossRepository,labels",
         // A wider cap than the client's other listings, which are all narrowed
         // by a label or a head branch. This one is narrowed only by base, and an
         // integration PR is long-lived by nature — on a busy repo it is exactly
@@ -799,7 +885,14 @@ export function createGitHubClient({
         if (featureIssueNumber === null || pr.isCrossRepository) {
           return [];
         }
-        return [{ number: asPrNumber(pr.number), featureIssueNumber, body: pr.body ?? "" }];
+        return [
+          {
+            number: asPrNumber(pr.number),
+            featureIssueNumber,
+            body: pr.body ?? "",
+            labels: pr.labels.map((label) => label.name),
+          },
+        ];
       });
     },
 
@@ -874,39 +967,20 @@ export function createGitHubClient({
     },
 
     listOpenPhoebePrs: () => {
-      type GhOpenPr = {
-        number: number;
-        headRefName: string;
-        isDraft: boolean;
-        isCrossRepository: boolean;
-        labels: Array<{ name: string }>;
-        author: { login: string } | null;
-      };
-      return ghJson<GhOpenPr[]>([
-        "pr",
-        "list",
-        "--base",
-        config.defaultBranch,
-        "--state",
-        "open",
-        "--json",
-        "number,headRefName,isDraft,isCrossRepository,labels,author",
-        "--limit",
-        "100",
-      ])
-        .filter((pr) =>
-          isPrInScope({
-            headRefName: asBranchRef(pr.headRefName),
-            isDraft: pr.isDraft,
-            isCrossRepository: pr.isCrossRepository,
-            labels: pr.labels.map((label) => label.name),
-          }),
-        )
-        .map((pr) => ({
-          number: asPrNumber(pr.number),
-          headRefName: asBranchRef(pr.headRefName),
-          authorLogin: noLoginAsNull(pr.author),
-        }));
+      // The default branch first — the listing every cycle has always made.
+      // Enumerating the live features costs one more `gh pr list` even on a repo
+      // that has none; a feature's own listing is paid only while it is live.
+      const prs = openPrsBasedOn(config.defaultBranch);
+      for (const branch of liveFeatureBranches()) {
+        try {
+          prs.push(...openPrsBasedOn(branch));
+        } catch (error) {
+          // One feature's listing failing must not cost the janitors every
+          // other open PR this cycle.
+          console.warn(`[phoebe] Skipping PRs based on ${branch} this cycle — ${errorText(error)}`);
+        }
+      }
+      return prs;
     },
 
     currentMergeInfo,
