@@ -786,8 +786,14 @@ export function createGitHubClient({
         config.defaultBranch,
         "--json",
         "number,headRefName,body,isCrossRepository",
+        // A wider cap than the client's other listings, which are all narrowed
+        // by a label or a head branch. This one is narrowed only by base, and an
+        // integration PR is long-lived by nature — on a busy repo it is exactly
+        // the PR that a 100-row window of newer PRs would push out, silently
+        // stranding the feature it collects. `gh` stops paginating when the
+        // results run out, so a quiet repo still pays one page.
         "--limit",
-        "100",
+        "1000",
       ]).flatMap((pr) => {
         const featureIssueNumber = parseFeatureIssueNumber(asBranchRef(pr.headRefName));
         if (featureIssueNumber === null || pr.isCrossRepository) {

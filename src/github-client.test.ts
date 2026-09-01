@@ -1028,7 +1028,7 @@ describe("listFeatureIntegrationPrs", () => {
       "--json",
       "number,headRefName,body,isCrossRepository",
       "--limit",
-      "100",
+      "1000",
       "-R",
       "acme/widget",
     ]);
