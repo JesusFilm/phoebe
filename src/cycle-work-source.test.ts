@@ -270,11 +270,12 @@ describe("cycle-scoped feature membership", () => {
     const nodeReads: number[] = [];
     const prReads: number[] = [];
     const graph: Record<number, IssueGraphNode> = {
-      200: { number: 200, labels: [], body: "", closed: false, parentNumber: 100 },
-      201: { number: 201, labels: [], body: "", closed: false, parentNumber: 100 },
-      100: { number: 100, labels: [], body: "", closed: false, parentNumber: 1 },
+      200: { number: 200, title: "", labels: [], body: "", closed: false, parentNumber: 100 },
+      201: { number: 201, title: "", labels: [], body: "", closed: false, parentNumber: 100 },
+      100: { number: 100, title: "", labels: [], body: "", closed: false, parentNumber: 1 },
       1: {
         number: 1,
+        title: "Feature",
         labels: [TEST_CONFIG.featureLabel],
         body: "",
         closed: false,

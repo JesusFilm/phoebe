@@ -5,6 +5,7 @@ import { asBranchRef, asSha, type BranchRef, type PrNumber, type Sha } from "./b
 import { WORK_KIND_NAMES, type WorkKindName } from "./config-schema.ts";
 import { config } from "./resolved-config.ts";
 import { PHOEBE_QUARANTINE_LABEL } from "./quarantine.ts";
+import type { Feature } from "./feature-branch.ts";
 
 export type Issue = {
   number: number;
@@ -33,6 +34,9 @@ export type BaseResolution = {
   stacked: boolean;
   blockerIssueNumber?: number;
   blockerPrNumber?: PrNumber;
+  /** Set when the issue belongs to a live feature; the branch and PR target it instead of the default. */
+  featureIssueNumber?: number;
+  featureIssueTitle?: string;
 };
 
 /**
@@ -91,47 +95,65 @@ export function issueBranch(issueNumber: number): BranchRef {
  * Resolve the worktree base for an issue.
  * Returns `null` when the issue should be skipped this cycle (blocked with no
  * open/merged blocker PR).
+ *
+ * Three arms after the `PHOEBE_BASE` escape hatch:
+ *   1. Blocked → stacking arm (unchanged).
+ *   2. Unblocked member of a live feature → feature branch arm (#379).
+ *   3. Unblocked, no feature → default branch arm.
  */
 export function resolveWorktreeBase(
   issue: Issue,
   blockerStates: ReadonlyMap<number, BlockerPrState>,
   phoebeBase?: string,
+  feature?: Feature | null,
 ): BaseResolution | null {
   if (phoebeBase) {
     return { worktreeBase: phoebeBase, stacked: false };
   }
 
   const blockers = parseBlockedBy(issue.body);
-  if (blockers.length === 0) {
-    return { worktreeBase: `origin/${config.defaultBranch}`, stacked: false };
-  }
+  if (blockers.length > 0) {
+    const blockerIssueNumber = blockers[0]!;
+    const state = blockerStates.get(blockerIssueNumber);
+    if (!state) {
+      return null;
+    }
 
-  const blockerIssueNumber = blockers[0]!;
-  const state = blockerStates.get(blockerIssueNumber);
-  if (!state) {
+    if (state.hasOpenPr) {
+      return {
+        worktreeBase: `origin/${issueBranch(blockerIssueNumber)}`,
+        stacked: true,
+        blockerIssueNumber,
+        blockerPrNumber: state.openPrNumber,
+      };
+    }
+
+    if (state.hasMergedPr) {
+      return { worktreeBase: `origin/${config.defaultBranch}`, stacked: false };
+    }
+
+    // Work that landed outside `branchPrefix` leaves no Phoebe PR to find; a
+    // blocker issue closed as completed is the signal that it is done anyway.
+    if (state.blockerCompleted) {
+      return { worktreeBase: `origin/${config.defaultBranch}`, stacked: false };
+    }
+
     return null;
   }
 
-  if (state.hasOpenPr) {
+  // Feature arm: unblocked member of a live feature routes onto the feature
+  // branch; the PR targets it instead of the default branch. The branch and its
+  // draft integration PR are created on first use by the work kind's run phase.
+  if (feature) {
     return {
-      worktreeBase: `origin/${issueBranch(blockerIssueNumber)}`,
-      stacked: true,
-      blockerIssueNumber,
-      blockerPrNumber: state.openPrNumber,
+      worktreeBase: `origin/${feature.branch}`,
+      stacked: false,
+      featureIssueNumber: feature.issueNumber,
+      featureIssueTitle: feature.title,
     };
   }
 
-  if (state.hasMergedPr) {
-    return { worktreeBase: `origin/${config.defaultBranch}`, stacked: false };
-  }
-
-  // Work that landed outside `branchPrefix` leaves no Phoebe PR to find; a
-  // blocker issue closed as completed is the signal that it is done anyway.
-  if (state.blockerCompleted) {
-    return { worktreeBase: `origin/${config.defaultBranch}`, stacked: false };
-  }
-
-  return null;
+  return { worktreeBase: `origin/${config.defaultBranch}`, stacked: false };
 }
 
 /**
@@ -181,6 +203,7 @@ export function selectIssue(
   blockerStates: ReadonlyMap<number, BlockerPrState>,
   phoebeBase?: string,
   processingLabel?: string,
+  resolveFeatureFor?: (issueNumber: number) => Feature | null,
 ): { issue: Issue; resolution: BaseResolution } | null {
   // Quarantined issues/research tickets (#75) are skipped for work until a human
   // clears the label or the issue is edited (the auto-un-stick sweep).
@@ -193,7 +216,8 @@ export function selectIssue(
   );
   const sorted = [...eligible].sort(compareIssues);
   for (const issue of sorted) {
-    const resolution = resolveWorktreeBase(issue, blockerStates, phoebeBase);
+    const feature = resolveFeatureFor ? resolveFeatureFor(issue.number) : undefined;
+    const resolution = resolveWorktreeBase(issue, blockerStates, phoebeBase, feature);
     if (resolution) {
       return { issue, resolution };
     }

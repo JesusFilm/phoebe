@@ -816,6 +816,7 @@ describe("issueGraphNode", () => {
   function restIssue(overrides: Record<string, unknown> = {}): string {
     return JSON.stringify({
       number: 12,
+      title: "Test issue",
       state: "open",
       body: "Part of #341.",
       labels: [{ name: "enhancement" }],
@@ -830,10 +831,11 @@ describe("issueGraphNode", () => {
     expect(calls[0]!.args).toEqual(["api", "repos/acme/widget/issues/12"]);
   });
 
-  test("maps labels, body, state and the native parent", () => {
+  test("maps title, labels, body, state and the native parent", () => {
     const { github } = clientWith([restIssue()]);
     expect(github.issueGraphNode(12)).toEqual({
       number: 12,
+      title: "Test issue",
       labels: ["enhancement"],
       body: "Part of #341.",
       closed: false,
@@ -904,5 +906,86 @@ describe("featureIntegrationPr", () => {
       ]),
     ]);
     expect(github.featureIntegrationPr(341)).toEqual({ number: 9, state: "MERGED" });
+  });
+});
+
+describe("createFeatureBranch", () => {
+  test("fetches the default-branch HEAD SHA then POSTs the new ref", () => {
+    const sha = "a".repeat(40);
+    const { github, calls } = clientWith([JSON.stringify({ object: { sha } }), ""]);
+    github.createFeatureBranch(341);
+    expect(calls[0]!.args).toEqual(["api", "repos/acme/widget/git/ref/heads/main"]);
+    expect(calls[1]!.args).toEqual([
+      "api",
+      "--method",
+      "POST",
+      "repos/acme/widget/git/refs",
+      "--input",
+      "-",
+    ]);
+    expect(JSON.parse(calls[1]!.input ?? "{}")).toEqual({
+      ref: "refs/heads/phoebe/feature-341",
+      sha,
+    });
+  });
+
+  test("swallows a 422 when the branch already exists", () => {
+    const sha = "b".repeat(40);
+    const alreadyExists = new Error("gh: Reference already exists (HTTP 422)") as Error & {
+      stderr: string;
+    };
+    alreadyExists.stderr = "Reference already exists (HTTP 422)";
+    const { exec, calls } = stubExec([JSON.stringify({ object: { sha } })]);
+    let callCount = 0;
+    const capturingExec: GhExecutor = (args, opts) => {
+      callCount++;
+      if (callCount === 2) throw alreadyExists;
+      return exec(args, opts);
+    };
+    const github = createGitHubClient({
+      config: resolveConfig(minimalUser()),
+      env: {},
+      internal: { exec: capturingExec, sleep: async () => {} },
+    });
+    expect(() => github.createFeatureBranch(341)).not.toThrow();
+    void calls;
+  });
+
+  test("re-throws non-422 errors", () => {
+    const permissionError = new Error("gh: Not Found (HTTP 404)") as Error & { stderr: string };
+    permissionError.stderr = "Not Found (HTTP 404)";
+    const sha = "c".repeat(40);
+    const { exec } = stubExec([JSON.stringify({ object: { sha } })]);
+    let callCount = 0;
+    const capturingExec: GhExecutor = (args, opts) => {
+      callCount++;
+      if (callCount === 2) throw permissionError;
+      return exec(args, opts);
+    };
+    const github = createGitHubClient({
+      config: resolveConfig(minimalUser()),
+      env: {},
+      internal: { exec: capturingExec, sleep: async () => {} },
+    });
+    expect(() => github.createFeatureBranch(341)).toThrow("Not Found");
+  });
+});
+
+describe("ensureDraftIntegrationPr", () => {
+  test("creates a draft PR when none exists", () => {
+    const { github, calls } = clientWith(["[]", ""]);
+    github.ensureDraftIntegrationPr(341, "My feature");
+    const createCall = calls.find((c) => c.args.includes("--draft"));
+    expect(createCall).toBeDefined();
+    expect(createCall?.args).toContain("--draft");
+    expect(createCall?.args).toContain("My feature");
+    expect(createCall?.args).toContain("phoebe/feature-341");
+  });
+
+  test("skips creation when an open PR already exists", () => {
+    const { github, calls } = clientWith([JSON.stringify([{ number: 99, state: "OPEN" }])]);
+    github.ensureDraftIntegrationPr(341, "My feature");
+    const createCall = calls.find((c) => c.args.includes("--draft"));
+    expect(createCall).toBeUndefined();
   });
 });

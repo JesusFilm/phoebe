@@ -4,10 +4,13 @@
 // tested in src/orchestrator.test.ts (selectIssue, unresolvedBlockerNumbers).
 
 import { describe, expect, test } from "vite-plus/test";
+import { asPrNumber } from "../branded.ts";
 import { resolveConfig } from "../config-schema.ts";
+import { featureBranch, type Feature } from "../feature-branch.ts";
 import { isLabelNotFoundError } from "../gh-error.ts";
 import { issueProducerKind, type IssueProducerUnit } from "./issue-producer.ts";
-import type { WorkKindRunCtx } from "./definition.ts";
+import type { WorkKindCtx, WorkKindRunCtx } from "./definition.ts";
+import type { Issue } from "../orchestrator.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -245,5 +248,255 @@ describe("claim write in issueProducerKind.run", () => {
 
     expect(agentRan).toBe(false);
     expect(addLabelCalled).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature arm: select() routing and run() branch/PR lifecycle (#379)
+// ---------------------------------------------------------------------------
+
+function anIssue(number: number, overrides: Partial<Issue> = {}): Issue {
+  return {
+    number,
+    title: `Issue ${number}`,
+    body: "",
+    labels: [],
+    createdAt: "2026-01-01T00:00:00Z",
+    ...overrides,
+  };
+}
+
+function liveFeature(issueNumber: number, title = "My feature"): Feature {
+  return { issueNumber, title, branch: featureBranch(issueNumber) };
+}
+
+/** Minimal WorkKindCtx for select() testing. */
+function makeSelectCtx(featureFor: (n: number) => Feature | null): WorkKindCtx {
+  return {
+    kind: "issues",
+    config: BASE_CONFIG,
+    options: undefined,
+    env: {},
+    cycle: {
+      issueBody: () => null,
+      registerIssues: () => {},
+      blockerStates: () => new Map(),
+      feature: featureFor,
+    },
+    clock: {
+      now: () => new Date(),
+      sleep: () => Promise.resolve(),
+    },
+    log: () => {},
+    github: new Proxy({} as WorkKindCtx["github"], {
+      get(_target, prop) {
+        if (typeof prop !== "string" || prop === "then") return undefined;
+        throw new Error(`github.${prop} should not be called in select()`);
+      },
+    }),
+    origin: {
+      fetch: () => {},
+      branchHead: () => "abc".padEnd(40, "0") as ReturnType<WorkKindCtx["origin"]["branchHead"]>,
+    },
+  };
+}
+
+function buildKind(issues: Issue[]) {
+  return issueProducerKind({
+    name: "issues",
+    promptFile: "prompts/issues-prompt.md",
+    noun: "issue(s)",
+    unitNoun: "issue",
+    verb: "Working",
+    listIssues: () => issues,
+  });
+}
+
+describe("issueProducerKind.select — feature arm routing", () => {
+  test("non-member routes to origin/main as before", () => {
+    const kind = buildKind([anIssue(10)]);
+    const ctx = makeSelectCtx(() => null);
+    const result = kind.select({ issues: [anIssue(10)] }, ctx);
+    expect(result.unit?.resolution.worktreeBase).toBe("origin/main");
+    expect(result.unit?.resolution.featureIssueNumber).toBeUndefined();
+  });
+
+  test("member of a live feature routes to the feature branch", () => {
+    const kind = buildKind([anIssue(10)]);
+    const ctx = makeSelectCtx(() => liveFeature(1, "The feature"));
+    const result = kind.select({ issues: [anIssue(10)] }, ctx);
+    expect(result.unit?.resolution.worktreeBase).toBe(`origin/${featureBranch(1)}`);
+    expect(result.unit?.resolution.featureIssueNumber).toBe(1);
+    expect(result.unit?.resolution.featureIssueTitle).toBe("The feature");
+  });
+
+  test("PHOEBE_BASE wins over the feature arm", () => {
+    const kind = buildKind([anIssue(10)]);
+    const ctx: WorkKindCtx = {
+      ...makeSelectCtx(() => liveFeature(1)),
+      env: { PHOEBE_BASE: "custom/base" },
+    };
+    const result = kind.select({ issues: [anIssue(10)] }, ctx);
+    expect(result.unit?.resolution.worktreeBase).toBe("custom/base");
+    expect(result.unit?.resolution.featureIssueNumber).toBeUndefined();
+  });
+
+  test("stacked issue bypasses the feature arm", () => {
+    const blockedIssue = anIssue(10, { body: "Blocked by #5" });
+    const kind = buildKind([blockedIssue]);
+    const ctx: WorkKindCtx = {
+      ...makeSelectCtx(() => liveFeature(1)),
+      cycle: {
+        issueBody: () => null,
+        registerIssues: () => {},
+        blockerStates: () =>
+          new Map([[5, { hasOpenPr: true, openPrNumber: asPrNumber(99), hasMergedPr: false }]]),
+        feature: () => liveFeature(1),
+      },
+    };
+    const result = kind.select({ issues: [blockedIssue] }, ctx);
+    expect(result.unit?.resolution.stacked).toBe(true);
+    expect(result.unit?.resolution.featureIssueNumber).toBeUndefined();
+  });
+
+  test("integration PR number is carried through when the feature already has one", () => {
+    const feature: Feature = {
+      issueNumber: 1,
+      title: "F",
+      branch: featureBranch(1),
+      integrationPrNumber: asPrNumber(42),
+    };
+    const kind = buildKind([anIssue(10)]);
+    const ctx = makeSelectCtx(() => feature);
+    const result = kind.select({ issues: [anIssue(10)] }, ctx);
+    expect(result.unit?.resolution.featureIssueNumber).toBe(1);
+  });
+});
+
+describe("issueProducerKind.run — feature branch and draft PR creation", () => {
+  function makeRunCtxWithFeature(
+    opts: {
+      createFeatureBranch?: (n: number) => void;
+      ensureDraftIntegrationPr?: (n: number, title: string) => void;
+    } = {},
+  ): WorkKindRunCtx {
+    const { createFeatureBranch, ensureDraftIntegrationPr } = opts;
+    return {
+      kind: "issues",
+      config: BASE_CONFIG,
+      options: undefined,
+      env: {},
+      cycle: {
+        issueBody: () => null,
+        registerIssues: () => {},
+        blockerStates: () => new Map(),
+        feature: () => null,
+      },
+      clock: { now: () => new Date(), sleep: () => Promise.resolve() },
+      log: () => {},
+      github: new Proxy({} as WorkKindRunCtx["github"], {
+        get(_target, prop) {
+          if (prop === "issueLabels") return () => [];
+          if (prop === "addIssueLabel") return () => {};
+          if (prop === "createFeatureBranch") return createFeatureBranch ?? (() => {});
+          if (prop === "ensureDraftIntegrationPr") return ensureDraftIntegrationPr ?? (() => {});
+          if (typeof prop !== "string" || prop === "then") return undefined;
+          throw new Error(`github.${prop} was not expected in this test`);
+        },
+      }),
+      origin: {
+        fetch: () => {},
+        branchHead: () =>
+          "abc".padEnd(40, "0") as ReturnType<WorkKindRunCtx["origin"]["branchHead"]>,
+      },
+      workspace: { mode: "worktree", dir: "/tmp/test-worktree" },
+      signal: new AbortController().signal,
+      agent: {
+        run: () => Promise.resolve(),
+        prWorkflow: () => Promise.resolve(),
+        issueWorkflow: () => Promise.resolve(),
+        cleanMerge: () => "pushed",
+      },
+    };
+  }
+
+  function featureUnit(
+    issueNumber: number,
+    featureIssueNumber: number,
+    featureIssueTitle: string,
+  ): IssueProducerUnit {
+    return {
+      ref: `issue:${issueNumber}`,
+      github: { objectType: "issue", id: issueNumber },
+      issue: anIssue(issueNumber),
+      resolution: {
+        worktreeBase: `origin/${featureBranch(featureIssueNumber)}`,
+        stacked: false,
+        featureIssueNumber,
+        featureIssueTitle,
+      },
+    };
+  }
+
+  test("createFeatureBranch is called before the agent for feature members", async () => {
+    const calls: number[] = [];
+    const kind = buildKind([]);
+    const unit = featureUnit(10, 1, "My feature");
+    const ctx = makeRunCtxWithFeature({
+      createFeatureBranch: (n) => {
+        calls.push(n);
+      },
+    });
+    await kind.run(unit, ctx);
+    expect(calls).toEqual([1]);
+  });
+
+  test("ensureDraftIntegrationPr is called with feature number and title", async () => {
+    const calls: Array<{ n: number; title: string }> = [];
+    const kind = buildKind([]);
+    const unit = featureUnit(10, 1, "My feature");
+    const ctx = makeRunCtxWithFeature({
+      ensureDraftIntegrationPr: (n, title) => {
+        calls.push({ n, title });
+      },
+    });
+    await kind.run(unit, ctx);
+    expect(calls).toEqual([{ n: 1, title: "My feature" }]);
+  });
+
+  test("non-member: createFeatureBranch and ensureDraftIntegrationPr are not called", async () => {
+    let branchCalled = false;
+    let prCalled = false;
+    const unit = anIssueUnit(42);
+    const kind = buildKind([]);
+    const ctx = makeRunCtxWithFeature({
+      createFeatureBranch: () => {
+        branchCalled = true;
+      },
+      ensureDraftIntegrationPr: () => {
+        prCalled = true;
+      },
+    });
+    await kind.run(unit, ctx);
+    expect(branchCalled).toBe(false);
+    expect(prCalled).toBe(false);
+  });
+
+  test("featureIssueNumber is threaded through to issueWorkflow", async () => {
+    let capturedFeatureNumber: number | undefined = undefined;
+    const kind = buildKind([]);
+    const unit = featureUnit(10, 1, "My feature");
+    const ctx = makeRunCtxWithFeature({});
+    const ctxWithCapture: WorkKindRunCtx = {
+      ...ctx,
+      agent: {
+        ...ctx.agent,
+        issueWorkflow: async (opts) => {
+          capturedFeatureNumber = opts.featureIssueNumber;
+        },
+      },
+    };
+    await kind.run(unit, ctxWithCapture);
+    expect(capturedFeatureNumber).toBe(1);
   });
 });

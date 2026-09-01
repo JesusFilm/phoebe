@@ -59,6 +59,7 @@ import {
 } from "./orchestrator.ts";
 import type { WorkKindCtx } from "./work-kinds/definition.ts";
 import { buildRegistry } from "./work-kinds/registry.ts";
+import { featureBranch, type Feature } from "./feature-branch.ts";
 import {
   oneShotWorkKinds,
   selectFirstWorkUnit as walkSelectFirstWorkUnit,
@@ -225,6 +226,46 @@ describe("resolveWorktreeBase", () => {
       stacked: false,
     });
     expect(getMergedBlockerPrNumbers(blocked.body, states)).toEqual([104]);
+  });
+
+  describe("feature arm", () => {
+    function liveFeature(issueNumber: number, title = "Feature"): Feature {
+      return { issueNumber, title, branch: featureBranch(issueNumber) };
+    }
+
+    test("unblocked member routes onto the feature branch", () => {
+      expect(
+        resolveWorktreeBase(issue({ number: 10 }), emptyStates, undefined, liveFeature(1)),
+      ).toEqual({
+        worktreeBase: `origin/${featureBranch(1)}`,
+        stacked: false,
+        featureIssueNumber: 1,
+        featureIssueTitle: "Feature",
+      });
+    });
+
+    test("PHOEBE_BASE wins over the feature arm", () => {
+      expect(
+        resolveWorktreeBase(issue({ number: 10 }), emptyStates, "custom/base", liveFeature(1)),
+      ).toEqual({ worktreeBase: "custom/base", stacked: false });
+    });
+
+    test("stacked routing bypasses the feature arm — blocked members are #383", () => {
+      const blocked = issue({ number: 10, body: "Blocked by #5" });
+      const states = new Map<number, BlockerPrState>([
+        [5, { hasOpenPr: true, openPrNumber: asPrNumber(99), hasMergedPr: false }],
+      ]);
+      const result = resolveWorktreeBase(blocked, states, undefined, liveFeature(1));
+      expect(result?.stacked).toBe(true);
+      expect(result?.featureIssueNumber).toBeUndefined();
+    });
+
+    test("non-member (feature=null) is unaffected — default branch as before", () => {
+      expect(resolveWorktreeBase(issue({ number: 10 }), emptyStates, undefined, null)).toEqual({
+        worktreeBase: "origin/main",
+        stacked: false,
+      });
+    });
   });
 
   test("uses config.defaultBranch instead of origin/main when configured", () => {
