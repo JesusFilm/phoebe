@@ -989,3 +989,92 @@ describe("ensureDraftIntegrationPr", () => {
     expect(createCall).toBeUndefined();
   });
 });
+
+describe("listFeatureIntegrationPrs", () => {
+  test("lists open PRs on the default branch and keeps only feature heads", () => {
+    const { github, calls } = clientWith([
+      JSON.stringify([
+        {
+          number: 99,
+          headRefName: "phoebe/feature-341",
+          body: "Part of #341.",
+          isCrossRepository: false,
+        },
+        {
+          number: 22,
+          headRefName: "phoebe/issue-380",
+          body: "Closes #380",
+          isCrossRepository: false,
+        },
+        {
+          number: 23,
+          headRefName: "phoebe/feature-7",
+          body: "",
+          isCrossRepository: true,
+        },
+      ]),
+    ]);
+
+    expect(github.listFeatureIntegrationPrs()).toEqual([
+      { number: 99, featureIssueNumber: 341, body: "Part of #341." },
+    ]);
+    expect(calls[0]!.args).toEqual([
+      "pr",
+      "list",
+      "--state",
+      "open",
+      "--base",
+      "main",
+      "--json",
+      "number,headRefName,body,isCrossRepository",
+      "--limit",
+      "1000",
+      "-R",
+      "acme/widget",
+    ]);
+  });
+
+  test("reads a null body as empty", () => {
+    const { github } = clientWith([
+      JSON.stringify([
+        { number: 99, headRefName: "phoebe/feature-341", body: null, isCrossRepository: false },
+      ]),
+    ]);
+    expect(github.listFeatureIntegrationPrs()[0]?.body).toBe("");
+  });
+});
+
+describe("listMergedMemberPrs", () => {
+  test("asks for merged PRs based on the feature branch", () => {
+    const { github, calls } = clientWith([
+      JSON.stringify([{ number: 22, headRefName: "phoebe/issue-380" }]),
+    ]);
+
+    expect(github.listMergedMemberPrs(341)).toEqual([
+      { number: 22, headRefName: "phoebe/issue-380" },
+    ]);
+    expect(calls[0]!.args).toEqual([
+      "pr",
+      "list",
+      "--base",
+      "phoebe/feature-341",
+      "--state",
+      "merged",
+      "--json",
+      "number,headRefName",
+      "--limit",
+      "100",
+      "-R",
+      "acme/widget",
+    ]);
+  });
+});
+
+describe("updatePrBody", () => {
+  test("pipes the new body through stdin", () => {
+    const { github, calls } = clientWith([""]);
+    github.updatePrBody(asPrNumber(99), "Part of #341.\n\nCloses #380\n");
+    expect(calls[0]!.args).toEqual(["pr", "edit", "99", "--body-file", "-", "-R", "acme/widget"]);
+    expect(calls[0]!.input).toBe("Part of #341.\n\nCloses #380\n");
+  });
+});

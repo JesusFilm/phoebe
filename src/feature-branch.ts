@@ -81,6 +81,20 @@ export function featureBranch(featureIssueNumber: number): BranchRef {
 }
 
 /**
+ * The feature issue number a branch names, or `null` when the branch is not a
+ * feature branch — the inverse of `featureBranch`, and how a sweep recognises
+ * an integration PR from the head branch alone.
+ */
+export function parseFeatureIssueNumber(branch: BranchRef): number | null {
+  const prefix = `${config.branchPrefix}feature-`;
+  if (!branch.startsWith(prefix)) {
+    return null;
+  }
+  const rest = branch.slice(prefix.length);
+  return /^\d+$/.test(rest) ? Number(rest) : null;
+}
+
+/**
  * The membership declaration a human can hand-author in a browser: the first
  * `Part of #M` in an issue body, or `null` when there is none. Configurable via
  * `config.partOfPattern` in the same shape as `blockedByPattern` — capture

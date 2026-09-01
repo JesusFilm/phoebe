@@ -16,9 +16,11 @@
 // push" is an assertion rather than a hope.
 
 import { describe, expect, test } from "vite-plus/test";
-import { asPrNumber, asSha, type PrNumber, type Sha } from "./branded.ts";
+import { asBranchRef, asPrNumber, asSha, type PrNumber, type Sha } from "./branded.ts";
 import { resolveConfig, type PhoebeUserConfig } from "./config-schema.ts";
 import type { GitRunner } from "./git-model.ts";
+import { featureBranch } from "./feature-branch.ts";
+import { CLOSES_SECTION_START } from "./feature-closes.ts";
 import type { QuarantinedUnit } from "./github-client.ts";
 import { stubGitHub, type GitHubStubOverrides } from "./github-stub.ts";
 import {
@@ -990,6 +992,122 @@ describe("the stale-stack sweep", () => {
     });
 
     expect(result.lines.join("\n")).toContain("stacks API exploded");
+    expect(result.lines).toContain(RUN_ONCE_NOTHING_MESSAGE);
+  });
+});
+
+// The feature-closes sweep runs wet, before selection, and keeps each live
+// feature's integration PR body listing one `Closes #N` per member PR that has
+// merged into the feature branch — the only way merging that PR into the
+// default branch closes the whole set (#380).
+describe("the feature-closes sweep", () => {
+  /** A wet `--run-once` cycle: it sweeps, finds no work, and exits. */
+  function sweepCycle(github: GitHubStubOverrides) {
+    return runCycle({
+      env: { GH_TOKEN: "a-token" },
+      config: { workOrder: ["issues"] },
+      github: { listReadyIssues: () => [], ...github },
+      run: { runOnce: true, dryRun: false },
+    });
+  }
+
+  /** One live feature: integration PR #99 on the branch for feature #341. */
+  function featureWorld(opts: {
+    body: string;
+    mergedMembers: readonly number[];
+    bodies: string[];
+  }): GitHubStubOverrides {
+    return {
+      listFeatureIntegrationPrs: () => [
+        { number: asPrNumber(99), featureIssueNumber: 341, body: opts.body },
+      ],
+      listMergedMemberPrs: (featureIssueNumber) =>
+        featureIssueNumber === 341
+          ? opts.mergedMembers.map((issueNumber) => ({
+              number: asPrNumber(400 + issueNumber),
+              headRefName: issueBranch(issueNumber),
+            }))
+          : [],
+      updatePrBody: (prNumber, body) => {
+        expect(prNumber).toBe(99);
+        opts.bodies.push(body);
+      },
+    };
+  }
+
+  test("a merged member PR earns a Closes line on the integration PR", async () => {
+    const bodies: string[] = [];
+    const result = await sweepCycle(
+      featureWorld({ body: "Part of #341.", mergedMembers: [381], bodies }),
+    );
+
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).toContain(CLOSES_SECTION_START);
+    expect(bodies[0]).toContain("Closes #381");
+    expect(bodies[0]).toContain("Part of #341.");
+    expect(result.lines).toContain(
+      `[phoebe] Integration PR #99 now closes #381 — merged into ${featureBranch(341)}.`,
+    );
+  });
+
+  test("a second cycle over the same merged member writes nothing", async () => {
+    const bodies: string[] = [];
+    await sweepCycle(featureWorld({ body: "Part of #341.", mergedMembers: [381], bodies }));
+    await sweepCycle(featureWorld({ body: bodies[0]!, mergedMembers: [381], bodies }));
+
+    expect(bodies).toHaveLength(1);
+  });
+
+  test("a feature whose members have not merged is left alone", async () => {
+    // updatePrBody is stubbed to fail the test if it is reached.
+    await sweepCycle({
+      listFeatureIntegrationPrs: () => [
+        { number: asPrNumber(99), featureIssueNumber: 341, body: "Part of #341." },
+      ],
+      listMergedMemberPrs: () => [],
+    });
+  });
+
+  test("a merged PR Phoebe did not branch earns no line", async () => {
+    await sweepCycle({
+      listFeatureIntegrationPrs: () => [
+        { number: asPrNumber(99), featureIssueNumber: 341, body: "Part of #341." },
+      ],
+      listMergedMemberPrs: () => [
+        { number: asPrNumber(22), headRefName: asBranchRef("contributor/typo-fix") },
+      ],
+    });
+  });
+
+  test("one feature's failed read does not stop the next feature", async () => {
+    const bodies: string[] = [];
+    const result = await sweepCycle({
+      listFeatureIntegrationPrs: () => [
+        { number: asPrNumber(98), featureIssueNumber: 7, body: "" },
+        { number: asPrNumber(99), featureIssueNumber: 341, body: "Part of #341." },
+      ],
+      listMergedMemberPrs: (featureIssueNumber) => {
+        if (featureIssueNumber === 7) throw new Error("gh exploded");
+        return [{ number: asPrNumber(22), headRefName: issueBranch(381) }];
+      },
+      updatePrBody: (prNumber, body) => {
+        bodies.push(`${prNumber}:${body}`);
+      },
+    });
+
+    expect(result.lines.join("\n")).toContain("gh exploded");
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).toContain("99:");
+  });
+
+  test("a failed listing is reported and the cycle carries on", async () => {
+    const result = await sweepCycle({
+      listFeatureIntegrationPrs: () => {
+        throw new Error("pr list exploded");
+      },
+    });
+
+    expect(result.lines.join("\n")).toContain("pr list exploded");
     expect(result.lines).toContain(RUN_ONCE_NOTHING_MESSAGE);
   });
 });

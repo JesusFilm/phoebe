@@ -31,6 +31,7 @@ import { detectAppCredentials, mintInstallationToken } from "./gh-app.ts";
 import { asBranchRef, asPrNumber, type BranchRef, type PrNumber } from "./branded.ts";
 import {
   createGitHubClient,
+  type FeatureIntegrationPr,
   type GitHubClient,
   type QuarantinedUnit,
   type StackedPhoebePr,
@@ -96,6 +97,7 @@ import {
   type StackedOn,
 } from "./orchestrator.ts";
 import { featureBranch } from "./feature-branch.ts";
+import { memberIssueNumber, withClosesSection } from "./feature-closes.ts";
 import {
   createWorkSource,
   type Clock,
@@ -597,6 +599,53 @@ export function createEngine(options: EngineOptions): Engine {
       } catch (error) {
         console.error(
           `[phoebe] Could not unstack or retarget PR #${pr.number} — ` +
+            `${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Keep each live feature's integration PR body listing a `Closes #N` line per
+   * member PR that has merged into the feature branch (#341, ticket #380).
+   * GitHub honours closing keywords only on a PR bound for the default branch,
+   * so this is what makes merging the integration PR close the whole set — at
+   * the moment the work actually reaches that branch, and never before.
+   *
+   * A sweep rather than a post-run hook: a member PR merges long after the run
+   * that opened it, usually while Phoebe is doing something else entirely.
+   * Best-effort like its neighbours — one feature's failure does not stop the
+   * rest, and the whole sweep failing costs a cycle's delay, nothing more.
+   */
+  function sweepFeatureCloses(): void {
+    let integrationPrs: FeatureIntegrationPr[];
+    try {
+      integrationPrs = github.listFeatureIntegrationPrs();
+    } catch (error) {
+      console.error(
+        `[phoebe] Could not list integration PRs for the feature-closes sweep — ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+      return;
+    }
+    for (const integrationPr of integrationPrs) {
+      try {
+        const members = github.listMergedMemberPrs(integrationPr.featureIssueNumber);
+        const closes = members
+          .map(memberIssueNumber)
+          .filter((issueNumber): issueNumber is number => issueNumber !== null);
+        const update = withClosesSection(integrationPr.body, closes);
+        if (!update) continue;
+        github.updatePrBody(integrationPr.number, update.body);
+        console.log(
+          `[phoebe] Integration PR #${integrationPr.number} now closes ` +
+            `${update.added.map((n) => `#${n}`).join(", ")} — ` +
+            `merged into ${featureBranch(integrationPr.featureIssueNumber)}.`,
+        );
+      } catch (error) {
+        console.error(
+          `[phoebe] Could not maintain the Closes list on integration PR ` +
+            `#${integrationPr.number} — ` +
             `${error instanceof Error ? error.message : String(error)}`,
         );
       }
@@ -1333,12 +1382,13 @@ export function createEngine(options: EngineOptions): Engine {
         continue;
       }
 
-      // Sweeps before selecting (#153, #366): skipped under `--dry-run`, which
-      // must not write to GitHub.
+      // Sweeps before selecting (#153, #366, #380): skipped under `--dry-run`,
+      // which must not write to GitHub.
       if (!dryRun) {
         sweepStrandedUnits();
         sweepQuarantine("content-advanced");
         sweepStaleNativeStacks();
+        sweepFeatureCloses();
       }
       const fetchKinds = runOnce ? oneShotWorkKinds(workOrder, registry) : workOrder;
       const cycle = await workSource.gatherCycle(fetchKinds);
