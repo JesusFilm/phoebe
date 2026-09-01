@@ -52,7 +52,13 @@ All three janitors scan open PRs based on the same scope rules (`isPrInScope`):
 4. Drafts are filtered by `draftPrs`: `skip-all` drops every draft;
    `skip-non-phoebe` drops drafts on non-Phoebe branches; `include` keeps them.
 
-Only PRs whose base is `defaultBranch` are listed.
+PRs are listed once per base: `defaultBranch`, plus the branch of every live
+feature ([#341](https://github.com/JesusFilm/phoebe/issues/341)). A member PR
+targets its feature branch, so this is what puts it in front of the janitors —
+without it a red member PR sits red and the feature stalls without a word. A
+feature retires when its integration PR merges or closes, and `prOptOutLabel` on
+that PR takes the whole feature out of scope; either way it contributes no
+listing.
 
 ## `issues`, start new work
 
