@@ -218,6 +218,8 @@ export type AgentHelpers = {
    * The issue-producer skeleton: branch off the resolved base, run the prompt,
    * and — only when the agent left commits — credit the issue author, push,
    * and open (or follow up on) a PR, stacking it natively when blocked.
+   * When `featureIssueNumber` is set the PR targets the feature branch instead
+   * of the default branch.
    */
   issueWorkflow(opts: {
     issueNumber: number;
@@ -227,6 +229,7 @@ export type AgentHelpers = {
     promptFile?: string;
     blockerIssueNumber?: number;
     blockerPrNumber?: PrNumber;
+    featureIssueNumber?: number;
   }): Promise<void>;
   /**
    * The no-agent merge attempt: merge the given blocker PRs and then the

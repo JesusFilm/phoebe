@@ -31,6 +31,7 @@ export const MAX_FEATURE_ANCESTOR_DEPTH = 5;
 /** One issue as the membership walk needs to see it. */
 export type IssueGraphNode = {
   number: number;
+  title: string;
   labels: readonly string[];
   /** Body text, read for the `Part of #M` fallback when there is no native link. */
   body: string;
@@ -64,8 +65,9 @@ export type FeatureGraphReader = {
 export type Feature = {
   /** The opted-in parent issue — the feature's identity and branch name source. */
   issueNumber: number;
+  title: string;
   branch: BranchRef;
-  /** The integration PR, absent until #379 opens it on first use of the branch. */
+  /** The integration PR, absent until the feature arm opens it on first use of the branch. */
   integrationPrNumber?: PrNumber;
 };
 
@@ -114,6 +116,7 @@ function liveFeature(parent: IssueGraphNode, reader: FeatureGraphReader): Featur
   }
   return {
     issueNumber: parent.number,
+    title: parent.title,
     branch: featureBranch(parent.number),
     ...(pr ? { integrationPrNumber: pr.number } : {}),
   };

@@ -120,6 +120,7 @@ export function issueProducerKind(opts: {
         ctx.cycle.blockerStates(),
         ctx.env["PHOEBE_BASE"],
         ctx.config.processingLabel,
+        (issueNumber) => ctx.cycle.feature(issueNumber),
       );
       return {
         unit: pick
@@ -139,6 +140,9 @@ export function issueProducerKind(opts: {
       ctx.log(
         `${verb} #${issue.number} — base ${resolution.worktreeBase}` +
           (resolution.stacked ? ` (stacked on #${resolution.blockerIssueNumber})` : "") +
+          (resolution.featureIssueNumber !== undefined
+            ? ` (feature #${resolution.featureIssueNumber})`
+            : "") +
           ".",
       );
       if (!claimIssue(issue.number, ctx)) {
@@ -146,6 +150,13 @@ export function issueProducerKind(opts: {
           `Issue #${issue.number} already carries processingLabel — another run owns it; skipping.`,
         );
         return;
+      }
+      if (resolution.featureIssueNumber !== undefined) {
+        ctx.github.createFeatureBranch(resolution.featureIssueNumber);
+        ctx.github.ensureDraftIntegrationPr(
+          resolution.featureIssueNumber,
+          resolution.featureIssueTitle ?? `Feature #${resolution.featureIssueNumber}`,
+        );
       }
       await ctx.agent.issueWorkflow({
         issueNumber: issue.number,
@@ -157,6 +168,9 @@ export function issueProducerKind(opts: {
           : {}),
         ...(resolution.blockerPrNumber !== undefined
           ? { blockerPrNumber: resolution.blockerPrNumber }
+          : {}),
+        ...(resolution.featureIssueNumber !== undefined
+          ? { featureIssueNumber: resolution.featureIssueNumber }
           : {}),
       });
     },

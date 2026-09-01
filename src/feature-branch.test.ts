@@ -24,6 +24,7 @@ type NodeSpec = Partial<IssueGraphNode> & { number: number };
 
 function node(spec: NodeSpec): IssueGraphNode {
   return {
+    title: "",
     labels: [],
     body: "",
     closed: false,
@@ -100,8 +101,17 @@ describe("resolveFeature", () => {
     ]);
     expect(resolveFeature(10, reader)).toEqual({
       issueNumber: 1,
+      title: "",
       branch: "phoebe/feature-1",
     });
+  });
+
+  test("carries the parent issue title through to the Feature", () => {
+    const reader = readerOver([
+      { number: 10, parentNumber: 1 },
+      { number: 1, title: "My feature", labels: [FEATURE_LABEL] },
+    ]);
+    expect(resolveFeature(10, reader)?.title).toBe("My feature");
   });
 
   test("climbs past an unlabelled parent to the nearest opted-in ancestor", () => {

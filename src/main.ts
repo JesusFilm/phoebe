@@ -95,6 +95,7 @@ import {
   type Issue,
   type StackedOn,
 } from "./orchestrator.ts";
+import { featureBranch } from "./feature-branch.ts";
 import {
   createWorkSource,
   type Clock,
@@ -951,20 +952,24 @@ export function createEngine(options: EngineOptions): Engine {
     promptFile: string;
     blockerIssueNumber?: number;
     blockerPrNumber?: PrNumber;
+    featureIssueNumber?: number;
     signal: AbortSignal;
   }): Promise<void> {
     const { issueNumber, issueTitle, worktreeBase, stacked, promptFile } = opts;
-    const { blockerIssueNumber, blockerPrNumber } = opts;
+    const { blockerIssueNumber, blockerPrNumber, featureIssueNumber } = opts;
     const agentBranch = issueBranch(issueNumber);
     const stackedOn: StackedOn | null =
       stacked && blockerIssueNumber !== undefined && blockerPrNumber !== undefined
         ? { blockerIssueNumber, blockerPrNumber }
         : null;
-    // A stacked PR targets the layer beneath it — the blocker's branch — which
-    // is native stacking's shape; `ensureNativeStack` retargets it back onto
-    // the default branch when the Stacks API turns out to be unavailable. The
+    // A stacked PR targets the blocker's branch; a feature-member PR targets the
+    // feature integration branch; all others target the default branch. The
     // agent's own `gh pr create` (issues prompt, step 7) uses the same base.
-    const intendedPrBase = stackedOn ? issueBranch(stackedOn.blockerIssueNumber) : prBase;
+    const intendedPrBase = stackedOn
+      ? issueBranch(stackedOn.blockerIssueNumber)
+      : featureIssueNumber !== undefined
+        ? featureBranch(featureIssueNumber)
+        : prBase;
 
     hub.fetch();
     const worktreeDir = prepareWorktree({ branch: agentBranch, baseRef: worktreeBase });
@@ -1066,6 +1071,9 @@ export function createEngine(options: EngineOptions): Engine {
             ? { blockerIssueNumber: opts.blockerIssueNumber }
             : {}),
           ...(opts.blockerPrNumber !== undefined ? { blockerPrNumber: opts.blockerPrNumber } : {}),
+          ...(opts.featureIssueNumber !== undefined
+            ? { featureIssueNumber: opts.featureIssueNumber }
+            : {}),
           signal,
         }),
       cleanMerge: (branch, blockerPrNumbers = []) => tryCleanMerge(branch, blockerPrNumbers),

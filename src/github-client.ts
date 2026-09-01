@@ -166,6 +166,18 @@ export type GitHubClient = {
    * whatever closed PRs the branch accumulated before it.
    */
   featureIntegrationPr(featureIssueNumber: number): IntegrationPr | null;
+  /**
+   * Ensure the feature integration branch exists on origin; create it from
+   * `origin/<defaultBranch>` when it does not. Idempotent: a 422 (reference
+   * already exists) is swallowed.
+   */
+  createFeatureBranch(featureIssueNumber: number): void;
+  /**
+   * Ensure the draft integration PR for a feature exists; create it when it
+   * does not. Idempotent: checks for an existing open PR on the branch first.
+   * Phoebe never undrafts, merges, or closes this PR — those are human acts.
+   */
+  ensureDraftIntegrationPr(featureIssueNumber: number, featureIssueTitle: string): void;
 
   // Pull requests
   listOpenPhoebePrs(): OpenPhoebePr[];
@@ -651,6 +663,7 @@ export function createGitHubClient({
     issueGraphNode: (issueNumber) => {
       type RestIssue = {
         number: number;
+        title: string;
         state: string;
         body: string | null;
         labels: Array<{ name: string }>;
@@ -659,6 +672,7 @@ export function createGitHubClient({
       const raw = ghApiJson<RestIssue>(`repos/${config.repoSlug}/issues/${issueNumber}`);
       return {
         number: raw.number,
+        title: raw.title,
         labels: raw.labels.map((label) => label.name),
         body: raw.body ?? "",
         closed: raw.state.toLowerCase() === "closed",
@@ -681,6 +695,48 @@ export function createGitHubClient({
           "10",
         ]),
       ),
+
+    createFeatureBranch: (featureIssueNumber) => {
+      const branch = featureBranch(featureIssueNumber);
+      type GitRef = { object: { sha: string } };
+      const ref = ghApiJson<GitRef>(
+        `repos/${config.repoSlug}/git/ref/heads/${config.defaultBranch}`,
+      );
+      try {
+        exec(["api", "--method", "POST", `repos/${config.repoSlug}/git/refs`, "--input", "-"], {
+          input: JSON.stringify({ ref: `refs/heads/${branch}`, sha: ref.object.sha }),
+        });
+      } catch (error) {
+        // 422 = branch already exists — the idempotent success case.
+        const stderr = (error as { stderr?: string }).stderr ?? "";
+        if (!/Reference already exists/i.test(stderr) && !/\b422\b/.test(stderr)) {
+          throw error;
+        }
+      }
+    },
+
+    ensureDraftIntegrationPr: (featureIssueNumber, featureIssueTitle) => {
+      const existing = client.featureIntegrationPr(featureIssueNumber);
+      if (existing && existing.state === "OPEN") {
+        return;
+      }
+      ghWrite(
+        [
+          "pr",
+          "create",
+          "--head",
+          featureBranch(featureIssueNumber),
+          "--base",
+          config.defaultBranch,
+          "--title",
+          featureIssueTitle,
+          "--body-file",
+          "-",
+          "--draft",
+        ],
+        { input: `Part of #${featureIssueNumber}.` },
+      );
+    },
 
     blockerPrState: (blockerIssueNumber) => {
       const branch: BranchRef = issueBranch(blockerIssueNumber);
