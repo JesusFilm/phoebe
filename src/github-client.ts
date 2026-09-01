@@ -25,7 +25,13 @@ import {
 } from "./branded.ts";
 import type { GitHubUser } from "./co-author.ts";
 import type { PhoebeConfig } from "./config-schema.ts";
-import { featureBranch, type IntegrationPr, type IssueGraphNode } from "./feature-branch.ts";
+import {
+  featureBranch,
+  parseFeatureIssueNumber,
+  type IntegrationPr,
+  type IssueGraphNode,
+} from "./feature-branch.ts";
+import type { MergedMemberPr } from "./feature-closes.ts";
 import { classifyGhError, describeGhError, isTransientGhError } from "./gh-error.ts";
 import {
   isCompletedBlockerIssue,
@@ -95,6 +101,18 @@ export type StackPrOutcome =
 export type UnstackPrOutcome =
   | { unstacked: true; stackNumber: number }
   | { unstacked: false; reason: string };
+
+/**
+ * An open integration PR sitting on a feature branch, as the `Closes` sweep
+ * reads it: the PR to edit, the feature whose members it collects, and the body
+ * the sweep maintains one block of.
+ */
+export type FeatureIntegrationPr = {
+  number: PrNumber;
+  /** The feature's parent issue number, read back out of the head branch. */
+  featureIssueNumber: number;
+  body: string;
+};
 
 /**
  * An open Phoebe PR whose base targets another Phoebe issue branch — a PR in a
@@ -178,6 +196,18 @@ export type GitHubClient = {
    * Phoebe never undrafts, merges, or closes this PR — those are human acts.
    */
   ensureDraftIntegrationPr(featureIssueNumber: number, featureIssueTitle: string): void;
+  /**
+   * Every open PR whose head is a feature integration branch — one entry per
+   * live feature, whatever state its members are in. The `Closes` sweep's
+   * starting point.
+   */
+  listFeatureIntegrationPrs(): FeatureIntegrationPr[];
+  /**
+   * The member PRs that have merged into a feature's branch. Merged only:
+   * a member PR closed unmerged put no work on the branch, so it earns no
+   * `Closes` line.
+   */
+  listMergedMemberPrs(featureIssueNumber: number): MergedMemberPr[];
 
   // Pull requests
   listOpenPhoebePrs(): OpenPhoebePr[];
@@ -225,6 +255,8 @@ export type GitHubClient = {
   prTimeoutInputs(prNumber: PrNumber): UnitTimeoutInputs;
 
   // Writes
+  /** Replace a PR's body wholesale (`gh pr edit --body-file -`). */
+  updatePrBody(prNumber: PrNumber, body: string): void;
   postPrComment(prNumber: PrNumber, body: string): void;
   postUnitComment(target: UnitTarget, body: string): void;
   addQuarantineLabel(target: UnitTarget): void;
@@ -738,6 +770,52 @@ export function createGitHubClient({
       );
     },
 
+    listFeatureIntegrationPrs: () => {
+      type GhPr = {
+        number: number;
+        headRefName: string;
+        body: string | null;
+        isCrossRepository: boolean;
+      };
+      return ghJson<GhPr[]>([
+        "pr",
+        "list",
+        "--state",
+        "open",
+        "--base",
+        config.defaultBranch,
+        "--json",
+        "number,headRefName,body,isCrossRepository",
+        "--limit",
+        "100",
+      ]).flatMap((pr) => {
+        const featureIssueNumber = parseFeatureIssueNumber(asBranchRef(pr.headRefName));
+        if (featureIssueNumber === null || pr.isCrossRepository) {
+          return [];
+        }
+        return [{ number: asPrNumber(pr.number), featureIssueNumber, body: pr.body ?? "" }];
+      });
+    },
+
+    listMergedMemberPrs: (featureIssueNumber) => {
+      type GhPr = { number: number; headRefName: string };
+      return ghJson<GhPr[]>([
+        "pr",
+        "list",
+        "--base",
+        featureBranch(featureIssueNumber),
+        "--state",
+        "merged",
+        "--json",
+        "number,headRefName",
+        "--limit",
+        "100",
+      ]).map((pr) => ({
+        number: asPrNumber(pr.number),
+        headRefName: asBranchRef(pr.headRefName),
+      }));
+    },
+
     blockerPrState: (blockerIssueNumber) => {
       const branch: BranchRef = issueBranch(blockerIssueNumber);
       const open = ghJson<Array<{ number: number }>>([
@@ -1079,6 +1157,12 @@ export function createGitHubClient({
         extraActivityAt: headCommitAt,
         baseline: raw.headRefOid,
       };
+    },
+
+    updatePrBody: (prNumber, body) => {
+      // Through stdin, not `--body`: a PR body runs to many lines and holds
+      // whatever markdown a human put there, which has no business on argv.
+      ghWrite(["pr", "edit", String(prNumber), "--body-file", "-"], { input: body });
     },
 
     postPrComment: (prNumber, body) => {

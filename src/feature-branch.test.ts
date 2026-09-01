@@ -5,10 +5,11 @@
 // src/cycle-work-source.test.ts.
 
 import { describe, expect, test } from "vite-plus/test";
-import { asPrNumber } from "./branded.ts";
+import { asBranchRef, asPrNumber } from "./branded.ts";
 import { resolveConfig } from "./config-schema.ts";
 import {
   featureBranch,
+  parseFeatureIssueNumber,
   parsePartOf,
   resolveFeature,
   type FeatureGraphReader,
@@ -65,6 +66,18 @@ function readerOver(
 describe("featureBranch", () => {
   test("derives the branch from the feature issue number, inside branchPrefix", () => {
     expect(featureBranch(341)).toBe("phoebe/feature-341");
+  });
+});
+
+describe("parseFeatureIssueNumber", () => {
+  test("reads back the number `featureBranch` put in", () => {
+    expect(parseFeatureIssueNumber(featureBranch(341))).toBe(341);
+  });
+
+  test("is null for an issue branch, and for anything outside the prefix", () => {
+    expect(parseFeatureIssueNumber(asBranchRef("phoebe/issue-341"))).toBeNull();
+    expect(parseFeatureIssueNumber(asBranchRef("feature-341"))).toBeNull();
+    expect(parseFeatureIssueNumber(asBranchRef("phoebe/feature-341-rework"))).toBeNull();
   });
 });
 
