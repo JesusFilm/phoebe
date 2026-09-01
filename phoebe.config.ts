@@ -35,14 +35,59 @@ export const config = defineConfig({
   testCommand: "pnpm run test",
   readyCommand: "pnpm run ready",
 
-  // Cursor provider (composer-2.5 default); requires CURSOR_API_KEY in this
-  // tenant's .env — the supervisor scrubs every other tenant's secrets.
-  defaultProvider: "cursor",
+  // Model policy. This file — not .phoebe/phoebe.config.ts — is the config the
+  // WORKSPACE deployment loads for this tenant (`--config
+  // /etc/phoebe/phoebe/phoebe.config.ts`), so the dogfood's provider/model/
+  // effort choices have to live here to reach a workspace run. The .phoebe/
+  // copy carries the same policy for a standalone solo deployment; keep the two
+  // in step.
+  //
+  // `defaultProvider` is claude rather than cursor for a second reason beyond
+  // the obvious one: the mismatch guard in selectProviderForKind silences a
+  // `workKinds` block whose `(provider ?? defaultProvider)` differs from the
+  // run's effective provider. Leaving this "cursor" and flipping the run with
+  // PHOEBE_AGENT=claude would make every block below inert.
+  //
+  // Baseline: opus-5 at low effort, because this is a long-running loop paying
+  // against subscription usage limits rather than metered API billing. Low is
+  // the right floor for the kinds whose spec arrives complete — a CI log, a
+  // reviewer's thread — and `workKinds` lifts the kinds that have to
+  // reconstruct intent instead.
+  defaultProvider: "claude",
+  defaultModels: { claude: "claude-opus-5" },
+  defaultEfforts: { claude: "low" },
 
-  // Run the `claude` provider (via PHOEBE_AGENT=claude) on a Pro/Max
-  // subscription rather than metered API billing: name the OAuth token's var
-  // instead of the shipped `ANTHROPIC_API_KEY` default. `providerEnv` merges
-  // key-by-key, so cursor and codex keep theirs.
+  // Per-work-kind tuning (#300). One rule on both axes: spend where the agent
+  // reconstructs intent, save where it executes a spec someone else wrote.
+  //
+  //   conflicts — no spec at all. The agent infers intent from two diverging
+  //               branches, and a bad resolution loses code silently. Also the
+  //               largest context draw, so it keeps opus-5's 1M window.
+  //   checks    — a failing CI log localises the fix. sonnet-5 is the same 1M
+  //               window at 60% off; medium rather than low because the cheap
+  //               failure mode here is papering over a red test.
+  //   reviews   — each thread is already specified by a human reviewer, and the
+  //               prompt's demand is instruction-following (paging GraphQL
+  //               review threads), not depth. Inherits `low` from above.
+  //   issues    — open-ended implementation against a ticket.
+  //   research  — answers land in wayfinder maps that later work builds on, so
+  //               a wrong one propagates instead of failing loudly.
+  //
+  // No haiku block anywhere, on purpose: a block can override `effort` but
+  // cannot clear it (#335), so a haiku kind would still be handed `--effort
+  // low`, which that model does not take.
+  workKinds: {
+    conflicts: { effort: "high" },
+    checks: { model: "claude-sonnet-5", effort: "medium" },
+    reviews: { model: "claude-sonnet-5" },
+    issues: { effort: "high" },
+    research: { effort: "high" },
+  },
+
+  // Run the `claude` provider above on a Pro/Max subscription rather than
+  // metered API billing: name the OAuth token's var instead of the shipped
+  // `ANTHROPIC_API_KEY` default. `providerEnv` merges key-by-key, so cursor and
+  // codex keep theirs.
   //
   // This is not cosmetic — `buildAgentEnv` (src/agent-env.ts) forwards exactly
   // the one var named here, so with the default mapping a `.env` holding only
