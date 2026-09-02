@@ -7,6 +7,7 @@
 //       repo/         the private clone (origin hub)
 //       worktrees/    per-unit git worktrees
 //       state/        reserved per-tenant state (supervisor status.json, #73)
+//       scratch/      plain-directory workspaces (#358), cleared per run
 //
 // The base (`/data/repos`) is a deployment-global constant in the container;
 // `PHOEBE_DATA_DIR` overrides it for host/dev. Derivation is a pure function of
@@ -27,7 +28,7 @@ import type { PathsConfig } from "./config-schema.ts";
 export const DEFAULT_DATA_BASE = "/data/repos";
 
 /**
- * Derive a tenant's `{repoDir, worktreesDir, stateDir}` from its `owner/repo`
+ * Derive a tenant's `{repoDir, worktreesDir, stateDir, scratchDir}` from its `owner/repo`
  * slug and the deployment data base. The slug is authoritative and the
  * `<owner>/<repo>` data path is derived from it (#58), so two tenants can never
  * collide and any
@@ -40,6 +41,7 @@ export function derivePaths(repoSlug: string, dataBase: string = DEFAULT_DATA_BA
     repoDir: join(root, "repo"),
     worktreesDir: join(root, "worktrees"),
     stateDir: join(root, "state"),
+    scratchDir: join(root, "scratch"),
   };
 }
 

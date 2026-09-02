@@ -4,9 +4,11 @@
 // custom invariant mechanically. `at` carries the error voice: config-path for
 // custom kinds (`workKinds.custom.<name>`), the built-in's name otherwise.
 
-import type { AnyWorkKindDefinition } from "./definition.ts";
+import type { AnyWorkKindDefinition, WorkspaceMode } from "./definition.ts";
 
-const WORKSPACE_VALUES = ["worktree"] as const;
+// Typed against the union so the runtime check and the compile-time mode can
+// only drift in one direction: a value here that is not a mode fails to build.
+const WORKSPACE_VALUES = ["worktree", "scratch"] as const satisfies readonly WorkspaceMode[];
 
 function fail(at: string, problem: string): never {
   throw new Error(`${at}: ${problem}`);

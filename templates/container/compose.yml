@@ -65,7 +65,7 @@ services:
       PHOEBE_RECONCILE_INTERVAL_MS: "${PHOEBE_RECONCILE_INTERVAL_MS:-}"
     volumes:
       # Two named volumes (#62). All tenant data nests under /data/repos as
-      # /data/repos/<owner>/<repo>/{repo,worktrees,state}; the shared engine
+      # /data/repos/<owner>/<repo>/{repo,worktrees,state,scratch}; the shared engine
       # checkout + crash-loop record live on their own volume at /data/engine.
       - phoebe-data:/data/repos
       - phoebe-engine:/data/engine

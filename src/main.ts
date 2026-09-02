@@ -25,6 +25,7 @@
 // (src/execution-gate.ts).
 
 import { execFileSync, execSync } from "node:child_process";
+import { mkdirSync, rmSync } from "node:fs";
 import type { PhoebeConfig } from "./config-schema.ts";
 import { selectProviderForKind } from "./provider-selection.ts";
 import { detectAppCredentials, mintInstallationToken } from "./gh-app.ts";
@@ -109,6 +110,7 @@ import type {
   AgentWorkflowOutcome,
   WorkKindCtx,
   WorkKindRunCtx,
+  WorkspaceHandle,
   WorkUnitGitHubTarget,
 } from "./work-kinds/definition.ts";
 import { buildRegistry, type WorkKindRegistry } from "./work-kinds/registry.ts";
@@ -828,6 +830,25 @@ export function createEngine(options: EngineOptions): Engine {
   // Work-unit execution
   // ---------------------------------------------------------------------------
 
+  /**
+   * The plain-directory workspace (#358): one empty directory per kind under
+   * the tenant's scratch root, with no clone and no git state. Cleared before
+   * it is created, exactly as `prepareWorktree` clears a stale worktree at the
+   * same path — the path is derived from the kind and so is stable across
+   * runs, which is what makes a directory left behind by a killed run
+   * self-healing rather than a leak the next run inherits.
+   */
+  function prepareScratchDir(kind: string): string {
+    // `kind` is always a built-in name (a hardcoded literal from
+    // `WORK_KIND_NAMES`) or a custom kind validated against
+    // `CUSTOM_WORK_KIND_NAME_RE` at config load, so it is already a safe,
+    // collision-free path segment — no further normalization needed.
+    const dir = join(config.paths.scratchDir, kind);
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+
   function prepareWorktree(opts: { branch: BranchRef; baseRef?: string }): string {
     const worktreeDir = hub.worktreeDirFor(opts.branch);
     hub.removeWorktree(worktreeDir);
@@ -1212,6 +1233,55 @@ export function createEngine(options: EngineOptions): Engine {
   }
 
   /**
+   * One unit's engine-prepared workspace, in the mode its kind declared
+   * (#356/#358): the handle `run` sees, the materializing accessor the agent
+   * helpers use as their default cwd, and the removal the unit boundary runs.
+   *
+   * Both modes share one shape — create on first read of `dir`, remove only
+   * what was created — so laziness is a property of the workspace seam rather
+   * than of the worktree arm that happened to get it first.
+   */
+  function lazyWorkspace(picked: PickedWorkUnit): {
+    handle: WorkspaceHandle;
+    dir: () => string;
+    remove: () => void;
+  } {
+    const mode = picked.definition.workspace;
+    let dir: string | null = null;
+    const materialize = (): string => {
+      if (dir === null) {
+        if (mode === "scratch") {
+          dir = prepareScratchDir(picked.kind);
+        } else {
+          hub.fetch();
+          dir = prepareWorktree({
+            branch: asBranchRef(`${config.branchPrefix}workspace`),
+            baseRef: `origin/${config.defaultBranch}`,
+          });
+        }
+      }
+      return dir;
+    };
+    return {
+      handle: {
+        mode,
+        get dir(): string {
+          return materialize();
+        },
+      },
+      dir: materialize,
+      remove: () => {
+        if (dir === null) return;
+        if (mode === "scratch") {
+          rmSync(dir, { recursive: true, force: true });
+        } else {
+          hub.removeWorktree(dir);
+        }
+      },
+    };
+  }
+
+  /**
    * Execute one picked unit through its definition's `run`: widen the cycle ctx
    * with the declared workspace and the agent helpers, and hand over under the
    * whole-unit run deadline (#359).
@@ -1224,25 +1294,14 @@ export function createEngine(options: EngineOptions): Engine {
    * expiry the engine abandons the floating `run` promise: an orphaned `run`
    * keeps executing but cannot hold the slot or prevent quarantine.
    *
-   * The workspace — a scratch worktree off the default branch, the default cwd
-   * for a bare `agent.run` — is materialized on first read, not up front. All
-   * five built-ins build their own branch-specific worktrees and never touch
-   * `ctx.workspace.dir`, so they pay no fetch-and-worktree churn per unit; a
-   * kind that does read it gets the worktree then, and only a materialized
-   * workspace is removed afterwards.
+   * The workspace — whichever mode the kind declared, and the default cwd for a
+   * bare `agent.run` — is materialized on first read, not up front. All five
+   * built-ins build their own branch-specific worktrees and never touch
+   * `ctx.workspace.dir`, so they pay no churn per unit; a kind that does read
+   * it pays then, and only a materialized workspace is removed afterwards.
    */
   async function runPickedUnit(picked: PickedWorkUnit, ctx: WorkKindCtx): Promise<void> {
-    let workspaceDir: string | null = null;
-    const workspace = (): string => {
-      if (workspaceDir === null) {
-        hub.fetch();
-        workspaceDir = prepareWorktree({
-          branch: asBranchRef(`${config.branchPrefix}workspace`),
-          baseRef: `origin/${config.defaultBranch}`,
-        });
-      }
-      return workspaceDir;
-    };
+    const workspace = lazyWorkspace(picked);
     try {
       await runWithDeadline({
         ms: runTimeoutMs,
@@ -1250,22 +1309,15 @@ export function createEngine(options: EngineOptions): Engine {
           const runCtx: WorkKindRunCtx = {
             ...ctx,
             log: (message) => console.log(`[phoebe][${picked.kind} ${picked.unit.ref}] ${message}`),
-            workspace: {
-              mode: "worktree",
-              get dir(): string {
-                return workspace();
-              },
-            },
+            workspace: workspace.handle,
             signal,
-            agent: createAgentHelpers(picked, workspace, signal),
+            agent: createAgentHelpers(picked, workspace.dir, signal),
           };
           return picked.definition.run(picked.unit, runCtx);
         },
       });
     } finally {
-      if (workspaceDir !== null) {
-        hub.removeWorktree(workspaceDir);
-      }
+      workspace.remove();
     }
   }
 

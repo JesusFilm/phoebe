@@ -19,7 +19,7 @@
 #
 # What lives on named volumes (see compose.yml):
 #   * /data/repos   — All tenant data, nested per repo as
-#                     /data/repos/<owner>/<repo>/{repo,worktrees,state}.
+#                     /data/repos/<owner>/<repo>/{repo,worktrees,state,scratch}.
 #   * /data/engine  — The shared engine checkout + crash-loop record, so a
 #                     restart fetches instead of cloning.
 #
@@ -51,7 +51,7 @@ RUN apt-get update \
 # the first `git clone` fails with EACCES. Creating and chowning them here is
 # what makes the volumes writable after the drop — and because the whole
 # /data/repos tree is then phoebe-owned, the engine's runtime
-# `mkdir -p /data/repos/<owner>/<repo>/{repo,worktrees,state}` nests freely.
+# `mkdir -p /data/repos/<owner>/<repo>/{repo,worktrees,state,scratch}` nests freely.
 #
 # (`node:24` already ships a uid-1000 `node` user. We add our own so the name
 # in `ps`, in log output, and on the volumes says what it is, and so the uid is

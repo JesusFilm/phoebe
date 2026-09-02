@@ -12,7 +12,10 @@ Two kinds, deliberately at the two ends of the effort scale:
   Fetch scans open PRs for review-thread silence, select picks the oldest
   un-nudged one, run spawns an agent (via the `ctx.agent` helper) that posts a
   nudge comment carrying a watermark marker so the PR is not re-selected — the
-  house watermark pattern: state lives on GitHub, not in Phoebe.
+  house watermark pattern: state lives on GitHub, not in Phoebe. It also shows
+  `workspace: "scratch"` (#358): a kind that only comments needs no checkout,
+  so the engine hands `run` an empty directory and the prompt passes `gh` an
+  explicit `-R`.
 - **The `docs-request` producer, inline in [`phoebe.config.ts`](phoebe.config.ts)**
   — the cheap case: a new issue-keyed producer is little more than a label, a
   prompt file, and one `ctx.agent.issueWorkflow` call.

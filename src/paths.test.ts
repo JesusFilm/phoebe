@@ -11,6 +11,7 @@ describe("derivePaths", () => {
       repoDir: "/data/repos/acme/widget/repo",
       worktreesDir: "/data/repos/acme/widget/worktrees",
       stateDir: "/data/repos/acme/widget/state",
+      scratchDir: "/data/repos/acme/widget/scratch",
     });
   });
 
@@ -23,6 +24,7 @@ describe("derivePaths", () => {
       repoDir: "/srv/phoebe/acme/widget/repo",
       worktreesDir: "/srv/phoebe/acme/widget/worktrees",
       stateDir: "/srv/phoebe/acme/widget/state",
+      scratchDir: "/srv/phoebe/acme/widget/scratch",
     });
   });
 
