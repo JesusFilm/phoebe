@@ -96,7 +96,7 @@ import {
   type Issue,
   type StackedOn,
 } from "./orchestrator.ts";
-import { featureBranch } from "./feature-branch.ts";
+import { featureBranch, resolveFeature, type Feature } from "./feature-branch.ts";
 import { memberIssueNumber, withClosesSection } from "./feature-closes.ts";
 import {
   createWorkSource,
@@ -544,11 +544,47 @@ export function createEngine(options: EngineOptions): Engine {
   }
 
   /**
+   * The live feature a Phoebe issue belongs to, read straight from GitHub.
+   * The sweeps run before the cycle's memoized reader exists, and they ask only
+   * about the handful of PRs they are about to touch, so the reads are cheap.
+   * An unreadable graph answers `null` — an issue Phoebe cannot place is treated
+   * as belonging to no feature, the same call the cycle reader makes.
+   */
+  function featureForIssue(issueNumber: number): Feature | null {
+    return resolveFeature(issueNumber, {
+      issueGraphNode: (n) => {
+        try {
+          return github.issueGraphNode(n);
+        } catch (error) {
+          console.warn(
+            `[phoebe] Could not read feature membership at #${n} — ` +
+              `${error instanceof Error ? error.message : String(error)}`,
+          );
+          return null;
+        }
+      },
+      featureIntegrationPr: (n) => {
+        try {
+          return { pr: github.featureIntegrationPr(n) };
+        } catch (error) {
+          console.warn(
+            `[phoebe] Could not read the integration PR for feature #${n} — ` +
+              `${error instanceof Error ? error.message : String(error)}`,
+          );
+          return null;
+        }
+      },
+    });
+  }
+
+  /**
    * Remove each open Phoebe PR that is natively stacked on a blocker branch
    * whose issue closed as completed without the blocker's PR merging. Once
    * that issue is done the stack's bottom layer is dead: GitHub will never
    * merge-and-retarget through it. The fix is to leave the stack and retarget
-   * the PR onto the default branch so it can merge on its own terms.
+   * the PR onto the branch it was always bound for so it can merge on its own
+   * terms — the default branch, or the feature branch when the PR belongs to a
+   * live feature (#383).
    *
    * Mirrors `sweepQuarantine` in style: best-effort, one PR's failure does not
    * stop the rest, never runs under `--dry-run`.
@@ -594,8 +630,14 @@ export function createEngine(options: EngineOptions): Engine {
               `blocker #${blockerIssueNumber} completed without merging its PR.`,
           );
         }
-        github.retargetPr(pr.number, prBase);
-        console.log(`[phoebe] PR #${pr.number} retargeted onto ${prBase}.`);
+        // A member of a live feature goes back onto the feature branch, never
+        // onto the default branch: that is where its work is bound, and where
+        // base resolution puts it now that its blocker is done (#383).
+        const stackedIssueNumber = parseIssueNumberFromBranch(pr.headRefName);
+        const feature = stackedIssueNumber === null ? null : featureForIssue(stackedIssueNumber);
+        const target = feature ? feature.branch : prBase;
+        github.retargetPr(pr.number, target);
+        console.log(`[phoebe] PR #${pr.number} retargeted onto ${target}.`);
       } catch (error) {
         console.error(
           `[phoebe] Could not unstack or retarget PR #${pr.number} — ` +
@@ -955,11 +997,17 @@ export function createEngine(options: EngineOptions): Engine {
    * find it in the comments) and retarget the PR onto the default branch.
    * Banner before retarget: if the retarget throws, a PR still targeting the
    * blocker branch with a warning beats one silently mis-based.
+   *
+   * A feature member gets the banner and no retarget (#383, #376): pointing its
+   * PR at the default branch would take the work off the feature branch, which
+   * is the whole arm. It waits on its blocker instead — and when that blocker
+   * merges, GitHub retargets this PR onto the feature branch with it.
    */
   function ensureNativeStack(opts: {
     issueNumber: number;
     existingPr: PrNumber | null;
     stackedOn: StackedOn;
+    featureIssueNumber?: number;
   }): void {
     const { blockerIssueNumber, blockerPrNumber } = opts.stackedOn;
     const prNumber = opts.existingPr ?? github.findIssuePr(opts.issueNumber);
@@ -977,9 +1025,18 @@ export function createEngine(options: EngineOptions): Engine {
     console.log(
       `[phoebe] Native PR stacking unavailable (${outcome.reason}) — using the do-not-merge banner.`,
     );
-    const banner = stackedPrComment(blockerIssueNumber, blockerPrNumber);
+    const memberBase =
+      opts.featureIssueNumber !== undefined ? featureBranch(opts.featureIssueNumber) : null;
+    const banner = stackedPrComment(blockerIssueNumber, blockerPrNumber, memberBase ?? prBase);
     if (!github.prCommentBodies(prNumber).includes(banner)) {
       github.postPrComment(prNumber, banner);
+    }
+    if (memberBase) {
+      console.log(
+        `[phoebe] PR #${prNumber} belongs to feature branch ${memberBase} — leaving its base on ` +
+          `${issueBranch(blockerIssueNumber)} rather than retargeting it onto ${prBase}.`,
+      );
+      return;
     }
     github.retargetPr(prNumber, prBase);
   }
@@ -1011,9 +1068,11 @@ export function createEngine(options: EngineOptions): Engine {
       stacked && blockerIssueNumber !== undefined && blockerPrNumber !== undefined
         ? { blockerIssueNumber, blockerPrNumber }
         : null;
-    // A stacked PR targets the blocker's branch; a feature-member PR targets the
-    // feature integration branch; all others target the default branch. The
-    // agent's own `gh pr create` (issues prompt, step 7) uses the same base.
+    // A stacked PR targets the blocker's branch — a stacked member included,
+    // whose stack reaches the feature branch through the blocker's own PR. An
+    // unstacked member targets the feature integration branch; all others target
+    // the default branch. The agent's own `gh pr create` (issues prompt, step 7)
+    // uses the same base.
     const intendedPrBase = stackedOn
       ? issueBranch(stackedOn.blockerIssueNumber)
       : featureIssueNumber !== undefined
@@ -1061,7 +1120,12 @@ export function createEngine(options: EngineOptions): Engine {
           github.postPrComment(existingPr, followUpPrComment(issueNumber, newCommitCount));
         }
         if (stackedOn) {
-          ensureNativeStack({ issueNumber, existingPr, stackedOn });
+          ensureNativeStack({
+            issueNumber,
+            existingPr,
+            stackedOn,
+            ...(featureIssueNumber !== undefined ? { featureIssueNumber } : {}),
+          });
         }
       } else {
         console.log("[phoebe] No commits — skipping PR creation.");
