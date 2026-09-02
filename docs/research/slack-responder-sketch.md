@@ -108,21 +108,18 @@ where it attaches — plus one genuine wrinkle that feeds back into the v1 contr
 
 ## Extension points
 
-### 1. `workspace: "none"` / `"readonly"`
+### 1. `workspace: "scratch"` / `"readonly"`
 
 The responder needs repo context at most and a branch never; today it must declare
 `"worktree"` and waste a checkout per turn. The `workspace` field was declared with one
 implemented value precisely so this arrives as data, and #349 made the run-ctx member a
 discriminated union so new modes are additive members, not retypes.
 
-**Future shape.** `none` → run-ctx carries `{ mode: "none"; dir: string }` where `dir` is
-a fresh empty scratch directory — agents need a cwd, and an empty one is the honest "no
-repo context". It is the only mode that changes machinery (skip worktree creation).
-`readonly` → `{ mode: "readonly"; dir: string }` where `dir` is a worktree prepared and
-discarded exactly as today, under a documented don't-push contract — a promise about
-intent the engine may later enforce, not a new mechanism. Attaches to: the definition's
-`workspace` field, the engine's prepare/remove step, and the `WorkKindRunCtx.workspace`
-union.
+**Future shape.** `readonly` → `{ mode: "readonly"; dir: string }` where `dir` is a
+worktree prepared and discarded exactly as today, under a documented don't-push
+contract — a promise about intent the engine may later enforce, not a new mechanism.
+Attaches to: the definition's `workspace` field, the engine's prepare/remove step, and
+the `WorkKindRunCtx.workspace` union.
 
 **Shipped (#358).** The first half of this landed as `workspace: "scratch"` —
 `{ mode: "scratch"; dir: string }`, one empty directory per kind under the tenant's

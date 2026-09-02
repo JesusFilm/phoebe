@@ -839,7 +839,11 @@ export function createEngine(options: EngineOptions): Engine {
    * self-healing rather than a leak the next run inherits.
    */
   function prepareScratchDir(kind: string): string {
-    const dir = join(config.paths.scratchDir, kind.toLowerCase().replace(/[^a-z0-9]/g, "-"));
+    // `kind` is always a built-in name (a hardcoded literal from
+    // `WORK_KIND_NAMES`) or a custom kind validated against
+    // `CUSTOM_WORK_KIND_NAME_RE` at config load, so it is already a safe,
+    // collision-free path segment — no further normalization needed.
+    const dir = join(config.paths.scratchDir, kind);
     rmSync(dir, { recursive: true, force: true });
     mkdirSync(dir, { recursive: true });
     return dir;

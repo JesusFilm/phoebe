@@ -441,7 +441,7 @@ resolve. Everything arrives on `ctx` (types via `import type` from
 
   Either mode is created the first time `dir` is read, so a kind that builds its
   own worktrees (as all five built-ins do) never pays for one, and a kind that
-  never writes a file never gets a directory.
+  never reads `ctx.workspace.dir` never gets a directory.
 
 - `ctx.signal` — an `AbortSignal` that fires when the unit's wall-clock budget
   expires. Pass it to async operations (fetch, sleep, agent helpers) or poll
