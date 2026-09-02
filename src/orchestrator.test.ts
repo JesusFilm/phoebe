@@ -56,6 +56,7 @@ import {
   type ReviewsCandidate,
   type StackContext,
   type StatusCheckItem,
+  type FeatureLookup,
 } from "./orchestrator.ts";
 import type { WorkKindCtx } from "./work-kinds/definition.ts";
 import { buildRegistry } from "./work-kinds/registry.ts";
@@ -233,9 +234,18 @@ describe("resolveWorktreeBase", () => {
       return { issueNumber, title, branch: featureBranch(issueNumber) };
     }
 
+    /** A lookup putting every listed issue in feature #1 and nobody else. */
+    function membersOf(feature: Feature, ...memberNumbers: number[]): FeatureLookup {
+      const members = new Set(memberNumbers);
+      return (issueNumber) => (members.has(issueNumber) ? feature : null);
+    }
+
+    const inFeatureOne = (...memberNumbers: number[]): FeatureLookup =>
+      membersOf(liveFeature(1), ...memberNumbers);
+
     test("unblocked member routes onto the feature branch", () => {
       expect(
-        resolveWorktreeBase(issue({ number: 10 }), emptyStates, undefined, liveFeature(1)),
+        resolveWorktreeBase(issue({ number: 10 }), emptyStates, undefined, inFeatureOne(10)),
       ).toEqual({
         worktreeBase: `origin/${featureBranch(1)}`,
         stacked: false,
@@ -246,24 +256,110 @@ describe("resolveWorktreeBase", () => {
 
     test("PHOEBE_BASE wins over the feature arm", () => {
       expect(
-        resolveWorktreeBase(issue({ number: 10 }), emptyStates, "custom/base", liveFeature(1)),
+        resolveWorktreeBase(issue({ number: 10 }), emptyStates, "custom/base", inFeatureOne(10)),
       ).toEqual({ worktreeBase: "custom/base", stacked: false });
     });
 
-    test("stacked routing bypasses the feature arm — blocked members are #383", () => {
-      const blocked = issue({ number: 10, body: "Blocked by #5" });
-      const states = new Map<number, BlockerPrState>([
-        [5, { hasOpenPr: true, openPrNumber: asPrNumber(99), hasMergedPr: false }],
-      ]);
-      const result = resolveWorktreeBase(blocked, states, undefined, liveFeature(1));
-      expect(result?.stacked).toBe(true);
-      expect(result?.featureIssueNumber).toBeUndefined();
-    });
-
     test("non-member (feature=null) is unaffected — default branch as before", () => {
-      expect(resolveWorktreeBase(issue({ number: 10 }), emptyStates, undefined, null)).toEqual({
+      expect(
+        resolveWorktreeBase(issue({ number: 10 }), emptyStates, undefined, () => null),
+      ).toEqual({
         worktreeBase: "origin/main",
         stacked: false,
+      });
+    });
+
+    describe("blockers across and inside the boundary (#383)", () => {
+      const blocked = issue({ number: 10, body: "Blocked by #5" });
+      const openBlocker = new Map<number, BlockerPrState>([
+        [5, { hasOpenPr: true, openPrNumber: asPrNumber(99), hasMergedPr: false }],
+      ]);
+      const mergedBlocker = new Map<number, BlockerPrState>([
+        [5, { hasOpenPr: false, hasMergedPr: true, mergedPrNumber: asPrNumber(99) }],
+      ]);
+      const completedBlocker = new Map<number, BlockerPrState>([
+        [5, { hasOpenPr: false, hasMergedPr: false, blockerCompleted: true }],
+      ]);
+
+      test("member blocked by a member of the same feature stacks, carrying the feature", () => {
+        expect(resolveWorktreeBase(blocked, openBlocker, undefined, inFeatureOne(10, 5))).toEqual({
+          worktreeBase: `origin/${issueBranch(5)}`,
+          stacked: true,
+          blockerIssueNumber: 5,
+          blockerPrNumber: 99,
+          featureIssueNumber: 1,
+          featureIssueTitle: "Feature",
+        });
+      });
+
+      test("member whose in-feature blocker merged lands on the feature branch", () => {
+        expect(resolveWorktreeBase(blocked, mergedBlocker, undefined, inFeatureOne(10, 5))).toEqual(
+          {
+            worktreeBase: `origin/${featureBranch(1)}`,
+            stacked: false,
+            featureIssueNumber: 1,
+            featureIssueTitle: "Feature",
+          },
+        );
+      });
+
+      test("member whose in-feature blocker closed as completed lands on the feature branch", () => {
+        expect(
+          resolveWorktreeBase(blocked, completedBlocker, undefined, inFeatureOne(10, 5)),
+        ).toEqual({
+          worktreeBase: `origin/${featureBranch(1)}`,
+          stacked: false,
+          featureIssueNumber: 1,
+          featureIssueTitle: "Feature",
+        });
+      });
+
+      test("member blocked by an outside issue with an open PR waits", () => {
+        expect(resolveWorktreeBase(blocked, openBlocker, undefined, inFeatureOne(10))).toBeNull();
+      });
+
+      test("member proceeds on the feature branch once the outside blocker has merged", () => {
+        expect(resolveWorktreeBase(blocked, mergedBlocker, undefined, inFeatureOne(10))).toEqual({
+          worktreeBase: `origin/${featureBranch(1)}`,
+          stacked: false,
+          featureIssueNumber: 1,
+          featureIssueTitle: "Feature",
+        });
+      });
+
+      test("member proceeds once the outside blocker issue is closed as completed", () => {
+        expect(resolveWorktreeBase(blocked, completedBlocker, undefined, inFeatureOne(10))).toEqual(
+          {
+            worktreeBase: `origin/${featureBranch(1)}`,
+            stacked: false,
+            featureIssueNumber: 1,
+            featureIssueTitle: "Feature",
+          },
+        );
+      });
+
+      test("non-member blocked by a member waits, open PR or merged", () => {
+        expect(resolveWorktreeBase(blocked, openBlocker, undefined, inFeatureOne(5))).toBeNull();
+        expect(resolveWorktreeBase(blocked, mergedBlocker, undefined, inFeatureOne(5))).toBeNull();
+        expect(
+          resolveWorktreeBase(blocked, completedBlocker, undefined, inFeatureOne(5)),
+        ).toBeNull();
+      });
+
+      test("members of two different features wait on each other", () => {
+        const featureOf: FeatureLookup = (issueNumber) =>
+          issueNumber === 10 ? liveFeature(1) : issueNumber === 5 ? liveFeature(2) : null;
+        expect(resolveWorktreeBase(blocked, openBlocker, undefined, featureOf)).toBeNull();
+        expect(resolveWorktreeBase(blocked, mergedBlocker, undefined, featureOf)).toBeNull();
+      });
+
+      test("a retired feature drops both sides back onto the default-branch arm", () => {
+        expect(resolveWorktreeBase(blocked, openBlocker, undefined, () => null)).toEqual({
+          worktreeBase: `origin/${issueBranch(5)}`,
+          stacked: true,
+          blockerIssueNumber: 5,
+          blockerPrNumber: 99,
+        });
       });
     });
   });
@@ -351,6 +447,19 @@ describe("unresolvedBlockerNumbers", () => {
     expect(unresolvedBlockerNumbers(issues, states)).toEqual([98]);
   });
 
+  test("names the outside blocker a member is waiting on across the boundary (#383)", () => {
+    const issues = [issue({ number: 10, body: "Blocked by #5" })];
+    const states = new Map<number, BlockerPrState>([
+      [5, { hasOpenPr: true, openPrNumber: asPrNumber(99), hasMergedPr: false }],
+    ]);
+    const featureOf: FeatureLookup = (issueNumber) =>
+      issueNumber === 10 ? { issueNumber: 1, title: "Feature", branch: featureBranch(1) } : null;
+
+    // Without the lookup the member reads as stacked, so nothing is waiting.
+    expect(unresolvedBlockerNumbers(issues, states)).toEqual([]);
+    expect(unresolvedBlockerNumbers(issues, states, undefined, undefined, featureOf)).toEqual([5]);
+  });
+
   test("excludes processing issues from the unresolved-blocker report", () => {
     const issues = [
       issue({ number: 102, body: "Blocked by #98", labels: ["ready-for-agent", "processing"] }),
@@ -422,6 +531,12 @@ describe("stackedPrComment", () => {
     expect(comment).toContain("#98");
     expect(comment).toContain("PR #104");
     expect(comment).toContain("Do not merge");
+  });
+
+  test("names the feature branch when the blocked PR is a member (#383)", () => {
+    const comment = stackedPrComment(98, asPrNumber(104), featureBranch(1));
+    expect(comment).toContain(`\`${featureBranch(1)}\``);
+    expect(comment).not.toContain("`main`");
   });
 
   test("uses config.defaultBranch in the warning text", () => {

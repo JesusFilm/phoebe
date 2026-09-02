@@ -92,12 +92,20 @@ export function issueBranch(issueNumber: number): BranchRef {
 }
 
 /**
+ * How the engine answers "which live feature does this issue belong to?" —
+ * `null` for an issue that belongs to none. Base resolution asks twice: once for
+ * the issue, once for its blocker, because the two answers together decide
+ * whether a dependency stacks or waits (#383).
+ */
+export type FeatureLookup = (issueNumber: number) => Feature | null;
+
+/**
  * Resolve the worktree base for an issue.
  * Returns `null` when the issue should be skipped this cycle (blocked with no
- * open/merged blocker PR).
+ * usable blocker state, or blocked across a feature's boundary).
  *
  * Three arms after the `PHOEBE_BASE` escape hatch:
- *   1. Blocked → stacking arm (unchanged).
+ *   1. Blocked → stacking arm, floored on the feature branch for a member (#383).
  *   2. Unblocked member of a live feature → feature branch arm (#379).
  *   3. Unblocked, no feature → default branch arm.
  */
@@ -105,17 +113,49 @@ export function resolveWorktreeBase(
   issue: Issue,
   blockerStates: ReadonlyMap<number, BlockerPrState>,
   phoebeBase?: string,
-  feature?: Feature | null,
+  featureOf?: FeatureLookup,
 ): BaseResolution | null {
   if (phoebeBase) {
     return { worktreeBase: phoebeBase, stacked: false };
   }
+
+  const feature = featureOf?.(issue.number) ?? null;
+
+  // Where this issue starts when nothing is holding it: the feature branch for a
+  // member (#379), the default branch for everyone else. Also where a member
+  // lands once its blocker is done, since a resolved blocker leaves no stack to
+  // join.
+  const ownBase = (): BaseResolution =>
+    feature
+      ? {
+          worktreeBase: `origin/${feature.branch}`,
+          stacked: false,
+          featureIssueNumber: feature.issueNumber,
+          featureIssueTitle: feature.title,
+        }
+      : { worktreeBase: `origin/${config.defaultBranch}`, stacked: false };
 
   const blockers = parseBlockedBy(issue.body);
   if (blockers.length > 0) {
     const blockerIssueNumber = blockers[0]!;
     const state = blockerStates.get(blockerIssueNumber);
     if (!state) {
+      return null;
+    }
+    const blockerFeature = featureOf?.(blockerIssueNumber) ?? null;
+
+    // A dependency that crosses a feature's boundary cannot be stacked: the two
+    // branches are bound for different places, so basing either on the other
+    // would strand its work on the wrong side (#383). Both sides therefore wait
+    // — the idle log names the blocker.
+    if (feature?.issueNumber !== blockerFeature?.issueNumber) {
+      // Unless the outside blocker is already done: its work is on the default
+      // branch, and the catch-up (#382) carries it onto the feature branch. A
+      // blocker *inside* a feature is never done in this sense — its work
+      // reaches the default branch only when the whole feature does.
+      if (blockerFeature === null && (state.hasMergedPr || state.blockerCompleted)) {
+        return ownBase();
+      }
       return null;
     }
 
@@ -125,35 +165,30 @@ export function resolveWorktreeBase(
         stacked: true,
         blockerIssueNumber,
         blockerPrNumber: state.openPrNumber,
+        // Carried so the member's stack is floored on the feature branch rather
+        // than the default one: the bottom layer is the blocker's PR, which
+        // already targets the feature branch, and the fallback when the Stacks
+        // API cannot express the stack must not retarget off it (#376).
+        ...(feature
+          ? { featureIssueNumber: feature.issueNumber, featureIssueTitle: feature.title }
+          : {}),
       };
     }
 
     if (state.hasMergedPr) {
-      return { worktreeBase: `origin/${config.defaultBranch}`, stacked: false };
+      return ownBase();
     }
 
     // Work that landed outside `branchPrefix` leaves no Phoebe PR to find; a
     // blocker issue closed as completed is the signal that it is done anyway.
     if (state.blockerCompleted) {
-      return { worktreeBase: `origin/${config.defaultBranch}`, stacked: false };
+      return ownBase();
     }
 
     return null;
   }
 
-  // Feature arm: unblocked member of a live feature routes onto the feature
-  // branch; the PR targets it instead of the default branch. The branch and its
-  // draft integration PR are created on first use by the work kind's run phase.
-  if (feature) {
-    return {
-      worktreeBase: `origin/${feature.branch}`,
-      stacked: false,
-      featureIssueNumber: feature.issueNumber,
-      featureIssueTitle: feature.title,
-    };
-  }
-
-  return { worktreeBase: `origin/${config.defaultBranch}`, stacked: false };
+  return ownBase();
 }
 
 /**
@@ -177,18 +212,22 @@ export function isCompletedBlockerIssue(view: {
  *
  * Reports the same blocker `resolveWorktreeBase` gated on — the first — so the
  * log never names a blocker that is not actually what is holding the issue.
+ * `featureOf` is passed through for the same reason: without it a member waiting
+ * across its feature's boundary (#383) reads as workable here and its blocker
+ * goes unnamed.
  */
 export function unresolvedBlockerNumbers(
   issues: readonly Issue[],
   blockerStates: ReadonlyMap<number, BlockerPrState>,
   phoebeBase?: string,
   processingLabel?: string,
+  featureOf?: FeatureLookup,
 ): number[] {
   const waiting = new Set<number>();
   for (const issue of issues) {
     if (issue.labels.includes(PHOEBE_QUARANTINE_LABEL)) continue;
     if (processingLabel && issue.labels.includes(processingLabel)) continue;
-    if (resolveWorktreeBase(issue, blockerStates, phoebeBase)) continue;
+    if (resolveWorktreeBase(issue, blockerStates, phoebeBase, featureOf)) continue;
     const gating = parseBlockedBy(issue.body)[0];
     if (gating !== undefined) {
       waiting.add(gating);
@@ -203,7 +242,7 @@ export function selectIssue(
   blockerStates: ReadonlyMap<number, BlockerPrState>,
   phoebeBase?: string,
   processingLabel?: string,
-  resolveFeatureFor?: (issueNumber: number) => Feature | null,
+  resolveFeatureFor?: FeatureLookup,
 ): { issue: Issue; resolution: BaseResolution } | null {
   // Quarantined issues/research tickets (#75) are skipped for work until a human
   // clears the label or the issue is edited (the auto-un-stick sweep).
@@ -216,8 +255,7 @@ export function selectIssue(
   );
   const sorted = [...eligible].sort(compareIssues);
   for (const issue of sorted) {
-    const feature = resolveFeatureFor ? resolveFeatureFor(issue.number) : undefined;
-    const resolution = resolveWorktreeBase(issue, blockerStates, phoebeBase, feature);
+    const resolution = resolveWorktreeBase(issue, blockerStates, phoebeBase, resolveFeatureFor);
     if (resolution) {
       return { issue, resolution };
     }
@@ -228,12 +266,21 @@ export function selectIssue(
 /** The blocker a stacked PR sits on: the blocking issue and its open PR. */
 export type StackedOn = { blockerIssueNumber: number; blockerPrNumber: PrNumber };
 
-export function stackedPrComment(blockerIssueNumber: number, blockerPrNumber: PrNumber): string {
+/**
+ * The ⛓️ do-not-merge banner, used when native stacking is unavailable.
+ * `mergesInto` names where merging early would land the blocker's work — the
+ * default branch for an ordinary PR, the feature branch for a member (#383).
+ */
+export function stackedPrComment(
+  blockerIssueNumber: number,
+  blockerPrNumber: PrNumber,
+  mergesInto: string = config.defaultBranch,
+): string {
   return (
     `⛓️ Blocked by #${blockerIssueNumber} (PR #${blockerPrNumber}). ` +
     `Its commits appear in this diff until #${blockerPrNumber} merges. ` +
     `**Do not merge this PR before #${blockerPrNumber}** — doing so would pull ` +
-    `#${blockerIssueNumber}'s work into \`${config.defaultBranch}\` ahead of its own review.`
+    `#${blockerIssueNumber}'s work into \`${mergesInto}\` ahead of its own review.`
   );
 }
 

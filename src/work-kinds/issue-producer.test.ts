@@ -10,7 +10,7 @@ import { featureBranch, type Feature } from "../feature-branch.ts";
 import { isLabelNotFoundError } from "../gh-error.ts";
 import { issueProducerKind, type IssueProducerUnit } from "./issue-producer.ts";
 import type { WorkKindCtx, WorkKindRunCtx } from "./definition.ts";
-import type { Issue } from "../orchestrator.ts";
+import { issueBranch, type Issue } from "../orchestrator.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -343,7 +343,7 @@ describe("issueProducerKind.select — feature arm routing", () => {
     expect(result.unit?.resolution.featureIssueNumber).toBeUndefined();
   });
 
-  test("stacked issue bypasses the feature arm", () => {
+  test("member blocked by a member of the same feature stacks and keeps the feature", () => {
     const blockedIssue = anIssue(10, { body: "Blocked by #5" });
     const kind = buildKind([blockedIssue]);
     const ctx: WorkKindCtx = {
@@ -358,7 +358,24 @@ describe("issueProducerKind.select — feature arm routing", () => {
     };
     const result = kind.select({ issues: [blockedIssue] }, ctx);
     expect(result.unit?.resolution.stacked).toBe(true);
-    expect(result.unit?.resolution.featureIssueNumber).toBeUndefined();
+    expect(result.unit?.resolution.worktreeBase).toBe(`origin/${issueBranch(5)}`);
+    expect(result.unit?.resolution.featureIssueNumber).toBe(1);
+  });
+
+  test("member blocked by a non-member is skipped", () => {
+    const blockedIssue = anIssue(10, { body: "Blocked by #5" });
+    const kind = buildKind([blockedIssue]);
+    const ctx: WorkKindCtx = {
+      ...makeSelectCtx(() => null),
+      cycle: {
+        issueBody: () => null,
+        registerIssues: () => {},
+        blockerStates: () =>
+          new Map([[5, { hasOpenPr: true, openPrNumber: asPrNumber(99), hasMergedPr: false }]]),
+        feature: (n) => (n === 10 ? liveFeature(1) : null),
+      },
+    };
+    expect(kind.select({ issues: [blockedIssue] }, ctx).unit).toBeNull();
   });
 
   test("integration PR number is carried through when the feature already has one", () => {

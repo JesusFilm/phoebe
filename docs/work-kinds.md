@@ -71,25 +71,43 @@ The producer. Selection (`selectIssue`):
 3. For each candidate in order, resolve a worktree base; take the first issue
    that resolves.
 
-**Base resolution** (`resolveWorktreeBase`) handles blockers:
+**Base resolution** (`resolveWorktreeBase`) handles blockers and feature
+membership together:
 
 - `PHOEBE_BASE` set → use it verbatim (escape hatch, no blocker logic).
-- No `Blocked by #N` reference → base `origin/main`.
-- Blocked, blocker PR **open** → **stack** on `origin/<blocker branch>`; the
-  opened PR targets the blocker's branch and is added to the blocker's native
-  GitHub stack (created if the blocker has none), so merge ordering and
-  post-merge rebase/retarget are GitHub's job. When the Stacks API is
-  unavailable (it is a public preview), the PR is retargeted to the default
-  branch instead and gets a ⛓️ banner comment warning not to merge before the
-  blocker.
-- Blocked, blocker PR **merged** → base `origin/main` (blocker work is already
-  in the base).
+- No `Blocked by #N` reference → base `origin/main`, or `origin/<feature branch>`
+  when the issue belongs to a live feature
+  ([#341](https://github.com/JesusFilm/phoebe/issues/341)).
+- Blocked by an issue on the **same side** of the feature boundary — both
+  members of one feature, or neither in a feature — with the blocker PR
+  **open** → **stack** on `origin/<blocker branch>`; the opened PR targets the
+  blocker's branch and is added to the blocker's native GitHub stack (created if
+  the blocker has none), so merge ordering and post-merge rebase/retarget are
+  GitHub's job. Inside a feature the stack's floor is the feature branch rather
+  than the default one: the bottom layer is the blocker's own PR, which already
+  targets it. When the Stacks API is unavailable (it is a public preview), the PR
+  gets a ⛓️ banner comment warning not to merge before the blocker, and is
+  retargeted to the default branch — except for a member, whose base is left
+  alone. Retargeting a member would take its work off the feature branch, which
+  is the point of the whole arm
+  ([#383](https://github.com/JesusFilm/phoebe/issues/383)).
+- Blocked **across a feature's boundary** → **skip** this cycle; the idle log
+  names the blocker. Neither side can stack on the other, because the two
+  branches are bound for different places. A member blocked by an outsider waits
+  for that PR to merge into the default branch, after which the
+  [catch-up](#the-feature-branch-catch-up) carries the work onto the feature
+  branch and the member proceeds normally. An outsider blocked by a member waits
+  for the feature itself: a member's work reaches the default branch only when
+  the integration PR merges.
+- Blocked, blocker PR **merged** → base `origin/main`, or the feature branch for
+  a member (the blocker work is already in the base, or on its way there via the
+  catch-up).
 - Blocked, no blocker PR either way, but the blocker **issue is closed as
-  completed** → base `origin/main`, unstacked. The work landed outside
-  `branchPrefix` (a human's branch, another tool's) and who built it is not
-  Phoebe's business. The `gh issue view` that answers this fires only when both
-  PR lookups come back empty. Closed as **not planned** does not count, because
-  an abandoned blocker leaves the dependent on unbuilt ground.
+  completed** → the same base as a merged blocker, unstacked. The work landed
+  outside `branchPrefix` (a human's branch, another tool's) and who built it is
+  not Phoebe's business. The `gh issue view` that answers this fires only when
+  both PR lookups come back empty. Closed as **not planned** does not count,
+  because an abandoned blocker leaves the dependent on unbuilt ground.
 - Blocked, blocker has **no** open or merged PR and is not closed as completed →
   **skip** this cycle. The idle log names the blockers it is waiting on.
 
@@ -112,7 +130,9 @@ issue number).
    (`stackPrOnto`): join the blocker's stack when the blocker is its top open
    layer, found a stack when it has none. When the PR cannot be stacked — the
    preview API is absent, or the blocker is buried under another layer — post
-   the ⛓️ banner comment (once) and retarget the PR onto the default branch.
+   the ⛓️ banner comment (once) and retarget the PR onto the default branch. A
+   feature member gets the banner and keeps its base: it waits on its blocker,
+   and GitHub carries it onto the feature branch when that blocker merges.
 
 The issue prompt has the agent claim the issue first, swapping `readyLabel` for
 `processingLabel`, so parallel operators and humans see it is in flight.

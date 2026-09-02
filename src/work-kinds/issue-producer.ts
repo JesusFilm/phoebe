@@ -43,6 +43,7 @@ function idleBlockerReason(issues: readonly Issue[], ctx: WorkKindCtx): string {
     ctx.cycle.blockerStates(),
     ctx.env["PHOEBE_BASE"],
     ctx.config.processingLabel,
+    (issueNumber) => ctx.cycle.feature(issueNumber),
   );
   if (waiting.length > 0) return `(waiting on blockers ${waiting.map((n) => `#${n}`).join(", ")})`;
   if (processingCount > 0) return `(${processingCount} already in progress)`;

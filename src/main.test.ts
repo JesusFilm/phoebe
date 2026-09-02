@@ -27,7 +27,7 @@ import {
 } from "./branded.ts";
 import { resolveConfig, type PhoebeUserConfig } from "./config-schema.ts";
 import type { GitRunner } from "./git-model.ts";
-import { featureBranch } from "./feature-branch.ts";
+import { featureBranch, type IssueGraphNode } from "./feature-branch.ts";
 import { CLOSES_SECTION_START } from "./feature-closes.ts";
 import type { QuarantinedUnit } from "./github-client.ts";
 import { stubGitHub, type GitHubStubOverrides } from "./github-stub.ts";
@@ -895,12 +895,28 @@ describe("the un-stick sweep", () => {
 });
 
 describe("the stale-stack sweep", () => {
+  /** An issue belonging to no feature — what the sweep reads to place a PR. */
+  function unaffiliated(issueNumber: number): IssueGraphNode {
+    return {
+      number: issueNumber,
+      title: `Ticket ${issueNumber}`,
+      labels: [],
+      body: "",
+      closed: false,
+      parentNumber: null,
+    };
+  }
+
   /** A wet `--run-once` cycle: it sweeps, finds no work, and exits. */
   function sweepCycle(github: GitHubStubOverrides) {
     return runCycle({
       env: { GH_TOKEN: "a-token" },
       config: { workOrder: ["issues"] },
-      github: { listReadyIssues: () => [], ...github },
+      github: {
+        listReadyIssues: () => [],
+        issueGraphNode: unaffiliated,
+        ...github,
+      },
       run: { runOnce: true, dryRun: false },
     });
   }
@@ -933,6 +949,62 @@ describe("the stale-stack sweep", () => {
       "[phoebe] PR #22 removed from stack #3 — blocker #5 completed without merging its PR.",
     );
     expect(result.lines).toContain("[phoebe] PR #22 retargeted onto main.");
+  });
+
+  test("a member's PR goes back onto its feature branch, not the default branch", async () => {
+    const writes: string[] = [];
+    const result = await sweepCycle({
+      listNativelyStackedPrs: () => [
+        {
+          number: asPrNumber(22),
+          headRefName: issueBranch(8),
+          baseRefName: issueBranch(5),
+        },
+      ],
+      issueGraphNode: (n) =>
+        n === 8
+          ? { ...unaffiliated(8), parentNumber: 1 }
+          : n === 1
+            ? { ...unaffiliated(1), labels: ["phoebe:feature"] }
+            : unaffiliated(n),
+      featureIntegrationPr: () => ({ number: asPrNumber(50), state: "OPEN" }),
+      blockerPrState: () => ({ hasOpenPr: false, hasMergedPr: false, blockerCompleted: true }),
+      unstackPr: () => ({ unstacked: true, stackNumber: 3 }),
+      retargetPr: (prNumber, base) => {
+        writes.push(`retarget ${prNumber} ${base}`);
+      },
+    });
+
+    expect(writes).toEqual([`retarget 22 ${featureBranch(1)}`]);
+    expect(result.lines).toContain(`[phoebe] PR #22 retargeted onto ${featureBranch(1)}.`);
+  });
+
+  test("an unreadable feature graph leaves the PR's base unchanged", async () => {
+    const writes: string[] = [];
+    const result = await sweepCycle({
+      listNativelyStackedPrs: () => [
+        {
+          number: asPrNumber(22),
+          headRefName: issueBranch(8),
+          baseRefName: issueBranch(5),
+        },
+      ],
+      issueGraphNode: (n) => {
+        if (n === 8) throw new Error("gh exploded");
+        return unaffiliated(n);
+      },
+      blockerPrState: () => ({ hasOpenPr: false, hasMergedPr: false, blockerCompleted: true }),
+      unstackPr: () => ({ unstacked: true, stackNumber: 3 }),
+      retargetPr: (prNumber, base) => {
+        writes.push(`retarget ${prNumber} ${base}`);
+      },
+    });
+
+    expect(writes).toEqual([]);
+    expect(result.lines).toContain(
+      "[phoebe] Could not determine feature membership for PR #22 — " +
+        "leaving its base unchanged until the next sweep.",
+    );
   });
 
   test("a stacked PR whose blocker still has an open PR is left alone", async () => {
