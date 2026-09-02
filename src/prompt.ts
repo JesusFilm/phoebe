@@ -113,6 +113,11 @@ export function buildDefaultPromptArgs(config: PhoebeConfig): PromptArgs {
     TEST_COMMAND: config.testCommand,
     READY_COMMAND: config.readyCommand,
     DEFAULT_BRANCH: config.defaultBranch,
+    // The base of the PR under work, when there is one. The default branch is
+    // the right answer for every PR but a feature member (#392), and a kind
+    // that knows better overrides it per callsite — a default here is what lets
+    // any template name the base without a per-kind guard.
+    BASE_BRANCH: config.defaultBranch,
     BRANCH_PREFIX: config.branchPrefix,
     READY_LABEL: config.readyLabel,
     RESEARCH_LABEL: config.researchLabel,

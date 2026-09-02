@@ -130,6 +130,13 @@ export type StackedPhoebePr = {
 export type PrMergeInfo = {
   number: PrNumber;
   headRefName: BranchRef;
+  /**
+   * The branch this PR merges into. For an ordinary PR and for a feature's
+   * integration PR that is the default branch; for a feature member it is the
+   * feature branch (#392). Every catch-up merge reads it rather than assuming
+   * the default branch.
+   */
+  baseRefName: BranchRef;
   headRefOid: Sha;
   mergeable: string;
   mergeStateStatus: string;
@@ -585,6 +592,7 @@ export function createGitHubClient({
     const raw = ghJson<{
       number: number;
       headRefName: string;
+      baseRefName: string;
       headRefOid: string;
       mergeable: string;
       mergeStateStatus: string;
@@ -593,11 +601,12 @@ export function createGitHubClient({
       "view",
       String(prNumber),
       "--json",
-      "number,headRefName,headRefOid,mergeable,mergeStateStatus",
+      "number,headRefName,baseRefName,headRefOid,mergeable,mergeStateStatus",
     ]);
     return {
       number: asPrNumber(raw.number),
       headRefName: asBranchRef(raw.headRefName),
+      baseRefName: asBranchRef(raw.baseRefName),
       headRefOid: asSha(raw.headRefOid),
       mergeable: raw.mergeable,
       mergeStateStatus: raw.mergeStateStatus,

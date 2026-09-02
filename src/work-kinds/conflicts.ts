@@ -10,6 +10,13 @@
 // So the integration PR is selected on distance from the default branch, and
 // then travels the ordinary run path: `cleanMerge`, the `conflict` prompt when
 // that dirties, the `phoebe-conflict-fail` watermark when neither resolves it.
+//
+// Every merge here is against the PR's own base (#392), not the default branch.
+// They are the same branch for an ordinary PR and for an integration PR; for a
+// feature member the base is the feature branch, and that is the merge GitHub
+// was reporting a conflict against. Catching such a PR up with the default
+// branch instead resolves a different merge and pushes commits `main` has and
+// the feature branch does not into a diff its reviewer never asked for.
 
 import type { PhoebeConfig } from "../config-schema.ts";
 import { parseFeatureIssueNumber } from "../feature-branch.ts";
@@ -33,6 +40,7 @@ import {
   type WorkUnitGitHubTarget,
 } from "./definition.ts";
 import {
+  baseBranchOf,
   collectIssueBodies,
   collectPrCandidates,
   freshPrHeadWatermark,
@@ -119,6 +127,7 @@ export function conflictsKind(config: PhoebeConfig): AnyWorkKindDefinition {
         return {
           prNumber: info.number,
           headRefName: info.headRefName,
+          baseRefName: info.baseRefName,
           headSha: info.headRefOid,
           ...(issueNumber !== null ? { issueNumber } : {}),
         };
@@ -166,20 +175,21 @@ export function conflictsKind(config: PhoebeConfig): AnyWorkKindDefinition {
     async run(unit, ctx) {
       const pr = unit.pr;
       const merged = unit.mergedBlockerPrNumbers;
+      const base = baseBranchOf(pr, ctx);
       const what = isIntegrationBranch(pr.headRefName) ? "Feature-branch catch-up" : "Conflict fix";
-      ctx.log(`${what}: PR #${pr.prNumber} (${pr.headRefName}).`);
+      ctx.log(`${what}: PR #${pr.prNumber} (${pr.headRefName}) onto ${base}.`);
       ctx.origin.fetch();
       if (merged.length > 0) {
         ctx.log(
           `Stacked catch-up: merging blocker PR(s) ${merged.map((n) => `#${n}`).join(", ")} ` +
-            `before ${ctx.config.defaultBranch}.`,
+            `before ${base}.`,
         );
       }
 
       // The no-agent clean merge first; only bring in the agent when real
       // conflicts remain. A merge that fails without unresolved paths has
       // nothing there for the agent to resolve.
-      const cleanResult = ctx.agent.cleanMerge(pr.headRefName, merged);
+      const cleanResult = ctx.agent.cleanMerge(pr.headRefName, merged, base);
       if (cleanResult === "pushed") {
         ctx.log(`Clean merge for PR #${pr.prNumber} — pushed.`);
         if (merged.length > 0) {
@@ -201,9 +211,11 @@ export function conflictsKind(config: PhoebeConfig): AnyWorkKindDefinition {
         promptArgs: {
           PR_NUMBER: String(pr.prNumber),
           PR_BRANCH: pr.headRefName,
+          BASE_BRANCH: base,
           BLOCKER_PR_NUMBERS: merged.join(","),
         },
         primeBlockerMerges: merged,
+        baseBranch: base,
         onResult: ({ originShaBefore, originShaAfter, localCommitCount, push }) => {
           const prInfo = ctx.github.currentMergeInfo(pr.prNumber);
           if (

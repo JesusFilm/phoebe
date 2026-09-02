@@ -2,8 +2,9 @@
 // PRs, reading each candidate's issue body through the cycle cache (dropping
 // candidates whose body cannot be read — a body the selectors cannot find would
 // read as "not stacked"), assembling the select-time stack context, deriving the
-// merged-blocker list a unit's run catches up on, and taking the fresh origin
-// snapshot a failure watermark is built from.
+// merged-blocker list a unit's run catches up on, resolving the base branch its
+// catch-up merges target, and taking the fresh origin snapshot a failure
+// watermark is built from.
 
 import {
   getMergedBlockerPrNumbers,
@@ -16,6 +17,23 @@ import type { BranchRef, PrNumber, Sha } from "../branded.ts";
 import type { WorkKindCtx } from "./definition.ts";
 
 type PrCandidate = { issueNumber?: number; headRefName: BranchRef };
+
+/**
+ * The branch a PR should be caught up with: its own base, falling back to the
+ * default branch when the candidate does not carry one (#392).
+ *
+ * Before the feature arm every Phoebe PR was based on the default branch, so
+ * the two answers coincided and the janitors hardcoded the default. A feature
+ * member is based on `<branchPrefix>feature-<M>`, and merging the default
+ * branch into it resolves a merge GitHub never reported while dragging in every
+ * commit `main` has moved by.
+ */
+export function baseBranchOf(
+  pr: { baseRefName?: BranchRef },
+  ctx: { config: { defaultBranch: string } },
+): string {
+  return pr.baseRefName ?? ctx.config.defaultBranch;
+}
 
 /**
  * Walk this cycle's open PRs, resolving each one's merge info, and collect the
