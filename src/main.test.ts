@@ -979,6 +979,34 @@ describe("the stale-stack sweep", () => {
     expect(result.lines).toContain(`[phoebe] PR #22 retargeted onto ${featureBranch(1)}.`);
   });
 
+  test("an unreadable feature graph leaves the PR's base unchanged", async () => {
+    const writes: string[] = [];
+    const result = await sweepCycle({
+      listNativelyStackedPrs: () => [
+        {
+          number: asPrNumber(22),
+          headRefName: issueBranch(8),
+          baseRefName: issueBranch(5),
+        },
+      ],
+      issueGraphNode: (n) => {
+        if (n === 8) throw new Error("gh exploded");
+        return unaffiliated(n);
+      },
+      blockerPrState: () => ({ hasOpenPr: false, hasMergedPr: false, blockerCompleted: true }),
+      unstackPr: () => ({ unstacked: true, stackNumber: 3 }),
+      retargetPr: (prNumber, base) => {
+        writes.push(`retarget ${prNumber} ${base}`);
+      },
+    });
+
+    expect(writes).toEqual([]);
+    expect(result.lines).toContain(
+      "[phoebe] Could not determine feature membership for PR #22 — " +
+        "leaving its base unchanged until the next sweep.",
+    );
+  });
+
   test("a stacked PR whose blocker still has an open PR is left alone", async () => {
     // unstackPr and retargetPr not stubbed — any call would throw.
     await sweepCycle({

@@ -547,15 +547,19 @@ export function createEngine(options: EngineOptions): Engine {
    * The live feature a Phoebe issue belongs to, read straight from GitHub.
    * The sweeps run before the cycle's memoized reader exists, and they ask only
    * about the handful of PRs they are about to touch, so the reads are cheap.
-   * An unreadable graph answers `null` — an issue Phoebe cannot place is treated
-   * as belonging to no feature, the same call the cycle reader makes.
+   * `undefined` means the graph could not be read — distinct from `null`, which
+   * means the graph was read and the issue belongs to no feature. Callers must
+   * not treat an unreadable graph as "no feature": doing so can retarget a real
+   * feature member onto the default branch on a transient GitHub failure.
    */
-  function featureForIssue(issueNumber: number): Feature | null {
-    return resolveFeature(issueNumber, {
+  function featureForIssue(issueNumber: number): Feature | null | undefined {
+    let unreadable = false;
+    const feature = resolveFeature(issueNumber, {
       issueGraphNode: (n) => {
         try {
           return github.issueGraphNode(n);
         } catch (error) {
+          unreadable = true;
           console.warn(
             `[phoebe] Could not read feature membership at #${n} — ` +
               `${error instanceof Error ? error.message : String(error)}`,
@@ -567,6 +571,7 @@ export function createEngine(options: EngineOptions): Engine {
         try {
           return { pr: github.featureIntegrationPr(n) };
         } catch (error) {
+          unreadable = true;
           console.warn(
             `[phoebe] Could not read the integration PR for feature #${n} — ` +
               `${error instanceof Error ? error.message : String(error)}`,
@@ -575,6 +580,7 @@ export function createEngine(options: EngineOptions): Engine {
         }
       },
     });
+    return feature ?? (unreadable ? undefined : null);
   }
 
   /**
@@ -635,6 +641,13 @@ export function createEngine(options: EngineOptions): Engine {
         // base resolution puts it now that its blocker is done (#383).
         const stackedIssueNumber = parseIssueNumberFromBranch(pr.headRefName);
         const feature = stackedIssueNumber === null ? null : featureForIssue(stackedIssueNumber);
+        if (feature === undefined) {
+          console.warn(
+            `[phoebe] Could not determine feature membership for PR #${pr.number} — ` +
+              `leaving its base unchanged until the next sweep.`,
+          );
+          continue;
+        }
         const target = feature ? feature.branch : prBase;
         github.retargetPr(pr.number, target);
         console.log(`[phoebe] PR #${pr.number} retargeted onto ${target}.`);
