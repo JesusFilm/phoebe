@@ -52,7 +52,7 @@ on #400 waits on.
 
 ## Ingestion: how a Slack message becomes a wake
 
-```
+```text
 Slack ──socket──▶ NanoClaw router
                       │ message interceptor (plain code, no LLM)
                       └▶ POST 127.0.0.1:8787/wake ──▶ watcher ──▶ runPiperCycle
@@ -174,8 +174,9 @@ else" (watcher README). Dedup is layered instead:
 - **No inbound ingress anywhere**: Socket Mode outbound WebSocket + loopback-only HTTP
   between the two local processes. An always-on Slack intake à la hatsu needs an
   outbound-capable long-lived process, not a public URL.
-- **Two long-lived processes**, systemd-supervised (the NanoClaw socket holder is live as
-  a user unit; the watcher's unit is planned, ENG-3737 —
+- **Two long-lived processes.** At `a321d77` only the NanoClaw socket holder is
+  systemd-supervised (live as a user unit); the watcher runs without restart
+  supervision, its unit still planned under ENG-3737 (
   [infra/README.md](https://github.com/JesusFilm/hatsu/blob/a321d77ae7ad56cdc99c900b2fa637fe702e68b4/infra/README.md)).
   Runtime is Node ≥22 running TypeScript directly (`--experimental-strip-types`,
   [package.json](https://github.com/JesusFilm/hatsu/blob/a321d77ae7ad56cdc99c900b2fa637fe702e68b4/package.json)).
@@ -210,8 +211,10 @@ inherits:
   immediate / 1 min / 5 min, and Slack disables event subscriptions above 95% delivery
   failure in a 60-minute window (apps under 1,000 events/hour exempt)
   ([Events API](https://docs.slack.dev/apis/events-api/)). Since `phoebe boot`
-  relaunches the engine when the ref or config moves, an HTTP intake would drop events
-  across every relaunch, where a Socket-Mode restart costs latency and nothing else.
+  relaunches the engine when the ref or config moves, an HTTP intake would lose any
+  event whose acks fail through the whole retry window — that is, whenever a relaunch
+  (or the gap until durable handoff) outlasts the ~6 minutes of retries — where a
+  Socket-Mode restart costs latency and nothing else.
 
 One caveat the other way: Slack recommends Socket Mode for local development and HTTP
 Request URLs for deployed team apps, and Socket Mode is barred from the public Slack
