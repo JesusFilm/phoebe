@@ -188,3 +188,32 @@ else" (watcher README). Dedup is layered instead:
 - **Crash tolerance comes from statelessness**: because intake state lives in the issue
   body and everything is re-derived, restart/redeploy of the intake pipeline loses
   latency only — a property worth requiring of any phoebe intake pipeline contract.
+
+## Slack platform constraints (from Slack's docs, corroborating the above)
+
+A parallel pass over Slack's own documentation (see the second comment on
+[#405](https://github.com/JesusFilm/phoebe/issues/405)) confirmed the load-bearing facts
+from the outside — Socket Mode needs no public Request URL, `connections:write` is the
+Socket-Mode switch, and the internal-vs-distributed rate-limit split is exactly as the
+shim README describes. It also surfaced four platform limits any phoebe Slack intake
+inherits:
+
+- **Ten concurrent WebSocket connections per app** — a ceiling on socket-holding
+  processes if intake ever runs per-tenant against one shared Slack app
+  ([Socket Mode](https://docs.slack.dev/apis/events-api/using-socket-mode/)).
+- **The socket URL refreshes regularly**: Slack sends a disconnect warning ~10 s ahead,
+  or a `refresh_requested` demanding immediate reconnection — a socket holder is not
+  fire-and-forget.
+- **30,000 event deliveries per workspace per app per 60 minutes**, then
+  `app_rate_limited`.
+- **If intake ever moves to HTTP**, events must be acked within 3 s; retries run
+  immediate / 1 min / 5 min, and Slack disables event subscriptions above 95% delivery
+  failure in a 60-minute window (apps under 1,000 events/hour exempt)
+  ([Events API](https://docs.slack.dev/apis/events-api/)). Since `phoebe boot`
+  relaunches the engine when the ref or config moves, an HTTP intake would drop events
+  across every relaunch, where a Socket-Mode restart costs latency and nothing else.
+
+One caveat the other way: Slack recommends Socket Mode for local development and HTTP
+Request URLs for deployed team apps, and Socket Mode is barred from the public Slack
+Marketplace. Neither binds an internal app; both would bite if this ever ships as a
+distributed product.
