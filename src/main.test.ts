@@ -16,7 +16,10 @@
 // records every call, so "no worktree, no push" is an assertion rather than a
 // hope.
 
-import { describe, expect, test } from "vite-plus/test";
+import { describe, expect, onTestFinished, test } from "vite-plus/test";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   asBranchRef,
   asPrNumber,
@@ -47,7 +50,7 @@ import {
 } from "./quarantine.ts";
 import { createEngine, type EngineRunOptions } from "./main.ts";
 import type { UnitRef } from "./unit-event.ts";
-import type { AnyWorkKindDefinition } from "./work-kinds/definition.ts";
+import type { AnyWorkKindDefinition, WorkspaceMode } from "./work-kinds/definition.ts";
 import { buildRegistry, type LoadedCustomKind } from "./work-kinds/registry.ts";
 
 // ---------------------------------------------------------------------------
@@ -268,10 +271,15 @@ async function runCycle(opts: {
   inContainer?: boolean;
   /** How many commits the default branch is ahead of each branch, keyed by branch. */
   behind?: Record<string, number>;
+  /** Root for this engine's derived tenant paths — a tmpdir when a test lets one be written. */
+  dataBase?: string;
 }): Promise<CycleResult> {
   const { git, calls: gitCalls } = stubGit(opts.shas ?? {}, opts.behind ?? {});
   const events: UnitRef[] = [];
-  const config = resolveConfig({ ...minimalUser(), ...opts.config });
+  const config = resolveConfig(
+    { ...minimalUser(), ...opts.config },
+    opts.dataBase !== undefined ? { dataBase: opts.dataBase } : {},
+  );
   const engine = createEngine({
     config,
     registry: buildRegistry(config, opts.customKinds ?? []),
@@ -1677,22 +1685,27 @@ describe("a custom kind in the walk", () => {
   });
 });
 
-// The scratch workspace is prepared on first read of `ctx.workspace.dir`, not
-// up front. These are the only tests that let a unit actually execute — the
-// container marker is injected rather than read — because "was a worktree
-// built?" is a question about the run path, not the selection path.
+// The engine-prepared workspace, in both declared modes. It is prepared on
+// first read of `ctx.workspace.dir`, not up front (#356), and `scratch` is a
+// plain directory with no clone and no git state (#358). These are the only
+// tests that let a unit actually execute — the container marker is injected
+// rather than read — because "what did the engine build?" is a question about
+// the run path, not the selection path.
 describe("the run workspace", () => {
-  /** A custom kind that executes, recording whether it read `workspace.dir`. */
-  function workspaceKind(opts: { readsDir: boolean }): {
+  /** What a run saw when it read `ctx.workspace.dir`. */
+  type WorkspaceSighting = { mode: string; dir: string; exists: boolean; entries: string[] };
+
+  /** A custom kind that executes, recording whether and what it read. */
+  function workspaceKind(opts: { readsDir: boolean; mode?: WorkspaceMode }): {
     kind: LoadedCustomKind;
-    dirsSeen: string[];
+    seen: WorkspaceSighting[];
   } {
-    const dirsSeen: string[] = [];
+    const seen: WorkspaceSighting[] = [];
     const definition: AnyWorkKindDefinition = {
       name: "nudge",
       oneShotEligible: true,
       promptFile: "prompts/nudge.md",
-      workspace: "worktree",
+      workspace: opts.mode ?? "worktree",
       report: {
         noun: "stale PR(s)",
         describe: (unit: { prNumber: number }) => `stale-PR nudge for PR #${unit.prNumber}`,
@@ -1707,21 +1720,32 @@ describe("the run workspace", () => {
         };
       },
       run: (_unit, ctx) => {
-        if (opts.readsDir) dirsSeen.push(ctx.workspace.dir);
+        if (opts.readsDir) {
+          const dir = ctx.workspace.dir;
+          const exists = existsSync(dir);
+          seen.push({
+            mode: ctx.workspace.mode,
+            dir,
+            exists,
+            entries: exists ? readdirSync(dir) : [],
+          });
+        }
         return Promise.resolve();
       },
     };
-    return { kind: { name: "nudge", definition, options: undefined }, dirsSeen };
+    return { kind: { name: "nudge", definition, options: undefined }, seen };
   }
 
-  async function executeNudge(readsDir: boolean): Promise<{
-    result: CycleResult;
-    dirsSeen: string[];
-  }> {
-    const { kind, dirsSeen } = workspaceKind({ readsDir });
+  async function executeNudge(opts: {
+    readsDir: boolean;
+    mode?: WorkspaceMode;
+    dataBase?: string;
+  }): Promise<{ result: CycleResult; seen: WorkspaceSighting[] }> {
+    const { kind, seen } = workspaceKind(opts);
     const result = await runCycle({
       config: { workOrder: ["nudge"] },
       customKinds: [kind],
+      ...(opts.dataBase !== undefined ? { dataBase: opts.dataBase } : {}),
       github: {
         ...prWorld([{ number: 44, issueNumber: 4 }]),
         // The boot-time login cross-check (#346) runs on an executing cycle.
@@ -1734,36 +1758,84 @@ describe("the run workspace", () => {
       inContainer: true,
       run: { runOnce: true, dryRun: false },
     });
-    return { result, dirsSeen };
+    return { result, seen };
+  }
+
+  /** A tenant data root a test may actually write to, removed afterwards. */
+  function tenantRoot(): string {
+    const root = mkdtempSync(join(tmpdir(), "phoebe-workspace-test-"));
+    onTestFinished(() => rmSync(root, { recursive: true, force: true }));
+    return root;
   }
 
   test("a run that never reads the dir builds no worktree", async () => {
-    const { result, dirsSeen } = await executeNudge(false);
+    const { result, seen } = await executeNudge({ readsDir: false });
 
     expect(result.events).toEqual([
       { kind: "nudge", id: "pr:44" },
       { kind: "nudge", id: "pr:44" },
     ]);
-    expect(dirsSeen).toEqual([]);
+    expect(seen).toEqual([]);
     // The unit ran to completion without a single worktree command — the churn
     // the eager workspace used to cost every unit, built-ins included.
     expect(result.gitCalls.filter((args) => args[0] === "worktree")).toEqual([]);
   });
 
   test("reading the dir materializes the worktree, and it is removed after", async () => {
-    const { dirsSeen } = await executeNudge(true);
+    const { seen } = await executeNudge({ readsDir: true });
 
-    expect(dirsSeen).toHaveLength(1);
-    expect(dirsSeen[0]).toContain("phoebe-workspace");
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.mode).toBe("worktree");
+    expect(seen[0]?.dir).toContain("phoebe-workspace");
   });
 
   test("the materialized worktree is added off the default branch and removed", async () => {
-    const { result } = await executeNudge(true);
+    const { result } = await executeNudge({ readsDir: true });
     const worktreeCalls = result.gitCalls.filter((args) => args[0] === "worktree");
 
     expect(worktreeCalls.some((args) => args[1] === "add")).toBe(true);
     expect(worktreeCalls.some((args) => args[1] === "remove")).toBe(true);
     expect(worktreeCalls.find((args) => args[1] === "add")?.at(-1)).toBe("origin/main");
+  });
+
+  test("a scratch kind gets a real, empty directory and no git at all", async () => {
+    const dataBase = tenantRoot();
+    const { result, seen } = await executeNudge({ readsDir: true, mode: "scratch", dataBase });
+
+    expect(seen[0]?.mode).toBe("scratch");
+    expect(seen[0]?.exists).toBe(true);
+    expect(seen[0]?.entries).toEqual([]);
+    expect(seen[0]?.dir).toBe(join(dataBase, "acme/widget/scratch/nudge"));
+    // No clone, no branch, no worktree plumbing: that is the whole point of the
+    // mode, and the assertion that separates it from a worktree that happens to
+    // look empty under the git stub.
+    expect(result.gitCalls.filter((args) => args[0] === "worktree")).toEqual([]);
+  });
+
+  test("the scratch directory is removed when the unit finishes", async () => {
+    const dataBase = tenantRoot();
+    const { seen } = await executeNudge({ readsDir: true, mode: "scratch", dataBase });
+
+    expect(seen[0]?.exists).toBe(true);
+    expect(existsSync(seen[0]?.dir ?? "")).toBe(false);
+  });
+
+  test("a scratch run that never reads the dir creates nothing", async () => {
+    const dataBase = tenantRoot();
+    await executeNudge({ readsDir: false, mode: "scratch", dataBase });
+
+    expect(existsSync(join(dataBase, "acme/widget/scratch"))).toBe(false);
+  });
+
+  test("a directory left behind by a killed run is cleared, not inherited", async () => {
+    const dataBase = tenantRoot();
+    const stale = join(dataBase, "acme/widget/scratch/nudge");
+    mkdirSync(stale, { recursive: true });
+    writeFileSync(join(stale, "half-written-draft.md"), "from the run that died");
+
+    const { seen } = await executeNudge({ readsDir: true, mode: "scratch", dataBase });
+
+    expect(seen[0]?.entries).toEqual([]);
   });
 });
 

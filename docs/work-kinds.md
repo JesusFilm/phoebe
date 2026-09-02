@@ -360,7 +360,7 @@ export default {
   name: "my-kind",              // must match the workKinds.custom key
   oneShotEligible: false,       // may a unit run under --run-once?
   promptFile: "prompts/my-kind-prompt.md",
-  workspace: "worktree",        // the one implemented mode (see edges below)
+  workspace: "worktree",        // or "scratch" — see the workspace modes below
   model: "…", effort: "…",      // optional agent defaults (see tuning below)
   report: {
     noun: "…(s)",               // idle-report noun
@@ -426,11 +426,23 @@ resolve. Everything arrives on `ctx` (types via `import type` from
 
 `run` receives the same surface widened with:
 
-- `ctx.workspace` — `{ mode: "worktree", dir }`: a scratch worktree of the
-  default branch, prepared and removed by the engine. It is the default cwd for
-  a bare `ctx.agent.run(...)`. The worktree is created the first time `dir` is
-  read, so a kind that builds its own worktrees (as all five built-ins do)
-  never pays for one.
+- `ctx.workspace` — `{ mode, dir }`: the workspace your definition's
+  `workspace` field asked for, prepared and removed by the engine, and the
+  default cwd for a bare `ctx.agent.run(...)`. Two modes:
+  - `"worktree"` — a git worktree of the default branch, off the tenant's
+    private clone. Repo context, and a branch to commit on.
+  - `"scratch"` — one empty directory: no clone, no branch, no git state. What
+    a kind that only needs somewhere to write files wants — drafts, a generated
+    report, a fetch-and-transform pass — without the cost and the branch
+    semantics of a checkout. Nothing stops a `"scratch"` kind from reaching git
+    through `ctx.agent.prWorkflow` / `issueWorkflow`, which build their own
+    branch-specific worktrees; the field governs the workspace the _engine_
+    prepares, not what your kind may do.
+
+  Either mode is created the first time `dir` is read, so a kind that builds its
+  own worktrees (as all five built-ins do) never pays for one, and a kind that
+  never writes a file never gets a directory.
+
 - `ctx.signal` — an `AbortSignal` that fires when the unit's wall-clock budget
   expires. Pass it to async operations (fetch, sleep, agent helpers) or poll
   `signal.aborted` to stop early and let the slot release cleanly. The engine
@@ -476,11 +488,15 @@ one-line name used in logs and `--dry-run` output.
 
 ### The edges are edges
 
-Four capabilities are deliberately absent from v1, each a named extension point
+Three capabilities are still deliberately absent, each a named extension point
 with a designed attachment — not an oversight. The design record is
 [`docs/research/slack-responder-sketch.md`](research/slack-responder-sketch.md):
-workspace modes `none`/`readonly` (new members of the `workspace` union),
 kind-declared credentials (`requiredEnv` punching kind-scoped holes in the
 agent env allowlist), non-GitHub work sources (already possible by construction
 — your fetch may call anything reachable; ctx owes it no HTTP convenience), and
 a kind-extended agent tool surface (kind-declared MCP servers).
+
+A fourth has landed: `"scratch"` is the sketch's plain-directory mode, shipped
+under a name that admits there is still a directory. The mode it named beside
+it, `readonly` — a worktree of the tenant clone under a don't-push contract —
+is still open, and the `workspace` union is where it attaches.

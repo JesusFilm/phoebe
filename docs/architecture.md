@@ -57,7 +57,7 @@ paths under `phoebe-data` are derived from `repoSlug` rather than configured:
 
 | Volume          | Mount          | Holds                                                                                                |
 | --------------- | -------------- | ---------------------------------------------------------------------------------------------------- |
-| `phoebe-data`   | `/data/repos`  | Every tenant's state, nested as `/data/repos/<owner>/<repo>/{repo,worktrees,state}`.                 |
+| `phoebe-data`   | `/data/repos`  | Every tenant's state, nested as `/data/repos/<owner>/<repo>/{repo,worktrees,state,scratch}`.         |
 | `phoebe-engine` | `/data/engine` | The shared engine checkout and the crash-loop record, so a restart re-fetches instead of re-cloning. |
 
 `PHOEBE_DATA_DIR` overrides the `/data/repos` base for host and dev runs. See

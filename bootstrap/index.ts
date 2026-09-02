@@ -45,6 +45,7 @@ export type {
   WorkKindSelection,
   WorkKindSkip,
   WorkspaceHandle,
+  WorkspaceMode,
   WorkUnitGitHubTarget,
   WorkUnitShape,
 } from "../src/work-kinds/definition.ts";

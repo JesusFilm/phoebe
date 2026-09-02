@@ -201,6 +201,12 @@ export type PathsConfig = {
   worktreesDir: string;
   /** Reserved per-tenant state (supervisor status.json, #73). */
   stateDir: string;
+  /**
+   * Root for `workspace: "scratch"` workspaces (#358) — one directory per
+   * kind, cleared and recreated per run. On the tenant volume rather than
+   * `/tmp` so it inherits per-tenant isolation and dies with the tenant's data.
+   */
+  scratchDir: string;
 };
 
 export type PhoebeConfig = {

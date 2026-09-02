@@ -124,6 +124,12 @@ intent the engine may later enforce, not a new mechanism. Attaches to: the defin
 `workspace` field, the engine's prepare/remove step, and the `WorkKindRunCtx.workspace`
 union.
 
+**Shipped (#358).** The first half of this landed as `workspace: "scratch"` —
+`{ mode: "scratch"; dir: string }`, one empty directory per kind under the tenant's
+`scratch/` root, created on first read of `dir` and removed with the unit. The name moved
+off `none` because the handle carries a `dir`: there is a workspace, it just is not a git
+tree. `readonly` is still open, and the union is still where it attaches.
+
 ### 2. Kind-declared credentials
 
 A Slack token has no home in Phoebe's credential machinery, and `src/agent-env.ts` is a

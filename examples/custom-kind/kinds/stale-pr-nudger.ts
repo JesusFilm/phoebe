@@ -43,7 +43,11 @@ export default function stalePrNudger(config: PhoebeConfig): WorkKindDefinition<
     name: "stale-pr-nudger",
     oneShotEligible: false,
     promptFile: "prompts/stale-pr-nudge-prompt.md",
-    workspace: "worktree",
+    // This kind posts one comment and never touches a file, let alone a
+    // branch: `"scratch"` (#358) hands `run` an empty directory instead of a
+    // checkout. The cost is that `gh` can no longer infer the repo from a
+    // remote, so the prompt names it — see `REPO_SLUG` in `run`.
+    workspace: "scratch",
     report: {
       noun: "stale PR(s)",
       describe: (unit) => `stale-PR nudge for PR #${unit.prNumber} (${unit.branch})`,
@@ -107,13 +111,17 @@ export default function stalePrNudger(config: PhoebeConfig): WorkKindDefinition<
       // and the run deadline are engine-fixed; the prompt (this kind's
       // `promptFile`) tells the agent to post the nudge comment — ending with
       // NUDGE_MARKER — via `gh`. Default cwd is the prepared workspace
-      // (`ctx.workspace.dir`), a scratch checkout of `${config.defaultBranch}`.
+      // (`ctx.workspace.dir`) — here an empty directory, created only because
+      // this line reads it.
       await ctx.agent.run({
         promptArgs: {
           PR_NUMBER: String(unit.prNumber),
           PR_BRANCH: unit.branch,
           // A factory can bake resolved-config values in like this.
           DEFAULT_BRANCH: config.defaultBranch,
+          // Every `gh` call in the prompt needs `-R` under a scratch
+          // workspace: there is no remote to infer the repo from.
+          REPO_SLUG: config.repoSlug,
           LAST_ACTIVITY_AT: unit.lastActivityAt ?? "unknown",
           NUDGE_MARKER,
         },

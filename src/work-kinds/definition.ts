@@ -161,14 +161,31 @@ export type WorkKindCtx = {
 
 /**
  * The workspace `run` receives, keyed by the definition's declared `workspace`
- * field. A discriminated member so future modes arrive as new members without
- * retyping existing kinds — the plain-directory workspace is #358. The engine
- * prepares and removes it; kinds never create workspaces themselves. The
- * worktree is materialized the first time `dir` is read, so a kind that builds
- * its own worktrees (as all five built-ins do) pays nothing for one it never
- * uses.
+ * field. The engine prepares and removes it; kinds never create workspaces
+ * themselves. Both members carry a `dir` because an agent needs a cwd whatever
+ * the mode — what differs is what is in it:
+ *
+ * - `worktree` — a git worktree of the default branch, off the tenant's
+ *   private clone. Repo context and a branch to commit on.
+ * - `scratch` — one empty directory, no clone and no git state (#358). What a
+ *   kind that only needs somewhere to write files wants: drafts, a generated
+ *   report, a fetch-and-transform pass. Nothing stops such a kind from reaching
+ *   git through `ctx.agent`'s workflow helpers, which build their own
+ *   branch-specific worktrees; the mode governs the workspace the *engine*
+ *   prepares, not what the kind may do.
+ *
+ * Either mode is materialized the first time `dir` is read, so a kind that
+ * builds its own worktrees (as all five built-ins do) pays nothing for a
+ * workspace it never uses, and only a materialized one is removed afterwards.
+ *
+ * A discriminated union so a later mode can carry fields these two do not
+ * without retyping the kinds already written — `readonly`, the read-only view
+ * of the tenant clone, is the member the Slack-responder sketch named next.
  */
-export type WorkspaceHandle = { mode: "worktree"; dir: string };
+export type WorkspaceHandle = { mode: "worktree"; dir: string } | { mode: "scratch"; dir: string };
+
+/** The declarable workspace modes — {@link WorkspaceHandle}'s discriminant. */
+export type WorkspaceMode = WorkspaceHandle["mode"];
 
 /**
  * What one agent-over-a-PR-branch pass produced, handed to
@@ -314,8 +331,8 @@ export type WorkKindDefinition<G = unknown, U extends WorkUnitShape = WorkUnitSh
    * boot-checked for existence.
    */
   promptFile: string;
-  /** Declared workspace mode. One implemented value in v1. */
-  workspace: "worktree";
+  /** Which workspace the engine prepares for `run` (see {@link WorkspaceHandle}). */
+  workspace: WorkspaceMode;
   /**
    * Definition-level agent defaults, sitting at the repo-defaults rung of the
    * resolution ladder: per-kind env → `workKinds` block → global env → these →
