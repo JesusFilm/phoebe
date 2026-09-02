@@ -8,11 +8,13 @@
 // runner through every call site.
 
 import {
+  addWorktreeDetached,
   addWorktreeForExistingBranch,
   addWorktreeForNewBranch,
   appendTrailerToCommits,
   commitCount,
   defaultGit,
+  dirtyFileCount,
   ensureClone,
   fetchOrigin,
   originBranchSha,
@@ -33,8 +35,10 @@ export type OriginHub = {
   worktreeDirFor(branch: BranchRef): string;
   addWorktreeForNew(opts: { worktreeDir: string; branch: BranchRef; baseRef: string }): void;
   addWorktreeForExisting(opts: { worktreeDir: string; branch: BranchRef }): void;
+  addWorktreeDetached(opts: { worktreeDir: string; ref: string }): void;
   removeWorktree(worktreeDir: string): void;
   commitCount(worktreeDir: string, range: string): number;
+  dirtyFileCount(worktreeDir: string): number;
   pushBranch(worktreeDir: string, branch: BranchRef): void;
   pushBranchWithLease(worktreeDir: string, branch: BranchRef): void;
   appendTrailerToCommits(opts: {
@@ -78,11 +82,17 @@ export function createOriginHub(
     addWorktreeForExisting({ worktreeDir, branch }) {
       addWorktreeForExistingBranch({ repoDir: repo, worktreeDir, branch }, git);
     },
+    addWorktreeDetached({ worktreeDir, ref }) {
+      addWorktreeDetached({ repoDir: repo, worktreeDir, ref }, git);
+    },
     removeWorktree(worktreeDir) {
       removeWorktree(repo, worktreeDir, git);
     },
     commitCount(worktreeDir, range) {
       return commitCount(worktreeDir, range, git);
+    },
+    dirtyFileCount(worktreeDir) {
+      return dirtyFileCount(worktreeDir, git);
     },
     pushBranch(worktreeDir, branch) {
       pushBranch(worktreeDir, branch, git);

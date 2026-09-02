@@ -230,6 +230,7 @@ function captureConsole(): { lines: string[]; restore: () => void } {
 function stubGit(
   shas: Record<string, Sha>,
   behind: Record<string, number> = {},
+  dirtyPaths: readonly string[] = [],
 ): { git: GitRunner; calls: string[][] } {
   const calls: string[][] = [];
   const git: GitRunner = (args) => {
@@ -246,6 +247,9 @@ function stubGit(
     // cycle (the workspace tests below) reaches it, and a stub that threw here
     // would send `removeWorktree` down its rmSync fallback against a real path.
     if (args[0] === "worktree") return "";
+    // `status --porcelain` — what the readonly workspace's boundary check
+    // (#397) asks of a tree the engine is about to delete.
+    if (args[0] === "status") return dirtyPaths.map((path) => ` M ${path}`).join("\n");
     if (args[0] === "rev-parse") {
       const ref = (args[1] ?? "").replace(/^origin\//, "");
       const found = shas[ref];
@@ -273,8 +277,14 @@ async function runCycle(opts: {
   behind?: Record<string, number>;
   /** Root for this engine's derived tenant paths — a tmpdir when a test lets one be written. */
   dataBase?: string;
+  /** Paths `git status --porcelain` reports as changed in any worktree. */
+  dirtyPaths?: readonly string[];
 }): Promise<CycleResult> {
-  const { git, calls: gitCalls } = stubGit(opts.shas ?? {}, opts.behind ?? {});
+  const { git, calls: gitCalls } = stubGit(
+    opts.shas ?? {},
+    opts.behind ?? {},
+    opts.dirtyPaths ?? [],
+  );
   const events: UnitRef[] = [];
   const config = resolveConfig(
     { ...minimalUser(), ...opts.config },
@@ -1685,9 +1695,10 @@ describe("a custom kind in the walk", () => {
   });
 });
 
-// The engine-prepared workspace, in both declared modes. It is prepared on
-// first read of `ctx.workspace.dir`, not up front (#356), and `scratch` is a
-// plain directory with no clone and no git state (#358). These are the only
+// The engine-prepared workspace, in all three declared modes. It is prepared on
+// first read of `ctx.workspace.dir`, not up front (#356); `scratch` is a plain
+// directory with no clone and no git state (#358), and `readonly` is a worktree
+// detached at the default branch, with no branch to push (#397). These are the only
 // tests that let a unit actually execute — the container marker is injected
 // rather than read — because "what did the engine build?" is a question about
 // the run path, not the selection path.
@@ -1740,12 +1751,14 @@ describe("the run workspace", () => {
     readsDir: boolean;
     mode?: WorkspaceMode;
     dataBase?: string;
+    dirtyPaths?: readonly string[];
   }): Promise<{ result: CycleResult; seen: WorkspaceSighting[] }> {
     const { kind, seen } = workspaceKind(opts);
     const result = await runCycle({
       config: { workOrder: ["nudge"] },
       customKinds: [kind],
       ...(opts.dataBase !== undefined ? { dataBase: opts.dataBase } : {}),
+      ...(opts.dirtyPaths !== undefined ? { dirtyPaths: opts.dirtyPaths } : {}),
       github: {
         ...prWorld([{ number: 44, issueNumber: 4 }]),
         // The boot-time login cross-check (#346) runs on an executing cycle.
@@ -1836,6 +1849,48 @@ describe("the run workspace", () => {
     const { seen } = await executeNudge({ readsDir: true, mode: "scratch", dataBase });
 
     expect(seen[0]?.entries).toEqual([]);
+  });
+
+  // `readonly` (#397): the same worktree the `worktree` arm prepares, detached
+  // at the default branch. The mode's whole claim is what it does *not* build —
+  // no branch to commit onto, none created in the clone — so the assertions are
+  // about the argv, plus the one thing the engine does check.
+  test("a readonly kind gets a detached worktree of the default branch, per kind", async () => {
+    const { result, seen } = await executeNudge({ readsDir: true, mode: "readonly" });
+
+    expect(seen[0]?.mode).toBe("readonly");
+    expect(seen[0]?.dir).toBe(join("/data/repos/acme/widget/worktrees", "readonly", "nudge"));
+    const add = result.gitCalls.find((args) => args[0] === "worktree" && args[1] === "add");
+    expect(add).toEqual(["worktree", "add", "--detach", seen[0]?.dir, "origin/main"]);
+    expect(result.gitCalls.some((args) => args[0] === "worktree" && args[1] === "remove")).toBe(
+      true,
+    );
+  });
+
+  test("a readonly run that never reads the dir builds no worktree", async () => {
+    const { result } = await executeNudge({ readsDir: false, mode: "readonly" });
+
+    expect(result.gitCalls.filter((args) => args[0] === "worktree")).toEqual([]);
+  });
+
+  test("a clean readonly tree is discarded without a word", async () => {
+    const { result } = await executeNudge({ readsDir: true, mode: "readonly" });
+
+    expect(result.lines.filter((line) => line.includes("readonly workspace"))).toEqual([]);
+  });
+
+  test("a readonly tree the kind wrote into is warned about as it is discarded", async () => {
+    const { result } = await executeNudge({
+      readsDir: true,
+      mode: "readonly",
+      dirtyPaths: ["src/index.ts", "README.md"],
+    });
+
+    expect(result.lines).toContainEqual(
+      expect.stringContaining("nudge: the readonly workspace was modified (2 changed file(s)"),
+    );
+    // Warned, not blocked: the unit still completed.
+    expect(result.events).toHaveLength(2);
   });
 });
 

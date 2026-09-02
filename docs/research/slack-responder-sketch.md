@@ -121,11 +121,24 @@ contract — a promise about intent the engine may later enforce, not a new mech
 Attaches to: the definition's `workspace` field, the engine's prepare/remove step, and
 the `WorkKindRunCtx.workspace` union.
 
-**Shipped (#358).** The first half of this landed as `workspace: "scratch"` —
+**Shipped (#358, #397).** Both halves landed. `workspace: "scratch"` is
 `{ mode: "scratch"; dir: string }`, one empty directory per kind under the tenant's
-`scratch/` root, created on first read of `dir` and removed with the unit. The name moved
-off `none` because the handle carries a `dir`: there is a workspace, it just is not a git
-tree. `readonly` is still open, and the union is still where it attaches.
+`scratch/` root. The name moved off `none` because the handle carries a `dir`: there is a
+workspace, it just is not a git tree. `workspace: "readonly"` is
+`{ mode: "readonly"; dir: string }`, the same worktree the `worktree` arm prepares, but
+detached at `origin/<defaultBranch>` and one directory per kind. Both are created on first
+read of `dir` and removed with the unit.
+
+The open question this sketch left was what the don't-push contract is worth, and it
+resolved against enforcement. A kind holds `ctx.env`, token included, and is trusted as
+the tenant. An engine that tried to stop a kind that meant to push would be theatre, and
+the trust posture written into extension point 2 says as much. So the contract is a shape.
+Detached means no branch is created or moved in the clone and a bare `git push` fails for
+want of a refspec, which covers accident, which was all that was ever coverable. The one
+engine check runs at the unit boundary and refuses nothing: a readonly tree left dirty or
+carrying commits is warned about as it is deleted, so work thrown away is thrown away
+loudly. That is the whole mechanism, and it is smaller than either option the ticket
+weighed.
 
 ### 2. Kind-declared credentials
 
