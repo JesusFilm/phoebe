@@ -360,7 +360,7 @@ export default {
   name: "my-kind",              // must match the workKinds.custom key
   oneShotEligible: false,       // may a unit run under --run-once?
   promptFile: "prompts/my-kind-prompt.md",
-  workspace: "worktree",        // or "scratch" — see the workspace modes below
+  workspace: "worktree",        // or "scratch" / "readonly" — modes below
   model: "…", effort: "…",      // optional agent defaults (see tuning below)
   report: {
     noun: "…(s)",               // idle-report noun
@@ -428,9 +428,10 @@ resolve. Everything arrives on `ctx` (types via `import type` from
 
 - `ctx.workspace` — `{ mode, dir }`: the workspace your definition's
   `workspace` field asked for, prepared and removed by the engine, and the
-  default cwd for a bare `ctx.agent.run(...)`. Two modes:
+  default cwd for a bare `ctx.agent.run(...)`. Three modes:
   - `"worktree"` — a git worktree of the default branch, off the tenant's
-    private clone. Repo context, and a branch to commit on.
+    private clone, on the engine-named `<branchPrefix>workspace` branch. Repo
+    context, and a branch to commit on.
   - `"scratch"` — one empty directory: no clone, no branch, no git state. What
     a kind that only needs somewhere to write files wants — drafts, a generated
     report, a fetch-and-transform pass — without the cost and the branch
@@ -438,8 +439,14 @@ resolve. Everything arrives on `ctx` (types via `import type` from
     through `ctx.agent.prWorkflow` / `issueWorkflow`, which build their own
     branch-specific worktrees; the field governs the workspace the _engine_
     prepares, not what your kind may do.
+  - `"readonly"` — the same worktree, _detached_ at the default branch. Repo
+    context and no branch: nothing is created or moved in the clone, and a bare
+    `git push` fails for want of a refspec. What a kind that reads the repo and
+    publishes elsewhere wants — an audit that files issues, a summary posted to
+    a channel. Read [The don't-push contract](#the-dont-push-contract) for what
+    the mode does and does not promise.
 
-  Either mode is created the first time `dir` is read, so a kind that builds its
+  Every mode is created the first time `dir` is read, so a kind that builds its
   own worktrees (as all five built-ins do) never pays for one, and a kind that
   never reads `ctx.workspace.dir` never gets a directory.
 
@@ -458,6 +465,29 @@ resolve. Everything arrives on `ctx` (types via `import type` from
   `prWorkflow`'s `baseBranch`, each defaulting to `defaultBranch`. Pass the
   PR's own base. Each helper passes `ctx.signal` to the agent subprocess
   automatically.
+
+### The don't-push contract
+
+`"readonly"` is a shape, not a guard. Your kind gets `ctx.env` with the GitHub
+token in it, because a kind is trusted as the tenant. An engine that then tried
+to stop a determined kind from pushing would be theatre. So the mode covers
+accident instead, and it covers it by leaving nothing around to push. The
+worktree is detached, no branch is created or moved in the clone, and `git push`
+with no refspec fails on the spot.
+
+The engine makes one check, at the unit boundary. A readonly tree left dirty or
+carrying commits is about to be deleted, so the engine warns as it deletes it:
+
+```
+[phoebe] my-kind: the readonly workspace was modified (2 changed file(s), 0 commit(s))
+and is being discarded with the unit. A kind that means to publish should build its own
+worktree through ctx.agent.
+```
+
+That reports work being lost. It is not a refusal, and the unit still succeeds.
+If your kind means to publish, declare `"scratch"` or `"worktree"` and go
+through `ctx.agent.prWorkflow` / `issueWorkflow`, which build their own
+branch-specific worktrees and own the push.
 
 ### Reporting
 
@@ -496,7 +526,8 @@ agent env allowlist), non-GitHub work sources (already possible by construction
 — your fetch may call anything reachable; ctx owes it no HTTP convenience), and
 a kind-extended agent tool surface (kind-declared MCP servers).
 
-A fourth has landed: `"scratch"` is the sketch's plain-directory mode, shipped
-under a name that admits there is still a directory. The mode it named beside
-it, `readonly` — a worktree of the tenant clone under a don't-push contract —
-is still open, and the `workspace` union is where it attaches.
+A fourth has landed, in both halves. `"scratch"` is the sketch's
+plain-directory mode, shipped under a name that admits there is still a
+directory. `"readonly"` is the worktree half, and the don't-push contract turned
+out to be a detached checkout plus a warning rather than a promise or a guard.
+See [The don't-push contract](#the-dont-push-contract).

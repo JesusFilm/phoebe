@@ -1233,11 +1233,54 @@ export function createEngine(options: EngineOptions): Engine {
   }
 
   /**
-   * One unit's engine-prepared workspace, in the mode its kind declared
-   * (#356/#358): the handle `run` sees, the materializing accessor the agent
-   * helpers use as their default cwd, and the removal the unit boundary runs.
+   * The read-only workspace (#397): a worktree of the default branch detached
+   * at `origin/<defaultBranch>`, one directory per kind so it can never share a
+   * path with the branch-slug dirs `worktreeDirFor` hands out.
    *
-   * Both modes share one shape — create on first read of `dir`, remove only
+   * Detached is the whole of the don't-push contract. No local ref is created
+   * or moved, and `git push` with no refspec fails out of a detached HEAD, so
+   * the kind cannot publish by habit. It can still publish on purpose — it
+   * holds `ctx.env` and the token — and the engine does not pretend otherwise.
+   */
+  function prepareReadonlyWorktree(kind: string): string {
+    const worktreeDir = join(config.paths.worktreesDir, "readonly", kind);
+    hub.removeWorktree(worktreeDir);
+    hub.addWorktreeDetached({ worktreeDir, ref: `origin/${config.defaultBranch}` });
+    return worktreeDir;
+  }
+
+  /**
+   * What a readonly workspace holds that the engine is about to delete. A kind
+   * that wrote into a tree with nowhere to push is losing the work; the engine
+   * does not stop it, but it refuses to lose it silently. Git failures here are
+   * swallowed: this runs on the unit-teardown path, where a throw would replace
+   * whatever actually happened to the unit.
+   */
+  function warnIfReadonlyTreeTouched(kind: string, dir: string): void {
+    try {
+      const changed = hub.dirtyFileCount(dir);
+      const commits = hub.commitCount(dir, `origin/${config.defaultBranch}..HEAD`);
+      if (changed === 0 && commits === 0) return;
+      console.warn(
+        `[phoebe] ${kind}: the readonly workspace was modified ` +
+          `(${changed} changed file(s), ${commits} commit(s)) and is being discarded with the ` +
+          `unit. A kind that means to publish should build its own worktree through ctx.agent.`,
+      );
+    } catch (error) {
+      console.warn(
+        `[phoebe] ${kind}: could not inspect the readonly workspace before removing it — ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  /**
+   * One unit's engine-prepared workspace, in the mode its kind declared
+   * (#356/#358/#397): the handle `run` sees, the materializing accessor the
+   * agent helpers use as their default cwd, and the removal the unit boundary
+   * runs.
+   *
+   * Every mode shares one shape — create on first read of `dir`, remove only
    * what was created — so laziness is a property of the workspace seam rather
    * than of the worktree arm that happened to get it first.
    */
@@ -1252,6 +1295,9 @@ export function createEngine(options: EngineOptions): Engine {
       if (dir === null) {
         if (mode === "scratch") {
           dir = prepareScratchDir(picked.kind);
+        } else if (mode === "readonly") {
+          hub.fetch();
+          dir = prepareReadonlyWorktree(picked.kind);
         } else {
           hub.fetch();
           dir = prepareWorktree({
@@ -1274,9 +1320,10 @@ export function createEngine(options: EngineOptions): Engine {
         if (dir === null) return;
         if (mode === "scratch") {
           rmSync(dir, { recursive: true, force: true });
-        } else {
-          hub.removeWorktree(dir);
+          return;
         }
+        if (mode === "readonly") warnIfReadonlyTreeTouched(picked.kind, dir);
+        hub.removeWorktree(dir);
       },
     };
   }

@@ -15,10 +15,12 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "vite-plus/test";
 import { asBranchRef } from "./branded.ts";
 import {
+  addWorktreeDetached,
   addWorktreeForExistingBranch,
   addWorktreeForNewBranch,
   appendTrailerToCommits,
   commitCount,
+  dirtyFileCount,
   ensureClone,
   fetchOrigin,
   originBranchSha,
@@ -107,6 +109,42 @@ describe("git model", () => {
 
     removeWorktree(repoDir, worktreeDir, testGit);
     expect(existsSync(worktreeDir)).toBe(false);
+  });
+
+  // The read-only workspace (#397). Detachment is the don't-push contract in
+  // full: no ref to push, and none created in the clone either.
+  test("detached worktree checks out the ref on no branch and creates no ref", () => {
+    const worktreeDir = join(worktreesDir, "readonly", "auditor");
+    const refsBefore = git(repoDir, "for-each-ref", "--format=%(refname)").trim();
+    addWorktreeDetached({ repoDir, worktreeDir, ref: "origin/main" }, testGit);
+
+    expect(git(worktreeDir, "rev-parse", "--abbrev-ref", "HEAD").trim()).toBe("HEAD");
+    expect(git(worktreeDir, "rev-parse", "HEAD").trim()).toBe(
+      originBranchSha(repoDir, asBranchRef("main"), testGit),
+    );
+    expect(git(repoDir, "for-each-ref", "--format=%(refname)").trim()).toBe(refsBefore);
+
+    removeWorktree(repoDir, worktreeDir, testGit);
+    expect(existsSync(worktreeDir)).toBe(false);
+  });
+
+  test("dirtyFileCount counts what a kind left in a tree about to be discarded", () => {
+    const worktreeDir = join(worktreesDir, "readonly", "auditor");
+    addWorktreeDetached({ repoDir, worktreeDir, ref: "origin/main" }, testGit);
+    expect(dirtyFileCount(worktreeDir, testGit)).toBe(0);
+
+    writeFileSync(join(worktreeDir, "notes.md"), "the kind wrote here\n");
+    writeFileSync(join(worktreeDir, "README.md"), "and edited here\n");
+    expect(dirtyFileCount(worktreeDir, testGit)).toBe(2);
+
+    // Committing hides the change from `git status`, which is why the boundary
+    // check asks `commitCount` as well.
+    git(worktreeDir, "add", ".");
+    git(worktreeDir, "commit", "-m", "work with nowhere to go");
+    expect(dirtyFileCount(worktreeDir, testGit)).toBe(0);
+    expect(commitCount(worktreeDir, "origin/main..HEAD", testGit)).toBe(1);
+
+    removeWorktree(repoDir, worktreeDir, testGit);
   });
 
   test("existing-branch worktree reuses the local branch left by a prior unit", () => {

@@ -8,7 +8,11 @@ import type { AnyWorkKindDefinition, WorkspaceMode } from "./definition.ts";
 
 // Typed against the union so the runtime check and the compile-time mode can
 // only drift in one direction: a value here that is not a mode fails to build.
-const WORKSPACE_VALUES = ["worktree", "scratch"] as const satisfies readonly WorkspaceMode[];
+const WORKSPACE_VALUES = [
+  "worktree",
+  "scratch",
+  "readonly",
+] as const satisfies readonly WorkspaceMode[];
 
 function fail(at: string, problem: string): never {
   throw new Error(`${at}: ${problem}`);

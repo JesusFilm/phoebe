@@ -5,7 +5,8 @@
 //
 //   /data/repos/<owner>/<repo>/
 //       repo/         the private clone (origin hub)
-//       worktrees/    per-unit git worktrees
+//       worktrees/    per-unit git worktrees; readonly/<kind>/ holds the
+//                     detached read-only workspaces (#397)
 //       state/        reserved per-tenant state (supervisor status.json, #73)
 //       scratch/      plain-directory workspaces (#358), cleared per run
 //

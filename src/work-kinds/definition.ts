@@ -162,27 +162,40 @@ export type WorkKindCtx = {
 /**
  * The workspace `run` receives, keyed by the definition's declared `workspace`
  * field. The engine prepares and removes it; kinds never create workspaces
- * themselves. Both members carry a `dir` because an agent needs a cwd whatever
- * the mode — what differs is what is in it:
+ * themselves. Every member carries a `dir` because an agent needs a cwd
+ * whatever the mode — what differs is what is in it:
  *
  * - `worktree` — a git worktree of the default branch, off the tenant's
- *   private clone. Repo context and a branch to commit on.
+ *   private clone, on the engine-named `<branchPrefix>workspace` branch. Repo
+ *   context and a branch to commit on.
  * - `scratch` — one empty directory, no clone and no git state (#358). What a
  *   kind that only needs somewhere to write files wants: drafts, a generated
  *   report, a fetch-and-transform pass. Nothing stops such a kind from reaching
  *   git through `ctx.agent`'s workflow helpers, which build their own
  *   branch-specific worktrees; the mode governs the workspace the *engine*
  *   prepares, not what the kind may do.
+ * - `readonly` — the same worktree, *detached* at the default branch (#397).
+ *   Repo context and no branch: nothing is created or moved in the clone, and
+ *   a bare `git push` fails for want of a refspec. The don't-push contract is
+ *   a shape rather than a promise or a guard — enforcement against a kind that
+ *   means it was never on the table (a kind is trusted as the tenant and gets
+ *   `ctx.env`, token included), so what is left to handle is accident. The
+ *   engine's one check is at the unit boundary: a readonly tree left dirty or
+ *   carrying commits is warned about as it is discarded, so work thrown away
+ *   is thrown away loudly. A kind that means to publish should build its own
+ *   worktree through `ctx.agent`.
  *
- * Either mode is materialized the first time `dir` is read, so a kind that
+ * Every mode is materialized the first time `dir` is read, so a kind that
  * builds its own worktrees (as all five built-ins do) pays nothing for a
  * workspace it never uses, and only a materialized one is removed afterwards.
  *
- * A discriminated union so a later mode can carry fields these two do not
- * without retyping the kinds already written — `readonly`, the read-only view
- * of the tenant clone, is the member the Slack-responder sketch named next.
+ * A discriminated union so a later mode can carry fields these do not without
+ * retyping the kinds already written.
  */
-export type WorkspaceHandle = { mode: "worktree"; dir: string } | { mode: "scratch"; dir: string };
+export type WorkspaceHandle =
+  | { mode: "worktree"; dir: string }
+  | { mode: "scratch"; dir: string }
+  | { mode: "readonly"; dir: string };
 
 /** The declarable workspace modes — {@link WorkspaceHandle}'s discriminant. */
 export type WorkspaceMode = WorkspaceHandle["mode"];

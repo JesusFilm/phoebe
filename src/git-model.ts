@@ -134,6 +134,32 @@ export function addWorktreeForExistingBranch(
   }
 }
 
+/**
+ * Create a worktree detached at `ref` — a checkout with no branch attached.
+ *
+ * The read-only workspace (#397) is this and nothing else: no local ref is
+ * created or moved in the clone, and `git push` from a detached HEAD fails for
+ * want of a refspec. Not a sandbox — a kind is trusted as the tenant and holds
+ * the token — but the shape means publishing takes deliberate effort rather
+ * than habit.
+ */
+export function addWorktreeDetached(
+  opts: { repoDir: string; worktreeDir: string; ref: string },
+  git: GitRunner = defaultGit,
+): void {
+  git(["worktree", "add", "--detach", opts.worktreeDir, opts.ref], {
+    cwd: opts.repoDir,
+    stdio: "inherit",
+  });
+}
+
+/** How many paths `git status --porcelain` reports as changed in a worktree. */
+export function dirtyFileCount(worktreeDir: string, git: GitRunner = defaultGit): number {
+  return git(["status", "--porcelain"], { cwd: worktreeDir })
+    .split("\n")
+    .filter((line) => line.trim().length > 0).length;
+}
+
 export function removeWorktree(
   repoDir: string,
   worktreeDir: string,

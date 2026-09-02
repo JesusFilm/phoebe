@@ -97,16 +97,16 @@ describe("validateWorkKindDefinition", () => {
     expect(() => validateWorkKindDefinition(customDefinition("ok"), "at")).not.toThrow();
   });
 
-  test("accepts the plain-directory workspace (#358)", () => {
-    const scratch = { ...customDefinition("ok"), workspace: "scratch" };
-    expect(() => validateWorkKindDefinition(scratch, "at")).not.toThrow();
+  test.each(["scratch", "readonly"])("accepts the %s workspace mode", (mode) => {
+    const definition = { ...customDefinition("ok"), workspace: mode };
+    expect(() => validateWorkKindDefinition(definition, "at")).not.toThrow();
   });
 
   test.each([
     ["name", { name: "" }, /`name` must be a non-empty string/],
     ["oneShotEligible", { oneShotEligible: "yes" }, /`oneShotEligible` must be a boolean/],
     ["promptFile", { promptFile: "  " }, /`promptFile` must be a non-empty path/],
-    ["workspace", { workspace: "readonly" }, /`workspace` must be one of: worktree, scratch/],
+    ["workspace", { workspace: "none" }, /`workspace` must be one of: worktree, scratch, readonly/],
     ["model", { model: 3 }, /`model` must be a string/],
     ["report", { report: null }, /`report` must be an object/],
     ["fetch", { fetch: undefined }, /`fetch` must be a function/],
