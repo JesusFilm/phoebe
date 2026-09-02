@@ -149,6 +149,23 @@ else" (watcher README). Dedup is layered instead:
   promotion. Failure exits carry machine-readable handover tags (`needs-human`,
   `decision-needed`, `sent-back`, `reopened-for-human`) in canned comment text so the
   watchdog can grep for trouble.
+- Creation is one `createIssue({ title, body, labels, milestone, status })` call that
+  also places the row on the board. **Labels:** exactly one, the pipeline opt-in marker
+  (`labels.autoWorkflow`, default `ai-auto-workflow`) — workflow state lives in the
+  Status field, never in labels. **Milestone:** every ticket carries `bugs` or
+  `improvements` (`config.milestones`)
+  ([platform/tracker/emitter.ts](https://github.com/JesusFilm/hatsu/blob/a321d77ae7ad56cdc99c900b2fa637fe702e68b4/platform/tracker/emitter.ts);
+  [config/schema.ts](https://github.com/JesusFilm/hatsu/blob/a321d77ae7ad56cdc99c900b2fa637fe702e68b4/config/schema.ts)).
+- **Repo targeting is fixed, not per-message**: `hatsu.config.ts` is "THE single file
+  allowed to name the target repository" (`JesusFilm/core`), enforced by a seam test
+  that fails if any other file names it
+  ([hatsu.config.ts](https://github.com/JesusFilm/hatsu/blob/a321d77ae7ad56cdc99c900b2fa637fe702e68b4/hatsu.config.ts);
+  [config/config-seam.test.ts](https://github.com/JesusFilm/hatsu/blob/a321d77ae7ad56cdc99c900b2fa637fe702e68b4/config/config-seam.test.ts)).
+- **Provenance footer:** each ticket references its thread the one canonical way —
+  a real archives permalink (`<slack.workspaceUrl>/archives/<channel>/p<ts sans dot>`)
+  when the workspace URL is configured, otherwise an honest `channel / ts` pair ("a
+  fabricated link that 404s is worse") — plus the intake run id back into the log trail
+  ([harnesses/piper/steps/ticket-notes.ts](https://github.com/JesusFilm/hatsu/blob/a321d77ae7ad56cdc99c900b2fa637fe702e68b4/harnesses/piper/steps/ticket-notes.ts)).
 - After Triage, Piper only **relays** later reporter messages onto the ticket verbatim;
   a revived closed-ticket thread always goes to a person (piper README, packet 5).
 
