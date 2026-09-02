@@ -86,13 +86,13 @@ Slack ──socket──▶ NanoClaw router
 
 ## Authentication, in detail
 
-| Credential | Holder | Purpose |
-|---|---|---|
-| `HATSU_SLACK_TOKEN` (bot `xoxb-`) | watcher (`main.ts` → `createSlackApi`) | Piper's Web API reads/posts |
-| `SLACK_BOT_TOKEN` (same app's `xoxb-`) | NanoClaw `.env` | the socket-side bot identity |
-| `SLACK_APP_TOKEN` (`xapp-`, `connections:write`) | NanoClaw `.env` | Socket Mode — required, "no public endpoint" |
-| `SLACK_SIGNING_SECRET` | NanoClaw `.env` | present in the credential set; the webhook route it would authenticate is unused/inert |
-| GitHub | `gh` login of the VM processes | a dedicated bot account (`siyang.bot@gmail.com`), never personal ([harnesses/piper/README.md](https://github.com/JesusFilm/hatsu/blob/a321d77ae7ad56cdc99c900b2fa637fe702e68b4/harnesses/piper/README.md)) |
+| Credential                                       | Holder                                 | Purpose                                                                                                                                                                                                    |
+| ------------------------------------------------ | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `HATSU_SLACK_TOKEN` (bot `xoxb-`)                | watcher (`main.ts` → `createSlackApi`) | Piper's Web API reads/posts                                                                                                                                                                                |
+| `SLACK_BOT_TOKEN` (same app's `xoxb-`)           | NanoClaw `.env`                        | the socket-side bot identity                                                                                                                                                                               |
+| `SLACK_APP_TOKEN` (`xapp-`, `connections:write`) | NanoClaw `.env`                        | Socket Mode — required, "no public endpoint"                                                                                                                                                               |
+| `SLACK_SIGNING_SECRET`                           | NanoClaw `.env`                        | present in the credential set; the webhook route it would authenticate is unused/inert                                                                                                                     |
+| GitHub                                           | `gh` login of the VM processes         | a dedicated bot account (`siyang.bot@gmail.com`), never personal ([harnesses/piper/README.md](https://github.com/JesusFilm/hatsu/blob/a321d77ae7ad56cdc99c900b2fa637fe702e68b4/harnesses/piper/README.md)) |
 
 All deployment data is environment, rendered from Doppler (project `hatsu`, config `prd`)
 into `/etc/hatsu/` on every service start; the repo commits no secrets and no workspace
@@ -124,7 +124,7 @@ else" (watcher README). Dedup is layered instead:
 4. **Self-recognition** is by ledger `ts` plus the watcher-supplied `botUserId` (refusal
    only, never attribution), and NanoClaw's `slack-a2a-guard` drops bot-authored inbound
    before the interceptor, so Piper cannot wake herself (piper README; shim README).
-5. **The accepted residual race:** two cycles on the *same* thread with no ticket yet can
+5. **The accepted residual race:** two cycles on the _same_ thread with no ticket yet can
    both open one — tolerated as a crash-window backstop, with the watcher's
    one-cycle-per-thread rule as the plan (piper README, packet 5).
 
