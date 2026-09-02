@@ -29,6 +29,7 @@ import type { PhoebeConfig } from "./config-schema.ts";
 export type OriginHub = {
   fetch(): void;
   branchHead(branch: BranchRef): Sha;
+  commitsBehind(branch: BranchRef, upstream: string): number;
   worktreeDirFor(branch: BranchRef): string;
   addWorktreeForNew(opts: { worktreeDir: string; branch: BranchRef; baseRef: string }): void;
   addWorktreeForExisting(opts: { worktreeDir: string; branch: BranchRef }): void;
@@ -64,6 +65,9 @@ export function createOriginHub(
     },
     branchHead(branch) {
       return originBranchSha(repo, branch, git);
+    },
+    commitsBehind(branch, upstream) {
+      return commitCount(repo, `origin/${branch}..origin/${upstream}`, git);
     },
     worktreeDirFor(branch) {
       return worktreeDirForBranch(worktrees, branch);

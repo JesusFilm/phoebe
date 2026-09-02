@@ -104,13 +104,22 @@ export type CycleServices = {
 export type WorkKindGitHub = CycleGitHubClient & Pick<GitHubClient, "currentMergeInfo">;
 
 /**
- * Read-only views of the origin hub (the private clone): freshen it and read a
- * branch head. What a kind needs for watermark snapshots and main-head
- * comparisons; all mutating git flows stay behind the `agent` helpers.
+ * Read-only views of the origin hub (the private clone): freshen it, read a
+ * branch head, and ask how far a branch has fallen behind another. What a kind
+ * needs for watermark snapshots and main-head comparisons; all mutating git
+ * flows stay behind the `agent` helpers.
  */
 export type WorkKindOrigin = {
   fetch(): void;
   branchHead(branch: string): Sha;
+  /**
+   * How many commits `origin/<upstream>` carries that `origin/<branch>` does
+   * not — `0` once the branch is current with it. The feature-branch catch-up
+   * (#341) asks this: a long-lived branch that has merely fallen behind the
+   * default branch conflicts with nothing yet, so no mergeability read would
+   * notice it drifting.
+   */
+  commitsBehind(branch: string, upstream: string): number;
 };
 
 /** The engine's clock, injected so kind time is testable and fake-able. */

@@ -164,6 +164,11 @@ The knob is global. There is no per-feature override: a specific feature comes
 out of janitor scope by putting `prOptOutLabel` on its integration PR, so a
 second label or an issue-keyed config map would buy nothing but proliferation.
 
+The integration PR is a draft, so `draftPrs: "skip-all"` hides it from the
+janitors and the catch-up never runs whatever this knob says. How the catch-up
+selects and what it does with what it selects:
+[`work-kinds.md`](work-kinds.md#the-feature-branch-catch-up).
+
 ## Work order
 
 | Field       | Default                                                    | Meaning                                                                                                                                                                                                                                                                                                               |
