@@ -71,6 +71,12 @@ The producer. Selection (`selectIssue`):
 3. For each candidate in order, resolve a worktree base; take the first issue
    that resolves.
 
+A base has three arms: the default branch, a blocker's branch when the work
+stacks, and a feature's integration branch when the issue belongs to a live
+feature. The third one is more than a base. Its opt-in label, who counts as a
+member, the integration PR, how member issues close, and how a feature is
+cancelled are [`feature-branches.md`](feature-branches.md).
+
 **Base resolution** (`resolveWorktreeBase`) handles blockers and feature
 membership together:
 

@@ -93,7 +93,8 @@ wayfinder-shaped value and what to set it to if you use something else.
 `featureLabel` is opt-in and Phoebe never creates it: like `readyLabel` it is a
 human's deliberate gesture. A repo that never adds the label simply has no
 feature branches, which is the correct behaviour rather than an error — so the
-`labels` doctor check does not look for it.
+`labels` doctor check does not look for it. What the label sets in motion is
+[`feature-branches.md`](feature-branches.md).
 
 ## PR-scan scope
 

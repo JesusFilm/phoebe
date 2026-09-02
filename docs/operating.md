@@ -79,6 +79,32 @@ When everything is skipped, the cycle log names the blockers
 This lets you queue a dependent chain of issues at once and let Phoebe sequence
 them.
 
+## Landing a group of issues together: `featureLabel`
+
+Add `featureLabel` (default `phoebe:feature`) to a **parent** issue and its
+children stop going to the default branch one at a time. They branch off
+`<branchPrefix>feature-<parent>` instead, their PRs target it, and Phoebe opens
+one draft integration PR from that branch to the default branch. You merge the
+member PRs into the branch, mark the integration PR ready when the set is
+complete, and merge it. That last merge is what puts the feature on the default
+branch and closes the member issues.
+
+The label is yours, like `readyLabel`. Phoebe never applies it and never treats a
+parent issue as a feature without it.
+
+**To cancel a feature, close its draft integration PR.** Phoebe stops routing
+anything onto the branch. It does not delete the branch, and it does not touch
+member PRs that are already open. Any member still carrying a label Phoebe
+selects on becomes an ordinary ticket bound for the default branch the next time
+it comes up, so close the members you are abandoning or strip their labels —
+`readyLabel` on the implementation children, `researchLabel` on the research
+ones.
+
+To take one feature away from the janitors without cancelling it, put
+`prOptOutLabel` on its integration PR: that drops the whole feature, members
+included. The arm end to end, and what it costs you, is
+[`feature-branches.md`](feature-branches.md).
+
 ## Taking a PR back: `prOptOutLabel`
 
 Add `prOptOutLabel` (default `ready-for-human`) to any PR and Phoebe drops it
@@ -236,6 +262,8 @@ See the [environment overlay table](configuration.md#environment-overlay-phoebe_
 | Pause a queued issue                          | Remove `readyLabel`.                                                                                                                               |
 | Bump an issue up the queue                    | Word it as a bug/fix, or it waits its turn by age.                                                                                                 |
 | Sequence-dependent issues                     | `Blocked by #N` in the body.                                                                                                                       |
+| Land a group of issues in one merge           | Add `featureLabel` (`phoebe:feature`) to their parent issue.                                                                                       |
+| Cancel a feature                              | Close its draft integration PR, then close or unlabel the members you are abandoning (`readyLabel` and `researchLabel` alike).                     |
 | Take a PR away from Phoebe                    | Add `prOptOutLabel` (`ready-for-human`), which works for any PR. Under the default `draftPrs`, marking a **non-Phoebe** PR draft also opts it out. |
 | Hand a PR back                                | Remove the label / mark ready-for-review.                                                                                                          |
 | Force a janitor to retry                      | Push, advance the base, post new review feedback, or delete the newest failure comment.                                                            |

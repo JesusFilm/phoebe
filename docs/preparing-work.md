@@ -118,8 +118,26 @@ is itself AFK-able. Deciding what to build needs you. Reading four sets of
 primary-source documentation to answer a question the decision depends on does
 not. Phoebe can burn those down in parallel while you keep thinking.
 
+## When the map lands on one branch
+
+Two of the three things a map can produce are covered above: ready tickets, which
+go to the default branch one at a time, and research tickets, which Phoebe burns
+down while you keep thinking. The third is a **feature**.
+
+Some maps fan out into siblings that are only coherent landed together, where
+each ticket passes review on its own and the default branch is still half-done
+until the last one arrives. Put `featureLabel` (default `phoebe:feature`) on the
+map itself and its children route onto one integration branch instead, reaching
+the default branch through a single PR you merge when the set is complete.
+
+It is opt-in for a reason: every map has sub-issues, and most of them are not
+features. The whole arm, including who counts as a member and how the member
+issues close, is [`feature-branches.md`](feature-branches.md).
+
 ## Related reading
 
+- [`feature-branches.md`](feature-branches.md), the arm for a group of tickets
+  that only makes sense landed together.
 - [`operating.md`](operating.md), the labels and levers for steering Phoebe once
   work is in flight.
 - [`work-kinds.md`](work-kinds.md), how each kind selects and executes a unit.
