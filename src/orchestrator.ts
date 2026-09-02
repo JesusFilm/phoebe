@@ -240,6 +240,13 @@ export function stackedPrComment(blockerIssueNumber: number, blockerPrNumber: Pr
 export type ConflictingPrCandidate = {
   prNumber: PrNumber;
   headRefName: BranchRef;
+  /**
+   * The branch this PR merges into, carried from fetch to run so the catch-up
+   * merge targets the PR's own base (#392). Absent means the default branch —
+   * true of every PR before the feature arm, and the fallback selectors that
+   * never read this field are free to leave unset.
+   */
+  baseRefName?: BranchRef;
   issueNumber?: number;
   headSha?: Sha;
   failureWatermark?: ConflictFailWatermark | null;
@@ -588,6 +595,8 @@ export function listFailingChecks(checks: readonly StatusCheckItem[]): FailingCh
 export type ChecksCandidate = {
   prNumber: PrNumber;
   headRefName: BranchRef;
+  /** The branch this PR merges into; absent means the default branch (#392). */
+  baseRefName?: BranchRef;
   issueNumber?: number;
   headSha?: Sha;
   mergeable: string;

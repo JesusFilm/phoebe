@@ -831,6 +831,7 @@ export function createEngine(options: EngineOptions): Engine {
   function tryCleanMerge(
     branch: BranchRef,
     mergedBlockerPrNumbers: readonly PrNumber[] = [],
+    baseBranch: string = config.defaultBranch,
   ): CleanMergeOutcome {
     let worktreeDir: string;
     try {
@@ -846,8 +847,8 @@ export function createEngine(options: EngineOptions): Engine {
         });
         gitInWorktree(worktreeDir, ["merge", "FETCH_HEAD"], { stdio: "pipe" });
       }
-      gitInWorktree(worktreeDir, ["fetch", "origin", config.defaultBranch], { stdio: "inherit" });
-      gitInWorktree(worktreeDir, ["merge", `origin/${config.defaultBranch}`], { stdio: "pipe" });
+      gitInWorktree(worktreeDir, ["fetch", "origin", baseBranch], { stdio: "inherit" });
+      gitInWorktree(worktreeDir, ["merge", `origin/${baseBranch}`], { stdio: "pipe" });
       hub.pushBranch(worktreeDir, branch);
       hub.removeWorktree(worktreeDir);
       return "pushed";
@@ -876,14 +877,15 @@ export function createEngine(options: EngineOptions): Engine {
   function attemptBlockerFirstMerges(
     worktreeDir: string,
     mergedBlockerPrNumbers: readonly PrNumber[],
+    baseBranch: string = config.defaultBranch,
   ): void {
     try {
       for (const n of mergedBlockerPrNumbers) {
         gitInWorktree(worktreeDir, ["fetch", "origin", `pull/${n}/head`], { stdio: "inherit" });
         gitInWorktree(worktreeDir, ["merge", "FETCH_HEAD"], { stdio: "pipe" });
       }
-      gitInWorktree(worktreeDir, ["fetch", "origin", config.defaultBranch], { stdio: "inherit" });
-      gitInWorktree(worktreeDir, ["merge", `origin/${config.defaultBranch}`], { stdio: "pipe" });
+      gitInWorktree(worktreeDir, ["fetch", "origin", baseBranch], { stdio: "inherit" });
+      gitInWorktree(worktreeDir, ["merge", `origin/${baseBranch}`], { stdio: "pipe" });
     } catch {
       // Conflicts stay in the tree for the agent to resolve.
     }
@@ -902,6 +904,7 @@ export function createEngine(options: EngineOptions): Engine {
     promptFile: string;
     promptArgs: Record<string, string>;
     primeBlockerMerges?: readonly PrNumber[];
+    baseBranch?: string;
     beforeAgent?: (worktreeDir: string) => void;
     onResult: (outcome: AgentWorkflowOutcome) => void | Promise<void>;
     signal: AbortSignal;
@@ -915,9 +918,9 @@ export function createEngine(options: EngineOptions): Engine {
     try {
       runShellCommand(config.installCommand, worktreeDir, env, Object.values(config.providerEnv));
       // Presence, not length: an empty list still primes the tree with the
-      // default-branch merge (reproducing the conflict for the agent to solve).
+      // base-branch merge (reproducing the conflict for the agent to solve).
       if (opts.primeBlockerMerges !== undefined) {
-        attemptBlockerFirstMerges(worktreeDir, opts.primeBlockerMerges);
+        attemptBlockerFirstMerges(worktreeDir, opts.primeBlockerMerges, opts.baseBranch);
       }
       opts.beforeAgent?.(worktreeDir);
 
@@ -1104,6 +1107,7 @@ export function createEngine(options: EngineOptions): Engine {
           ...(opts.primeBlockerMerges !== undefined
             ? { primeBlockerMerges: opts.primeBlockerMerges }
             : {}),
+          ...(opts.baseBranch !== undefined ? { baseBranch: opts.baseBranch } : {}),
           ...(opts.beforeAgent !== undefined ? { beforeAgent: opts.beforeAgent } : {}),
           onResult: opts.onResult,
           signal,
@@ -1125,7 +1129,8 @@ export function createEngine(options: EngineOptions): Engine {
             : {}),
           signal,
         }),
-      cleanMerge: (branch, blockerPrNumbers = []) => tryCleanMerge(branch, blockerPrNumbers),
+      cleanMerge: (branch, blockerPrNumbers = [], baseBranch) =>
+        tryCleanMerge(branch, blockerPrNumbers, baseBranch),
     };
   }
 

@@ -95,6 +95,8 @@ type PrFixture = {
   issueNumber: number;
   /** Overrides the derived `issueBranch` — how a feature's integration PR is declared. */
   headRefName?: BranchRef;
+  /** Overrides the default branch — how a feature member's base is declared. */
+  baseRefName?: BranchRef;
   authorLogin?: string | null;
   mergeable?: string;
   mergeStateStatus?: string;
@@ -111,6 +113,10 @@ function headOf(pr: PrFixture): Sha {
 
 function branchOf(pr: PrFixture): BranchRef {
   return pr.headRefName ?? issueBranch(pr.issueNumber);
+}
+
+function baseOf(pr: PrFixture): BranchRef {
+  return pr.baseRefName ?? asBranchRef("main");
 }
 
 /**
@@ -136,6 +142,7 @@ function prWorld(prs: readonly PrFixture[]): GitHubStubOverrides {
       return Promise.resolve({
         number: asPrNumber(pr.number),
         headRefName: branchOf(pr),
+        baseRefName: baseOf(pr),
         headRefOid: headOf(pr),
         mergeable: pr.mergeable ?? "MERGEABLE",
         mergeStateStatus: pr.mergeStateStatus ?? "CLEAN",

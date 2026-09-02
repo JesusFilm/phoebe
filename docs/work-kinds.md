@@ -183,12 +183,17 @@ eligible PR number):
    blocker-head merge can itself conflict — which lands in the agent's lap like
    any other conflict, one step later than it needed to be.
 2. Try a **clean, agent-free merge** first: merge each merged-blocker PR head,
-   then `origin/<defaultBranch>`, and push. If it succeeds, done (a stacked
-   catch-up posts a retraction comment noting the branch is now independently
-   mergeable).
+   then the PR's **own base** (`origin/<baseRefName>`), and push. If it
+   succeeds, done (a stacked catch-up posts a retraction comment noting the
+   branch is now independently mergeable). The base is `defaultBranch` for an
+   ordinary PR and for an integration PR; for a feature **member** it is the
+   feature branch, which is the merge GitHub was reporting a conflict against
+   ([#392](https://github.com/JesusFilm/phoebe/issues/392)). Merging
+   `defaultBranch` there would resolve a different merge and push commits the
+   member's reviewer never asked for.
 3. If the clean merge conflicts, hand off to the agent with the `conflict`
    prompt (worktree pre-staged with the attempted merge; `BLOCKER_PR_NUMBERS`
-   supplied). The agent resolves, verifies, and pushes.
+   and `BASE_BRANCH` supplied). The agent resolves, verifies, and pushes.
 4. If neither the agent nor the merge produced commits and the PR still
    conflicts, post a failure comment carrying a fresh watermark
    (`prHead` + `mainHead`) and leave the branch untouched for a human.
@@ -235,9 +240,9 @@ PR number):
 
 **Execution** (`fixOnePrChecks`):
 
-1. If the PR is `BEHIND` the base, try a clean catch-up merge first (including
-   merged-blocker PRs); if that conflicts, defer to the `conflicts` kind next
-   cycle.
+1. If the PR is `BEHIND` the base, try a clean catch-up merge against that base
+   first (including merged-blocker PRs); if that conflicts, defer to the
+   `conflicts` kind next cycle.
 2. Otherwise run the agent with the `checks` prompt; the formatted list of
    failing checks is passed as `{{FAILING_CHECKS}}`.
 3. Push new commits. If the agent produced nothing and origin is unchanged, post
@@ -410,8 +415,11 @@ resolve. Everything arrives on `ctx` (types via `import type` from
   `promptArgs` and optionally a `promptFile` override), the two skeletons the
   built-ins share — `prWorkflow` (the PR-fix shape) and `issueWorkflow` (the
   issue-producer shape; a prompt-only producer is a kind whose `run` is one
-  call to it) — and `cleanMerge` (the no-agent catch-up merge). Each helper
-  passes `ctx.signal` to the agent subprocess automatically.
+  call to it) — and `cleanMerge` (the no-agent catch-up merge). Both merge
+  helpers take the branch to catch up _with_: `cleanMerge`'s third argument and
+  `prWorkflow`'s `baseBranch`, each defaulting to `defaultBranch`. Pass the
+  PR's own base. Each helper passes `ctx.signal` to the agent subprocess
+  automatically.
 
 ### Reporting
 

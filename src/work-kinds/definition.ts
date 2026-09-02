@@ -212,14 +212,18 @@ export type AgentHelpers = {
    * prepare a worktree on the PR branch, install, optionally prime the tree,
    * run the agent, re-snapshot, then hand `onResult` the outcome. The worktree
    * is always removed. `primeBlockerMerges` merges the given blocker PRs and
-   * then the default branch into the tree before the agent, tolerating
-   * conflicts (they are what the agent is there for).
+   * then `baseBranch` into the tree before the agent, tolerating conflicts
+   * (they are what the agent is there for). `baseBranch` defaults to the
+   * default branch and should be the PR's own base — for a feature member
+   * that is the feature branch, and merging the default branch there would
+   * resolve a conflict GitHub never reported (#392).
    */
   prWorkflow(opts: {
     pr: { prNumber: PrNumber; headRefName: BranchRef };
     promptFile?: string;
     promptArgs: Record<string, string>;
     primeBlockerMerges?: readonly PrNumber[];
+    baseBranch?: string;
     beforeAgent?: (worktreeDir: string) => void;
     onResult: (outcome: AgentWorkflowOutcome) => void | Promise<void>;
   }): Promise<void>;
@@ -241,14 +245,21 @@ export type AgentHelpers = {
     featureIssueNumber?: number;
   }): Promise<void>;
   /**
-   * The no-agent merge attempt: merge the given blocker PRs and then the
-   * default branch into `branch`, pushing on success. `"conflicted"` means
+   * The no-agent merge attempt: merge the given blocker PRs and then
+   * `baseBranch` into `branch`, pushing on success. `"conflicted"` means
    * real conflicts remain in the tree (bring in an agent); `"failed"` means
    * the merge could not even start or finish.
+   *
+   * `baseBranch` defaults to the default branch, which is the base of every
+   * PR the janitors saw before the feature arm (#341). A feature member is
+   * based on the feature branch, and catching it up with the default branch
+   * instead pushes commits its reviewer never asked for while leaving the
+   * conflict GitHub reported in place (#392) — so pass the PR's own base.
    */
   cleanMerge(
     branch: BranchRef,
     blockerPrNumbers?: readonly PrNumber[],
+    baseBranch?: string,
   ): "pushed" | "conflicted" | "failed";
 };
 

@@ -92,6 +92,9 @@ describe("buildDefaultPromptArgs", () => {
       TEST_COMMAND: "npm test",
       READY_COMMAND: "npm run ready",
       DEFAULT_BRANCH: "main",
+      // The base of the PR under work. Defaults to the default branch so an
+      // override written before #392 still renders; conflicts overrides it.
+      BASE_BRANCH: "main",
       BRANCH_PREFIX: "phoebe/",
       READY_LABEL: "ready-for-agent",
       PROCESSING_LABEL: "processing",
@@ -139,11 +142,17 @@ describe("shipped default prompts", () => {
   });
 
   test("checks + conflict prompts document the baseline-breakage branch", () => {
-    for (const file of ["checks-prompt.md", "conflict-prompt.md"]) {
+    // Each prompt names the branch its own work reconciles against: `checks`
+    // reasons about breakage on the default branch, `conflicts` about the PR's
+    // own base, which for a feature member is the feature branch (#392).
+    for (const [file, branchPlaceholder] of [
+      ["checks-prompt.md", "{{DEFAULT_BRANCH}}"],
+      ["conflict-prompt.md", "{{BASE_BRANCH}}"],
+    ]) {
       const template = readFileSync(join(promptsDir, file), "utf8");
-      // A baseline check against a clean default-branch checkout.
+      // A baseline check against a clean checkout of that branch.
       expect(template, `${file} should describe a baseline check`).toMatch(/baseline/i);
-      expect(template).toContain("{{DEFAULT_BRANCH}}");
+      expect(template).toContain(branchPlaceholder);
       // The reconciliation rule: a green check gate does not clear a red test
       // suite unless every red test is baseline-only.
       expect(template).toContain("{{CHECK_COMMAND}}");
@@ -152,6 +161,14 @@ describe("shipped default prompts", () => {
       // Guidance to open/link a tracking issue rather than silently proceeding.
       expect(template, `${file} should point at a tracking issue`).toMatch(/gh issue create/);
     }
+  });
+
+  test("the conflict prompt names the PR base, never the default branch", () => {
+    // Every merge instruction in this prompt is against the PR's own base. A
+    // stray {{DEFAULT_BRANCH}} would tell a feature member's agent to merge
+    // `main` — the merge GitHub never reported a conflict against (#392).
+    const template = readFileSync(join(promptsDir, "conflict-prompt.md"), "utf8");
+    expect(template).not.toContain("{{DEFAULT_BRANCH}}");
   });
 
   test("reviews prompt is self-contained (no external skill dependency)", () => {

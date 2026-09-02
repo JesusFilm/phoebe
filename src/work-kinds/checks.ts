@@ -26,6 +26,7 @@ import {
   type WorkUnitGitHubTarget,
 } from "./definition.ts";
 import {
+  baseBranchOf,
   collectIssueBodies,
   collectPrCandidates,
   freshPrHeadWatermark,
@@ -73,6 +74,7 @@ export function checksKind(config: PhoebeConfig): AnyWorkKindDefinition {
             return {
               prNumber: info.number,
               headRefName: info.headRefName,
+              baseRefName: info.baseRefName,
               headSha: info.headRefOid,
               mergeable: info.mergeable,
               mergeStateStatus: info.mergeStateStatus,
@@ -132,16 +134,20 @@ export function checksKind(config: PhoebeConfig): AnyWorkKindDefinition {
 
       if (pr.mergeStateStatus === "BEHIND") {
         const merged = unit.mergedBlockerPrNumbers;
+        // The PR's own base, not the default branch: a feature member is behind
+        // its feature branch, and merging `main` here would neither catch it up
+        // nor leave a diff its reviewer recognises (#392).
+        const base = baseBranchOf(pr, ctx);
         if (merged.length > 0) {
           ctx.log(
-            `Behind main — catch-up merging blocker PR(s) ${merged.map((n) => `#${n}`).join(", ")} ` +
-              `before ${ctx.config.defaultBranch}.`,
+            `Behind ${base} — catch-up merging blocker PR(s) ${merged.map((n) => `#${n}`).join(", ")} ` +
+              `before ${base}.`,
           );
         } else {
-          ctx.log(`Behind main — catch-up merge for PR #${pr.prNumber}.`);
+          ctx.log(`Behind ${base} — catch-up merge for PR #${pr.prNumber}.`);
         }
 
-        const cleanResult = ctx.agent.cleanMerge(pr.headRefName, merged);
+        const cleanResult = ctx.agent.cleanMerge(pr.headRefName, merged, base);
         if (cleanResult === "pushed") {
           ctx.log(`Catch-up merge for PR #${pr.prNumber} — pushed; waiting for CI on next cycle.`);
           if (merged.length > 0) {

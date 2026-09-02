@@ -199,12 +199,13 @@ const ARGV_CASES: ArgvCase[] = [
       JSON.stringify({
         number: 1,
         headRefName: "b",
+        baseRefName: "main",
         headRefOid: "s",
         mergeable: "MERGEABLE",
         mergeStateStatus: "CLEAN",
       }),
     ],
-    fields: "number,headRefName,headRefOid,mergeable,mergeStateStatus",
+    fields: "number,headRefName,baseRefName,headRefOid,mergeable,mergeStateStatus",
   },
   {
     name: "prCommentBodies",
@@ -425,6 +426,7 @@ describe("the per-cycle client", () => {
     JSON.stringify({
       number: 5,
       headRefName: "phoebe/issue-5",
+      baseRefName: "main",
       headRefOid: "deadbeef",
       mergeable,
       mergeStateStatus: "CLEAN",
