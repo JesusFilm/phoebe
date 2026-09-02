@@ -38,9 +38,9 @@ The cost is real and worth saying plainly. Nothing on a feature branch is visibl
 on `main` until a human merges the integration PR, so the feedback the default
 branch gives you (CI against everyone else's work, other people reading the diff)
 arrives late and all at once. And the branch needs keeping current with `main`
-for as long as it is open. Phoebe does that part, described
-[below](#keeping-the-branch-current). The rest is the price of landing the group
-in one piece.
+for as long as it is open. Phoebe does that part by default, and three settings
+turn it off, both [below](#keeping-the-branch-current). The rest is the price of
+landing the group in one piece.
 
 ## Arming it: `phoebe:feature` on the parent
 
@@ -201,7 +201,7 @@ it. A branch that has merely fallen behind conflicts with nothing yet, meaning n
 mergeability read would ever nominate it, and left alone it drifts until the PR
 you finally sit down to review is a conflict pile.
 
-`conflicts` therefore selects a feature's integration PR whenever the default
+So by default `conflicts` selects a feature's integration PR whenever the default
 branch carries commits its branch does not, then works it down the path it
 already had: the agent-free merge first, the `conflict` prompt when that dirties.
 The selection and execution detail is in
@@ -209,7 +209,8 @@ The selection and execution detail is in
 `featureBranchCatchUp`, is in
 [`configuration.md`](configuration.md#feature-branch-catch-up).
 
-Two other settings turn the catch-up off without mentioning it:
+Setting that knob to `false` retires the catch-up for the whole tenant. Two other
+settings turn it off without mentioning it:
 
 - **`prOptOutLabel` on the integration PR** takes the whole feature out of
   janitor scope, members included. That is the per-feature lever, and it is why
@@ -246,16 +247,21 @@ PR.
 
 Retiring changes nothing about the artifacts. The branch stays (Phoebe never
 deletes one), and member PRs already open still target it. Retarget or close
-those yourself.
+those yourself. Cancelling is reversible for the same reason: reopen the
+integration PR and the feature is live again, on the branch it always had.
 
 What it changes is where the next member goes. A member still open and still
-carrying `readyLabel` becomes an ordinary ticket bound for the default branch the
-next time Phoebe reaches it, and so does a member that arrives late, after the
-feature has already merged. Phoebe has no basis for refusing to work a
-`ready-for-agent` ticket: the feature branch was a routing decision, never a
-permission. If cancelling the feature also means abandoning its tickets, take
-`readyLabel` off them or close them, or Phoebe will work them one by one onto
-`main`.
+carrying a label Phoebe selects on becomes an ordinary ticket bound for the
+default branch the next time Phoebe reaches it, and so does a member that arrives
+late, after the feature has already merged. Phoebe has no basis for refusing to
+work a labelled ticket: the feature branch was a routing decision, never a
+permission.
+
+So if cancelling the feature also means abandoning its tickets, close them or
+strip every label that selects them — `readyLabel` on the implementation
+children and `researchLabel` on the research ones. Miss the research children and
+Phoebe will work them onto `main` one at a time, which is exactly the outcome
+cancelling was meant to prevent.
 
 ## Related reading
 

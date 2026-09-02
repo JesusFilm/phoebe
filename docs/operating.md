@@ -94,9 +94,11 @@ parent issue as a feature without it.
 
 **To cancel a feature, close its draft integration PR.** Phoebe stops routing
 anything onto the branch. It does not delete the branch, and it does not touch
-member PRs that are already open. Any member still carrying `readyLabel` becomes
-an ordinary ticket bound for the default branch the next time it comes up, so
-remove the label from the members you are abandoning too.
+member PRs that are already open. Any member still carrying a label Phoebe
+selects on becomes an ordinary ticket bound for the default branch the next time
+it comes up, so close the members you are abandoning or strip their labels —
+`readyLabel` on the implementation children, `researchLabel` on the research
+ones.
 
 To take one feature away from the janitors without cancelling it, put
 `prOptOutLabel` on its integration PR: that drops the whole feature, members
@@ -261,7 +263,7 @@ See the [environment overlay table](configuration.md#environment-overlay-phoebe_
 | Bump an issue up the queue                    | Word it as a bug/fix, or it waits its turn by age.                                                                                                 |
 | Sequence-dependent issues                     | `Blocked by #N` in the body.                                                                                                                       |
 | Land a group of issues in one merge           | Add `featureLabel` (`phoebe:feature`) to their parent issue.                                                                                       |
-| Cancel a feature                              | Close its draft integration PR, then unlabel the members you are abandoning.                                                                       |
+| Cancel a feature                              | Close its draft integration PR, then close or unlabel the members you are abandoning (`readyLabel` and `researchLabel` alike).                     |
 | Take a PR away from Phoebe                    | Add `prOptOutLabel` (`ready-for-human`), which works for any PR. Under the default `draftPrs`, marking a **non-Phoebe** PR draft also opts it out. |
 | Hand a PR back                                | Remove the label / mark ready-for-review.                                                                                                          |
 | Force a janitor to retry                      | Push, advance the base, post new review feedback, or delete the newest failure comment.                                                            |
