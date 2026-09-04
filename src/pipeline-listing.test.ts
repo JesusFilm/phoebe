@@ -98,6 +98,18 @@ describe("isWedged", () => {
     expect(isWedged(snapshot({ updatedAt: "2020-01-01T00:00:00.000Z" }), poll, NOW)).toBe(false);
     expect(isWedged(null, poll, NOW)).toBe(false);
   });
+
+  test("a newer unit with a shorter budget wedges even when the oldest is fine", () => {
+    // Oldest unit: 60m budget, started 30m ago — well inside budget.
+    // Newer unit: 10m budget, started 20m ago — 5m past budget + poll interval.
+    const mixed = snapshot({
+      currentUnits: [
+        inFlight("old", new Date(NOW - 30 * MINUTE).toISOString(), 60 * MINUTE),
+        inFlight("new", new Date(NOW - 20 * MINUTE).toISOString(), 10 * MINUTE),
+      ],
+    });
+    expect(isWedged(mixed, poll, NOW)).toBe(true);
+  });
 });
 
 describe("formatAge", () => {

@@ -93,7 +93,7 @@ import { formatLeaseReason, WorktreeLeasedError } from "./worktree-lease.ts";
 import { unitDir, unitOwner } from "./unit-scope.ts";
 import { prefixedWriter, runCommandPrefixed } from "./prefixed-output.ts";
 import { withCloneLock } from "./clone-lock.ts";
-import { readonlyWorktreeDir } from "./paths.ts";
+import { READONLY_WORKTREES_SEGMENT } from "./paths.ts";
 import { sweepScope, type SweepScope } from "./sweep-scope.ts";
 import { PROVIDERS } from "./providers/providers.ts";
 import { resolveIssueCoAuthorTrailer } from "./co-author.ts";
@@ -1578,7 +1578,10 @@ export function createEngine(options: EngineOptions): Engine {
    * holds `ctx.env` and the token — and the engine does not pretend otherwise.
    */
   function prepareReadonlyWorktree(scope: UnitScope): string {
-    const worktreeDir = unitDir(join(config.paths.worktreesDir, "readonly"), scope.ref);
+    const worktreeDir = unitDir(
+      join(config.paths.worktreesDir, READONLY_WORKTREES_SEGMENT),
+      scope.ref,
+    );
     releaseWorktree(worktreeDir, scope);
     scope.hub.addWorktreeDetached({ worktreeDir, ref: `origin/${config.defaultBranch}` });
     scope.hub.lockWorktree(worktreeDir, scope.leaseReason);
