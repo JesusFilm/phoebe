@@ -88,3 +88,19 @@ describe("buildPromptShellEnv", () => {
     expect(env.COREPACK_ENABLE_DOWNLOAD_PROMPT).toBe("0");
   });
 });
+
+describe("declared keys never reach the consumer toolchain (#425)", () => {
+  const env = { SLACK_BOT_TOKEN: "xoxb-1", FOO: "public", PATH: "/usr/bin" };
+
+  test("installCommand runs without them", () => {
+    const built = buildInstallCommandEnv(env, PROVIDER_KEYS, ["SLACK_BOT_TOKEN"]);
+    expect(built).not.toHaveProperty("SLACK_BOT_TOKEN");
+    expect(built.FOO).toBe("public");
+  });
+
+  test("a prompt `!` expansion runs without them", () => {
+    const built = buildPromptShellEnv(env, PROVIDER_KEYS, ["SLACK_BOT_TOKEN"]);
+    expect(built).not.toHaveProperty("SLACK_BOT_TOKEN");
+    expect(built.FOO).toBe("public");
+  });
+});
