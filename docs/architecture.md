@@ -85,8 +85,11 @@ clone (`src/git-model.ts`):
 
 1. `ensureClone` clones `repoUrl` into `/data/repos/<owner>/<repo>/repo` once; later cycles reuse it.
 2. Each cycle `git fetch origin` refreshes the clone.
-3. For a unit, `prepareWorktree` removes any stale worktree for the branch and
-   adds a fresh one:
+3. For a unit, `prepareWorktree` removes any stale worktree for the branch,
+   adds a fresh one, and takes a lease on it (`git worktree lock`, reason
+   `pipeline=<name> pid=<n>`) so a sibling pipeline sharing the clone leaves it
+   alone. A tree another pipeline leases is not removed; the unit is skipped for
+   the cycle. The branch cases:
    - **Issues.** A new branch `<branchPrefix>issue-<n>` reset to the resolved
      base ref (`origin/main`, a blocker's branch when stacked, etc.).
    - **Conflicts, checks, and reviews.** A worktree on the PR's existing head
@@ -99,7 +102,14 @@ clone (`src/git-model.ts`):
 Worktree directory names are derived from the branch, lowercased with
 non-alphanumerics collapsed to `-`, so they are filesystem-safe and collision-
 resistant. A failed unit never kills the engine: `prepareWorktree` clears any
-stale worktree on the next attempt.
+stale worktree on the next attempt, breaking its own pipeline's leftover lease
+as it goes.
+
+Step 1 is conditional and serialized. A pipeline clones only when one of its
+kinds declares a `worktree` or `readonly` workspace, and the first clone on a
+fresh tenant is taken under a `mkdir` lock in `state/` so two pipelines booting
+together produce one clone. Nothing else is locked: fetch and worktree
+administration share the clone on git's own ref locking.
 
 ## The agent child and its locked-down environment
 

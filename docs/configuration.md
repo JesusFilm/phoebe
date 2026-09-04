@@ -191,14 +191,14 @@ custom-kind charset, so `#` can never appear in one. The block is tenant-only. A
 workspace root declaring it is a config error, since a root says which tenants
 exist, not what work happens inside one.
 
-| Knob             | Default  | Hot? | Meaning                                                                                                                                                                                                                   |
-| ---------------- | -------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `order`          | `[]`     | cold | Priority, not membership. Named kinds are polled first, in this sequence; every other kind this pipeline owns follows in declaration order. An unknown name is a boot error.                                              |
-| `kinds`          | `{}`     | cold | This row's [per-kind tuning blocks](#per-work-kind-overrides) and [`custom` declarations](#custom-work-kinds-workkindscustom), the same shape the deprecated top-level `workKinds` had.                                   |
-| `concurrency`    | `1`      | cold | How many units this row may hold in flight, and the input the fleet's [slot cap](#concurrency-the-rows-knob-and-the-fleets-cap) is derived from. The engine still admits one unit at a time; that half is a later ticket. |
-| `pollIntervalMs` | `300000` | cold | Idle poll cadence. **Outranks `PHOEBE_POLL_INTERVAL_MS`**; the env var is the fallback for a row that declares nothing, and the default applies when neither does.                                                        |
-| `disabled`       | `false`  | hot  | Operator off-switch for this row.                                                                                                                                                                                         |
-| `priority`       | `0`      | hot  | Tenant-local scheduling priority for a contended [slot](#concurrency-the-rows-knob-and-the-fleets-cap); higher wins, ties keep their place in the queue.                                                                  |
+| Knob             | Default  | Hot? | Meaning                                                                                                                                                                                                                                                                                             |
+| ---------------- | -------- | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `order`          | `[]`     | cold | Priority, not membership. Named kinds are polled first, in this sequence; every other kind this pipeline owns follows in declaration order. An unknown name is a boot error.                                                                                                                        |
+| `kinds`          | `{}`     | cold | This row's [per-kind tuning blocks](#per-work-kind-overrides) and [`custom` declarations](#custom-work-kinds-workkindscustom), the same shape the deprecated top-level `workKinds` had.                                                                                                             |
+| `concurrency`    | `1`      | cold | How many units this row may hold in flight at once, and the input the fleet's [slot cap](#concurrency-the-rows-knob-and-the-fleets-cap) is derived from. A pass tops the row up to this many and waits on whichever comes first: a unit finishing, or the poll interval. `--run-once` pins it to 1. |
+| `pollIntervalMs` | `300000` | cold | Idle poll cadence. **Outranks `PHOEBE_POLL_INTERVAL_MS`**; the env var is the fallback for a row that declares nothing, and the default applies when neither does.                                                                                                                                  |
+| `disabled`       | `false`  | hot  | Operator off-switch for this row.                                                                                                                                                                                                                                                                   |
+| `priority`       | `0`      | hot  | Tenant-local scheduling priority for a contended [slot](#concurrency-the-rows-knob-and-the-fleets-cap); higher wins, ties keep their place in the queue.                                                                                                                                            |
 
 Hot means the supervisor acts on a change without relaunching the row. Cold
 knobs relaunch it. `disabled` is hot at all three scopes: tenant, pipeline, and
@@ -211,6 +211,12 @@ It spawns one child per row and relaunches a row when its own cold config moves
 `concurrency` are live in the broker (below). A row's `disabled` is validated but
 not yet acted on; the ticket that switches a row off comes later. A kind's
 `disabled` is live now, since it is what took over from omission.
+
+Raise `concurrency` only for kinds that cannot collide over a worktree. Units
+of one row still share that row's workspace names, so two `worktree` kinds at
+concurrency 2 can have one unit tear down the tree the other is working in.
+Per-unit workspace isolation is a later ticket; until it lands, the safe raises
+are rows of `scratch` kinds and rows whose units never share a branch.
 
 **A kind belongs to at most one pipeline.** Two rows naming or declaring the
 same kind is fatal for the tenant at load. The rows are separate processes and
@@ -265,6 +271,24 @@ the row into the flat fields the rest of the engine reads (`workOrder`,
 downstream has to know pipelines exist. `--run-once` and `--dry-run` take it
 too. `phoebe --run-once --dry-run --pipeline intake` previews that row's
 would-pick and nothing else.
+
+### What a row owns on disk
+
+Two rows are two processes sharing one tenant's clone and one `state/` dir, so
+each owns a slice of both rather than the whole thing.
+
+| Thing                          | Owned by                                                                                                                               |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `state/<pipeline>/status.json` | The row alone. `phoebe list` reads `state/work/status.json` for its tenant line.                                                       |
+| Stdout lines                   | Tagged `[phoebe:<owner>/<repo>:<pipeline>]`, including `work`'s. Match it as a prefix, not a fixed string.                             |
+| The four tracker sweeps        | Scoped to the kinds the row schedules, so two rows cover every object exactly once. A row scheduling none of a sweep's kinds skips it. |
+| The origin clone               | Shared. Cloned once, the first clone serialized by a lock under `state/`; a row whose kinds all declare `scratch` never clones at all. |
+| A worktree                     | Leased with `git worktree lock`, reason `pipeline=<name> pid=<n>`. A tree another row leases is left alone and its unit waits a cycle. |
+
+A lease outlives the process that took it, so a row breaks its own leases at
+boot and never anyone else's. If you find a locked worktree and no engine, the
+reason string names the row that left it; `git worktree unlock` it by hand or
+let that row's next boot do it.
 
 ### Deprecated top-level aliases
 
@@ -448,7 +472,7 @@ under one slug-keyed root on the `phoebe-data` volume:
 | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | `/data/repos/<owner>/<repo>/repo`      | The private clone (origin hub).                                                                                                          |
 | `/data/repos/<owner>/<repo>/worktrees` | Per-unit git worktrees.                                                                                                                  |
-| `/data/repos/<owner>/<repo>/state`     | Per-tenant state, the bootstrapper's `status.json`.                                                                                      |
+| `/data/repos/<owner>/<repo>/state`     | Per-tenant state: one `<pipeline>/status.json` per pipeline row, plus the clone lock.                                                    |
 | `/data/engine`                         | The **shared** engine checkout + the crash-loop record (`engine-crash-loop.json`), deployment-global, on its own `phoebe-engine` volume. |
 
 The base is `/data/repos` in the container; `PHOEBE_DATA_DIR` overrides it for

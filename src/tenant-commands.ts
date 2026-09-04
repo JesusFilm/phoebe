@@ -34,7 +34,8 @@ import {
 } from "../bootstrap/workspace-source.ts";
 import { resolveCredentialArm, type CredentialArm } from "../bootstrap/credential-arm.ts";
 import { loadUserConfig } from "./load-config.ts";
-import { readStatus, STATUS_FILE, type StatusSnapshot } from "./unit-event.ts";
+import { readStatus, statusPathFor, type StatusSnapshot } from "./unit-event.ts";
+import { DEFAULT_PIPELINE_NAME } from "./config-schema.ts";
 
 /**
  * The named model-A constraint (#61/#63): all tenants share uid 10001, so their
@@ -285,7 +286,7 @@ function listingForLive(
     configValid,
     envPresent: envPresent(dir),
     retainedData: existsSync(dataDir),
-    status: readStatus(join(dataDir, "state", STATUS_FILE)),
+    status: readStatus(statusPathFor(join(dataDir, "state"), DEFAULT_PIPELINE_NAME)),
     arm: readTenantArm(resolvedEnvPath),
     disabled,
   };
@@ -309,7 +310,10 @@ function listingForHeld(
     configValid: configReadable,
     envPresent: envPresent(dir),
     retainedData: dataDir !== null && existsSync(dataDir),
-    status: dataDir !== null ? readStatus(join(dataDir, "state", STATUS_FILE)) : null,
+    status:
+      dataDir !== null
+        ? readStatus(statusPathFor(join(dataDir, "state"), DEFAULT_PIPELINE_NAME))
+        : null,
     arm: readTenantArm(join(dir, TENANT_ENV_FILE)),
     disabled: false,
   };

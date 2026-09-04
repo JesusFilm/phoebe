@@ -67,6 +67,31 @@ describe("installDrainSignal", () => {
     drain.dispose();
   });
 
+  // The engine loop races a poll sleep against its in-flight units settling
+  // (#422), so it abandons waits it no longer cares about. An abandoned wait
+  // timing out must not take the live one's wake-up with it.
+  test("an abandoned wait timing out still leaves a later wait wakeable", async () => {
+    const emitter = new EventEmitter();
+    const drain = installDrainSignal(emitter, ["SIGTERM"]);
+    const abandoned = drain.wait(1);
+    const live = drain.wait(60_000);
+    await abandoned;
+
+    emitter.emit("SIGTERM");
+    await live; // resolves without sleeping out the 60s
+    expect(drain.requested).toBe(true);
+    drain.dispose();
+  });
+
+  test("a drain wakes every outstanding wait", async () => {
+    const emitter = new EventEmitter();
+    const drain = installDrainSignal(emitter, ["SIGTERM"]);
+    const waits = [drain.wait(60_000), drain.wait(60_000), drain.wait(60_000)];
+    emitter.emit("SIGTERM");
+    await Promise.all(waits);
+    drain.dispose();
+  });
+
   test("dispose removes the listener so later signals are ignored", () => {
     const emitter = new EventEmitter();
     const drain = installDrainSignal(emitter, ["SIGTERM"]);

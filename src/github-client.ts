@@ -491,6 +491,13 @@ export type CreateGitHubClientOptions = {
    */
   env: NodeJS.ProcessEnv;
   /**
+   * The engine's stdout tag (#418), so this client's own warnings are as
+   * attributable as the loop's. Passed in because the tag names the process —
+   * tenant *and* pipeline — and this module only knows the tenant. Defaults to
+   * the bare tag for the non-engine callers (`phoebe doctor`, tests).
+   */
+  tag?: string;
+  /**
    * Internal seam for src/github-client.test.ts. Not part of `GitHubClient` and
    * not for production callers: the whole point of the interface above is that
    * a caller never has to know a subprocess is involved.
@@ -501,8 +508,10 @@ export type CreateGitHubClientOptions = {
 export function createGitHubClient({
   config,
   env,
+  tag,
   internal,
 }: CreateGitHubClientOptions): GitHubClient {
+  const tagged = tag ?? "[phoebe]";
   const rawExec = internal?.exec ?? createGhExecutor(env);
   const sleep = internal?.sleep ?? defaultSleep;
 
@@ -523,7 +532,7 @@ export function createGitHubClient({
       onRetry: (error, delayMs, retry) => {
         const message = error instanceof Error ? error.message : String(error);
         console.warn(
-          `[phoebe] Transient GitHub failure on \`gh ${args[0] ?? ""}\` — retrying in ${delayMs / 1000}s ` +
+          `${tagged} Transient GitHub failure on \`gh ${args[0] ?? ""}\` — retrying in ${delayMs / 1000}s ` +
             `(retry ${retry}/${TRANSIENT_RETRY_SCHEDULE_MS.length}): ${message}`,
         );
       },
@@ -780,7 +789,7 @@ export function createGitHubClient({
         .map((pr) => featureBranch(pr.featureIssueNumber));
     } catch (error) {
       console.warn(
-        `[phoebe] Skipping feature-branch PRs this cycle — the integration PRs ` +
+        `${tagged} Skipping feature-branch PRs this cycle — the integration PRs ` +
           `could not be listed: ${errorText(error)}`,
       );
       return [];
@@ -1030,7 +1039,9 @@ export function createGitHubClient({
         } catch (error) {
           // One feature's listing failing must not cost the janitors every
           // other open PR this cycle.
-          console.warn(`[phoebe] Skipping PRs based on ${branch} this cycle — ${errorText(error)}`);
+          console.warn(
+            `${tagged} Skipping PRs based on ${branch} this cycle — ${errorText(error)}`,
+          );
         }
       }
       return prs;
