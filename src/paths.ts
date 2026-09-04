@@ -5,10 +5,11 @@
 //
 //   /data/repos/<owner>/<repo>/
 //       repo/         the private clone (origin hub)
-//       worktrees/    per-unit git worktrees; readonly/<kind>/ holds the
-//                     detached read-only workspaces (#397)
+//       worktrees/    per-unit git worktrees; readonly/<kind>/<ref>/ holds the
+//                     detached read-only workspaces (#397/#423)
 //       state/        reserved per-tenant state (supervisor status.json, #73)
-//       scratch/      plain-directory workspaces (#358), cleared per run
+//       scratch/      plain-directory workspaces (#358), <kind>/<ref>/ per unit
+//                     (#423), cleared per run
 //
 // The base (`/data/repos`) is a deployment-global constant in the container;
 // `PHOEBE_DATA_DIR` overrides it for host/dev. Derivation is a pure function of

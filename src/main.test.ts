@@ -55,6 +55,7 @@ import type { SlotClient } from "./slot-client.ts";
 import { createEmitUnitEvent, type StatusSnapshot, type UnitRef } from "./unit-event.ts";
 import type {
   AnyWorkKindDefinition,
+  WorkKindRunCtx,
   WorkspaceMode,
   WorkUnitGitHubTarget,
 } from "./work-kinds/definition.ts";
@@ -1774,12 +1775,33 @@ describe("a custom kind in the walk", () => {
 // tests that let a unit actually execute — the container marker is injected
 // rather than read — because "what did the engine build?" is a question about
 // the run path, not the selection path.
+/** A tenant data root a test may actually write to, removed afterwards. */
+function tenantRoot(): string {
+  const root = mkdtempSync(join(tmpdir(), "phoebe-workspace-test-"));
+  onTestFinished(() => rmSync(root, { recursive: true, force: true }));
+  return root;
+}
+
 describe("the run workspace", () => {
-  /** What a run saw when it read `ctx.workspace.dir`. */
-  type WorkspaceSighting = { mode: string; dir: string; exists: boolean; entries: string[] };
+  /** What a run saw when it read `ctx.workspace.dir` and `ctx.workspace.scratch`. */
+  type WorkspaceSighting = {
+    mode: string;
+    dir: string;
+    exists: boolean;
+    entries: string[];
+    scratch?: string;
+    scratchEntries?: string[];
+  };
 
   /** A custom kind that executes, recording whether and what it read. */
-  function workspaceKind(opts: { readsDir: boolean; mode?: WorkspaceMode }): {
+  function workspaceKind(opts: {
+    readsDir: boolean;
+    mode?: WorkspaceMode;
+    /** Also read the handle's scratch dir, and leave a draft in it (#423). */
+    writesScratch?: boolean;
+    /** Override the unit ref, for the paths a kind-owned ref has to survive. */
+    ref?: string;
+  }): {
     kind: LoadedCustomKind;
     seen: WorkspaceSighting[];
   } {
@@ -1797,7 +1819,9 @@ describe("the run workspace", () => {
       select: (gathered: { prs: { number: number }[] }) => {
         const pick = gathered.prs[0] ?? null;
         return {
-          unit: pick ? { ref: `pr:${pick.number}`, prNumber: Number(pick.number) } : null,
+          unit: pick
+            ? { ref: opts.ref ?? `pr:${pick.number}`, prNumber: Number(pick.number) }
+            : null,
           skipped: [],
           total: gathered.prs.length,
         };
@@ -1806,12 +1830,19 @@ describe("the run workspace", () => {
         if (opts.readsDir) {
           const dir = ctx.workspace.dir;
           const exists = existsSync(dir);
-          seen.push({
+          const sighting: WorkspaceSighting = {
             mode: ctx.workspace.mode,
             dir,
             exists,
             entries: exists ? readdirSync(dir) : [],
-          });
+          };
+          if (opts.writesScratch) {
+            const scratch = ctx.workspace.scratch;
+            writeFileSync(join(scratch, "draft.md"), "what the kind produced");
+            sighting.scratch = scratch;
+            sighting.scratchEntries = readdirSync(scratch);
+          }
+          seen.push(sighting);
         }
         return Promise.resolve();
       },
@@ -1822,6 +1853,8 @@ describe("the run workspace", () => {
   async function executeNudge(opts: {
     readsDir: boolean;
     mode?: WorkspaceMode;
+    writesScratch?: boolean;
+    ref?: string;
     dataBase?: string;
     dirtyPaths?: readonly string[];
   }): Promise<{ result: CycleResult; seen: WorkspaceSighting[] }> {
@@ -1844,13 +1877,6 @@ describe("the run workspace", () => {
       run: { runOnce: true, dryRun: false },
     });
     return { result, seen };
-  }
-
-  /** A tenant data root a test may actually write to, removed afterwards. */
-  function tenantRoot(): string {
-    const root = mkdtempSync(join(tmpdir(), "phoebe-workspace-test-"));
-    onTestFinished(() => rmSync(root, { recursive: true, force: true }));
-    return root;
   }
 
   /** Worktree calls that build or tear one down — not the boot-time lease read (#418). */
@@ -1894,7 +1920,7 @@ describe("the run workspace", () => {
     expect(seen[0]?.mode).toBe("scratch");
     expect(seen[0]?.exists).toBe(true);
     expect(seen[0]?.entries).toEqual([]);
-    expect(seen[0]?.dir).toBe(join(dataBase, "acme/widget/scratch/nudge"));
+    expect(seen[0]?.dir).toBe(join(dataBase, "acme/widget/scratch/nudge/pr%3A44"));
     // No clone, no branch, no worktree plumbing: that is the whole point of the
     // mode, and the assertion that separates it from a worktree that happens to
     // look empty under the git stub.
@@ -1931,11 +1957,13 @@ describe("the run workspace", () => {
   // at the default branch. The mode's whole claim is what it does *not* build —
   // no branch to commit onto, none created in the clone — so the assertions are
   // about the argv, plus the one thing the engine does check.
-  test("a readonly kind gets a detached worktree of the default branch, per kind", async () => {
+  test("a readonly kind gets a detached worktree of the default branch, per unit", async () => {
     const { result, seen } = await executeNudge({ readsDir: true, mode: "readonly" });
 
     expect(seen[0]?.mode).toBe("readonly");
-    expect(seen[0]?.dir).toBe(join("/data/repos/acme/widget/worktrees", "readonly", "nudge"));
+    expect(seen[0]?.dir).toBe(
+      join("/data/repos/acme/widget/worktrees", "readonly", "nudge", "pr%3A44"),
+    );
     const add = result.gitCalls.find((args) => args[0] === "worktree" && args[1] === "add");
     expect(add).toEqual(["worktree", "add", "--detach", seen[0]?.dir, "origin/main"]);
     expect(result.gitCalls.some((args) => args[0] === "worktree" && args[1] === "remove")).toBe(
@@ -1963,10 +1991,68 @@ describe("the run workspace", () => {
     });
 
     expect(result.lines).toContainEqual(
-      expect.stringContaining("nudge: the readonly workspace was modified (2 changed file(s)"),
+      expect.stringContaining(
+        "nudge pr:44: the readonly workspace was modified (2 changed file(s)",
+      ),
     );
     // Warned, not blocked: the unit still completed.
     expect(result.events).toHaveLength(2);
+  });
+
+  // The scratch every handle carries (#423). The mode still names the git
+  // shape; where a kind may write is no longer part of that choice.
+  test("a readonly kind gets somewhere to write beside its reading room", async () => {
+    const dataBase = tenantRoot();
+    const { seen } = await executeNudge({
+      readsDir: true,
+      writesScratch: true,
+      mode: "readonly",
+      dataBase,
+    });
+
+    expect(seen[0]?.scratch).toBe(join(dataBase, "acme/widget/scratch/nudge/pr%3A44"));
+    expect(seen[0]?.scratchEntries).toEqual(["draft.md"]);
+    // The two are different places: the reading room is the detached tree.
+    expect(seen[0]?.scratch).not.toBe(seen[0]?.dir);
+  });
+
+  test("the scratch a readonly unit wrote goes with the unit", async () => {
+    const dataBase = tenantRoot();
+    const { seen } = await executeNudge({
+      readsDir: true,
+      writesScratch: true,
+      mode: "readonly",
+      dataBase,
+    });
+
+    expect(existsSync(seen[0]?.scratch ?? "")).toBe(false);
+  });
+
+  test("a scratch kind reads one directory under both names", async () => {
+    const dataBase = tenantRoot();
+    const { seen } = await executeNudge({
+      readsDir: true,
+      writesScratch: true,
+      mode: "scratch",
+      dataBase,
+    });
+
+    expect(seen[0]?.scratch).toBe(seen[0]?.dir);
+  });
+
+  // A ref is a kind's own string: nothing in the engine parses one, so nothing
+  // in the engine may assume it is path-shaped either.
+  test("a ref carrying / and % lands on one directory of its own", async () => {
+    const dataBase = tenantRoot();
+    const { seen } = await executeNudge({
+      readsDir: true,
+      mode: "scratch",
+      ref: "feed/2026%mix",
+      dataBase,
+    });
+
+    expect(seen[0]?.dir).toBe(join(dataBase, "acme/widget/scratch/nudge/feed%2F2026%25mix"));
+    expect(seen[0]?.exists).toBe(true);
   });
 });
 
@@ -2270,7 +2356,7 @@ describe("the worktree lease at the unit boundary", () => {
     expect(
       result.lines.some(
         (line) =>
-          line.includes("Skipped stale-PR nudge for PR #44") && line.includes("pipeline work"),
+          line.includes("Skipped stale-PR nudge for PR #44") && line.includes("leased by work"),
       ),
     ).toBe(true);
     expect(result.gitCalls).not.toContainEqual(["worktree", "remove", "--force", WORKSPACE_DIR]);
@@ -2285,7 +2371,7 @@ describe("the worktree lease at the unit boundary", () => {
       "worktree",
       "lock",
       "--reason",
-      `pipeline=work pid=${process.pid}`,
+      `pipeline=work#nudge:pr%3A44 pid=${process.pid}`,
       WORKSPACE_DIR,
     ]);
     expect(worktreeArgv).toContainEqual(["worktree", "unlock", WORKSPACE_DIR]);
@@ -2357,6 +2443,10 @@ function gatedKind(opts: {
   /** The GitHub object each unit declares; omitted ⇒ the unit declares none. */
   target?: (id: number) => WorkUnitGitHubTarget;
   name?: string;
+  /** Which workspace the kind declares; a plain directory, and no git, by default. */
+  workspace?: WorkspaceMode;
+  /** Run inside `run` before the unit blocks — where a test touches its workspace. */
+  onRun?: (ref: string, ctx: WorkKindRunCtx) => void;
 }): GatedKind {
   const name = opts.name ?? "gated";
   const refs = [...opts.refs];
@@ -2377,7 +2467,7 @@ function gatedKind(opts: {
         name,
         oneShotEligible: true,
         promptFile: `prompts/${name}.md`,
-        workspace: "scratch",
+        workspace: opts.workspace ?? "scratch",
         report: {
           noun: `${name} unit(s)`,
           describe: (unit: { ref: string }) => `${name} ${unit.ref}`,
@@ -2400,12 +2490,14 @@ function gatedKind(opts: {
             total: gathered.refs.length,
           };
         },
-        run: (unit: { ref: string }) => {
+        run: (unit: { ref: string }, ctx: WorkKindRunCtx) => {
           started.push(unit.ref);
           // Handed out once: a real kind stops offering a unit it has worked,
           // and without that the gate would re-offer the same ref forever.
+          // Before `onRun`, which is allowed to throw.
           const at = refs.indexOf(Number(unit.ref.slice(2)));
           if (at !== -1) refs.splice(at, 1);
+          opts.onRun?.(unit.ref, ctx);
           const promise = new Promise<void>((resolve, reject) => {
             gates.set(unit.ref, (error) => (error ? reject(error) : resolve()));
           });
@@ -2428,6 +2520,10 @@ function concurrentEngine(opts: {
   github?: GitHubStubOverrides;
   credentialClient?: CredentialClient;
   slotClient?: SlotClient;
+  /** Root for the derived tenant paths — a tmpdir when a test lets one be written. */
+  dataBase?: string;
+  /** Wrap the git stub, to see what the engine asked of it (#423). */
+  git?: (base: GitRunner) => GitRunner;
 }): {
   drain: ReturnType<typeof manualDrain>;
   lines: string[];
@@ -2436,10 +2532,13 @@ function concurrentEngine(opts: {
   loop: () => Promise<void>;
 } {
   const drain = manualDrain();
-  const config = resolveConfig({
-    ...minimalUser(),
-    workOrder: opts.workOrder ?? opts.kinds.map((gated) => gated.kind.name),
-  });
+  const config = resolveConfig(
+    {
+      ...minimalUser(),
+      workOrder: opts.workOrder ?? opts.kinds.map((gated) => gated.kind.name),
+    },
+    opts.dataBase !== undefined ? { dataBase: opts.dataBase } : {},
+  );
   const env: NodeJS.ProcessEnv = { GH_TOKEN: "t0" };
   let snapshot: StatusSnapshot | null = null;
   const lines: string[] = [];
@@ -2456,7 +2555,7 @@ function concurrentEngine(opts: {
       newestUnitMarkerAuthor: () => PHOEBE_LOGIN,
       ...opts.github,
     }),
-    git: stubGit({}).git,
+    git: opts.git ? opts.git(stubGit({}).git) : stubGit({}).git,
     clock: { sleep: () => Promise.resolve(), now: () => new Date("2026-08-19T00:00:00Z") },
     drain,
     slotClient: opts.slotClient ?? null,
@@ -2745,5 +2844,165 @@ describe("rolling top-up inside one pipeline", () => {
     await gated.release("u:1");
     await loop;
     expect(slots).toEqual({ acquired: 1, released: 1 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-unit isolation under concurrency (#423)
+// ---------------------------------------------------------------------------
+//
+// #422 put several units in flight inside one row and left them sharing
+// everything below the row: one lease owner, one directory per kind, one
+// inherited stdout. These are the tests that they no longer do.
+
+describe("per-unit isolation under concurrency", () => {
+  test("two units of one row never both hold a worktree; the second is skipped", async () => {
+    // Both declare `worktree`, so both want the one engine-named workspace
+    // tree — the collision the row's `concurrency` used to make possible.
+    const gated = gatedKind({
+      refs: [1, 2],
+      workspace: "worktree",
+      onRun: (_ref, ctx) => void ctx.workspace.dir,
+    });
+    const engine = concurrentEngine({ kinds: [gated], concurrency: 2 });
+    const loop = engine.loop();
+    await settle();
+
+    expect(gated.started).toEqual(["u:1", "u:2"]);
+    // The second says whose tree it is, so an operator reading the log knows
+    // what it is waiting for rather than just that something went wrong.
+    expect(
+      engine.lines.some(
+        (line) => line.includes("Skipped gated u:2") && line.includes("work#gated:u%3A1"),
+      ),
+    ).toBe(true);
+    // Skipped, not failed: the unit comes back next cycle.
+    expect(engine.lines.some((line) => line.includes("Failed executing"))).toBe(false);
+
+    engine.drain.request();
+    await gated.release("u:1");
+    await loop;
+  });
+
+  test("the surviving unit keeps its tree: nobody removed it out from under it", async () => {
+    const worktreeCalls: string[][] = [];
+    const gated = gatedKind({
+      refs: [1, 2],
+      workspace: "worktree",
+      onRun: (_ref, ctx) => void ctx.workspace.dir,
+    });
+    const engine = concurrentEngine({
+      kinds: [gated],
+      concurrency: 2,
+      git: (base) => (args, opts) => {
+        if (args[0] === "worktree") worktreeCalls.push([...args]);
+        return base(args, opts);
+      },
+    });
+    const loop = engine.loop();
+    await settle();
+
+    // u:1's own preparation clears whatever a killed predecessor left, then
+    // takes the lease. What must not happen is anything after that, which is
+    // where the old teardown's recursive delete would have taken the tree apart.
+    const afterLease = worktreeCalls.slice(
+      worktreeCalls.findIndex((args) => args[1] === "lock") + 1,
+    );
+    expect(afterLease.filter((args) => args[1] === "remove" || args[1] === "unlock")).toEqual([]);
+
+    engine.drain.request();
+    await gated.release("u:1");
+    await loop;
+    // And the release happened once u:1 was done with it.
+    expect(worktreeCalls.filter((args) => args[1] === "remove").length).toBeGreaterThan(1);
+  });
+
+  test("two units of one kind write into scratch directories of their own", async () => {
+    const dataBase = tenantRoot();
+    const dirs = new Map<string, string>();
+    const gated = gatedKind({
+      refs: [1, 2],
+      onRun: (ref, ctx) => {
+        dirs.set(ref, ctx.workspace.dir);
+        writeFileSync(join(ctx.workspace.dir, "draft.md"), ref);
+      },
+    });
+    const engine = concurrentEngine({ kinds: [gated], concurrency: 2, dataBase });
+    const loop = engine.loop();
+    await settle();
+
+    expect(dirs.get("u:1")).toBe(join(dataBase, "acme/widget/scratch/gated/u%3A1"));
+    expect(dirs.get("u:2")).toBe(join(dataBase, "acme/widget/scratch/gated/u%3A2"));
+    // The claim in full: the second unit's preparation did not clear the first
+    // unit's work, which one kind-keyed directory would have.
+    expect(readdirSync(dirs.get("u:1") ?? "")).toEqual(["draft.md"]);
+    expect(readdirSync(dirs.get("u:2") ?? "")).toEqual(["draft.md"]);
+
+    engine.drain.request();
+    await gated.release("u:1");
+    await gated.release("u:2");
+    await loop;
+    expect(existsSync(dirs.get("u:1") ?? "")).toBe(false);
+    expect(existsSync(dirs.get("u:2") ?? "")).toBe(false);
+  });
+
+  test("two units of one kind get read-only trees of their own", async () => {
+    const dirs: string[] = [];
+    const gated = gatedKind({
+      refs: [1, 2],
+      workspace: "readonly",
+      onRun: (_ref, ctx) => dirs.push(ctx.workspace.dir),
+    });
+    const engine = concurrentEngine({ kinds: [gated], concurrency: 2 });
+    const loop = engine.loop();
+    await settle();
+
+    expect(dirs).toEqual([
+      "/data/repos/acme/widget/worktrees/readonly/gated/u%3A1",
+      "/data/repos/acme/widget/worktrees/readonly/gated/u%3A2",
+    ]);
+
+    engine.drain.request();
+    await gated.release("u:1");
+    await gated.release("u:2");
+    await loop;
+  });
+
+  // The output half of the same problem: with two units running, a line that
+  // says nothing about which unit produced it is a line an operator cannot use.
+  test("every git line carries the unit that caused it, and none goes unstamped", async () => {
+    const printed: string[] = [];
+    const gated = gatedKind({
+      refs: [1, 2],
+      workspace: "worktree",
+      onRun: (_ref, ctx) => void ctx.workspace.dir,
+    });
+    const engine = concurrentEngine({
+      kinds: [gated],
+      concurrency: 2,
+      // Every unit fetches the clone before it prepares its tree, so both units
+      // reach an inheriting git call even though only one gets the tree.
+      git: (base) => (args, opts) => {
+        if (args[0] === "fetch") opts?.echo?.("remote: Counting objects: 12, done.");
+        return base(args, opts);
+      },
+    });
+    const loop = engine.loop();
+    await settle();
+
+    const gitLines = engine.lines.filter((line) => line.includes("Counting objects"));
+    expect(gitLines).toContain(
+      "[phoebe:acme/widget:work][gated u:1] remote: Counting objects: 12, done.",
+    );
+    expect(gitLines).toContain(
+      "[phoebe:acme/widget:work][gated u:2] remote: Counting objects: 12, done.",
+    );
+    expect(gitLines.every((line) => line.startsWith("[phoebe:acme/widget:work][gated u:"))).toBe(
+      true,
+    );
+
+    engine.drain.request();
+    await gated.release("u:1");
+    await loop;
   });
 });
