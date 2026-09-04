@@ -62,7 +62,14 @@ import {
   type MintedToken,
 } from "./github-app.ts";
 import { attachBroker } from "./broker-ipc.ts";
-import { createSlotBroker, resolveMaxConcurrent, type SlotBroker } from "./slot-broker.ts";
+import {
+  createSlotBroker,
+  describeCap,
+  resolveEffectiveCap,
+  resolveFloorBudget,
+  type BrokerRow,
+  type SlotBroker,
+} from "./slot-broker.ts";
 import {
   discoverTenants,
   discoverWorkspaceTenants,
@@ -83,6 +90,7 @@ import {
   type FleetDiscoverInput,
   type FleetRun,
   type RowExitPolicy,
+  type SuperviseFleetDeps,
 } from "./supervise-fleet.ts";
 import {
   isExplicitWorkspace,
@@ -518,6 +526,49 @@ function readTenantEnv(envPath: string): Record<string, string> {
   }
 }
 
+/** One supervised row as the slot broker orders and sizes for it (#407). */
+function brokerRow(row: SupervisedRow): BrokerRow {
+  return {
+    id: row.id,
+    tenantId: row.tenant.id,
+    priority: row.pipeline.priority,
+    concurrency: row.pipeline.concurrency,
+    label: rowLabel(row),
+  };
+}
+
+/**
+ * Keep the broker in step with the live row matrix (#407), in either arm.
+ *
+ * Two different things ride on the same hook. Every poll refreshes the ordering
+ * data — a row's tenant and its hot `priority` — which is what lets a `priority`
+ * edit reorder the queue with no relaunch. Only a poll that *reshaped* the
+ * matrix re-derives the effective cap: shrinking a semaphore below its own
+ * `inUse` has no safe answer, so the number moves only when the supervisor is
+ * already mid-reshape, never on a hot flip.
+ *
+ * The cap line is logged when it says something new, so an operator sees the
+ * two numbers of the worst case (`cap + floorBudget`) at boot and again whenever
+ * a reconcile moves them, without a line per poll.
+ */
+export function trackRows(
+  broker: SlotBroker,
+  env: NodeJS.ProcessEnv = process.env,
+): NonNullable<SuperviseFleetDeps["onRows"]> {
+  let reported: string | null = null;
+  return ({ rows, reshaped }) => {
+    const live = rows.map(brokerRow);
+    broker.setRows(live);
+    if (!reshaped) return;
+    const cap = resolveEffectiveCap(live, env);
+    broker.setCapacity(cap.capacity);
+    const line = describeCap(cap, broker.floorBudget);
+    if (line === reported) return;
+    console.log(`[phoebe] boot: ${line}`);
+    reported = line;
+  };
+}
+
 /**
  * Supervise a workspace multi-tenant deployment (#58/#59/#61/#91): a
  * shared engine (#60, materialized once by `launchTarget` from the top config's
@@ -628,6 +679,7 @@ function runFleet(opts: {
         `[phoebe] boot: row reconcile — +${added.length} added, -${removed.length} removed, ` +
           `~${changed.length} relaunched (no container restart).`,
       ),
+    onRows: trackRows(broker),
     onChildExit: ({ row, exit }) =>
       console.error(
         `[phoebe] boot: row ${rowLabel(row)} exited (${exit.code ?? exit.signal}) — ` +
@@ -1105,10 +1157,26 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
 
   // One slot broker for the whole container, both arms (#416/#407). It is the
   // only entity that sees every row, which is what makes it the fairness
-  // authority; two of them would be two caps blind to each other. Solo has one
-  // row, so its default cap of 1 is the engine's existing one-unit-at-a-time
-  // behaviour and `PHOEBE_MAX_CONCURRENT_AGENTS` still means what it says.
-  const broker = createSlotBroker(resolveMaxConcurrent(process.env));
+  // authority; two of them would be two caps blind to each other.
+  //
+  // Its capacity is derived from the live rows (`trackRows`), so a solo tenant
+  // declaring `pipelines.work.concurrency: 3` gets 3 rather than a silent 1.
+  // Until the first row matrix arrives there is nothing to derive from and no
+  // child to ask, so it starts at the operator's override or 1.
+  const broker = createSlotBroker({
+    capacity: resolveEffectiveCap([], process.env).capacity,
+    floorBudget: resolveFloorBudget(process.env),
+    onOverGrant: ({ label, inUse, capacity, outstanding, floorBudget }) =>
+      console.log(
+        `[phoebe] boot: slot floor — ${label} held no slot with work waiting; granting one ` +
+          `over the cap (in use ${inUse}, cap ${capacity}, floor ${outstanding}/${floorBudget}).`,
+      ),
+    onOverGrantReturned: ({ label, inUse, capacity, outstanding, floorBudget }) =>
+      console.log(
+        `[phoebe] boot: slot floor — the over-cap slot held by ${label} is free again ` +
+          `(in use ${inUse}, cap ${capacity}, floor ${outstanding}/${floorBudget}).`,
+      ),
+  });
 
   // Detection ladder (#83/#91): loaded root config has a `workspace` block →
   // workspace mode; else solo. The root config is loaded here for the mode
@@ -1260,6 +1328,9 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       spawn: spawnSolo,
       stop,
       intervalMs,
+      // Solo contends on the same broker, so its rows size and order it too:
+      // one tenant, but its own pipelines' `concurrency` and `priority`.
+      onRows: trackRows(broker),
       // Solo backs off on the engine constant, not the fleet's per-row one: the
       // relaunch line quotes it, so the two must not drift.
       crashBackoffMs: CRASH_BACKOFF_MS,

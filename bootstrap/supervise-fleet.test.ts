@@ -1038,8 +1038,20 @@ describe("superviseFleet — solo's one row", () => {
 });
 
 /** One enumerated row, with only the two fields the supervisor diffs on varied. */
-function pipelineRow(name: string, fingerprint: string | null): PipelineRow {
-  return { name, disabled: false, priority: 0, concurrency: 1, needsClone: true, fingerprint };
+function pipelineRow(
+  name: string,
+  fingerprint: string | null,
+  knobs: Partial<Pick<PipelineRow, "disabled" | "priority" | "concurrency">> = {},
+): PipelineRow {
+  return {
+    name,
+    disabled: false,
+    priority: 0,
+    concurrency: 1,
+    needsClone: true,
+    fingerprint,
+    ...knobs,
+  };
 }
 
 /** Where a slug's tenant keeps its config — the key the enumerator is asked by. */
@@ -1072,6 +1084,7 @@ function matrixHarness(
   const spawned: Array<{ row: SupervisedRow; fake: ReturnType<typeof fakeChild> }> = [];
   const rowErrors: Array<{ tenantId: string; error: unknown }> = [];
   const runs: FleetRun[] = [];
+  const matrices: Array<{ rows: SupervisedRow[]; reshaped: boolean }> = [];
   let enumerations = 0;
   let stopRequested = false;
 
@@ -1121,6 +1134,7 @@ function matrixHarness(
       wait: clock.wait,
     },
     onRowsError: (info) => rowErrors.push(info),
+    onRows: ({ rows: live, reshaped }) => matrices.push({ rows: [...live], reshaped }),
     onRunEnd: (run) => runs.push(run),
     ...(options.decide ? { rowExit: { decide: options.decide } } : {}),
   });
@@ -1131,6 +1145,7 @@ function matrixHarness(
     spawned,
     rowErrors,
     runs,
+    matrices,
     named,
     get enumerations() {
       return enumerations;
@@ -1313,6 +1328,101 @@ describe("superviseFleet — the (tenant × pipeline) matrix", () => {
 
     h.named("intake")[0]!.fake.exit({ code: 4, signal: null });
     expect(await h.result).toEqual({ code: 4, signal: null });
+  });
+
+  test("announces the whole matrix before the first child spawns", async () => {
+    const h = matrixHarness({ rows: TWO_ROWS });
+    await settle();
+
+    // The broker must be sized and ordered before anything can ask it for a
+    // slot, so the announcement leads the spawn.
+    expect(h.matrices[0]).toBeDefined();
+    expect(h.matrices[0]!.reshaped).toBe(true);
+    expect(h.matrices[0]!.rows.map((row) => row.id)).toEqual([
+      `${WIDGET_ID}#work`,
+      `${WIDGET_ID}#intake`,
+    ]);
+  });
+
+  test("a poll that reshapes nothing announces the matrix as unchanged", async () => {
+    const h = matrixHarness({ rows: TWO_ROWS });
+    await settle();
+    h.tick();
+    await settle();
+
+    const last = h.matrices[h.matrices.length - 1]!;
+    expect(last.reshaped).toBe(false);
+    expect(last.rows).toHaveLength(2);
+    // Nothing was reshaped, so nothing was drained either.
+    for (const s of h.spawned) expect(s.fake.kills).toEqual([]);
+  });
+
+  test("a hot `priority` edit lands on the running row without relaunching it", async () => {
+    const h = matrixHarness({ rows: TWO_ROWS });
+    await settle();
+    const initial = [...h.spawned];
+
+    // `priority` is outside the row fingerprint, so a bump moves the tenant's
+    // stat fingerprint and nothing else. The row must not relaunch for it —
+    // and the move must not be read as a tenant-wide change either.
+    h.setRows({
+      [WIDGET]: [pipelineRow("work", "w1"), pipelineRow("intake", "i1", { priority: 5 })],
+    });
+    h.setSamples([sample("acme/widget", "fp2")]);
+    h.tick();
+    await settle();
+
+    for (const s of initial) expect(s.fake.kills).toEqual([]);
+    expect(h.spawned).toHaveLength(2);
+    // Nothing after the boot announcement reshaped, so the cap never moves for
+    // a hot edit — but the new priority is announced all the same.
+    expect(h.matrices.slice(1).some((matrix) => matrix.reshaped)).toBe(false);
+    const last = h.matrices[h.matrices.length - 1]!;
+    expect(last.rows.find((row) => row.pipeline.name === "intake")?.pipeline.priority).toBe(5);
+  });
+
+  test("a row whose cold config also moved still relaunches", async () => {
+    const h = matrixHarness({ rows: TWO_ROWS });
+    await settle();
+    const intake = h.named("intake")[0]!;
+
+    h.setRows({
+      [WIDGET]: [pipelineRow("work", "w1"), pipelineRow("intake", "i2", { priority: 5 })],
+    });
+    h.setSamples([sample("acme/widget", "fp2")]);
+    h.tick();
+    await settle();
+
+    expect(intake.fake.kills).toContain("SIGTERM");
+    expect(h.named("intake")).toHaveLength(2);
+    // A relaunch is a reshape, so this is where a moved cap would land.
+    expect(h.matrices.slice(1).some((matrix) => matrix.reshaped)).toBe(true);
+  });
+
+  test("a held tenant's running rows stay in the announced matrix", async () => {
+    const h = matrixHarness({
+      samples: [sample("acme/widget", "fp1"), sample("acme/gadget", "fp1")],
+      rows: {
+        [WIDGET]: [pipelineRow("work", "w1")],
+        [configOf("acme/gadget")]: [pipelineRow("work", "g1")],
+      },
+    });
+    await settle();
+
+    // Gadget's config goes unreadable: it is held, contributing no rows this
+    // poll — but its child is still running and still contending for slots.
+    h.setRows({
+      [WIDGET]: [pipelineRow("work", "w1")],
+      [configOf("acme/gadget")]: new PipelineEnumerationError("unreadable"),
+    });
+    h.setSamples([sample("acme/widget", "fp1"), sample("acme/gadget", "fp2")]);
+    h.tick();
+    await settle();
+
+    const last = h.matrices[h.matrices.length - 1]!;
+    expect(last.rows.map((row) => row.id).sort()).toEqual(
+      [`${tenant("acme/gadget").id}#work`, `${WIDGET_ID}#work`].sort(),
+    );
   });
 
   test("an engine with no `pipelines` subcommand runs one implicit row per tenant", async () => {

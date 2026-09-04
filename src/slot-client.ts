@@ -8,6 +8,7 @@
 // agent + test + push) holding the slot, and releases it when the unit finishes
 // — release bracketed by the same `try/finally` that owns worktree cleanup, so
 // timeout, error, and normal completion share one leak-free release path (#72).
+// One slot per admitted unit, so a row running several at once holds several.
 //
 // A standalone engine — dev / local-mount / `--run-once`, spawned without an IPC
 // channel — has no supervisor to ask and is already serialized to one unit, so
@@ -31,10 +32,12 @@ export type ParentChannel = {
 export type SlotClient = {
   /**
    * Request a slot; resolves when the supervisor grants one, and **rejects**
-   * with `BrokerDisconnectedError` if the IPC channel closes first.
+   * with `BrokerDisconnectedError` if the IPC channel closes first. Several may
+   * be outstanding at once — a row admitting `concurrency` units requests one
+   * per unit — and grants are fungible, so they resolve in request order.
    */
   acquire(): Promise<void>;
-  /** Release the held slot back to the supervisor. */
+  /** Release one held slot back to the supervisor. */
   release(): void;
 };
 
@@ -63,40 +66,65 @@ function isGrant(message: unknown): boolean {
 
 /**
  * Build a slot client bound to the parent IPC channel, or null when there is no
- * channel (a standalone engine — run unbrokered). The engine works one unit at
- * a time, so at most one acquire is ever outstanding per child: a single grant
- * message settles it, and the listener is removed as soon as it fires.
+ * channel (a standalone engine — run unbrokered).
  *
- * `acquire` also settles on channel `disconnect` — by **rejecting** with
- * `BrokerDisconnectedError`. Without settling at all, a supervisor that dies (or
- * is torn down) between the request and the grant would leave the promise
- * pending forever, and the loop `await`s it *before* the run deadline is armed
- * (src/main.ts) — a silent stall. Rejecting (rather than resolving) means the
- * engine stops instead of running the unit unbrokered: with the broker gone, a
- * fleet of children would otherwise all proceed at once and bypass the global
- * concurrency cap. The caller catches it and exits cleanly.
+ * A row may admit several units at once (#404), so several acquires can be
+ * outstanding, and the supervisor answers each with the same untagged
+ * `phoebe:slot:granted` message. **Grants are fungible**: any grant satisfies
+ * any of this row's pending acquires, so the client keeps them in a FIFO and
+ * resolves the head rather than correlating ids. The wire format is unchanged;
+ * only this bookkeeping went from one listener to a queue (#407).
+ *
+ * `acquire` also settles on channel `disconnect` — by **rejecting** every
+ * pending acquire with `BrokerDisconnectedError`. Without settling at all, a
+ * supervisor that dies (or is torn down) between the request and the grant would
+ * leave the promise pending forever, and the loop `await`s it *before* the run
+ * deadline is armed (src/main.ts) — a silent stall. Rejecting (rather than
+ * resolving) means the row stops admitting instead of running the unit
+ * unbrokered — with the broker gone, a fleet of children would otherwise all
+ * proceed at once and bypass the global concurrency cap — while the units
+ * already running drain. The caller catches it and exits cleanly.
+ *
+ * The two listeners are attached with the first pending acquire and removed
+ * with the last, so an idle engine holds none.
  */
 export function createSlotClient(proc: ParentChannel): SlotClient | null {
   if (typeof proc.send !== "function" || proc.connected === false) return null;
   const send = proc.send.bind(proc);
+  /** Acquires the supervisor has not answered yet, oldest first. */
+  const pending: Array<{ resolve: () => void; reject: (error: Error) => void }> = [];
+  let listening = false;
+
+  const onMessage = (message: unknown): void => {
+    // A grant with nothing pending is not ours to hold: drop it rather than
+    // banking permission the loop never asked for.
+    if (!isGrant(message)) return;
+    pending.shift()?.resolve();
+    if (pending.length === 0) detach();
+  };
+  const onDisconnect = (): void => {
+    const orphaned = pending.splice(0, pending.length);
+    detach();
+    for (const acquire of orphaned) acquire.reject(new BrokerDisconnectedError());
+  };
+  const attach = (): void => {
+    if (listening) return;
+    listening = true;
+    proc.on?.("message", onMessage);
+    proc.on?.("disconnect", onDisconnect);
+  };
+  const detach = (): void => {
+    if (!listening) return;
+    listening = false;
+    proc.off?.("message", onMessage);
+    proc.off?.("disconnect", onDisconnect);
+  };
+
   return {
     acquire(): Promise<void> {
       return new Promise<void>((resolve, reject) => {
-        const onMessage = (message: unknown): void => {
-          if (!isGrant(message)) return;
-          cleanup();
-          resolve();
-        };
-        const onDisconnect = (): void => {
-          cleanup();
-          reject(new BrokerDisconnectedError());
-        };
-        const cleanup = (): void => {
-          proc.off?.("message", onMessage);
-          proc.off?.("disconnect", onDisconnect);
-        };
-        proc.on?.("message", onMessage);
-        proc.on?.("disconnect", onDisconnect);
+        pending.push({ resolve, reject });
+        attach();
         send({ type: SLOT_ACQUIRE });
       });
     },

@@ -191,14 +191,14 @@ custom-kind charset, so `#` can never appear in one. The block is tenant-only. A
 workspace root declaring it is a config error, since a root says which tenants
 exist, not what work happens inside one.
 
-| Knob             | Default  | Hot? | Meaning                                                                                                                                                                                 |
-| ---------------- | -------- | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `order`          | `[]`     | cold | Priority, not membership. Named kinds are polled first, in this sequence; every other kind this pipeline owns follows in declaration order. An unknown name is a boot error.            |
-| `kinds`          | `{}`     | cold | This row's [per-kind tuning blocks](#per-work-kind-overrides) and [`custom` declarations](#custom-work-kinds-workkindscustom), the same shape the deprecated top-level `workKinds` had. |
-| `concurrency`    | `1`      | cold | How many units this row may hold in flight. Accepted and validated today; acting on it is a later ticket, so every row still runs one unit at a time.                                   |
-| `pollIntervalMs` | `300000` | cold | Idle poll cadence. **Outranks `PHOEBE_POLL_INTERVAL_MS`**; the env var is the fallback for a row that declares nothing, and the default applies when neither does.                      |
-| `disabled`       | `false`  | hot  | Operator off-switch for this row.                                                                                                                                                       |
-| `priority`       | `0`      | hot  | Tenant-local scheduling priority for a contended concurrency slot; higher wins.                                                                                                         |
+| Knob             | Default  | Hot? | Meaning                                                                                                                                                                                                                   |
+| ---------------- | -------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `order`          | `[]`     | cold | Priority, not membership. Named kinds are polled first, in this sequence; every other kind this pipeline owns follows in declaration order. An unknown name is a boot error.                                              |
+| `kinds`          | `{}`     | cold | This row's [per-kind tuning blocks](#per-work-kind-overrides) and [`custom` declarations](#custom-work-kinds-workkindscustom), the same shape the deprecated top-level `workKinds` had.                                   |
+| `concurrency`    | `1`      | cold | How many units this row may hold in flight, and the input the fleet's [slot cap](#concurrency-the-rows-knob-and-the-fleets-cap) is derived from. The engine still admits one unit at a time; that half is a later ticket. |
+| `pollIntervalMs` | `300000` | cold | Idle poll cadence. **Outranks `PHOEBE_POLL_INTERVAL_MS`**; the env var is the fallback for a row that declares nothing, and the default applies when neither does.                                                        |
+| `disabled`       | `false`  | hot  | Operator off-switch for this row.                                                                                                                                                                                         |
+| `priority`       | `0`      | hot  | Tenant-local scheduling priority for a contended [slot](#concurrency-the-rows-knob-and-the-fleets-cap); higher wins, ties keep their place in the queue.                                                                  |
 
 Hot means the supervisor acts on a change without relaunching the row. Cold
 knobs relaunch it. `disabled` is hot at all three scopes: tenant, pipeline, and
@@ -207,16 +207,54 @@ engine — `phoebe pipelines` prints this tenant's rows as JSON, and the hot kno
 are exactly what its per-row fingerprint leaves out
 ([architecture.md](architecture.md#asking-the-engine-which-rows-a-tenant-has)).
 It spawns one child per row and relaunches a row when its own cold config moves
-([Supervising rows](architecture.md#supervising-rows)). `disabled`, `priority`
-and `concurrency` are validated but not yet acted on; the tickets that schedule
-on them come later. A kind's `disabled` is live now, since it is what took over
-from omission.
+([Supervising rows](architecture.md#supervising-rows)). `priority` and
+`concurrency` are live in the broker (below). A row's `disabled` is validated but
+not yet acted on; the ticket that switches a row off comes later. A kind's
+`disabled` is live now, since it is what took over from omission.
 
 **A kind belongs to at most one pipeline.** Two rows naming or declaring the
 same kind is fatal for the tenant at load. The rows are separate processes and
 would race each other over the same PR. Kinds nobody claims fall to `work`,
 which is what makes `order` mean priority and nothing else in a tenant with one
 pipeline.
+
+### Concurrency: the row's knob and the fleet's cap
+
+Two ceilings, and neither negotiates with the other. `concurrency` bounds what a
+row will admit; the bootstrapper's slot broker bounds what the container will run
+at once. What runs is whatever both allow.
+
+The cap is derived rather than fixed: `max(concurrency)` across the live rows. A
+row's declared concurrency is reachable when nothing else is working, and the cap
+still binds across rows. Every row at the default 1 derives 1, which is the fleet
+Phoebe has always run. `PHOEBE_MAX_CONCURRENT_AGENTS` replaces the derived
+number, winning even when it is lower — the operator knows the machine and the
+tenant does not. A row declaring more than the cap is not rewritten to fit; it
+queues, and boot says so on one line:
+
+```
+[phoebe] boot: slot cap 2 — PHOEBE_MAX_CONCURRENT_AGENTS=2 replaces max(concurrency)=4; floorBudget=1; declaring more than the cap and queuing for it (not clamped): acme/gadget:work(4)
+```
+
+The cap is recomputed on a reconcile that reshapes rows, never on a hot edit: a
+granted slot cannot be recalled, so the number moves only when the supervisor is
+already draining and respawning.
+
+**The slot floor.** A row holding no slot with work waiting is _starved_, and one
+long unit elsewhere can keep it that way for as long as that unit runs. Such a
+row is granted one slot over the cap. `PHOEBE_SLOT_FLOOR_BUDGET` (default 1) is
+how many of those over-cap grants may exist at once across the container, so the
+worst case is `cap + floorBudget` — two numbers, both in the boot line. Set it to
+0 for a hard ceiling, and accept what that costs a starved row.
+
+**Who is served next.** Tenants take turns, and `priority` orders one tenant's
+rows against each other: higher first, ties in the order they asked. Tenant-local
+by design — `priority: 100` means "ahead of my other pipelines", never "ahead of
+everyone else's repo" — and re-read every poll, so an edit lands on rows already
+queued without relaunching anything. Starving a low-priority row for as long as
+something higher is contending is what the knob is for. Turns are taken per
+**row**, not per tenant: declaring three pipelines is declaring three independent
+streams, and they queue as three.
 
 ### Choosing a row: `--pipeline`
 
@@ -784,7 +822,8 @@ config-file territory.
 | `PHOEBE_RECONCILE_INTERVAL_MS`               | `60000`              | How often `phoebe boot` polls the mounted config and the tracked ref for a drain-and-relaunch (see Engine source → Reconcile).                                                                                                                                                                                                                 |
 | `PHOEBE_BASE`                                | _none_               | Force the worktree base ref for issues (bypasses blocker resolution).                                                                                                                                                                                                                                                                          |
 | `PHOEBE_DATA_DIR`                            | `/data/repos`        | Base dir for derived tenant paths (host/dev override). Each tenant nests under `<base>/<owner>/<repo>/`.                                                                                                                                                                                                                                       |
-| `PHOEBE_MAX_CONCURRENT_AGENTS`               | `1`                  | Cap on concurrently-executing work units (the bootstrapper's FIFO broker), in solo and fleet alike. Raise deliberately.                                                                                                                                                                                                                        |
+| `PHOEBE_MAX_CONCURRENT_AGENTS`               | derived              | Cap on concurrently-executing work units (the bootstrapper's slot broker), in solo and fleet alike. Defaults to `max(concurrency)` across the live rows, which is 1 unless a row declares more. Setting it replaces that, even when lower. See [Concurrency](#concurrency-the-rows-knob-and-the-fleets-cap).                                   |
+| `PHOEBE_SLOT_FLOOR_BUDGET`                   | `1`                  | How many rows may hold a slot over the cap at once because they are starved — no slot held, work waiting. The container's worst case is the cap plus this. `0` makes the cap a hard ceiling.                                                                                                                                                   |
 | `PHOEBE_RUN_TIMEOUT_MS`                      | `2700000` (45 min)   | Whole-unit wall-clock budget; a unit that exceeds it is aborted so it can't hold the concurrency slot forever. Under the App arm the effective ceiling is ≈50 min (installation tokens expire after 60 min). Also settable as the `runTimeoutMs` config field.                                                                                 |
 | `PHOEBE_MAX_UNPRODUCTIVE_RUNS`               | `3`                  | Consecutive unproductive runs (no PR produced) before an issue unit is quarantined (`phoebe:quarantined` label + escalation comment). PR-shaped units (conflicts/checks/reviews) are quarantined after K timeouts instead. Also the `maxUnproductiveRuns` config field. `PHOEBE_MAX_UNIT_TIMEOUTS` / `maxUnitTimeouts` are deprecated aliases. |
 

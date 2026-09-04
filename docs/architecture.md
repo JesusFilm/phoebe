@@ -255,6 +255,20 @@ is the engine, its death is the container's, and the threshold is unchanged.
 Every other unexpected exit respawns after the backoff, whatever the code; only
 an exit the supervisor asked for does not.
 
+**Slots across the matrix.** One broker serves every row in either arm, and it
+sizes itself off the matrix it is supervising: the effective cap is the largest
+`concurrency` any live row declares, or `PHOEBE_MAX_CONCURRENT_AGENTS` when the
+operator sets it. The number is recomputed on a reconcile that reshapes rows and
+never on a hot edit, because a slot already granted cannot be recalled. A row
+declaring more than the cap queues for it rather than being rewritten. Rows take
+turns per tenant, `priority` orders one tenant's rows among themselves, and a row
+holding no slot with work waiting may hold one over the cap — bounded by
+`PHOEBE_SLOT_FLOOR_BUDGET` — so a 45-minute unit elsewhere cannot stall an intake
+row for 45 minutes. A release gives back an over-cap slot before a regular one,
+and nothing is handed on while the cap is breached, so the breach never rolls
+forward. The knobs and the boot line are in
+[`configuration.md`](configuration.md#concurrency-the-rows-knob-and-the-fleets-cap).
+
 ## One cycle, end to end
 
 Every step below is one walk over the **work-kind registry** — the built-in
