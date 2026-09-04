@@ -8,6 +8,13 @@ import type { EngineExit, LaunchedEngine, WatchState } from "./reconcile.ts";
 import type { DiscoveredTenant, TenantSample } from "./tenants.ts";
 import { DuplicateOriginSlugError } from "./tenants.ts";
 import {
+  PipelineEnumerationError,
+  rowId,
+  type PipelineRow,
+  type RowEnumerator,
+  type SupervisedRow,
+} from "./pipeline-rows.ts";
+import {
   superviseFleet,
   type DrainTimer,
   type FleetChild,
@@ -163,7 +170,7 @@ function harness(initial: TenantSample[]) {
     },
     spawn: (t) => {
       const fake = fakeChild();
-      spawned.push({ slug: t.slug, fake });
+      spawned.push({ slug: t.tenant.slug, fake });
       return fake.child;
     },
     stop: {
@@ -406,7 +413,7 @@ describe("superviseFleet", () => {
       discover: () => ({ samples, hold }),
       spawn: (t) => {
         const fake = fakeChild();
-        spawned.push({ slug: t.slug, fake });
+        spawned.push({ slug: t.tenant.slug, fake });
         return fake.child;
       },
       stop: {
@@ -511,7 +518,8 @@ describe("superviseFleet", () => {
     const exit = await result;
     expect(exit).toEqual({ code: 0, signal: null });
     expect(stubborn.kills).toEqual(["SIGTERM", "SIGKILL"]);
-    expect(reaped).toEqual([tenant("acme/widget").id]); // onReap still fires after kill
+    // onReap still fires after the kill, and reaps by row id (#420).
+    expect(reaped).toEqual([rowId(tenant("acme/widget").id, "work")]);
   });
 
   test("a graceful drain cancels the grace timer and never SIGKILLs (#79)", async () => {
@@ -1026,5 +1034,302 @@ describe("superviseFleet — solo's one row", () => {
 
     expect(await h.result).toEqual({ code: 1, signal: null });
     expect(h.entries).toHaveLength(1);
+  });
+});
+
+/** One enumerated row, with only the two fields the supervisor diffs on varied. */
+function pipelineRow(name: string, fingerprint: string | null): PipelineRow {
+  return { name, disabled: false, priority: 0, concurrency: 1, needsClone: true, fingerprint };
+}
+
+/** Where a slug's tenant keeps its config — the key the enumerator is asked by. */
+function configOf(slug: string): string {
+  return tenant(slug).configPath;
+}
+
+/**
+ * A fleet whose rows come from a fake engine (#417's `RowEnumerator` contract),
+ * so the matrix can be moved a row at a time: `setRows` re-answers enumeration,
+ * `setSamples` moves a tenant's fingerprint, and an `Error` in the row table is
+ * an enumeration that throws.
+ */
+function matrixHarness(
+  options: {
+    samples?: TenantSample[];
+    rows?: Record<string, PipelineRow[] | Error>;
+    supported?: boolean;
+    decide?: (run: FleetRun) => RowExitAction;
+  } = {},
+) {
+  const clock = gatedClock();
+  const engineState = {
+    config: "1:1",
+    remoteSha: SHA_A,
+    source: { ...DEFAULT_ENGINE_SOURCE },
+  };
+  let samples: TenantSample[] = options.samples ?? [sample("acme/widget", "fp1")];
+  let rows: Record<string, PipelineRow[] | Error> = options.rows ?? {};
+  const spawned: Array<{ row: SupervisedRow; fake: ReturnType<typeof fakeChild> }> = [];
+  const rowErrors: Array<{ tenantId: string; error: unknown }> = [];
+  const runs: FleetRun[] = [];
+  let enumerations = 0;
+  let stopRequested = false;
+
+  // One enumerator per materialization, cache and all — the whole point of
+  // hanging it off `LaunchedEngine` is that an upgrade starts a fresh one.
+  const enumerator = (): RowEnumerator => {
+    const cache = new Map<string, { fingerprint: string; rows: readonly PipelineRow[] }>();
+    return {
+      supported: () => options.supported ?? true,
+      rowsFor: ({ configPath, fingerprint }) => {
+        const cached = cache.get(configPath);
+        if (cached && fingerprint !== null && cached.fingerprint === fingerprint)
+          return cached.rows;
+        enumerations += 1;
+        const answer = rows[configPath] ?? [pipelineRow("work", "work-fp")];
+        if (answer instanceof Error) throw answer;
+        if (fingerprint !== null) cache.set(configPath, { fingerprint, rows: answer });
+        return answer;
+      },
+    };
+  };
+
+  const result = superviseFleet({
+    intervalMs: 1000,
+    crashBackoffMs: 500,
+    launch: () => ({
+      entry: "/data/engine/src/cli.ts",
+      sha: engineState.remoteSha,
+      config: engineState.config,
+      source: { ...engineState.source },
+      quarantinedSha: null,
+      guarded: true,
+      confirmEngineSource: async () => ({ ...engineState.source }),
+      sample: () => ({ config: engineState.config, remoteSha: engineState.remoteSha }),
+      rows: enumerator(),
+    }),
+    discover: () => samples,
+    spawn: (row) => {
+      const fake = fakeChild();
+      spawned.push({ row, fake });
+      return fake.child;
+    },
+    stop: {
+      get requested() {
+        return stopRequested;
+      },
+      wait: clock.wait,
+    },
+    onRowsError: (info) => rowErrors.push(info),
+    onRunEnd: (run) => runs.push(run),
+    ...(options.decide ? { rowExit: { decide: options.decide } } : {}),
+  });
+
+  const named = (name: string) => spawned.filter((s) => s.row.pipeline.name === name);
+  return {
+    result,
+    spawned,
+    rowErrors,
+    runs,
+    named,
+    get enumerations() {
+      return enumerations;
+    },
+    setRows: (next: Record<string, PipelineRow[] | Error>) => {
+      rows = next;
+    },
+    setSamples: (next: TenantSample[]) => {
+      samples = next;
+    },
+    moveEngineRef: (sha: string) => {
+      engineState.remoteSha = sha;
+    },
+    tick: clock.tick,
+    requestStop: () => {
+      stopRequested = true;
+      clock.tick();
+    },
+  };
+}
+
+describe("superviseFleet — the (tenant × pipeline) matrix", () => {
+  const WIDGET = configOf("acme/widget");
+  const WIDGET_ID = tenant("acme/widget").id;
+  const TWO_ROWS = { [WIDGET]: [pipelineRow("work", "w1"), pipelineRow("intake", "i1")] };
+
+  test("boots one child per declared row, each under its own row id", async () => {
+    const h = matrixHarness({ rows: TWO_ROWS });
+    await settle();
+
+    expect(h.spawned.map((s) => s.row.pipeline.name)).toEqual(["work", "intake"]);
+    expect(h.spawned.map((s) => s.row.id)).toEqual([`${WIDGET_ID}#work`, `${WIDGET_ID}#intake`]);
+    // Enumerated rows carry the `--pipeline` flag their child is spawned with.
+    expect(h.spawned.every((s) => s.row.enumerated)).toBe(true);
+  });
+
+  test("a row-local edit relaunches only that row", async () => {
+    const h = matrixHarness({ rows: TWO_ROWS });
+    await settle();
+    const work = h.named("work")[0]!;
+
+    // `intake.pollIntervalMs` moved: the tenant's stat fingerprint follows, but
+    // only intake's own digest does.
+    h.setRows({ [WIDGET]: [pipelineRow("work", "w1"), pipelineRow("intake", "i2")] });
+    h.setSamples([sample("acme/widget", "fp2")]);
+    h.tick();
+    await settle();
+
+    expect(work.fake.kills).toEqual([]);
+    expect(h.named("intake")).toHaveLength(2);
+    expect(h.named("work")).toHaveLength(1);
+  });
+
+  test("a tenant-wide edit no row accounts for fans out to every row", async () => {
+    const h = matrixHarness({ rows: TWO_ROWS });
+    await settle();
+    const initial = [...h.spawned];
+
+    // `gitIdentity` moved: the row digests deliberately exclude tenant-wide
+    // fields, so nothing but the tenant fingerprint has anything to say.
+    h.setSamples([sample("acme/widget", "fp2")]);
+    h.tick();
+    await settle();
+
+    for (const s of initial) expect(s.fake.kills).toContain("SIGTERM");
+    expect(h.named("work")).toHaveLength(2);
+    expect(h.named("intake")).toHaveLength(2);
+  });
+
+  test("a row that vanishes from the config drains, and its siblings keep running", async () => {
+    const h = matrixHarness({ rows: TWO_ROWS });
+    await settle();
+    const work = h.named("work")[0]!;
+    const intake = h.named("intake")[0]!;
+
+    h.setRows({ [WIDGET]: [pipelineRow("work", "w1")] });
+    h.setSamples([sample("acme/widget", "fp2")]);
+    h.tick();
+    await settle();
+
+    expect(intake.fake.kills).toContain("SIGTERM");
+    // Running, not relaunched: the vanished row already accounts for the move.
+    expect(work.fake.kills).toEqual([]);
+    expect(h.spawned).toHaveLength(2);
+  });
+
+  test("an enumeration failure holds the tenant, warns each poll, and drains nothing", async () => {
+    const h = matrixHarness({ rows: TWO_ROWS });
+    await settle();
+    const initial = [...h.spawned];
+
+    h.setRows({ [WIDGET]: new PipelineEnumerationError("intake claims a kind work owns") });
+    h.setSamples([sample("acme/widget", "fp2")]);
+    h.tick();
+    await settle();
+    for (const s of initial) expect(s.fake.kills).toEqual([]);
+    expect(h.rowErrors.map((e) => e.tenantId)).toEqual([WIDGET_ID]);
+
+    // Still broken next poll: said again, still nothing drained.
+    h.tick();
+    await settle();
+    expect(h.rowErrors).toHaveLength(2);
+    for (const s of initial) expect(s.fake.kills).toEqual([]);
+
+    // Fixed. The held tenant never moved its watermark on, so the edit that
+    // could not be read is still pending and fans out to both rows.
+    h.setRows(TWO_ROWS);
+    h.tick();
+    await settle();
+    expect(h.rowErrors).toHaveLength(2);
+    expect(h.spawned).toHaveLength(4);
+  });
+
+  test("an enumeration failure at boot contributes no rows and retries", async () => {
+    const h = matrixHarness({ rows: { [WIDGET]: new PipelineEnumerationError("no such kind") } });
+    await settle();
+
+    expect(h.spawned).toEqual([]);
+    expect(h.rowErrors).toHaveLength(1);
+
+    h.setRows(TWO_ROWS);
+    h.tick();
+    await settle();
+    expect(h.spawned.map((s) => s.row.pipeline.name)).toEqual(["work", "intake"]);
+  });
+
+  test("an engine upgrade re-enumerates rather than reusing the old row list", async () => {
+    const h = matrixHarness({ rows: { [WIDGET]: [pipelineRow("work", "w1")] } });
+    await settle();
+    expect(h.enumerations).toBe(1);
+
+    // The new commit understands a row the old one never reported, under a
+    // tenant fingerprint that has not moved at all.
+    h.setRows(TWO_ROWS);
+    h.moveEngineRef(SHA_B);
+    h.tick();
+    await settle();
+
+    expect(h.enumerations).toBe(2);
+    expect(h.spawned.map((s) => s.row.pipeline.name)).toEqual(["work", "work", "intake"]);
+  });
+
+  test("one row crash-looping is that row's problem; the container stays up", async () => {
+    const h = matrixHarness({ rows: TWO_ROWS, decide: () => "exit" });
+    await settle();
+
+    h.named("work")[0]!.fake.exit({ code: 1, signal: null });
+    await settle();
+    // The exit policy was never asked — intake is still up, so the death is not
+    // universal and the row is simply reaped and respawned.
+    expect(h.runs.at(-1)?.everyRowCrashLooping).toBe(false);
+    h.tick(); // release the respawn backoff
+    await settle();
+    expect(h.named("work")).toHaveLength(2);
+  });
+
+  test("every row crash-looping at once is the container's problem", async () => {
+    const h = matrixHarness({ rows: TWO_ROWS, decide: () => "exit" });
+    await settle();
+
+    h.named("work")[0]!.fake.exit({ code: 7, signal: null });
+    h.named("intake")[0]!.fake.exit({ code: 1, signal: null });
+
+    expect(await h.result).toEqual({ code: 7, signal: null });
+    expect(h.runs.some((run) => run.everyRowCrashLooping)).toBe(true);
+  });
+
+  test("a row still crash-looping between respawns keeps counting", async () => {
+    // The two rows never die in the same instant, so a mark that reset on
+    // respawn would let them alternate forever and the container would hang on
+    // a fleet that is entirely broken.
+    const h = matrixHarness({ rows: TWO_ROWS, decide: () => "exit" });
+    await settle();
+
+    h.named("work")[0]!.fake.exit({ code: 1, signal: null });
+    await settle();
+    h.tick();
+    await settle();
+    expect(h.named("work")).toHaveLength(2);
+
+    h.named("intake")[0]!.fake.exit({ code: 4, signal: null });
+    expect(await h.result).toEqual({ code: 4, signal: null });
+  });
+
+  test("an engine with no `pipelines` subcommand runs one implicit row per tenant", async () => {
+    const h = matrixHarness({ supported: false });
+    await settle();
+
+    expect(h.spawned).toHaveLength(1);
+    expect(h.spawned[0]?.row.pipeline.name).toBe("work");
+    // Nothing to ask, so nothing is asked — and no `--pipeline` is passed on.
+    expect(h.spawned[0]?.row.enumerated).toBe(false);
+    expect(h.enumerations).toBe(0);
+
+    // A tenant config edit still relaunches that child, exactly as it always has.
+    h.setSamples([sample("acme/widget", "fp2")]);
+    h.tick();
+    await settle();
+    expect(h.spawned[0]?.fake.kills).toContain("SIGTERM");
+    expect(h.spawned).toHaveLength(2);
   });
 });

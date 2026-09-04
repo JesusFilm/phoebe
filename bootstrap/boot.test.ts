@@ -14,8 +14,10 @@ import {
   LOCAL_ENGINE_DIR,
   resolveEngineEntry,
   setupGitCredentials,
+  rowArgv,
   tenantFingerprint,
 } from "./boot.ts";
+import type { SupervisedRow } from "./pipeline-rows.ts";
 
 describe("resolveEngineEntry", () => {
   test("a local source execs the engine CLI under the mounted dir", () => {
@@ -306,5 +308,57 @@ describe("tenantFingerprint — token removal (retention regression)", () => {
     const withToken = tenantFingerprint(configPath, envPath);
     writeFileSync(envPath, "CURSOR_API_KEY=sk-1\n");
     expect(tenantFingerprint(configPath, envPath)).not.toBe(withToken);
+  });
+});
+
+describe("rowArgv", () => {
+  const row = (name: string, enumerated: boolean): SupervisedRow => ({
+    id: `/etc/phoebe/repos/acme/widget#${name}`,
+    tenant: {
+      id: "/etc/phoebe/repos/acme/widget",
+      slug: "acme/widget",
+      dir: "/etc/phoebe/repos/acme/widget",
+      configPath: "/etc/phoebe/repos/acme/widget/phoebe.config.ts",
+      envPath: "/etc/phoebe/repos/acme/widget/.env",
+      gitIdentity: null,
+    },
+    pipeline: {
+      name,
+      disabled: false,
+      priority: 0,
+      concurrency: 1,
+      needsClone: true,
+      fingerprint: enumerated ? "abc123" : null,
+    },
+    enumerated,
+  });
+
+  test("names the row the child is to run", () => {
+    expect(
+      rowArgv(row("intake", true), "/etc/phoebe/repos/acme/widget/phoebe.config.ts", false, []),
+    ) //
+      .toEqual(["--pipeline", "intake"]);
+  });
+
+  test("keeps `--config` for a relocated asset dir, ahead of the row", () => {
+    const configPath = "/etc/phoebe/repos/acme/widget/phoebe.config.ts";
+    expect(rowArgv(row("work", true), configPath, true, ["--dry-run"])).toEqual([
+      "--config",
+      configPath,
+      "--pipeline",
+      "work",
+      "--dry-run",
+    ]);
+  });
+
+  test("omits `--pipeline` for the implicit row of an engine that cannot enumerate", () => {
+    // That checkout has no such flag and would exit on it before reading a
+    // config, so an engine downgrade must stay a no-op (#417).
+    expect(
+      rowArgv(row("work", false), "/etc/phoebe/repos/acme/widget/phoebe.config.ts", false, [
+        "--run-once",
+      ]),
+    ) //
+      .toEqual(["--run-once"]);
   });
 });

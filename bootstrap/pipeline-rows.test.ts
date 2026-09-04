@@ -15,8 +15,12 @@ import {
   createRowEnumerator,
   IMPLICIT_WORK_ROW,
   PipelineEnumerationError,
+  diffRows,
+  rowId,
+  rowLabel,
   type EngineCommand,
   type EngineCommandResult,
+  type RowSample,
 } from "./pipeline-rows.ts";
 
 const PROBE_OK = `{"version":1,"supported":true}\n`;
@@ -233,3 +237,81 @@ ${body}};
     ).toThrow(/claimed by both `pipelines.work` and `pipelines.intake`/);
   });
 }, 60_000);
+
+describe("the row matrix vocabulary", () => {
+  const tenant = {
+    id: "/etc/phoebe/repos/acme/widget",
+    slug: "acme/widget",
+    dir: "/etc/phoebe/repos/acme/widget",
+    configPath: "/etc/phoebe/repos/acme/widget/phoebe.config.ts",
+    envPath: "/etc/phoebe/repos/acme/widget/.env",
+    gitIdentity: null,
+  };
+
+  function row(name: string, fingerprint: string | null): RowSample {
+    return {
+      row: {
+        id: rowId(tenant.id, name),
+        tenant,
+        pipeline: {
+          name,
+          disabled: false,
+          priority: 0,
+          concurrency: 1,
+          needsClone: true,
+          fingerprint,
+        },
+        enumerated: fingerprint !== null,
+      },
+      fingerprint,
+    };
+  }
+
+  test("a row id joins the tenant and the pipeline", () => {
+    expect(rowId(tenant.id, "intake")).toBe("/etc/phoebe/repos/acme/widget#intake");
+  });
+
+  test("an operator reads a row as slug:pipeline", () => {
+    expect(rowLabel(row("intake", "i1").row)).toBe("acme/widget:intake");
+  });
+
+  test("a tenant with no slug falls back to its dir, so a row is always nameable", () => {
+    const solo = { ...row("work", "w1").row, tenant: { ...tenant, slug: null } };
+    expect(rowLabel(solo)).toBe("/etc/phoebe/repos/acme/widget:work");
+  });
+
+  test("diffs added, removed and moved rows", () => {
+    const previous = new Map([
+      [rowId(tenant.id, "work"), "w1"],
+      [rowId(tenant.id, "intake"), "i1"],
+    ]);
+    const diff = diffRows(previous, [row("work", "w1"), row("review", "r1")]);
+
+    expect(diff.added.map((r) => r.pipeline.name)).toEqual(["review"]);
+    expect(diff.removed).toEqual([rowId(tenant.id, "intake")]);
+    expect(diff.changed).toEqual([]);
+  });
+
+  test("a moved fingerprint is the only thing that relaunches a row", () => {
+    const previous = new Map([[rowId(tenant.id, "intake"), "i1"]]);
+    expect(diffRows(previous, [row("intake", "i2")]).changed.map((r) => r.pipeline.name)) //
+      .toEqual(["intake"]);
+    expect(diffRows(previous, [row("intake", "i1")]).changed).toEqual([]);
+  });
+
+  test("a null fingerprint on either side is unknown, never a change", () => {
+    // What the implicit row of a checkout that cannot enumerate always carries:
+    // it must not churn its child every poll.
+    expect(diffRows(new Map([[rowId(tenant.id, "work"), null]]), [row("work", null)]).changed) //
+      .toEqual([]);
+    expect(diffRows(new Map([[rowId(tenant.id, "work"), "w1"]]), [row("work", null)]).changed) //
+      .toEqual([]);
+  });
+
+  test("a held row is never reported as removed, however absent", () => {
+    const previous = new Map([[rowId(tenant.id, "intake"), "i1"]]);
+    const hold = new Set([rowId(tenant.id, "intake")]);
+    expect(diffRows(previous, [], hold).removed).toEqual([]);
+    expect(diffRows(previous, []).removed).toEqual([rowId(tenant.id, "intake")]);
+  });
+});
