@@ -450,7 +450,66 @@ Even `true` is narrow. It means the config loaded and satisfied the schema at th
 moment it was checked, not that the deployment is healthy. Run `phoebe doctor` for
 that.
 
-### Upgrading a workspace
+#### Moving the work fields into `pipelines.work`
+
+A tenant used to declare its work at the top level of `phoebe.config.ts`. It now
+declares it inside a **pipeline** — a named row of work with its own priority
+order, kind tuning and cadence (see
+[`configuration.md` → Pipelines](configuration.md#pipelines)). `phoebe migrate`
+does the move for you, on a tenant config:
+
+| Was                    | Is now                                      |
+| ---------------------- | ------------------------------------------- |
+| `workOrder`            | `pipelines.work.order`                      |
+| `workKinds`            | `pipelines.work.kinds`                      |
+| `promptFiles.issue`    | `pipelines.work.kinds.issues.promptFile`    |
+| `promptFiles.conflict` | `pipelines.work.kinds.conflicts.promptFile` |
+| `promptFiles.checks`   | `pipelines.work.kinds.checks.promptFile`    |
+| `promptFiles.reviews`  | `pipelines.work.kinds.reviews.promptFile`   |
+| `promptFiles.research` | `pipelines.work.kinds.research.promptFile`  |
+
+The two odd `promptFiles` spellings are spent in the move: the key that pointed
+the `issues` kind at its prompt was `issue`, and the one for `conflicts` was
+`conflict`. On a kind block the path says which kind it belongs to.
+
+**What the move does to your file.** It relocates each field's source range and
+nothing else. Comments _inside_ a moved block travel with it; every byte outside
+the ranges it touches is left alone. A comment sitting _above_ one of the moved
+fields is not part of its range and stays where it was, so re-read the file
+afterwards and move that paragraph yourself if it now sits above nothing. The
+migration then loads the result and checks the resolved work order, kind tuning
+and prompt paths against what the file resolved to before it was touched; a
+mismatch reverts the write and reports `failed` rather than leaving you with a
+tenant quietly running different work.
+
+**When your config is refused.** A field whose value is computed rather than
+written out — a `...spread`, a reference to a const, a call, a template string —
+is reported `manual` and left alone, because moving an expression is not the
+same as moving a literal. The report prints the edit to make by hand:
+
+> In phoebe.config.ts, move `workOrder` to `pipelines.work.order`, `workKinds`
+> to `pipelines.work.kinds`, and each `promptFiles.<key>` to
+> `pipelines.work.kinds.<kind>.promptFile` by hand (issue → issues, conflict →
+> conflicts, checks → checks, reviews → reviews, research → research). The old
+> fields keep working until you do.
+
+That last sentence is the point: nothing breaks while the config sits
+unmigrated. The old fields are accepted, resolve as `pipelines.work.*`, and cost
+one deprecation warning per load.
+
+**Migrate as part of the flip, not ahead of it.** The aliases protect one
+direction only. A new engine reads an unmigrated config fine — that is what they
+are for. An **older** engine still loads a migrated config, since nothing in it
+is invalid there, but it has never heard of `pipelines`, so it reads the file as
+a tenant that declares no work: shipped work order, no per-kind tuning, default
+prompt paths. That failure is quiet, which is what makes it worth naming.
+
+The order that avoids it is the one
+[`phoebe upgrade`](#phoebe-upgrade-moving-the-engine-ref) already runs:
+materialize the target engine, run **its** migrations, and write `engine.ref`
+last, only if they passed. Migrating by hand is the same work in the same order
+— run `phoebe migrate` from the new checkout, not from the engine you are
+leaving — and if you roll the pin back afterwards, roll the config back with it.
 
 The end-to-end ritual for advancing a workspace deployment to a new engine version:
 

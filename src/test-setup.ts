@@ -9,8 +9,13 @@
 // defaults; tests that want a different config can call `setResolvedConfig`
 // with their own value before the module under test triggers a read.
 
-import { resolveConfig } from "./config-schema.ts";
+import { DEFAULT_PIPELINE_NAME, resolveConfig } from "./config-schema.ts";
+import { selectPipelineRow } from "./pipeline-row.ts";
 import { setResolvedConfig } from "./resolved-config.ts";
 import { config as sampleUserConfig } from "../phoebe.config.ts";
 
-setResolvedConfig(resolveConfig(sampleUserConfig));
+// Row selection included, exactly as the CLI does it before it hands the engine
+// a config (#415/#419): the sample declares its work under `pipelines.work`, so
+// without this the fixture would carry the shipped defaults for `workKinds` and
+// `promptFiles` rather than what this repo actually runs.
+setResolvedConfig(selectPipelineRow(resolveConfig(sampleUserConfig), DEFAULT_PIPELINE_NAME));

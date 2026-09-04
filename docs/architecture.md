@@ -87,9 +87,10 @@ clone (`src/git-model.ts`):
 2. Each cycle `git fetch origin` refreshes the clone.
 3. For a unit, `prepareWorktree` removes any stale worktree for the branch,
    adds a fresh one, and takes a lease on it (`git worktree lock`, reason
-   `pipeline=<name> pid=<n>`) so a sibling pipeline sharing the clone leaves it
-   alone. A tree another pipeline leases is not removed; the unit is skipped for
-   the cycle. The branch cases:
+   `pipeline=<name>#<kind>:<ref> pid=<n>`) so anything else sharing the clone
+   leaves it alone — a sibling pipeline, or a sibling unit of the same row when
+   `concurrency` is above 1. A tree someone else leases is not removed; the unit
+   is skipped for the cycle. The branch cases:
    - **Issues.** A new branch `<branchPrefix>issue-<n>` reset to the resolved
      base ref (`origin/main`, a blocker's branch when stacked, etc.).
    - **Conflicts, checks, and reviews.** A worktree on the PR's existing head
@@ -102,8 +103,14 @@ clone (`src/git-model.ts`):
 Worktree directory names are derived from the branch, lowercased with
 non-alphanumerics collapsed to `-`, so they are filesystem-safe and collision-
 resistant. A failed unit never kills the engine: `prepareWorktree` clears any
-stale worktree on the next attempt, breaking its own pipeline's leftover lease
-as it goes.
+stale worktree on the next attempt, breaking its own leftover lease as it goes.
+
+The two directories keyed by the unit rather than the branch — the plain
+`scratch/` workspace and the detached `worktrees/readonly/` tree — are
+`<kind>/<ref>`, with the kind-owned ref percent-encoded (`src/unit-scope.ts`).
+Children a unit spawns write through a prefix rather than inheriting the
+engine's stdout, so a row running several units at once produces a stream an
+operator can attribute line by line.
 
 Step 1 is conditional and serialized. A pipeline clones only when one of its
 kinds declares a `worktree` or `readonly` workspace, and the first clone on a
@@ -278,6 +285,39 @@ row for 45 minutes. A release gives back an over-cap slot before a regular one,
 and nothing is handed on while the cap is breached, so the breach never rolls
 forward. The knobs and the boot line are in
 [`configuration.md`](configuration.md#concurrency-the-rows-knob-and-the-fleets-cap).
+
+### Reclaiming what a row leaves behind
+
+Deleting a pipeline, renaming one, or retiring a work kind leaves disk with no
+owner: `state/<pipeline>/` and its snapshot, `scratch/<kind>` and
+`readonly/<kind>` trees, and worktrees locked by a lease whose pipeline no
+longer exists. The **stale-state sweep** reclaims them — `phoebe sweep-state`,
+a one-shot engine command the supervisor invokes per tenant at two moments and
+never on a timer: at facility boot before any row spawns, and after a row-set
+change once the rows it took down have drained. Both are moments when the disk
+in question is provably nobody's.
+
+It is a stateless diff of disk against the row enumeration, with no cursor and
+no memory of the last sweep. State is orphaned only when its pipeline name — or,
+for kind-keyed state, its kind — is absent from the enumeration. So a
+`disabled` row is still enumerated and its state is _stopped_, not orphaned; a
+rename is a delete plus a create; a kind that moved to another row keeps its
+scratch; and an enumeration that fails means _unknown_, which skips the sweep
+entirely rather than reading it as "everything is orphaned".
+
+Deletion is tiered. Leases, orphaned state directories, and unowned scratch and
+read-only trees go without asking, as do _clean_ worktrees. A worktree that is
+dirty, or that holds commits `origin` has not seen, is never auto-deleted: it is
+reported with its exact path and a one-line reclaim hint, and `phoebe doctor`'s
+warn-only `stale-state` check keeps reporting it between sweeps. Worktrees are
+classified by the lease rather than by name, because they are branch-keyed:
+locked by a live row is untouchable, and orphan-locked or unlocked is a
+candidate — which makes the sweep the second thing allowed to break a lease,
+after a pipeline breaking its own at boot.
+
+The sweep is never load-bearing. A per-item failure continues to the next item,
+and a whole sweep that fails is one log line: the supervisor spawns exactly as
+if it had never run.
 
 ## One cycle, end to end
 

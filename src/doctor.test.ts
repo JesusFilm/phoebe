@@ -4,6 +4,9 @@
 // Also covers arm-aware token checks: the App arm and the PAT arm behave
 // differently, and the unverifiable state must never fail --check.
 
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
 import {
   buildDoctorReport,
@@ -15,6 +18,7 @@ import {
   labelsCheck,
   launcherFloorCheck,
   promptDriftCheck,
+  staleStateCheck,
   tenantRow,
   tenantTokenCheck,
 } from "./doctor.ts";
@@ -486,6 +490,57 @@ describe("tenantRow config load failure regression", () => {
   });
 });
 
+describe("tenantRow prompt-drift source (#419)", () => {
+  const okFetch = async () =>
+    new Response(JSON.stringify({ id: 1, name: "widget" }), { status: 200 });
+
+  /** A tenant dir holding a config and a vendored issues prompt with no blocker rule. */
+  function scaffoldTenant(configBody: string): string {
+    const dir = mkdtempSync(join(tmpdir(), "phoebe-doctor-drift-"));
+    writeFileSync(join(dir, "vendored-issues.md"), "# Issues\n\nDo the work.\n");
+    writeFileSync(
+      join(dir, "phoebe.config.ts"),
+      `export const config = {\n  repoSlug: "acme/widget",\n${configBody}};\n`,
+    );
+    return join(dir, "phoebe.config.ts");
+  }
+
+  async function driftCheckFor(configBody: string) {
+    const row = await tenantRow({
+      path: "tenant",
+      slug: "acme/widget",
+      arm: "pat",
+      token: "ghp_tok",
+      envLabel: "/etc/phoebe/.env",
+      fetchFn: okFetch as typeof fetch,
+      inContainer: false,
+      configPath: scaffoldTenant(configBody),
+    });
+    return row.checks.find((c) => c.id === "prompt-drift");
+  }
+
+  test("reads the kind block's promptFile", async () => {
+    const check = await driftCheckFor(
+      `  pipelines: { work: { kinds: { issues: { promptFile: "./vendored-issues.md" } } } },\n`,
+    );
+    expect(check?.state).toBe("warn");
+    expect(check?.detail).toMatch(/vendored-issues\.md/);
+    expect(check?.detail).toMatch(/no blocker-recording rule/);
+  });
+
+  test("still reads the deprecated promptFiles alias", async () => {
+    const check = await driftCheckFor(`  promptFiles: { issue: "./vendored-issues.md" },\n`);
+    expect(check?.state).toBe("warn");
+    expect(check?.detail).toMatch(/vendored-issues\.md/);
+  });
+
+  test("a config declaring neither is on the shipped default", async () => {
+    const check = await driftCheckFor("");
+    expect(check?.state).toBe("ok");
+    expect(check?.detail).toMatch(/shipped default/);
+  });
+});
+
 describe("declaredEnvCheck", () => {
   test("a scheduled kind's missing key is a tenant finding", () => {
     const check = declaredEnvCheck(
@@ -518,5 +573,64 @@ describe("declaredEnvCheck", () => {
       inContainer: false,
     });
     expect(row.checks.find((check) => check.id === "declared-env")).toBeUndefined();
+  });
+});
+
+describe("staleStateCheck", () => {
+  const dataDir = "/data/repos/acme/widget";
+
+  test("a clean data directory is ok", () => {
+    expect(staleStateCheck({ dataDir, items: [] })).toEqual({
+      id: "stale-state",
+      state: "ok",
+      detail: `nothing orphaned under ${dataDir}`,
+    });
+  });
+
+  test("orphans are a warn, counted by tier, never a fail", () => {
+    const check = staleStateCheck({
+      dataDir,
+      items: [
+        { tier: "state", path: `${dataDir}/state/intake`, detail: "no row", reclaim: null },
+        { tier: "scratch", path: `${dataDir}/scratch/triage`, detail: "no kind", reclaim: null },
+      ],
+    });
+    expect(check.state).toBe("warn");
+    expect(check.detail).toContain("2 orphan(s)");
+    expect(check.detail).toContain("state 1, scratch 1");
+    expect(check.detail).toContain("2 the next sweep reclaims");
+  });
+
+  test("a worktree the sweep refused names its path and how to reclaim it", () => {
+    const path = `${dataDir}/worktrees/phoebe-issue-9`;
+    const check = staleStateCheck({
+      dataDir,
+      items: [{ tier: "worktree", path, detail: "not clean", reclaim: "git worktree remove it" }],
+    });
+    expect(check.state).toBe("warn");
+    expect(check.detail).toContain(path);
+    expect(check.detail).toContain("git worktree remove it");
+    expect(check.detail).toContain("none of it auto-reclaimable");
+  });
+
+  test("warn findings leave the report exiting 0", () => {
+    const report = buildDoctorReport(
+      [],
+      [
+        {
+          path: "tenant",
+          slug: "acme/widget",
+          checks: [
+            staleStateCheck({
+              dataDir,
+              items: [
+                { tier: "state", path: `${dataDir}/state/intake`, detail: "no row", reclaim: null },
+              ],
+            }),
+          ],
+        },
+      ],
+    );
+    expect(report.ok).toBe(true);
   });
 });

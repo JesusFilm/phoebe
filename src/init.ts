@@ -19,7 +19,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { TENANT_CONFIG_FILE, TENANT_ENV_FILE } from "../bootstrap/tenants.ts";
-import { CONFIG_DEFAULTS } from "./config-schema.ts";
+import { DEFAULT_PROMPT_FILE_BY_KIND } from "./config-schema.ts";
 import { defaultGit, type GitRunner } from "./git-model.ts";
 import {
   defaultRepoUrl,
@@ -97,8 +97,9 @@ function planContainerOutputs(): PlannedOutput[] {
 
 /**
  * Enumerate every file init will produce for a profile. Solo prompts are
- * derived from `CONFIG_DEFAULTS.promptFiles` so adding a new prompt kind to
- * the engine automatically gets scaffolded — no drift between the two lists.
+ * derived from the built-in kinds' own default prompt paths so adding a work
+ * kind to the engine automatically gets its prompt scaffolded — and so a
+ * consumer scaffolded today has no `promptFiles` block to migrate (#419).
  *
  * Tenant profile (`init --tenant`) is handled by {@link initTenant} — origin
  * prefill makes the config dynamic, so it is not part of this static plan.
@@ -136,7 +137,7 @@ export function planInitOutputs(profile: InitProfile = "solo"): PlannedOutput[] 
   }
 
   // solo — the single-tenant deployment scaffold
-  const promptOutputs: PlannedOutput[] = Object.values(CONFIG_DEFAULTS.promptFiles).map(
+  const promptOutputs: PlannedOutput[] = Object.values(DEFAULT_PROMPT_FILE_BY_KIND).map(
     (relPath) => ({
       destRelPath: relPath,
       source: { kind: "shipped-prompt", promptRelPath: relPath },
@@ -481,7 +482,7 @@ export function copyShippedPromptsInto(
   const moduleDir = opts.moduleDir ?? dirname(fileURLToPath(import.meta.url));
   mkdirSync(promptsDir, { recursive: true });
   const written: string[] = [];
-  for (const relPath of Object.values(CONFIG_DEFAULTS.promptFiles)) {
+  for (const relPath of Object.values(DEFAULT_PROMPT_FILE_BY_KIND)) {
     const content = readShippedFile(relPath, opts.packageRoot, moduleDir);
     const dest = join(promptsDir, basename(relPath));
     writeFileSync(dest, content);

@@ -9,10 +9,12 @@ import { researchPromptMigration } from "./m001-research-prompt.ts";
 import { addResearchToWorkOrderMigration } from "./m002-add-research-to-workorder.ts";
 import { containerLauncherArgMigration } from "./m003-container-launcher-arg.ts";
 import { renameMaxUnitTimeoutsMigration } from "./m004-rename-max-unit-timeouts.ts";
+import { pipelinesWorkBlockMigration } from "./m005-pipelines-work-block.ts";
 
 export const MIGRATIONS: readonly Migration[] = [
   researchPromptMigration,
   addResearchToWorkOrderMigration,
   containerLauncherArgMigration,
   renameMaxUnitTimeoutsMigration,
+  pipelinesWorkBlockMigration,
 ];

@@ -24,6 +24,7 @@ import {
   pushBranchWithLease,
   removeWorktree,
   unlockWorktree,
+  withOutputPrefix,
   worktreeDirForBranch,
   worktreeLease,
   type GitRunner,
@@ -47,8 +48,19 @@ export type OriginHub = {
   lockWorktree(worktreeDir: string, reason: string): void;
   /** Drop the lease on `worktreeDir`; a no-op when there is none. */
   unlockWorktree(worktreeDir: string): void;
-  /** Which pipeline leases `worktreeDir`, and whether it is locked at all. */
-  worktreeLease(worktreeDir: string): { locked: boolean; pipeline: string | null };
+  /** Who leases `worktreeDir` (`<pipeline>#<kind>:<ref>`), and whether it is locked at all. */
+  worktreeLease(worktreeDir: string): { locked: boolean; holder: string | null };
+  /**
+   * The same hub, with every git call that would have inherited the engine's
+   * stdout writing through `echo` instead, one line at a time (#423).
+   *
+   * A unit takes its own view at the top of its run and uses it for everything
+   * it does to the clone, so `git fetch`, `worktree add` and `push` come out of
+   * a concurrent pipeline attributed rather than interleaved. Everything else
+   * about the hub — the clone it binds, the worktrees dir — is shared, because
+   * it is the same clone.
+   */
+  withOutput(echo: (line: string) => void): OriginHub;
   /** Every registered worktree with its lock reason — what the boot-time break walks. */
   listWorktrees(): WorktreeEntry[];
   commitCount(worktreeDir: string, range: string): number;
@@ -129,6 +141,9 @@ export function createOriginHub(
     },
     appendTrailerToCommits(opts) {
       return appendTrailerToCommits(opts, git);
+    },
+    withOutput(echo) {
+      return createOriginHub(config, inContainer, withOutputPrefix(git, echo), opts);
     },
   };
 }

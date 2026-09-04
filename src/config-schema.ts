@@ -246,6 +246,21 @@ export const PROMPT_FILE_KEY_BY_KIND = {
 } as const satisfies Record<WorkKindName, keyof PromptFilesConfig>;
 
 /**
+ * Where each built-in kind's prompt lives when nobody says otherwise (#419).
+ * This is the kinds' own list, and `CONFIG_DEFAULTS.promptFiles` is derived
+ * from it rather than the other way round: `promptFiles` is on its way out, so
+ * the thing that scaffolds prompt files and the thing that reports drift ask
+ * the kind, not the deprecated block.
+ */
+export const DEFAULT_PROMPT_FILE_BY_KIND = {
+  conflicts: "prompts/conflict-prompt.md",
+  checks: "prompts/checks-prompt.md",
+  reviews: "prompts/reviews-prompt.md",
+  issues: "prompts/issues-prompt.md",
+  research: "prompts/research-prompt.md",
+} as const satisfies Record<WorkKindName, string>;
+
+/**
  * The top-level fields `pipelines.work` replaces (#415). Each keeps working —
  * an existing config needs no edit — but pairs with exactly one new field, and
  * declaring both sides of a pair is an error rather than a silent merge.
@@ -801,12 +816,14 @@ export const CONFIG_DEFAULTS = {
   blockedByPattern: String.raw`Blocked by\s+#(\d+)`,
   partOfPattern: String.raw`Part of\s+#(\d+)`,
   reviewsSuccessHeading: "## Review feedback addressed",
+  // The deprecated block's defaults, spelled from the kinds' own list so the
+  // two can never drift apart (#419).
   promptFiles: {
-    issue: "prompts/issues-prompt.md",
-    conflict: "prompts/conflict-prompt.md",
-    checks: "prompts/checks-prompt.md",
-    reviews: "prompts/reviews-prompt.md",
-    research: "prompts/research-prompt.md",
+    issue: DEFAULT_PROMPT_FILE_BY_KIND.issues,
+    conflict: DEFAULT_PROMPT_FILE_BY_KIND.conflicts,
+    checks: DEFAULT_PROMPT_FILE_BY_KIND.checks,
+    reviews: DEFAULT_PROMPT_FILE_BY_KIND.reviews,
+    research: DEFAULT_PROMPT_FILE_BY_KIND.research,
   } satisfies PromptFilesConfig,
   workOrder: ["conflicts", "checks", "reviews", "issues", "research"] as readonly string[],
   defaultProvider: "cursor" as ProviderName,
