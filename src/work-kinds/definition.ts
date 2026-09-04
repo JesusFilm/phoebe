@@ -155,6 +155,18 @@ export type WorkKindCtx = {
   origin: WorkKindOrigin;
   cycle: CycleServices;
   clock: WorkKindClock;
+  /**
+   * This kind's refs that are running right now (#422) — including any the
+   * engine admitted earlier in this same pass, because a pipeline whose
+   * `concurrency` is above 1 asks `select` again as soon as it has taken a
+   * pick. `select` must not offer a ref this set holds.
+   *
+   * Honouring it is what lets a kind fill several slots at once. A kind that
+   * ignores it offers its top candidate again, the engine drops the repeat and
+   * stops asking that kind for the rest of the pass — so the cost of ignoring
+   * it is one unit at a time, never two agents on one unit.
+   */
+  inFlight: ReadonlySet<string>;
   /** Log with the uniform `[phoebe][<kind> <ref>]` prefix (ref once known). */
   log(message: string): void;
 };

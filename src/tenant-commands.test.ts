@@ -146,6 +146,8 @@ describe("listTenants", () => {
       JSON.stringify({
         tenant: "acme/valid",
         pipeline: "work",
+        // Deliberately the pre-#422 single-unit shape: the snapshot outlives the
+        // engine that wrote it, so `phoebe list` has to read one back.
         currentUnit: { kind: "issues", id: "9" },
       }),
     );
@@ -170,10 +172,9 @@ describe("listTenants", () => {
       retainedData: true,
       arm: "pat",
     });
-    expect(listings.find((l) => l.slug === "acme/valid")?.status?.currentUnit).toEqual({
-      kind: "issues",
-      id: "9",
-    });
+    expect(
+      listings.find((l) => l.slug === "acme/valid")?.status?.currentUnits.map((c) => c.unit),
+    ).toEqual([{ kind: "issues", id: "9" }]);
     expect(listings.find((l) => l.slug === "acme/envless")).toMatchObject({
       held: false,
       configValid: true,
@@ -213,7 +214,13 @@ describe("listTenants", () => {
       JSON.stringify({
         tenant: "acme/widget",
         pipeline: "work",
-        currentUnit: { kind: "issues", id: "41" },
+        currentUnits: [
+          {
+            unit: { kind: "issues", id: "41" },
+            startedAt: "2026-09-04T00:00:00.000Z",
+            runBudgetMs: null,
+          },
+        ],
       }),
     );
 
@@ -261,7 +268,13 @@ describe("listTenants", () => {
       JSON.stringify({
         tenant: "acme/outboard",
         pipeline: "work",
-        currentUnit: { kind: "issues", id: "3" },
+        currentUnits: [
+          {
+            unit: { kind: "issues", id: "3" },
+            startedAt: "2026-09-04T00:00:00.000Z",
+            runBudgetMs: null,
+          },
+        ],
       }),
     );
 
@@ -284,7 +297,9 @@ describe("listTenants", () => {
       envPresent: true,
       retainedData: true,
     });
-    expect(listings[0]?.status?.currentUnit).toEqual({ kind: "issues", id: "3" });
+    expect(listings[0]?.status?.currentUnits.map((c) => c.unit)).toEqual([
+      { kind: "issues", id: "3" },
+    ]);
   });
 
   test("explicit arm reports undeclared in-tree children after the declared block", async () => {

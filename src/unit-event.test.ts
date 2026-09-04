@@ -56,27 +56,45 @@ describe("statusPathFor", () => {
 describe("applyUnitEvent", () => {
   const base = emptyStatus("acme/widget", "work");
 
-  test("started sets the current unit", () => {
-    const s = applyUnitEvent(base, event({ event: "started" }));
-    expect(s.currentUnit).toEqual({ kind: "issues", id: "42" });
+  test("started adds the unit, with its start time and its budget", () => {
+    const s = applyUnitEvent(base, event({ event: "started", runBudgetMs: 1_800_000 }));
+    expect(s.currentUnits).toEqual([
+      {
+        unit: { kind: "issues", id: "42" },
+        startedAt: "2026-07-31T12:00:00.000Z",
+        runBudgetMs: 1_800_000,
+      },
+    ]);
     expect(s.updatedAt).toBe("2026-07-31T12:00:00.000Z");
   });
 
-  test("completed clears the current unit", () => {
+  test("completed drops the unit", () => {
     const started = applyUnitEvent(base, event({ event: "started" }));
-    expect(applyUnitEvent(started, event({ event: "completed" })).currentUnit).toBeNull();
+    expect(applyUnitEvent(started, event({ event: "completed" })).currentUnits).toEqual([]);
   });
 
-  test("failed clears the unit and records the error as lastError", () => {
+  // The whole difference concurrency makes to the fold: one unit settling must
+  // not blank the siblings still running beside it (#422).
+  test("one unit settling leaves its siblings in flight", () => {
+    const first = applyUnitEvent(base, event({ event: "started" }));
+    const second = applyUnitEvent(
+      first,
+      event({ event: "started", unit: { kind: "issues", id: "43" } }),
+    );
+    const s = applyUnitEvent(second, event({ event: "completed" }));
+    expect(s.currentUnits.map((current) => current.unit.id)).toEqual(["43"]);
+  });
+
+  test("failed drops the unit and records the error as lastError", () => {
     const started = applyUnitEvent(base, event({ event: "started" }));
     const s = applyUnitEvent(started, event({ event: "failed", detail: "push rejected" }));
-    expect(s.currentUnit).toBeNull();
+    expect(s.currentUnits).toEqual([]);
     expect(s.lastError).toBe("push rejected");
   });
 
-  test("timed-out clears the unit and stamps lastTimeoutAt", () => {
+  test("timed-out drops the unit and stamps lastTimeoutAt", () => {
     const s = applyUnitEvent(base, event({ event: "timed-out", ts: "2026-07-31T13:00:00.000Z" }));
-    expect(s.currentUnit).toBeNull();
+    expect(s.currentUnits).toEqual([]);
     expect(s.lastTimeoutAt).toBe("2026-07-31T13:00:00.000Z");
   });
 
@@ -85,12 +103,24 @@ describe("applyUnitEvent", () => {
     expect(s.lastError).toBe("3 timeouts");
   });
 
-  test("skipped clears the unit without blaming this pipeline for it", () => {
+  test("skipped drops the unit without blaming this pipeline for it", () => {
     const failed = applyUnitEvent(base, event({ event: "failed", detail: "push rejected" }));
     const s = applyUnitEvent(failed, event({ event: "skipped", detail: "leased by intake" }));
-    expect(s.currentUnit).toBeNull();
+    expect(s.currentUnits).toEqual([]);
     // The prior error stands; a deferred unit is not a new one.
     expect(s.lastError).toBe("push rejected");
+  });
+
+  test("waiting-for-slot is set by the wait and cleared only by the start", () => {
+    const waiting = applyUnitEvent(base, event({ event: "waiting-for-slot" }));
+    expect(waiting.waitingForSlot).toBe(true);
+    // A sibling finishing says nothing about whether this pass got its slot.
+    const sibling = applyUnitEvent(
+      waiting,
+      event({ event: "completed", unit: { kind: "issues", id: "43" } }),
+    );
+    expect(sibling.waitingForSlot).toBe(true);
+    expect(applyUnitEvent(sibling, event({ event: "started" })).waitingForSlot).toBe(false);
   });
 });
 
@@ -137,10 +167,12 @@ describe("createEmitUnitEvent", () => {
     emit({ unit: { kind: "issues", id: "42" }, event: "started" });
     expect(lines).toEqual(["[phoebe:acme/widget:work] started issues 42"]);
     expect(written).not.toBeNull();
-    expect(written!.currentUnit).toEqual({ kind: "issues", id: "42" });
+    expect(written!.currentUnits.map((current) => current.unit)).toEqual([
+      { kind: "issues", id: "42" },
+    ]);
 
     emit({ unit: { kind: "issues", id: "42" }, event: "timed-out", detail: "45m" });
-    expect(written!.currentUnit).toBeNull();
+    expect(written!.currentUnits).toEqual([]);
     expect(written!.lastTimeoutAt).toBe("2026-07-31T12:00:00.000Z");
   });
 
@@ -188,16 +220,18 @@ describe("two pipelines on one tenant", () => {
 
     work({ unit: { kind: "issues", id: "7" }, event: "started" });
     intake({ unit: { kind: "triage", id: "88" }, event: "started" });
-    // The event that used to blank a shared file's `currentUnit`.
+    // The event that used to blank a shared file's current unit.
     intake({ unit: { kind: "triage", id: "88" }, event: "completed" });
 
     expect(readStatus(statusPathFor(stateDir, "work"))).toMatchObject({
       pipeline: "work",
-      currentUnit: { kind: "issues", id: "7" },
+      currentUnits: [
+        { unit: { kind: "issues", id: "7" }, startedAt: expect.any(String), runBudgetMs: null },
+      ],
     });
     expect(readStatus(statusPathFor(stateDir, "intake"))).toMatchObject({
       pipeline: "intake",
-      currentUnit: null,
+      currentUnits: [],
     });
   });
 });

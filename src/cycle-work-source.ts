@@ -84,9 +84,18 @@ export function createWorkSource(opts: {
    * directly need not supply one.
    */
   tag?: string;
+  /**
+   * This kind's currently-running refs (#422) — a live view of the loop's
+   * in-flight set, read through on every `ctx.inFlight` access rather than
+   * copied, so a `select` called a second time in one pass sees the unit the
+   * first call yielded. Defaults to empty, which is what a work source built
+   * outside the loop (a test, a preview) should see.
+   */
+  inFlight?: (kind: string) => ReadonlySet<string>;
 }): WorkSource {
   const { github, originHub, clock, env, config, registry } = opts;
   const tag = opts.tag ?? "[phoebe]";
+  const inFlight = opts.inFlight ?? (() => new Set<string>());
 
   /** The message every per-unit warning below prints, whatever was thrown. */
   function errorText(error: unknown): string {
@@ -227,6 +236,9 @@ export function createWorkSource(opts: {
         origin,
         cycle: services,
         clock,
+        get inFlight() {
+          return inFlight(kind);
+        },
         log: (message) => console.log(`${tag}[${kind}] ${message}`),
       };
       ctxCache.set(kind, ctx);
