@@ -25,7 +25,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { validateUserConfig } from "./config-schema.ts";
+import { validateUserConfig, type PhoebeUserConfig } from "./config-schema.ts";
 import { ConfigRefusal, isConfigRefusal } from "./config-handle.ts";
 import { defaultGit, type GitRunner } from "./git-model.ts";
 import { loadUserConfig, resolveConfigPath } from "./load-config.ts";
@@ -75,6 +75,36 @@ export type Migration = {
     data: unknown,
     readFile: (relPath: string) => string | null,
   ) => Record<string, string> | ConfigRefusal;
+  /**
+   * Optional check of this migration's own making, run after the generic
+   * post-apply validation has passed. Throwing reverts the migration's writes
+   * exactly as a validation failure does, and the report says `failed`.
+   *
+   * This is where a migration that reshapes rather than adds proves the
+   * reshape was faithful — that the config still resolves to what it resolved
+   * to before — which the schema check cannot see.
+   */
+  verify?: (ctx: MigrationVerifyContext) => Promise<void>;
+};
+
+/**
+ * What a migration's own post-apply check is handed. `loadConfig` is the only
+ * way in: a migration that wants to compare the migrated config against the
+ * one it replaced cannot read the pre-image off disk, because it has already
+ * been overwritten.
+ */
+export type MigrationVerifyContext = {
+  dir: string;
+  configPath: string;
+  /** The value `detect` returned, verbatim. */
+  data: unknown;
+  /**
+   * Load a config the way the engine does: the file at `configPath` when
+   * `source` is omitted, or `source` written to a throwaway sibling of it —
+   * so relative imports resolve identically — when it is passed. The sibling
+   * is removed before this resolves.
+   */
+  loadConfig: (source?: string) => Promise<PhoebeUserConfig>;
 };
 
 export type MigrationState = "applied" | "not-applicable" | "failed" | "manual" | "applicable";
@@ -195,6 +225,37 @@ function writeNoClobber(abs: string, content: string): void {
   } finally {
     closeSync(fd);
   }
+}
+
+/**
+ * The `loadConfig` a migration's {@link Migration.verify} is handed. Source
+ * text that is not on disk — the pre-migration config, say — is loaded through
+ * a throwaway sibling of the real config so its relative imports resolve the
+ * same way, created no-clobber and removed again whatever happens.
+ */
+function makeVerifyLoader(
+  configPath: string,
+  counter: number,
+): (source?: string) => Promise<PhoebeUserConfig> {
+  let scratch = 0;
+  return async (source?: string) => {
+    if (source === undefined) {
+      return loadUserConfig(configPath, { reloadKey: `migrate-verify-${String(counter)}` });
+    }
+    scratch += 1;
+    const suffix = `${String(counter)}-${String(scratch)}`;
+    const abs = join(dirname(configPath), `.phoebe-migrate-verify-${suffix}.ts`);
+    writeNoClobber(abs, source);
+    try {
+      return await loadUserConfig(abs, { reloadKey: `migrate-verify-scratch-${suffix}` });
+    } finally {
+      try {
+        unlinkSync(abs);
+      } catch {
+        // best-effort: a scratch file we cannot remove is not worth failing over
+      }
+    }
+  };
 }
 
 // ----------------------------------------------------------------- runner
@@ -341,8 +402,18 @@ export async function runMigrate(opts: RunMigrateOptions): Promise<MigrateReport
 
     // post-apply validation — only a validation failure triggers revert
     counter += 1;
+    let failureLabel = "validation";
     try {
       await validate(opts.configPath, counter);
+      if (migration.verify !== undefined) {
+        failureLabel = "verification";
+        await migration.verify({
+          dir: opts.dir,
+          configPath: opts.configPath,
+          data,
+          loadConfig: makeVerifyLoader(opts.configPath, counter),
+        });
+      }
     } catch (err) {
       // Revert all writes from this migration in-place
       for (const entry of entries) {
@@ -365,7 +436,7 @@ export async function runMigrate(opts: RunMigrateOptions): Promise<MigrateReport
         id: migration.id,
         title: migration.title,
         state: "failed",
-        detail: `validation failed (reverted): ${err instanceof Error ? err.message : String(err)}`,
+        detail: `${failureLabel} failed (reverted): ${err instanceof Error ? err.message : String(err)}`,
       });
       continue;
     }

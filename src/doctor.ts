@@ -55,7 +55,11 @@ import {
   compareVersions,
   readDockerfilePin,
 } from "./upgrade.ts";
-import { CONFIG_DEFAULTS } from "./config-schema.ts";
+import {
+  CONFIG_DEFAULTS,
+  DEFAULT_PIPELINE_NAME,
+  DEFAULT_PROMPT_FILE_BY_KIND,
+} from "./config-schema.ts";
 import { enumerateWorkspaceTenants } from "./tenant-commands.ts";
 
 export type CheckState = "ok" | "warn" | "fail" | "unknown";
@@ -527,6 +531,7 @@ export async function tenantRow(fields: {
       const anyUser = user as {
         disabled?: unknown;
         promptFiles?: { issue?: unknown };
+        pipelines?: Record<string, { kinds?: Record<string, { promptFile?: unknown }> }>;
         readyLabel?: unknown;
         processingLabel?: unknown;
         prOptOutLabel?: unknown;
@@ -535,7 +540,12 @@ export async function tenantRow(fields: {
       if (typeof anyUser.readyLabel === "string") readyLabel = anyUser.readyLabel;
       if (typeof anyUser.processingLabel === "string") processingLabel = anyUser.processingLabel;
       if (typeof anyUser.prOptOutLabel === "string") prOptOutLabel = anyUser.prOptOutLabel;
-      const rawIssuePath = anyUser.promptFiles?.issue;
+      // The kind block first, the deprecated `promptFiles` alias second (#419):
+      // a migrated config carries the path under the kind that reads it, and
+      // declaring both is already fatal at load, so there is no third case.
+      const rawIssuePath =
+        anyUser.pipelines?.[DEFAULT_PIPELINE_NAME]?.kinds?.["issues"]?.promptFile ??
+        anyUser.promptFiles?.issue;
       if (typeof rawIssuePath === "string" && rawIssuePath.trim().length > 0) {
         issuePromptPath = rawIssuePath;
       }
@@ -629,7 +639,7 @@ export async function tenantRow(fields: {
         detail: "not evaluated (config load failed)",
       });
     } else {
-      const defaultPath = CONFIG_DEFAULTS.promptFiles.issue;
+      const defaultPath = DEFAULT_PROMPT_FILE_BY_KIND.issues;
       const effectivePath = issuePromptPath ?? defaultPath;
       let promptContent: string | null = null;
       if (effectivePath !== defaultPath) {

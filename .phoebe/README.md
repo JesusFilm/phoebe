@@ -27,11 +27,11 @@ is the test fixture, and `phoebe init` won't overwrite it.
   has no `boot` at all.)
 - **No prompts of its own.** A stock `phoebe init` runtime carries a `prompts/`
   copy beside its config. Here the whole working tree is mounted, so the config
-  points `promptFiles` one level up at the repo's own `prompts/` instead. The
-  copy this directory used to hold drifted months behind the originals and never
-  received the `research` prompt at all, so every research unit died at dispatch
-  (#164); `src/deployment-prompts.test.ts` now fails if any deployment grows a
-  private copy back.
+  points each kind's `promptFile` one level up at the repo's own `prompts/`
+  instead. The copy this directory used to hold drifted months behind the
+  originals and never received the `research` prompt at all, so every research
+  unit died at dispatch (#164); `src/deployment-prompts.test.ts` now fails if any
+  deployment grows a private copy back.
 - **One compose file.** With the bootstrapper on the mount there is nothing for
   a local-engine overlay to switch on, so the scaffold's `compose.local.yml` is
   folded into the base file here.

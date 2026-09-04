@@ -1,11 +1,11 @@
 // Reference illustration — custom work kinds (issue #303).
 //
-// A solo-shaped config whose point is the `workKinds.custom` block: it
+// A solo-shaped config whose point is the `pipelines.work.kinds.custom` block: it
 // declares one full-form kind loaded from a module in the repo
 // (kinds/stale-pr-nudger.ts) and one prompt-only producer written inline
 // below. Both implement the same contract as the five built-ins; after boot
-// the engine treats all of them identically — `workOrder`, per-kind
-// `workKinds` tuning blocks, `PHOEBE_<KIND>_*` env vars (hyphens become
+// the engine treats all of them identically — the row's `order`, per-kind
+// tuning blocks, `PHOEBE_<KIND>_*` env vars (hyphens become
 // underscores: PHOEBE_STALE_PR_NUDGER_MODEL), quarantine, and the prompt
 // existence check included.
 //
@@ -80,22 +80,32 @@ const config: PhoebeUserConfig = {
 
   engine: { source: "github", ref: "v0.1.0" },
 
-  // Order is priority, not membership: these four are polled first, in this
-  // sequence, and the built-ins left out follow. (Deprecated alias for
-  // `pipelines.work.order`; it still resolves there.)
-  workOrder: ["conflicts", "issues", "stale-pr-nudger", "docs-request"],
+  // One row of work, the reserved `work` one an engine child runs when no
+  // `--pipeline` flag names another (#415). `order` and `kinds` are what the
+  // top-level `workOrder` and `workKinds` fields became; those still resolve
+  // here, but `phoebe migrate` moves them — and refuses this config, because the
+  // `docs-request` entry below is a reference rather than a literal, and no
+  // automatic move may relocate an expression it cannot read.
+  pipelines: {
+    work: {
+      // Order is priority, not membership: these four are polled first, in
+      // this sequence, and the built-ins left out follow.
+      order: ["conflicts", "issues", "stale-pr-nudger", "docs-request"],
 
-  workKinds: {
-    custom: {
-      // Full form: a module in this repo (path relative to this config file's
-      // directory), plus tenant knobs the kind reads back as `ctx.options`.
-      "stale-pr-nudger": { module: "./kinds/stale-pr-nudger.ts", options: { staleDays: 7 } },
-      // Cheap case: the inline definition above. A bare path string also
-      // works when there are no knobs: `"docs-request": "./kinds/docs.ts"`.
-      "docs-request": docsRequestKind,
+      kinds: {
+        custom: {
+          // Full form: a module in this repo (path relative to this config
+          // file's directory), plus tenant knobs the kind reads back as
+          // `ctx.options`.
+          "stale-pr-nudger": { module: "./kinds/stale-pr-nudger.ts", options: { staleDays: 7 } },
+          // Cheap case: the inline definition above. A bare path string also
+          // works when there are no knobs: `"docs-request": "./kinds/docs.ts"`.
+          "docs-request": docsRequestKind,
+        },
+        // Custom kinds are tuned exactly like built-ins.
+        "stale-pr-nudger": { effort: "low" },
+      },
     },
-    // Custom kinds are tuned exactly like built-ins.
-    "stale-pr-nudger": { effort: "low" },
   },
 };
 
