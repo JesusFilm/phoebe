@@ -1,4 +1,7 @@
 // The supervisor's global concurrency broker — scheduling across N repos (#59).
+// One per container, covering every row the supervisor runs in either arm: solo
+// is a one-tenant fleet, so it contends here too rather than against a broker of
+// its own (#416).
 //
 // One engine child per tenant, but one machine: left ungated, N children could
 // run N heavy work units (worktree + install + agent + test + push) at once and
@@ -18,7 +21,7 @@
 // reconcile-SIGTERM) the supervisor reclaims every slot it held, so no failure
 // mode can permanently shrink the cap (#59/#72 carry-forward). This module is
 // the pure semaphore + owner bookkeeping; the IPC adapter that maps child
-// messages onto it lives in the supervisor (bootstrap/reconcile.ts).
+// messages onto it lives in bootstrap/broker-ipc.ts.
 
 /** Default concurrency cap: today's proven single-repo host load (#59). */
 export const DEFAULT_MAX_CONCURRENT = 1;
