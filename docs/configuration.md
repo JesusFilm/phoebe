@@ -256,14 +256,18 @@ how many of those over-cap grants may exist at once across the container, so the
 worst case is `cap + floorBudget` — two numbers, both in the boot line. Set it to
 0 for a hard ceiling, and accept what that costs a starved pipeline.
 
-**Who is served next.** Tenants take turns, and `priority` orders one tenant's
+**Who is served next.** The queue is served oldest waiter first — the tenant whose
+waiter has been queued longest goes next — and `priority` orders that tenant's
 pipelines against each other: higher first, ties in the order they asked. Tenant-local
 by design — `priority: 100` means "ahead of my other pipelines", never "ahead of
 everyone else's repo" — and re-read every poll, so an edit lands on pipelines already
 queued without relaunching anything. Starving a low-priority pipeline for as long as
 something higher is contending is what the knob is for. Turns are taken per
 **pipeline**, not per tenant: declaring three pipelines is declaring three independent
-streams, and they queue as three.
+streams, and they queue as three. Nothing rotates on top of that either. One pipeline
+that queues several waiters at once is served for all of them before a tenant that
+asked later, and what moves a pipeline waiting behind them is the slot floor, not its
+place in the queue.
 
 ### Choosing a pipeline: `--pipeline`
 

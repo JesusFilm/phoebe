@@ -28,7 +28,7 @@
 //     arithmetic that keeps the breach bounded is two rules: a release consumes
 //     the over-grant first, and no freed slot is handed to a waiter while
 //     `inUse` exceeds the cap.
-//   - **Priority orders the queue**: round-robin picks the tenant, then the
+//   - **Priority orders the queue**: the oldest waiter's tenant is served, then the
 //     pipeline's `priority` (higher first, ties FIFO) picks among that tenant's
 //     waiting pipelines. Tenant-local by design — the knob lives in tenant config,
 //     so a globally-comparable value would let a tenant revoke cross-tenant
@@ -36,9 +36,16 @@
 //     makes `priority` hot: a change lands on everyone already queued with no
 //     queue surgery.
 //
-// Fairness stays per *pipeline*: a tenant declaring three pipelines gets three queue
-// positions against a one-pipeline tenant's one, deliberately, because that is
-// what declaring three independent streams means.
+// Fairness stays per *waiter*, and a waiter belongs to a pipeline rather than to a
+// tenant: a tenant declaring three pipelines gets three queue positions against a
+// one-pipeline tenant's one, deliberately, because that is what declaring three
+// independent streams means. Nothing rotates on top of that, so a tenant already
+// holding the two oldest waiters takes both grants before a tenant that asked
+// later — routine once rolling top-up lets one pipeline queue several waiters at
+// once (#422). That is the rule and not a gap in it (#458): a queue position is
+// earned by asking early, `priority` only ever reorders one tenant's own pipelines,
+// and what keeps the pipeline at the back of a long queue moving is the slot floor
+// above, which is blind to queue length.
 //
 // The broker is the only entity that sees all pipelines — the natural fairness
 // authority — and crash-reclaim is clean: when a child dies (crash / OOM /
@@ -60,7 +67,7 @@ export const DEFAULT_SLOT_FLOOR_BUDGET = 1;
 export type BrokerPipeline = {
   /** The owner id — `<tenantId>#<pipeline>`, the same key `acquire` uses. */
   id: string;
-  /** The tenant this pipeline belongs to; round-robin is over tenants. */
+  /** The tenant this pipeline belongs to; `priority` compares pipelines within one. */
   tenantId: string;
   /** Tenant-local rank among that tenant's waiting pipelines. Higher wins. */
   priority: number;
@@ -260,11 +267,13 @@ export function createSlotBroker(opts: {
   });
 
   /**
-   * The grant-time ordering, over the waiters this pass may serve: round-robin
-   * picks the tenant — the one whose waiter has been queued longest — and
-   * `priority` picks among that tenant's waiting pipelines, ties falling back to
-   * FIFO. Read fresh on every grant, so a `priority` edit needs no queue
-   * surgery. Returns the queue index to serve, or -1 when nothing is eligible.
+   * The grant-time ordering, over the waiters this pass may serve: the tenant
+   * whose waiter has been queued longest is served, and `priority` picks among
+   * that tenant's waiting pipelines, ties falling back to FIFO. Nothing rotates —
+   * a tenant holding the two oldest waiters takes both grants — because the guard
+   * against waiting behind a long queue is the slot floor, not the order (#458).
+   * Read fresh on every grant, so a `priority` edit needs no queue surgery.
+   * Returns the queue index to serve, or -1 when nothing is eligible.
    */
   const pick = (eligible: (waiter: Waiter) => boolean): number => {
     let chosen = -1;
@@ -279,8 +288,8 @@ export function createSlotBroker(opts: {
         best = priorityOf(waiter.owner);
         continue;
       }
-      // A different tenant waits its turn however high it ranks: `priority` is
-      // tenant-local, and cross-tenant order is the round-robin's to keep.
+      // A different tenant waits behind the oldest waiter however high it ranks:
+      // `priority` is tenant-local, and cross-tenant order is the queue's to keep.
       if (tenantOf(waiter.owner) !== tenant) continue;
       const rank = priorityOf(waiter.owner);
       if (rank > best) {

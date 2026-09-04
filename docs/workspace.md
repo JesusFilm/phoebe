@@ -367,7 +367,8 @@ described. The model is [`pipelines.md`](pipelines.md).
 - One fleet-wide slot cap over **pipelines**, derived from the pipelines' `concurrency` and
   overridable with `PHOEBE_MAX_CONCURRENT_AGENTS`
   ([configuration.md](configuration.md#concurrency-the-pipelines-knob-and-the-fleets-cap)).
-  Turns are taken per pipeline, so three pipelines queue as three streams.
+  The queue is served oldest waiter first and turns are taken per pipeline, so three
+  pipelines queue as three streams.
 - A pipeline's death is its own: the container exits only when every pipeline is
   crash-looping at once.
 - Log lines tagged `[phoebe:<owner>/<repo>:<pipeline>]` (match as a prefix).

@@ -358,7 +358,7 @@ level of its config.
 work units execute at once across the whole container, so N repos don't thrash
 the host. It defaults to the largest `concurrency` any live pipeline declares — 1
 unless a pipeline asks for more — and `PHOEBE_MAX_CONCURRENT_AGENTS` replaces that,
-even when lower. Pipelines queue for it, tenants take turns, and a pipeline starved of a
+even when lower. Pipelines queue for it oldest waiter first, and a pipeline starved of a
 slot may hold one over the cap (`PHOEBE_SLOT_FLOOR_BUDGET`, default 1), so the
 worst case is the cap plus that budget. Boot prints both numbers and their
 derivation on one line. Idle polling stays per-pipeline and parallel. The knobs are
