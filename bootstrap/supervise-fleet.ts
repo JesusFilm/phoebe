@@ -827,22 +827,30 @@ export async function superviseFleet(deps: SuperviseFleetDeps): Promise<EngineEx
     // have retired a kind, which orphans that kind's scratch and read-only
     // trees. A pipeline that only appeared orphans nothing, so it is not a trigger.
     const sweepable = new Set<string>();
+    // Every drain this poll asks for races its grace alongside the others — the
+    // shape `drainAll` already uses (#459). Awaited one at a time, N pipelines
+    // leaving in one poll would serialize up to N graces, an hour each by
+    // default, and everything behind them would wait out the sum.
+    const draining: Array<Promise<EngineExit>> = [];
     for (const id of diff.removed) {
       const record = children.get(id);
       if (record) {
         sweepable.add(record.pipeline.tenant.id);
-        await drain(record);
         children.delete(id);
+        draining.push(drain(record));
       }
     }
     for (const pipeline of changed) {
       const record = children.get(pipeline.id);
       if (record) {
         sweepable.add(pipeline.tenant.id);
-        await drain(record);
         children.delete(pipeline.id);
+        draining.push(drain(record));
       }
     }
+    // The sweep and the respawns stay behind the join: both are only sound once
+    // every pipeline this reconcile takes down is down.
+    await Promise.all(draining);
     // Every pipeline this reconcile takes down is down and none is back up yet: the
     // one window in a running facility where a vanished pipeline's disk is provably
     // nobody's (#426). Held tenants are excluded — unknown pipelines cannot tell an
