@@ -129,6 +129,7 @@ import type {
   WorkKindRunCtx,
   WorkspaceHandle,
   WorkUnitGitHubTarget,
+  WorkUnitShape,
 } from "./work-kinds/definition.ts";
 import { buildRegistry, type WorkKindRegistry } from "./work-kinds/registry.ts";
 import {
@@ -463,10 +464,70 @@ export function createEngine(options: EngineOptions): Engine {
   // re-picked. Kept thin over the GitHub client; the count/threshold policy is
   // pure in quarantine.ts (`decideTimeoutRecord`).
 
-  // Timeout counts for units with no GitHub escalation surface (no `github`
-  // target on the unit): counted in memory, keyed `(kind, ref)`, so the
-  // degraded path still notices a repeat offender within this process's life.
-  const inMemoryTimeoutCounts = new Map<string, number>();
+  // --- In-memory quarantine, for units the engine cannot see (#424) -----------
+  // A unit with no `github` target has nowhere to receive the quarantine label,
+  // so its timeouts are counted here instead, keyed kind → ref. At K the ref
+  // shows up in that kind's `ctx.quarantined`, and a kind that offers it anyway
+  // has the pick refused at admission. An entry lives until the unit's
+  // `revision` changes, until the unit gains a `github` target (from then on
+  // the label path owns the write half), or until this process ends — nothing
+  // goes to disk, so a relaunch costs up to K run budgets and buys a restart
+  // story where everything under `state/` stays re-derivable.
+
+  type MemoryTimeoutEntry = {
+    count: number;
+    /** The unit's `revision` when the count was recorded; `undefined` if it declares none. */
+    revision: string | undefined;
+  };
+
+  const memoryTimeouts = new Map<string, Map<string, MemoryTimeoutEntry>>();
+
+  /**
+   * This kind's counts, keyed by ref. Nested rather than one map under a
+   * composite key because `ctx.quarantined` is per kind and refs are kind-owned
+   * strings nothing may parse — including any key format the engine invents.
+   */
+  function memoryTimeoutsFor(kind: string): Map<string, MemoryTimeoutEntry> {
+    const existing = memoryTimeouts.get(kind);
+    if (existing) return existing;
+    const fresh = new Map<string, MemoryTimeoutEntry>();
+    memoryTimeouts.set(kind, fresh);
+    return fresh;
+  }
+
+  /** K — the same threshold and the same ladder the label path uses. */
+  function maxUnproductiveRuns(): number {
+    return resolveMaxUnproductiveRuns(env, config.maxUnproductiveRuns);
+  }
+
+  /** What `ctx.quarantined` answers: this kind's refs already at the threshold. */
+  function quarantinedRefs(kind: string): ReadonlySet<string> {
+    const k = maxUnproductiveRuns();
+    const refs = new Set<string>();
+    for (const [ref, entry] of memoryTimeoutsFor(kind)) {
+      if (entry.count >= k) refs.add(ref);
+    }
+    return refs;
+  }
+
+  /**
+   * The admission backstop, asked of every pick — and the place both exits from
+   * an in-memory quarantine are taken, because a pick is the only moment the
+   * engine learns anything new about an opaque unit. A pick carrying a `github`
+   * target hands the write half to the label path; a pick whose `revision` has
+   * moved on is the content having advanced, which is what the baseline
+   * comparison means for a unit the engine can see.
+   */
+  function refuseQuarantinedPick(kind: string, unit: WorkUnitShape): boolean {
+    const counts = memoryTimeoutsFor(kind);
+    const entry = counts.get(unit.ref);
+    if (!entry) return false;
+    if (unit.github !== undefined || entry.revision !== unit.revision) {
+      counts.delete(unit.ref);
+      return false;
+    }
+    return entry.count >= maxUnproductiveRuns();
+  }
 
   /**
    * Record one whole-unit timeout toward the poison-unit quarantine (#75) for
@@ -483,12 +544,24 @@ export function createEngine(options: EngineOptions): Engine {
     const ref = unitRefOf(picked);
     const ghTarget: WorkUnitGitHubTarget | undefined = picked.unit.github;
     if (!ghTarget) {
-      const key = `${ref.kind}:${ref.id}`;
-      const count = (inMemoryTimeoutCounts.get(key) ?? 0) + 1;
-      inMemoryTimeoutCounts.set(key, count);
+      const counts = memoryTimeoutsFor(ref.kind);
+      const previous = counts.get(ref.id);
+      const revision = picked.unit.revision;
+      // A count recorded against a different revision is a count of a different
+      // unit in all but name, so this timeout starts a fresh run of K.
+      const carried = previous !== undefined && previous.revision === revision ? previous.count : 0;
+      const count = carried + 1;
+      counts.set(ref.id, { count, revision });
+      const quarantined = count >= maxUnproductiveRuns();
       log.warn(
         `${ref.kind} ${ref.id} timed out ${count}× — the unit carries no GitHub ` +
-          `target, so there is no escalation surface; counting in memory only.`,
+          `target, so there is no escalation surface; counting in memory only.` +
+          (quarantined
+            ? ` It is quarantined in memory from now on, ` +
+              (revision === undefined
+                ? `until this process restarts.`
+                : `until a pick of it carries a different revision than "${revision}".`)
+            : ""),
       );
       return;
     }
@@ -1719,6 +1792,7 @@ export function createEngine(options: EngineOptions): Engine {
     config,
     registry,
     inFlight: refsInFlight,
+    quarantined: quarantinedRefs,
   });
 
   /**
@@ -1768,20 +1842,42 @@ export function createEngine(options: EngineOptions): Engine {
   }
 
   /**
+   * The last idle report this process printed, or `null` when the next one
+   * should print whatever it says. Cleared by activity — a pass that admits a
+   * unit — so the first idle pass after work always reports.
+   */
+  let lastIdleReport: string | null = null;
+
+  /**
    * Explain an idle cycle from the record the selection walk produced, so the
    * report can only ever describe the walk the loop actually made. It stops at
    * the first kind that had units and could work none of them: that kind is why
    * this cycle is idle, and the kinds behind it in `workOrder` would not have run
    * anyway.
+   *
+   * Printed only when the rendered report differs from the previous pass's
+   * (#408). The report describes a state, not an event: a row polling every few
+   * seconds would otherwise repeat the same three lines until they buried
+   * everything an operator wanted to read, and a work row at 300 s prints what
+   * it prints today.
    */
   function logIdleCycle(cycle: GatheredCycle, skipped: readonly WorkUnitSkip[]): void {
+    const lines: string[] = [];
+    let explained = false;
     for (const skip of skipped) {
-      log.say(idleSkipLine(skip, cycle));
+      lines.push(idleSkipLine(skip, cycle));
       if (skip.reason === NONE_WORKABLE) {
-        return;
+        explained = true;
+        break;
       }
     }
-    log.say("No work this cycle — idle.");
+    if (!explained) {
+      lines.push("No work this cycle — idle.");
+    }
+    const rendered = lines.join("\n");
+    if (rendered === lastIdleReport) return;
+    lastIdleReport = rendered;
+    for (const line of lines) log.say(line);
   }
 
   /**
@@ -1974,6 +2070,13 @@ export function createEngine(options: EngineOptions): Engine {
             `${kind} offered ${ref}, which this pipeline is already running — dropped, and ` +
               `${kind} is not asked again this cycle. Its \`select\` is ignoring \`ctx.inFlight\`.`,
           ),
+        refuseQuarantined: refuseQuarantinedPick,
+        onQuarantineDropped: (kind, ref) =>
+          log.say(
+            `${kind} offered ${ref}, which timed out ${maxUnproductiveRuns()}× and is ` +
+              `quarantined in memory — dropped, and ${kind} is not asked again this cycle. ` +
+              `Its \`select\` is ignoring \`ctx.quarantined\`.`,
+          ),
       });
 
       if (units.length === 0) {
@@ -1988,6 +2091,9 @@ export function createEngine(options: EngineOptions): Engine {
         await waitForNextPass();
         continue;
       }
+
+      // Activity: whatever the next idle pass has to say, it says out loud.
+      lastIdleReport = null;
 
       const decision = executionDecision({ dryRun, inContainer });
       if (decision === "dry-run") {

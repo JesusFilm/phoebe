@@ -92,10 +92,18 @@ export function createWorkSource(opts: {
    * outside the loop (a test, a preview) should see.
    */
   inFlight?: (kind: string) => ReadonlySet<string>;
+  /**
+   * This kind's refs the engine has quarantined in memory (#424) — read through
+   * the same way `inFlight` is, so a `select` asked twice in one pass sees a
+   * count the first ask's pick has just cleared. Defaults to empty, which is
+   * what a work source built outside the loop should see.
+   */
+  quarantined?: (kind: string) => ReadonlySet<string>;
 }): WorkSource {
   const { github, originHub, clock, env, config, registry } = opts;
   const tag = opts.tag ?? "[phoebe]";
   const inFlight = opts.inFlight ?? (() => new Set<string>());
+  const quarantined = opts.quarantined ?? (() => new Set<string>());
 
   /** The message every per-unit warning below prints, whatever was thrown. */
   function errorText(error: unknown): string {
@@ -238,6 +246,9 @@ export function createWorkSource(opts: {
         clock,
         get inFlight() {
           return inFlight(kind);
+        },
+        get quarantined() {
+          return quarantined(kind);
         },
         log: (message) => console.log(`${tag}[${kind}] ${message}`),
       };

@@ -43,6 +43,15 @@ export type WorkUnitGitHubTarget = { objectType: "issue" | "pr"; id: number };
 export type WorkUnitShape = {
   ref: string;
   github?: WorkUnitGitHubTarget;
+  /**
+   * What "the content advanced" means for a unit the engine cannot see (#424) —
+   * a Slack thread's newest message `ts`, a row version, any string that
+   * changes when the unit does. The engine records it beside the in-memory
+   * timeout count and forgets that count when a later pick of the same ref
+   * carries a different one, which is how a unit quarantined in memory gets out
+   * again. A kind that never sets it keeps its count for the process's life.
+   */
+  revision?: string;
 };
 
 /** One rule that turned units away this cycle, in the kind's own words. */
@@ -167,6 +176,19 @@ export type WorkKindCtx = {
    * it is one unit at a time, never two agents on one unit.
    */
   inFlight: ReadonlySet<string>;
+  /**
+   * This kind's refs the engine has quarantined in memory (#424): units with no
+   * `github` target whose whole-unit timeouts reached the quarantine threshold,
+   * so there was nowhere to write the `phoebe:quarantined` label. `select`
+   * should not offer one of them — unless the unit's `revision` has moved on,
+   * which is the exit: the engine forgets the count and admits the pick.
+   *
+   * Empty for every kind whose units carry `github`; those take the label path,
+   * which is why no built-in ever appears here. A kind that ignores the set has
+   * its pick refused at admission and is not asked again that pass, so the cost
+   * of ignoring it is a stalled kind rather than a burnt run budget.
+   */
+  quarantined: ReadonlySet<string>;
   /** Log with the uniform `[phoebe][<kind> <ref>]` prefix (ref once known). */
   log(message: string): void;
 };

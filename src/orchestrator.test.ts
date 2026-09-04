@@ -855,6 +855,7 @@ function walkCtx(kind: string, data: WalkData): WorkKindCtx {
     },
     clock: { now: () => new Date(0), sleep: () => Promise.resolve() },
     inFlight: new Set<string>(),
+    quarantined: new Set<string>(),
     log: () => {},
   };
 }
