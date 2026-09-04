@@ -97,6 +97,70 @@ describe("createSlotClient", () => {
     expect(resolved).toBe(true);
   });
 
+  test("three pending acquires take three untagged grants, in request order", async () => {
+    const channel = mockChannel();
+    const client = createSlotClient(channel)!;
+    const order: number[] = [];
+    const first = client.acquire().then(() => order.push(1));
+    const second = client.acquire().then(() => order.push(2));
+    const third = client.acquire().then(() => order.push(3));
+    // Three requests on the wire, and the wire format is unchanged.
+    expect(channel.sent).toEqual([
+      { type: SLOT_ACQUIRE },
+      { type: SLOT_ACQUIRE },
+      { type: SLOT_ACQUIRE },
+    ]);
+    // Grants are fungible: nothing on them says which acquire they answer.
+    channel.emit({ type: SLOT_GRANTED });
+    channel.emit({ type: SLOT_GRANTED });
+    channel.emit({ type: SLOT_GRANTED });
+    await Promise.all([first, second, third]);
+    expect(order).toEqual([1, 2, 3]);
+    expect(channel.listenerCount()).toBe(0);
+  });
+
+  test("a grant resolves one acquire, leaving the rest pending", async () => {
+    const channel = mockChannel();
+    const client = createSlotClient(channel)!;
+    let resolved = 0;
+    const first = client.acquire().then(() => (resolved += 1));
+    void client.acquire().then(() => (resolved += 1));
+    channel.emit({ type: SLOT_GRANTED });
+    await first;
+    expect(resolved).toBe(1);
+    // The listeners stay attached for the acquire still outstanding.
+    expect(channel.listenerCount()).toBe(2);
+  });
+
+  test("a disconnect rejects every pending acquire", async () => {
+    const channel = mockChannel();
+    const client = createSlotClient(channel)!;
+    const pending = [client.acquire(), client.acquire(), client.acquire()];
+    channel.emitDisconnect();
+    for (const acquire of pending) {
+      await expect(acquire).rejects.toBeInstanceOf(BrokerDisconnectedError);
+    }
+    expect(channel.listenerCount()).toBe(0);
+  });
+
+  test("a grant with nothing pending is dropped, not banked", async () => {
+    const channel = mockChannel();
+    const client = createSlotClient(channel)!;
+    const first = client.acquire();
+    channel.emit({ type: SLOT_GRANTED });
+    await first;
+    channel.emit({ type: SLOT_GRANTED }); // nobody is waiting for this one
+    let resolved = false;
+    const next = client.acquire().then(() => {
+      resolved = true;
+    });
+    await Promise.resolve();
+    expect(resolved).toBe(false);
+    channel.emit({ type: SLOT_GRANTED });
+    await next;
+    expect(resolved).toBe(true);
+  });
+
   test("release sends a release message", () => {
     const channel = mockChannel();
     const client = createSlotClient(channel)!;
