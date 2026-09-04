@@ -354,11 +354,22 @@ must be material before first boot.
 
 ## Fleet invariants
 
+The fleet the supervisor walks is a **(tenant × pipeline) matrix**, not a list of
+tenants: the unit it spawns, keys, and reclaims slots for is a row, and a tenant
+declaring two pipelines contributes two rows. A deployment that never declares
+`pipelines` has one row per tenant, which is what the invariants below always
+described. The model is [`pipelines.md`](pipelines.md).
+
 - One container, one shared engine version (`engine` only on the root).
-- `paths` still derive from each tenant's `repoSlug` under `/data/repos/…`.
-- One fleet-wide slot cap, derived from the rows' `concurrency` and overridable
-  with `PHOEBE_MAX_CONCURRENT_AGENTS`
+- `paths` still derive from each tenant's `repoSlug` under `/data/repos/…`, and
+  every row of a tenant shares them, partitioned rather than duplicated
+  ([`pipelines.md`](pipelines.md#what-a-pipeline-owns-on-disk)).
+- One fleet-wide slot cap over **rows**, derived from the rows' `concurrency` and
+  overridable with `PHOEBE_MAX_CONCURRENT_AGENTS`
   ([configuration.md](configuration.md#concurrency-the-rows-knob-and-the-fleets-cap)).
+  Turns are taken per row, so three pipelines queue as three streams.
+- A row's death is its own: the container exits only when every row is
+  crash-looping at once.
 - Log lines tagged `[phoebe:<owner>/<repo>:<pipeline>]` (match as a prefix).
 - Trust domain: one container = co-locate only mutually trusted repos
   ([`trust.md`](trust.md#one-container--one-trust-domain)).
@@ -380,3 +391,4 @@ must be material before first boot.
 | Mount model (`:ro`, include `.git`)                          | #87                                                                |
 | Scaffold profiles / this runbook                             | #88                                                                |
 | Fleet operating commands                                     | [`operating.md`](operating.md#running-many-repos-in-one-container) |
+| Pipelines: rows within a tenant                              | [`pipelines.md`](pipelines.md)                                     |

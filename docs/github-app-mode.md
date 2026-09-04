@@ -162,7 +162,9 @@ the file. There is no step to take here.
 
 The token itself is not narrowed per pipeline: the supervisor leases it per row
 and caches the minted installation token per tenant, so every row of a tenant
-works its repo with the same full grant.
+works its repo with the same full grant. What _is_ per row is any key a kind
+declared, so an intake row's Slack token never reaches the work row's child. See
+[`pipelines.md` → Credentials per pipeline](pipelines.md#credentials-per-pipeline).
 
 ### Reviews and branch protection
 

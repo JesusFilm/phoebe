@@ -214,8 +214,11 @@ to whichever map first ships a non-GitHub kind for real.
 **Since resolved.** The pipelines map was the map that shipped one. The in-memory count
 gained a consumer, `ctx.quarantined`, a per-kind set of refs at the threshold, backed by
 an admission drop; the unit's optional `revision` is the way out. Domain terminal states
-did stay kind-owned in the external system, as this paragraph expected. See
-[Units the engine cannot see](../work-kinds.md#units-the-engine-cannot-see).
+did stay kind-owned in the external system, as this paragraph expected. The map split the
+question in two, settling engine-caused quarantine inside the engine and domain terminal
+states outside it. See [Units the engine cannot see](../work-kinds.md#units-the-engine-cannot-see)
+for the contract and [`pipelines.md`](../pipelines.md#units-the-engine-cannot-see) for the
+decision and the rest of the framework this record's responder now attaches to.
 
 Quarantine's marker/baseline logic stays engine-owned — it is subtle enough that per-kind
 reimplementation (a definition-level `escalate` hook) was rejected. All five built-ins set

@@ -20,6 +20,13 @@ Phoebe ships as a **single Docker container** that is simultaneously:
 - the **execution environment**, where the chosen agent CLI runs, installs
   dependencies, edits files, runs your gates, and pushes.
 
+What the orchestrator supervises is a **(tenant × pipeline) matrix**: one engine
+child per cell, each with its own order, cadence and concurrency. A deployment
+that never declares `pipelines` is a matrix one column wide, every tenant's
+implicit `work` row, which is the fleet Phoebe has always run. The model, and
+why a pipeline is a process rather than a queue, is
+[`pipelines.md`](pipelines.md).
+
 There is no host-spawns-sandboxes layer. Your host checkout is never touched:
 the container owns a **private clone** of the target repo and pushes branches
 directly to `origin`. The same image drives any repository because every
@@ -55,10 +62,10 @@ _would_ do (`phoebe --dry-run --run-once`) without booting the container.
 Two named volumes hold all persistent state, declared in `compose.yml`. Tenant
 paths under `phoebe-data` are derived from `repoSlug` rather than configured:
 
-| Volume          | Mount          | Holds                                                                                                |
-| --------------- | -------------- | ---------------------------------------------------------------------------------------------------- |
-| `phoebe-data`   | `/data/repos`  | Every tenant's state, nested as `/data/repos/<owner>/<repo>/{repo,worktrees,state,scratch}`.         |
-| `phoebe-engine` | `/data/engine` | The shared engine checkout and the crash-loop record, so a restart re-fetches instead of re-cloning. |
+| Volume          | Mount          | Holds                                                                                                                                                                                                                                                                 |
+| --------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `phoebe-data`   | `/data/repos`  | Every tenant's state, nested as `/data/repos/<owner>/<repo>/{repo,worktrees,state,scratch}`. Each pipeline owns `state/<pipeline>/` under that; scratch and read-only trees are keyed by kind and unit ([`pipelines.md`](pipelines.md#what-a-pipeline-owns-on-disk)). |
+| `phoebe-engine` | `/data/engine` | The shared engine checkout and the crash-loop record, so a restart re-fetches instead of re-cloning.                                                                                                                                                                  |
 
 `PHOEBE_DATA_DIR` overrides the `/data/repos` base for host and dev runs. See
 [`configuration.md`](configuration.md#container-paths-derived-not-configured)
@@ -321,11 +328,11 @@ if it had never run.
 
 ## One cycle, end to end
 
-Every step below is one walk over the **work-kind registry** — the built-in
-definitions plus any custom kinds the tenant declared (`workKinds.custom`),
-indistinguishable to the engine after boot. Each kind's own `fetch`, `select`,
-and `run` do the work; the engine supplies the walk, the workspace, and the
-agent machinery.
+This is **one pipeline's** cycle: one row of the matrix, over the kinds that row
+owns. Every step below is one walk over the **work-kind registry** — the built-in
+definitions plus any custom kinds the tenant declared, indistinguishable to the
+engine after boot. Each kind's own `fetch`, `select`, and `run` do the work; the
+engine supplies the walk, the workspace, and the agent machinery.
 
 ```
 each kind in workOrder: registry kind.fetch(ctx) ──► gathered slot
@@ -345,8 +352,15 @@ kind.run(unit, ctx) — e.g. prepare worktree ─► install ─► agent ─►
 --run-once: exit · daemon: repeat
 ```
 
-The engine repeats this forever, idling `PHOEBE_POLL_INTERVAL_MS`
-(default 300000) between empty cycles. `--run-once` works at most one unit of
+A row whose `concurrency` is above 1 runs the same walk as a **rolling top-up**:
+each pass fills the free slots depth-first and then waits on whichever comes
+first, a unit settling or the poll interval or a drain, so the loop never awaits
+one particular unit ([`pipelines.md` → Units in
+flight](pipelines.md#units-in-flight)).
+
+The engine repeats this forever, idling the row's `pollIntervalMs`
+(`PHOEBE_POLL_INTERVAL_MS`, default 300000, for a row that declares none)
+between empty cycles. `--run-once` works at most one unit of
 the first one-shot-eligible kind and exits. The built-in janitor kinds
 (`conflicts`, `checks`, `reviews`) are persistent-mode only; eligibility is a
 field on each kind's definition.

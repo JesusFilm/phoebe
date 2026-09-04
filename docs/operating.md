@@ -156,12 +156,12 @@ failure comment too, so a human knows to step in.
 
 ## Running modes
 
-| Invocation             | Behaviour                                                                                                     |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------- |
-| no flags (the default) | Persistent poll loop; all kinds; idles `PHOEBE_POLL_INTERVAL_MS` (300000).                                    |
-| `--run-once`           | One `issues` or `research` unit then exit. Janitor kinds are persistent-mode only.                            |
-| `--dry-run --run-once` | Print the unit that _would_ be picked (host-safe, nothing executes).                                          |
-| `--pipeline <name>`    | Run one declared [pipeline row](configuration.md#pipelines-rows-of-work-inside-one-tenant) instead of `work`. |
+| Invocation             | Behaviour                                                                          |
+| ---------------------- | ---------------------------------------------------------------------------------- |
+| no flags (the default) | Persistent poll loop; all kinds; idles `PHOEBE_POLL_INTERVAL_MS` (300000).         |
+| `--run-once`           | One `issues` or `research` unit then exit. Janitor kinds are persistent-mode only. |
+| `--dry-run --run-once` | Print the unit that _would_ be picked (host-safe, nothing executes).               |
+| `--pipeline <name>`    | Run one declared [pipeline row](pipelines.md) instead of `work`.                   |
 
 Flags go after the compose service name (`docker compose run --rm phoebe
 --run-once`); `phoebe boot` forwards them to the engine it launches. No flags is
@@ -170,6 +170,8 @@ the deployed shape, and `docker compose up -d` runs the persistent loop.
 `--dry-run` is the safe way to preview selection on your host without booting
 the container. See [`upgrading.md`](upgrading.md) for start/stop/upgrade
 commands and [`work-kinds.md`](work-kinds.md) for the full selection rules.
+A tenant running more than one row is [`pipelines.md`](pipelines.md); there is no
+per-pipeline stop verb, because hot `disabled: true` is the stop.
 
 ## Checking the deployment's health: `phoebe doctor`
 
@@ -327,8 +329,9 @@ own `state/<name>/status.json` and nothing else:
 - `working k/N <units>` — `N` is the row's declared `concurrency`.
 - `waiting for slot` — a pass picked a unit and is queued on the fleet cap.
 - `idle`.
-- `wedged? <age>` beside a working row whose oldest unit has been running
-  longer than its own run budget plus one poll interval.
+- `wedged? <age>` beside a working row with a unit that has been running longer
+  than its own run budget plus one poll interval. Each unit is weighed against
+  its own budget; `<age>` is the oldest unit's.
 
 `wedged?` is a question, not a verdict: `list` reads files, not processes. An
 idle row is never wedged however long it has been idle, and rows are never

@@ -454,9 +454,10 @@ that.
 
 A tenant used to declare its work at the top level of `phoebe.config.ts`. It now
 declares it inside a **pipeline** — a named row of work with its own priority
-order, kind tuning and cadence (see
-[`configuration.md` → Pipelines](configuration.md#pipelines)). `phoebe migrate`
-does the move for you, on a tenant config:
+order, kind tuning and cadence. The field reference is
+[`configuration.md` → Pipelines](configuration.md#pipelines); the model, and why
+a tenant might want a second row, is [`pipelines.md`](pipelines.md).
+`phoebe migrate` does the move for you, on a tenant config:
 
 | Was                    | Is now                                      |
 | ---------------------- | ------------------------------------------- |

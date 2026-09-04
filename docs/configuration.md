@@ -172,12 +172,13 @@ selects and what it does with what it selects:
 
 ## Pipelines
 
-A **pipeline** is a named row of work this tenant runs, with its own priority
-order, kind tuning, cadence and concurrency. Every tenant has one whether or not
-it says so. `work`, the reserved default, is the serial poll loop Phoebe has
-always run. Declaring `pipelines` is how you tune that row, or add a second one
-beside it. An `intake` row can file issues from somewhere else every 15 seconds
-while `work` keeps its five-minute cadence.
+This section is the field reference. For the model, meaning why a pipeline is a
+separate process, how rows are supervised, and the intake example the design was
+validated against, read [`pipelines.md`](pipelines.md).
+
+Declaring `pipelines` is how you tune the row a tenant already has, or add a
+second one beside it. An `intake` row can file issues from somewhere else every 15
+seconds while `work` keeps its five-minute cadence.
 
 ```ts
 pipelines: {
