@@ -12,14 +12,18 @@ import {
   checkMinBootstrap,
   isMovingBranch,
   LOCAL_ENGINE_DIR,
+  reportPipelineExit,
+  reportSpawnFailure,
   resolveEngineEntry,
+  resolveSoloTenant,
   setupGitCredentials,
   pipelineArgv,
   tenantFingerprint,
   trackPipelines,
   workspacePipelineFingerprint,
 } from "./boot.ts";
-import type { SupervisedPipeline } from "./pipelines.ts";
+import { pipelineLabel, type SupervisedPipeline } from "./pipelines.ts";
+import type { DiscoveredTenant } from "./tenants.ts";
 import { createSlotBroker } from "./slot-broker.ts";
 
 describe("resolveEngineEntry", () => {
@@ -565,5 +569,87 @@ describe("workspacePipelineFingerprint", () => {
   test("an unknown enumerated fingerprint stays unknown", () => {
     const t = tenantDir("FOO=public\n");
     expect(workspacePipelineFingerprint(t.pipeline("work", [], []), null)).toBeNull();
+  });
+});
+
+// #420 asked every `[phoebe] boot:` line to name a pipeline `<slug>:<pipeline>`. Solo
+// got neither half of that: no slug to name it with, and no handlers to name it
+// in (#457). These pin both halves — the label a solo tenant resolves to, and the
+// two lines both arms now report a pipeline's death through.
+describe("solo's labelled pipeline lines", () => {
+  /** A pipeline of `tenant`, enough of one for a label. */
+  function pipelineOf(tenant: DiscoveredTenant, name: string): SupervisedPipeline {
+    return {
+      id: `${tenant.id}#${name}`,
+      tenant,
+      pipeline: {
+        name,
+        disabled: false,
+        priority: 0,
+        concurrency: 1,
+        needsClone: true,
+        env: [],
+        fingerprint: "fp",
+      },
+      enumerated: true,
+      siblingEnv: [],
+    };
+  }
+
+  /** Swap `console.error` for a recorder: these lines are operator-facing output. */
+  function captureError(): { lines: string[]; restore: () => void } {
+    const lines: string[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => lines.push(args.map(String).join(" "));
+    return {
+      lines,
+      restore: () => {
+        console.error = original;
+      },
+    };
+  }
+
+  const soloDir = mkdtempSync(join(tmpdir(), "phoebe-solo-label-"));
+
+  test("the solo tenant takes its slug from the root config's repoSlug", () => {
+    const tenant = resolveSoloTenant(soloDir, { repoSlug: "  acme/widget  " });
+    expect(tenant.slug).toBe("acme/widget");
+    expect(tenant.id).toBe(soloDir);
+    expect(pipelineLabel(pipelineOf(tenant, "work"))).toBe("acme/widget:work");
+  });
+
+  test("a missing or unusable repoSlug keeps the null, and the path label with it", () => {
+    for (const config of [{}, { repoSlug: "" }, { repoSlug: "   " }, { repoSlug: 42 }]) {
+      const tenant = resolveSoloTenant(soloDir, config);
+      expect(tenant.slug).toBeNull();
+      expect(pipelineLabel(pipelineOf(tenant, "work"))).toBe(`${soloDir}:work`);
+    }
+  });
+
+  test("a spawn failure names the pipeline it could not start", () => {
+    const tenant = resolveSoloTenant(soloDir, { repoSlug: "acme/widget" });
+    const capture = captureError();
+    try {
+      reportSpawnFailure(pipelineOf(tenant, "work"), new Error("ENOENT"));
+    } finally {
+      capture.restore();
+    }
+    expect(capture.lines).toEqual([
+      "[phoebe] boot: pipeline acme/widget:work failed to spawn — ENOENT",
+    ]);
+  });
+
+  test("a child exit names the pipeline that died and the status it died with", () => {
+    const tenant = resolveSoloTenant(soloDir, { repoSlug: "acme/widget" });
+    const capture = captureError();
+    try {
+      reportPipelineExit(pipelineOf(tenant, "work"), { code: 1, signal: null });
+      reportPipelineExit(pipelineOf(tenant, "intake"), { code: null, signal: "SIGKILL" });
+    } finally {
+      capture.restore();
+    }
+    expect(capture.lines[0]).toContain("pipeline acme/widget:work exited (1)");
+    expect(capture.lines[0]).toContain("respawning with backoff");
+    expect(capture.lines[1]).toContain("pipeline acme/widget:intake exited (SIGKILL)");
   });
 });
