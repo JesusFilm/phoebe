@@ -25,6 +25,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { matchConfigFlag } from "./cli-flags.ts";
 import { validateUserConfig, type PhoebeUserConfig } from "./config-schema.ts";
 import { ConfigRefusal, isConfigRefusal } from "./config-handle.ts";
 import { defaultGit, type GitRunner } from "./git-model.ts";
@@ -960,17 +961,10 @@ export function parseMigrateArgs(argv: readonly string[]): ParsedMigrateArgs {
       json = true;
       continue;
     }
-    if (arg === "--config" || arg === "-c") {
-      const next = argv[i + 1];
-      if (next === undefined) {
-        throw new Error(`${arg} requires a path argument (e.g. --config phoebe.config.ts).`);
-      }
-      configPath = next;
-      i += 1;
-      continue;
-    }
-    if (arg.startsWith("--config=")) {
-      configPath = arg.slice("--config=".length);
+    const config = matchConfigFlag(argv, i);
+    if (config !== undefined) {
+      configPath = config.value;
+      i += config.consumed - 1;
       continue;
     }
     // --dir and --only are intentionally not accepted (see #179)

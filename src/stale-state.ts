@@ -48,6 +48,7 @@
 
 import { existsSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
+import { matchConfigFlag } from "./cli-flags.ts";
 import { CLONE_LOCK_DIR } from "./clone-lock.ts";
 import { resolveConfig, type PathsConfig, type PhoebeConfig } from "./config-schema.ts";
 import {
@@ -506,17 +507,10 @@ export function parseSweepStateArgs(argv: readonly string[]): ParsedSweepStateAr
       help = true;
       continue;
     }
-    if (arg === "--config" || arg === "-c") {
-      const next = argv[i + 1];
-      if (next === undefined || next.startsWith("-")) {
-        throw new Error(`${arg} requires a path argument (e.g. --config phoebe.config.ts).`);
-      }
-      configPath = next;
-      i += 1;
-      continue;
-    }
-    if (arg !== undefined && arg.startsWith("--config=")) {
-      configPath = arg.slice("--config=".length);
+    const config = matchConfigFlag(argv, i);
+    if (config !== undefined) {
+      configPath = config.value;
+      i += config.consumed - 1;
       continue;
     }
     throw new Error(

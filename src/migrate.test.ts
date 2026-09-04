@@ -174,6 +174,9 @@ describe("parseMigrateArgs", () => {
   test("--config without a value throws", () => {
     expect(() => parseMigrateArgs(["--config"])).toThrow(/requires a path/);
     expect(() => parseMigrateArgs(["-c"])).toThrow(/requires a path/);
+    // Shared with every other `--config` parser (#460): the next flag is not
+    // the path, so `--check` is not swallowed as one.
+    expect(() => parseMigrateArgs(["--config", "--check"])).toThrow(/requires a path/);
   });
 
   test("rejects --dir", () => {

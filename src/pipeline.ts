@@ -10,6 +10,7 @@
 // single consumer rewrite. Absent the flag the pipeline is `work`, the reserved
 // default, so an existing deployment sees no change at all.
 
+import { matchPipelineFlag } from "./cli-flags.ts";
 import {
   DEFAULT_PIPELINE_NAME,
   PIPELINE_DEFAULTS,
@@ -29,21 +30,8 @@ import {
  */
 export function parsePipelineName(argv: readonly string[]): string {
   for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (arg === "--pipeline") {
-      const next = argv[i + 1];
-      if (next === undefined || next.startsWith("-")) {
-        throw new Error("`--pipeline` requires a pipeline name (e.g. `--pipeline work`).");
-      }
-      return next;
-    }
-    if (arg !== undefined && arg.startsWith("--pipeline=")) {
-      const value = arg.slice("--pipeline=".length);
-      if (value.length === 0) {
-        throw new Error("`--pipeline=` requires a pipeline name (e.g. `--pipeline=work`).");
-      }
-      return value;
-    }
+    const match = matchPipelineFlag(argv, i);
+    if (match !== undefined) return match.value;
   }
   return DEFAULT_PIPELINE_NAME;
 }

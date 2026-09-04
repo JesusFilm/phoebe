@@ -83,6 +83,15 @@ describe("parseCliArgs", () => {
 
   test("rejects --pipeline with no name", () => {
     expect(() => parseCliArgs(["--pipeline"])).toThrow(/requires a pipeline name/);
+    expect(() => parseCliArgs(["--pipeline="])).toThrow(/requires a pipeline name/);
+  });
+
+  test("refuses to read the next flag as a value (#460)", () => {
+    // The shared matchers hold both flags to one contract, so `--pipeline`
+    // here rejects what `parsePipelineName` has always rejected — rather than
+    // forwarding `--dry-run` as a pipeline name and losing the flag.
+    expect(() => parseCliArgs(["--pipeline", "--dry-run"])).toThrow(/requires a pipeline name/);
+    expect(() => parseCliArgs(["--config", "--dry-run"])).toThrow(/requires a path/);
   });
 
   test("rejects an unknown flag instead of forwarding it into the void", () => {

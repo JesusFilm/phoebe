@@ -19,6 +19,7 @@
 
 import { createHash } from "node:crypto";
 import { dirname } from "node:path";
+import { matchConfigFlag } from "./cli-flags.ts";
 import { resolveConfig, type PhoebeConfig, type ResolvedPipeline } from "./config-schema.ts";
 import { applyEnvOverlay, loadUserConfig, resolveConfigPath } from "./load-config.ts";
 import { resolveDataBase } from "./paths.ts";
@@ -239,17 +240,10 @@ export function parsePipelinesArgs(argv: readonly string[]): ParsedPipelinesArgs
       help = true;
       continue;
     }
-    if (arg === "--config" || arg === "-c") {
-      const next = argv[i + 1];
-      if (next === undefined || next.startsWith("-")) {
-        throw new Error(`${arg} requires a path argument (e.g. --config phoebe.config.ts).`);
-      }
-      configPath = next;
-      i += 1;
-      continue;
-    }
-    if (arg !== undefined && arg.startsWith("--config=")) {
-      configPath = arg.slice("--config=".length);
+    const config = matchConfigFlag(argv, i);
+    if (config !== undefined) {
+      configPath = config.value;
+      i += config.consumed - 1;
       continue;
     }
     throw new Error(
