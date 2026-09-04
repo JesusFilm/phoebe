@@ -142,13 +142,16 @@ export function oldestUnitAgeMs(units: readonly CurrentUnit[], now: number): num
 }
 
 /**
- * Whether the oldest in-flight unit is past its own deadline: its `runBudgetMs`
+ * Whether any in-flight unit is past its own deadline: its own `runBudgetMs`
  * plus one poll interval of slack, since a loop reaps a timed-out unit on its
  * next pass rather than the instant the budget expires.
  *
- * A snapshot that names no budget (an older engine's, or a unit admitted
- * without one) yields no verdict at all. Guessing a budget would turn "this
- * engine did not say" into "this unit is stuck".
+ * Each unit is judged against its own budget, not the oldest unit's — a newer
+ * unit with a shorter budget can be wedged while the oldest one isn't.
+ *
+ * A unit that names no budget (an older engine's, or a unit admitted without
+ * one) yields no verdict at all for that unit. Guessing a budget would turn
+ * "this engine did not say" into "this unit is stuck".
  */
 export function isWedged(
   snapshot: StatusSnapshot | null,
@@ -156,10 +159,13 @@ export function isWedged(
   now: number,
 ): boolean {
   const units = snapshot?.currentUnits ?? [];
-  const oldest = units[0];
-  if (oldest === undefined || oldest.runBudgetMs === null) return false;
-  const age = oldestUnitAgeMs(units, now);
-  return age !== null && age > oldest.runBudgetMs + pollIntervalMs;
+  return units.some((unit) => {
+    if (unit.runBudgetMs === null) return false;
+    const startedAt = Date.parse(unit.startedAt);
+    if (!Number.isFinite(startedAt)) return false;
+    const age = now - startedAt;
+    return age > unit.runBudgetMs + pollIntervalMs;
+  });
 }
 
 /** A coarse age for one line of operator output: `45s`, `12m`, `3h`, `2d`. */
