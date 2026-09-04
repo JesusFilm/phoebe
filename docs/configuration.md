@@ -224,6 +224,24 @@ downstream has to know pipelines exist. `--run-once` and `--dry-run` take it
 too. `phoebe --run-once --dry-run --pipeline intake` previews that row's
 would-pick and nothing else.
 
+### What a row owns on disk
+
+Two rows are two processes sharing one tenant's clone and one `state/` dir, so
+each owns a slice of both rather than the whole thing.
+
+| Thing                          | Owned by                                                                                                                               |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `state/<pipeline>/status.json` | The row alone. `phoebe list` reads `state/work/status.json` for its tenant line.                                                       |
+| Stdout lines                   | Tagged `[phoebe:<owner>/<repo>:<pipeline>]`, including `work`'s. Match it as a prefix, not a fixed string.                             |
+| The four tracker sweeps        | Scoped to the kinds the row schedules, so two rows cover every object exactly once. A row scheduling none of a sweep's kinds skips it. |
+| The origin clone               | Shared. Cloned once, the first clone serialized by a lock under `state/`; a row whose kinds all declare `scratch` never clones at all. |
+| A worktree                     | Leased with `git worktree lock`, reason `pipeline=<name> pid=<n>`. A tree another row leases is left alone and its unit waits a cycle. |
+
+A lease outlives the process that took it, so a row breaks its own leases at
+boot and never anyone else's. If you find a locked worktree and no engine, the
+reason string names the row that left it; `git worktree unlock` it by hand or
+let that row's next boot do it.
+
 ### Deprecated top-level aliases
 
 `workOrder`, `workKinds` and `promptFiles` still work, so an existing config
@@ -406,7 +424,7 @@ under one slug-keyed root on the `phoebe-data` volume:
 | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | `/data/repos/<owner>/<repo>/repo`      | The private clone (origin hub).                                                                                                          |
 | `/data/repos/<owner>/<repo>/worktrees` | Per-unit git worktrees.                                                                                                                  |
-| `/data/repos/<owner>/<repo>/state`     | Per-tenant state, the bootstrapper's `status.json`.                                                                                      |
+| `/data/repos/<owner>/<repo>/state`     | Per-tenant state: one `<pipeline>/status.json` per pipeline row, plus the clone lock.                                                    |
 | `/data/engine`                         | The **shared** engine checkout + the crash-loop record (`engine-crash-loop.json`), deployment-global, on its own `phoebe-engine` volume. |
 
 The base is `/data/repos` in the container; `PHOEBE_DATA_DIR` overrides it for

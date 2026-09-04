@@ -78,6 +78,9 @@ function minimalUser(): PhoebeUserConfig {
   };
 }
 
+/** The tag every line this engine writes carries (#418): slug + pipeline row. */
+const TAG = "[phoebe:acme/widget:work]";
+
 function anIssue(number: number, overrides: Partial<Issue> = {}): Issue {
   return {
     number,
@@ -227,12 +230,32 @@ function captureConsole(): { lines: string[]; restore: () => void } {
  * the double and its recording are one object, so a test can both answer git
  * and assert what git was asked to do.
  */
+/** Lock reasons keyed by worktree dir, read out of a porcelain listing. */
+function parseLeases(porcelain: string): Map<string, string> {
+  const leases = new Map<string, string>();
+  let dir: string | null = null;
+  for (const line of porcelain.split("\n")) {
+    if (line.startsWith("worktree ")) dir = line.slice("worktree ".length);
+    else if (dir !== null && line.startsWith("locked ")) leases.set(dir, line.slice(7));
+  }
+  return leases;
+}
+
+/** The porcelain listing those leases would produce. */
+function renderWorktrees(leases: ReadonlyMap<string, string>): string {
+  return [...leases]
+    .map(([dir, reason]) => `worktree ${dir}\nHEAD ${"2".repeat(40)}\nlocked ${reason}\n`)
+    .join("\n");
+}
+
 function stubGit(
   shas: Record<string, Sha>,
   behind: Record<string, number> = {},
   dirtyPaths: readonly string[] = [],
+  worktreeList = "",
 ): { git: GitRunner; calls: string[][] } {
   const calls: string[][] = [];
+  const leases = parseLeases(worktreeList);
   const git: GitRunner = (args) => {
     calls.push([...args]);
     if (args[0] === "fetch") return "";
@@ -246,7 +269,17 @@ function stubGit(
     // Worktree plumbing answers emptily rather than throwing: an executing
     // cycle (the workspace tests below) reaches it, and a stub that threw here
     // would send `removeWorktree` down its rmSync fallback against a real path.
-    if (args[0] === "worktree") return "";
+    // The worktree lease (#418). `lock`/`unlock` mutate what `list` answers,
+    // so a cycle that takes a lease and then tears its tree down sees the
+    // lease it actually took — a static listing would let a release that never
+    // unlocks pass. The rest of the worktree plumbing answers emptily rather
+    // than throwing, since an executing cycle reaches it.
+    if (args[0] === "worktree") {
+      if (args[1] === "list") return renderWorktrees(leases);
+      if (args[1] === "lock") leases.set(String(args[4]), String(args[3]));
+      if (args[1] === "unlock") leases.delete(String(args[2]));
+      return "";
+    }
     // `status --porcelain` — what the readonly workspace's boundary check
     // (#397) asks of a tree the engine is about to delete.
     if (args[0] === "status") return dirtyPaths.map((path) => ` M ${path}`).join("\n");
@@ -279,11 +312,16 @@ async function runCycle(opts: {
   dataBase?: string;
   /** Paths `git status --porcelain` reports as changed in any worktree. */
   dirtyPaths?: readonly string[];
+  /** What `git worktree list --porcelain` answers — the worktree leases (#418). */
+  worktreeList?: string;
+  /** Which pipeline row this engine is (#418); defaults to the reserved `work`. */
+  pipeline?: string;
 }): Promise<CycleResult> {
   const { git, calls: gitCalls } = stubGit(
     opts.shas ?? {},
     opts.behind ?? {},
     opts.dirtyPaths ?? [],
+    opts.worktreeList ?? "",
   );
   const events: UnitRef[] = [];
   const config = resolveConfig(
@@ -292,6 +330,7 @@ async function runCycle(opts: {
   );
   const engine = createEngine({
     config,
+    ...(opts.pipeline !== undefined ? { pipeline: opts.pipeline } : {}),
     registry: buildRegistry(config, opts.customKinds ?? []),
     env: opts.env ?? {},
     ...(opts.inContainer !== undefined ? { inContainer: opts.inContainer } : {}),
@@ -324,7 +363,7 @@ async function runCycle(opts: {
 
 /** The one line a dry cycle prints for the unit it picked, or undefined. */
 function selection(result: CycleResult): string | undefined {
-  return result.lines.find((line) => line.startsWith("[phoebe] Would execute:"));
+  return result.lines.find((line) => line.startsWith("[phoebe:acme/widget:work] Would execute:"));
 }
 
 // ---------------------------------------------------------------------------
@@ -348,7 +387,9 @@ describe("selecting one unit, per work kind", () => {
       github: { listReadyIssues: () => [anIssue(7)] },
     });
 
-    expect(selection(result)).toBe("[phoebe] Would execute: issue #7 — base origin/main.");
+    expect(selection(result)).toBe(
+      "[phoebe:acme/widget:work] Would execute: issue #7 — base origin/main.",
+    );
   });
 
   test("research: the workable research ticket wins the cycle", async () => {
@@ -358,7 +399,7 @@ describe("selecting one unit, per work kind", () => {
     });
 
     expect(selection(result)).toBe(
-      "[phoebe] Would execute: research ticket #9 — base origin/main.",
+      "[phoebe:acme/widget:work] Would execute: research ticket #9 — base origin/main.",
     );
   });
 
@@ -373,7 +414,7 @@ describe("selecting one unit, per work kind", () => {
     });
 
     expect(selection(result)).toBe(
-      `[phoebe] Would execute: conflict fix for PR #21 (${issueBranch(7)}).`,
+      `[phoebe:acme/widget:work] Would execute: conflict fix for PR #21 (${issueBranch(7)}).`,
     );
   });
 
@@ -387,7 +428,7 @@ describe("selecting one unit, per work kind", () => {
     });
 
     expect(selection(result)).toBe(
-      `[phoebe] Would execute: checks fix for PR #22 (${issueBranch(8)}).`,
+      `[phoebe:acme/widget:work] Would execute: checks fix for PR #22 (${issueBranch(8)}).`,
     );
   });
 
@@ -403,7 +444,7 @@ describe("selecting one unit, per work kind", () => {
     });
 
     expect(selection(result)).toBe(
-      `[phoebe] Would execute: review feedback for PR #23 (${issueBranch(9)}).`,
+      `[phoebe:acme/widget:work] Would execute: review feedback for PR #23 (${issueBranch(9)}).`,
     );
   });
 });
@@ -420,7 +461,9 @@ describe("processingLabel skips", () => {
       },
     });
 
-    expect(selection(result)).toBe("[phoebe] Would execute: issue #8 — base origin/main.");
+    expect(selection(result)).toBe(
+      "[phoebe:acme/widget:work] Would execute: issue #8 — base origin/main.",
+    );
   });
 
   test("research: a ticket carrying processingLabel is invisible to selection", async () => {
@@ -435,7 +478,7 @@ describe("processingLabel skips", () => {
     });
 
     expect(selection(result)).toBe(
-      "[phoebe] Would execute: research ticket #10 — base origin/main.",
+      "[phoebe:acme/widget:work] Would execute: research ticket #10 — base origin/main.",
     );
   });
 
@@ -473,7 +516,7 @@ describe("comments with no author", () => {
     });
 
     expect(selection(result)).toBe(
-      `[phoebe] Would execute: review feedback for PR #23 (${issueBranch(9)}).`,
+      `[phoebe:acme/widget:work] Would execute: review feedback for PR #23 (${issueBranch(9)}).`,
     );
   });
 
@@ -525,7 +568,7 @@ describe("work order", () => {
     });
 
     expect(selection(result)).toBe(
-      `[phoebe] Would execute: conflict fix for PR #21 (${issueBranch(7)}).`,
+      `[phoebe:acme/widget:work] Would execute: conflict fix for PR #21 (${issueBranch(7)}).`,
     );
   });
 
@@ -536,7 +579,9 @@ describe("work order", () => {
       github: contestedWorld(),
     });
 
-    expect(selection(result)).toBe("[phoebe] Would execute: issue #30 — base origin/main.");
+    expect(selection(result)).toBe(
+      "[phoebe:acme/widget:work] Would execute: issue #30 — base origin/main.",
+    );
   });
 
   test("the idle report names the labels this engine was configured with", async () => {
@@ -549,7 +594,7 @@ describe("work order", () => {
     });
 
     expect(result.lines).toContain(
-      "[phoebe] 1 needs-robot issue(s) but none workable this cycle (waiting on blockers #10).",
+      "[phoebe:acme/widget:work] 1 needs-robot issue(s) but none workable this cycle (waiting on blockers #10).",
     );
   });
 });
@@ -579,9 +624,11 @@ describe("watermark skips", () => {
 
     expect(selection(result)).toBeUndefined();
     expect(result.lines).toContain(
-      "[phoebe] 1 conflicting PR(s) skipped (unchanged failure watermark).",
+      "[phoebe:acme/widget:work] 1 conflicting PR(s) skipped (unchanged failure watermark).",
     );
-    expect(result.lines).toContain("[phoebe] 1 conflicting PR(s) but none fixable this cycle.");
+    expect(result.lines).toContain(
+      "[phoebe:acme/widget:work] 1 conflicting PR(s) but none fixable this cycle.",
+    );
   });
 
   test("conflicts: the same PR is workable once git says main has moved", async () => {
@@ -592,7 +639,7 @@ describe("watermark skips", () => {
     });
 
     expect(selection(result)).toBe(
-      `[phoebe] Would execute: conflict fix for PR #21 (${issueBranch(7)}).`,
+      `[phoebe:acme/widget:work] Would execute: conflict fix for PR #21 (${issueBranch(7)}).`,
     );
   });
 
@@ -615,7 +662,7 @@ describe("watermark skips", () => {
 
     expect(selection(result)).toBeUndefined();
     expect(result.lines).toContain(
-      "[phoebe] 1 failing-CI PR(s) skipped (conflicting, stacked, or watermarked).",
+      "[phoebe:acme/widget:work] 1 failing-CI PR(s) skipped (conflicting, stacked, or watermarked).",
     );
   });
 
@@ -637,7 +684,7 @@ describe("watermark skips", () => {
     });
 
     expect(selection(result)).toBe(
-      `[phoebe] Would execute: checks fix for PR #22 (${issueBranch(8)}).`,
+      `[phoebe:acme/widget:work] Would execute: checks fix for PR #22 (${issueBranch(8)}).`,
     );
   });
 });
@@ -673,7 +720,7 @@ describe("stacked-blocker skips", () => {
 
     expect(selection(result)).toBeUndefined();
     expect(result.lines).toContain(
-      "[phoebe] 1 conflicting PR(s) skipped (stacked on open blocker).",
+      "[phoebe:acme/widget:work] 1 conflicting PR(s) skipped (stacked on open blocker).",
     );
   });
 });
@@ -716,7 +763,7 @@ describe("issue bodies survive every work order", () => {
 
     expect(selection(result)).toBeUndefined();
     expect(result.lines).toContain(
-      "[phoebe] 1 failing-CI PR(s) skipped (conflicting, stacked, or watermarked).",
+      "[phoebe:acme/widget:work] 1 failing-CI PR(s) skipped (conflicting, stacked, or watermarked).",
     );
   });
 
@@ -729,7 +776,7 @@ describe("issue bodies survive every work order", () => {
 
     expect(selection(result)).toBeUndefined();
     expect(result.lines).toContain(
-      "[phoebe] 1 conflicting PR(s) skipped (stacked on open blocker).",
+      "[phoebe:acme/widget:work] 1 conflicting PR(s) skipped (stacked on open blocker).",
     );
   });
 });
@@ -765,9 +812,11 @@ describe("the idle report follows workOrder", () => {
 
     expect(selection(result)).toBeUndefined();
     expect(result.lines).toContain(
-      "[phoebe] 1 conflicting PR(s) skipped (stacked on open blocker).",
+      "[phoebe:acme/widget:work] 1 conflicting PR(s) skipped (stacked on open blocker).",
     );
-    expect(result.lines).toContain("[phoebe] 1 conflicting PR(s) but none fixable this cycle.");
+    expect(result.lines).toContain(
+      "[phoebe:acme/widget:work] 1 conflicting PR(s) but none fixable this cycle.",
+    );
     expect(result.lines.join("\n")).not.toContain("issue(s) but none workable");
   });
 
@@ -780,7 +829,7 @@ describe("the idle report follows workOrder", () => {
 
     expect(selection(result)).toBeUndefined();
     expect(result.lines).toContain(
-      "[phoebe] 1 ready-for-agent issue(s) but none workable this cycle (waiting on blockers #11).",
+      "[phoebe:acme/widget:work] 1 ready-for-agent issue(s) but none workable this cycle (waiting on blockers #11).",
     );
     expect(result.lines.join("\n")).not.toContain("conflicting PR(s)");
   });
@@ -795,7 +844,7 @@ describe("the idle report follows workOrder", () => {
       },
     });
 
-    expect(result.lines).toContain("[phoebe] No work this cycle — idle.");
+    expect(result.lines).toContain("[phoebe:acme/widget:work] No work this cycle — idle.");
   });
 });
 
@@ -812,7 +861,7 @@ describe("an empty cycle", () => {
     });
 
     expect(selection(result)).toBeUndefined();
-    expect(result.lines).toContain("[phoebe] No work this cycle — idle.");
+    expect(result.lines).toContain("[phoebe:acme/widget:work] No work this cycle — idle.");
     expect(result.events).toEqual([]);
   });
 });
@@ -872,7 +921,7 @@ describe("the un-stick sweep", () => {
       `comment issue #7 ${buildUnstickComment().split("\n")[0]}`,
     ]);
     expect(result.lines).toContain(
-      "[phoebe] Un-quarantined issue #7 — its content advanced past the quarantine baseline.",
+      "[phoebe:acme/widget:work] Un-quarantined issue #7 — its content advanced past the quarantine baseline.",
     );
   });
 
@@ -883,7 +932,7 @@ describe("the un-stick sweep", () => {
       listQuarantinedPrs: () => [],
     });
 
-    expect(result.lines).toContain(RUN_ONCE_NOTHING_MESSAGE);
+    expect(result.lines).toContain(`${TAG} ${RUN_ONCE_NOTHING_MESSAGE}`);
   });
 
   test("a disabled tenant clears the same unit the live sweep would leave", async () => {
@@ -902,7 +951,7 @@ describe("the un-stick sweep", () => {
       `comment issue #7 ${buildUnstickComment().split("\n")[0]}`,
     ]);
     expect(result.lines).toContain(
-      "[phoebe] Un-quarantined issue #7 — tenant is disabled; cleared so it starts fresh when re-enabled.",
+      "[phoebe:acme/widget:work] Un-quarantined issue #7 — tenant is disabled; cleared so it starts fresh when re-enabled.",
     );
   });
 
@@ -915,7 +964,7 @@ describe("the un-stick sweep", () => {
     });
 
     expect(result.lines.join("\n")).toContain("gh exploded");
-    expect(result.lines).toContain(RUN_ONCE_NOTHING_MESSAGE);
+    expect(result.lines).toContain(`${TAG} ${RUN_ONCE_NOTHING_MESSAGE}`);
   });
 });
 
@@ -971,9 +1020,9 @@ describe("the stale-stack sweep", () => {
 
     expect(writes).toEqual(["unstack 22", "retarget 22 main"]);
     expect(result.lines).toContain(
-      "[phoebe] PR #22 removed from stack #3 — blocker #5 completed without merging its PR.",
+      "[phoebe:acme/widget:work] PR #22 removed from stack #3 — blocker #5 completed without merging its PR.",
     );
-    expect(result.lines).toContain("[phoebe] PR #22 retargeted onto main.");
+    expect(result.lines).toContain("[phoebe:acme/widget:work] PR #22 retargeted onto main.");
   });
 
   test("a member's PR goes back onto its feature branch, not the default branch", async () => {
@@ -1001,7 +1050,9 @@ describe("the stale-stack sweep", () => {
     });
 
     expect(writes).toEqual([`retarget 22 ${featureBranch(1)}`]);
-    expect(result.lines).toContain(`[phoebe] PR #22 retargeted onto ${featureBranch(1)}.`);
+    expect(result.lines).toContain(
+      `[phoebe:acme/widget:work] PR #22 retargeted onto ${featureBranch(1)}.`,
+    );
   });
 
   test("an unreadable feature graph leaves the PR's base unchanged", async () => {
@@ -1027,7 +1078,7 @@ describe("the stale-stack sweep", () => {
 
     expect(writes).toEqual([]);
     expect(result.lines).toContain(
-      "[phoebe] Could not determine feature membership for PR #22 — " +
+      "[phoebe:acme/widget:work] Could not determine feature membership for PR #22 — " +
         "leaving its base unchanged until the next sweep.",
     );
   });
@@ -1068,7 +1119,7 @@ describe("the stale-stack sweep", () => {
     });
 
     expect(writes).toEqual(["retarget 22 main"]);
-    expect(result.lines).toContain("[phoebe] PR #22 retargeted onto main.");
+    expect(result.lines).toContain("[phoebe:acme/widget:work] PR #22 retargeted onto main.");
   });
 
   test("dissolving one stack retargets all members whose blocker completed in the same sweep", async () => {
@@ -1115,7 +1166,7 @@ describe("the stale-stack sweep", () => {
     });
 
     expect(result.lines.join("\n")).toContain("stacks API exploded");
-    expect(result.lines).toContain(RUN_ONCE_NOTHING_MESSAGE);
+    expect(result.lines).toContain(`${TAG} ${RUN_ONCE_NOTHING_MESSAGE}`);
   });
 });
 
@@ -1141,7 +1192,7 @@ describe("keeping the feature branch current with the default branch", () => {
     });
 
     expect(selection(result)).toBe(
-      `[phoebe] Would execute: feature-branch catch-up for PR #99 (${featureBranch(341)}).`,
+      `[phoebe:acme/widget:work] Would execute: feature-branch catch-up for PR #99 (${featureBranch(341)}).`,
     );
   });
 
@@ -1186,7 +1237,7 @@ describe("keeping the feature branch current with the default branch", () => {
 
     expect(selection(skipped)).toBeUndefined();
     expect(skipped.lines).toContain(
-      "[phoebe] 1 conflicting PR(s) skipped (unchanged failure watermark).",
+      "[phoebe:acme/widget:work] 1 conflicting PR(s) skipped (unchanged failure watermark).",
     );
 
     // The same branch is workable again the moment the default branch moves.
@@ -1198,7 +1249,7 @@ describe("keeping the feature branch current with the default branch", () => {
     });
 
     expect(selection(retried)).toBe(
-      `[phoebe] Would execute: feature-branch catch-up for PR #99 (${featureBranch(341)}).`,
+      `[phoebe:acme/widget:work] Would execute: feature-branch catch-up for PR #99 (${featureBranch(341)}).`,
     );
   });
 
@@ -1221,7 +1272,7 @@ describe("keeping the feature branch current with the default branch", () => {
     });
 
     expect(selection(result)).toBe(
-      `[phoebe] Would execute: checks fix for PR #99 (${featureBranch(341)}).`,
+      `[phoebe:acme/widget:work] Would execute: checks fix for PR #99 (${featureBranch(341)}).`,
     );
   });
 });
@@ -1276,7 +1327,7 @@ describe("the feature-closes sweep", () => {
     expect(bodies[0]).toContain("Closes #381");
     expect(bodies[0]).toContain("Part of #341.");
     expect(result.lines).toContain(
-      `[phoebe] Integration PR #99 now closes #381 — merged into ${featureBranch(341)}.`,
+      `[phoebe:acme/widget:work] Integration PR #99 now closes #381 — merged into ${featureBranch(341)}.`,
     );
   });
 
@@ -1338,7 +1389,7 @@ describe("the feature-closes sweep", () => {
     });
 
     expect(result.lines.join("\n")).toContain("pr list exploded");
-    expect(result.lines).toContain(RUN_ONCE_NOTHING_MESSAGE);
+    expect(result.lines).toContain(`${TAG} ${RUN_ONCE_NOTHING_MESSAGE}`);
   });
 });
 
@@ -1356,7 +1407,7 @@ describe("--dry-run", () => {
     });
 
     expect(selection(result)).toBe(
-      `[phoebe] Would execute: conflict fix for PR #21 (${issueBranch(7)}).`,
+      `[phoebe:acme/widget:work] Would execute: conflict fix for PR #21 (${issueBranch(7)}).`,
     );
     // No worktree, no push: discovery reads origin and nothing else. Every
     // GitHub write is unstubbed, so one attempted comment would have thrown.
@@ -1428,7 +1479,9 @@ describe("the stranded-unit sweep", () => {
       "add-label issue #7 ready-for-agent",
       `comment issue #7 ${buildUnitTimeoutMarker(1)}`,
     ]);
-    expect(result.lines).toContain("[phoebe] Re-armed issue #7 — stranded with no PR.");
+    expect(result.lines).toContain(
+      "[phoebe:acme/widget:work] Re-armed issue #7 — stranded with no PR.",
+    );
   });
 
   test("the counter increments from the last recorded value", async () => {
@@ -1549,7 +1602,7 @@ describe("the stranded-unit sweep", () => {
     });
 
     expect(result.lines.join("\n")).toContain("gh listing exploded");
-    expect(result.lines).toContain(RUN_ONCE_NOTHING_MESSAGE);
+    expect(result.lines).toContain(`${TAG} ${RUN_ONCE_NOTHING_MESSAGE}`);
   });
 
   test("a failed PR check is reported and the sweep continues with other issues", async () => {
@@ -1564,7 +1617,9 @@ describe("the stranded-unit sweep", () => {
     });
 
     expect(result.lines.join("\n")).toContain("PR check failed");
-    expect(result.lines).toContain("[phoebe] Re-armed issue #8 — stranded with no PR.");
+    expect(result.lines).toContain(
+      "[phoebe:acme/widget:work] Re-armed issue #8 — stranded with no PR.",
+    );
   });
 
   test("a quarantined claimed issue is re-armed unconditionally", async () => {
@@ -1577,7 +1632,9 @@ describe("the stranded-unit sweep", () => {
 
     expect(writes).toContain("remove-label issue #7 processing");
     expect(writes).toContain("add-label issue #7 ready-for-agent");
-    expect(result.lines).toContain("[phoebe] Re-armed issue #7 — stranded with no PR.");
+    expect(result.lines).toContain(
+      "[phoebe:acme/widget:work] Re-armed issue #7 — stranded with no PR.",
+    );
   });
 });
 
@@ -1634,7 +1691,9 @@ describe("a custom kind in the walk", () => {
       github: { ...prWorld([{ number: 44, issueNumber: 4 }]), listReadyIssues: () => [] },
     });
 
-    expect(selection(result)).toBe("[phoebe] Would execute: stale-PR nudge for PR #44.");
+    expect(selection(result)).toBe(
+      "[phoebe:acme/widget:work] Would execute: stale-PR nudge for PR #44.",
+    );
   });
 
   test("its free-string skip reason and noun render in the idle report", async () => {
@@ -1650,8 +1709,12 @@ describe("a custom kind in the walk", () => {
     });
 
     expect(selection(result)).toBeUndefined();
-    expect(result.lines).toContain("[phoebe] 2 stale PR(s) skipped (already nudged).");
-    expect(result.lines).toContain("[phoebe] 2 stale PR(s) but none workable this cycle.");
+    expect(result.lines).toContain(
+      "[phoebe:acme/widget:work] 2 stale PR(s) skipped (already nudged).",
+    );
+    expect(result.lines).toContain(
+      "[phoebe:acme/widget:work] 2 stale PR(s) but none workable this cycle.",
+    );
   });
 
   test("workOrder rejects a kind nobody registered", async () => {
@@ -1675,7 +1738,9 @@ describe("a custom kind in the walk", () => {
       github: { ...prWorld([{ number: 44, issueNumber: 4 }]) },
     });
 
-    expect(result.lines).toContain("[phoebe] 1 stale PR(s) but none workable this cycle.");
+    expect(result.lines).toContain(
+      "[phoebe:acme/widget:work] 1 stale PR(s) but none workable this cycle.",
+    );
     expect(result.lines.join("\n")).toContain("idle reporter exploded");
   });
 
@@ -1691,7 +1756,7 @@ describe("a custom kind in the walk", () => {
       github: { ...prWorld([{ number: 44, issueNumber: 4 }]), listReadyIssues: () => [] },
     });
 
-    expect(selection(result)).toBe("[phoebe] Would execute: nudge pr:44.");
+    expect(selection(result)).toBe("[phoebe:acme/widget:work] Would execute: nudge pr:44.");
   });
 });
 
@@ -1781,6 +1846,10 @@ describe("the run workspace", () => {
     return root;
   }
 
+  /** Worktree calls that build or tear one down — not the boot-time lease read (#418). */
+  const worktreeMutations = (calls: readonly string[][]): string[][] =>
+    calls.filter((args) => args[0] === "worktree" && args[1] !== "list");
+
   test("a run that never reads the dir builds no worktree", async () => {
     const { result, seen } = await executeNudge({ readsDir: false });
 
@@ -1791,7 +1860,7 @@ describe("the run workspace", () => {
     expect(seen).toEqual([]);
     // The unit ran to completion without a single worktree command — the churn
     // the eager workspace used to cost every unit, built-ins included.
-    expect(result.gitCalls.filter((args) => args[0] === "worktree")).toEqual([]);
+    expect(worktreeMutations(result.gitCalls)).toEqual([]);
   });
 
   test("reading the dir materializes the worktree, and it is removed after", async () => {
@@ -1804,7 +1873,7 @@ describe("the run workspace", () => {
 
   test("the materialized worktree is added off the default branch and removed", async () => {
     const { result } = await executeNudge({ readsDir: true });
-    const worktreeCalls = result.gitCalls.filter((args) => args[0] === "worktree");
+    const worktreeCalls = worktreeMutations(result.gitCalls);
 
     expect(worktreeCalls.some((args) => args[1] === "add")).toBe(true);
     expect(worktreeCalls.some((args) => args[1] === "remove")).toBe(true);
@@ -1822,7 +1891,7 @@ describe("the run workspace", () => {
     // No clone, no branch, no worktree plumbing: that is the whole point of the
     // mode, and the assertion that separates it from a worktree that happens to
     // look empty under the git stub.
-    expect(result.gitCalls.filter((args) => args[0] === "worktree")).toEqual([]);
+    expect(worktreeMutations(result.gitCalls)).toEqual([]);
   });
 
   test("the scratch directory is removed when the unit finishes", async () => {
@@ -1870,7 +1939,7 @@ describe("the run workspace", () => {
   test("a readonly run that never reads the dir builds no worktree", async () => {
     const { result } = await executeNudge({ readsDir: false, mode: "readonly" });
 
-    expect(result.gitCalls.filter((args) => args[0] === "worktree")).toEqual([]);
+    expect(worktreeMutations(result.gitCalls)).toEqual([]);
   });
 
   test("a clean readonly tree is discarded without a word", async () => {
@@ -1945,5 +2014,274 @@ describe("the run deadline signal", () => {
     expect(signals).toHaveLength(1);
     expect(signals[0]).toBeInstanceOf(AbortSignal);
     expect(signals[0]?.aborted).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// What a pipeline owns on disk (#418)
+// ---------------------------------------------------------------------------
+
+describe("the stdout tag", () => {
+  test("every line an engine writes carries slug and pipeline", async () => {
+    const result = await runCycle({
+      github: { listReadyIssues: () => [], listResearchIssues: () => [] },
+      config: { workOrder: ["issues", "research"] },
+    });
+
+    expect(result.lines).not.toEqual([]);
+    for (const line of result.lines) {
+      expect(line.startsWith("[phoebe:acme/widget:work]")).toBe(true);
+    }
+  });
+
+  test("a second row on the same tenant tags itself apart", async () => {
+    const result = await runCycle({
+      github: { listReadyIssues: () => [] },
+      config: { workOrder: ["issues"] },
+      pipeline: "intake",
+    });
+
+    expect(result.lines).not.toEqual([]);
+    for (const line of result.lines) {
+      expect(line.startsWith("[phoebe:acme/widget:intake]")).toBe(true);
+    }
+  });
+});
+
+describe("sweeps scoped to the pipeline's kinds", () => {
+  /** A wet `--run-once` cycle that selects nothing, so only the sweeps run. */
+  function sweepCycle(opts: {
+    github: GitHubStubOverrides;
+    config?: Partial<PhoebeUserConfig>;
+    customKinds?: LoadedCustomKind[];
+  }) {
+    return runCycle({
+      env: { GH_TOKEN: "a-token" },
+      github: opts.github,
+      ...(opts.config !== undefined ? { config: opts.config } : {}),
+      ...(opts.customKinds !== undefined ? { customKinds: opts.customKinds } : {}),
+      run: { runOnce: true, dryRun: false },
+    });
+  }
+
+  /** A kind that gathers nothing, so a row can schedule work without units. */
+  function idleKind(name: string): LoadedCustomKind {
+    return {
+      name,
+      options: undefined,
+      definition: {
+        name,
+        oneShotEligible: true,
+        promptFile: "prompts/nudge.md",
+        workspace: "scratch",
+        report: { noun: `${name}(s)`, describe: () => name },
+        fetch: () => Promise.resolve({}),
+        select: () => ({ unit: null, skipped: [], total: 0 }),
+        run: () => Promise.resolve(),
+      } as AnyWorkKindDefinition,
+    };
+  }
+
+  // The acceptance case: the sweep that re-arms issues must not run at all from
+  // a row that works no issues, or it hands a sibling's in-flight ticket back
+  // to the queue.
+  test("a row that schedules no issue kind lists no claimed issue", async () => {
+    const result = await sweepCycle({
+      config: { workOrder: ["conflicts"] },
+      github: {
+        openPrs: () => [],
+        // Every listing the issue-side sweeps would reach is left unstubbed:
+        // the stub throws on an undeclared call, so reaching one fails here.
+        resolveLogin: () => PHOEBE_LOGIN,
+        newestUnitMarkerAuthor: () => PHOEBE_LOGIN,
+        listQuarantinedPrs: () => [],
+        listNativelyStackedPrs: () => [],
+      },
+    });
+
+    expect(result.lines.some((line) => line.includes("Re-armed"))).toBe(false);
+  });
+
+  test("a row of custom kinds alone sweeps nothing at all", async () => {
+    const result = await sweepCycle({
+      config: { workOrder: ["digest"] },
+      customKinds: [idleKind("digest")],
+      github: { resolveLogin: () => PHOEBE_LOGIN, newestUnitMarkerAuthor: () => PHOEBE_LOGIN },
+    });
+
+    expect(result.lines).toContain(`[phoebe:acme/widget:work] ${RUN_ONCE_NOTHING_MESSAGE}`);
+  });
+
+  test("an issue row re-arms its own tickets and leaves the research row's alone", async () => {
+    const rearmed: number[] = [];
+    const result = await sweepCycle({
+      config: { workOrder: ["issues"] },
+      github: {
+        listReadyIssues: () => [],
+        resolveLogin: () => PHOEBE_LOGIN,
+        newestUnitMarkerAuthor: () => PHOEBE_LOGIN,
+        listQuarantinedIssues: () => [],
+        listNativelyStackedPrs: () => [],
+        listFeatureIntegrationPrs: () => [],
+        listLabeledIssues: () => [
+          anIssue(7, { labels: ["processing"] }),
+          anIssue(8, { labels: ["processing", "wayfinder:research"] }),
+        ],
+        blockerPrState: () => ({ hasOpenPr: false, hasMergedPr: false }),
+        issueTimeoutInputs: () => ({ comments: [], extraActivityAt: null, baseline: "body:aa" }),
+        removeIssueLabel: (issueNumber) => {
+          rearmed.push(issueNumber);
+        },
+        addIssueLabel: () => {},
+        postUnitComment: () => {},
+      },
+    });
+
+    expect(rearmed).toEqual([7]);
+    expect(result.lines).toContain(
+      "[phoebe:acme/widget:work] Re-armed issue #7 — stranded with no PR.",
+    );
+  });
+
+  test("a research row re-arms the research ticket and nothing else", async () => {
+    const rearmed: number[] = [];
+    await sweepCycle({
+      config: { workOrder: ["research"] },
+      github: {
+        listResearchIssues: () => [],
+        resolveLogin: () => PHOEBE_LOGIN,
+        newestUnitMarkerAuthor: () => PHOEBE_LOGIN,
+        listQuarantinedIssues: () => [],
+        listNativelyStackedPrs: () => [],
+        listFeatureIntegrationPrs: () => [],
+        listLabeledIssues: () => [
+          anIssue(7, { labels: ["processing"] }),
+          anIssue(8, { labels: ["processing", "wayfinder:research"] }),
+        ],
+        blockerPrState: () => ({ hasOpenPr: false, hasMergedPr: false }),
+        issueTimeoutInputs: () => ({ comments: [], extraActivityAt: null, baseline: "body:aa" }),
+        removeIssueLabel: (issueNumber) => {
+          rearmed.push(issueNumber);
+        },
+        addIssueLabel: () => {},
+        postUnitComment: () => {},
+      },
+    });
+
+    expect(rearmed).toEqual([8]);
+  });
+});
+
+describe("the worktree lease at the unit boundary", () => {
+  const WORKSPACE_DIR = "/data/repos/acme/widget/worktrees/phoebe-workspace";
+
+  /** A `git worktree list --porcelain` answer with one leased workspace tree. */
+  const leasedBy = (reason: string): string =>
+    [
+      "worktree /data/repos/acme/widget/repo",
+      "HEAD 1111111111111111111111111111111111111111",
+      "branch refs/heads/main",
+      "",
+      `worktree ${WORKSPACE_DIR}`,
+      "HEAD 2222222222222222222222222222222222222222",
+      "branch refs/heads/phoebe/workspace",
+      `locked ${reason}`,
+      "",
+    ].join("\n");
+
+  /** A kind that reads its workspace, so the engine has to build the worktree. */
+  function workspaceReader(): LoadedCustomKind {
+    return {
+      name: "nudge",
+      options: undefined,
+      definition: {
+        name: "nudge",
+        oneShotEligible: true,
+        promptFile: "prompts/nudge.md",
+        workspace: "worktree",
+        report: {
+          noun: "stale PR(s)",
+          describe: (unit: { prNumber: number }) => `stale-PR nudge for PR #${unit.prNumber}`,
+        },
+        fetch: (ctx) => Promise.resolve({ prs: ctx.github.openPrs() }),
+        select: (gathered: { prs: { number: number }[] }) => {
+          const pick = gathered.prs[0] ?? null;
+          return {
+            unit: pick ? { ref: `pr:${pick.number}`, prNumber: Number(pick.number) } : null,
+            skipped: [],
+            total: gathered.prs.length,
+          };
+        },
+        run: (_unit, ctx) => {
+          void ctx.workspace.dir;
+          return Promise.resolve();
+        },
+      } as AnyWorkKindDefinition,
+    };
+  }
+
+  function leaseCycle(worktreeList: string, pipeline?: string) {
+    return runCycle({
+      config: { workOrder: ["nudge"] },
+      customKinds: [workspaceReader()],
+      github: {
+        ...prWorld([{ number: 44, issueNumber: 4 }]),
+        resolveLogin: () => PHOEBE_LOGIN,
+        newestUnitMarkerAuthor: () => PHOEBE_LOGIN,
+      },
+      env: { GH_TOKEN: "t" },
+      inContainer: true,
+      worktreeList,
+      ...(pipeline !== undefined ? { pipeline } : {}),
+      run: { runOnce: true, dryRun: false },
+    });
+  }
+
+  test("a boot of the owning pipeline breaks its own stale lease", async () => {
+    const result = await leaseCycle(leasedBy("pipeline=work pid=999"));
+
+    expect(result.gitCalls).toContainEqual(["worktree", "unlock", WORKSPACE_DIR]);
+    expect(result.lines).toContain(
+      `[phoebe:acme/widget:work] Broke a stale worktree lease on ${WORKSPACE_DIR} — it was this pipeline's own.`,
+    );
+  });
+
+  test("a boot of a different pipeline leaves the lease alone and says so", async () => {
+    const result = await leaseCycle(leasedBy("pipeline=work pid=999"), "intake");
+
+    expect(result.gitCalls).not.toContainEqual(["worktree", "unlock", WORKSPACE_DIR]);
+    expect(result.lines).toContain(
+      `[phoebe:acme/widget:intake] Worktree ${WORKSPACE_DIR} is leased by pipeline work — leaving it alone.`,
+    );
+  });
+
+  // The whole point: the sibling's tree survives. The old teardown would have
+  // fallen through to a recursive delete on git's refusal.
+  test("a unit whose tree another pipeline leases is skipped, not failed", async () => {
+    const result = await leaseCycle(leasedBy("pipeline=work pid=999"), "intake");
+
+    expect(
+      result.lines.some(
+        (line) =>
+          line.includes("Skipped stale-PR nudge for PR #44") && line.includes("pipeline work"),
+      ),
+    ).toBe(true);
+    expect(result.gitCalls).not.toContainEqual(["worktree", "remove", "--force", WORKSPACE_DIR]);
+    expect(result.lines.some((line) => line.includes("Failed executing"))).toBe(false);
+  });
+
+  test("an unleased tree is claimed, built, leased, and released", async () => {
+    const result = await leaseCycle("");
+    const worktreeArgv = result.gitCalls.filter((args) => args[0] === "worktree");
+
+    expect(worktreeArgv).toContainEqual([
+      "worktree",
+      "lock",
+      "--reason",
+      `pipeline=work pid=${process.pid}`,
+      WORKSPACE_DIR,
+    ]);
+    expect(worktreeArgv).toContainEqual(["worktree", "unlock", WORKSPACE_DIR]);
+    expect(worktreeArgv).toContainEqual(["worktree", "remove", "--force", WORKSPACE_DIR]);
   });
 });

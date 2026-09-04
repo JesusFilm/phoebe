@@ -9,7 +9,7 @@
 // asserted through the injectable GitRunner seam.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "vite-plus/test";
@@ -23,13 +23,18 @@ import {
   dirtyFileCount,
   ensureClone,
   fetchOrigin,
+  listWorktrees,
+  lockWorktree,
   originBranchSha,
   pushBranch,
   pushBranchWithLease,
   removeWorktree,
+  unlockWorktree,
   worktreeDirForBranch,
+  worktreeLease,
   type GitRunner,
 } from "./git-model.ts";
+import { formatLeaseReason, WorktreeLeasedError } from "./worktree-lease.ts";
 
 const IDENTITY = [
   "-c",
@@ -411,5 +416,94 @@ describe("fetchOrigin retry", () => {
     );
     expect(calls).toBe(3);
     expect(slept).toEqual([2_000, 8_000]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The worktree lease (#418)
+// ---------------------------------------------------------------------------
+//
+// Against real git, because the lease *is* git's behaviour: a locked tree
+// refusing `remove --force` is the enforcement, not a convention layered over
+// it. Verified on 2.39 and 2.54 alike.
+
+describe("the worktree lease", () => {
+  const leaseBranch = asBranchRef("agent/leased");
+  let leased: string;
+
+  beforeAll(() => {
+    leased = worktreeDirForBranch(worktreesDir, leaseBranch);
+    addWorktreeForNewBranch(
+      { repoDir, worktreeDir: leased, branch: leaseBranch, baseRef: "origin/main" },
+      testGit,
+    );
+  });
+
+  afterAll(() => {
+    unlockWorktree(repoDir, leased, testGit);
+    removeWorktree(repoDir, leased, testGit);
+  });
+
+  test("an unlocked tree reports no lease", () => {
+    expect(worktreeLease(repoDir, leased, testGit)).toEqual({ locked: false, pipeline: null });
+  });
+
+  test("a lock names the pipeline that took it", () => {
+    lockWorktree(repoDir, leased, formatLeaseReason({ pipeline: "work", pid: 4242 }), testGit);
+    expect(worktreeLease(repoDir, leased, testGit)).toEqual({ locked: true, pipeline: "work" });
+  });
+
+  test("the listing carries the reason verbatim, pid and all", () => {
+    const entry = listWorktrees(repoDir, testGit).find((row) => row.dir.endsWith("agent-leased"));
+    expect(entry?.reason).toBe("pipeline=work pid=4242");
+  });
+
+  // The hazard the lease exists for: the old teardown fell back to a recursive
+  // delete when git refused, which would take a sibling's live tree apart.
+  test("removeWorktree throws on a leased tree rather than deleting it", () => {
+    expect(() => removeWorktree(repoDir, leased, testGit)).toThrow(WorktreeLeasedError);
+    expect(existsSync(leased)).toBe(true);
+    expect(existsSync(join(leased, "README.md"))).toBe(true);
+  });
+
+  test("unlocking lets the tree be removed again", () => {
+    unlockWorktree(repoDir, leased, testGit);
+    expect(worktreeLease(repoDir, leased, testGit).locked).toBe(false);
+
+    const throwaway = worktreeDirForBranch(worktreesDir, asBranchRef("agent/throwaway"));
+    addWorktreeForNewBranch(
+      {
+        repoDir,
+        worktreeDir: throwaway,
+        branch: asBranchRef("agent/throwaway"),
+        baseRef: "origin/main",
+      },
+      testGit,
+    );
+    lockWorktree(repoDir, throwaway, formatLeaseReason({ pipeline: "work", pid: 1 }), testGit);
+    unlockWorktree(repoDir, throwaway, testGit);
+    removeWorktree(repoDir, throwaway, testGit);
+    expect(existsSync(throwaway)).toBe(false);
+  });
+
+  test("unlocking a tree that is not locked is a no-op, not a failure", () => {
+    expect(() => unlockWorktree(repoDir, leased, testGit)).not.toThrow();
+  });
+
+  // The path git prints is its own; a caller's may be a symlink or unnormalized.
+  test("an unregistered path reports no lease", () => {
+    expect(worktreeLease(repoDir, join(worktreesDir, "never-existed"), testGit)).toEqual({
+      locked: false,
+      pipeline: null,
+    });
+  });
+
+  test("removing a directory that is not a worktree still clears it", () => {
+    const orphan = join(worktreesDir, "orphan-from-a-killed-run");
+    mkdirSync(orphan, { recursive: true });
+    writeFileSync(join(orphan, "half-written.txt"), "from the run that died\n");
+
+    removeWorktree(repoDir, orphan, testGit);
+    expect(existsSync(orphan)).toBe(false);
   });
 });

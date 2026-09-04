@@ -22,6 +22,7 @@ export function executionDecision(opts: {
   return opts.inContainer ? "execute" : "refuse";
 }
 
+/** Untagged: the engine prints it through its own tagged channel (#418). */
 export const EXECUTION_REFUSED_MESSAGE =
-  "[phoebe] Refusing to execute a work unit outside the Phoebe container. " +
+  "Refusing to execute a work unit outside the Phoebe container. " +
   "Use --dry-run to preview selection on the host, or start the container loop.";

@@ -132,7 +132,7 @@ export function spawnSoloChild(entry, args, { env, onSpawnError, onExit } = {}) 
  *   * An **IPC channel** (4th stdio slot), so the child's `createSlotClient`
  *     (src/slot-client.ts) can request concurrency slots from the supervisor's
  *     broker (bootstrap/broker-ipc.ts). stdout/stderr stay inherited, so a
- *     child's self-tagged `[phoebe:<slug>]` lines interleave at the kernel.
+ *     child's self-tagged `[phoebe:<slug>:<pipeline>]` lines interleave at the kernel.
  *   * An explicit `env` (the #61 per-tenant scrub) and `cwd` (the tenant dir, so
  *     the engine loads that tenant's config + prompts), and **no process-level
  *     signal forwarding** — the supervisor owns draining (SIGTERM via `kill`),

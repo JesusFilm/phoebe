@@ -17,16 +17,21 @@ import {
   dirtyFileCount,
   ensureClone,
   fetchOrigin,
+  listWorktrees,
+  lockWorktree,
   originBranchSha,
   pushBranch,
   pushBranchWithLease,
   removeWorktree,
+  unlockWorktree,
   worktreeDirForBranch,
+  worktreeLease,
   type GitRunner,
   type TrailerRewriteOutcome,
 } from "./git-model.ts";
 import { type BranchRef, type Sha } from "./branded.ts";
 import type { PhoebeConfig } from "./config-schema.ts";
+import { leasePipeline, type WorktreeEntry } from "./worktree-lease.ts";
 
 export type OriginHub = {
   fetch(): void;
@@ -36,7 +41,16 @@ export type OriginHub = {
   addWorktreeForNew(opts: { worktreeDir: string; branch: BranchRef; baseRef: string }): void;
   addWorktreeForExisting(opts: { worktreeDir: string; branch: BranchRef }): void;
   addWorktreeDetached(opts: { worktreeDir: string; ref: string }): void;
+  /** Refuses — throws `WorktreeLeasedError` — on a tree leased by anyone (#418). */
   removeWorktree(worktreeDir: string): void;
+  /** Take the worktree lease on `worktreeDir` with `reason` (#418). */
+  lockWorktree(worktreeDir: string, reason: string): void;
+  /** Drop the lease on `worktreeDir`; a no-op when there is none. */
+  unlockWorktree(worktreeDir: string): void;
+  /** Which pipeline leases `worktreeDir`, and whether it is locked at all. */
+  worktreeLease(worktreeDir: string): { locked: boolean; pipeline: string | null };
+  /** Every registered worktree with its lock reason — what the boot-time break walks. */
+  listWorktrees(): WorktreeEntry[];
   commitCount(worktreeDir: string, range: string): number;
   dirtyFileCount(worktreeDir: string): number;
   pushBranch(worktreeDir: string, branch: BranchRef): void;
@@ -60,12 +74,13 @@ export function createOriginHub(
   config: PhoebeConfig,
   inContainer: boolean,
   git: GitRunner = defaultGit,
+  opts: { warn?: (line: string) => void } = {},
 ): OriginHub {
   const repo = inContainer ? config.paths.repoDir : process.cwd();
   const worktrees = config.paths.worktreesDir;
   return {
     fetch() {
-      fetchOrigin(repo, git);
+      fetchOrigin(repo, git, undefined, opts.warn);
     },
     branchHead(branch) {
       return originBranchSha(repo, branch, git);
@@ -87,6 +102,18 @@ export function createOriginHub(
     },
     removeWorktree(worktreeDir) {
       removeWorktree(repo, worktreeDir, git);
+    },
+    lockWorktree(worktreeDir, reason) {
+      lockWorktree(repo, worktreeDir, reason, git);
+    },
+    unlockWorktree(worktreeDir) {
+      unlockWorktree(repo, worktreeDir, git);
+    },
+    worktreeLease(worktreeDir) {
+      return worktreeLease(repo, worktreeDir, git);
+    },
+    listWorktrees() {
+      return listWorktrees(repo, git);
     },
     commitCount(worktreeDir, range) {
       return commitCount(worktreeDir, range, git);
@@ -118,4 +145,53 @@ export function ensureOriginClone(
 ): void {
   const repo = inContainer ? config.paths.repoDir : process.cwd();
   ensureClone({ repoUrl: config.repoUrl, repoDir: repo }, git);
+}
+
+/**
+ * Whether this pipeline's kinds need the origin hub at all (#418).
+ *
+ * A pipeline every one of whose kinds declares `scratch` never touches the
+ * clone: no worktree, no detached checkout, no fetch. Cloning for it costs the
+ * tenant a full copy of the repo and a slow first boot for nothing, and on a
+ * fresh tenant it puts the process into the clone lock's queue for work it
+ * will not do. The `workspace` declaration is the whole test — a kind that
+ * builds its own worktrees through `ctx.agent` declares `worktree`, which is
+ * what makes the five built-ins say yes.
+ */
+export function requiresOriginClone(
+  workOrder: readonly string[],
+  workspaceModeFor: (kind: string) => string,
+): boolean {
+  return workOrder.some((kind) => {
+    const mode = workspaceModeFor(kind);
+    return mode === "worktree" || mode === "readonly";
+  });
+}
+
+/**
+ * Drop every worktree lease this pipeline left behind, and report the trees
+ * some other pipeline still holds (#418).
+ *
+ * Run once at boot, before any unit. A lease outlives the process that took it
+ * — a killed engine leaves its trees locked — so a pipeline unconditionally
+ * breaks its own, whatever it finds. It never breaks another's: that tree may
+ * have a live agent inside it, and the sibling will release it itself.
+ */
+export function breakOwnLeases(
+  hub: OriginHub,
+  pipeline: string,
+): { broken: string[]; heldByOthers: Array<{ dir: string; pipeline: string | null }> } {
+  const broken: string[] = [];
+  const heldByOthers: Array<{ dir: string; pipeline: string | null }> = [];
+  for (const entry of hub.listWorktrees()) {
+    if (entry.reason === null) continue;
+    const owner = leasePipeline(entry.reason);
+    if (owner === pipeline) {
+      hub.unlockWorktree(entry.dir);
+      broken.push(entry.dir);
+    } else {
+      heldByOthers.push({ dir: entry.dir, pipeline: owner });
+    }
+  }
+  return { broken, heldByOthers };
 }

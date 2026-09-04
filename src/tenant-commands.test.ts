@@ -138,11 +138,16 @@ describe("listTenants", () => {
     writeFileSync(join(configDir, "envless", "phoebe.config.ts"), "export default {};\n");
     writeFileSync(join(configDir, "broken", "phoebe.config.ts"), "export default {};\n");
     writeFileSync(join(configDir, "valid", ".env"), "GH_TOKEN=x\n");
-    const stateDir = join(dataBase, "acme", "valid", "state");
+    // The `work` row's snapshot is the one `phoebe list` reads (#418).
+    const stateDir = join(dataBase, "acme", "valid", "state", "work");
     mkdirSync(stateDir, { recursive: true });
     writeFileSync(
       join(stateDir, "status.json"),
-      JSON.stringify({ tenant: "acme/valid", currentUnit: { kind: "issues", id: "9" } }),
+      JSON.stringify({
+        tenant: "acme/valid",
+        pipeline: "work",
+        currentUnit: { kind: "issues", id: "9" },
+      }),
     );
 
     const { listings } = await listTenants({
@@ -201,11 +206,15 @@ describe("listTenants", () => {
     writeFileSync(join(configDir, "widget", "phoebe.config.ts"), "export default {};\n");
     writeFileSync(join(configDir, "gadget", "phoebe.config.ts"), "export default {};\n");
     writeFileSync(join(configDir, "widget", ".env"), "GH_TOKEN=x\n");
-    const stateDir = join(dataBase, "acme", "widget", "state");
+    const stateDir = join(dataBase, "acme", "widget", "state", "work");
     mkdirSync(stateDir, { recursive: true });
     writeFileSync(
       join(stateDir, "status.json"),
-      JSON.stringify({ tenant: "acme/widget", currentUnit: { kind: "issues", id: "41" } }),
+      JSON.stringify({
+        tenant: "acme/widget",
+        pipeline: "work",
+        currentUnit: { kind: "issues", id: "41" },
+      }),
     );
 
     const result = await listTenants({
@@ -246,10 +255,14 @@ describe("listTenants", () => {
     mkdirSync(join(configDir, "outboard"), { recursive: true });
     writeFileSync(join(configDir, "outboard", "phoebe.config.ts"), "export default {};\n");
     writeFileSync(join(configDir, "outboard", ".env"), "GH_TOKEN=x\n");
-    mkdirSync(join(dataBase, "acme", "outboard", "state"), { recursive: true });
+    mkdirSync(join(dataBase, "acme", "outboard", "state", "work"), { recursive: true });
     writeFileSync(
-      join(dataBase, "acme", "outboard", "state", "status.json"),
-      JSON.stringify({ tenant: "acme/outboard", currentUnit: { kind: "issues", id: "3" } }),
+      join(dataBase, "acme", "outboard", "state", "work", "status.json"),
+      JSON.stringify({
+        tenant: "acme/outboard",
+        pipeline: "work",
+        currentUnit: { kind: "issues", id: "3" },
+      }),
     );
 
     const { listings } = await listTenants({
