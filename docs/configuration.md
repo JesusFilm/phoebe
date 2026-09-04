@@ -191,22 +191,28 @@ custom-kind charset, so `#` can never appear in one. The block is tenant-only. A
 workspace root declaring it is a config error, since a root says which tenants
 exist, not what work happens inside one.
 
-| Knob             | Default  | Hot? | Meaning                                                                                                                                                                                 |
-| ---------------- | -------- | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `order`          | `[]`     | cold | Priority, not membership. Named kinds are polled first, in this sequence; every other kind this pipeline owns follows in declaration order. An unknown name is a boot error.            |
-| `kinds`          | `{}`     | cold | This row's [per-kind tuning blocks](#per-work-kind-overrides) and [`custom` declarations](#custom-work-kinds-workkindscustom), the same shape the deprecated top-level `workKinds` had. |
-| `concurrency`    | `1`      | cold | How many units this row may hold in flight. Accepted and validated today; acting on it is a later ticket, so every row still runs one unit at a time.                                   |
-| `pollIntervalMs` | `300000` | cold | Idle poll cadence. **Outranks `PHOEBE_POLL_INTERVAL_MS`**; the env var is the fallback for a row that declares nothing, and the default applies when neither does.                      |
-| `disabled`       | `false`  | hot  | Operator off-switch for this row.                                                                                                                                                       |
-| `priority`       | `0`      | hot  | Tenant-local scheduling priority for a contended concurrency slot; higher wins.                                                                                                         |
+| Knob             | Default  | Hot? | Meaning                                                                                                                                                                                        |
+| ---------------- | -------- | ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `order`          | `[]`     | cold | Priority, not membership. Named kinds are polled first, in this sequence; every other kind this pipeline owns follows in declaration order. An unknown name is a boot error.                   |
+| `kinds`          | `{}`     | cold | This row's [per-kind tuning blocks](#per-work-kind-overrides) and [`custom` declarations](#custom-work-kinds-workkindscustom), the same shape the deprecated top-level `workKinds` had.        |
+| `concurrency`    | `1`      | cold | How many units this row may hold in flight at once. A pass tops the row up to this many and waits on whichever comes first: a unit finishing, or the poll interval. `--run-once` pins it to 1. |
+| `pollIntervalMs` | `300000` | cold | Idle poll cadence. **Outranks `PHOEBE_POLL_INTERVAL_MS`**; the env var is the fallback for a row that declares nothing, and the default applies when neither does.                             |
+| `disabled`       | `false`  | hot  | Operator off-switch for this row.                                                                                                                                                              |
+| `priority`       | `0`      | hot  | Tenant-local scheduling priority for a contended concurrency slot; higher wins.                                                                                                                |
 
 Hot means the supervisor acts on a change without relaunching the row. Cold
 knobs relaunch it. `disabled` is hot at all three scopes: tenant, pipeline, and
 [kind](#per-work-kind-overrides). That is the shape the supervisor will read;
 the ticket that teaches it to spawn and reap rows comes later, so today this
-release validates the pipeline-level `disabled`, `priority` and `concurrency`
-without acting on them. A kind's `disabled` is live now, since it is what took
+release validates the pipeline-level `disabled` and `priority` without acting
+on them. A kind's `disabled` is live now, since it is what took
 over from omission.
+
+Raise `concurrency` only for kinds that cannot collide over a worktree. Units
+of one row still share that row's workspace names, so two `worktree` kinds at
+concurrency 2 can have one unit tear down the tree the other is working in.
+Per-unit workspace isolation is a later ticket; until it lands, the safe raises
+are rows of `scratch` kinds and rows whose units never share a branch.
 
 **A kind belongs to at most one pipeline.** Two rows naming or declaring the
 same kind is fatal for the tenant at load. The rows are separate processes and

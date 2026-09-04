@@ -135,7 +135,7 @@ import {
   NONE_WORKABLE,
   oneShotWorkKinds,
   registeredKind,
-  selectFirstWorkUnit,
+  selectWorkUnits,
   type PickedWorkUnit,
   type WorkUnitSkip,
 } from "./work-kinds/walk.ts";
@@ -249,6 +249,12 @@ export type EngineRunOptions = {
   dryRun: boolean;
   /** How long an idle cycle waits before polling again. */
   pollIntervalMs: number;
+  /**
+   * How many units this row may hold in flight at once (#422) — the pipeline's
+   * declared `concurrency`. Defaults to 1, which is the serial loop; `runOnce`
+   * pins it there whatever the row says.
+   */
+  concurrency?: number;
 };
 
 export type EngineOptions = {
@@ -330,6 +336,10 @@ export type Engine = {
 export function createEngine(options: EngineOptions): Engine {
   const { config, env, drain, slotClient, credentialClient, emitUnitEvent } = options;
   const { runOnce, dryRun, pollIntervalMs } = options.run;
+  // `--run-once` means one unit, so it pins the row's concurrency to 1 rather
+  // than honouring a declaration that would have it admit several and then
+  // exit after the first (#422).
+  const concurrency = runOnce ? 1 : Math.max(1, Math.floor(options.run.concurrency ?? 1));
   const pipeline = options.pipeline ?? DEFAULT_PIPELINE_NAME;
   // Every line this engine writes carries `[phoebe:<slug>:<pipeline>]` (#418).
   // With two processes on one tenant interleaving at the kernel, an untagged
@@ -593,6 +603,8 @@ export function createEngine(options: EngineOptions): Engine {
       return;
     }
     for (const unit of quarantined) {
+      // Never repair an object this pipeline is running (#422).
+      if (targetInFlight(unit.target)) continue;
       if (
         reason === "content-advanced" &&
         !decideAutoUnstick({ comments: unit.comments, currentBaseline: unit.currentBaseline })
@@ -683,6 +695,8 @@ export function createEngine(options: EngineOptions): Engine {
       return;
     }
     for (const pr of stackedPrs) {
+      // Never repair an object this pipeline is running (#422).
+      if (targetInFlight({ objectType: "pr", id: pr.number })) continue;
       const blockerIssueNumber = parseIssueNumberFromBranch(pr.baseRefName);
       if (blockerIssueNumber === null) continue;
       let blockerState: BlockerPrState;
@@ -763,6 +777,8 @@ export function createEngine(options: EngineOptions): Engine {
       return;
     }
     for (const integrationPr of integrationPrs) {
+      // Never repair an object this pipeline is running (#422).
+      if (targetInFlight({ objectType: "pr", id: integrationPr.number })) continue;
       try {
         const members = github.listMergedMemberPrs(integrationPr.featureIssueNumber);
         const closes = members
@@ -816,6 +832,13 @@ export function createEngine(options: EngineOptions): Engine {
       // on every row listed, and it is the only thing that tells the two issue
       // producers' units apart (#418).
       if (!scope.ownsIssue(issue.labels)) continue;
+      // And never re-arm an issue this very pipeline is running (#422). An
+      // `issues` unit between its claim and its first push is precisely an issue
+      // wearing the processing label with no PR yet — the shape this sweep was
+      // built to repair. Serial, that state could not coexist with the sweep;
+      // with a second unit in flight it can, so the in-flight set is what tells
+      // a stranded issue from a live one.
+      if (targetInFlight({ objectType: "issue", id: issue.number })) continue;
       const label = `issue #${issue.number}`;
       let hasPr: boolean;
       try {
@@ -1470,6 +1493,223 @@ export function createEngine(options: EngineOptions): Engine {
     }
   }
 
+  // --- The in-flight set (#422) ------------------------------------------------
+  // What this pipeline is running right now. A pass tops the set up to the row's
+  // `concurrency` and then waits for whichever comes first: a unit settling or
+  // the poll interval. At concurrency 1 the set holds at most one unit and the
+  // loop reduces to the serial one it has always been.
+
+  type InFlightUnit = {
+    ref: UnitRef;
+    /** The unit's GitHub object, when it declared one — what admission excludes on. */
+    target: WorkUnitGitHubTarget | undefined;
+    /** Settles when the unit finishes, whatever the outcome. Never rejects. */
+    settled: Promise<void>;
+  };
+
+  const inFlight = new Map<string, InFlightUnit>();
+  /** This kind's running refs — what `ctx.inFlight` and the selection walk read. */
+  const inFlightRefs = new Map<string, Set<string>>();
+  /** The first error a `--run-once` unit threw, rethrown once nothing is running. */
+  let fatalError: unknown;
+
+  function inFlightKey(ref: UnitRef): string {
+    return `${ref.kind} ${ref.id}`;
+  }
+
+  function refsInFlight(kind: string): Set<string> {
+    const existing = inFlightRefs.get(kind);
+    if (existing) return existing;
+    const fresh = new Set<string>();
+    inFlightRefs.set(kind, fresh);
+    return fresh;
+  }
+
+  /**
+   * Is this GitHub object one of the units running right now? Both the admission
+   * exclusion and the four sweeps ask it, of the unit's structural `github`
+   * field rather than of its ref: refs are kind-owned and nothing may parse one,
+   * but the target is the window the engine already has (#352).
+   */
+  function targetInFlight(target: UnitTarget): boolean {
+    for (const unit of inFlight.values()) {
+      if (unit.target?.objectType === target.objectType && unit.target.id === target.id) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Woken when any in-flight unit settles, so a pass that has nothing else to
+  // wait for reconsiders admission immediately rather than sleeping out a poll
+  // interval behind a slot that is already free.
+  const settleWakers = new Set<() => void>();
+
+  function announceSettled(): void {
+    for (const wake of settleWakers) wake();
+  }
+
+  /**
+   * Wait for the next pass: whichever comes first of a unit settling, the poll
+   * interval, or a drain. With nothing running there is nothing to settle, so
+   * this is the idle poll the loop has always done.
+   */
+  async function waitForNextPass(): Promise<void> {
+    if (inFlight.size === 0) {
+      await drain.wait(pollIntervalMs);
+      return;
+    }
+    let forget = (): void => {};
+    const settled = new Promise<void>((resolve) => {
+      const wake = (): void => resolve();
+      settleWakers.add(wake);
+      forget = () => settleWakers.delete(wake);
+    });
+    try {
+      await Promise.race([drain.wait(pollIntervalMs), settled]);
+    } finally {
+      forget();
+    }
+  }
+
+  /** Await every unit still running. The exit path of every way the loop stops. */
+  async function settleInFlight(): Promise<void> {
+    while (inFlight.size > 0) {
+      await Promise.all([...inFlight.values()].map((unit) => unit.settled));
+    }
+  }
+
+  /**
+   * Run one admitted unit to settlement and report its outcome on the event
+   * rail. Throws only under `runOnce`, where the unit's outcome is the process's
+   * exit code; the loop absorbs that and rethrows once nothing is left running.
+   * Otherwise a failed unit must not kill the daemon — `prepareWorktree` clears
+   * any stale worktree on the next attempt.
+   */
+  async function workUnit(picked: PickedWorkUnit, ctx: WorkKindCtx): Promise<void> {
+    const ref = unitRefOf(picked);
+    try {
+      await runPickedUnit(picked, ctx);
+      emitUnitEvent({ unit: ref, event: "completed" });
+    } catch (error) {
+      if (error instanceof WorktreeLeasedError) {
+        // Not a failure: another pipeline is working the tree this unit needs
+        // (#418). Say so and leave the unit alone — the sibling will release it,
+        // and the next cycle picks the unit up again.
+        emitUnitEvent({ unit: ref, event: "skipped", detail: error.message });
+        log.say(`Skipped ${describeUnit(picked)} — ${error.message}.`);
+        return;
+      }
+      if (error instanceof RunTimeoutError) {
+        // A whole-unit timeout (#72): the agent was killed, the slot releases in
+        // `finally`, and the engine survives (never told to the supervisor, #60
+        // orthogonality). #75 layers the poison-unit quarantine on this event.
+        emitUnitEvent({
+          unit: ref,
+          event: "timed-out",
+          detail: `${Math.round(error.elapsedMs / 1000)}s budget exceeded`,
+        });
+        // Count this timeout on the unit and, at K consecutive, quarantine it so
+        // a genuinely poisonous unit stops being re-picked forever (#75).
+        recordUnitTimeout(picked, emitUnitEvent);
+      } else {
+        // A non-timeout failure: drop the unit from the snapshot and record the
+        // error so `phoebe list` shows it (the durable record is still the
+        // per-work-kind watermark/failure-comment on GitHub; this is the
+        // at-a-glance snapshot).
+        emitUnitEvent({
+          unit: ref,
+          event: "failed",
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      }
+      if (runOnce) throw error;
+      log.fail(
+        `Failed executing ${describeUnit(picked)} — ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      slotClient?.release();
+    }
+  }
+
+  /** What one admission attempt did, and what the pass should do next. */
+  type Admission = "started" | "refused" | "drain" | "stop";
+
+  /**
+   * Admit one selected unit: refuse it if its GitHub object is already busy,
+   * take a broker slot for it, and start it without awaiting — the pass returns
+   * to admission and the loop's wait is what watches for it settling.
+   *
+   * The credential lease is checked once per pass, before this runs and ahead of
+   * the slot request (#422). That ordering is the point: a failed refresh has no
+   * slot to give back, so the branch that used to release one is gone.
+   */
+  async function admit(picked: PickedWorkUnit, ctx: WorkKindCtx): Promise<Admission> {
+    const ref = unitRefOf(picked);
+    const target = picked.unit.github;
+    if (target) {
+      // Two units on one PR would be two agents pushing one branch.
+      if (targetInFlight(target)) {
+        log.say(
+          `Not admitting ${describeUnit(picked)} — ` +
+            `${describeUnitTarget(target)} is already in flight.`,
+        );
+        return "refused";
+      }
+    } else {
+      // A unit with no `github` field is opaque to the engine, so there is
+      // nothing to exclude it against. That is a defined degraded behaviour
+      // (docs/research/slack-responder-sketch.md), not a fault — but it is the
+      // kind of thing an operator should be able to find in the log afterwards.
+      log.say(`${describeUnit(picked)} declares no GitHub target — admitted with no exclusion.`);
+    }
+
+    // A concurrency slot for the whole unit execution (#59): the supervisor's
+    // global cap bounds how many repos run a unit at once. Held through worktree
+    // + install + agent + test + push, released in `workUnit`'s `finally` so
+    // timeout, error, and normal completion share one leak-free release path
+    // (#72). Standalone (unbrokered) engines skip this entirely.
+    if (slotClient) {
+      emitUnitEvent({ unit: ref, event: "waiting-for-slot" });
+      try {
+        await slotClient.acquire();
+      } catch (error) {
+        if (error instanceof BrokerDisconnectedError) {
+          // The supervisor's channel closed while we waited for a slot. Stop
+          // rather than run unbrokered (which, across a fleet, would bypass the
+          // global cap); the supervisor is gone or will respawn us afresh.
+          log.fail(`${error.message} — stopping this engine.`);
+          return "stop";
+        }
+        throw error;
+      }
+    }
+
+    // A drain that arrived while awaiting the slot must not let this unit start
+    // — "start no new one". Give the slot straight back.
+    if (drain.requested) {
+      slotClient?.release();
+      log.say("Drain requested before starting the next unit — exiting 0.");
+      return "drain";
+    }
+
+    emitUnitEvent({ unit: ref, event: "started", runBudgetMs: runTimeoutMsFor(picked.kind) });
+    refsInFlight(ref.kind).add(ref.id);
+    const key = inFlightKey(ref);
+    const settled = workUnit(picked, ctx)
+      .catch((error: unknown) => {
+        fatalError ??= error;
+      })
+      .finally(() => {
+        inFlight.delete(key);
+        refsInFlight(ref.kind).delete(ref.id);
+        announceSettled();
+      });
+    inFlight.set(key, { ref, target, settled });
+    return "started";
+  }
+
   const workSource: WorkSource = createWorkSource({
     tag: log.tag,
     github,
@@ -1478,6 +1718,7 @@ export function createEngine(options: EngineOptions): Engine {
     env,
     config,
     registry,
+    inFlight: refsInFlight,
   });
 
   /**
@@ -1597,7 +1838,12 @@ export function createEngine(options: EngineOptions): Engine {
 
     while (true) {
       if (drain.requested) {
-        log.say("Drain requested — starting no new work unit; exiting 0.");
+        log.say(
+          inFlight.size === 0
+            ? "Drain requested — starting no new work unit; exiting 0."
+            : `Drain requested — starting no new work unit; awaiting ${inFlight.size} ` +
+                `in flight, then exiting 0.`,
+        );
         break;
       }
 
@@ -1625,12 +1871,12 @@ export function createEngine(options: EngineOptions): Engine {
           }
           if (error instanceof CredentialRefreshBlockedError) {
             log.warn("Credential refresh unavailable — skipping work this cycle.");
-            await drain.wait(pollIntervalMs);
+            await waitForNextPass();
             continue;
           }
           if (error instanceof CredentialLeaseTimedOutError) {
             log.warn("Credential lease timed out — skipping work this cycle.");
-            await drain.wait(pollIntervalMs);
+            await waitForNextPass();
             continue;
           }
           throw error;
@@ -1641,7 +1887,7 @@ export function createEngine(options: EngineOptions): Engine {
         if (!creds) {
           log.fail("App mode active but GH_APP_ID or GH_APP_PRIVATE_KEY is missing.");
           if (runOnce) break;
-          await drain.wait(pollIntervalMs);
+          await waitForNextPass();
           continue;
         }
         const mintResult = await mintInstallationToken(config.repoSlug, creds);
@@ -1649,7 +1895,7 @@ export function createEngine(options: EngineOptions): Engine {
           const statusLabel = mintResult.status !== null ? ` HTTP ${mintResult.status}` : "";
           log.fail(`App mode mint failed${statusLabel}: ${mintResult.reason}`);
           if (runOnce) break;
-          await drain.wait(pollIntervalMs);
+          await waitForNextPass();
           continue;
         }
         // Inject the minted token as GH_TOKEN so all gh calls this cycle use it,
@@ -1672,9 +1918,9 @@ export function createEngine(options: EngineOptions): Engine {
       }
 
       // Disabled short-circuit (#202): if the tenant declares `disabled: true`,
-      // start no new work this cycle. Any run already in flight finished before
-      // looping back here, satisfying the "drain, don't cancel" contract. Clear
-      // any lingering quarantine state so a re-enabled tenant starts clean.
+      // start no new work this cycle. Runs already in flight finish on their own
+      // terms, satisfying the "drain, don't cancel" contract. Clear any lingering
+      // quarantine state so a re-enabled tenant starts clean.
       if (config.disabled) {
         if (!dryRun) {
           sweepQuarantine("tenant-disabled");
@@ -1689,51 +1935,65 @@ export function createEngine(options: EngineOptions): Engine {
           "Tenant is disabled — no new work will be started this cycle. " +
             "Remove `disabled: true` from phoebe.config.ts to re-enable.",
         );
-        await drain.wait(pollIntervalMs);
+        await waitForNextPass();
         continue;
       }
 
       // Sweeps before selecting (#153, #366, #380): skipped under `--dry-run`,
-      // which must not write to GitHub.
+      // which must not write to GitHub. They run on every pass, including one
+      // with no free slot — repairing objects nobody is holding is the work a
+      // pass owes whatever it can admit, and each sweep now skips the objects
+      // this pipeline is itself running (#422).
       if (!dryRun) {
         sweepStrandedUnits();
         sweepQuarantine("content-advanced");
         sweepStaleNativeStacks();
         sweepFeatureCloses();
       }
+
+      // Rolling top-up (#422): a pass admits at most as many units as the row
+      // has free slots. With none free there is nothing selection could do with
+      // an answer, so skip the gather entirely and wait.
+      const free = concurrency - inFlight.size;
+      if (free <= 0) {
+        await waitForNextPass();
+        continue;
+      }
+
       const fetchKinds = runOnce ? oneShotWorkKinds(workOrder, registry) : workOrder;
       const cycle = await workSource.gatherCycle(fetchKinds);
-      const { unit: picked, skipped } = selectFirstWorkUnit({
+      const { units, skipped } = selectWorkUnits({
         registry,
         kinds: cycle.record.kindsGathered,
         gathered: cycle.record.gathered,
         ctxFor: cycle.ctxFor,
+        limit: free,
+        inFlight: refsInFlight,
+        onDropped: (kind, ref) =>
+          log.say(
+            `${kind} offered ${ref}, which this pipeline is already running — dropped, and ` +
+              `${kind} is not asked again this cycle. Its \`select\` is ignoring \`ctx.inFlight\`.`,
+          ),
       });
 
-      if (!picked) {
+      if (units.length === 0) {
         if (runOnce) {
           log.say(RUN_ONCE_NOTHING_MESSAGE);
-        } else {
+        } else if (inFlight.size === 0) {
+          // A pass that found nothing new while units are running is not idle,
+          // and reporting it as such every poll would bury the real idle line.
           logIdleCycle(cycle, skipped);
         }
         if (runOnce || dryRun) break;
-        // Interruptible idle poll — a SIGTERM mid-sleep wakes it, the next
-        // iteration's drain check breaks, and shutdown does not wait a full cycle.
-        await drain.wait(pollIntervalMs);
+        await waitForNextPass();
         continue;
-      }
-
-      // A drain that arrived during the fetch/selection above must not let this
-      // freshly-picked unit start — "start no new one". The in-flight unit (if any)
-      // already finished before we looped back here, so exit now.
-      if (drain.requested) {
-        log.say("Drain requested before starting the next unit — exiting 0.");
-        break;
       }
 
       const decision = executionDecision({ dryRun, inContainer });
       if (decision === "dry-run") {
-        log.say(`Would execute: ${describeUnit(picked)}.`);
+        for (const picked of units) {
+          log.say(`Would execute: ${describeUnit(picked)}.`);
+        }
         break;
       }
       if (decision === "refuse") {
@@ -1741,124 +2001,65 @@ export function createEngine(options: EngineOptions): Engine {
         process.exit(1);
       }
 
-      // Acquire a concurrency slot for the whole unit execution (#59): the
-      // supervisor's global cap bounds how many repos run a unit at once. Held
-      // through worktree + install + agent + test + push, released in `finally`
-      // so timeout, error, and normal completion share one leak-free release
-      // path (#72). Standalone (unbrokered) engines skip this entirely.
-      if (slotClient) {
-        try {
-          await slotClient.acquire();
-        } catch (error) {
-          if (error instanceof BrokerDisconnectedError) {
-            // The supervisor's channel closed while we waited for a slot. Stop
-            // rather than run unbrokered (which, across a fleet, would bypass the
-            // global cap); the supervisor is gone or will respawn us afresh.
-            log.fail(`${error.message} — stopping this engine.`);
-            break;
-          }
-          throw error;
-        }
+      // A drain that arrived during the fetch/selection above must not let these
+      // freshly-picked units start — "start no new one". Anything already
+      // running is awaited on the way out.
+      if (drain.requested) {
+        log.say("Drain requested before starting the next unit — exiting 0.");
+        break;
       }
 
-      // Credential lease — call site 2: after the slot grant, before the agent
-      // spawns (#211). The slot acquire can block arbitrarily long behind the
-      // concurrency cap; a lease taken before acquiring would be worthless in a
-      // busy fleet. A disconnect or a blocked answer releases the slot and loops —
-      // no drain, no kill, no hang.
+      // Credential lease — call site 2: admission, ahead of the slot request
+      // (#422). One live lease per pipeline process, refreshed in place, so a
+      // pass admitting three units refreshes once — the lease belongs to the
+      // process, not to the unit. A failed refresh blocks admission and leaves
+      // `GH_TOKEN` exactly as it was, so whatever is already running finishes on
+      // the token it was handed. There is no slot to release: nothing has been
+      // requested yet.
       if (credentialClient) {
         try {
           const token = await credentialClient.requestLease(credentialBudgetMs);
           if (token !== null) env["GH_TOKEN"] = token;
         } catch (error) {
-          slotClient?.release();
           if (error instanceof BrokerDisconnectedError) {
             log.fail(`${error.message} — stopping this engine.`);
             break;
           }
           if (error instanceof CredentialRefreshBlockedError) {
-            log.warn(`Credential refresh unavailable after slot grant — unit admission blocked.`);
-            await drain.wait(pollIntervalMs);
+            log.warn("Credential refresh unavailable — admitting no unit this cycle.");
+            await waitForNextPass();
             continue;
           }
           if (error instanceof CredentialLeaseTimedOutError) {
-            log.warn(`Credential lease timed out after slot grant — unit admission skipped.`);
-            await drain.wait(pollIntervalMs);
+            log.warn("Credential lease timed out — admitting no unit this cycle.");
+            await waitForNextPass();
             continue;
           }
           throw error;
         }
       }
 
-      // A drain that arrived while awaiting the credential lease must not let this
-      // unit start — "start no new one". Release the already-acquired slot.
-      if (drain.requested) {
-        slotClient?.release();
-        log.say("Drain requested before starting the next unit — exiting 0.");
-        break;
+      let stopping = false;
+      for (const picked of units) {
+        const admission = await admit(picked, cycle.ctxFor(picked.kind));
+        if (admission === "stop" || admission === "drain") {
+          stopping = true;
+          break;
+        }
       }
+      if (stopping) break;
 
-      const ref = unitRefOf(picked);
-      emitUnitEvent({ unit: ref, event: "started" });
-      try {
-        await runPickedUnit(picked, cycle.ctxFor(picked.kind));
-        emitUnitEvent({ unit: ref, event: "completed" });
-      } catch (error) {
-        if (error instanceof WorktreeLeasedError) {
-          // Not a failure: another pipeline is working the tree this unit needs
-          // (#418). Say so and leave the unit alone — the sibling will release
-          // it, and the next cycle picks the unit up again.
-          emitUnitEvent({ unit: ref, event: "skipped", detail: error.message });
-          log.say(`Skipped ${describeUnit(picked)} — ${error.message}.`);
-          if (runOnce) break;
-          await drain.wait(pollIntervalMs);
-          continue;
-        }
-        if (error instanceof RunTimeoutError) {
-          // A whole-unit timeout (#72): the agent was killed, the slot releases in
-          // `finally`, and the engine survives (never told to the supervisor, #60
-          // orthogonality). #75 layers the poison-unit quarantine on this event.
-          emitUnitEvent({
-            unit: ref,
-            event: "timed-out",
-            detail: `${Math.round(error.elapsedMs / 1000)}s budget exceeded`,
-          });
-          // Count this timeout on the unit and, at K consecutive, quarantine it so
-          // a genuinely poisonous unit stops being re-picked forever (#75).
-          recordUnitTimeout(picked, emitUnitEvent);
-        } else {
-          // A non-timeout failure: clear the current unit and record the error so
-          // `phoebe list` shows it (the durable record is still the per-work-kind
-          // watermark/failure-comment on GitHub; this is the at-a-glance snapshot).
-          emitUnitEvent({
-            unit: ref,
-            event: "failed",
-            detail: error instanceof Error ? error.message : String(error),
-          });
-        }
-        if (runOnce) {
-          throw error;
-        }
-        // A failed unit must not kill the daemon — prepareWorktree clears any
-        // stale worktree on the next attempt.
-        log.fail(
-          `Failed executing ${describeUnit(picked)} — ` +
-            `${error instanceof Error ? error.message : String(error)}`,
-        );
-        await drain.wait(pollIntervalMs);
-        continue;
-      } finally {
-        slotClient?.release();
-      }
-
+      // `--run-once` is pinned to concurrency 1, so exactly one unit was
+      // admitted: leave the loop and await it on the way out.
       if (runOnce) break;
-      // Drain requested while the unit ran: it is finished, so exit now rather
-      // than picking up another. This is the graceful-drain boundary.
-      if (drain.requested) {
-        log.say("Finished the in-flight unit under drain — exiting 0.");
-        break;
-      }
+      await waitForNextPass();
     }
+
+    // Every way out of the loop lands here: the units still running are finished,
+    // never cancelled, and only then does the engine return. Drain generalizes to
+    // exactly this — admit nothing, await everything, exit 0.
+    await settleInFlight();
+    if (fatalError !== undefined) throw fatalError;
   }
 
   return { runLoop };
@@ -1905,13 +2106,15 @@ export async function runEngine(
   // by the CLI, so the name is read back here only for the cadence — declared on
   // the row, which outranks `PHOEBE_POLL_INTERVAL_MS` — and for the log line.
   const pipeline = parsePipelineName(argv);
-  const pollIntervalMs = resolvePollIntervalMs(pipelineRow(config, pipeline), process.env);
+  const row = pipelineRow(config, pipeline);
+  const pollIntervalMs = resolvePollIntervalMs(row, process.env);
+  const concurrency = row.concurrency;
   const log = createEngineLog(config.repoSlug, pipeline);
 
   console.log(
     runOnce
       ? `${log.tag} Run-once mode (pipeline ${pipeline}) — will work at most one unit of the first one-shot-eligible kind in WORK_ORDER, then exit.`
-      : `${log.tag} Persistent mode (pipeline ${pipeline}) — idle poll every ${pollIntervalMs}ms. SIGTERM drains: finish the current unit, then exit 0.`,
+      : `${log.tag} Persistent mode (pipeline ${pipeline}) — up to ${concurrency} unit(s) in flight, idle poll every ${pollIntervalMs}ms. SIGTERM drains: finish what is in flight, then exit 0.`,
   );
   if (dryRun) {
     log.say("Dry-run — selection only, nothing executes.");
@@ -1997,7 +2200,7 @@ export async function runEngine(
       slotClient,
       credentialClient,
       emitUnitEvent,
-      run: { runOnce, dryRun, pollIntervalMs },
+      run: { runOnce, dryRun, pollIntervalMs, concurrency },
     });
     await engine.runLoop();
   } finally {

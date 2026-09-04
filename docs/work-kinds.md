@@ -23,9 +23,11 @@ built-in selects and executes a unit. Field references point at
 workOrder: ["conflicts", "checks", "reviews", "issues", "research"] # default
 ```
 
-Each cycle the engine gathers work data for every kind, then
-`selectFirstWorkUnit` returns the first kind (in `workOrder` order) that yields a
-unit. Order is priority: with the default, a conflicting PR is reconciled before
+Each cycle the engine gathers work data for every kind, then `selectWorkUnits`
+walks the kinds in `workOrder` order and takes units until the pipeline's free
+slots are full — one slot by default, so one unit. The walk is depth-first: a
+kind is asked again and again until it runs out before the next kind is asked at
+all. Order is priority: with the default, a conflicting PR is reconciled before
 a red-CI PR, which is handled before review feedback, which is handled before a
 brand-new issue is picked up, which is handled before a research ticket. That
 keeps already-open work flowing rather than piling up new branches.
@@ -401,7 +403,10 @@ Built-ins use `pr:123` / `issue:88` as convention. The optional `github` field
 is the timeout-escalation target: with it set, a unit that repeatedly times out
 gets the timeout marker, the `phoebe:quarantined` label and the escalation
 comment exactly like a built-in unit; without it, timeouts are counted in
-memory only and the engine logs that the unit has no escalation surface.
+memory only and the engine logs that the unit has no escalation surface. It is
+also the admission exclusion: the engine refuses to start a unit whose `github`
+object another running unit already holds, and a unit that declares none gets no
+exclusion and a log line saying so.
 
 ### The `ctx` surface
 
@@ -427,6 +432,12 @@ resolve. Everything arrives on `ctx` (types via `import type` from
   means unreadable — drop that candidate), `registerIssues(issues)` (feed the
   blocker index during fetch), `blockerStates()` (read it during select).
 - `ctx.clock` — `now()` / `sleep(ms)`, injected so time is testable.
+- `ctx.inFlight` — this kind's refs running right now, including any admitted
+  earlier in the same pass. `select` must not offer one of them. Filtering on
+  it is what lets your kind fill several slots when the pipeline's
+  `concurrency` is above 1; ignore it and the engine drops the repeated pick,
+  stops asking your kind for the rest of the pass, and logs why — so the cost is
+  one unit at a time, never two agents on one unit.
 - `ctx.log(message)` — logs with the uniform `[phoebe][<kind> <ref>]` prefix.
 
 `run` receives the same surface widened with:
