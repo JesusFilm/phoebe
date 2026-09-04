@@ -278,6 +278,10 @@ at load. Declaring both sides of a pair is an error, not a merge.
 | `workKinds`         | `pipelines.work.kinds`                   |
 | `promptFiles.<key>` | `pipelines.work.kinds.<kind>.promptFile` |
 
+`phoebe migrate` moves them for you, once the ref flip that brought you an
+engine which knows `pipelines` has settled — see
+[upgrading.md → moving the work fields](upgrading.md#moving-the-work-fields-into-pipelineswork).
+
 One behaviour did change with them. `order` is priority-only, so **omitting a
 kind no longer disables it**. A kind absent from `order` runs after the named
 ones. Set `kinds.<name>.disabled: true` instead. A config whose `workOrder`
@@ -423,7 +427,13 @@ workKinds: {
 `promptFiles` is a deprecated alias. A kind's prompt path now lives on its own
 tuning block, at [`pipelines.<row>.kinds.<name>.promptFile`](#pipelines). A
 built-in reads the kind block first and falls back to the `promptFiles` key
-here. Declaring both for one kind is a config error.
+here. Declaring both for one kind is a config error, and `phoebe migrate` folds
+the block onto the kinds for you.
+
+The default paths in the table are the built-in kinds' own — the kind is where
+they are written down, and `promptFiles` inherits them. A config `phoebe init`
+scaffolds today names none of them: the prompts land at those paths, the kinds
+read them, and there is nothing to migrate later.
 
 Every kind a tenant can dispatch — built-in or custom — is checked **at engine
 startup**: if its prompt names a file that does not exist, the engine refuses to

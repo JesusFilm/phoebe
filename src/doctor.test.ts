@@ -4,6 +4,9 @@
 // Also covers arm-aware token checks: the App arm and the PAT arm behave
 // differently, and the unverifiable state must never fail --check.
 
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
 import {
   buildDoctorReport,
@@ -483,6 +486,57 @@ describe("tenantRow config load failure regression", () => {
     expect(labelsResult?.detail).toMatch(/config load failed/);
     expect(driftResult?.state).toBe("unknown");
     expect(driftResult?.detail).toMatch(/config load failed/);
+  });
+});
+
+describe("tenantRow prompt-drift source (#419)", () => {
+  const okFetch = async () =>
+    new Response(JSON.stringify({ id: 1, name: "widget" }), { status: 200 });
+
+  /** A tenant dir holding a config and a vendored issues prompt with no blocker rule. */
+  function scaffoldTenant(configBody: string): string {
+    const dir = mkdtempSync(join(tmpdir(), "phoebe-doctor-drift-"));
+    writeFileSync(join(dir, "vendored-issues.md"), "# Issues\n\nDo the work.\n");
+    writeFileSync(
+      join(dir, "phoebe.config.ts"),
+      `export const config = {\n  repoSlug: "acme/widget",\n${configBody}};\n`,
+    );
+    return join(dir, "phoebe.config.ts");
+  }
+
+  async function driftCheckFor(configBody: string) {
+    const row = await tenantRow({
+      path: "tenant",
+      slug: "acme/widget",
+      arm: "pat",
+      token: "ghp_tok",
+      envLabel: "/etc/phoebe/.env",
+      fetchFn: okFetch as typeof fetch,
+      inContainer: false,
+      configPath: scaffoldTenant(configBody),
+    });
+    return row.checks.find((c) => c.id === "prompt-drift");
+  }
+
+  test("reads the kind block's promptFile", async () => {
+    const check = await driftCheckFor(
+      `  pipelines: { work: { kinds: { issues: { promptFile: "./vendored-issues.md" } } } },\n`,
+    );
+    expect(check?.state).toBe("warn");
+    expect(check?.detail).toMatch(/vendored-issues\.md/);
+    expect(check?.detail).toMatch(/no blocker-recording rule/);
+  });
+
+  test("still reads the deprecated promptFiles alias", async () => {
+    const check = await driftCheckFor(`  promptFiles: { issue: "./vendored-issues.md" },\n`);
+    expect(check?.state).toBe("warn");
+    expect(check?.detail).toMatch(/vendored-issues\.md/);
+  });
+
+  test("a config declaring neither is on the shipped default", async () => {
+    const check = await driftCheckFor("");
+    expect(check?.state).toBe("ok");
+    expect(check?.detail).toMatch(/shipped default/);
   });
 });
 

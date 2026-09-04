@@ -40,8 +40,9 @@ A deployment is solo or workspace, never both. See
 Not a topology — a feature illustration on a solo-shaped config: a full-form
 custom work kind (a stale-PR nudger, loaded from a module in the repo) beside
 the inline prompt-only-producer cheap case, both registered under
-`workKinds.custom` and treated by the engine exactly like the built-ins. Start
-here when the five built-in kinds don't cover the work you want Phoebe to do.
+`pipelines.work.kinds.custom` and treated by the engine exactly like the
+built-ins. Start here when the five built-in kinds do not cover the work you
+want Phoebe to do.
 
 ## Learn more
 
