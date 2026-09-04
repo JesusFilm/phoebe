@@ -202,11 +202,15 @@ exist, not what work happens inside one.
 
 Hot means the supervisor acts on a change without relaunching the row. Cold
 knobs relaunch it. `disabled` is hot at all three scopes: tenant, pipeline, and
-[kind](#per-work-kind-overrides). That is the shape the supervisor will read;
-the ticket that teaches it to spawn and reap rows comes later, so today this
-release validates the pipeline-level `disabled`, `priority` and `concurrency`
-without acting on them. A kind's `disabled` is live now, since it is what took
-over from omission.
+[kind](#per-work-kind-overrides). The supervisor reads that shape by asking the
+engine — `phoebe pipelines` prints this tenant's rows as JSON, and the hot knobs
+are exactly what its per-row fingerprint leaves out
+([architecture.md](architecture.md#asking-the-engine-which-rows-a-tenant-has)).
+It spawns one child per row and relaunches a row when its own cold config moves
+([Supervising rows](architecture.md#supervising-rows)). `disabled`, `priority`
+and `concurrency` are validated but not yet acted on; the tickets that schedule
+on them come later. A kind's `disabled` is live now, since it is what took over
+from omission.
 
 **A kind belongs to at most one pipeline.** Two rows naming or declaring the
 same kind is fatal for the tenant at load. The rows are separate processes and
