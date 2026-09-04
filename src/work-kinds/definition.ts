@@ -175,7 +175,9 @@ export type WorkKindCtx = {
  * The workspace `run` receives, keyed by the definition's declared `workspace`
  * field. The engine prepares and removes it; kinds never create workspaces
  * themselves. Every member carries a `dir` because an agent needs a cwd
- * whatever the mode — what differs is what is in it:
+ * whatever the mode, and a `scratch` because somewhere to write is not the same
+ * question as which git shape the kind asked for (#423) — what differs is what
+ * is in `dir`:
  *
  * - `worktree` — a git worktree of the default branch, off the tenant's
  *   private clone, on the engine-named `<branchPrefix>workspace` branch. Repo
@@ -197,17 +199,28 @@ export type WorkKindCtx = {
  *   is thrown away loudly. A kind that means to publish should build its own
  *   worktree through `ctx.agent`.
  *
- * Every mode is materialized the first time `dir` is read, so a kind that
- * builds its own worktrees (as all five built-ins do) pays nothing for a
- * workspace it never uses, and only a materialized one is removed afterwards.
+ * `scratch` is a per-unit directory the kind may write anything into, on every
+ * handle. It is what makes `readonly` usable rather than merely safe: a kind
+ * that reads the repo and produces something — a report, a draft, a fetched
+ * payload — needs both a reading room and a desk, and before this it got one or
+ * the other. It leaves `workspace: "scratch"` reading a little oddly, as "no git
+ * shape, plus the scratch every kind now has", with `dir` and `scratch` the same
+ * directory. The mode is not renamed here; the reading is the price of not
+ * breaking every kind that declares it.
+ *
+ * Both are materialized the first time they are read, and independently, so a
+ * kind that builds its own worktrees (as all five built-ins do) pays nothing for
+ * a workspace it never uses, and only what was materialized is removed
+ * afterwards. Both are per-unit, so two units of one kind in flight together
+ * never share a directory.
  *
  * A discriminated union so a later mode can carry fields these do not without
  * retyping the kinds already written.
  */
 export type WorkspaceHandle =
-  | { mode: "worktree"; dir: string }
-  | { mode: "scratch"; dir: string }
-  | { mode: "readonly"; dir: string };
+  | { mode: "worktree"; dir: string; scratch: string }
+  | { mode: "scratch"; dir: string; scratch: string }
+  | { mode: "readonly"; dir: string; scratch: string };
 
 /** The declarable workspace modes — {@link WorkspaceHandle}'s discriminant. */
 export type WorkspaceMode = WorkspaceHandle["mode"];

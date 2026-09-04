@@ -117,8 +117,8 @@ describe("breakOwnLeases", () => {
       branch: asBranchRef("phoebe/issue-8"),
       baseRef: "origin/main",
     });
-    h.lockWorktree(mine, formatLeaseReason({ pipeline: "work", pid: 111 }));
-    h.lockWorktree(theirs, formatLeaseReason({ pipeline: "intake", pid: 222 }));
+    h.lockWorktree(mine, formatLeaseReason({ owner: "work#issues:issue%3A7", pid: 111 }));
+    h.lockWorktree(theirs, formatLeaseReason({ owner: "intake#slack:msg%3A8", pid: 222 }));
   });
 
   // A lease outlives the process that took it, so a boot has to clear its own
@@ -133,18 +133,21 @@ describe("breakOwnLeases", () => {
 
     expect(heldByOthers).toHaveLength(1);
     expect(heldByOthers[0]?.pipeline).toBe("intake");
-    expect(h.worktreeLease(theirs)).toEqual({ locked: true, pipeline: "intake" });
+    expect(h.worktreeLease(theirs)).toEqual({
+      locked: true,
+      holder: "intake#slack:msg%3A8",
+    });
   });
 
   test("a second boot of another pipeline still does not touch the first's tree", () => {
     const h = hub();
-    h.lockWorktree(mine, formatLeaseReason({ pipeline: "work", pid: 333 }));
+    h.lockWorktree(mine, formatLeaseReason({ owner: "work#issues:issue%3A7", pid: 333 }));
 
     const { broken, heldByOthers } = breakOwnLeases(h, "intake");
 
     expect(broken.some((dir) => dir.includes("issue-8"))).toBe(true);
     expect(heldByOthers.map((held) => held.pipeline)).toEqual(["work"]);
-    expect(h.worktreeLease(mine)).toEqual({ locked: true, pipeline: "work" });
+    expect(h.worktreeLease(mine)).toEqual({ locked: true, holder: "work#issues:issue%3A7" });
 
     h.unlockWorktree(mine);
   });

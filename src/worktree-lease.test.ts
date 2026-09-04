@@ -1,17 +1,39 @@
-// The lease's grammar (#418): how a reason string is written, how the owner is
-// read back out of it, and how git's porcelain listing is parsed.
+// The lease's grammar (#418/#423): how a reason string is written, how the owner
+// is read back out of it at both grains, and how git's porcelain listing is
+// parsed.
 
 import { describe, expect, test } from "vite-plus/test";
 import {
   formatLeaseReason,
+  leaseHolder,
   leasePipeline,
   parseWorktreeList,
   WorktreeLeasedError,
 } from "./worktree-lease.ts";
 
 describe("formatLeaseReason", () => {
-  test("stamps the pipeline and the pid", () => {
-    expect(formatLeaseReason({ pipeline: "work", pid: 42 })).toBe("pipeline=work pid=42");
+  test("stamps the owner and the pid", () => {
+    expect(formatLeaseReason({ owner: "work#issues:issue%3A88", pid: 42 })).toBe(
+      "pipeline=work#issues:issue%3A88 pid=42",
+    );
+  });
+});
+
+// The unit grain (#423): what a unit compares its own lease against before it
+// takes a tree apart. A sibling unit of this very pipeline is as much someone
+// else as another row is.
+describe("leaseHolder", () => {
+  test("reads the whole owner, unit segment included", () => {
+    expect(leaseHolder("pipeline=work#issues:issue%3A88 pid=42")).toBe("work#issues:issue%3A88");
+  });
+
+  test("an older engine's pipeline-only lease is a holder too", () => {
+    expect(leaseHolder("pipeline=work pid=42")).toBe("work");
+  });
+
+  test("a lock nothing here wrote has no holder", () => {
+    expect(leaseHolder("held while I debug this")).toBeNull();
+    expect(leaseHolder(null)).toBeNull();
   });
 });
 
@@ -21,12 +43,12 @@ describe("leasePipeline", () => {
     expect(leasePipeline("pipeline=intake pid=7")).toBe("intake");
   });
 
-  // The per-unit isolation ticket widens the owner to `<pipeline>#<unit-ref>`.
-  // The boot-time break reads only the pipeline segment, so it keeps clearing
-  // its own leases across that change without being taught about it.
-  test("reads only the pipeline segment of a widened owner", () => {
-    expect(leasePipeline("pipeline=work#issue:88 pid=42")).toBe("work");
-    expect(leasePipeline("pipeline=intake#pr:12 pid=9")).toBe("intake");
+  // The owner is `<pipeline>#<kind>:<ref>` since #423. The boot-time break
+  // reads only the pipeline segment, so it keeps clearing its own leases
+  // without being taught that units exist — and so will the stale-state sweep.
+  test("reads only the pipeline segment of a unit-keyed owner", () => {
+    expect(leasePipeline("pipeline=work#issues:issue%3A88 pid=42")).toBe("work");
+    expect(leasePipeline("pipeline=intake#conflicts:pr%3A12 pid=9")).toBe("intake");
   });
 
   test("a lock nothing here wrote has no owner", () => {
@@ -80,10 +102,10 @@ describe("parseWorktreeList", () => {
 
 describe("WorktreeLeasedError", () => {
   test("names the holder so the skip line says who to wait for", () => {
-    const error = new WorktreeLeasedError("/w/issue-7", "intake");
+    const error = new WorktreeLeasedError("/w/issue-7", "work#conflicts:pr%3A12");
     expect(error.message).toContain("/w/issue-7");
-    expect(error.message).toContain("pipeline intake");
-    expect(error.holder).toBe("intake");
+    expect(error.message).toContain("work#conflicts:pr%3A12");
+    expect(error.holder).toBe("work#conflicts:pr%3A12");
   });
 
   test("an unattributable lock says so rather than naming nobody", () => {

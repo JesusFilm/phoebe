@@ -83,6 +83,7 @@ function makeCtx(overrides: {
     workspace: {
       mode: "worktree",
       dir: "/tmp/test-worktree",
+      scratch: "/tmp/test-scratch",
     },
     signal: new AbortController().signal,
     agent: {
@@ -432,7 +433,7 @@ describe("issueProducerKind.run — feature branch and draft PR creation", () =>
           "abc".padEnd(40, "0") as ReturnType<WorkKindRunCtx["origin"]["branchHead"]>,
         commitsBehind: () => 0,
       },
-      workspace: { mode: "worktree", dir: "/tmp/test-worktree" },
+      workspace: { mode: "worktree", dir: "/tmp/test-worktree", scratch: "/tmp/test-scratch" },
       signal: new AbortController().signal,
       agent: {
         run: () => Promise.resolve(),
