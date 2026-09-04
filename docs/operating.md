@@ -156,12 +156,12 @@ failure comment too, so a human knows to step in.
 
 ## Running modes
 
-| Invocation             | Behaviour                                                                                                     |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------- |
-| no flags (the default) | Persistent poll loop; all kinds; idles `PHOEBE_POLL_INTERVAL_MS` (300000).                                    |
-| `--run-once`           | One `issues` or `research` unit then exit. Janitor kinds are persistent-mode only.                            |
-| `--dry-run --run-once` | Print the unit that _would_ be picked (host-safe, nothing executes).                                          |
-| `--pipeline <name>`    | Run one declared [pipeline row](configuration.md#pipelines-rows-of-work-inside-one-tenant) instead of `work`. |
+| Invocation             | Behaviour                                                                          |
+| ---------------------- | ---------------------------------------------------------------------------------- |
+| no flags (the default) | Persistent poll loop; all kinds; idles `PHOEBE_POLL_INTERVAL_MS` (300000).         |
+| `--run-once`           | One `issues` or `research` unit then exit. Janitor kinds are persistent-mode only. |
+| `--dry-run --run-once` | Print the unit that _would_ be picked (host-safe, nothing executes).               |
+| `--pipeline <name>`    | Run one declared [pipeline row](pipelines.md) instead of `work`.                   |
 
 Flags go after the compose service name (`docker compose run --rm phoebe
 --run-once`); `phoebe boot` forwards them to the engine it launches. No flags is
@@ -170,6 +170,8 @@ the deployed shape, and `docker compose up -d` runs the persistent loop.
 `--dry-run` is the safe way to preview selection on your host without booting
 the container. See [`upgrading.md`](upgrading.md) for start/stop/upgrade
 commands and [`work-kinds.md`](work-kinds.md) for the full selection rules.
+A tenant running more than one row is [`pipelines.md`](pipelines.md); there is no
+per-pipeline stop verb, because hot `disabled: true` is the stop.
 
 ## Checking the deployment's health: `phoebe doctor`
 

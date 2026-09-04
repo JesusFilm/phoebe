@@ -5,7 +5,8 @@ repository, does it in a container, and pushes the result as a pull request.
 
 This file is the glossary. For how the pieces fit together see
 [`docs/architecture.md`](docs/architecture.md); for the mechanics of each kind of work see
-[`docs/work-kinds.md`](docs/work-kinds.md).
+[`docs/work-kinds.md`](docs/work-kinds.md); for running more than one stream of work in a
+tenant see [`docs/pipelines.md`](docs/pipelines.md).
 
 ## Language
 
@@ -22,12 +23,21 @@ one tenant or many.
 _Avoid_: project, target, client
 
 **Fleet**:
-The set of tenants a single deployment supervises.
+The rows a single deployment supervises — the whole (tenant × pipeline) matrix, not the
+tenants alone.
 _Avoid_: pool, cluster
 
+**Pipeline**:
+One named row of work a tenant runs, in its own engine process, with its own order, kind
+tuning, cadence and concurrency. Every tenant has at least one; `work` is the reserved
+default. A work kind belongs to exactly one pipeline.
+_Avoid_: lane, stream, queue, channel (and never for the planning pipeline a person runs
+before Phoebe — that sense is spelled out in full)
+
 **Engine**:
-The long-running process that selects one work unit per cycle and works it. Shipped as
-`src/`, checked out fresh at the git ref the deployment names.
+The long-running process behind one pipeline: it selects work units up to that pipeline's
+concurrency and works them. Shipped as `src/`, checked out fresh at the git ref the
+deployment names, and shared by every row of the deployment.
 _Avoid_: daemon, worker, runner
 
 **Bootstrapper**:
@@ -53,7 +63,8 @@ _Avoid_: grooming, refinement, backlog prep
 ### Work
 
 **Work unit**:
-One issue or one pull request, worked start to finish inside a single cycle.
+One thing a work kind works start to finish — an issue, a pull request, or whatever a
+custom kind's `ref` names. A pipeline holds up to its `concurrency` of them at once.
 _Avoid_: task, job, item, unit of work
 
 **Work kind**:
@@ -72,14 +83,25 @@ A tenant-registered work kind, indistinguishable from a built-in after boot.
 _Avoid_: plugin kind, user-defined kind
 
 **Work order**:
-The configured priority of work kinds. The first kind with a workable unit wins the cycle.
+The configured priority of one pipeline's work kinds (`pipelines.<row>.order`). Priority
+only: a kind it omits still runs, after the named ones.
 _Avoid_: queue, priority list
 
 **Cycle**:
-One pass of the engine's loop: gather each kind's work data, select at most one unit, work
-it or idle.
+One pass of a pipeline's loop: gather its kinds' work data, admit units up to the free
+slots, work them or idle.
 _Avoid_: iteration, tick, poll (the interval between empty cycles is the poll interval —
 the cycle is the pass itself)
+
+**Admission**:
+The engine's check on a pick before it becomes a running unit: not already in flight, not
+quarantined, and not sharing a GitHub object with a unit already running.
+_Avoid_: acceptance, intake (that word is an example pipeline's name), dispatch
+
+**In-flight set**:
+One kind's refs running right now, offered to `select` as `ctx.inFlight` so one gather can
+fill several slots.
+_Avoid_: active set, running set
 
 **Work source**:
 What gathers one cycle's work data. It owns the cycle-scoped issue-body cache and returns a
@@ -122,8 +144,8 @@ inside the container.
 _Avoid_: guard, host check
 
 **Drain**:
-Finishing the work unit in flight, starting no new one, and exiting cleanly. How the engine
-answers a shutdown or a relaunch.
+Finishing every work unit in flight, admitting no new one, and exiting cleanly. How a
+pipeline answers a shutdown or a relaunch.
 _Avoid_: graceful shutdown, quiesce
 
 **Reconcile**:
@@ -135,6 +157,11 @@ _Avoid_: refresh, sync, poll
 A GitHub token the bootstrapper hands the engine for a bounded period, re-read or re-minted
 rather than baked into the process.
 _Avoid_: credential handoff, token grant
+
+**Engine log tag**:
+The bracket every engine line opens with, payload `<slug>:<pipeline>` — the implicit `work`
+row included. Match it as a prefix; a unit's own lines add a second bracket.
+_Avoid_: log prefix, label
 
 **Slot**:
 Permission to execute one work unit, granted by the bootstrapper. A row holds one per unit
@@ -153,6 +180,26 @@ _Avoid_: blocked, queued
 **Slot floor**:
 The bounded allowance that lets a starved row hold a slot over the effective cap.
 _Avoid_: reserve, guarantee, boost
+
+**Worktree lease**:
+A `git worktree lock` whose reason names the unit holding the tree (`pipeline=<row>#<kind>:<ref>`).
+Broken only by its own pipeline at that pipeline's next boot, or by the stale-state sweep.
+_Avoid_: worktree lock (that is the git verb), reservation
+
+**Declared key**:
+An environment-variable name a work kind names in `requiredEnv`, and optionally in
+`agentEnv`. It is boot-checked for that kind's row and scrubbed from every sibling row.
+_Avoid_: kind secret, scoped credential
+
+**Wedged**:
+A pipeline whose oldest in-flight unit has outlived its own run budget plus one poll
+interval. A question `phoebe list` raises, never a state the engine records.
+_Avoid_: hung, stuck, frozen
+
+**Stale**:
+On-disk state whose pipeline or work kind the current row enumeration does not produce.
+Reported by `phoebe list` and `phoebe doctor`, reclaimed by the stale-state sweep.
+_Avoid_: orphaned (fine in prose, but the reported state is `stale`), leftover, abandoned
 
 **Engine source**:
 Where an engine checkout comes from — a GitHub ref, or a local directory in development.
