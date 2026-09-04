@@ -68,7 +68,7 @@ export function resolvePollIntervalMs(pipeline: ResolvedPipeline, env: NodeJS.Pr
 
 /**
  * Which pipeline owns each kind: the pipeline that names it in `order`, else the
- * pipeline that declares it under `kinds.custom`. Kinds nobody claims fall to the
+ * pipeline that declares it under `kinds` (#465). Kinds nobody claims fall to the
  * default pipeline, which is what makes a single-pipeline tenant's `order` mean
  * "priority" and nothing else. Two pipelines claiming one kind is already fatal at
  * validation (`validatePipelinesField`), so first-claim-wins here is only a

@@ -88,7 +88,7 @@ describe("buildRegistry", () => {
           options: undefined,
         },
       ]),
-    ).toThrow(/workKinds\.custom\.nudge: .*`run` must be a function/);
+    ).toThrow(/kinds\.nudge: .*`run` must be a function/);
   });
 });
 

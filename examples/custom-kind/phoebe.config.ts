@@ -1,7 +1,7 @@
 // Reference illustration — custom work kinds (issue #303).
 //
-// A solo-shaped config whose point is the `pipelines.work.kinds.custom` block: it
-// declares one full-form kind loaded from a module in the repo
+// A solo-shaped config whose point is custom entries in `pipelines.work.kinds`:
+// it declares one full-form kind loaded from a module in the repo
 // (kinds/stale-pr-nudger.ts) and one prompt-only producer written inline
 // below. Both implement the same contract as the five built-ins; after boot
 // the engine treats all of them identically — the pipeline's `order`, per-kind
@@ -93,17 +93,18 @@ const config: PhoebeUserConfig = {
       order: ["conflicts", "issues", "stale-pr-nudger", "docs-request"],
 
       kinds: {
-        custom: {
-          // Full form: a module in this repo (path relative to this config
-          // file's directory), plus tenant knobs the kind reads back as
-          // `ctx.options`.
-          "stale-pr-nudger": { module: "./kinds/stale-pr-nudger.ts", options: { staleDays: 7 } },
-          // Cheap case: the inline definition above. A bare path string also
-          // works when there are no knobs: `"docs-request": "./kinds/docs.ts"`.
-          "docs-request": docsRequestKind,
+        // Full form: a module in this repo (path relative to this config
+        // file's directory), tenant knobs the kind reads back as
+        // `ctx.options`, and tuning knobs beside them — the same knobs a
+        // built-in's block holds (#465).
+        "stale-pr-nudger": {
+          module: "./kinds/stale-pr-nudger.ts",
+          options: { staleDays: 7 },
+          effort: "low",
         },
-        // Custom kinds are tuned exactly like built-ins.
-        "stale-pr-nudger": { effort: "low" },
+        // Cheap case: the inline definition above. A bare path string also
+        // works when there are no knobs: `"docs-request": "./kinds/docs.ts"`.
+        "docs-request": docsRequestKind,
       },
     },
   },

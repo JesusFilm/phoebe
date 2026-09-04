@@ -1,7 +1,7 @@
-// Loading a tenant's custom work kinds (#350): resolve each
-// `workKinds.custom.<name>` entry — inline definition, path string, or
-// `{ module, options }` wrapper — into a definition, then assemble the
-// registry. Path modules load with the same dynamic-import machinery as the
+// Loading a tenant's custom work kinds (#350, flattened by #465): resolve each
+// non-built-in `kinds.<name>` entry — inline definition, path string, or
+// `{ module, options, ...knobs }` wrapper — into a definition, then assemble
+// the registry. Path modules load with the same dynamic-import machinery as the
 // config itself (native Node type-stripping), resolved against the config
 // file's directory. Editing a kind module requires a restart: the reconcile
 // watch fingerprints the config file only (documented v1 limitation).
@@ -55,7 +55,7 @@ export async function loadCustomKinds(
 ): Promise<LoadedCustomKind[]> {
   const loaded: LoadedCustomKind[] = [];
   for (const [name, entry] of Object.entries(customKindEntries(config.workKinds))) {
-    const at = `workKinds.custom.${name}`;
+    const at = `kinds.${name}`;
     loaded.push(await resolveEntry(at, name, entry, configDir, config));
   }
   return loaded;

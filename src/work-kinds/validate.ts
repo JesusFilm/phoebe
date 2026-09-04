@@ -2,7 +2,7 @@
 // functions, `workspace` a known value. Built-in definitions pass through this
 // too at registration — cheap, and it enforces the can't-tell-built-in-from-
 // custom invariant mechanically. `at` carries the error voice: config-path for
-// custom kinds (`workKinds.custom.<name>`), the built-in's name otherwise.
+// custom kinds (`kinds.<name>`), the built-in's name otherwise.
 
 import { validateDeclaredEnv } from "./declared-env.ts";
 import type { AnyWorkKindDefinition, WorkspaceMode } from "./definition.ts";

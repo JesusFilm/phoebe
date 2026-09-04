@@ -16,8 +16,8 @@ A kind is one registered **definition** — name, prompt, eligibility, reporting
 and a `fetch`/`select`/`run` triple. Five ship built-in: three **janitors** that
 keep open PRs moving (`conflicts`, `checks`, `reviews`) and two **producers**
 that start new work (`issues`, and `research` for wayfinder research tickets); a
-tenant may register more under
-[`pipelines.<pipeline>.kinds.custom`](configuration.md#custom-work-kinds-workkindscustom)
+tenant may register more directly under
+[`pipelines.<pipeline>.kinds`](configuration.md#custom-work-kinds)
 (see [Writing your own kind](#writing-your-own-kind)). Field references point at
 [`configuration.md`](configuration.md); the runtime plumbing is
 `src/work-kinds/`, `src/orchestrator.ts` and `src/main.ts`.
@@ -338,8 +338,9 @@ operator's view.
 ## Writing your own kind
 
 A custom kind is authored code implementing the same contract as the five
-built-ins, declared under `workKinds.custom.<name>` (field syntax and the
-declaration arms live in [`configuration.md` → workKinds](configuration.md#custom-work-kinds-workkindscustom)).
+built-ins, declared under any non-built-in `kinds.<name>` key (field syntax and
+the declaration arms live in
+[`configuration.md` → Custom work kinds](configuration.md#custom-work-kinds)).
 After boot-time registration the engine cannot tell a built-in from a custom
 kind: `workOrder`, `workKinds` tuning blocks, `PHOEBE_<KIND>_*` env vars
 (hyphens in the name become underscores), quarantine, concurrency slots, the
@@ -373,7 +374,7 @@ type Gathered = /* whatever your fetch collects */;
 type Unit = { ref: string; github?: { objectType: "issue" | "pr"; id: number }; /* … */ };
 
 export default {
-  name: "my-kind",              // must match the workKinds.custom key
+  name: "my-kind",              // must match the kinds.<name> key
   oneShotEligible: false,       // may a unit run under --run-once?
   promptFile: "prompts/my-kind-prompt.md",
   workspace: "worktree",        // or "scratch" / "readonly" — modes below
@@ -609,12 +610,13 @@ printed.
   error (overriding built-ins is not supported).
 - **`promptFile` resolves against the runtime root**, exactly like the
   built-ins' prompts, and joins the boot-time existence check when the kind is
-  scheduled. Note the wart: _module_ paths in `workKinds.custom` resolve
+  scheduled. Note the wart: _module_ paths in a kind declaration resolve
   against the config file's directory, prompt paths against the runtime root —
   in a `configDir` deployment those differ.
 - **`model` / `effort` defaults** on the definition sit at the repo-defaults
-  rung of the resolution ladder: per-kind env → the kind's `workKinds` block →
-  global env → definition defaults → repo defaults. Like a providerless block,
+  rung of the resolution ladder: per-kind env → the kind's tuning knobs (a built-in's block, or the knobs on
+  a custom kind's `{ module, ... }` wrapper) → global env → definition
+  defaults → repo defaults. Like a providerless block,
   definition defaults stay silent when an env flip moves the run off the
   default provider.
 - **`runTimeoutMs` is per kind.** The whole-unit wall-clock budget is settable

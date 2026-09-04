@@ -71,14 +71,14 @@ function moduleDir(source: string, fileName = "nudge.mjs"): string {
 describe("loadCustomKinds", () => {
   test("an inline definition passes through as-is, with no options", async () => {
     const definition = inlineDefinition("nudge");
-    const config = resolveConfig(userConfig({ workKinds: { custom: { nudge: definition } } }));
+    const config = resolveConfig(userConfig({ workKinds: { nudge: definition } }));
     const loaded = await loadCustomKinds(config, "/nowhere");
     expect(loaded).toEqual([{ name: "nudge", definition, options: undefined }]);
   });
 
   test("a path-string entry imports the module's default export", async () => {
     const dir = moduleDir(PLAIN_MODULE_SOURCE);
-    const config = resolveConfig(userConfig({ workKinds: { custom: { nudge: "./nudge.mjs" } } }));
+    const config = resolveConfig(userConfig({ workKinds: { nudge: "./nudge.mjs" } }));
     const loaded = await loadCustomKinds(config, dir);
     expect(loaded[0]?.definition.report.noun).toBe("thing(s)");
     expect(loaded[0]?.options).toBeUndefined();
@@ -87,7 +87,7 @@ describe("loadCustomKinds", () => {
   test("a factory default export is invoked with the resolved config", async () => {
     const dir = moduleDir(FACTORY_MODULE_SOURCE);
     const config = resolveConfig(
-      userConfig({ readyLabel: "needs-robot", workKinds: { custom: { nudge: "./nudge.mjs" } } }),
+      userConfig({ readyLabel: "needs-robot", workKinds: { nudge: "./nudge.mjs" } }),
     );
     const loaded = await loadCustomKinds(config, dir);
     expect(loaded[0]?.definition.report.noun).toBe("needs-robot nudge(s)");
@@ -97,7 +97,7 @@ describe("loadCustomKinds", () => {
     const dir = moduleDir(PLAIN_MODULE_SOURCE);
     const options = { staleDays: 7 };
     const config = resolveConfig(
-      userConfig({ workKinds: { custom: { nudge: { module: "./nudge.mjs", options } } } }),
+      userConfig({ workKinds: { nudge: { module: "./nudge.mjs", options } } }),
     );
     const loaded = await loadCustomKinds(config, dir);
     expect(loaded[0]?.options).toBe(options);
@@ -105,15 +105,15 @@ describe("loadCustomKinds", () => {
 
   test("a missing module is a boot error naming the entry and both paths", async () => {
     const dir = moduleDir(PLAIN_MODULE_SOURCE);
-    const config = resolveConfig(userConfig({ workKinds: { custom: { nudge: "./missing.mjs" } } }));
+    const config = resolveConfig(userConfig({ workKinds: { nudge: "./missing.mjs" } }));
     await expect(loadCustomKinds(config, dir)).rejects.toThrow(
-      /workKinds\.custom\.nudge: failed to load kind module \.\/missing\.mjs/,
+      /kinds\.nudge: failed to load kind module \.\/missing\.mjs/,
     );
   });
 
   test("a module without a default export is a boot error", async () => {
     const dir = moduleDir(`export const notDefault = 1;\n`);
-    const config = resolveConfig(userConfig({ workKinds: { custom: { nudge: "./nudge.mjs" } } }));
+    const config = resolveConfig(userConfig({ workKinds: { nudge: "./nudge.mjs" } }));
     await expect(loadCustomKinds(config, dir)).rejects.toThrow(/must `export default`/);
   });
 });
@@ -123,7 +123,7 @@ describe("createWorkKindRegistry", () => {
     const config = resolveConfig(
       userConfig({
         workOrder: ["issues", "nudge"],
-        workKinds: { custom: { nudge: inlineDefinition("nudge") } },
+        workKinds: { nudge: inlineDefinition("nudge") },
       }),
     );
     const registry = await createWorkKindRegistry(config, "/nowhere");
@@ -136,9 +136,7 @@ describe("createWorkKindRegistry", () => {
     const originalWarn = console.warn;
     console.warn = (...args: unknown[]) => warned.push(args.map(String).join(" "));
     try {
-      const config = resolveConfig(
-        userConfig({ workKinds: { custom: { nudge: inlineDefinition("nudge") } } }),
-      );
+      const config = resolveConfig(userConfig({ workKinds: { nudge: inlineDefinition("nudge") } }));
       await createWorkKindRegistry(config, "/nowhere");
     } finally {
       console.warn = originalWarn;

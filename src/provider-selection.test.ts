@@ -309,11 +309,10 @@ describe("custom kind names", () => {
     expect(workKindEnvVar("my-kind", "AGENT")).toBe("PHOEBE_MY_KIND_AGENT");
   });
 
-  test("a sibling workKinds block tunes a custom kind like a built-in", () => {
+  test("wrapper knobs tune a custom kind like a built-in's block", () => {
     const config = selectionConfig({
       workKinds: {
-        custom: { "my-kind": "./kinds/my-kind.ts" },
-        "my-kind": { model: "composer-mini" },
+        "my-kind": { module: "./kinds/my-kind.ts", model: "composer-mini" },
       },
     });
     const picked = selectProviderForKind({ kind: "my-kind", env: {}, config });
@@ -323,8 +322,7 @@ describe("custom kind names", () => {
   test("the per-kind env var outranks the custom kind's block", () => {
     const config = selectionConfig({
       workKinds: {
-        custom: { "my-kind": "./kinds/my-kind.ts" },
-        "my-kind": { model: "composer-mini" },
+        "my-kind": { module: "./kinds/my-kind.ts", model: "composer-mini" },
       },
     });
     const picked = selectProviderForKind({
@@ -349,9 +347,9 @@ describe("definition-level defaults (#303)", () => {
     expect(picked.effort).toBe("low");
   });
 
-  test("lose to a sibling workKinds block and to the global env", () => {
+  test("lose to the wrapper's knobs and to the global env", () => {
     const config = selectionConfig({
-      workKinds: { custom: { "my-kind": "./k.ts" }, "my-kind": { model: "from-block" } },
+      workKinds: { "my-kind": { module: "./k.ts", model: "from-block" } },
     });
     expect(
       selectProviderForKind({

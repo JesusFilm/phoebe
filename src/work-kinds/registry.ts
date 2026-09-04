@@ -98,7 +98,7 @@ export function buildRegistry(
   }
 
   for (const custom of customs) {
-    const at = `workKinds.custom.${custom.name}`;
+    const at = `kinds.${custom.name}`;
     const definition = validateWorkKindDefinition(custom.definition, at, providerKeys);
     if (definition.name !== custom.name) {
       throw new Error(
