@@ -501,6 +501,20 @@ export function createEngine(options: EngineOptions): Engine {
 
   const workOrder = validateWorkOrder(config.workOrder, [...registry.keys()]);
 
+  // Which tracker objects this pipeline's sweeps may touch (#418). Partition by
+  // ownership: a sweep repairs an object only when the kind that object belongs
+  // to is one this row schedules, which is what gives two processes exactly-once
+  // coverage with nothing to elect and nothing to fail over.
+  const scope: SweepScope = sweepScope(workOrder, config.researchLabel);
+
+  // Whether any scheduled kind puts a workspace on the clone (#418). A row of
+  // `scratch` kinds owns no worktrees, so it has no leases to break at boot and
+  // no reason to touch git at all.
+  const usesRepoWorkspace = requiresOriginClone(
+    workOrder,
+    (kind) => registeredKind(registry, kind).definition.workspace,
+  );
+
   /** The scheduled kinds paired with their definitions, for the declared-key rules. */
   const scheduledKinds = (kinds: readonly string[] = workOrder): DeclaringKind[] =>
     kinds.map((kind) => ({ name: kind, definition: registeredKind(registry, kind).definition }));
@@ -535,20 +549,6 @@ export function createEngine(options: EngineOptions): Engine {
     const off = new Set(missing.map((m) => m.kind));
     return kinds.filter((kind) => !off.has(kind));
   };
-
-  // Which tracker objects this pipeline's sweeps may touch (#418). Partition by
-  // ownership: a sweep repairs an object only when the kind that object belongs
-  // to is one this row schedules, which is what gives two processes exactly-once
-  // coverage with nothing to elect and nothing to fail over.
-  const scope: SweepScope = sweepScope(workOrder, config.researchLabel);
-
-  // Whether any scheduled kind puts a workspace on the clone (#418). A row of
-  // `scratch` kinds owns no worktrees, so it has no leases to break at boot and
-  // no reason to touch git at all.
-  const usesRepoWorkspace = requiresOriginClone(
-    workOrder,
-    (kind) => registeredKind(registry, kind).definition.workspace,
-  );
 
   // --- Poison-unit quarantine write path (#75) ---------------------------------
   // The read/skip half ships in orchestrator.ts (it filters `phoebe:quarantined`

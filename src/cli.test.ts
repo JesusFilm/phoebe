@@ -5,7 +5,15 @@
 // level in dev; here we just pin the surface.
 
 import { describe, expect, test } from "vite-plus/test";
-import { assertNotWorkspaceRoot, parseCliArgs, parseInitArgs } from "./cli.ts";
+import {
+  assertNotWorkspaceRoot,
+  formatListJson,
+  formatListReport,
+  parseCliArgs,
+  parseInitArgs,
+} from "./cli.ts";
+import type { PipelineListing } from "./pipeline-listing.ts";
+import type { ListTenantsResult, TenantListing } from "./tenant-commands.ts";
 
 describe("parseCliArgs", () => {
   test("returns empty parsed state for empty argv", () => {
@@ -250,5 +258,180 @@ describe("parseInitArgs", () => {
 
   test("rejects a second positional argument", () => {
     expect(() => parseInitArgs(["a", "b"])).toThrow(/at most one target directory/);
+  });
+});
+
+// --- `phoebe list` rendering (#427) --------------------------------------
+
+const NOW = Date.parse("2026-09-04T12:00:00.000Z");
+
+function pipeline(fields: Partial<PipelineListing> & { name: string }): PipelineListing {
+  return {
+    disabled: false,
+    source: "enumerated",
+    state: "idle",
+    units: [],
+    updatedAt: "2026-09-04T11:59:00.000Z",
+    wedged: false,
+    concurrency: 1,
+    ...fields,
+  };
+}
+
+function tenant(fields: Partial<TenantListing> & { path: string }): TenantListing {
+  return {
+    slug: "acme/widget",
+    held: false,
+    reason: null,
+    configValid: true,
+    envPresent: true,
+    retainedData: true,
+    pipelines: [],
+    arm: "pat",
+    disabled: false,
+    ...fields,
+  };
+}
+
+function result(listings: TenantListing[], fields: Partial<ListTenantsResult> = {}) {
+  return {
+    listings,
+    declared: listings.length,
+    live: listings.filter((l) => !l.held).length,
+    explicit: false,
+    solo: false,
+    undeclared: [],
+    ...fields,
+  };
+}
+
+describe("formatListReport", () => {
+  test("one indented line per pipeline, states and marks in the same grammar", () => {
+    const report = formatListReport(
+      result([
+        tenant({
+          path: "children/widget",
+          pipelines: [
+            pipeline({
+              name: "work",
+              state: "working",
+              concurrency: 2,
+              units: [
+                {
+                  unit: { kind: "issues", id: "12" },
+                  startedAt: "2026-09-04T11:40:00.000Z",
+                  runBudgetMs: 2_700_000,
+                },
+              ],
+            }),
+            pipeline({ name: "intake", state: "waiting for slot" }),
+            pipeline({ name: "nightly", disabled: true, state: "no status" }),
+          ],
+        }),
+      ]),
+      NOW,
+    );
+
+    expect(report.split("\n")).toEqual([
+      "[phoebe] 1 tenant(s):",
+      "  children/widget  (acme/widget)",
+      "      ✓ config  ✓ env  ✓ data  arm: pat",
+      "        work     working 1/2 issues 12",
+      "        intake   waiting for slot",
+      "        nightly  no status  (disabled)",
+    ]);
+  });
+
+  test("a wedged row keeps its refs and adds the age it has been running", () => {
+    const report = formatListReport(
+      result([
+        tenant({
+          path: "children/widget",
+          pipelines: [
+            pipeline({
+              name: "work",
+              state: "working",
+              wedged: true,
+              units: [
+                {
+                  unit: { kind: "issues", id: "12" },
+                  startedAt: "2026-09-04T09:00:00.000Z",
+                  runBudgetMs: 2_700_000,
+                },
+              ],
+            }),
+          ],
+        }),
+      ]),
+      NOW,
+    );
+    expect(report).toContain("work  working 1/1 issues 12  wedged? 3h");
+  });
+
+  test("a stale dir gets a mark and a legend; a held tenant's lines come off disk", () => {
+    const report = formatListReport(
+      result(
+        [
+          tenant({
+            path: "children/widget",
+            pipelines: [pipeline({ name: "work" }), pipeline({ name: "old", source: "stale" })],
+          }),
+          tenant({
+            path: "children/stuck",
+            slug: "acme/stuck",
+            held: true,
+            reason: "missing repoSlug",
+            pipelines: [pipeline({ name: "work", source: "disk", concurrency: null })],
+          }),
+        ],
+        { explicit: true },
+      ),
+      NOW,
+    );
+
+    expect(report).toContain("old   idle  (stale)");
+    expect(report).toContain("held — missing repoSlug");
+    expect(report).toContain("work  idle  (from disk)");
+    expect(report).toContain("stale = state/<name>/ directory");
+    expect(report).toContain("held = discovery would skip this dir now");
+  });
+
+  test("solo names itself; an empty workspace still says No tenants", () => {
+    const solo = formatListReport(
+      result([tenant({ path: "/deploy", pipelines: [pipeline({ name: "work" })] })], {
+        solo: true,
+      }),
+      NOW,
+    );
+    expect(solo.split("\n")[0]).toBe("[phoebe] 1 tenant (solo):");
+    expect(solo).toContain("        work  idle");
+    expect(formatListReport(result([]), NOW)).toContain("No tenants");
+  });
+});
+
+describe("formatListJson", () => {
+  test("each tenant carries pipelines[] and no tenant-level status", () => {
+    const parsed = JSON.parse(
+      formatListJson(
+        result([
+          tenant({
+            path: "children/widget",
+            pipelines: [pipeline({ name: "work", state: "working", wedged: true })],
+          }),
+        ]),
+      ),
+    ) as { tenants: { status?: unknown; pipelines: Record<string, unknown>[] }[] };
+
+    expect(parsed.tenants[0]).not.toHaveProperty("status");
+    expect(Object.keys(parsed.tenants[0]!.pipelines[0]!).sort()).toEqual([
+      "disabled",
+      "name",
+      "source",
+      "state",
+      "units",
+      "updatedAt",
+      "wedged",
+    ]);
+    expect(parsed.tenants[0]!.pipelines[0]).toMatchObject({ state: "working", wedged: true });
   });
 });

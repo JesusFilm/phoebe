@@ -208,8 +208,9 @@ are exactly what its per-row fingerprint leaves out
 ([architecture.md](architecture.md#asking-the-engine-which-rows-a-tenant-has)).
 It spawns one child per row and relaunches a row when its own cold config moves
 ([Supervising rows](architecture.md#supervising-rows)). `priority` and
-`concurrency` are live in the broker (below). A row's `disabled` is validated but
-not yet acted on; the ticket that switches a row off comes later. A kind's
+`concurrency` are live in the broker (below). A row's `disabled` is validated and
+listed — `phoebe list` shows the row as `(disabled)` — but not yet acted on; the
+ticket that switches a row off comes later. A kind's
 `disabled` is live now, since it is what took over from omission.
 
 Everything a unit is given is its own: its worktree lease, its scratch
@@ -280,7 +281,7 @@ each owns a slice of both rather than the whole thing.
 
 | Thing                          | Owned by                                                                                                                                                                               |
 | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `state/<pipeline>/status.json` | The row alone. `phoebe list` reads `state/work/status.json` for its tenant line.                                                                                                       |
+| `state/<pipeline>/status.json` | The row alone. `phoebe list` reads every row's, one line each.                                                                                                                         |
 | Stdout lines                   | Tagged `[phoebe:<owner>/<repo>:<pipeline>]`, including `work`'s. Match it as a prefix, not a fixed string.                                                                             |
 | The four tracker sweeps        | Scoped to the kinds the row schedules, so two rows cover every object exactly once. A row scheduling none of a sweep's kinds skips it.                                                 |
 | The origin clone               | Shared. Cloned once, the first clone serialized by a lock under `state/`; a row whose kinds all declare `scratch` never clones at all.                                                 |
