@@ -410,6 +410,12 @@ also the admission exclusion: the engine refuses to start a unit whose `github`
 object another running unit already holds, and a unit that declares none gets no
 exclusion and a log line saying so.
 
+The optional `revision` field is what "the content advanced" means for a unit
+the engine cannot see — a Slack thread's newest message `ts`, a row version, any
+string that changes when the unit does. It is the exit from the in-memory
+quarantine below; a unit that never sets it keeps its timeout count for the
+process's life. Nothing else reads it, and no built-in sets it.
+
 ### The `ctx` surface
 
 Kind code can never import the engine — configs and kind modules load from a
@@ -440,6 +446,12 @@ resolve. Everything arrives on `ctx` (types via `import type` from
   `concurrency` is above 1; ignore it and the engine drops the repeated pick,
   stops asking your kind for the rest of the pass, and logs why — so the cost is
   one unit at a time, never two agents on one unit.
+- `ctx.quarantined` — this kind's refs the engine has quarantined in memory:
+  units with no `github` target whose timeouts reached the threshold, so there
+  was nowhere to write the `phoebe:quarantined` label. Filter them out of
+  `select` the way you filter `ctx.inFlight`. Empty for every kind whose units
+  carry `github` — those take the label path. See [Units the engine cannot
+  see](#units-the-engine-cannot-see).
 - `ctx.log(message)` — logs with the uniform `[phoebe][<kind> <ref>]` prefix.
 
 `run` receives the same surface widened with:
@@ -520,6 +532,48 @@ the scratch is there for, and is not warned about. If your kind means to
 publish, go through `ctx.agent.prWorkflow` / `issueWorkflow`, which build their
 own branch-specific worktrees and own the push.
 
+### Units the engine cannot see
+
+Quarantine's skip half is a GitHub label filter, so a unit with no `github`
+target used to have nowhere to receive the marker and nothing to stop it being
+re-picked forever. It now has both, in memory: the engine counts a unit's
+whole-unit timeouts under `(kind, ref)` and, at the same threshold the label
+path uses (`maxUnproductiveRuns`, K=3 by default), puts the ref in that kind's
+`ctx.quarantined`.
+
+```ts
+select: (gathered, ctx) => {
+  const workable = gathered.threads.filter(
+    (thread) => !ctx.inFlight.has(thread.ref) && !ctx.quarantined.has(thread.ref),
+  );
+  ...
+}
+```
+
+Offering one anyway is not fatal: the engine refuses the pick at admission, logs
+it, and does not ask your kind again that pass — so ignoring the set stalls your
+kind on its poison unit rather than spending a run budget on it every pass.
+
+Three things end an in-memory quarantine, and only three:
+
+- **The unit's `revision` changes.** A later pick of the same ref carrying a
+  different `revision` is the content having advanced, so the engine forgets
+  the count and admits it. Set the field and re-offer the unit when it moves.
+- **The unit gains a `github` target.** The count is dropped and the label path
+  owns the write half from then on, starting from zero — nothing is seeded from
+  memory, so no comment ever claims timeouts an issue cannot show. The skip half
+  for such a unit stays yours: filter `phoebe:quarantined` in `select`, as the
+  built-ins do.
+- **The process ends.** The count is memory-only and never written to disk, so a
+  relaunch costs up to K run budgets on a genuinely wedged unit and keeps
+  everything under `state/` re-derivable.
+
+Terminal states that are not the engine's business — a person owns this now,
+sent back, waiting on the reporter — stay yours, recorded where the unit lives
+(a marker reaction, a board field, a ledger line in the issue body) and
+expressed to the engine as a `skipped` reason from `select`. The engine's own
+vocabulary is only success, failure and quarantine.
+
 ### Reporting
 
 `report.noun` names your units in the idle report; skip reasons returned from
@@ -528,6 +582,12 @@ own branch-specific worktrees and own the push.
 none, the engine renders `"<total> <noun> but none workable this cycle."` —
 supply `report.idle` to override that line. `report.describe(unit)` is the
 one-line name used in logs and `--dry-run` output.
+
+The report as a whole prints only when what it renders differs from the previous
+pass — first idle pass after activity, and again whenever the skip set changes.
+A pipeline polling every few seconds would otherwise repeat one paragraph until
+it buried everything worth reading; a work row at 300 s prints what it always
+printed.
 
 ### Names, prompts, and tuning
 

@@ -92,8 +92,9 @@ and one unified issue-body map. Nothing in it needs merging after the fact.
 _Avoid_: cycle data, fetch result
 
 **Quarantined unit**:
-A work unit labelled so the engine skips it, because working it timed out. The label lapses
-once the unit's content advances.
+A work unit the engine skips because working it timed out — labelled, or, for a unit with
+no GitHub target, remembered by the pipeline process. The label lapses once the unit's
+content advances; the memory lapses when the unit's revision changes or the process ends.
 _Avoid_: blocked, stuck, skipped
 
 **Quarantined commit**:
@@ -101,6 +102,11 @@ An engine commit the bootstrapper refuses to launch after it crash-looped, in fa
 last commit that ran healthily. Unrelated to a quarantined unit — do not shorten either to
 "quarantine" alone.
 _Avoid_: bad commit, blacklisted commit
+
+**Handover**:
+A unit a person now owns, recorded by its kind in the external system so selection skips
+it. The engine stores none of them; a handover reaches it as a skip reason from `select`.
+_Avoid_: escalation (that is the quarantine comment), parked
 
 ### Running
 
