@@ -51,8 +51,8 @@ export async function collectPrCandidates<T>(
       const candidate = await visit(await ctx.github.mergeInfo(pr.number), pr);
       if (candidate !== null) collected.push(candidate);
     } catch (error) {
-      console.warn(
-        `[phoebe] Skipping PR #${pr.number} for ${ctx.kind} this cycle — ` +
+      ctx.log(
+        `Skipping PR #${pr.number} this cycle — ` +
           `${error instanceof Error ? error.message : String(error)}`,
       );
     }

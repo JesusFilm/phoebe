@@ -138,11 +138,18 @@ describe("listTenants", () => {
     writeFileSync(join(configDir, "envless", "phoebe.config.ts"), "export default {};\n");
     writeFileSync(join(configDir, "broken", "phoebe.config.ts"), "export default {};\n");
     writeFileSync(join(configDir, "valid", ".env"), "GH_TOKEN=x\n");
-    const stateDir = join(dataBase, "acme", "valid", "state");
+    // The `work` row's snapshot is the one `phoebe list` reads (#418).
+    const stateDir = join(dataBase, "acme", "valid", "state", "work");
     mkdirSync(stateDir, { recursive: true });
     writeFileSync(
       join(stateDir, "status.json"),
-      JSON.stringify({ tenant: "acme/valid", currentUnit: { kind: "issues", id: "9" } }),
+      JSON.stringify({
+        tenant: "acme/valid",
+        pipeline: "work",
+        // Deliberately the pre-#422 single-unit shape: the snapshot outlives the
+        // engine that wrote it, so `phoebe list` has to read one back.
+        currentUnit: { kind: "issues", id: "9" },
+      }),
     );
 
     const { listings } = await listTenants({
@@ -165,10 +172,9 @@ describe("listTenants", () => {
       retainedData: true,
       arm: "pat",
     });
-    expect(listings.find((l) => l.slug === "acme/valid")?.status?.currentUnit).toEqual({
-      kind: "issues",
-      id: "9",
-    });
+    expect(
+      listings.find((l) => l.slug === "acme/valid")?.status?.currentUnits.map((c) => c.unit),
+    ).toEqual([{ kind: "issues", id: "9" }]);
     expect(listings.find((l) => l.slug === "acme/envless")).toMatchObject({
       held: false,
       configValid: true,
@@ -201,11 +207,21 @@ describe("listTenants", () => {
     writeFileSync(join(configDir, "widget", "phoebe.config.ts"), "export default {};\n");
     writeFileSync(join(configDir, "gadget", "phoebe.config.ts"), "export default {};\n");
     writeFileSync(join(configDir, "widget", ".env"), "GH_TOKEN=x\n");
-    const stateDir = join(dataBase, "acme", "widget", "state");
+    const stateDir = join(dataBase, "acme", "widget", "state", "work");
     mkdirSync(stateDir, { recursive: true });
     writeFileSync(
       join(stateDir, "status.json"),
-      JSON.stringify({ tenant: "acme/widget", currentUnit: { kind: "issues", id: "41" } }),
+      JSON.stringify({
+        tenant: "acme/widget",
+        pipeline: "work",
+        currentUnits: [
+          {
+            unit: { kind: "issues", id: "41" },
+            startedAt: "2026-09-04T00:00:00.000Z",
+            runBudgetMs: null,
+          },
+        ],
+      }),
     );
 
     const result = await listTenants({
@@ -246,10 +262,20 @@ describe("listTenants", () => {
     mkdirSync(join(configDir, "outboard"), { recursive: true });
     writeFileSync(join(configDir, "outboard", "phoebe.config.ts"), "export default {};\n");
     writeFileSync(join(configDir, "outboard", ".env"), "GH_TOKEN=x\n");
-    mkdirSync(join(dataBase, "acme", "outboard", "state"), { recursive: true });
+    mkdirSync(join(dataBase, "acme", "outboard", "state", "work"), { recursive: true });
     writeFileSync(
-      join(dataBase, "acme", "outboard", "state", "status.json"),
-      JSON.stringify({ tenant: "acme/outboard", currentUnit: { kind: "issues", id: "3" } }),
+      join(dataBase, "acme", "outboard", "state", "work", "status.json"),
+      JSON.stringify({
+        tenant: "acme/outboard",
+        pipeline: "work",
+        currentUnits: [
+          {
+            unit: { kind: "issues", id: "3" },
+            startedAt: "2026-09-04T00:00:00.000Z",
+            runBudgetMs: null,
+          },
+        ],
+      }),
     );
 
     const { listings } = await listTenants({
@@ -271,7 +297,9 @@ describe("listTenants", () => {
       envPresent: true,
       retainedData: true,
     });
-    expect(listings[0]?.status?.currentUnit).toEqual({ kind: "issues", id: "3" });
+    expect(listings[0]?.status?.currentUnits.map((c) => c.unit)).toEqual([
+      { kind: "issues", id: "3" },
+    ]);
   });
 
   test("explicit arm reports undeclared in-tree children after the declared block", async () => {
