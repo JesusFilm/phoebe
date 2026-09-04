@@ -265,3 +265,52 @@ describe("envReconcileDigest", () => {
     expect(envReconcileDigest("A=1B\nB=2\n")).not.toBe(envReconcileDigest("A=1\nBB=2\n"));
   });
 });
+
+describe("the subtractive row scrub (#425)", () => {
+  const tenantEnv = { SLACK_BOT_TOKEN: "xoxb-1", FOO: "public" };
+
+  test("the declaring row keeps its key and an undeclared key reaches it", () => {
+    const env = buildEngineChildEnv({ base: {}, tenantEnv, scrubKeys: [] });
+    expect(env.SLACK_BOT_TOKEN).toBe("xoxb-1");
+    expect(env.FOO).toBe("public");
+  });
+
+  test("a sibling row loses the key it never declared, and keeps the undeclared one", () => {
+    const env = buildEngineChildEnv({ base: {}, tenantEnv, scrubKeys: ["SLACK_BOT_TOKEN"] });
+    expect(env).not.toHaveProperty("SLACK_BOT_TOKEN");
+    expect(env.FOO).toBe("public");
+  });
+
+  test("the scrub runs after every overlay, so a base-supplied key goes too", () => {
+    const env = buildEngineChildEnv({
+      base: { PATH: "/usr/bin", PHOEBE_BASE: "/data" },
+      tenantEnv: {},
+      scrubKeys: ["PHOEBE_BASE"],
+    });
+    expect(env).not.toHaveProperty("PHOEBE_BASE");
+    expect(env.PATH).toBe("/usr/bin");
+  });
+});
+
+describe("envReconcileDigest through one row's lens (#425)", () => {
+  const before = "SLACK_BOT_TOKEN=xoxb-1\nFOO=public\n";
+  const rotatedDeclared = "SLACK_BOT_TOKEN=xoxb-2\nFOO=public\n";
+  const rotatedUndeclared = "SLACK_BOT_TOKEN=xoxb-1\nFOO=changed\n";
+
+  test("a row that cannot see the key does not move when it rotates", () => {
+    expect(envReconcileDigest(rotatedDeclared, ["SLACK_BOT_TOKEN"])).toBe(
+      envReconcileDigest(before, ["SLACK_BOT_TOKEN"]),
+    );
+  });
+
+  test("the row that can see it does move", () => {
+    expect(envReconcileDigest(rotatedDeclared)).not.toBe(envReconcileDigest(before));
+  });
+
+  test("an undeclared key moves both readings", () => {
+    expect(envReconcileDigest(rotatedUndeclared)).not.toBe(envReconcileDigest(before));
+    expect(envReconcileDigest(rotatedUndeclared, ["SLACK_BOT_TOKEN"])).not.toBe(
+      envReconcileDigest(before, ["SLACK_BOT_TOKEN"]),
+    );
+  });
+});

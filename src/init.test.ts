@@ -1,6 +1,6 @@
 // Init scaffolder contract:
-//   * plan enumerates every consumer-owned file (prompts derived from
-//     `CONFIG_DEFAULTS.promptFiles` so drift is impossible),
+//   * plan enumerates every consumer-owned file (prompts derived from the
+//     built-in kinds' own default paths so drift is impossible),
 //   * template rendering substitutes every `{{TOKEN}}` and throws on unknowns,
 //   * `.gitignore` merges are additive (no dedup gap, no clobber),
 //   * `runInit` never overwrites an existing file (the guarded-re-run
@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
 import { DEFAULT_DRAIN_TIMEOUT_MS } from "../bootstrap/supervise-fleet.ts";
-import { CONFIG_DEFAULTS } from "./config-schema.ts";
+import { DEFAULT_PROMPT_FILE_BY_KIND } from "./config-schema.ts";
 import {
   DEFAULT_TEMPLATE_PARAMS,
   formatInitReport,
@@ -98,7 +98,7 @@ describe("planInitOutputs", () => {
     expect(dests).toContain("container/compose.local.yml");
     expect(dests).toContain(".gitignore");
     expect(dests).not.toContain("container/README.md");
-    for (const promptPath of Object.values(CONFIG_DEFAULTS.promptFiles)) {
+    for (const promptPath of Object.values(DEFAULT_PROMPT_FILE_BY_KIND)) {
       expect(dests).toContain(promptPath);
     }
   });
@@ -115,7 +115,7 @@ describe("planInitOutputs", () => {
       "container/README.md",
       ".gitignore",
     ]);
-    for (const promptPath of Object.values(CONFIG_DEFAULTS.promptFiles)) {
+    for (const promptPath of Object.values(DEFAULT_PROMPT_FILE_BY_KIND)) {
       expect(dests).not.toContain(promptPath);
     }
   });
@@ -309,6 +309,23 @@ describe("runInit", () => {
     const scaffolded = readFileSync(join(target, "prompts/issues-prompt.md"), "utf8");
     expect(scaffolded).toContain("{{ISSUE_NUMBER}}");
     expect(scaffolded).toContain("Phoebe");
+  });
+
+  test("a fresh solo scaffold has no promptFiles block, and its prompts sit at the kinds' defaults", () => {
+    const target = makeTempDir();
+    runInit({ targetDir: target });
+
+    // #419: the config is scaffolded with nothing to migrate — the built-in
+    // kinds already read these paths, so naming them would only be a block the
+    // next `phoebe migrate` has to move.
+    const scaffolded = readFileSync(join(target, "phoebe.config.ts"), "utf8");
+    expect(scaffolded).not.toContain("promptFiles");
+    expect(scaffolded).not.toContain("workOrder");
+    expect(scaffolded).not.toContain("workKinds");
+
+    for (const promptPath of Object.values(DEFAULT_PROMPT_FILE_BY_KIND)) {
+      expect(statSync(join(target, promptPath)).isFile()).toBe(true);
+    }
   });
 });
 

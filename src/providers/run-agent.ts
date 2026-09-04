@@ -53,11 +53,20 @@ export async function runAgent(opts: {
   signal?: AbortSignal;
   /** Repo slug (`owner/repo`) prepended to the bracket: `[owner/repo:cursor]`. */
   tenant?: string;
+  /**
+   * The unit this agent is working, `<kind> <ref>`, as a second bracket:
+   * `[owner/repo:cursor][issues issue:88]`. With several units in flight in one
+   * pipeline (#423), the tenant and provider no longer say which run a line came
+   * from. The same shape `ctx.log` and the engine's git and install output use,
+   * so one unit's whole stream greps as one thing.
+   */
+  unit?: string;
 }): Promise<AgentRunResult> {
   const { provider, model, effort, prompt, cwd, env } = opts;
   const spawn = opts.spawn ?? defaultSpawn;
   const log = opts.log ?? ((line: string) => console.log(line));
   const tag = opts.tenant ? `${opts.tenant}:${provider.name}` : provider.name;
+  const unitTag = opts.unit ? `[${opts.unit}]` : "";
 
   const command = provider.buildCommand({ prompt, model, effort });
   const [file, ...args] = command.argv;
@@ -86,9 +95,9 @@ export async function runAgent(opts: {
       for (const event of provider.parseStreamLine(line)) {
         if (event.type === "text") {
           const text = event.text.trim();
-          if (text) log(`[${tag}] ${text}`);
+          if (text) log(`[${tag}]${unitTag} ${text}`);
         } else if (event.type === "tool_call") {
-          log(`[${tag}] ${event.name}: ${event.args}`);
+          log(`[${tag}]${unitTag} ${event.name}: ${event.args}`);
         } else {
           resultText = event.result;
         }
@@ -103,7 +112,7 @@ export async function runAgent(opts: {
     });
     child.stderr.on("data", (chunk) => {
       const text = chunk.toString().trim();
-      if (text) log(`[${tag}:stderr] ${text}`);
+      if (text) log(`[${tag}:stderr]${unitTag} ${text}`);
     });
     child.on("error", reject);
     child.on("close", (code) => {

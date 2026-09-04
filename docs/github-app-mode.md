@@ -160,6 +160,10 @@ Vouch reads the `.github/VOUCHED.td` file only for human handles. A bot handle
 ending in `[bot]` resolves to `trusted` on its own, without reading
 the file. There is no step to take here.
 
+The token itself is not narrowed per pipeline: the supervisor leases it per row
+and caches the minted installation token per tenant, so every row of a tenant
+works its repo with the same full grant.
+
 ### Reviews and branch protection
 
 **The operator can approve the bot's PR** under required-review branch

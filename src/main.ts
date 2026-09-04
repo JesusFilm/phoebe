@@ -24,7 +24,7 @@
 // Work-unit execution is refused outside the container marker
 // (src/execution-gate.ts).
 
-import { execFileSync, execSync } from "node:child_process";
+import { execSync } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
 import { DEFAULT_PIPELINE_NAME, type PhoebeConfig } from "./config-schema.ts";
 import { selectProviderForKind } from "./provider-selection.ts";
@@ -90,7 +90,10 @@ import {
   type OriginHub,
 } from "./origin-hub.ts";
 import { formatLeaseReason, WorktreeLeasedError } from "./worktree-lease.ts";
+import { unitDir, unitOwner } from "./unit-scope.ts";
+import { prefixedWriter, runCommandPrefixed } from "./prefixed-output.ts";
 import { withCloneLock } from "./clone-lock.ts";
+import { READONLY_WORKTREES_SEGMENT } from "./paths.ts";
 import { sweepScope, type SweepScope } from "./sweep-scope.ts";
 import { PROVIDERS } from "./providers/providers.ts";
 import { resolveIssueCoAuthorTrailer } from "./co-author.ts";
@@ -131,6 +134,12 @@ import type {
   WorkUnitGitHubTarget,
   WorkUnitShape,
 } from "./work-kinds/definition.ts";
+import {
+  assertDeclaredEnvPresent,
+  declaredEnvKeys,
+  missingDeclaredEnv,
+  type DeclaringKind,
+} from "./work-kinds/declared-env.ts";
 import { buildRegistry, type WorkKindRegistry } from "./work-kinds/registry.ts";
 import {
   NONE_WORKABLE,
@@ -177,34 +186,50 @@ type CleanMergeOutcome = "pushed" | "conflicted" | "failed";
 // Helpers that hold no engine state
 // ---------------------------------------------------------------------------
 
+/**
+ * A git call inside one unit's worktree. `echo` takes the output a caller would
+ * once have let inherit the engine's stdout, so a concurrent pipeline's fetches
+ * and merges stay attributable (#423); `stdio: "pipe"` is the deliberate
+ * silence a caller asks for when it only wants the exit code or the stdout.
+ */
 function gitInWorktree(
   worktreeDir: string,
   args: string[],
-  opts?: { stdio?: "inherit" | "ignore" | "pipe" },
+  opts?: { stdio?: "inherit" | "ignore" | "pipe"; echo?: (line: string) => void },
 ): string {
-  return execFileSync("git", ["-C", worktreeDir, ...args], {
-    encoding: "utf8",
+  return defaultGit(["-C", worktreeDir, ...args], {
     timeout: CHILD_PROCESS_TIMEOUT_MS,
     ...(opts?.stdio ? { stdio: opts.stdio } : {}),
-  }) as unknown as string;
+    ...(opts?.echo ? { echo: opts.echo } : {}),
+  });
 }
 
 /**
  * Run a configured toolchain command (a shell string) inside a worktree. The
  * worktree may sit at a PR branch head, so the env drops the engine's own
- * credentials — the branch's install hooks run as this child (see shell-env.ts).
+ * credentials and every key this row's kinds declared — the branch's install
+ * hooks run as this child (see shell-env.ts).
+ *
+ * Its output streams through `echo` line by line rather than inheriting the
+ * engine's stdout (#423): an install is the longest-running child a unit has,
+ * and two of them interleaving unattributed is the worst of the concurrency
+ * cases. Awaited rather than sync so the lines still arrive as they are
+ * produced.
  */
 function runShellCommand(
   command: string,
   cwd: string,
   parentEnv: NodeJS.ProcessEnv,
   providerKeys: readonly string[],
-): void {
-  execSync(command, {
+  declaredKeys: readonly string[],
+  echo: (line: string) => void,
+): Promise<void> {
+  return runCommandPrefixed({
+    command,
     cwd,
-    env: buildInstallCommandEnv(parentEnv, providerKeys),
-    stdio: "inherit",
-    timeout: SHELL_COMMAND_TIMEOUT_MS,
+    env: buildInstallCommandEnv(parentEnv, providerKeys, declaredKeys),
+    timeoutMs: SHELL_COMMAND_TIMEOUT_MS,
+    echo,
   });
 }
 
@@ -213,11 +238,12 @@ function promptShell(
   cwd: string,
   parentEnv: NodeJS.ProcessEnv,
   providerKeys: readonly string[],
+  declaredKeys: readonly string[],
 ): (command: string) => string {
   return (command) =>
     execSync(command, {
       cwd,
-      env: buildPromptShellEnv(parentEnv, providerKeys),
+      env: buildPromptShellEnv(parentEnv, providerKeys, declaredKeys),
       encoding: "utf8",
       timeout: SHELL_COMMAND_TIMEOUT_MS,
     });
@@ -404,8 +430,41 @@ export function createEngine(options: EngineOptions): Engine {
     options.originHub ??
     createOriginHub(config, inContainer, git, { warn: (line) => log.warn(line) });
 
-  /** This process's lease stamp on any tree it creates (#418). */
-  const leaseReason = formatLeaseReason({ pipeline, pid: process.pid });
+  /**
+   * One unit's own view of everything this engine shares (#423).
+   *
+   * With several units in flight, "the pipeline" is no longer a fine enough
+   * owner for anything a unit touches: the lease it takes, the directories it
+   * is given, the stdout its children write to. This is that widening, in one
+   * object built at the top of a unit's run and handed to everything the unit
+   * does. What is *not* here is the clone itself — that stays shared, and
+   * `hub` differs only in where its children's output goes.
+   */
+  type UnitScope = {
+    ref: UnitRef;
+    /** `<pipeline>#<kind>:<ref>` — who holds this unit's leases (#423). */
+    owner: string;
+    /** This unit's lease stamp on any tree it creates (#418). */
+    leaseReason: string;
+    /** Print one line of a child's output, stamped with this unit. */
+    echo: (line: string) => void;
+    /** The origin hub with this unit's stamp on its children's output. */
+    hub: OriginHub;
+  };
+
+  function unitScope(ref: UnitRef): UnitScope {
+    const owner = unitOwner(pipeline, ref);
+    // The same shape `ctx.log` prints, so a kind's own lines and the lines its
+    // git and install children produce read as one stream.
+    const echo = prefixedWriter(`${log.tag}[${ref.kind} ${ref.id}]`, (line) => console.log(line));
+    return {
+      ref,
+      owner,
+      leaseReason: formatLeaseReason({ owner, pid: process.pid }),
+      echo,
+      hub: hub.withOutput(echo),
+    };
+  }
 
   // ---------------------------------------------------------------------------
   // Provider selection (multi-provider ready)
@@ -441,6 +500,41 @@ export function createEngine(options: EngineOptions): Engine {
   }
 
   const workOrder = validateWorkOrder(config.workOrder, [...registry.keys()]);
+
+  /** The scheduled kinds paired with their definitions, for the declared-key rules. */
+  const scheduledKinds = (kinds: readonly string[] = workOrder): DeclaringKind[] =>
+    kinds.map((kind) => ({ name: kind, definition: registeredKind(registry, kind).definition }));
+
+  /**
+   * Every key this row's scheduled kinds declared (#425) — the row's `env`, as
+   * the enumerator reports it to the supervisor. The consumer toolchain never
+   * sees these: `installCommand` and prompt `!` expansions run with all of them
+   * stripped, and only the agent hop reopens, per kind, for `agentEnv`.
+   */
+  const rowDeclaredEnv = declaredEnvKeys(scheduledKinds());
+
+  /**
+   * The kinds this cycle may actually gather: the work order minus any kind
+   * whose declared key this row cannot read. Boot already refused that state
+   * fatally (`assertDeclaredEnvPresent`), so this is the *hot* arm — a kind
+   * switched on against a key nobody added stays off, loudly and once, and the
+   * row keeps working everything else.
+   */
+  const loggedMissingEnv = new Set<string>();
+  const schedulableKinds = (kinds: readonly string[]): readonly string[] => {
+    const missing = missingDeclaredEnv(scheduledKinds(kinds), env);
+    if (missing.length === 0) return kinds;
+    for (const { kind, key } of missing) {
+      if (loggedMissingEnv.has(`${kind}\0${key}`)) continue;
+      loggedMissingEnv.add(`${kind}\0${key}`);
+      console.error(
+        `[phoebe] Work kind "${kind}" declares ${key}, which this pipeline's env does not ` +
+          `hold — the kind stays off until the key is set. Every other kind keeps running.`,
+      );
+    }
+    const off = new Set(missing.map((m) => m.kind));
+    return kinds.filter((kind) => !off.has(kind));
+  };
 
   // Which tracker objects this pipeline's sweeps may touch (#418). Partition by
   // ownership: a sweep repairs an object only when the kind that object belongs
@@ -986,13 +1080,14 @@ export function createEngine(options: EngineOptions): Engine {
     issueNumber: number;
     worktreeDir: string;
     baseRef: string;
+    scope: UnitScope;
   }): void {
     const trailer = issueCoAuthorTrailer(opts.issueNumber);
     if (trailer === null) {
       log.say(`No co-author credit for #${opts.issueNumber} (no creditable author).`);
       return;
     }
-    const outcome = hub.appendTrailerToCommits({
+    const outcome = opts.scope.hub.appendTrailerToCommits({
       worktreeDir: opts.worktreeDir,
       baseRef: opts.baseRef,
       trailer,
@@ -1011,54 +1106,60 @@ export function createEngine(options: EngineOptions): Engine {
   // ---------------------------------------------------------------------------
 
   /**
-   * The plain-directory workspace (#358): one empty directory per kind under
+   * The plain-directory workspace (#358): one empty directory per unit under
    * the tenant's scratch root, with no clone and no git state. Cleared before
    * it is created, exactly as `prepareWorktree` clears a stale worktree at the
-   * same path — the path is derived from the kind and so is stable across
-   * runs, which is what makes a directory left behind by a killed run
+   * same path — the path is derived from the unit's identity and so is stable
+   * across runs, which is what makes a directory left behind by a killed run
    * self-healing rather than a leak the next run inherits.
+   *
+   * Per unit rather than per kind since #423: at `concurrency` above 1 two
+   * units of one kind are in flight together, and one kind-keyed directory
+   * would have the second unit's clearing delete the first's work.
    */
-  function prepareScratchDir(kind: string): string {
-    // `kind` is always a built-in name (a hardcoded literal from
-    // `WORK_KIND_NAMES`) or a custom kind validated against
-    // `CUSTOM_WORK_KIND_NAME_RE` at config load, so it is already a safe,
-    // collision-free path segment — no further normalization needed.
-    const dir = join(config.paths.scratchDir, kind);
+  function prepareScratchDir(ref: UnitRef): string {
+    const dir = unitDir(config.paths.scratchDir, ref);
     rmSync(dir, { recursive: true, force: true });
     mkdirSync(dir, { recursive: true });
     return dir;
   }
 
   /**
-   * Give up a worktree path: drop this pipeline's lease on it, then remove it.
+   * Give up a worktree path: drop this unit's lease on it, then remove it.
    *
    * Both ends of a tree's life go through here — the clearing that precedes
    * `prepareWorktree` and the teardown that follows a unit — because they are
    * the same act, and because both used to assume this process owned
-   * `worktrees/` outright. It no longer does (#418). A tree leased by anyone
-   * else ends the attempt with a `WorktreeLeasedError` before the removal that
-   * would otherwise take a live agent's tree apart; our own leftover lease,
-   * from a run some predecessor was killed in the middle of, is simply
-   * dropped — same tree, and this is the run rebuilding it.
+   * `worktrees/` outright. It no longer does (#418), and since #423 neither
+   * does this unit: a tree leased by anyone else, a sibling unit of this very
+   * pipeline included, ends the attempt with a `WorktreeLeasedError` before the
+   * removal that would otherwise take a live agent's tree apart. Our own
+   * leftover lease, from a run some predecessor was killed in the middle of, is
+   * simply dropped — same tree, same unit, and this is the run rebuilding it.
    */
-  function releaseWorktree(worktreeDir: string): void {
-    const lease = hub.worktreeLease(worktreeDir);
-    if (lease.locked && lease.pipeline !== pipeline) {
-      throw new WorktreeLeasedError(worktreeDir, lease.pipeline);
+  function releaseWorktree(worktreeDir: string, scope: UnitScope): void {
+    const lease = scope.hub.worktreeLease(worktreeDir);
+    if (lease.locked && lease.holder !== scope.owner) {
+      throw new WorktreeLeasedError(worktreeDir, lease.holder);
     }
-    if (lease.locked) hub.unlockWorktree(worktreeDir);
-    hub.removeWorktree(worktreeDir);
+    if (lease.locked) scope.hub.unlockWorktree(worktreeDir);
+    scope.hub.removeWorktree(worktreeDir);
   }
 
-  function prepareWorktree(opts: { branch: BranchRef; baseRef?: string }): string {
-    const worktreeDir = hub.worktreeDirFor(opts.branch);
-    releaseWorktree(worktreeDir);
+  function prepareWorktree(opts: {
+    branch: BranchRef;
+    baseRef?: string;
+    scope: UnitScope;
+  }): string {
+    const { scope } = opts;
+    const worktreeDir = scope.hub.worktreeDirFor(opts.branch);
+    releaseWorktree(worktreeDir, scope);
     if (opts.baseRef) {
-      hub.addWorktreeForNew({ worktreeDir, branch: opts.branch, baseRef: opts.baseRef });
+      scope.hub.addWorktreeForNew({ worktreeDir, branch: opts.branch, baseRef: opts.baseRef });
     } else {
-      hub.addWorktreeForExisting({ worktreeDir, branch: opts.branch });
+      scope.hub.addWorktreeForExisting({ worktreeDir, branch: opts.branch });
     }
-    hub.lockWorktree(worktreeDir, leaseReason);
+    scope.hub.lockWorktree(worktreeDir, scope.leaseReason);
     return worktreeDir;
   }
 
@@ -1070,6 +1171,7 @@ export function createEngine(options: EngineOptions): Engine {
    */
   async function runAgentInWorktree(opts: {
     picked: PickedWorkUnit;
+    scope: UnitScope;
     worktreeDir: string;
     promptFile: string;
     promptArgs: Record<string, string>;
@@ -1081,12 +1183,17 @@ export function createEngine(options: EngineOptions): Engine {
     const prompt = renderPrompt(
       loadPromptTemplate(opts.promptFile),
       { ...buildDefaultPromptArgs(config), ...opts.promptArgs },
-      promptShell(opts.worktreeDir, env, Object.values(config.providerEnv)),
+      promptShell(opts.worktreeDir, env, Object.values(config.providerEnv), rowDeclaredEnv),
     );
     const agentEnv = buildAgentEnv({
       parentEnv: env,
       provider: provider.name,
       providerEnv: config.providerEnv,
+      // The running kind's own opening (#425) — its `agentEnv`, and no sibling
+      // kind's: the hole is per definition, not per row.
+      ...(opts.picked.definition.agentEnv !== undefined
+        ? { agentEnv: opts.picked.definition.agentEnv }
+        : {}),
     });
     // The deadline is held by the outer `runPickedUnit` (#359): the signal
     // already fires when the whole-unit budget expires, killing the child and
@@ -1100,6 +1207,7 @@ export function createEngine(options: EngineOptions): Engine {
       env: agentEnv,
       signal: opts.signal,
       tenant: config.repoSlug,
+      unit: `${opts.scope.ref.kind} ${opts.scope.ref.id}`,
     });
     if (exitCode !== 0) {
       log.say(`Agent exited with code ${exitCode}.`);
@@ -1107,13 +1215,14 @@ export function createEngine(options: EngineOptions): Engine {
   }
 
   function tryCleanMerge(
+    scope: UnitScope,
     branch: BranchRef,
     mergedBlockerPrNumbers: readonly PrNumber[] = [],
     baseBranch: string = config.defaultBranch,
   ): CleanMergeOutcome {
     let worktreeDir: string;
     try {
-      worktreeDir = prepareWorktree({ branch });
+      worktreeDir = prepareWorktree({ branch, scope });
     } catch {
       return "failed";
     }
@@ -1121,21 +1230,25 @@ export function createEngine(options: EngineOptions): Engine {
     try {
       for (const blockerPrNumber of mergedBlockerPrNumbers) {
         gitInWorktree(worktreeDir, ["fetch", "origin", `pull/${blockerPrNumber}/head`], {
-          stdio: "inherit",
+          echo: scope.echo,
         });
         gitInWorktree(worktreeDir, ["merge", "FETCH_HEAD"], { stdio: "pipe" });
       }
-      gitInWorktree(worktreeDir, ["fetch", "origin", baseBranch], { stdio: "inherit" });
+      gitInWorktree(worktreeDir, ["fetch", "origin", baseBranch], { echo: scope.echo });
       gitInWorktree(worktreeDir, ["merge", `origin/${baseBranch}`], { stdio: "pipe" });
-      hub.pushBranch(worktreeDir, branch);
-      releaseWorktree(worktreeDir);
+      scope.hub.pushBranch(worktreeDir, branch);
+      releaseWorktree(worktreeDir, scope);
       return "pushed";
     } catch {
       try {
-        const unmerged = gitInWorktree(worktreeDir, ["diff", "--name-only", "--diff-filter=U"]);
+        // Piped, not echoed: the caller reads this list to decide the outcome,
+        // and printing it would say "conflict" twice.
+        const unmerged = gitInWorktree(worktreeDir, ["diff", "--name-only", "--diff-filter=U"], {
+          stdio: "pipe",
+        });
         if (unmerged.trim()) {
           gitInWorktree(worktreeDir, ["merge", "--abort"], { stdio: "ignore" });
-          releaseWorktree(worktreeDir);
+          releaseWorktree(worktreeDir, scope);
           return "conflicted";
         }
       } catch {
@@ -1146,23 +1259,24 @@ export function createEngine(options: EngineOptions): Engine {
       } catch {
         // Best-effort.
       }
-      releaseWorktree(worktreeDir);
+      releaseWorktree(worktreeDir, scope);
       return "failed";
     }
   }
 
   /** Blocker-first merge attempt, mirroring `cmd && … || true` hook semantics. */
   function attemptBlockerFirstMerges(
+    scope: UnitScope,
     worktreeDir: string,
     mergedBlockerPrNumbers: readonly PrNumber[],
     baseBranch: string = config.defaultBranch,
   ): void {
     try {
       for (const n of mergedBlockerPrNumbers) {
-        gitInWorktree(worktreeDir, ["fetch", "origin", `pull/${n}/head`], { stdio: "inherit" });
+        gitInWorktree(worktreeDir, ["fetch", "origin", `pull/${n}/head`], { echo: scope.echo });
         gitInWorktree(worktreeDir, ["merge", "FETCH_HEAD"], { stdio: "pipe" });
       }
-      gitInWorktree(worktreeDir, ["fetch", "origin", baseBranch], { stdio: "inherit" });
+      gitInWorktree(worktreeDir, ["fetch", "origin", baseBranch], { echo: scope.echo });
       gitInWorktree(worktreeDir, ["merge", `origin/${baseBranch}`], { stdio: "pipe" });
     } catch {
       // Conflicts stay in the tree for the agent to resolve.
@@ -1178,6 +1292,7 @@ export function createEngine(options: EngineOptions): Engine {
    */
   async function runAgentWorkflow(opts: {
     picked: PickedWorkUnit;
+    scope: UnitScope;
     pr: { prNumber: PrNumber; headRefName: BranchRef };
     promptFile: string;
     promptArgs: Record<string, string>;
@@ -1188,31 +1303,40 @@ export function createEngine(options: EngineOptions): Engine {
     signal: AbortSignal;
   }): Promise<void> {
     const branch = opts.pr.headRefName;
+    const { scope } = opts;
 
-    hub.fetch();
-    const originShaBefore = hub.branchHead(branch);
+    scope.hub.fetch();
+    const originShaBefore = scope.hub.branchHead(branch);
 
-    const worktreeDir = prepareWorktree({ branch });
+    const worktreeDir = prepareWorktree({ branch, scope });
     try {
-      runShellCommand(config.installCommand, worktreeDir, env, Object.values(config.providerEnv));
+      await runShellCommand(
+        config.installCommand,
+        worktreeDir,
+        env,
+        Object.values(config.providerEnv),
+        rowDeclaredEnv,
+        scope.echo,
+      );
       // Presence, not length: an empty list still primes the tree with the
       // base-branch merge (reproducing the conflict for the agent to solve).
       if (opts.primeBlockerMerges !== undefined) {
-        attemptBlockerFirstMerges(worktreeDir, opts.primeBlockerMerges, opts.baseBranch);
+        attemptBlockerFirstMerges(scope, worktreeDir, opts.primeBlockerMerges, opts.baseBranch);
       }
       opts.beforeAgent?.(worktreeDir);
 
       await runAgentInWorktree({
         picked: opts.picked,
+        scope,
         worktreeDir,
         promptFile: opts.promptFile,
         promptArgs: opts.promptArgs,
         signal: opts.signal,
       });
 
-      hub.fetch();
-      const originShaAfter = hub.branchHead(branch);
-      const localCommitCount = hub.commitCount(worktreeDir, `origin/${branch}..HEAD`);
+      scope.hub.fetch();
+      const originShaAfter = scope.hub.branchHead(branch);
+      const localCommitCount = scope.hub.commitCount(worktreeDir, `origin/${branch}..HEAD`);
 
       await opts.onResult({
         worktreeDir,
@@ -1220,10 +1344,10 @@ export function createEngine(options: EngineOptions): Engine {
         originShaBefore,
         originShaAfter,
         localCommitCount,
-        push: () => hub.pushBranch(worktreeDir, branch),
+        push: () => scope.hub.pushBranch(worktreeDir, branch),
       });
     } finally {
-      releaseWorktree(worktreeDir);
+      releaseWorktree(worktreeDir, scope);
     }
   }
 
@@ -1286,6 +1410,7 @@ export function createEngine(options: EngineOptions): Engine {
    */
   async function runOneIssue(opts: {
     picked: PickedWorkUnit;
+    scope: UnitScope;
     issueNumber: number;
     issueTitle: string;
     worktreeBase: string;
@@ -1314,26 +1439,35 @@ export function createEngine(options: EngineOptions): Engine {
         ? featureBranch(featureIssueNumber)
         : prBase;
 
-    hub.fetch();
-    const worktreeDir = prepareWorktree({ branch: agentBranch, baseRef: worktreeBase });
+    const { scope } = opts;
+    scope.hub.fetch();
+    const worktreeDir = prepareWorktree({ branch: agentBranch, baseRef: worktreeBase, scope });
     try {
-      runShellCommand(config.installCommand, worktreeDir, env, Object.values(config.providerEnv));
+      await runShellCommand(
+        config.installCommand,
+        worktreeDir,
+        env,
+        Object.values(config.providerEnv),
+        rowDeclaredEnv,
+        scope.echo,
+      );
 
       await runAgentInWorktree({
         picked: opts.picked,
+        scope,
         worktreeDir,
         promptFile,
         promptArgs: { ISSUE_NUMBER: String(issueNumber), PR_BASE: intendedPrBase },
         signal: opts.signal,
       });
 
-      const newCommitCount = hub.commitCount(worktreeDir, `${worktreeBase}..HEAD`);
+      const newCommitCount = scope.hub.commitCount(worktreeDir, `${worktreeBase}..HEAD`);
 
       if (newCommitCount > 0) {
         if (config.creditIssueAuthor) {
-          stampIssueAuthorCredit({ issueNumber, worktreeDir, baseRef: worktreeBase });
+          stampIssueAuthorCredit({ issueNumber, worktreeDir, baseRef: worktreeBase, scope });
         }
-        hub.pushBranchWithLease(worktreeDir, agentBranch);
+        scope.hub.pushBranchWithLease(worktreeDir, agentBranch);
         const existingPr = github.findIssuePr(issueNumber);
         if (existingPr === null) {
           const prTitle = `Phoebe: ${issueTitle} (#${issueNumber})`;
@@ -1364,7 +1498,7 @@ export function createEngine(options: EngineOptions): Engine {
         log.say("No commits — skipping PR creation.");
       }
     } finally {
-      releaseWorktree(worktreeDir);
+      releaseWorktree(worktreeDir, scope);
     }
   }
 
@@ -1379,6 +1513,7 @@ export function createEngine(options: EngineOptions): Engine {
    */
   function createAgentHelpers(
     picked: PickedWorkUnit,
+    scope: UnitScope,
     workspaceDir: () => string,
     signal: AbortSignal,
   ): AgentHelpers {
@@ -1387,6 +1522,7 @@ export function createEngine(options: EngineOptions): Engine {
       run: (opts = {}) =>
         runAgentInWorktree({
           picked,
+          scope,
           worktreeDir: opts.worktreeDir ?? workspaceDir(),
           promptFile: opts.promptFile ?? defaultPromptFile,
           promptArgs: opts.promptArgs ?? {},
@@ -1395,6 +1531,7 @@ export function createEngine(options: EngineOptions): Engine {
       prWorkflow: (opts) =>
         runAgentWorkflow({
           picked,
+          scope,
           pr: opts.pr,
           promptFile: opts.promptFile ?? defaultPromptFile,
           promptArgs: opts.promptArgs,
@@ -1409,6 +1546,7 @@ export function createEngine(options: EngineOptions): Engine {
       issueWorkflow: (opts) =>
         runOneIssue({
           picked,
+          scope,
           issueNumber: opts.issueNumber,
           issueTitle: opts.issueTitle,
           worktreeBase: opts.worktreeBase,
@@ -1424,25 +1562,29 @@ export function createEngine(options: EngineOptions): Engine {
           signal,
         }),
       cleanMerge: (branch, blockerPrNumbers = [], baseBranch) =>
-        tryCleanMerge(branch, blockerPrNumbers, baseBranch),
+        tryCleanMerge(scope, branch, blockerPrNumbers, baseBranch),
     };
   }
 
   /**
    * The read-only workspace (#397): a worktree of the default branch detached
-   * at `origin/<defaultBranch>`, one directory per kind so it can never share a
-   * path with the branch-slug dirs `worktreeDirFor` hands out.
+   * at `origin/<defaultBranch>`, under `readonly/<kind>/<ref>` so it can never
+   * share a path with the branch-slug dirs `worktreeDirFor` hands out, nor with
+   * a sibling unit of its own kind (#423).
    *
    * Detached is the whole of the don't-push contract. No local ref is created
    * or moved, and `git push` with no refspec fails out of a detached HEAD, so
    * the kind cannot publish by habit. It can still publish on purpose — it
    * holds `ctx.env` and the token — and the engine does not pretend otherwise.
    */
-  function prepareReadonlyWorktree(kind: string): string {
-    const worktreeDir = join(config.paths.worktreesDir, "readonly", kind);
-    releaseWorktree(worktreeDir);
-    hub.addWorktreeDetached({ worktreeDir, ref: `origin/${config.defaultBranch}` });
-    hub.lockWorktree(worktreeDir, leaseReason);
+  function prepareReadonlyWorktree(scope: UnitScope): string {
+    const worktreeDir = unitDir(
+      join(config.paths.worktreesDir, READONLY_WORKTREES_SEGMENT),
+      scope.ref,
+    );
+    releaseWorktree(worktreeDir, scope);
+    scope.hub.addWorktreeDetached({ worktreeDir, ref: `origin/${config.defaultBranch}` });
+    scope.hub.lockWorktree(worktreeDir, scope.leaseReason);
     return worktreeDir;
   }
 
@@ -1453,19 +1595,23 @@ export function createEngine(options: EngineOptions): Engine {
    * swallowed: this runs on the unit-teardown path, where a throw would replace
    * whatever actually happened to the unit.
    */
-  function warnIfReadonlyTreeTouched(kind: string, dir: string): void {
+  function warnIfReadonlyTreeTouched(scope: UnitScope, dir: string): void {
+    // Named for the unit, not the kind: two units of one kind can be discarding
+    // trees at the same time, and "which one lost work" is the whole point of
+    // the line (#423).
+    const unit = `${scope.ref.kind} ${scope.ref.id}`;
     try {
-      const changed = hub.dirtyFileCount(dir);
-      const commits = hub.commitCount(dir, `origin/${config.defaultBranch}..HEAD`);
+      const changed = scope.hub.dirtyFileCount(dir);
+      const commits = scope.hub.commitCount(dir, `origin/${config.defaultBranch}..HEAD`);
       if (changed === 0 && commits === 0) return;
       log.warn(
-        `${kind}: the readonly workspace was modified ` +
+        `${unit}: the readonly workspace was modified ` +
           `(${changed} changed file(s), ${commits} commit(s)) and is being discarded with the ` +
           `unit. A kind that means to publish should build its own worktree through ctx.agent.`,
       );
     } catch (error) {
       log.warn(
-        `${kind}: could not inspect the readonly workspace before removing it — ` +
+        `${unit}: could not inspect the readonly workspace before removing it — ` +
           `${error instanceof Error ? error.message : String(error)}`,
       );
     }
@@ -1477,31 +1623,46 @@ export function createEngine(options: EngineOptions): Engine {
    * agent helpers use as their default cwd, and the removal the unit boundary
    * runs.
    *
-   * Every mode shares one shape — create on first read of `dir`, remove only
-   * what was created — so laziness is a property of the workspace seam rather
-   * than of the worktree arm that happened to get it first.
+   * Two things are prepared, not one (#423). The git shape is what the mode
+   * names — a worktree, a detached worktree, or nothing at all — and the
+   * scratch directory is on every handle, because "which git shape" and "where
+   * may I write" turned out to be different questions: a `readonly` kind that
+   * has to produce something had a reading room and no desk. `scratch` mode is
+   * the degenerate case where they are the same directory.
+   *
+   * Both follow one shape — create on first read, remove only what was created
+   * — so laziness is a property of the workspace seam rather than of the
+   * worktree arm that happened to get it first, and a kind that reads only one
+   * of the two pays only for that one.
    */
-  function lazyWorkspace(picked: PickedWorkUnit): {
+  function lazyWorkspace(
+    picked: PickedWorkUnit,
+    scope: UnitScope,
+  ): {
     handle: WorkspaceHandle;
     dir: () => string;
     remove: () => void;
   } {
     const mode = picked.definition.workspace;
+    let scratch: string | null = null;
+    const materializeScratch = (): string => {
+      scratch ??= prepareScratchDir(scope.ref);
+      return scratch;
+    };
+
     let dir: string | null = null;
     const materialize = (): string => {
+      if (mode === "scratch") return materializeScratch();
       if (dir === null) {
-        if (mode === "scratch") {
-          dir = prepareScratchDir(picked.kind);
-        } else if (mode === "readonly") {
-          hub.fetch();
-          dir = prepareReadonlyWorktree(picked.kind);
-        } else {
-          hub.fetch();
-          dir = prepareWorktree({
-            branch: asBranchRef(`${config.branchPrefix}workspace`),
-            baseRef: `origin/${config.defaultBranch}`,
-          });
-        }
+        scope.hub.fetch();
+        dir =
+          mode === "readonly"
+            ? prepareReadonlyWorktree(scope)
+            : prepareWorktree({
+                branch: asBranchRef(`${config.branchPrefix}workspace`),
+                baseRef: `origin/${config.defaultBranch}`,
+                scope,
+              });
       }
       return dir;
     };
@@ -1511,16 +1672,18 @@ export function createEngine(options: EngineOptions): Engine {
         get dir(): string {
           return materialize();
         },
+        get scratch(): string {
+          return materializeScratch();
+        },
       },
       dir: materialize,
       remove: () => {
+        // The scratch first, so a git shape someone else turns out to hold —
+        // which ends this in a throw — does not strand the directory.
+        if (scratch !== null) rmSync(scratch, { recursive: true, force: true });
         if (dir === null) return;
-        if (mode === "scratch") {
-          rmSync(dir, { recursive: true, force: true });
-          return;
-        }
-        if (mode === "readonly") warnIfReadonlyTreeTouched(picked.kind, dir);
-        releaseWorktree(dir);
+        if (mode === "readonly") warnIfReadonlyTreeTouched(scope, dir);
+        releaseWorktree(dir, scope);
       },
     };
   }
@@ -1545,7 +1708,8 @@ export function createEngine(options: EngineOptions): Engine {
    * it pays then, and only a materialized workspace is removed afterwards.
    */
   async function runPickedUnit(picked: PickedWorkUnit, ctx: WorkKindCtx): Promise<void> {
-    const workspace = lazyWorkspace(picked);
+    const scope = unitScope(unitRefOf(picked));
+    const workspace = lazyWorkspace(picked, scope);
     try {
       await runWithDeadline({
         ms: runTimeoutMsFor(picked.kind),
@@ -1556,7 +1720,7 @@ export function createEngine(options: EngineOptions): Engine {
               console.log(`${log.tag}[${picked.kind} ${picked.unit.ref}] ${message}`),
             workspace: workspace.handle,
             signal,
-            agent: createAgentHelpers(picked, workspace.dir, signal),
+            agent: createAgentHelpers(picked, scope, workspace.dir, signal),
           };
           return picked.definition.run(picked.unit, runCtx);
         },
@@ -1579,6 +1743,19 @@ export function createEngine(options: EngineOptions): Engine {
     /** Settles when the unit finishes, whatever the outcome. Never rejects. */
     settled: Promise<void>;
   };
+
+  /**
+   * What became of an admitted unit, as far as the *loop* is concerned.
+   *
+   * `worked` means a slot freed and the pass should reconsider admission at
+   * once. `skipped` means the unit never started, because a tree it needed was
+   * leased — and that is worth waiting a poll interval over rather than
+   * reconsidering, since the holder will be minutes rather than microseconds.
+   * Waking on it would spin the loop through a gather per pass for as long as
+   * the sibling holds the tree, which is what makes the distinction load-bearing
+   * now that a sibling *unit* can be the holder (#423).
+   */
+  type UnitOutcome = "worked" | "skipped";
 
   const inFlight = new Map<string, InFlightUnit>();
   /** This kind's running refs — what `ctx.inFlight` and the selection walk read. */
@@ -1659,19 +1836,20 @@ export function createEngine(options: EngineOptions): Engine {
    * Otherwise a failed unit must not kill the daemon — `prepareWorktree` clears
    * any stale worktree on the next attempt.
    */
-  async function workUnit(picked: PickedWorkUnit, ctx: WorkKindCtx): Promise<void> {
+  async function workUnit(picked: PickedWorkUnit, ctx: WorkKindCtx): Promise<UnitOutcome> {
     const ref = unitRefOf(picked);
     try {
       await runPickedUnit(picked, ctx);
       emitUnitEvent({ unit: ref, event: "completed" });
     } catch (error) {
       if (error instanceof WorktreeLeasedError) {
-        // Not a failure: another pipeline is working the tree this unit needs
-        // (#418). Say so and leave the unit alone — the sibling will release it,
-        // and the next cycle picks the unit up again.
+        // Not a failure: someone else is working the tree this unit needs — a
+        // sibling pipeline (#418) or a sibling unit of this one (#423). Say so
+        // and leave the unit alone; the holder will release it, and the next
+        // cycle picks the unit up again.
         emitUnitEvent({ unit: ref, event: "skipped", detail: error.message });
         log.say(`Skipped ${describeUnit(picked)} — ${error.message}.`);
-        return;
+        return "skipped";
       }
       if (error instanceof RunTimeoutError) {
         // A whole-unit timeout (#72): the agent was killed, the slot releases in
@@ -1704,6 +1882,7 @@ export function createEngine(options: EngineOptions): Engine {
     } finally {
       slotClient?.release();
     }
+    return "worked";
   }
 
   /** What one admission attempt did, and what the pass should do next. */
@@ -1770,14 +1949,18 @@ export function createEngine(options: EngineOptions): Engine {
     emitUnitEvent({ unit: ref, event: "started", runBudgetMs: runTimeoutMsFor(picked.kind) });
     refsInFlight(ref.kind).add(ref.id);
     const key = inFlightKey(ref);
+    let outcome: UnitOutcome = "worked";
     const settled = workUnit(picked, ctx)
+      .then((result) => {
+        outcome = result;
+      })
       .catch((error: unknown) => {
         fatalError ??= error;
       })
       .finally(() => {
         inFlight.delete(key);
         refsInFlight(ref.kind).delete(ref.id);
-        announceSettled();
+        if (outcome === "worked") announceSettled();
       });
     inFlight.set(key, { ref, target, settled });
     return "started";
@@ -2056,7 +2239,9 @@ export function createEngine(options: EngineOptions): Engine {
         continue;
       }
 
-      const fetchKinds = runOnce ? oneShotWorkKinds(workOrder, registry) : workOrder;
+      const fetchKinds = schedulableKinds(
+        runOnce ? oneShotWorkKinds(workOrder, registry) : workOrder,
+      );
       const cycle = await workSource.gatherCycle(fetchKinds);
       const { units, skipped } = selectWorkUnits({
         registry,
@@ -2212,6 +2397,20 @@ export async function runEngine(
   // by the CLI, so the name is read back here only for the cadence — declared on
   // the row, which outranks `PHOEBE_POLL_INTERVAL_MS` — and for the log line.
   const pipeline = parsePipelineName(argv);
+  // And in the same posture, the declared keys (#425): a scheduled kind whose
+  // `requiredEnv` this row cannot read is a startup failure naming the kind and
+  // the key, not a unit that dies weeks later holding an empty string. The
+  // supervisor has already scrubbed this env, so "cannot read" here means what
+  // the kind would mean by it.
+  assertDeclaredEnvPresent({
+    repoSlug: config.repoSlug,
+    pipeline,
+    kinds: workOrder.map((kind) => ({
+      name: kind,
+      definition: registeredKind(registry, kind).definition,
+    })),
+    env: process.env,
+  });
   const row = pipelineRow(config, pipeline);
   const pollIntervalMs = resolvePollIntervalMs(row, process.env);
   const concurrency = row.concurrency;

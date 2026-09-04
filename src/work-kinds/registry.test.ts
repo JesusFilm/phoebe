@@ -126,3 +126,49 @@ describe("validateWorkKindDefinition", () => {
     );
   });
 });
+
+describe("declared keys reach validation through registry assembly (#425)", () => {
+  test("a custom kind naming a GH_APP_* key in agentEnv fails to register", () => {
+    expect(() =>
+      buildRegistry(testConfig(), [
+        {
+          name: "nudge",
+          definition: {
+            ...customDefinition("nudge"),
+            requiredEnv: ["GH_APP_PRIVATE_KEY"],
+            agentEnv: ["GH_APP_PRIVATE_KEY"],
+          },
+          options: undefined,
+        },
+      ]),
+    ).toThrow(/reserved key `GH_APP_PRIVATE_KEY`/);
+  });
+
+  test("the tenant's own provider key name is reserved, not the shipped default", () => {
+    const config = testConfig({ providerEnv: { claude: "MY_CLAUDE_KEY" } });
+    const declaring = (key: string) => [
+      {
+        name: "nudge",
+        definition: { ...customDefinition("nudge"), requiredEnv: [key] },
+        options: undefined,
+      },
+    ];
+    expect(() => buildRegistry(config, declaring("MY_CLAUDE_KEY"))).toThrow(/MY_CLAUDE_KEY/);
+    expect(() => buildRegistry(config, declaring("ANTHROPIC_API_KEY"))).not.toThrow();
+  });
+
+  test("a valid declaration registers and keeps both fields", () => {
+    const registry = buildRegistry(testConfig(), [
+      {
+        name: "nudge",
+        definition: {
+          ...customDefinition("nudge"),
+          requiredEnv: ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"],
+          agentEnv: ["SLACK_BOT_TOKEN"],
+        },
+        options: undefined,
+      },
+    ]);
+    expect(registry.get("nudge")?.definition.agentEnv).toEqual(["SLACK_BOT_TOKEN"]);
+  });
+});

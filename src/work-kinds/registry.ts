@@ -65,6 +65,10 @@ export function buildRegistry(
   customs: readonly LoadedCustomKind[] = [],
 ): WorkKindRegistry {
   const registry = new Map<string, RegisteredWorkKind>();
+  // The keys a kind may not declare that only the config knows (#425): every
+  // provider API key this tenant names. The rest of the reserved set is fixed
+  // and lives in declared-env.ts.
+  const providerKeys = Object.values(config.providerEnv);
 
   // A kind block's `promptFile` re-points whichever definition lands under that
   // name (#415), so the knob means the same thing for a custom kind as for a
@@ -83,6 +87,7 @@ export function buildRegistry(
     const definition = validateWorkKindDefinition(
       BUILT_IN_WORK_KIND_FACTORIES[name](config),
       `built-in work kind "${name}"`,
+      providerKeys,
     );
     if (definition.name !== name) {
       throw new Error(
@@ -94,7 +99,7 @@ export function buildRegistry(
 
   for (const custom of customs) {
     const at = `workKinds.custom.${custom.name}`;
-    const definition = validateWorkKindDefinition(custom.definition, at);
+    const definition = validateWorkKindDefinition(custom.definition, at, providerKeys);
     if (definition.name !== custom.name) {
       throw new Error(
         `${at}: the definition's \`name\` ("${definition.name}") must match its declaration key.`,

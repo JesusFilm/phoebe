@@ -172,7 +172,7 @@ commands and [`work-kinds.md`](work-kinds.md) for the full selection rules.
 
 ## Checking the deployment's health: `phoebe doctor`
 
-`phoebe doctor` (report-only) runs seven checks and exits 1 when any fails:
+`phoebe doctor` (report-only) runs eight checks and exits 1 when any fails:
 
 - **cli.** Installed `phoebe-agent` against the npm registry's latest.
 - **engine.** The configured pin against the latest release tag, plus the commit
@@ -194,6 +194,17 @@ In workspace mode it also sweeps every tenant, using the same enumeration boot
 supervises with, checking each tenant's `GH_TOKEN` is present the way its
 engine child reads it, and that its repo answers to that token. Held tenants
 surface as failures with their hold reason. `--json` for scripts.
+
+The eighth check is per tenant and is the only one that reads the data volume:
+
+- **stale-state.** State under a tenant's data directory that no pipeline row
+  owns — a deleted or renamed row's `state/<pipeline>/`, a retired kind's
+  scratch or read-only tree, a worktree whose lease names a pipeline that no
+  longer exists. Most of it the next boot reclaims by itself ([the stale-state
+  sweep](architecture.md#reclaiming-what-a-row-leaves-behind)); what this names
+  by path is the tier that sweep refuses to touch — a worktree that is dirty or
+  holds commits `origin` has not seen — with a one-line hint for reclaiming it
+  by hand. **Warn, never fail**: accumulated dirt is a chore, not a fault.
 
 Division of labor: `phoebe upgrade` moves you between versions; `phoebe migrate`
 reshapes your files for the version you are moving to; `phoebe doctor` tells you
@@ -284,15 +295,21 @@ one trust domain.
 | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Add a repo                        | Place the checkout under the root (`git clone` / `git submodule add`), then `phoebe init --tenant <dir>` (host-side) and, on the declared arm, add the dir to `workspace.tenants` yourself. Phoebe never edits your fleet declaration; `workspace.tenants` is yours. The bootstrapper discovers it next poll. Fill in its `.env`.                                                                                                                                                                       |
 | Remove a repo                     | Drop the child from `workspace.tenants` and/or delete its config dir (host-side; Phoebe never edits your fleet declaration). Reversible, because the tenant's `/data` is retained and re-adding re-uses it.                                                                                                                                                                                                                                                                                             |
+| Reclaim a deleted pipeline's disk | Nothing to do: the next boot, and any later row-set change, sweeps the state of rows the config no longer declares. A worktree that is dirty or holds unpushed commits is left for you, named by `phoebe doctor`'s `stale-state` check. Run `phoebe sweep-state` (in-container) to do it now.                                                                                                                                                                                                           |
 | Reclaim a removed repo's disk     | `phoebe purge <owner/repo> --yes` (in-container). Destructive; refuses while a live config still claims the slug.                                                                                                                                                                                                                                                                                                                                                                                       |
 | Apply deployment migrations       | `phoebe migrate` (host-side, in the deployment dir). Rewrites config content and scaffolds missing artifacts across root and fleet; lists uncommitted paths for you to review and commit per repo. See [`upgrading.md` → phoebe migrate](upgrading.md#phoebe-migrate-reshaping-your-files-for-the-current-ref).                                                                                                                                                                                         |
 | Check every tenant's GitHub token | `node scripts/verify-tenant-token.mjs --all` (host-side, in the deployment dir). One section per tenant; `--check` exits non-zero when any is short a grant. See [Checking a tenant's GitHub token](#checking-a-tenants-github-token).                                                                                                                                                                                                                                                                  |
 | See every tenant + its health     | `phoebe list` (in-container): config present? `.env` present? retained data? current unit (read from each tenant's `work` row, `state/work/status.json`). Rows that cannot boot show `held — <reason>`. Use `--json` for scriptable output and `--check` to exit non-zero when the declaration is not fully honoured (declared-arm accounting, meaning `N of M`, declared order, and `undeclared`, lives in [`workspace.md` → Declaring the fleet](workspace.md#declaring-the-fleet-workspacetenants)). |
 
-**Concurrency across tenants.** Only `PHOEBE_MAX_CONCURRENT_AGENTS` work units
-(default **1**) execute at once across the whole fleet. It is a bootstrapper-brokered,
-FIFO round-robin cap so N repos don't thrash the host. Idle polling stays
-per-repo and parallel.
+**Concurrency across tenants.** One bootstrapper-brokered cap decides how many
+work units execute at once across the whole container, so N repos don't thrash
+the host. It defaults to the largest `concurrency` any live row declares — 1
+unless a row asks for more — and `PHOEBE_MAX_CONCURRENT_AGENTS` replaces that,
+even when lower. Rows queue for it, tenants take turns, and a row starved of a
+slot may hold one over the cap (`PHOEBE_SLOT_FLOOR_BUDGET`, default 1), so the
+worst case is the cap plus that budget. Boot prints both numbers and their
+derivation on one line. Idle polling stays per-row and parallel. The knobs are
+in [`configuration.md`](configuration.md#concurrency-the-rows-knob-and-the-fleets-cap).
 
 **Reading the logs.** Every engine line is tagged
 `[phoebe:<owner>/<repo>:<pipeline>]` — the pipeline row included, and the
@@ -304,6 +321,13 @@ string stops matching. Agent output uses the combined bracket
 stay visually distinct from unit-event lines. stderr lines add a further suffix:
 `[<owner>/<repo>:<command>:stderr]`.
 The container writes no log files. Stdout is the whole story.
+
+**Which unit said it.** Anything produced on behalf of one work unit adds a
+second bracket naming it: `[phoebe:<owner>/<repo>:<row>][<kind> <ref>]` on a
+kind's own logging and on the git and install output its children produce, and
+`[<owner>/<repo>:<command>][<kind> <ref>]` on the agent's. It is there whatever
+the row's `concurrency`, so `[issues issue:88]` greps one unit's whole story —
+its clone traffic, its install, its agent — out of a row running several.
 
 **When a unit hangs.** A work unit that exceeds its wall-clock budget
 (`PHOEBE_RUN_TIMEOUT_MS`, default 45 min) is aborted so it can't starve the

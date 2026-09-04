@@ -39,6 +39,7 @@ export type Migration = {
     data: unknown,
     readFile: (relPath: string) => string | null,
   ) => Record<string, string> | ConfigRefusal;
+  verify?: (ctx: MigrationVerifyContext) => Promise<void>;
 };
 ```
 
@@ -115,6 +116,36 @@ makes the edit by hand.
 `apply` must not write to disk directly. Only the runner flushes writes, so an
 exception inside `apply` before it returns leaves nothing on disk.
 
+### `verify`, a migration's own post-apply check
+
+```ts
+verify?: (ctx: MigrationVerifyContext) => Promise<void>
+```
+
+Optional, and run after the generic post-apply validation has passed. Throwing
+reverts this migration's writes exactly as a validation failure does; the report
+says `failed` with `verification failed (reverted)`.
+
+The schema check answers "is this config still valid?". A migration that
+**reshapes** rather than adds has a second question to answer — "does it still
+mean the same thing?" — and that is what `verify` is for. `ctx.loadConfig()`
+loads the migrated file the way the engine does; `ctx.loadConfig(source)` loads
+source text that is not on disk, through a throwaway sibling of the config so
+its relative imports still resolve. The pre-migration source is gone from disk
+by then, so pass it through `detect`'s data if the check needs it:
+
+```ts
+async verify(ctx) {
+  const { content } = ctx.data as DetectData; // the source detect read
+  const before = resolution(await ctx.loadConfig(content));
+  const after = resolution(await ctx.loadConfig());
+  if (before !== after) throw new Error(`the move changed what this tenant runs: …`);
+}
+```
+
+An additive migration does not need one. Reach for it when the migration could
+plausibly be faithful-looking and wrong.
+
 ## `ConfigHandle`, the parser-based config-edit layer
 
 Config migrations call `configHandle`, the narrow API that bounds what a
@@ -138,6 +169,41 @@ may add, remove, or reorder tenants.
 `ConfigEditResult` is `{ ok: true; content: string } | { ok: false; reason: string }`.
 On `ok: false`, the edit is ambiguous or unsafe. Return a `ConfigRefusal` with
 the manual instruction.
+
+### Moving a field: `moveField`
+
+`setField` writes scalar literals. A field whose value is a whole block —
+`workKinds`, `promptFiles` — is moved instead, by source range:
+
+```ts
+const moved = configHandle.moveField(content, ["workOrder"], ["pipelines", "work", "order"]);
+```
+
+Both paths are full paths from the config object, so a nested key moves as
+readily as a top-level one (`["promptFiles", "issue"]` →
+`["pipelines", "work", "kinds", "issues", "promptFile"]`). Object literals the
+destination path names but the config does not have yet are created around the
+value; the last segment is the key it lands under, so a move renames as it goes.
+
+What it guarantees:
+
+- The value's **source range** is what moves. Comments inside it travel with it.
+  Its inner lines are reindented for the new depth, and every byte outside the
+  ranges the move touches is untouched.
+- The value is **never read**. Anything computed rather than written out — a
+  spread, a reference, a call, a template literal, a computed key, a shorthand —
+  is refused, because relocating an expression is not the same as relocating a
+  literal. Refuse to the operator; do not work around it.
+- A comment sitting **above** the moved field is not part of its range and stays
+  where it was. Say so in the operator instruction if the migration moves a
+  field that usually carries one.
+
+A destination key that already exists is a refusal too: the migration cannot
+pick which of the two the operator meant.
+
+`listKeys(content, path)` reads the keys of a nested block in source order, and
+tells an absent block (`found: false`) from an empty one. It is how a migration
+enumerates what to move without reading any value.
 
 ### What an author may assume
 
@@ -217,6 +283,12 @@ The complete closed set:
 | Non-literal value (for writes)                 | `process.env.X`, call, template, reference. Reads OK as `raw`, never writable     |
 | `config.x = ...` mutation after literal        | literal fields are the canonical shape, and mutations are invisible to the handle |
 
+The set above is what `resolveConfigObject` checks about the config object
+itself. [`moveField`](#moving-a-field-movefield) applies the same rules a level
+down, to the value it is asked to relocate, and adds two of its own: a
+destination key that already exists, and an intermediate on either path that is
+not a plain object literal.
+
 ### Why `rewriteEngineRef` does not use this handle
 
 `rewriteEngineRef` in `src/upgrade.ts` is a regex-based rewriter that predates
@@ -266,9 +338,11 @@ The runner's flush-and-validate loop:
 2. For each `relPath`, capture the pre-image (`readFileSync` or `null` for new
    files).
 3. Write all staged files to disk (same-inode `writeFileSync`).
-4. Run post-apply validation: `loadUserConfig` → `validateUserConfig`.
-5. **If validation succeeds**, append the journal entries and mark `applied`.
-6. **If validation fails**, revert every write from this migration in-place (new
+4. Run post-apply validation: `loadUserConfig` → `validateUserConfig`, then the
+   migration's own [`verify`](#verify-a-migrations-own-post-apply-check) if it
+   declares one.
+5. **If both pass**, append the journal entries and mark `applied`.
+6. **If either fails**, revert every write from this migration in-place (new
    files are deleted; modified files are written back to their pre-image). Mark
    `failed`. The runner continues with the next migration.
 
