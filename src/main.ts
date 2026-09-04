@@ -91,6 +91,7 @@ import {
 } from "./origin-hub.ts";
 import { formatLeaseReason, WorktreeLeasedError } from "./worktree-lease.ts";
 import { withCloneLock } from "./clone-lock.ts";
+import { readonlyWorktreeDir } from "./paths.ts";
 import { sweepScope, type SweepScope } from "./sweep-scope.ts";
 import { PROVIDERS } from "./providers/providers.ts";
 import { resolveIssueCoAuthorTrailer } from "./co-author.ts";
@@ -1343,7 +1344,7 @@ export function createEngine(options: EngineOptions): Engine {
    * holds `ctx.env` and the token — and the engine does not pretend otherwise.
    */
   function prepareReadonlyWorktree(kind: string): string {
-    const worktreeDir = join(config.paths.worktreesDir, "readonly", kind);
+    const worktreeDir = readonlyWorktreeDir(config.paths.worktreesDir, kind);
     releaseWorktree(worktreeDir);
     hub.addWorktreeDetached({ worktreeDir, ref: `origin/${config.defaultBranch}` });
     hub.lockWorktree(worktreeDir, leaseReason);

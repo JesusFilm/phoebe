@@ -50,6 +50,11 @@ import {
   type RowEnumerator,
   type SupervisedRow,
 } from "./pipeline-rows.ts";
+import {
+  createStateSweeper,
+  type StateSweepOutcome,
+  type StateSweepTrigger,
+} from "./state-sweep.ts";
 import { lsRemoteBranchSha, materializeGithubEngine } from "./github-engine.ts";
 import { buildEngineChildEnv, envReconcileDigest, parseDotenv } from "./engine-child-env.ts";
 import { attachCredentialHandler, type CredentialCache } from "./credential-ipc.ts";
@@ -325,6 +330,35 @@ function probeRowEnumeration(entry: string): RowEnumerator {
   return rows;
 }
 
+/**
+ * Read one tenant's stale-state sweep out to the operator (#426).
+ *
+ * A sweep that found nothing says nothing — this runs at every boot, and a line
+ * per tenant per boot saying "no orphans" would train an operator to skip the
+ * whole block. What it does always print is the protected tier: a worktree the
+ * sweep refused to delete is the one outcome only a human can finish, and it is
+ * invisible everywhere else until someone runs doctor.
+ */
+function reportStateSweep(info: {
+  tenantId: string;
+  trigger: StateSweepTrigger;
+  outcome: StateSweepOutcome;
+}): void {
+  const { outcome } = info;
+  if (outcome.removed === 0 && outcome.failed === 0 && outcome.kept.length === 0) return;
+  const failed = outcome.failed > 0 ? `, ${outcome.failed} it could not remove` : "";
+  console.log(
+    `[phoebe] boot: stale-state sweep (${info.trigger}) for ${info.tenantId} — ` +
+      `reclaimed ${outcome.removed} orphan(s)${failed}.`,
+  );
+  for (const item of outcome.kept) {
+    console.warn(
+      `[phoebe] boot: left ${item.path} in place — ${item.detail}. ` +
+        `To reclaim it, ${item.reclaim}.`,
+    );
+  }
+}
+
 async function launchTarget(configPath: string, guard: CrashGuard): Promise<LaunchedEngine> {
   const fingerprint = configFingerprint(configPath);
   const source = readEngineSource(await loadMountedConfig(configPath, fingerprint));
@@ -349,6 +383,7 @@ async function launchTarget(configPath: string, guard: CrashGuard): Promise<Laun
       quarantinedSha: null,
       sample,
       rows: probeRowEnumeration(entry),
+      stateSweep: createStateSweeper({ entry }),
     };
   }
 
@@ -384,6 +419,7 @@ async function launchTarget(configPath: string, guard: CrashGuard): Promise<Laun
     quarantinedSha,
     sample,
     rows: probeRowEnumeration(entry),
+    stateSweep: createStateSweeper({ entry }),
   };
 }
 
@@ -645,6 +681,12 @@ function runFleet(opts: {
       console.warn(
         `[phoebe] boot: could not enumerate rows for ${tenantId} — ${describe(error)}. ` +
           `Holding the tenant (its running rows keep running); retrying next poll.`,
+      ),
+    onStateSweep: reportStateSweep,
+    onStateSweepError: ({ tenantId, trigger, error }) =>
+      console.warn(
+        `[phoebe] boot: could not sweep stale state for ${tenantId} (${trigger}) — ` +
+          `${describe(error)}. Rows spawn as if the sweep had not run.`,
       ),
     onRunEnd: recordRunEnd(opts.guard),
     onRunTick: ({ engine, elapsedMs }) => {
@@ -1263,6 +1305,12 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       // Solo backs off on the engine constant, not the fleet's per-row one: the
       // relaunch line quotes it, so the two must not drift.
       crashBackoffMs: CRASH_BACKOFF_MS,
+      onStateSweep: reportStateSweep,
+      onStateSweepError: ({ tenantId, trigger, error }) =>
+        console.warn(
+          `[phoebe] boot: could not sweep stale state for ${tenantId} (${trigger}) — ` +
+            `${describe(error)}. Rows spawn as if the sweep had not run.`,
+        ),
       onRunEnd: recordRunEnd(guard),
       onRunTick: ({ engine, elapsedMs }) => {
         if (engine.sha !== null) guard.noteAlive(engine.sha, elapsedMs);

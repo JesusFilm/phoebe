@@ -14,6 +14,7 @@ import {
   labelsCheck,
   launcherFloorCheck,
   promptDriftCheck,
+  staleStateCheck,
   tenantRow,
   tenantTokenCheck,
 } from "./doctor.ts";
@@ -482,5 +483,64 @@ describe("tenantRow config load failure regression", () => {
     expect(labelsResult?.detail).toMatch(/config load failed/);
     expect(driftResult?.state).toBe("unknown");
     expect(driftResult?.detail).toMatch(/config load failed/);
+  });
+});
+
+describe("staleStateCheck", () => {
+  const dataDir = "/data/repos/acme/widget";
+
+  test("a clean data directory is ok", () => {
+    expect(staleStateCheck({ dataDir, items: [] })).toEqual({
+      id: "stale-state",
+      state: "ok",
+      detail: `nothing orphaned under ${dataDir}`,
+    });
+  });
+
+  test("orphans are a warn, counted by tier, never a fail", () => {
+    const check = staleStateCheck({
+      dataDir,
+      items: [
+        { tier: "state", path: `${dataDir}/state/intake`, detail: "no row", reclaim: null },
+        { tier: "scratch", path: `${dataDir}/scratch/triage`, detail: "no kind", reclaim: null },
+      ],
+    });
+    expect(check.state).toBe("warn");
+    expect(check.detail).toContain("2 orphan(s)");
+    expect(check.detail).toContain("state 1, scratch 1");
+    expect(check.detail).toContain("2 the next sweep reclaims");
+  });
+
+  test("a worktree the sweep refused names its path and how to reclaim it", () => {
+    const path = `${dataDir}/worktrees/phoebe-issue-9`;
+    const check = staleStateCheck({
+      dataDir,
+      items: [{ tier: "worktree", path, detail: "not clean", reclaim: "git worktree remove it" }],
+    });
+    expect(check.state).toBe("warn");
+    expect(check.detail).toContain(path);
+    expect(check.detail).toContain("git worktree remove it");
+    expect(check.detail).toContain("none of it auto-reclaimable");
+  });
+
+  test("warn findings leave the report exiting 0", () => {
+    const report = buildDoctorReport(
+      [],
+      [
+        {
+          path: "tenant",
+          slug: "acme/widget",
+          checks: [
+            staleStateCheck({
+              dataDir,
+              items: [
+                { tier: "state", path: `${dataDir}/state/intake`, detail: "no row", reclaim: null },
+              ],
+            }),
+          ],
+        },
+      ],
+    );
+    expect(report.ok).toBe(true);
   });
 });
