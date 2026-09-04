@@ -94,4 +94,60 @@ describe("withClosesSection", () => {
     const update = withClosesSection(body, [381])!;
     expect(closesLines(update.body)).toEqual(["Closes #999", "Closes #381"]);
   });
+
+  test("reads a line a hand edit left trailing blanks on", () => {
+    const first = withClosesSection("Part of #400.", [416, 415])!;
+    // CRLF from the web UI, and the two spaces of a Markdown hard break.
+    const handEdited = first.body.replaceAll("\n", "\r\n").replace("Closes #415", "Closes #415  ");
+    expect(withClosesSection(handEdited, [416, 415])).toBeNull();
+  });
+});
+
+// A stacked member merges into its blocker's branch, not the feature branch, so
+// the sweep never sees it and a human records it by hand under the block —
+// integration PR #430 carried three such lines (#418, #422, #423).
+describe("withClosesSection, with a human's Closes lines below the block", () => {
+  const stray = ["Closes #418", "Closes #422", "Closes #423"];
+
+  /** The #430 shape: Phoebe's block, then a human's note and their own lines. */
+  function bodyLikePr430(): string {
+    const withBlock = withClosesSection("Part of #400.", [416, 415])!.body;
+    return [
+      withBlock,
+      "PRs #438, #439 and #443 merged into `phoebe/issue-415` instead of this",
+      "branch; their work came across when that branch merged:",
+      "",
+      ...stray,
+      "",
+    ].join("\n");
+  }
+
+  test("writes the next member inside the markers, not below the stray lines", () => {
+    const update = withClosesSection(bodyLikePr430(), [416, 415, 417])!;
+    expect(update.added).toEqual([417]);
+    const line = update.body.indexOf("Closes #417");
+    expect(line).toBeGreaterThan(update.body.indexOf(CLOSES_SECTION_START));
+    expect(line).toBeLessThan(update.body.indexOf(CLOSES_SECTION_END));
+  });
+
+  test("leaves the human's lines and note where they wrote them", () => {
+    const update = withClosesSection(bodyLikePr430(), [416, 415, 417])!;
+    expect(update.body).toContain("their work came across when that branch merged:");
+    const tail = update.body.slice(
+      update.body.indexOf(CLOSES_SECTION_END) + CLOSES_SECTION_END.length,
+    );
+    expect(closesLines(tail)).toEqual(stray);
+  });
+
+  test("counts a line below the block as said, so no issue is closed twice", () => {
+    expect(withClosesSection(bodyLikePr430(), [418])).toBeNull();
+    const update = withClosesSection(bodyLikePr430(), [418, 417])!;
+    expect(update.added).toEqual([417]);
+    expect(closesLines(update.body)).toEqual([
+      "Closes #415",
+      "Closes #416",
+      "Closes #417",
+      ...stray,
+    ]);
+  });
 });
