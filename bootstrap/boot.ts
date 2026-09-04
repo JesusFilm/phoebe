@@ -749,7 +749,7 @@ function runFleet(opts: {
     onRunTick: ({ engine, elapsedMs }) => {
       if (engine.sha !== null) opts.guard.noteAlive(engine.sha, elapsedMs);
     },
-    rowExit: rowExitPolicy(opts.guard),
+    pipelineExit: pipelineExitPolicy(opts.guard),
   });
 }
 
@@ -826,7 +826,7 @@ function recordRunEnd(guard: CrashGuard): (run: FleetRun) => void {
  * misbehave". Only a guarded launch retries: a pinned ref that crashes takes the
  * container down, exactly as it did before there was a guard.
  */
-function rowExitPolicy(guard: CrashGuard): PipelineExitPolicy {
+function pipelineExitPolicy(guard: CrashGuard): PipelineExitPolicy {
   return {
     decide: (run) => {
       const outcome = run.engine.guarded ? runOutcome(run) : null;
@@ -1436,7 +1436,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       // The universality rule over a one-pipeline fleet: that pipeline *is* the engine, so
       // every death of it is universal and reaches the policy — which is how
       // "the engine exited, so the container exits" is still what solo does.
-      rowExit: { ...rowExitPolicy(guard), propagateOnStop: true },
+      pipelineExit: { ...pipelineExitPolicy(guard), propagateOnStop: true },
       onEngineChange: (reason) =>
         console.log(
           reason === "config"

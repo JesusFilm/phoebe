@@ -591,7 +591,7 @@ describe("staleStateCheck", () => {
     const check = staleStateCheck({
       dataDir,
       items: [
-        { tier: "state", path: `${dataDir}/state/intake`, detail: "no row", reclaim: null },
+        { tier: "state", path: `${dataDir}/state/intake`, detail: "no pipeline", reclaim: null },
         { tier: "scratch", path: `${dataDir}/scratch/triage`, detail: "no kind", reclaim: null },
       ],
     });
@@ -624,7 +624,12 @@ describe("staleStateCheck", () => {
             staleStateCheck({
               dataDir,
               items: [
-                { tier: "state", path: `${dataDir}/state/intake`, detail: "no row", reclaim: null },
+                {
+                  tier: "state",
+                  path: `${dataDir}/state/intake`,
+                  detail: "no pipeline",
+                  reclaim: null,
+                },
               ],
             }),
           ],

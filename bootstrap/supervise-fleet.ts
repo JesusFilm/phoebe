@@ -296,7 +296,7 @@ export type SuperviseFleetDeps = {
    */
   pipelineFingerprint?: (pipeline: SupervisedPipeline, enumerated: string | null) => string | null;
   /** What a pipeline exiting on its own means for the container ({@link PipelineExitPolicy}). */
-  rowExit?: PipelineExitPolicy;
+  pipelineExit?: PipelineExitPolicy;
   /** Reap a child we intentionally drained (relaunch/remove); the broker owner id. */
   onReap?: (pipelineId: string) => void;
   crashBackoffMs?: number;
@@ -369,7 +369,7 @@ export async function superviseFleet(deps: SuperviseFleetDeps): Promise<EngineEx
   const crashLooping = new Map<string, boolean>();
 
   const isCrashLooping =
-    deps.rowExit?.crashLooping ?? ((run: FleetRun) => run.elapsedMs < healthyRunMs);
+    deps.pipelineExit?.crashLooping ?? ((run: FleetRun) => run.elapsedMs < healthyRunMs);
 
   /**
    * The universality rule (#401): every pipeline that ran this engine has crash-looped.
@@ -610,7 +610,7 @@ export async function superviseFleet(deps: SuperviseFleetDeps): Promise<EngineEx
    */
   const stopAndDrain = async (): Promise<EngineExit> => {
     const drained = await drainAll();
-    if (deps.rowExit?.propagateOnStop !== true) return clean;
+    if (deps.pipelineExit?.propagateOnStop !== true) return clean;
     return drained[0] ?? pendingExit ?? clean;
   };
 
@@ -661,7 +661,7 @@ export async function superviseFleet(deps: SuperviseFleetDeps): Promise<EngineEx
       children.delete(record.pipeline.id);
       deps.onRunEnd?.(run);
       pendingExit = exit;
-      const action = universal ? (deps.rowExit?.decide(run) ?? "respawn") : "respawn";
+      const action = universal ? (deps.pipelineExit?.decide(run) ?? "respawn") : "respawn";
       if (action === "exit") {
         await drainAll();
         return exit;
@@ -751,12 +751,12 @@ export async function superviseFleet(deps: SuperviseFleetDeps): Promise<EngineEx
     const { pipelines: desired, held } = expand(samples);
     // A held tenant's pipelines are unknown, not gone: protect every one of them from
     // the removal diff, exactly as a held tenant dir is protected today (#86).
-    const rowHold = new Set<string>();
+    const pipelineHold = new Set<string>();
     for (const record of children.values()) {
       const tenantId = record.pipeline.tenant.id;
-      if (held.has(tenantId) || tenantHold.has(tenantId)) rowHold.add(record.pipeline.id);
+      if (held.has(tenantId) || tenantHold.has(tenantId)) pipelineHold.add(record.pipeline.id);
     }
-    const diff = diffPipelines(previous, desired, rowHold);
+    const diff = diffPipelines(previous, desired, pipelineHold);
 
     // A tenant fingerprint that moved with no pipeline of its own to show for it is
     // by elimination a tenant-wide change — a git identity, a repo slug, an
@@ -817,7 +817,7 @@ export async function superviseFleet(deps: SuperviseFleetDeps): Promise<EngineEx
     const live = desired.map((sample) => sample.pipeline);
     const desiredIds = new Set(live.map((pipeline) => pipeline.id));
     for (const record of children.values()) {
-      if (!desiredIds.has(record.pipeline.id) && rowHold.has(record.pipeline.id))
+      if (!desiredIds.has(record.pipeline.id) && pipelineHold.has(record.pipeline.id))
         live.push(record.pipeline);
     }
     deps.onPipelines?.({ pipelines: live, reshaped });

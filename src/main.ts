@@ -525,7 +525,7 @@ export function createEngine(options: EngineOptions): Engine {
    * sees these: `installCommand` and prompt `!` expansions run with all of them
    * stripped, and only the agent hop reopens, per kind, for `agentEnv`.
    */
-  const rowDeclaredEnv = declaredEnvKeys(scheduledKinds());
+  const pipelineDeclaredEnv = declaredEnvKeys(scheduledKinds());
 
   /**
    * The kinds this cycle may actually gather: the work order minus any kind
@@ -541,8 +541,8 @@ export function createEngine(options: EngineOptions): Engine {
     for (const { kind, key } of missing) {
       if (loggedMissingEnv.has(`${kind}\0${key}`)) continue;
       loggedMissingEnv.add(`${kind}\0${key}`);
-      console.error(
-        `[phoebe] Work kind "${kind}" declares ${key}, which this pipeline's env does not ` +
+      log.warn(
+        `Work kind "${kind}" declares ${key}, which this pipeline's env does not ` +
           `hold — the kind stays off until the key is set. Every other kind keeps running.`,
       );
     }
@@ -1183,7 +1183,7 @@ export function createEngine(options: EngineOptions): Engine {
     const prompt = renderPrompt(
       loadPromptTemplate(opts.promptFile),
       { ...buildDefaultPromptArgs(config), ...opts.promptArgs },
-      promptShell(opts.worktreeDir, env, Object.values(config.providerEnv), rowDeclaredEnv),
+      promptShell(opts.worktreeDir, env, Object.values(config.providerEnv), pipelineDeclaredEnv),
     );
     const agentEnv = buildAgentEnv({
       parentEnv: env,
@@ -1315,7 +1315,7 @@ export function createEngine(options: EngineOptions): Engine {
         worktreeDir,
         env,
         Object.values(config.providerEnv),
-        rowDeclaredEnv,
+        pipelineDeclaredEnv,
         scope.echo,
       );
       // Presence, not length: an empty list still primes the tree with the
@@ -1448,7 +1448,7 @@ export function createEngine(options: EngineOptions): Engine {
         worktreeDir,
         env,
         Object.values(config.providerEnv),
-        rowDeclaredEnv,
+        pipelineDeclaredEnv,
         scope.echo,
       );
 

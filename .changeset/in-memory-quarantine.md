@@ -10,4 +10,4 @@ Units the engine cannot see now have a skip half (#424). A unit with no `github`
 
 **A ref that gains a `github` target mid-count** drops its in-memory entry and starts the label path from zero — nothing is seeded from memory, so no comment claims timeouts an issue cannot show. The skip half for such a unit is the kind's own label filter, as it already is for the built-ins.
 
-**The idle report prints only when it changes** — the first idle pass after activity, and again whenever the skip set moves. A pipeline polling every few seconds was otherwise repeating one paragraph until it buried everything worth reading; a work row at 300 s prints what it always printed. The in-memory drop renders there like any other skip: `N <noun> skipped (quarantined in memory)`.
+**The idle report prints only when it changes** — the first idle pass after activity, and again whenever the skip set moves. A pipeline polling every few seconds was otherwise repeating one paragraph until it buried everything worth reading; a work pipeline at 300 s prints what it always printed. The in-memory drop renders there like any other skip: `N <noun> skipped (quarantined in memory)`.

@@ -254,7 +254,7 @@ describe("listTenants", () => {
       configValid: true,
       envPresent: false,
       retainedData: false,
-      // Enumerated but never run: the row exists, its snapshot does not.
+      // Enumerated but never run: the pipeline exists, its snapshot does not.
       pipelines: [{ name: "work", source: "enumerated", state: "no status" }],
       // No `.env` and no deployment App key: nothing can mint, so an absent
       // token is a pat-arm shortfall rather than a healthy app-arm tenant.
@@ -267,7 +267,7 @@ describe("listTenants", () => {
       configValid: false,
       envPresent: false,
       retainedData: false,
-      // Held and nothing on disk: no row set to enumerate, no snapshots to show.
+      // Held and nothing on disk: no pipeline set to enumerate, no snapshots to show.
       pipelines: [],
     });
   });
@@ -374,7 +374,7 @@ describe("listTenants", () => {
       retainedData: true,
     });
     // Held: the lines come off disk, since the config discovery could not read
-    // is exactly the one the row set would have to come from.
+    // is exactly the one the pipeline set would have to come from.
     expect(listings[0]?.pipelines).toMatchObject([
       { name: "work", source: "disk", state: "working", concurrency: null },
     ]);
@@ -541,7 +541,7 @@ describe("listTenants", () => {
       currentUnits: [],
       waitingForSlot: true,
     });
-    // A row the config no longer declares — the pipeline analogue of undeclared.
+    // A pipeline the config no longer declares — the pipeline analogue of undeclared.
     mkdirSync(join(dataBase, "acme", "multi", "state", "old"), { recursive: true });
     // Not a pipeline: the tenant's clone lock lives in the same directory.
     mkdirSync(join(dataBase, "acme", "multi", "state", "clone.lock"), { recursive: true });

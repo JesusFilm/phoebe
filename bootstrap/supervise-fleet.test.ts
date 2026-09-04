@@ -676,7 +676,7 @@ function soloHarness(
     onRunEnd: (run) => runs.push(run),
     onRunTick: (tick) => ticks.push(tick.elapsedMs),
     onEngineChange: (reason) => relaunches.push(reason),
-    rowExit: {
+    pipelineExit: {
       decide: (run) => options.decide?.(run) ?? "exit",
       propagateOnStop: true,
     },
@@ -1164,7 +1164,7 @@ function matrixHarness(
     onStateSweep: ({ tenantId, trigger }) => sweeps.push({ tenantId, trigger }),
     onStateSweepError: ({ tenantId, trigger }) => sweepErrors.push({ tenantId, trigger }),
     onRunEnd: (run) => runs.push(run),
-    ...(options.decide ? { rowExit: { decide: options.decide } } : {}),
+    ...(options.decide ? { pipelineExit: { decide: options.decide } } : {}),
   });
 
   const named = (name: string) => spawned.filter((s) => s.pipeline.pipeline.name === name);

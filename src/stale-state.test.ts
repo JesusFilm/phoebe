@@ -160,13 +160,13 @@ function ownershipOf(overrides: Partial<PhoebeUserConfig> = {}): PipelineOwnersh
 const CUSTOM_KIND = { module: "./triage.ts" };
 
 describe("pipelineOwnership", () => {
-  test("a config with no pipelines block owns the work row and every built-in", () => {
+  test("a config with no pipelines block owns the work pipeline and every built-in", () => {
     const ownership = ownershipOf();
     expect([...ownership.pipelines]).toEqual(["work"]);
     expect(ownership.kinds.has("issues")).toBe(true);
   });
 
-  test("a disabled row is still enumerated, so its state is stopped and not orphaned", () => {
+  test("a disabled pipeline is still enumerated, so its state is stopped and not orphaned", () => {
     const ownership = ownershipOf({
       pipelines: {
         work: {},
@@ -177,7 +177,7 @@ describe("pipelineOwnership", () => {
     expect(ownership.kinds.has("triage")).toBe(true);
   });
 
-  test("a kind that moved between rows is still owned", () => {
+  test("a kind that moved between pipelines is still owned", () => {
     const before = ownershipOf({
       pipelines: { work: {}, intake: { kinds: { custom: { triage: CUSTOM_KIND } } } },
     });
@@ -205,13 +205,13 @@ describe("state directories", () => {
     expect(result.removed.map((item) => item.path)).toContain(intake);
   });
 
-  test("a disabled row keeps its state directory", () => {
+  test("a disabled pipeline keeps its state directory", () => {
     const intake = stateDirFor("intake");
     sweep(owns(["work", "intake"], ["issues"]));
     expect(existsSync(intake)).toBe(true);
   });
 
-  test("the clone lock is not a row's directory", () => {
+  test("the clone lock is not a pipeline's directory", () => {
     const lock = join(paths.stateDir, CLONE_LOCK_DIR);
     mkdirSync(lock, { recursive: true });
     sweep(owns(["work"], ["issues"]));
@@ -229,7 +229,7 @@ describe("state directories", () => {
     expect(existsSync(intake)).toBe(false);
   });
 
-  test("a live row's directory is never opened for tmp files", () => {
+  test("a live pipeline's directory is never opened for tmp files", () => {
     const work = stateDirFor("work");
     const tmp = join(work, ".7.status.json.tmp");
     writeFileSync(tmp, "{}\n");
@@ -252,7 +252,7 @@ describe("scratch directories", () => {
     expect(existsSync(owned)).toBe(true);
   });
 
-  test("a kind that moved to another row keeps its scratch", () => {
+  test("a kind that moved to another pipeline keeps its scratch", () => {
     const dir = scratchDirFor("triage");
     sweep(
       pipelineOwnership(
@@ -276,7 +276,7 @@ describe("worktrees", () => {
     expect(items.map((item) => item.path)).not.toContain(paths.repoDir);
   });
 
-  test("a clean tree leased by a pipeline no row produces is unlocked and removed", () => {
+  test("a clean tree leased by a pipeline no pipeline produces is unlocked and removed", () => {
     const dir = unitWorktree("phoebe/issue-9", { lease: "intake", published: true });
 
     const result = sweep(owns(["work"], ["issues"]));
@@ -310,7 +310,7 @@ describe("worktrees", () => {
     expect(result.kept.map((item) => item.path)).toEqual([dir]);
   });
 
-  test("a tree leased by a live row is untouchable", () => {
+  test("a tree leased by a live pipeline is untouchable", () => {
     const dir = unitWorktree("phoebe/issue-12", { lease: "work", published: true });
 
     const result = sweep(owns(["work"], ["issues"]));
@@ -350,7 +350,7 @@ describe("worktrees", () => {
     expect(result.removed.some((item) => item.tier === "readonly")).toBe(true);
   });
 
-  test("a read-only tree a live row is working in survives", () => {
+  test("a read-only tree a live pipeline is working in survives", () => {
     const dir = readonlyWorktree("research", { lease: "work" });
     sweep(owns(["work"], ["research"]));
     expect(existsSync(dir)).toBe(true);

@@ -309,7 +309,7 @@ async function listingForLive(opts: {
       configPath: opts.configPath,
       stateDir: stateDirFor(opts.dataBase, opts.slug),
       dataBase: opts.dataBase,
-      ...(opts.loadPipelines !== undefined ? { loadRows: opts.loadPipelines } : {}),
+      ...(opts.loadPipelines !== undefined ? { loadPipelines: opts.loadPipelines } : {}),
     }),
     arm: readTenantArm(resolvedEnvPath),
     disabled: opts.disabled ?? false,

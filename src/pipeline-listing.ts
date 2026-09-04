@@ -240,13 +240,13 @@ export async function listPipelines(opts: {
   /** The tenant's `state/` dir, or null when its slug is unknown. */
   stateDir: string | null;
   dataBase: string;
-  loadRows?: LoadPipelines;
+  loadPipelines?: LoadPipelines;
   env?: NodeJS.ProcessEnv;
   now?: number;
 }): Promise<PipelineListing[]> {
   const now = opts.now ?? Date.now();
-  const loadRows: LoadPipelines =
-    opts.loadRows ??
+  const loadPipelines: LoadPipelines =
+    opts.loadPipelines ??
     ((configPath) =>
       enumeratePipelineFacts({
         configPath,
@@ -257,7 +257,7 @@ export async function listPipelines(opts: {
   let pipelines: readonly PipelineFacts[] | null = null;
   if (opts.configPath !== null) {
     try {
-      pipelines = await loadRows(opts.configPath);
+      pipelines = await loadPipelines(opts.configPath);
     } catch {
       pipelines = null;
     }

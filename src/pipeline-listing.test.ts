@@ -137,7 +137,7 @@ describe("listPipelines", () => {
       stateDir,
       dataBase: "/data/repos",
       now: NOW,
-      loadRows: pipelines([
+      loadPipelines: pipelines([
         WORK_ROW,
         { name: "intake", disabled: true, concurrency: 1, pollIntervalMs: 15_000 },
       ]),
@@ -160,7 +160,7 @@ describe("listPipelines", () => {
       stateDir,
       dataBase: "/data/repos",
       now: NOW,
-      loadRows: pipelines([WORK_ROW]),
+      loadPipelines: pipelines([WORK_ROW]),
     });
     expect(listings[0]).toMatchObject({ state: "idle", wedged: false });
   });
@@ -175,7 +175,7 @@ describe("listPipelines", () => {
       stateDir,
       dataBase: "/data/repos",
       now: NOW,
-      loadRows: pipelines([WORK_ROW]),
+      loadPipelines: pipelines([WORK_ROW]),
     });
     expect(listings[0]).toMatchObject({ state: "working", wedged: true });
   });
@@ -205,7 +205,7 @@ describe("listPipelines", () => {
       stateDir,
       dataBase: "/data/repos",
       now: NOW,
-      loadRows: () => {
+      loadPipelines: () => {
         throw new Error("custom kind failed to load");
       },
     });
@@ -218,7 +218,7 @@ describe("listPipelines", () => {
       stateDir: join(stateDir, "missing"),
       dataBase: "/data/repos",
       now: NOW,
-      loadRows: pipelines([WORK_ROW]),
+      loadPipelines: pipelines([WORK_ROW]),
     });
     expect(listings).toMatchObject([{ name: "work", state: "no status", updatedAt: null }]);
   });
