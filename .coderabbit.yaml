@@ -12,4 +12,4 @@ reviews:
     enabled: true
     base_branches:
       - main
-      - 'phoebe/feature-.*'
+      - "phoebe/feature-.*"
