@@ -103,7 +103,9 @@ first time Phoebe picks up a member:
    is idempotent, so a branch that already exists is simply used. The name comes
    from the parent's issue number, which means it cannot drift or collide, and it
    sits inside `branchPrefix` so a `prScope: "phoebe"` tenant admits both the
-   integration PR and the member PRs.
+   integration PR and the member PRs. The branch starts on one empty commit,
+   because GitHub will not open a pull request between two refs at the same
+   commit; a squash merge of the integration PR erases it.
 2. **The draft integration PR**, from that branch to the default branch, titled
    with the parent issue's title and bodied `Part of #M`. It costs nothing to open
    early, it is the object a human watches the feature through, and it gives the

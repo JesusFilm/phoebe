@@ -4,10 +4,18 @@
 // `-R`, or a GraphQL cursor that never advances. Those three are what this file
 // covers; per the design record there is no obligation to reach every method.
 
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
 import { asBranchRef, asPrNumber, asSha } from "./branded.ts";
 import { resolveConfig, type PhoebeUserConfig } from "./config-schema.ts";
-import { createGitHubClient, type GhExecutor, type GitHubClient } from "./github-client.ts";
+import {
+  createGhExecutor,
+  createGitHubClient,
+  type GhExecutor,
+  type GitHubClient,
+} from "./github-client.ts";
 import { buildUnitTimeoutMarker, decideTimeoutRecord } from "./quarantine.ts";
 
 function minimalUser(): PhoebeUserConfig {
@@ -913,64 +921,97 @@ describe("featureIntegrationPr", () => {
 });
 
 describe("createFeatureBranch", () => {
-  test("fetches the default-branch HEAD SHA then POSTs the new ref", () => {
-    const sha = "a".repeat(40);
-    const { github, calls } = clientWith([JSON.stringify({ object: { sha } }), ""]);
-    github.createFeatureBranch(341);
-    expect(calls[0]!.args).toEqual(["api", "repos/acme/widget/git/ref/heads/main"]);
-    expect(calls[1]!.args).toEqual([
-      "api",
-      "--method",
-      "POST",
-      "repos/acme/widget/git/refs",
-      "--input",
-      "-",
-    ]);
-    expect(JSON.parse(calls[1]!.input ?? "{}")).toEqual({
-      ref: "refs/heads/phoebe/feature-341",
-      sha,
-    });
-  });
-
-  test("swallows a 422 when the branch already exists", () => {
-    const sha = "b".repeat(40);
-    const alreadyExists = new Error("gh: Reference already exists (HTTP 422)") as Error & {
-      stderr: string;
-    };
-    alreadyExists.stderr = "Reference already exists (HTTP 422)";
-    const { exec, calls } = stubExec([JSON.stringify({ object: { sha } })]);
-    let callCount = 0;
-    const capturingExec: GhExecutor = (args, opts) => {
-      callCount++;
-      if (callCount === 2) throw alreadyExists;
+  const SHA = "a".repeat(40);
+  const TREE = "b".repeat(40);
+  const SEED = "c".repeat(40);
+  const ghError = (text: string) => {
+    const error = new Error(`gh: ${text}`) as Error & { stderr: string };
+    error.stderr = text;
+    return error;
+  };
+  /** An executor whose first call (the branch probe) throws `probeError`, then replies in order. */
+  function probingExec(
+    probeError: Error | null,
+    replies: readonly string[],
+    failAt?: { call: number; error: Error },
+  ) {
+    const { exec, calls } = stubExec(replies);
+    let n = 0;
+    const wrapped: GhExecutor = (args, opts) => {
+      n++;
+      if (n === 1 && probeError) {
+        calls.push({ args, ...opts });
+        throw probeError;
+      }
+      if (failAt && n === failAt.call) {
+        calls.push({ args, ...opts });
+        throw failAt.error;
+      }
       return exec(args, opts);
     };
     const github = createGitHubClient({
       config: resolveConfig(minimalUser()),
       env: {},
-      internal: { exec: capturingExec, sleep: async () => {} },
+      internal: { exec: wrapped, sleep: async () => {} },
+    });
+    return { github, calls };
+  }
+  const seedReplies = [
+    JSON.stringify({ object: { sha: SHA } }),
+    JSON.stringify({ tree: { sha: TREE } }),
+    JSON.stringify({ sha: SEED }),
+    "",
+  ];
+
+  test("seeds a missing branch with an empty commit on the default branch's tree", () => {
+    const { github, calls } = probingExec(ghError("Not Found (HTTP 404)"), seedReplies);
+    github.createFeatureBranch(341);
+    expect(calls.map((c) => c.args)).toEqual([
+      ["api", "repos/acme/widget/git/ref/heads/phoebe/feature-341"],
+      ["api", "repos/acme/widget/git/ref/heads/main"],
+      ["api", `repos/acme/widget/git/commits/${SHA}`],
+      ["api", "--method", "POST", "repos/acme/widget/git/commits", "--input", "-"],
+      ["api", "--method", "POST", "repos/acme/widget/git/refs", "--input", "-"],
+    ]);
+    const commit = JSON.parse(calls[3]!.input ?? "{}") as {
+      tree: string;
+      parents: string[];
+      message: string;
+    };
+    expect(commit.tree).toBe(TREE);
+    expect(commit.parents).toEqual([SHA]);
+    expect(commit.message).toContain("#341");
+    expect(JSON.parse(calls[4]!.input ?? "{}")).toEqual({
+      ref: "refs/heads/phoebe/feature-341",
+      sha: SEED,
+    });
+  });
+
+  test("uses an existing branch as-is and mints nothing", () => {
+    const { github, calls } = probingExec(null, [JSON.stringify({ object: { sha: SHA } })]);
+    github.createFeatureBranch(341);
+    expect(calls).toHaveLength(1);
+  });
+
+  test("re-throws a probe failure that is not a 404", () => {
+    const { github } = probingExec(ghError("Bad credentials (HTTP 401)"), seedReplies);
+    expect(() => github.createFeatureBranch(341)).toThrow("Bad credentials");
+  });
+
+  test("swallows 'Reference already exists' when a sibling won the race", () => {
+    const { github } = probingExec(ghError("Not Found (HTTP 404)"), seedReplies, {
+      call: 5,
+      error: ghError("Reference already exists (HTTP 422)"),
     });
     expect(() => github.createFeatureBranch(341)).not.toThrow();
-    void calls;
   });
 
-  test("re-throws non-422 errors", () => {
-    const permissionError = new Error("gh: Not Found (HTTP 404)") as Error & { stderr: string };
-    permissionError.stderr = "Not Found (HTTP 404)";
-    const sha = "c".repeat(40);
-    const { exec } = stubExec([JSON.stringify({ object: { sha } })]);
-    let callCount = 0;
-    const capturingExec: GhExecutor = (args, opts) => {
-      callCount++;
-      if (callCount === 2) throw permissionError;
-      return exec(args, opts);
-    };
-    const github = createGitHubClient({
-      config: resolveConfig(minimalUser()),
-      env: {},
-      internal: { exec: capturingExec, sleep: async () => {} },
+  test("re-throws any other 422 from the ref write", () => {
+    const { github } = probingExec(ghError("Not Found (HTTP 404)"), seedReplies, {
+      call: 5,
+      error: ghError("Invalid request.\n\nFor 'links/0/schema', nil is not an object. (HTTP 422)"),
     });
-    expect(() => github.createFeatureBranch(341)).toThrow("Not Found");
+    expect(() => github.createFeatureBranch(341)).toThrow("links/0/schema");
   });
 });
 
@@ -1233,5 +1274,26 @@ describe("updatePrBody", () => {
     github.updatePrBody(asPrNumber(99), "Part of #341.\n\nCloses #380\n");
     expect(calls[0]!.args).toEqual(["pr", "edit", "99", "--body-file", "-", "-R", "acme/widget"]);
     expect(calls[0]!.input).toBe("Part of #341.\n\nCloses #380\n");
+  });
+});
+
+describe("createGhExecutor", () => {
+  /** A fake `gh` on PATH that echoes its stdin, so forwarded input is observable. */
+  function fakeGhOnPath(): NodeJS.ProcessEnv {
+    const dir = mkdtempSync(join(tmpdir(), "phoebe-gh-"));
+    const gh = join(dir, "gh");
+    writeFileSync(gh, "#!/bin/sh\ncat\n");
+    chmodSync(gh, 0o755);
+    return { PATH: `${dir}:${process.env.PATH ?? ""}` };
+  }
+
+  test("forwards input on the captured path", () => {
+    const exec = createGhExecutor(fakeGhOnPath());
+    expect(exec(["api", "--input", "-"], { input: '{"ref":"x"}' })).toBe('{"ref":"x"}');
+  });
+
+  test("forwards input on the inherit path without throwing", () => {
+    const exec = createGhExecutor(fakeGhOnPath());
+    expect(() => exec(["api", "--input", "-"], { input: "{}", inherit: true })).not.toThrow();
   });
 });
