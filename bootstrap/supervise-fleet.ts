@@ -256,6 +256,19 @@ export type SuperviseFleetDeps = {
     engine: LaunchedEngine;
     elapsedMs: number;
   }) => void;
+  /**
+   * Narrow the engine's row fingerprint with what only the supervisor knows:
+   * the tenant's `.env` as *this row* would hold it (#425). Returning null for
+   * a null input keeps the "unknown never counts as a change" rule — the
+   * implicit row of a checkout that cannot enumerate has no fingerprint to
+   * narrow, and relaunches on the tenant axis as it always has.
+   *
+   * This is what makes a declared-key rotation relaunch one row: the rotated
+   * key moves only the digest of the rows that can see it, and a tenant whose
+   * fingerprint moved with at least one row of its own to show for it does not
+   * fan out to its siblings.
+   */
+  rowFingerprint?: (row: SupervisedRow, enumerated: string | null) => string | null;
   /** What a row exiting on its own means for the container ({@link RowExitPolicy}). */
   rowExit?: RowExitPolicy;
   /** Reap a child we intentionally drained (relaunch/remove); the broker owner id. */
@@ -375,15 +388,21 @@ export async function superviseFleet(deps: SuperviseFleetDeps): Promise<EngineEx
         deps.onRowsError?.({ tenantId: tenant.id, error });
         continue;
       }
+      // Sibling declarations are a property of the tenant's whole row set, so
+      // they are assembled here, once, rather than re-derived per spawn.
       for (const pipeline of pipelines) {
+        const row: SupervisedRow = {
+          id: rowId(tenant.id, pipeline.name),
+          tenant,
+          pipeline,
+          enumerated: enumerator !== null,
+          siblingEnv: [
+            ...new Set(pipelines.filter((p) => p !== pipeline).flatMap((p) => p.env)),
+          ].sort(),
+        };
         rows.push({
-          row: {
-            id: rowId(tenant.id, pipeline.name),
-            tenant,
-            pipeline,
-            enumerated: enumerator !== null,
-          },
-          fingerprint: pipeline.fingerprint,
+          row,
+          fingerprint: deps.rowFingerprint?.(row, pipeline.fingerprint) ?? pipeline.fingerprint,
         });
       }
     }

@@ -10,7 +10,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
 import { resolveConfig, type PhoebeUserConfig } from "./config-schema.ts";
-import { enumeratePipelineRows, parsePipelinesArgs } from "./pipeline-enumerate.ts";
+import {
+  enumerateDeclaredEnv,
+  enumeratePipelineRows,
+  parsePipelinesArgs,
+} from "./pipeline-enumerate.ts";
 
 function userConfig(overrides: Partial<PhoebeUserConfig> = {}): PhoebeUserConfig {
   return {
@@ -187,6 +191,66 @@ describe("enumeratePipelineRows", () => {
     await expect(
       enumerate({ pipelines: { intake: { kinds: { custom: { nudge: "./nudge.ts" } } } } }, dir),
     ).rejects.toThrow(/prompts\/nudge.md is missing/);
+  });
+});
+
+const DECLARING_KIND_SOURCE = `export default {
+  name: "nudge",
+  oneShotEligible: true,
+  promptFile: "prompts/custom.md",
+  workspace: "scratch",
+  requiredEnv: ["SLACK_BOT_TOKEN"],
+  agentEnv: ["SLACK_BOT_TOKEN"],
+  report: { noun: "nudge(s)", describe: (unit) => unit.ref },
+  fetch: () => Promise.resolve([]),
+  select: () => ({ unit: null, skipped: [], total: 0 }),
+  run: () => Promise.resolve(),
+};
+`;
+
+describe("the per-row `env` (#425)", () => {
+  test("a row whose kinds declare nothing reports no keys", async () => {
+    const rows = await enumerate();
+    expect(rows[0]?.env).toEqual([]);
+  });
+
+  test("the declaring row reports the key and its sibling does not", async () => {
+    const { dir } = kindModule(DECLARING_KIND_SOURCE);
+    const rows = await enumerate(
+      { pipelines: { intake: { kinds: { custom: { nudge: "./nudge.ts" } } } } },
+      dir,
+    );
+    expect(rows.find((row) => row.name === "intake")?.env).toEqual(["SLACK_BOT_TOKEN"]);
+    expect(rows.find((row) => row.name === "work")?.env).toEqual([]);
+  });
+
+  test("a kind switched off contributes no key — `env` is the reach of live work", async () => {
+    const { dir } = kindModule(DECLARING_KIND_SOURCE);
+    const rows = await enumerate(
+      {
+        pipelines: {
+          intake: { kinds: { custom: { nudge: "./nudge.ts" }, nudge: { disabled: true } } },
+        },
+      },
+      dir,
+    );
+    expect(rows.find((row) => row.name === "intake")?.env).toEqual([]);
+  });
+});
+
+describe("enumerateDeclaredEnv", () => {
+  test("attributes each declared key to the row and kind that named it", async () => {
+    const { dir } = kindModule(DECLARING_KIND_SOURCE);
+    const declarations = await enumerateDeclaredEnv(
+      resolveConfig(
+        userConfig({ pipelines: { intake: { kinds: { custom: { nudge: "./nudge.ts" } } } } }),
+        { dataBase: "/tmp/phoebe-test" },
+      ),
+      dir,
+    );
+    expect(declarations).toEqual([
+      { pipeline: "intake", kind: "nudge", keys: ["SLACK_BOT_TOKEN"] },
+    ]);
   });
 });
 
