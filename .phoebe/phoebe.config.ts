@@ -29,7 +29,7 @@ const config: PhoebeUserConfig = {
   // Baseline: opus-5 at low effort, because this is a long-running loop paying
   // against subscription usage limits rather than metered API billing. Low is
   // the right floor for the kinds whose spec arrives complete — a CI log, a
-  // reviewer's thread — and `workKinds` below lifts the kinds that have to
+  // reviewer's thread — and the kind blocks below lift the kinds that have to
   // reconstruct intent instead.
   //
   // Mind the resolution ladder (docs/configuration.md): per-kind config
@@ -41,6 +41,16 @@ const config: PhoebeUserConfig = {
   defaultEfforts: { claude: "low" },
   providerEnv: { claude: "CLAUDE_CODE_OAUTH_TOKEN" },
 
+  // Run the engine from the host working tree mounted at /opt/phoebe-engine
+  // (container/compose.yml) rather than a github checkout, so `boot` execs
+  // exactly what is checked out. Only the bootstrapper reads this field; the
+  // engine drops it in resolveConfig.
+  engine: { source: "local" },
+
+  // This deployment's rows of work (#415/#419). Only the reserved `work` row,
+  // which is what an engine child with no `--pipeline` flag runs;
+  // `pipelines.work.kinds` is where `workKinds` and `promptFiles` moved.
+  //
   // Per-work-kind tuning (#300). One rule on both axes: spend where the agent
   // reconstructs intent, save where it executes a spec someone else wrote.
   //
@@ -62,32 +72,28 @@ const config: PhoebeUserConfig = {
   // defaultEfforts, and an empty PHOEBE_<KIND>_EFFORT reads as unset), so a
   // haiku kind would still be handed `--effort low`, which that model does not
   // take.
-  workKinds: {
-    conflicts: { effort: "high" },
-    checks: { model: "claude-sonnet-5", effort: "medium" },
-    reviews: { model: "claude-sonnet-5" },
-    issues: { effort: "high" },
-    research: { effort: "high" },
+  //
+  // Each kind's `promptFile`: the engine child's cwd is this directory (compose
+  // `working_dir`), so every prompt points at the repo's own `prompts/` one
+  // level up instead of a second copy under `.phoebe/prompts/`. The whole
+  // working tree is mounted, so `..` is in reach, and one tree means a prompt
+  // improvement merged to `prompts/` actually reaches the agent working this
+  // repo (#164).
+  pipelines: {
+    work: {
+      kinds: {
+        conflicts: { effort: "high", promptFile: "../prompts/conflict-prompt.md" },
+        checks: {
+          model: "claude-sonnet-5",
+          effort: "medium",
+          promptFile: "../prompts/checks-prompt.md",
+        },
+        reviews: { model: "claude-sonnet-5", promptFile: "../prompts/reviews-prompt.md" },
+        issues: { effort: "high", promptFile: "../prompts/issues-prompt.md" },
+        research: { effort: "high", promptFile: "../prompts/research-prompt.md" },
+      },
+    },
   },
-
-  // The engine child's cwd is this directory (compose `working_dir`), so point
-  // every prompt at the repo's own `prompts/` one level up instead of keeping a
-  // second copy under `.phoebe/prompts/`. The whole working tree is mounted, so
-  // `..` is in reach, and one tree means a prompt improvement merged to
-  // `prompts/` actually reaches the agent working this repo (#164).
-  promptFiles: {
-    issue: "../prompts/issues-prompt.md",
-    conflict: "../prompts/conflict-prompt.md",
-    checks: "../prompts/checks-prompt.md",
-    reviews: "../prompts/reviews-prompt.md",
-    research: "../prompts/research-prompt.md",
-  },
-
-  // Run the engine from the host working tree mounted at /opt/phoebe-engine
-  // (container/compose.yml) rather than a github checkout, so `boot` execs
-  // exactly what is checked out. Only the bootstrapper reads this field; the
-  // engine drops it in resolveConfig.
-  engine: { source: "local" },
 };
 
 export default config;

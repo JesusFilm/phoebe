@@ -9,6 +9,8 @@
 //   * formatMigrateReport: applies listed individually, not-applicable collapsed
 //     to trailing count, uncommitted listing only includes journal paths.
 //   * Pre-existing dirt absent from uncommitted listing.
+//   * Migration.verify: throwing reverts the write and reports failed; its
+//     loadConfig reads the file on disk and, given source text, a scratch sibling.
 
 import {
   chmodSync,
@@ -16,6 +18,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   openSync,
   readFileSync,
   writeFileSync,
@@ -27,6 +30,7 @@ import { ConfigRefusal, isConfigRefusal } from "./config-handle.ts";
 import { validateUserConfig, type PhoebeUserConfig } from "./config-schema.ts";
 import { researchPromptMigration } from "./migrations/m001-research-prompt.ts";
 import { addResearchToWorkOrderMigration } from "./migrations/m002-add-research-to-workorder.ts";
+import { pipelinesWorkBlockMigration } from "./migrations/m005-pipelines-work-block.ts";
 import {
   buildMigrateJson,
   formatFleetMigrateReport,
@@ -51,6 +55,8 @@ const MINIMAL_CONFIG = `export const config = {
   testCommand: "npm test",
 };
 `;
+
+const MINIMAL_CONFIG_ALTERED = MINIMAL_CONFIG.replace("acme/test", "acme/altered");
 
 function makeTempDir(): string {
   return mkdtempSync(join(tmpdir(), "phoebe-migrate-test-"));
@@ -2225,5 +2231,177 @@ describe("buildMigrateJson", () => {
     expect(reparsed.report).toBe(1);
     expect(reparsed.ok).toBe(true);
     expect(reparsed.root.migrations[0]!.paths).toEqual(["f.md"]);
+  });
+});
+
+// ----------------------------------------------------------------- m005 end-to-end
+
+// The one place the whole path runs for real: real files, the runner's own
+// load-and-validate, and m005's `verify` loading both the migrated config and
+// the source it replaced. Everything above stubs `validateFn`.
+
+const TENANT_CONFIG_WITH_WORK_FIELDS = `export const config = {
+  repoSlug: "acme/test",
+  repoUrl: "https://github.com/acme/test.git",
+  installCommand: "npm ci",
+  checkCommand: "npm run check",
+  testCommand: "npm test",
+
+  workOrder: ["conflicts", "issues"],
+
+  // Spend where the agent reconstructs intent.
+  workKinds: {
+    // conflicts has no spec at all.
+    conflicts: { effort: "high" },
+    issues: { effort: "high" },
+  },
+
+  promptFiles: {
+    issue: "../prompts/issues-prompt.md",
+    conflict: "../prompts/conflict-prompt.md",
+  },
+};
+`;
+
+describe("m005 pipelinesWorkBlockMigration end-to-end", () => {
+  test("moves the three fields, verifies the row still resolves, and is done after one run", async () => {
+    const dir = makeTempDir();
+    const configPath = join(dir, "phoebe.config.ts");
+    writeFileSync(configPath, TENANT_CONFIG_WITH_WORK_FIELDS);
+
+    const report = await runMigrate({
+      dir,
+      role: "tenant",
+      configPath,
+      migrations: [pipelinesWorkBlockMigration],
+    });
+
+    expect(report.results[0]!.state).toBe("applied");
+    expect(report.ok).toBe(true);
+
+    const migrated = readFileSync(configPath, "utf8");
+    expect(migrated).toContain(
+      [
+        `  pipelines: {`,
+        `    work: {`,
+        `      order: ["conflicts", "issues"],`,
+        `      kinds: {`,
+        `        // conflicts has no spec at all.`,
+        `        conflicts: { effort: "high", promptFile: "../prompts/conflict-prompt.md" },`,
+        `        issues: { effort: "high", promptFile: "../prompts/issues-prompt.md" },`,
+        `      },`,
+        `    },`,
+        `  },`,
+      ].join("\n"),
+    );
+    expect(migrated).toContain(`  repoSlug: "acme/test",`);
+    expect(migrated).not.toContain("workOrder");
+
+    // No scratch file from `verify` survives the run.
+    expect(readdirSync(dir).filter((name) => name.startsWith("."))).toEqual([]);
+
+    const second = await runMigrate({
+      dir,
+      role: "tenant",
+      configPath,
+      migrations: [pipelinesWorkBlockMigration],
+    });
+    expect(second.results[0]!.state).toBe("not-applicable");
+  });
+
+  test("a spread in workKinds is manual and the config is left untouched", async () => {
+    const dir = makeTempDir();
+    const configPath = join(dir, "phoebe.config.ts");
+    const before = TENANT_CONFIG_WITH_WORK_FIELDS.replace(
+      "  workKinds: {",
+      "  workKinds: {\n    ...BASE_KINDS,",
+    );
+    writeFileSync(configPath, before);
+
+    const report = await runMigrate({
+      dir,
+      role: "tenant",
+      configPath,
+      migrations: [pipelinesWorkBlockMigration],
+    });
+
+    expect(report.results[0]!.state).toBe("manual");
+    expect(report.results[0]!.detail).toContain("move `workOrder` to `pipelines.work.order`");
+    expect(readFileSync(configPath, "utf8")).toBe(before);
+    expect(report.journal).toHaveLength(0);
+  });
+
+  test("skipped on a solo root and a workspace root", async () => {
+    for (const role of ["solo-root", "workspace-root"] as const) {
+      const dir = makeTempDir();
+      const configPath = join(dir, "phoebe.config.ts");
+      writeFileSync(configPath, TENANT_CONFIG_WITH_WORK_FIELDS);
+      const report = await runMigrate({
+        dir,
+        role,
+        configPath,
+        migrations: [pipelinesWorkBlockMigration],
+      });
+      expect(report.results).toHaveLength(0);
+      expect(readFileSync(configPath, "utf8")).toBe(TENANT_CONFIG_WITH_WORK_FIELDS);
+    }
+  });
+});
+
+describe("Migration.verify", () => {
+  test("a throwing verify reverts the write and reports failed", async () => {
+    const dir = makeTempDir();
+    const configPath = scaffoldDeployment(dir);
+    const before = readFileSync(configPath, "utf8");
+
+    const report = await runMigrate({
+      dir,
+      role: "solo-root",
+      configPath,
+      migrations: [
+        {
+          ...makeApplyingMigration("test-verify", "phoebe.config.ts", MINIMAL_CONFIG_ALTERED),
+          detect: () => true,
+          verify: () => Promise.reject(new Error("the row resolves differently")),
+        },
+      ],
+      validateFn: async () => {},
+    });
+
+    expect(report.results[0]!.state).toBe("failed");
+    expect(report.results[0]!.detail).toContain("verification failed (reverted)");
+    expect(report.results[0]!.detail).toContain("the row resolves differently");
+    expect(readFileSync(configPath, "utf8")).toBe(before);
+    expect(report.journal).toHaveLength(0);
+  });
+
+  test("loadConfig reads the file on disk, and source text through a scratch sibling", async () => {
+    const dir = makeTempDir();
+    const configPath = scaffoldDeployment(dir);
+    let onDisk: PhoebeUserConfig | undefined;
+    let fromSource: PhoebeUserConfig | undefined;
+
+    const report = await runMigrate({
+      dir,
+      role: "solo-root",
+      configPath,
+      migrations: [
+        {
+          ...makeApplyingMigration("test-loader", "phoebe.config.ts", MINIMAL_CONFIG_ALTERED),
+          detect: () => true,
+          verify: async (ctx) => {
+            onDisk = await ctx.loadConfig();
+            fromSource = await ctx.loadConfig(MINIMAL_CONFIG);
+          },
+        },
+      ],
+      validateFn: async () => {},
+    });
+
+    expect(report.results[0]!.state).toBe("applied");
+    expect(onDisk?.repoSlug).toBe("acme/altered");
+    expect(fromSource?.repoSlug).toBe("acme/test");
+    // The scratch sibling is gone again.
+    expect(readdirSync(dir).filter((name) => name.startsWith("."))).toEqual([]);
   });
 });
