@@ -131,9 +131,22 @@ rather than baked into the process.
 _Avoid_: credential handoff, token grant
 
 **Slot**:
-Permission to run one work unit at a time, granted by the bootstrapper so a fleet cannot
-exceed its concurrency limit.
+Permission to execute one work unit, granted by the bootstrapper. A row holds one per unit
+it has in flight.
 _Avoid_: lock, permit, ticket
+
+**Effective cap**:
+How many slots the container hands out at once: the largest `concurrency` any live row
+declares, or the operator's env override.
+_Avoid_: limit, max agents
+
+**Starved row**:
+A row holding no slot while it has work waiting for one.
+_Avoid_: blocked, queued
+
+**Slot floor**:
+The bounded allowance that lets a starved row hold a slot over the effective cap.
+_Avoid_: reserve, guarantee, boost
 
 **Engine source**:
 Where an engine checkout comes from — a GitHub ref, or a local directory in development.

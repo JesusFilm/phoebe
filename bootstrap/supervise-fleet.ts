@@ -89,6 +89,15 @@ export const DEFAULT_FLEET_INTERVAL_MS = 60_000;
  */
 export const DEFAULT_DRAIN_TIMEOUT_MS = 3_600_000;
 
+/**
+ * The knobs the supervisor consumes itself and so acts on without relaunching a
+ * row (#402/#407). Compared as one string because the question is only ever
+ * "did either move?".
+ */
+function hotKnobs(row: PipelineRow): string {
+  return `${row.disabled}:${row.priority}`;
+}
+
 /** A supervised row's child — enough to drain it and await its exit. */
 export type FleetChild = {
   kill: (signal: NodeJS.Signals) => void;
@@ -204,6 +213,15 @@ export type SuperviseFleetDeps = {
   onEngineChange?: (reason: "config" | "ref") => void;
   /** Row ids added / drained / relaunched by one poll of the row axis. */
   onRowChange?: (change: { added: string[]; removed: string[]; changed: string[] }) => void;
+  /**
+   * The live row matrix, every poll that could see it move — the hot knobs the
+   * supervisor consumes without relaunching a row, and the reshape that may move
+   * the derived slot cap (#407). `reshaped` is true only when this poll added,
+   * removed or relaunched a row; a poll that merely re-read a row's `priority`
+   * fires with false, so nothing resizes a semaphore mid-flight. Held tenants'
+   * running rows are included: they are live, whatever their enumeration did.
+   */
+  onRows?: (matrix: { rows: readonly SupervisedRow[]; reshaped: boolean }) => void;
   onChildExit?: (info: { row: SupervisedRow; exit: EngineExit; expected: boolean }) => void;
   onLaunchError?: (error: unknown) => void;
   /**
@@ -411,6 +429,9 @@ export async function superviseFleet(deps: SuperviseFleetDeps): Promise<EngineEx
     for (const { tenant, fingerprint } of samples) {
       if (!held.has(tenant.id)) tenantFingerprints.set(tenant.id, fingerprint);
     }
+    // Announced before anything spawns: a child must never be able to ask for a
+    // slot the broker has not been sized and ordered for.
+    deps.onRows?.({ rows: rows.map((sample) => sample.row), reshaped: true });
     for (const { row, fingerprint } of rows) spawnFor(row, fingerprint);
   };
 
@@ -670,6 +691,19 @@ export async function superviseFleet(deps: SuperviseFleetDeps): Promise<EngineEx
     // drags its siblings down with it.
     const accounted = new Set<string>();
     for (const row of [...diff.added, ...diff.changed]) accounted.add(row.tenant.id);
+    // A hot knob is one the supervisor acts on without relaunching (#402/#407):
+    // `disabled` and `priority`, both deliberately outside the row fingerprint.
+    // Editing one moves the tenant's stat fingerprint and nothing else, so
+    // without this the fan-out below would relaunch the very row a hot edit was
+    // meant to spare. The running record takes the new values instead, and the
+    // move is accounted for.
+    const relaunching = new Set(diff.changed.map((row) => row.id));
+    for (const { row } of desired) {
+      const record = children.get(row.id);
+      if (record === undefined || relaunching.has(row.id)) continue;
+      if (hotKnobs(record.row.pipeline) !== hotKnobs(row.pipeline)) accounted.add(row.tenant.id);
+      record.row = row;
+    }
     for (const id of diff.removed) {
       const record = children.get(id);
       if (record) accounted.add(record.row.tenant.id);
@@ -691,13 +725,24 @@ export async function superviseFleet(deps: SuperviseFleetDeps): Promise<EngineEx
       if (!present.has(id) && !tenantHold.has(id)) tenantFingerprints.delete(id);
     }
 
-    if (diff.added.length || diff.removed.length || changed.length) {
+    const reshaped = diff.added.length > 0 || diff.removed.length > 0 || changed.length > 0;
+    if (reshaped) {
       deps.onRowChange?.({
         added: diff.added.map((row) => row.id),
         removed: diff.removed,
         changed: changed.map((row) => row.id),
       });
     }
+    // The matrix as it will be once this poll has applied: everything desired,
+    // plus the running rows of a held tenant, which are live but unenumerable
+    // this poll. Announced before the diff is applied, for the same reason the
+    // first spawn is.
+    const live = desired.map((sample) => sample.row);
+    const desiredIds = new Set(live.map((row) => row.id));
+    for (const record of children.values()) {
+      if (!desiredIds.has(record.row.id) && rowHold.has(record.row.id)) live.push(record.row);
+    }
+    deps.onRows?.({ rows: live, reshaped });
     const fingerprintById = new Map(desired.map((s) => [s.row.id, s.fingerprint] as const));
     for (const id of diff.removed) {
       const record = children.get(id);
