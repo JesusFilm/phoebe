@@ -4,10 +4,16 @@
 // temp clone.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { withBackoffSync, type SleepSync } from "./backoff.ts";
 import { asSha, type BranchRef, type Sha } from "./branded.ts";
+import {
+  leasePipeline,
+  parseWorktreeList,
+  WorktreeLeasedError,
+  type WorktreeEntry,
+} from "./worktree-lease.ts";
 
 export type GitRunner = (
   args: string[],
@@ -78,13 +84,14 @@ export function fetchOrigin(
   repoDir: string,
   git: GitRunner = defaultGit,
   sleepSync?: SleepSync,
+  warn: (line: string) => void = (line) => console.warn(`[phoebe] ${line}`),
 ): void {
   withBackoffSync(() => git(["fetch", "origin"], { cwd: repoDir, stdio: "inherit" }), {
     scheduleMs: FETCH_RETRY_SCHEDULE_MS,
     isRetryable: () => true,
     onRetry: (_error, delayMs, retry) => {
-      console.warn(
-        `[phoebe] \`git fetch origin\` failed — retrying in ${delayMs / 1000}s ` +
+      warn(
+        `\`git fetch origin\` failed — retrying in ${delayMs / 1000}s ` +
           `(retry ${retry}/${FETCH_RETRY_SCHEDULE_MS.length}).`,
       );
     },
@@ -160,11 +167,102 @@ export function dirtyFileCount(worktreeDir: string, git: GitRunner = defaultGit)
     .filter((line) => line.trim().length > 0).length;
 }
 
+// --- The worktree lease (#418) -----------------------------------------------
+// `git worktree lock` is the lease's enforcement, not a flag beside it: a
+// locked tree refuses `worktree remove --force` (it wants a second `-f`) and
+// `worktree prune` skips it. The reason string's grammar lives in
+// worktree-lease.ts.
+
+/** Take the lease on `worktreeDir`, stamping `reason` on it. */
+export function lockWorktree(
+  repoDir: string,
+  worktreeDir: string,
+  reason: string,
+  git: GitRunner = defaultGit,
+): void {
+  git(["worktree", "lock", "--reason", reason, worktreeDir], { cwd: repoDir, stdio: "ignore" });
+}
+
+/**
+ * Release the lease on `worktreeDir`. Best-effort: git exits non-zero when the
+ * tree is not locked or no longer registered, and both are the state the caller
+ * was asking for.
+ */
+export function unlockWorktree(
+  repoDir: string,
+  worktreeDir: string,
+  git: GitRunner = defaultGit,
+): void {
+  try {
+    git(["worktree", "unlock", worktreeDir], { cwd: repoDir, stdio: "ignore" });
+  } catch {
+    // Already unlocked, or already gone.
+  }
+}
+
+/** Every worktree registered on the clone, with the lock reason each carries. */
+export function listWorktrees(repoDir: string, git: GitRunner = defaultGit): WorktreeEntry[] {
+  return parseWorktreeList(git(["worktree", "list", "--porcelain"], { cwd: repoDir }));
+}
+
+/**
+ * Resolve a path for comparison against git's listing, which prints each tree's
+ * real absolute path. `realpathSync` is what makes a symlinked data root
+ * compare equal; a path that does not exist yet falls back to lexical
+ * resolution.
+ */
+function comparablePath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+/**
+ * The lease on `worktreeDir`. `locked: false` covers the tree being
+ * unregistered as much as unlocked; `locked: true` with a null pipeline is a
+ * lock nothing here wrote — a hand-placed one — which callers treat as another
+ * writer's, not their own. A clone that cannot be listed at all reports no
+ * lease: there is none this process could honour, and the caller's existing
+ * tolerance for a missing clone is what it falls back on.
+ */
+export function worktreeLease(
+  repoDir: string,
+  worktreeDir: string,
+  git: GitRunner = defaultGit,
+): { locked: boolean; pipeline: string | null } {
+  let entries: WorktreeEntry[];
+  try {
+    entries = listWorktrees(repoDir, git);
+  } catch {
+    return { locked: false, pipeline: null };
+  }
+  const wanted = comparablePath(worktreeDir);
+  const entry = entries.find((row) => comparablePath(row.dir) === wanted);
+  if (!entry || entry.reason === null) return { locked: false, pipeline: null };
+  return { locked: true, pipeline: leasePipeline(entry.reason) };
+}
+
+/**
+ * Remove a worktree, unless it is leased.
+ *
+ * The lease check comes first and throws, because the fallback below is a
+ * recursive delete: git's own refusal would be enough to stop `worktree
+ * remove`, and the fallback would then go around it and take a sibling
+ * pipeline's live tree out from under a running agent (#418). A caller drops
+ * its own lease first (`unlockWorktree`); anything still locked here belongs to
+ * someone else and must survive. Past the lease, the fallback stays what it
+ * was: a directory left behind by a killed run is not a worktree git will
+ * remove, and clearing it is how the next run self-heals.
+ */
 export function removeWorktree(
   repoDir: string,
   worktreeDir: string,
   git: GitRunner = defaultGit,
 ): void {
+  const lease = worktreeLease(repoDir, worktreeDir, git);
+  if (lease.locked) throw new WorktreeLeasedError(worktreeDir, lease.pipeline);
   try {
     git(["worktree", "remove", "--force", worktreeDir], { cwd: repoDir, stdio: "ignore" });
   } catch {

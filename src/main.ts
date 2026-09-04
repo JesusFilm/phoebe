@@ -26,7 +26,7 @@
 
 import { execFileSync, execSync } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
-import type { PhoebeConfig } from "./config-schema.ts";
+import { DEFAULT_PIPELINE_NAME, type PhoebeConfig } from "./config-schema.ts";
 import { selectProviderForKind } from "./provider-selection.ts";
 import { parsePipelineName, pipelineRow, resolvePollIntervalMs } from "./pipeline-row.ts";
 import { detectAppCredentials, mintInstallationToken } from "./gh-app.ts";
@@ -58,8 +58,10 @@ import {
 } from "./run-timeout.ts";
 import {
   createEmitUnitEvent,
-  STATUS_FILE,
+  createEngineLog,
+  statusPathFor,
   type EmitUnitEvent,
+  type EngineLog,
   type UnitRef,
 } from "./unit-event.ts";
 import {
@@ -80,7 +82,16 @@ import {
   isInsideContainer,
 } from "./execution-gate.ts";
 import { defaultGit, type GitRunner } from "./git-model.ts";
-import { createOriginHub, ensureOriginClone, type OriginHub } from "./origin-hub.ts";
+import {
+  breakOwnLeases,
+  createOriginHub,
+  ensureOriginClone,
+  requiresOriginClone,
+  type OriginHub,
+} from "./origin-hub.ts";
+import { formatLeaseReason, WorktreeLeasedError } from "./worktree-lease.ts";
+import { withCloneLock } from "./clone-lock.ts";
+import { sweepScope, type SweepScope } from "./sweep-scope.ts";
 import { PROVIDERS } from "./providers/providers.ts";
 import { resolveIssueCoAuthorTrailer } from "./co-author.ts";
 import { runAgent } from "./providers/run-agent.ts";
@@ -244,6 +255,14 @@ export type EngineOptions = {
   /** This tenant's resolved config — passed in, never read from a module-level holder. */
   config: PhoebeConfig;
   /**
+   * Which pipeline row this engine is (#415/#418). It is the process's identity
+   * on disk and in the logs: the stdout tag's third segment, the `state/`
+   * subdirectory its snapshot lives in, and the owner stamped on every worktree
+   * lease it takes. Defaults to the reserved `work` row, which is what an
+   * engine built before pipelines existed already was.
+   */
+  pipeline?: string;
+  /**
    * The assembled work-kind registry (#303): built-ins plus this tenant's
    * custom kinds. Defaults to built-ins only — the CLI path assembles the full
    * registry (custom kind modules load asynchronously) and passes it in.
@@ -311,6 +330,12 @@ export type Engine = {
 export function createEngine(options: EngineOptions): Engine {
   const { config, env, drain, slotClient, credentialClient, emitUnitEvent } = options;
   const { runOnce, dryRun, pollIntervalMs } = options.run;
+  const pipeline = options.pipeline ?? DEFAULT_PIPELINE_NAME;
+  // Every line this engine writes carries `[phoebe:<slug>:<pipeline>]` (#418).
+  // With two processes on one tenant interleaving at the kernel, an untagged
+  // line is a line the operator cannot attribute — and the `work` row is tagged
+  // like any other so a host parser has one grammar to match, as a prefix.
+  const log: EngineLog = createEngineLog(config.repoSlug, pipeline);
   const registry = options.registry ?? buildRegistry(config);
   const git = options.git ?? defaultGit;
   const clock = options.clock ?? defaultClock;
@@ -318,7 +343,7 @@ export function createEngine(options: EngineOptions): Engine {
   // (src/github-client.ts): argv, the `-R <repoSlug>` pin, GraphQL pagination,
   // the merge-state retry and `gh`-error enrichment are all its business, not
   // the loop's. A caller that supplies its own replaces the whole GitHub side.
-  const github = options.github ?? createGitHubClient({ config, env });
+  const github = options.github ?? createGitHubClient({ config, env, tag: log.tag });
 
   const startupGhToken: string | undefined = env["GH_TOKEN"];
 
@@ -330,7 +355,7 @@ export function createEngine(options: EngineOptions): Engine {
 
   function logArmIfChanged(arm: CredentialArm): void {
     if (arm !== lastLoggedArm) {
-      console.log(`[phoebe] Credential arm: ${arm}.`);
+      log.say(`Credential arm: ${arm}.`);
       lastLoggedArm = arm;
     }
   }
@@ -364,7 +389,12 @@ export function createEngine(options: EngineOptions): Engine {
   const prBase = config.defaultBranch;
 
   const inContainer = options.inContainer ?? isInsideContainer();
-  const hub = options.originHub ?? createOriginHub(config, inContainer, git);
+  const hub =
+    options.originHub ??
+    createOriginHub(config, inContainer, git, { warn: (line) => log.warn(line) });
+
+  /** This process's lease stamp on any tree it creates (#418). */
+  const leaseReason = formatLeaseReason({ pipeline, pid: process.pid });
 
   // ---------------------------------------------------------------------------
   // Provider selection (multi-provider ready)
@@ -401,6 +431,20 @@ export function createEngine(options: EngineOptions): Engine {
 
   const workOrder = validateWorkOrder(config.workOrder, [...registry.keys()]);
 
+  // Which tracker objects this pipeline's sweeps may touch (#418). Partition by
+  // ownership: a sweep repairs an object only when the kind that object belongs
+  // to is one this row schedules, which is what gives two processes exactly-once
+  // coverage with nothing to elect and nothing to fail over.
+  const scope: SweepScope = sweepScope(workOrder, config.researchLabel);
+
+  // Whether any scheduled kind puts a workspace on the clone (#418). A row of
+  // `scratch` kinds owns no worktrees, so it has no leases to break at boot and
+  // no reason to touch git at all.
+  const usesRepoWorkspace = requiresOriginClone(
+    workOrder,
+    (kind) => registeredKind(registry, kind).definition.workspace,
+  );
+
   // --- Poison-unit quarantine write path (#75) ---------------------------------
   // The read/skip half ships in orchestrator.ts (it filters `phoebe:quarantined`
   // out of selection). This is the missing write half: on a whole-unit timeout,
@@ -432,8 +476,8 @@ export function createEngine(options: EngineOptions): Engine {
       const key = `${ref.kind}:${ref.id}`;
       const count = (inMemoryTimeoutCounts.get(key) ?? 0) + 1;
       inMemoryTimeoutCounts.set(key, count);
-      console.warn(
-        `[phoebe] ${ref.kind} ${ref.id} timed out ${count}× — the unit carries no GitHub ` +
+      log.warn(
+        `${ref.kind} ${ref.id} timed out ${count}× — the unit carries no GitHub ` +
           `target, so there is no escalation surface; counting in memory only.`,
       );
       return;
@@ -478,8 +522,8 @@ export function createEngine(options: EngineOptions): Engine {
         });
       }
     } catch (error) {
-      console.error(
-        `[phoebe] Could not record timeout toward quarantine for ${ref.kind} ${ref.id} — ` +
+      log.fail(
+        `Could not record timeout toward quarantine for ${ref.kind} ${ref.id} — ` +
           `${error instanceof Error ? error.message : String(error)}`,
       );
     }
@@ -530,12 +574,20 @@ export function createEngine(options: EngineOptions): Engine {
    */
   function sweepQuarantine(reason: UnstickReason): void {
     const { sweepName, because } = UNSTICK_WORDING[reason];
+    // Scoped to what this pipeline schedules (#418): a row of PR janitors does
+    // not list quarantined issues, and a row of issue producers does not list
+    // quarantined PRs. A row that schedules neither shape lists nothing and the
+    // sweep is empty, which is the correct amount of work for it to do.
+    if (!scope.issues && !scope.prs) return;
     let quarantined: QuarantinedUnit[];
     try {
-      quarantined = [...github.listQuarantinedIssues(), ...github.listQuarantinedPrs()];
+      quarantined = [
+        ...(scope.issues ? github.listQuarantinedIssues() : []),
+        ...(scope.prs ? github.listQuarantinedPrs() : []),
+      ];
     } catch (error) {
-      console.error(
-        `[phoebe] Could not list quarantined units for the ${sweepName} sweep — ` +
+      log.fail(
+        `Could not list quarantined units for the ${sweepName} sweep — ` +
           `${error instanceof Error ? error.message : String(error)}`,
       );
       return;
@@ -554,10 +606,10 @@ export function createEngine(options: EngineOptions): Engine {
         // the unit being workable again rather than silently stuck.
         github.removeQuarantineLabel(unit.target);
         github.postUnitComment(unit.target, buildUnstickComment());
-        console.log(`[phoebe] Un-quarantined ${label} — ${because}`);
+        log.say(`Un-quarantined ${label} — ${because}`);
       } catch (error) {
-        console.error(
-          `[phoebe] Could not un-quarantine ${label} — ` +
+        log.fail(
+          `Could not un-quarantine ${label} — ` +
             `${error instanceof Error ? error.message : String(error)}`,
         );
       }
@@ -581,8 +633,8 @@ export function createEngine(options: EngineOptions): Engine {
           return github.issueGraphNode(n);
         } catch (error) {
           unreadable = true;
-          console.warn(
-            `[phoebe] Could not read feature membership at #${n} — ` +
+          log.warn(
+            `Could not read feature membership at #${n} — ` +
               `${error instanceof Error ? error.message : String(error)}`,
           );
           return null;
@@ -593,8 +645,8 @@ export function createEngine(options: EngineOptions): Engine {
           return { pr: github.featureIntegrationPr(n) };
         } catch (error) {
           unreadable = true;
-          console.warn(
-            `[phoebe] Could not read the integration PR for feature #${n} — ` +
+          log.warn(
+            `Could not read the integration PR for feature #${n} — ` +
               `${error instanceof Error ? error.message : String(error)}`,
           );
           return null;
@@ -617,12 +669,15 @@ export function createEngine(options: EngineOptions): Engine {
    * stop the rest, never runs under `--dry-run`.
    */
   function sweepStaleNativeStacks(): void {
+    // The stacks this repairs are built by the issue producers, in
+    // `issueWorkflow`; a row that runs none of them owns none of these PRs (#418).
+    if (!scope.issues) return;
     let stackedPrs: StackedPhoebePr[];
     try {
       stackedPrs = github.listNativelyStackedPrs();
     } catch (error) {
-      console.error(
-        `[phoebe] Could not list natively stacked PRs for the stale-stack sweep — ` +
+      log.fail(
+        `Could not list natively stacked PRs for the stale-stack sweep — ` +
           `${error instanceof Error ? error.message : String(error)}`,
       );
       return;
@@ -634,8 +689,8 @@ export function createEngine(options: EngineOptions): Engine {
       try {
         blockerState = github.blockerPrState(blockerIssueNumber);
       } catch (error) {
-        console.error(
-          `[phoebe] Could not read blocker state for #${blockerIssueNumber} (stale-stack sweep) — ` +
+        log.fail(
+          `Could not read blocker state for #${blockerIssueNumber} (stale-stack sweep) — ` +
             `${error instanceof Error ? error.message : String(error)}`,
         );
         continue;
@@ -645,15 +700,15 @@ export function createEngine(options: EngineOptions): Engine {
         const outcome = github.unstackPr(pr.number);
         if (!outcome.unstacked) {
           if (outcome.reason !== "not-in-stack") {
-            console.error(`[phoebe] Could not unstack PR #${pr.number} — ${outcome.reason}`);
+            log.fail(`Could not unstack PR #${pr.number} — ${outcome.reason}`);
             continue;
           }
           // PR has a Phoebe-branch base but is no longer in a native stack — its
           // stack was dissolved earlier this cycle (by processing another member)
           // or in a prior cycle. Fall through and retarget it anyway.
         } else {
-          console.log(
-            `[phoebe] PR #${pr.number} removed from stack #${outcome.stackNumber} — ` +
+          log.say(
+            `PR #${pr.number} removed from stack #${outcome.stackNumber} — ` +
               `blocker #${blockerIssueNumber} completed without merging its PR.`,
           );
         }
@@ -663,18 +718,18 @@ export function createEngine(options: EngineOptions): Engine {
         const stackedIssueNumber = parseIssueNumberFromBranch(pr.headRefName);
         const feature = stackedIssueNumber === null ? null : featureForIssue(stackedIssueNumber);
         if (feature === undefined) {
-          console.warn(
-            `[phoebe] Could not determine feature membership for PR #${pr.number} — ` +
+          log.warn(
+            `Could not determine feature membership for PR #${pr.number} — ` +
               `leaving its base unchanged until the next sweep.`,
           );
           continue;
         }
         const target = feature ? feature.branch : prBase;
         github.retargetPr(pr.number, target);
-        console.log(`[phoebe] PR #${pr.number} retargeted onto ${target}.`);
+        log.say(`PR #${pr.number} retargeted onto ${target}.`);
       } catch (error) {
-        console.error(
-          `[phoebe] Could not unstack or retarget PR #${pr.number} — ` +
+        log.fail(
+          `Could not unstack or retarget PR #${pr.number} — ` +
             `${error instanceof Error ? error.message : String(error)}`,
         );
       }
@@ -694,12 +749,15 @@ export function createEngine(options: EngineOptions): Engine {
    * rest, and the whole sweep failing costs a cycle's delay, nothing more.
    */
   function sweepFeatureCloses(): void {
+    // A feature's members are issues, so the row that works them is the row that
+    // keeps their integration PR's `Closes` block current (#418).
+    if (!scope.issues) return;
     let integrationPrs: FeatureIntegrationPr[];
     try {
       integrationPrs = github.listFeatureIntegrationPrs();
     } catch (error) {
-      console.error(
-        `[phoebe] Could not list integration PRs for the feature-closes sweep — ` +
+      log.fail(
+        `Could not list integration PRs for the feature-closes sweep — ` +
           `${error instanceof Error ? error.message : String(error)}`,
       );
       return;
@@ -713,14 +771,14 @@ export function createEngine(options: EngineOptions): Engine {
         const update = withClosesSection(integrationPr.body, closes);
         if (!update) continue;
         github.updatePrBody(integrationPr.number, update.body);
-        console.log(
-          `[phoebe] Integration PR #${integrationPr.number} now closes ` +
+        log.say(
+          `Integration PR #${integrationPr.number} now closes ` +
             `${update.added.map((n) => `#${n}`).join(", ")} — ` +
             `merged into ${featureBranch(integrationPr.featureIssueNumber)}.`,
         );
       } catch (error) {
-        console.error(
-          `[phoebe] Could not maintain the Closes list on integration PR ` +
+        log.fail(
+          `Could not maintain the Closes list on integration PR ` +
             `#${integrationPr.number} — ` +
             `${error instanceof Error ? error.message : String(error)}`,
         );
@@ -740,25 +798,32 @@ export function createEngine(options: EngineOptions): Engine {
    * `readyLabel`, so `sweepQuarantine` needs no change.
    */
   function sweepStrandedUnits(): void {
+    if (!scope.issues) return;
     let claimed: Issue[];
     try {
       claimed = github.listLabeledIssues(config.processingLabel);
     } catch (error) {
-      console.error(
-        `[phoebe] Could not list claimed issues for the stranded-unit sweep — ` +
+      log.fail(
+        `Could not list claimed issues for the stranded-unit sweep — ` +
           `${error instanceof Error ? error.message : String(error)}`,
       );
       return;
     }
     for (const issue of claimed) {
+      // The one sweep whose double-run does damage: re-arming an issue a sibling
+      // pipeline is mid-run on hands the same ticket to two agents. So this
+      // filter is per issue rather than per row — the research label is already
+      // on every row listed, and it is the only thing that tells the two issue
+      // producers' units apart (#418).
+      if (!scope.ownsIssue(issue.labels)) continue;
       const label = `issue #${issue.number}`;
       let hasPr: boolean;
       try {
         const state = github.blockerPrState(issue.number);
         hasPr = state.hasOpenPr || state.hasMergedPr;
       } catch (error) {
-        console.error(
-          `[phoebe] Could not check PR state for ${label} in the stranded-unit sweep — ` +
+        log.fail(
+          `Could not check PR state for ${label} in the stranded-unit sweep — ` +
             `${error instanceof Error ? error.message : String(error)}`,
         );
         continue;
@@ -793,10 +858,10 @@ export function createEngine(options: EngineOptions): Engine {
             }),
           );
         }
-        console.log(`[phoebe] Re-armed ${label} — stranded with no PR.`);
+        log.say(`Re-armed ${label} — stranded with no PR.`);
       } catch (error) {
-        console.error(
-          `[phoebe] Could not re-arm ${label} in the stranded-unit sweep — ` +
+        log.fail(
+          `Could not re-arm ${label} in the stranded-unit sweep — ` +
             `${error instanceof Error ? error.message : String(error)}`,
         );
       }
@@ -828,7 +893,7 @@ export function createEngine(options: EngineOptions): Engine {
   }): void {
     const trailer = issueCoAuthorTrailer(opts.issueNumber);
     if (trailer === null) {
-      console.log(`[phoebe] No co-author credit for #${opts.issueNumber} (no creditable author).`);
+      log.say(`No co-author credit for #${opts.issueNumber} (no creditable author).`);
       return;
     }
     const outcome = hub.appendTrailerToCommits({
@@ -842,7 +907,7 @@ export function createEngine(options: EngineOptions): Engine {
       "skipped-merges": "range holds a merge commit; commits left as the agent made them",
       failed: "rewrite failed and was aborted; commits left as the agent made them",
     }[outcome];
-    console.log(`[phoebe] Co-author trailer for #${opts.issueNumber}: ${detail}.`);
+    log.say(`Co-author trailer for #${opts.issueNumber}: ${detail}.`);
   }
 
   // ---------------------------------------------------------------------------
@@ -868,14 +933,36 @@ export function createEngine(options: EngineOptions): Engine {
     return dir;
   }
 
+  /**
+   * Give up a worktree path: drop this pipeline's lease on it, then remove it.
+   *
+   * Both ends of a tree's life go through here — the clearing that precedes
+   * `prepareWorktree` and the teardown that follows a unit — because they are
+   * the same act, and because both used to assume this process owned
+   * `worktrees/` outright. It no longer does (#418). A tree leased by anyone
+   * else ends the attempt with a `WorktreeLeasedError` before the removal that
+   * would otherwise take a live agent's tree apart; our own leftover lease,
+   * from a run some predecessor was killed in the middle of, is simply
+   * dropped — same tree, and this is the run rebuilding it.
+   */
+  function releaseWorktree(worktreeDir: string): void {
+    const lease = hub.worktreeLease(worktreeDir);
+    if (lease.locked && lease.pipeline !== pipeline) {
+      throw new WorktreeLeasedError(worktreeDir, lease.pipeline);
+    }
+    if (lease.locked) hub.unlockWorktree(worktreeDir);
+    hub.removeWorktree(worktreeDir);
+  }
+
   function prepareWorktree(opts: { branch: BranchRef; baseRef?: string }): string {
     const worktreeDir = hub.worktreeDirFor(opts.branch);
-    hub.removeWorktree(worktreeDir);
+    releaseWorktree(worktreeDir);
     if (opts.baseRef) {
       hub.addWorktreeForNew({ worktreeDir, branch: opts.branch, baseRef: opts.baseRef });
     } else {
       hub.addWorktreeForExisting({ worktreeDir, branch: opts.branch });
     }
+    hub.lockWorktree(worktreeDir, leaseReason);
     return worktreeDir;
   }
 
@@ -919,7 +1006,7 @@ export function createEngine(options: EngineOptions): Engine {
       tenant: config.repoSlug,
     });
     if (exitCode !== 0) {
-      console.log(`[phoebe] Agent exited with code ${exitCode}.`);
+      log.say(`Agent exited with code ${exitCode}.`);
     }
   }
 
@@ -945,14 +1032,14 @@ export function createEngine(options: EngineOptions): Engine {
       gitInWorktree(worktreeDir, ["fetch", "origin", baseBranch], { stdio: "inherit" });
       gitInWorktree(worktreeDir, ["merge", `origin/${baseBranch}`], { stdio: "pipe" });
       hub.pushBranch(worktreeDir, branch);
-      hub.removeWorktree(worktreeDir);
+      releaseWorktree(worktreeDir);
       return "pushed";
     } catch {
       try {
         const unmerged = gitInWorktree(worktreeDir, ["diff", "--name-only", "--diff-filter=U"]);
         if (unmerged.trim()) {
           gitInWorktree(worktreeDir, ["merge", "--abort"], { stdio: "ignore" });
-          hub.removeWorktree(worktreeDir);
+          releaseWorktree(worktreeDir);
           return "conflicted";
         }
       } catch {
@@ -963,7 +1050,7 @@ export function createEngine(options: EngineOptions): Engine {
       } catch {
         // Best-effort.
       }
-      hub.removeWorktree(worktreeDir);
+      releaseWorktree(worktreeDir);
       return "failed";
     }
   }
@@ -1040,7 +1127,7 @@ export function createEngine(options: EngineOptions): Engine {
         push: () => hub.pushBranch(worktreeDir, branch),
       });
     } finally {
-      hub.removeWorktree(worktreeDir);
+      releaseWorktree(worktreeDir);
     }
   }
 
@@ -1068,19 +1155,15 @@ export function createEngine(options: EngineOptions): Engine {
     const { blockerIssueNumber, blockerPrNumber } = opts.stackedOn;
     const prNumber = opts.existingPr ?? github.findIssuePr(opts.issueNumber);
     if (prNumber === null) {
-      console.log(`[phoebe] No open PR found for #${opts.issueNumber} — skipping stack setup.`);
+      log.say(`No open PR found for #${opts.issueNumber} — skipping stack setup.`);
       return;
     }
     const outcome = github.stackPrOnto(prNumber, blockerPrNumber);
     if (outcome.stacked) {
-      console.log(
-        `[phoebe] PR #${prNumber} stacked on PR #${blockerPrNumber} (stack #${outcome.stackNumber}).`,
-      );
+      log.say(`PR #${prNumber} stacked on PR #${blockerPrNumber} (stack #${outcome.stackNumber}).`);
       return;
     }
-    console.log(
-      `[phoebe] Native PR stacking unavailable (${outcome.reason}) — using the do-not-merge banner.`,
-    );
+    log.say(`Native PR stacking unavailable (${outcome.reason}) — using the do-not-merge banner.`);
     const memberBase =
       opts.featureIssueNumber !== undefined ? featureBranch(opts.featureIssueNumber) : null;
     const banner = stackedPrComment(blockerIssueNumber, blockerPrNumber, memberBase ?? prBase);
@@ -1088,8 +1171,8 @@ export function createEngine(options: EngineOptions): Engine {
       github.postPrComment(prNumber, banner);
     }
     if (memberBase) {
-      console.log(
-        `[phoebe] PR #${prNumber} belongs to feature branch ${memberBase} — leaving its base on ` +
+      log.say(
+        `PR #${prNumber} belongs to feature branch ${memberBase} — leaving its base on ` +
           `${issueBranch(blockerIssueNumber)} rather than retargeting it onto ${prBase}.`,
       );
       return;
@@ -1170,9 +1253,7 @@ export function createEngine(options: EngineOptions): Engine {
             body: prBody,
           });
         } else {
-          console.log(
-            `[phoebe] PR #${existingPr} already exists for ${agentBranch} — posting follow-up note.`,
-          );
+          log.say(`PR #${existingPr} already exists for ${agentBranch} — posting follow-up note.`);
           github.postPrComment(existingPr, followUpPrComment(issueNumber, newCommitCount));
         }
         if (stackedOn) {
@@ -1184,10 +1265,10 @@ export function createEngine(options: EngineOptions): Engine {
           });
         }
       } else {
-        console.log("[phoebe] No commits — skipping PR creation.");
+        log.say("No commits — skipping PR creation.");
       }
     } finally {
-      hub.removeWorktree(worktreeDir);
+      releaseWorktree(worktreeDir);
     }
   }
 
@@ -1263,8 +1344,9 @@ export function createEngine(options: EngineOptions): Engine {
    */
   function prepareReadonlyWorktree(kind: string): string {
     const worktreeDir = join(config.paths.worktreesDir, "readonly", kind);
-    hub.removeWorktree(worktreeDir);
+    releaseWorktree(worktreeDir);
     hub.addWorktreeDetached({ worktreeDir, ref: `origin/${config.defaultBranch}` });
+    hub.lockWorktree(worktreeDir, leaseReason);
     return worktreeDir;
   }
 
@@ -1280,14 +1362,14 @@ export function createEngine(options: EngineOptions): Engine {
       const changed = hub.dirtyFileCount(dir);
       const commits = hub.commitCount(dir, `origin/${config.defaultBranch}..HEAD`);
       if (changed === 0 && commits === 0) return;
-      console.warn(
-        `[phoebe] ${kind}: the readonly workspace was modified ` +
+      log.warn(
+        `${kind}: the readonly workspace was modified ` +
           `(${changed} changed file(s), ${commits} commit(s)) and is being discarded with the ` +
           `unit. A kind that means to publish should build its own worktree through ctx.agent.`,
       );
     } catch (error) {
-      console.warn(
-        `[phoebe] ${kind}: could not inspect the readonly workspace before removing it — ` +
+      log.warn(
+        `${kind}: could not inspect the readonly workspace before removing it — ` +
           `${error instanceof Error ? error.message : String(error)}`,
       );
     }
@@ -1342,7 +1424,7 @@ export function createEngine(options: EngineOptions): Engine {
           return;
         }
         if (mode === "readonly") warnIfReadonlyTreeTouched(picked.kind, dir);
-        hub.removeWorktree(dir);
+        releaseWorktree(dir);
       },
     };
   }
@@ -1374,7 +1456,8 @@ export function createEngine(options: EngineOptions): Engine {
         work: (signal) => {
           const runCtx: WorkKindRunCtx = {
             ...ctx,
-            log: (message) => console.log(`[phoebe][${picked.kind} ${picked.unit.ref}] ${message}`),
+            log: (message) =>
+              console.log(`${log.tag}[${picked.kind} ${picked.unit.ref}] ${message}`),
             workspace: workspace.handle,
             signal,
             agent: createAgentHelpers(picked, workspace.dir, signal),
@@ -1388,6 +1471,7 @@ export function createEngine(options: EngineOptions): Engine {
   }
 
   const workSource: WorkSource = createWorkSource({
+    tag: log.tag,
     github,
     originHub: hub,
     clock,
@@ -1412,8 +1496,8 @@ export function createEngine(options: EngineOptions): Engine {
     try {
       return produce() ?? fallback;
     } catch (error) {
-      console.warn(
-        `[phoebe] ${kind}: report failed, falling back to the engine's wording — ` +
+      log.warn(
+        `${kind}: report failed, falling back to the engine's wording — ` +
           `${error instanceof Error ? error.message : String(error)}`,
       );
       return fallback;
@@ -1451,12 +1535,12 @@ export function createEngine(options: EngineOptions): Engine {
    */
   function logIdleCycle(cycle: GatheredCycle, skipped: readonly WorkUnitSkip[]): void {
     for (const skip of skipped) {
-      console.log(`[phoebe] ${idleSkipLine(skip, cycle)}`);
+      log.say(idleSkipLine(skip, cycle));
       if (skip.reason === NONE_WORKABLE) {
         return;
       }
     }
-    console.log("[phoebe] No work this cycle — idle.");
+    log.say("No work this cycle — idle.");
   }
 
   /**
@@ -1465,6 +1549,33 @@ export function createEngine(options: EngineOptions): Engine {
    * tenant's config are all closed over.
    */
   async function runLoop(): Promise<void> {
+    // Boot-time lease break (#418). A worktree lease outlives the process that
+    // took it — a killed engine leaves its trees locked, and nothing would ever
+    // unlock them. So a pipeline drops its own leases unconditionally at boot,
+    // and never anyone else's: a tree stamped with a sibling's name may have a
+    // live agent inside it. Skipped on the host, where the hub points at the
+    // operator's own checkout.
+    if (inContainer && !dryRun && usesRepoWorkspace) {
+      try {
+        const { broken, heldByOthers } = breakOwnLeases(hub, pipeline);
+        for (const dir of broken) {
+          log.say(`Broke a stale worktree lease on ${dir} — it was this pipeline's own.`);
+        }
+        for (const held of heldByOthers) {
+          log.say(
+            `Worktree ${held.dir} is leased by ` +
+              `${held.pipeline === null ? "another writer" : `pipeline ${held.pipeline}`} — ` +
+              `leaving it alone.`,
+          );
+        }
+      } catch (error) {
+        log.warn(
+          `Could not read worktree leases at boot — ` +
+            `${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+
     // Boot-time login identity cross-check (#346): warn when the resolved login
     // differs from the author on Phoebe's own newest unit-marker comment. An
     // identity drift silently resets the quarantine counter every rotation —
@@ -1475,18 +1586,18 @@ export function createEngine(options: EngineOptions): Engine {
       const historicalAuthor = github.newestUnitMarkerAuthor();
       const warning = loginMismatchWarning(resolvedLogin, historicalAuthor);
       if (warning) {
-        console.warn(warning);
+        log.warn(warning);
       }
     } catch (error) {
-      console.warn(
-        `[phoebe] Boot-time login identity cross-check failed — ` +
+      log.warn(
+        `Boot-time login identity cross-check failed — ` +
           `${error instanceof Error ? error.message : String(error)}`,
       );
     }
 
     while (true) {
       if (drain.requested) {
-        console.log("[phoebe] Drain requested — starting no new work unit; exiting 0.");
+        log.say("Drain requested — starting no new work unit; exiting 0.");
         break;
       }
 
@@ -1509,16 +1620,16 @@ export function createEngine(options: EngineOptions): Engine {
           if (leasedToken !== null) env["GH_TOKEN"] = leasedToken;
         } catch (error) {
           if (error instanceof BrokerDisconnectedError) {
-            console.error(`[phoebe] ${error.message} — stopping this engine.`);
+            log.fail(`${error.message} — stopping this engine.`);
             break;
           }
           if (error instanceof CredentialRefreshBlockedError) {
-            console.warn("[phoebe] Credential refresh unavailable — skipping work this cycle.");
+            log.warn("Credential refresh unavailable — skipping work this cycle.");
             await drain.wait(pollIntervalMs);
             continue;
           }
           if (error instanceof CredentialLeaseTimedOutError) {
-            console.warn("[phoebe] Credential lease timed out — skipping work this cycle.");
+            log.warn("Credential lease timed out — skipping work this cycle.");
             await drain.wait(pollIntervalMs);
             continue;
           }
@@ -1528,7 +1639,7 @@ export function createEngine(options: EngineOptions): Engine {
       if (leasedToken === null && arm === "app" && !dryRun) {
         const creds = detectAppCredentials(env);
         if (!creds) {
-          console.error("[phoebe] App mode active but GH_APP_ID or GH_APP_PRIVATE_KEY is missing.");
+          log.fail("App mode active but GH_APP_ID or GH_APP_PRIVATE_KEY is missing.");
           if (runOnce) break;
           await drain.wait(pollIntervalMs);
           continue;
@@ -1536,7 +1647,7 @@ export function createEngine(options: EngineOptions): Engine {
         const mintResult = await mintInstallationToken(config.repoSlug, creds);
         if (!mintResult.ok) {
           const statusLabel = mintResult.status !== null ? ` HTTP ${mintResult.status}` : "";
-          console.error(`[phoebe] App mode mint failed${statusLabel}: ${mintResult.reason}`);
+          log.fail(`App mode mint failed${statusLabel}: ${mintResult.reason}`);
           if (runOnce) break;
           await drain.wait(pollIntervalMs);
           continue;
@@ -1569,13 +1680,13 @@ export function createEngine(options: EngineOptions): Engine {
           sweepQuarantine("tenant-disabled");
         }
         if (runOnce) {
-          console.log(
-            "[phoebe] Tenant is disabled — no work will be started (`disabled: true` in phoebe.config.ts).",
+          log.say(
+            "Tenant is disabled — no work will be started (`disabled: true` in phoebe.config.ts).",
           );
           break;
         }
-        console.log(
-          "[phoebe] Tenant is disabled — no new work will be started this cycle. " +
+        log.say(
+          "Tenant is disabled — no new work will be started this cycle. " +
             "Remove `disabled: true` from phoebe.config.ts to re-enable.",
         );
         await drain.wait(pollIntervalMs);
@@ -1601,7 +1712,7 @@ export function createEngine(options: EngineOptions): Engine {
 
       if (!picked) {
         if (runOnce) {
-          console.log(RUN_ONCE_NOTHING_MESSAGE);
+          log.say(RUN_ONCE_NOTHING_MESSAGE);
         } else {
           logIdleCycle(cycle, skipped);
         }
@@ -1616,17 +1727,17 @@ export function createEngine(options: EngineOptions): Engine {
       // freshly-picked unit start — "start no new one". The in-flight unit (if any)
       // already finished before we looped back here, so exit now.
       if (drain.requested) {
-        console.log("[phoebe] Drain requested before starting the next unit — exiting 0.");
+        log.say("Drain requested before starting the next unit — exiting 0.");
         break;
       }
 
       const decision = executionDecision({ dryRun, inContainer });
       if (decision === "dry-run") {
-        console.log(`[phoebe] Would execute: ${describeUnit(picked)}.`);
+        log.say(`Would execute: ${describeUnit(picked)}.`);
         break;
       }
       if (decision === "refuse") {
-        console.error(EXECUTION_REFUSED_MESSAGE);
+        log.fail(EXECUTION_REFUSED_MESSAGE);
         process.exit(1);
       }
 
@@ -1643,7 +1754,7 @@ export function createEngine(options: EngineOptions): Engine {
             // The supervisor's channel closed while we waited for a slot. Stop
             // rather than run unbrokered (which, across a fleet, would bypass the
             // global cap); the supervisor is gone or will respawn us afresh.
-            console.error(`[phoebe] ${error.message} — stopping this engine.`);
+            log.fail(`${error.message} — stopping this engine.`);
             break;
           }
           throw error;
@@ -1662,20 +1773,16 @@ export function createEngine(options: EngineOptions): Engine {
         } catch (error) {
           slotClient?.release();
           if (error instanceof BrokerDisconnectedError) {
-            console.error(`[phoebe] ${error.message} — stopping this engine.`);
+            log.fail(`${error.message} — stopping this engine.`);
             break;
           }
           if (error instanceof CredentialRefreshBlockedError) {
-            console.warn(
-              `[phoebe] Credential refresh unavailable after slot grant — unit admission blocked.`,
-            );
+            log.warn(`Credential refresh unavailable after slot grant — unit admission blocked.`);
             await drain.wait(pollIntervalMs);
             continue;
           }
           if (error instanceof CredentialLeaseTimedOutError) {
-            console.warn(
-              `[phoebe] Credential lease timed out after slot grant — unit admission skipped.`,
-            );
+            log.warn(`Credential lease timed out after slot grant — unit admission skipped.`);
             await drain.wait(pollIntervalMs);
             continue;
           }
@@ -1687,7 +1794,7 @@ export function createEngine(options: EngineOptions): Engine {
       // unit start — "start no new one". Release the already-acquired slot.
       if (drain.requested) {
         slotClient?.release();
-        console.log("[phoebe] Drain requested before starting the next unit — exiting 0.");
+        log.say("Drain requested before starting the next unit — exiting 0.");
         break;
       }
 
@@ -1697,6 +1804,16 @@ export function createEngine(options: EngineOptions): Engine {
         await runPickedUnit(picked, cycle.ctxFor(picked.kind));
         emitUnitEvent({ unit: ref, event: "completed" });
       } catch (error) {
+        if (error instanceof WorktreeLeasedError) {
+          // Not a failure: another pipeline is working the tree this unit needs
+          // (#418). Say so and leave the unit alone — the sibling will release
+          // it, and the next cycle picks the unit up again.
+          emitUnitEvent({ unit: ref, event: "skipped", detail: error.message });
+          log.say(`Skipped ${describeUnit(picked)} — ${error.message}.`);
+          if (runOnce) break;
+          await drain.wait(pollIntervalMs);
+          continue;
+        }
         if (error instanceof RunTimeoutError) {
           // A whole-unit timeout (#72): the agent was killed, the slot releases in
           // `finally`, and the engine survives (never told to the supervisor, #60
@@ -1724,8 +1841,8 @@ export function createEngine(options: EngineOptions): Engine {
         }
         // A failed unit must not kill the daemon — prepareWorktree clears any
         // stale worktree on the next attempt.
-        console.error(
-          `[phoebe] Failed executing ${describeUnit(picked)} — ` +
+        log.fail(
+          `Failed executing ${describeUnit(picked)} — ` +
             `${error instanceof Error ? error.message : String(error)}`,
         );
         await drain.wait(pollIntervalMs);
@@ -1738,7 +1855,7 @@ export function createEngine(options: EngineOptions): Engine {
       // Drain requested while the unit ran: it is finished, so exit now rather
       // than picking up another. This is the graceful-drain boundary.
       if (drain.requested) {
-        console.log("[phoebe] Finished the in-flight unit under drain — exiting 0.");
+        log.say("Finished the in-flight unit under drain — exiting 0.");
         break;
       }
     }
@@ -1789,14 +1906,15 @@ export async function runEngine(
   // the row, which outranks `PHOEBE_POLL_INTERVAL_MS` — and for the log line.
   const pipeline = parsePipelineName(argv);
   const pollIntervalMs = resolvePollIntervalMs(pipelineRow(config, pipeline), process.env);
+  const log = createEngineLog(config.repoSlug, pipeline);
 
   console.log(
     runOnce
-      ? `[phoebe] Run-once mode (pipeline ${pipeline}) — will work at most one unit of the first one-shot-eligible kind in WORK_ORDER, then exit.`
-      : `[phoebe] Persistent mode (pipeline ${pipeline}) — idle poll every ${pollIntervalMs}ms. SIGTERM drains: finish the current unit, then exit 0.`,
+      ? `${log.tag} Run-once mode (pipeline ${pipeline}) — will work at most one unit of the first one-shot-eligible kind in WORK_ORDER, then exit.`
+      : `${log.tag} Persistent mode (pipeline ${pipeline}) — idle poll every ${pollIntervalMs}ms. SIGTERM drains: finish the current unit, then exit 0.`,
   );
   if (dryRun) {
-    console.log("[phoebe] Dry-run — selection only, nothing executes.");
+    log.say("Dry-run — selection only, nothing executes.");
   }
 
   // Bootstrap the private clone every work unit fetches/worktrees against. Only
@@ -1806,9 +1924,26 @@ export async function runEngine(
   // latch below, as it was before the engine became a factory: until that latch
   // exists, a SIGTERM mid-clone still kills the process rather than being held
   // until the clone finishes.
+  //
+  // Two things changed with pipelines (#418). It is now conditional: a row whose
+  // kinds all declare `scratch` never touches the clone, and cloning the repo
+  // for it costs a full copy and a slow first boot for nothing. And it is
+  // serialized by the tenant's clone lock, because two rows booting on a fresh
+  // tenant would otherwise race `git clone` into one directory — the second
+  // waits, then finds the clone already there and moves on. Only the clone is
+  // locked; fetch and worktree administration share the clone unlocked, on
+  // git's own ref locking and the fetch backoff.
   const inContainer = isInsideContainer();
   if (inContainer && !dryRun) {
-    ensureOriginClone(config, inContainer);
+    const workspaceModeFor = (kind: string): string =>
+      registeredKind(registry, kind).definition.workspace;
+    if (requiresOriginClone(workOrder, workspaceModeFor)) {
+      withCloneLock(config.paths.stateDir, () => ensureOriginClone(config, inContainer), {
+        log: (line) => log.say(line),
+      });
+    } else {
+      log.say("No scheduled kind needs a repo workspace — skipping the origin clone.");
+    }
   }
 
   // `phoebe boot` stops the engine with SIGTERM (container shutdown, and later a
@@ -1840,19 +1975,22 @@ export async function runEngine(
   // GH_TOKEN unchanged.
   const credentialClient = createCredentialClient(ipcChannel);
 
-  // Per-repo observability (#73): one tagged `[phoebe:<slug>]` line per unit
-  // event + a `status.json` snapshot in this tenant's state dir, which
-  // `phoebe list` reads. The emitter swallows snapshot-write failures, so it is
-  // harmless on the host (where the derived state dir may be unwritable).
+  // Per-repo observability (#73): one tagged `[phoebe:<slug>:<pipeline>]` line
+  // per unit event + a `status.json` snapshot under this pipeline's own dir in
+  // the tenant's state dir (#418), which `phoebe list` reads for the `work`
+  // row. The emitter swallows snapshot-write failures, so it is harmless on the
+  // host (where the derived state dir may be unwritable).
   const emitUnitEvent = createEmitUnitEvent({
     tenant: config.repoSlug,
-    statusPath: join(config.paths.stateDir, STATUS_FILE),
+    pipeline,
+    statusPath: statusPathFor(config.paths.stateDir, pipeline),
   });
 
   const drain = installDrainSignal();
   try {
     const engine = createEngine({
       config,
+      pipeline,
       registry,
       env: process.env,
       drain,

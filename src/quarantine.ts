@@ -286,7 +286,7 @@ export function decideTimeoutRecord(opts: {
 export function loginMismatchWarning(resolved: string, historical: string | null): string | null {
   if (historical === null || resolved === historical) return null;
   return (
-    `[phoebe] ⚠️  Login identity mismatch: the boot-resolved login is "${resolved}" ` +
+    `⚠️  Login identity mismatch: the boot-resolved login is "${resolved}" ` +
     `but the newest phoebe-unit-timeout marker was posted by "${historical}". ` +
     `Quarantine timeout counts may reset silently every rotation. ` +
     `Check PHOEBE_GH_LOGIN and the bot/user token in use.`

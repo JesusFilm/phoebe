@@ -860,8 +860,9 @@ export function buildReviewsHandledComment(opts: {
 // per-tenant set.
 export { WORK_KIND_NAMES, type WorkKindName };
 
+/** Untagged: the engine prints it through its own tagged channel (#418). */
 export const RUN_ONCE_NOTHING_MESSAGE =
-  "[phoebe] Nothing to do under --run-once (janitor kinds are persistent-mode only).";
+  "Nothing to do under --run-once (janitor kinds are persistent-mode only).";
 
 /**
  * Fail fast when the work order names a kind outside `legalKinds` — this

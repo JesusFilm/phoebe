@@ -3,8 +3,14 @@
 // With N repos multiplexed into one container, every line must be attributable
 // per repo. The chosen shape is per-tenant-tagged stdout, host-collected, so the
 // container stays log-stateless (no on-disk logs, no rotation): every Phoebe
-// line is `[phoebe:<slug>]`, even in solo single-tenant mode — one grammar for
-// any host parser, and the un-attributable bare `[phoebe]` is eliminated.
+// line is `[phoebe:<slug>:<pipeline>]`, even in solo single-tenant mode — one
+// grammar for any host parser, and the un-attributable bare `[phoebe]` is
+// eliminated.
+//
+// The pipeline segment arrived with #418, when a tenant became several engine
+// processes rather than one. It is on every line including the implicit `work`
+// row's, so the grammar has one shape rather than two — a host parser matching
+// the tag has to match it as a prefix, not as a fixed string.
 //
 // Two concerns, one file each (#73 Decision 4): stdout is the append-only event
 // *history* (ephemeral in-container); `status.json` is the current-state
@@ -17,32 +23,86 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-/** Snapshot filename inside a tenant's reserved `state/` dir (#62/#63). */
+/** Snapshot filename inside a pipeline's own dir under `state/` (#62/#63/#418). */
 export const STATUS_FILE = "status.json";
+
+/**
+ * Where one pipeline's snapshot lives: `state/<pipeline>/status.json`.
+ *
+ * Per pipeline rather than per tenant because the snapshot has exactly one
+ * writer by design — it holds a single `currentUnit` — and a tenant now runs
+ * several engine processes. Sharing one file, each would blank the other's
+ * current unit on every event. The directory is the ownership boundary: one
+ * process writes it, `phoebe list` and an operator read it.
+ */
+export function statusPathFor(stateDir: string, pipeline: string): string {
+  return join(stateDir, pipeline, STATUS_FILE);
+}
 
 export type UnitRef = { kind: string; id: string };
 
-/** What happened to a work unit — the event vocabulary on the rail. */
-export type UnitEventName = "started" | "completed" | "failed" | "timed-out" | "quarantined";
+/**
+ * What happened to a work unit — the event vocabulary on the rail. `skipped`
+ * is the one outcome that is nobody's fault: the unit was picked, and then its
+ * worktree turned out to be leased by another pipeline (#418), so this cycle
+ * leaves it alone.
+ */
+export type UnitEventName =
+  | "started"
+  | "completed"
+  | "failed"
+  | "timed-out"
+  | "quarantined"
+  | "skipped";
 
 /** One structured unit event (#73 Decision 5). */
 export type UnitEvent = {
   ts: string;
   tenant: string;
+  pipeline: string;
   unit: UnitRef;
   event: UnitEventName;
   detail?: string;
 };
 
-/** The per-tenant stdout tag. Solo mode uses its config's `repoSlug`, never bare. */
-export function unitTag(tenant: string): string {
-  return `[phoebe:${tenant}]`;
+/**
+ * The stdout tag every engine line carries. Solo mode uses its config's
+ * `repoSlug` and the implicit `work` row, never bare and never half-tagged.
+ */
+export function unitTag(tenant: string, pipeline: string): string {
+  return `[phoebe:${tenant}:${pipeline}]`;
+}
+
+/**
+ * The engine's three tagged output channels. Every line one engine process
+ * writes goes through one of these, so the tag is a property of the process
+ * rather than of the 60-odd call sites that would otherwise each have to
+ * remember it — which is what "every line" in #418 actually costs.
+ */
+export type EngineLog = {
+  /** The tag itself, for the handful of lines that build their own prefix. */
+  tag: string;
+  say(line: string): void;
+  warn(line: string): void;
+  fail(line: string): void;
+};
+
+export function createEngineLog(tenant: string, pipeline: string): EngineLog {
+  const tag = unitTag(tenant, pipeline);
+  return {
+    tag,
+    say: (line) => console.log(`${tag} ${line}`),
+    warn: (line) => console.warn(`${tag} ${line}`),
+    fail: (line) => console.error(`${tag} ${line}`),
+  };
 }
 
 /** A tagged, human-readable stdout line for one event. `id` is the unit's
  *  kind-owned ref (`pr:123`, `issue:88`) and prints as-is (#348). */
 export function formatUnitEventLine(event: UnitEvent): string {
-  const head = `${unitTag(event.tenant)} ${event.event} ${event.unit.kind} ${event.unit.id}`;
+  const head =
+    `${unitTag(event.tenant, event.pipeline)} ${event.event} ` +
+    `${event.unit.kind} ${event.unit.id}`;
   return event.detail ? `${head} — ${event.detail}` : head;
 }
 
@@ -53,15 +113,19 @@ export function formatUnitEventLine(event: UnitEvent): string {
  */
 export type StatusSnapshot = {
   tenant: string;
+  /** Which row wrote this file. Its directory already says so; the field is what
+   *  makes a snapshot read on its own — `cat`'d, or shipped somewhere else. */
+  pipeline: string;
   currentUnit: UnitRef | null;
   lastError: string | null;
   lastTimeoutAt: string | null;
   updatedAt: string;
 };
 
-export function emptyStatus(tenant: string): StatusSnapshot {
+export function emptyStatus(tenant: string, pipeline: string): StatusSnapshot {
   return {
     tenant,
+    pipeline,
     currentUnit: null,
     lastError: null,
     lastTimeoutAt: null,
@@ -74,8 +138,10 @@ export function emptyStatus(tenant: string): StatusSnapshot {
  * `completed` clears it; `failed` clears it and records the error as `lastError`
  * so `phoebe list` can tell a repo that keeps failing from one that succeeds;
  * `timed-out` clears it and stamps `lastTimeoutAt`; `quarantined` records the
- * reason as `lastError`. Every event refreshes `updatedAt` so a wedged
- * supervisor is visible as a stale timestamp (#63).
+ * reason as `lastError`; `skipped` clears it and records nothing, because a
+ * unit deferred to its lease holder is not this pipeline's error. Every event
+ * refreshes `updatedAt` so a wedged supervisor is visible as a stale
+ * timestamp (#63).
  */
 export function applyUnitEvent(prev: StatusSnapshot, event: UnitEvent): StatusSnapshot {
   const next: StatusSnapshot = { ...prev, updatedAt: event.ts };
@@ -97,6 +163,9 @@ export function applyUnitEvent(prev: StatusSnapshot, event: UnitEvent): StatusSn
     case "quarantined":
       next.currentUnit = null;
       next.lastError = event.detail ?? "quarantined";
+      break;
+    case "skipped":
+      next.currentUnit = null;
       break;
   }
   return next;
@@ -127,7 +196,7 @@ export function writeStatus(path: string, snapshot: StatusSnapshot): void {
   renameSync(tmp, path);
 }
 
-export type EmitUnitEvent = (event: Omit<UnitEvent, "tenant" | "ts">) => void;
+export type EmitUnitEvent = (event: Omit<UnitEvent, "tenant" | "pipeline" | "ts">) => void;
 
 /**
  * Build the `emitUnitEvent` chokepoint for one tenant: it prints the tagged
@@ -138,6 +207,7 @@ export type EmitUnitEvent = (event: Omit<UnitEvent, "tenant" | "ts">) => void;
  */
 export function createEmitUnitEvent(deps: {
   tenant: string;
+  pipeline: string;
   statusPath: string;
   now?: () => string;
   log?: (line: string) => void;
@@ -150,13 +220,20 @@ export function createEmitUnitEvent(deps: {
   const write = deps.write ?? writeStatus;
 
   return (partial) => {
-    const event: UnitEvent = { ...partial, tenant: deps.tenant, ts: now() };
+    const event: UnitEvent = {
+      ...partial,
+      tenant: deps.tenant,
+      pipeline: deps.pipeline,
+      ts: now(),
+    };
     log(formatUnitEventLine(event));
     try {
-      const prev = read(deps.statusPath) ?? emptyStatus(deps.tenant);
+      const prev = read(deps.statusPath) ?? emptyStatus(deps.tenant, deps.pipeline);
       write(deps.statusPath, applyUnitEvent(prev, event));
     } catch (error) {
-      log(`${unitTag(deps.tenant)} could not refresh status.json — ${String(error)}`);
+      log(
+        `${unitTag(deps.tenant, deps.pipeline)} could not refresh status.json — ${String(error)}`,
+      );
     }
   };
 }
