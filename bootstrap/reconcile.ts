@@ -1,9 +1,9 @@
-// The reconcile watch loop — `phoebe boot`'s supervision of the running engine.
+// The reconcile vocabulary — what `phoebe boot` watches, and how it reads a sample.
 //
 // `boot` is the container's long-lived main process (#40): it resolves the
-// engine source and execs the engine as a long-running child. This module is
-// what it does for the rest of the container's life — poll the two things that
-// decide *which* engine should be running, and reconcile when they diverge:
+// engine source and execs the engine as a long-running child. For the rest of
+// the container's life it polls the two things that decide *which* engine should
+// be running, and reconciles when they diverge:
 //
 //   - the mounted `phoebe.config.ts` (its `engine` field picks the source), and
 //   - the tip of the tracked branch, versus the commit the engine is running.
@@ -19,18 +19,18 @@
 // no work at all when nothing moved.
 //
 // Following a branch means eventually following it onto a commit that does not
-// boot, so the loop also reports every finished run and asks whether a
-// self-exit is worth retrying. The policy behind those two hooks — count fast
-// crashes, pin back to the last-good commit — is bootstrap/crash-loop.ts; all
-// the loop knows is that a launch may be avoiding a quarantined commit, which
-// the ref-watch must then stop treating as a change.
+// boot, so a finished run is reported and a self-exit is judged. The policy
+// behind those hooks — count fast crashes, pin back to the last-good commit — is
+// bootstrap/crash-loop.ts; all the watch knows is that a launch may be avoiding a
+// quarantined commit, which the ref-watch must then stop treating as a change.
 //
-// The loop takes everything impure as a dependency — launching, spawning, the
-// poll clock, the stop latch — so the drain-then-relaunch ordering is unit-tested
-// without processes or timers.
+// The loop that acts on all of this is bootstrap/supervise-fleet.ts, and since
+// #416 it is the only one: solo is a one-tenant fleet. This module holds what
+// both the loop and boot need to agree on — the launched-engine shape, the
+// sample, and `detectChange`.
 
 import { statSync } from "node:fs";
-import { engineSourcesEqual, type ResolvedEngineSource } from "./engine-source.ts";
+import { type ResolvedEngineSource } from "./engine-source.ts";
 
 /** How often the watch samples the config and the tracked ref. */
 export const DEFAULT_RECONCILE_INTERVAL_MS = 60_000;
@@ -104,12 +104,6 @@ export type EngineRun = {
   requestedStop: boolean;
 };
 
-/** The supervised engine child: enough of a process to drain it and await it. */
-export type SupervisedChild = {
-  kill: (signal: NodeJS.Signals) => void;
-  exited: Promise<EngineExit>;
-};
-
 /**
  * The outside stop request (container `SIGTERM`/`SIGINT`). A one-way latch whose
  * `wait` doubles as the poll clock, so a shutdown wakes the loop immediately
@@ -119,40 +113,6 @@ export type SupervisedChild = {
 export type StopLatch = {
   readonly requested: boolean;
   wait: (ms: number) => Promise<void>;
-};
-
-export type SuperviseDeps = {
-  /** Re-read the config, resolve + materialize the engine source. */
-  launch: () => Promise<LaunchedEngine> | LaunchedEngine;
-  /** Spawn the engine as a long-running child. */
-  spawn: (entry: string) => SupervisedChild;
-  stop: StopLatch;
-  intervalMs?: number;
-  /** Reads the clock for run durations; injectable so the loop is tested without waiting. */
-  now?: () => number;
-  onRelaunch?: (reason: ReconcileReason) => void;
-  onLaunchError?: (error: unknown) => void;
-  onSampleError?: (error: unknown) => void;
-  /**
-   * Every finished run, however it ended — drained for a reconcile, stopped with
-   * the container, or crashed. The crash-loop guard's bookkeeping hook: this is
-   * where boot learns a commit ran healthily, or died on startup.
-   */
-  onRunEnd?: (run: EngineRun) => void;
-  /**
-   * Each poll tick, with how long the engine has been up. The guard's other half:
-   * it banks a commit as proven while it is still running, so an engine that has
-   * been up for weeks and is then killed outright still leaves a fallback target
-   * behind.
-   */
-  onRunTick?: (tick: { engine: LaunchedEngine; elapsedMs: number }) => void;
-  /**
-   * The engine exited on its own. True relaunches it — the crash-loop guard
-   * choosing to try again (possibly onto the last-good commit) rather than let a
-   * bad engine take the container down; false propagates the exit, which is the
-   * default and the only behaviour when no guard is wired.
-   */
-  relaunchAfterExit?: (run: EngineRun) => boolean;
 };
 
 /**
@@ -201,134 +161,4 @@ export function detectChange(opts: {
     return current.remoteSha === launched.quarantinedSha ? null : "ref";
   }
   return null;
-}
-
-type WatchOutcome =
-  | { kind: "exit"; exit: EngineExit }
-  | { kind: "change"; reason: ReconcileReason };
-
-/**
- * Poll until the engine exits by itself, the container is stopping, or a watched
- * input moves. Races the child's exit against the poll clock so neither a long
- * poll interval nor a quiet engine delays the other.
- */
-async function watchEngine(
-  engine: LaunchedEngine,
-  child: SupervisedChild,
-  deps: SuperviseDeps,
-  clock: { intervalMs: number; startedAt: number; now: () => number },
-): Promise<WatchOutcome> {
-  const { intervalMs } = clock;
-  // One reaction on the child's exit for the whole watch — re-deriving it each
-  // iteration would pile up handlers on a promise that outlives thousands of
-  // polls over a long-lived container.
-  const exitOutcome = child.exited.then((exit) => ({ kind: "exit" as const, exit }));
-  while (true) {
-    const raced = await Promise.race([
-      exitOutcome,
-      deps.stop.wait(intervalMs).then(() => ({ kind: "tick" as const })),
-    ]);
-    if (raced.kind === "exit") return raced;
-
-    if (deps.stop.requested) {
-      // The container is going down. The spawn wrapper forwards the signal to
-      // the child, but one that arrived before this child existed never reached
-      // it — so re-send (the engine's drain latch is one-way and idempotent) and
-      // wait the drain out rather than relaunching into a shutdown.
-      child.kill("SIGTERM");
-      return { kind: "exit", exit: await child.exited };
-    }
-
-    deps.onRunTick?.({ engine, elapsedMs: clock.now() - clock.startedAt });
-
-    let current: WatchState;
-    try {
-      current = engine.sample();
-    } catch (error) {
-      // A failed poll (network blip on `ls-remote`, unreadable mount) is not a
-      // change — leave the engine alone and look again next tick.
-      deps.onSampleError?.(error);
-      continue;
-    }
-
-    const reason = detectChange({
-      launched: { config: engine.config, sha: engine.sha, quarantinedSha: engine.quarantinedSha },
-      current,
-    });
-    if (reason === "config" && engine.confirmEngineSource) {
-      try {
-        const confirmed = await engine.confirmEngineSource();
-        if (engineSourcesEqual(engine.source, confirmed)) {
-          engine.config = current.config;
-          continue;
-        }
-      } catch (error) {
-        deps.onSampleError?.(error);
-        continue;
-      }
-    }
-    if (reason) return { kind: "change", reason };
-  }
-}
-
-/**
- * Run the engine, and keep the *right* engine running: watch, drain, relaunch,
- * repeat. Resolves with the exit to give the container when the engine exits on
- * its own (and the crash-loop guard does not want it retried) or the container
- * is stopping — the two cases where boot should stop supervising and die with
- * the engine's status.
- */
-export async function superviseEngine(deps: SuperviseDeps): Promise<EngineExit> {
-  const intervalMs = deps.intervalMs ?? DEFAULT_RECONCILE_INTERVAL_MS;
-  const now = deps.now ?? Date.now;
-  let everLaunched = false;
-
-  while (true) {
-    if (deps.stop.requested) return { code: 0, signal: null };
-
-    let engine: LaunchedEngine;
-    try {
-      engine = await deps.launch();
-    } catch (error) {
-      // The first launch is the container's whole reason to exist, so a bad
-      // config or a missing mount fails loudly. A *relaunch* failure is
-      // transient by comparison (network blip mid-fetch, a ref deleted between
-      // poll and fetch) and the old engine has already drained — retrying on the
-      // next poll brings the engine back instead of taking the container down.
-      if (!everLaunched) throw error;
-      deps.onLaunchError?.(error);
-      await deps.stop.wait(intervalMs);
-      continue;
-    }
-    everLaunched = true;
-
-    const startedAt = now();
-    const child = deps.spawn(engine.entry);
-    const outcome = await watchEngine(engine, child, deps, { intervalMs, startedAt, now });
-
-    if (outcome.kind === "exit") {
-      // A stop makes the engine's exit the container's exit, whatever the guard
-      // would have preferred — we are going down either way, and the run was cut
-      // short rather than judged.
-      const requestedStop = deps.stop.requested;
-      const run = { engine, exit: outcome.exit, elapsedMs: now() - startedAt, requestedStop };
-      deps.onRunEnd?.(run);
-      if (requestedStop || !deps.relaunchAfterExit?.(run)) return outcome.exit;
-      // Retrying a crash: back off first, so a commit that dies on startup
-      // cannot spin the loop, and re-check the stop latch the wait may have
-      // woken on. `launch` runs again from the top, which is where the fallback
-      // to a last-good commit actually takes effect.
-      await deps.stop.wait(CRASH_BACKOFF_MS);
-      if (deps.stop.requested) return outcome.exit;
-      continue;
-    }
-
-    deps.onRelaunch?.(outcome.reason);
-    child.kill("SIGTERM");
-    // Nothing new starts until the drain finishes: one engine at a time, and the
-    // in-flight work unit runs to completion.
-    const exit = await child.exited;
-    deps.onRunEnd?.({ engine, exit, elapsedMs: now() - startedAt, requestedStop: true });
-    if (deps.stop.requested) return exit;
-  }
 }

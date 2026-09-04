@@ -11,7 +11,7 @@
 // file — so the whole ladder (first crash → threshold → fallback → recovery) is
 // tested without spawning an engine. The wiring (when a run ends, what to
 // materialize, what to log) lives in boot.ts; the loop that calls it is
-// reconcile.ts.
+// supervise-fleet.ts.
 //
 // The record is deployment-global: one guard about one engine SHA for the whole
 // fleet (#60). It lives beside the shared engine checkout on the `phoebe-engine`
