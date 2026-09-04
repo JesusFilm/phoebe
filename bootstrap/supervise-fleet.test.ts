@@ -4,10 +4,23 @@
 // gated clock, a stop latch), no processes or real timers.
 
 import { describe, expect, test } from "vite-plus/test";
-import type { EngineExit, LaunchedEngine } from "./reconcile.ts";
+import type { EngineExit, LaunchedEngine, WatchState } from "./reconcile.ts";
 import type { DiscoveredTenant, TenantSample } from "./tenants.ts";
 import { DuplicateOriginSlugError } from "./tenants.ts";
-import { superviseFleet, type DrainTimer, type FleetChild } from "./supervise-fleet.ts";
+import {
+  PipelineEnumerationError,
+  pipelineId,
+  type Pipeline,
+  type PipelineEnumerator,
+  type SupervisedPipeline,
+} from "./pipelines.ts";
+import {
+  superviseFleet,
+  type DrainTimer,
+  type FleetChild,
+  type FleetRun,
+  type PipelineExitAction,
+} from "./supervise-fleet.ts";
 
 const DEFAULT_ENGINE_SOURCE = {
   source: "github" as const,
@@ -157,7 +170,7 @@ function harness(initial: TenantSample[]) {
     },
     spawn: (t) => {
       const fake = fakeChild();
-      spawned.push({ slug: t.slug, fake });
+      spawned.push({ slug: t.tenant.slug, fake });
       return fake.child;
     },
     stop: {
@@ -400,7 +413,7 @@ describe("superviseFleet", () => {
       discover: () => ({ samples, hold }),
       spawn: (t) => {
         const fake = fakeChild();
-        spawned.push({ slug: t.slug, fake });
+        spawned.push({ slug: t.tenant.slug, fake });
         return fake.child;
       },
       stop: {
@@ -505,7 +518,8 @@ describe("superviseFleet", () => {
     const exit = await result;
     expect(exit).toEqual({ code: 0, signal: null });
     expect(stubborn.kills).toEqual(["SIGTERM", "SIGKILL"]);
-    expect(reaped).toEqual([tenant("acme/widget").id]); // onReap still fires after kill
+    // onReap still fires after the kill, and reaps by pipeline id (#420).
+    expect(reaped).toEqual([pipelineId(tenant("acme/widget").id, "work")]);
   });
 
   test("a graceful drain cancels the grace timer and never SIGKILLs (#79)", async () => {
@@ -548,5 +562,1073 @@ describe("superviseFleet", () => {
     expect(exit).toEqual({ code: 0, signal: null });
     expect(spawned[0]!.kills).toEqual(["SIGTERM"]); // no SIGKILL
     expect(timers.canceledCount()).toBe(1); // grace timer was canceled, not left pending
+  });
+});
+
+// --- solo, as a one-tenant fleet (#416) --------------------------------------
+// Solo used to have its own single-child loop. These are the behaviours that
+// loop guaranteed, now asserted against `superviseFleet` driving one pipeline with
+// the arm's exit policy injected: the engine's exit is the container's, a fast
+// crash re-materializes the engine so the crash-loop fallback can land, and the
+// tenant axis stays inert because the root config *is* the engine's config.
+
+const SOLO_TENANT: DiscoveredTenant = {
+  id: "/etc/phoebe",
+  slug: null,
+  dir: "/etc/phoebe",
+  configPath: "/etc/phoebe/phoebe.config.ts",
+  envPath: "/etc/phoebe/.env",
+  gitIdentity: null,
+};
+
+const SHA_A = "a".repeat(40);
+const SHA_B = "b".repeat(40);
+
+/**
+ * A child only the test settles — unlike `fakeChild`, `SIGTERM` does not end it.
+ * That is what makes a drain genuinely awaited, so a test can drive what lands
+ * between "we asked it to stop" and "it is gone".
+ */
+function scriptedChild(): {
+  child: FleetChild;
+  kills: string[];
+  exit: (exit?: EngineExit) => void;
+} {
+  const kills: string[] = [];
+  let settle!: (exit: EngineExit) => void;
+  const exited = new Promise<EngineExit>((resolve) => {
+    settle = resolve;
+  });
+  return {
+    kills,
+    child: {
+      kill: (signal) => {
+        kills.push(signal);
+      },
+      exited,
+    },
+    exit: (exit = { code: 0, signal: null }) => settle(exit),
+  };
+}
+
+/** A drain grace that never expires — every drain here ends on the child's exit. */
+const patientDrainTimer: DrainTimer = () => ({
+  expired: new Promise<void>(() => {}),
+  cancel: () => {},
+});
+
+function soloHarness(
+  options: {
+    launch?: (attempt: number) => Promise<LaunchedEngine> | LaunchedEngine;
+    decide?: (run: FleetRun) => PipelineExitAction;
+  } = {},
+) {
+  const clock = gatedClock();
+  const state: WatchState & { sha: string | null; source: typeof DEFAULT_ENGINE_SOURCE } = {
+    config: "1:2",
+    remoteSha: SHA_A,
+    sha: SHA_A,
+    source: { ...DEFAULT_ENGINE_SOURCE },
+  };
+  const children: Array<ReturnType<typeof scriptedChild>> = [];
+  const entries: string[] = [];
+  const relaunches: string[] = [];
+  const runs: FleetRun[] = [];
+  const ticks: number[] = [];
+  let stopRequested = false;
+  let attempt = 0;
+  let clockMs = 0;
+
+  const result = superviseFleet({
+    intervalMs: 1000,
+    crashBackoffMs: 500,
+    now: () => clockMs,
+    drainTimer: patientDrainTimer,
+    // The root is the one tenant, and its fingerprint is a constant: a config
+    // edit is the engine axis's business, never the tenant axis's.
+    discover: () => [{ tenant: SOLO_TENANT, fingerprint: "solo" }],
+    launch: async () => {
+      const n = attempt++;
+      if (options.launch) return await options.launch(n);
+      return {
+        entry: `/engine/${n}/src/cli.ts`,
+        sha: state.sha,
+        config: state.config,
+        source: { ...state.source },
+        quarantinedSha: null,
+        guarded: true,
+        confirmEngineSource: async () => ({ ...state.source }),
+        sample: () => ({ config: state.config, remoteSha: state.remoteSha }),
+      };
+    },
+    spawn: (_tenant, engine) => {
+      entries.push(engine.entry);
+      const next = scriptedChild();
+      children.push(next);
+      return next.child;
+    },
+    stop: {
+      get requested() {
+        return stopRequested;
+      },
+      wait: clock.wait,
+    },
+    onRunEnd: (run) => runs.push(run),
+    onRunTick: (tick) => ticks.push(tick.elapsedMs),
+    onEngineChange: (reason) => relaunches.push(reason),
+    pipelineExit: {
+      decide: (run) => options.decide?.(run) ?? "exit",
+      propagateOnStop: true,
+    },
+  });
+
+  return {
+    result,
+    state,
+    children,
+    entries,
+    relaunches,
+    runs,
+    ticks,
+    tick: clock.tick,
+    /** Move the injected clock forward, so run durations are asserted exactly. */
+    advance: (ms: number) => {
+      clockMs += ms;
+    },
+    requestStop: () => {
+      stopRequested = true;
+      clock.tick();
+    },
+  };
+}
+
+describe("superviseFleet — solo's one pipeline", () => {
+  test("runs the engine and stays out of its way while nothing changes", async () => {
+    const h = soloHarness();
+    await settle();
+    expect(h.entries).toEqual(["/engine/0/src/cli.ts"]);
+
+    for (let i = 0; i < 5; i++) {
+      h.tick();
+      await settle();
+    }
+
+    expect(h.entries).toHaveLength(1);
+    expect(h.children[0]?.kills).toEqual([]);
+    expect(h.relaunches).toEqual([]);
+
+    h.requestStop();
+    await settle();
+    h.children[0]?.exit();
+    expect(await h.result).toEqual({ code: 0, signal: null });
+  });
+
+  test("an engine that exits on its own is not relaunched — its exit is the result", async () => {
+    const h = soloHarness();
+    await settle();
+
+    h.children[0]?.exit({ code: 3, signal: null });
+
+    expect(await h.result).toEqual({ code: 3, signal: null });
+    expect(h.entries).toHaveLength(1);
+  });
+
+  test("editing the mounted config drains the engine, then relaunches it", async () => {
+    const h = soloHarness();
+    await settle();
+
+    h.state.config = "9:9";
+    h.state.source = { source: "github", ref: "next", repo: "JesusFilm/phoebe" };
+    h.tick();
+    await settle();
+
+    // Drained, not killed outright — and nothing new starts until it is gone.
+    expect(h.relaunches).toEqual(["config"]);
+    expect(h.children[0]?.kills).toEqual(["SIGTERM"]);
+    expect(h.entries).toHaveLength(1);
+
+    h.children[0]?.exit();
+    await settle();
+    expect(h.entries).toEqual(["/engine/0/src/cli.ts", "/engine/1/src/cli.ts"]);
+
+    h.requestStop();
+    await settle();
+    h.children[1]?.exit();
+    await h.result;
+  });
+
+  test("a config edit that does not move the engine source is rebased without draining (#138)", async () => {
+    const h = soloHarness();
+    await settle();
+
+    h.state.config = "9:9";
+    h.tick();
+    await settle();
+
+    expect(h.relaunches).toEqual([]);
+    expect(h.children[0]?.kills).toEqual([]);
+    expect(h.entries).toHaveLength(1);
+
+    h.state.config = "10:10";
+    h.tick();
+    await settle();
+    expect(h.relaunches).toEqual([]);
+    expect(h.entries).toHaveLength(1);
+
+    h.requestStop();
+    await settle();
+    h.children[0]?.exit();
+    await h.result;
+  });
+
+  test("the tracked ref advancing relaunches the engine on the new commit", async () => {
+    const h = soloHarness();
+    await settle();
+
+    h.state.remoteSha = SHA_B;
+    h.state.sha = SHA_B;
+    h.tick();
+    await settle();
+    h.children[0]?.exit();
+    await settle();
+
+    expect(h.relaunches).toEqual(["ref"]);
+    expect(h.entries).toHaveLength(2);
+
+    // The relaunched engine is on the new commit, so the watch goes quiet again.
+    h.tick();
+    await settle();
+    expect(h.entries).toHaveLength(2);
+
+    h.requestStop();
+    await settle();
+    h.children[1]?.exit();
+    await h.result;
+  });
+
+  test("an outside stop drains without relaunching, even mid-poll", async () => {
+    const h = soloHarness();
+    await settle();
+
+    // A container SIGTERM: the engine is already draining via the forwarded
+    // signal, so the loop must wait it out rather than start anything new.
+    h.requestStop();
+    await settle();
+    expect(h.entries).toHaveLength(1);
+
+    h.children[0]?.exit({ code: 0, signal: null });
+    expect(await h.result).toEqual({ code: 0, signal: null });
+    expect(h.entries).toHaveLength(1);
+  });
+
+  test("a stop landing during a relaunch drain does not respawn into a shutdown", async () => {
+    const h = soloHarness();
+    await settle();
+
+    h.state.config = "9:9";
+    h.state.source = { source: "github", ref: "next", repo: "JesusFilm/phoebe" };
+    h.tick();
+    await settle();
+    expect(h.children[0]?.kills).toEqual(["SIGTERM"]);
+
+    // The container goes down while the engine is finishing its unit.
+    h.requestStop();
+    h.children[0]?.exit({ code: 0, signal: null });
+
+    expect(await h.result).toEqual({ code: 0, signal: null });
+    expect(h.entries).toHaveLength(1);
+  });
+
+  test("a relaunch that cannot resolve the engine retries instead of exiting", async () => {
+    // The engine has already drained, so a transient failure here must not take
+    // the container down with it — poll again and try to bring it back.
+    // Two failures, because the drained child's exit wakes the loop once more
+    // straight away: the fleet retries immediately, then falls back to the poll
+    // cadence. Both attempts have to fail for "nothing is running" to hold.
+    const h = soloHarness({
+      launch: async (attempt) => {
+        if (attempt === 1 || attempt === 2) throw new Error("network is down");
+        return {
+          entry: `/engine/${attempt}/src/cli.ts`,
+          sha: SHA_A,
+          config: attempt === 0 ? "1:2" : "9:9",
+          source: { ...DEFAULT_ENGINE_SOURCE, ref: attempt === 0 ? "main" : "next" },
+          quarantinedSha: null,
+          guarded: true,
+          confirmEngineSource: async () => ({ ...DEFAULT_ENGINE_SOURCE, ref: "next" }),
+          sample: () => ({ config: "9:9", remoteSha: SHA_A }),
+        };
+      },
+    });
+    await settle();
+    expect(h.entries).toEqual(["/engine/0/src/cli.ts"]);
+
+    h.tick();
+    await settle();
+    h.children[0]?.exit();
+    await settle();
+
+    // Both attempts threw; nothing new is running yet — and boot is still up.
+    expect(h.entries).toHaveLength(1);
+
+    h.tick();
+    await settle();
+    expect(h.entries).toEqual(["/engine/0/src/cli.ts", "/engine/3/src/cli.ts"]);
+
+    h.requestStop();
+    await settle();
+    h.children[1]?.exit();
+    await h.result;
+  });
+
+  test("a failure on the very first launch is fatal — a bad config fails loudly", async () => {
+    const h = soloHarness({
+      launch: () => {
+        throw new Error("no engine is mounted at /opt/phoebe-engine");
+      },
+    });
+
+    await expect(h.result).rejects.toThrow(/no engine is mounted/);
+  });
+
+  test("every finished run is reported, with what it exited as and how long it lived", async () => {
+    // The crash-loop guard is only as good as this hook: it is where boot learns
+    // that a commit ran healthily (or died on startup).
+    const h = soloHarness();
+    await settle();
+
+    h.advance(1_500);
+    h.children[0]?.exit({ code: 7, signal: null });
+    await h.result;
+
+    expect(h.runs).toHaveLength(1);
+    expect(h.runs[0]?.tenantId).toBe(SOLO_TENANT.id);
+    expect(h.runs[0]?.exit).toEqual({ code: 7, signal: null });
+    expect(h.runs[0]?.elapsedMs).toBe(1_500);
+    expect(h.runs[0]?.engine.sha).toBe(SHA_A);
+    // The engine went of its own accord — this exit is evidence about the commit.
+    expect(h.runs[0]?.requestedStop).toBe(false);
+  });
+
+  test("a run boot ended is flagged as such, however it ended", async () => {
+    // The guard must be able to tell "this commit died" from "we stopped it":
+    // crediting or blaming a run boot cut short would corrupt the record.
+    const h = soloHarness();
+    await settle();
+
+    h.state.config = "9:9";
+    h.state.source = { source: "github", ref: "next", repo: "JesusFilm/phoebe" };
+    h.tick();
+    await settle();
+    h.children[0]?.exit();
+    await settle();
+    expect(h.runs[0]?.requestedStop).toBe(true);
+
+    h.requestStop();
+    await settle();
+    h.children[1]?.exit();
+    await h.result;
+    expect(h.runs[1]?.requestedStop).toBe(true);
+  });
+
+  test("each poll reports how long the engine has been up", async () => {
+    // How a commit that never exits still gets banked as last-good.
+    const h = soloHarness();
+    await settle();
+    expect(h.ticks).toEqual([]);
+
+    h.advance(30_000);
+    h.tick();
+    await settle();
+    h.advance(30_000);
+    h.tick();
+    await settle();
+
+    expect(h.ticks).toEqual([30_000, 60_000]);
+
+    h.requestStop();
+    await settle();
+    h.children[0]?.exit();
+    await h.result;
+  });
+
+  test("a run drained for a reconcile is reported too, and the next run times itself", async () => {
+    // A long, healthy run that ends in a config-change drain is exactly what
+    // should be remembered as last-good — so it has to reach the hook as well.
+    const h = soloHarness();
+    await settle();
+
+    h.advance(90_000);
+    h.state.config = "9:9";
+    h.state.source = { source: "github", ref: "next", repo: "JesusFilm/phoebe" };
+    h.tick();
+    await settle();
+    h.children[0]?.exit();
+    await settle();
+
+    expect(h.runs.map((run) => run.elapsedMs)).toEqual([90_000]);
+
+    h.advance(400);
+    h.requestStop();
+    await settle();
+    h.children[1]?.exit();
+    await h.result;
+
+    expect(h.runs.map((run) => run.elapsedMs)).toEqual([90_000, 400]);
+  });
+
+  test("a crash the guard wants to survive relaunches instead of ending the container", async () => {
+    const seen: FleetRun[] = [];
+    const h = soloHarness({
+      decide: (run) => {
+        seen.push(run);
+        return "relaunch";
+      },
+    });
+    await settle();
+
+    h.advance(300);
+    h.children[0]?.exit({ code: 1, signal: null });
+    await settle();
+
+    // Backed off first — a commit that dies instantly must not spin the loop.
+    expect(h.entries).toHaveLength(1);
+    expect(seen[0]?.elapsedMs).toBe(300);
+
+    h.tick();
+    await settle();
+    // A fresh `launch`, not a bare respawn: the fallback to a last-good commit
+    // only takes effect through re-materializing the engine.
+    expect(h.entries).toEqual(["/engine/0/src/cli.ts", "/engine/1/src/cli.ts"]);
+
+    h.requestStop();
+    await settle();
+    h.children[1]?.exit();
+    await h.result;
+  });
+
+  test("a stop landing during the crash backoff does not respawn into a shutdown", async () => {
+    const h = soloHarness({ decide: () => "relaunch" });
+    await settle();
+
+    h.children[0]?.exit({ code: 1, signal: null });
+    await settle();
+    h.requestStop();
+    await settle();
+
+    // The crash is still what the container exits with — a shutdown mid-backoff
+    // should not launder a failing engine into a clean stop.
+    expect(h.entries).toHaveLength(1);
+    expect(await h.result).toEqual({ code: 1, signal: null });
+  });
+
+  test("a stop and a crash arriving together propagates the crash, not a relaunch", async () => {
+    // The container is going down; the engine's exit is the container's exit,
+    // whatever the guard would have preferred.
+    const h = soloHarness({ decide: () => "relaunch" });
+    await settle();
+
+    h.requestStop();
+    await settle();
+    h.children[0]?.exit({ code: 1, signal: null });
+
+    expect(await h.result).toEqual({ code: 1, signal: null });
+    expect(h.entries).toHaveLength(1);
+  });
+});
+
+/** One enumerated pipeline, with only the two fields the supervisor diffs on varied. */
+function declaredPipeline(
+  name: string,
+  fingerprint: string | null,
+  knobs: Partial<Pick<Pipeline, "disabled" | "priority" | "concurrency">> = {},
+): Pipeline {
+  return {
+    name,
+    disabled: false,
+    priority: 0,
+    concurrency: 1,
+    needsClone: true,
+    env: [],
+    fingerprint,
+    ...knobs,
+  };
+}
+
+/** Where a slug's tenant keeps its config — the key the enumerator is asked by. */
+function configOf(slug: string): string {
+  return tenant(slug).configPath;
+}
+
+/**
+ * A fleet whose pipelines come from a fake engine (#417's `PipelineEnumerator` contract),
+ * so the matrix can be moved a pipeline at a time: `setPipelines` re-answers enumeration,
+ * `setSamples` moves a tenant's fingerprint, and an `Error` in the pipeline table is
+ * an enumeration that throws.
+ */
+function matrixHarness(
+  options: {
+    samples?: TenantSample[];
+    pipelines?: Record<string, Pipeline[] | Error>;
+    supported?: boolean;
+    decide?: (run: FleetRun) => PipelineExitAction;
+    pipelineFingerprint?: (
+      pipeline: SupervisedPipeline,
+      enumerated: string | null,
+    ) => string | null;
+    /** How the checkout's stale-state sweeper (#426) behaves, if it has one. */
+    sweep?: "ok" | "fail" | "absent";
+  } = {},
+) {
+  const clock = gatedClock();
+  const engineState = {
+    config: "1:1",
+    remoteSha: SHA_A,
+    source: { ...DEFAULT_ENGINE_SOURCE },
+  };
+  let samples: TenantSample[] = options.samples ?? [sample("acme/widget", "fp1")];
+  let pipelines: Record<string, Pipeline[] | Error> = options.pipelines ?? {};
+  const spawned: Array<{ pipeline: SupervisedPipeline; fake: ReturnType<typeof fakeChild> }> = [];
+  const rowErrors: Array<{ tenantId: string; error: unknown }> = [];
+  // One ordered log of everything the loop did, so "before any pipeline spawns" and
+  // "after the removed pipelines drained" are assertions rather than hopes.
+  const events: string[] = [];
+  const sweeps: Array<{ tenantId: string; trigger: string }> = [];
+  const sweepErrors: Array<{ tenantId: string; trigger: string }> = [];
+  const runs: FleetRun[] = [];
+  const matrices: Array<{ pipelines: SupervisedPipeline[]; reshaped: boolean }> = [];
+  let enumerations = 0;
+  let stopRequested = false;
+
+  // One enumerator per materialization, cache and all — the whole point of
+  // hanging it off `LaunchedEngine` is that an upgrade starts a fresh one.
+  const enumerator = (): PipelineEnumerator => {
+    const cache = new Map<string, { fingerprint: string; pipelines: readonly Pipeline[] }>();
+    return {
+      supported: () => options.supported ?? true,
+      pipelinesFor: ({ configPath, fingerprint }) => {
+        const cached = cache.get(configPath);
+        if (cached && fingerprint !== null && cached.fingerprint === fingerprint)
+          return cached.pipelines;
+        enumerations += 1;
+        const answer = pipelines[configPath] ?? [declaredPipeline("work", "work-fp")];
+        if (answer instanceof Error) throw answer;
+        if (fingerprint !== null) cache.set(configPath, { fingerprint, pipelines: answer });
+        return answer;
+      },
+    };
+  };
+
+  const result = superviseFleet({
+    intervalMs: 1000,
+    crashBackoffMs: 500,
+    launch: () => ({
+      entry: "/data/engine/src/cli.ts",
+      sha: engineState.remoteSha,
+      config: engineState.config,
+      source: { ...engineState.source },
+      quarantinedSha: null,
+      guarded: true,
+      confirmEngineSource: async () => ({ ...engineState.source }),
+      sample: () => ({ config: engineState.config, remoteSha: engineState.remoteSha }),
+      pipelines: enumerator(),
+      ...((options.sweep ?? "ok") === "absent"
+        ? {}
+        : {
+            stateSweep: {
+              sweep: ({ configPath }: { configPath: string }) => {
+                events.push(`sweep:${configPath}`);
+                if (options.sweep === "fail") throw new Error("config will not load");
+                return { removed: 1, failed: 0, kept: [] };
+              },
+            },
+          }),
+    }),
+    discover: () => samples,
+    spawn: (pipeline) => {
+      const fake = fakeChild();
+      events.push(`spawn:${pipeline.pipeline.name}`);
+      spawned.push({ pipeline, fake });
+      return fake.child;
+    },
+    stop: {
+      get requested() {
+        return stopRequested;
+      },
+      wait: clock.wait,
+    },
+    ...(options.pipelineFingerprint ? { pipelineFingerprint: options.pipelineFingerprint } : {}),
+    onPipelinesError: (info) => rowErrors.push(info),
+    onPipelines: ({ pipelines: live, reshaped }) =>
+      matrices.push({ pipelines: [...live], reshaped }),
+    onStateSweep: ({ tenantId, trigger }) => sweeps.push({ tenantId, trigger }),
+    onStateSweepError: ({ tenantId, trigger }) => sweepErrors.push({ tenantId, trigger }),
+    onRunEnd: (run) => runs.push(run),
+    ...(options.decide ? { pipelineExit: { decide: options.decide } } : {}),
+  });
+
+  const named = (name: string) => spawned.filter((s) => s.pipeline.pipeline.name === name);
+  return {
+    result,
+    spawned,
+    rowErrors,
+    events,
+    sweeps,
+    sweepErrors,
+    runs,
+    matrices,
+    named,
+    get enumerations() {
+      return enumerations;
+    },
+    setPipelines: (next: Record<string, Pipeline[] | Error>) => {
+      pipelines = next;
+    },
+    setSamples: (next: TenantSample[]) => {
+      samples = next;
+    },
+    moveEngineRef: (sha: string) => {
+      engineState.remoteSha = sha;
+    },
+    tick: clock.tick,
+    requestStop: () => {
+      stopRequested = true;
+      clock.tick();
+    },
+  };
+}
+
+describe("superviseFleet — the (tenant × pipeline) matrix", () => {
+  const WIDGET = configOf("acme/widget");
+  const WIDGET_ID = tenant("acme/widget").id;
+  const TWO_PIPELINES = {
+    [WIDGET]: [declaredPipeline("work", "w1"), declaredPipeline("intake", "i1")],
+  };
+
+  test("boots one child per declared pipeline, each under its own pipeline id", async () => {
+    const h = matrixHarness({ pipelines: TWO_PIPELINES });
+    await settle();
+
+    expect(h.spawned.map((s) => s.pipeline.pipeline.name)).toEqual(["work", "intake"]);
+    expect(h.spawned.map((s) => s.pipeline.id)).toEqual([
+      `${WIDGET_ID}#work`,
+      `${WIDGET_ID}#intake`,
+    ]);
+    // Enumerated pipelines carry the `--pipeline` flag their child is spawned with.
+    expect(h.spawned.every((s) => s.pipeline.enumerated)).toBe(true);
+  });
+
+  test("a pipeline-local edit relaunches only that pipeline", async () => {
+    const h = matrixHarness({ pipelines: TWO_PIPELINES });
+    await settle();
+    const work = h.named("work")[0]!;
+
+    // `intake.pollIntervalMs` moved: the tenant's stat fingerprint follows, but
+    // only intake's own digest does.
+    h.setPipelines({
+      [WIDGET]: [declaredPipeline("work", "w1"), declaredPipeline("intake", "i2")],
+    });
+    h.setSamples([sample("acme/widget", "fp2")]);
+    h.tick();
+    await settle();
+
+    expect(work.fake.kills).toEqual([]);
+    expect(h.named("intake")).toHaveLength(2);
+    expect(h.named("work")).toHaveLength(1);
+  });
+
+  test("a tenant-wide edit no pipeline accounts for fans out to every pipeline", async () => {
+    const h = matrixHarness({ pipelines: TWO_PIPELINES });
+    await settle();
+    const initial = [...h.spawned];
+
+    // `gitIdentity` moved: the pipeline digests deliberately exclude tenant-wide
+    // fields, so nothing but the tenant fingerprint has anything to say.
+    h.setSamples([sample("acme/widget", "fp2")]);
+    h.tick();
+    await settle();
+
+    for (const s of initial) expect(s.fake.kills).toContain("SIGTERM");
+    expect(h.named("work")).toHaveLength(2);
+    expect(h.named("intake")).toHaveLength(2);
+  });
+
+  test("a pipeline that vanishes from the config drains, and its siblings keep running", async () => {
+    const h = matrixHarness({ pipelines: TWO_PIPELINES });
+    await settle();
+    const work = h.named("work")[0]!;
+    const intake = h.named("intake")[0]!;
+
+    h.setPipelines({ [WIDGET]: [declaredPipeline("work", "w1")] });
+    h.setSamples([sample("acme/widget", "fp2")]);
+    h.tick();
+    await settle();
+
+    expect(intake.fake.kills).toContain("SIGTERM");
+    // Running, not relaunched: the vanished pipeline already accounts for the move.
+    expect(work.fake.kills).toEqual([]);
+    expect(h.spawned).toHaveLength(2);
+  });
+
+  test("an enumeration failure holds the tenant, warns each poll, and drains nothing", async () => {
+    const h = matrixHarness({ pipelines: TWO_PIPELINES });
+    await settle();
+    const initial = [...h.spawned];
+
+    h.setPipelines({ [WIDGET]: new PipelineEnumerationError("intake claims a kind work owns") });
+    h.setSamples([sample("acme/widget", "fp2")]);
+    h.tick();
+    await settle();
+    for (const s of initial) expect(s.fake.kills).toEqual([]);
+    expect(h.rowErrors.map((e) => e.tenantId)).toEqual([WIDGET_ID]);
+
+    // Still broken next poll: said again, still nothing drained.
+    h.tick();
+    await settle();
+    expect(h.rowErrors).toHaveLength(2);
+    for (const s of initial) expect(s.fake.kills).toEqual([]);
+
+    // Fixed. The held tenant never moved its watermark on, so the edit that
+    // could not be read is still pending and fans out to both pipelines.
+    h.setPipelines(TWO_PIPELINES);
+    h.tick();
+    await settle();
+    expect(h.rowErrors).toHaveLength(2);
+    expect(h.spawned).toHaveLength(4);
+  });
+
+  test("an enumeration failure at boot contributes no pipelines and retries", async () => {
+    const h = matrixHarness({
+      pipelines: { [WIDGET]: new PipelineEnumerationError("no such kind") },
+    });
+    await settle();
+
+    expect(h.spawned).toEqual([]);
+    expect(h.rowErrors).toHaveLength(1);
+
+    h.setPipelines(TWO_PIPELINES);
+    h.tick();
+    await settle();
+    expect(h.spawned.map((s) => s.pipeline.pipeline.name)).toEqual(["work", "intake"]);
+  });
+
+  test("an engine upgrade re-enumerates rather than reusing the old pipeline list", async () => {
+    const h = matrixHarness({ pipelines: { [WIDGET]: [declaredPipeline("work", "w1")] } });
+    await settle();
+    expect(h.enumerations).toBe(1);
+
+    // The new commit understands a pipeline the old one never reported, under a
+    // tenant fingerprint that has not moved at all.
+    h.setPipelines(TWO_PIPELINES);
+    h.moveEngineRef(SHA_B);
+    h.tick();
+    await settle();
+
+    expect(h.enumerations).toBe(2);
+    expect(h.spawned.map((s) => s.pipeline.pipeline.name)).toEqual(["work", "work", "intake"]);
+  });
+
+  test("one pipeline crash-looping is that pipeline's problem; the container stays up", async () => {
+    const h = matrixHarness({ pipelines: TWO_PIPELINES, decide: () => "exit" });
+    await settle();
+
+    h.named("work")[0]!.fake.exit({ code: 1, signal: null });
+    await settle();
+    // The exit policy was never asked — intake is still up, so the death is not
+    // universal and the pipeline is simply reaped and respawned.
+    expect(h.runs.at(-1)?.everyPipelineCrashLooping).toBe(false);
+    h.tick(); // release the respawn backoff
+    await settle();
+    expect(h.named("work")).toHaveLength(2);
+  });
+
+  test("every pipeline crash-looping at once is the container's problem", async () => {
+    const h = matrixHarness({ pipelines: TWO_PIPELINES, decide: () => "exit" });
+    await settle();
+
+    h.named("work")[0]!.fake.exit({ code: 7, signal: null });
+    h.named("intake")[0]!.fake.exit({ code: 1, signal: null });
+
+    expect(await h.result).toEqual({ code: 7, signal: null });
+    expect(h.runs.some((run) => run.everyPipelineCrashLooping)).toBe(true);
+  });
+
+  test("a pipeline still crash-looping between respawns keeps counting", async () => {
+    // The two pipelines never die in the same instant, so a mark that reset on
+    // respawn would let them alternate forever and the container would hang on
+    // a fleet that is entirely broken.
+    const h = matrixHarness({ pipelines: TWO_PIPELINES, decide: () => "exit" });
+    await settle();
+
+    h.named("work")[0]!.fake.exit({ code: 1, signal: null });
+    await settle();
+    h.tick();
+    await settle();
+    expect(h.named("work")).toHaveLength(2);
+
+    h.named("intake")[0]!.fake.exit({ code: 4, signal: null });
+    expect(await h.result).toEqual({ code: 4, signal: null });
+  });
+
+  test("announces the whole matrix before the first child spawns", async () => {
+    const h = matrixHarness({ pipelines: TWO_PIPELINES });
+    await settle();
+
+    // The broker must be sized and ordered before anything can ask it for a
+    // slot, so the announcement leads the spawn.
+    expect(h.matrices[0]).toBeDefined();
+    expect(h.matrices[0]!.reshaped).toBe(true);
+    expect(h.matrices[0]!.pipelines.map((pipeline) => pipeline.id)).toEqual([
+      `${WIDGET_ID}#work`,
+      `${WIDGET_ID}#intake`,
+    ]);
+  });
+
+  test("a poll that reshapes nothing announces the matrix as unchanged", async () => {
+    const h = matrixHarness({ pipelines: TWO_PIPELINES });
+    await settle();
+    h.tick();
+    await settle();
+
+    const last = h.matrices[h.matrices.length - 1]!;
+    expect(last.reshaped).toBe(false);
+    expect(last.pipelines).toHaveLength(2);
+    // Nothing was reshaped, so nothing was drained either.
+    for (const s of h.spawned) expect(s.fake.kills).toEqual([]);
+  });
+
+  test("a hot `priority` edit lands on the running pipeline without relaunching it", async () => {
+    const h = matrixHarness({ pipelines: TWO_PIPELINES });
+    await settle();
+    const initial = [...h.spawned];
+
+    // `priority` is outside the pipeline fingerprint, so a bump moves the tenant's
+    // stat fingerprint and nothing else. The pipeline must not relaunch for it —
+    // and the move must not be read as a tenant-wide change either.
+    h.setPipelines({
+      [WIDGET]: [declaredPipeline("work", "w1"), declaredPipeline("intake", "i1", { priority: 5 })],
+    });
+    h.setSamples([sample("acme/widget", "fp2")]);
+    h.tick();
+    await settle();
+
+    for (const s of initial) expect(s.fake.kills).toEqual([]);
+    expect(h.spawned).toHaveLength(2);
+    // Nothing after the boot announcement reshaped, so the cap never moves for
+    // a hot edit — but the new priority is announced all the same.
+    expect(h.matrices.slice(1).some((matrix) => matrix.reshaped)).toBe(false);
+    const last = h.matrices[h.matrices.length - 1]!;
+    expect(
+      last.pipelines.find((pipeline) => pipeline.pipeline.name === "intake")?.pipeline.priority,
+    ).toBe(5);
+  });
+
+  test("a pipeline whose cold config also moved still relaunches", async () => {
+    const h = matrixHarness({ pipelines: TWO_PIPELINES });
+    await settle();
+    const intake = h.named("intake")[0]!;
+
+    h.setPipelines({
+      [WIDGET]: [declaredPipeline("work", "w1"), declaredPipeline("intake", "i2", { priority: 5 })],
+    });
+    h.setSamples([sample("acme/widget", "fp2")]);
+    h.tick();
+    await settle();
+
+    expect(intake.fake.kills).toContain("SIGTERM");
+    expect(h.named("intake")).toHaveLength(2);
+    // A relaunch is a reshape, so this is where a moved cap would land.
+    expect(h.matrices.slice(1).some((matrix) => matrix.reshaped)).toBe(true);
+  });
+
+  test("a held tenant's running pipelines stay in the announced matrix", async () => {
+    const h = matrixHarness({
+      samples: [sample("acme/widget", "fp1"), sample("acme/gadget", "fp1")],
+      pipelines: {
+        [WIDGET]: [declaredPipeline("work", "w1")],
+        [configOf("acme/gadget")]: [declaredPipeline("work", "g1")],
+      },
+    });
+    await settle();
+
+    // Gadget's config goes unreadable: it is held, contributing no pipelines this
+    // poll — but its child is still running and still contending for slots.
+    h.setPipelines({
+      [WIDGET]: [declaredPipeline("work", "w1")],
+      [configOf("acme/gadget")]: new PipelineEnumerationError("unreadable"),
+    });
+    h.setSamples([sample("acme/widget", "fp1"), sample("acme/gadget", "fp2")]);
+    h.tick();
+    await settle();
+
+    const last = h.matrices[h.matrices.length - 1]!;
+    expect(last.pipelines.map((pipeline) => pipeline.id).sort()).toEqual(
+      [`${tenant("acme/gadget").id}#work`, `${WIDGET_ID}#work`].sort(),
+    );
+  });
+
+  test("an engine with no `pipelines` subcommand runs one implicit pipeline per tenant", async () => {
+    const h = matrixHarness({ supported: false });
+    await settle();
+
+    expect(h.spawned).toHaveLength(1);
+    expect(h.spawned[0]?.pipeline.pipeline.name).toBe("work");
+    // Nothing to ask, so nothing is asked — and no `--pipeline` is passed on.
+    expect(h.spawned[0]?.pipeline.enumerated).toBe(false);
+    expect(h.enumerations).toBe(0);
+
+    // A tenant config edit still relaunches that child, exactly as it always has.
+    h.setSamples([sample("acme/widget", "fp2")]);
+    h.tick();
+    await settle();
+    expect(h.spawned[0]?.fake.kills).toContain("SIGTERM");
+    expect(h.spawned).toHaveLength(2);
+  });
+});
+
+describe("declared keys across the matrix (#425)", () => {
+  const WIDGET = configOf("acme/widget");
+  const declaring = (name: string, fp: string, env: string[]): Pipeline => ({
+    ...declaredPipeline(name, fp),
+    env,
+  });
+
+  test("each pipeline learns what its siblings declared, and nothing it declared itself", async () => {
+    const h = matrixHarness({
+      pipelines: {
+        [WIDGET]: [
+          declaring("work", "w1", []),
+          declaring("intake", "i1", ["SLACK_BOT_TOKEN"]),
+          declaring("triage", "t1", ["LINEAR_KEY"]),
+        ],
+      },
+    });
+    await settle();
+    expect(h.named("work")[0]?.pipeline.siblingEnv).toEqual(["LINEAR_KEY", "SLACK_BOT_TOKEN"]);
+    expect(h.named("intake")[0]?.pipeline.siblingEnv).toEqual(["LINEAR_KEY"]);
+    h.requestStop();
+    await h.result;
+  });
+
+  test("a `.env` rotation only the intake pipeline can see relaunches it alone", async () => {
+    let slackToken = "xoxb-1";
+    const h = matrixHarness({
+      pipelines: {
+        [WIDGET]: [declaring("work", "w1", []), declaring("intake", "i1", ["SLACK_BOT_TOKEN"])],
+      },
+      // The supervisor's half of the pipeline fingerprint: the tenant's `.env` as
+      // this pipeline would hold it, which is boot.ts's `workspacePipelineFingerprint`.
+      pipelineFingerprint: (pipeline, enumerated) =>
+        enumerated === null
+          ? null
+          : `${enumerated}:${pipeline.pipeline.env.includes("SLACK_BOT_TOKEN") ? slackToken : ""}`,
+    });
+    await settle();
+    expect(h.spawned).toHaveLength(2);
+
+    slackToken = "xoxb-2";
+    // The tenant fingerprint moves too — a `.env` edit is a tenant-wide stat
+    // change — which is what makes "only intake relaunched" the real claim.
+    h.setSamples([sample("acme/widget", "fp2")]);
+    h.tick();
+    await settle();
+    expect(h.named("intake")).toHaveLength(2);
+    expect(h.named("work")).toHaveLength(1);
+    h.requestStop();
+    await h.result;
+  });
+});
+
+// The stale-state sweep's two triggers (#426). Both are about *when*: the sweep
+// deletes disk, so it may only run at a moment when the pipelines that disk belonged
+// to are down — and it must never be what stops a pipeline from starting.
+describe("superviseFleet — the stale-state sweep's triggers", () => {
+  const WIDGET = configOf("acme/widget");
+  const WIDGET_ID = tenant("acme/widget").id;
+  const TWO_PIPELINES = {
+    [WIDGET]: [declaredPipeline("work", "w1"), declaredPipeline("intake", "i1")],
+  };
+
+  test("facility boot sweeps once per tenant, before any pipeline spawns", async () => {
+    const h = matrixHarness({ pipelines: TWO_PIPELINES });
+    await settle();
+
+    expect(h.events).toEqual([`sweep:${WIDGET}`, "spawn:work", "spawn:intake"]);
+    expect(h.sweeps).toEqual([{ tenantId: WIDGET_ID, trigger: "boot" }]);
+  });
+
+  test("a sweep that fails is reported, and every pipeline spawns anyway", async () => {
+    const h = matrixHarness({ pipelines: TWO_PIPELINES, sweep: "fail" });
+    await settle();
+
+    expect(h.sweepErrors).toEqual([{ tenantId: WIDGET_ID, trigger: "boot" }]);
+    expect(h.spawned.map((s) => s.pipeline.pipeline.name)).toEqual(["work", "intake"]);
+  });
+
+  test("an engine checkout with no sweeper spawns exactly as before", async () => {
+    const h = matrixHarness({ pipelines: TWO_PIPELINES, sweep: "absent" });
+    await settle();
+
+    expect(h.events).toEqual(["spawn:work", "spawn:intake"]);
+    expect(h.sweeps).toEqual([]);
+    expect(h.sweepErrors).toEqual([]);
+  });
+
+  test("a tenant whose pipelines will not enumerate is not swept", async () => {
+    const h = matrixHarness({
+      pipelines: { [WIDGET]: new PipelineEnumerationError("no such kind") },
+    });
+    await settle();
+
+    expect(h.sweeps).toEqual([]);
+    expect(h.spawned).toEqual([]);
+  });
+
+  test("a pipeline that vanished is swept after it drains and before anything respawns", async () => {
+    const h = matrixHarness({ pipelines: TWO_PIPELINES });
+    await settle();
+    const intake = h.named("intake")[0]!;
+
+    // `intake` deleted and `work` re-tuned in one edit: the sweep sits between
+    // the drain of both and the respawn of the one that is coming back.
+    h.setPipelines({ [WIDGET]: [declaredPipeline("work", "w2")] });
+    h.setSamples([sample("acme/widget", "fp2")]);
+    h.tick();
+    await settle();
+
+    expect(intake.fake.kills).toContain("SIGTERM");
+    expect(h.events).toEqual([
+      `sweep:${WIDGET}`,
+      "spawn:work",
+      "spawn:intake",
+      `sweep:${WIDGET}`,
+      "spawn:work",
+    ]);
+    expect(h.sweeps.map((s) => s.trigger)).toEqual(["boot", "pipeline-change"]);
+  });
+
+  test("a pipeline that only appeared orphans nothing, so nothing is swept for it", async () => {
+    const h = matrixHarness({ pipelines: { [WIDGET]: [declaredPipeline("work", "w1")] } });
+    await settle();
+
+    h.setPipelines(TWO_PIPELINES);
+    h.setSamples([sample("acme/widget", "fp2")]);
+    h.tick();
+    await settle();
+
+    expect(h.named("intake")).toHaveLength(1);
+    expect(h.sweeps.map((s) => s.trigger)).toEqual(["boot"]);
+  });
+
+  test("an engine upgrade is not a pipeline-set change and does not sweep", async () => {
+    const h = matrixHarness({ pipelines: TWO_PIPELINES });
+    await settle();
+
+    h.moveEngineRef(SHA_B);
+    h.tick();
+    await settle();
+
+    expect(h.spawned).toHaveLength(4);
+    expect(h.sweeps.map((s) => s.trigger)).toEqual(["boot"]);
   });
 });

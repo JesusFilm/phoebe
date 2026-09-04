@@ -14,7 +14,8 @@ import { afterAll, beforeAll, describe, expect, test } from "vite-plus/test";
 import { asBranchRef } from "./branded.ts";
 import { resolveConfig } from "./config-schema.ts";
 import type { GitRunner } from "./git-model.ts";
-import { createOriginHub } from "./origin-hub.ts";
+import { breakOwnLeases, createOriginHub, requiresOriginClone } from "./origin-hub.ts";
+import { formatLeaseReason } from "./worktree-lease.ts";
 
 const IDENTITY = [
   "-c",
@@ -91,5 +92,89 @@ describe("commitsBehind", () => {
 
   test("reads zero for a branch level with its upstream", () => {
     expect(hub().commitsBehind(asBranchRef("main"), "main")).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The boot-time lease break (#418)
+// ---------------------------------------------------------------------------
+
+describe("breakOwnLeases", () => {
+  let mine: string;
+  let theirs: string;
+
+  beforeAll(() => {
+    const h = hub();
+    mine = h.worktreeDirFor(asBranchRef("phoebe/issue-7"));
+    theirs = h.worktreeDirFor(asBranchRef("phoebe/issue-8"));
+    h.addWorktreeForNew({
+      worktreeDir: mine,
+      branch: asBranchRef("phoebe/issue-7"),
+      baseRef: "origin/main",
+    });
+    h.addWorktreeForNew({
+      worktreeDir: theirs,
+      branch: asBranchRef("phoebe/issue-8"),
+      baseRef: "origin/main",
+    });
+    h.lockWorktree(mine, formatLeaseReason({ owner: "work#issues:issue%3A7", pid: 111 }));
+    h.lockWorktree(theirs, formatLeaseReason({ owner: "intake#slack:msg%3A8", pid: 222 }));
+  });
+
+  // A lease outlives the process that took it, so a boot has to clear its own
+  // unconditionally — otherwise a killed engine locks its trees forever.
+  test("a pipeline breaks its own leases and leaves every other one alone", () => {
+    const h = hub();
+    const { broken, heldByOthers } = breakOwnLeases(h, "work");
+
+    expect(broken).toHaveLength(1);
+    expect(broken[0]).toContain("issue-7");
+    expect(h.worktreeLease(mine).locked).toBe(false);
+
+    expect(heldByOthers).toHaveLength(1);
+    expect(heldByOthers[0]?.pipeline).toBe("intake");
+    expect(h.worktreeLease(theirs)).toEqual({
+      locked: true,
+      holder: "intake#slack:msg%3A8",
+    });
+  });
+
+  test("a second boot of another pipeline still does not touch the first's tree", () => {
+    const h = hub();
+    h.lockWorktree(mine, formatLeaseReason({ owner: "work#issues:issue%3A7", pid: 333 }));
+
+    const { broken, heldByOthers } = breakOwnLeases(h, "intake");
+
+    expect(broken.some((dir) => dir.includes("issue-8"))).toBe(true);
+    expect(heldByOthers.map((held) => held.pipeline)).toEqual(["work"]);
+    expect(h.worktreeLease(mine)).toEqual({ locked: true, holder: "work#issues:issue%3A7" });
+
+    h.unlockWorktree(mine);
+  });
+});
+
+describe("requiresOriginClone", () => {
+  const modes: Record<string, string> = {
+    issues: "worktree",
+    scout: "readonly",
+    digest: "scratch",
+    nudge: "scratch",
+  };
+  const modeFor = (kind: string): string => modes[kind] ?? "scratch";
+
+  test("a pipeline with a worktree kind needs the clone", () => {
+    expect(requiresOriginClone(["digest", "issues"], modeFor)).toBe(true);
+  });
+
+  test("a readonly kind needs it too — a detached checkout is still a checkout", () => {
+    expect(requiresOriginClone(["scout"], modeFor)).toBe(true);
+  });
+
+  test("a pipeline whose kinds all declare scratch never clones", () => {
+    expect(requiresOriginClone(["digest", "nudge"], modeFor)).toBe(false);
+  });
+
+  test("a pipeline with no kinds at all never clones", () => {
+    expect(requiresOriginClone([], modeFor)).toBe(false);
   });
 });

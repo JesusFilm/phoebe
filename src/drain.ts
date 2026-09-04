@@ -14,8 +14,8 @@
 // unit-tested without sending real process signals.
 //
 // Both poll loops use it, for the same reason: the engine's work loop drains on
-// it (src/main.ts), and the bootstrapper's reconcile watch takes it as the
-// container's stop request (bootstrap/reconcile.ts) so a shutdown wakes the
+// it (src/main.ts), and the bootstrapper's supervision loop takes it as the
+// container's stop request (bootstrap/supervise-fleet.ts) so a shutdown wakes the
 // watch instead of waiting out a poll interval — and so boot survives the moment
 // between draining one engine and spawning its replacement.
 
@@ -25,8 +25,13 @@ export interface DrainSignal {
   /**
    * Resolve after `ms`, or immediately once a drain is requested — whichever
    * comes first. A drain arriving mid-wait wakes it so the loop stops promptly
-   * rather than sleeping out the full poll interval. Single-waiter: the loop
-   * awaits one wait() at a time.
+   * rather than sleeping out the full poll interval.
+   *
+   * Several waits may be outstanding at once. The engine loop races this
+   * against its in-flight units settling (#422), so a wait it stopped caring
+   * about is still pending when the next one starts — and a wait that keeps a
+   * single shared waker slot would have the abandoned timer clear the live
+   * one's, leaving a later SIGTERM with nothing to wake.
    */
   wait(ms: number): Promise<void>;
   /** Remove the signal listeners and cancel any pending wait. Idempotent. */
@@ -38,13 +43,14 @@ export function installDrainSignal(
   signals: readonly NodeJS.Signals[] = ["SIGTERM"],
 ): DrainSignal {
   let requested = false;
-  // Resolver for an in-flight wait(), so a drain can wake it early. Cleared once
-  // it fires (or the wait times out) so we never resolve a stale promise.
-  let wake: (() => void) | undefined;
+  // Resolvers for the waits currently outstanding, so a drain wakes every one
+  // of them early. Each removes its own entry as it settles, so an abandoned
+  // wait cannot cancel a live one.
+  const wakers = new Set<() => void>();
 
   const onSignal = () => {
     requested = true;
-    wake?.();
+    for (const wake of wakers) wake();
   };
   for (const signal of signals) emitter.on(signal, onSignal);
 
@@ -55,20 +61,19 @@ export function installDrainSignal(
     wait(ms: number): Promise<void> {
       if (requested) return Promise.resolve();
       return new Promise((resolve) => {
-        const timer = setTimeout(() => {
-          wake = undefined;
-          resolve();
-        }, ms);
-        wake = () => {
+        let timer: ReturnType<typeof setTimeout>;
+        const settle = (): void => {
           clearTimeout(timer);
-          wake = undefined;
+          wakers.delete(settle);
           resolve();
         };
+        timer = setTimeout(settle, ms);
+        wakers.add(settle);
       });
     },
     dispose() {
       for (const signal of signals) emitter.off(signal, onSignal);
-      wake?.();
+      for (const wake of wakers) wake();
     },
   };
 }

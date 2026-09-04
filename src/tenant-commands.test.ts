@@ -44,6 +44,29 @@ async function withAppKey<T>(fn: () => T | Promise<T>): Promise<T> {
   }
 }
 
+/** A tenant config the engine will actually resolve — five required fields. */
+function tenantConfigSource(slug: string, pipelines = PIPELINES_SOURCE): string {
+  return (
+    `export default {\n` +
+    `  repoSlug: "${slug}",\n` +
+    `  repoUrl: "https://github.com/${slug}.git",\n` +
+    `  installCommand: "pnpm i",\n` +
+    `  checkCommand: "pnpm check",\n` +
+    `  testCommand: "pnpm test",\n` +
+    pipelines +
+    `};\n`
+  );
+}
+
+const PIPELINES_SOURCE =
+  "  pipelines: { work: { concurrency: 2 }, intake: { disabled: true, pollIntervalMs: 15000 } },\n";
+
+/** Write one pipeline's snapshot under `state/<pipeline>/`. */
+function writeSnapshot(dir: string, snapshot: Record<string, unknown>): void {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "status.json"), JSON.stringify(snapshot));
+}
+
 describe("parseSlug / defaultRepoUrl / slugFromRemoteUrl", () => {
   test("splits a valid slug", () => {
     expect(parseSlug("acme/widget")).toEqual({ owner: "acme", repo: "widget" });
@@ -113,14 +136,59 @@ describe("renderTenantConfig", () => {
 });
 
 describe("listTenants", () => {
-  test("solo deployment has no fleet to list", async () => {
+  test("a directory with no config at all lists nothing", async () => {
     expect(await listTenants({ configDir, dataBase })).toEqual({
       listings: [],
       declared: 0,
       live: 0,
       explicit: false,
+      solo: false,
       undeclared: [],
     });
+  });
+
+  test("solo lists the deployment root itself, pipeline lines and all (#427)", async () => {
+    writeFileSync(
+      join(configDir, "phoebe.config.ts"),
+      `export default { repoSlug: "acme/solo" };\n`,
+    );
+    writeFileSync(join(configDir, ".env"), "GH_TOKEN=x\n");
+    const stateDir = join(dataBase, "acme", "solo", "state", "work");
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(
+      join(stateDir, "status.json"),
+      JSON.stringify({ tenant: "acme/solo", pipeline: "work", currentUnits: [] }),
+    );
+
+    const result = await listTenants({
+      configDir,
+      dataBase,
+      loadPipelines: () => [
+        { name: "work", disabled: false, concurrency: 1, pollIntervalMs: 300_000 },
+      ],
+    });
+
+    expect(result).toMatchObject({ declared: 1, live: 1, solo: true, explicit: false });
+    expect(result.listings[0]).toMatchObject({
+      path: configDir,
+      slug: "acme/solo",
+      held: false,
+      configValid: true,
+      envPresent: true,
+      arm: "pat",
+    });
+    expect(result.listings[0]?.pipelines).toEqual([
+      {
+        name: "work",
+        disabled: false,
+        source: "enumerated",
+        state: "idle",
+        units: [],
+        updatedAt: "1970-01-01T00:00:00.000Z",
+        wedged: false,
+        concurrency: 1,
+      },
+    ]);
   });
 
   test("workspace walk mode lists valid + held children with observational reasons", async () => {
@@ -138,16 +206,26 @@ describe("listTenants", () => {
     writeFileSync(join(configDir, "envless", "phoebe.config.ts"), "export default {};\n");
     writeFileSync(join(configDir, "broken", "phoebe.config.ts"), "export default {};\n");
     writeFileSync(join(configDir, "valid", ".env"), "GH_TOKEN=x\n");
-    const stateDir = join(dataBase, "acme", "valid", "state");
+    // The `work` pipeline's snapshot is the one `phoebe list` reads (#418).
+    const stateDir = join(dataBase, "acme", "valid", "state", "work");
     mkdirSync(stateDir, { recursive: true });
     writeFileSync(
       join(stateDir, "status.json"),
-      JSON.stringify({ tenant: "acme/valid", currentUnit: { kind: "issues", id: "9" } }),
+      JSON.stringify({
+        tenant: "acme/valid",
+        pipeline: "work",
+        // Deliberately the pre-#422 single-unit shape: the snapshot outlives the
+        // engine that wrote it, so `phoebe list` has to read one back.
+        currentUnit: { kind: "issues", id: "9" },
+      }),
     );
 
     const { listings } = await listTenants({
       configDir,
       dataBase,
+      loadPipelines: () => [
+        { name: "work", disabled: false, concurrency: 1, pollIntervalMs: 300_000 },
+      ],
       loadRepoSlug: (path) => {
         const child = basename(dirname(path));
         if (child === "broken") throw new Error("parse failure");
@@ -165,16 +243,19 @@ describe("listTenants", () => {
       retainedData: true,
       arm: "pat",
     });
-    expect(listings.find((l) => l.slug === "acme/valid")?.status?.currentUnit).toEqual({
-      kind: "issues",
-      id: "9",
-    });
+    expect(listings.find((l) => l.slug === "acme/valid")?.pipelines).toMatchObject([
+      { name: "work", source: "enumerated", state: "working" },
+    ]);
+    expect(
+      listings.find((l) => l.slug === "acme/valid")?.pipelines[0]?.units.map((c) => c.unit),
+    ).toEqual([{ kind: "issues", id: "9" }]);
     expect(listings.find((l) => l.slug === "acme/envless")).toMatchObject({
       held: false,
       configValid: true,
       envPresent: false,
       retainedData: false,
-      status: null,
+      // Enumerated but never run: the pipeline exists, its snapshot does not.
+      pipelines: [{ name: "work", source: "enumerated", state: "no status" }],
       // No `.env` and no deployment App key: nothing can mint, so an absent
       // token is a pat-arm shortfall rather than a healthy app-arm tenant.
       arm: "pat",
@@ -186,7 +267,8 @@ describe("listTenants", () => {
       configValid: false,
       envPresent: false,
       retainedData: false,
-      status: null,
+      // Held and nothing on disk: no pipeline set to enumerate, no snapshots to show.
+      pipelines: [],
     });
   });
 
@@ -201,11 +283,21 @@ describe("listTenants", () => {
     writeFileSync(join(configDir, "widget", "phoebe.config.ts"), "export default {};\n");
     writeFileSync(join(configDir, "gadget", "phoebe.config.ts"), "export default {};\n");
     writeFileSync(join(configDir, "widget", ".env"), "GH_TOKEN=x\n");
-    const stateDir = join(dataBase, "acme", "widget", "state");
+    const stateDir = join(dataBase, "acme", "widget", "state", "work");
     mkdirSync(stateDir, { recursive: true });
     writeFileSync(
       join(stateDir, "status.json"),
-      JSON.stringify({ tenant: "acme/widget", currentUnit: { kind: "issues", id: "41" } }),
+      JSON.stringify({
+        tenant: "acme/widget",
+        pipeline: "work",
+        currentUnits: [
+          {
+            unit: { kind: "issues", id: "41" },
+            startedAt: "2026-09-04T00:00:00.000Z",
+            runBudgetMs: null,
+          },
+        ],
+      }),
     );
 
     const result = await listTenants({
@@ -246,10 +338,20 @@ describe("listTenants", () => {
     mkdirSync(join(configDir, "outboard"), { recursive: true });
     writeFileSync(join(configDir, "outboard", "phoebe.config.ts"), "export default {};\n");
     writeFileSync(join(configDir, "outboard", ".env"), "GH_TOKEN=x\n");
-    mkdirSync(join(dataBase, "acme", "outboard", "state"), { recursive: true });
+    mkdirSync(join(dataBase, "acme", "outboard", "state", "work"), { recursive: true });
     writeFileSync(
-      join(dataBase, "acme", "outboard", "state", "status.json"),
-      JSON.stringify({ tenant: "acme/outboard", currentUnit: { kind: "issues", id: "3" } }),
+      join(dataBase, "acme", "outboard", "state", "work", "status.json"),
+      JSON.stringify({
+        tenant: "acme/outboard",
+        pipeline: "work",
+        currentUnits: [
+          {
+            unit: { kind: "issues", id: "3" },
+            startedAt: "2026-09-04T00:00:00.000Z",
+            runBudgetMs: null,
+          },
+        ],
+      }),
     );
 
     const { listings } = await listTenants({
@@ -271,7 +373,14 @@ describe("listTenants", () => {
       envPresent: true,
       retainedData: true,
     });
-    expect(listings[0]?.status?.currentUnit).toEqual({ kind: "issues", id: "3" });
+    // Held: the lines come off disk, since the config discovery could not read
+    // is exactly the one the pipeline set would have to come from.
+    expect(listings[0]?.pipelines).toMatchObject([
+      { name: "work", source: "disk", state: "working", concurrency: null },
+    ]);
+    expect(listings[0]?.pipelines[0]?.units.map((c) => c.unit)).toEqual([
+      { kind: "issues", id: "3" },
+    ]);
   });
 
   test("explicit arm reports undeclared in-tree children after the declared block", async () => {
@@ -404,6 +513,101 @@ describe("listTenants", () => {
 
     expect(listings.find((l) => l.slug === "acme/on")?.disabled).toBe(false);
     expect(listings.find((l) => l.slug === "acme/off")?.disabled).toBe(true);
+  });
+
+  test("pipeline lines come from the real in-process enumeration (#427)", async () => {
+    // No `loadPipelines` seam: this is the enumerator the supervisor spawns
+    // from, run in `list`'s own process against a config on disk.
+    writeFileSync(
+      join(configDir, "phoebe.config.ts"),
+      `export default { workspace: { tenants: ["multi"] } };\n`,
+    );
+    mkdirSync(join(configDir, "multi"), { recursive: true });
+    writeFileSync(join(configDir, "multi", "phoebe.config.ts"), tenantConfigSource("acme/multi"));
+    writeSnapshot(join(dataBase, "acme", "multi", "state", "work"), {
+      tenant: "acme/multi",
+      pipeline: "work",
+      currentUnits: [
+        {
+          unit: { kind: "issues", id: "12" },
+          startedAt: "2026-09-04T00:00:00.000Z",
+          runBudgetMs: 60_000,
+        },
+      ],
+    });
+    writeSnapshot(join(dataBase, "acme", "multi", "state", "intake"), {
+      tenant: "acme/multi",
+      pipeline: "intake",
+      currentUnits: [],
+      waitingForSlot: true,
+    });
+    // A pipeline the config no longer declares — the pipeline analogue of undeclared.
+    mkdirSync(join(dataBase, "acme", "multi", "state", "old"), { recursive: true });
+    // Not a pipeline: the tenant's clone lock lives in the same directory.
+    mkdirSync(join(dataBase, "acme", "multi", "state", "clone.lock"), { recursive: true });
+
+    const { listings } = await listTenants({ configDir, dataBase });
+
+    expect(listings[0]?.pipelines).toMatchObject([
+      { name: "work", source: "enumerated", state: "working", concurrency: 2, disabled: false },
+      {
+        name: "intake",
+        source: "enumerated",
+        state: "waiting for slot",
+        concurrency: 1,
+        disabled: true,
+      },
+      { name: "old", source: "stale", state: "no status", concurrency: null },
+    ]);
+    expect(listings[0]?.held).toBe(false);
+  });
+
+  test("a tenant with no pipelines block lists one work line (#427)", async () => {
+    writeFileSync(
+      join(configDir, "phoebe.config.ts"),
+      `export default { workspace: { tenants: ["plain"] } };\n`,
+    );
+    mkdirSync(join(configDir, "plain"), { recursive: true });
+    writeFileSync(
+      join(configDir, "plain", "phoebe.config.ts"),
+      tenantConfigSource("acme/plain", ""),
+    );
+
+    const { listings } = await listTenants({ configDir, dataBase });
+    expect(listings[0]?.pipelines).toMatchObject([
+      { name: "work", source: "enumerated", state: "no status" },
+    ]);
+  });
+
+  test("a held tenant lists every snapshot on disk (#427)", async () => {
+    writeFileSync(
+      join(configDir, "phoebe.config.ts"),
+      `export default { workspace: { tenants: ["stuck"] } };\n`,
+    );
+    mkdirSync(join(configDir, "stuck"), { recursive: true });
+    writeFileSync(join(configDir, "stuck", "phoebe.config.ts"), "export default {};\n");
+    for (const pipeline of ["work", "intake"]) {
+      writeSnapshot(join(dataBase, "acme", "stuck", "state", pipeline), {
+        tenant: "acme/stuck",
+        pipeline,
+        currentUnits: [],
+      });
+    }
+    // A directory with no snapshot in it is not evidence of anything.
+    mkdirSync(join(dataBase, "acme", "stuck", "state", "empty"), { recursive: true });
+
+    const { listings } = await listTenants({
+      configDir,
+      dataBase,
+      loadRepoSlug: () => "acme/stuck",
+      readOriginUrl: () => "https://github.com/acme/other.git",
+    });
+
+    expect(listings[0]?.held).toBe(true);
+    expect(listings[0]?.pipelines).toMatchObject([
+      { name: "intake", source: "disk", state: "idle" },
+      { name: "work", source: "disk", state: "idle" },
+    ]);
   });
 
   test("held rows always have disabled: false (#202)", async () => {

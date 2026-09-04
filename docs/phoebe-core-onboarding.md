@@ -280,7 +280,7 @@ docker compose --env-file ../.env up -d
 `--dry-run --run-once` is the safe first step: it prints the selected unit without
 booting execution. The janitor kinds (`conflicts`, `checks`, `reviews`) only run
 in **persistent mode**; `--run-once` handles at most one `issues` unit
-([work-kinds.md](work-kinds.md#the-poll-loop-and-workorder)).
+([work-kinds.md](work-kinds.md#the-poll-loop-and-order)).
 
 ## 8. Day-to-day and upgrades
 

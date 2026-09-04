@@ -20,6 +20,13 @@ Phoebe ships as a **single Docker container** that is simultaneously:
 - the **execution environment**, where the chosen agent CLI runs, installs
   dependencies, edits files, runs your gates, and pushes.
 
+What the orchestrator supervises is a **(tenant × pipeline) matrix**: one engine
+child per cell, each with its own order, cadence and concurrency. A deployment
+that never declares `pipelines` is a matrix one column wide, every tenant's
+implicit `work` pipeline, which is the fleet Phoebe has always run. The model, and
+why a pipeline is a process rather than a queue, is
+[`pipelines.md`](pipelines.md).
+
 There is no host-spawns-sandboxes layer. Your host checkout is never touched:
 the container owns a **private clone** of the target repo and pushes branches
 directly to `origin`. The same image drives any repository because every
@@ -55,10 +62,10 @@ _would_ do (`phoebe --dry-run --run-once`) without booting the container.
 Two named volumes hold all persistent state, declared in `compose.yml`. Tenant
 paths under `phoebe-data` are derived from `repoSlug` rather than configured:
 
-| Volume          | Mount          | Holds                                                                                                |
-| --------------- | -------------- | ---------------------------------------------------------------------------------------------------- |
-| `phoebe-data`   | `/data/repos`  | Every tenant's state, nested as `/data/repos/<owner>/<repo>/{repo,worktrees,state,scratch}`.         |
-| `phoebe-engine` | `/data/engine` | The shared engine checkout and the crash-loop record, so a restart re-fetches instead of re-cloning. |
+| Volume          | Mount          | Holds                                                                                                                                                                                                                                                                 |
+| --------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `phoebe-data`   | `/data/repos`  | Every tenant's state, nested as `/data/repos/<owner>/<repo>/{repo,worktrees,state,scratch}`. Each pipeline owns `state/<pipeline>/` under that; scratch and read-only trees are keyed by kind and unit ([`pipelines.md`](pipelines.md#what-a-pipeline-owns-on-disk)). |
+| `phoebe-engine` | `/data/engine` | The shared engine checkout and the crash-loop record, so a restart re-fetches instead of re-cloning.                                                                                                                                                                  |
 
 `PHOEBE_DATA_DIR` overrides the `/data/repos` base for host and dev runs. See
 [`configuration.md`](configuration.md#container-paths-derived-not-configured)
@@ -85,8 +92,12 @@ clone (`src/git-model.ts`):
 
 1. `ensureClone` clones `repoUrl` into `/data/repos/<owner>/<repo>/repo` once; later cycles reuse it.
 2. Each cycle `git fetch origin` refreshes the clone.
-3. For a unit, `prepareWorktree` removes any stale worktree for the branch and
-   adds a fresh one:
+3. For a unit, `prepareWorktree` removes any stale worktree for the branch,
+   adds a fresh one, and takes a lease on it (`git worktree lock`, reason
+   `pipeline=<name>#<kind>:<ref> pid=<n>`) so anything else sharing the clone
+   leaves it alone — a sibling pipeline, or a sibling unit of the same pipeline when
+   `concurrency` is above 1. A tree someone else leases is not removed; the unit
+   is skipped for the cycle. The branch cases:
    - **Issues.** A new branch `<branchPrefix>issue-<n>` reset to the resolved
      base ref (`origin/main`, a blocker's branch when stacked, etc.).
    - **Conflicts, checks, and reviews.** A worktree on the PR's existing head
@@ -99,7 +110,20 @@ clone (`src/git-model.ts`):
 Worktree directory names are derived from the branch, lowercased with
 non-alphanumerics collapsed to `-`, so they are filesystem-safe and collision-
 resistant. A failed unit never kills the engine: `prepareWorktree` clears any
-stale worktree on the next attempt.
+stale worktree on the next attempt, breaking its own leftover lease as it goes.
+
+The two directories keyed by the unit rather than the branch — the plain
+`scratch/` workspace and the detached `worktrees/readonly/` tree — are
+`<kind>/<ref>`, with the kind-owned ref percent-encoded (`src/unit-scope.ts`).
+Children a unit spawns write through a prefix rather than inheriting the
+engine's stdout, so a pipeline running several units at once produces a stream an
+operator can attribute line by line.
+
+Step 1 is conditional and serialized. A pipeline clones only when one of its
+kinds declares a `worktree` or `readonly` workspace, and the first clone on a
+fresh tenant is taken under a `mkdir` lock in `state/` so two pipelines booting
+together produce one clone. Nothing else is locked: fetch and worktree
+administration share the clone on git's own ref locking.
 
 ## The agent child and its locked-down environment
 
@@ -177,13 +201,138 @@ first boot straight onto a broken ref exits and lets the container's restart
 policy make the failure visible. See
 [`configuration.md`](configuration.md#crash-loop-fallback).
 
+### Asking the engine which pipelines a tenant has
+
+A tenant declares its [pipelines](configuration.md#pipelines) in its own config,
+and the supervisor will run one engine child per pipeline. It learns those pipelines by
+asking the materialized checkout — `<engine entry> pipelines --config <tenant
+config>` prints one JSON object per tenant, a pipeline at a time: name, the hot
+`disabled` and `priority` knobs, `concurrency`, whether the pipeline's kinds want the
+tenant's git clone, and an opaque per-pipeline fingerprint. Reading the `pipelines`
+block in the bootstrapper instead would pin what a supervisor understands to the
+installed launcher version, so every new pipeline knob would need an npm release
+before any deployment could use it — the thing the engine-source design exists to
+avoid.
+
+The fingerprint is the pipeline's own cold config, hashed, with `disabled` and
+`priority` stripped at every nesting level. Those two are hot: the supervisor
+acts on a change to either without relaunching the pipeline, so a digest that moved
+with them would relaunch it anyway. This is the one place in the system where a
+fingerprint knows what a field means.
+
+Two separate questions, because confusing them would spawn a `work` pipeline against a
+config already known to be bad. **Capability** belongs to the engine: boot probes
+the checkout once per materialization (`pipelines --probe`), and a checkout
+without the subcommand means every tenant runs one implicit `work` pipeline and no
+enumeration ever runs — byte for byte what a deployment did before pipelines
+existed. **Validity** belongs to the tenant: an enumeration that fails is that
+tenant's fault, never the fleet's. A custom kind module loads during enumeration,
+so a factory kind that checks its own prompt files and throws fails here, which
+is the right severity and the right moment.
+
+Enumeration spawns a Node process, so it runs only when the tenant config's stat
+fingerprint moves — the same cheap trigger the engine-source confirm uses. Steady
+state stays stat-only. An engine upgrade re-enumerates every tenant rather than
+reusing the pre-upgrade pipeline set: the enumerator itself just changed version, so
+the same config may legitimately report different pipelines.
+
+### Supervising pipelines
+
+The unit the supervisor runs is a **pipeline**: one `(tenant × pipeline)` cell, keyed
+`<tenant config dir>#<pipeline>`. That id is the child-map key, the concurrency
+broker's owner id, and the credential lease's, so a pipeline reclaims its own slots
+and its own token when it dies. A tenant declaring `work` and `intake` gets two
+children, each spawned with its own `--pipeline`. A solo deployment is a
+one-tenant fleet on the same loop, and a checkout that cannot enumerate gives
+every tenant one implicit `work` pipeline — the one-child-per-tenant fleet, unchanged,
+and spawned without a `--pipeline` flag that engine would die on.
+
+A tenant's stat fingerprint moving is the trigger to re-enumerate; the pipeline diff
+decides what happens next. A pipeline that appeared spawns, one that vanished drains,
+and one whose own fingerprint moved relaunches by itself — so editing
+`intake.pollIntervalMs` touches nothing but the intake child. A tenant
+fingerprint that moves with no pipeline of its own to show for it is by elimination
+tenant-wide, a `gitIdentity` or a `repoSlug` or an edited `.env`, and every pipeline
+of that tenant relaunches, because every one of them runs with it.
+
+An enumeration that fails holds the tenant: nothing drains, the reason is warned
+once per poll, and the next poll tries again. The held tenant's watermark stays
+put, so the edit that could not be read is still pending when enumeration
+recovers. At first boot a held tenant contributes no pipelines at all rather than a
+`work` pipeline against a config already known to be bad.
+
+An engine upgrade drains the fleet, materializes once, and re-enumerates every
+tenant before anything respawns. The pre-upgrade pipeline list is never reused:
+capability belongs to the engine commit, so the same config may legitimately
+report different pipelines either side of the flip.
+
+**The universality rule.** A pipeline's death alone is never fatal. The container
+comes down only when every supervised pipeline is crash-looping at once, and a fast
+crash counts toward the crash-loop guard only when every pipeline that ran that commit
+has fast-crashed on it. So one broken tenant cannot quarantine a commit the rest
+of the fleet is running happily, and one broken pipeline cannot take its siblings with
+it. A pipeline is marked crash-looping when it dies of its own accord inside
+`HEALTHY_RUN_MS`, and the mark survives a respawn — it clears once the pipeline has
+been up past that window — so two pipelines crash-looping out of phase still add up to
+a verdict. Solo has one pipeline, so the rule reduces to what it always did: that pipeline
+is the engine, its death is the container's, and the threshold is unchanged.
+Every other unexpected exit respawns after the backoff, whatever the code; only
+an exit the supervisor asked for does not.
+
+**Slots across the matrix.** One broker serves every pipeline in either arm, and it
+sizes itself off the matrix it is supervising: the effective cap is the largest
+`concurrency` any live pipeline declares, or `PHOEBE_MAX_CONCURRENT_AGENTS` when the
+operator sets it. The number is recomputed on a reconcile that reshapes pipelines and
+never on a hot edit, because a slot already granted cannot be recalled. A pipeline
+declaring more than the cap queues for it rather than being rewritten. Pipelines take
+turns per tenant, `priority` orders one tenant's pipelines among themselves, and a pipeline
+holding no slot with work waiting may hold one over the cap — bounded by
+`PHOEBE_SLOT_FLOOR_BUDGET` — so a 45-minute unit elsewhere cannot stall an intake
+pipeline for 45 minutes. A release gives back an over-cap slot before a regular one,
+and nothing is handed on while the cap is breached, so the breach never rolls
+forward. The knobs and the boot line are in
+[`configuration.md`](configuration.md#concurrency-the-pipelines-knob-and-the-fleets-cap).
+
+### Reclaiming what a pipeline leaves behind
+
+Deleting a pipeline, renaming one, or retiring a work kind leaves disk with no
+owner: `state/<pipeline>/` and its snapshot, `scratch/<kind>` and
+`readonly/<kind>` trees, and worktrees locked by a lease whose pipeline no
+longer exists. The **stale-state sweep** reclaims them — `phoebe sweep-state`,
+a one-shot engine command the supervisor invokes per tenant at two moments and
+never on a timer: at facility boot before any pipeline spawns, and after a pipeline-set
+change once the pipelines it took down have drained. Both are moments when the disk
+in question is provably nobody's.
+
+It is a stateless diff of disk against the pipeline enumeration, with no cursor and
+no memory of the last sweep. State is orphaned only when its pipeline name — or,
+for kind-keyed state, its kind — is absent from the enumeration. So a
+`disabled` pipeline is still enumerated and its state is _stopped_, not orphaned; a
+rename is a delete plus a create; a kind that moved to another pipeline keeps its
+scratch; and an enumeration that fails means _unknown_, which skips the sweep
+entirely rather than reading it as "everything is orphaned".
+
+Deletion is tiered. Leases, orphaned state directories, and unowned scratch and
+read-only trees go without asking, as do _clean_ worktrees. A worktree that is
+dirty, or that holds commits `origin` has not seen, is never auto-deleted: it is
+reported with its exact path and a one-line reclaim hint, and `phoebe doctor`'s
+warn-only `stale-state` check keeps reporting it between sweeps. Worktrees are
+classified by the lease rather than by name, because they are branch-keyed:
+locked by a live pipeline is untouchable, and orphan-locked or unlocked is a
+candidate — which makes the sweep the second thing allowed to break a lease,
+after a pipeline breaking its own at boot.
+
+The sweep is never load-bearing. A per-item failure continues to the next item,
+and a whole sweep that fails is one log line: the supervisor spawns exactly as
+if it had never run.
+
 ## One cycle, end to end
 
-Every step below is one walk over the **work-kind registry** — the built-in
-definitions plus any custom kinds the tenant declared (`workKinds.custom`),
-indistinguishable to the engine after boot. Each kind's own `fetch`, `select`,
-and `run` do the work; the engine supplies the walk, the workspace, and the
-agent machinery.
+This is **one pipeline's** cycle: one pipeline of the matrix, over the kinds that pipeline
+owns. Every step below is one walk over the **work-kind registry** — the built-in
+definitions plus any custom kinds the tenant declared, indistinguishable to the
+engine after boot. Each kind's own `fetch`, `select`, and `run` do the work; the
+engine supplies the walk, the workspace, and the agent machinery.
 
 ```
 each kind in workOrder: registry kind.fetch(ctx) ──► gathered slot
@@ -203,8 +352,15 @@ kind.run(unit, ctx) — e.g. prepare worktree ─► install ─► agent ─►
 --run-once: exit · daemon: repeat
 ```
 
-The engine repeats this forever, idling `PHOEBE_POLL_INTERVAL_MS`
-(default 300000) between empty cycles. `--run-once` works at most one unit of
+A pipeline whose `concurrency` is above 1 runs the same walk as a **rolling top-up**:
+each pass fills the free slots depth-first and then waits on whichever comes
+first, a unit settling or the poll interval or a drain, so the loop never awaits
+one particular unit ([`pipelines.md` → Units in
+flight](pipelines.md#units-in-flight)).
+
+The engine repeats this forever, idling the pipeline's `pollIntervalMs`
+(`PHOEBE_POLL_INTERVAL_MS`, default 300000, for a pipeline that declares none)
+between empty cycles. `--run-once` works at most one unit of
 the first one-shot-eligible kind and exits. The built-in janitor kinds
 (`conflicts`, `checks`, `reviews`) are persistent-mode only; eligibility is a
 field on each kind's definition.

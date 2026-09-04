@@ -170,26 +170,179 @@ janitors and the catch-up never runs whatever this knob says. How the catch-up
 selects and what it does with what it selects:
 [`work-kinds.md`](work-kinds.md#the-feature-branch-catch-up).
 
+## Pipelines
+
+This section is the field reference. For the model, meaning why a pipeline is a
+separate process, how pipelines are supervised, and the intake example the design was
+validated against, read [`pipelines.md`](pipelines.md).
+
+Declaring `pipelines` is how you tune the pipeline a tenant already has, or add a
+second one beside it. An `intake` pipeline can file issues from somewhere else every 15
+seconds while `work` keeps its five-minute cadence.
+
+```ts
+pipelines: {
+  work: { order: ["conflicts", "checks"], concurrency: 2 },
+  intake: { pollIntervalMs: 15_000, kinds: { custom: { slack: "./kinds/slack.ts" } } },
+},
+```
+
+Names are lowercase `[a-z][a-z0-9-]*`, at most 32 characters. That is the
+custom-kind charset, so `#` can never appear in one. The block is tenant-only. A
+workspace root declaring it is a config error, since a root says which tenants
+exist, not what work happens inside one.
+
+| Knob             | Default  | Hot? | Meaning                                                                                                                                                                                                                                                                                                             |
+| ---------------- | -------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `order`          | `[]`     | cold | Priority, not membership. Named kinds are polled first, in this sequence; every other kind this pipeline owns follows in declaration order. An unknown name is a boot error.                                                                                                                                        |
+| `kinds`          | `{}`     | cold | This pipeline's [per-kind tuning blocks](#per-work-kind-overrides) and [`custom` declarations](#custom-work-kinds-workkindscustom), the same shape the deprecated top-level `workKinds` had.                                                                                                                        |
+| `concurrency`    | `1`      | cold | How many units this pipeline may hold in flight at once. A pass tops the pipeline up to this many and waits on whichever comes first: a unit finishing, or the poll interval. `--run-once` pins it to 1. Also the input the fleet's [slot cap](#concurrency-the-pipelines-knob-and-the-fleets-cap) is derived from. |
+| `pollIntervalMs` | `300000` | cold | Idle poll cadence. **Outranks `PHOEBE_POLL_INTERVAL_MS`**; the env var is the fallback for a pipeline that declares nothing, and the default applies when neither does.                                                                                                                                             |
+| `disabled`       | `false`  | hot  | Operator off-switch for this pipeline.                                                                                                                                                                                                                                                                              |
+| `priority`       | `0`      | hot  | Tenant-local scheduling priority for a contended [slot](#concurrency-the-pipelines-knob-and-the-fleets-cap); higher wins, ties keep their place in the queue.                                                                                                                                                       |
+
+Hot means the supervisor acts on a change without relaunching the pipeline. Cold
+knobs relaunch it. `disabled` is hot at all three scopes: tenant, pipeline, and
+[kind](#per-work-kind-overrides). The supervisor reads that shape by asking the
+engine — `phoebe pipelines` prints this tenant's pipelines as JSON, and the hot knobs
+are exactly what its per-pipeline fingerprint leaves out
+([architecture.md](architecture.md#asking-the-engine-which-pipelines-a-tenant-has)).
+It spawns one child per pipeline and relaunches a pipeline when its own cold config moves
+([Supervising pipelines](architecture.md#supervising-pipelines)). `priority` and
+`concurrency` are live in the broker (below). A pipeline's `disabled` is validated and
+listed — `phoebe list` shows the pipeline as `(disabled)` — but not yet acted on; the
+ticket that switches a pipeline off comes later. A kind's
+`disabled` is live now, since it is what took over from omission.
+
+Everything a unit is given is its own: its worktree lease, its scratch
+directory, its read-only tree, and the prefix on its children's output. Two
+units of one pipeline that want the same worktree do not fight over it — the second
+finds the first's lease, logs who holds it, and comes back next cycle. What
+raising `concurrency` still costs you is throughput on kinds that genuinely
+want one tree: they will take turns rather than run together.
+
+**A kind belongs to at most one pipeline.** Two pipelines naming or declaring the
+same kind is fatal for the tenant at load. The pipelines are separate processes and
+would race each other over the same PR. Kinds nobody claims fall to `work`,
+which is what makes `order` mean priority and nothing else in a tenant with one
+pipeline.
+
+### Concurrency: the pipeline's knob and the fleet's cap
+
+Two ceilings, and neither negotiates with the other. `concurrency` bounds what a
+pipeline will admit; the bootstrapper's slot broker bounds what the container will run
+at once. What runs is whatever both allow.
+
+The cap is derived rather than fixed: `max(concurrency)` across the live pipelines. A
+pipeline's declared concurrency is reachable when nothing else is working, and the cap
+still binds across pipelines. Every pipeline at the default 1 derives 1, which is the fleet
+Phoebe has always run. `PHOEBE_MAX_CONCURRENT_AGENTS` replaces the derived
+number, winning even when it is lower — the operator knows the machine and the
+tenant does not. A pipeline declaring more than the cap is not rewritten to fit; it
+queues, and boot says so on one line:
+
+```
+[phoebe] boot: slot cap 2 — PHOEBE_MAX_CONCURRENT_AGENTS=2 replaces max(concurrency)=4; floorBudget=1; declaring more than the cap and queuing for it (not clamped): acme/gadget:work(4)
+```
+
+The cap is recomputed on a reconcile that reshapes pipelines, never on a hot edit: a
+granted slot cannot be recalled, so the number moves only when the supervisor is
+already draining and respawning.
+
+**The slot floor.** A pipeline holding no slot with work waiting is _starved_, and one
+long unit elsewhere can keep it that way for as long as that unit runs. Such a
+pipeline is granted one slot over the cap. `PHOEBE_SLOT_FLOOR_BUDGET` (default 1) is
+how many of those over-cap grants may exist at once across the container, so the
+worst case is `cap + floorBudget` — two numbers, both in the boot line. Set it to
+0 for a hard ceiling, and accept what that costs a starved pipeline.
+
+**Who is served next.** Tenants take turns, and `priority` orders one tenant's
+pipelines against each other: higher first, ties in the order they asked. Tenant-local
+by design — `priority: 100` means "ahead of my other pipelines", never "ahead of
+everyone else's repo" — and re-read every poll, so an edit lands on pipelines already
+queued without relaunching anything. Starving a low-priority pipeline for as long as
+something higher is contending is what the knob is for. Turns are taken per
+**pipeline**, not per tenant: declaring three pipelines is declaring three independent
+streams, and they queue as three.
+
+### Choosing a pipeline: `--pipeline`
+
+The engine child takes `--pipeline <name>`. Absent the flag, the pipeline is `work`.
+An unknown name exits with an error before any GitHub call. The flag resolves
+the pipeline into the flat fields the rest of the engine reads (`workOrder`,
+`workKinds`, `promptFiles`, the cadence and the run budget), so nothing
+downstream has to know pipelines exist. `--run-once` and `--dry-run` take it
+too. `phoebe --run-once --dry-run --pipeline intake` previews that pipeline's
+would-pick and nothing else.
+
+### What a pipeline owns on disk
+
+Two pipelines are two processes sharing one tenant's clone and one `state/` dir, so
+each owns a slice of both rather than the whole thing.
+
+| Thing                          | Owned by                                                                                                                                                                                    |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `state/<pipeline>/status.json` | The pipeline alone. `phoebe list` reads every pipeline's, one line each.                                                                                                                    |
+| Stdout lines                   | Tagged `[phoebe:<owner>/<repo>:<pipeline>]`, including `work`'s. Match it as a prefix, not a fixed string.                                                                                  |
+| The four tracker sweeps        | Scoped to the kinds the pipeline schedules, so two pipelines cover every object exactly once. A pipeline scheduling none of a sweep's kinds skips it.                                       |
+| The origin clone               | Shared. Cloned once, the first clone serialized by a lock under `state/`; a pipeline whose kinds all declare `scratch` never clones at all.                                                 |
+| A worktree                     | Leased with `git worktree lock`, reason `pipeline=<name>#<kind>:<ref> pid=<n>`. A tree anyone else leases — another pipeline, or a sibling unit — is left alone and its unit waits a cycle. |
+| A unit's directories           | `scratch/<kind>/<ref>` and `worktrees/readonly/<kind>/<ref>`, the ref percent-encoded. One unit alone; created when first read, removed with the unit.                                      |
+
+A lease outlives the process that took it, so a pipeline breaks its own leases at
+boot and never anyone else's — it reads the pipeline segment of the reason and
+ignores the rest. If you find a locked worktree and no engine, the reason string
+names the pipeline _and the unit_ that left it; `git worktree unlock` it by hand or
+let that pipeline's next boot do it.
+
+Every line a unit's children print carries that unit:
+`[phoebe:<owner>/<repo>:<pipeline>][<kind> <ref>]` on git and install output, and
+`[owner/repo:<provider>][<kind> <ref>]` on the agent's. Match either as a
+prefix.
+
+### Deprecated top-level aliases
+
+`workOrder`, `workKinds` and `promptFiles` still work, so an existing config
+needs no edit. They resolve as `pipelines.work.*`, with one deprecation warning
+at load. Declaring both sides of a pair is an error, not a merge.
+
+| Deprecated          | Now                                      |
+| ------------------- | ---------------------------------------- |
+| `workOrder`         | `pipelines.work.order`                   |
+| `workKinds`         | `pipelines.work.kinds`                   |
+| `promptFiles.<key>` | `pipelines.work.kinds.<kind>.promptFile` |
+
+`phoebe migrate` moves them for you, once the ref flip that brought you an
+engine which knows `pipelines` has settled — see
+[upgrading.md → moving the work fields](upgrading.md#moving-the-work-fields-into-pipelineswork).
+
+One behaviour did change with them. `order` is priority-only, so **omitting a
+kind no longer disables it**. A kind absent from `order` runs after the named
+ones. Set `kinds.<name>.disabled: true` instead. A config whose `workOrder`
+already listed every kind, which covers the shipped default and every config
+`phoebe init` writes, behaves exactly as before.
+
 ## Work order
 
-| Field       | Default                                                    | Meaning                                                                                                                                                                                                                                                                                                               |
-| ----------- | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `workOrder` | `["conflicts", "checks", "reviews", "issues", "research"]` | Ordered work kinds; the first kind with a workable unit each cycle wins. Validated at startup: it must be non-empty and contain only registered kinds — the five built-ins (`conflicts`, `checks`, `reviews`, `issues`, `research`) plus any [custom kinds](#custom-work-kinds-workkindscustom) this tenant declares. |
+Priority within one pipeline. Put janitor kinds first so open PRs are unblocked
+before new issues are started, and `research` last so net-new code advances
+before research tickets.
 
-Order is priority: put janitor kinds first so open PRs are unblocked before new
-issues are started, and `research` last so net-new code advances before research
-tickets. Omit `research` to disable it for a repo. See
-[`work-kinds.md`](work-kinds.md).
+| Field       | Default | Meaning                                                                        |
+| ----------- | ------- | ------------------------------------------------------------------------------ |
+| `workOrder` | `[]`    | **Deprecated alias** for [`pipelines.work.order`](#pipelines). Still honoured. |
+
+See [`work-kinds.md`](work-kinds.md).
 
 ## Providers & models
 
-| Field             | Default                                                                          | Meaning                                                                                                                                                                                                                                                                                                                   |
-| ----------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `defaultProvider` | `"cursor"`                                                                       | Which agent CLI to drive: `cursor`, `claude`, or `codex`.                                                                                                                                                                                                                                                                 |
-| `defaultModels`   | `{ cursor: "composer-2.5", claude: "claude-sonnet-4-6", codex: "gpt-5.4-mini" }` | Per-provider model. Merged key-by-key.                                                                                                                                                                                                                                                                                    |
-| `defaultEfforts`  | `{}`                                                                             | Per-provider reasoning effort, merged key-by-key. Only `claude` honours it today (`--effort`, one of `low`, `medium`, `high`, `xhigh`, `max`); `cursor` and `codex` ignore it. A provider left unset gets **no** effort flag, so its CLI default stands.                                                                  |
-| `providerEnv`     | `{ cursor: "CURSOR_API_KEY", claude: "ANTHROPIC_API_KEY", codex: "OPENAI_KEY" }` | Env var holding each provider's API key. This is the only key the agent child inherits for the active provider.                                                                                                                                                                                                           |
-| `workKinds`       | `{}`                                                                             | Per-work-kind overrides of the three knobs above, e.g. `{ reviews: { provider: "claude", model: "claude-haiku-4-5", effort: "low" } }`. Keys are the work kinds (built-in or custom); each block holds only optional `provider`, `model`, `effort`. The reserved `custom` key declares tenant-authored kinds — see below. |
+| Field             | Default                                                                          | Meaning                                                                                                                                                                                                                                                                                                                |
+| ----------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `defaultProvider` | `"cursor"`                                                                       | Which agent CLI to drive: `cursor`, `claude`, or `codex`.                                                                                                                                                                                                                                                              |
+| `defaultModels`   | `{ cursor: "composer-2.5", claude: "claude-sonnet-4-6", codex: "gpt-5.4-mini" }` | Per-provider model. Merged key-by-key.                                                                                                                                                                                                                                                                                 |
+| `defaultEfforts`  | `{}`                                                                             | Per-provider reasoning effort, merged key-by-key. Only `claude` honours it today (`--effort`, one of `low`, `medium`, `high`, `xhigh`, `max`); `cursor` and `codex` ignore it. A provider left unset gets **no** effort flag, so its CLI default stands.                                                               |
+| `providerEnv`     | `{ cursor: "CURSOR_API_KEY", claude: "ANTHROPIC_API_KEY", codex: "OPENAI_KEY" }` | Env var holding each provider's API key. This is the only key the agent child inherits for the active provider.                                                                                                                                                                                                        |
+| `workKinds`       | `{}`                                                                             | **Deprecated alias** for [`pipelines.work.kinds`](#pipelines); still honoured. Per-work-kind overrides, e.g. `{ reviews: { provider: "claude", model: "claude-haiku-4-5", effort: "low" } }`. Keys are the work kinds (built-in or custom); the reserved `custom` key declares tenant-authored kinds, described below. |
 
 `PHOEBE_AGENT`, `PHOEBE_MODEL`, and `PHOEBE_EFFORT` override `defaultProvider`
 and the active provider's entry in `defaultModels` / `defaultEfforts` for one
@@ -221,9 +374,18 @@ per-kind `PHOEBE_<KIND>_AGENT`, which outranks even an explicit `provider`. An
 explicitly-bound block is _not_ flipped by the global `PHOEBE_AGENT` — per-kind
 config outranks global env, per the ladder above.
 
+A kind block holds three more knobs. They resolve on their own ladders rather
+than the provider one.
+
+| Knob           | Default               | Hot? | Meaning                                                                                                                                                 |
+| -------------- | --------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `promptFile`   | the kind's own        | cold | Where this kind's prompt template lives, relative to the runtime root. Replaces the [`promptFiles`](#prompt-files) block.                               |
+| `runTimeoutMs` | tenant `runTimeoutMs` | cold | This kind's whole-unit wall-clock budget. Ladder: `PHOEBE_<KIND>_RUN_TIMEOUT_MS`, then this field, then `PHOEBE_RUN_TIMEOUT_MS`, then the tenant field. |
+| `disabled`     | `false`               | hot  | The only off-switch for a kind. Since `order` is priority rather than membership, leaving a kind out of it no longer stops it running.                  |
+
 Unknown kind keys and unknown provider values are boot-time config errors;
 `model` and `effort` are unvalidated pass-through strings — the CLIs are the
-authority. Blocks for kinds absent from `workOrder` are allowed and inert.
+authority. Blocks for kinds a pipeline does not own are allowed and inert.
 
 A kind's definition may also carry its own `model` / `effort` defaults; they
 sit at the repo-defaults rung (between global env and `defaultModels` /
@@ -283,9 +445,9 @@ workKinds: {
   engine wholesale. The _deployment-global_ allowlist the bootstrapper applies
   stays built-ins-only — a deployment-wide knob naming one tenant's kind is a
   category smell.
-- A declared kind not listed in `workOrder` boots with a **warning** and never
-  runs — declare-first-schedule-later is allowed, but forgetting the schedule
-  is the likelier story.
+- A declared kind its pipeline owns **runs whether or not `order` names it**.
+  `order` is priority, so an unnamed kind is polled after the named ones. Set
+  `disabled: true` on its block to declare a kind without running it.
 - **Editing a kind module requires a restart.** The reconcile watch
   fingerprints the config file only, so a module edit is invisible until the
   deployment restarts (a documented v1 limitation).
@@ -296,12 +458,23 @@ workKinds: {
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `promptFiles` | `{ issue: "prompts/issues-prompt.md", conflict: "prompts/conflict-prompt.md", checks: "prompts/checks-prompt.md", reviews: "prompts/reviews-prompt.md", research: "prompts/research-prompt.md" }` | **Overrides for the built-in kinds' prompt paths** — each kind's definition owns its prompt, and these keys re-point the built-ins'. Paths are relative to the **runtime root** (the process working directory, which is the consumer checkout on the host, or `/etc/phoebe` in the container where compose mounts `phoebe.config.ts` and `prompts/`). Resolved only from that base, never from the installed package. `phoebe init` copies the shipped defaults into `prompts/`. Edit them to override, or point a key at another runtime-root-relative path. A [custom kind](#custom-work-kinds-workkindscustom)'s prompt lives in its own definition's `promptFile` (same runtime-root resolution, no override key here). |
 
+`promptFiles` is a deprecated alias. A kind's prompt path now lives on its own
+tuning block, at [`pipelines.<pipeline>.kinds.<name>.promptFile`](#pipelines). A
+built-in reads the kind block first and falls back to the `promptFiles` key
+here. Declaring both for one kind is a config error, and `phoebe migrate` folds
+the block onto the kinds for you.
+
+The default paths in the table are the built-in kinds' own — the kind is where
+they are written down, and `promptFiles` inherits them. A config `phoebe init`
+scaffolds today names none of them: the prompts land at those paths, the kinds
+read them, and there is nothing to migrate later.
+
 Every kind a tenant can dispatch — built-in or custom — is checked **at engine
 startup**: if its prompt names a file that does not exist, the engine refuses to
 start and names the tenant and every missing kind at once. Prompt loading used to be fail-at-use, so a tenant
 missing one kind booted clean and only died when the first unit of that kind was
 dispatched, which could be weeks later if that kind was rare (#164). The check follows
-[`workOrder`](#work-order), so a kind you dropped there needs no prompt file.
+the pipeline's resolved work order, so a kind you disabled needs no prompt file.
 
 A key may point outside the runtime root. Being a loadable file is the rule, not
 containment: `promptFiles: { issue: "../prompts/issues-prompt.md", … }` is how a
@@ -319,7 +492,7 @@ under one slug-keyed root on the `phoebe-data` volume:
 | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | `/data/repos/<owner>/<repo>/repo`      | The private clone (origin hub).                                                                                                          |
 | `/data/repos/<owner>/<repo>/worktrees` | Per-unit git worktrees.                                                                                                                  |
-| `/data/repos/<owner>/<repo>/state`     | Per-tenant state, the bootstrapper's `status.json`.                                                                                      |
+| `/data/repos/<owner>/<repo>/state`     | Per-tenant state: one `<pipeline>/status.json` per pipeline, plus the clone lock.                                                        |
 | `/data/engine`                         | The **shared** engine checkout + the crash-loop record (`engine-crash-loop.json`), deployment-global, on its own `phoebe-engine` volume. |
 
 The base is `/data/repos` in the container; `PHOEBE_DATA_DIR` overrides it for
@@ -686,13 +859,15 @@ config-file territory.
 | `PHOEBE_AGENT`                               | _none_               | Provider for this run (`cursor` \| `claude` \| `codex`).                                                                                                                                                                                                                                                                                       |
 | `PHOEBE_MODEL`                               | _none_               | Model for this run.                                                                                                                                                                                                                                                                                                                            |
 | `PHOEBE_EFFORT`                              | _none_               | Reasoning effort for this run, overriding the active provider's `defaultEfforts` entry. Only `claude` honours it (`low` \| `medium` \| `high` \| `xhigh` \| `max`).                                                                                                                                                                            |
-| `PHOEBE_<KIND>_AGENT` / `_MODEL` / `_EFFORT` | _none_               | Per-work-kind variants of the trio above, where `<KIND>` is the upcased kind name — `CONFLICTS`, `CHECKS`, `REVIEWS`, `ISSUES`, `RESEARCH`, or a custom kind's name with hyphens as underscores (`stale-pr-nudger` → `PHOEBE_STALE_PR_NUDGER_MODEL`). Outrank everything, including the kind's `workKinds` block. Empty string reads as unset. |
-| `PHOEBE_POLL_INTERVAL_MS`                    | `300000`             | Persistent-mode idle poll interval. Under the App arm this is the capacity lever, since a shorter interval raises the per-tenant request rate ([github-app-mode.md §5](github-app-mode.md#5-capacity)).                                                                                                                                        |
+| `PHOEBE_<KIND>_AGENT` / `_MODEL` / `_EFFORT` | _none_               | Per-work-kind variants of the trio above, where `<KIND>` is the upcased kind name — `CONFLICTS`, `CHECKS`, `REVIEWS`, `ISSUES`, `RESEARCH`, or a custom kind's name with hyphens as underscores (`stale-pr-nudger` → `PHOEBE_STALE_PR_NUDGER_MODEL`). Outrank everything, including the kind's tuning block. Empty string reads as unset.      |
+| `PHOEBE_<KIND>_RUN_TIMEOUT_MS`               | _none_               | Per-work-kind whole-unit budget, same naming rule. Top of the [`runTimeoutMs` ladder](#per-work-kind-overrides): it outranks the kind's block, which outranks `PHOEBE_RUN_TIMEOUT_MS`.                                                                                                                                                         |
+| `PHOEBE_POLL_INTERVAL_MS`                    | `300000`             | Persistent-mode idle poll interval, for pipelines that declare no [`pollIntervalMs`](#pipelines) of their own. A declared cadence outranks this. Under the App arm this is the capacity lever, since a shorter interval raises the per-tenant request rate ([github-app-mode.md §5](github-app-mode.md#5-capacity)).                           |
 | `PHOEBE_ENGINE_DIR`                          | `<tmp>/phoebe-agent` | Base dir `phoebe boot` clones a `github` engine source into (and bin.mjs materializes under). Put it on a persistent volume so github boots fetch instead of re-cloning.                                                                                                                                                                       |
 | `PHOEBE_RECONCILE_INTERVAL_MS`               | `60000`              | How often `phoebe boot` polls the mounted config and the tracked ref for a drain-and-relaunch (see Engine source → Reconcile).                                                                                                                                                                                                                 |
 | `PHOEBE_BASE`                                | _none_               | Force the worktree base ref for issues (bypasses blocker resolution).                                                                                                                                                                                                                                                                          |
 | `PHOEBE_DATA_DIR`                            | `/data/repos`        | Base dir for derived tenant paths (host/dev override). Each tenant nests under `<base>/<owner>/<repo>/`.                                                                                                                                                                                                                                       |
-| `PHOEBE_MAX_CONCURRENT_AGENTS`               | `1`                  | Cap on concurrently-executing work units (the bootstrapper's FIFO broker), in solo and fleet alike. Raise deliberately.                                                                                                                                                                                                                        |
+| `PHOEBE_MAX_CONCURRENT_AGENTS`               | derived              | Cap on concurrently-executing work units (the bootstrapper's slot broker), in solo and fleet alike. Defaults to `max(concurrency)` across the live pipelines, which is 1 unless a pipeline declares more. Setting it replaces that, even when lower. See [Concurrency](#concurrency-the-pipelines-knob-and-the-fleets-cap).                    |
+| `PHOEBE_SLOT_FLOOR_BUDGET`                   | `1`                  | How many pipelines may hold a slot over the cap at once because they are starved — no slot held, work waiting. The container's worst case is the cap plus this. `0` makes the cap a hard ceiling.                                                                                                                                              |
 | `PHOEBE_RUN_TIMEOUT_MS`                      | `2700000` (45 min)   | Whole-unit wall-clock budget; a unit that exceeds it is aborted so it can't hold the concurrency slot forever. Under the App arm the effective ceiling is ≈50 min (installation tokens expire after 60 min). Also settable as the `runTimeoutMs` config field.                                                                                 |
 | `PHOEBE_MAX_UNPRODUCTIVE_RUNS`               | `3`                  | Consecutive unproductive runs (no PR produced) before an issue unit is quarantined (`phoebe:quarantined` label + escalation comment). PR-shaped units (conflicts/checks/reviews) are quarantined after K timeouts instead. Also the `maxUnproductiveRuns` config field. `PHOEBE_MAX_UNIT_TIMEOUTS` / `maxUnitTimeouts` are deprecated aliases. |
 

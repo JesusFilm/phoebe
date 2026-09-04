@@ -5,10 +5,11 @@
 //
 //   /data/repos/<owner>/<repo>/
 //       repo/         the private clone (origin hub)
-//       worktrees/    per-unit git worktrees; readonly/<kind>/ holds the
-//                     detached read-only workspaces (#397)
+//       worktrees/    per-unit git worktrees; readonly/<kind>/<ref>/ holds the
+//                     detached read-only workspaces (#397/#423)
 //       state/        reserved per-tenant state (supervisor status.json, #73)
-//       scratch/      plain-directory workspaces (#358), cleared per run
+//       scratch/      plain-directory workspaces (#358), <kind>/<ref>/ per unit
+//                     (#423), cleared per run
 //
 // The base (`/data/repos`) is a deployment-global constant in the container;
 // `PHOEBE_DATA_DIR` overrides it for host/dev. Derivation is a pure function of
@@ -44,6 +45,20 @@ export function derivePaths(repoSlug: string, dataBase: string = DEFAULT_DATA_BA
     stateDir: join(root, "state"),
     scratchDir: join(root, "scratch"),
   };
+}
+
+/**
+ * Where the read-only workspaces (#397) live inside `worktrees/`: one detached
+ * tree per kind under `readonly/`, which is the one subtree of `worktrees/`
+ * keyed by kind rather than by branch. The stale-state sweep (#426) reads the
+ * same segment to find the trees of a retired kind, so the two agree by
+ * construction rather than by two copies of a string literal.
+ */
+export const READONLY_WORKTREES_SEGMENT = "readonly";
+
+/** The read-only workspace directory for one kind. */
+export function readonlyWorktreeDir(worktreesDir: string, kind: string): string {
+  return join(worktreesDir, READONLY_WORKTREES_SEGMENT, kind);
 }
 
 /**

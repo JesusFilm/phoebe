@@ -92,6 +92,19 @@ export type ConfigHandle = {
    * Refuses when the array is not a plain string literal array.
    */
   appendWorkKind(content: string, kind: string): ConfigEditResult;
+  /**
+   * Move the field at `from` to `to` by source range, creating the object
+   * literals `to` names along the way. Refuses a computed value or a spread.
+   */
+  moveField(content: string, from: readonly string[], to: readonly string[]): ConfigEditResult;
+  /** The keys of the object literal at `path`, in source order. */
+  listKeys(
+    content: string,
+    path: readonly string[],
+  ):
+    | { ok: false; reason: string }
+    | { ok: true; found: false }
+    | { ok: true; found: true; keys: string[] };
 };
 
 // ------------------------------------------------------ constants
@@ -284,28 +297,39 @@ function resolveConfigObject(source: string): ResolvedConfig | ResolveFailure {
   }
 
   // Validate the object: no spreads, no computed keys, no duplicate keys
+  const shapeReason = objectShapeReason(expr, "config object");
+  if (shapeReason !== null) return { ok: false, reason: shapeReason };
+
+  return { ok: true, configObj: expr };
+}
+
+/**
+ * Shape check for one object literal: no spreads, no computed or non-static
+ * keys, no duplicates. `label` names the object in the refusal so a nested
+ * failure says which block it came from.
+ */
+function objectShapeReason(obj: BNode, label: string): string | null {
   const seenKeys = new Set<string>();
-  for (const prop of expr.properties as BNode[]) {
+  for (const prop of obj.properties as BNode[]) {
     if (prop.type === "SpreadElement" || prop.type === "RestElement") {
-      return { ok: false, reason: "config object contains a spread element (`...`)" };
+      return `${label} contains a spread element (\`...\`)`;
     }
     if (prop.type !== "ObjectProperty" && prop.type !== "ObjectMethod") {
-      return { ok: false, reason: `unexpected config property type: ${prop.type as string}` };
+      return `${label} contains an unexpected property type: ${prop.type as string}`;
     }
     if (prop.computed as boolean) {
-      return { ok: false, reason: "config object contains a computed key" };
+      return `${label} contains a computed key`;
     }
     const keyName = propKeyName(prop.key);
     if (keyName === null) {
-      return { ok: false, reason: "config object contains a non-static key" };
+      return `${label} contains a non-static key`;
     }
     if (seenKeys.has(keyName)) {
-      return { ok: false, reason: `config object contains duplicate key "${keyName}"` };
+      return `${label} contains duplicate key "${keyName}"`;
     }
     seenKeys.add(keyName);
   }
-
-  return { ok: true, configObj: expr };
+  return null;
 }
 
 function findProp(configObj: BNode, key: string): BNode | null {
@@ -498,53 +522,330 @@ export function editConfigAppendWorkKind(source: string, kind: string): ConfigEd
   };
 }
 
+// ------------------------------------------------------ move
+
+/** Leading whitespace of the line `pos` sits on. */
+function lineIndentAt(source: string, pos: number): string {
+  const lineStart = source.lastIndexOf("\n", pos - 1) + 1;
+  return source.slice(lineStart, pos).match(/^(\s*)/)?.[1] ?? "";
+}
+
+/**
+ * Shift every line of `text` after the first from `from` to `to`. The first
+ * line is left alone because the splice site supplies its indentation. Blank
+ * lines stay blank rather than collecting trailing spaces.
+ *
+ * Safe only because {@link nonStaticReason} has already refused template
+ * literals: no string in the moved range spans lines, so no reindent can
+ * change a value.
+ */
+function reindentBlock(text: string, from: string, to: string): string {
+  if (from === to || !text.includes("\n")) return text;
+  const delta = to.length - from.length;
+  return text
+    .split("\n")
+    .map((line, i) => {
+      if (i === 0 || line.trim() === "") return line;
+      if (delta > 0) return " ".repeat(delta) + line;
+      const strip = Math.min(-delta, line.length - line.trimStart().length);
+      return line.slice(strip);
+    })
+    .join("\n");
+}
+
+/** Truncate a source excerpt so a refusal reason stays one readable line. */
+function excerpt(text: string): string {
+  const oneLine = text.replace(/\s+/g, " ").trim();
+  return oneLine.length > 60 ? `${oneLine.slice(0, 57)}...` : oneLine;
+}
+
+/**
+ * Why `node` cannot be moved as bytes: it is computed rather than written out.
+ * A move never reads the value, so anything the reader of the migrated config
+ * would evaluate — a call, an identifier, `process.env.X`, a spread, a
+ * computed key — has to be refused rather than relocated, because relocating
+ * it can change what it evaluates to (a spread's keys land in a different
+ * object; an identifier may not be in scope of the new position's meaning).
+ */
+function nonStaticReason(node: BNode, source: string, label: string): string | null {
+  const inner = unwrapTs(node);
+  switch (inner.type) {
+    case "StringLiteral":
+    case "NumericLiteral":
+    case "BooleanLiteral":
+    case "NullLiteral":
+      return null;
+    case "UnaryExpression":
+      return (inner.operator as string) === "-" && inner.argument.type === "NumericLiteral"
+        ? null
+        : `${label} holds a computed value (\`${excerpt(source.slice(inner.start as number, inner.end as number))}\`)`;
+    case "ArrayExpression":
+      for (const element of inner.elements as BNode[]) {
+        if (element === null) return `${label} contains an elision (empty slot)`;
+        if (element.type === "SpreadElement") {
+          return `${label} contains a spread element (\`...\`)`;
+        }
+        const reason = nonStaticReason(element, source, label);
+        if (reason !== null) return reason;
+      }
+      return null;
+    case "ObjectExpression": {
+      const shape = objectShapeReason(inner, label);
+      if (shape !== null) return shape;
+      for (const prop of inner.properties as BNode[]) {
+        if (prop.type === "ObjectMethod") return `${label} contains a method`;
+        if (prop.shorthand as boolean) return `${label} contains a shorthand property`;
+        const reason = nonStaticReason(prop.value, source, label);
+        if (reason !== null) return reason;
+      }
+      return null;
+    }
+    default:
+      return `${label} holds a computed value (\`${excerpt(source.slice(inner.start as number, inner.end as number))}\`)`;
+  }
+}
+
+type LocatedProp =
+  | { ok: false; reason: string }
+  | { ok: true; found: false }
+  | { ok: true; found: true; parent: BNode; prop: BNode };
+
+/**
+ * Walk `path` from the config object. Missing at any step is `found: false`;
+ * an intermediate that is not a plain object literal is a refusal, because a
+ * migration cannot splice into something it cannot see the inside of.
+ */
+function locatePath(source: string, configObj: BNode, path: readonly string[]): LocatedProp {
+  let obj = configObj;
+  for (let i = 0; i < path.length; i++) {
+    const prop = findProp(obj, path[i]!);
+    if (prop === null) return { ok: true, found: false };
+    if (i === path.length - 1) return { ok: true, found: true, parent: obj, prop };
+    const label = `\`${path.slice(0, i + 1).join(".")}\``;
+    const value = unwrapTs(prop.value);
+    if (value.type !== "ObjectExpression") {
+      return { ok: false, reason: `${label} is not a plain object literal` };
+    }
+    const shape = objectShapeReason(value, label);
+    if (shape !== null) return { ok: false, reason: shape };
+    obj = value;
+  }
+  /* c8 ignore next -- unreachable: the loop returns on the last segment */
+  return { ok: true, found: false };
+}
+
+/**
+ * Splice `valueSource` in at `path`, creating any object literals the path
+ * names but the config does not have yet. `originIndent` is the indentation
+ * the value carried where it came from, so its inner lines land aligned under
+ * their new key.
+ */
+function insertAtPath(
+  source: string,
+  path: readonly string[],
+  valueSource: string,
+  originIndent: string,
+): ConfigEditResult {
+  const resolved = resolveConfigObject(source);
+  /* c8 ignore next -- the caller already resolved this source */
+  if (!resolved.ok) return resolved;
+
+  // Descend as far as the config already goes.
+  let obj = resolved.configObj;
+  let depth = 0;
+  while (depth < path.length - 1) {
+    const prop = findProp(obj, path[depth]!);
+    if (prop === null) break;
+    const label = `\`${path.slice(0, depth + 1).join(".")}\``;
+    const value = unwrapTs(prop.value);
+    if (value.type !== "ObjectExpression") {
+      return { ok: false, reason: `${label} is not a plain object literal` };
+    }
+    const shape = objectShapeReason(value, label);
+    if (shape !== null) return { ok: false, reason: shape };
+    obj = value;
+    depth += 1;
+  }
+
+  // Everything left of the leaf that is still missing gets built here, in one
+  // splice, so the new block is written the way a person would write it.
+  const remaining = path.slice(depth);
+  const { multiLine, elemIndent } = objectIndent(source, obj);
+  if (!multiLine) {
+    const inline = remaining
+      .slice(1)
+      .reduceRight(
+        (acc, key) => `{ ${key}: ${acc} }`,
+        reindentBlock(valueSource, originIndent, ""),
+      );
+    return { ok: true, content: insertProperty(source, obj, remaining[0]!, inline) };
+  }
+
+  let text = reindentBlock(
+    valueSource,
+    originIndent,
+    elemIndent + "  ".repeat(remaining.length - 1),
+  );
+  for (let d = remaining.length - 1; d >= 1; d--) {
+    const indentHere = elemIndent + "  ".repeat(d - 1);
+    text = `{\n${indentHere}  ${remaining[d]!}: ${text},\n${indentHere}}`;
+  }
+  return { ok: true, content: insertProperty(source, obj, remaining[0]!, text) };
+}
+
+/**
+ * Move the field at `from` to `to`, as bytes.
+ *
+ * The value's source range is lifted verbatim — comments inside it travel with
+ * it — reindented for its new depth, and spliced under the last segment of
+ * `to`; object literals the destination path names but the config does not
+ * have yet are created around it. The original property, its trailing comma
+ * and its now-empty line are deleted. The value is never read, so a field
+ * whose value is computed or holds a spread is refused instead: see
+ * {@link nonStaticReason}.
+ *
+ * A comment sitting *above* the moved field is not part of its source range
+ * and stays where it was.
+ */
+export function editConfigMoveField(
+  source: string,
+  from: readonly string[],
+  to: readonly string[],
+): ConfigEditResult {
+  if (from.length === 0 || to.length === 0) {
+    return { ok: false, reason: "move needs a source and a destination path" };
+  }
+  const resolved = resolveConfigObject(source);
+  if (!resolved.ok) return resolved;
+
+  const fromLabel = `\`${from.join(".")}\``;
+  const located = locatePath(source, resolved.configObj, from);
+  if (!located.ok) return located;
+  if (!located.found) return { ok: false, reason: `${fromLabel} not found in config` };
+  if (located.prop.shorthand as boolean) {
+    return { ok: false, reason: `${fromLabel} is a shorthand property — cannot move` };
+  }
+
+  const nonStatic = nonStaticReason(located.prop.value, source, fromLabel);
+  if (nonStatic !== null) return { ok: false, reason: nonStatic };
+
+  const destination = locatePath(source, resolved.configObj, to);
+  if (!destination.ok) return destination;
+  if (destination.found) {
+    return { ok: false, reason: `\`${to.join(".")}\` already exists — keep one of the two` };
+  }
+
+  const valueNode: BNode = located.prop.value;
+  const valueSource = source.slice(valueNode.start as number, valueNode.end as number);
+  const originIndent = lineIndentAt(source, located.prop.start as number);
+  const without = removeProp(source, located.parent, located.prop);
+
+  return insertAtPath(without, to, valueSource, originIndent);
+}
+
+/**
+ * The keys of the object literal at `path`, in source order. `found: false`
+ * when the path names nothing — which is how a migration tells "no such block"
+ * from "a block with no keys".
+ */
+export function editConfigListKeys(
+  source: string,
+  path: readonly string[],
+):
+  | { ok: false; reason: string }
+  | { ok: true; found: false }
+  | { ok: true; found: true; keys: string[] } {
+  const resolved = resolveConfigObject(source);
+  if (!resolved.ok) return resolved;
+
+  const located = locatePath(source, resolved.configObj, path);
+  if (!located.ok) return located;
+  if (!located.found) return { ok: true, found: false };
+
+  const label = `\`${path.join(".")}\``;
+  const value = unwrapTs(located.prop.value);
+  if (value.type !== "ObjectExpression") {
+    return { ok: false, reason: `${label} is not a plain object literal` };
+  }
+  const shape = objectShapeReason(value, label);
+  if (shape !== null) return { ok: false, reason: shape };
+
+  return {
+    ok: true,
+    found: true,
+    keys: (value.properties as BNode[]).map((prop) => propKeyName(prop.key)!),
+  };
+}
+
 // ------------------------------------------------------ splice helpers
+
+/**
+ * Where a new property of `obj` would sit: whether the literal is written
+ * across lines, and the indentation its properties carry. Read off the last
+ * existing property, falling back to one step in from the closing brace.
+ */
+function objectIndent(source: string, obj: BNode): { multiLine: boolean; elemIndent: string } {
+  const objSource = source.slice(obj.start as number, obj.end as number);
+  const innerSource = objSource.slice(1, objSource.length - 1);
+  if (!innerSource.includes("\n")) return { multiLine: false, elemIndent: "" };
+
+  const lastNlBeforeClose = objSource.lastIndexOf("\n", objSource.length - 2);
+  const closingIndent =
+    objSource.slice(lastNlBeforeClose + 1, objSource.length - 1).match(/^(\s*)/)?.[1] ?? "";
+
+  let elemIndent = `${closingIndent}  `;
+  const props = obj.properties as BNode[];
+  if (props.length > 0) {
+    const lastProp = props[props.length - 1]!;
+    const lineStart = source.lastIndexOf("\n", (lastProp.start as number) - 1) + 1;
+    elemIndent =
+      source.slice(lineStart, lastProp.start as number).match(/^(\s*)/)?.[1] ?? elemIndent;
+  }
+  return { multiLine: true, elemIndent };
+}
 
 function insertProperty(source: string, obj: BNode, key: string, valueSource: string): string {
   const closingBracePos = (obj.end as number) - 1;
-  const objSource = source.slice(obj.start as number, obj.end as number);
-  const innerSource = objSource.slice(1, objSource.length - 1);
-  const isMultiLine = innerSource.includes("\n");
+  const { multiLine: isMultiLine, elemIndent } = objectIndent(source, obj);
   const props = obj.properties as BNode[];
 
   if (isMultiLine) {
-    const lastNlBeforeClose = objSource.lastIndexOf("\n", objSource.length - 2);
-    const closingIndent =
-      objSource.slice(lastNlBeforeClose + 1, objSource.length - 1).match(/^(\s*)/)?.[1] ?? "";
-
-    let elemIndent = `${closingIndent}  `;
-    if (props.length > 0) {
-      const lastProp = props[props.length - 1]!;
-      const lineStart = source.lastIndexOf("\n", (lastProp.start as number) - 1) + 1;
-      elemIndent =
-        source.slice(lineStart, lastProp.start as number).match(/^(\s*)/)?.[1] ?? elemIndent;
-    }
-
+    // Splice above the closing brace's own line, not immediately before the
+    // brace: a nested literal indents its `}`, and inserting after that
+    // indentation would push the new key out and leave the brace at column 0.
+    const closingLineStart = source.lastIndexOf("\n", closingBracePos - 1) + 1;
+    const insertAt =
+      source.slice(closingLineStart, closingBracePos).trim() === ""
+        ? closingLineStart
+        : closingBracePos;
     const afterLastProp =
       props.length > 0 ? source.slice(props[props.length - 1]!.end as number, closingBracePos) : "";
     const hasTrailingComma = afterLastProp.includes(",");
     const newLine = `${elemIndent}${key}: ${valueSource},\n`;
 
     if (hasTrailingComma || props.length === 0) {
-      return source.slice(0, closingBracePos) + newLine + source.slice(closingBracePos);
+      return source.slice(0, insertAt) + newLine + source.slice(insertAt);
     }
     const lastPropEnd = props[props.length - 1]!.end as number;
     return (
       source.slice(0, lastPropEnd) +
       "," +
-      source.slice(lastPropEnd, closingBracePos) +
+      source.slice(lastPropEnd, insertAt) +
       newLine +
-      source.slice(closingBracePos)
+      source.slice(insertAt)
     );
   }
 
-  // Single-line
-  const sep = props.length > 0 ? ", " : " ";
-  return (
-    source.slice(0, closingBracePos) +
-    `${sep}${key}: ${valueSource}` +
-    source.slice(closingBracePos)
-  );
+  // Single-line. Splice after the last property rather than before the brace,
+  // so `{ a: 1 }` gains `, b: 2` where its comma belongs instead of after the
+  // space that precedes the brace.
+  if (props.length === 0) {
+    return (
+      source.slice(0, closingBracePos) + ` ${key}: ${valueSource} ` + source.slice(closingBracePos)
+    );
+  }
+  const lastPropEnd = props[props.length - 1]!.end as number;
+  return source.slice(0, lastPropEnd) + `, ${key}: ${valueSource}` + source.slice(lastPropEnd);
 }
 
 function removeProp(source: string, obj: BNode, prop: BNode): string {
@@ -561,8 +862,10 @@ function removeProp(source: string, obj: BNode, prop: BNode): string {
     // content on its line; otherwise splice would delete unrelated source text.
     const linePrefix = source.slice(lineStart, prop.start as number);
     const ownLine = linePrefix.trim() === "" && lineStart > (obj.start as number);
-    // Include the preceding \n for own-line properties.
-    const removeStart = ownLine ? lineStart - 1 : (prop.start as number);
+    // Take the property's own indentation with it; the line's own \n is
+    // consumed below, so the line disappears whole and its neighbours keep
+    // theirs.
+    const removeStart = ownLine ? lineStart : (prop.start as number);
 
     // After prop.end: skip whitespace, comma, then newline
     let removeEnd = prop.end as number;
@@ -614,4 +917,6 @@ export const configHandle: ConfigHandle = {
   setField: editConfigSetField,
   removeField: editConfigRemoveField,
   appendWorkKind: editConfigAppendWorkKind,
+  moveField: editConfigMoveField,
+  listKeys: editConfigListKeys,
 };

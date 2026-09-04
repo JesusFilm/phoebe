@@ -21,7 +21,7 @@ in `workOrder`. It only ever acts on:
 
 - **Issues** labelled `readyLabel`,
 - **Wayfinder research tickets** labelled `researchLabel` (default
-  `wayfinder:research`), when `research` is in `workOrder`, and
+  `wayfinder:research`), unless the `research` kind is disabled, and
 - **Open PRs in scope** (see `prScope` / `draftPrs` / `prOptOutLabel`).
 
 So every lever below is just a way of adding or removing an issue/PR from those
@@ -161,6 +161,7 @@ failure comment too, so a human knows to step in.
 | no flags (the default) | Persistent poll loop; all kinds; idles `PHOEBE_POLL_INTERVAL_MS` (300000).         |
 | `--run-once`           | One `issues` or `research` unit then exit. Janitor kinds are persistent-mode only. |
 | `--dry-run --run-once` | Print the unit that _would_ be picked (host-safe, nothing executes).               |
+| `--pipeline <name>`    | Run one declared [pipeline](pipelines.md) instead of `work`.                       |
 
 Flags go after the compose service name (`docker compose run --rm phoebe
 --run-once`); `phoebe boot` forwards them to the engine it launches. No flags is
@@ -169,10 +170,12 @@ the deployed shape, and `docker compose up -d` runs the persistent loop.
 `--dry-run` is the safe way to preview selection on your host without booting
 the container. See [`upgrading.md`](upgrading.md) for start/stop/upgrade
 commands and [`work-kinds.md`](work-kinds.md) for the full selection rules.
+A tenant running more than one pipeline is [`pipelines.md`](pipelines.md); there is no
+per-pipeline stop verb, because hot `disabled: true` is the stop.
 
 ## Checking the deployment's health: `phoebe doctor`
 
-`phoebe doctor` (report-only) runs seven checks and exits 1 when any fails:
+`phoebe doctor` (report-only) runs eight checks and exits 1 when any fails:
 
 - **cli.** Installed `phoebe-agent` against the npm registry's latest.
 - **engine.** The configured pin against the latest release tag, plus the commit
@@ -194,6 +197,17 @@ In workspace mode it also sweeps every tenant, using the same enumeration boot
 supervises with, checking each tenant's `GH_TOKEN` is present the way its
 engine child reads it, and that its repo answers to that token. Held tenants
 surface as failures with their hold reason. `--json` for scripts.
+
+The eighth check is per tenant and is the only one that reads the data volume:
+
+- **stale-state.** State under a tenant's data directory that no pipeline
+  owns — a deleted or renamed pipeline's `state/<pipeline>/`, a retired kind's
+  scratch or read-only tree, a worktree whose lease names a pipeline that no
+  longer exists. Most of it the next boot reclaims by itself ([the stale-state
+  sweep](architecture.md#reclaiming-what-a-pipeline-leaves-behind)); what this names
+  by path is the tier that sweep refuses to touch — a worktree that is dirty or
+  holds commits `origin` has not seen — with a one-line hint for reclaiming it
+  by hand. **Warn, never fail**: accumulated dirt is a chore, not a fault.
 
 Division of labor: `phoebe upgrade` moves you between versions; `phoebe migrate`
 reshapes your files for the version you are moving to; `phoebe doctor` tells you
@@ -280,27 +294,93 @@ that declares `workspace: { depth }` (walk) or `workspace: { tenants: [...] }`
 Read [`trust.md`](trust.md) first: co-locating repos means co-locating them in
 one trust domain.
 
-| Action                            | How                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Add a repo                        | Place the checkout under the root (`git clone` / `git submodule add`), then `phoebe init --tenant <dir>` (host-side) and, on the declared arm, add the dir to `workspace.tenants` yourself. Phoebe never edits your fleet declaration; `workspace.tenants` is yours. The bootstrapper discovers it next poll. Fill in its `.env`.                                                                                                                                                |
-| Remove a repo                     | Drop the child from `workspace.tenants` and/or delete its config dir (host-side; Phoebe never edits your fleet declaration). Reversible, because the tenant's `/data` is retained and re-adding re-uses it.                                                                                                                                                                                                                                                                      |
-| Reclaim a removed repo's disk     | `phoebe purge <owner/repo> --yes` (in-container). Destructive; refuses while a live config still claims the slug.                                                                                                                                                                                                                                                                                                                                                                |
-| Apply deployment migrations       | `phoebe migrate` (host-side, in the deployment dir). Rewrites config content and scaffolds missing artifacts across root and fleet; lists uncommitted paths for you to review and commit per repo. See [`upgrading.md` → phoebe migrate](upgrading.md#phoebe-migrate-reshaping-your-files-for-the-current-ref).                                                                                                                                                                  |
-| Check every tenant's GitHub token | `node scripts/verify-tenant-token.mjs --all` (host-side, in the deployment dir). One section per tenant; `--check` exits non-zero when any is short a grant. See [Checking a tenant's GitHub token](#checking-a-tenants-github-token).                                                                                                                                                                                                                                           |
-| See every tenant + its health     | `phoebe list` (in-container): config present? `.env` present? retained data? current unit (read from each tenant's `status.json`). Rows that cannot boot show `held — <reason>`. Use `--json` for scriptable output and `--check` to exit non-zero when the declaration is not fully honoured (declared-arm accounting, meaning `N of M`, declared order, and `undeclared`, lives in [`workspace.md` → Declaring the fleet](workspace.md#declaring-the-fleet-workspacetenants)). |
+| Action                            | How                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Add a repo                        | Place the checkout under the root (`git clone` / `git submodule add`), then `phoebe init --tenant <dir>` (host-side) and, on the declared arm, add the dir to `workspace.tenants` yourself. Phoebe never edits your fleet declaration; `workspace.tenants` is yours. The bootstrapper discovers it next poll. Fill in its `.env`.                                                                                                                                                                                                                                |
+| Remove a repo                     | Drop the child from `workspace.tenants` and/or delete its config dir (host-side; Phoebe never edits your fleet declaration). Reversible, because the tenant's `/data` is retained and re-adding re-uses it.                                                                                                                                                                                                                                                                                                                                                      |
+| Reclaim a deleted pipeline's disk | Nothing to do: the next boot, and any later pipeline-set change, sweeps the state of pipelines the config no longer declares. A worktree that is dirty or holds unpushed commits is left for you, named by `phoebe doctor`'s `stale-state` check. Run `phoebe sweep-state` (in-container) to do it now.                                                                                                                                                                                                                                                          |
+| Reclaim a removed repo's disk     | `phoebe purge <owner/repo> --yes` (in-container). Destructive; refuses while a live config still claims the slug.                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Apply deployment migrations       | `phoebe migrate` (host-side, in the deployment dir). Rewrites config content and scaffolds missing artifacts across root and fleet; lists uncommitted paths for you to review and commit per repo. See [`upgrading.md` → phoebe migrate](upgrading.md#phoebe-migrate-reshaping-your-files-for-the-current-ref).                                                                                                                                                                                                                                                  |
+| Check every tenant's GitHub token | `node scripts/verify-tenant-token.mjs --all` (host-side, in the deployment dir). One section per tenant; `--check` exits non-zero when any is short a grant. See [Checking a tenant's GitHub token](#checking-a-tenants-github-token).                                                                                                                                                                                                                                                                                                                           |
+| See every tenant + its health     | `phoebe list` (in-container): one row per tenant — config present? `.env` present? retained data? which credential arm? — and beneath it one indented line per pipeline (see below). Tenants that cannot boot show `held — <reason>`. Use `--json` for scriptable output and `--check` to exit non-zero when a declared tenant is held; declared-arm accounting, meaning `N of M`, declared order, and `undeclared` are reported but don't affect the exit code — see [`workspace.md` → Declaring the fleet](workspace.md#declaring-the-fleet-workspacetenants). |
 
-**Concurrency across tenants.** Only `PHOEBE_MAX_CONCURRENT_AGENTS` work units
-(default **1**) execute at once across the whole fleet. It is a bootstrapper-brokered,
-FIFO round-robin cap so N repos don't thrash the host. Idle polling stays
-per-repo and parallel.
+**Reading `phoebe list`.** A tenant prints its own row — path, slug, the
+config/env/data flags, its credential arm — and beneath it one indented line per
+pipeline. The implicit `work` pipeline prints like any other, and a solo deployment
+prints its single tenant the same way:
 
-**Reading the logs.** Every tenant line is tagged `[phoebe:<owner>/<repo>]`, and
-the bootstrapper's own lines are tagged `[phoebe]`, so a host log collector can
-attribute each line to its tenant. Agent output uses the combined bracket
+```
+[phoebe] 2 of 2 declared tenant(s):
+  children/widget  (acme/widget)
+      ✓ config  ✓ env  ✓ data  arm: pat
+        work    working 1/2 issues 12
+        intake  waiting for slot
+        old     idle  (stale)
+  children/sprocket  (acme/sprocket)
+      held — missing repoSlug in phoebe.config.ts  ✓ config  ✓ env  ✓ data  arm: app
+        work    idle  (from disk)
+```
+
+The pipeline set is the one the supervisor spawns from, so `list` and the supervisor
+cannot disagree about what a tenant runs. Each line's state comes from that pipeline's
+own `state/<name>/status.json` and nothing else:
+
+- `no status` — the pipeline exists; nothing has written a snapshot for it yet.
+- `working k/N <units>` — `N` is the pipeline's declared `concurrency`.
+- `waiting for slot` — a pass picked a unit and is queued on the fleet cap.
+- `idle`.
+- `wedged? <age>` beside a working pipeline with a unit that has been running longer
+  than its own run budget plus one poll interval. Each unit is weighed against
+  its own budget; `<age>` is the oldest unit's.
+
+`wedged?` is a question, not a verdict: `list` reads files, not processes. An
+idle pipeline is never wedged however long it has been idle, and pipelines are never
+weighed against each other — a pipeline that polls every 15 minutes is not sick for
+being quieter than the one beside it.
+
+`(stale)` marks a `state/<name>/` directory this tenant's config no longer
+declares: a renamed or deleted pipeline whose snapshot outlived it. It is
+reported, never acted on, and it does not affect `--check`. A held tenant is one
+whose config could not be read, so there is no pipeline set to ask for — `list` shows
+the snapshots that are on disk and marks each one `(from disk)`.
+
+**Stopping one pipeline.** There is no per-pipeline stop verb yet. Setting
+`disabled: true` on that pipeline in the tenant's `phoebe.config.ts` is hot at the
+pipeline scope — the supervisor picks up the edit without relaunching anything, and
+the pipeline lists as `(disabled)` — but nothing acts on it: the supervisor does not
+stop the pipeline, and the flag is display-only for now, recording operator intent.
+To actually stop work today, use the off-switch that bites: per kind
+(`pipelines.<pipeline>.kinds.<kind>.disabled: true`), which takes each of the pipeline's
+kinds out of rotation. Stopping the whole tenant is `disabled: true` at the top
+level of its config.
+
+**Concurrency across tenants.** One bootstrapper-brokered cap decides how many
+work units execute at once across the whole container, so N repos don't thrash
+the host. It defaults to the largest `concurrency` any live pipeline declares — 1
+unless a pipeline asks for more — and `PHOEBE_MAX_CONCURRENT_AGENTS` replaces that,
+even when lower. Pipelines queue for it, tenants take turns, and a pipeline starved of a
+slot may hold one over the cap (`PHOEBE_SLOT_FLOOR_BUDGET`, default 1), so the
+worst case is the cap plus that budget. Boot prints both numbers and their
+derivation on one line. Idle polling stays per-pipeline and parallel. The knobs are
+in [`configuration.md`](configuration.md#concurrency-the-pipelines-knob-and-the-fleets-cap).
+
+**Reading the logs.** Every engine line is tagged
+`[phoebe:<owner>/<repo>:<pipeline>]` — the pipeline included, and the
+implicit `work` pipeline is tagged like any other. The bootstrapper's own lines are
+tagged `[phoebe]`. A host log collector matching the tenant tag should match it
+as a **prefix**: a parser pinned to the exact old `[phoebe:<owner>/<repo>]`
+string stops matching. Agent output uses the combined bracket
 `[<owner>/<repo>:<command>]` (e.g. `[JesusFilm/phoebe:cursor]`) so agent lines
 stay visually distinct from unit-event lines. stderr lines add a further suffix:
 `[<owner>/<repo>:<command>:stderr]`.
 The container writes no log files. Stdout is the whole story.
+
+**Which unit said it.** Anything produced on behalf of one work unit adds a
+second bracket naming it: `[phoebe:<owner>/<repo>:<pipeline>][<kind> <ref>]` on a
+kind's own logging and on the git and install output its children produce, and
+`[<owner>/<repo>:<command>][<kind> <ref>]` on the agent's. It is there whatever
+the pipeline's `concurrency`, so `[issues issue:88]` greps one unit's whole story —
+its clone traffic, its install, its agent — out of a pipeline running several.
 
 **When a unit hangs.** A work unit that exceeds its wall-clock budget
 (`PHOEBE_RUN_TIMEOUT_MS`, default 45 min) is aborted so it can't starve the

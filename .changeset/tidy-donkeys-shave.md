@@ -1,0 +1,9 @@
+---
+"phoebe-agent": minor
+---
+
+The slot broker learns to schedule pipelines (#421). Its cap is no longer a constant 1: it derives `max(concurrency)` across the live pipelines, so a tenant writing `pipelines.work.concurrency: 3` gets 3 instead of a silent 1, while every pipeline at the default still derives today's 1. `PHOEBE_MAX_CONCURRENT_AGENTS` replaces the derived number, winning even when it is lower, and a pipeline declaring more than the cap queues for it rather than being rewritten to fit — boot prints the cap, where it came from, and any such pipeline on one line. The number is recomputed only on a reconcile that reshapes pipelines, because a granted slot cannot be recalled.
+
+Two mechanisms answer the two shapes of starvation. A pipeline holding no slot with work waiting may hold one over the cap, bounded fleet-wide by `PHOEBE_SLOT_FLOOR_BUDGET` (default 1, `0` for a hard ceiling), so one 45-minute unit elsewhere cannot stall an intake pipeline for 45 minutes; a release gives the over-cap slot back before a regular one, and nothing is handed to a waiter while the cap is breached, so the breach never rolls forward. And `priority` now orders the queue: tenants take turns, a tenant's own pipelines are served highest-first with ties keeping their place, and the same ordering allocates the floor budget. Waiters are sorted when a slot is granted rather than when they queue, which is what makes `priority` hot — the supervisor re-reads it and a pipeline already waiting is reordered without relaunching anything.
+
+Grants are fungible on the wire. A pipeline may have several acquires outstanding, the supervisor answers each with the same untagged message, and the engine-side client resolves its own FIFO; a broker disconnect now rejects every one of them, so the pipeline stops admitting work and drains what is running. The wire format is unchanged.

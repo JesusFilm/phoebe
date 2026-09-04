@@ -53,7 +53,11 @@ workspace-root/                         # bind-mounted :ro → /etc/phoebe
 | **Child (tenant)** | each linked repo       | In-tree `phoebe.config.ts` + gitignored `.env` (+ optional `prompts/`); **no** `container/`                          |
 | **Private clone**  | container volumes      | `/data/repos/<owner>/<repo>/`. Each tenant still clones privately, and the host checkout is **not** the working copy |
 
-**One supervised engine child per tenant.** The bootstrapper discovers children
+**One supervised engine child per `(tenant × pipeline)` pipeline.** A tenant that
+declares no [pipelines](configuration.md#pipelines) has one `work` pipeline, so the
+default is one child per tenant; a tenant declaring `work` and `intake` gets two,
+each reconciled on its own ([Supervising pipelines](architecture.md#supervising-pipelines)).
+The bootstrapper discovers children
 via the root's `workspace` arm, either walking to `workspace.depth` (default `1`)
 or resolving the declared `workspace.tenants` list ([Declaring the fleet](#declaring-the-fleet-workspacetenants)).
 It treats every resolved directory with a root-level `phoebe.config.ts` as a
@@ -84,8 +88,8 @@ your choice:
 
 An empty or unmaterialized child directory is skip-and-warned until the checkout
 exists on disk. Refreshing a child's content (a `git pull` or `submodule
-update`) moves mtime; the fleet treats that as a changed tenant (mtime:size
-fingerprint) and will respawn that child.
+update`) moves mtime; the fleet reads that as a changed tenant (mtime:size
+fingerprint), re-reads its pipelines, and respawns the pipelines the edit actually moved.
 
 ## Two-tier `.env` model
 
@@ -335,7 +339,12 @@ docker compose --env-file ../.env up -d
 1. Selects workspace mode from the root `workspace` block,
 2. Discovers children (walks to `depth`, or resolves the declared `tenants`
    list, see [Declaring the fleet](#declaring-the-fleet-workspacetenants)),
-3. Hands the discovered set to the #57 fleet (one engine child per tenant,
+3. Sweeps each tenant's stale state — the disk of pipelines the config no
+   longer declares — before spawning anything, and again after a later pipeline-set
+   change has drained the pipelines it removed
+   ([Reclaiming what a pipeline leaves behind](architecture.md#reclaiming-what-a-pipeline-leaves-behind)).
+   A sweep that fails never holds up a spawn,
+4. Hands the discovered set to the #57 fleet (one engine child per pipeline,
    env-scrub, shared concurrency cap, reconcile re-reads the block every poll).
 
 See the mount notes beside the scaffolded templates
@@ -345,10 +354,23 @@ must be material before first boot.
 
 ## Fleet invariants
 
+The fleet the supervisor walks is a **(tenant × pipeline) matrix**, not a list of
+tenants: the unit it spawns, keys, and reclaims slots for is a pipeline, and a tenant
+declaring two pipelines contributes two pipelines. A deployment that never declares
+`pipelines` has one pipeline per tenant, which is what the invariants below always
+described. The model is [`pipelines.md`](pipelines.md).
+
 - One container, one shared engine version (`engine` only on the root).
-- `paths` still derive from each tenant's `repoSlug` under `/data/repos/…`.
-- Fleet-wide `PHOEBE_MAX_CONCURRENT_AGENTS` (default 1).
-- Log lines tagged `[phoebe:<owner>/<repo>]`.
+- `paths` still derive from each tenant's `repoSlug` under `/data/repos/…`, and
+  every pipeline of a tenant shares them, partitioned rather than duplicated
+  ([`pipelines.md`](pipelines.md#what-a-pipeline-owns-on-disk)).
+- One fleet-wide slot cap over **pipelines**, derived from the pipelines' `concurrency` and
+  overridable with `PHOEBE_MAX_CONCURRENT_AGENTS`
+  ([configuration.md](configuration.md#concurrency-the-pipelines-knob-and-the-fleets-cap)).
+  Turns are taken per pipeline, so three pipelines queue as three streams.
+- A pipeline's death is its own: the container exits only when every pipeline is
+  crash-looping at once.
+- Log lines tagged `[phoebe:<owner>/<repo>:<pipeline>]` (match as a prefix).
 - Trust domain: one container = co-locate only mutually trusted repos
   ([`trust.md`](trust.md#one-container--one-trust-domain)).
 - **Phoebe never edits your fleet declaration.** `workspace.tenants` is yours,
@@ -369,3 +391,4 @@ must be material before first boot.
 | Mount model (`:ro`, include `.git`)                          | #87                                                                |
 | Scaffold profiles / this runbook                             | #88                                                                |
 | Fleet operating commands                                     | [`operating.md`](operating.md#running-many-repos-in-one-container) |
+| Pipelines: pipelines within a tenant                         | [`pipelines.md`](pipelines.md)                                     |

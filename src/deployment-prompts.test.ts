@@ -6,7 +6,7 @@
 // two of the copies it did keep drifted behind the originals — so the agent
 // working this repo ran older prompts than the repo ships, and every research
 // unit died at dispatch. This test pins the fix in both directions: each
-// deployment's `promptFiles` must resolve to a file that exists, and it must be a
+// deployment's prompt path must resolve to a file that exists, and it must be a
 // file in the one shipped `prompts/` tree rather than a private copy.
 //
 // It reads the configs off disk through the same functions boot uses
@@ -19,7 +19,8 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
 import { readConfigDir } from "../bootstrap/config-dir.ts";
-import { resolveConfig } from "./config-schema.ts";
+import { DEFAULT_PIPELINE_NAME, resolveConfig } from "./config-schema.ts";
+import { selectPipeline } from "./pipeline.ts";
 import { loadUserConfig } from "./load-config.ts";
 import { assertPromptFilesExist as assertPromptFilesExistRaw } from "./prompt.ts";
 import { buildRegistry } from "./work-kinds/registry.ts";
@@ -63,11 +64,17 @@ async function deploymentAt(configRelPath: string): Promise<{
   const configPath = join(repoRoot, configRelPath);
   const user = await loadUserConfig(configPath);
   const configDir = readConfigDir(user as unknown as Record<string, unknown>);
-  return { config: resolveConfig(user), runtimeRoot: resolve(dirname(configPath), configDir) };
+  return {
+    // Pipeline selection as the CLI runs it (#419): a deployment declares its prompt
+    // paths per kind under `pipelines.work`, and this is what folds them onto
+    // the flat `promptFiles` the boot check reads.
+    config: selectPipeline(resolveConfig(user), DEFAULT_PIPELINE_NAME),
+    runtimeRoot: resolve(dirname(configPath), configDir),
+  };
 }
 
 describe.each(DEPLOYMENT_CONFIGS)("deployment %s", (configRelPath) => {
-  test("has every promptFiles entry present at its runtime root", async () => {
+  test("has every prompt path present at its runtime root", async () => {
     const { config, runtimeRoot } = await deploymentAt(configRelPath);
 
     // The same call the engine makes at startup — a missing kind is a boot

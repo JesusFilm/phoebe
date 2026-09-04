@@ -12,15 +12,21 @@
 // `github` — a git checkout of the engine repo at a ref (github-engine.ts, #41).
 //
 // Boot then stays in charge for the life of the container: the reconcile watch
-// (reconcile.ts, #42) polls the mounted config and the tracked ref, and when
-// either moves it drains the engine, re-resolves the source, and relaunches —
-// same container, no interrupted work unit. Following a branch also means
-// eventually following it onto a commit that will not boot, so every launch
-// passes through the crash-loop guard (crash-loop.ts, #43): a tip that dies fast
-// enough times is quarantined and boot materializes the last commit that ran
-// healthily instead. This module is the wiring; the loop lives in reconcile.ts,
-// the fallback policy in crash-loop.ts, and everything impure is passed in from
-// here.
+// (#42) polls the mounted config and the tracked ref, and when either moves it
+// drains the engine, re-resolves the source, and relaunches — same container, no
+// interrupted work unit. Following a branch also means eventually following it
+// onto a commit that will not boot, so every launch passes through the
+// crash-loop guard (crash-loop.ts, #43): a tip that dies fast enough times is
+// quarantined and boot materializes the last commit that ran healthily instead.
+//
+// Both arms — solo and workspace — run on one supervision loop and share one
+// slot broker (#416). The arm still picks discovery (the root itself, or a walk
+// of the workspace tree) and how a child gets its environment (the supervisor's
+// ambient env, or the per-tenant scrub); what a pipeline's death means for the
+// container is injected policy, not a second loop. This module is the wiring;
+// the loop lives in supervise-fleet.ts, the watched-world vocabulary in
+// reconcile.ts, the fallback policy in crash-loop.ts, and everything impure is
+// passed in from here.
 
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -32,11 +38,24 @@ import { loadUserConfig, resolveConfigPath } from "../src/load-config.ts";
 import {
   crashLoopStatePath,
   createCrashGuard,
+  judgeRun,
   type CrashGuard,
   type CrashGuardEvent,
   type RunOutcome,
 } from "./crash-loop.ts";
 import { readEngineSource, type ResolvedEngineSource } from "./engine-source.ts";
+import {
+  createPipelineEnumerator,
+  pipelineLabel,
+  siblingOnlyEnvKeys,
+  type PipelineEnumerator,
+  type SupervisedPipeline,
+} from "./pipelines.ts";
+import {
+  createStateSweeper,
+  type StateSweepOutcome,
+  type StateSweepTrigger,
+} from "./state-sweep.ts";
 import { lsRemoteBranchSha, materializeGithubEngine } from "./github-engine.ts";
 import { buildEngineChildEnv, envReconcileDigest, parseDotenv } from "./engine-child-env.ts";
 import { attachCredentialHandler, type CredentialCache } from "./credential-ipc.ts";
@@ -49,9 +68,16 @@ import {
   type MintedToken,
 } from "./github-app.ts";
 import { attachBroker } from "./broker-ipc.ts";
-import { createSlotBroker, resolveMaxConcurrent } from "./slot-broker.ts";
 import {
-  assertNotRemovedReposLayout,
+  createSlotBroker,
+  describeCap,
+  resolveEffectiveCap,
+  resolveFloorBudget,
+  type BrokerPipeline,
+  type SlotBroker,
+} from "./slot-broker.ts";
+import {
+  discoverTenants,
   discoverWorkspaceTenants,
   WorkspaceStructuralChangeError,
   WorkspaceTenantAxisSkip,
@@ -64,7 +90,14 @@ import {
 } from "./tenants.ts";
 import { readConfigDir } from "./config-dir.ts";
 import { readGitIdentity, soloIdentityEnv, type GitIdentity } from "./git-identity.ts";
-import { superviseFleet, type FleetChild, type FleetDiscoverInput } from "./supervise-fleet.ts";
+import {
+  superviseFleet,
+  type FleetChild,
+  type FleetDiscoverInput,
+  type FleetRun,
+  type PipelineExitPolicy,
+  type SuperviseFleetDeps,
+} from "./supervise-fleet.ts";
 import {
   isExplicitWorkspace,
   resolveWorkspace,
@@ -75,13 +108,11 @@ import { readFileSync } from "node:fs";
 import { resolveCredentialArm, type CredentialArm } from "./credential-arm.ts";
 import {
   configFingerprint,
-  superviseEngine,
   CRASH_BACKOFF_MS,
   DEFAULT_RECONCILE_INTERVAL_MS,
   type EngineExit,
   type EngineRun,
   type LaunchedEngine,
-  type SupervisedChild,
 } from "./reconcile.ts";
 // Untyped plain-JS import (see spawn-engine.mjs / materialize.mjs for why the
 // bootstrapper's child-process plumbing can't be TypeScript).
@@ -89,6 +120,15 @@ import { propagateExit, spawnEngineChild, spawnSoloChild } from "./spawn-engine.
 
 /** Where the local-engine compose overlay mounts the engine for `source: "local"`. */
 export const LOCAL_ENGINE_DIR = "/opt/phoebe-engine";
+
+/**
+ * The solo pipeline's reconcile fingerprint — a constant, because solo has no tenant
+ * axis to reconcile. The root config *is* the engine's config, so every edit to
+ * it is already the engine axis's business (relaunch on a moved engine source,
+ * a silent rebase otherwise, #138). A fingerprint that tracked the file would
+ * relaunch the child a second time for the same edit.
+ */
+const SOLO_TENANT_FINGERPRINT = "solo";
 
 /**
  * The launcher's own semver version, read once at module load.
@@ -281,6 +321,53 @@ async function loadMountedConfig(
  * notices both that the quarantine still applies and that the branch has moved
  * past it. A fallback then checks out the last-good commit in the same clone.
  */
+/**
+ * Probe a freshly materialized checkout for pipeline enumeration and say so, once
+ * (#417). The line is worth printing on every launch: on an engine without the
+ * subcommand it is the whole explanation for why a tenant's declared `intake`
+ * pipeline is not running, and the answer can legitimately change under the same
+ * config the moment the engine ref moves.
+ */
+function probePipelineEnumeration(entry: string): PipelineEnumerator {
+  const pipelines = createPipelineEnumerator({ entry });
+  console.log(
+    pipelines.supported()
+      ? "[phoebe] boot: engine supports pipeline enumeration — pipelines are read per tenant."
+      : "[phoebe] boot: engine has no `pipelines` subcommand — every tenant runs one implicit " +
+          "`work` pipeline.",
+  );
+  return pipelines;
+}
+
+/**
+ * Read one tenant's stale-state sweep out to the operator (#426).
+ *
+ * A sweep that found nothing says nothing — this runs at every boot, and a line
+ * per tenant per boot saying "no orphans" would train an operator to skip the
+ * whole block. What it does always print is the protected tier: a worktree the
+ * sweep refused to delete is the one outcome only a human can finish, and it is
+ * invisible everywhere else until someone runs doctor.
+ */
+function reportStateSweep(info: {
+  tenantId: string;
+  trigger: StateSweepTrigger;
+  outcome: StateSweepOutcome;
+}): void {
+  const { outcome } = info;
+  if (outcome.removed === 0 && outcome.failed === 0 && outcome.kept.length === 0) return;
+  const failed = outcome.failed > 0 ? `, ${outcome.failed} it could not remove` : "";
+  console.log(
+    `[phoebe] boot: stale-state sweep (${info.trigger}) for ${info.tenantId} — ` +
+      `reclaimed ${outcome.removed} orphan(s)${failed}.`,
+  );
+  for (const item of outcome.kept) {
+    console.warn(
+      `[phoebe] boot: left ${item.path} in place — ${item.detail}. ` +
+        `To reclaim it, ${item.reclaim}.`,
+    );
+  }
+}
+
 async function launchTarget(configPath: string, guard: CrashGuard): Promise<LaunchedEngine> {
   const fingerprint = configFingerprint(configPath);
   const source = readEngineSource(await loadMountedConfig(configPath, fingerprint));
@@ -304,6 +391,8 @@ async function launchTarget(configPath: string, guard: CrashGuard): Promise<Laun
       guarded: false,
       quarantinedSha: null,
       sample,
+      pipelines: probePipelineEnumeration(entry),
+      stateSweep: createStateSweeper({ entry }),
     };
   }
 
@@ -338,6 +427,8 @@ async function launchTarget(configPath: string, guard: CrashGuard): Promise<Laun
     guarded,
     quarantinedSha,
     sample,
+    pipelines: probePipelineEnumeration(entry),
+    stateSweep: createStateSweeper({ entry }),
   };
 }
 
@@ -472,21 +563,66 @@ function readTenantEnv(envPath: string): Record<string, string> {
   }
 }
 
+/** One supervised pipeline as the slot broker orders and sizes for it (#407). */
+function brokerPipeline(pipeline: SupervisedPipeline): BrokerPipeline {
+  return {
+    id: pipeline.id,
+    tenantId: pipeline.tenant.id,
+    priority: pipeline.pipeline.priority,
+    concurrency: pipeline.pipeline.concurrency,
+    label: pipelineLabel(pipeline),
+  };
+}
+
+/**
+ * Keep the broker in step with the live pipeline matrix (#407), in either arm.
+ *
+ * Two different things ride on the same hook. Every poll refreshes the ordering
+ * data — a pipeline's tenant and its hot `priority` — which is what lets a `priority`
+ * edit reorder the queue with no relaunch. Only a poll that *reshaped* the
+ * matrix re-derives the effective cap: shrinking a semaphore below its own
+ * `inUse` has no safe answer, so the number moves only when the supervisor is
+ * already mid-reshape, never on a hot flip.
+ *
+ * The cap line is logged when it says something new, so an operator sees the
+ * two numbers of the worst case (`cap + floorBudget`) at boot and again whenever
+ * a reconcile moves them, without a line per poll.
+ */
+export function trackPipelines(
+  broker: SlotBroker,
+  env: NodeJS.ProcessEnv = process.env,
+): NonNullable<SuperviseFleetDeps["onPipelines"]> {
+  let reported: string | null = null;
+  return ({ pipelines, reshaped }) => {
+    const live = pipelines.map(brokerPipeline);
+    broker.setPipelines(live);
+    if (!reshaped) return;
+    const cap = resolveEffectiveCap(live, env);
+    broker.setCapacity(cap.capacity);
+    const line = describeCap(cap, broker.floorBudget);
+    if (line === reported) return;
+    console.log(`[phoebe] boot: ${line}`);
+    reported = line;
+  };
+}
+
 /**
  * Supervise a workspace multi-tenant deployment (#58/#59/#61/#91): a
  * shared engine (#60, materialized once by `launchTarget` from the top config's
- * `engine` field) with one child per tenant, a global concurrency broker across
- * them, and hot add/remove/change via `superviseFleet`.
+ * `engine` field) with one child per `(tenant × pipeline)` pipeline (#401/#420), a
+ * global concurrency broker across them, and hot add/remove/change via
+ * `superviseFleet`.
  *
- * Each child is spawned with an IPC channel + the tenant's scrubbed env (#61)
- * and cwd (its config dir), and wired to the broker (#59). The crash-loop guard
- * still applies any existing engine fallback on each (re)launch; feeding the
- * guard fleet-aggregated crash verdicts (#60 §6) is a follow-up — live fleet
- * validation is deferred to #77.
+ * Each child is spawned with an IPC channel + the tenant's scrubbed env (#61),
+ * cwd (its config dir) and its pipeline's `--pipeline`, and wired to the broker (#59)
+ * under the pipeline id. The crash-loop guard applies any existing engine fallback on
+ * each (re)launch, and now hears about the fleet's runs under the universality
+ * rule — live fleet validation is still deferred to #77.
  *
  * `discover` is injected rather than called directly so the reconcile loop stays
  * testable against a fake fleet: today's one caller re-walks the workspace tree
- * and reloads each child's `repoSlug` every poll (#91).
+ * and reloads each child's `repoSlug` every poll (#91). Pipelines come from the
+ * engine, not from here, so this stays tenant-shaped.
  */
 function runFleet(opts: {
   configPath: string;
@@ -495,8 +631,9 @@ function runFleet(opts: {
   intervalMs: number;
   argv: readonly string[];
   discover: () => FleetDiscoverInput;
+  broker: SlotBroker;
 }): Promise<EngineExit> {
-  const broker = createSlotBroker(resolveMaxConcurrent(process.env));
+  const { broker } = opts;
   // Fleet-level credential-lease state (#211/#205): the cache and the warn-once
   // tracker outlive child respawns. Every child's lease must be answered — a
   // spawned engine requests one at the top of each poll and blocks until the
@@ -504,7 +641,8 @@ function runFleet(opts: {
   const credentialCache: CredentialCache = new Map();
   const warnedOverBudget = new Set<string>();
 
-  const spawnFleetChild = (tenant: DiscoveredTenant, engine: LaunchedEngine): FleetChild => {
+  const spawnFleetChild = (pipeline: SupervisedPipeline, engine: LaunchedEngine): FleetChild => {
+    const tenant = pipeline.tenant;
     const env = buildEngineChildEnv({
       base: process.env,
       mintedEnv: tenant.mintedEnv,
@@ -512,12 +650,15 @@ function runFleet(opts: {
       // base and the App bot fallback, below the tenant's own `.env`.
       configIdentity: tenant.gitIdentity,
       tenantEnv: readTenantEnv(tenant.envPath),
+      // The subtractive pipeline scrub (#425): this tenant's `.env` reaches the pipeline
+      // whole except for the keys a sibling pipeline declared and this one did not.
+      scrubKeys: siblingOnlyEnvKeys(pipeline),
     });
     let settle!: (exit: EngineExit) => void;
     const exited = new Promise<EngineExit>((resolve) => {
       settle = resolve;
     });
-    const label = tenant.slug ?? tenant.id;
+    const label = pipelineLabel(pipeline);
     // The child's cwd is the tenant's asset dir (#98): `dirname(envPath)`, which
     // is `tenant.dir` unless `configDir` relocated the `.env` (e.g. into
     // `.phoebe/`). When relocated, cwd is not where the config lives, so pass
@@ -526,17 +667,20 @@ function runFleet(opts: {
     // the asset dir. The default path (co-located) is byte-for-byte unchanged.
     const assetsDir = dirname(tenant.envPath);
     const relocated = assetsDir !== tenant.dir;
-    const argv = relocated ? ["--config", tenant.configPath, ...opts.argv] : opts.argv;
-    const child = spawnEngineChild(engine.entry, argv, {
-      env,
-      cwd: assetsDir,
-      onExit: (code: number | null, signal: NodeJS.Signals | null) => settle({ code, signal }),
-      onSpawnError: (error: Error) => {
-        console.error(`[phoebe] boot: tenant ${label} failed to spawn — ${error.message}`);
-        settle({ code: 1, signal: null });
+    const child = spawnEngineChild(
+      engine.entry,
+      pipelineArgv(pipeline, tenant.configPath, relocated, opts.argv),
+      {
+        env,
+        cwd: assetsDir,
+        onExit: (code: number | null, signal: NodeJS.Signals | null) => settle({ code, signal }),
+        onSpawnError: (error: Error) => {
+          console.error(`[phoebe] boot: pipeline ${label} failed to spawn — ${error.message}`);
+          settle({ code: 1, signal: null });
+        },
       },
-    });
-    attachBroker({ owner: tenant.id, broker, child });
+    );
+    attachBroker({ owner: pipeline.id, broker, child });
     // The lease answerer (#211/#205). `readPatToken` re-reads this tenant's
     // `.env` per request, so a rotated PAT lands in the running child at its
     // next lease call site — no drain, no respawn (the fingerprint above
@@ -545,8 +689,10 @@ function runFleet(opts: {
     // App tenants
     // (no explicit token) get the null no-op: their refreshed installation
     // token still arrives via the mint-expiry fingerprint relaunch (#209).
+    // Leased under the pipeline id, so a lease answered for one pipeline of a tenant is
+    // never mistaken for its sibling's (#420).
     attachCredentialHandler({
-      tenantId: tenant.id,
+      tenantId: pipeline.id,
       child,
       cache: credentialCache,
       mint: null,
@@ -565,27 +711,135 @@ function runFleet(opts: {
     onEngineChange: (reason) =>
       console.log(
         reason === "config"
-          ? "[phoebe] boot: shared config changed — draining the fleet and relaunching every tenant."
-          : "[phoebe] boot: tracked engine ref advanced — draining the fleet and relaunching every tenant.",
+          ? "[phoebe] boot: shared config changed — draining the fleet and relaunching every pipeline."
+          : "[phoebe] boot: tracked engine ref advanced — draining the fleet and relaunching every pipeline.",
       ),
-    onTenantChange: ({ added, removed, changed }) =>
+    onPipelineChange: ({ added, removed, changed }) =>
       console.log(
-        `[phoebe] boot: tenant reconcile — +${added.length} added, -${removed.length} removed, ` +
+        `[phoebe] boot: pipeline reconcile — +${added.length} added, -${removed.length} removed, ` +
           `~${changed.length} relaunched (no container restart).`,
       ),
-    onChildExit: ({ tenantId, exit }) =>
+    onPipelines: trackPipelines(broker),
+    onChildExit: ({ pipeline, exit }) =>
       console.error(
-        `[phoebe] boot: tenant ${tenantId} exited (${exit.code ?? exit.signal}) — ` +
-          `respawning with backoff (per-tenant supervision; the shared engine is untouched).`,
+        `[phoebe] boot: pipeline ${pipelineLabel(pipeline)} exited (${exit.code ?? exit.signal}) — ` +
+          `respawning with backoff (per-pipeline supervision; the shared engine and every ` +
+          `sibling pipeline are untouched).`,
       ),
     onLaunchError: (error) =>
       console.error(`[phoebe] boot: fleet (re)launch failed — ${describe(error)}. Retrying.`),
     onDiscoverError: (error) =>
       console.warn(
         `[phoebe] boot: tenant discovery failed — ${describe(error)}. ` +
-          `Skipping the tenant axis this poll (the running fleet is left intact).`,
+          `Skipping the pipeline axis this poll (the running fleet is left intact).`,
       ),
+    pipelineFingerprint: workspacePipelineFingerprint,
+    onPipelinesError: ({ tenantId, error }) =>
+      console.warn(
+        `[phoebe] boot: could not enumerate pipelines for ${tenantId} — ${describe(error)}. ` +
+          `Holding the tenant (its running pipelines keep running); retrying next poll.`,
+      ),
+    onStateSweep: reportStateSweep,
+    onStateSweepError: ({ tenantId, trigger, error }) =>
+      console.warn(
+        `[phoebe] boot: could not sweep stale state for ${tenantId} (${trigger}) — ` +
+          `${describe(error)}. Pipelines spawn as if the sweep had not run.`,
+      ),
+    onRunEnd: recordRunEnd(opts.guard),
+    onRunTick: ({ engine, elapsedMs }) => {
+      if (engine.sha !== null) opts.guard.noteAlive(engine.sha, elapsedMs);
+    },
+    pipelineExit: pipelineExitPolicy(opts.guard),
   });
+}
+
+/**
+ * A pipeline's reconcile fingerprint: what the engine said about the pipeline's config,
+ * narrowed by the tenant's `.env` *as this pipeline would hold it* (#425).
+ *
+ * The tenant fingerprint still counts every `.env` key, so an edit there is
+ * always noticed. What this decides is *who relaunches*: a rotated key that
+ * only the intake pipeline can see moves only the intake pipeline's digest, and because
+ * the supervisor never fans a tenant-wide change out to pipelines that already
+ * accounted for it, the work pipeline keeps running. A rotated undeclared key is
+ * visible to every pipeline and moves all of them, which is the behaviour a
+ * single-pipeline tenant has always had.
+ *
+ * A null enumerated fingerprint stays null — the implicit pipeline of a checkout
+ * that cannot enumerate declares nothing and relaunches on the tenant axis.
+ */
+export function workspacePipelineFingerprint(
+  pipeline: SupervisedPipeline,
+  enumerated: string | null,
+): string | null {
+  if (enumerated === null) return null;
+  const hidden = siblingOnlyEnvKeys(pipeline);
+  let digest: string;
+  try {
+    digest = envReconcileDigest(readFileSync(pipeline.tenant.envPath, "utf8"), hidden);
+  } catch {
+    digest = "";
+  }
+  return `${enumerated}:${digest}`;
+}
+
+/**
+ * A pipeline's child argv: the pipeline it runs, plus the config path when the tenant's
+ * assets were relocated away from it (#98). `--pipeline` is omitted for the
+ * implicit pipeline of an engine that cannot enumerate — that checkout has no such
+ * flag and would exit on it before reading a config (#417).
+ */
+export function pipelineArgv(
+  pipeline: SupervisedPipeline,
+  configPath: string,
+  relocated: boolean,
+  forwarded: readonly string[],
+): string[] {
+  return [
+    ...(relocated ? ["--config", configPath] : []),
+    ...(pipeline.enumerated ? ["--pipeline", pipeline.pipeline.name] : []),
+    ...forwarded,
+  ];
+}
+
+/**
+ * Feed the crash-loop guard one finished pipeline run, under the universality rule
+ * (#401/#420): a fast crash is evidence against the *engine commit* only once
+ * every pipeline that ran it has fast-crashed. Until then it is one pipeline's problem,
+ * and counting it would let a single broken tenant quarantine a commit the rest
+ * of the fleet is running happily. Healthy runs are never gated — any pipeline
+ * proving the commit boots is worth banking as the fallback target.
+ */
+function recordRunEnd(guard: CrashGuard): (run: FleetRun) => void {
+  return (run) => {
+    const outcome = runOutcome(run);
+    if (outcome === null) return;
+    if (!run.everyPipelineCrashLooping && judgeRun(outcome) === "crash") return;
+    guard.record(outcome);
+  };
+}
+
+/**
+ * What a pipeline dying on its own means for the container. The loop asks only when
+ * every supervised pipeline is crash-looping (#401), so by the time this runs the
+ * question is "is this engine commit worth another try", not "did one tenant
+ * misbehave". Only a guarded launch retries: a pinned ref that crashes takes the
+ * container down, exactly as it did before there was a guard.
+ */
+function pipelineExitPolicy(guard: CrashGuard): PipelineExitPolicy {
+  return {
+    decide: (run) => {
+      const outcome = run.engine.guarded ? runOutcome(run) : null;
+      if (outcome === null || !guard.shouldRetry(outcome)) return "exit";
+      console.log(
+        `[phoebe] boot: relaunching the engine in ${Math.round(CRASH_BACKOFF_MS / 1000)}s — ` +
+          `a last-good engine commit is available to fall back to.`,
+      );
+      // Through a fresh launch, which is where the fallback to the last-good
+      // commit actually takes effect.
+      return "relaunch";
+    },
+  };
 }
 
 /**
@@ -978,6 +1232,29 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   // own forwarders are not installed.
   const stop = installDrainSignal(process, ["SIGTERM", "SIGINT"]);
 
+  // One slot broker for the whole container, both arms (#416/#407). It is the
+  // only entity that sees every pipeline, which is what makes it the fairness
+  // authority; two of them would be two caps blind to each other.
+  //
+  // Its capacity is derived from the live pipelines (`trackPipelines`), so a solo tenant
+  // declaring `pipelines.work.concurrency: 3` gets 3 rather than a silent 1.
+  // Until the first pipeline matrix arrives there is nothing to derive from and no
+  // child to ask, so it starts at the operator's override or 1.
+  const broker = createSlotBroker({
+    capacity: resolveEffectiveCap([], process.env).capacity,
+    floorBudget: resolveFloorBudget(process.env),
+    onOverGrant: ({ label, inUse, capacity, outstanding, floorBudget }) =>
+      console.log(
+        `[phoebe] boot: slot floor — ${label} held no slot with work waiting; granting one ` +
+          `over the cap (in use ${inUse}, cap ${capacity}, floor ${outstanding}/${floorBudget}).`,
+      ),
+    onOverGrantReturned: ({ label, inUse, capacity, outstanding, floorBudget }) =>
+      console.log(
+        `[phoebe] boot: slot floor — the over-cap slot held by ${label} is free again ` +
+          `(in use ${inUse}, cap ${capacity}, floor ${outstanding}/${floorBudget}).`,
+      ),
+  });
+
   // Detection ladder (#83/#91): loaded root config has a `workspace` block →
   // workspace mode; else solo. The root config is loaded here for the mode
   // decision; `launchTarget` still re-reads on each (re)launch for the engine
@@ -1015,6 +1292,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
         stop,
         intervalMs,
         argv,
+        broker,
         // The root `workspace` block is re-read every poll from here on: this
         // callback owns both the hot tenant list and the shape-change abort (#139).
         discover: workspaceDiscover(configDir, configPath, workspace, appMint),
@@ -1033,11 +1311,11 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     return;
   }
 
-  // Not a workspace ⇒ solo, the single-tenant fast-path below: one engine child,
-  // no scanning. One guard first — a root that carries the removed `repos/`
-  // layout is refused by name here, rather than read as a solo deployment whose
-  // config is missing every per-repo field.
-  assertNotRemovedReposLayout(configDir);
+  // Not a workspace ⇒ solo: a one-tenant fleet, the root config run in place.
+  // `discoverTenants` refuses a root that carries the removed `repos/` layout by
+  // name, rather than reading it as a solo deployment whose config is missing
+  // every per-repo field.
+  const soloTenant = discoverTenants(configDir).tenants[0];
 
   // Solo: log the credential arm once at first spawn. The root *is* the tenant
   // here, so the ambient env serves as both the tenant and the deployment env.
@@ -1045,10 +1323,6 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     `[phoebe] boot: credential arm: ${resolveCredentialArm(process.env as Record<string, string | undefined>)}.`,
   );
 
-  // Solo gets a cap-1 broker (honoring PHOEBE_MAX_CONCURRENT_AGENTS) so the
-  // child's slot client is properly wired and the env knob is meaningful.
-  // Default cap of 1 matches the engine's existing one-unit-at-a-time behaviour.
-  const soloBroker = createSlotBroker(resolveMaxConcurrent(process.env));
   // Lease bookkeeping shared across engine relaunches (#211): unused while solo
   // answers the null no-op, but the handler's contract wants both.
   const soloCredentialCache: CredentialCache = new Map();
@@ -1059,13 +1333,12 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   // sets, and the declared `gitIdentity` fills the rest.
   //
   // One mutable cell, written by the launcher and read by the spawner. The
-  // identity must be re-read per launch (editing the field is itself what
-  // relaunches the child, and the new identity is the point of the edit), but
-  // `spawn` is synchronous while the read is not — so it happens in `launch`,
-  // which `superviseEngine` always runs first (reconcile.ts). Seeded from the
-  // config boot already loaded so the cell is never unset. A malformed value
-  // fails the launch (fatal at boot, retried next poll on a relaunch) — never a
-  // silent fall back to whatever identity the deployment happens to carry.
+  // identity must be re-read per launch, but `spawn` is synchronous while the
+  // read is not — so it happens in `launch`, which the supervision loop always
+  // runs first (supervise-fleet.ts). Seeded from the config boot already loaded
+  // so the cell is never unset. A malformed value fails the launch (fatal at
+  // boot, retried next poll on a relaunch) — never a silent fall back to
+  // whatever identity the deployment happens to carry.
   let soloIdentity: GitIdentity | null = readGitIdentity(rootConfig);
   const launchSolo = async (): Promise<LaunchedEngine> => {
     soloIdentity = readGitIdentity(
@@ -1074,12 +1347,23 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     return launchTarget(configPath, guard);
   };
 
-  const spawnSolo = (entry: string): SupervisedChild => {
+  const spawnSolo = (pipeline: SupervisedPipeline, engine: LaunchedEngine): FleetChild => {
     let settle!: (exit: EngineExit) => void;
     const exited = new Promise<EngineExit>((resolve) => {
       settle = resolve;
     });
     const { env, overridden } = soloIdentityEnv(process.env, soloIdentity);
+    // Solo's arm of the subtractive pipeline scrub (#425). There is no per-tenant
+    // `.env` here — the container env *is* the tenant's — so the subtraction
+    // runs against what the child would otherwise inherit. Materializing a copy
+    // is the only way to take a key away from an inherited env, so a pipeline with
+    // nothing to scrub keeps the null: the child then inherits verbatim, as it
+    // always has.
+    const scrubKeys = siblingOnlyEnvKeys(pipeline);
+    const childEnv = env ?? (scrubKeys.length > 0 ? { ...process.env } : null);
+    if (childEnv !== null) {
+      for (const key of scrubKeys) delete childEnv[key];
+    }
     if (soloIdentity !== null && overridden.length > 0) {
       // The declaration lost, which is the rule — but say so. A leftover
       // `GIT_AUTHOR_NAME` on the container env would otherwise make a repo's
@@ -1090,17 +1374,20 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
           `(in solo it is this tenant's own env-file). Unset those vars to use the declaration.`,
       );
     }
-    const child = spawnSoloChild(entry, argv, {
-      // `env` is null when nothing is declared: the child then inherits the
-      // supervisor's env exactly as it always has.
-      ...(env === null ? {} : { env }),
+    // Solo's config is the root's, resolved from cwd exactly as it always was:
+    // `relocated` is false, so this argv is today's plus the pipeline's `--pipeline`.
+    const child = spawnSoloChild(engine.entry, pipelineArgv(pipeline, configPath, false, argv), {
+      // Null when neither a `gitIdentity` nor a sibling declaration asked for a
+      // change: the child then inherits the supervisor's env exactly as it
+      // always has.
+      ...(childEnv === null ? {} : { env: childEnv }),
       onExit: (code: number | null, signal: NodeJS.Signals | null) => settle({ code, signal }),
       onSpawnError: (error: Error) => {
         console.error(`[phoebe] boot: engine failed to spawn — ${error.message}`);
         settle({ code: 1, signal: null });
       },
     });
-    attachBroker({ owner: "solo", broker: soloBroker, child });
+    attachBroker({ owner: pipeline.id, broker, child });
     // Answer the child's credential lease (#211) with the null no-op: solo is
     // one trust domain whose secrets arrive on the ambient container env, so
     // there is no per-tenant `.env` to re-read (#205's rotation-in-place has no
@@ -1108,7 +1395,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     // child mints its own token in-loop when the lease yields nothing).
     // Without an answerer the child would hang forever on its first request.
     attachCredentialHandler({
-      tenantId: "solo",
+      tenantId: pipeline.id,
       child,
       cache: soloCredentialCache,
       mint: null,
@@ -1119,30 +1406,38 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
 
   let exit: EngineExit;
   try {
-    exit = await superviseEngine({
+    exit = await superviseFleet({
       launch: launchSolo,
+      // Solo's tenant axis stays inert: the root *is* the tenant, so every edit
+      // to its config is already the engine axis's business (relaunch on a moved
+      // engine source, a silent rebase otherwise, #138). A constant fingerprint
+      // keeps it that way — the pipelines the engine enumerates at launch are the
+      // pipelines solo runs until something re-materializes the engine.
+      discover: () => [{ tenant: soloTenant, fingerprint: SOLO_TENANT_FINGERPRINT }],
       spawn: spawnSolo,
       stop,
       intervalMs,
-      onRunEnd: (run) => {
-        const outcome = runOutcome(run);
-        if (outcome !== null) guard.record(outcome);
-      },
+      // Solo contends on the same broker, so its pipelines size and order it too:
+      // one tenant, but its own pipelines' `concurrency` and `priority`.
+      onPipelines: trackPipelines(broker),
+      // Solo backs off on the engine constant, not the fleet's per-pipeline one: the
+      // relaunch line quotes it, so the two must not drift.
+      crashBackoffMs: CRASH_BACKOFF_MS,
+      onStateSweep: reportStateSweep,
+      onStateSweepError: ({ tenantId, trigger, error }) =>
+        console.warn(
+          `[phoebe] boot: could not sweep stale state for ${tenantId} (${trigger}) — ` +
+            `${describe(error)}. Pipelines spawn as if the sweep had not run.`,
+        ),
+      onRunEnd: recordRunEnd(guard),
       onRunTick: ({ engine, elapsedMs }) => {
         if (engine.sha !== null) guard.noteAlive(engine.sha, elapsedMs);
       },
-      relaunchAfterExit: (run) => {
-        // Only a guarded launch retries: a pinned ref that crashes takes the
-        // container down, exactly as it did before there was a guard.
-        const outcome = run.engine.guarded ? runOutcome(run) : null;
-        if (outcome === null || !guard.shouldRetry(outcome)) return false;
-        console.log(
-          `[phoebe] boot: relaunching the engine in ${Math.round(CRASH_BACKOFF_MS / 1000)}s — ` +
-            `a last-good engine commit is available to fall back to.`,
-        );
-        return true;
-      },
-      onRelaunch: (reason) =>
+      // The universality rule over a one-pipeline fleet: that pipeline *is* the engine, so
+      // every death of it is universal and reaches the policy — which is how
+      // "the engine exited, so the container exits" is still what solo does.
+      pipelineExit: { ...pipelineExitPolicy(guard), propagateOnStop: true },
+      onEngineChange: (reason) =>
         console.log(
           reason === "config"
             ? "[phoebe] boot: mounted config changed — draining the engine (SIGTERM) and relaunching."

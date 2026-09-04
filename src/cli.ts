@@ -19,7 +19,11 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
-import { resolveConfig } from "./config-schema.ts";
+import {
+  deprecatedPipelineAliases,
+  resolveConfig,
+  type PhoebeUserConfig,
+} from "./config-schema.ts";
 import { createWorkKindRegistry } from "./work-kinds/load-custom.ts";
 import {
   copyShippedPromptsInto,
@@ -30,15 +34,19 @@ import {
 } from "./init.ts";
 import { formatInitTenantRegistrationAdviceForRoot } from "./init-tenant-advice.ts";
 import { applyEnvOverlay, loadUserConfig, resolveConfigPath } from "./load-config.ts";
+import { parsePipelineName, selectPipeline } from "./pipeline.ts";
 import { runEngine } from "./main.ts";
 import { resolveDataBase } from "./paths.ts";
 import { setResolvedConfig } from "./resolved-config.ts";
+import { formatAge, oldestUnitAgeMs, type PipelineListing } from "./pipeline-listing.ts";
 import {
   LIST_HELD_LEGEND,
+  LIST_STALE_LEGEND,
   LIST_UNDECLARED_LEGEND,
   listTenants,
   purgeTenant,
   TRUST_DOMAIN_NOTE,
+  type ListTenantsResult,
   type TenantListing,
 } from "./tenant-commands.ts";
 
@@ -98,6 +106,22 @@ export function parseCliArgs(argv: readonly string[]): ParsedArgs {
       configPath = arg.slice("--config=".length);
       continue;
     }
+    // `--pipeline <name>` selects which pipeline of this tenant's work to run (#415).
+    // Forwarded rather than consumed: `runEngine` reads the same flag back for
+    // the pipeline's poll cadence and its log line.
+    if (arg === "--pipeline") {
+      const next = argv[i + 1];
+      if (next === undefined) {
+        throw new Error(`${arg} requires a pipeline name (e.g. --pipeline work).`);
+      }
+      forward.push(arg, next);
+      i += 1;
+      continue;
+    }
+    if (arg !== undefined && arg.startsWith("--pipeline=")) {
+      forward.push(arg);
+      continue;
+    }
     if (arg !== undefined && arg.startsWith("-") && !ENGINE_FLAGS.has(arg)) {
       throw new Error(`Unknown flag \`${arg}\` for \`phoebe\`. See \`phoebe --help\`.`);
     }
@@ -121,7 +145,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedArgs {
       const version = installedVersion();
       throw new Error(
         `Unknown command \`${arg}\` for \`phoebe\`${version === null ? "" : ` (phoebe-agent v${version})`}. ` +
-          `Known commands: boot, init, list, purge, upgrade, doctor, migrate, stop, start. If \`${arg}\` was added in a newer ` +
+          `Known commands: boot, init, list, purge, upgrade, doctor, migrate, stop, start, pipelines, sweep-state. If \`${arg}\` was added in a newer ` +
           `release, upgrade first: \`pnpm dlx phoebe-agent@latest upgrade\`. See \`phoebe --help\`.`,
       );
     }
@@ -261,6 +285,10 @@ Usage:
   phoebe upgrade --check [--json]  Report current vs latest; exit 1 when behind
   phoebe doctor [--json]           Deployment + tenant health checks (report-only)
   phoebe migrate [--config <path>] Apply deployment migrations (idempotent)
+  phoebe pipelines [--config <path>]
+                                   Print this tenant's pipelines as JSON (for the supervisor)
+  phoebe sweep-state [--config <path>]
+                                   Delete tenant state no pipeline owns
   phoebe stop [--now]              Drain and stop the deployment container (host-side)
   phoebe start [--build]           Bring the deployment container up detached (host-side)
   phoebe [--config <path>] [flags] Run the engine
@@ -269,6 +297,7 @@ Options (engine mode):
   --config, -c <path>   Path to phoebe.config.ts (default: ./phoebe.config.ts)
   --run-once            Work one unit of the first one-shot-eligible kind, then exit
   --dry-run             Print the selected unit without executing it
+  --pipeline <name>     Which pipeline to run (default: work)
   --help, -h            Show this message
 
 Environment overlays (each replaces the corresponding config field):
@@ -359,29 +388,137 @@ function parseCommandArgs(argv: readonly string[]): {
   return { positionals, flags };
 }
 
+/**
+ * The tenant's own columns. The engine-state column that used to sit here moved
+ * to the pipeline lines below (#427): a tenant is several pipelines now, and one
+ * state word for all of them could only ever be one pipeline's.
+ */
 function formatHealthColumns(listing: TenantListing): string {
   const flag = (label: string, on: boolean): string => `${on ? "✓" : "✗"} ${label}`;
-  const unit = listing.status?.currentUnit;
-  const state = unit ? `working ${unit.kind} ${unit.id}` : listing.status ? "idle" : "no status";
   return (
     `${flag("config", listing.configValid)}  ${flag("env", listing.envPresent)}  ` +
-    `${flag("data", listing.retainedData)}  arm: ${listing.arm}  ${state}`
+    `${flag("data", listing.retainedData)}  arm: ${listing.arm}`
   );
 }
 
-function formatTenantListing(listing: TenantListing): string {
+/** Where the line came from, or that the pipeline is switched off. */
+function formatPipelineMark(pipeline: PipelineListing): string {
+  if (pipeline.source === "stale") return "  (stale)";
+  if (pipeline.source === "disk") return "  (from disk)";
+  return pipeline.disabled ? "  (disabled)" : "";
+}
+
+/**
+ * One pipeline's state column. `working` carries `k/N` — what is in flight
+ * against what the pipeline declared — and the refs themselves, so an operator can
+ * go find the unit. `wedged?` rides along rather than replacing it: the pipeline is
+ * still working as far as anything on disk knows, and the age is the reason to
+ * doubt it.
+ */
+function formatPipelineState(pipeline: PipelineListing, now: number): string {
+  if (pipeline.state !== "working") return pipeline.state;
+  const refs = pipeline.units.map((current) => `${current.unit.kind} ${current.unit.id}`);
+  const capacity =
+    pipeline.concurrency !== null
+      ? `${pipeline.units.length}/${pipeline.concurrency}`
+      : String(pipeline.units.length);
+  const age = oldestUnitAgeMs(pipeline.units, now);
+  const wedged = pipeline.wedged && age !== null ? `  wedged? ${formatAge(age)}` : "";
+  return `working ${capacity} ${refs.join(", ")}${wedged}`;
+}
+
+/** One indented line per pipeline, names padded into a column. */
+function formatPipelineLines(listing: TenantListing, now: number): string[] {
+  const width = Math.max(0, ...listing.pipelines.map((pipeline) => pipeline.name.length));
+  return listing.pipelines.map(
+    (pipeline) =>
+      `        ${pipeline.name.padEnd(width)}  ${formatPipelineState(pipeline, now)}` +
+      formatPipelineMark(pipeline),
+  );
+}
+
+function formatTenantListing(listing: TenantListing, now: number): string {
   const slugSuffix = listing.slug !== null ? `  (${listing.slug})` : "";
   const disabledSuffix = listing.disabled ? "  (disabled)" : "";
   const header = `  ${listing.path}${slugSuffix}${disabledSuffix}`;
-  if (listing.held) {
-    const held = `held — ${listing.reason ?? "held"}`;
-    const detail = listing.slug !== null ? `${held}  ${formatHealthColumns(listing)}` : held;
-    return `${header}\n      ${detail}`;
-  }
-  return `${header}\n      ${formatHealthColumns(listing)}`;
+  const held = `held — ${listing.reason ?? "held"}`;
+  const detail = !listing.held
+    ? formatHealthColumns(listing)
+    : listing.slug !== null
+      ? `${held}  ${formatHealthColumns(listing)}`
+      : held;
+  return [`${header}\n      ${detail}`, ...formatPipelineLines(listing, now)].join("\n");
 }
 
-/** `phoebe list` — enumerate tenants + health (reads status.json). */
+/**
+ * The machine-readable report. Each tenant carries its pipeline lines; the
+ * tenant-level `status` field is gone with the column it fed (#427) — a reader
+ * that wants one pipeline's snapshot names the pipeline.
+ */
+export function formatListJson(result: ListTenantsResult): string {
+  return JSON.stringify({
+    declared: result.declared,
+    live: result.live,
+    solo: result.solo,
+    tenants: result.listings.map((listing) => ({
+      path: listing.path,
+      slug: listing.slug,
+      held: listing.held,
+      reason: listing.reason,
+      arm: listing.arm,
+      configValid: listing.configValid,
+      envPresent: listing.envPresent,
+      retainedData: listing.retainedData,
+      disabled: listing.disabled,
+      pipelines: listing.pipelines.map((pipeline) => ({
+        name: pipeline.name,
+        disabled: pipeline.disabled,
+        source: pipeline.source,
+        state: pipeline.state,
+        units: pipeline.units,
+        updatedAt: pipeline.updatedAt,
+        wedged: pipeline.wedged,
+      })),
+    })),
+    undeclared: result.undeclared,
+  });
+}
+
+/** The human report: tenant pipelines, their pipeline lines, and the legends. */
+export function formatListReport(result: ListTenantsResult, now: number): string {
+  if (result.listings.length === 0 && result.undeclared.length === 0) {
+    return "[phoebe] No tenants (nothing declared here — no workspace children, no root config).";
+  }
+  const header = result.solo
+    ? "[phoebe] 1 tenant (solo):"
+    : result.explicit && result.declared > 0
+      ? `[phoebe] ${result.live} of ${result.declared} declared tenant(s):`
+      : result.listings.length > 0
+        ? `[phoebe] ${result.listings.length} tenant(s):`
+        : "[phoebe] 0 declared tenant(s):";
+  const body = result.listings.map((listing) => formatTenantListing(listing, now)).join("\n");
+  const undeclaredSection =
+    result.undeclared.length > 0
+      ? `\n\nundeclared:\n${result.undeclared.map((path) => `  ${path}`).join("\n")}`
+      : "";
+  const legendParts: string[] = [];
+  if (result.listings.some((listing) => listing.held)) legendParts.push(LIST_HELD_LEGEND);
+  if (result.listings.some((listing) => listing.pipelines.some((p) => p.source === "stale"))) {
+    legendParts.push(LIST_STALE_LEGEND);
+  }
+  if (result.undeclared.length > 0) legendParts.push(LIST_UNDECLARED_LEGEND);
+  const legend = legendParts.length > 0 ? `\n${legendParts.join("\n")}` : "";
+  const main = body.length > 0 ? `${header}\n${body}` : header;
+  return `${main}${undeclaredSection}${legend}`;
+}
+
+/**
+ * `phoebe list` — every tenant, its health columns, and one line per pipeline.
+ *
+ * `--check` stays structural: it exits 1 when the fleet declaration is not
+ * honoured, and nothing a pipeline line says moves it. A wedged pipeline is a
+ * question for an operator, not a failed assertion about the declaration.
+ */
 async function runListCli(argv: readonly string[]): Promise<void> {
   const { flags } = parseCommandArgs(argv);
   const result = await listTenants({
@@ -389,56 +526,11 @@ async function runListCli(argv: readonly string[]): Promise<void> {
     dataBase: resolveDataBase(process.env),
   });
 
-  if (flags["json"] === true) {
-    process.stdout.write(
-      `${JSON.stringify({
-        declared: result.declared,
-        live: result.live,
-        tenants: result.listings.map((listing) => ({
-          path: listing.path,
-          slug: listing.slug,
-          held: listing.held,
-          reason: listing.reason,
-          arm: listing.arm,
-          configValid: listing.configValid,
-          envPresent: listing.envPresent,
-          retainedData: listing.retainedData,
-          disabled: listing.disabled,
-          status: listing.status,
-        })),
-        undeclared: result.undeclared,
-      })}\n`,
-    );
-    if (flags["check"] === true && result.explicit && result.listings.some((l) => l.held)) {
-      process.exitCode = 1;
-    }
-    return;
-  }
-
-  if (result.listings.length === 0 && result.undeclared.length === 0) {
-    process.stdout.write(
-      "[phoebe] No tenants (solo single-tenant deployment, or a workspace with none declared yet).\n",
-    );
-    return;
-  }
-
-  const header =
-    result.explicit && result.declared > 0
-      ? `[phoebe] ${result.live} of ${result.declared} declared tenant(s):`
-      : result.listings.length > 0
-        ? `[phoebe] ${result.listings.length} tenant(s):`
-        : "[phoebe] 0 declared tenant(s):";
-  const body = result.listings.map(formatTenantListing).join("\n");
-  const undeclaredSection =
-    result.undeclared.length > 0
-      ? `\n\nundeclared:\n${result.undeclared.map((path) => `  ${path}`).join("\n")}`
-      : "";
-  const legendParts: string[] = [];
-  if (result.listings.some((listing) => listing.held)) legendParts.push(LIST_HELD_LEGEND);
-  if (result.undeclared.length > 0) legendParts.push(LIST_UNDECLARED_LEGEND);
-  const legend = legendParts.length > 0 ? `\n${legendParts.join("\n")}` : "";
-  const main = body.length > 0 ? `${header}\n${body}` : header;
-  process.stdout.write(`${main}${undeclaredSection}${legend}\n`);
+  process.stdout.write(
+    flags["json"] === true
+      ? `${formatListJson(result)}\n`
+      : `${formatListReport(result, Date.now())}\n`,
+  );
 
   if (flags["check"] === true && result.explicit && result.listings.some((l) => l.held)) {
     process.exitCode = 1;
@@ -457,6 +549,23 @@ async function runPurgeCli(argv: readonly string[]): Promise<void> {
     confirm: flags["yes"] === true,
   });
   process.stdout.write(`[phoebe] purge ${slug} → wiped ${purged}\n`);
+}
+
+/**
+ * One deprecation notice per load, naming every superseded top-level field this
+ * config still uses (#415). Emitted here rather than inside `resolveConfig`
+ * because the resolver runs per tenant inside the supervisor's reconcile loop
+ * too, and a warning that repeats every few seconds trains operators to ignore
+ * warnings.
+ */
+export function warnDeprecatedPipelineAliases(user: PhoebeUserConfig): void {
+  const aliases = deprecatedPipelineAliases(user);
+  if (aliases.length === 0) return;
+  console.warn(
+    `[phoebe] phoebe.config.ts uses deprecated field(s): ${aliases.join(", ")}. ` +
+      `They now resolve as \`pipelines.work.*\` and keep working; \`phoebe migrate\` will ` +
+      `move them. See docs/configuration.md → Pipelines.`,
+  );
 }
 
 /**
@@ -543,6 +652,20 @@ export async function runCli(): Promise<void> {
     const { runDoctorCli } = await import("./doctor.ts");
     return await runDoctorCli(args.slice(1));
   }
+  // The supervisor's one question about a tenant's config (#417): which pipelines it
+  // declares, and their fingerprints. Lazy like its neighbours — the
+  // engine-run path never loads it.
+  if (args[0] === "pipelines") {
+    const { runPipelinesCli } = await import("./pipeline-enumerate.ts");
+    return await runPipelinesCli(args.slice(1));
+  }
+  // Reclaiming disk no pipeline owns (#426): the supervisor's pre-spawn and
+  // post-drain sweep, and an operator's hand run. Lazy for the same reason as
+  // its neighbours.
+  if (args[0] === "sweep-state") {
+    const { runSweepStateCli } = await import("./stale-state.ts");
+    return await runSweepStateCli(args.slice(1));
+  }
   if (args[0] === "migrate") {
     const { runMigrateCli } = await import("./migrate.ts");
     return await runMigrateCli(args.slice(1));
@@ -570,7 +693,14 @@ export async function runCli(): Promise<void> {
   const userConfig = await loadUserConfig(configPath);
   assertNotWorkspaceRoot(userConfig, configPath);
   const overlaid = applyEnvOverlay(userConfig, process.env);
-  const resolved = resolveConfig(overlaid, { dataBase: resolveDataBase(process.env) });
+  const tenant = resolveConfig(overlaid, { dataBase: resolveDataBase(process.env) });
+  warnDeprecatedPipelineAliases(overlaid);
+  // Flatten the selected pipeline onto the tenant config (#415): `workOrder`,
+  // `workKinds` and `promptFiles` now describe this pipeline, so the registry
+  // loader, the orchestrator and the prompt check all keep reading the fields
+  // they always read. An unknown `--pipeline` throws here, before any GitHub
+  // call. Absent the flag, the pipeline is `work`.
+  const resolved = selectPipeline(tenant, parsePipelineName(parsed.forward));
   // The engine takes the config as an argument (#280); the holder is still
   // installed because `orchestrator.ts` — which the engine and the `gh` client
   // both call into — still reads its fields through the Proxy.

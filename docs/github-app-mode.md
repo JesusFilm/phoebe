@@ -160,6 +160,12 @@ Vouch reads the `.github/VOUCHED.td` file only for human handles. A bot handle
 ending in `[bot]` resolves to `trusted` on its own, without reading
 the file. There is no step to take here.
 
+The token itself is not narrowed per pipeline: the supervisor leases it per pipeline
+and caches the minted installation token per tenant, so every pipeline of a tenant
+works its repo with the same full grant. What _is_ per pipeline is any key a kind
+declared, so an intake pipeline's Slack token never reaches the work pipeline's child. See
+[`pipelines.md` → Credentials per pipeline](pipelines.md#credentials-per-pipeline).
+
 ### Reviews and branch protection
 
 **The operator can approve the bot's PR** under required-review branch

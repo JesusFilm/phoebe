@@ -43,6 +43,15 @@ export type WorkUnitGitHubTarget = { objectType: "issue" | "pr"; id: number };
 export type WorkUnitShape = {
   ref: string;
   github?: WorkUnitGitHubTarget;
+  /**
+   * What "the content advanced" means for a unit the engine cannot see (#424) —
+   * a Slack thread's newest message `ts`, a row version, any string that
+   * changes when the unit does. The engine records it beside the in-memory
+   * timeout count and forgets that count when a later pick of the same ref
+   * carries a different one, which is how a unit quarantined in memory gets out
+   * again. A kind that never sets it keeps its count for the process's life.
+   */
+  revision?: string;
 };
 
 /** One rule that turned units away this cycle, in the kind's own words. */
@@ -155,6 +164,31 @@ export type WorkKindCtx = {
   origin: WorkKindOrigin;
   cycle: CycleServices;
   clock: WorkKindClock;
+  /**
+   * This kind's refs that are running right now (#422) — including any the
+   * engine admitted earlier in this same pass, because a pipeline whose
+   * `concurrency` is above 1 asks `select` again as soon as it has taken a
+   * pick. `select` must not offer a ref this set holds.
+   *
+   * Honouring it is what lets a kind fill several slots at once. A kind that
+   * ignores it offers its top candidate again, the engine drops the repeat and
+   * stops asking that kind for the rest of the pass — so the cost of ignoring
+   * it is one unit at a time, never two agents on one unit.
+   */
+  inFlight: ReadonlySet<string>;
+  /**
+   * This kind's refs the engine has quarantined in memory (#424): units with no
+   * `github` target whose whole-unit timeouts reached the quarantine threshold,
+   * so there was nowhere to write the `phoebe:quarantined` label. `select`
+   * should not offer one of them — unless the unit's `revision` has moved on,
+   * which is the exit: the engine forgets the count and admits the pick.
+   *
+   * Empty for every kind whose units carry `github`; those take the label path,
+   * which is why no built-in ever appears here. A kind that ignores the set has
+   * its pick refused at admission and is not asked again that pass, so the cost
+   * of ignoring it is a stalled kind rather than a burnt run budget.
+   */
+  quarantined: ReadonlySet<string>;
   /** Log with the uniform `[phoebe][<kind> <ref>]` prefix (ref once known). */
   log(message: string): void;
 };
@@ -163,7 +197,9 @@ export type WorkKindCtx = {
  * The workspace `run` receives, keyed by the definition's declared `workspace`
  * field. The engine prepares and removes it; kinds never create workspaces
  * themselves. Every member carries a `dir` because an agent needs a cwd
- * whatever the mode — what differs is what is in it:
+ * whatever the mode, and a `scratch` because somewhere to write is not the same
+ * question as which git shape the kind asked for (#423) — what differs is what
+ * is in `dir`:
  *
  * - `worktree` — a git worktree of the default branch, off the tenant's
  *   private clone, on the engine-named `<branchPrefix>workspace` branch. Repo
@@ -185,17 +221,28 @@ export type WorkKindCtx = {
  *   is thrown away loudly. A kind that means to publish should build its own
  *   worktree through `ctx.agent`.
  *
- * Every mode is materialized the first time `dir` is read, so a kind that
- * builds its own worktrees (as all five built-ins do) pays nothing for a
- * workspace it never uses, and only a materialized one is removed afterwards.
+ * `scratch` is a per-unit directory the kind may write anything into, on every
+ * handle. It is what makes `readonly` usable rather than merely safe: a kind
+ * that reads the repo and produces something — a report, a draft, a fetched
+ * payload — needs both a reading room and a desk, and before this it got one or
+ * the other. It leaves `workspace: "scratch"` reading a little oddly, as "no git
+ * shape, plus the scratch every kind now has", with `dir` and `scratch` the same
+ * directory. The mode is not renamed here; the reading is the price of not
+ * breaking every kind that declares it.
+ *
+ * Both are materialized the first time they are read, and independently, so a
+ * kind that builds its own worktrees (as all five built-ins do) pays nothing for
+ * a workspace it never uses, and only what was materialized is removed
+ * afterwards. Both are per-unit, so two units of one kind in flight together
+ * never share a directory.
  *
  * A discriminated union so a later mode can carry fields these do not without
  * retyping the kinds already written.
  */
 export type WorkspaceHandle =
-  | { mode: "worktree"; dir: string }
-  | { mode: "scratch"; dir: string }
-  | { mode: "readonly"; dir: string };
+  | { mode: "worktree"; dir: string; scratch: string }
+  | { mode: "scratch"; dir: string; scratch: string }
+  | { mode: "readonly"; dir: string; scratch: string };
 
 /** The declarable workspace modes — {@link WorkspaceHandle}'s discriminant. */
 export type WorkspaceMode = WorkspaceHandle["mode"];
@@ -346,6 +393,31 @@ export type WorkKindDefinition<G = unknown, U extends WorkUnitShape = WorkUnitSh
   promptFile: string;
   /** Which workspace the engine prepares for `run` (see {@link WorkspaceHandle}). */
   workspace: WorkspaceMode;
+  /**
+   * The env keys this kind's own code reads out of `ctx.env` (#410). Declaring
+   * them is what earns them: the supervisor takes every key a *sibling* pipeline
+   * declared and this one did not out of this pipeline's child env, so an intake
+   * kind's Slack token never reaches the work pipeline. Undeclared keys are
+   * untouched and flow as they always have.
+   *
+   * Boot-checked for presence and non-blankness across the kinds the pipeline
+   * schedules, and stripped from the install-command and prompt-shell envs
+   * unconditionally — a toolchain command the consumer owns has no business
+   * with a credential a kind declared for itself.
+   *
+   * Reserved keys cannot be declared: `GH_TOKEN`, `PHOEBE_GH_LOGIN`, the git
+   * identity variables, anything `PHOEBE_*` or `GH_APP_*`, and any `providerEnv`
+   * value (see work-kinds/declared-env.ts).
+   */
+  requiredEnv?: readonly string[];
+  /**
+   * The subset of `requiredEnv` this kind's *agent children* may also see — the
+   * one kind-scoped hole in the otherwise fixed agent allowlist
+   * (src/agent-env.ts). Empty by default, because a prompt-injected agent that
+   * can read a token can exfiltrate it: a kind opts in per key, and only for
+   * keys it already reads.
+   */
+  agentEnv?: readonly string[];
   /**
    * Definition-level agent defaults, sitting at the repo-defaults rung of the
    * resolution ladder: per-kind env → `workKinds` block → global env → these →

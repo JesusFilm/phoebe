@@ -104,11 +104,16 @@ function noopOriginHub(): OriginHub {
     addWorktreeForExisting: () => {},
     addWorktreeDetached: () => {},
     removeWorktree: () => {},
+    lockWorktree: () => {},
+    unlockWorktree: () => {},
+    worktreeLease: () => ({ locked: false, holder: null }),
+    listWorktrees: () => [],
     commitCount: () => 0,
     dirtyFileCount: () => 0,
     pushBranch: () => {},
     pushBranchWithLease: () => {},
     appendTrailerToCommits: () => "nothing" as const,
+    withOutput: () => noopOriginHub(),
   };
 }
 

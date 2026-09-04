@@ -61,11 +61,7 @@ import {
 import type { WorkKindCtx } from "./work-kinds/definition.ts";
 import { buildRegistry } from "./work-kinds/registry.ts";
 import { featureBranch, type Feature } from "./feature-branch.ts";
-import {
-  oneShotWorkKinds,
-  selectFirstWorkUnit as walkSelectFirstWorkUnit,
-  type WorkUnitSkip,
-} from "./work-kinds/walk.ts";
+import { oneShotWorkKinds, selectWorkUnits, type WorkUnitSkip } from "./work-kinds/walk.ts";
 
 function issue(overrides: Partial<Issue> & Pick<Issue, "number">): Issue {
   return {
@@ -797,8 +793,8 @@ describe("validateWorkOrder", () => {
     ]);
   });
 
-  test("throws on empty order", () => {
-    expect(() => validate([])).toThrow(/must not be empty/);
+  test("accepts an empty order — priority, not membership (#415)", () => {
+    expect(validate([])).toEqual([]);
   });
 
   test("throws on unknown kind", () => {
@@ -858,6 +854,8 @@ function walkCtx(kind: string, data: WalkData): WorkKindCtx {
       feature: () => null,
     },
     clock: { now: () => new Date(0), sleep: () => Promise.resolve() },
+    inFlight: new Set<string>(),
+    quarantined: new Set<string>(),
     log: () => {},
   };
 }
@@ -891,12 +889,15 @@ function selectFirstWorkUnit(
     ["issues", { issues: data.issues }],
     ["research", { issues: data.researchIssues ?? [] }],
   ]);
-  const { unit, skipped } = walkSelectFirstWorkUnit({
+  const { units, skipped } = selectWorkUnits({
     registry: walkRegistry,
     kinds: order,
     gathered,
-    ctxFor: (kind) => walkCtx(kind, data),
+    ctxFor: (kind: string) => walkCtx(kind, data),
+    limit: 1,
+    inFlight: () => new Set<string>(),
   });
+  const unit = units[0];
   if (!unit) return { unit: null, skipped };
   const raw = unit.unit as Record<string, unknown>;
   const flattened = "pr" in raw ? raw["pr"] : raw;

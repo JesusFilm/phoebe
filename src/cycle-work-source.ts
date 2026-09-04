@@ -77,8 +77,33 @@ export function createWorkSource(opts: {
   env: NodeJS.ProcessEnv;
   config: PhoebeConfig;
   registry: WorkKindRegistry;
+  /**
+   * The engine's stdout tag (#418). Passed in rather than derived: the tag
+   * names the *process* — tenant and pipeline — and this module only knows the
+   * tenant. Defaults to the bare tag so a test that builds a work source
+   * directly need not supply one.
+   */
+  tag?: string;
+  /**
+   * This kind's currently-running refs (#422) — a live view of the loop's
+   * in-flight set, read through on every `ctx.inFlight` access rather than
+   * copied, so a `select` called a second time in one pass sees the unit the
+   * first call yielded. Defaults to empty, which is what a work source built
+   * outside the loop (a test, a preview) should see.
+   */
+  inFlight?: (kind: string) => ReadonlySet<string>;
+  /**
+   * This kind's refs the engine has quarantined in memory (#424) — read through
+   * the same way `inFlight` is, so a `select` asked twice in one pass sees a
+   * count the first ask's pick has just cleared. Defaults to empty, which is
+   * what a work source built outside the loop should see.
+   */
+  quarantined?: (kind: string) => ReadonlySet<string>;
 }): WorkSource {
   const { github, originHub, clock, env, config, registry } = opts;
+  const tag = opts.tag ?? "[phoebe]";
+  const inFlight = opts.inFlight ?? (() => new Set<string>());
+  const quarantined = opts.quarantined ?? (() => new Set<string>());
 
   /** The message every per-unit warning below prints, whatever was thrown. */
   function errorText(error: unknown): string {
@@ -97,7 +122,7 @@ export function createWorkSource(opts: {
       try {
         into.set(n, github.blockerPrState(n));
       } catch (error) {
-        console.warn(`[phoebe] Skipping blocker state for #${n} this cycle — ${errorText(error)}`);
+        console.warn(`${tag} Skipping blocker state for #${n} this cycle — ${errorText(error)}`);
       }
     }
   }
@@ -144,7 +169,7 @@ export function createWorkSource(opts: {
           return node;
         } catch (error) {
           console.warn(
-            `[phoebe] Skipping feature membership at #${issueNumber} this cycle — ${errorText(error)}`,
+            `${tag} Skipping feature membership at #${issueNumber} this cycle — ${errorText(error)}`,
           );
           graphNodes.set(issueNumber, null);
           return null;
@@ -160,7 +185,7 @@ export function createWorkSource(opts: {
           return read;
         } catch (error) {
           console.warn(
-            `[phoebe] Skipping feature #${featureIssueNumber} this cycle — its integration PR ` +
+            `${tag} Skipping feature #${featureIssueNumber} this cycle — its integration PR ` +
               `could not be read: ${errorText(error)}`,
           );
           integrationPrs.set(featureIssueNumber, null);
@@ -179,7 +204,7 @@ export function createWorkSource(opts: {
           return body;
         } catch (error) {
           console.warn(
-            `[phoebe] Skipping issue body for #${issueNumber} this cycle — ${errorText(error)}`,
+            `${tag} Skipping issue body for #${issueNumber} this cycle — ${errorText(error)}`,
           );
           issueBodies.set(issueNumber, null);
           return null;
@@ -219,7 +244,13 @@ export function createWorkSource(opts: {
         origin,
         cycle: services,
         clock,
-        log: (message) => console.log(`[phoebe][${kind}] ${message}`),
+        get inFlight() {
+          return inFlight(kind);
+        },
+        get quarantined() {
+          return quarantined(kind);
+        },
+        log: (message) => console.log(`${tag}[${kind}] ${message}`),
       };
       ctxCache.set(kind, ctx);
       return ctx;

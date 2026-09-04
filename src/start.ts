@@ -180,8 +180,8 @@ export async function runStart(opts: { build: boolean; deps?: StartDeps }): Prom
   }
   const deployment = resolved;
 
-  const beforeRows = await composePs(deployment, opts.deps?.runner);
-  const before = findPhoebeService(beforeRows);
+  const beforePipelines = await composePs(deployment, opts.deps?.runner);
+  const before = findPhoebeService(beforePipelines);
   if (before !== undefined && isContainerRunning(before)) {
     io.stdout("[phoebe] Already running.");
     return { kind: "already-running" };
@@ -210,8 +210,8 @@ export async function runStart(opts: { build: boolean; deps?: StartDeps }): Prom
   // missing engine ref makes boot exit seconds later — wait, then re-probe.
   await waitMs(START_SETTLE_MS);
 
-  const afterRows = await composePs(deployment, opts.deps?.runner);
-  const after = findPhoebeService(afterRows);
+  const afterPipelines = await composePs(deployment, opts.deps?.runner);
+  const after = findPhoebeService(afterPipelines);
   if (after === undefined || !isContainerRunning(after)) {
     const exitCode =
       after?.ExitCode !== undefined && after.ExitCode !== "" ? Number(after.ExitCode) : null;

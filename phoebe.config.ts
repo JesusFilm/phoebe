@@ -44,19 +44,43 @@ export const config = defineConfig({
   //
   // `defaultProvider` is claude rather than cursor for a second reason beyond
   // the obvious one: the mismatch guard in selectProviderForKind silences a
-  // `workKinds` block whose `(provider ?? defaultProvider)` differs from the
+  // kind block whose `(provider ?? defaultProvider)` differs from the
   // run's effective provider. Leaving this "cursor" and flipping the run with
   // PHOEBE_AGENT=claude would make every block below inert.
   //
   // Baseline: opus-5 at low effort, because this is a long-running loop paying
   // against subscription usage limits rather than metered API billing. Low is
   // the right floor for the kinds whose spec arrives complete — a CI log, a
-  // reviewer's thread — and `workKinds` lifts the kinds that have to
+  // reviewer's thread — and the kind blocks below lift the kinds that have to
   // reconstruct intent instead.
   defaultProvider: "claude",
   defaultModels: { claude: "claude-opus-5" },
   defaultEfforts: { claude: "low" },
 
+  // As a workspace tenant, reuse this repo's standalone `.phoebe/` folder: the
+  // supervisor reads `.env` (and cwd-relative prompts) from `.phoebe/` instead
+  // of the repo root, so nothing is duplicated. A standalone `.phoebe/`
+  // deployment ignores this (configDir only applies to fleet tenants), so solo
+  // still works unchanged. Requires engine >= v0.3.0.
+  configDir: ".phoebe",
+
+  // Run the `claude` provider above on a Pro/Max subscription rather than
+  // metered API billing: name the OAuth token's var instead of the shipped
+  // `ANTHROPIC_API_KEY` default. `providerEnv` merges key-by-key, so cursor and
+  // codex keep theirs.
+  //
+  // This is not cosmetic — `buildAgentEnv` (src/agent-env.ts) forwards exactly
+  // the one var named here, so with the default mapping a `.env` holding only
+  // CLAUDE_CODE_OAUTH_TOKEN hands the CLI nothing and every unit dies on
+  // "Not logged in · Please run /login". Mint the token with `claude
+  // setup-token` (or `node scripts/hoist-claude-login.mjs`); see
+  // docs/claude-subscription-auth.md.
+  providerEnv: { claude: "CLAUDE_CODE_OAUTH_TOKEN" },
+
+  // This tenant's pipelines of work (#415/#419). Only the reserved `work` pipeline, which
+  // is what an engine child with no `--pipeline` flag runs; `pipelines.work.kinds`
+  // is where `workKinds` and `promptFiles` moved.
+  //
   // Per-work-kind tuning (#300). One rule on both axes: spend where the agent
   // reconstructs intent, save where it executes a spec someone else wrote.
   //
@@ -76,51 +100,33 @@ export const config = defineConfig({
   // No haiku block anywhere, on purpose: a block can override `effort` but
   // cannot clear it (#335), so a haiku kind would still be handed `--effort
   // low`, which that model does not take.
-  workKinds: {
-    conflicts: { effort: "high" },
-    checks: { model: "claude-sonnet-5", effort: "medium" },
-    reviews: { model: "claude-sonnet-5" },
-    issues: { effort: "high" },
-    research: { effort: "high" },
-  },
-
-  // Run the `claude` provider above on a Pro/Max subscription rather than
-  // metered API billing: name the OAuth token's var instead of the shipped
-  // `ANTHROPIC_API_KEY` default. `providerEnv` merges key-by-key, so cursor and
-  // codex keep theirs.
   //
-  // This is not cosmetic — `buildAgentEnv` (src/agent-env.ts) forwards exactly
-  // the one var named here, so with the default mapping a `.env` holding only
-  // CLAUDE_CODE_OAUTH_TOKEN hands the CLI nothing and every unit dies on
-  // "Not logged in · Please run /login". Mint the token with `claude
-  // setup-token` (or `node scripts/hoist-claude-login.mjs`); see
-  // docs/claude-subscription-auth.md.
-  providerEnv: { claude: "CLAUDE_CODE_OAUTH_TOKEN" },
-
-  // As a workspace tenant, reuse this repo's standalone `.phoebe/` folder: the
-  // supervisor reads `.env` (and cwd-relative prompts) from `.phoebe/` instead
-  // of the repo root, so nothing is duplicated. A standalone `.phoebe/`
-  // deployment ignores this (configDir only applies to fleet tenants), so solo
-  // still works unchanged. Requires engine >= v0.3.0.
-  configDir: ".phoebe",
-
-  // …and, because `configDir` moves the engine child's cwd to `.phoebe/`, point
-  // every prompt back at the repo's own `prompts/` one level up rather than
-  // keeping a second copy under `.phoebe/prompts/`. The whole working tree is
-  // mounted, so `..` is in reach, and one tree means prompt edits reach the
-  // agent that works this repo instead of drifting out of sight (#164). Relative
-  // `promptFiles` are resolved by existence, not containment.
+  // Each kind's `promptFile` is the second half of `configDir` above: that
+  // field moves the engine child's cwd to `.phoebe/`, so every prompt points
+  // back at the repo's own `prompts/` one level up rather than a second copy
+  // under `.phoebe/prompts/`. The whole working tree is mounted, so `..` is in
+  // reach, and one tree means prompt edits reach the agent that works this repo
+  // instead of drifting out of sight (#164). Relative prompt paths resolve by
+  // existence, not containment.
   //
-  // These are written for the cwd this config is RUN with — `.phoebe/` — so a
+  // They are written for the cwd this config is RUN with — `.phoebe/` — so a
   // by-hand engine run against this repo belongs there too (`cd .phoebe && node
   // ../src/cli.ts --dry-run --run-once`), not at the repo root, where `..` would
   // leave the checkout and the startup check would say so.
-  promptFiles: {
-    issue: "../prompts/issues-prompt.md",
-    conflict: "../prompts/conflict-prompt.md",
-    checks: "../prompts/checks-prompt.md",
-    reviews: "../prompts/reviews-prompt.md",
-    research: "../prompts/research-prompt.md",
+  pipelines: {
+    work: {
+      kinds: {
+        conflicts: { effort: "high", promptFile: "../prompts/conflict-prompt.md" },
+        checks: {
+          model: "claude-sonnet-5",
+          effort: "medium",
+          promptFile: "../prompts/checks-prompt.md",
+        },
+        reviews: { model: "claude-sonnet-5", promptFile: "../prompts/reviews-prompt.md" },
+        issues: { effort: "high", promptFile: "../prompts/issues-prompt.md" },
+        research: { effort: "high", promptFile: "../prompts/research-prompt.md" },
+      },
+    },
   },
 });
 

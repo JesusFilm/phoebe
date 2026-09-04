@@ -3,19 +3,40 @@
 // function takes the clone directory explicitly so tests can run against a
 // temp clone.
 
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { withBackoffSync, type SleepSync } from "./backoff.ts";
 import { asSha, type BranchRef, type Sha } from "./branded.ts";
+import { outputLines } from "./prefixed-output.ts";
+import {
+  leaseHolder,
+  parseWorktreeList,
+  WorktreeLeasedError,
+  type WorktreeEntry,
+} from "./worktree-lease.ts";
 
 export type GitRunner = (
   args: string[],
-  opts?: { cwd?: string; stdio?: "inherit" | "ignore" | "pipe"; timeout?: number },
+  opts?: {
+    cwd?: string;
+    stdio?: "inherit" | "ignore" | "pipe";
+    timeout?: number;
+    /**
+     * Take the child's output line by line instead of letting it reach the
+     * engine's own stdout (#423). Set by `withOutputPrefix` in place of
+     * `stdio: "inherit"`, which is unattributable once a pipeline runs several
+     * units at once. Both streams are collected: git says most of what an
+     * operator wants — fetch progress, push results, worktree creation — on
+     * stderr.
+     */
+    echo?: (line: string) => void;
+  },
 ) => string;
 
-export const defaultGit: GitRunner = (args, opts) =>
-  execFileSync("git", args, {
+export const defaultGit: GitRunner = (args, opts) => {
+  if (opts?.echo) return gitCapturing(args, opts, opts.echo);
+  return execFileSync("git", args, {
     encoding: "utf8",
     ...(opts?.cwd ? { cwd: opts.cwd } : {}),
     ...(opts?.stdio ? { stdio: opts.stdio } : {}),
@@ -23,6 +44,61 @@ export const defaultGit: GitRunner = (args, opts) =>
     // must not block it forever on a hung remote — the caller bounds it.
     ...(opts?.timeout ? { timeout: opts.timeout } : {}),
   }) as unknown as string;
+};
+
+/**
+ * Run git with both streams piped, hand every line to `echo`, and keep
+ * `execFileSync`'s contract: return stdout, throw on anything but exit 0.
+ *
+ * Synchronous like the rest of the model, so the output arrives as one block
+ * when the command ends rather than as it is produced. That is the cost of
+ * attributable output for a call that used to inherit the terminal, and these
+ * are all short commands — fetch, push, worktree administration. The one long
+ * inheriting call, the first `clone`, is not a unit's and keeps its live
+ * stream.
+ */
+function gitCapturing(
+  args: string[],
+  opts: { cwd?: string; timeout?: number },
+  echo: (line: string) => void,
+): string {
+  const result = spawnSync("git", args, {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    ...(opts.cwd ? { cwd: opts.cwd } : {}),
+    ...(opts.timeout ? { timeout: opts.timeout } : {}),
+  });
+  const stdout = result.stdout ?? "";
+  const stderr = result.stderr ?? "";
+  for (const line of outputLines(`${stdout}\n${stderr}`)) echo(line);
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(
+      `Command failed: git ${args.join(" ")}` +
+        `${result.signal ? ` (killed with ${result.signal})` : ` (exit ${result.status})`}` +
+        `${stderr.trim() ? `\n${stderr.trim()}` : ""}`,
+    );
+  }
+  return stdout;
+}
+
+/**
+ * The same runner, with every call that would have inherited the engine's
+ * stdout writing through `write` instead — one line at a time, so a caller can
+ * put a unit's ref on each (#423).
+ *
+ * A wrapper rather than a parameter on every git helper: `stdio: "inherit"` is
+ * spread across the model, and the thing that varies is who is asking, not what
+ * is asked. Calls that capture already, or deliberately discard, pass through
+ * untouched.
+ */
+export function withOutputPrefix(git: GitRunner, write: (line: string) => void): GitRunner {
+  return (args, opts) => {
+    if (opts?.stdio !== "inherit") return git(args, opts);
+    const { stdio: _inherit, ...rest } = opts;
+    return git(args, { ...rest, echo: write });
+  };
+}
 
 /**
  * Clone the repo into `repoDir` unless a clone already exists there.
@@ -78,13 +154,14 @@ export function fetchOrigin(
   repoDir: string,
   git: GitRunner = defaultGit,
   sleepSync?: SleepSync,
+  warn: (line: string) => void = (line) => console.warn(`[phoebe] ${line}`),
 ): void {
   withBackoffSync(() => git(["fetch", "origin"], { cwd: repoDir, stdio: "inherit" }), {
     scheduleMs: FETCH_RETRY_SCHEDULE_MS,
     isRetryable: () => true,
     onRetry: (_error, delayMs, retry) => {
-      console.warn(
-        `[phoebe] \`git fetch origin\` failed — retrying in ${delayMs / 1000}s ` +
+      warn(
+        `\`git fetch origin\` failed — retrying in ${delayMs / 1000}s ` +
           `(retry ${retry}/${FETCH_RETRY_SCHEDULE_MS.length}).`,
       );
     },
@@ -160,11 +237,106 @@ export function dirtyFileCount(worktreeDir: string, git: GitRunner = defaultGit)
     .filter((line) => line.trim().length > 0).length;
 }
 
+// --- The worktree lease (#418) -----------------------------------------------
+// `git worktree lock` is the lease's enforcement, not a flag beside it: a
+// locked tree refuses `worktree remove --force` (it wants a second `-f`) and
+// `worktree prune` skips it. The reason string's grammar lives in
+// worktree-lease.ts.
+
+/** Take the lease on `worktreeDir`, stamping `reason` on it. */
+export function lockWorktree(
+  repoDir: string,
+  worktreeDir: string,
+  reason: string,
+  git: GitRunner = defaultGit,
+): void {
+  git(["worktree", "lock", "--reason", reason, worktreeDir], { cwd: repoDir, stdio: "ignore" });
+}
+
+/**
+ * Release the lease on `worktreeDir`. Best-effort: git exits non-zero when the
+ * tree is not locked or no longer registered, and both are the state the caller
+ * was asking for.
+ */
+export function unlockWorktree(
+  repoDir: string,
+  worktreeDir: string,
+  git: GitRunner = defaultGit,
+): void {
+  try {
+    git(["worktree", "unlock", worktreeDir], { cwd: repoDir, stdio: "ignore" });
+  } catch {
+    // Already unlocked, or already gone.
+  }
+}
+
+/** Every worktree registered on the clone, with the lock reason each carries. */
+export function listWorktrees(repoDir: string, git: GitRunner = defaultGit): WorktreeEntry[] {
+  return parseWorktreeList(git(["worktree", "list", "--porcelain"], { cwd: repoDir }));
+}
+
+/**
+ * Resolve a path for comparison against git's listing, which prints each tree's
+ * real absolute path. `realpathSync` is what makes a symlinked data root
+ * compare equal; a path that does not exist yet falls back to lexical
+ * resolution.
+ */
+function comparablePath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+/**
+ * The lease on `worktreeDir`. `locked: false` covers the tree being
+ * unregistered as much as unlocked; `locked: true` with a null holder is a
+ * lock nothing here wrote — a hand-placed one — which callers treat as another
+ * writer's, not their own. A clone that cannot be listed at all reports no
+ * lease: there is none this process could honour, and the caller's existing
+ * tolerance for a missing clone is what it falls back on.
+ *
+ * `holder` is the whole owner — `<pipeline>#<kind>:<ref>` (#423) — because the
+ * caller is one unit asking whether the tree is its own, and a sibling unit's
+ * lease is not.
+ */
+export function worktreeLease(
+  repoDir: string,
+  worktreeDir: string,
+  git: GitRunner = defaultGit,
+): { locked: boolean; holder: string | null } {
+  let entries: WorktreeEntry[];
+  try {
+    entries = listWorktrees(repoDir, git);
+  } catch {
+    return { locked: false, holder: null };
+  }
+  const wanted = comparablePath(worktreeDir);
+  const entry = entries.find((row) => comparablePath(row.dir) === wanted);
+  if (!entry || entry.reason === null) return { locked: false, holder: null };
+  return { locked: true, holder: leaseHolder(entry.reason) };
+}
+
+/**
+ * Remove a worktree, unless it is leased.
+ *
+ * The lease check comes first and throws, because the fallback below is a
+ * recursive delete: git's own refusal would be enough to stop `worktree
+ * remove`, and the fallback would then go around it and take a sibling
+ * pipeline's live tree out from under a running agent (#418). A caller drops
+ * its own lease first (`unlockWorktree`); anything still locked here belongs to
+ * someone else and must survive. Past the lease, the fallback stays what it
+ * was: a directory left behind by a killed run is not a worktree git will
+ * remove, and clearing it is how the next run self-heals.
+ */
 export function removeWorktree(
   repoDir: string,
   worktreeDir: string,
   git: GitRunner = defaultGit,
 ): void {
+  const lease = worktreeLease(repoDir, worktreeDir, git);
+  if (lease.locked) throw new WorktreeLeasedError(worktreeDir, lease.holder);
   try {
     git(["worktree", "remove", "--force", worktreeDir], { cwd: repoDir, stdio: "ignore" });
   } catch {

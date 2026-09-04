@@ -12,6 +12,12 @@
 // expansions keep GH_TOKEN because the shipped templates call `gh`, but the
 // commands themselves come from the read-only config mount, never the branch;
 // no toolchain command needs a provider API key, so those never ride along.
+//
+// Declared keys (#425) join that list unconditionally, on both spawns. A key a
+// kind named in `requiredEnv` is a credential the tenant provisioned for the
+// *engine's* use; the consumer's install script and a prompt's `!` expansion
+// are neither, and until now every `.env` value reached both — which is the
+// pre-existing leak into the target repo's install hooks this closes.
 
 const ENGINE_CREDENTIAL_KEYS = ["GH_TOKEN", "GH_APP_ID", "GH_APP_PRIVATE_KEY"] as const;
 
@@ -57,30 +63,39 @@ function without(env: NodeJS.ProcessEnv, keys: readonly string[]): NodeJS.Proces
 
 /**
  * Env for `installCommand`: the parent env minus GH_TOKEN, the GH_APP_*
- * credentials, and every configured provider API key (`providerKeys` — the
- * values of `config.providerEnv`). An install that needs GitHub auth of its
- * own (private git dependencies, GitHub Packages) must bring a dedicated
- * token; the engine's minted credential is not it.
+ * credentials, every configured provider API key (`providerKeys` — the values
+ * of `config.providerEnv`), and every key this pipeline's kinds declared
+ * (`declaredKeys`). An install that needs GitHub auth of its own (private git
+ * dependencies, GitHub Packages) must bring a dedicated token; the engine's
+ * minted credential is not it.
  */
 export function buildInstallCommandEnv(
   parentEnv: NodeJS.ProcessEnv,
   providerKeys: readonly string[],
+  declaredKeys: readonly string[] = [],
 ): NodeJS.ProcessEnv {
-  return without(withCorepackAnswer(parentEnv), [...ENGINE_CREDENTIAL_KEYS, ...providerKeys]);
+  return without(withCorepackAnswer(parentEnv), [
+    ...ENGINE_CREDENTIAL_KEYS,
+    ...providerKeys,
+    ...declaredKeys,
+  ]);
 }
 
 /**
  * Env for prompt `!`...`` expansions: keeps GH_TOKEN — the shipped templates
  * open with `gh pr view` / `gh issue view` — but drops the GH_APP_*
- * credentials and every provider API key, which no expansion has a use for.
+ * credentials, every provider API key, and every declared key, none of which an
+ * expansion has a use for.
  */
 export function buildPromptShellEnv(
   parentEnv: NodeJS.ProcessEnv,
   providerKeys: readonly string[],
+  declaredKeys: readonly string[] = [],
 ): NodeJS.ProcessEnv {
   return without(withCorepackAnswer(parentEnv), [
     "GH_APP_ID",
     "GH_APP_PRIVATE_KEY",
     ...providerKeys,
+    ...declaredKeys,
   ]);
 }

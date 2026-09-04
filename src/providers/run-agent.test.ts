@@ -9,6 +9,7 @@ function makeFakeChild(): {
   written: string[];
   ended: () => boolean;
   emitStdout: (data: string) => void;
+  emitStderr: (data: string) => void;
   close: (code: number | null) => void;
 } {
   const listeners = new Map<string, Listener[]>();
@@ -38,6 +39,7 @@ function makeFakeChild(): {
     written,
     ended: () => stdinEnded,
     emitStdout: (data) => emit("stdout:data", Buffer.from(data)),
+    emitStderr: (data) => emit("stderr:data", Buffer.from(data)),
     close: (code) => emit("child:close", code),
   };
 }
@@ -135,6 +137,40 @@ describe("runAgent", () => {
     expect(logged).toEqual([
       "[JesusFilm/phoebe:claude] Reading file",
       "[JesusFilm/phoebe:claude] Bash: ls",
+    ]);
+  });
+
+  // With several units in flight in one pipeline (#423), the tenant and the provider
+  // no longer say which run a line came from. The unit does.
+  test("with a unit, log brackets name it beside the tenant and provider", async () => {
+    const fake = makeFakeChild();
+    const claudeTextLine = JSON.stringify({
+      type: "assistant",
+      message: { content: [{ type: "text", text: "Reading file" }] },
+    });
+    const spawn: SpawnAgent = () => {
+      queueMicrotask(() => {
+        fake.emitStdout(`${claudeTextLine}\n`);
+        fake.emitStderr("cli warning\n");
+        fake.close(0);
+      });
+      return fake.child;
+    };
+    const logged: string[] = [];
+    await runAgent({
+      provider: PROVIDERS.claude,
+      model: "m",
+      prompt: "p",
+      cwd: "/w",
+      env: {},
+      spawn,
+      log: (line) => logged.push(line),
+      tenant: "JesusFilm/phoebe",
+      unit: "issues issue:88",
+    });
+    expect(logged).toEqual([
+      "[JesusFilm/phoebe:claude][issues issue:88] Reading file",
+      "[JesusFilm/phoebe:claude:stderr][issues issue:88] cli warning",
     ]);
   });
 

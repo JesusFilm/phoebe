@@ -6,7 +6,10 @@
 import { describe, expect, test } from "vite-plus/test";
 import {
   CONFIG_DEFAULTS,
+  DEFAULT_PROMPT_FILE_BY_KIND,
+  PROMPT_FILE_KEY_BY_KIND,
   PROVIDER_NAMES,
+  deprecatedPipelineAliases,
   resolveConfig,
   validateUserConfig,
   type PhoebeUserConfig,
@@ -681,5 +684,157 @@ describe("resolveConfig", () => {
     expect(Object.keys(resolved).sort()).not.toContain("configDir");
     expect(Object.keys(resolved).sort()).not.toContain("gitIdentity");
     expect(Object.keys(resolved).sort()).not.toContain("deployment");
+  });
+});
+
+describe("the pipelines block (#415)", () => {
+  test("a legal block resolves with per-pipeline defaults filled", () => {
+    const resolved = resolveConfig(
+      minimalUserConfig({ pipelines: { intake: { order: ["research"] } } }),
+    );
+    expect(resolved.pipelines["intake"]).toEqual({
+      order: ["research"],
+      kinds: {},
+      concurrency: 1,
+      disabled: false,
+      priority: 0,
+    });
+  });
+
+  test("the work pipeline exists whether or not it is declared", () => {
+    expect(Object.keys(resolveConfig(minimalUserConfig()).pipelines)).toEqual(["work"]);
+  });
+
+  test("a pipeline name outside the kind-name charset is rejected", () => {
+    for (const name of ["in#take", "Intake", "1intake", "-intake"]) {
+      expect(() => validateUserConfig(minimalUserConfig({ pipelines: { [name]: {} } }))).toThrow(
+        /names illegal pipeline/,
+      );
+    }
+  });
+
+  test("a workspace root may not declare pipelines", () => {
+    expect(() =>
+      validateUserConfig({ workspace: { depth: 1 }, pipelines: { intake: {} } } as never),
+    ).toThrow(/declares `pipelines` on a workspace root/);
+  });
+
+  test("an unknown knob is a boot error, not an inert key", () => {
+    expect(() =>
+      validateUserConfig(minimalUserConfig({ pipelines: { work: { concurency: 2 } } } as never)),
+    ).toThrow(/names unknown knob "concurency"/);
+  });
+
+  test("the scalar knobs are type-checked", () => {
+    const reject = (pipeline: unknown, pattern: RegExp) =>
+      expect(() =>
+        validateUserConfig(minimalUserConfig({ pipelines: { work: pipeline } } as never)),
+      ).toThrow(pattern);
+    reject({ concurrency: 0 }, /concurrency must be a positive number/);
+    reject({ pollIntervalMs: "15000" }, /pollIntervalMs must be a positive number/);
+    reject({ priority: 1.5 }, /priority must be an integer/);
+    reject({ disabled: "yes" }, /disabled must be a boolean/);
+    reject({ order: "checks" }, /order must be an array of kind names/);
+  });
+
+  test("a pipeline's kinds block is validated under its own config path", () => {
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({ pipelines: { intake: { kinds: { bogus: {} } } } } as never),
+      ),
+    ).toThrow(/`pipelines.intake.kinds` names unknown work kind "bogus"/);
+  });
+});
+
+describe("deprecated pipeline aliases (#415)", () => {
+  test("workOrder and pipelines.work.order together is an error naming both", () => {
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({ workOrder: ["checks"], pipelines: { work: { order: ["checks"] } } }),
+      ),
+    ).toThrow(/declares both `workOrder` and `pipelines.work.order`/);
+  });
+
+  test("workKinds and pipelines.work.kinds together is an error naming both", () => {
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({ workKinds: { checks: {} }, pipelines: { work: { kinds: {} } } }),
+      ),
+    ).toThrow(/declares both `workKinds` and `pipelines.work.kinds`/);
+  });
+
+  test("promptFiles collides only on the key the kind block re-points", () => {
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({
+          promptFiles: { issue: "a.md" },
+          pipelines: { work: { kinds: { issues: { promptFile: "b.md" } } } },
+        }),
+      ),
+    ).toThrow(/declares both `promptFiles.issue` and `pipelines.work.kinds.issues.promptFile`/);
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({
+          promptFiles: { reviews: "a.md" },
+          pipelines: { work: { kinds: { issues: { promptFile: "b.md" } } } },
+        }),
+      ),
+    ).not.toThrow();
+  });
+
+  test("reports which superseded fields a config still uses", () => {
+    expect(deprecatedPipelineAliases(minimalUserConfig())).toEqual([]);
+    expect(
+      deprecatedPipelineAliases(
+        minimalUserConfig({ workOrder: ["checks"], promptFiles: { issue: "a.md" } }),
+      ),
+    ).toEqual(["workOrder", "promptFiles"]);
+  });
+});
+
+describe("work-kind tuning knobs widened by #415", () => {
+  test("promptFile, runTimeoutMs and disabled are accepted", () => {
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({
+          workKinds: { issues: { promptFile: "p/x.md", runTimeoutMs: 60_000, disabled: true } },
+        }),
+      ),
+    ).not.toThrow();
+  });
+
+  test("each is type-checked", () => {
+    const reject = (block: unknown, pattern: RegExp) =>
+      expect(() =>
+        validateUserConfig(minimalUserConfig({ workKinds: { issues: block } } as never)),
+      ).toThrow(pattern);
+    reject({ promptFile: "  " }, /promptFile` must be a path string/);
+    reject({ runTimeoutMs: -1 }, /runTimeoutMs` must be a positive number/);
+    reject({ disabled: "true" }, /disabled` must be a boolean/);
+  });
+});
+
+describe("the built-in kinds' default prompt paths (#419)", () => {
+  test("every kind has one, and it is what the deprecated promptFiles block defaults to", () => {
+    for (const [kind, key] of Object.entries(PROMPT_FILE_KEY_BY_KIND)) {
+      const fromKind =
+        DEFAULT_PROMPT_FILE_BY_KIND[kind as keyof typeof DEFAULT_PROMPT_FILE_BY_KIND];
+      expect(fromKind, `default prompt path for "${kind}"`).toBe(CONFIG_DEFAULTS.promptFiles[key]);
+    }
+    expect(Object.keys(DEFAULT_PROMPT_FILE_BY_KIND).sort()).toEqual(
+      Object.keys(PROMPT_FILE_KEY_BY_KIND).sort(),
+    );
+  });
+
+  test("a kind reads its path through the resolved config, migrated or not", () => {
+    const declared = resolveConfig(
+      minimalUserConfig({
+        pipelines: { work: { kinds: { issues: { promptFile: "p/mine.md" } } } },
+      }),
+    );
+    expect(declared.pipelines["work"]!.kinds["issues"]).toEqual({ promptFile: "p/mine.md" });
+    expect(resolveConfig(minimalUserConfig()).promptFiles.issue).toBe(
+      DEFAULT_PROMPT_FILE_BY_KIND.issues,
+    );
   });
 });
