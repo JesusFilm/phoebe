@@ -45,6 +45,14 @@ export type PipelineRow = {
   /** Whether this row's kinds want the tenant's git clone. */
   needsClone: boolean;
   /**
+   * The env keys this row's scheduled kinds declared (#425) — names only, never
+   * values. Read two ways: subtractively, so a key a *sibling* row declared and
+   * this one did not is taken out of this row's child env, and as the lens on
+   * the tenant's `.env` for this row's reconcile digest. Empty for a row that
+   * declares nothing, which is every row of every deployment today.
+   */
+  env: readonly string[];
+  /**
    * Opaque digest of the row's cold config; a move means relaunch this row.
    * Null for the implicit row of a checkout that cannot enumerate — the same
    * "unknown, never counts as a change" sentinel the tenant fingerprints use.
@@ -63,6 +71,7 @@ export const IMPLICIT_WORK_ROW: PipelineRow = Object.freeze({
   priority: 0,
   concurrency: 1,
   needsClone: true,
+  env: [],
   fingerprint: null,
 });
 
@@ -153,7 +162,7 @@ function parseRow(value: unknown): PipelineRow {
     throw new PipelineEnumerationError(`a row is not an object (got ${JSON.stringify(value)})`);
   }
   const row = value as Record<string, unknown>;
-  const { name, disabled, priority, concurrency, needsClone, fingerprint } = row;
+  const { name, disabled, priority, concurrency, needsClone, env, fingerprint } = row;
   if (
     typeof name !== "string" ||
     typeof disabled !== "boolean" ||
@@ -164,7 +173,21 @@ function parseRow(value: unknown): PipelineRow {
   ) {
     throw new PipelineEnumerationError(`malformed row ${JSON.stringify(value)}`);
   }
-  return { name, disabled, priority, concurrency, needsClone, fingerprint };
+  // `env` is additive (#425): an engine old enough to enumerate but too old to
+  // declare keys reports none, and no row loses anything. Present, it must be
+  // key names — a malformed one would scrub by accident.
+  if (env !== undefined && (!Array.isArray(env) || env.some((key) => typeof key !== "string"))) {
+    throw new PipelineEnumerationError(`row ${name} declared a malformed \`env\``);
+  }
+  return {
+    name,
+    disabled,
+    priority,
+    concurrency,
+    needsClone,
+    env: (env as string[] | undefined) ?? [],
+    fingerprint,
+  };
 }
 
 function parseRows(payload: unknown): PipelineRow[] {
@@ -277,7 +300,24 @@ export type SupervisedRow = {
    * spawned with a `--pipeline` flag it would die on before reading a config.
    */
   enumerated: boolean;
+  /**
+   * Every key this row's *siblings* declared — the union of `env` over the
+   * tenant's other rows (#425). The scrub is subtractive, so this minus the
+   * row's own `env` is exactly what the child does not get to see. A tenant
+   * with one row has an empty set here and an unchanged child env.
+   */
+  siblingEnv: readonly string[];
 };
+
+/**
+ * What the subtractive scrub takes out of one row's child env: the keys a
+ * sibling declared and this row did not. Sorted, so a fingerprint built over it
+ * is stable.
+ */
+export function siblingOnlyEnvKeys(row: SupervisedRow): string[] {
+  const own = new Set(row.pipeline.env);
+  return [...new Set(row.siblingEnv)].filter((key) => !own.has(key)).sort();
+}
 
 /** A row paired with the fingerprint that decides whether it relaunches. */
 export type RowSample = { row: SupervisedRow; fingerprint: string | null };

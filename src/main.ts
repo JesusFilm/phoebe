@@ -130,6 +130,12 @@ import type {
   WorkspaceHandle,
   WorkUnitGitHubTarget,
 } from "./work-kinds/definition.ts";
+import {
+  assertDeclaredEnvPresent,
+  declaredEnvKeys,
+  missingDeclaredEnv,
+  type DeclaringKind,
+} from "./work-kinds/declared-env.ts";
 import { buildRegistry, type WorkKindRegistry } from "./work-kinds/registry.ts";
 import {
   NONE_WORKABLE,
@@ -191,17 +197,19 @@ function gitInWorktree(
 /**
  * Run a configured toolchain command (a shell string) inside a worktree. The
  * worktree may sit at a PR branch head, so the env drops the engine's own
- * credentials — the branch's install hooks run as this child (see shell-env.ts).
+ * credentials and every key this row's kinds declared — the branch's install
+ * hooks run as this child (see shell-env.ts).
  */
 function runShellCommand(
   command: string,
   cwd: string,
   parentEnv: NodeJS.ProcessEnv,
   providerKeys: readonly string[],
+  declaredKeys: readonly string[],
 ): void {
   execSync(command, {
     cwd,
-    env: buildInstallCommandEnv(parentEnv, providerKeys),
+    env: buildInstallCommandEnv(parentEnv, providerKeys, declaredKeys),
     stdio: "inherit",
     timeout: SHELL_COMMAND_TIMEOUT_MS,
   });
@@ -212,11 +220,12 @@ function promptShell(
   cwd: string,
   parentEnv: NodeJS.ProcessEnv,
   providerKeys: readonly string[],
+  declaredKeys: readonly string[],
 ): (command: string) => string {
   return (command) =>
     execSync(command, {
       cwd,
-      env: buildPromptShellEnv(parentEnv, providerKeys),
+      env: buildPromptShellEnv(parentEnv, providerKeys, declaredKeys),
       encoding: "utf8",
       timeout: SHELL_COMMAND_TIMEOUT_MS,
     });
@@ -454,6 +463,41 @@ export function createEngine(options: EngineOptions): Engine {
     workOrder,
     (kind) => registeredKind(registry, kind).definition.workspace,
   );
+
+  /** The scheduled kinds paired with their definitions, for the declared-key rules. */
+  const scheduledKinds = (kinds: readonly string[] = workOrder): DeclaringKind[] =>
+    kinds.map((kind) => ({ name: kind, definition: registeredKind(registry, kind).definition }));
+
+  /**
+   * Every key this row's scheduled kinds declared (#425) — the row's `env`, as
+   * the enumerator reports it to the supervisor. The consumer toolchain never
+   * sees these: `installCommand` and prompt `!` expansions run with all of them
+   * stripped, and only the agent hop reopens, per kind, for `agentEnv`.
+   */
+  const rowDeclaredEnv = declaredEnvKeys(scheduledKinds());
+
+  /**
+   * The kinds this cycle may actually gather: the work order minus any kind
+   * whose declared key this row cannot read. Boot already refused that state
+   * fatally (`assertDeclaredEnvPresent`), so this is the *hot* arm — a kind
+   * switched on against a key nobody added stays off, loudly and once, and the
+   * row keeps working everything else.
+   */
+  const loggedMissingEnv = new Set<string>();
+  const schedulableKinds = (kinds: readonly string[]): readonly string[] => {
+    const missing = missingDeclaredEnv(scheduledKinds(kinds), env);
+    if (missing.length === 0) return kinds;
+    for (const { kind, key } of missing) {
+      if (loggedMissingEnv.has(`${kind}\0${key}`)) continue;
+      loggedMissingEnv.add(`${kind}\0${key}`);
+      console.error(
+        `[phoebe] Work kind "${kind}" declares ${key}, which this pipeline's env does not ` +
+          `hold — the kind stays off until the key is set. Every other kind keeps running.`,
+      );
+    }
+    const off = new Set(missing.map((m) => m.kind));
+    return kinds.filter((kind) => !off.has(kind));
+  };
 
   // --- Poison-unit quarantine write path (#75) ---------------------------------
   // The read/skip half ships in orchestrator.ts (it filters `phoebe:quarantined`
@@ -1008,12 +1052,17 @@ export function createEngine(options: EngineOptions): Engine {
     const prompt = renderPrompt(
       loadPromptTemplate(opts.promptFile),
       { ...buildDefaultPromptArgs(config), ...opts.promptArgs },
-      promptShell(opts.worktreeDir, env, Object.values(config.providerEnv)),
+      promptShell(opts.worktreeDir, env, Object.values(config.providerEnv), rowDeclaredEnv),
     );
     const agentEnv = buildAgentEnv({
       parentEnv: env,
       provider: provider.name,
       providerEnv: config.providerEnv,
+      // The running kind's own opening (#425) — its `agentEnv`, and no sibling
+      // kind's: the hole is per definition, not per row.
+      ...(opts.picked.definition.agentEnv !== undefined
+        ? { agentEnv: opts.picked.definition.agentEnv }
+        : {}),
     });
     // The deadline is held by the outer `runPickedUnit` (#359): the signal
     // already fires when the whole-unit budget expires, killing the child and
@@ -1121,7 +1170,13 @@ export function createEngine(options: EngineOptions): Engine {
 
     const worktreeDir = prepareWorktree({ branch });
     try {
-      runShellCommand(config.installCommand, worktreeDir, env, Object.values(config.providerEnv));
+      runShellCommand(
+        config.installCommand,
+        worktreeDir,
+        env,
+        Object.values(config.providerEnv),
+        rowDeclaredEnv,
+      );
       // Presence, not length: an empty list still primes the tree with the
       // base-branch merge (reproducing the conflict for the agent to solve).
       if (opts.primeBlockerMerges !== undefined) {
@@ -1244,7 +1299,13 @@ export function createEngine(options: EngineOptions): Engine {
     hub.fetch();
     const worktreeDir = prepareWorktree({ branch: agentBranch, baseRef: worktreeBase });
     try {
-      runShellCommand(config.installCommand, worktreeDir, env, Object.values(config.providerEnv));
+      runShellCommand(
+        config.installCommand,
+        worktreeDir,
+        env,
+        Object.values(config.providerEnv),
+        rowDeclaredEnv,
+      );
 
       await runAgentInWorktree({
         picked: opts.picked,
@@ -1960,7 +2021,9 @@ export function createEngine(options: EngineOptions): Engine {
         continue;
       }
 
-      const fetchKinds = runOnce ? oneShotWorkKinds(workOrder, registry) : workOrder;
+      const fetchKinds = schedulableKinds(
+        runOnce ? oneShotWorkKinds(workOrder, registry) : workOrder,
+      );
       const cycle = await workSource.gatherCycle(fetchKinds);
       const { units, skipped } = selectWorkUnits({
         registry,
@@ -2106,6 +2169,20 @@ export async function runEngine(
   // by the CLI, so the name is read back here only for the cadence — declared on
   // the row, which outranks `PHOEBE_POLL_INTERVAL_MS` — and for the log line.
   const pipeline = parsePipelineName(argv);
+  // And in the same posture, the declared keys (#425): a scheduled kind whose
+  // `requiredEnv` this row cannot read is a startup failure naming the kind and
+  // the key, not a unit that dies weeks later holding an empty string. The
+  // supervisor has already scrubbed this env, so "cannot read" here means what
+  // the kind would mean by it.
+  assertDeclaredEnvPresent({
+    repoSlug: config.repoSlug,
+    pipeline,
+    kinds: workOrder.map((kind) => ({
+      name: kind,
+      definition: registeredKind(registry, kind).definition,
+    })),
+    env: process.env,
+  });
   const row = pipelineRow(config, pipeline);
   const pollIntervalMs = resolvePollIntervalMs(row, process.env);
   const concurrency = row.concurrency;

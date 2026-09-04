@@ -90,3 +90,26 @@ describe("buildAgentEnv", () => {
     expect(env).not.toHaveProperty("PHOEBE_GH_LOGIN");
   });
 });
+
+describe("the per-kind agentEnv opening (#425)", () => {
+  test("a declared key reaches the agent only when the kind names it in agentEnv", () => {
+    const withToken = { ...parentEnv, SLACK_BOT_TOKEN: "xoxb-1" };
+    expect(
+      buildAgentEnv({ parentEnv: withToken, provider: "claude", providerEnv }),
+    ).not.toHaveProperty("SLACK_BOT_TOKEN");
+    expect(
+      buildAgentEnv({
+        parentEnv: withToken,
+        provider: "claude",
+        providerEnv,
+        agentEnv: ["SLACK_BOT_TOKEN"],
+      })["SLACK_BOT_TOKEN"],
+    ).toBe("xoxb-1");
+  });
+
+  test("an opened key the row's env does not hold stays absent", () => {
+    expect(
+      buildAgentEnv({ parentEnv, provider: "claude", providerEnv, agentEnv: ["SLACK_BOT_TOKEN"] }),
+    ).not.toHaveProperty("SLACK_BOT_TOKEN");
+  });
+});
