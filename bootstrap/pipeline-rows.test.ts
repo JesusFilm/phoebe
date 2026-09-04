@@ -18,9 +18,11 @@ import {
   diffRows,
   rowId,
   rowLabel,
+  siblingOnlyEnvKeys,
   type EngineCommand,
   type EngineCommandResult,
   type RowSample,
+  type SupervisedRow,
 } from "./pipeline-rows.ts";
 
 const PROBE_OK = `{"version":1,"supported":true}\n`;
@@ -259,9 +261,11 @@ describe("the row matrix vocabulary", () => {
           priority: 0,
           concurrency: 1,
           needsClone: true,
+          env: [],
           fingerprint,
         },
         enumerated: fingerprint !== null,
+        siblingEnv: [],
       },
       fingerprint,
     };
@@ -313,5 +317,81 @@ describe("the row matrix vocabulary", () => {
     const hold = new Set([rowId(tenant.id, "intake")]);
     expect(diffRows(previous, [], hold).removed).toEqual([]);
     expect(diffRows(previous, []).removed).toEqual([rowId(tenant.id, "intake")]);
+  });
+});
+
+describe("a row's declared `env` (#425)", () => {
+  const withEnv = (env: unknown): string =>
+    `${JSON.stringify({
+      version: 1,
+      rows: [
+        {
+          name: "work",
+          disabled: false,
+          priority: 0,
+          concurrency: 1,
+          needsClone: true,
+          fingerprint: "fp-work",
+        },
+        {
+          name: "intake",
+          disabled: false,
+          priority: 0,
+          concurrency: 1,
+          needsClone: true,
+          env,
+          fingerprint: "fp-intake",
+        },
+      ],
+    })}\n`;
+
+  const rowsOf = (stdout: string) =>
+    createRowEnumerator({ entry: "/engine/src/cli.ts", run: engineReturning(stdout).run }).rowsFor({
+      configPath: "/t/phoebe.config.ts",
+      fingerprint: "a",
+    });
+
+  test("an engine too old to declare keys leaves every row with none", () => {
+    expect(rowsOf(rowsJson("work", "intake")).map((row) => row.env)).toEqual([[], []]);
+  });
+
+  test("declared keys come back as names", () => {
+    expect(rowsOf(withEnv(["SLACK_BOT_TOKEN"]))[1]?.env).toEqual(["SLACK_BOT_TOKEN"]);
+  });
+
+  test("a malformed `env` is a tenant fault, not a silent empty scrub", () => {
+    expect(() => rowsOf(withEnv("SLACK_BOT_TOKEN"))).toThrow(PipelineEnumerationError);
+  });
+});
+
+describe("siblingOnlyEnvKeys", () => {
+  const rowWith = (own: string[], siblings: string[]): SupervisedRow => ({
+    id: `/t#intake`,
+    tenant: {
+      id: "/t",
+      slug: "acme/widget",
+      dir: "/t",
+      configPath: "/t/phoebe.config.ts",
+      envPath: "/t/.env",
+      gitIdentity: null,
+    },
+    pipeline: { ...IMPLICIT_WORK_ROW, name: "intake", env: own },
+    enumerated: true,
+    siblingEnv: siblings,
+  });
+
+  test("is what a sibling declared and this row did not", () => {
+    expect(siblingOnlyEnvKeys(rowWith([], ["SLACK_BOT_TOKEN", "LINEAR_KEY"]))).toEqual([
+      "LINEAR_KEY",
+      "SLACK_BOT_TOKEN",
+    ]);
+  });
+
+  test("a key this row declares too is not taken away", () => {
+    expect(siblingOnlyEnvKeys(rowWith(["SLACK_BOT_TOKEN"], ["SLACK_BOT_TOKEN"]))).toEqual([]);
+  });
+
+  test("a tenant with one row scrubs nothing", () => {
+    expect(siblingOnlyEnvKeys(rowWith(["SLACK_BOT_TOKEN"], []))).toEqual([]);
   });
 });
