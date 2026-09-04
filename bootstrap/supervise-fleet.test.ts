@@ -1078,6 +1078,11 @@ function matrixHarness(
     ) => string | null;
     /** How the checkout's stale-state sweeper (#426) behaves, if it has one. */
     sweep?: "ok" | "fail" | "absent";
+    /**
+     * Spawn children only the test settles, under a grace that never expires, so
+     * a drain can be observed while it is still in flight.
+     */
+    scripted?: boolean;
   } = {},
 ) {
   const clock = gatedClock();
@@ -1145,8 +1150,9 @@ function matrixHarness(
           }),
     }),
     discover: () => samples,
+    ...(options.scripted ? { drainTimer: patientDrainTimer } : {}),
     spawn: (pipeline) => {
-      const fake = fakeChild();
+      const fake = options.scripted ? scriptedChild() : fakeChild();
       events.push(`spawn:${pipeline.pipeline.name}`);
       spawned.push({ pipeline, fake });
       return fake.child;
@@ -1605,6 +1611,35 @@ describe("superviseFleet — the stale-state sweep's triggers", () => {
       "spawn:work",
     ]);
     expect(h.sweeps.map((s) => s.trigger)).toEqual(["boot", "pipeline-change"]);
+  });
+
+  test("the pipelines a poll takes down drain together, not one grace after another (#459)", async () => {
+    const h = matrixHarness({ pipelines: TWO_PIPELINES, scripted: true });
+    await settle();
+    const work = h.named("work")[0]!;
+    const intake = h.named("intake")[0]!;
+
+    // Both pipelines vanish and a third arrives in one edit. Neither outgoing
+    // child exits on SIGTERM, so the poll is parked mid-drain.
+    h.setPipelines({ [WIDGET]: [declaredPipeline("api", "a1")] });
+    h.setSamples([sample("acme/widget", "fp2")]);
+    h.tick();
+    await settle();
+
+    // Drained one at a time, intake would still be running here, untouched until
+    // work's hour-long grace ran out.
+    expect(work.fake.kills).toEqual(["SIGTERM"]);
+    expect(intake.fake.kills).toEqual(["SIGTERM"]);
+    // And the join still holds everything behind it.
+    expect(h.sweeps.map((s) => s.trigger)).toEqual(["boot"]);
+    expect(h.named("api")).toHaveLength(0);
+
+    work.fake.exit();
+    intake.fake.exit();
+    await settle();
+
+    expect(h.sweeps.map((s) => s.trigger)).toEqual(["boot", "pipeline-change"]);
+    expect(h.named("api")).toHaveLength(1);
   });
 
   test("a pipeline that only appeared orphans nothing, so nothing is swept for it", async () => {
