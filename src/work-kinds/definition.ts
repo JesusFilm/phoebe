@@ -359,6 +359,31 @@ export type WorkKindDefinition<G = unknown, U extends WorkUnitShape = WorkUnitSh
   /** Which workspace the engine prepares for `run` (see {@link WorkspaceHandle}). */
   workspace: WorkspaceMode;
   /**
+   * The env keys this kind's own code reads out of `ctx.env` (#410). Declaring
+   * them is what earns them: the supervisor takes every key a *sibling* row
+   * declared and this one did not out of this row's child env, so an intake
+   * kind's Slack token never reaches the work row. Undeclared keys are
+   * untouched and flow as they always have.
+   *
+   * Boot-checked for presence and non-blankness across the kinds the row
+   * schedules, and stripped from the install-command and prompt-shell envs
+   * unconditionally — a toolchain command the consumer owns has no business
+   * with a credential a kind declared for itself.
+   *
+   * Reserved keys cannot be declared: `GH_TOKEN`, `PHOEBE_GH_LOGIN`, the git
+   * identity variables, anything `PHOEBE_*` or `GH_APP_*`, and any `providerEnv`
+   * value (see work-kinds/declared-env.ts).
+   */
+  requiredEnv?: readonly string[];
+  /**
+   * The subset of `requiredEnv` this kind's *agent children* may also see — the
+   * one kind-scoped hole in the otherwise fixed agent allowlist
+   * (src/agent-env.ts). Empty by default, because a prompt-injected agent that
+   * can read a token can exfiltrate it: a kind opts in per key, and only for
+   * keys it already reads.
+   */
+  agentEnv?: readonly string[];
+  /**
    * Definition-level agent defaults, sitting at the repo-defaults rung of the
    * resolution ladder: per-kind env → `workKinds` block → global env → these →
    * repo defaults.

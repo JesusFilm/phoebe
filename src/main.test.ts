@@ -1724,6 +1724,37 @@ describe("a custom kind in the walk", () => {
     );
   });
 
+  test("a kind whose declared key the row cannot read stays off, and the cycle goes on", async () => {
+    const declaring = nudgeKind({ workable: true });
+    declaring.definition.requiredEnv = ["SLACK_BOT_TOKEN"];
+
+    const result = await runCycle({
+      config: { workOrder: ["nudge"] },
+      customKinds: [declaring],
+      env: {},
+      github: { ...prWorld([{ number: 44, issueNumber: 4 }]) },
+    });
+
+    expect(selection(result)).toBeUndefined();
+    expect(result.lines.join("\n")).toContain(
+      'Work kind "nudge" declares SLACK_BOT_TOKEN, which this pipeline\'s env does not hold',
+    );
+  });
+
+  test("the same kind works its unit once the key is set", async () => {
+    const declaring = nudgeKind({ workable: true });
+    declaring.definition.requiredEnv = ["SLACK_BOT_TOKEN"];
+
+    const result = await runCycle({
+      config: { workOrder: ["nudge"] },
+      customKinds: [declaring],
+      env: { SLACK_BOT_TOKEN: "xoxb-1" },
+      github: { ...prWorld([{ number: 44, issueNumber: 4 }]) },
+    });
+
+    expect(selection(result)).toBe("[phoebe] Would execute: stale-PR nudge for PR #44.");
+  });
+
   test("workOrder rejects a kind nobody registered", async () => {
     await expect(runCycle({ config: { workOrder: ["nudge"] }, github: {} })).rejects.toThrow(
       /Unknown work kind "nudge"/,

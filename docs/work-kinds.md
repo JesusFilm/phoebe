@@ -368,6 +368,8 @@ export default {
   oneShotEligible: false,       // may a unit run under --run-once?
   promptFile: "prompts/my-kind-prompt.md",
   workspace: "worktree",        // or "scratch" / "readonly" — modes below
+  requiredEnv: ["SLACK_BOT_TOKEN"],  // env keys this kind's code reads
+  agentEnv: ["SLACK_BOT_TOKEN"],     // the subset its agent children may see
   model: "…", effort: "…",      // optional agent defaults (see tuning below)
   report: {
     noun: "…(s)",               // idle-report noun
@@ -532,18 +534,58 @@ one-line name used in logs and `--dry-run` output.
 - **Editing a kind module requires a restart**: the reconcile watch fingerprints
   the config file only, so it does not see kind-module edits.
 
+### Declared keys: `requiredEnv` and `agentEnv`
+
+A kind that reads a credential out of `ctx.env` says which one. `requiredEnv`
+names the keys the kind's own code reads; `agentEnv`, empty unless you set it,
+is the subset its agent children also see. The values still live in the
+tenant's one `.env` — there is no per-pipeline secret file and no per-pipeline
+config field.
+
+Declaring a key buys three things:
+
+- **A boot check.** Every key a scheduled kind declares must be present and
+  non-blank when the pipeline's engine child starts. A missing one fails the
+  boot naming the kind and the key, the way a missing prompt file does. Only
+  that row dies; its siblings boot. A kind you switch on later against a key
+  nobody added stays off with a logged error instead of taking the row down.
+- **Scope.** The supervisor takes every key a _sibling_ row declared and this
+  one did not out of this row's child env. An intake pipeline's Slack token
+  never reaches the work pipeline's child, and a key nobody declares reaches
+  every row exactly as before. `phoebe doctor` reports a scheduled kind whose
+  declared key is missing as a tenant finding.
+- **A narrower relaunch.** The `.env` reconcile digest is computed per row over
+  the keys that row would actually hold, so rotating the Slack token relaunches
+  the intake row alone. Rotating an undeclared key still relaunches every row
+  of the tenant.
+
+Declared keys are stripped from `installCommand`'s env and from prompt `!`
+expansions, always — a consumer's install script has no business with a
+credential a kind asked for, and until this landed every `.env` value reached
+the target repo's install hooks. The agent hop is the one place that reopens,
+per kind, for `agentEnv` only, because that is where a credential meets a
+prompt.
+
+Some keys cannot be declared at all: `GH_TOKEN`, `PHOEBE_GH_LOGIN`, the four
+git identity variables, anything under `PHOEBE_*` or `GH_APP_*`, and any value
+of `providerEnv`. The engine mints, leases or sets those, and letting a
+declaration move them would let one kind take the token away from a sibling
+row. Naming one is a validation error, as is an `agentEnv` key your
+`requiredEnv` does not list.
+
 ### The edges are edges
 
-Three capabilities are still deliberately absent, each a named extension point
+Two capabilities are still deliberately absent, each a named extension point
 with a designed attachment — not an oversight. The design record is
 [`docs/research/slack-responder-sketch.md`](research/slack-responder-sketch.md):
-kind-declared credentials (`requiredEnv` punching kind-scoped holes in the
-agent env allowlist), non-GitHub work sources (already possible by construction
-— your fetch may call anything reachable; ctx owes it no HTTP convenience), and
-a kind-extended agent tool surface (kind-declared MCP servers).
+non-GitHub work sources (already possible by construction — your fetch may call
+anything reachable; ctx owes it no HTTP convenience) and a kind-extended agent
+tool surface (kind-declared MCP servers).
 
-A fourth has landed, in both halves. `"scratch"` is the sketch's
-plain-directory mode, shipped under a name that admits there is still a
-directory. `"readonly"` is the worktree half, and the don't-push contract turned
-out to be a detached checkout plus a warning rather than a promise or a guard.
-See [The don't-push contract](#the-dont-push-contract).
+Two have landed. Kind-declared credentials arrived as `requiredEnv` and
+`agentEnv` above, with the sketch's kind-scoped hole in the agent allowlist
+opt-in per key. And the workspace modes arrived in both halves: `"scratch"` is
+the sketch's plain-directory mode, shipped under a name that admits there is
+still a directory, and `"readonly"` is the worktree half, where the don't-push
+contract turned out to be a detached checkout plus a warning rather than a
+promise or a guard. See [The don't-push contract](#the-dont-push-contract).

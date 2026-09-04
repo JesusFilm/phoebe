@@ -4,6 +4,7 @@
 // custom invariant mechanically. `at` carries the error voice: config-path for
 // custom kinds (`workKinds.custom.<name>`), the built-in's name otherwise.
 
+import { validateDeclaredEnv } from "./declared-env.ts";
 import type { AnyWorkKindDefinition, WorkspaceMode } from "./definition.ts";
 
 // Typed against the union so the runtime check and the compile-time mode can
@@ -18,7 +19,17 @@ function fail(at: string, problem: string): never {
   throw new Error(`${at}: ${problem}`);
 }
 
-export function validateWorkKindDefinition(candidate: unknown, at: string): AnyWorkKindDefinition {
+export function validateWorkKindDefinition(
+  candidate: unknown,
+  at: string,
+  /**
+   * The tenant's `providerEnv` values, which the declared-key check treats as
+   * reserved (#425). Passed by registry assembly, which is the only caller that
+   * knows the resolved config; defaulting to none keeps the rest of the
+   * validation callable without one.
+   */
+  providerKeys: readonly string[] = [],
+): AnyWorkKindDefinition {
   if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) {
     fail(at, `a work-kind definition must be an object (got ${JSON.stringify(candidate)}).`);
   }
@@ -67,5 +78,10 @@ export function validateWorkKindDefinition(candidate: unknown, at: string): AnyW
     }
   }
 
-  return candidate as AnyWorkKindDefinition;
+  const definition = candidate as AnyWorkKindDefinition;
+  // Last, so the shape checks above have already run: the declared-key rules
+  // (reserved names, `agentEnv ⊆ requiredEnv`) live in declared-env.ts, which
+  // owns the vocabulary and raises in the same `at`-prefixed voice.
+  validateDeclaredEnv(definition, at, providerKeys);
+  return definition;
 }

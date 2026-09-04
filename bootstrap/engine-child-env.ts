@@ -20,6 +20,13 @@
 // Solo single-tenant mode does NOT use this: one tenant is one trust domain
 // (the whole container), Docker injects exactly that tenant's secrets, and the
 // child inherits the supervisor env as it does today.
+//
+// One axis is finer than the tenant, and only one: the subtractive row scrub
+// (#425). A tenant that runs several rows still has one `.env`, but a key a
+// kind declared belongs to the row scheduling that kind — so a row loses every
+// key its siblings declared and it did not. Undeclared keys are nobody's in
+// particular and reach every row, as they always have. Solo applies the same
+// subtraction to the env it inherits.
 
 import { createHash } from "node:crypto";
 
@@ -115,11 +122,21 @@ export function parseDotenv(contents: string): Record<string, string> {
  *
  * Digests the *parsed* env (sorted keys), not the bytes, so reordering lines or
  * editing comments is as invisible to reconcile as it is to the child.
+ *
+ * `hidden` narrows it to what one row would actually hold: pass the keys the
+ * subtractive scrub removes for that row and the digest stops moving for
+ * rotations that row cannot see. Empty — the tenant-wide reading — is every
+ * key, which is what the tenant fingerprint wants.
  */
-export function envReconcileDigest(contents: string): string {
+export function envReconcileDigest(contents: string, hidden: readonly string[] = []): string {
   const parsed = parseDotenv(contents);
   const hasToken = isSet(parsed["GH_TOKEN"]);
   delete parsed["GH_TOKEN"];
+  // The per-row reading (#425): a row's child env never holds a key a sibling
+  // declared and it did not, so a rotation of that key is nothing this row
+  // could act on — counting it would drain and respawn a child to hand it an
+  // env byte-for-byte identical to the one it already has.
+  for (const key of hidden) delete parsed[key];
   const hash = createHash("sha256");
   hash.update(hasToken ? "token" : "no-token");
   hash.update("\0");
@@ -161,6 +178,7 @@ export const MINTED_ENV_ALLOWED_KEYS: ReadonlySet<keyof MintedCredentials> = new
  *   2. mintedEnv  (GH_TOKEN, PHOEBE_GH_LOGIN, git identity from App minting)
  *   3. configIdentity  (the tenant config's `gitIdentity`, #199)
  *   4. tenantEnv  (tenant's parsed .env — always wins every collision)
+ *   5. scrubKeys  (subtracted: keys a sibling row declared and this one did not)
  */
 export function buildEngineChildEnv(opts: {
   base: Record<string, string | undefined>;
@@ -179,8 +197,16 @@ export function buildEngineChildEnv(opts: {
    * child env is byte-for-byte what it was before the field existed.
    */
   configIdentity?: GitIdentity | null;
+  /**
+   * The subtractive row scrub (#425): keys a *sibling* row of this tenant
+   * declared and this row did not. Removed last, after every overlay, so it
+   * catches the key wherever it entered — the tenant's `.env`, most of the
+   * time. Empty (the default) leaves the child env exactly as it was before
+   * rows could declare anything.
+   */
+  scrubKeys?: readonly string[];
 }): Record<string, string> {
-  const { base, tenantEnv, mintedEnv, configIdentity } = opts;
+  const { base, tenantEnv, mintedEnv, configIdentity, scrubKeys = [] } = opts;
   const env: Record<string, string> = {};
   for (const key of [...ENGINE_CHILD_BASE_KEYS, ...ENGINE_CHILD_DEPLOYMENT_KNOBS]) {
     const value = base[key];
@@ -207,5 +233,9 @@ export function buildEngineChildEnv(opts: {
   for (const [key, value] of Object.entries(tenantEnv)) {
     if (value !== "") env[key] = value;
   }
+  // Then the row scrub, which is a subtraction and therefore has to come after
+  // everything that could add. Reserved keys can never be declared, so nothing
+  // here can take away the token, the bot login or the git identity.
+  for (const key of scrubKeys) delete env[key];
   return env;
 }
