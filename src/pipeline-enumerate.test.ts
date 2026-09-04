@@ -1,0 +1,231 @@
+// Row enumeration (#417): the answer the bootstrapper gets when it asks a
+// materialized engine checkout which rows a tenant declares. The cases that
+// matter are the fingerprint's two halves — what must move it (a cadence edit,
+// a kind gained) and what must never (the hot `disabled` and `priority` knobs
+// at any depth) — plus the paths where enumeration is the first thing to fail:
+// a kind two rows both claim, and a custom kind module that will not load.
+
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, test } from "vite-plus/test";
+import { resolveConfig, type PhoebeUserConfig } from "./config-schema.ts";
+import { enumeratePipelineRows, parsePipelinesArgs } from "./pipeline-enumerate.ts";
+
+function userConfig(overrides: Partial<PhoebeUserConfig> = {}): PhoebeUserConfig {
+  return {
+    repoSlug: "acme/widget",
+    repoUrl: "https://github.com/acme/widget.git",
+    installCommand: "npm ci",
+    checkCommand: "npm run check",
+    testCommand: "npm test",
+    ...overrides,
+  };
+}
+
+/** Enumerate a user config the way the subcommand does, minus the file I/O. */
+async function enumerate(overrides: Partial<PhoebeUserConfig> = {}, configDir = process.cwd()) {
+  return await enumeratePipelineRows(
+    resolveConfig(userConfig(overrides), { dataBase: "/tmp/phoebe-test" }),
+    configDir,
+  );
+}
+
+/** A kind module on disk, as a tenant declares it: `custom: { nudge: "./nudge.ts" }`. */
+function kindModule(source: string): { dir: string; path: string } {
+  const dir = mkdtempSync(join(tmpdir(), "phoebe-enumerate-"));
+  const path = join(dir, "nudge.ts");
+  writeFileSync(path, source);
+  return { dir, path };
+}
+
+const SCRATCH_KIND_SOURCE = `export default {
+  name: "nudge",
+  oneShotEligible: true,
+  promptFile: "prompts/custom.md",
+  workspace: "scratch",
+  report: { noun: "nudge(s)", describe: (unit) => unit.ref },
+  fetch: () => Promise.resolve([]),
+  select: () => ({ unit: null, skipped: [], total: 0 }),
+  run: () => Promise.resolve(),
+};
+`;
+
+describe("enumeratePipelineRows", () => {
+  test("a config with no pipelines block enumerates one work row", async () => {
+    const rows = await enumerate();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      name: "work",
+      disabled: false,
+      priority: 0,
+      concurrency: 1,
+      needsClone: true,
+    });
+    expect(rows[0]?.fingerprint).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  test("two declared rows enumerate with distinct fingerprints", async () => {
+    const rows = await enumerate({
+      pipelines: {
+        work: { order: ["conflicts", "checks"] },
+        intake: { pollIntervalMs: 15_000 },
+      },
+    });
+    expect(rows.map((row) => row.name)).toEqual(["work", "intake"]);
+    expect(rows[0]?.fingerprint).not.toBe(rows[1]?.fingerprint);
+  });
+
+  test("the hot knobs never move a fingerprint, at the row or its kinds", async () => {
+    const pipelines = {
+      work: { order: ["conflicts"] },
+      intake: { pollIntervalMs: 15_000, kinds: { checks: { model: "sonnet" } } },
+    };
+    const before = await enumerate({ pipelines });
+    const after = await enumerate({
+      pipelines: {
+        ...pipelines,
+        intake: {
+          ...pipelines.intake,
+          disabled: true,
+          priority: 5,
+          kinds: { checks: { model: "sonnet", disabled: true } },
+        },
+      },
+    });
+    expect(after.map((row) => row.fingerprint)).toEqual(before.map((row) => row.fingerprint));
+    // The knobs still arrive — hot means "act without relaunching", not "hide".
+    expect(after[1]).toMatchObject({ name: "intake", disabled: true, priority: 5 });
+  });
+
+  test("a cold knob moves only its own row's fingerprint", async () => {
+    const before = await enumerate({
+      pipelines: { work: { order: ["conflicts"] }, intake: { pollIntervalMs: 15_000 } },
+    });
+    const after = await enumerate({
+      pipelines: { work: { order: ["conflicts"] }, intake: { pollIntervalMs: 30_000 } },
+    });
+    expect(after[0]?.fingerprint).toBe(before[0]?.fingerprint);
+    expect(after[1]?.fingerprint).not.toBe(before[1]?.fingerprint);
+  });
+
+  test("two rows tuned identically still differ, because the name is in the digest", async () => {
+    const rows = await enumerate({
+      pipelines: { work: { concurrency: 2 }, intake: { concurrency: 2 } },
+    });
+    expect(rows[0]?.fingerprint).not.toBe(rows[1]?.fingerprint);
+  });
+
+  test("an edited inline kind moves the fingerprint of the row that declares it", async () => {
+    const inline = (run: () => Promise<void>) => ({
+      pipelines: {
+        intake: {
+          kinds: {
+            custom: {
+              nudge: {
+                name: "nudge",
+                oneShotEligible: true,
+                promptFile: "prompts/custom.md",
+                workspace: "scratch" as const,
+                report: { noun: "nudge(s)", describe: (unit: { ref: string }) => unit.ref },
+                fetch: () => Promise.resolve([]),
+                select: () => ({ unit: null, skipped: [], total: 0 }),
+                run,
+              },
+            },
+          },
+        },
+      },
+    });
+    const before = await enumerate(inline(() => Promise.resolve()));
+    const after = await enumerate(
+      inline(async () => {
+        await Promise.resolve("an edited body");
+      }),
+    );
+    expect(after[1]?.fingerprint).not.toBe(before[1]?.fingerprint);
+  });
+
+  test("a row whose kinds all want the repo needs a clone", async () => {
+    const rows = await enumerate({ pipelines: { work: {}, intake: { order: [] } } });
+    expect(rows[0]?.needsClone).toBe(true);
+  });
+
+  test("a row owning only a scratch kind needs no clone", async () => {
+    const { dir } = kindModule(SCRATCH_KIND_SOURCE);
+    const rows = await enumerate(
+      {
+        pipelines: {
+          work: { order: ["conflicts", "checks", "reviews", "issues", "research"] },
+          intake: { kinds: { custom: { nudge: "./nudge.ts" } } },
+        },
+      },
+      dir,
+    );
+    expect(rows[1]).toMatchObject({ name: "intake", needsClone: false });
+  });
+
+  test("a disabled worktree kind still keeps its row's clone", async () => {
+    const { dir } = kindModule(SCRATCH_KIND_SOURCE);
+    const rows = await enumerate(
+      {
+        pipelines: {
+          work: { order: ["conflicts", "reviews", "issues", "research"] },
+          intake: {
+            order: ["checks"],
+            kinds: { checks: { disabled: true }, custom: { nudge: "./nudge.ts" } },
+          },
+        },
+      },
+      dir,
+    );
+    expect(rows[1]).toMatchObject({ name: "intake", needsClone: true });
+  });
+
+  test("a kind module that throws on load surfaces as an enumerate failure", async () => {
+    const { dir } = kindModule(`throw new Error("prompts/nudge.md is missing");\n`);
+    await expect(
+      enumerate({ pipelines: { intake: { kinds: { custom: { nudge: "./nudge.ts" } } } } }, dir),
+    ).rejects.toThrow(/prompts\/nudge.md is missing/);
+  });
+});
+
+describe("the tenant faults enumeration reports", () => {
+  test("a kind claimed by two pipelines is fatal before any row is enumerated", () => {
+    expect(() =>
+      resolveConfig(
+        userConfig({
+          pipelines: { work: { order: ["checks"] }, intake: { order: ["checks"] } },
+        }),
+        { dataBase: "/tmp/phoebe-test" },
+      ),
+    ).toThrow(/claimed by both `pipelines.work` and `pipelines.intake`/);
+  });
+});
+
+describe("parsePipelinesArgs", () => {
+  test("reads both --config spellings", () => {
+    expect(parsePipelinesArgs(["--config", "/t/phoebe.config.ts"]).configPath).toBe(
+      "/t/phoebe.config.ts",
+    );
+    expect(parsePipelinesArgs(["--config=/t/phoebe.config.ts"]).configPath).toBe(
+      "/t/phoebe.config.ts",
+    );
+    expect(parsePipelinesArgs(["-c", "/t/phoebe.config.ts"]).configPath).toBe(
+      "/t/phoebe.config.ts",
+    );
+  });
+
+  test("--probe asks about the engine and wants no config", () => {
+    expect(parsePipelinesArgs(["--probe"])).toEqual({
+      configPath: undefined,
+      probe: true,
+      help: false,
+    });
+  });
+
+  test("an unknown argument is rejected rather than ignored", () => {
+    expect(() => parsePipelinesArgs(["--pipeline", "intake"])).toThrow(/Unknown argument/);
+    expect(() => parsePipelinesArgs(["--config"])).toThrow(/requires a path argument/);
+  });
+});

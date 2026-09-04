@@ -177,6 +177,41 @@ first boot straight onto a broken ref exits and lets the container's restart
 policy make the failure visible. See
 [`configuration.md`](configuration.md#crash-loop-fallback).
 
+### Asking the engine which rows a tenant has
+
+A tenant declares its [pipelines](configuration.md#pipelines) in its own config,
+and the supervisor will run one engine child per row. It learns those rows by
+asking the materialized checkout — `<engine entry> pipelines --config <tenant
+config>` prints one JSON object per tenant, a row at a time: name, the hot
+`disabled` and `priority` knobs, `concurrency`, whether the row's kinds want the
+tenant's git clone, and an opaque per-row fingerprint. Reading the `pipelines`
+block in the bootstrapper instead would pin what a supervisor understands to the
+installed launcher version, so every new pipeline knob would need an npm release
+before any deployment could use it — the thing the engine-source design exists to
+avoid.
+
+The fingerprint is the row's own cold config, hashed, with `disabled` and
+`priority` stripped at every nesting level. Those two are hot: the supervisor
+acts on a change to either without relaunching the row, so a digest that moved
+with them would relaunch it anyway. This is the one place in the system where a
+fingerprint knows what a field means.
+
+Two separate questions, because confusing them would spawn a `work` row against a
+config already known to be bad. **Capability** belongs to the engine: boot probes
+the checkout once per materialization (`pipelines --probe`), and a checkout
+without the subcommand means every tenant runs one implicit `work` row and no
+enumeration ever runs — byte for byte what a deployment did before pipelines
+existed. **Validity** belongs to the tenant: an enumeration that fails is that
+tenant's fault, never the fleet's. A custom kind module loads during enumeration,
+so a factory kind that checks its own prompt files and throws fails here, which
+is the right severity and the right moment.
+
+Enumeration spawns a Node process, so it runs only when the tenant config's stat
+fingerprint moves — the same cheap trigger the engine-source confirm uses. Steady
+state stays stat-only. An engine upgrade re-enumerates every tenant rather than
+reusing the pre-upgrade row set: the enumerator itself just changed version, so
+the same config may legitimately report different rows.
+
 ## One cycle, end to end
 
 Every step below is one walk over the **work-kind registry** — the built-in
