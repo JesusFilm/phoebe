@@ -128,7 +128,7 @@ describe("createSlotBroker", () => {
     expect(broker.inUse).toBe(1);
   });
 
-  test("re-request after release goes to the back of the queue (round-robin)", async () => {
+  test("re-request after release goes to the back of the queue", async () => {
     const broker = capped(1);
     await broker.acquire("A"); // A holds the only slot
     const b = tracked(broker.acquire("B"));
@@ -356,7 +356,7 @@ describe("waiter ordering", () => {
     expect(one.granted()).toBe(false);
   });
 
-  test("cross-tenant order is round-robin, whatever a tenant declares", async () => {
+  test("cross-tenant order is the queue's own, whatever a tenant declares", async () => {
     const broker = createSlotBroker({ capacity: 1, floorBudget: 0 });
     // B declares priority 9 — tenant-local, so it buys nothing against A.
     broker.setPipelines([pipeline("holder#work"), pipeline("a#work"), pipeline("b#work", 1, 9)]);
@@ -369,6 +369,43 @@ describe("waiter ordering", () => {
     await tick();
     expect(a.granted()).toBe(true);
     expect(b.granted()).toBe(false);
+  });
+
+  test("a tenant holding the two oldest waiters is served for both", async () => {
+    const broker = createSlotBroker({ capacity: 1, floorBudget: 0 });
+    broker.setPipelines([pipeline("holder#work"), pipeline("a#work", 2), pipeline("b#work")]);
+    await broker.acquire("holder#work");
+    // Rolling top-up: one pipeline queues two units in a single pass, ahead of B.
+    const first = tracked(broker.acquire("a#work"));
+    const second = tracked(broker.acquire("a#work"));
+    const b = tracked(broker.acquire("b#work"));
+    await tick();
+
+    broker.release("holder#work");
+    await tick();
+    expect([first.granted(), second.granted(), b.granted()]).toEqual([true, false, false]);
+
+    // Nothing rotates: A's second waiter asked before B, so it takes the slot.
+    broker.release("a#work");
+    await tick();
+    expect([second.granted(), b.granted()]).toEqual([true, false]);
+
+    broker.release("a#work");
+    await tick();
+    expect(b.granted()).toBe(true);
+  });
+
+  test("the floor, not the order, moves a tenant queued behind another's waiters", async () => {
+    const broker = createSlotBroker({ capacity: 1, floorBudget: 1 });
+    broker.setPipelines([pipeline("a#work", 2), pipeline("b#work")]);
+    await broker.acquire("a#work"); // A holds the cap's only slot
+    const second = tracked(broker.acquire("a#work")); // and queues a second unit
+    const b = tracked(broker.acquire("b#work")); // B asks last, behind that waiter
+    await tick();
+
+    // B holds no slot at all, so the floor grants it one over the cap. A's own
+    // second waiter is not starved, and waits for the cap to free.
+    expect([second.granted(), b.granted()]).toEqual([false, true]);
   });
 
   test("the floor budget is allocated by the same ordering", async () => {

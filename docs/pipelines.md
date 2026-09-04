@@ -200,12 +200,17 @@ regular one, and nothing is handed on while the cap is breached, so the breach
 never rolls forward. Set the budget to 0 for a hard ceiling, and accept what that
 costs a starved pipeline.
 
-The other shape is a pipeline that is served but always last. Tenants take turns, and
-`priority` orders one tenant's pipelines against each other, higher first, ties in the
-order they asked. Turns are taken per **pipeline**, not per tenant, so declaring three
-pipelines is declaring three independent streams and they queue as three. Starving
-a low-priority pipeline for as long as something higher is contending is what the knob is
-for.
+The other shape is a pipeline that is served but always last. The queue is served
+**oldest waiter first** — the tenant whose waiter has been queued longest goes next,
+and `priority` orders that tenant's pipelines against each other, higher first, ties in
+the order they asked. Turns are taken per **pipeline**, not per tenant, so declaring three
+pipelines is declaring three independent streams and they queue as three. Nothing
+rotates on top of that: a pipeline admitting several units at once queues several
+waiters, and it is served for all of them before a tenant that asked later. Asking
+early is the only thing that buys a place, since `priority` never reaches past its own
+tenant, and what keeps the pipeline at the back of a long queue moving is the slot
+floor above, which is blind to how long the queue is. Starving a low-priority pipeline
+for as long as something higher is contending is what the knob is for.
 
 An intake pipeline takes slots in the same currency as everything else. There is no
 exemption for short work, and asking for one would mean the broker could not bound
