@@ -53,7 +53,11 @@ workspace-root/                         # bind-mounted :ro → /etc/phoebe
 | **Child (tenant)** | each linked repo       | In-tree `phoebe.config.ts` + gitignored `.env` (+ optional `prompts/`); **no** `container/`                          |
 | **Private clone**  | container volumes      | `/data/repos/<owner>/<repo>/`. Each tenant still clones privately, and the host checkout is **not** the working copy |
 
-**One supervised engine child per tenant.** The bootstrapper discovers children
+**One supervised engine child per `(tenant × pipeline)` row.** A tenant that
+declares no [pipelines](configuration.md#pipelines) has one `work` row, so the
+default is one child per tenant; a tenant declaring `work` and `intake` gets two,
+each reconciled on its own ([Supervising rows](architecture.md#supervising-rows)).
+The bootstrapper discovers children
 via the root's `workspace` arm, either walking to `workspace.depth` (default `1`)
 or resolving the declared `workspace.tenants` list ([Declaring the fleet](#declaring-the-fleet-workspacetenants)).
 It treats every resolved directory with a root-level `phoebe.config.ts` as a
@@ -84,8 +88,8 @@ your choice:
 
 An empty or unmaterialized child directory is skip-and-warned until the checkout
 exists on disk. Refreshing a child's content (a `git pull` or `submodule
-update`) moves mtime; the fleet treats that as a changed tenant (mtime:size
-fingerprint) and will respawn that child.
+update`) moves mtime; the fleet reads that as a changed tenant (mtime:size
+fingerprint), re-reads its rows, and respawns the rows the edit actually moved.
 
 ## Two-tier `.env` model
 

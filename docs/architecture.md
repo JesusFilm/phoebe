@@ -212,6 +212,49 @@ state stays stat-only. An engine upgrade re-enumerates every tenant rather than
 reusing the pre-upgrade row set: the enumerator itself just changed version, so
 the same config may legitimately report different rows.
 
+### Supervising rows
+
+The unit the supervisor runs is a **row**: one `(tenant × pipeline)` cell, keyed
+`<tenant config dir>#<pipeline>`. That id is the child-map key, the concurrency
+broker's owner id, and the credential lease's, so a row reclaims its own slots
+and its own token when it dies. A tenant declaring `work` and `intake` gets two
+children, each spawned with its own `--pipeline`. A solo deployment is a
+one-tenant fleet on the same loop, and a checkout that cannot enumerate gives
+every tenant one implicit `work` row — the one-child-per-tenant fleet, unchanged,
+and spawned without a `--pipeline` flag that engine would die on.
+
+A tenant's stat fingerprint moving is the trigger to re-enumerate; the row diff
+decides what happens next. A row that appeared spawns, one that vanished drains,
+and one whose own fingerprint moved relaunches by itself — so editing
+`intake.pollIntervalMs` touches nothing but the intake child. A tenant
+fingerprint that moves with no row of its own to show for it is by elimination
+tenant-wide, a `gitIdentity` or a `repoSlug` or an edited `.env`, and every row
+of that tenant relaunches, because every one of them runs with it.
+
+An enumeration that fails holds the tenant: nothing drains, the reason is warned
+once per poll, and the next poll tries again. The held tenant's watermark stays
+put, so the edit that could not be read is still pending when enumeration
+recovers. At first boot a held tenant contributes no rows at all rather than a
+`work` row against a config already known to be bad.
+
+An engine upgrade drains the fleet, materializes once, and re-enumerates every
+tenant before anything respawns. The pre-upgrade row list is never reused:
+capability belongs to the engine commit, so the same config may legitimately
+report different rows either side of the flip.
+
+**The universality rule.** A row's death alone is never fatal. The container
+comes down only when every supervised row is crash-looping at once, and a fast
+crash counts toward the crash-loop guard only when every row that ran that commit
+has fast-crashed on it. So one broken tenant cannot quarantine a commit the rest
+of the fleet is running happily, and one broken row cannot take its siblings with
+it. A row is marked crash-looping when it dies of its own accord inside
+`HEALTHY_RUN_MS`, and the mark survives a respawn — it clears once the row has
+been up past that window — so two rows crash-looping out of phase still add up to
+a verdict. Solo has one row, so the rule reduces to what it always did: that row
+is the engine, its death is the container's, and the threshold is unchanged.
+Every other unexpected exit respawns after the backoff, whatever the code; only
+an exit the supervisor asked for does not.
+
 ## One cycle, end to end
 
 Every step below is one walk over the **work-kind registry** — the built-in

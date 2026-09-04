@@ -1,4 +1,5 @@
-// How the supervisor learns a tenant's rows (#401/#417).
+// How the supervisor learns a tenant's rows (#401/#417), and the vocabulary it
+// supervises them with (#420).
 //
 // The bootstrapper spawns one engine child per (tenant × pipeline), so it needs
 // row names — and it gets them by asking the materialized engine checkout
@@ -22,8 +23,15 @@
 // Enumeration spawns a Node process, so it runs only when the tenant config's
 // stat fingerprint moves — the same cheap trigger the engine-source confirm
 // already uses (#138). Steady state stays stat-only.
+//
+// The supervised unit is a row, not a tenant: {@link SupervisedRow} names one
+// `(tenant × pipeline)` cell, {@link rowId} keys it, and {@link diffRows} says
+// what moved between two polls. The loop that acts on that is
+// bootstrap/supervise-fleet.ts.
 
 import { spawnSync } from "node:child_process";
+
+import type { DiscoveredTenant } from "./tenants.ts";
 
 /** One row of a tenant's work, as the supervisor reads it off the engine. */
 export type PipelineRow = {
@@ -238,4 +246,78 @@ export function createRowEnumerator(opts: { entry: string; run?: EngineCommand }
       return rows;
     },
   };
+}
+
+/**
+ * The separator between a row id's two halves (#401/#420). Neither half can
+ * contain it: a tenant id is an absolute path and a pipeline name reuses the
+ * custom-kind regex, which excludes `#` for exactly this reason (#415).
+ */
+export const ROW_ID_SEPARATOR = "#";
+
+/** The supervisor's key for one `(tenant × pipeline)` row. */
+export function rowId(tenantId: string, pipeline: string): string {
+  return `${tenantId}${ROW_ID_SEPARATOR}${pipeline}`;
+}
+
+/**
+ * One cell of the supervision matrix: a tenant, one of its pipelines, and the
+ * id that names the pair. That id is the child-map key, the broker owner and
+ * the credential-lease id, so a row's slots and its token are reclaimed with the
+ * row rather than with everything its tenant runs.
+ */
+export type SupervisedRow = {
+  /** `<tenantId>#<pipeline>`. */
+  id: string;
+  tenant: DiscoveredTenant;
+  pipeline: PipelineRow;
+  /**
+   * Whether the engine checkout named this row. False for the implicit `work`
+   * row of a checkout with no `pipelines` subcommand, whose child must not be
+   * spawned with a `--pipeline` flag it would die on before reading a config.
+   */
+  enumerated: boolean;
+};
+
+/** A row paired with the fingerprint that decides whether it relaunches. */
+export type RowSample = { row: SupervisedRow; fingerprint: string | null };
+
+/** How an operator reads a row in a boot line: `<slug>:<pipeline>`. */
+export function rowLabel(row: SupervisedRow): string {
+  return `${row.tenant.slug ?? row.tenant.id}:${row.pipeline.name}`;
+}
+
+/**
+ * What changed between the last poll's row fingerprints and the current matrix
+ * — the row-level twin of `diffFleet`, with the same conservatism: a null
+ * fingerprint on either side is "unknown" and never counts as a change, and a
+ * held row id is never reported as removed however absent it is from `current`.
+ */
+export type RowDiff = {
+  added: SupervisedRow[];
+  removed: string[];
+  changed: SupervisedRow[];
+};
+
+export function diffRows(
+  previous: ReadonlyMap<string, string | null>,
+  current: readonly RowSample[],
+  hold: ReadonlySet<string> = new Set(),
+): RowDiff {
+  const added: SupervisedRow[] = [];
+  const changed: SupervisedRow[] = [];
+  const seen = new Set<string>();
+
+  for (const { row, fingerprint } of current) {
+    seen.add(row.id);
+    if (!previous.has(row.id)) {
+      added.push(row);
+      continue;
+    }
+    const before = previous.get(row.id) ?? null;
+    if (before !== null && fingerprint !== null && before !== fingerprint) changed.push(row);
+  }
+
+  const removed = [...previous.keys()].filter((id) => !seen.has(id) && !hold.has(id));
+  return { added, removed, changed };
 }
