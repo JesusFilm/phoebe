@@ -14,8 +14,8 @@
 // unit-tested without sending real process signals.
 //
 // Both poll loops use it, for the same reason: the engine's work loop drains on
-// it (src/main.ts), and the bootstrapper's reconcile watch takes it as the
-// container's stop request (bootstrap/reconcile.ts) so a shutdown wakes the
+// it (src/main.ts), and the bootstrapper's supervision loop takes it as the
+// container's stop request (bootstrap/supervise-fleet.ts) so a shutdown wakes the
 // watch instead of waiting out a poll interval — and so boot survives the moment
 // between draining one engine and spawning its replacement.
 
