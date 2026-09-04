@@ -170,26 +170,99 @@ janitors and the catch-up never runs whatever this knob says. How the catch-up
 selects and what it does with what it selects:
 [`work-kinds.md`](work-kinds.md#the-feature-branch-catch-up).
 
+## Pipelines
+
+A **pipeline** is a named row of work this tenant runs, with its own priority
+order, kind tuning, cadence and concurrency. Every tenant has one whether or not
+it says so. `work`, the reserved default, is the serial poll loop Phoebe has
+always run. Declaring `pipelines` is how you tune that row, or add a second one
+beside it. An `intake` row can file issues from somewhere else every 15 seconds
+while `work` keeps its five-minute cadence.
+
+```ts
+pipelines: {
+  work: { order: ["conflicts", "checks"], concurrency: 2 },
+  intake: { pollIntervalMs: 15_000, kinds: { custom: { slack: "./kinds/slack.ts" } } },
+},
+```
+
+Names are lowercase `[a-z][a-z0-9-]*`, at most 32 characters. That is the
+custom-kind charset, so `#` can never appear in one. The block is tenant-only. A
+workspace root declaring it is a config error, since a root says which tenants
+exist, not what work happens inside one.
+
+| Knob             | Default  | Hot? | Meaning                                                                                                                                                                                 |
+| ---------------- | -------- | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `order`          | `[]`     | cold | Priority, not membership. Named kinds are polled first, in this sequence; every other kind this pipeline owns follows in declaration order. An unknown name is a boot error.            |
+| `kinds`          | `{}`     | cold | This row's [per-kind tuning blocks](#per-work-kind-overrides) and [`custom` declarations](#custom-work-kinds-workkindscustom), the same shape the deprecated top-level `workKinds` had. |
+| `concurrency`    | `1`      | cold | How many units this row may hold in flight. Accepted and validated today; acting on it is a later ticket, so every row still runs one unit at a time.                                   |
+| `pollIntervalMs` | `300000` | cold | Idle poll cadence. **Outranks `PHOEBE_POLL_INTERVAL_MS`**; the env var is the fallback for a row that declares nothing, and the default applies when neither does.                      |
+| `disabled`       | `false`  | hot  | Operator off-switch for this row.                                                                                                                                                       |
+| `priority`       | `0`      | hot  | Tenant-local scheduling priority for a contended concurrency slot; higher wins.                                                                                                         |
+
+Hot means the supervisor acts on a change without relaunching the row. Cold
+knobs relaunch it. `disabled` is hot at all three scopes: tenant, pipeline, and
+[kind](#per-work-kind-overrides). That is the shape the supervisor will read;
+the ticket that teaches it to spawn and reap rows comes later, so today this
+release validates the pipeline-level `disabled`, `priority` and `concurrency`
+without acting on them. A kind's `disabled` is live now, since it is what took
+over from omission.
+
+**A kind belongs to at most one pipeline.** Two rows naming or declaring the
+same kind is fatal for the tenant at load. The rows are separate processes and
+would race each other over the same PR. Kinds nobody claims fall to `work`,
+which is what makes `order` mean priority and nothing else in a tenant with one
+pipeline.
+
+### Choosing a row: `--pipeline`
+
+The engine child takes `--pipeline <name>`. Absent the flag, the row is `work`.
+An unknown name exits with an error before any GitHub call. The flag resolves
+the row into the flat fields the rest of the engine reads (`workOrder`,
+`workKinds`, `promptFiles`, the cadence and the run budget), so nothing
+downstream has to know pipelines exist. `--run-once` and `--dry-run` take it
+too. `phoebe --run-once --dry-run --pipeline intake` previews that row's
+would-pick and nothing else.
+
+### Deprecated top-level aliases
+
+`workOrder`, `workKinds` and `promptFiles` still work, so an existing config
+needs no edit. They resolve as `pipelines.work.*`, with one deprecation warning
+at load. Declaring both sides of a pair is an error, not a merge.
+
+| Deprecated          | Now                                      |
+| ------------------- | ---------------------------------------- |
+| `workOrder`         | `pipelines.work.order`                   |
+| `workKinds`         | `pipelines.work.kinds`                   |
+| `promptFiles.<key>` | `pipelines.work.kinds.<kind>.promptFile` |
+
+One behaviour did change with them. `order` is priority-only, so **omitting a
+kind no longer disables it**. A kind absent from `order` runs after the named
+ones. Set `kinds.<name>.disabled: true` instead. A config whose `workOrder`
+already listed every kind, which covers the shipped default and every config
+`phoebe init` writes, behaves exactly as before.
+
 ## Work order
 
-| Field       | Default                                                    | Meaning                                                                                                                                                                                                                                                                                                               |
-| ----------- | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `workOrder` | `["conflicts", "checks", "reviews", "issues", "research"]` | Ordered work kinds; the first kind with a workable unit each cycle wins. Validated at startup: it must be non-empty and contain only registered kinds — the five built-ins (`conflicts`, `checks`, `reviews`, `issues`, `research`) plus any [custom kinds](#custom-work-kinds-workkindscustom) this tenant declares. |
+Priority within one pipeline. Put janitor kinds first so open PRs are unblocked
+before new issues are started, and `research` last so net-new code advances
+before research tickets.
 
-Order is priority: put janitor kinds first so open PRs are unblocked before new
-issues are started, and `research` last so net-new code advances before research
-tickets. Omit `research` to disable it for a repo. See
-[`work-kinds.md`](work-kinds.md).
+| Field       | Default | Meaning                                                                        |
+| ----------- | ------- | ------------------------------------------------------------------------------ |
+| `workOrder` | `[]`    | **Deprecated alias** for [`pipelines.work.order`](#pipelines). Still honoured. |
+
+See [`work-kinds.md`](work-kinds.md).
 
 ## Providers & models
 
-| Field             | Default                                                                          | Meaning                                                                                                                                                                                                                                                                                                                   |
-| ----------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `defaultProvider` | `"cursor"`                                                                       | Which agent CLI to drive: `cursor`, `claude`, or `codex`.                                                                                                                                                                                                                                                                 |
-| `defaultModels`   | `{ cursor: "composer-2.5", claude: "claude-sonnet-4-6", codex: "gpt-5.4-mini" }` | Per-provider model. Merged key-by-key.                                                                                                                                                                                                                                                                                    |
-| `defaultEfforts`  | `{}`                                                                             | Per-provider reasoning effort, merged key-by-key. Only `claude` honours it today (`--effort`, one of `low`, `medium`, `high`, `xhigh`, `max`); `cursor` and `codex` ignore it. A provider left unset gets **no** effort flag, so its CLI default stands.                                                                  |
-| `providerEnv`     | `{ cursor: "CURSOR_API_KEY", claude: "ANTHROPIC_API_KEY", codex: "OPENAI_KEY" }` | Env var holding each provider's API key. This is the only key the agent child inherits for the active provider.                                                                                                                                                                                                           |
-| `workKinds`       | `{}`                                                                             | Per-work-kind overrides of the three knobs above, e.g. `{ reviews: { provider: "claude", model: "claude-haiku-4-5", effort: "low" } }`. Keys are the work kinds (built-in or custom); each block holds only optional `provider`, `model`, `effort`. The reserved `custom` key declares tenant-authored kinds — see below. |
+| Field             | Default                                                                          | Meaning                                                                                                                                                                                                                                                                                                                |
+| ----------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `defaultProvider` | `"cursor"`                                                                       | Which agent CLI to drive: `cursor`, `claude`, or `codex`.                                                                                                                                                                                                                                                              |
+| `defaultModels`   | `{ cursor: "composer-2.5", claude: "claude-sonnet-4-6", codex: "gpt-5.4-mini" }` | Per-provider model. Merged key-by-key.                                                                                                                                                                                                                                                                                 |
+| `defaultEfforts`  | `{}`                                                                             | Per-provider reasoning effort, merged key-by-key. Only `claude` honours it today (`--effort`, one of `low`, `medium`, `high`, `xhigh`, `max`); `cursor` and `codex` ignore it. A provider left unset gets **no** effort flag, so its CLI default stands.                                                               |
+| `providerEnv`     | `{ cursor: "CURSOR_API_KEY", claude: "ANTHROPIC_API_KEY", codex: "OPENAI_KEY" }` | Env var holding each provider's API key. This is the only key the agent child inherits for the active provider.                                                                                                                                                                                                        |
+| `workKinds`       | `{}`                                                                             | **Deprecated alias** for [`pipelines.work.kinds`](#pipelines); still honoured. Per-work-kind overrides, e.g. `{ reviews: { provider: "claude", model: "claude-haiku-4-5", effort: "low" } }`. Keys are the work kinds (built-in or custom); the reserved `custom` key declares tenant-authored kinds, described below. |
 
 `PHOEBE_AGENT`, `PHOEBE_MODEL`, and `PHOEBE_EFFORT` override `defaultProvider`
 and the active provider's entry in `defaultModels` / `defaultEfforts` for one
@@ -221,9 +294,18 @@ per-kind `PHOEBE_<KIND>_AGENT`, which outranks even an explicit `provider`. An
 explicitly-bound block is _not_ flipped by the global `PHOEBE_AGENT` — per-kind
 config outranks global env, per the ladder above.
 
+A kind block holds three more knobs. They resolve on their own ladders rather
+than the provider one.
+
+| Knob           | Default               | Hot? | Meaning                                                                                                                                                 |
+| -------------- | --------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `promptFile`   | the kind's own        | cold | Where this kind's prompt template lives, relative to the runtime root. Replaces the [`promptFiles`](#prompt-files) block.                               |
+| `runTimeoutMs` | tenant `runTimeoutMs` | cold | This kind's whole-unit wall-clock budget. Ladder: `PHOEBE_<KIND>_RUN_TIMEOUT_MS`, then this field, then `PHOEBE_RUN_TIMEOUT_MS`, then the tenant field. |
+| `disabled`     | `false`               | hot  | The only off-switch for a kind. Since `order` is priority rather than membership, leaving a kind out of it no longer stops it running.                  |
+
 Unknown kind keys and unknown provider values are boot-time config errors;
 `model` and `effort` are unvalidated pass-through strings — the CLIs are the
-authority. Blocks for kinds absent from `workOrder` are allowed and inert.
+authority. Blocks for kinds a pipeline does not own are allowed and inert.
 
 A kind's definition may also carry its own `model` / `effort` defaults; they
 sit at the repo-defaults rung (between global env and `defaultModels` /
@@ -283,9 +365,9 @@ workKinds: {
   engine wholesale. The _deployment-global_ allowlist the bootstrapper applies
   stays built-ins-only — a deployment-wide knob naming one tenant's kind is a
   category smell.
-- A declared kind not listed in `workOrder` boots with a **warning** and never
-  runs — declare-first-schedule-later is allowed, but forgetting the schedule
-  is the likelier story.
+- A declared kind its pipeline owns **runs whether or not `order` names it**.
+  `order` is priority, so an unnamed kind is polled after the named ones. Set
+  `disabled: true` on its block to declare a kind without running it.
 - **Editing a kind module requires a restart.** The reconcile watch
   fingerprints the config file only, so a module edit is invisible until the
   deployment restarts (a documented v1 limitation).
@@ -296,12 +378,17 @@ workKinds: {
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `promptFiles` | `{ issue: "prompts/issues-prompt.md", conflict: "prompts/conflict-prompt.md", checks: "prompts/checks-prompt.md", reviews: "prompts/reviews-prompt.md", research: "prompts/research-prompt.md" }` | **Overrides for the built-in kinds' prompt paths** — each kind's definition owns its prompt, and these keys re-point the built-ins'. Paths are relative to the **runtime root** (the process working directory, which is the consumer checkout on the host, or `/etc/phoebe` in the container where compose mounts `phoebe.config.ts` and `prompts/`). Resolved only from that base, never from the installed package. `phoebe init` copies the shipped defaults into `prompts/`. Edit them to override, or point a key at another runtime-root-relative path. A [custom kind](#custom-work-kinds-workkindscustom)'s prompt lives in its own definition's `promptFile` (same runtime-root resolution, no override key here). |
 
+`promptFiles` is a deprecated alias. A kind's prompt path now lives on its own
+tuning block, at [`pipelines.<row>.kinds.<name>.promptFile`](#pipelines). A
+built-in reads the kind block first and falls back to the `promptFiles` key
+here. Declaring both for one kind is a config error.
+
 Every kind a tenant can dispatch — built-in or custom — is checked **at engine
 startup**: if its prompt names a file that does not exist, the engine refuses to
 start and names the tenant and every missing kind at once. Prompt loading used to be fail-at-use, so a tenant
 missing one kind booted clean and only died when the first unit of that kind was
 dispatched, which could be weeks later if that kind was rare (#164). The check follows
-[`workOrder`](#work-order), so a kind you dropped there needs no prompt file.
+the row's resolved work order, so a kind you disabled needs no prompt file.
 
 A key may point outside the runtime root. Being a loadable file is the rule, not
 containment: `promptFiles: { issue: "../prompts/issues-prompt.md", … }` is how a
@@ -686,8 +773,9 @@ config-file territory.
 | `PHOEBE_AGENT`                               | _none_               | Provider for this run (`cursor` \| `claude` \| `codex`).                                                                                                                                                                                                                                                                                       |
 | `PHOEBE_MODEL`                               | _none_               | Model for this run.                                                                                                                                                                                                                                                                                                                            |
 | `PHOEBE_EFFORT`                              | _none_               | Reasoning effort for this run, overriding the active provider's `defaultEfforts` entry. Only `claude` honours it (`low` \| `medium` \| `high` \| `xhigh` \| `max`).                                                                                                                                                                            |
-| `PHOEBE_<KIND>_AGENT` / `_MODEL` / `_EFFORT` | _none_               | Per-work-kind variants of the trio above, where `<KIND>` is the upcased kind name — `CONFLICTS`, `CHECKS`, `REVIEWS`, `ISSUES`, `RESEARCH`, or a custom kind's name with hyphens as underscores (`stale-pr-nudger` → `PHOEBE_STALE_PR_NUDGER_MODEL`). Outrank everything, including the kind's `workKinds` block. Empty string reads as unset. |
-| `PHOEBE_POLL_INTERVAL_MS`                    | `300000`             | Persistent-mode idle poll interval. Under the App arm this is the capacity lever, since a shorter interval raises the per-tenant request rate ([github-app-mode.md §5](github-app-mode.md#5-capacity)).                                                                                                                                        |
+| `PHOEBE_<KIND>_AGENT` / `_MODEL` / `_EFFORT` | _none_               | Per-work-kind variants of the trio above, where `<KIND>` is the upcased kind name — `CONFLICTS`, `CHECKS`, `REVIEWS`, `ISSUES`, `RESEARCH`, or a custom kind's name with hyphens as underscores (`stale-pr-nudger` → `PHOEBE_STALE_PR_NUDGER_MODEL`). Outrank everything, including the kind's tuning block. Empty string reads as unset.      |
+| `PHOEBE_<KIND>_RUN_TIMEOUT_MS`               | _none_               | Per-work-kind whole-unit budget, same naming rule. Top of the [`runTimeoutMs` ladder](#per-work-kind-overrides): it outranks the kind's block, which outranks `PHOEBE_RUN_TIMEOUT_MS`.                                                                                                                                                         |
+| `PHOEBE_POLL_INTERVAL_MS`                    | `300000`             | Persistent-mode idle poll interval, for rows that declare no [`pollIntervalMs`](#pipelines) of their own. A declared cadence outranks this. Under the App arm this is the capacity lever, since a shorter interval raises the per-tenant request rate ([github-app-mode.md §5](github-app-mode.md#5-capacity)).                                |
 | `PHOEBE_ENGINE_DIR`                          | `<tmp>/phoebe-agent` | Base dir `phoebe boot` clones a `github` engine source into (and bin.mjs materializes under). Put it on a persistent volume so github boots fetch instead of re-cloning.                                                                                                                                                                       |
 | `PHOEBE_RECONCILE_INTERVAL_MS`               | `60000`              | How often `phoebe boot` polls the mounted config and the tracked ref for a drain-and-relaunch (see Engine source → Reconcile).                                                                                                                                                                                                                 |
 | `PHOEBE_BASE`                                | _none_               | Force the worktree base ref for issues (bypasses blocker resolution).                                                                                                                                                                                                                                                                          |

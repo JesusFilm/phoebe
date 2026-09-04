@@ -5,8 +5,10 @@ import {
   DEFAULT_RUN_TIMEOUT_MS,
   RunTimeoutError,
   resolveRunTimeoutMs,
+  resolveRunTimeoutMsForKind,
   runWithDeadline,
 } from "./run-timeout.ts";
+import type { WorkKindsField } from "./config-schema.ts";
 
 /** A manual clock: `setTimer` records the fn; `fire()` runs the armed one. */
 function fakeTimers() {
@@ -95,5 +97,45 @@ describe("runWithDeadline", () => {
     await expect(
       runWithDeadline({ ms: 1000, work: async () => Promise.reject(new Error("boom")), timers }),
     ).rejects.toThrow("boom");
+  });
+});
+
+describe("resolveRunTimeoutMsForKind (#415)", () => {
+  const resolve = (
+    env: NodeJS.ProcessEnv,
+    workKinds: WorkKindsField = {},
+    configValue = 2_700_000,
+  ) => resolveRunTimeoutMsForKind({ kind: "issues", env, workKinds, configValue });
+
+  test("the kind block outranks the tenant field", () => {
+    expect(resolve({}, { issues: { runTimeoutMs: 60_000 } })).toBe(60_000);
+  });
+
+  test("the kind block outranks the global env var", () => {
+    expect(resolve({ PHOEBE_RUN_TIMEOUT_MS: "900000" }, { issues: { runTimeoutMs: 60_000 } })).toBe(
+      60_000,
+    );
+  });
+
+  test("the per-kind env var outranks the kind block", () => {
+    expect(
+      resolve({ PHOEBE_ISSUES_RUN_TIMEOUT_MS: "5000" }, { issues: { runTimeoutMs: 60_000 } }),
+    ).toBe(5_000);
+  });
+
+  test("a kind with no block falls through to the tenant ladder", () => {
+    expect(resolve({}, { reviews: { runTimeoutMs: 1 } })).toBe(2_700_000);
+    expect(resolve({ PHOEBE_RUN_TIMEOUT_MS: "900000" })).toBe(900_000);
+    expect(resolve({}, {}, 0)).toBe(DEFAULT_RUN_TIMEOUT_MS);
+  });
+
+  test("a hyphenated custom kind maps to an underscored env var", () => {
+    expect(
+      resolveRunTimeoutMsForKind({
+        kind: "stale-pr-nudger",
+        env: { PHOEBE_STALE_PR_NUDGER_RUN_TIMEOUT_MS: "7000" },
+        workKinds: {},
+      }),
+    ).toBe(7_000);
   });
 });

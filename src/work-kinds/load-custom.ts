@@ -88,25 +88,18 @@ async function resolveEntry(
 
 /**
  * The boot step (#350 Q6): load config → **load kind modules → validate
- * definitions → assemble the registry** → validate `workOrder` against the
- * registry's names → assert prompt files. This function is the bold middle,
- * plus the declared-but-unscheduled warning — an unlisted custom kind is
- * almost certainly a mistake, but erroring would break
- * declare-first-schedule-later.
+ * definitions → assemble the registry** → validate the work order against the
+ * registry's names → assert prompt files. This function is the bold middle.
+ *
+ * It used to warn about a custom kind missing from `workOrder`. Since #415 the
+ * order is priority, not membership: a declared kind its pipeline owns is
+ * scheduled whether or not it is named there, so there is nothing left to warn
+ * about. Taking one out of rotation is `kinds.<name>.disabled`.
  */
 export async function createWorkKindRegistry(
   config: PhoebeConfig,
   configDir: string,
 ): Promise<WorkKindRegistry> {
   const customs = await loadCustomKinds(config, configDir);
-  const registry = buildRegistry(config, customs);
-  for (const custom of customs) {
-    if (!config.workOrder.includes(custom.name)) {
-      console.warn(
-        `[phoebe] Custom work kind "${custom.name}" is declared but not listed in ` +
-          `\`workOrder\` — it will never be scheduled. Add it to \`workOrder\` to run it.`,
-      );
-    }
-  }
-  return registry;
+  return buildRegistry(config, customs);
 }

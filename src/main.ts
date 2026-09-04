@@ -28,6 +28,7 @@ import { execFileSync, execSync } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
 import type { PhoebeConfig } from "./config-schema.ts";
 import { selectProviderForKind } from "./provider-selection.ts";
+import { parsePipelineName, pipelineRow, resolvePollIntervalMs } from "./pipeline-row.ts";
 import { detectAppCredentials, mintInstallationToken } from "./gh-app.ts";
 import { asBranchRef, asPrNumber, type BranchRef, type PrNumber } from "./branded.ts";
 import {
@@ -49,7 +50,12 @@ import {
   type CredentialClient,
 } from "./credential-client.ts";
 import { createSlotClient, type SlotClient } from "./slot-client.ts";
-import { RunTimeoutError, resolveRunTimeoutMs, runWithDeadline } from "./run-timeout.ts";
+import {
+  RunTimeoutError,
+  resolveRunTimeoutMs,
+  resolveRunTimeoutMsForKind,
+  runWithDeadline,
+} from "./run-timeout.ts";
 import {
   createEmitUnitEvent,
   STATUS_FILE,
@@ -137,8 +143,6 @@ import {
 // ---------------------------------------------------------------------------
 
 type CredentialArm = "pat" | "app";
-
-const DEFAULT_POLL_INTERVAL_MS = 300_000;
 
 // Never let a gh/git child process block the persistent loop forever (rate-limit
 // backoff, credential prompt, network partition). Configured toolchain commands
@@ -333,14 +337,29 @@ export function createEngine(options: EngineOptions): Engine {
 
   // Whole-unit wall-clock budget (#72): the agent phase — the async, hang-prone
   // step — runs under this deadline, so a hung unit releases its #59 slot within
-  // a known ceiling instead of starving the fleet. Env (`PHOEBE_RUN_TIMEOUT_MS`)
-  // overrides the config field.
-  const runTimeoutMs = resolveRunTimeoutMs(env, config.runTimeoutMs);
-  // Lease budget sent to the supervisor: run timeout plus ten minutes for the
-  // install/push phases that follow the agent inside the same unit. Only the
-  // child resolves this number — env-over-config precedence lives engine-side,
-  // and a supervisor that computed it independently would duplicate and drift.
-  const credentialBudgetMs = runTimeoutMs + 10 * 60 * 1000;
+  // a known ceiling instead of starving the fleet. Resolved per kind (#415), on
+  // the ladder in run-timeout.ts: per-kind env, the kind's `runTimeoutMs`,
+  // `PHOEBE_RUN_TIMEOUT_MS`, then the tenant field.
+  const runTimeoutMsFor = (kind: string): number =>
+    resolveRunTimeoutMsForKind({
+      kind,
+      env,
+      workKinds: config.workKinds,
+      configValue: config.runTimeoutMs,
+    });
+  // Lease budget sent to the supervisor: the longest budget any kind here can
+  // claim, plus ten minutes for the install/push phases that follow the agent
+  // inside the same unit. Taken across every registered kind rather than the
+  // tenant number alone, so a kind that raised its own budget cannot outlive the
+  // credential it was handed. Only the child resolves this — env-over-config
+  // precedence lives engine-side, and a supervisor that computed it
+  // independently would duplicate and drift.
+  const credentialBudgetMs =
+    Math.max(
+      ...[...registry.keys()].map(runTimeoutMsFor),
+      resolveRunTimeoutMs(env, config.runTimeoutMs),
+    ) +
+    10 * 60 * 1000;
 
   const prBase = config.defaultBranch;
 
@@ -1351,7 +1370,7 @@ export function createEngine(options: EngineOptions): Engine {
     const workspace = lazyWorkspace(picked);
     try {
       await runWithDeadline({
-        ms: runTimeoutMs,
+        ms: runTimeoutMsFor(picked.kind),
         work: (signal) => {
           const runCtx: WorkKindRunCtx = {
             ...ctx,
@@ -1765,16 +1784,16 @@ export async function runEngine(
 
   const runOnce = argv.includes("--run-once");
   const dryRun = argv.includes("--dry-run");
-  const rawPollIntervalMs = Number(process.env["PHOEBE_POLL_INTERVAL_MS"]);
-  const pollIntervalMs =
-    Number.isFinite(rawPollIntervalMs) && rawPollIntervalMs > 0
-      ? rawPollIntervalMs
-      : DEFAULT_POLL_INTERVAL_MS;
+  // Which row this child is (#415). `config` has already been flattened onto it
+  // by the CLI, so the name is read back here only for the cadence — declared on
+  // the row, which outranks `PHOEBE_POLL_INTERVAL_MS` — and for the log line.
+  const pipeline = parsePipelineName(argv);
+  const pollIntervalMs = resolvePollIntervalMs(pipelineRow(config, pipeline), process.env);
 
   console.log(
     runOnce
-      ? "[phoebe] Run-once mode — will work at most one unit of the first one-shot-eligible kind in WORK_ORDER, then exit."
-      : `[phoebe] Persistent mode — idle poll every ${pollIntervalMs}ms. SIGTERM drains: finish the current unit, then exit 0.`,
+      ? `[phoebe] Run-once mode (pipeline ${pipeline}) — will work at most one unit of the first one-shot-eligible kind in WORK_ORDER, then exit.`
+      : `[phoebe] Persistent mode (pipeline ${pipeline}) — idle poll every ${pollIntervalMs}ms. SIGTERM drains: finish the current unit, then exit 0.`,
   );
   if (dryRun) {
     console.log("[phoebe] Dry-run — selection only, nothing executes.");

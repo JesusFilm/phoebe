@@ -19,7 +19,11 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
-import { resolveConfig } from "./config-schema.ts";
+import {
+  deprecatedPipelineAliases,
+  resolveConfig,
+  type PhoebeUserConfig,
+} from "./config-schema.ts";
 import { createWorkKindRegistry } from "./work-kinds/load-custom.ts";
 import {
   copyShippedPromptsInto,
@@ -30,6 +34,7 @@ import {
 } from "./init.ts";
 import { formatInitTenantRegistrationAdviceForRoot } from "./init-tenant-advice.ts";
 import { applyEnvOverlay, loadUserConfig, resolveConfigPath } from "./load-config.ts";
+import { parsePipelineName, selectPipelineRow } from "./pipeline-row.ts";
 import { runEngine } from "./main.ts";
 import { resolveDataBase } from "./paths.ts";
 import { setResolvedConfig } from "./resolved-config.ts";
@@ -96,6 +101,22 @@ export function parseCliArgs(argv: readonly string[]): ParsedArgs {
     }
     if (arg !== undefined && arg.startsWith("--config=")) {
       configPath = arg.slice("--config=".length);
+      continue;
+    }
+    // `--pipeline <name>` selects which row of this tenant's work to run (#415).
+    // Forwarded rather than consumed: `runEngine` reads the same flag back for
+    // the row's poll cadence and its log line.
+    if (arg === "--pipeline") {
+      const next = argv[i + 1];
+      if (next === undefined) {
+        throw new Error(`${arg} requires a pipeline name (e.g. --pipeline work).`);
+      }
+      forward.push(arg, next);
+      i += 1;
+      continue;
+    }
+    if (arg !== undefined && arg.startsWith("--pipeline=")) {
+      forward.push(arg);
       continue;
     }
     if (arg !== undefined && arg.startsWith("-") && !ENGINE_FLAGS.has(arg)) {
@@ -269,6 +290,7 @@ Options (engine mode):
   --config, -c <path>   Path to phoebe.config.ts (default: ./phoebe.config.ts)
   --run-once            Work one unit of the first one-shot-eligible kind, then exit
   --dry-run             Print the selected unit without executing it
+  --pipeline <name>     Which pipeline row to run (default: work)
   --help, -h            Show this message
 
 Environment overlays (each replaces the corresponding config field):
@@ -460,6 +482,23 @@ async function runPurgeCli(argv: readonly string[]): Promise<void> {
 }
 
 /**
+ * One deprecation notice per load, naming every superseded top-level field this
+ * config still uses (#415). Emitted here rather than inside `resolveConfig`
+ * because the resolver runs per tenant inside the supervisor's reconcile loop
+ * too, and a warning that repeats every few seconds trains operators to ignore
+ * warnings.
+ */
+export function warnDeprecatedPipelineAliases(user: PhoebeUserConfig): void {
+  const aliases = deprecatedPipelineAliases(user);
+  if (aliases.length === 0) return;
+  console.warn(
+    `[phoebe] phoebe.config.ts uses deprecated field(s): ${aliases.join(", ")}. ` +
+      `They now resolve as \`pipelines.work.*\` and keep working; \`phoebe migrate\` will ` +
+      `move them. See docs/configuration.md → Pipelines.`,
+  );
+}
+
+/**
  * Refuse to run the engine on a workspace-root config. Presence of the
  * `workspace` block is what selects workspace mode (#83/#91); the engine runs
  * one tenant at a time, so a root config on the engine-run path can only fall
@@ -570,7 +609,14 @@ export async function runCli(): Promise<void> {
   const userConfig = await loadUserConfig(configPath);
   assertNotWorkspaceRoot(userConfig, configPath);
   const overlaid = applyEnvOverlay(userConfig, process.env);
-  const resolved = resolveConfig(overlaid, { dataBase: resolveDataBase(process.env) });
+  const tenant = resolveConfig(overlaid, { dataBase: resolveDataBase(process.env) });
+  warnDeprecatedPipelineAliases(overlaid);
+  // Flatten the selected row onto the tenant config (#415): `workOrder`,
+  // `workKinds` and `promptFiles` now describe this row, so the registry
+  // loader, the orchestrator and the prompt check all keep reading the fields
+  // they always read. An unknown `--pipeline` throws here, before any GitHub
+  // call. Absent the flag, the row is `work`.
+  const resolved = selectPipelineRow(tenant, parsePipelineName(parsed.forward));
   // The engine takes the config as an argument (#280); the holder is still
   // installed because `orchestrator.ts` — which the engine and the `gh` client
   // both call into — still reads its fields through the Proxy.

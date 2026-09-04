@@ -864,20 +864,19 @@ export const RUN_ONCE_NOTHING_MESSAGE =
   "[phoebe] Nothing to do under --run-once (janitor kinds are persistent-mode only).";
 
 /**
- * Fail fast when `WORK_ORDER` is empty or names a kind outside `legalKinds` —
- * this tenant's registry names: the built-ins plus whatever custom kinds it
- * declared (#350). The registry must therefore already be assembled wherever
- * this runs.
+ * Fail fast when the work order names a kind outside `legalKinds` — this
+ * tenant's registry names: the built-ins plus whatever custom kinds it declared
+ * (#350). The registry must therefore already be assembled wherever this runs.
+ *
+ * An empty order is legal since #415: the order is priority, not membership,
+ * and a row can legitimately resolve to nothing — every kind it owns disabled,
+ * or every kind claimed by a sibling pipeline. That row idles; it is not a
+ * misconfiguration the engine should refuse to boot on.
  */
 export function validateWorkOrder(
   order: readonly string[],
   legalKinds: readonly string[],
 ): readonly string[] {
-  if (order.length === 0) {
-    throw new Error(
-      `WORK_ORDER must not be empty. Include at least one of: ${legalKinds.join(", ")}.`,
-    );
-  }
   for (const kind of order) {
     if (!legalKinds.includes(kind)) {
       throw new Error(

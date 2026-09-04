@@ -27,12 +27,15 @@ export type ProviderSelection = {
   effort: string | undefined;
 };
 
+/** The per-kind runtime toggles: one env var per knob a kind block holds. */
+export type WorkKindEnvKnob = "AGENT" | "MODEL" | "EFFORT" | "RUN_TIMEOUT_MS";
+
 /**
  * The name of one per-kind runtime toggle, e.g. `PHOEBE_REVIEWS_MODEL`.
  * Hyphens in a (custom) kind name map to underscores — collision-free, since
  * `_` is outside the kind-name charset (#350).
  */
-export function workKindEnvVar(kind: string, knob: "AGENT" | "MODEL" | "EFFORT"): string {
+export function workKindEnvVar(kind: string, knob: WorkKindEnvKnob): string {
   return `PHOEBE_${kind.toUpperCase().replaceAll("-", "_")}_${knob}`;
 }
 

@@ -17,6 +17,9 @@
 // Extending one budget across the *whole* unit (install→push) is a tracked #72
 // follow-up; today the budget covers the agent phase, where real hangs happen.
 
+import { workKindOverride, type WorkKindsField } from "./config-schema.ts";
+import { workKindEnvVar } from "./provider-selection.ts";
+
 /** 45 minutes — the shipped default whole-unit budget (config `runTimeoutMs`). */
 export const DEFAULT_RUN_TIMEOUT_MS = 2_700_000;
 
@@ -42,6 +45,33 @@ export function resolveRunTimeoutMs(
   const raw = Number(env["PHOEBE_RUN_TIMEOUT_MS"]);
   if (Number.isFinite(raw) && raw > 0) return raw;
   return configValue > 0 ? configValue : DEFAULT_RUN_TIMEOUT_MS;
+}
+
+/**
+ * One kind's run timeout (#415), on the same ladder the provider knobs use:
+ *
+ *   1. per-kind env    (`PHOEBE_ISSUES_RUN_TIMEOUT_MS`)
+ *   2. per-kind config (`kinds.issues.runTimeoutMs`)
+ *   3. global env      (`PHOEBE_RUN_TIMEOUT_MS`)
+ *   4. the tenant's    `runTimeoutMs`, else the shipped default
+ *
+ * Per-kind config outranks the global env var for the reason it does there: a
+ * kind's block is durable policy, and only the kind-specific var pushes it
+ * aside. An intake sweep that should die after two minutes and an
+ * implementation kind that legitimately runs an hour no longer have to agree.
+ */
+export function resolveRunTimeoutMsForKind(opts: {
+  kind: string;
+  env: NodeJS.ProcessEnv;
+  workKinds: WorkKindsField;
+  configValue?: number;
+}): number {
+  const { kind, env, workKinds } = opts;
+  const perKind = Number(env[workKindEnvVar(kind, "RUN_TIMEOUT_MS")]);
+  if (Number.isFinite(perKind) && perKind > 0) return perKind;
+  const declared = workKindOverride(workKinds, kind)?.runTimeoutMs;
+  if (declared !== undefined && declared > 0) return declared;
+  return resolveRunTimeoutMs(env, opts.configValue);
 }
 
 type Timers = {

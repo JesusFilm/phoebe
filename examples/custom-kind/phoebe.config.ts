@@ -80,7 +80,9 @@ const config: PhoebeUserConfig = {
 
   engine: { source: "github", ref: "v0.1.0" },
 
-  // Custom kinds run only when scheduled — order them among the built-ins.
+  // Order is priority, not membership: these four are polled first, in this
+  // sequence, and the built-ins left out follow. (Deprecated alias for
+  // `pipelines.work.order`; it still resolves there.)
   workOrder: ["conflicts", "issues", "stale-pr-nudger", "docs-request"],
 
   workKinds: {

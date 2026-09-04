@@ -21,7 +21,7 @@ in `workOrder`. It only ever acts on:
 
 - **Issues** labelled `readyLabel`,
 - **Wayfinder research tickets** labelled `researchLabel` (default
-  `wayfinder:research`), when `research` is in `workOrder`, and
+  `wayfinder:research`), unless the `research` kind is disabled, and
 - **Open PRs in scope** (see `prScope` / `draftPrs` / `prOptOutLabel`).
 
 So every lever below is just a way of adding or removing an issue/PR from those
