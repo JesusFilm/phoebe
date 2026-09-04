@@ -14,7 +14,7 @@ import {
   LOCAL_ENGINE_DIR,
   resolveEngineEntry,
   setupGitCredentials,
-  rowArgv,
+  pipelineArgv,
   tenantFingerprint,
   trackPipelines,
   workspacePipelineFingerprint,
@@ -314,7 +314,7 @@ describe("tenantFingerprint — token removal (retention regression)", () => {
   });
 });
 
-describe("rowArgv", () => {
+describe("pipelineArgv", () => {
   const pipeline = (name: string, enumerated: boolean): SupervisedPipeline => ({
     id: `/etc/phoebe/repos/acme/widget#${name}`,
     tenant: {
@@ -340,7 +340,7 @@ describe("rowArgv", () => {
 
   test("names the pipeline the child is to run", () => {
     expect(
-      rowArgv(
+      pipelineArgv(
         pipeline("intake", true),
         "/etc/phoebe/repos/acme/widget/phoebe.config.ts",
         false,
@@ -352,7 +352,7 @@ describe("rowArgv", () => {
 
   test("keeps `--config` for a relocated asset dir, ahead of the pipeline", () => {
     const configPath = "/etc/phoebe/repos/acme/widget/phoebe.config.ts";
-    expect(rowArgv(pipeline("work", true), configPath, true, ["--dry-run"])).toEqual([
+    expect(pipelineArgv(pipeline("work", true), configPath, true, ["--dry-run"])).toEqual([
       "--config",
       configPath,
       "--pipeline",
@@ -365,9 +365,12 @@ describe("rowArgv", () => {
     // That checkout has no such flag and would exit on it before reading a
     // config, so an engine downgrade must stay a no-op (#417).
     expect(
-      rowArgv(pipeline("work", false), "/etc/phoebe/repos/acme/widget/phoebe.config.ts", false, [
-        "--run-once",
-      ]),
+      pipelineArgv(
+        pipeline("work", false),
+        "/etc/phoebe/repos/acme/widget/phoebe.config.ts",
+        false,
+        ["--run-once"],
+      ),
     ) //
       .toEqual(["--run-once"]);
   });

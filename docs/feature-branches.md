@@ -168,11 +168,16 @@ what appears in the block:
 - **The line comes from the head branch, not the body.** `<branchPrefix>issue-<n>`
   names issue `n`, and Phoebe derives that branch from the ticket it was handed,
   so it cannot name an issue whose work is elsewhere. The cost is that your own
-  PR onto the feature branch earns no line. Write its `Closes` yourself, outside
-  the markers, where the sweep leaves it alone.
+  PR onto the feature branch earns no line, and neither does a stacked member
+  whose PR merged into its blocker's branch — the sweep lists by base, so it
+  never sees that one, even though the blocker's merge carried the work across.
+  Write those `Closes` yourself, outside the markers, where the sweep leaves them
+  alone.
 - **Append only, inside the markers.** Everything outside them is copied through
   untouched and existing lines are never removed, so a cycle that reads a short
-  list cannot silently drop a line, and editing around the block is safe.
+  list cannot silently drop a line, and editing around the block is safe. A line
+  you wrote outside also counts as said: Phoebe adds no second line for an issue
+  the body already closes, so the record never claims one issue twice.
 
 The sweep that maintains the block runs every cycle and is not part of janitor
 scope, so `draftPrs`, `prScope` and `prOptOutLabel` do not reach it. Whatever

@@ -13,6 +13,11 @@
 // picked. A kind that ignores it offers the same ref twice, the walk drops the
 // repeat and stops asking that kind — so the worst a careless kind gets is
 // concurrency 1, never two agents on one unit.
+//
+// The in-memory quarantine (#424) rides the same shape: a pick the engine has
+// quarantined is refused and that kind's walk ends, so a kind ignoring
+// `ctx.quarantined` stalls on its poison unit instead of spending a run budget
+// on it every pass.
 
 import type {
   AnyWorkKindDefinition,
@@ -24,6 +29,14 @@ import type { RegisteredWorkKind, WorkKindRegistry } from "./registry.ts";
 
 /** The one engine-synthesized skip reason: units existed, none were picked. */
 export const NONE_WORKABLE = "none-workable";
+
+/**
+ * The idle-report reason for a pick the engine refused because the unit is
+ * quarantined in memory (#424). Rendered like any kind-owned reason —
+ * `"<count> <noun> skipped (quarantined in memory)"` — because to an operator
+ * it reads as one more rule that turned a unit away.
+ */
+export const QUARANTINED_IN_MEMORY = "quarantined in memory";
 
 export type PickedWorkUnit = {
   kind: string;
@@ -89,6 +102,16 @@ export function selectWorkUnits(opts: {
   inFlight(kind: string): ReadonlySet<string>;
   /** Told when a kind offered a ref that is already running. */
   onDropped?(kind: string, ref: string): void;
+  /**
+   * The in-memory quarantine backstop (#424), asked of every pick: `true`
+   * refuses this unit and ends the kind's walk, the same shape the in-flight
+   * drop has. Kinds honour `ctx.quarantined` themselves; this catches the ones
+   * that do not, and it is where the engine notices a pick whose `revision` has
+   * moved on — so answering it may clear the very count it is asked about.
+   */
+  refuseQuarantined?(kind: string, unit: WorkUnitShape): boolean;
+  /** Told when a quarantined pick was refused. */
+  onQuarantineDropped?(kind: string, ref: string): void;
 }): WorkSelection {
   const units: PickedWorkUnit[] = [];
   const skipped: WorkUnitSkip[] = [];
@@ -124,6 +147,11 @@ export function selectWorkUnits(opts: {
       }
       const ref = selection.unit.ref;
       assertRefShape(kind, ref);
+      if (opts.refuseQuarantined?.(kind, selection.unit) === true) {
+        opts.onQuarantineDropped?.(kind, ref);
+        skipped.push({ kind, reason: QUARANTINED_IN_MEMORY, count: 1 });
+        break;
+      }
       if (running.has(ref)) {
         opts.onDropped?.(kind, ref);
         break;

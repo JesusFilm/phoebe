@@ -64,6 +64,7 @@ function makeCtx(overrides: {
       sleep: () => Promise.resolve(),
     },
     inFlight: new Set<string>(),
+    quarantined: new Set<string>(),
     log: () => {},
     // WorkKindGitHub — we only need issueLabels, addIssueLabel, and createLabel
     github: new Proxy({} as WorkKindRunCtx["github"], {
@@ -291,6 +292,7 @@ function makeSelectCtx(featureFor: (n: number) => Feature | null): WorkKindCtx {
       sleep: () => Promise.resolve(),
     },
     inFlight: new Set<string>(),
+    quarantined: new Set<string>(),
     log: () => {},
     github: new Proxy({} as WorkKindCtx["github"], {
       get(_target, prop) {
@@ -416,6 +418,7 @@ describe("issueProducerKind.run — feature branch and draft PR creation", () =>
       },
       clock: { now: () => new Date(), sleep: () => Promise.resolve() },
       inFlight: new Set<string>(),
+      quarantined: new Set<string>(),
       log: () => {},
       github: new Proxy({} as WorkKindRunCtx["github"], {
         get(_target, prop) {

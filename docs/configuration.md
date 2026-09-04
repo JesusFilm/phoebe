@@ -172,12 +172,13 @@ selects and what it does with what it selects:
 
 ## Pipelines
 
-A **pipeline** is a named pipeline of work this tenant runs, with its own priority
-order, kind tuning, cadence and concurrency. Every tenant has one whether or not
-it says so. `work`, the reserved default, is the serial poll loop Phoebe has
-always run. Declaring `pipelines` is how you tune that pipeline, or add a second one
-beside it. An `intake` pipeline can file issues from somewhere else every 15 seconds
-while `work` keeps its five-minute cadence.
+This section is the field reference. For the model, meaning why a pipeline is a
+separate process, how pipelines are supervised, and the intake example the design was
+validated against, read [`pipelines.md`](pipelines.md).
+
+Declaring `pipelines` is how you tune the pipeline a tenant already has, or add a
+second one beside it. An `intake` pipeline can file issues from somewhere else every 15
+seconds while `work` keeps its five-minute cadence.
 
 ```ts
 pipelines: {
@@ -208,8 +209,9 @@ are exactly what its per-pipeline fingerprint leaves out
 ([architecture.md](architecture.md#asking-the-engine-which-pipelines-a-tenant-has)).
 It spawns one child per pipeline and relaunches a pipeline when its own cold config moves
 ([Supervising pipelines](architecture.md#supervising-pipelines)). `priority` and
-`concurrency` are live in the broker (below). A pipeline's `disabled` is validated but
-not yet acted on; the ticket that switches a pipeline off comes later. A kind's
+`concurrency` are live in the broker (below). A pipeline's `disabled` is validated and
+listed — `phoebe list` shows the pipeline as `(disabled)` — but not yet acted on; the
+ticket that switches a pipeline off comes later. A kind's
 `disabled` is live now, since it is what took over from omission.
 
 Everything a unit is given is its own: its worktree lease, its scratch
@@ -280,7 +282,7 @@ each owns a slice of both rather than the whole thing.
 
 | Thing                          | Owned by                                                                                                                                                                                    |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `state/<pipeline>/status.json` | The pipeline alone. `phoebe list` reads `state/work/status.json` for its tenant line.                                                                                                       |
+| `state/<pipeline>/status.json` | The pipeline alone. `phoebe list` reads every pipeline's, one line each.                                                                                                                    |
 | Stdout lines                   | Tagged `[phoebe:<owner>/<repo>:<pipeline>]`, including `work`'s. Match it as a prefix, not a fixed string.                                                                                  |
 | The four tracker sweeps        | Scoped to the kinds the pipeline schedules, so two pipelines cover every object exactly once. A pipeline scheduling none of a sweep's kinds skips it.                                       |
 | The origin clone               | Shared. Cloned once, the first clone serialized by a lock under `state/`; a pipeline whose kinds all declare `scratch` never clones at all.                                                 |

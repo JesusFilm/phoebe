@@ -51,6 +51,11 @@ import {
   type PipelineEnumerator,
   type SupervisedPipeline,
 } from "./pipelines.ts";
+import {
+  createStateSweeper,
+  type StateSweepOutcome,
+  type StateSweepTrigger,
+} from "./state-sweep.ts";
 import { lsRemoteBranchSha, materializeGithubEngine } from "./github-engine.ts";
 import { buildEngineChildEnv, envReconcileDigest, parseDotenv } from "./engine-child-env.ts";
 import { attachCredentialHandler, type CredentialCache } from "./credential-ipc.ts";
@@ -334,6 +339,35 @@ function probePipelineEnumeration(entry: string): PipelineEnumerator {
   return pipelines;
 }
 
+/**
+ * Read one tenant's stale-state sweep out to the operator (#426).
+ *
+ * A sweep that found nothing says nothing — this runs at every boot, and a line
+ * per tenant per boot saying "no orphans" would train an operator to skip the
+ * whole block. What it does always print is the protected tier: a worktree the
+ * sweep refused to delete is the one outcome only a human can finish, and it is
+ * invisible everywhere else until someone runs doctor.
+ */
+function reportStateSweep(info: {
+  tenantId: string;
+  trigger: StateSweepTrigger;
+  outcome: StateSweepOutcome;
+}): void {
+  const { outcome } = info;
+  if (outcome.removed === 0 && outcome.failed === 0 && outcome.kept.length === 0) return;
+  const failed = outcome.failed > 0 ? `, ${outcome.failed} it could not remove` : "";
+  console.log(
+    `[phoebe] boot: stale-state sweep (${info.trigger}) for ${info.tenantId} — ` +
+      `reclaimed ${outcome.removed} orphan(s)${failed}.`,
+  );
+  for (const item of outcome.kept) {
+    console.warn(
+      `[phoebe] boot: left ${item.path} in place — ${item.detail}. ` +
+        `To reclaim it, ${item.reclaim}.`,
+    );
+  }
+}
+
 async function launchTarget(configPath: string, guard: CrashGuard): Promise<LaunchedEngine> {
   const fingerprint = configFingerprint(configPath);
   const source = readEngineSource(await loadMountedConfig(configPath, fingerprint));
@@ -358,6 +392,7 @@ async function launchTarget(configPath: string, guard: CrashGuard): Promise<Laun
       quarantinedSha: null,
       sample,
       pipelines: probePipelineEnumeration(entry),
+      stateSweep: createStateSweeper({ entry }),
     };
   }
 
@@ -393,6 +428,7 @@ async function launchTarget(configPath: string, guard: CrashGuard): Promise<Laun
     quarantinedSha,
     sample,
     pipelines: probePipelineEnumeration(entry),
+    stateSweep: createStateSweeper({ entry }),
   };
 }
 
@@ -633,7 +669,7 @@ function runFleet(opts: {
     const relocated = assetsDir !== tenant.dir;
     const child = spawnEngineChild(
       engine.entry,
-      rowArgv(pipeline, tenant.configPath, relocated, opts.argv),
+      pipelineArgv(pipeline, tenant.configPath, relocated, opts.argv),
       {
         env,
         cwd: assetsDir,
@@ -703,6 +739,12 @@ function runFleet(opts: {
         `[phoebe] boot: could not enumerate pipelines for ${tenantId} — ${describe(error)}. ` +
           `Holding the tenant (its running pipelines keep running); retrying next poll.`,
       ),
+    onStateSweep: reportStateSweep,
+    onStateSweepError: ({ tenantId, trigger, error }) =>
+      console.warn(
+        `[phoebe] boot: could not sweep stale state for ${tenantId} (${trigger}) — ` +
+          `${describe(error)}. Pipelines spawn as if the sweep had not run.`,
+      ),
     onRunEnd: recordRunEnd(opts.guard),
     onRunTick: ({ engine, elapsedMs }) => {
       if (engine.sha !== null) opts.guard.noteAlive(engine.sha, elapsedMs);
@@ -747,7 +789,7 @@ export function workspacePipelineFingerprint(
  * implicit pipeline of an engine that cannot enumerate — that checkout has no such
  * flag and would exit on it before reading a config (#417).
  */
-export function rowArgv(
+export function pipelineArgv(
   pipeline: SupervisedPipeline,
   configPath: string,
   relocated: boolean,
@@ -1334,7 +1376,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     }
     // Solo's config is the root's, resolved from cwd exactly as it always was:
     // `relocated` is false, so this argv is today's plus the pipeline's `--pipeline`.
-    const child = spawnSoloChild(engine.entry, rowArgv(pipeline, configPath, false, argv), {
+    const child = spawnSoloChild(engine.entry, pipelineArgv(pipeline, configPath, false, argv), {
       // Null when neither a `gitIdentity` nor a sibling declaration asked for a
       // change: the child then inherits the supervisor's env exactly as it
       // always has.
@@ -1381,6 +1423,12 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       // Solo backs off on the engine constant, not the fleet's per-pipeline one: the
       // relaunch line quotes it, so the two must not drift.
       crashBackoffMs: CRASH_BACKOFF_MS,
+      onStateSweep: reportStateSweep,
+      onStateSweepError: ({ tenantId, trigger, error }) =>
+        console.warn(
+          `[phoebe] boot: could not sweep stale state for ${tenantId} (${trigger}) — ` +
+            `${describe(error)}. Pipelines spawn as if the sweep had not run.`,
+        ),
       onRunEnd: recordRunEnd(guard),
       onRunTick: ({ engine, elapsedMs }) => {
         if (engine.sha !== null) guard.noteAlive(engine.sha, elapsedMs);

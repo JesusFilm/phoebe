@@ -52,9 +52,15 @@ export function memberIssueNumber(pr: MergedMemberPr): number | null {
   return parseIssueNumberFromBranch(pr.headRefName);
 }
 
-/** The issue numbers already listed in the block, in the order they appear. */
-function listedIssueNumbers(section: string): number[] {
-  return [...section.matchAll(/^Closes #(\d+)$/gm)].map((match) => Number(match[1]));
+/**
+ * The issues `text` already carries a `Closes` line for, in the order they
+ * appear. Trailing blanks count as part of the line — a human typing the two
+ * spaces of a Markdown hard break onto `Closes #418` still means it, and a line
+ * that fails to match here reads as unlisted, which is how the sweep would come
+ * to write a second line for an issue the body already closes.
+ */
+function listedIssueNumbers(text: string): number[] {
+  return [...text.matchAll(/^Closes #(\d+)[ \t\r]*$/gm)].map((match) => Number(match[1]));
 }
 
 function renderSection(issueNumbers: readonly number[]): string {
@@ -66,10 +72,16 @@ function renderSection(issueNumbers: readonly number[]): string {
  * `body` with every issue in `issueNumbers` listed in the `Closes` block, or
  * `null` when the body already says it and there is nothing to write.
  *
- * Idempotent by construction: the answer is a function of what the block
- * already lists, so however many cycles run over the same merged members, each
- * one gets exactly one line. Everything outside the two markers is copied
- * through untouched.
+ * Idempotent by construction: the answer is a function of what the body already
+ * closes, so however many cycles run over the same merged members, each one gets
+ * exactly one line. Phoebe's own lines always land between the markers, and
+ * everything outside them is copied through untouched — including a `Closes`
+ * line a human wrote there, which counts as said. Integration PR #430 carried
+ * three such lines: the sweep cannot attribute a stacked member whose PR merged
+ * into a blocker branch rather than the feature branch, so a human recorded them
+ * below the block. Should the sweep later attribute one, a line inside the
+ * markers would only repeat the body. Phoebe neither adopts the human's line nor
+ * moves it.
  */
 export function withClosesSection(
   body: string,
@@ -79,7 +91,8 @@ export function withClosesSection(
   const end = body.indexOf(CLOSES_SECTION_END);
   const hasSection = start !== -1 && end > start;
   const listed = hasSection ? listedIssueNumbers(body.slice(start, end)) : [];
-  const added = [...new Set(issueNumbers)].filter((n) => !listed.includes(n)).sort((a, b) => a - b);
+  const closed = listedIssueNumbers(body);
+  const added = [...new Set(issueNumbers)].filter((n) => !closed.includes(n)).sort((a, b) => a - b);
   if (added.length === 0) {
     return null;
   }

@@ -2547,7 +2547,8 @@ function gatedKind(opts: {
 
 /** An engine running `kinds` for real, with the drain latch the test drives. */
 function concurrentEngine(opts: {
-  kinds: readonly GatedKind[];
+  /** Anything that carries a loaded kind — the gated one, or #424's hanging one. */
+  kinds: readonly { kind: LoadedCustomKind }[];
   concurrency: number;
   workOrder?: readonly string[];
   github?: GitHubStubOverrides;
@@ -2557,6 +2558,8 @@ function concurrentEngine(opts: {
   dataBase?: string;
   /** Wrap the git stub, to see what the engine asked of it (#423). */
   git?: (base: GitRunner) => GitRunner;
+  /** Extra environment, over the token every engine here starts with. */
+  env?: NodeJS.ProcessEnv;
 }): {
   drain: ReturnType<typeof manualDrain>;
   lines: string[];
@@ -2572,7 +2575,7 @@ function concurrentEngine(opts: {
     },
     opts.dataBase !== undefined ? { dataBase: opts.dataBase } : {},
   );
-  const env: NodeJS.ProcessEnv = { GH_TOKEN: "t0" };
+  const env: NodeJS.ProcessEnv = { GH_TOKEN: "t0", ...opts.env };
   let snapshot: StatusSnapshot | null = null;
   const lines: string[] = [];
   const engine = createEngine({
@@ -3036,6 +3039,275 @@ describe("per-unit isolation under concurrency", () => {
 
     engine.drain.request();
     await gated.release("u:1");
+    await loop;
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Units the engine cannot see: the in-memory quarantine (#424)
+// ---------------------------------------------------------------------------
+
+/**
+ * A kind whose one unit always hangs, so every pass that admits it ends in a
+ * whole-unit timeout. It is the shape #424 exists for: no `github` target, so
+ * the label path has nowhere to write and the count lives in the engine's
+ * memory instead.
+ *
+ * `state` is what a test moves — the unit's `revision`, and for the mid-count
+ * hand-over the `github` target it gains. `honoursQuarantine` picks between the
+ * two kinds the engine has to survive: one that filters `ctx.quarantined` in
+ * `select`, and the careless one that does not.
+ */
+function hangingKind(opts: { name?: string; ref?: string; honoursQuarantine?: boolean } = {}): {
+  kind: LoadedCustomKind;
+  /** Refs handed to `run`, in admission order — one entry per timed-out pass. */
+  started: string[];
+  /** What `ctx.quarantined` held at each `select`, oldest first. */
+  seen: string[][];
+  state: { revision: string | undefined; target: WorkUnitGitHubTarget | undefined };
+} {
+  const name = opts.name ?? "opaque";
+  const ref = opts.ref ?? "thread:1";
+  const started: string[] = [];
+  const seen: string[][] = [];
+  const state: { revision: string | undefined; target: WorkUnitGitHubTarget | undefined } = {
+    revision: undefined,
+    target: undefined,
+  };
+  return {
+    started,
+    seen,
+    state,
+    kind: {
+      name,
+      options: undefined,
+      definition: {
+        name,
+        oneShotEligible: true,
+        promptFile: `prompts/${name}.md`,
+        workspace: "scratch",
+        report: {
+          noun: `${name} thread(s)`,
+          describe: (unit: { ref: string }) => `${name} ${unit.ref}`,
+        },
+        fetch: () => Promise.resolve({}),
+        select: (_gathered: unknown, ctx) => {
+          seen.push([...ctx.quarantined]);
+          const held = opts.honoursQuarantine === true && ctx.quarantined.has(ref);
+          const offer = !held && !ctx.inFlight.has(ref);
+          return {
+            unit: offer
+              ? {
+                  ref,
+                  ...(state.target ? { github: state.target } : {}),
+                  ...(state.revision !== undefined ? { revision: state.revision } : {}),
+                }
+              : null,
+            skipped: held ? [{ reason: "quarantined", count: 1 }] : [],
+            total: 1,
+          };
+        },
+        // Never settles: the unit's wall-clock budget is what ends the run.
+        run: (unit: { ref: string }) => {
+          started.push(unit.ref);
+          return new Promise<void>(() => {});
+        },
+      } as AnyWorkKindDefinition,
+    },
+  };
+}
+
+/**
+ * Wait, in real time, until `check` holds. The timeout path races a real timer,
+ * so these tests cannot drive it by flushing microtasks the way the rolling
+ * top-up ones do.
+ */
+async function waitUntil(check: () => boolean, what: string): Promise<void> {
+  for (let attempt = 0; attempt < 400; attempt++) {
+    if (check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`timed out waiting for ${what}`);
+}
+
+/** A one-millisecond run budget, and the threshold this suite counts against. */
+function quarantineEnv(k: number): NodeJS.ProcessEnv {
+  return { PHOEBE_RUN_TIMEOUT_MS: "1", PHOEBE_MAX_UNPRODUCTIVE_RUNS: String(k) };
+}
+
+describe("the in-memory quarantine for units with no GitHub target", () => {
+  test("K timeouts put the ref in ctx.quarantined, and the next pick is dropped", async () => {
+    const hanging = hangingKind();
+    const engine = concurrentEngine({ kinds: [hanging], concurrency: 1, env: quarantineEnv(2) });
+    const loop = engine.loop();
+
+    await waitUntil(
+      () => engine.lines.some((line) => line.includes("quarantined in memory — dropped")),
+      "the quarantined pick to be dropped",
+    );
+
+    // Two timeouts, and the third pass never reached `run`.
+    expect(hanging.started).toEqual(["thread:1", "thread:1"]);
+    // The kind was told, on the very pass where it offered the unit anyway.
+    expect(hanging.seen.at(-1)).toEqual(["thread:1"]);
+    // And the operator is told twice: at the drop, and in the idle report.
+    expect(
+      engine.lines.some((line) =>
+        line.includes("1 opaque thread(s) skipped (quarantined in memory)."),
+      ),
+    ).toBe(true);
+
+    engine.drain.request();
+    await loop;
+  });
+
+  test("a kind honouring ctx.quarantined stops offering the unit itself", async () => {
+    const hanging = hangingKind({ honoursQuarantine: true });
+    const engine = concurrentEngine({ kinds: [hanging], concurrency: 1, env: quarantineEnv(2) });
+    const loop = engine.loop();
+
+    await waitUntil(
+      () => engine.lines.some((line) => line.includes("1 opaque thread(s) skipped (quarantined).")),
+      "the kind's own skip reason",
+    );
+
+    expect(hanging.started).toEqual(["thread:1", "thread:1"]);
+    // Nothing was dropped at admission: the kind never offered the unit again.
+    expect(engine.lines.some((line) => line.includes("quarantined in memory — dropped"))).toBe(
+      false,
+    );
+
+    engine.drain.request();
+    await loop;
+  });
+
+  test("the same ref with a different revision is admitted, and its count restarts", async () => {
+    const hanging = hangingKind();
+    hanging.state.revision = "ts:1";
+    const engine = concurrentEngine({ kinds: [hanging], concurrency: 1, env: quarantineEnv(2) });
+    const loop = engine.loop();
+
+    const drops = (): number =>
+      engine.lines.filter((line) => line.includes("quarantined in memory — dropped")).length;
+    await waitUntil(() => drops() === 1, "the quarantined pick to be dropped");
+    expect(hanging.started).toHaveLength(2);
+
+    // The thread has a new message: the content advanced, so the count is void.
+    hanging.state.revision = "ts:2";
+    engine.drain.tick();
+    await waitUntil(() => drops() === 2, "the re-admitted unit to reach K again");
+
+    // Two more timeouts before the second quarantine, and the first of them
+    // counted as a first: the count started over rather than carrying.
+    expect(hanging.started).toHaveLength(4);
+    expect(engine.lines.filter((line) => line.includes("timed out 1×"))).toHaveLength(2);
+
+    engine.drain.request();
+    await loop;
+  });
+
+  test("a ref that gains a GitHub target hands over to the label path at one", async () => {
+    const hanging = hangingKind();
+    const posted: { id: number; body: string }[] = [];
+    const engine = concurrentEngine({
+      kinds: [hanging],
+      concurrency: 1,
+      env: quarantineEnv(5),
+      github: {
+        prTimeoutInputs: () => ({ comments: [], extraActivityAt: null, baseline: "sha:abc" }),
+        postUnitComment: (target, body) => posted.push({ id: target.id, body }),
+      },
+    });
+    const loop = engine.loop();
+
+    await waitUntil(() => hanging.started.length >= 2, "the timeouts with no target");
+
+    // The unit's PR now exists, so the label path owns the write half from here.
+    hanging.state.target = { objectType: "pr", id: 7 };
+    engine.drain.tick();
+    await waitUntil(() => posted.length > 0, "the first timeout marker");
+
+    expect(posted[0]).toEqual({ id: 7, body: buildUnitTimeoutMarker(1) });
+    // The in-memory entry went with it: nothing carried over, and the ref never
+    // reached the threshold, so `ctx.quarantined` stayed empty throughout.
+    expect(hanging.seen.every((refs) => refs.length === 0)).toBe(true);
+
+    engine.drain.request();
+    await loop;
+  });
+});
+
+describe("the idle report prints only on change", () => {
+  test("the first idle pass after activity prints; an unchanged one stays silent", async () => {
+    const gated = gatedKind({ refs: [1] });
+    const engine = concurrentEngine({ kinds: [gated], concurrency: 1 });
+    const loop = engine.loop();
+    await settle();
+    expect(gated.started).toEqual(["u:1"]);
+
+    const idleLines = (): string[] =>
+      engine.lines.filter((line) => line.includes("No work this cycle — idle."));
+
+    // The unit finishes, and the pass that finds nothing left says so.
+    await gated.release("u:1");
+    await settle();
+    expect(idleLines()).toHaveLength(1);
+
+    // Two more quiet passes say nothing: the state has not changed.
+    engine.drain.tick();
+    await settle();
+    engine.drain.tick();
+    await settle();
+    expect(idleLines()).toHaveLength(1);
+
+    // Work, then quiet again — and the same report is due once more.
+    gated.offer(2);
+    engine.drain.tick();
+    await settle();
+    expect(gated.started).toEqual(["u:1", "u:2"]);
+    await gated.release("u:2");
+    await settle();
+    expect(idleLines()).toHaveLength(2);
+
+    engine.drain.request();
+    await loop;
+  });
+
+  test("a changed skip set prints again", async () => {
+    const reason = { text: "waiting on the reporter" };
+    const kind: LoadedCustomKind = {
+      name: "digest",
+      options: undefined,
+      definition: {
+        name: "digest",
+        oneShotEligible: true,
+        promptFile: "prompts/digest.md",
+        workspace: "scratch",
+        report: { noun: "digest(s)", describe: () => "digest" },
+        fetch: () => Promise.resolve({}),
+        select: () => ({ unit: null, skipped: [{ reason: reason.text, count: 1 }], total: 0 }),
+        run: () => Promise.resolve(),
+      } as AnyWorkKindDefinition,
+    };
+    const engine = concurrentEngine({ kinds: [{ kind }], concurrency: 1 });
+    const loop = engine.loop();
+    await settle();
+
+    const skips = (): string[] => engine.lines.filter((line) => line.includes("digest(s) skipped"));
+    expect(skips()).toHaveLength(1);
+
+    engine.drain.tick();
+    await settle();
+    expect(skips()).toHaveLength(1);
+
+    // The kind's own words changed, so the report is worth printing again.
+    reason.text = "the reporter answered";
+    engine.drain.tick();
+    await settle();
+    expect(skips()).toHaveLength(2);
+    expect(skips().at(-1)).toContain("1 digest(s) skipped (the reporter answered).");
+
+    engine.drain.request();
     await loop;
   });
 });

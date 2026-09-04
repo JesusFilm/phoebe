@@ -198,11 +198,11 @@ describe("selectPipeline", () => {
 });
 
 describe("resolvePollIntervalMs", () => {
-  const rowOf = (user: PhoebeUserConfig, name: string) =>
+  const pipelineOf = (user: PhoebeUserConfig, name: string) =>
     declaredPipeline(resolveConfig(user), name);
 
   test("a declared interval outranks the env var", () => {
-    const pipeline = rowOf(
+    const pipeline = pipelineOf(
       userConfig({ pipelines: { intake: { pollIntervalMs: 15_000 } } }),
       "intake",
     );
@@ -210,12 +210,12 @@ describe("resolvePollIntervalMs", () => {
   });
 
   test("a pipeline declaring nothing takes the env value", () => {
-    const pipeline = rowOf(userConfig({ pipelines: { intake: {} } }), "intake");
+    const pipeline = pipelineOf(userConfig({ pipelines: { intake: {} } }), "intake");
     expect(resolvePollIntervalMs(pipeline, { PHOEBE_POLL_INTERVAL_MS: "60000" })).toBe(60_000);
   });
 
   test("neither declared nor set falls to the default", () => {
-    expect(resolvePollIntervalMs(rowOf(userConfig(), "work"), {})).toBe(300_000);
+    expect(resolvePollIntervalMs(pipelineOf(userConfig(), "work"), {})).toBe(300_000);
   });
 });
 

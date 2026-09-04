@@ -33,6 +33,12 @@
 //     tenant-wide — a git identity, a repo slug, an edited `.env` — and fans out
 //     to every pipeline of that tenant.
 //
+// The loop also owns the stale-state sweep's two triggers (#426), because it is
+// the only thing that knows when a pipeline is down: boot before the first spawn, and
+// a pipeline-set change after the pipelines it removed have drained and before anything is
+// respawned. Both are moments when the disk in question is provably nobody's.
+// The sweep never blocks a spawn — a failure is one log line.
+//
 // A pipeline that dies on its own is that pipeline's problem: its slot is reclaimed and it
 // is respawned with backoff, leaving the shared engine and every sibling
 // untouched. The container comes down only under the universality rule — every
@@ -61,6 +67,7 @@ import {
   type PipelineSample,
   type SupervisedPipeline,
 } from "./pipelines.ts";
+import type { StateSweepOutcome, StateSweepTrigger } from "./state-sweep.ts";
 import {
   diffFleet,
   DuplicateOriginSlugError,
@@ -242,6 +249,21 @@ export type SuperviseFleetDeps = {
    * tries again — so this fires once per poll for as long as the fault lasts.
    */
   onPipelinesError?: (info: { tenantId: string; error: unknown }) => void;
+  /** One tenant's stale-state sweep finished — what it reclaimed and what it refused. */
+  onStateSweep?: (info: {
+    tenantId: string;
+    trigger: StateSweepTrigger;
+    outcome: StateSweepOutcome;
+  }) => void;
+  /**
+   * One tenant's sweep failed as a whole. Its disk is untouched and its pipelines
+   * spawn anyway: reclaiming stale state is never worth a pipeline not running.
+   */
+  onStateSweepError?: (info: {
+    tenantId: string;
+    trigger: StateSweepTrigger;
+    error: unknown;
+  }) => void;
   /**
    * Every finished run of every pipeline, however it ended — drained for a reconcile,
    * stopped with the container, or crashed. The crash-loop guard's bookkeeping
@@ -429,16 +451,56 @@ export async function superviseFleet(deps: SuperviseFleetDeps): Promise<EngineEx
   let waking = rearm();
 
   /**
+   * Reclaim the disk of pipelines this tenant no longer has (#426), for every tenant
+   * named in `tenantIds`. Called at exactly two moments, both of them ones where
+   * the pipelines in question are provably down: facility boot before anything
+   * spawns, and a pipeline-set change once the pipelines it removed have drained. Never on
+   * a timer.
+   *
+   * A tenant whose enumeration is held is skipped — unknown pipelines cannot tell an
+   * orphan from a pipeline that is merely stopped — and one tenant's failure is a log
+   * line, not a reason to stop sweeping the next or to delay a spawn.
+   */
+  const sweepStaleState = (
+    samples: readonly TenantSample[],
+    tenantIds: ReadonlySet<string>,
+    trigger: StateSweepTrigger,
+  ): void => {
+    const sweeper = engine.stateSweep;
+    if (sweeper === undefined) return;
+    for (const { tenant } of samples) {
+      if (!tenantIds.has(tenant.id)) continue;
+      try {
+        const outcome = sweeper.sweep({ configPath: tenant.configPath, cwd: tenant.dir });
+        deps.onStateSweep?.({ tenantId: tenant.id, trigger, outcome });
+      } catch (error) {
+        deps.onStateSweepError?.({ tenantId: tenant.id, trigger, error });
+      }
+    }
+  };
+
+  /**
    * Enumerate every tenant against the engine that is running now, and spawn the
    * whole matrix. The only way a fleet comes up — at boot and after an engine
    * relaunch alike — so an upgrade can never respawn a pipeline list the old checkout
    * reported.
+   *
+   * `sweep` is set for the boot call alone. An engine relaunch drains the fleet
+   * and comes back through here too, but a new engine ref is not a pipeline-set
+   * change: what it enumerates differently is reported by doctor and reclaimed
+   * at the next trigger, rather than by a sweep on every upgrade.
    */
-  const spawnFleetFromDiscovery = async (): Promise<void> => {
+  const spawnFleetFromDiscovery = async (opts: { sweep?: boolean } = {}): Promise<void> => {
     const samples = normalizeDiscover(await deps.discover()).samples;
     const { pipelines, held } = expand(samples);
     for (const { tenant, fingerprint } of samples) {
       if (!held.has(tenant.id)) tenantFingerprints.set(tenant.id, fingerprint);
+    }
+    if (opts.sweep === true) {
+      const enumerated = new Set(
+        samples.map(({ tenant }) => tenant.id).filter((id) => !held.has(id)),
+      );
+      sweepStaleState(samples, enumerated, "boot");
     }
     // Announced before anything spawns: a child must never be able to ask for a
     // slot the broker has not been sized and ordered for.
@@ -554,7 +616,9 @@ export async function superviseFleet(deps: SuperviseFleetDeps): Promise<EngineEx
 
   // Initial fleet: one child per pipeline of every discovered tenant. A tenant whose
   // pipelines will not enumerate contributes none and is retried at the next poll.
-  await spawnFleetFromDiscovery();
+  // Facility boot is the stale-state sweep's first trigger, and it runs here —
+  // before a single pipeline spawns, when nothing on this tenant's disk can be in use.
+  await spawnFleetFromDiscovery({ sweep: true });
 
   while (true) {
     if (deps.stop.requested) return await stopAndDrain();
@@ -758,9 +822,15 @@ export async function superviseFleet(deps: SuperviseFleetDeps): Promise<EngineEx
     }
     deps.onPipelines?.({ pipelines: live, reshaped });
     const fingerprintById = new Map(desired.map((s) => [s.pipeline.id, s.fingerprint] as const));
+    // Which tenants this reconcile could have orphaned state for. A pipeline that
+    // vanished takes its whole keyspace with it; a pipeline that merely *changed* may
+    // have retired a kind, which orphans that kind's scratch and read-only
+    // trees. A pipeline that only appeared orphans nothing, so it is not a trigger.
+    const sweepable = new Set<string>();
     for (const id of diff.removed) {
       const record = children.get(id);
       if (record) {
+        sweepable.add(record.pipeline.tenant.id);
         await drain(record);
         children.delete(id);
       }
@@ -768,9 +838,20 @@ export async function superviseFleet(deps: SuperviseFleetDeps): Promise<EngineEx
     for (const pipeline of changed) {
       const record = children.get(pipeline.id);
       if (record) {
+        sweepable.add(pipeline.tenant.id);
         await drain(record);
         children.delete(pipeline.id);
       }
+    }
+    // Every pipeline this reconcile takes down is down and none is back up yet: the
+    // one window in a running facility where a vanished pipeline's disk is provably
+    // nobody's (#426). Held tenants are excluded — unknown pipelines cannot tell an
+    // orphan from a pipeline that is merely stopped.
+    for (const id of [...sweepable]) {
+      if (held.has(id) || tenantHold.has(id)) sweepable.delete(id);
+    }
+    if (sweepable.size > 0) sweepStaleState(samples, sweepable, "pipeline-change");
+    for (const pipeline of changed) {
       spawnFor(pipeline, fingerprintById.get(pipeline.id) ?? null);
     }
     for (const pipeline of diff.added) {

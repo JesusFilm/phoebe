@@ -48,6 +48,20 @@ export function derivePaths(repoSlug: string, dataBase: string = DEFAULT_DATA_BA
 }
 
 /**
+ * Where the read-only workspaces (#397) live inside `worktrees/`: one detached
+ * tree per kind under `readonly/`, which is the one subtree of `worktrees/`
+ * keyed by kind rather than by branch. The stale-state sweep (#426) reads the
+ * same segment to find the trees of a retired kind, so the two agree by
+ * construction rather than by two copies of a string literal.
+ */
+export const READONLY_WORKTREES_SEGMENT = "readonly";
+
+/** The read-only workspace directory for one kind. */
+export function readonlyWorktreeDir(worktreesDir: string, kind: string): string {
+  return join(worktreesDir, READONLY_WORKTREES_SEGMENT, kind);
+}
+
+/**
  * The deployment data base, honoring the `PHOEBE_DATA_DIR` host/dev override.
  * Kept apart from `derivePaths` so the derivation stays pure; the CLI reads the
  * env once and threads the result into `resolveConfig`.

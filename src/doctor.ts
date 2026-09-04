@@ -3,7 +3,8 @@
 // is actually working. (A `--fix` mode that repairs at the current pin is a
 // mapped follow-up.)
 //
-// Seven checks, all reads of state that already exists:
+// Seven deployment checks, all reads of state that already exists (an eighth,
+// `stale-state`, is per tenant and lives in the tenant sweep below):
 //   1. cli            — installed bootstrapper vs the npm registry's latest
 //   2. engine         — configured pin vs the latest release tag, plus the commit
 //                       actually materialized in the engine checkout
@@ -23,9 +24,12 @@
 // In workspace mode it also sweeps tenants — the same enumeration boot
 // supervises with (#91/#154), so doctor can never report a different fleet from
 // the one that is running. Per tenant: is a GH_TOKEN present the way the child
-// would read it, and does the tenant repo answer to it. The full five-permission
-// grant probe stays in scripts/verify-tenant-token.mjs (it ships with the repo,
-// not the package); doctor's per-tenant probe is the reachability slice of it.
+// would read it, does the tenant repo answer to it, and — the one check that
+// reads the data volume rather than the tracker — is there state under
+// `/data/repos` that no pipeline owns (#426, warn-only). The full
+// five-permission grant probe stays in scripts/verify-tenant-token.mjs (it ships
+// with the repo, not the package); doctor's per-tenant probe is the
+// reachability slice of it.
 
 import { existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -67,6 +71,14 @@ import {
 } from "./config-schema.ts";
 import { resolveDataBase } from "./paths.ts";
 import { enumerateDeclaredEnv } from "./pipeline-enumerate.ts";
+import {
+  createWorktreeInspector,
+  hasTenantData,
+  pipelineOwnership,
+  scanStaleState,
+  tenantDataDir,
+  type StaleItem,
+} from "./stale-state.ts";
 import { enumerateWorkspaceTenants } from "./tenant-commands.ts";
 
 /** A scheduled kind's declared key that its pipeline's env does not hold (#425). */
@@ -582,6 +594,82 @@ export function tenantTokenCheck(fields: {
   };
 }
 
+/**
+ * The `stale-state` check (#411/#426) — doctor's first look at the repos data
+ * directory, and its only one.
+ *
+ * The sweep runs at facility boot and after a pipeline-set change, so between those
+ * triggers orphaned state simply sits there. This is what makes it visible,
+ * including the dirty worktrees the sweep refused to delete: those are the ones
+ * an operator has to act on, and nothing else in the deployment would ever
+ * mention them.
+ *
+ * Warn, never fail. Accumulated dirt is a chore, not a fault, and a doctor that
+ * exits 1 over a leftover directory trains an operator to ignore its exit code.
+ */
+export function staleStateCheck(fields: {
+  dataDir: string;
+  items: readonly StaleItem[];
+}): DoctorCheck {
+  const { dataDir, items } = fields;
+  if (items.length === 0) {
+    return { id: "stale-state", state: "ok", detail: `nothing orphaned under ${dataDir}` };
+  }
+  const tiers = new Map<string, number>();
+  for (const item of items) tiers.set(item.tier, (tiers.get(item.tier) ?? 0) + 1);
+  const byTier = [...tiers].map(([tier, count]) => `${tier} ${count}`).join(", ");
+  const kept = items.filter((item) => item.reclaim !== null);
+  const parts = [`${items.length} orphan(s) under ${dataDir} (${byTier})`];
+  parts.push(
+    kept.length === items.length
+      ? "none of it auto-reclaimable"
+      : `${items.length - kept.length} the next sweep reclaims`,
+  );
+  for (const item of kept) {
+    parts.push(`left in place: ${item.path} — ${item.detail}; to reclaim, ${item.reclaim}`);
+  }
+  return { id: "stale-state", state: "warn", detail: parts.join("; ") };
+}
+
+/**
+ * Scan one tenant's data directory without touching it. Unknown — never a
+ * finding — when the config will not resolve or the volume is not mounted
+ * where doctor is running: an unreadable enumeration cannot tell orphaned from
+ * merely stopped, which is the same posture the sweep itself takes.
+ */
+async function tenantStaleState(fields: {
+  configPath: string;
+  dataBase: string;
+  git?: GitRunner;
+}): Promise<DoctorCheck> {
+  let config;
+  try {
+    // Deliberately un-overlaid: a tenant's env comes from its own `.env`, which
+    // is the child's, not doctor's. `pipelines` is not overlaid by anything.
+    config = resolveConfig(await loadUserConfig(fields.configPath), { dataBase: fields.dataBase });
+  } catch (error) {
+    return {
+      id: "stale-state",
+      state: "unknown",
+      detail: `not evaluated (${error instanceof Error ? error.message : String(error)})`,
+    };
+  }
+  const dataDir = tenantDataDir(config.paths);
+  if (!hasTenantData(config.paths)) {
+    return { id: "stale-state", state: "unknown", detail: `not evaluated (no data at ${dataDir})` };
+  }
+  const items = scanStaleState({
+    paths: config.paths,
+    ownership: pipelineOwnership(config),
+    inspector: createWorktreeInspector({
+      repoDir: config.paths.repoDir,
+      defaultBranch: config.defaultBranch,
+      ...(fields.git !== undefined ? { git: fields.git } : {}),
+    }),
+  });
+  return staleStateCheck({ dataDir, items });
+}
+
 export async function tenantRow(fields: {
   path: string;
   slug: string | null;
@@ -598,6 +686,9 @@ export async function tenantRow(fields: {
    * modules is not safe to interleave.
    */
   declaredEnv?: MissingDeclaredEnvKey[] | null;
+  /** Where tenant data lives, for the `stale-state` check (#426). */
+  dataBase?: string;
+  git?: GitRunner;
 }): Promise<TenantDoctorRow> {
   const checks: DoctorCheck[] = [];
 
@@ -749,6 +840,18 @@ export async function tenantRow(fields: {
         }),
       );
     }
+  }
+
+  // Stale-state check: the only one that looks at the data volume, so it runs
+  // last and asks nothing of the tracker.
+  if (fields.configPath !== undefined && fields.dataBase !== undefined) {
+    checks.push(
+      await tenantStaleState({
+        configPath: fields.configPath,
+        dataBase: fields.dataBase,
+        ...(fields.git !== undefined ? { git: fields.git } : {}),
+      }),
+    );
   }
 
   return { path: fields.path, slug: fields.slug, checks };
@@ -985,6 +1088,10 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
   // solo probes the root itself (the deployment root IS the tenant there).
   const tenants: TenantDoctorRow[] = [];
   const inContainer = isInsideContainer();
+  // Where tenant data lives, for the stale-state check: the container constant
+  // unless `PHOEBE_DATA_DIR` moves it, which is how doctor reads a mounted
+  // volume from the host.
+  const dataBase = resolveDataBase(deps.env);
   const enumeration = await enumerateWorkspaceTenants({ configDir: deps.configDir });
   if (enumeration !== null) {
     // Bounded, order-preserving: each probe can wait out its 30s timeout, so a
@@ -1020,6 +1127,8 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
           fetchFn,
           inContainer,
           configPath: tenant.configPath,
+          dataBase,
+          git,
         });
       })),
     );
@@ -1048,6 +1157,8 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
         fetchFn,
         inContainer,
         configPath,
+        dataBase,
+        git,
       }),
     );
   }

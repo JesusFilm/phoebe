@@ -27,7 +27,7 @@ import {
 
 const PROBE_OK = `{"version":1,"supported":true}\n`;
 
-function rowsJson(...names: string[]): string {
+function pipelinesJson(...names: string[]): string {
   return `${JSON.stringify({
     version: 1,
     pipelines: names.map((name, index) => ({
@@ -67,14 +67,14 @@ function engineReturning(stdout: string) {
 
 describe("the capability probe", () => {
   test("an engine that answers the probe supports enumeration", () => {
-    const engine = engineReturning(rowsJson("work"));
+    const engine = engineReturning(pipelinesJson("work"));
     const pipelines = createPipelineEnumerator({ entry: "/engine/src/cli.ts", run: engine.run });
     expect(pipelines.supported()).toBe(true);
     expect(engine.calls).toEqual([["pipelines", "--probe"]]);
   });
 
   test("it is asked once per enumerator, however often it is read", () => {
-    const engine = engineReturning(rowsJson("work"));
+    const engine = engineReturning(pipelinesJson("work"));
     const pipelines = createPipelineEnumerator({ entry: "/engine/src/cli.ts", run: engine.run });
     pipelines.supported();
     pipelines.supported();
@@ -107,7 +107,7 @@ describe("the capability probe", () => {
 
 describe("enumerating a tenant", () => {
   test("pipelines come back parsed, with the tenant's config on the command line", () => {
-    const engine = engineReturning(rowsJson("work", "intake"));
+    const engine = engineReturning(pipelinesJson("work", "intake"));
     const pipelines = createPipelineEnumerator({
       entry: "/engine/src/cli.ts",
       run: engine.run,
@@ -121,7 +121,7 @@ describe("enumerating a tenant", () => {
   });
 
   test("a chatty kind module cannot corrupt the answer", () => {
-    const engine = engineReturning(`loading slack kind…\n${rowsJson("work")}`);
+    const engine = engineReturning(`loading slack kind…\n${pipelinesJson("work")}`);
     const pipelines = createPipelineEnumerator({
       entry: "/engine/src/cli.ts",
       run: engine.run,
@@ -133,7 +133,7 @@ describe("enumerating a tenant", () => {
   });
 
   test("it runs only when the tenant's stat fingerprint moved", () => {
-    const engine = engineReturning(rowsJson("work"));
+    const engine = engineReturning(pipelinesJson("work"));
     const enumerator = createPipelineEnumerator({ entry: "/engine/src/cli.ts", run: engine.run });
     const target = { configPath: "/t/phoebe.config.ts", fingerprint: "a" };
     enumerator.pipelinesFor(target);
@@ -145,7 +145,7 @@ describe("enumerating a tenant", () => {
   });
 
   test("an unknown fingerprint is never cached — unknown is not unchanged", () => {
-    const engine = engineReturning(rowsJson("work"));
+    const engine = engineReturning(pipelinesJson("work"));
     const enumerator = createPipelineEnumerator({ entry: "/engine/src/cli.ts", run: engine.run });
     const target = { configPath: "/t/phoebe.config.ts", fingerprint: null };
     enumerator.pipelinesFor(target);
@@ -154,7 +154,7 @@ describe("enumerating a tenant", () => {
   });
 
   test("each tenant is enumerated on its own", () => {
-    const engine = engineReturning(rowsJson("work"));
+    const engine = engineReturning(pipelinesJson("work"));
     const enumerator = createPipelineEnumerator({ entry: "/engine/src/cli.ts", run: engine.run });
     enumerator.pipelinesFor({ configPath: "/a/phoebe.config.ts", fingerprint: "a" });
     enumerator.pipelinesFor({ configPath: "/b/phoebe.config.ts", fingerprint: "a" });
@@ -365,7 +365,7 @@ describe("a pipeline's declared `env` (#425)", () => {
       ],
     })}\n`;
 
-  const rowsOf = (stdout: string) =>
+  const pipelinesOf = (stdout: string) =>
     createPipelineEnumerator({
       entry: "/engine/src/cli.ts",
       run: engineReturning(stdout).run,
@@ -375,15 +375,18 @@ describe("a pipeline's declared `env` (#425)", () => {
     });
 
   test("an engine too old to declare keys leaves every pipeline with none", () => {
-    expect(rowsOf(rowsJson("work", "intake")).map((pipeline) => pipeline.env)).toEqual([[], []]);
+    expect(pipelinesOf(pipelinesJson("work", "intake")).map((pipeline) => pipeline.env)).toEqual([
+      [],
+      [],
+    ]);
   });
 
   test("declared keys come back as names", () => {
-    expect(rowsOf(withEnv(["SLACK_BOT_TOKEN"]))[1]?.env).toEqual(["SLACK_BOT_TOKEN"]);
+    expect(pipelinesOf(withEnv(["SLACK_BOT_TOKEN"]))[1]?.env).toEqual(["SLACK_BOT_TOKEN"]);
   });
 
   test("a malformed `env` is a tenant fault, not a silent empty scrub", () => {
-    expect(() => rowsOf(withEnv("SLACK_BOT_TOKEN"))).toThrow(PipelineEnumerationError);
+    expect(() => pipelinesOf(withEnv("SLACK_BOT_TOKEN"))).toThrow(PipelineEnumerationError);
   });
 });
 

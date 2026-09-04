@@ -4,9 +4,10 @@
 // add/remove verb here; registering a child is an edit to the root config the
 // operator owns (#127 — Phoebe never writes it).
 //
-//   - `list`   enumerate tenants + health (config valid? env present? engine
-//              state from status.json? retained /data?), through the same #91
-//              discover walk boot supervises with. Solo has nothing to list.
+//   - `list`   enumerate tenants + health (config valid? env present? retained
+//              /data?), through the same #91 discover walk boot supervises
+//              with, and one nested line per pipeline (#427). Solo lists the
+//              deployment root itself — it is the one tenant.
 //   - `purge <owner/repo> --yes`  destructive wipe of a *removed* tenant's
 //              retained /data/repos/<slug>; refuses while a live config exists.
 //
@@ -34,8 +35,7 @@ import {
 } from "../bootstrap/workspace-source.ts";
 import { resolveCredentialArm, type CredentialArm } from "../bootstrap/credential-arm.ts";
 import { loadUserConfig } from "./load-config.ts";
-import { readStatus, statusPathFor, type StatusSnapshot } from "./unit-event.ts";
-import { DEFAULT_PIPELINE_NAME } from "./config-schema.ts";
+import { listPipelines, type LoadPipelines, type PipelineListing } from "./pipeline-listing.ts";
 
 /**
  * The named model-A constraint (#61/#63): all tenants share uid 10001, so their
@@ -204,7 +204,12 @@ export type TenantListing = {
   configValid: boolean;
   envPresent: boolean;
   retainedData: boolean;
-  status: StatusSnapshot | null;
+  /**
+   * One line per pipeline beneath the tenant row (#427): the pipelines the
+   * supervisor would spawn, plus any `state/<name>/` directory no pipeline
+   * produces. A held tenant's lines come off disk — see {@link listPipelines}.
+   */
+  pipelines: PipelineListing[];
   /**
    * Resolved credential arm: `"pat"` when an explicit `GH_TOKEN` is present in
    * the tenant's `.env`, `"app"` when there is none and the deployment holds a
@@ -228,6 +233,8 @@ export type ListTenantsResult = {
   live: number;
   /** True when the root config uses `workspace.tenants`. */
   explicit: boolean;
+  /** True when the root config is the tenant — a solo deployment (#427). */
+  solo: boolean;
   /**
    * In-tree config-carrying dirs not declared in `workspace.tenants` (explicit
    * arm only; empty otherwise). Depth-1 scan — a hint, not a guarantee (#141).
@@ -239,6 +246,11 @@ export type ListTenantsResult = {
 export const LIST_HELD_LEGEND =
   "held = discovery would skip this dir now; a held tenant may still be running — " +
   "the supervisor only drops a tenant when you edit the config.";
+
+/** Legend line for stale pipeline dirs — the per-pipeline analogue of undeclared (#427). */
+export const LIST_STALE_LEGEND =
+  "stale = state/<name>/ directory this tenant's config no longer declares (a renamed or " +
+  "deleted pipeline); nothing writes it, and deleting the directory is safe.";
 
 /** Legend line for undeclared rows on the explicit arm (#141). */
 export const LIST_UNDECLARED_LEGEND =
@@ -266,39 +278,57 @@ function readTenantArm(envPath: string): CredentialArm {
   return resolveCredentialArm(tenantEnv, process.env);
 }
 
-/** Health columns for one live tenant dir. */
-function listingForLive(
-  path: string,
-  slug: string,
-  dir: string,
-  dataBase: string,
-  configValid: boolean,
-  envPath?: string,
-  disabled = false,
-): TenantListing {
-  const resolvedEnvPath = envPath ?? join(dir, TENANT_ENV_FILE);
-  const dataDir = join(dataBase, slug);
+/** The tenant's `state/` dir, or null when its slug was never recovered. */
+function stateDirFor(dataBase: string, slug: string | null): string | null {
+  return slug === null ? null : join(dataBase, slug, "state");
+}
+
+/** Health columns plus pipeline lines for one live tenant dir. */
+async function listingForLive(opts: {
+  path: string;
+  slug: string;
+  dir: string;
+  configPath: string;
+  dataBase: string;
+  configValid: boolean;
+  envPath?: string;
+  disabled?: boolean;
+  loadPipelines?: LoadPipelines;
+}): Promise<TenantListing> {
+  const resolvedEnvPath = opts.envPath ?? join(opts.dir, TENANT_ENV_FILE);
+  const dataDir = join(opts.dataBase, opts.slug);
   return {
-    path,
-    slug,
+    path: opts.path,
+    slug: opts.slug,
     held: false,
     reason: null,
-    configValid,
-    envPresent: envPresent(dir),
+    configValid: opts.configValid,
+    envPresent: envPresent(opts.dir),
     retainedData: existsSync(dataDir),
-    status: readStatus(statusPathFor(join(dataDir, "state"), DEFAULT_PIPELINE_NAME)),
+    pipelines: await listPipelines({
+      configPath: opts.configPath,
+      stateDir: stateDirFor(opts.dataBase, opts.slug),
+      dataBase: opts.dataBase,
+      ...(opts.loadPipelines !== undefined ? { loadRows: opts.loadPipelines } : {}),
+    }),
     arm: readTenantArm(resolvedEnvPath),
-    disabled,
+    disabled: opts.disabled ?? false,
   };
 }
 
-/** Health columns for a held row; lit when discovery recovered a slug (#140). */
-function listingForHeld(
+/**
+ * Health columns for a held row; lit when discovery recovered a slug (#140).
+ *
+ * Its pipeline lines come off disk: a hold *is* the config being unreadable, so
+ * there is no pipeline set to enumerate, and the snapshots are the only evidence of
+ * what this tenant was running when discovery lost sight of it.
+ */
+async function listingForHeld(
   path: string,
   dir: string,
   hold: WorkspaceHold,
   dataBase: string,
-): TenantListing {
+): Promise<TenantListing> {
   const slug = hold.slug;
   const configReadable = slug !== null;
   const dataDir = slug !== null ? join(dataBase, slug) : null;
@@ -310,10 +340,11 @@ function listingForHeld(
     configValid: configReadable,
     envPresent: envPresent(dir),
     retainedData: dataDir !== null && existsSync(dataDir),
-    status:
-      dataDir !== null
-        ? readStatus(statusPathFor(join(dataDir, "state"), DEFAULT_PIPELINE_NAME))
-        : null,
+    pipelines: await listPipelines({
+      configPath: null,
+      stateDir: stateDirFor(dataBase, slug),
+      dataBase,
+    }),
     arm: readTenantArm(join(dir, TENANT_ENV_FILE)),
     disabled: false,
   };
@@ -406,6 +437,8 @@ export type TenantDiscoverySeams = {
   readOriginUrl?: (tenantDir: string) => string | null | Promise<string | null>;
   /** Read `disabled` from a tenant config; defaults to reading `phoebe.config.ts`. */
   loadDisabled?: (configPath: string) => boolean | Promise<boolean>;
+  /** Enumerate a tenant's pipelines; defaults to the in-process enumerator (#427). */
+  loadPipelines?: LoadPipelines;
 };
 
 /** Drop the unset seams, so an absent override never shadows a default. */
@@ -415,6 +448,7 @@ function definedSeams(seams: TenantDiscoverySeams): TenantDiscoverySeams {
     ...(seams.loadConfigDir !== undefined ? { loadConfigDir: seams.loadConfigDir } : {}),
     ...(seams.readOriginUrl !== undefined ? { readOriginUrl: seams.readOriginUrl } : {}),
     ...(seams.loadDisabled !== undefined ? { loadDisabled: seams.loadDisabled } : {}),
+    ...(seams.loadPipelines !== undefined ? { loadPipelines: seams.loadPipelines } : {}),
   };
 }
 
@@ -456,6 +490,7 @@ async function listWorkspaceTenants(opts: {
   dataBase: string;
   enumeration: WorkspaceEnumeration;
   loadDisabled?: TenantDiscoverySeams["loadDisabled"];
+  loadPipelines?: LoadPipelines;
 }): Promise<ListTenantsResult> {
   const { explicit, workspace, ...discovery } = opts.enumeration;
   const loadDisabledFn = opts.loadDisabled ?? defaultLoadDisabled;
@@ -473,15 +508,17 @@ async function listWorkspaceTenants(opts: {
       if (tenant !== undefined) {
         const disabled = await loadDisabledFn(tenant.configPath);
         listings.push(
-          listingForLive(
-            entry,
-            tenant.slug!,
-            tenant.dir,
-            opts.dataBase,
-            true,
-            tenant.envPath,
+          await listingForLive({
+            path: entry,
+            slug: tenant.slug!,
+            dir: tenant.dir,
+            configPath: tenant.configPath,
+            dataBase: opts.dataBase,
+            configValid: true,
+            envPath: tenant.envPath,
             disabled,
-          ),
+            ...(opts.loadPipelines !== undefined ? { loadPipelines: opts.loadPipelines } : {}),
+          }),
         );
         continue;
       }
@@ -492,26 +529,33 @@ async function listWorkspaceTenants(opts: {
         reason: "discovery failed",
         slug: null,
       };
-      listings.push(listingForHeld(entry, dir, hold, opts.dataBase));
+      listings.push(await listingForHeld(entry, dir, hold, opts.dataBase));
     }
   } else {
     for (const tenant of discovery.tenants) {
       const disabled = await loadDisabledFn(tenant.configPath);
       listings.push(
-        listingForLive(
-          relativeTenantPath(opts.configDir, tenant.dir),
-          tenant.slug!,
-          tenant.dir,
-          opts.dataBase,
-          true,
-          tenant.envPath,
+        await listingForLive({
+          path: relativeTenantPath(opts.configDir, tenant.dir),
+          slug: tenant.slug!,
+          dir: tenant.dir,
+          configPath: tenant.configPath,
+          dataBase: opts.dataBase,
+          configValid: true,
+          envPath: tenant.envPath,
           disabled,
-        ),
+          ...(opts.loadPipelines !== undefined ? { loadPipelines: opts.loadPipelines } : {}),
+        }),
       );
     }
     for (const hold of discovery.holds) {
       listings.push(
-        listingForHeld(relativeTenantPath(opts.configDir, hold.dir), hold.dir, hold, opts.dataBase),
+        await listingForHeld(
+          relativeTenantPath(opts.configDir, hold.dir),
+          hold.dir,
+          hold,
+          opts.dataBase,
+        ),
       );
     }
     listings.sort((a, b) => (a.slug ?? a.path).localeCompare(b.slug ?? b.path));
@@ -521,7 +565,7 @@ async function listWorkspaceTenants(opts: {
   const undeclared = isExplicitWorkspace(workspace)
     ? discoverUndeclaredInTreeTenants(opts.configDir, workspace.tenants)
     : [];
-  return { listings, declared: listings.length, live, explicit, undeclared };
+  return { listings, declared: listings.length, live, explicit, solo: false, undeclared };
 }
 
 /**
@@ -544,11 +588,70 @@ export async function listTenants(
       dataBase: opts.dataBase,
       enumeration,
       loadDisabled: opts.loadDisabled,
+      ...(opts.loadPipelines !== undefined ? { loadPipelines: opts.loadPipelines } : {}),
     });
   }
-  // Solo: exactly one tenant, and it is the deployment root itself — there is
-  // no fleet to enumerate, so `phoebe list` reports no tenants.
-  return { listings: [], declared: 0, live: 0, explicit: false, undeclared: [] };
+  return await listSoloTenant(opts);
+}
+
+/**
+ * Solo: one tenant, and it is the deployment root itself (#427).
+ *
+ * The row was empty before pipelines, because a fleet of one had nothing to
+ * account for. Its pipeline lines do — a solo deployment runs pipelines like any
+ * other tenant, and `No tenants` was hiding them. That message now means what
+ * it says: nothing is declared here at all.
+ */
+async function listSoloTenant(
+  opts: TenantDiscoverySeams & { configDir: string; dataBase: string },
+): Promise<ListTenantsResult> {
+  const empty: ListTenantsResult = {
+    listings: [],
+    declared: 0,
+    live: 0,
+    explicit: false,
+    solo: false,
+    undeclared: [],
+  };
+  const configPath = join(opts.configDir, TENANT_CONFIG_FILE);
+  if (!existsSync(configPath)) return empty;
+
+  // Slug and `disabled` come from the root config the same way a child's do;
+  // an unreadable root is listed with its columns dark rather than dropped,
+  // since the directory plainly claims to be a deployment.
+  let slug: string | null = null;
+  let disabled = false;
+  try {
+    slug = await (opts.loadRepoSlug ?? defaultLoadRepoSlug)(configPath);
+    disabled = await (opts.loadDisabled ?? defaultLoadDisabled)(configPath);
+  } catch {
+    slug = null;
+  }
+  const listing: TenantListing =
+    slug === null
+      ? {
+          path: opts.configDir,
+          slug: null,
+          held: false,
+          reason: null,
+          configValid: false,
+          envPresent: envPresent(opts.configDir),
+          retainedData: false,
+          pipelines: [],
+          arm: readTenantArm(join(opts.configDir, TENANT_ENV_FILE)),
+          disabled: false,
+        }
+      : await listingForLive({
+          path: opts.configDir,
+          slug,
+          dir: opts.configDir,
+          configPath,
+          dataBase: opts.dataBase,
+          configValid: true,
+          disabled,
+          ...(opts.loadPipelines !== undefined ? { loadPipelines: opts.loadPipelines } : {}),
+        });
+  return { listings: [listing], declared: 1, live: 1, explicit: false, solo: true, undeclared: [] };
 }
 
 /**

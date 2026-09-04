@@ -5,48 +5,57 @@ at the end, anyone writing a kind of their own. It answers how each of the five
 built-in kinds selects and executes one unit, then documents the contract every
 kind (built-in or custom) implements.
 
-Every cycle Phoebe walks `config.workOrder` and runs **one** unit of the first
-kind that has workable work. A kind is one registered **definition** — name,
-prompt, eligibility, reporting, and a `fetch`/`select`/`run` triple. Five ship
-built-in: three **janitors** that keep open PRs moving (`conflicts`, `checks`,
-`reviews`) and two **producers** that start new work (`issues`, and `research`
-for wayfinder research tickets); a tenant may register more under
-[`workKinds.custom`](configuration.md#workkinds) (see
-[Writing your own kind](#writing-your-own-kind)). This file documents how each
-built-in selects and executes a unit. Field references point at
+This is the view from inside **one pipeline**. A pipeline is one pipeline of work a
+tenant runs in its own process, with its own order, cadence and concurrency;
+every tenant has at least one, and a config that never mentions them has exactly
+one, called `work`. A kind belongs to exactly one pipeline. Everything below
+describes what that pipeline does with the kinds it owns. For the pipelines themselves, how
+they are declared, supervised and watched, read [`pipelines.md`](pipelines.md).
+
+A kind is one registered **definition** — name, prompt, eligibility, reporting,
+and a `fetch`/`select`/`run` triple. Five ship built-in: three **janitors** that
+keep open PRs moving (`conflicts`, `checks`, `reviews`) and two **producers**
+that start new work (`issues`, and `research` for wayfinder research tickets); a
+tenant may register more under
+[`pipelines.<pipeline>.kinds.custom`](configuration.md#custom-work-kinds-workkindscustom)
+(see [Writing your own kind](#writing-your-own-kind)). Field references point at
 [`configuration.md`](configuration.md); the runtime plumbing is
 `src/work-kinds/`, `src/orchestrator.ts` and `src/main.ts`.
 
-## The poll loop and `workOrder`
+## The poll loop and `order`
 
 ```yaml
-workOrder: ["conflicts", "checks", "reviews", "issues", "research"] # default
+pipelines: { work: { order: ["conflicts", "checks", "reviews", "issues", "research"] } } # default
 ```
 
-Each cycle the engine gathers work data for every kind, then `selectWorkUnits`
-walks the kinds in `workOrder` order and takes units until the pipeline's free
-slots are full — one slot by default, so one unit. The walk is depth-first: a
-kind is asked again and again until it runs out before the next kind is asked at
-all. Order is priority: with the default, a conflicting PR is reconciled before
-a red-CI PR, which is handled before review feedback, which is handled before a
-brand-new issue is picked up, which is handled before a research ticket. That
+Each pass the pipeline gathers work data for the kinds it owns, then `selectWorkUnits`
+walks them in `order` order and takes units until the pipeline's free slots are full —
+one slot by default, so one unit. The walk is depth-first: a kind is asked again
+and again until it runs out before the next kind is asked at all. Order is
+priority, so with the default a conflicting PR is reconciled before a red-CI PR,
+before review feedback, before a brand-new issue, before a research ticket. That
 keeps already-open work flowing rather than piling up new branches.
 
-Priority is all it is. A kind left out of the order still runs, after the named
+Priority is all it is. A kind left out of `order` still runs, after the named
 ones; taking one out of rotation is `disabled: true` on its tuning block. The
-field itself is now the deprecated alias for `pipelines.work.order`. See
-[`configuration.md` → Pipelines](configuration.md#pipelines).
+top-level `workOrder` is now the deprecated alias for `pipelines.work.order`.
 
-- **Persistent mode** (no flags) runs all kinds and sleeps
-  `PHOEBE_POLL_INTERVAL_MS` (default 300000) between empty cycles.
+Above one slot the pass tops the pipeline up and waits on whichever comes first: a
+unit settling, the poll interval, or a drain. See [`pipelines.md` → Units in
+flight](pipelines.md#units-in-flight).
+
+- **Persistent mode** (no flags) runs all the pipeline's kinds and sleeps the pipeline's
+  `pollIntervalMs` (default 300000) between empty cycles.
 - **`--run-once`** works at most one unit of the first _one-shot-eligible_ kind
-  and exits. `issues` and `research` are one-shot-eligible; the three janitor
-  kinds are **persistent-mode only**. Under `--run-once` with nothing to work,
-  Phoebe prints "Nothing to do" and exits.
+  and exits, with `concurrency` pinned to 1. `issues` and `research` are
+  one-shot-eligible; the three janitor kinds are **persistent-mode only**. Under
+  `--run-once` with nothing to work, Phoebe prints "Nothing to do" and exits.
 - **`--dry-run`** prints the unit it would pick without executing (host-safe).
+- **`--pipeline <name>`** picks the pipeline; absent it, the pipeline is `work`. All three
+  flags combine.
 
-A failed unit in persistent mode is logged and skipped; the engine continues to
-the next cycle. Under `--run-once`, a failure throws.
+A failed unit in persistent mode is logged and skipped; the pipeline continues to the
+next cycle. Under `--run-once`, a failure throws.
 
 ## Which PRs the janitors scan
 
@@ -330,7 +339,7 @@ operator's view.
 
 A custom kind is authored code implementing the same contract as the five
 built-ins, declared under `workKinds.custom.<name>` (field syntax and the
-declaration arms live in [`configuration.md` → workKinds](configuration.md#workkinds)).
+declaration arms live in [`configuration.md` → workKinds](configuration.md#custom-work-kinds-workkindscustom)).
 After boot-time registration the engine cannot tell a built-in from a custom
 kind: `workOrder`, `workKinds` tuning blocks, `PHOEBE_<KIND>_*` env vars
 (hyphens in the name become underscores), quarantine, concurrency slots, the
@@ -410,6 +419,13 @@ also the admission exclusion: the engine refuses to start a unit whose `github`
 object another running unit already holds, and a unit that declares none gets no
 exclusion and a log line saying so.
 
+The optional `revision` field is what "the content advanced" means for a unit
+the engine cannot see — a Slack thread's newest message `ts`, a row version, any
+string that changes when the unit does. It is the exit from the in-memory
+quarantine below; a unit that never sets it keeps its timeout count for the
+process's life. Nothing else reads it, and no built-in sets it. It exists for
+units the engine cannot see ([`pipelines.md`](pipelines.md#units-the-engine-cannot-see)).
+
 ### The `ctx` surface
 
 Kind code can never import the engine — configs and kind modules load from a
@@ -437,9 +453,16 @@ resolve. Everything arrives on `ctx` (types via `import type` from
 - `ctx.inFlight` — this kind's refs running right now, including any admitted
   earlier in the same pass. `select` must not offer one of them. Filtering on
   it is what lets your kind fill several slots when the pipeline's
-  `concurrency` is above 1; ignore it and the engine drops the repeated pick,
-  stops asking your kind for the rest of the pass, and logs why — so the cost is
-  one unit at a time, never two agents on one unit.
+  `concurrency` is above 1 ([`pipelines.md` → Units in
+  flight](pipelines.md#units-in-flight)); ignore it and the engine drops the
+  repeated pick, stops asking your kind for the rest of the pass, and logs why —
+  so the cost is one unit at a time, never two agents on one unit.
+- `ctx.quarantined` — this kind's refs the engine has quarantined in memory:
+  units with no `github` target whose timeouts reached the threshold, so there
+  was nowhere to write the `phoebe:quarantined` label. Filter them out of
+  `select` the way you filter `ctx.inFlight`. Empty for every kind whose units
+  carry `github` — those take the label path. See [Units the engine cannot
+  see](#units-the-engine-cannot-see).
 - `ctx.log(message)` — logs with the uniform `[phoebe][<kind> <ref>]` prefix.
 
 `run` receives the same surface widened with:
@@ -471,7 +494,8 @@ resolve. Everything arrives on `ctx` (types via `import type` from
   and a kind that reads neither gets no directory at all. Both are per unit:
   two units of your kind in flight together — which is what a pipeline's
   `concurrency` above 1 means — never share a path, so one unit's preparation
-  cannot clear the other's work.
+  cannot clear the other's work ([`pipelines.md` → What a pipeline owns on
+  disk](pipelines.md#what-a-pipeline-owns-on-disk)).
 
   `scratch` is why a `"readonly"` kind is usable and not merely safe. Reading
   the repo and producing something needs a reading room _and_ a desk, and the
@@ -520,6 +544,49 @@ the scratch is there for, and is not warned about. If your kind means to
 publish, go through `ctx.agent.prWorkflow` / `issueWorkflow`, which build their
 own branch-specific worktrees and own the push.
 
+### Units the engine cannot see
+
+Quarantine's skip half is a GitHub label filter, so a unit with no `github`
+target used to have nowhere to receive the marker and nothing to stop it being
+re-picked forever. It now has both, in memory: the engine counts a unit's
+whole-unit timeouts under `(kind, ref)` and, at the same threshold the label
+path uses (`maxUnproductiveRuns`, K=3 by default), puts the ref in that kind's
+`ctx.quarantined`.
+
+```ts
+select: (gathered, ctx) => {
+  const workable = gathered.threads.filter(
+    (thread) => !ctx.inFlight.has(thread.ref) && !ctx.quarantined.has(thread.ref),
+  );
+  ...
+}
+```
+
+Offering one anyway is not fatal: the engine refuses the pick at admission, logs
+it, and does not ask your kind again that pass — so ignoring the set stalls your
+kind on its poison unit rather than spending a run budget on it every pass.
+
+Three things end an in-memory quarantine, and only three:
+
+- **The unit's `revision` changes.** A later pick of the same ref carrying a
+  different `revision` is the content having advanced, so the engine forgets
+  the count and admits it. Set the field and re-offer the unit when it moves.
+- **The unit gains a `github` target.** The count is dropped and the label path
+  owns the write half from then on, starting from zero — nothing is seeded from
+  memory, so no comment ever claims timeouts an issue cannot show. The skip half
+  for such a unit stays yours: filter `phoebe:quarantined` in `select`, as the
+  built-ins do.
+- **The process ends.** The count is memory-only and never written to disk, so a
+  relaunch costs up to K run budgets on a genuinely wedged unit and keeps
+  everything under `state/` re-derivable.
+
+Terminal states that are not the engine's business — a person owns this now,
+sent back, waiting on the reporter — stay yours, recorded where the unit lives
+and expressed to the engine as a `skipped` reason from `select`; the engine's own
+vocabulary is only success, failure and quarantine. That is the [handover
+pattern](#patterns-for-a-kind-that-shares-a-repo), and why the pipelines map
+[settled it kind-owned](pipelines.md#units-the-engine-cannot-see).
+
 ### Reporting
 
 `report.noun` names your units in the idle report; skip reasons returned from
@@ -528,6 +595,12 @@ own branch-specific worktrees and own the push.
 none, the engine renders `"<total> <noun> but none workable this cycle."` —
 supply `report.idle` to override that line. `report.describe(unit)` is the
 one-line name used in logs and `--dry-run` output.
+
+The report as a whole prints only when what it renders differs from the previous
+pass — first idle pass after activity, and again whenever the skip set changes.
+A pipeline polling every few seconds would otherwise repeat one paragraph until
+it buried everything worth reading; a work pipeline at 300 s prints what it always
+printed.
 
 ### Names, prompts, and tuning
 
@@ -544,8 +617,43 @@ one-line name used in logs and `--dry-run` output.
   global env → definition defaults → repo defaults. Like a providerless block,
   definition defaults stay silent when an env flip moves the run off the
   default provider.
+- **`runTimeoutMs` is per kind.** The whole-unit wall-clock budget is settable
+  on the kind's tuning block, not only on the tenant. A ninety-second triage
+  pass and a forty-five-minute implementation run share a pipeline without either
+  wearing the other's deadline. Ladder and env overrides:
+  [`configuration.md`](configuration.md#per-work-kind-overrides).
 - **Editing a kind module requires a restart**: the reconcile watch fingerprints
   the config file only, so it does not see kind-module edits.
+
+### Patterns for a kind that shares a repo
+
+Five things a kind wants to do that the engine deliberately does not do for it.
+Each was named by the pipelines validation pass
+([`pipelines.md`](pipelines.md#the-intake-example-end-to-end)); all five are
+yours to implement, and all five are one-liners once you know they are yours.
+
+- **Draft handback.** To get structured output out of an agent, have it write a
+  kind-local draft file and read the file back. The engine knows nothing about
+  it, which is the point: no new channel, and no schema the framework has to
+  version. `ctx.workspace.scratch` is where the file goes.
+- **Handover.** A unit a person now owns is recorded where the unit lives, as a
+  marker reaction or a board field or a line in the issue body, and reaches the
+  engine only as a `skipped` reason from `select`. The engine stores no
+  handovers; its vocabulary is success, failure and quarantine.
+- **Label partitioning.** Two kinds over one repository stay out of each other's
+  way by selecting on disjoint label sets. That is kind duty, not engine duty:
+  nothing stops two kinds from claiming one issue except the labels they agree
+  to filter on. It is how a triage kind and `issues` coexist.
+- **The quarantine filter is yours.** The label path is the _write_ half: the
+  engine applies `phoebe:quarantined` and the escalation comment. The skip
+  half belongs to `select`, which must filter both the label (for GitHub units)
+  and [`ctx.quarantined`](#units-the-engine-cannot-see) (for units without a
+  `github` target). Every built-in does it in one line.
+- **A factory kind checks its own prompts.** A definition needing prompt files
+  beyond `promptFile` should verify they exist in its factory and throw. The
+  factory runs during enumeration, so the throw fails that tenant's pipeline list
+  loudly at the right moment, rather than surfacing as a missing file mid-unit
+  weeks later.
 
 ### Declared keys: `requiredEnv` and `agentEnv`
 
@@ -588,17 +696,37 @@ pipeline. Naming one is a validation error, as is an `agentEnv` key your
 
 ### The edges are edges
 
-Two capabilities are still deliberately absent, each a named extension point
-with a designed attachment — not an oversight. The design record is
-[`docs/research/slack-responder-sketch.md`](research/slack-responder-sketch.md):
-non-GitHub work sources (already possible by construction — your fetch may call
-anything reachable; ctx owes it no HTTP convenience) and a kind-extended agent
-tool surface (kind-declared MCP servers).
+Most of what the responder sketch named as missing has landed, and what is left
+is one capability, deliberately absent, with a designed attachment rather than an
+oversight. The design record is
+[`docs/research/slack-responder-sketch.md`](research/slack-responder-sketch.md).
 
-Two have landed. Kind-declared credentials arrived as `requiredEnv` and
-`agentEnv` above, with the sketch's kind-scoped hole in the agent allowlist
-opt-in per key. And the workspace modes arrived in both halves: `"scratch"` is
-the sketch's plain-directory mode, shipped under a name that admits there is
-still a directory, and `"readonly"` is the worktree half, where the don't-push
-contract turned out to be a detached checkout plus a warning rather than a
-promise or a guard. See [The don't-push contract](#the-dont-push-contract).
+**Still absent: a kind-extended agent tool surface.** Kind-declared MCP servers,
+so a kind could widen what its agent children may reach the way `agentEnv` widens
+what they may read. Where it attaches is known; nothing implements it.
+
+**Landed: kind-declared credentials.** `requiredEnv` and `agentEnv`
+[above](#declared-keys-requiredenv-and-agentenv) are the sketch's kind-scoped
+hole in the agent allowlist, opt-in per key, with the subtractive pipeline scrub the
+pipelines map added on top so a sibling pipeline's secret never reaches yours
+([`pipelines.md` → Credentials per
+pipeline](pipelines.md#credentials-per-pipeline)).
+
+**Landed: the workspace modes**, in both halves. `"scratch"` is the sketch's
+plain-directory mode under a name that admits there is still a directory, and
+`"readonly"` is the worktree half, where the don't-push contract turned out to be
+a detached checkout plus a warning rather than a promise or a guard. See [The
+don't-push contract](#the-dont-push-contract).
+
+**Never absent: non-GitHub work sources.** They were always possible by
+construction, since your `fetch` may call anything reachable and `ctx` owes it no
+HTTP convenience. What was missing was everything around one: a unit that is not a
+GitHub object had no way to be quarantined, no way to say its content had moved,
+and no separate cadence to run on. All three arrived with pipelines. A Slack
+thread is a unit with a `revision` and no `github` target, on a pipeline with its own
+`pollIntervalMs`, holding a Slack token no other pipeline can see. The worked example
+is [`pipelines.md` → The intake example](pipelines.md#the-intake-example-end-to-end).
+
+One seam is named and not built: the **wake seam**, a pipeline-scoped, payload-free
+nudge that would let a pipeline start work the moment its source has some, instead of
+at the next poll. Fixed in the design, unimplemented in the engine.
