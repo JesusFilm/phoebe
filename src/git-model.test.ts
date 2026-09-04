@@ -20,6 +20,7 @@ import {
   addWorktreeForNewBranch,
   appendTrailerToCommits,
   commitCount,
+  defaultGit,
   dirtyFileCount,
   ensureClone,
   fetchOrigin,
@@ -30,6 +31,7 @@ import {
   pushBranchWithLease,
   removeWorktree,
   unlockWorktree,
+  withOutputPrefix,
   worktreeDirForBranch,
   worktreeLease,
   type GitRunner,
@@ -429,6 +431,8 @@ describe("fetchOrigin retry", () => {
 
 describe("the worktree lease", () => {
   const leaseBranch = asBranchRef("agent/leased");
+  /** One unit's owner, as `unitOwner` composes it (#423). */
+  const OWNER = "work#issues:issue%3A7";
   let leased: string;
 
   beforeAll(() => {
@@ -445,17 +449,19 @@ describe("the worktree lease", () => {
   });
 
   test("an unlocked tree reports no lease", () => {
-    expect(worktreeLease(repoDir, leased, testGit)).toEqual({ locked: false, pipeline: null });
+    expect(worktreeLease(repoDir, leased, testGit)).toEqual({ locked: false, holder: null });
   });
 
-  test("a lock names the pipeline that took it", () => {
-    lockWorktree(repoDir, leased, formatLeaseReason({ pipeline: "work", pid: 4242 }), testGit);
-    expect(worktreeLease(repoDir, leased, testGit)).toEqual({ locked: true, pipeline: "work" });
+  // The holder is the whole owner — row *and* unit (#423) — because the caller
+  // is one unit asking whether the tree it wants is its own.
+  test("a lock names the unit that took it", () => {
+    lockWorktree(repoDir, leased, formatLeaseReason({ owner: OWNER, pid: 4242 }), testGit);
+    expect(worktreeLease(repoDir, leased, testGit)).toEqual({ locked: true, holder: OWNER });
   });
 
   test("the listing carries the reason verbatim, pid and all", () => {
     const entry = listWorktrees(repoDir, testGit).find((row) => row.dir.endsWith("agent-leased"));
-    expect(entry?.reason).toBe("pipeline=work pid=4242");
+    expect(entry?.reason).toBe(`pipeline=${OWNER} pid=4242`);
   });
 
   // The hazard the lease exists for: the old teardown fell back to a recursive
@@ -480,7 +486,7 @@ describe("the worktree lease", () => {
       },
       testGit,
     );
-    lockWorktree(repoDir, throwaway, formatLeaseReason({ pipeline: "work", pid: 1 }), testGit);
+    lockWorktree(repoDir, throwaway, formatLeaseReason({ owner: OWNER, pid: 1 }), testGit);
     unlockWorktree(repoDir, throwaway, testGit);
     removeWorktree(repoDir, throwaway, testGit);
     expect(existsSync(throwaway)).toBe(false);
@@ -494,7 +500,7 @@ describe("the worktree lease", () => {
   test("an unregistered path reports no lease", () => {
     expect(worktreeLease(repoDir, join(worktreesDir, "never-existed"), testGit)).toEqual({
       locked: false,
-      pipeline: null,
+      holder: null,
     });
   });
 
@@ -505,5 +511,59 @@ describe("the worktree lease", () => {
 
     removeWorktree(repoDir, orphan, testGit);
     expect(existsSync(orphan)).toBe(false);
+  });
+});
+
+// Attributable git output (#423). The wrapper's job is to turn the calls that
+// used to inherit the engine's terminal into calls whose every line comes back
+// through a callback, so a concurrent pipeline can stamp each with its unit.
+describe("withOutputPrefix", () => {
+  test("a call that would have inherited comes back line by line instead", () => {
+    const lines: string[] = [];
+    const runner = withOutputPrefix(defaultGit, (line) =>
+      lines.push(`[work#issues:issue%3A7] ${line}`),
+    );
+    const tree = join(worktreesDir, "echoed");
+
+    // `worktree add` says what it did on stderr — the stream a piped runner
+    // would drop if it kept only stdout.
+    runner(["worktree", "add", "-B", "agent/echoed", tree, "origin/main"], {
+      cwd: repoDir,
+      stdio: "inherit",
+    });
+
+    expect(lines.length).toBeGreaterThan(0);
+    expect(lines.every((line) => line.startsWith("[work#issues:issue%3A7] "))).toBe(true);
+    expect(lines.some((line) => line.includes("agent/echoed"))).toBe(true);
+
+    unlockWorktree(repoDir, tree, testGit);
+    removeWorktree(repoDir, tree, testGit);
+  });
+
+  test("a failing call still throws, with what git said on the error", () => {
+    const lines: string[] = [];
+    const runner = withOutputPrefix(defaultGit, (line) => lines.push(line));
+
+    expect(() =>
+      runner(["worktree", "add", join(worktreesDir, "no-such"), "refs/heads/never-existed"], {
+        cwd: repoDir,
+        stdio: "inherit",
+      }),
+    ).toThrow(/never-existed/);
+    expect(lines.length).toBeGreaterThan(0);
+  });
+
+  // Only the inheriting calls change. A caller that asked for stdout, or asked
+  // for silence, gets exactly what it asked for.
+  test("calls that capture or discard pass through untouched", () => {
+    const lines: string[] = [];
+    const spy = spyGit();
+    const runner = withOutputPrefix(spy.runner, (line) => lines.push(line));
+
+    runner(["rev-parse", "origin/main"], { cwd: repoDir });
+    runner(["worktree", "prune"], { cwd: repoDir, stdio: "ignore" });
+
+    expect(lines).toEqual([]);
+    expect(spy.calls.map((call) => call.args[0])).toEqual(["rev-parse", "worktree"]);
   });
 });

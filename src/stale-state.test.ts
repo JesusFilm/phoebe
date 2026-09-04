@@ -110,12 +110,7 @@ function unitWorktree(branch: string, opts: { lease?: string; published?: boolea
     git(paths.repoDir, "update-ref", `refs/remotes/origin/${branch}`, "HEAD");
   }
   if (opts.lease !== undefined) {
-    lockWorktree(
-      paths.repoDir,
-      dir,
-      formatLeaseReason({ pipeline: opts.lease, pid: 4242 }),
-      testGit,
-    );
+    lockWorktree(paths.repoDir, dir, formatLeaseReason({ owner: opts.lease, pid: 4242 }), testGit);
   }
   return dir;
 }
@@ -124,7 +119,7 @@ function readonlyWorktree(kind: string, opts: { lease?: string } = {}): string {
   const dir = join(paths.worktreesDir, READONLY_WORKTREES_SEGMENT, kind);
   addWorktreeDetached({ repoDir: paths.repoDir, worktreeDir: dir, ref: "origin/main" }, testGit);
   if (opts.lease !== undefined) {
-    lockWorktree(paths.repoDir, dir, formatLeaseReason({ pipeline: opts.lease, pid: 99 }), testGit);
+    lockWorktree(paths.repoDir, dir, formatLeaseReason({ owner: opts.lease, pid: 99 }), testGit);
   }
   return dir;
 }

@@ -444,9 +444,11 @@ resolve. Everything arrives on `ctx` (types via `import type` from
 
 `run` receives the same surface widened with:
 
-- `ctx.workspace` — `{ mode, dir }`: the workspace your definition's
+- `ctx.workspace` — `{ mode, dir, scratch }`: the workspace your definition's
   `workspace` field asked for, prepared and removed by the engine, and the
-  default cwd for a bare `ctx.agent.run(...)`. Three modes:
+  default cwd for a bare `ctx.agent.run(...)`. `dir` is the git shape the mode
+  names; `scratch` is a directory of your own to write anything into, and is on
+  every handle whatever the mode. Three modes:
   - `"worktree"` — a git worktree of the default branch, off the tenant's
     private clone, on the engine-named `<branchPrefix>workspace` branch. Repo
     context, and a branch to commit on.
@@ -464,9 +466,19 @@ resolve. Everything arrives on `ctx` (types via `import type` from
     a channel. Read [The don't-push contract](#the-dont-push-contract) for what
     the mode does and does not promise.
 
-  Every mode is created the first time `dir` is read, so a kind that builds its
-  own worktrees (as all five built-ins do) never pays for one, and a kind that
-  never reads `ctx.workspace.dir` never gets a directory.
+  Both are created the first time they are read, and independently, so a kind
+  that builds its own worktrees (as all five built-ins do) never pays for one,
+  and a kind that reads neither gets no directory at all. Both are per unit:
+  two units of your kind in flight together — which is what a row's
+  `concurrency` above 1 means — never share a path, so one unit's preparation
+  cannot clear the other's work.
+
+  `scratch` is why a `"readonly"` kind is usable and not merely safe. Reading
+  the repo and producing something needs a reading room _and_ a desk, and the
+  mode used to give you one or the other. It does leave `"scratch"` reading a
+  little oddly: it now means "no git shape, plus the scratch every kind has",
+  with `dir` and `scratch` the same directory. The mode is not renamed, so
+  nothing you have declared changes.
 
 - `ctx.signal` — an `AbortSignal` that fires when the unit's wall-clock budget
   expires. Pass it to async operations (fetch, sleep, agent helpers) or poll
@@ -497,15 +509,16 @@ The engine makes one check, at the unit boundary. A readonly tree left dirty or
 carrying commits is about to be deleted, so the engine warns as it deletes it:
 
 ```
-[phoebe] my-kind: the readonly workspace was modified (2 changed file(s), 0 commit(s))
+[phoebe] my-kind issue:88: the readonly workspace was modified (2 changed file(s), 0 commit(s))
 and is being discarded with the unit. A kind that means to publish should build its own
 worktree through ctx.agent.
 ```
 
 That reports work being lost. It is not a refusal, and the unit still succeeds.
-If your kind means to publish, declare `"scratch"` or `"worktree"` and go
-through `ctx.agent.prWorkflow` / `issueWorkflow`, which build their own
-branch-specific worktrees and own the push.
+The warning is about the _tree_: writing under `ctx.workspace.scratch` is what
+the scratch is there for, and is not warned about. If your kind means to
+publish, go through `ctx.agent.prWorkflow` / `issueWorkflow`, which build their
+own branch-specific worktrees and own the push.
 
 ### Reporting
 
