@@ -305,6 +305,13 @@ stay visually distinct from unit-event lines. stderr lines add a further suffix:
 `[<owner>/<repo>:<command>:stderr]`.
 The container writes no log files. Stdout is the whole story.
 
+**Which unit said it.** Anything produced on behalf of one work unit adds a
+second bracket naming it: `[phoebe:<owner>/<repo>:<row>][<kind> <ref>]` on a
+kind's own logging and on the git and install output its children produce, and
+`[<owner>/<repo>:<command>][<kind> <ref>]` on the agent's. It is there whatever
+the row's `concurrency`, so `[issues issue:88]` greps one unit's whole story —
+its clone traffic, its install, its agent — out of a row running several.
+
 **When a unit hangs.** A work unit that exceeds its wall-clock budget
 (`PHOEBE_RUN_TIMEOUT_MS`, default 45 min) is aborted so it can't starve the
 fleet, and the engine moves on. A unit that hangs **every** time is quarantined

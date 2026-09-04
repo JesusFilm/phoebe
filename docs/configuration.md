@@ -208,11 +208,12 @@ release validates the pipeline-level `disabled` and `priority` without acting
 on them. A kind's `disabled` is live now, since it is what took
 over from omission.
 
-Raise `concurrency` only for kinds that cannot collide over a worktree. Units
-of one row still share that row's workspace names, so two `worktree` kinds at
-concurrency 2 can have one unit tear down the tree the other is working in.
-Per-unit workspace isolation is a later ticket; until it lands, the safe raises
-are rows of `scratch` kinds and rows whose units never share a branch.
+Everything a unit is given is its own: its worktree lease, its scratch
+directory, its read-only tree, and the prefix on its children's output. Two
+units of one row that want the same worktree do not fight over it — the second
+finds the first's lease, logs who holds it, and comes back next cycle. What
+raising `concurrency` still costs you is throughput on kinds that genuinely
+want one tree: they will take turns rather than run together.
 
 **A kind belongs to at most one pipeline.** Two rows naming or declaring the
 same kind is fatal for the tenant at load. The rows are separate processes and
@@ -235,18 +236,25 @@ would-pick and nothing else.
 Two rows are two processes sharing one tenant's clone and one `state/` dir, so
 each owns a slice of both rather than the whole thing.
 
-| Thing                          | Owned by                                                                                                                               |
-| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `state/<pipeline>/status.json` | The row alone. `phoebe list` reads `state/work/status.json` for its tenant line.                                                       |
-| Stdout lines                   | Tagged `[phoebe:<owner>/<repo>:<pipeline>]`, including `work`'s. Match it as a prefix, not a fixed string.                             |
-| The four tracker sweeps        | Scoped to the kinds the row schedules, so two rows cover every object exactly once. A row scheduling none of a sweep's kinds skips it. |
-| The origin clone               | Shared. Cloned once, the first clone serialized by a lock under `state/`; a row whose kinds all declare `scratch` never clones at all. |
-| A worktree                     | Leased with `git worktree lock`, reason `pipeline=<name> pid=<n>`. A tree another row leases is left alone and its unit waits a cycle. |
+| Thing                          | Owned by                                                                                                                                                                               |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `state/<pipeline>/status.json` | The row alone. `phoebe list` reads `state/work/status.json` for its tenant line.                                                                                                       |
+| Stdout lines                   | Tagged `[phoebe:<owner>/<repo>:<pipeline>]`, including `work`'s. Match it as a prefix, not a fixed string.                                                                             |
+| The four tracker sweeps        | Scoped to the kinds the row schedules, so two rows cover every object exactly once. A row scheduling none of a sweep's kinds skips it.                                                 |
+| The origin clone               | Shared. Cloned once, the first clone serialized by a lock under `state/`; a row whose kinds all declare `scratch` never clones at all.                                                 |
+| A worktree                     | Leased with `git worktree lock`, reason `pipeline=<name>#<kind>:<ref> pid=<n>`. A tree anyone else leases — another row, or a sibling unit — is left alone and its unit waits a cycle. |
+| A unit's directories           | `scratch/<kind>/<ref>` and `worktrees/readonly/<kind>/<ref>`, the ref percent-encoded. One unit alone; created when first read, removed with the unit.                                 |
 
 A lease outlives the process that took it, so a row breaks its own leases at
-boot and never anyone else's. If you find a locked worktree and no engine, the
-reason string names the row that left it; `git worktree unlock` it by hand or
+boot and never anyone else's — it reads the pipeline segment of the reason and
+ignores the rest. If you find a locked worktree and no engine, the reason string
+names the row _and the unit_ that left it; `git worktree unlock` it by hand or
 let that row's next boot do it.
+
+Every line a unit's children print carries that unit:
+`[phoebe:<owner>/<repo>:<row>][<kind> <ref>]` on git and install output, and
+`[owner/repo:<provider>][<kind> <ref>]` on the agent's. Match either as a
+prefix.
 
 ### Deprecated top-level aliases
 
