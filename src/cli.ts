@@ -19,6 +19,7 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
+import { matchConfigFlag, matchPipelineFlag } from "./cli-flags.ts";
 import {
   deprecatedPipelineAliases,
   resolveConfig,
@@ -93,33 +94,19 @@ export function parseCliArgs(argv: readonly string[]): ParsedArgs {
       help = true;
       continue;
     }
-    if (arg === "--config" || arg === "-c") {
-      const next = argv[i + 1];
-      if (next === undefined) {
-        throw new Error(`${arg} requires a path argument (e.g. --config phoebe.config.ts).`);
-      }
-      configPath = next;
-      i += 1;
-      continue;
-    }
-    if (arg !== undefined && arg.startsWith("--config=")) {
-      configPath = arg.slice("--config=".length);
+    const config = matchConfigFlag(argv, i);
+    if (config !== undefined) {
+      configPath = config.value;
+      i += config.consumed - 1;
       continue;
     }
     // `--pipeline <name>` selects which pipeline of this tenant's work to run (#415).
     // Forwarded rather than consumed: `runEngine` reads the same flag back for
     // the pipeline's poll cadence and its log line.
-    if (arg === "--pipeline") {
-      const next = argv[i + 1];
-      if (next === undefined) {
-        throw new Error(`${arg} requires a pipeline name (e.g. --pipeline work).`);
-      }
-      forward.push(arg, next);
-      i += 1;
-      continue;
-    }
-    if (arg !== undefined && arg.startsWith("--pipeline=")) {
-      forward.push(arg);
+    const pipeline = matchPipelineFlag(argv, i);
+    if (pipeline !== undefined) {
+      forward.push(...argv.slice(i, i + pipeline.consumed));
+      i += pipeline.consumed - 1;
       continue;
     }
     if (arg !== undefined && arg.startsWith("-") && !ENGINE_FLAGS.has(arg)) {

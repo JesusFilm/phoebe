@@ -76,6 +76,9 @@ describe("parseUpgradeArgs", () => {
     expect(parseUpgradeArgs(["--config", "cfg.ts"]).configPath).toBe("cfg.ts");
     expect(parseUpgradeArgs(["--config=cfg.ts"]).configPath).toBe("cfg.ts");
     expect(() => parseUpgradeArgs(["--config"])).toThrow(/requires a path/);
+    // Shared with every other `--config` parser (#460): the next flag is not
+    // the path, so `--check` is not swallowed as one.
+    expect(() => parseUpgradeArgs(["--config", "--check"])).toThrow(/requires a path/);
   });
 
   test("unknown flags are rejected loudly", () => {

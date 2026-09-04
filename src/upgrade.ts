@@ -38,6 +38,7 @@ import {
   parseLsRemote,
   type GithubSource,
 } from "../bootstrap/github-engine.ts";
+import { matchConfigFlag } from "./cli-flags.ts";
 import { isInsideContainer } from "./execution-gate.ts";
 import { defaultGit, type GitRunner } from "./git-model.ts";
 import { loadUserConfig, resolveConfigPath } from "./load-config.ts";
@@ -96,17 +97,10 @@ export function parseUpgradeArgs(argv: readonly string[]): ParsedUpgradeArgs {
       json = true;
       continue;
     }
-    if (arg === "--config" || arg === "-c") {
-      const next = argv[i + 1];
-      if (next === undefined) {
-        throw new Error(`${arg} requires a path argument (e.g. --config phoebe.config.ts).`);
-      }
-      configPath = next;
-      i += 1;
-      continue;
-    }
-    if (arg.startsWith("--config=")) {
-      configPath = arg.slice("--config=".length);
+    const config = matchConfigFlag(argv, i);
+    if (config !== undefined) {
+      configPath = config.value;
+      i += config.consumed - 1;
       continue;
     }
     if (arg.startsWith("-")) {
