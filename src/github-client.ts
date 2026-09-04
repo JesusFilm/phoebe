@@ -194,9 +194,11 @@ export type GitHubClient = {
    */
   featureIntegrationPr(featureIssueNumber: number): IntegrationPr | null;
   /**
-   * Ensure the feature integration branch exists on origin; create it from
-   * `origin/<defaultBranch>` when it does not. Idempotent: a 422 (reference
-   * already exists) is swallowed.
+   * Ensure the feature integration branch exists on origin. When it does not,
+   * seed it with one empty commit over `origin/<defaultBranch>`'s tree — GitHub
+   * refuses a pull request between two refs at the same commit, and the draft
+   * integration PR opens before any member lands. Idempotent: an existing
+   * branch is used as-is, and a "Reference already exists" race is swallowed.
    */
   createFeatureBranch(featureIssueNumber: number): void;
   /**
@@ -403,7 +405,11 @@ export type GhExecutor = (
   opts?: { input?: string; inherit?: boolean },
 ) => string;
 
-function createGhExecutor(env: NodeJS.ProcessEnv): GhExecutor {
+/**
+ * The real executor: `gh` as a child process with `env`. Captured by default;
+ * `inherit` streams output through. `input` is forwarded on both paths.
+ */
+export function createGhExecutor(env: NodeJS.ProcessEnv): GhExecutor {
   return (args, opts) => {
     if (opts?.inherit) {
       execFileSync("gh", [...args], {
@@ -418,6 +424,11 @@ function createGhExecutor(env: NodeJS.ProcessEnv): GhExecutor {
       env,
       encoding: "utf8",
       timeout: CHILD_PROCESS_TIMEOUT_MS,
+      // Captured stderr is what the classifiers read; stdin carries `--input -`
+      // bodies on this path exactly as on the inherit path — dropping it here
+      // once sent GitHub an empty body for every ref and stack write.
+      stdio: ["pipe", "pipe", "pipe"],
+      ...(opts?.input !== undefined ? { input: opts.input } : {}),
     }) as unknown as string;
   };
 }
@@ -824,18 +835,51 @@ export function createGitHubClient({
 
     createFeatureBranch: (featureIssueNumber) => {
       const branch = featureBranch(featureIssueNumber);
+      const slug = config.repoSlug;
       type GitRef = { object: { sha: string } };
-      const ref = ghApiJson<GitRef>(
-        `repos/${config.repoSlug}/git/ref/heads/${config.defaultBranch}`,
-      );
+      type GitCommit = { tree: { sha: string } };
+      type NewCommit = { sha: string };
+      // The raw `gh` error, stderr first: the classifiers below read status text.
+      const ghErrorText = (error: unknown): string =>
+        `${(error as { stderr?: string }).stderr ?? ""}\n${errorText(error)}`;
+
+      // Read the default branch first so a repository-level failure (no access,
+      // wrong slug) surfaces here with its own message. After that, a 404 on
+      // the feature ref can only mean the branch is absent.
+      const head = ghApiJson<GitRef>(`repos/${slug}/git/ref/heads/${config.defaultBranch}`);
       try {
-        exec(["api", "--method", "POST", `repos/${config.repoSlug}/git/refs`, "--input", "-"], {
-          input: JSON.stringify({ ref: `refs/heads/${branch}`, sha: ref.object.sha }),
+        exec(["api", `repos/${slug}/git/ref/heads/${branch}`]);
+        return; // An existing branch is used as-is; nothing is minted.
+      } catch (error) {
+        if (!/\b404\b|Not Found/i.test(ghErrorText(error))) {
+          throw error;
+        }
+      }
+
+      // Seed the branch on one empty commit over the default branch's tree.
+      // GitHub refuses a pull request whose head and base share a commit, so a
+      // branch cut straight from the default branch could never carry the draft
+      // integration PR the arm opens on first use.
+      const headCommit = ghApiJson<GitCommit>(`repos/${slug}/git/commits/${head.object.sha}`);
+      const seed = JSON.parse(
+        exec(["api", "--method", "POST", `repos/${slug}/git/commits`, "--input", "-"], {
+          input: JSON.stringify({
+            message:
+              `Start the integration branch for feature #${featureIssueNumber}\n\n` +
+              "An empty commit so the draft integration PR can open before any member lands.",
+            tree: headCommit.tree.sha,
+            parents: [head.object.sha],
+          }),
+        }),
+      ) as NewCommit;
+      try {
+        exec(["api", "--method", "POST", `repos/${slug}/git/refs`, "--input", "-"], {
+          input: JSON.stringify({ ref: `refs/heads/${branch}`, sha: seed.sha }),
         });
       } catch (error) {
-        // 422 = branch already exists — the idempotent success case.
-        const stderr = (error as { stderr?: string }).stderr ?? "";
-        if (!/Reference already exists/i.test(stderr) && !/\b422\b/.test(stderr)) {
+        // Two members picked up back to back can race the probe; the loser's
+        // 422 names the reason. Any other 422 (a malformed body, say) is real.
+        if (!/Reference already exists/i.test(ghErrorText(error))) {
           throw error;
         }
       }
