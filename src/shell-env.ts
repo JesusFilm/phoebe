@@ -64,7 +64,7 @@ function without(env: NodeJS.ProcessEnv, keys: readonly string[]): NodeJS.Proces
 /**
  * Env for `installCommand`: the parent env minus GH_TOKEN, the GH_APP_*
  * credentials, every configured provider API key (`providerKeys` — the values
- * of `config.providerEnv`), and every key this row's kinds declared
+ * of `config.providerEnv`), and every key this pipeline's kinds declared
  * (`declaredKeys`). An install that needs GitHub auth of its own (private git
  * dependencies, GitHub Packages) must bring a dedicated token; the engine's
  * minted credential is not it.

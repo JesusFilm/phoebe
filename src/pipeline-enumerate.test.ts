@@ -1,9 +1,9 @@
-// Row enumeration (#417): the answer the bootstrapper gets when it asks a
-// materialized engine checkout which rows a tenant declares. The cases that
+// Pipeline enumeration (#417): the answer the bootstrapper gets when it asks a
+// materialized engine checkout which pipelines a tenant declares. The cases that
 // matter are the fingerprint's two halves — what must move it (a cadence edit,
 // a kind gained) and what must never (the hot `disabled` and `priority` knobs
 // at any depth) — plus the paths where enumeration is the first thing to fail:
-// a kind two rows both claim, and a custom kind module that will not load.
+// a kind two pipelines both claim, and a custom kind module that will not load.
 
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,7 +12,7 @@ import { describe, expect, test } from "vite-plus/test";
 import { resolveConfig, type PhoebeUserConfig } from "./config-schema.ts";
 import {
   enumerateDeclaredEnv,
-  enumeratePipelineRows,
+  enumeratePipelines,
   parsePipelinesArgs,
 } from "./pipeline-enumerate.ts";
 
@@ -29,7 +29,7 @@ function userConfig(overrides: Partial<PhoebeUserConfig> = {}): PhoebeUserConfig
 
 /** Enumerate a user config the way the subcommand does, minus the file I/O. */
 async function enumerate(overrides: Partial<PhoebeUserConfig> = {}, configDir = process.cwd()) {
-  return await enumeratePipelineRows(
+  return await enumeratePipelines(
     resolveConfig(userConfig(overrides), { dataBase: "/tmp/phoebe-test" }),
     configDir,
   );
@@ -55,32 +55,32 @@ const SCRATCH_KIND_SOURCE = `export default {
 };
 `;
 
-describe("enumeratePipelineRows", () => {
-  test("a config with no pipelines block enumerates one work row", async () => {
-    const rows = await enumerate();
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({
+describe("enumeratePipelines", () => {
+  test("a config with no pipelines block enumerates one work pipeline", async () => {
+    const pipelines = await enumerate();
+    expect(pipelines).toHaveLength(1);
+    expect(pipelines[0]).toMatchObject({
       name: "work",
       disabled: false,
       priority: 0,
       concurrency: 1,
       needsClone: true,
     });
-    expect(rows[0]?.fingerprint).toMatch(/^[0-9a-f]{16}$/);
+    expect(pipelines[0]?.fingerprint).toMatch(/^[0-9a-f]{16}$/);
   });
 
-  test("two declared rows enumerate with distinct fingerprints", async () => {
-    const rows = await enumerate({
+  test("two declared pipelines enumerate with distinct fingerprints", async () => {
+    const pipelines = await enumerate({
       pipelines: {
         work: { order: ["conflicts", "checks"] },
         intake: { pollIntervalMs: 15_000 },
       },
     });
-    expect(rows.map((row) => row.name)).toEqual(["work", "intake"]);
-    expect(rows[0]?.fingerprint).not.toBe(rows[1]?.fingerprint);
+    expect(pipelines.map((pipeline) => pipeline.name)).toEqual(["work", "intake"]);
+    expect(pipelines[0]?.fingerprint).not.toBe(pipelines[1]?.fingerprint);
   });
 
-  test("the hot knobs never move a fingerprint, at the row or its kinds", async () => {
+  test("the hot knobs never move a fingerprint, at the pipeline or its kinds", async () => {
     const pipelines = {
       work: { order: ["conflicts"] },
       intake: { pollIntervalMs: 15_000, kinds: { checks: { model: "sonnet" } } },
@@ -97,12 +97,14 @@ describe("enumeratePipelineRows", () => {
         },
       },
     });
-    expect(after.map((row) => row.fingerprint)).toEqual(before.map((row) => row.fingerprint));
+    expect(after.map((pipeline) => pipeline.fingerprint)).toEqual(
+      before.map((pipeline) => pipeline.fingerprint),
+    );
     // The knobs still arrive — hot means "act without relaunching", not "hide".
     expect(after[1]).toMatchObject({ name: "intake", disabled: true, priority: 5 });
   });
 
-  test("a cold knob moves only its own row's fingerprint", async () => {
+  test("a cold knob moves only its own pipeline's fingerprint", async () => {
     const before = await enumerate({
       pipelines: { work: { order: ["conflicts"] }, intake: { pollIntervalMs: 15_000 } },
     });
@@ -113,14 +115,14 @@ describe("enumeratePipelineRows", () => {
     expect(after[1]?.fingerprint).not.toBe(before[1]?.fingerprint);
   });
 
-  test("two rows tuned identically still differ, because the name is in the digest", async () => {
-    const rows = await enumerate({
+  test("two pipelines tuned identically still differ, because the name is in the digest", async () => {
+    const pipelines = await enumerate({
       pipelines: { work: { concurrency: 2 }, intake: { concurrency: 2 } },
     });
-    expect(rows[0]?.fingerprint).not.toBe(rows[1]?.fingerprint);
+    expect(pipelines[0]?.fingerprint).not.toBe(pipelines[1]?.fingerprint);
   });
 
-  test("an edited inline kind moves the fingerprint of the row that declares it", async () => {
+  test("an edited inline kind moves the fingerprint of the pipeline that declares it", async () => {
     const inline = (run: () => Promise<void>) => ({
       pipelines: {
         intake: {
@@ -150,14 +152,14 @@ describe("enumeratePipelineRows", () => {
     expect(after[1]?.fingerprint).not.toBe(before[1]?.fingerprint);
   });
 
-  test("a row whose kinds all want the repo needs a clone", async () => {
-    const rows = await enumerate({ pipelines: { work: {}, intake: { order: [] } } });
-    expect(rows[0]?.needsClone).toBe(true);
+  test("a pipeline whose kinds all want the repo needs a clone", async () => {
+    const pipelines = await enumerate({ pipelines: { work: {}, intake: { order: [] } } });
+    expect(pipelines[0]?.needsClone).toBe(true);
   });
 
-  test("a row owning only a scratch kind needs no clone", async () => {
+  test("a pipeline owning only a scratch kind needs no clone", async () => {
     const { dir } = kindModule(SCRATCH_KIND_SOURCE);
-    const rows = await enumerate(
+    const pipelines = await enumerate(
       {
         pipelines: {
           work: { order: ["conflicts", "checks", "reviews", "issues", "research"] },
@@ -166,12 +168,12 @@ describe("enumeratePipelineRows", () => {
       },
       dir,
     );
-    expect(rows[1]).toMatchObject({ name: "intake", needsClone: false });
+    expect(pipelines[1]).toMatchObject({ name: "intake", needsClone: false });
   });
 
-  test("a disabled worktree kind still keeps its row's clone", async () => {
+  test("a disabled worktree kind still keeps its pipeline's clone", async () => {
     const { dir } = kindModule(SCRATCH_KIND_SOURCE);
-    const rows = await enumerate(
+    const pipelines = await enumerate(
       {
         pipelines: {
           work: { order: ["conflicts", "reviews", "issues", "research"] },
@@ -183,7 +185,7 @@ describe("enumeratePipelineRows", () => {
       },
       dir,
     );
-    expect(rows[1]).toMatchObject({ name: "intake", needsClone: true });
+    expect(pipelines[1]).toMatchObject({ name: "intake", needsClone: true });
   });
 
   test("a kind module that throws on load surfaces as an enumerate failure", async () => {
@@ -208,25 +210,27 @@ const DECLARING_KIND_SOURCE = `export default {
 };
 `;
 
-describe("the per-row `env` (#425)", () => {
-  test("a row whose kinds declare nothing reports no keys", async () => {
-    const rows = await enumerate();
-    expect(rows[0]?.env).toEqual([]);
+describe("the per-pipeline `env` (#425)", () => {
+  test("a pipeline whose kinds declare nothing reports no keys", async () => {
+    const pipelines = await enumerate();
+    expect(pipelines[0]?.env).toEqual([]);
   });
 
-  test("the declaring row reports the key and its sibling does not", async () => {
+  test("the declaring pipeline reports the key and its sibling does not", async () => {
     const { dir } = kindModule(DECLARING_KIND_SOURCE);
-    const rows = await enumerate(
+    const pipelines = await enumerate(
       { pipelines: { intake: { kinds: { custom: { nudge: "./nudge.ts" } } } } },
       dir,
     );
-    expect(rows.find((row) => row.name === "intake")?.env).toEqual(["SLACK_BOT_TOKEN"]);
-    expect(rows.find((row) => row.name === "work")?.env).toEqual([]);
+    expect(pipelines.find((pipeline) => pipeline.name === "intake")?.env).toEqual([
+      "SLACK_BOT_TOKEN",
+    ]);
+    expect(pipelines.find((pipeline) => pipeline.name === "work")?.env).toEqual([]);
   });
 
   test("a kind switched off contributes no key — `env` is the reach of live work", async () => {
     const { dir } = kindModule(DECLARING_KIND_SOURCE);
-    const rows = await enumerate(
+    const pipelines = await enumerate(
       {
         pipelines: {
           intake: { kinds: { custom: { nudge: "./nudge.ts" }, nudge: { disabled: true } } },
@@ -234,12 +238,12 @@ describe("the per-row `env` (#425)", () => {
       },
       dir,
     );
-    expect(rows.find((row) => row.name === "intake")?.env).toEqual([]);
+    expect(pipelines.find((pipeline) => pipeline.name === "intake")?.env).toEqual([]);
   });
 });
 
 describe("enumerateDeclaredEnv", () => {
-  test("attributes each declared key to the row and kind that named it", async () => {
+  test("attributes each declared key to the pipeline and kind that named it", async () => {
     const { dir } = kindModule(DECLARING_KIND_SOURCE);
     const declarations = await enumerateDeclaredEnv(
       resolveConfig(
@@ -255,7 +259,7 @@ describe("enumerateDeclaredEnv", () => {
 });
 
 describe("the tenant faults enumeration reports", () => {
-  test("a kind claimed by two pipelines is fatal before any row is enumerated", () => {
+  test("a kind claimed by two pipelines is fatal before any pipeline is enumerated", () => {
     expect(() =>
       resolveConfig(
         userConfig({

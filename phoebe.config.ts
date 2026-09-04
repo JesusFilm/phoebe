@@ -77,7 +77,7 @@ export const config = defineConfig({
   // docs/claude-subscription-auth.md.
   providerEnv: { claude: "CLAUDE_CODE_OAUTH_TOKEN" },
 
-  // This tenant's rows of work (#415/#419). Only the reserved `work` row, which
+  // This tenant's pipelines of work (#415/#419). Only the reserved `work` pipeline, which
   // is what an engine child with no `--pipeline` flag runs; `pipelines.work.kinds`
   // is where `workKinds` and `promptFiles` moved.
   //

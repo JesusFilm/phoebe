@@ -17,10 +17,10 @@
 // process in a log line and nothing reads it back.
 //
 // The owner is read at two grains, which is the whole design. A *unit* holds
-// the lease, so a sibling unit of the same row finding the tree busy skips its
+// the lease, so a sibling unit of the same pipeline finding the tree busy skips its
 // cycle instead of tearing down a live agent's tree (#423). A *pipeline* breaks
 // the lease at boot, since a killed engine leaves its trees locked and only the
-// row that took them may clear them. `leaseHolder` answers the first question
+// pipeline that took them may clear them. `leaseHolder` answers the first question
 // and `leasePipeline` the second, off the one reason string. The unit segment's
 // composition lives in unit-scope.ts, which is also where the two per-unit
 // directories get their names.
@@ -51,7 +51,7 @@ export function formatLeaseReason(opts: { owner: string; pid: number }): string 
  *
  * This is the identity a unit compares its own against before it takes a tree
  * apart, so it must be the whole string: a lease held by a sibling unit of this
- * very pipeline is as much someone else's as another row's.
+ * very pipeline is as much someone else's as another pipeline's.
  */
 export function leaseHolder(reason: string | null): string | null {
   if (reason === null) return null;
@@ -63,7 +63,7 @@ export function leaseHolder(reason: string | null): string | null {
  * Which pipeline holds a lease, from its reason string — or `null` when the
  * reason is not one of ours.
  *
- * The row is everything up to the first `#`, so both the unit-keyed form and a
+ * The pipeline is everything up to the first `#`, so both the unit-keyed form and a
  * bare `pipeline=work` left by an older engine parse to `work`. That is what
  * lets the boot-time break clear a process's own leases without knowing units
  * exist, and the stale-state sweep that lands after this will read the same

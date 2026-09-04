@@ -59,7 +59,7 @@ describe("unitDir", () => {
 });
 
 describe("unitOwner", () => {
-  test("joins the row and the unit across the segment the boot break reads", () => {
+  test("joins the pipeline and the unit across the segment the boot break reads", () => {
     expect(unitOwner("work", { kind: "issues", id: "issue:88" })).toBe("work#issues:issue%3A88");
   });
 

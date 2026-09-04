@@ -130,22 +130,29 @@ A GitHub token the bootstrapper hands the engine for a bounded period, re-read o
 rather than baked into the process.
 _Avoid_: credential handoff, token grant
 
+**Pipeline**:
+One named body of a tenant's work, run as its own supervised engine child — the
+`(tenant × pipeline)` pairing is the unit the supervisor spawns, reconciles, and drains.
+Every tenant has at least the reserved `work` pipeline. The word covers both the config
+declaration and the running child; the tenant half of the id disambiguates instances.
+_Avoid_: row, lane, cell, worker
+
 **Slot**:
-Permission to execute one work unit, granted by the bootstrapper. A row holds one per unit
-it has in flight.
+Permission to execute one work unit, granted by the bootstrapper. A pipeline holds one per
+unit it has in flight.
 _Avoid_: lock, permit, ticket
 
 **Effective cap**:
-How many slots the container hands out at once: the largest `concurrency` any live row
-declares, or the operator's env override.
+How many slots the container hands out at once: the largest `concurrency` any live
+pipeline declares, or the operator's env override.
 _Avoid_: limit, max agents
 
-**Starved row**:
-A row holding no slot while it has work waiting for one.
-_Avoid_: blocked, queued
+**Starved pipeline**:
+A pipeline holding no slot while it has work waiting for one.
+_Avoid_: blocked, queued, starved row
 
 **Slot floor**:
-The bounded allowance that lets a starved row hold a slot over the effective cap.
+The bounded allowance that lets a starved pipeline hold a slot over the effective cap.
 _Avoid_: reserve, guarantee, boost
 
 **Engine source**:

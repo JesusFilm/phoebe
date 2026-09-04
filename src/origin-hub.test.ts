@@ -162,7 +162,7 @@ describe("requiresOriginClone", () => {
   };
   const modeFor = (kind: string): string => modes[kind] ?? "scratch";
 
-  test("a row with a worktree kind needs the clone", () => {
+  test("a pipeline with a worktree kind needs the clone", () => {
     expect(requiresOriginClone(["digest", "issues"], modeFor)).toBe(true);
   });
 
@@ -170,11 +170,11 @@ describe("requiresOriginClone", () => {
     expect(requiresOriginClone(["scout"], modeFor)).toBe(true);
   });
 
-  test("a row whose kinds all declare scratch never clones", () => {
+  test("a pipeline whose kinds all declare scratch never clones", () => {
     expect(requiresOriginClone(["digest", "nudge"], modeFor)).toBe(false);
   });
 
-  test("a row with no kinds at all never clones", () => {
+  test("a pipeline with no kinds at all never clones", () => {
     expect(requiresOriginClone([], modeFor)).toBe(false);
   });
 });

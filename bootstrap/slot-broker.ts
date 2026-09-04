@@ -1,26 +1,26 @@
 // The supervisor's global concurrency broker — scheduling across N repos (#59).
-// One per container, covering every row the supervisor runs in either arm: solo
+// One per container, covering every pipeline the supervisor runs in either arm: solo
 // is a one-tenant fleet, so it contends here too rather than against a broker of
 // its own (#416).
 //
-// One engine child per row, but one machine: left ungated, N children could run
+// One engine child per pipeline, but one machine: left ungated, N children could run
 // N heavy work units (worktree + install + agent + test + push) at once and
 // thrash the host. The supervisor holds a single in-memory counting semaphore
 // and hands out a bounded number of *slots*; a child requests one per unit it
 // admits and releases it when that unit finishes. The cheap poll → fetch →
 // select phase stays ungated and parallel across children.
 //
-// A row holds as many slots as it has units in flight, so the cap can no longer
+// A pipeline holds as many slots as it has units in flight, so the cap can no longer
 // be a constant 1 (#407). Three rules replace it:
 //
 //   - **The effective cap is derived**: `max(declared concurrency)` across the
-//     live rows, so a row's own `concurrency` is always achievable when it is
-//     the only one working, while the cap still binds across rows. Today's fleet
-//     — every row at 1 — derives 1, so the upgrade is a no-op.
+//     live pipelines, so a pipeline's own `concurrency` is always achievable when it is
+//     the only one working, while the cap still binds across pipelines. Today's fleet
+//     — every pipeline at 1 — derives 1, so the upgrade is a no-op.
 //     `PHOEBE_MAX_CONCURRENT_AGENTS` replaces the derived number absolutely,
 //     even when lower: the operator knows the machine and the tenant does not.
-//     A row declaring more than the cap is not clamped locally; it queues.
-//   - **The slot floor**: a row holding zero slots with a waiter is *starved*
+//     A pipeline declaring more than the cap is not clamped locally; it queues.
+//   - **The slot floor**: a pipeline holding zero slots with a waiter is *starved*
 //     and may be granted one slot over the cap, at most `floorBudget` such
 //     over-grants fleet-wide at once (`PHOEBE_SLOT_FLOOR_BUDGET`, default 1;
 //     0 is a hard ceiling). It guarantees progress, not throughput — one long
@@ -29,18 +29,18 @@
 //     the over-grant first, and no freed slot is handed to a waiter while
 //     `inUse` exceeds the cap.
 //   - **Priority orders the queue**: round-robin picks the tenant, then the
-//     row's `priority` (higher first, ties FIFO) picks among that tenant's
-//     waiting rows. Tenant-local by design — the knob lives in tenant config,
+//     pipeline's `priority` (higher first, ties FIFO) picks among that tenant's
+//     waiting pipelines. Tenant-local by design — the knob lives in tenant config,
 //     so a globally-comparable value would let a tenant revoke cross-tenant
 //     fairness. Waiters are sorted at grant time, not at enqueue, which is what
 //     makes `priority` hot: a change lands on everyone already queued with no
 //     queue surgery.
 //
-// Fairness stays per *row*: a tenant declaring three pipelines gets three queue
+// Fairness stays per *pipeline*: a tenant declaring three pipelines gets three queue
 // positions against a one-pipeline tenant's one, deliberately, because that is
 // what declaring three independent streams means.
 //
-// The broker is the only entity that sees all rows — the natural fairness
+// The broker is the only entity that sees all pipelines — the natural fairness
 // authority — and crash-reclaim is clean: when a child dies (crash / OOM /
 // reconcile-SIGTERM) the supervisor reclaims every slot it held and restores any
 // floor budget it was holding, so no failure mode can permanently shrink the cap
@@ -52,21 +52,21 @@
 export const DEFAULT_SLOT_FLOOR_BUDGET = 1;
 
 /**
- * A live row as the broker orders and sizes for it: who it contends against,
- * how it ranks among its tenant's rows, and what it declared it would admit.
- * The supervisor pushes the whole matrix on every poll (`setRows`), so a hot
+ * A live pipeline as the broker orders and sizes for it: who it contends against,
+ * how it ranks among its tenant's pipelines, and what it declared it would admit.
+ * The supervisor pushes the whole matrix on every poll (`setPipelines`), so a hot
  * `priority` edit takes effect without relaunching anything.
  */
-export type BrokerRow = {
+export type BrokerPipeline = {
   /** The owner id — `<tenantId>#<pipeline>`, the same key `acquire` uses. */
   id: string;
-  /** The tenant this row belongs to; round-robin is over tenants. */
+  /** The tenant this pipeline belongs to; round-robin is over tenants. */
   tenantId: string;
-  /** Tenant-local rank among that tenant's waiting rows. Higher wins. */
+  /** Tenant-local rank among that tenant's waiting pipelines. Higher wins. */
   priority: number;
-  /** What the row declared it may hold in flight — the cap's derivation input. */
+  /** What the pipeline declared it may hold in flight — the cap's derivation input. */
   concurrency: number;
-  /** How an operator reads the row in a log line (`<slug>:<pipeline>`). */
+  /** How an operator reads the pipeline in a log line (`<slug>:<pipeline>`). */
   label?: string;
 };
 
@@ -74,36 +74,36 @@ export type BrokerRow = {
 export type EffectiveCap = {
   /** What the broker will run concurrently, floor excluded. */
   capacity: number;
-  /** `max(declared concurrency)` across the live rows — the derived number. */
+  /** `max(declared concurrency)` across the live pipelines — the derived number. */
   declared: number;
   /** Whether the operator's env replaced the derivation. */
   source: "env" | "derived";
-  /** Labels of the rows the derivation took its max from. */
+  /** Labels of the pipelines the derivation took its max from. */
   from: readonly string[];
-  /** Rows declaring more than the cap. They queue; nothing is clamped locally. */
+  /** Pipelines declaring more than the cap. They queue; nothing is clamped locally. */
   clamped: readonly { label: string; concurrency: number }[];
 };
 
 /** How an owner reads in a log line when the supervisor gave no label. */
-function labelOf(row: BrokerRow): string {
-  return row.label ?? row.id;
+function labelOf(pipeline: BrokerPipeline): string {
+  return pipeline.label ?? pipeline.id;
 }
 
 /**
- * The effective cap for a live row matrix: `max(declared concurrency)`, or
+ * The effective cap for a live pipeline matrix: `max(declared concurrency)`, or
  * `PHOEBE_MAX_CONCURRENT_AGENTS` when it is set to a valid value. The env
  * *replaces* the derivation, winning even when lower — that is what the variable
  * has always meant. A missing, non-numeric or < 1 value is no override at all.
  *
- * An empty matrix derives 1: a container with no rows has nothing to size for,
- * and the first row reshape recomputes.
+ * An empty matrix derives 1: a container with no pipelines has nothing to size for,
+ * and the first pipeline reshape recomputes.
  */
 export function resolveEffectiveCap(
-  rows: readonly BrokerRow[],
+  pipelines: readonly BrokerPipeline[],
   env: NodeJS.ProcessEnv = process.env,
 ): EffectiveCap {
-  const declaredBy = rows
-    .map((row) => Math.floor(row.concurrency))
+  const declaredBy = pipelines
+    .map((pipeline) => Math.floor(pipeline.concurrency))
     .filter((n) => Number.isInteger(n) && n >= 1);
   const declared = Math.max(1, ...declaredBy);
   const raw = Number(env["PHOEBE_MAX_CONCURRENT_AGENTS"]);
@@ -113,10 +113,12 @@ export function resolveEffectiveCap(
     capacity,
     declared,
     source: override === null ? "derived" : "env",
-    from: rows.filter((row) => Math.floor(row.concurrency) === declared).map(labelOf),
-    clamped: rows
-      .filter((row) => row.concurrency > capacity)
-      .map((row) => ({ label: labelOf(row), concurrency: row.concurrency })),
+    from: pipelines
+      .filter((pipeline) => Math.floor(pipeline.concurrency) === declared)
+      .map(labelOf),
+    clamped: pipelines
+      .filter((pipeline) => pipeline.concurrency > capacity)
+      .map((pipeline) => ({ label: labelOf(pipeline), concurrency: pipeline.concurrency })),
   };
 }
 
@@ -126,38 +128,38 @@ export function resolveEffectiveCap(
  * operator-side, deliberately not tenant-authored), read together to state the
  * worst case, which is `capacity + floorBudget`. **0 is a valid value** — an
  * operator who needs a hard ceiling sets it and accepts what it costs a starved
- * row. A negative or non-integer value is no answer, so the default stands.
+ * pipeline. A negative or non-integer value is no answer, so the default stands.
  */
 export function resolveFloorBudget(env: NodeJS.ProcessEnv = process.env): number {
   const raw = Number(env["PHOEBE_SLOT_FLOOR_BUDGET"]);
   return Number.isInteger(raw) && raw >= 0 ? raw : DEFAULT_SLOT_FLOOR_BUDGET;
 }
 
-/** How many rows a boot line names before it summarizes the rest. */
-const MAX_NAMED_ROWS = 3;
+/** How many pipelines a boot line names before it summarizes the rest. */
+const MAX_NAMED_PIPELINES = 3;
 
-function nameRows(labels: readonly string[]): string {
-  const named = labels.slice(0, MAX_NAMED_ROWS).join(", ");
-  const rest = labels.length - MAX_NAMED_ROWS;
+function namePipelines(labels: readonly string[]): string {
+  const named = labels.slice(0, MAX_NAMED_PIPELINES).join(", ");
+  const rest = labels.length - MAX_NAMED_PIPELINES;
   return rest > 0 ? `${named} (+${rest} more)` : named;
 }
 
 /**
  * The cap, its derivation and the clamp warning, on one line — the two numbers
  * of the worst-case formula stated where an operator can read them without
- * reverse-engineering the row set (#407).
+ * reverse-engineering the pipeline set (#407).
  */
 export function describeCap(cap: EffectiveCap, floorBudget: number): string {
   const derivation =
     cap.source === "env"
       ? `PHOEBE_MAX_CONCURRENT_AGENTS=${cap.capacity} replaces max(concurrency)=${cap.declared}`
       : cap.from.length > 0
-        ? `max(concurrency)=${cap.declared} from ${nameRows(cap.from)}`
-        : `max(concurrency)=${cap.declared}, no live rows yet`;
+        ? `max(concurrency)=${cap.declared} from ${namePipelines(cap.from)}`
+        : `max(concurrency)=${cap.declared}, no live pipelines yet`;
   const clamp =
     cap.clamped.length > 0
       ? `; declaring more than the cap and queuing for it (not clamped): ` +
-        nameRows(cap.clamped.map((row) => `${row.label}(${row.concurrency})`))
+        namePipelines(cap.clamped.map((pipeline) => `${pipeline.label}(${pipeline.concurrency})`))
       : "";
   return `slot cap ${cap.capacity} — ${derivation}; floorBudget=${floorBudget}${clamp}`;
 }
@@ -184,12 +186,12 @@ export type SlotBroker = {
   /** A child died: drop its queued requests and release every slot it held. */
   reclaim(owner: string): void;
   /**
-   * The live row matrix, as of this poll. Hot: it refreshes each row's tenant
+   * The live pipeline matrix, as of this poll. Hot: it refreshes each pipeline's tenant
    * and `priority` for the next grant and never touches the cap.
    */
-  setRows(rows: readonly BrokerRow[]): void;
+  setPipelines(pipelines: readonly BrokerPipeline[]): void;
   /**
-   * Resize on a row-reshaping reconcile. Slots already granted are never
+   * Resize on a pipeline-reshaping reconcile. Slots already granted are never
    * recalled — a shrink lets `inUse` fall back to the new ceiling instead.
    */
   setCapacity(capacity: number): void;
@@ -211,7 +213,7 @@ export type SlotBroker = {
 export function createSlotBroker(opts: {
   capacity: number;
   floorBudget?: number;
-  /** A starved row was let over the cap. */
+  /** A starved pipeline was let over the cap. */
   onOverGrant?: (event: OverGrantEvent) => void;
   /** An over-cap grant came back, restoring the budget. */
   onOverGrantReturned?: (event: OverGrantEvent) => void;
@@ -219,9 +221,9 @@ export function createSlotBroker(opts: {
   const floorBudget = Math.max(0, Math.floor(opts.floorBudget ?? DEFAULT_SLOT_FLOOR_BUDGET));
   let cap = Math.max(1, Math.floor(opts.capacity));
   const held = new Map<string, number>();
-  /** Which of an owner's held slots are over-cap. At most one per row, by rule. */
+  /** Which of an owner's held slots are over-cap. At most one per pipeline, by rule. */
   const overGrants = new Map<string, number>();
-  const rows = new Map<string, BrokerRow>();
+  const pipelines = new Map<string, BrokerPipeline>();
   const queue: Waiter[] = [];
 
   const total = (counts: ReadonlyMap<string, number>): number => {
@@ -234,9 +236,9 @@ export function createSlotBroker(opts: {
 
   // An owner the supervisor has not described yet is its own tenant at priority
   // 0: it keeps a queue position of its own and outranks nobody.
-  const tenantOf = (owner: string): string => rows.get(owner)?.tenantId ?? owner;
-  const priorityOf = (owner: string): number => rows.get(owner)?.priority ?? 0;
-  const nameOf = (owner: string): string => rows.get(owner)?.label ?? owner;
+  const tenantOf = (owner: string): string => pipelines.get(owner)?.tenantId ?? owner;
+  const priorityOf = (owner: string): number => pipelines.get(owner)?.priority ?? 0;
+  const nameOf = (owner: string): string => pipelines.get(owner)?.label ?? owner;
 
   const take = (owner: string): void => {
     held.set(owner, (held.get(owner) ?? 0) + 1);
@@ -260,7 +262,7 @@ export function createSlotBroker(opts: {
   /**
    * The grant-time ordering, over the waiters this pass may serve: round-robin
    * picks the tenant — the one whose waiter has been queued longest — and
-   * `priority` picks among that tenant's waiting rows, ties falling back to
+   * `priority` picks among that tenant's waiting pipelines, ties falling back to
    * FIFO. Read fresh on every grant, so a `priority` edit needs no queue
    * surgery. Returns the queue index to serve, or -1 when nothing is eligible.
    */
@@ -305,7 +307,7 @@ export function createSlotBroker(opts: {
    * two rules that keep a breach bounded live here: the regular loop stops the
    * moment `inUse` reaches the cap — so while `inUse` exceeds it (an over-grant
    * is out) a freed slot lets `inUse` fall rather than going to a waiter — and
-   * the floor loop only ever serves a *starved* row, one holding no slot at all.
+   * the floor loop only ever serves a *starved* pipeline, one holding no slot at all.
    */
   const pump = (): void => {
     while (inUse() < cap) {
@@ -334,8 +336,8 @@ export function createSlotBroker(opts: {
       // release (double-release, release-without-acquire) rather than over-grant.
       if ((held.get(owner) ?? 0) === 0) return;
       drop(held, owner);
-      // The over-grant goes back first, so the row drops back to a normal
-      // citizen — and the budget frees for the next starved row — as early as
+      // The over-grant goes back first, so the pipeline drops back to a normal
+      // citizen — and the budget frees for the next starved pipeline — as early as
       // possible.
       if ((overGrants.get(owner) ?? 0) > 0) {
         drop(overGrants, owner);
@@ -355,9 +357,9 @@ export function createSlotBroker(opts: {
       if (returned) opts.onOverGrantReturned?.(event(owner));
       pump();
     },
-    setRows(next: readonly BrokerRow[]): void {
-      rows.clear();
-      for (const row of next) rows.set(row.id, row);
+    setPipelines(next: readonly BrokerPipeline[]): void {
+      pipelines.clear();
+      for (const pipeline of next) pipelines.set(pipeline.id, pipeline);
     },
     setCapacity(capacity: number): void {
       cap = Math.max(1, Math.floor(capacity));

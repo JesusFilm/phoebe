@@ -73,7 +73,7 @@ export function buildRegistry(
   // A kind block's `promptFile` re-points whichever definition lands under that
   // name (#415), so the knob means the same thing for a custom kind as for a
   // built-in. Built-ins reach the same value through `config.promptFiles`,
-  // which row selection has already folded the block into; re-applying it here
+  // which pipeline selection has already folded the block into; re-applying it here
   // is a no-op for them and the only path for a custom kind.
   const withDeclaredPrompt = (
     name: string,

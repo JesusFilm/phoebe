@@ -16,10 +16,10 @@ import {
   setupGitCredentials,
   rowArgv,
   tenantFingerprint,
-  trackRows,
-  workspaceRowFingerprint,
+  trackPipelines,
+  workspacePipelineFingerprint,
 } from "./boot.ts";
-import type { SupervisedRow } from "./pipeline-rows.ts";
+import type { SupervisedPipeline } from "./pipelines.ts";
 import { createSlotBroker } from "./slot-broker.ts";
 
 describe("resolveEngineEntry", () => {
@@ -315,7 +315,7 @@ describe("tenantFingerprint — token removal (retention regression)", () => {
 });
 
 describe("rowArgv", () => {
-  const row = (name: string, enumerated: boolean): SupervisedRow => ({
+  const pipeline = (name: string, enumerated: boolean): SupervisedPipeline => ({
     id: `/etc/phoebe/repos/acme/widget#${name}`,
     tenant: {
       id: "/etc/phoebe/repos/acme/widget",
@@ -338,16 +338,21 @@ describe("rowArgv", () => {
     siblingEnv: [],
   });
 
-  test("names the row the child is to run", () => {
+  test("names the pipeline the child is to run", () => {
     expect(
-      rowArgv(row("intake", true), "/etc/phoebe/repos/acme/widget/phoebe.config.ts", false, []),
+      rowArgv(
+        pipeline("intake", true),
+        "/etc/phoebe/repos/acme/widget/phoebe.config.ts",
+        false,
+        [],
+      ),
     ) //
       .toEqual(["--pipeline", "intake"]);
   });
 
-  test("keeps `--config` for a relocated asset dir, ahead of the row", () => {
+  test("keeps `--config` for a relocated asset dir, ahead of the pipeline", () => {
     const configPath = "/etc/phoebe/repos/acme/widget/phoebe.config.ts";
-    expect(rowArgv(row("work", true), configPath, true, ["--dry-run"])).toEqual([
+    expect(rowArgv(pipeline("work", true), configPath, true, ["--dry-run"])).toEqual([
       "--config",
       configPath,
       "--pipeline",
@@ -356,11 +361,11 @@ describe("rowArgv", () => {
     ]);
   });
 
-  test("omits `--pipeline` for the implicit row of an engine that cannot enumerate", () => {
+  test("omits `--pipeline` for the implicit pipeline of an engine that cannot enumerate", () => {
     // That checkout has no such flag and would exit on it before reading a
     // config, so an engine downgrade must stay a no-op (#417).
     expect(
-      rowArgv(row("work", false), "/etc/phoebe/repos/acme/widget/phoebe.config.ts", false, [
+      rowArgv(pipeline("work", false), "/etc/phoebe/repos/acme/widget/phoebe.config.ts", false, [
         "--run-once",
       ]),
     ) //
@@ -368,12 +373,12 @@ describe("rowArgv", () => {
   });
 });
 
-describe("trackRows", () => {
-  const row = (
+describe("trackPipelines", () => {
+  const pipeline = (
     slug: string,
     name: string,
     knobs: { concurrency?: number; priority?: number } = {},
-  ): SupervisedRow => ({
+  ): SupervisedPipeline => ({
     id: `/etc/phoebe/repos/${slug}#${name}`,
     tenant: {
       id: `/etc/phoebe/repos/${slug}`,
@@ -410,35 +415,38 @@ describe("trackRows", () => {
   }
 
   const MATRIX = [
-    row("acme/widget", "work"),
-    row("acme/widget", "intake"),
-    row("acme/gadget", "work", { concurrency: 4 }),
+    pipeline("acme/widget", "work"),
+    pipeline("acme/widget", "intake"),
+    pipeline("acme/gadget", "work", { concurrency: 4 }),
   ];
 
-  test("derives the cap from the live rows and logs the derivation once", () => {
+  test("derives the cap from the live pipelines and logs the derivation once", () => {
     const broker = createSlotBroker({ capacity: 1 });
     const log = captureLog();
     try {
-      const track = trackRows(broker, {});
-      track({ rows: MATRIX, reshaped: true });
+      const track = trackPipelines(broker, {});
+      track({ pipelines: MATRIX, reshaped: true });
       expect(broker.capacity).toBe(4);
-      // Rows declaring 1, 1 and 4 derive 4, and the line says where from.
+      // Pipelines declaring 1, 1 and 4 derive 4, and the line says where from.
       expect(log.lines).toEqual([
         "[phoebe] boot: slot cap 4 — max(concurrency)=4 from acme/gadget:work; floorBudget=1",
       ]);
       // A second reshape saying the same thing does not repeat itself.
-      track({ rows: MATRIX, reshaped: true });
+      track({ pipelines: MATRIX, reshaped: true });
       expect(log.lines).toHaveLength(1);
     } finally {
       log.restore();
     }
   });
 
-  test("the env replaces the derivation, and the over-cap row is named as queuing", () => {
+  test("the env replaces the derivation, and the over-cap pipeline is named as queuing", () => {
     const broker = createSlotBroker({ capacity: 1 });
     const log = captureLog();
     try {
-      trackRows(broker, { PHOEBE_MAX_CONCURRENT_AGENTS: "2" })({ rows: MATRIX, reshaped: true });
+      trackPipelines(broker, { PHOEBE_MAX_CONCURRENT_AGENTS: "2" })({
+        pipelines: MATRIX,
+        reshaped: true,
+      });
       expect(broker.capacity).toBe(2);
       expect(log.lines[0]).toContain("slot cap 2 — PHOEBE_MAX_CONCURRENT_AGENTS=2");
       expect(log.lines[0]).toContain("acme/gadget:work(4)");
@@ -451,8 +459,11 @@ describe("trackRows", () => {
     const broker = createSlotBroker({ capacity: 1, floorBudget: 0 });
     const log = captureLog();
     try {
-      const track = trackRows(broker, {});
-      track({ rows: [row("acme/widget", "work"), row("acme/widget", "intake")], reshaped: true });
+      const track = trackPipelines(broker, {});
+      track({
+        pipelines: [pipeline("acme/widget", "work"), pipeline("acme/widget", "intake")],
+        reshaped: true,
+      });
       expect(broker.capacity).toBe(1);
 
       await broker.acquire("/etc/phoebe/repos/acme/widget#work");
@@ -464,13 +475,13 @@ describe("trackRows", () => {
         }),
       ];
 
-      // A hot `priority` edit: the row set is the same shape, so the cap holds
+      // A hot `priority` edit: the pipeline set is the same shape, so the cap holds
       // still while the queue reorders behind it.
       track({
-        rows: [
-          row("acme/widget", "work", { concurrency: 8 }),
-          row("acme/widget", "intake"),
-          row("acme/widget", "urgent", { priority: 5 }),
+        pipelines: [
+          pipeline("acme/widget", "work", { concurrency: 8 }),
+          pipeline("acme/widget", "intake"),
+          pipeline("acme/widget", "urgent", { priority: 5 }),
         ],
         reshaped: false,
       });
@@ -486,16 +497,16 @@ describe("trackRows", () => {
   });
 });
 
-describe("workspaceRowFingerprint", () => {
+describe("workspacePipelineFingerprint", () => {
   function tenantDir(env: string): {
     dir: string;
-    row: (name: string, own: string[], siblings: string[]) => SupervisedRow;
+    pipeline: (name: string, own: string[], siblings: string[]) => SupervisedPipeline;
   } {
-    const dir = mkdtempSync(join(tmpdir(), "phoebe-row-fp-"));
+    const dir = mkdtempSync(join(tmpdir(), "phoebe-pipeline-fp-"));
     writeFileSync(join(dir, ".env"), env);
     return {
       dir,
-      row: (name, own, siblings) => ({
+      pipeline: (name, own, siblings) => ({
         id: `${dir}#${name}`,
         tenant: {
           id: dir,
@@ -520,35 +531,36 @@ describe("workspaceRowFingerprint", () => {
     };
   }
 
-  test("rotating a declared key moves the declaring row and not its sibling", () => {
+  test("rotating a declared key moves the declaring pipeline and not its sibling", () => {
     const before = tenantDir("SLACK_BOT_TOKEN=xoxb-1\nFOO=public\n");
     const after = tenantDir("SLACK_BOT_TOKEN=xoxb-2\nFOO=public\n");
-    const intake = (t: ReturnType<typeof tenantDir>) => t.row("intake", ["SLACK_BOT_TOKEN"], []);
-    const work = (t: ReturnType<typeof tenantDir>) => t.row("work", [], ["SLACK_BOT_TOKEN"]);
+    const intake = (t: ReturnType<typeof tenantDir>) =>
+      t.pipeline("intake", ["SLACK_BOT_TOKEN"], []);
+    const work = (t: ReturnType<typeof tenantDir>) => t.pipeline("work", [], ["SLACK_BOT_TOKEN"]);
 
-    expect(workspaceRowFingerprint(intake(after), "fp")).not.toBe(
-      workspaceRowFingerprint(intake(before), "fp"),
+    expect(workspacePipelineFingerprint(intake(after), "fp")).not.toBe(
+      workspacePipelineFingerprint(intake(before), "fp"),
     );
-    expect(workspaceRowFingerprint(work(after), "fp")).toBe(
-      workspaceRowFingerprint(work(before), "fp"),
+    expect(workspacePipelineFingerprint(work(after), "fp")).toBe(
+      workspacePipelineFingerprint(work(before), "fp"),
     );
   });
 
-  test("rotating an undeclared key moves both rows", () => {
+  test("rotating an undeclared key moves both pipelines", () => {
     const before = tenantDir("SLACK_BOT_TOKEN=xoxb-1\nFOO=public\n");
     const after = tenantDir("SLACK_BOT_TOKEN=xoxb-1\nFOO=changed\n");
     for (const [own, siblings] of [
       [["SLACK_BOT_TOKEN"], []],
       [[], ["SLACK_BOT_TOKEN"]],
     ] as const) {
-      expect(workspaceRowFingerprint(after.row("r", [...own], [...siblings]), "fp")).not.toBe(
-        workspaceRowFingerprint(before.row("r", [...own], [...siblings]), "fp"),
-      );
+      expect(
+        workspacePipelineFingerprint(after.pipeline("r", [...own], [...siblings]), "fp"),
+      ).not.toBe(workspacePipelineFingerprint(before.pipeline("r", [...own], [...siblings]), "fp"));
     }
   });
 
   test("an unknown enumerated fingerprint stays unknown", () => {
     const t = tenantDir("FOO=public\n");
-    expect(workspaceRowFingerprint(t.row("work", [], []), null)).toBeNull();
+    expect(workspacePipelineFingerprint(t.pipeline("work", [], []), null)).toBeNull();
   });
 });

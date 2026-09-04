@@ -266,16 +266,16 @@ describe("envReconcileDigest", () => {
   });
 });
 
-describe("the subtractive row scrub (#425)", () => {
+describe("the subtractive pipeline scrub (#425)", () => {
   const tenantEnv = { SLACK_BOT_TOKEN: "xoxb-1", FOO: "public" };
 
-  test("the declaring row keeps its key and an undeclared key reaches it", () => {
+  test("the declaring pipeline keeps its key and an undeclared key reaches it", () => {
     const env = buildEngineChildEnv({ base: {}, tenantEnv, scrubKeys: [] });
     expect(env.SLACK_BOT_TOKEN).toBe("xoxb-1");
     expect(env.FOO).toBe("public");
   });
 
-  test("a sibling row loses the key it never declared, and keeps the undeclared one", () => {
+  test("a sibling pipeline loses the key it never declared, and keeps the undeclared one", () => {
     const env = buildEngineChildEnv({ base: {}, tenantEnv, scrubKeys: ["SLACK_BOT_TOKEN"] });
     expect(env).not.toHaveProperty("SLACK_BOT_TOKEN");
     expect(env.FOO).toBe("public");
@@ -292,18 +292,18 @@ describe("the subtractive row scrub (#425)", () => {
   });
 });
 
-describe("envReconcileDigest through one row's lens (#425)", () => {
+describe("envReconcileDigest through one pipeline's lens (#425)", () => {
   const before = "SLACK_BOT_TOKEN=xoxb-1\nFOO=public\n";
   const rotatedDeclared = "SLACK_BOT_TOKEN=xoxb-2\nFOO=public\n";
   const rotatedUndeclared = "SLACK_BOT_TOKEN=xoxb-1\nFOO=changed\n";
 
-  test("a row that cannot see the key does not move when it rotates", () => {
+  test("a pipeline that cannot see the key does not move when it rotates", () => {
     expect(envReconcileDigest(rotatedDeclared, ["SLACK_BOT_TOKEN"])).toBe(
       envReconcileDigest(before, ["SLACK_BOT_TOKEN"]),
     );
   });
 
-  test("the row that can see it does move", () => {
+  test("the pipeline that can see it does move", () => {
     expect(envReconcileDigest(rotatedDeclared)).not.toBe(envReconcileDigest(before));
   });
 

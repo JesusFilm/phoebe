@@ -4,7 +4,7 @@
 // declares one full-form kind loaded from a module in the repo
 // (kinds/stale-pr-nudger.ts) and one prompt-only producer written inline
 // below. Both implement the same contract as the five built-ins; after boot
-// the engine treats all of them identically — the row's `order`, per-kind
+// the engine treats all of them identically — the pipeline's `order`, per-kind
 // tuning blocks, `PHOEBE_<KIND>_*` env vars (hyphens become
 // underscores: PHOEBE_STALE_PR_NUDGER_MODEL), quarantine, and the prompt
 // existence check included.
@@ -80,7 +80,7 @@ const config: PhoebeUserConfig = {
 
   engine: { source: "github", ref: "v0.1.0" },
 
-  // One row of work, the reserved `work` one an engine child runs when no
+  // One pipeline of work, the reserved `work` one an engine child runs when no
   // `--pipeline` flag names another (#415). `order` and `kinds` are what the
   // top-level `workOrder` and `workKinds` fields became; those still resolve
   // here, but `phoebe migrate` moves them — and refuses this config, because the

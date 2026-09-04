@@ -688,7 +688,7 @@ describe("resolveConfig", () => {
 });
 
 describe("the pipelines block (#415)", () => {
-  test("a legal block resolves with per-row defaults filled", () => {
+  test("a legal block resolves with per-pipeline defaults filled", () => {
     const resolved = resolveConfig(
       minimalUserConfig({ pipelines: { intake: { order: ["research"] } } }),
     );
@@ -701,7 +701,7 @@ describe("the pipelines block (#415)", () => {
     });
   });
 
-  test("the work row exists whether or not it is declared", () => {
+  test("the work pipeline exists whether or not it is declared", () => {
     expect(Object.keys(resolveConfig(minimalUserConfig()).pipelines)).toEqual(["work"]);
   });
 
@@ -726,9 +726,9 @@ describe("the pipelines block (#415)", () => {
   });
 
   test("the scalar knobs are type-checked", () => {
-    const reject = (row: unknown, pattern: RegExp) =>
+    const reject = (pipeline: unknown, pattern: RegExp) =>
       expect(() =>
-        validateUserConfig(minimalUserConfig({ pipelines: { work: row } } as never)),
+        validateUserConfig(minimalUserConfig({ pipelines: { work: pipeline } } as never)),
       ).toThrow(pattern);
     reject({ concurrency: 0 }, /concurrency must be a positive number/);
     reject({ pollIntervalMs: "15000" }, /pollIntervalMs must be a positive number/);
@@ -737,7 +737,7 @@ describe("the pipelines block (#415)", () => {
     reject({ order: "checks" }, /order must be an array of kind names/);
   });
 
-  test("a row's kinds block is validated under its own config path", () => {
+  test("a pipeline's kinds block is validated under its own config path", () => {
     expect(() =>
       validateUserConfig(
         minimalUserConfig({ pipelines: { intake: { kinds: { bogus: {} } } } } as never),

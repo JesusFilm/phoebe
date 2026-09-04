@@ -9,17 +9,17 @@ import type { DiscoveredTenant, TenantSample } from "./tenants.ts";
 import { DuplicateOriginSlugError } from "./tenants.ts";
 import {
   PipelineEnumerationError,
-  rowId,
-  type PipelineRow,
-  type RowEnumerator,
-  type SupervisedRow,
-} from "./pipeline-rows.ts";
+  pipelineId,
+  type Pipeline,
+  type PipelineEnumerator,
+  type SupervisedPipeline,
+} from "./pipelines.ts";
 import {
   superviseFleet,
   type DrainTimer,
   type FleetChild,
   type FleetRun,
-  type RowExitAction,
+  type PipelineExitAction,
 } from "./supervise-fleet.ts";
 
 const DEFAULT_ENGINE_SOURCE = {
@@ -518,8 +518,8 @@ describe("superviseFleet", () => {
     const exit = await result;
     expect(exit).toEqual({ code: 0, signal: null });
     expect(stubborn.kills).toEqual(["SIGTERM", "SIGKILL"]);
-    // onReap still fires after the kill, and reaps by row id (#420).
-    expect(reaped).toEqual([rowId(tenant("acme/widget").id, "work")]);
+    // onReap still fires after the kill, and reaps by pipeline id (#420).
+    expect(reaped).toEqual([pipelineId(tenant("acme/widget").id, "work")]);
   });
 
   test("a graceful drain cancels the grace timer and never SIGKILLs (#79)", async () => {
@@ -567,12 +567,12 @@ describe("superviseFleet", () => {
 
 // --- solo, as a one-tenant fleet (#416) --------------------------------------
 // Solo used to have its own single-child loop. These are the behaviours that
-// loop guaranteed, now asserted against `superviseFleet` driving one row with
+// loop guaranteed, now asserted against `superviseFleet` driving one pipeline with
 // the arm's exit policy injected: the engine's exit is the container's, a fast
 // crash re-materializes the engine so the crash-loop fallback can land, and the
 // tenant axis stays inert because the root config *is* the engine's config.
 
-const SOLO_ROW: DiscoveredTenant = {
+const SOLO_TENANT: DiscoveredTenant = {
   id: "/etc/phoebe",
   slug: null,
   dir: "/etc/phoebe",
@@ -620,7 +620,7 @@ const patientDrainTimer: DrainTimer = () => ({
 function soloHarness(
   options: {
     launch?: (attempt: number) => Promise<LaunchedEngine> | LaunchedEngine;
-    decide?: (run: FleetRun) => RowExitAction;
+    decide?: (run: FleetRun) => PipelineExitAction;
   } = {},
 ) {
   const clock = gatedClock();
@@ -646,7 +646,7 @@ function soloHarness(
     drainTimer: patientDrainTimer,
     // The root is the one tenant, and its fingerprint is a constant: a config
     // edit is the engine axis's business, never the tenant axis's.
-    discover: () => [{ tenant: SOLO_ROW, fingerprint: "solo" }],
+    discover: () => [{ tenant: SOLO_TENANT, fingerprint: "solo" }],
     launch: async () => {
       const n = attempt++;
       if (options.launch) return await options.launch(n);
@@ -702,7 +702,7 @@ function soloHarness(
   };
 }
 
-describe("superviseFleet — solo's one row", () => {
+describe("superviseFleet — solo's one pipeline", () => {
   test("runs the engine and stays out of its way while nothing changes", async () => {
     const h = soloHarness();
     await settle();
@@ -902,7 +902,7 @@ describe("superviseFleet — solo's one row", () => {
     await h.result;
 
     expect(h.runs).toHaveLength(1);
-    expect(h.runs[0]?.tenantId).toBe(SOLO_ROW.id);
+    expect(h.runs[0]?.tenantId).toBe(SOLO_TENANT.id);
     expect(h.runs[0]?.exit).toEqual({ code: 7, signal: null });
     expect(h.runs[0]?.elapsedMs).toBe(1_500);
     expect(h.runs[0]?.engine.sha).toBe(SHA_A);
@@ -1037,12 +1037,12 @@ describe("superviseFleet — solo's one row", () => {
   });
 });
 
-/** One enumerated row, with only the two fields the supervisor diffs on varied. */
-function pipelineRow(
+/** One enumerated pipeline, with only the two fields the supervisor diffs on varied. */
+function declaredPipeline(
   name: string,
   fingerprint: string | null,
-  knobs: Partial<Pick<PipelineRow, "disabled" | "priority" | "concurrency">> = {},
-): PipelineRow {
+  knobs: Partial<Pick<Pipeline, "disabled" | "priority" | "concurrency">> = {},
+): Pipeline {
   return {
     name,
     disabled: false,
@@ -1061,18 +1061,21 @@ function configOf(slug: string): string {
 }
 
 /**
- * A fleet whose rows come from a fake engine (#417's `RowEnumerator` contract),
- * so the matrix can be moved a row at a time: `setRows` re-answers enumeration,
- * `setSamples` moves a tenant's fingerprint, and an `Error` in the row table is
+ * A fleet whose pipelines come from a fake engine (#417's `PipelineEnumerator` contract),
+ * so the matrix can be moved a pipeline at a time: `setPipelines` re-answers enumeration,
+ * `setSamples` moves a tenant's fingerprint, and an `Error` in the pipeline table is
  * an enumeration that throws.
  */
 function matrixHarness(
   options: {
     samples?: TenantSample[];
-    rows?: Record<string, PipelineRow[] | Error>;
+    pipelines?: Record<string, Pipeline[] | Error>;
     supported?: boolean;
-    decide?: (run: FleetRun) => RowExitAction;
-    rowFingerprint?: (row: SupervisedRow, enumerated: string | null) => string | null;
+    decide?: (run: FleetRun) => PipelineExitAction;
+    pipelineFingerprint?: (
+      pipeline: SupervisedPipeline,
+      enumerated: string | null,
+    ) => string | null;
   } = {},
 ) {
   const clock = gatedClock();
@@ -1082,28 +1085,28 @@ function matrixHarness(
     source: { ...DEFAULT_ENGINE_SOURCE },
   };
   let samples: TenantSample[] = options.samples ?? [sample("acme/widget", "fp1")];
-  let rows: Record<string, PipelineRow[] | Error> = options.rows ?? {};
-  const spawned: Array<{ row: SupervisedRow; fake: ReturnType<typeof fakeChild> }> = [];
+  let pipelines: Record<string, Pipeline[] | Error> = options.pipelines ?? {};
+  const spawned: Array<{ pipeline: SupervisedPipeline; fake: ReturnType<typeof fakeChild> }> = [];
   const rowErrors: Array<{ tenantId: string; error: unknown }> = [];
   const runs: FleetRun[] = [];
-  const matrices: Array<{ rows: SupervisedRow[]; reshaped: boolean }> = [];
+  const matrices: Array<{ pipelines: SupervisedPipeline[]; reshaped: boolean }> = [];
   let enumerations = 0;
   let stopRequested = false;
 
   // One enumerator per materialization, cache and all — the whole point of
   // hanging it off `LaunchedEngine` is that an upgrade starts a fresh one.
-  const enumerator = (): RowEnumerator => {
-    const cache = new Map<string, { fingerprint: string; rows: readonly PipelineRow[] }>();
+  const enumerator = (): PipelineEnumerator => {
+    const cache = new Map<string, { fingerprint: string; pipelines: readonly Pipeline[] }>();
     return {
       supported: () => options.supported ?? true,
-      rowsFor: ({ configPath, fingerprint }) => {
+      pipelinesFor: ({ configPath, fingerprint }) => {
         const cached = cache.get(configPath);
         if (cached && fingerprint !== null && cached.fingerprint === fingerprint)
-          return cached.rows;
+          return cached.pipelines;
         enumerations += 1;
-        const answer = rows[configPath] ?? [pipelineRow("work", "work-fp")];
+        const answer = pipelines[configPath] ?? [declaredPipeline("work", "work-fp")];
         if (answer instanceof Error) throw answer;
-        if (fingerprint !== null) cache.set(configPath, { fingerprint, rows: answer });
+        if (fingerprint !== null) cache.set(configPath, { fingerprint, pipelines: answer });
         return answer;
       },
     };
@@ -1121,12 +1124,12 @@ function matrixHarness(
       guarded: true,
       confirmEngineSource: async () => ({ ...engineState.source }),
       sample: () => ({ config: engineState.config, remoteSha: engineState.remoteSha }),
-      rows: enumerator(),
+      pipelines: enumerator(),
     }),
     discover: () => samples,
-    spawn: (row) => {
+    spawn: (pipeline) => {
       const fake = fakeChild();
-      spawned.push({ row, fake });
+      spawned.push({ pipeline, fake });
       return fake.child;
     },
     stop: {
@@ -1135,14 +1138,15 @@ function matrixHarness(
       },
       wait: clock.wait,
     },
-    ...(options.rowFingerprint ? { rowFingerprint: options.rowFingerprint } : {}),
-    onRowsError: (info) => rowErrors.push(info),
-    onRows: ({ rows: live, reshaped }) => matrices.push({ rows: [...live], reshaped }),
+    ...(options.pipelineFingerprint ? { pipelineFingerprint: options.pipelineFingerprint } : {}),
+    onPipelinesError: (info) => rowErrors.push(info),
+    onPipelines: ({ pipelines: live, reshaped }) =>
+      matrices.push({ pipelines: [...live], reshaped }),
     onRunEnd: (run) => runs.push(run),
     ...(options.decide ? { rowExit: { decide: options.decide } } : {}),
   });
 
-  const named = (name: string) => spawned.filter((s) => s.row.pipeline.name === name);
+  const named = (name: string) => spawned.filter((s) => s.pipeline.pipeline.name === name);
   return {
     result,
     spawned,
@@ -1153,8 +1157,8 @@ function matrixHarness(
     get enumerations() {
       return enumerations;
     },
-    setRows: (next: Record<string, PipelineRow[] | Error>) => {
-      rows = next;
+    setPipelines: (next: Record<string, Pipeline[] | Error>) => {
+      pipelines = next;
     },
     setSamples: (next: TenantSample[]) => {
       samples = next;
@@ -1173,26 +1177,33 @@ function matrixHarness(
 describe("superviseFleet — the (tenant × pipeline) matrix", () => {
   const WIDGET = configOf("acme/widget");
   const WIDGET_ID = tenant("acme/widget").id;
-  const TWO_ROWS = { [WIDGET]: [pipelineRow("work", "w1"), pipelineRow("intake", "i1")] };
+  const TWO_PIPELINES = {
+    [WIDGET]: [declaredPipeline("work", "w1"), declaredPipeline("intake", "i1")],
+  };
 
-  test("boots one child per declared row, each under its own row id", async () => {
-    const h = matrixHarness({ rows: TWO_ROWS });
+  test("boots one child per declared pipeline, each under its own pipeline id", async () => {
+    const h = matrixHarness({ pipelines: TWO_PIPELINES });
     await settle();
 
-    expect(h.spawned.map((s) => s.row.pipeline.name)).toEqual(["work", "intake"]);
-    expect(h.spawned.map((s) => s.row.id)).toEqual([`${WIDGET_ID}#work`, `${WIDGET_ID}#intake`]);
-    // Enumerated rows carry the `--pipeline` flag their child is spawned with.
-    expect(h.spawned.every((s) => s.row.enumerated)).toBe(true);
+    expect(h.spawned.map((s) => s.pipeline.pipeline.name)).toEqual(["work", "intake"]);
+    expect(h.spawned.map((s) => s.pipeline.id)).toEqual([
+      `${WIDGET_ID}#work`,
+      `${WIDGET_ID}#intake`,
+    ]);
+    // Enumerated pipelines carry the `--pipeline` flag their child is spawned with.
+    expect(h.spawned.every((s) => s.pipeline.enumerated)).toBe(true);
   });
 
-  test("a row-local edit relaunches only that row", async () => {
-    const h = matrixHarness({ rows: TWO_ROWS });
+  test("a pipeline-local edit relaunches only that pipeline", async () => {
+    const h = matrixHarness({ pipelines: TWO_PIPELINES });
     await settle();
     const work = h.named("work")[0]!;
 
     // `intake.pollIntervalMs` moved: the tenant's stat fingerprint follows, but
     // only intake's own digest does.
-    h.setRows({ [WIDGET]: [pipelineRow("work", "w1"), pipelineRow("intake", "i2")] });
+    h.setPipelines({
+      [WIDGET]: [declaredPipeline("work", "w1"), declaredPipeline("intake", "i2")],
+    });
     h.setSamples([sample("acme/widget", "fp2")]);
     h.tick();
     await settle();
@@ -1202,12 +1213,12 @@ describe("superviseFleet — the (tenant × pipeline) matrix", () => {
     expect(h.named("work")).toHaveLength(1);
   });
 
-  test("a tenant-wide edit no row accounts for fans out to every row", async () => {
-    const h = matrixHarness({ rows: TWO_ROWS });
+  test("a tenant-wide edit no pipeline accounts for fans out to every pipeline", async () => {
+    const h = matrixHarness({ pipelines: TWO_PIPELINES });
     await settle();
     const initial = [...h.spawned];
 
-    // `gitIdentity` moved: the row digests deliberately exclude tenant-wide
+    // `gitIdentity` moved: the pipeline digests deliberately exclude tenant-wide
     // fields, so nothing but the tenant fingerprint has anything to say.
     h.setSamples([sample("acme/widget", "fp2")]);
     h.tick();
@@ -1218,29 +1229,29 @@ describe("superviseFleet — the (tenant × pipeline) matrix", () => {
     expect(h.named("intake")).toHaveLength(2);
   });
 
-  test("a row that vanishes from the config drains, and its siblings keep running", async () => {
-    const h = matrixHarness({ rows: TWO_ROWS });
+  test("a pipeline that vanishes from the config drains, and its siblings keep running", async () => {
+    const h = matrixHarness({ pipelines: TWO_PIPELINES });
     await settle();
     const work = h.named("work")[0]!;
     const intake = h.named("intake")[0]!;
 
-    h.setRows({ [WIDGET]: [pipelineRow("work", "w1")] });
+    h.setPipelines({ [WIDGET]: [declaredPipeline("work", "w1")] });
     h.setSamples([sample("acme/widget", "fp2")]);
     h.tick();
     await settle();
 
     expect(intake.fake.kills).toContain("SIGTERM");
-    // Running, not relaunched: the vanished row already accounts for the move.
+    // Running, not relaunched: the vanished pipeline already accounts for the move.
     expect(work.fake.kills).toEqual([]);
     expect(h.spawned).toHaveLength(2);
   });
 
   test("an enumeration failure holds the tenant, warns each poll, and drains nothing", async () => {
-    const h = matrixHarness({ rows: TWO_ROWS });
+    const h = matrixHarness({ pipelines: TWO_PIPELINES });
     await settle();
     const initial = [...h.spawned];
 
-    h.setRows({ [WIDGET]: new PipelineEnumerationError("intake claims a kind work owns") });
+    h.setPipelines({ [WIDGET]: new PipelineEnumerationError("intake claims a kind work owns") });
     h.setSamples([sample("acme/widget", "fp2")]);
     h.tick();
     await settle();
@@ -1254,73 +1265,75 @@ describe("superviseFleet — the (tenant × pipeline) matrix", () => {
     for (const s of initial) expect(s.fake.kills).toEqual([]);
 
     // Fixed. The held tenant never moved its watermark on, so the edit that
-    // could not be read is still pending and fans out to both rows.
-    h.setRows(TWO_ROWS);
+    // could not be read is still pending and fans out to both pipelines.
+    h.setPipelines(TWO_PIPELINES);
     h.tick();
     await settle();
     expect(h.rowErrors).toHaveLength(2);
     expect(h.spawned).toHaveLength(4);
   });
 
-  test("an enumeration failure at boot contributes no rows and retries", async () => {
-    const h = matrixHarness({ rows: { [WIDGET]: new PipelineEnumerationError("no such kind") } });
+  test("an enumeration failure at boot contributes no pipelines and retries", async () => {
+    const h = matrixHarness({
+      pipelines: { [WIDGET]: new PipelineEnumerationError("no such kind") },
+    });
     await settle();
 
     expect(h.spawned).toEqual([]);
     expect(h.rowErrors).toHaveLength(1);
 
-    h.setRows(TWO_ROWS);
+    h.setPipelines(TWO_PIPELINES);
     h.tick();
     await settle();
-    expect(h.spawned.map((s) => s.row.pipeline.name)).toEqual(["work", "intake"]);
+    expect(h.spawned.map((s) => s.pipeline.pipeline.name)).toEqual(["work", "intake"]);
   });
 
-  test("an engine upgrade re-enumerates rather than reusing the old row list", async () => {
-    const h = matrixHarness({ rows: { [WIDGET]: [pipelineRow("work", "w1")] } });
+  test("an engine upgrade re-enumerates rather than reusing the old pipeline list", async () => {
+    const h = matrixHarness({ pipelines: { [WIDGET]: [declaredPipeline("work", "w1")] } });
     await settle();
     expect(h.enumerations).toBe(1);
 
-    // The new commit understands a row the old one never reported, under a
+    // The new commit understands a pipeline the old one never reported, under a
     // tenant fingerprint that has not moved at all.
-    h.setRows(TWO_ROWS);
+    h.setPipelines(TWO_PIPELINES);
     h.moveEngineRef(SHA_B);
     h.tick();
     await settle();
 
     expect(h.enumerations).toBe(2);
-    expect(h.spawned.map((s) => s.row.pipeline.name)).toEqual(["work", "work", "intake"]);
+    expect(h.spawned.map((s) => s.pipeline.pipeline.name)).toEqual(["work", "work", "intake"]);
   });
 
-  test("one row crash-looping is that row's problem; the container stays up", async () => {
-    const h = matrixHarness({ rows: TWO_ROWS, decide: () => "exit" });
+  test("one pipeline crash-looping is that pipeline's problem; the container stays up", async () => {
+    const h = matrixHarness({ pipelines: TWO_PIPELINES, decide: () => "exit" });
     await settle();
 
     h.named("work")[0]!.fake.exit({ code: 1, signal: null });
     await settle();
     // The exit policy was never asked — intake is still up, so the death is not
-    // universal and the row is simply reaped and respawned.
-    expect(h.runs.at(-1)?.everyRowCrashLooping).toBe(false);
+    // universal and the pipeline is simply reaped and respawned.
+    expect(h.runs.at(-1)?.everyPipelineCrashLooping).toBe(false);
     h.tick(); // release the respawn backoff
     await settle();
     expect(h.named("work")).toHaveLength(2);
   });
 
-  test("every row crash-looping at once is the container's problem", async () => {
-    const h = matrixHarness({ rows: TWO_ROWS, decide: () => "exit" });
+  test("every pipeline crash-looping at once is the container's problem", async () => {
+    const h = matrixHarness({ pipelines: TWO_PIPELINES, decide: () => "exit" });
     await settle();
 
     h.named("work")[0]!.fake.exit({ code: 7, signal: null });
     h.named("intake")[0]!.fake.exit({ code: 1, signal: null });
 
     expect(await h.result).toEqual({ code: 7, signal: null });
-    expect(h.runs.some((run) => run.everyRowCrashLooping)).toBe(true);
+    expect(h.runs.some((run) => run.everyPipelineCrashLooping)).toBe(true);
   });
 
-  test("a row still crash-looping between respawns keeps counting", async () => {
-    // The two rows never die in the same instant, so a mark that reset on
+  test("a pipeline still crash-looping between respawns keeps counting", async () => {
+    // The two pipelines never die in the same instant, so a mark that reset on
     // respawn would let them alternate forever and the container would hang on
     // a fleet that is entirely broken.
-    const h = matrixHarness({ rows: TWO_ROWS, decide: () => "exit" });
+    const h = matrixHarness({ pipelines: TWO_PIPELINES, decide: () => "exit" });
     await settle();
 
     h.named("work")[0]!.fake.exit({ code: 1, signal: null });
@@ -1334,42 +1347,42 @@ describe("superviseFleet — the (tenant × pipeline) matrix", () => {
   });
 
   test("announces the whole matrix before the first child spawns", async () => {
-    const h = matrixHarness({ rows: TWO_ROWS });
+    const h = matrixHarness({ pipelines: TWO_PIPELINES });
     await settle();
 
     // The broker must be sized and ordered before anything can ask it for a
     // slot, so the announcement leads the spawn.
     expect(h.matrices[0]).toBeDefined();
     expect(h.matrices[0]!.reshaped).toBe(true);
-    expect(h.matrices[0]!.rows.map((row) => row.id)).toEqual([
+    expect(h.matrices[0]!.pipelines.map((pipeline) => pipeline.id)).toEqual([
       `${WIDGET_ID}#work`,
       `${WIDGET_ID}#intake`,
     ]);
   });
 
   test("a poll that reshapes nothing announces the matrix as unchanged", async () => {
-    const h = matrixHarness({ rows: TWO_ROWS });
+    const h = matrixHarness({ pipelines: TWO_PIPELINES });
     await settle();
     h.tick();
     await settle();
 
     const last = h.matrices[h.matrices.length - 1]!;
     expect(last.reshaped).toBe(false);
-    expect(last.rows).toHaveLength(2);
+    expect(last.pipelines).toHaveLength(2);
     // Nothing was reshaped, so nothing was drained either.
     for (const s of h.spawned) expect(s.fake.kills).toEqual([]);
   });
 
-  test("a hot `priority` edit lands on the running row without relaunching it", async () => {
-    const h = matrixHarness({ rows: TWO_ROWS });
+  test("a hot `priority` edit lands on the running pipeline without relaunching it", async () => {
+    const h = matrixHarness({ pipelines: TWO_PIPELINES });
     await settle();
     const initial = [...h.spawned];
 
-    // `priority` is outside the row fingerprint, so a bump moves the tenant's
-    // stat fingerprint and nothing else. The row must not relaunch for it —
+    // `priority` is outside the pipeline fingerprint, so a bump moves the tenant's
+    // stat fingerprint and nothing else. The pipeline must not relaunch for it —
     // and the move must not be read as a tenant-wide change either.
-    h.setRows({
-      [WIDGET]: [pipelineRow("work", "w1"), pipelineRow("intake", "i1", { priority: 5 })],
+    h.setPipelines({
+      [WIDGET]: [declaredPipeline("work", "w1"), declaredPipeline("intake", "i1", { priority: 5 })],
     });
     h.setSamples([sample("acme/widget", "fp2")]);
     h.tick();
@@ -1381,16 +1394,18 @@ describe("superviseFleet — the (tenant × pipeline) matrix", () => {
     // a hot edit — but the new priority is announced all the same.
     expect(h.matrices.slice(1).some((matrix) => matrix.reshaped)).toBe(false);
     const last = h.matrices[h.matrices.length - 1]!;
-    expect(last.rows.find((row) => row.pipeline.name === "intake")?.pipeline.priority).toBe(5);
+    expect(
+      last.pipelines.find((pipeline) => pipeline.pipeline.name === "intake")?.pipeline.priority,
+    ).toBe(5);
   });
 
-  test("a row whose cold config also moved still relaunches", async () => {
-    const h = matrixHarness({ rows: TWO_ROWS });
+  test("a pipeline whose cold config also moved still relaunches", async () => {
+    const h = matrixHarness({ pipelines: TWO_PIPELINES });
     await settle();
     const intake = h.named("intake")[0]!;
 
-    h.setRows({
-      [WIDGET]: [pipelineRow("work", "w1"), pipelineRow("intake", "i2", { priority: 5 })],
+    h.setPipelines({
+      [WIDGET]: [declaredPipeline("work", "w1"), declaredPipeline("intake", "i2", { priority: 5 })],
     });
     h.setSamples([sample("acme/widget", "fp2")]);
     h.tick();
@@ -1402,20 +1417,20 @@ describe("superviseFleet — the (tenant × pipeline) matrix", () => {
     expect(h.matrices.slice(1).some((matrix) => matrix.reshaped)).toBe(true);
   });
 
-  test("a held tenant's running rows stay in the announced matrix", async () => {
+  test("a held tenant's running pipelines stay in the announced matrix", async () => {
     const h = matrixHarness({
       samples: [sample("acme/widget", "fp1"), sample("acme/gadget", "fp1")],
-      rows: {
-        [WIDGET]: [pipelineRow("work", "w1")],
-        [configOf("acme/gadget")]: [pipelineRow("work", "g1")],
+      pipelines: {
+        [WIDGET]: [declaredPipeline("work", "w1")],
+        [configOf("acme/gadget")]: [declaredPipeline("work", "g1")],
       },
     });
     await settle();
 
-    // Gadget's config goes unreadable: it is held, contributing no rows this
+    // Gadget's config goes unreadable: it is held, contributing no pipelines this
     // poll — but its child is still running and still contending for slots.
-    h.setRows({
-      [WIDGET]: [pipelineRow("work", "w1")],
+    h.setPipelines({
+      [WIDGET]: [declaredPipeline("work", "w1")],
       [configOf("acme/gadget")]: new PipelineEnumerationError("unreadable"),
     });
     h.setSamples([sample("acme/widget", "fp1"), sample("acme/gadget", "fp2")]);
@@ -1423,19 +1438,19 @@ describe("superviseFleet — the (tenant × pipeline) matrix", () => {
     await settle();
 
     const last = h.matrices[h.matrices.length - 1]!;
-    expect(last.rows.map((row) => row.id).sort()).toEqual(
+    expect(last.pipelines.map((pipeline) => pipeline.id).sort()).toEqual(
       [`${tenant("acme/gadget").id}#work`, `${WIDGET_ID}#work`].sort(),
     );
   });
 
-  test("an engine with no `pipelines` subcommand runs one implicit row per tenant", async () => {
+  test("an engine with no `pipelines` subcommand runs one implicit pipeline per tenant", async () => {
     const h = matrixHarness({ supported: false });
     await settle();
 
     expect(h.spawned).toHaveLength(1);
-    expect(h.spawned[0]?.row.pipeline.name).toBe("work");
+    expect(h.spawned[0]?.pipeline.pipeline.name).toBe("work");
     // Nothing to ask, so nothing is asked — and no `--pipeline` is passed on.
-    expect(h.spawned[0]?.row.enumerated).toBe(false);
+    expect(h.spawned[0]?.pipeline.enumerated).toBe(false);
     expect(h.enumerations).toBe(0);
 
     // A tenant config edit still relaunches that child, exactly as it always has.
@@ -1449,14 +1464,14 @@ describe("superviseFleet — the (tenant × pipeline) matrix", () => {
 
 describe("declared keys across the matrix (#425)", () => {
   const WIDGET = configOf("acme/widget");
-  const declaring = (name: string, fp: string, env: string[]): PipelineRow => ({
-    ...pipelineRow(name, fp),
+  const declaring = (name: string, fp: string, env: string[]): Pipeline => ({
+    ...declaredPipeline(name, fp),
     env,
   });
 
-  test("each row learns what its siblings declared, and nothing it declared itself", async () => {
+  test("each pipeline learns what its siblings declared, and nothing it declared itself", async () => {
     const h = matrixHarness({
-      rows: {
+      pipelines: {
         [WIDGET]: [
           declaring("work", "w1", []),
           declaring("intake", "i1", ["SLACK_BOT_TOKEN"]),
@@ -1465,24 +1480,24 @@ describe("declared keys across the matrix (#425)", () => {
       },
     });
     await settle();
-    expect(h.named("work")[0]?.row.siblingEnv).toEqual(["LINEAR_KEY", "SLACK_BOT_TOKEN"]);
-    expect(h.named("intake")[0]?.row.siblingEnv).toEqual(["LINEAR_KEY"]);
+    expect(h.named("work")[0]?.pipeline.siblingEnv).toEqual(["LINEAR_KEY", "SLACK_BOT_TOKEN"]);
+    expect(h.named("intake")[0]?.pipeline.siblingEnv).toEqual(["LINEAR_KEY"]);
     h.requestStop();
     await h.result;
   });
 
-  test("a `.env` rotation only the intake row can see relaunches it alone", async () => {
+  test("a `.env` rotation only the intake pipeline can see relaunches it alone", async () => {
     let slackToken = "xoxb-1";
     const h = matrixHarness({
-      rows: {
+      pipelines: {
         [WIDGET]: [declaring("work", "w1", []), declaring("intake", "i1", ["SLACK_BOT_TOKEN"])],
       },
-      // The supervisor's half of the row fingerprint: the tenant's `.env` as
-      // this row would hold it, which is boot.ts's `workspaceRowFingerprint`.
-      rowFingerprint: (row, enumerated) =>
+      // The supervisor's half of the pipeline fingerprint: the tenant's `.env` as
+      // this pipeline would hold it, which is boot.ts's `workspacePipelineFingerprint`.
+      pipelineFingerprint: (pipeline, enumerated) =>
         enumerated === null
           ? null
-          : `${enumerated}:${row.pipeline.env.includes("SLACK_BOT_TOKEN") ? slackToken : ""}`,
+          : `${enumerated}:${pipeline.pipeline.env.includes("SLACK_BOT_TOKEN") ? slackToken : ""}`,
     });
     await settle();
     expect(h.spawned).toHaveLength(2);

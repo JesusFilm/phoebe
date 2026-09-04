@@ -34,7 +34,7 @@ import {
 } from "./init.ts";
 import { formatInitTenantRegistrationAdviceForRoot } from "./init-tenant-advice.ts";
 import { applyEnvOverlay, loadUserConfig, resolveConfigPath } from "./load-config.ts";
-import { parsePipelineName, selectPipelineRow } from "./pipeline-row.ts";
+import { parsePipelineName, selectPipeline } from "./pipeline.ts";
 import { runEngine } from "./main.ts";
 import { resolveDataBase } from "./paths.ts";
 import { setResolvedConfig } from "./resolved-config.ts";
@@ -103,9 +103,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedArgs {
       configPath = arg.slice("--config=".length);
       continue;
     }
-    // `--pipeline <name>` selects which row of this tenant's work to run (#415).
+    // `--pipeline <name>` selects which pipeline of this tenant's work to run (#415).
     // Forwarded rather than consumed: `runEngine` reads the same flag back for
-    // the row's poll cadence and its log line.
+    // the pipeline's poll cadence and its log line.
     if (arg === "--pipeline") {
       const next = argv[i + 1];
       if (next === undefined) {
@@ -283,7 +283,7 @@ Usage:
   phoebe doctor [--json]           Deployment + tenant health checks (report-only)
   phoebe migrate [--config <path>] Apply deployment migrations (idempotent)
   phoebe pipelines [--config <path>]
-                                   Print this tenant's pipeline rows as JSON (for the supervisor)
+                                   Print this tenant's pipelines as JSON (for the supervisor)
   phoebe stop [--now]              Drain and stop the deployment container (host-side)
   phoebe start [--build]           Bring the deployment container up detached (host-side)
   phoebe [--config <path>] [flags] Run the engine
@@ -292,7 +292,7 @@ Options (engine mode):
   --config, -c <path>   Path to phoebe.config.ts (default: ./phoebe.config.ts)
   --run-once            Work one unit of the first one-shot-eligible kind, then exit
   --dry-run             Print the selected unit without executing it
-  --pipeline <name>     Which pipeline row to run (default: work)
+  --pipeline <name>     Which pipeline to run (default: work)
   --help, -h            Show this message
 
 Environment overlays (each replaces the corresponding config field):
@@ -590,7 +590,7 @@ export async function runCli(): Promise<void> {
     const { runDoctorCli } = await import("./doctor.ts");
     return await runDoctorCli(args.slice(1));
   }
-  // The supervisor's one question about a tenant's config (#417): which rows it
+  // The supervisor's one question about a tenant's config (#417): which pipelines it
   // declares, and their fingerprints. Lazy like its neighbours — the
   // engine-run path never loads it.
   if (args[0] === "pipelines") {
@@ -626,12 +626,12 @@ export async function runCli(): Promise<void> {
   const overlaid = applyEnvOverlay(userConfig, process.env);
   const tenant = resolveConfig(overlaid, { dataBase: resolveDataBase(process.env) });
   warnDeprecatedPipelineAliases(overlaid);
-  // Flatten the selected row onto the tenant config (#415): `workOrder`,
-  // `workKinds` and `promptFiles` now describe this row, so the registry
+  // Flatten the selected pipeline onto the tenant config (#415): `workOrder`,
+  // `workKinds` and `promptFiles` now describe this pipeline, so the registry
   // loader, the orchestrator and the prompt check all keep reading the fields
   // they always read. An unknown `--pipeline` throws here, before any GitHub
-  // call. Absent the flag, the row is `work`.
-  const resolved = selectPipelineRow(tenant, parsePipelineName(parsed.forward));
+  // call. Absent the flag, the pipeline is `work`.
+  const resolved = selectPipeline(tenant, parsePipelineName(parsed.forward));
   // The engine takes the config as an argument (#280); the holder is still
   // installed because `orchestrator.ts` — which the engine and the `gh` client
   // both call into — still reads its fields through the Proxy.

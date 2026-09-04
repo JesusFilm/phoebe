@@ -31,7 +31,7 @@
 
 import { statSync } from "node:fs";
 import { type ResolvedEngineSource } from "./engine-source.ts";
-import type { RowEnumerator } from "./pipeline-rows.ts";
+import type { PipelineEnumerator } from "./pipelines.ts";
 
 /** How often the watch samples the config and the tracked ref. */
 export const DEFAULT_RECONCILE_INTERVAL_MS = 60_000;
@@ -89,12 +89,12 @@ export type LaunchedEngine = {
    */
   guarded: boolean;
   /**
-   * This checkout's row enumerator (#417), probed once at materialization. Its
+   * This checkout's pipeline enumerator (#417), probed once at materialization. Its
    * home is the launch because capability is a property of the engine commit:
-   * an upgrade may legitimately report a different row set for the same config,
+   * an upgrade may legitimately report a different pipeline set for the same config,
    * so the answer never outlives the checkout it came from.
    */
-  rows?: RowEnumerator;
+  pipelines?: PipelineEnumerator;
 };
 
 export type EngineExit = { code: number | null; signal: NodeJS.Signals | null };

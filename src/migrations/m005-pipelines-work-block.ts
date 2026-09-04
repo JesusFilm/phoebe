@@ -37,7 +37,7 @@ import {
   editConfigRemoveField,
 } from "../config-handle.ts";
 import type { Migration, MigrationVerifyContext } from "../migrate.ts";
-import { selectPipelineRow } from "../pipeline-row.ts";
+import { selectPipeline } from "../pipeline.ts";
 
 const CONFIG_REL_PATH = "phoebe.config.ts";
 
@@ -104,7 +104,7 @@ function stable(value: unknown): string {
 }
 
 /**
- * What the `work` row resolves to: the three things the move is allowed to
+ * What the `work` pipeline resolves to: the three things the move is allowed to
  * relocate but not change. Prompt paths are compared as the flattened
  * `promptFiles` the kinds resolve to, which is exactly where the fold lands,
  * and kind tuning is compared with `promptFile` taken out so the fold does not
@@ -115,11 +115,11 @@ function workResolution(user: PhoebeUserConfig): {
   kinds: string;
   promptFiles: string;
 } {
-  const row = selectPipelineRow(resolveConfig(user), DEFAULT_PIPELINE_NAME);
+  const pipeline = selectPipeline(resolveConfig(user), DEFAULT_PIPELINE_NAME);
   return {
-    order: row.workOrder,
-    kinds: stable(tuningOnly(row.workKinds)),
-    promptFiles: stable(row.promptFiles),
+    order: pipeline.workOrder,
+    kinds: stable(tuningOnly(pipeline.workKinds)),
+    promptFiles: stable(pipeline.promptFiles),
   };
 }
 

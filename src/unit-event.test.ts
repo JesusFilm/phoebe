@@ -31,7 +31,7 @@ describe("tagging", () => {
   test("every line is [phoebe:<slug>:<pipeline>], never bare", () => {
     expect(unitTag("acme/widget", "work")).toBe("[phoebe:acme/widget:work]");
   });
-  test("the implicit work row is tagged like any other (#418)", () => {
+  test("the implicit work pipeline is tagged like any other (#418)", () => {
     expect(unitTag("acme/widget", "intake")).toBe("[phoebe:acme/widget:intake]");
   });
   test("formats an event line with optional detail", () => {

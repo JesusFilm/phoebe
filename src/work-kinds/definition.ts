@@ -373,12 +373,12 @@ export type WorkKindDefinition<G = unknown, U extends WorkUnitShape = WorkUnitSh
   workspace: WorkspaceMode;
   /**
    * The env keys this kind's own code reads out of `ctx.env` (#410). Declaring
-   * them is what earns them: the supervisor takes every key a *sibling* row
-   * declared and this one did not out of this row's child env, so an intake
-   * kind's Slack token never reaches the work row. Undeclared keys are
+   * them is what earns them: the supervisor takes every key a *sibling* pipeline
+   * declared and this one did not out of this pipeline's child env, so an intake
+   * kind's Slack token never reaches the work pipeline. Undeclared keys are
    * untouched and flow as they always have.
    *
-   * Boot-checked for presence and non-blankness across the kinds the row
+   * Boot-checked for presence and non-blankness across the kinds the pipeline
    * schedules, and stripped from the install-command and prompt-shell envs
    * unconditionally — a toolchain command the consumer owns has no business
    * with a credential a kind declared for itself.

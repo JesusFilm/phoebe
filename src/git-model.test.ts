@@ -452,7 +452,7 @@ describe("the worktree lease", () => {
     expect(worktreeLease(repoDir, leased, testGit)).toEqual({ locked: false, holder: null });
   });
 
-  // The holder is the whole owner — row *and* unit (#423) — because the caller
+  // The holder is the whole owner — pipeline *and* unit (#423) — because the caller
   // is one unit asking whether the tree it wants is its own.
   test("a lock names the unit that took it", () => {
     lockWorktree(repoDir, leased, formatLeaseReason({ owner: OWNER, pid: 4242 }), testGit);

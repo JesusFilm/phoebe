@@ -2264,7 +2264,7 @@ const TENANT_CONFIG_WITH_WORK_FIELDS = `export const config = {
 `;
 
 describe("m005 pipelinesWorkBlockMigration end-to-end", () => {
-  test("moves the three fields, verifies the row still resolves, and is done after one run", async () => {
+  test("moves the three fields, verifies the pipeline still resolves, and is done after one run", async () => {
     const dir = makeTempDir();
     const configPath = join(dir, "phoebe.config.ts");
     writeFileSync(configPath, TENANT_CONFIG_WITH_WORK_FIELDS);
@@ -2362,7 +2362,7 @@ describe("Migration.verify", () => {
         {
           ...makeApplyingMigration("test-verify", "phoebe.config.ts", MINIMAL_CONFIG_ALTERED),
           detect: () => true,
-          verify: () => Promise.reject(new Error("the row resolves differently")),
+          verify: () => Promise.reject(new Error("the pipeline resolves differently")),
         },
       ],
       validateFn: async () => {},
@@ -2370,7 +2370,7 @@ describe("Migration.verify", () => {
 
     expect(report.results[0]!.state).toBe("failed");
     expect(report.results[0]!.detail).toContain("verification failed (reverted)");
-    expect(report.results[0]!.detail).toContain("the row resolves differently");
+    expect(report.results[0]!.detail).toContain("the pipeline resolves differently");
     expect(readFileSync(configPath, "utf8")).toBe(before);
     expect(report.journal).toHaveLength(0);
   });

@@ -8,7 +8,7 @@
 //   apply: ConfigRefusal, config untouched, when a moved value is computed or
 //          holds a spread.
 //   idempotence: apply → detect returns null.
-//   verify: passes when the row still resolves the same, throws when it does not.
+//   verify: passes when the pipeline still resolves the same, throws when it does not.
 //   role filter: tenant only.
 //
 // The end-to-end pass through `runMigrate` — real files, real load, real
@@ -200,7 +200,7 @@ describe("m005 verify", () => {
     });
   }
 
-  test("passes when the move preserved the resolved row", async () => {
+  test("passes when the move preserved the resolved pipeline", async () => {
     await expect(
       runVerify(
         { ...USER, workOrder: ["issues"], promptFiles: { issue: "p/i.md" } },

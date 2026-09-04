@@ -4,7 +4,7 @@
 // names the keys its own code reads, `agentEnv` the subset its agent children
 // may also see. Nothing here mints, stores or transports a secret: the tenant's
 // one `.env` is still the only home, and a declaration is a statement about
-// *reach*, which is what lets the supervisor take a key away from the rows that
+// *reach*, which is what lets the supervisor take a key away from the pipelines that
 // never asked for it (bootstrap/engine-child-env.ts) and lets a boot fail on an
 // absence rather than a cycle failing on one.
 //
@@ -15,10 +15,10 @@ import type { AnyWorkKindDefinition } from "./definition.ts";
 
 /**
  * Keys a kind may never declare, whatever it wants them for. Two families:
- * the GitHub credential and the bot login the engine mints and leases per row,
+ * the GitHub credential and the bot login the engine mints and leases per pipeline,
  * and the git identity every child commits under. Declaring one would put a
  * key the engine owns under a kind's control — and, worse, would let the
- * subtractive scrub take it away from a sibling row that needs it to work at
+ * subtractive scrub take it away from a sibling pipeline that needs it to work at
  * all.
  */
 export const RESERVED_DECLARED_ENV_KEYS: readonly string[] = [
@@ -38,7 +38,7 @@ export const RESERVED_DECLARED_ENV_KEYS: readonly string[] = [
  */
 export function reservedEnvReason(key: string, providerKeys: readonly string[]): string | null {
   if (RESERVED_DECLARED_ENV_KEYS.includes(key)) {
-    return "the engine owns it — it is minted, leased or set per row";
+    return "the engine owns it — it is minted, leased or set per pipeline";
   }
   if (key.startsWith("PHOEBE_")) return "`PHOEBE_*` is the engine's own knob namespace";
   if (key.startsWith("GH_APP_")) return "`GH_APP_*` are the App credentials no child holds";
@@ -104,7 +104,7 @@ export function validateDeclaredEnv(
 export type DeclaringKind = { name: string; definition: AnyWorkKindDefinition };
 
 /**
- * The union of `requiredEnv` over these kinds, sorted and deduped — a row's
+ * The union of `requiredEnv` over these kinds, sorted and deduped — a pipeline's
  * `env`, which is what the enumerator reports and the scrub subtracts against.
  * Sorted so two boots of one config produce the same list.
  */
@@ -138,9 +138,9 @@ export function missingDeclaredEnv(
 
 /**
  * Boot check, in the posture of the prompt-file check (src/prompt.ts): a key a
- * scheduled kind declares and this row cannot read is a startup failure naming
+ * scheduled kind declares and this pipeline cannot read is a startup failure naming
  * every kind and key at once, not a cycle that fails once the kind's first unit
- * is dispatched. Scoped to the kinds the row schedules — a kind switched off
+ * is dispatched. Scoped to the kinds the pipeline schedules — a kind switched off
  * runs nothing, so its key being absent refuses no boot.
  */
 export function assertDeclaredEnvPresent(opts: {

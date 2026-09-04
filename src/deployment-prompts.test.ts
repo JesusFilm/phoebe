@@ -20,7 +20,7 @@ import { dirname, join, resolve } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
 import { readConfigDir } from "../bootstrap/config-dir.ts";
 import { DEFAULT_PIPELINE_NAME, resolveConfig } from "./config-schema.ts";
-import { selectPipelineRow } from "./pipeline-row.ts";
+import { selectPipeline } from "./pipeline.ts";
 import { loadUserConfig } from "./load-config.ts";
 import { assertPromptFilesExist as assertPromptFilesExistRaw } from "./prompt.ts";
 import { buildRegistry } from "./work-kinds/registry.ts";
@@ -65,10 +65,10 @@ async function deploymentAt(configRelPath: string): Promise<{
   const user = await loadUserConfig(configPath);
   const configDir = readConfigDir(user as unknown as Record<string, unknown>);
   return {
-    // Row selection as the CLI runs it (#419): a deployment declares its prompt
+    // Pipeline selection as the CLI runs it (#419): a deployment declares its prompt
     // paths per kind under `pipelines.work`, and this is what folds them onto
     // the flat `promptFiles` the boot check reads.
-    config: selectPipelineRow(resolveConfig(user), DEFAULT_PIPELINE_NAME),
+    config: selectPipeline(resolveConfig(user), DEFAULT_PIPELINE_NAME),
     runtimeRoot: resolve(dirname(configPath), configDir),
   };
 }

@@ -88,7 +88,7 @@ clone (`src/git-model.ts`):
 3. For a unit, `prepareWorktree` removes any stale worktree for the branch,
    adds a fresh one, and takes a lease on it (`git worktree lock`, reason
    `pipeline=<name>#<kind>:<ref> pid=<n>`) so anything else sharing the clone
-   leaves it alone — a sibling pipeline, or a sibling unit of the same row when
+   leaves it alone — a sibling pipeline, or a sibling unit of the same pipeline when
    `concurrency` is above 1. A tree someone else leases is not removed; the unit
    is skipped for the cycle. The branch cases:
    - **Issues.** A new branch `<branchPrefix>issue-<n>` reset to the resolved
@@ -109,7 +109,7 @@ The two directories keyed by the unit rather than the branch — the plain
 `scratch/` workspace and the detached `worktrees/readonly/` tree — are
 `<kind>/<ref>`, with the kind-owned ref percent-encoded (`src/unit-scope.ts`).
 Children a unit spawns write through a prefix rather than inheriting the
-engine's stdout, so a row running several units at once produces a stream an
+engine's stdout, so a pipeline running several units at once produces a stream an
 operator can attribute line by line.
 
 Step 1 is conditional and serialized. A pipeline clones only when one of its
@@ -194,29 +194,29 @@ first boot straight onto a broken ref exits and lets the container's restart
 policy make the failure visible. See
 [`configuration.md`](configuration.md#crash-loop-fallback).
 
-### Asking the engine which rows a tenant has
+### Asking the engine which pipelines a tenant has
 
 A tenant declares its [pipelines](configuration.md#pipelines) in its own config,
-and the supervisor will run one engine child per row. It learns those rows by
+and the supervisor will run one engine child per pipeline. It learns those pipelines by
 asking the materialized checkout — `<engine entry> pipelines --config <tenant
-config>` prints one JSON object per tenant, a row at a time: name, the hot
-`disabled` and `priority` knobs, `concurrency`, whether the row's kinds want the
-tenant's git clone, and an opaque per-row fingerprint. Reading the `pipelines`
+config>` prints one JSON object per tenant, a pipeline at a time: name, the hot
+`disabled` and `priority` knobs, `concurrency`, whether the pipeline's kinds want the
+tenant's git clone, and an opaque per-pipeline fingerprint. Reading the `pipelines`
 block in the bootstrapper instead would pin what a supervisor understands to the
 installed launcher version, so every new pipeline knob would need an npm release
 before any deployment could use it — the thing the engine-source design exists to
 avoid.
 
-The fingerprint is the row's own cold config, hashed, with `disabled` and
+The fingerprint is the pipeline's own cold config, hashed, with `disabled` and
 `priority` stripped at every nesting level. Those two are hot: the supervisor
-acts on a change to either without relaunching the row, so a digest that moved
+acts on a change to either without relaunching the pipeline, so a digest that moved
 with them would relaunch it anyway. This is the one place in the system where a
 fingerprint knows what a field means.
 
-Two separate questions, because confusing them would spawn a `work` row against a
+Two separate questions, because confusing them would spawn a `work` pipeline against a
 config already known to be bad. **Capability** belongs to the engine: boot probes
 the checkout once per materialization (`pipelines --probe`), and a checkout
-without the subcommand means every tenant runs one implicit `work` row and no
+without the subcommand means every tenant runs one implicit `work` pipeline and no
 enumeration ever runs — byte for byte what a deployment did before pipelines
 existed. **Validity** belongs to the tenant: an enumeration that fails is that
 tenant's fault, never the fleet's. A custom kind module loads during enumeration,
@@ -226,65 +226,65 @@ is the right severity and the right moment.
 Enumeration spawns a Node process, so it runs only when the tenant config's stat
 fingerprint moves — the same cheap trigger the engine-source confirm uses. Steady
 state stays stat-only. An engine upgrade re-enumerates every tenant rather than
-reusing the pre-upgrade row set: the enumerator itself just changed version, so
-the same config may legitimately report different rows.
+reusing the pre-upgrade pipeline set: the enumerator itself just changed version, so
+the same config may legitimately report different pipelines.
 
-### Supervising rows
+### Supervising pipelines
 
-The unit the supervisor runs is a **row**: one `(tenant × pipeline)` cell, keyed
+The unit the supervisor runs is a **pipeline**: one `(tenant × pipeline)` cell, keyed
 `<tenant config dir>#<pipeline>`. That id is the child-map key, the concurrency
-broker's owner id, and the credential lease's, so a row reclaims its own slots
+broker's owner id, and the credential lease's, so a pipeline reclaims its own slots
 and its own token when it dies. A tenant declaring `work` and `intake` gets two
 children, each spawned with its own `--pipeline`. A solo deployment is a
 one-tenant fleet on the same loop, and a checkout that cannot enumerate gives
-every tenant one implicit `work` row — the one-child-per-tenant fleet, unchanged,
+every tenant one implicit `work` pipeline — the one-child-per-tenant fleet, unchanged,
 and spawned without a `--pipeline` flag that engine would die on.
 
-A tenant's stat fingerprint moving is the trigger to re-enumerate; the row diff
-decides what happens next. A row that appeared spawns, one that vanished drains,
+A tenant's stat fingerprint moving is the trigger to re-enumerate; the pipeline diff
+decides what happens next. A pipeline that appeared spawns, one that vanished drains,
 and one whose own fingerprint moved relaunches by itself — so editing
 `intake.pollIntervalMs` touches nothing but the intake child. A tenant
-fingerprint that moves with no row of its own to show for it is by elimination
-tenant-wide, a `gitIdentity` or a `repoSlug` or an edited `.env`, and every row
+fingerprint that moves with no pipeline of its own to show for it is by elimination
+tenant-wide, a `gitIdentity` or a `repoSlug` or an edited `.env`, and every pipeline
 of that tenant relaunches, because every one of them runs with it.
 
 An enumeration that fails holds the tenant: nothing drains, the reason is warned
 once per poll, and the next poll tries again. The held tenant's watermark stays
 put, so the edit that could not be read is still pending when enumeration
-recovers. At first boot a held tenant contributes no rows at all rather than a
-`work` row against a config already known to be bad.
+recovers. At first boot a held tenant contributes no pipelines at all rather than a
+`work` pipeline against a config already known to be bad.
 
 An engine upgrade drains the fleet, materializes once, and re-enumerates every
-tenant before anything respawns. The pre-upgrade row list is never reused:
+tenant before anything respawns. The pre-upgrade pipeline list is never reused:
 capability belongs to the engine commit, so the same config may legitimately
-report different rows either side of the flip.
+report different pipelines either side of the flip.
 
-**The universality rule.** A row's death alone is never fatal. The container
-comes down only when every supervised row is crash-looping at once, and a fast
-crash counts toward the crash-loop guard only when every row that ran that commit
+**The universality rule.** A pipeline's death alone is never fatal. The container
+comes down only when every supervised pipeline is crash-looping at once, and a fast
+crash counts toward the crash-loop guard only when every pipeline that ran that commit
 has fast-crashed on it. So one broken tenant cannot quarantine a commit the rest
-of the fleet is running happily, and one broken row cannot take its siblings with
-it. A row is marked crash-looping when it dies of its own accord inside
-`HEALTHY_RUN_MS`, and the mark survives a respawn — it clears once the row has
-been up past that window — so two rows crash-looping out of phase still add up to
-a verdict. Solo has one row, so the rule reduces to what it always did: that row
+of the fleet is running happily, and one broken pipeline cannot take its siblings with
+it. A pipeline is marked crash-looping when it dies of its own accord inside
+`HEALTHY_RUN_MS`, and the mark survives a respawn — it clears once the pipeline has
+been up past that window — so two pipelines crash-looping out of phase still add up to
+a verdict. Solo has one pipeline, so the rule reduces to what it always did: that pipeline
 is the engine, its death is the container's, and the threshold is unchanged.
 Every other unexpected exit respawns after the backoff, whatever the code; only
 an exit the supervisor asked for does not.
 
-**Slots across the matrix.** One broker serves every row in either arm, and it
+**Slots across the matrix.** One broker serves every pipeline in either arm, and it
 sizes itself off the matrix it is supervising: the effective cap is the largest
-`concurrency` any live row declares, or `PHOEBE_MAX_CONCURRENT_AGENTS` when the
-operator sets it. The number is recomputed on a reconcile that reshapes rows and
-never on a hot edit, because a slot already granted cannot be recalled. A row
-declaring more than the cap queues for it rather than being rewritten. Rows take
-turns per tenant, `priority` orders one tenant's rows among themselves, and a row
+`concurrency` any live pipeline declares, or `PHOEBE_MAX_CONCURRENT_AGENTS` when the
+operator sets it. The number is recomputed on a reconcile that reshapes pipelines and
+never on a hot edit, because a slot already granted cannot be recalled. A pipeline
+declaring more than the cap queues for it rather than being rewritten. Pipelines take
+turns per tenant, `priority` orders one tenant's pipelines among themselves, and a pipeline
 holding no slot with work waiting may hold one over the cap — bounded by
 `PHOEBE_SLOT_FLOOR_BUDGET` — so a 45-minute unit elsewhere cannot stall an intake
-row for 45 minutes. A release gives back an over-cap slot before a regular one,
+pipeline for 45 minutes. A release gives back an over-cap slot before a regular one,
 and nothing is handed on while the cap is breached, so the breach never rolls
 forward. The knobs and the boot line are in
-[`configuration.md`](configuration.md#concurrency-the-rows-knob-and-the-fleets-cap).
+[`configuration.md`](configuration.md#concurrency-the-pipelines-knob-and-the-fleets-cap).
 
 ## One cycle, end to end
 

@@ -9,7 +9,7 @@
 //
 // The pipeline segment arrived with #418, when a tenant became several engine
 // processes rather than one. It is on every line including the implicit `work`
-// row's, so the grammar has one shape rather than two — a host parser matching
+// pipeline's, so the grammar has one shape rather than two — a host parser matching
 // the tag has to match it as a prefix, not as a fixed string.
 //
 // Two concerns, one file each (#73 Decision 4): stdout is the append-only event
@@ -76,7 +76,7 @@ export type UnitEvent = {
 
 /**
  * The stdout tag every engine line carries. Solo mode uses its config's
- * `repoSlug` and the implicit `work` row, never bare and never half-tagged.
+ * `repoSlug` and the implicit `work` pipeline, never bare and never half-tagged.
  */
 export function unitTag(tenant: string, pipeline: string): string {
   return `[phoebe:${tenant}:${pipeline}]`;
@@ -128,12 +128,12 @@ export type CurrentUnit = {
  * The fixed-size current-state snapshot `phoebe list` reads. Deliberately a
  * bounded set of last-event fields — never a rolling log (#73 Decision 4), which
  * would reintroduce the on-disk growth Decision 1 avoids. `currentUnits` is
- * bounded by the row's `concurrency` (#422), so it stays fixed-size in the sense
+ * bounded by the pipeline's `concurrency` (#422), so it stays fixed-size in the sense
  * that matters: an operator's screen, not an ever-growing file.
  */
 export type StatusSnapshot = {
   tenant: string;
-  /** Which row wrote this file. Its directory already says so; the field is what
+  /** Which pipeline wrote this file. Its directory already says so; the field is what
    *  makes a snapshot read on its own — `cat`'d, or shipped somewhere else. */
   pipeline: string;
   /** What this pipeline is running, oldest admission first (#422). */

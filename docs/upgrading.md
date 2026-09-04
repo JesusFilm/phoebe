@@ -453,7 +453,7 @@ that.
 #### Moving the work fields into `pipelines.work`
 
 A tenant used to declare its work at the top level of `phoebe.config.ts`. It now
-declares it inside a **pipeline** — a named row of work with its own priority
+declares it inside a **pipeline** — a named body of work with its own priority
 order, kind tuning and cadence (see
 [`configuration.md` → Pipelines](configuration.md#pipelines)). `phoebe migrate`
 does the move for you, on a tenant config:

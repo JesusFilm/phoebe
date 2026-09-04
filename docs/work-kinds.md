@@ -469,7 +469,7 @@ resolve. Everything arrives on `ctx` (types via `import type` from
   Both are created the first time they are read, and independently, so a kind
   that builds its own worktrees (as all five built-ins do) never pays for one,
   and a kind that reads neither gets no directory at all. Both are per unit:
-  two units of your kind in flight together — which is what a row's
+  two units of your kind in flight together — which is what a pipeline's
   `concurrency` above 1 means — never share a path, so one unit's preparation
   cannot clear the other's work.
 
@@ -560,16 +560,16 @@ Declaring a key buys three things:
 - **A boot check.** Every key a scheduled kind declares must be present and
   non-blank when the pipeline's engine child starts. A missing one fails the
   boot naming the kind and the key, the way a missing prompt file does. Only
-  that row dies; its siblings boot. A kind you switch on later against a key
-  nobody added stays off with a logged error instead of taking the row down.
-- **Scope.** The supervisor takes every key a _sibling_ row declared and this
-  one did not out of this row's child env. An intake pipeline's Slack token
+  that pipeline dies; its siblings boot. A kind you switch on later against a key
+  nobody added stays off with a logged error instead of taking the pipeline down.
+- **Scope.** The supervisor takes every key a _sibling_ pipeline declared and this
+  one did not out of this pipeline's child env. An intake pipeline's Slack token
   never reaches the work pipeline's child, and a key nobody declares reaches
-  every row exactly as before. `phoebe doctor` reports a scheduled kind whose
+  every pipeline exactly as before. `phoebe doctor` reports a scheduled kind whose
   declared key is missing as a tenant finding.
-- **A narrower relaunch.** The `.env` reconcile digest is computed per row over
-  the keys that row would actually hold, so rotating the Slack token relaunches
-  the intake row alone. Rotating an undeclared key still relaunches every row
+- **A narrower relaunch.** The `.env` reconcile digest is computed per pipeline over
+  the keys that pipeline would actually hold, so rotating the Slack token relaunches
+  the intake pipeline alone. Rotating an undeclared key still relaunches every pipeline
   of the tenant.
 
 Declared keys are stripped from `installCommand`'s env and from prompt `!`
@@ -583,7 +583,7 @@ Some keys cannot be declared at all: `GH_TOKEN`, `PHOEBE_GH_LOGIN`, the four
 git identity variables, anything under `PHOEBE_*` or `GH_APP_*`, and any value
 of `providerEnv`. The engine mints, leases or sets those, and letting a
 declaration move them would let one kind take the token away from a sibling
-row. Naming one is a validation error, as is an `agentEnv` key your
+pipeline. Naming one is a validation error, as is an `agentEnv` key your
 `requiredEnv` does not list.
 
 ### The edges are edges

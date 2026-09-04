@@ -86,7 +86,7 @@ function minimalUser(): PhoebeUserConfig {
   };
 }
 
-/** The tag every line this engine writes carries (#418): slug + pipeline row. */
+/** The tag every line this engine writes carries (#418): slug + pipeline. */
 const TAG = "[phoebe:acme/widget:work]";
 
 function anIssue(number: number, overrides: Partial<Issue> = {}): Issue {
@@ -322,7 +322,7 @@ async function runCycle(opts: {
   dirtyPaths?: readonly string[];
   /** What `git worktree list --porcelain` answers — the worktree leases (#418). */
   worktreeList?: string;
-  /** Which pipeline row this engine is (#418); defaults to the reserved `work`. */
+  /** Which pipeline this engine is (#418); defaults to the reserved `work`. */
   pipeline?: string;
 }): Promise<CycleResult> {
   const { git, calls: gitCalls } = stubGit(
@@ -1725,7 +1725,7 @@ describe("a custom kind in the walk", () => {
     );
   });
 
-  test("a kind whose declared key the row cannot read stays off, and the cycle goes on", async () => {
+  test("a kind whose declared key the pipeline cannot read stays off, and the cycle goes on", async () => {
     const declaring = nudgeKind({ workable: true });
     declaring.definition.requiredEnv = ["SLACK_BOT_TOKEN"];
 
@@ -2160,7 +2160,7 @@ describe("the stdout tag", () => {
     }
   });
 
-  test("a second row on the same tenant tags itself apart", async () => {
+  test("a second pipeline on the same tenant tags itself apart", async () => {
     const result = await runCycle({
       github: { listReadyIssues: () => [] },
       config: { workOrder: ["issues"] },
@@ -2190,7 +2190,7 @@ describe("sweeps scoped to the pipeline's kinds", () => {
     });
   }
 
-  /** A kind that gathers nothing, so a row can schedule work without units. */
+  /** A kind that gathers nothing, so a pipeline can schedule work without units. */
   function idleKind(name: string): LoadedCustomKind {
     return {
       name,
@@ -2209,9 +2209,9 @@ describe("sweeps scoped to the pipeline's kinds", () => {
   }
 
   // The acceptance case: the sweep that re-arms issues must not run at all from
-  // a row that works no issues, or it hands a sibling's in-flight ticket back
+  // a pipeline that works no issues, or it hands a sibling's in-flight ticket back
   // to the queue.
-  test("a row that schedules no issue kind lists no claimed issue", async () => {
+  test("a pipeline that schedules no issue kind lists no claimed issue", async () => {
     const result = await sweepCycle({
       config: { workOrder: ["conflicts"] },
       github: {
@@ -2228,7 +2228,7 @@ describe("sweeps scoped to the pipeline's kinds", () => {
     expect(result.lines.some((line) => line.includes("Re-armed"))).toBe(false);
   });
 
-  test("a row of custom kinds alone sweeps nothing at all", async () => {
+  test("a pipeline of custom kinds alone sweeps nothing at all", async () => {
     const result = await sweepCycle({
       config: { workOrder: ["digest"] },
       customKinds: [idleKind("digest")],
@@ -2238,7 +2238,7 @@ describe("sweeps scoped to the pipeline's kinds", () => {
     expect(result.lines).toContain(`[phoebe:acme/widget:work] ${RUN_ONCE_NOTHING_MESSAGE}`);
   });
 
-  test("an issue row re-arms its own tickets and leaves the research row's alone", async () => {
+  test("an issue pipeline re-arms its own tickets and leaves the research pipeline's alone", async () => {
     const rearmed: number[] = [];
     const result = await sweepCycle({
       config: { workOrder: ["issues"] },
@@ -2269,7 +2269,7 @@ describe("sweeps scoped to the pipeline's kinds", () => {
     );
   });
 
-  test("a research row re-arms the research ticket and nothing else", async () => {
+  test("a research pipeline re-arms the research ticket and nothing else", async () => {
     const rearmed: number[] = [];
     await sweepCycle({
       config: { workOrder: ["research"] },
@@ -2804,7 +2804,7 @@ describe("rolling top-up inside one pipeline", () => {
     const engine = concurrentEngine({
       kinds: [gated],
       concurrency: 2,
-      // `issues` is in the order so the row owns issue-shaped objects and the
+      // `issues` is in the order so the pipeline owns issue-shaped objects and the
       // stranded sweep actually runs; it offers nothing itself.
       workOrder: ["gated", "issues"],
       github: {
@@ -2884,14 +2884,14 @@ describe("rolling top-up inside one pipeline", () => {
 // Per-unit isolation under concurrency (#423)
 // ---------------------------------------------------------------------------
 //
-// #422 put several units in flight inside one row and left them sharing
-// everything below the row: one lease owner, one directory per kind, one
+// #422 put several units in flight inside one pipeline and left them sharing
+// everything below the pipeline: one lease owner, one directory per kind, one
 // inherited stdout. These are the tests that they no longer do.
 
 describe("per-unit isolation under concurrency", () => {
-  test("two units of one row never both hold a worktree; the second is skipped", async () => {
+  test("two units of one pipeline never both hold a worktree; the second is skipped", async () => {
     // Both declare `worktree`, so both want the one engine-named workspace
-    // tree — the collision the row's `concurrency` used to make possible.
+    // tree — the collision the pipeline's `concurrency` used to make possible.
     const gated = gatedKind({
       refs: [1, 2],
       workspace: "worktree",

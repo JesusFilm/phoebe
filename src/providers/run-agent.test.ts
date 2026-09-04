@@ -140,7 +140,7 @@ describe("runAgent", () => {
     ]);
   });
 
-  // With several units in flight in one row (#423), the tenant and the provider
+  // With several units in flight in one pipeline (#423), the tenant and the provider
   // no longer say which run a line came from. The unit does.
   test("with a unit, log brackets name it beside the tenant and provider", async () => {
     const fake = makeFakeChild();

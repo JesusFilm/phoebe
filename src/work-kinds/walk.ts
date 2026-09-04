@@ -83,7 +83,7 @@ export function selectWorkUnits(opts: {
   kinds: readonly string[];
   gathered: ReadonlyMap<string, unknown>;
   ctxFor(kind: string): WorkKindCtx;
-  /** How many units this pass may still admit — the row's free slots. */
+  /** How many units this pass may still admit — the pipeline's free slots. */
   limit: number;
   /** This kind's refs that were already running when the walk started. */
   inFlight(kind: string): ReadonlySet<string>;

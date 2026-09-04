@@ -1,7 +1,7 @@
-// Row selection (#415): a `--pipeline <name>` flag plus the tenant's
+// Pipeline selection (#415): a `--pipeline <name>` flag plus the tenant's
 // `pipelines` block, flattened into the config shape every existing module
 // reads. The cases that matter are the ones a consumer can get wrong — a
-// partial order, a kind two rows both want, a cadence the environment tries to
+// partial order, a kind two pipelines both want, a cadence the environment tries to
 // override — plus the no-pipelines path, which has to behave exactly as it did
 // before this file existed.
 
@@ -14,10 +14,10 @@ import {
 } from "./config-schema.ts";
 import {
   parsePipelineName,
-  pipelineRow,
+  declaredPipeline,
   resolvePollIntervalMs,
-  selectPipelineRow,
-} from "./pipeline-row.ts";
+  selectPipeline,
+} from "./pipeline.ts";
 import type { AnyWorkKindDefinition } from "./work-kinds/definition.ts";
 
 function userConfig(overrides: Partial<PhoebeUserConfig> = {}): PhoebeUserConfig {
@@ -48,7 +48,7 @@ function inlineKind(name: string): AnyWorkKindDefinition {
 }
 
 describe("parsePipelineName", () => {
-  test("defaults to the reserved work row", () => {
+  test("defaults to the reserved work pipeline", () => {
     expect(parsePipelineName([])).toBe("work");
     expect(parsePipelineName(["--run-once", "--dry-run"])).toBe("work");
   });
@@ -67,24 +67,26 @@ describe("parsePipelineName", () => {
   });
 });
 
-describe("pipelineRow", () => {
-  test("the work row exists undeclared", () => {
+describe("declaredPipeline", () => {
+  test("the work pipeline exists undeclared", () => {
     const config = resolveConfig(userConfig());
-    expect(pipelineRow(config, "work").concurrency).toBe(1);
+    expect(declaredPipeline(config, "work").concurrency).toBe(1);
   });
 
   test("an unknown name is a boot error naming what is declared", () => {
     const config = resolveConfig(userConfig({ pipelines: { intake: {} } }));
-    expect(() => pipelineRow(config, "intak")).toThrow(/Unknown pipeline "intak".*work, intake/s);
+    expect(() => declaredPipeline(config, "intak")).toThrow(
+      /Unknown pipeline "intak".*work, intake/s,
+    );
   });
 });
 
-describe("selectPipelineRow", () => {
+describe("selectPipeline", () => {
   test("order is priority: named kinds first, every other registered kind after", () => {
     const config = resolveConfig(
       userConfig({ pipelines: { work: { order: ["checks"], concurrency: 2 } } }),
     );
-    expect(selectPipelineRow(config, "work").workOrder).toEqual([
+    expect(selectPipeline(config, "work").workOrder).toEqual([
       "checks",
       "conflicts",
       "reviews",
@@ -96,13 +98,13 @@ describe("selectPipelineRow", () => {
 
   test("a tenant declaring nothing gets the shipped order", () => {
     const config = resolveConfig(userConfig());
-    expect(selectPipelineRow(config, "work").workOrder).toEqual(EVERY_BUILT_IN);
+    expect(selectPipeline(config, "work").workOrder).toEqual(EVERY_BUILT_IN);
   });
 
   test("the deprecated workOrder alias resolves as pipelines.work.order", () => {
     const config = resolveConfig(userConfig({ workOrder: ["issues", "checks"] }));
     expect(config.pipelines["work"]?.order).toEqual(["issues", "checks"]);
-    expect(selectPipelineRow(config, "work").workOrder).toEqual([
+    expect(selectPipeline(config, "work").workOrder).toEqual([
       "issues",
       "checks",
       "conflicts",
@@ -115,7 +117,7 @@ describe("selectPipelineRow", () => {
     const config = resolveConfig(
       userConfig({ pipelines: { work: { kinds: { research: { disabled: true } } } } }),
     );
-    expect(selectPipelineRow(config, "work").workOrder).toEqual([
+    expect(selectPipeline(config, "work").workOrder).toEqual([
       "conflicts",
       "checks",
       "reviews",
@@ -123,18 +125,18 @@ describe("selectPipelineRow", () => {
     ]);
   });
 
-  test("a kind another row claims does not follow into work", () => {
+  test("a kind another pipeline claims does not follow into work", () => {
     const config = resolveConfig(userConfig({ pipelines: { intake: { order: ["research"] } } }));
-    expect(selectPipelineRow(config, "work").workOrder).toEqual([
+    expect(selectPipeline(config, "work").workOrder).toEqual([
       "conflicts",
       "checks",
       "reviews",
       "issues",
     ]);
-    expect(selectPipelineRow(config, "intake").workOrder).toEqual(["research"]);
+    expect(selectPipeline(config, "intake").workOrder).toEqual(["research"]);
   });
 
-  test("a row's custom kinds are its own, and follow its named ones", () => {
+  test("a pipeline's custom kinds are its own, and follow its named ones", () => {
     const config = resolveConfig(
       userConfig({
         pipelines: {
@@ -143,8 +145,8 @@ describe("selectPipelineRow", () => {
         },
       }),
     );
-    expect(selectPipelineRow(config, "intake").workOrder).toEqual(["slack"]);
-    expect(selectPipelineRow(config, "work").workOrder).toEqual([
+    expect(selectPipeline(config, "intake").workOrder).toEqual(["slack"]);
+    expect(selectPipeline(config, "work").workOrder).toEqual([
       "issues",
       "conflicts",
       "checks",
@@ -157,7 +159,7 @@ describe("selectPipelineRow", () => {
     const config = resolveConfig(
       userConfig({ pipelines: { work: { order: ["checks", "checks"] } } }),
     );
-    expect(selectPipelineRow(config, "work").workOrder).toEqual([
+    expect(selectPipeline(config, "work").workOrder).toEqual([
       "checks",
       "conflicts",
       "reviews",
@@ -166,9 +168,9 @@ describe("selectPipelineRow", () => {
     ]);
   });
 
-  test("an unknown kind in a row's order names the row", () => {
+  test("an unknown kind in a pipeline's order names the pipeline", () => {
     const config = resolveConfig(userConfig({ pipelines: { intake: { order: ["bogus"] } } }));
-    expect(() => selectPipelineRow(config, "intake")).toThrow(
+    expect(() => selectPipeline(config, "intake")).toThrow(
       /Unknown work kind "bogus" in `pipelines.intake.order`/,
     );
   });
@@ -177,35 +179,39 @@ describe("selectPipelineRow", () => {
     const config = resolveConfig(
       userConfig({ pipelines: { work: { kinds: { issues: { promptFile: "p/mine.md" } } } } }),
     );
-    const row = selectPipelineRow(config, "work");
-    expect(row.promptFiles.issue).toBe("p/mine.md");
-    expect(row.promptFiles.reviews).toBe(CONFIG_DEFAULTS.promptFiles.reviews);
+    const pipeline = selectPipeline(config, "work");
+    expect(pipeline.promptFiles.issue).toBe("p/mine.md");
+    expect(pipeline.promptFiles.reviews).toBe(CONFIG_DEFAULTS.promptFiles.reviews);
   });
 
   test("the promptFiles alias still lands when no kind block re-points it", () => {
     const config = resolveConfig(userConfig({ promptFiles: { issue: "p/alias.md" } }));
-    expect(selectPipelineRow(config, "work").promptFiles.issue).toBe("p/alias.md");
+    expect(selectPipeline(config, "work").promptFiles.issue).toBe("p/alias.md");
   });
 
-  test("the row's kinds block becomes the flat workKinds", () => {
+  test("the pipeline's kinds block becomes the flat workKinds", () => {
     const config = resolveConfig(
       userConfig({ pipelines: { work: { kinds: { reviews: { effort: "low" } } } } }),
     );
-    expect(selectPipelineRow(config, "work").workKinds).toEqual({ reviews: { effort: "low" } });
+    expect(selectPipeline(config, "work").workKinds).toEqual({ reviews: { effort: "low" } });
   });
 });
 
 describe("resolvePollIntervalMs", () => {
-  const rowOf = (user: PhoebeUserConfig, name: string) => pipelineRow(resolveConfig(user), name);
+  const rowOf = (user: PhoebeUserConfig, name: string) =>
+    declaredPipeline(resolveConfig(user), name);
 
   test("a declared interval outranks the env var", () => {
-    const row = rowOf(userConfig({ pipelines: { intake: { pollIntervalMs: 15_000 } } }), "intake");
-    expect(resolvePollIntervalMs(row, { PHOEBE_POLL_INTERVAL_MS: "60000" })).toBe(15_000);
+    const pipeline = rowOf(
+      userConfig({ pipelines: { intake: { pollIntervalMs: 15_000 } } }),
+      "intake",
+    );
+    expect(resolvePollIntervalMs(pipeline, { PHOEBE_POLL_INTERVAL_MS: "60000" })).toBe(15_000);
   });
 
-  test("a row declaring nothing takes the env value", () => {
-    const row = rowOf(userConfig({ pipelines: { intake: {} } }), "intake");
-    expect(resolvePollIntervalMs(row, { PHOEBE_POLL_INTERVAL_MS: "60000" })).toBe(60_000);
+  test("a pipeline declaring nothing takes the env value", () => {
+    const pipeline = rowOf(userConfig({ pipelines: { intake: {} } }), "intake");
+    expect(resolvePollIntervalMs(pipeline, { PHOEBE_POLL_INTERVAL_MS: "60000" })).toBe(60_000);
   });
 
   test("neither declared nor set falls to the default", () => {
@@ -213,8 +219,8 @@ describe("resolvePollIntervalMs", () => {
   });
 });
 
-describe("cross-row validation", () => {
-  test("a kind claimed by two rows is fatal, naming both", () => {
+describe("cross-pipeline validation", () => {
+  test("a kind claimed by two pipelines is fatal, naming both", () => {
     expect(() =>
       validateUserConfig(
         userConfig({
@@ -224,7 +230,7 @@ describe("cross-row validation", () => {
     ).toThrow(/work kind "checks" is claimed by both `pipelines.work` and `pipelines.intake`/);
   });
 
-  test("a custom kind declared in two rows is the same violation", () => {
+  test("a custom kind declared in two pipelines is the same violation", () => {
     expect(() =>
       validateUserConfig(
         userConfig({
@@ -237,7 +243,7 @@ describe("cross-row validation", () => {
     ).toThrow(/work kind "slack" is claimed by both/);
   });
 
-  test("one row naming a kind twice is not a violation", () => {
+  test("one pipeline naming a kind twice is not a violation", () => {
     expect(() =>
       validateUserConfig(userConfig({ pipelines: { work: { order: ["checks", "checks"] } } })),
     ).not.toThrow();

@@ -22,7 +22,7 @@
 // Both arms — solo and workspace — run on one supervision loop and share one
 // slot broker (#416). The arm still picks discovery (the root itself, or a walk
 // of the workspace tree) and how a child gets its environment (the supervisor's
-// ambient env, or the per-tenant scrub); what a row's death means for the
+// ambient env, or the per-tenant scrub); what a pipeline's death means for the
 // container is injected policy, not a second loop. This module is the wiring;
 // the loop lives in supervise-fleet.ts, the watched-world vocabulary in
 // reconcile.ts, the fallback policy in crash-loop.ts, and everything impure is
@@ -45,12 +45,12 @@ import {
 } from "./crash-loop.ts";
 import { readEngineSource, type ResolvedEngineSource } from "./engine-source.ts";
 import {
-  createRowEnumerator,
-  rowLabel,
+  createPipelineEnumerator,
+  pipelineLabel,
   siblingOnlyEnvKeys,
-  type RowEnumerator,
-  type SupervisedRow,
-} from "./pipeline-rows.ts";
+  type PipelineEnumerator,
+  type SupervisedPipeline,
+} from "./pipelines.ts";
 import { lsRemoteBranchSha, materializeGithubEngine } from "./github-engine.ts";
 import { buildEngineChildEnv, envReconcileDigest, parseDotenv } from "./engine-child-env.ts";
 import { attachCredentialHandler, type CredentialCache } from "./credential-ipc.ts";
@@ -68,7 +68,7 @@ import {
   describeCap,
   resolveEffectiveCap,
   resolveFloorBudget,
-  type BrokerRow,
+  type BrokerPipeline,
   type SlotBroker,
 } from "./slot-broker.ts";
 import {
@@ -90,7 +90,7 @@ import {
   type FleetChild,
   type FleetDiscoverInput,
   type FleetRun,
-  type RowExitPolicy,
+  type PipelineExitPolicy,
   type SuperviseFleetDeps,
 } from "./supervise-fleet.ts";
 import {
@@ -117,13 +117,13 @@ import { propagateExit, spawnEngineChild, spawnSoloChild } from "./spawn-engine.
 export const LOCAL_ENGINE_DIR = "/opt/phoebe-engine";
 
 /**
- * The solo row's reconcile fingerprint — a constant, because solo has no tenant
+ * The solo pipeline's reconcile fingerprint — a constant, because solo has no tenant
  * axis to reconcile. The root config *is* the engine's config, so every edit to
  * it is already the engine axis's business (relaunch on a moved engine source,
  * a silent rebase otherwise, #138). A fingerprint that tracked the file would
  * relaunch the child a second time for the same edit.
  */
-const SOLO_ROW_FINGERPRINT = "solo";
+const SOLO_TENANT_FINGERPRINT = "solo";
 
 /**
  * The launcher's own semver version, read once at module load.
@@ -317,21 +317,21 @@ async function loadMountedConfig(
  * past it. A fallback then checks out the last-good commit in the same clone.
  */
 /**
- * Probe a freshly materialized checkout for row enumeration and say so, once
+ * Probe a freshly materialized checkout for pipeline enumeration and say so, once
  * (#417). The line is worth printing on every launch: on an engine without the
  * subcommand it is the whole explanation for why a tenant's declared `intake`
- * row is not running, and the answer can legitimately change under the same
+ * pipeline is not running, and the answer can legitimately change under the same
  * config the moment the engine ref moves.
  */
-function probeRowEnumeration(entry: string): RowEnumerator {
-  const rows = createRowEnumerator({ entry });
+function probePipelineEnumeration(entry: string): PipelineEnumerator {
+  const pipelines = createPipelineEnumerator({ entry });
   console.log(
-    rows.supported()
-      ? "[phoebe] boot: engine supports pipeline enumeration — rows are read per tenant."
+    pipelines.supported()
+      ? "[phoebe] boot: engine supports pipeline enumeration — pipelines are read per tenant."
       : "[phoebe] boot: engine has no `pipelines` subcommand — every tenant runs one implicit " +
-          "`work` row.",
+          "`work` pipeline.",
   );
-  return rows;
+  return pipelines;
 }
 
 async function launchTarget(configPath: string, guard: CrashGuard): Promise<LaunchedEngine> {
@@ -357,7 +357,7 @@ async function launchTarget(configPath: string, guard: CrashGuard): Promise<Laun
       guarded: false,
       quarantinedSha: null,
       sample,
-      rows: probeRowEnumeration(entry),
+      pipelines: probePipelineEnumeration(entry),
     };
   }
 
@@ -392,7 +392,7 @@ async function launchTarget(configPath: string, guard: CrashGuard): Promise<Laun
     guarded,
     quarantinedSha,
     sample,
-    rows: probeRowEnumeration(entry),
+    pipelines: probePipelineEnumeration(entry),
   };
 }
 
@@ -527,22 +527,22 @@ function readTenantEnv(envPath: string): Record<string, string> {
   }
 }
 
-/** One supervised row as the slot broker orders and sizes for it (#407). */
-function brokerRow(row: SupervisedRow): BrokerRow {
+/** One supervised pipeline as the slot broker orders and sizes for it (#407). */
+function brokerPipeline(pipeline: SupervisedPipeline): BrokerPipeline {
   return {
-    id: row.id,
-    tenantId: row.tenant.id,
-    priority: row.pipeline.priority,
-    concurrency: row.pipeline.concurrency,
-    label: rowLabel(row),
+    id: pipeline.id,
+    tenantId: pipeline.tenant.id,
+    priority: pipeline.pipeline.priority,
+    concurrency: pipeline.pipeline.concurrency,
+    label: pipelineLabel(pipeline),
   };
 }
 
 /**
- * Keep the broker in step with the live row matrix (#407), in either arm.
+ * Keep the broker in step with the live pipeline matrix (#407), in either arm.
  *
  * Two different things ride on the same hook. Every poll refreshes the ordering
- * data — a row's tenant and its hot `priority` — which is what lets a `priority`
+ * data — a pipeline's tenant and its hot `priority` — which is what lets a `priority`
  * edit reorder the queue with no relaunch. Only a poll that *reshaped* the
  * matrix re-derives the effective cap: shrinking a semaphore below its own
  * `inUse` has no safe answer, so the number moves only when the supervisor is
@@ -552,14 +552,14 @@ function brokerRow(row: SupervisedRow): BrokerRow {
  * two numbers of the worst case (`cap + floorBudget`) at boot and again whenever
  * a reconcile moves them, without a line per poll.
  */
-export function trackRows(
+export function trackPipelines(
   broker: SlotBroker,
   env: NodeJS.ProcessEnv = process.env,
-): NonNullable<SuperviseFleetDeps["onRows"]> {
+): NonNullable<SuperviseFleetDeps["onPipelines"]> {
   let reported: string | null = null;
-  return ({ rows, reshaped }) => {
-    const live = rows.map(brokerRow);
-    broker.setRows(live);
+  return ({ pipelines, reshaped }) => {
+    const live = pipelines.map(brokerPipeline);
+    broker.setPipelines(live);
     if (!reshaped) return;
     const cap = resolveEffectiveCap(live, env);
     broker.setCapacity(cap.capacity);
@@ -573,19 +573,19 @@ export function trackRows(
 /**
  * Supervise a workspace multi-tenant deployment (#58/#59/#61/#91): a
  * shared engine (#60, materialized once by `launchTarget` from the top config's
- * `engine` field) with one child per `(tenant × pipeline)` row (#401/#420), a
+ * `engine` field) with one child per `(tenant × pipeline)` pipeline (#401/#420), a
  * global concurrency broker across them, and hot add/remove/change via
  * `superviseFleet`.
  *
  * Each child is spawned with an IPC channel + the tenant's scrubbed env (#61),
- * cwd (its config dir) and its row's `--pipeline`, and wired to the broker (#59)
- * under the row id. The crash-loop guard applies any existing engine fallback on
+ * cwd (its config dir) and its pipeline's `--pipeline`, and wired to the broker (#59)
+ * under the pipeline id. The crash-loop guard applies any existing engine fallback on
  * each (re)launch, and now hears about the fleet's runs under the universality
  * rule — live fleet validation is still deferred to #77.
  *
  * `discover` is injected rather than called directly so the reconcile loop stays
  * testable against a fake fleet: today's one caller re-walks the workspace tree
- * and reloads each child's `repoSlug` every poll (#91). Rows come from the
+ * and reloads each child's `repoSlug` every poll (#91). Pipelines come from the
  * engine, not from here, so this stays tenant-shaped.
  */
 function runFleet(opts: {
@@ -605,8 +605,8 @@ function runFleet(opts: {
   const credentialCache: CredentialCache = new Map();
   const warnedOverBudget = new Set<string>();
 
-  const spawnFleetChild = (row: SupervisedRow, engine: LaunchedEngine): FleetChild => {
-    const tenant = row.tenant;
+  const spawnFleetChild = (pipeline: SupervisedPipeline, engine: LaunchedEngine): FleetChild => {
+    const tenant = pipeline.tenant;
     const env = buildEngineChildEnv({
       base: process.env,
       mintedEnv: tenant.mintedEnv,
@@ -614,15 +614,15 @@ function runFleet(opts: {
       // base and the App bot fallback, below the tenant's own `.env`.
       configIdentity: tenant.gitIdentity,
       tenantEnv: readTenantEnv(tenant.envPath),
-      // The subtractive row scrub (#425): this tenant's `.env` reaches the row
-      // whole except for the keys a sibling row declared and this one did not.
-      scrubKeys: siblingOnlyEnvKeys(row),
+      // The subtractive pipeline scrub (#425): this tenant's `.env` reaches the pipeline
+      // whole except for the keys a sibling pipeline declared and this one did not.
+      scrubKeys: siblingOnlyEnvKeys(pipeline),
     });
     let settle!: (exit: EngineExit) => void;
     const exited = new Promise<EngineExit>((resolve) => {
       settle = resolve;
     });
-    const label = rowLabel(row);
+    const label = pipelineLabel(pipeline);
     // The child's cwd is the tenant's asset dir (#98): `dirname(envPath)`, which
     // is `tenant.dir` unless `configDir` relocated the `.env` (e.g. into
     // `.phoebe/`). When relocated, cwd is not where the config lives, so pass
@@ -633,18 +633,18 @@ function runFleet(opts: {
     const relocated = assetsDir !== tenant.dir;
     const child = spawnEngineChild(
       engine.entry,
-      rowArgv(row, tenant.configPath, relocated, opts.argv),
+      rowArgv(pipeline, tenant.configPath, relocated, opts.argv),
       {
         env,
         cwd: assetsDir,
         onExit: (code: number | null, signal: NodeJS.Signals | null) => settle({ code, signal }),
         onSpawnError: (error: Error) => {
-          console.error(`[phoebe] boot: row ${label} failed to spawn — ${error.message}`);
+          console.error(`[phoebe] boot: pipeline ${label} failed to spawn — ${error.message}`);
           settle({ code: 1, signal: null });
         },
       },
     );
-    attachBroker({ owner: row.id, broker, child });
+    attachBroker({ owner: pipeline.id, broker, child });
     // The lease answerer (#211/#205). `readPatToken` re-reads this tenant's
     // `.env` per request, so a rotated PAT lands in the running child at its
     // next lease call site — no drain, no respawn (the fingerprint above
@@ -653,10 +653,10 @@ function runFleet(opts: {
     // App tenants
     // (no explicit token) get the null no-op: their refreshed installation
     // token still arrives via the mint-expiry fingerprint relaunch (#209).
-    // Leased under the row id, so a lease answered for one row of a tenant is
+    // Leased under the pipeline id, so a lease answered for one pipeline of a tenant is
     // never mistaken for its sibling's (#420).
     attachCredentialHandler({
-      tenantId: row.id,
+      tenantId: pipeline.id,
       child,
       cache: credentialCache,
       mint: null,
@@ -675,33 +675,33 @@ function runFleet(opts: {
     onEngineChange: (reason) =>
       console.log(
         reason === "config"
-          ? "[phoebe] boot: shared config changed — draining the fleet and relaunching every row."
-          : "[phoebe] boot: tracked engine ref advanced — draining the fleet and relaunching every row.",
+          ? "[phoebe] boot: shared config changed — draining the fleet and relaunching every pipeline."
+          : "[phoebe] boot: tracked engine ref advanced — draining the fleet and relaunching every pipeline.",
       ),
-    onRowChange: ({ added, removed, changed }) =>
+    onPipelineChange: ({ added, removed, changed }) =>
       console.log(
-        `[phoebe] boot: row reconcile — +${added.length} added, -${removed.length} removed, ` +
+        `[phoebe] boot: pipeline reconcile — +${added.length} added, -${removed.length} removed, ` +
           `~${changed.length} relaunched (no container restart).`,
       ),
-    onRows: trackRows(broker),
-    onChildExit: ({ row, exit }) =>
+    onPipelines: trackPipelines(broker),
+    onChildExit: ({ pipeline, exit }) =>
       console.error(
-        `[phoebe] boot: row ${rowLabel(row)} exited (${exit.code ?? exit.signal}) — ` +
-          `respawning with backoff (per-row supervision; the shared engine and every ` +
-          `sibling row are untouched).`,
+        `[phoebe] boot: pipeline ${pipelineLabel(pipeline)} exited (${exit.code ?? exit.signal}) — ` +
+          `respawning with backoff (per-pipeline supervision; the shared engine and every ` +
+          `sibling pipeline are untouched).`,
       ),
     onLaunchError: (error) =>
       console.error(`[phoebe] boot: fleet (re)launch failed — ${describe(error)}. Retrying.`),
     onDiscoverError: (error) =>
       console.warn(
         `[phoebe] boot: tenant discovery failed — ${describe(error)}. ` +
-          `Skipping the row axis this poll (the running fleet is left intact).`,
+          `Skipping the pipeline axis this poll (the running fleet is left intact).`,
       ),
-    rowFingerprint: workspaceRowFingerprint,
-    onRowsError: ({ tenantId, error }) =>
+    pipelineFingerprint: workspacePipelineFingerprint,
+    onPipelinesError: ({ tenantId, error }) =>
       console.warn(
-        `[phoebe] boot: could not enumerate rows for ${tenantId} — ${describe(error)}. ` +
-          `Holding the tenant (its running rows keep running); retrying next poll.`,
+        `[phoebe] boot: could not enumerate pipelines for ${tenantId} — ${describe(error)}. ` +
+          `Holding the tenant (its running pipelines keep running); retrying next poll.`,
       ),
     onRunEnd: recordRunEnd(opts.guard),
     onRunTick: ({ engine, elapsedMs }) => {
@@ -712,29 +712,29 @@ function runFleet(opts: {
 }
 
 /**
- * A row's reconcile fingerprint: what the engine said about the row's config,
- * narrowed by the tenant's `.env` *as this row would hold it* (#425).
+ * A pipeline's reconcile fingerprint: what the engine said about the pipeline's config,
+ * narrowed by the tenant's `.env` *as this pipeline would hold it* (#425).
  *
  * The tenant fingerprint still counts every `.env` key, so an edit there is
  * always noticed. What this decides is *who relaunches*: a rotated key that
- * only the intake row can see moves only the intake row's digest, and because
- * the supervisor never fans a tenant-wide change out to rows that already
- * accounted for it, the work row keeps running. A rotated undeclared key is
- * visible to every row and moves all of them, which is the behaviour a
- * single-row tenant has always had.
+ * only the intake pipeline can see moves only the intake pipeline's digest, and because
+ * the supervisor never fans a tenant-wide change out to pipelines that already
+ * accounted for it, the work pipeline keeps running. A rotated undeclared key is
+ * visible to every pipeline and moves all of them, which is the behaviour a
+ * single-pipeline tenant has always had.
  *
- * A null enumerated fingerprint stays null — the implicit row of a checkout
+ * A null enumerated fingerprint stays null — the implicit pipeline of a checkout
  * that cannot enumerate declares nothing and relaunches on the tenant axis.
  */
-export function workspaceRowFingerprint(
-  row: SupervisedRow,
+export function workspacePipelineFingerprint(
+  pipeline: SupervisedPipeline,
   enumerated: string | null,
 ): string | null {
   if (enumerated === null) return null;
-  const hidden = siblingOnlyEnvKeys(row);
+  const hidden = siblingOnlyEnvKeys(pipeline);
   let digest: string;
   try {
-    digest = envReconcileDigest(readFileSync(row.tenant.envPath, "utf8"), hidden);
+    digest = envReconcileDigest(readFileSync(pipeline.tenant.envPath, "utf8"), hidden);
   } catch {
     digest = "";
   }
@@ -742,49 +742,49 @@ export function workspaceRowFingerprint(
 }
 
 /**
- * A row's child argv: the row it runs, plus the config path when the tenant's
+ * A pipeline's child argv: the pipeline it runs, plus the config path when the tenant's
  * assets were relocated away from it (#98). `--pipeline` is omitted for the
- * implicit row of an engine that cannot enumerate — that checkout has no such
+ * implicit pipeline of an engine that cannot enumerate — that checkout has no such
  * flag and would exit on it before reading a config (#417).
  */
 export function rowArgv(
-  row: SupervisedRow,
+  pipeline: SupervisedPipeline,
   configPath: string,
   relocated: boolean,
   forwarded: readonly string[],
 ): string[] {
   return [
     ...(relocated ? ["--config", configPath] : []),
-    ...(row.enumerated ? ["--pipeline", row.pipeline.name] : []),
+    ...(pipeline.enumerated ? ["--pipeline", pipeline.pipeline.name] : []),
     ...forwarded,
   ];
 }
 
 /**
- * Feed the crash-loop guard one finished row run, under the universality rule
+ * Feed the crash-loop guard one finished pipeline run, under the universality rule
  * (#401/#420): a fast crash is evidence against the *engine commit* only once
- * every row that ran it has fast-crashed. Until then it is one row's problem,
+ * every pipeline that ran it has fast-crashed. Until then it is one pipeline's problem,
  * and counting it would let a single broken tenant quarantine a commit the rest
- * of the fleet is running happily. Healthy runs are never gated — any row
+ * of the fleet is running happily. Healthy runs are never gated — any pipeline
  * proving the commit boots is worth banking as the fallback target.
  */
 function recordRunEnd(guard: CrashGuard): (run: FleetRun) => void {
   return (run) => {
     const outcome = runOutcome(run);
     if (outcome === null) return;
-    if (!run.everyRowCrashLooping && judgeRun(outcome) === "crash") return;
+    if (!run.everyPipelineCrashLooping && judgeRun(outcome) === "crash") return;
     guard.record(outcome);
   };
 }
 
 /**
- * What a row dying on its own means for the container. The loop asks only when
- * every supervised row is crash-looping (#401), so by the time this runs the
+ * What a pipeline dying on its own means for the container. The loop asks only when
+ * every supervised pipeline is crash-looping (#401), so by the time this runs the
  * question is "is this engine commit worth another try", not "did one tenant
  * misbehave". Only a guarded launch retries: a pinned ref that crashes takes the
  * container down, exactly as it did before there was a guard.
  */
-function rowExitPolicy(guard: CrashGuard): RowExitPolicy {
+function rowExitPolicy(guard: CrashGuard): PipelineExitPolicy {
   return {
     decide: (run) => {
       const outcome = run.engine.guarded ? runOutcome(run) : null;
@@ -1191,12 +1191,12 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   const stop = installDrainSignal(process, ["SIGTERM", "SIGINT"]);
 
   // One slot broker for the whole container, both arms (#416/#407). It is the
-  // only entity that sees every row, which is what makes it the fairness
+  // only entity that sees every pipeline, which is what makes it the fairness
   // authority; two of them would be two caps blind to each other.
   //
-  // Its capacity is derived from the live rows (`trackRows`), so a solo tenant
+  // Its capacity is derived from the live pipelines (`trackPipelines`), so a solo tenant
   // declaring `pipelines.work.concurrency: 3` gets 3 rather than a silent 1.
-  // Until the first row matrix arrives there is nothing to derive from and no
+  // Until the first pipeline matrix arrives there is nothing to derive from and no
   // child to ask, so it starts at the operator's override or 1.
   const broker = createSlotBroker({
     capacity: resolveEffectiveCap([], process.env).capacity,
@@ -1305,19 +1305,19 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     return launchTarget(configPath, guard);
   };
 
-  const spawnSolo = (row: SupervisedRow, engine: LaunchedEngine): FleetChild => {
+  const spawnSolo = (pipeline: SupervisedPipeline, engine: LaunchedEngine): FleetChild => {
     let settle!: (exit: EngineExit) => void;
     const exited = new Promise<EngineExit>((resolve) => {
       settle = resolve;
     });
     const { env, overridden } = soloIdentityEnv(process.env, soloIdentity);
-    // Solo's arm of the subtractive row scrub (#425). There is no per-tenant
+    // Solo's arm of the subtractive pipeline scrub (#425). There is no per-tenant
     // `.env` here — the container env *is* the tenant's — so the subtraction
     // runs against what the child would otherwise inherit. Materializing a copy
-    // is the only way to take a key away from an inherited env, so a row with
+    // is the only way to take a key away from an inherited env, so a pipeline with
     // nothing to scrub keeps the null: the child then inherits verbatim, as it
     // always has.
-    const scrubKeys = siblingOnlyEnvKeys(row);
+    const scrubKeys = siblingOnlyEnvKeys(pipeline);
     const childEnv = env ?? (scrubKeys.length > 0 ? { ...process.env } : null);
     if (childEnv !== null) {
       for (const key of scrubKeys) delete childEnv[key];
@@ -1333,8 +1333,8 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       );
     }
     // Solo's config is the root's, resolved from cwd exactly as it always was:
-    // `relocated` is false, so this argv is today's plus the row's `--pipeline`.
-    const child = spawnSoloChild(engine.entry, rowArgv(row, configPath, false, argv), {
+    // `relocated` is false, so this argv is today's plus the pipeline's `--pipeline`.
+    const child = spawnSoloChild(engine.entry, rowArgv(pipeline, configPath, false, argv), {
       // Null when neither a `gitIdentity` nor a sibling declaration asked for a
       // change: the child then inherits the supervisor's env exactly as it
       // always has.
@@ -1345,7 +1345,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
         settle({ code: 1, signal: null });
       },
     });
-    attachBroker({ owner: row.id, broker, child });
+    attachBroker({ owner: pipeline.id, broker, child });
     // Answer the child's credential lease (#211) with the null no-op: solo is
     // one trust domain whose secrets arrive on the ambient container env, so
     // there is no per-tenant `.env` to re-read (#205's rotation-in-place has no
@@ -1353,7 +1353,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     // child mints its own token in-loop when the lease yields nothing).
     // Without an answerer the child would hang forever on its first request.
     attachCredentialHandler({
-      tenantId: row.id,
+      tenantId: pipeline.id,
       child,
       cache: soloCredentialCache,
       mint: null,
@@ -1369,23 +1369,23 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       // Solo's tenant axis stays inert: the root *is* the tenant, so every edit
       // to its config is already the engine axis's business (relaunch on a moved
       // engine source, a silent rebase otherwise, #138). A constant fingerprint
-      // keeps it that way — the rows the engine enumerates at launch are the
-      // rows solo runs until something re-materializes the engine.
-      discover: () => [{ tenant: soloTenant, fingerprint: SOLO_ROW_FINGERPRINT }],
+      // keeps it that way — the pipelines the engine enumerates at launch are the
+      // pipelines solo runs until something re-materializes the engine.
+      discover: () => [{ tenant: soloTenant, fingerprint: SOLO_TENANT_FINGERPRINT }],
       spawn: spawnSolo,
       stop,
       intervalMs,
-      // Solo contends on the same broker, so its rows size and order it too:
+      // Solo contends on the same broker, so its pipelines size and order it too:
       // one tenant, but its own pipelines' `concurrency` and `priority`.
-      onRows: trackRows(broker),
-      // Solo backs off on the engine constant, not the fleet's per-row one: the
+      onPipelines: trackPipelines(broker),
+      // Solo backs off on the engine constant, not the fleet's per-pipeline one: the
       // relaunch line quotes it, so the two must not drift.
       crashBackoffMs: CRASH_BACKOFF_MS,
       onRunEnd: recordRunEnd(guard),
       onRunTick: ({ engine, elapsedMs }) => {
         if (engine.sha !== null) guard.noteAlive(engine.sha, elapsedMs);
       },
-      // The universality rule over a one-row fleet: that row *is* the engine, so
+      // The universality rule over a one-pipeline fleet: that pipeline *is* the engine, so
       // every death of it is universal and reaches the policy — which is how
       // "the engine exited, so the container exits" is still what solo does.
       rowExit: { ...rowExitPolicy(guard), propagateOnStop: true },

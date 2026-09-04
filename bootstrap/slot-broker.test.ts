@@ -1,6 +1,6 @@
 // Slot broker tests (#59/#407): the counting semaphore that bounds concurrent
-// work units across N rows, the cap it derives from those rows, the bounded
-// floor that lets a starved row over that cap, and the priority ordering that
+// work units across N pipelines, the cap it derives from those pipelines, the bounded
+// floor that lets a starved pipeline over that cap, and the priority ordering that
 // decides who is served next.
 
 import { describe, expect, test } from "vite-plus/test";
@@ -10,7 +10,7 @@ import {
   DEFAULT_SLOT_FLOOR_BUDGET,
   resolveEffectiveCap,
   resolveFloorBudget,
-  type BrokerRow,
+  type BrokerPipeline,
   type OverGrantEvent,
 } from "./slot-broker.ts";
 
@@ -25,33 +25,39 @@ function tracked(promise: Promise<void>): { granted: () => boolean } {
 
 const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
-/** A row of tenant `<owner>#<pipeline>`, at the given concurrency and priority. */
-function row(id: string, concurrency = 1, priority = 0): BrokerRow {
+/** A pipeline of tenant `<owner>#<pipeline>`, at the given concurrency and priority. */
+function pipeline(id: string, concurrency = 1, priority = 0): BrokerPipeline {
   return { id, tenantId: id.split("#")[0]!, priority, concurrency, label: id };
 }
 
 describe("resolveEffectiveCap", () => {
-  test("derives max(declared concurrency) across the live rows", () => {
-    const cap = resolveEffectiveCap([row("a#work"), row("b#work"), row("c#work", 4)], {});
+  test("derives max(declared concurrency) across the live pipelines", () => {
+    const cap = resolveEffectiveCap(
+      [pipeline("a#work"), pipeline("b#work"), pipeline("c#work", 4)],
+      {},
+    );
     expect(cap.capacity).toBe(4);
     expect(cap.source).toBe("derived");
     expect(cap.from).toEqual(["c#work"]);
     expect(cap.clamped).toEqual([]);
   });
 
-  test("today's fleet — every row at 1 — still derives 1", () => {
-    expect(resolveEffectiveCap([row("a#work"), row("b#work")], {}).capacity).toBe(1);
+  test("today's fleet — every pipeline at 1 — still derives 1", () => {
+    expect(resolveEffectiveCap([pipeline("a#work"), pipeline("b#work")], {}).capacity).toBe(1);
     expect(resolveEffectiveCap([], {}).capacity).toBe(1);
   });
 
   test("the env replaces the derivation absolutely, even when lower", () => {
-    const cap = resolveEffectiveCap([row("a#work"), row("b#work"), row("c#work", 4)], {
-      PHOEBE_MAX_CONCURRENT_AGENTS: "2",
-    });
+    const cap = resolveEffectiveCap(
+      [pipeline("a#work"), pipeline("b#work"), pipeline("c#work", 4)],
+      {
+        PHOEBE_MAX_CONCURRENT_AGENTS: "2",
+      },
+    );
     expect(cap.capacity).toBe(2);
     expect(cap.source).toBe("env");
     expect(cap.declared).toBe(4);
-    // The over-cap row is not clamped locally — it queues, and it is named.
+    // The over-cap pipeline is not clamped locally — it queues, and it is named.
     expect(cap.clamped).toEqual([{ label: "c#work", concurrency: 4 }]);
     expect(describeCap(cap, 1)).toContain("PHOEBE_MAX_CONCURRENT_AGENTS=2");
     expect(describeCap(cap, 1)).toContain("c#work(4)");
@@ -60,7 +66,7 @@ describe("resolveEffectiveCap", () => {
 
   test("a garbage or < 1 override is no override at all", () => {
     for (const value of ["0", "2.5", "lots", ""]) {
-      const cap = resolveEffectiveCap([row("a#work", 3)], {
+      const cap = resolveEffectiveCap([pipeline("a#work", 3)], {
         PHOEBE_MAX_CONCURRENT_AGENTS: value,
       });
       expect(cap.capacity).toBe(3);
@@ -68,8 +74,8 @@ describe("resolveEffectiveCap", () => {
     }
   });
 
-  test("the derivation line names the rows it took the max from", () => {
-    const cap = resolveEffectiveCap([row("a#work", 2), row("b#work", 2)], {});
+  test("the derivation line names the pipelines it took the max from", () => {
+    const cap = resolveEffectiveCap([pipeline("a#work", 2), pipeline("b#work", 2)], {});
     expect(describeCap(cap, 1)).toBe(
       "slot cap 2 — max(concurrency)=2 from a#work, b#work; floorBudget=1",
     );
@@ -182,7 +188,7 @@ describe("createSlotBroker", () => {
     expect(a.granted()).toBe(true);
   });
 
-  test("one row may hold several slots at once", async () => {
+  test("one pipeline may hold several slots at once", async () => {
     const broker = capped(3);
     const first = tracked(broker.acquire("a#work"));
     const second = tracked(broker.acquire("a#work"));
@@ -196,7 +202,7 @@ describe("createSlotBroker", () => {
 });
 
 describe("the slot floor", () => {
-  test("a starved row is granted over the cap, one budget unit at a time", async () => {
+  test("a starved pipeline is granted over the cap, one budget unit at a time", async () => {
     const broker = createSlotBroker({ capacity: 1, floorBudget: 1 });
     await broker.acquire("a#work"); // a long unit holds the only slot
     const b = tracked(broker.acquire("b#intake"));
@@ -225,7 +231,7 @@ describe("the slot floor", () => {
     expect(broker.inUse).toBe(1);
   });
 
-  test("a row already holding a slot is not starved, however long it waits", async () => {
+  test("a pipeline already holding a slot is not starved, however long it waits", async () => {
     const broker = createSlotBroker({ capacity: 2, floorBudget: 1 });
     await broker.acquire("a#work");
     await broker.acquire("a#work"); // A holds both slots — wants throughput
@@ -259,7 +265,7 @@ describe("the slot floor", () => {
     expect(broker.overGranted).toBe(0);
   });
 
-  test("reclaiming a dead row restores the floor budget it held", async () => {
+  test("reclaiming a dead pipeline restores the floor budget it held", async () => {
     const broker = createSlotBroker({ capacity: 1, floorBudget: 1 });
     await broker.acquire("a#work");
     await broker.acquire("b#intake"); // over the cap
@@ -267,7 +273,7 @@ describe("the slot floor", () => {
     await tick();
     expect(c.granted()).toBe(false);
 
-    broker.reclaim("b#intake"); // the over-granted row is killed
+    broker.reclaim("b#intake"); // the over-granted pipeline is killed
     await tick();
     expect(broker.overGranted).toBe(1); // the budget freed, and C took it
     expect(c.granted()).toBe(true);
@@ -283,7 +289,7 @@ describe("the slot floor", () => {
       onOverGrant: (event) => granted.push(event),
       onOverGrantReturned: (event) => returned.push(event),
     });
-    broker.setRows([row("a#work"), row("b#intake")]);
+    broker.setPipelines([pipeline("a#work"), pipeline("b#intake")]);
     await broker.acquire("a#work");
     await broker.acquire("b#intake");
     expect(granted).toEqual([
@@ -312,9 +318,13 @@ describe("the slot floor", () => {
 });
 
 describe("waiter ordering", () => {
-  test("priority picks among one tenant's waiting rows, higher first", async () => {
+  test("priority picks among one tenant's waiting pipelines, higher first", async () => {
     const broker = createSlotBroker({ capacity: 1, floorBudget: 0 });
-    broker.setRows([row("a#work"), row("a#quiet", 1, 0), row("a#urgent", 1, 5)]);
+    broker.setPipelines([
+      pipeline("a#work"),
+      pipeline("a#quiet", 1, 0),
+      pipeline("a#urgent", 1, 5),
+    ]);
     await broker.acquire("a#work");
     const quiet = tracked(broker.acquire("a#quiet")); // queued first
     const urgent = tracked(broker.acquire("a#urgent")); // queued second, ranks higher
@@ -332,14 +342,14 @@ describe("waiter ordering", () => {
 
   test("priority is read at grant time, so an edit needs no queue surgery", async () => {
     const broker = createSlotBroker({ capacity: 1, floorBudget: 0 });
-    broker.setRows([row("a#work"), row("a#one"), row("a#two")]);
+    broker.setPipelines([pipeline("a#work"), pipeline("a#one"), pipeline("a#two")]);
     await broker.acquire("a#work");
     const one = tracked(broker.acquire("a#one")); // queued first
     const two = tracked(broker.acquire("a#two"));
     await tick();
 
     // The operator raises `a#two`'s priority while both are already waiting.
-    broker.setRows([row("a#work"), row("a#one"), row("a#two", 1, 3)]);
+    broker.setPipelines([pipeline("a#work"), pipeline("a#one"), pipeline("a#two", 1, 3)]);
     broker.release("a#work");
     await tick();
     expect(two.granted()).toBe(true);
@@ -349,7 +359,7 @@ describe("waiter ordering", () => {
   test("cross-tenant order is round-robin, whatever a tenant declares", async () => {
     const broker = createSlotBroker({ capacity: 1, floorBudget: 0 });
     // B declares priority 9 — tenant-local, so it buys nothing against A.
-    broker.setRows([row("holder#work"), row("a#work"), row("b#work", 1, 9)]);
+    broker.setPipelines([pipeline("holder#work"), pipeline("a#work"), pipeline("b#work", 1, 9)]);
     await broker.acquire("holder#work");
     const a = tracked(broker.acquire("a#work")); // queued first
     const b = tracked(broker.acquire("b#work"));
@@ -363,7 +373,12 @@ describe("waiter ordering", () => {
 
   test("the floor budget is allocated by the same ordering", async () => {
     const broker = createSlotBroker({ capacity: 1, floorBudget: 1 });
-    broker.setRows([row("a#work"), row("a#quiet"), row("a#urgent", 1, 5), row("z#work")]);
+    broker.setPipelines([
+      pipeline("a#work"),
+      pipeline("a#quiet"),
+      pipeline("a#urgent", 1, 5),
+      pipeline("z#work"),
+    ]);
     await broker.acquire("a#work"); // the cap's slot, held long
     await broker.acquire("z#work"); // starved first, so it holds the budget
     const quiet = tracked(broker.acquire("a#quiet")); // starved, queued first
@@ -379,9 +394,9 @@ describe("waiter ordering", () => {
     expect(quiet.granted()).toBe(false);
   });
 
-  test("the floor's entitlement is immediate — the first starved row asking takes it", async () => {
+  test("the floor's entitlement is immediate — the first starved pipeline asking takes it", async () => {
     const broker = createSlotBroker({ capacity: 1, floorBudget: 1 });
-    broker.setRows([row("a#work"), row("a#quiet"), row("a#urgent", 1, 5)]);
+    broker.setPipelines([pipeline("a#work"), pipeline("a#quiet"), pipeline("a#urgent", 1, 5)]);
     await broker.acquire("a#work");
     const quiet = tracked(broker.acquire("a#quiet"));
     await tick();
@@ -407,7 +422,7 @@ describe("waiter ordering", () => {
 });
 
 describe("setCapacity", () => {
-  test("a raised cap hands waiting rows their slots", async () => {
+  test("a raised cap hands waiting pipelines their slots", async () => {
     const broker = createSlotBroker({ capacity: 1, floorBudget: 0 });
     await broker.acquire("a#work");
     const b = tracked(broker.acquire("b#work"));

@@ -203,8 +203,8 @@ export async function runStop(opts: { now: boolean; deps?: StopDeps }): Promise<
 
   // Re-probe: Compose exits 0 whether the container drained or was SIGKILLed
   // after the grace. A unit that never finished must not look like a clean stop.
-  const afterRows = await composePs(deployment, opts.deps?.runner);
-  const after = findPhoebeService(afterRows);
+  const afterPipelines = await composePs(deployment, opts.deps?.runner);
+  const after = findPhoebeService(afterPipelines);
   if (after !== undefined && wasKilledAfterGrace(after)) {
     if (opts.now) {
       io.stderr(

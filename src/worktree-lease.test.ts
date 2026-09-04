@@ -21,7 +21,7 @@ describe("formatLeaseReason", () => {
 
 // The unit grain (#423): what a unit compares its own lease against before it
 // takes a tree apart. A sibling unit of this very pipeline is as much someone
-// else as another row is.
+// else as another pipeline is.
 describe("leaseHolder", () => {
   test("reads the whole owner, unit segment included", () => {
     expect(leaseHolder("pipeline=work#issues:issue%3A88 pid=42")).toBe("work#issues:issue%3A88");

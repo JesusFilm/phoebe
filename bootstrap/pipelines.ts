@@ -1,19 +1,19 @@
-// How the supervisor learns a tenant's rows (#401/#417), and the vocabulary it
+// How the supervisor learns a tenant's pipelines (#401/#417), and the vocabulary it
 // supervises them with (#420).
 //
 // The bootstrapper spawns one engine child per (tenant × pipeline), so it needs
-// row names — and it gets them by asking the materialized engine checkout
+// pipeline names — and it gets them by asking the materialized engine checkout
 // (`<entry> pipelines --config <tenant config>`) rather than by reading the
 // `pipelines` block itself. The rest of the config stays the engine's business,
 // exactly as `engine-source.ts` keeps the bootstrapper's interest in a config
 // down to one field.
 //
 // Two questions, deliberately separate, because confusing them would spawn a
-// `work` row against a config already known to be broken:
+// `work` pipeline against a config already known to be broken:
 //
 //   - **Capability** is a property of the engine. Probed once per
 //     materialization; an old checkout with no `pipelines` subcommand means
-//     every tenant runs one implicit `work` row and enumeration never runs at
+//     every tenant runs one implicit `work` pipeline and enumeration never runs at
 //     all — byte-for-byte today's behaviour, so an existing deployment migrates
 //     as a no-op.
 //   - **Validity** is a property of the tenant. A failed enumeration is that
@@ -24,8 +24,8 @@
 // stat fingerprint moves — the same cheap trigger the engine-source confirm
 // already uses (#138). Steady state stays stat-only.
 //
-// The supervised unit is a row, not a tenant: {@link SupervisedRow} names one
-// `(tenant × pipeline)` cell, {@link rowId} keys it, and {@link diffRows} says
+// The supervised unit is a pipeline, not a tenant: {@link SupervisedPipeline} names one
+// `(tenant × pipeline)` cell, {@link pipelineId} keys it, and {@link diffPipelines} says
 // what moved between two polls. The loop that acts on that is
 // bootstrap/supervise-fleet.ts.
 
@@ -33,28 +33,28 @@ import { spawnSync } from "node:child_process";
 
 import type { DiscoveredTenant } from "./tenants.ts";
 
-/** One row of a tenant's work, as the supervisor reads it off the engine. */
-export type PipelineRow = {
+/** One pipeline of a tenant's work, as the supervisor reads it off the engine. */
+export type Pipeline = {
   name: string;
-  /** Hot: the operator's off-switch, acted on without relaunching the row. */
+  /** Hot: the operator's off-switch, acted on without relaunching the pipeline. */
   disabled: boolean;
   /** Hot: tenant-local priority for a contended concurrency slot. */
   priority: number;
-  /** Units this row may hold in flight. */
+  /** Units this pipeline may hold in flight. */
   concurrency: number;
-  /** Whether this row's kinds want the tenant's git clone. */
+  /** Whether this pipeline's kinds want the tenant's git clone. */
   needsClone: boolean;
   /**
-   * The env keys this row's scheduled kinds declared (#425) — names only, never
-   * values. Read two ways: subtractively, so a key a *sibling* row declared and
-   * this one did not is taken out of this row's child env, and as the lens on
-   * the tenant's `.env` for this row's reconcile digest. Empty for a row that
-   * declares nothing, which is every row of every deployment today.
+   * The env keys this pipeline's scheduled kinds declared (#425) — names only, never
+   * values. Read two ways: subtractively, so a key a *sibling* pipeline declared and
+   * this one did not is taken out of this pipeline's child env, and as the lens on
+   * the tenant's `.env` for this pipeline's reconcile digest. Empty for a pipeline that
+   * declares nothing, which is every pipeline of every deployment today.
    */
   env: readonly string[];
   /**
-   * Opaque digest of the row's cold config; a move means relaunch this row.
-   * Null for the implicit row of a checkout that cannot enumerate — the same
+   * Opaque digest of the pipeline's cold config; a move means relaunch this pipeline.
+   * Null for the implicit pipeline of a checkout that cannot enumerate — the same
    * "unknown, never counts as a change" sentinel the tenant fingerprints use.
    */
   fingerprint: string | null;
@@ -62,10 +62,10 @@ export type PipelineRow = {
 
 /**
  * What every tenant runs on an engine checkout that cannot enumerate: the
- * reserved default row, one unit at a time, with the tenant's clone — which is
+ * reserved default pipeline, one unit at a time, with the tenant's clone — which is
  * what a pre-pipelines engine child has always been.
  */
-export const IMPLICIT_WORK_ROW: PipelineRow = Object.freeze({
+export const IMPLICIT_WORK_PIPELINE: Pipeline = Object.freeze({
   name: "work",
   disabled: false,
   priority: 0,
@@ -75,7 +75,7 @@ export const IMPLICIT_WORK_ROW: PipelineRow = Object.freeze({
   fingerprint: null,
 });
 
-/** A tenant-level fault: this tenant's rows are unknown, the fleet is fine. */
+/** A tenant-level fault: this tenant's pipelines are unknown, the fleet is fine. */
 export class PipelineEnumerationError extends Error {
   constructor(message: string) {
     super(message);
@@ -99,7 +99,7 @@ export type EngineCommand = (
 /** How long either call may take before it is a failure rather than a wait. */
 export const ENUMERATE_TIMEOUT_MS = 60_000;
 
-/** The tenant whose rows are wanted: where its config is, and whether it moved. */
+/** The tenant whose pipelines are wanted: where its config is, and whether it moved. */
 export type EnumerateTarget = {
   configPath: string;
   /** Working directory for the engine process — the tenant dir, as its child gets. */
@@ -108,11 +108,11 @@ export type EnumerateTarget = {
   fingerprint: string | null;
 };
 
-export type RowEnumerator = {
+export type PipelineEnumerator = {
   /** Whether this checkout supports enumeration. Probed once, then remembered. */
   supported: () => boolean;
-  /** This tenant's rows, re-read only when its fingerprint moved. */
-  rowsFor: (target: EnumerateTarget) => readonly PipelineRow[];
+  /** This tenant's pipelines, re-read only when its fingerprint moved. */
+  pipelinesFor: (target: EnumerateTarget) => readonly Pipeline[];
 };
 
 function engineCommandFor(entry: string): EngineCommand {
@@ -156,13 +156,15 @@ function diagnosis(result: EngineCommandResult): string {
   return stdout.length > 0 ? stdout.split("\n").slice(-1).join(" ") : `exit ${result.status}`;
 }
 
-/** Read one row off the parsed JSON, rejecting anything the wrong shape. */
-function parseRow(value: unknown): PipelineRow {
+/** Read one pipeline off the parsed JSON, rejecting anything the wrong shape. */
+function parsePipeline(value: unknown): Pipeline {
   if (value === null || typeof value !== "object") {
-    throw new PipelineEnumerationError(`a row is not an object (got ${JSON.stringify(value)})`);
+    throw new PipelineEnumerationError(
+      `a pipeline is not an object (got ${JSON.stringify(value)})`,
+    );
   }
-  const row = value as Record<string, unknown>;
-  const { name, disabled, priority, concurrency, needsClone, env, fingerprint } = row;
+  const pipeline = value as Record<string, unknown>;
+  const { name, disabled, priority, concurrency, needsClone, env, fingerprint } = pipeline;
   if (
     typeof name !== "string" ||
     typeof disabled !== "boolean" ||
@@ -171,13 +173,13 @@ function parseRow(value: unknown): PipelineRow {
     typeof needsClone !== "boolean" ||
     typeof fingerprint !== "string"
   ) {
-    throw new PipelineEnumerationError(`malformed row ${JSON.stringify(value)}`);
+    throw new PipelineEnumerationError(`malformed pipeline ${JSON.stringify(value)}`);
   }
   // `env` is additive (#425): an engine old enough to enumerate but too old to
-  // declare keys reports none, and no row loses anything. Present, it must be
+  // declare keys reports none, and no pipeline loses anything. Present, it must be
   // key names — a malformed one would scrub by accident.
   if (env !== undefined && (!Array.isArray(env) || env.some((key) => typeof key !== "string"))) {
-    throw new PipelineEnumerationError(`row ${name} declared a malformed \`env\``);
+    throw new PipelineEnumerationError(`pipeline ${name} declared a malformed \`env\``);
   }
   return {
     name,
@@ -190,22 +192,22 @@ function parseRow(value: unknown): PipelineRow {
   };
 }
 
-function parseRows(payload: unknown): PipelineRow[] {
+function parsePipelines(payload: unknown): Pipeline[] {
   const declared =
     payload !== null && typeof payload === "object"
-      ? (payload as Record<string, unknown>)["rows"]
+      ? (payload as Record<string, unknown>)["pipelines"]
       : undefined;
   if (!Array.isArray(declared)) {
     throw new PipelineEnumerationError(
-      `the engine printed no rows (got ${JSON.stringify(payload)})`,
+      `the engine printed no pipelines (got ${JSON.stringify(payload)})`,
     );
   }
   if (declared.length === 0) {
-    // Every tenant has at least the reserved `work` row, so an empty list is
+    // Every tenant has at least the reserved `work` pipeline, so an empty list is
     // not "this tenant runs nothing" — it is an answer that did not arrive.
-    throw new PipelineEnumerationError("the engine enumerated zero rows");
+    throw new PipelineEnumerationError("the engine enumerated zero pipelines");
   }
-  return declared.map(parseRow);
+  return declared.map(parsePipeline);
 }
 
 /**
@@ -213,9 +215,12 @@ function parseRows(payload: unknown): PipelineRow[] {
  * per materialization" record: create one per launch, and a checkout that
  * cannot enumerate is asked exactly once and never invoked again.
  */
-export function createRowEnumerator(opts: { entry: string; run?: EngineCommand }): RowEnumerator {
+export function createPipelineEnumerator(opts: {
+  entry: string;
+  run?: EngineCommand;
+}): PipelineEnumerator {
   const run = opts.run ?? engineCommandFor(opts.entry);
-  const cache = new Map<string, { fingerprint: string; rows: readonly PipelineRow[] }>();
+  const cache = new Map<string, { fingerprint: string; pipelines: readonly Pipeline[] }>();
   let probed: boolean | null = null;
 
   const supported = (): boolean => {
@@ -230,7 +235,7 @@ export function createRowEnumerator(opts: { entry: string; run?: EngineCommand }
     return probed;
   };
 
-  const enumerate = (target: EnumerateTarget): readonly PipelineRow[] => {
+  const enumerate = (target: EnumerateTarget): readonly Pipeline[] => {
     const result = run(
       ["pipelines", "--config", target.configPath],
       target.cwd !== undefined ? { cwd: target.cwd } : {},
@@ -241,7 +246,7 @@ export function createRowEnumerator(opts: { entry: string; run?: EngineCommand }
       );
     }
     try {
-      return parseRows(lastJsonLine(result.stdout));
+      return parsePipelines(lastJsonLine(result.stdout));
     } catch (error) {
       throw new PipelineEnumerationError(
         `enumerating pipelines for ${target.configPath} failed — ` +
@@ -252,110 +257,110 @@ export function createRowEnumerator(opts: { entry: string; run?: EngineCommand }
 
   return {
     supported,
-    rowsFor: (target) => {
-      if (!supported()) return [IMPLICIT_WORK_ROW];
+    pipelinesFor: (target) => {
+      if (!supported()) return [IMPLICIT_WORK_PIPELINE];
       const cached = cache.get(target.configPath);
       if (
         cached !== undefined &&
         target.fingerprint !== null &&
         cached.fingerprint === target.fingerprint
       ) {
-        return cached.rows;
+        return cached.pipelines;
       }
-      const rows = enumerate(target);
+      const pipelines = enumerate(target);
       if (target.fingerprint !== null) {
-        cache.set(target.configPath, { fingerprint: target.fingerprint, rows });
+        cache.set(target.configPath, { fingerprint: target.fingerprint, pipelines });
       }
-      return rows;
+      return pipelines;
     },
   };
 }
 
 /**
- * The separator between a row id's two halves (#401/#420). Neither half can
+ * The separator between a pipeline id's two halves (#401/#420). Neither half can
  * contain it: a tenant id is an absolute path and a pipeline name reuses the
  * custom-kind regex, which excludes `#` for exactly this reason (#415).
  */
-export const ROW_ID_SEPARATOR = "#";
+export const PIPELINE_ID_SEPARATOR = "#";
 
-/** The supervisor's key for one `(tenant × pipeline)` row. */
-export function rowId(tenantId: string, pipeline: string): string {
-  return `${tenantId}${ROW_ID_SEPARATOR}${pipeline}`;
+/** The supervisor's key for one `(tenant × pipeline)` pipeline. */
+export function pipelineId(tenantId: string, pipeline: string): string {
+  return `${tenantId}${PIPELINE_ID_SEPARATOR}${pipeline}`;
 }
 
 /**
  * One cell of the supervision matrix: a tenant, one of its pipelines, and the
  * id that names the pair. That id is the child-map key, the broker owner and
- * the credential-lease id, so a row's slots and its token are reclaimed with the
- * row rather than with everything its tenant runs.
+ * the credential-lease id, so a pipeline's slots and its token are reclaimed with the
+ * pipeline rather than with everything its tenant runs.
  */
-export type SupervisedRow = {
+export type SupervisedPipeline = {
   /** `<tenantId>#<pipeline>`. */
   id: string;
   tenant: DiscoveredTenant;
-  pipeline: PipelineRow;
+  pipeline: Pipeline;
   /**
-   * Whether the engine checkout named this row. False for the implicit `work`
-   * row of a checkout with no `pipelines` subcommand, whose child must not be
+   * Whether the engine checkout named this pipeline. False for the implicit `work`
+   * pipeline of a checkout with no `pipelines` subcommand, whose child must not be
    * spawned with a `--pipeline` flag it would die on before reading a config.
    */
   enumerated: boolean;
   /**
-   * Every key this row's *siblings* declared — the union of `env` over the
-   * tenant's other rows (#425). The scrub is subtractive, so this minus the
-   * row's own `env` is exactly what the child does not get to see. A tenant
-   * with one row has an empty set here and an unchanged child env.
+   * Every key this pipeline's *siblings* declared — the union of `env` over the
+   * tenant's other pipelines (#425). The scrub is subtractive, so this minus the
+   * pipeline's own `env` is exactly what the child does not get to see. A tenant
+   * with one pipeline has an empty set here and an unchanged child env.
    */
   siblingEnv: readonly string[];
 };
 
 /**
- * What the subtractive scrub takes out of one row's child env: the keys a
- * sibling declared and this row did not. Sorted, so a fingerprint built over it
+ * What the subtractive scrub takes out of one pipeline's child env: the keys a
+ * sibling declared and this pipeline did not. Sorted, so a fingerprint built over it
  * is stable.
  */
-export function siblingOnlyEnvKeys(row: SupervisedRow): string[] {
-  const own = new Set(row.pipeline.env);
-  return [...new Set(row.siblingEnv)].filter((key) => !own.has(key)).sort();
+export function siblingOnlyEnvKeys(pipeline: SupervisedPipeline): string[] {
+  const own = new Set(pipeline.pipeline.env);
+  return [...new Set(pipeline.siblingEnv)].filter((key) => !own.has(key)).sort();
 }
 
-/** A row paired with the fingerprint that decides whether it relaunches. */
-export type RowSample = { row: SupervisedRow; fingerprint: string | null };
+/** A pipeline paired with the fingerprint that decides whether it relaunches. */
+export type PipelineSample = { pipeline: SupervisedPipeline; fingerprint: string | null };
 
-/** How an operator reads a row in a boot line: `<slug>:<pipeline>`. */
-export function rowLabel(row: SupervisedRow): string {
-  return `${row.tenant.slug ?? row.tenant.id}:${row.pipeline.name}`;
+/** How an operator reads a pipeline in a boot line: `<slug>:<pipeline>`. */
+export function pipelineLabel(pipeline: SupervisedPipeline): string {
+  return `${pipeline.tenant.slug ?? pipeline.tenant.id}:${pipeline.pipeline.name}`;
 }
 
 /**
- * What changed between the last poll's row fingerprints and the current matrix
- * — the row-level twin of `diffFleet`, with the same conservatism: a null
+ * What changed between the last poll's pipeline fingerprints and the current matrix
+ * — the pipeline-level twin of `diffFleet`, with the same conservatism: a null
  * fingerprint on either side is "unknown" and never counts as a change, and a
- * held row id is never reported as removed however absent it is from `current`.
+ * held pipeline id is never reported as removed however absent it is from `current`.
  */
-export type RowDiff = {
-  added: SupervisedRow[];
+export type PipelineDiff = {
+  added: SupervisedPipeline[];
   removed: string[];
-  changed: SupervisedRow[];
+  changed: SupervisedPipeline[];
 };
 
-export function diffRows(
+export function diffPipelines(
   previous: ReadonlyMap<string, string | null>,
-  current: readonly RowSample[],
+  current: readonly PipelineSample[],
   hold: ReadonlySet<string> = new Set(),
-): RowDiff {
-  const added: SupervisedRow[] = [];
-  const changed: SupervisedRow[] = [];
+): PipelineDiff {
+  const added: SupervisedPipeline[] = [];
+  const changed: SupervisedPipeline[] = [];
   const seen = new Set<string>();
 
-  for (const { row, fingerprint } of current) {
-    seen.add(row.id);
-    if (!previous.has(row.id)) {
-      added.push(row);
+  for (const { pipeline, fingerprint } of current) {
+    seen.add(pipeline.id);
+    if (!previous.has(pipeline.id)) {
+      added.push(pipeline);
       continue;
     }
-    const before = previous.get(row.id) ?? null;
-    if (before !== null && fingerprint !== null && before !== fingerprint) changed.push(row);
+    const before = previous.get(pipeline.id) ?? null;
+    if (before !== null && fingerprint !== null && before !== fingerprint) changed.push(pipeline);
   }
 
   const removed = [...previous.keys()].filter((id) => !seen.has(id) && !hold.has(id));

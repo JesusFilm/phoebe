@@ -1,4 +1,4 @@
-// Declared keys (#425): what a kind may name, and what happens when the row
+// Declared keys (#425): what a kind may name, and what happens when the pipeline
 // cannot read one. The cases that matter are the two refusals validation owes
 // (a reserved key, an `agentEnv` its `requiredEnv` does not cover) and the two
 // postures the presence check has — fatal at boot, silent-but-off when a kind
@@ -145,7 +145,7 @@ describe("missingDeclaredEnv", () => {
 });
 
 describe("assertDeclaredEnvPresent", () => {
-  test("a blank declared key fails the row, naming the kind and the key", () => {
+  test("a blank declared key fails the pipeline, naming the kind and the key", () => {
     expect(() =>
       assertDeclaredEnvPresent({
         repoSlug: "acme/widget",
@@ -156,7 +156,7 @@ describe("assertDeclaredEnvPresent", () => {
     ).toThrow(/slack-intake: SLACK_BOT_TOKEN/);
   });
 
-  test("a row whose kinds declare nothing boots", () => {
+  test("a pipeline whose kinds declare nothing boots", () => {
     expect(() =>
       assertDeclaredEnvPresent({
         repoSlug: "acme/widget",

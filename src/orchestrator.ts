@@ -870,8 +870,8 @@ export const RUN_ONCE_NOTHING_MESSAGE =
  * (#350). The registry must therefore already be assembled wherever this runs.
  *
  * An empty order is legal since #415: the order is priority, not membership,
- * and a row can legitimately resolve to nothing — every kind it owns disabled,
- * or every kind claimed by a sibling pipeline. That row idles; it is not a
+ * and a pipeline can legitimately resolve to nothing — every kind it owns disabled,
+ * or every kind claimed by a sibling pipeline. That pipeline idles; it is not a
  * misconfiguration the engine should refuse to boot on.
  */
 export function validateWorkOrder(

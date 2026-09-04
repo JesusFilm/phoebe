@@ -53,10 +53,10 @@ workspace-root/                         # bind-mounted :ro → /etc/phoebe
 | **Child (tenant)** | each linked repo       | In-tree `phoebe.config.ts` + gitignored `.env` (+ optional `prompts/`); **no** `container/`                          |
 | **Private clone**  | container volumes      | `/data/repos/<owner>/<repo>/`. Each tenant still clones privately, and the host checkout is **not** the working copy |
 
-**One supervised engine child per `(tenant × pipeline)` row.** A tenant that
-declares no [pipelines](configuration.md#pipelines) has one `work` row, so the
+**One supervised engine child per `(tenant × pipeline)` pair.** A tenant that
+declares no [pipelines](configuration.md#pipelines) has one `work` pipeline, so the
 default is one child per tenant; a tenant declaring `work` and `intake` gets two,
-each reconciled on its own ([Supervising rows](architecture.md#supervising-rows)).
+each reconciled on its own ([Supervising pipelines](architecture.md#supervising-pipelines)).
 The bootstrapper discovers children
 via the root's `workspace` arm, either walking to `workspace.depth` (default `1`)
 or resolving the declared `workspace.tenants` list ([Declaring the fleet](#declaring-the-fleet-workspacetenants)).
@@ -89,7 +89,7 @@ your choice:
 An empty or unmaterialized child directory is skip-and-warned until the checkout
 exists on disk. Refreshing a child's content (a `git pull` or `submodule
 update`) moves mtime; the fleet reads that as a changed tenant (mtime:size
-fingerprint), re-reads its rows, and respawns the rows the edit actually moved.
+fingerprint), re-reads its pipelines, and respawns the pipelines the edit actually moved.
 
 ## Two-tier `.env` model
 
@@ -351,9 +351,9 @@ must be material before first boot.
 
 - One container, one shared engine version (`engine` only on the root).
 - `paths` still derive from each tenant's `repoSlug` under `/data/repos/…`.
-- One fleet-wide slot cap, derived from the rows' `concurrency` and overridable
+- One fleet-wide slot cap, derived from the pipelines' `concurrency` and overridable
   with `PHOEBE_MAX_CONCURRENT_AGENTS`
-  ([configuration.md](configuration.md#concurrency-the-rows-knob-and-the-fleets-cap)).
+  ([configuration.md](configuration.md#concurrency-the-pipelines-knob-and-the-fleets-cap)).
 - Log lines tagged `[phoebe:<owner>/<repo>:<pipeline>]` (match as a prefix).
 - Trust domain: one container = co-locate only mutually trusted repos
   ([`trust.md`](trust.md#one-container--one-trust-domain)).

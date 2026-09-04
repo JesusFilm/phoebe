@@ -107,7 +107,7 @@ describe("the per-kind agentEnv opening (#425)", () => {
     ).toBe("xoxb-1");
   });
 
-  test("an opened key the row's env does not hold stays absent", () => {
+  test("an opened key the pipeline's env does not hold stays absent", () => {
     expect(
       buildAgentEnv({ parentEnv, provider: "claude", providerEnv, agentEnv: ["SLACK_BOT_TOKEN"] }),
     ).not.toHaveProperty("SLACK_BOT_TOKEN");

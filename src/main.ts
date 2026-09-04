@@ -28,7 +28,7 @@ import { execSync } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
 import { DEFAULT_PIPELINE_NAME, type PhoebeConfig } from "./config-schema.ts";
 import { selectProviderForKind } from "./provider-selection.ts";
-import { parsePipelineName, pipelineRow, resolvePollIntervalMs } from "./pipeline-row.ts";
+import { parsePipelineName, declaredPipeline, resolvePollIntervalMs } from "./pipeline.ts";
 import { detectAppCredentials, mintInstallationToken } from "./gh-app.ts";
 import { asBranchRef, asPrNumber, type BranchRef, type PrNumber } from "./branded.ts";
 import {
@@ -205,7 +205,7 @@ function gitInWorktree(
 /**
  * Run a configured toolchain command (a shell string) inside a worktree. The
  * worktree may sit at a PR branch head, so the env drops the engine's own
- * credentials and every key this row's kinds declared — the branch's install
+ * credentials and every key this pipeline's kinds declared — the branch's install
  * hooks run as this child (see shell-env.ts).
  *
  * Its output streams through `echo` line by line rather than inheriting the
@@ -275,9 +275,9 @@ export type EngineRunOptions = {
   /** How long an idle cycle waits before polling again. */
   pollIntervalMs: number;
   /**
-   * How many units this row may hold in flight at once (#422) — the pipeline's
+   * How many units this pipeline may hold in flight at once (#422) — the pipeline's
    * declared `concurrency`. Defaults to 1, which is the serial loop; `runOnce`
-   * pins it there whatever the row says.
+   * pins it there whatever the pipeline says.
    */
   concurrency?: number;
 };
@@ -286,10 +286,10 @@ export type EngineOptions = {
   /** This tenant's resolved config — passed in, never read from a module-level holder. */
   config: PhoebeConfig;
   /**
-   * Which pipeline row this engine is (#415/#418). It is the process's identity
+   * Which pipeline this engine is (#415/#418). It is the process's identity
    * on disk and in the logs: the stdout tag's third segment, the `state/`
    * subdirectory its snapshot lives in, and the owner stamped on every worktree
-   * lease it takes. Defaults to the reserved `work` row, which is what an
+   * lease it takes. Defaults to the reserved `work` pipeline, which is what an
    * engine built before pipelines existed already was.
    */
   pipeline?: string;
@@ -361,14 +361,14 @@ export type Engine = {
 export function createEngine(options: EngineOptions): Engine {
   const { config, env, drain, slotClient, credentialClient, emitUnitEvent } = options;
   const { runOnce, dryRun, pollIntervalMs } = options.run;
-  // `--run-once` means one unit, so it pins the row's concurrency to 1 rather
+  // `--run-once` means one unit, so it pins the pipeline's concurrency to 1 rather
   // than honouring a declaration that would have it admit several and then
   // exit after the first (#422).
   const concurrency = runOnce ? 1 : Math.max(1, Math.floor(options.run.concurrency ?? 1));
   const pipeline = options.pipeline ?? DEFAULT_PIPELINE_NAME;
   // Every line this engine writes carries `[phoebe:<slug>:<pipeline>]` (#418).
   // With two processes on one tenant interleaving at the kernel, an untagged
-  // line is a line the operator cannot attribute — and the `work` row is tagged
+  // line is a line the operator cannot attribute — and the `work` pipeline is tagged
   // like any other so a host parser has one grammar to match, as a prefix.
   const log: EngineLog = createEngineLog(config.repoSlug, pipeline);
   const registry = options.registry ?? buildRegistry(config);
@@ -504,7 +504,7 @@ export function createEngine(options: EngineOptions): Engine {
     kinds.map((kind) => ({ name: kind, definition: registeredKind(registry, kind).definition }));
 
   /**
-   * Every key this row's scheduled kinds declared (#425) — the row's `env`, as
+   * Every key this pipeline's scheduled kinds declared (#425) — the pipeline's `env`, as
    * the enumerator reports it to the supervisor. The consumer toolchain never
    * sees these: `installCommand` and prompt `!` expansions run with all of them
    * stripped, and only the agent hop reopens, per kind, for `agentEnv`.
@@ -513,10 +513,10 @@ export function createEngine(options: EngineOptions): Engine {
 
   /**
    * The kinds this cycle may actually gather: the work order minus any kind
-   * whose declared key this row cannot read. Boot already refused that state
+   * whose declared key this pipeline cannot read. Boot already refused that state
    * fatally (`assertDeclaredEnvPresent`), so this is the *hot* arm — a kind
    * switched on against a key nobody added stays off, loudly and once, and the
-   * row keeps working everything else.
+   * pipeline keeps working everything else.
    */
   const loggedMissingEnv = new Set<string>();
   const schedulableKinds = (kinds: readonly string[]): readonly string[] => {
@@ -536,11 +536,11 @@ export function createEngine(options: EngineOptions): Engine {
 
   // Which tracker objects this pipeline's sweeps may touch (#418). Partition by
   // ownership: a sweep repairs an object only when the kind that object belongs
-  // to is one this row schedules, which is what gives two processes exactly-once
+  // to is one this pipeline schedules, which is what gives two processes exactly-once
   // coverage with nothing to elect and nothing to fail over.
   const scope: SweepScope = sweepScope(workOrder, config.researchLabel);
 
-  // Whether any scheduled kind puts a workspace on the clone (#418). A row of
+  // Whether any scheduled kind puts a workspace on the clone (#418). A pipeline of
   // `scratch` kinds owns no worktrees, so it has no leases to break at boot and
   // no reason to touch git at all.
   const usesRepoWorkspace = requiresOriginClone(
@@ -677,9 +677,9 @@ export function createEngine(options: EngineOptions): Engine {
    */
   function sweepQuarantine(reason: UnstickReason): void {
     const { sweepName, because } = UNSTICK_WORDING[reason];
-    // Scoped to what this pipeline schedules (#418): a row of PR janitors does
-    // not list quarantined issues, and a row of issue producers does not list
-    // quarantined PRs. A row that schedules neither shape lists nothing and the
+    // Scoped to what this pipeline schedules (#418): a pipeline of PR janitors does
+    // not list quarantined issues, and a pipeline of issue producers does not list
+    // quarantined PRs. A pipeline that schedules neither shape lists nothing and the
     // sweep is empty, which is the correct amount of work for it to do.
     if (!scope.issues && !scope.prs) return;
     let quarantined: QuarantinedUnit[];
@@ -775,7 +775,7 @@ export function createEngine(options: EngineOptions): Engine {
    */
   function sweepStaleNativeStacks(): void {
     // The stacks this repairs are built by the issue producers, in
-    // `issueWorkflow`; a row that runs none of them owns none of these PRs (#418).
+    // `issueWorkflow`; a pipeline that runs none of them owns none of these PRs (#418).
     if (!scope.issues) return;
     let stackedPrs: StackedPhoebePr[];
     try {
@@ -856,7 +856,7 @@ export function createEngine(options: EngineOptions): Engine {
    * rest, and the whole sweep failing costs a cycle's delay, nothing more.
    */
   function sweepFeatureCloses(): void {
-    // A feature's members are issues, so the row that works them is the row that
+    // A feature's members are issues, so the pipeline that works them is the pipeline that
     // keeps their integration PR's `Closes` block current (#418).
     if (!scope.issues) return;
     let integrationPrs: FeatureIntegrationPr[];
@@ -921,8 +921,8 @@ export function createEngine(options: EngineOptions): Engine {
     for (const issue of claimed) {
       // The one sweep whose double-run does damage: re-arming an issue a sibling
       // pipeline is mid-run on hands the same ticket to two agents. So this
-      // filter is per issue rather than per row — the research label is already
-      // on every row listed, and it is the only thing that tells the two issue
+      // filter is per issue rather than per pipeline — the research label is already
+      // on every pipeline listed, and it is the only thing that tells the two issue
       // producers' units apart (#418).
       if (!scope.ownsIssue(issue.labels)) continue;
       // And never re-arm an issue this very pipeline is running (#422). An
@@ -1116,7 +1116,7 @@ export function createEngine(options: EngineOptions): Engine {
       provider: provider.name,
       providerEnv: config.providerEnv,
       // The running kind's own opening (#425) — its `agentEnv`, and no sibling
-      // kind's: the hole is per definition, not per row.
+      // kind's: the hole is per definition, not per pipeline.
       ...(opts.picked.definition.agentEnv !== undefined
         ? { agentEnv: opts.picked.definition.agentEnv }
         : {}),
@@ -1654,7 +1654,7 @@ export function createEngine(options: EngineOptions): Engine {
   }
 
   // --- The in-flight set (#422) ------------------------------------------------
-  // What this pipeline is running right now. A pass tops the set up to the row's
+  // What this pipeline is running right now. A pass tops the set up to the pipeline's
   // `concurrency` and then waits for whichever comes first: a unit settling or
   // the poll interval. At concurrency 1 the set holds at most one unit and the
   // loop reduces to the serial one it has always been.
@@ -2130,7 +2130,7 @@ export function createEngine(options: EngineOptions): Engine {
         sweepFeatureCloses();
       }
 
-      // Rolling top-up (#422): a pass admits at most as many units as the row
+      // Rolling top-up (#422): a pass admits at most as many units as the pipeline
       // has free slots. With none free there is nothing selection could do with
       // an answer, so skip the gather entirely and wait.
       const free = concurrency - inFlight.size;
@@ -2283,33 +2283,33 @@ export async function runEngine(
 
   const runOnce = argv.includes("--run-once");
   const dryRun = argv.includes("--dry-run");
-  // Which row this child is (#415). `config` has already been flattened onto it
+  // Which pipeline this child is (#415). `config` has already been flattened onto it
   // by the CLI, so the name is read back here only for the cadence — declared on
-  // the row, which outranks `PHOEBE_POLL_INTERVAL_MS` — and for the log line.
-  const pipeline = parsePipelineName(argv);
+  // the pipeline, which outranks `PHOEBE_POLL_INTERVAL_MS` — and for the log line.
+  const pipelineName = parsePipelineName(argv);
   // And in the same posture, the declared keys (#425): a scheduled kind whose
-  // `requiredEnv` this row cannot read is a startup failure naming the kind and
+  // `requiredEnv` this pipeline cannot read is a startup failure naming the kind and
   // the key, not a unit that dies weeks later holding an empty string. The
   // supervisor has already scrubbed this env, so "cannot read" here means what
   // the kind would mean by it.
   assertDeclaredEnvPresent({
     repoSlug: config.repoSlug,
-    pipeline,
+    pipeline: pipelineName,
     kinds: workOrder.map((kind) => ({
       name: kind,
       definition: registeredKind(registry, kind).definition,
     })),
     env: process.env,
   });
-  const row = pipelineRow(config, pipeline);
-  const pollIntervalMs = resolvePollIntervalMs(row, process.env);
-  const concurrency = row.concurrency;
-  const log = createEngineLog(config.repoSlug, pipeline);
+  const pipeline = declaredPipeline(config, pipelineName);
+  const pollIntervalMs = resolvePollIntervalMs(pipeline, process.env);
+  const concurrency = pipeline.concurrency;
+  const log = createEngineLog(config.repoSlug, pipelineName);
 
   console.log(
     runOnce
-      ? `${log.tag} Run-once mode (pipeline ${pipeline}) — will work at most one unit of the first one-shot-eligible kind in WORK_ORDER, then exit.`
-      : `${log.tag} Persistent mode (pipeline ${pipeline}) — up to ${concurrency} unit(s) in flight, idle poll every ${pollIntervalMs}ms. SIGTERM drains: finish what is in flight, then exit 0.`,
+      ? `${log.tag} Run-once mode (pipeline ${pipelineName}) — will work at most one unit of the first one-shot-eligible kind in WORK_ORDER, then exit.`
+      : `${log.tag} Persistent mode (pipeline ${pipelineName}) — up to ${concurrency} unit(s) in flight, idle poll every ${pollIntervalMs}ms. SIGTERM drains: finish what is in flight, then exit 0.`,
   );
   if (dryRun) {
     log.say("Dry-run — selection only, nothing executes.");
@@ -2323,10 +2323,10 @@ export async function runEngine(
   // exists, a SIGTERM mid-clone still kills the process rather than being held
   // until the clone finishes.
   //
-  // Two things changed with pipelines (#418). It is now conditional: a row whose
+  // Two things changed with pipelines (#418). It is now conditional: a pipeline whose
   // kinds all declare `scratch` never touches the clone, and cloning the repo
   // for it costs a full copy and a slow first boot for nothing. And it is
-  // serialized by the tenant's clone lock, because two rows booting on a fresh
+  // serialized by the tenant's clone lock, because two pipelines booting on a fresh
   // tenant would otherwise race `git clone` into one directory — the second
   // waits, then finds the clone already there and moves on. Only the clone is
   // locked; fetch and worktree administration share the clone unlocked, on
@@ -2376,19 +2376,19 @@ export async function runEngine(
   // Per-repo observability (#73): one tagged `[phoebe:<slug>:<pipeline>]` line
   // per unit event + a `status.json` snapshot under this pipeline's own dir in
   // the tenant's state dir (#418), which `phoebe list` reads for the `work`
-  // row. The emitter swallows snapshot-write failures, so it is harmless on the
+  // pipeline. The emitter swallows snapshot-write failures, so it is harmless on the
   // host (where the derived state dir may be unwritable).
   const emitUnitEvent = createEmitUnitEvent({
     tenant: config.repoSlug,
-    pipeline,
-    statusPath: statusPathFor(config.paths.stateDir, pipeline),
+    pipeline: pipelineName,
+    statusPath: statusPathFor(config.paths.stateDir, pipelineName),
   });
 
   const drain = installDrainSignal();
   try {
     const engine = createEngine({
       config,
-      pipeline,
+      pipeline: pipelineName,
       registry,
       env: process.env,
       drain,

@@ -31,7 +31,7 @@ export const PR_UNIT_KINDS = ["conflicts", "checks", "reviews"] as const;
 
 /**
  * What this pipeline's scheduled kinds let it sweep. Built once per engine
- * from the row's work order, so a sweep asks a boolean rather than re-deriving
+ * from the pipeline's work order, so a sweep asks a boolean rather than re-deriving
  * a set every cycle.
  */
 export type SweepScope = {
@@ -43,7 +43,7 @@ export type SweepScope = {
    * The owning kind of one queue-labelled issue: `research` when it carries the
    * research label, else `issues`. The two producers are told apart by nothing
    * else — same processing label, same PR shape — and the label is already on
-   * every row the stranded sweep lists, so the partition costs no extra call.
+   * every pipeline the stranded sweep lists, so the partition costs no extra call.
    */
   ownsIssue(labels: readonly string[]): boolean;
 };

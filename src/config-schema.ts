@@ -162,13 +162,13 @@ export function workKindOverride(
 
 /**
  * The reserved default pipeline. It exists whether or not the tenant declares
- * it — an engine child with no `--pipeline` flag runs this row — and declaring
+ * it — an engine child with no `--pipeline` flag runs this pipeline — and declaring
  * it is how a tenant tunes the work it was already doing.
  */
 export const DEFAULT_PIPELINE_NAME = "work";
 
 /**
- * One `pipelines.<name>` declaration: a named row of work with its own
+ * One `pipelines.<name>` declaration: a named pipeline of work with its own
  * priority order, kind tuning, cadence, and concurrency. Every field is
  * optional; {@link PIPELINE_DEFAULTS} fills the four scalars.
  */
@@ -188,7 +188,7 @@ export type PipelineDeclaration = {
    * is the fallback for a pipeline that declares nothing, then the default.
    */
   pollIntervalMs?: number;
-  /** Operator off-switch for this row. Hot — it never relaunches the row. */
+  /** Operator off-switch for this pipeline. Hot — it never relaunches the pipeline. */
   disabled?: boolean;
   /** Tenant-local scheduling priority; higher wins a contended slot. Hot. */
   priority?: number;
@@ -200,7 +200,7 @@ export type PipelinesField = Record<string, PipelineDeclaration>;
 /**
  * One pipeline as the engine sees it. The four scalars are filled; `order` and
  * `kinds` carry whatever the tenant declared (aliases folded in for the `work`
- * row). `pollIntervalMs` stays optional on purpose: absent means "declared
+ * pipeline). `pollIntervalMs` stays optional on purpose: absent means "declared
  * nothing", which is what lets `PHOEBE_POLL_INTERVAL_MS` be the fallback rather
  * than being outranked by a default nobody asked for.
  */
@@ -235,7 +235,7 @@ const PIPELINE_KNOBS = [
  * Which `promptFiles` key holds each built-in kind's prompt. The two spellings
  * differ (`promptFiles.issue` for the `issues` kind, `promptFiles.conflict`
  * for `conflicts`), so the mapping is written down once here and read by both
- * the alias-conflict check and row selection.
+ * the alias-conflict check and pipeline selection.
  */
 export const PROMPT_FILE_KEY_BY_KIND = {
   conflicts: "conflict",
@@ -283,19 +283,19 @@ export function deprecatedPipelineAliases(user: PhoebeUserConfig): readonly stri
   );
 }
 
-/** The kind names one pipeline row claims: everything it orders or declares. */
-function claimedKindNames(row: PipelineDeclaration): string[] {
-  return [...(row.order ?? []), ...Object.keys(customKindEntries(row.kinds))];
+/** The kind names one pipeline claims: everything it orders or declares. */
+function claimedKindNames(pipeline: PipelineDeclaration): string[] {
+  return [...(pipeline.order ?? []), ...Object.keys(customKindEntries(pipeline.kinds))];
 }
 
 /**
  * Reject a malformed `pipelines` block (#415). Names reuse the custom-kind
  * regex — so `#`, which the fleet's `slug:pipeline` tags reserve, can never
- * appear in one — and each row's knobs are checked by type, because a
+ * appear in one — and each pipeline's knobs are checked by type, because a
  * mistyped `concurency` would sit inert forever looking configured.
  *
- * The cross-row pass is the partition invariant from #403: a kind belongs to at
- * most one pipeline, so two rows naming the same kind is fatal for the tenant
+ * The cross-pipeline pass is the partition invariant from #403: a kind belongs to at
+ * most one pipeline, so two pipelines naming the same kind is fatal for the tenant
  * at load rather than a race between two engine children over the same PR.
  */
 export function validatePipelinesField(pipelines: PipelinesField): void {
@@ -306,7 +306,7 @@ export function validatePipelinesField(pipelines: PipelinesField): void {
     );
   }
 
-  for (const [name, row] of Object.entries(pipelines)) {
+  for (const [name, pipeline] of Object.entries(pipelines)) {
     if (!CUSTOM_WORK_KIND_NAME_RE.test(name) || name.length > CUSTOM_WORK_KIND_NAME_MAX) {
       throw new Error(
         `phoebe.config.ts \`pipelines\` names illegal pipeline "${name}". Pipeline names are ` +
@@ -314,12 +314,12 @@ export function validatePipelinesField(pipelines: PipelinesField): void {
       );
     }
     const at = `phoebe.config.ts \`pipelines.${name}\``;
-    if (typeof row !== "object" || row === null || Array.isArray(row)) {
+    if (typeof pipeline !== "object" || pipeline === null || Array.isArray(pipeline)) {
       throw new Error(
-        `${at} must be an object holding ${PIPELINE_KNOBS.join(", ")} — got ${JSON.stringify(row)}.`,
+        `${at} must be an object holding ${PIPELINE_KNOBS.join(", ")} — got ${JSON.stringify(pipeline)}.`,
       );
     }
-    for (const knob of Object.keys(row)) {
+    for (const knob of Object.keys(pipeline)) {
       if (!(PIPELINE_KNOBS as readonly string[]).includes(knob)) {
         throw new Error(
           `${at} names unknown knob "${knob}". A pipeline holds only ` +
@@ -327,13 +327,13 @@ export function validatePipelinesField(pipelines: PipelinesField): void {
         );
       }
     }
-    if (row.order !== undefined && !Array.isArray(row.order)) {
+    if (pipeline.order !== undefined && !Array.isArray(pipeline.order)) {
       throw new Error(
-        `${at}.order must be an array of kind names — got ${JSON.stringify(row.order)}.`,
+        `${at}.order must be an array of kind names — got ${JSON.stringify(pipeline.order)}.`,
       );
     }
     for (const knob of ["concurrency", "pollIntervalMs"] as const) {
-      const value = row[knob];
+      const value = pipeline[knob];
       if (
         value !== undefined &&
         (typeof value !== "number" || !Number.isFinite(value) || value <= 0)
@@ -341,25 +341,29 @@ export function validatePipelinesField(pipelines: PipelinesField): void {
         throw new Error(`${at}.${knob} must be a positive number — got ${JSON.stringify(value)}.`);
       }
     }
-    if (row.priority !== undefined && !Number.isInteger(row.priority)) {
-      throw new Error(`${at}.priority must be an integer — got ${JSON.stringify(row.priority)}.`);
+    if (pipeline.priority !== undefined && !Number.isInteger(pipeline.priority)) {
+      throw new Error(
+        `${at}.priority must be an integer — got ${JSON.stringify(pipeline.priority)}.`,
+      );
     }
-    if (row.disabled !== undefined && typeof row.disabled !== "boolean") {
-      throw new Error(`${at}.disabled must be a boolean — got ${JSON.stringify(row.disabled)}.`);
+    if (pipeline.disabled !== undefined && typeof pipeline.disabled !== "boolean") {
+      throw new Error(
+        `${at}.disabled must be a boolean — got ${JSON.stringify(pipeline.disabled)}.`,
+      );
     }
-    if (row.kinds !== undefined) {
-      validateWorkKindsField(row.kinds, `pipelines.${name}.kinds`);
+    if (pipeline.kinds !== undefined) {
+      validateWorkKindsField(pipeline.kinds, `pipelines.${name}.kinds`);
     }
   }
 
   const owner = new Map<string, string>();
-  for (const [name, row] of Object.entries(pipelines)) {
-    for (const kind of claimedKindNames(row)) {
+  for (const [name, pipeline] of Object.entries(pipelines)) {
+    for (const kind of claimedKindNames(pipeline)) {
       const held = owner.get(kind);
       if (held !== undefined && held !== name) {
         throw new Error(
           `phoebe.config.ts work kind "${kind}" is claimed by both \`pipelines.${held}\` and ` +
-            `\`pipelines.${name}\`. A kind belongs to at most one pipeline — the two rows are ` +
+            `\`pipelines.${name}\`. A kind belongs to at most one pipeline — the two pipelines are ` +
             `separate processes and would race each other over the same work.`,
         );
       }
@@ -370,7 +374,7 @@ export function validatePipelinesField(pipelines: PipelinesField): void {
 
 /**
  * Fold the deprecated top-level aliases into `pipelines.work` and fill the
- * per-row defaults. The `work` row is materialized whether or not the tenant
+ * per-pipeline defaults. The `work` pipeline is materialized whether or not the tenant
  * declared it, so every reader can index the block by name without a fallback.
  */
 export function resolvePipelines(user: PhoebeUserConfig): Record<string, ResolvedPipeline> {
@@ -378,17 +382,17 @@ export function resolvePipelines(user: PhoebeUserConfig): Record<string, Resolve
   const names = new Set([DEFAULT_PIPELINE_NAME, ...Object.keys(declared)]);
   const resolved: Record<string, ResolvedPipeline> = {};
   for (const name of names) {
-    const row = declared[name] ?? {};
-    const isDefaultRow = name === DEFAULT_PIPELINE_NAME;
-    const order = row.order ?? (isDefaultRow ? user.workOrder : undefined) ?? [];
-    const kinds = row.kinds ?? (isDefaultRow ? user.workKinds : undefined) ?? {};
+    const pipeline = declared[name] ?? {};
+    const isDefaultPipeline = name === DEFAULT_PIPELINE_NAME;
+    const order = pipeline.order ?? (isDefaultPipeline ? user.workOrder : undefined) ?? [];
+    const kinds = pipeline.kinds ?? (isDefaultPipeline ? user.workKinds : undefined) ?? {};
     resolved[name] = {
       order,
       kinds,
-      concurrency: row.concurrency ?? PIPELINE_DEFAULTS.concurrency,
-      ...(row.pollIntervalMs !== undefined ? { pollIntervalMs: row.pollIntervalMs } : {}),
-      disabled: row.disabled ?? PIPELINE_DEFAULTS.disabled,
-      priority: row.priority ?? PIPELINE_DEFAULTS.priority,
+      concurrency: pipeline.concurrency ?? PIPELINE_DEFAULTS.concurrency,
+      ...(pipeline.pollIntervalMs !== undefined ? { pollIntervalMs: pipeline.pollIntervalMs } : {}),
+      disabled: pipeline.disabled ?? PIPELINE_DEFAULTS.disabled,
+      priority: pipeline.priority ?? PIPELINE_DEFAULTS.priority,
     };
   }
   return resolved;
@@ -400,23 +404,23 @@ export function resolvePipelines(user: PhoebeUserConfig): Record<string, Resolve
  * and stopping is the honest answer.
  */
 function validatePipelineAliasConflicts(user: PhoebeUserConfig): void {
-  const workRow = user.pipelines?.[DEFAULT_PIPELINE_NAME];
-  if (workRow === undefined) return;
+  const workPipeline = user.pipelines?.[DEFAULT_PIPELINE_NAME];
+  if (workPipeline === undefined) return;
   const conflict = (alias: string, replacement: string): never => {
     throw new Error(
       `phoebe.config.ts declares both \`${alias}\` and \`${replacement}\`. ` +
         `\`${alias}\` is the deprecated alias for \`${replacement}\` — keep one.`,
     );
   };
-  if (user.workOrder !== undefined && workRow.order !== undefined) {
+  if (user.workOrder !== undefined && workPipeline.order !== undefined) {
     conflict("workOrder", "pipelines.work.order");
   }
-  if (user.workKinds !== undefined && workRow.kinds !== undefined) {
+  if (user.workKinds !== undefined && workPipeline.kinds !== undefined) {
     conflict("workKinds", "pipelines.work.kinds");
   }
-  if (user.promptFiles === undefined || workRow.kinds === undefined) return;
+  if (user.promptFiles === undefined || workPipeline.kinds === undefined) return;
   for (const [kind, promptKey] of Object.entries(PROMPT_FILE_KEY_BY_KIND)) {
-    const declaredOnKind = workKindOverride(workRow.kinds, kind)?.promptFile;
+    const declaredOnKind = workKindOverride(workPipeline.kinds, kind)?.promptFile;
     if (declaredOnKind !== undefined && user.promptFiles[promptKey] !== undefined) {
       conflict(`promptFiles.${promptKey}`, `pipelines.work.kinds.${kind}.promptFile`);
     }
@@ -608,13 +612,13 @@ export type PhoebeConfig = {
   workKinds: WorkKindsField;
   /**
    * Every pipeline this tenant declares, defaults filled and the deprecated
-   * top-level aliases folded into the `work` row (#415). The `work` row is
+   * top-level aliases folded into the `work` pipeline (#415). The `work` pipeline is
    * always present, declared or not.
    *
    * Unlike `engine`/`workspace`/`deployment`, this block survives into the
-   * resolved config: the supervisor's row enumerator and the cross-row
-   * partition check both need to see every row at once, and `selectPipelineRow`
-   * (src/pipeline-row.ts) reads it to flatten one row into the fields above.
+   * resolved config: the supervisor's pipeline enumerator and the cross-pipeline
+   * partition check both need to see every pipeline at once, and `selectPipeline`
+   * (src/pipeline.ts) reads it to flatten one pipeline into the fields above.
    */
   pipelines: Record<string, ResolvedPipeline>;
   /** Env var holding each provider's API key — the only key the agent child inherits. */
@@ -767,12 +771,12 @@ export type PhoebeUserConfig = {
    */
   workKinds?: WorkKindsField;
   /**
-   * Named pipelines (#415/#402): rows of work this tenant runs as separate
+   * Named pipelines (#415/#402): pipelines of work this tenant runs as separate
    * engine children, each with its own priority order, kind tuning, cadence
    * and concurrency. Tenant-only — a workspace root declaring it is a
    * validation error, since the root supervises tenants rather than work.
    *
-   * `work` is the reserved default row: it exists whether or not it is
+   * `work` is the reserved default pipeline: it exists whether or not it is
    * declared, and it is the home of the work-kind config the three deprecated
    * top-level fields above used to hold.
    */
@@ -951,7 +955,7 @@ export function validateUserConfig(user: PhoebeUserConfig): void {
   if (user.pipelines !== undefined) {
     if (user.workspace !== undefined) {
       throw new Error(
-        `phoebe.config.ts declares \`pipelines\` on a workspace root. Pipelines are rows of ` +
+        `phoebe.config.ts declares \`pipelines\` on a workspace root. Pipelines are pipelines of ` +
           `work inside one tenant, so the block belongs on a tenant config — the root only ` +
           `says which tenants exist.`,
       );
@@ -1077,7 +1081,7 @@ function validateCustomKindEntry(name: string, entry: CustomKindEntry, customAt:
  * tuned by a sibling override block exactly like a built-in.
  *
  * `at` is the config path the errors name: `workKinds` for the deprecated
- * top-level block, `pipelines.<name>.kinds` for a pipeline row (#415).
+ * top-level block, `pipelines.<name>.kinds` for a pipeline (#415).
  */
 function validateWorkKindsField(
   workKinds: NonNullable<PhoebeUserConfig["workKinds"]>,

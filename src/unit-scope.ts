@@ -63,9 +63,9 @@ export function unitDir(base: string, unit: UnitRef): string {
  * Who a worktree lease belongs to: `<pipeline>#<kind>:<encoded ref>`.
  *
  * The `#` is the seam the boot-time lease break reads across — it takes the
- * pipeline segment alone, so a row still breaks its own leases without knowing
+ * pipeline segment alone, so a pipeline still breaks its own leases without knowing
  * units exist (see `leasePipeline`). Past it, the unit segment is what stops a
- * sibling unit of the same row from stealing a tree: `releaseWorktree`
+ * sibling unit of the same pipeline from stealing a tree: `releaseWorktree`
  * compares the whole owner, so anything but this unit's own lease ends the
  * attempt in a skip.
  *

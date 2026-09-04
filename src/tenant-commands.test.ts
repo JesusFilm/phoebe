@@ -138,7 +138,7 @@ describe("listTenants", () => {
     writeFileSync(join(configDir, "envless", "phoebe.config.ts"), "export default {};\n");
     writeFileSync(join(configDir, "broken", "phoebe.config.ts"), "export default {};\n");
     writeFileSync(join(configDir, "valid", ".env"), "GH_TOKEN=x\n");
-    // The `work` row's snapshot is the one `phoebe list` reads (#418).
+    // The `work` pipeline's snapshot is the one `phoebe list` reads (#418).
     const stateDir = join(dataBase, "acme", "valid", "state", "work");
     mkdirSync(stateDir, { recursive: true });
     writeFileSync(

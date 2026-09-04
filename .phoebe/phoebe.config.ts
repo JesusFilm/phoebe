@@ -47,7 +47,7 @@ const config: PhoebeUserConfig = {
   // engine drops it in resolveConfig.
   engine: { source: "local" },
 
-  // This deployment's rows of work (#415/#419). Only the reserved `work` row,
+  // This deployment's pipelines of work (#415/#419). Only the reserved `work` pipeline,
   // which is what an engine child with no `--pipeline` flag runs;
   // `pipelines.work.kinds` is where `workKinds` and `promptFiles` moved.
   //
