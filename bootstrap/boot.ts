@@ -131,6 +131,27 @@ export const LOCAL_ENGINE_DIR = "/opt/phoebe-engine";
 const SOLO_TENANT_FINGERPRINT = "solo";
 
 /**
+ * Solo's one tenant, named after the `repoSlug` its own config declares (#457).
+ *
+ * Discovery leaves a solo tenant's slug null: there is no child config for the
+ * supervisor to read one out of, and the tenant id is the deployment directory.
+ * But boot has already loaded the root config for the mode decision, and in solo
+ * that config *is* the tenant's — the slug every labelled line wants is sitting
+ * right there. Without it a boot line reads `/etc/phoebe:work` instead of the
+ * `<owner>/<repo>:work` #420 asked for. A missing or malformed `repoSlug` keeps
+ * the null and the path label with it: the engine child is what validates that
+ * field, and a log line is not the place to die over it.
+ */
+export function resolveSoloTenant(
+  configDir: string,
+  config: Record<string, unknown>,
+): DiscoveredTenant {
+  const declared = config["repoSlug"];
+  const slug = typeof declared === "string" && declared.trim().length > 0 ? declared.trim() : null;
+  return { ...discoverTenants(configDir).tenants[0], slug };
+}
+
+/**
  * The launcher's own semver version, read once at module load.
  *
  * In the deployed package flow (bin.mjs → materialize.mjs → outside
@@ -563,6 +584,36 @@ function readTenantEnv(envPath: string): Record<string, string> {
   }
 }
 
+/**
+ * The spawn-failure line, named `<slug>:<pipeline>` (#420) — both arms report
+ * through it (#457). A pipeline that never got a process is the one death no exit
+ * hook can name, so if the name does not come from here it comes from nowhere.
+ */
+export function reportSpawnFailure(pipeline: SupervisedPipeline, error: Error): void {
+  console.error(
+    `[phoebe] boot: pipeline ${pipelineLabel(pipeline)} failed to spawn — ${error.message}`,
+  );
+}
+
+/**
+ * The child-exit line, named `<slug>:<pipeline>` (#420) — both arms report
+ * through it (#457).
+ *
+ * What normally follows an unexpected death is per-pipeline supervision: this
+ * pipeline comes back after the backoff and nothing around it is touched. The
+ * universality rule is the exception, and when it hands a death to the exit
+ * policy that policy logs its own line — a relaunch onto the last-good engine, or
+ * the status the container goes down with. So this line stops at the rule rather
+ * than predicting the verdict.
+ */
+export function reportPipelineExit(pipeline: SupervisedPipeline, exit: EngineExit): void {
+  console.error(
+    `[phoebe] boot: pipeline ${pipelineLabel(pipeline)} exited (${exit.code ?? exit.signal}) — ` +
+      `respawning with backoff, the shared engine and every sibling pipeline untouched. ` +
+      `Only a fleet where every pipeline is crash-looping reaches the exit policy.`,
+  );
+}
+
 /** One supervised pipeline as the slot broker orders and sizes for it (#407). */
 function brokerPipeline(pipeline: SupervisedPipeline): BrokerPipeline {
   return {
@@ -658,7 +709,6 @@ function runFleet(opts: {
     const exited = new Promise<EngineExit>((resolve) => {
       settle = resolve;
     });
-    const label = pipelineLabel(pipeline);
     // The child's cwd is the tenant's asset dir (#98): `dirname(envPath)`, which
     // is `tenant.dir` unless `configDir` relocated the `.env` (e.g. into
     // `.phoebe/`). When relocated, cwd is not where the config lives, so pass
@@ -675,7 +725,7 @@ function runFleet(opts: {
         cwd: assetsDir,
         onExit: (code: number | null, signal: NodeJS.Signals | null) => settle({ code, signal }),
         onSpawnError: (error: Error) => {
-          console.error(`[phoebe] boot: pipeline ${label} failed to spawn — ${error.message}`);
+          reportSpawnFailure(pipeline, error);
           settle({ code: 1, signal: null });
         },
       },
@@ -720,12 +770,7 @@ function runFleet(opts: {
           `~${changed.length} relaunched (no container restart).`,
       ),
     onPipelines: trackPipelines(broker),
-    onChildExit: ({ pipeline, exit }) =>
-      console.error(
-        `[phoebe] boot: pipeline ${pipelineLabel(pipeline)} exited (${exit.code ?? exit.signal}) — ` +
-          `respawning with backoff (per-pipeline supervision; the shared engine and every ` +
-          `sibling pipeline are untouched).`,
-      ),
+    onChildExit: ({ pipeline, exit }) => reportPipelineExit(pipeline, exit),
     onLaunchError: (error) =>
       console.error(`[phoebe] boot: fleet (re)launch failed — ${describe(error)}. Retrying.`),
     onDiscoverError: (error) =>
@@ -1315,7 +1360,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   // `discoverTenants` refuses a root that carries the removed `repos/` layout by
   // name, rather than reading it as a solo deployment whose config is missing
   // every per-repo field.
-  const soloTenant = discoverTenants(configDir).tenants[0];
+  const soloTenant = resolveSoloTenant(configDir, rootConfig);
 
   // Solo: log the credential arm once at first spawn. The root *is* the tenant
   // here, so the ambient env serves as both the tenant and the deployment env.
@@ -1383,7 +1428,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       ...(childEnv === null ? {} : { env: childEnv }),
       onExit: (code: number | null, signal: NodeJS.Signals | null) => settle({ code, signal }),
       onSpawnError: (error: Error) => {
-        console.error(`[phoebe] boot: engine failed to spawn — ${error.message}`);
+        reportSpawnFailure(pipeline, error);
         settle({ code: 1, signal: null });
       },
     });
@@ -1417,6 +1462,12 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       spawn: spawnSolo,
       stop,
       intervalMs,
+      // The same labelled death line the fleet gets (#457). Solo has no tenant axis
+      // and so no `onPipelineChange` to wire — its constant fingerprint means the
+      // matrix never reshapes mid-run — but its pipelines die like any other, and a
+      // death nothing names is a death an operator has to go read the engine's own
+      // output to explain.
+      onChildExit: ({ pipeline, exit }) => reportPipelineExit(pipeline, exit),
       // Solo contends on the same broker, so its pipelines size and order it too:
       // one tenant, but its own pipelines' `concurrency` and `priority`.
       onPipelines: trackPipelines(broker),
