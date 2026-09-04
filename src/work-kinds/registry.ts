@@ -5,7 +5,12 @@
 // in config-schema.ts (the import-cycle reason its comment documents); the
 // assertion below pins registry keys ≡ names.
 
-import { WORK_KIND_NAMES, type PhoebeConfig, type WorkKindName } from "../config-schema.ts";
+import {
+  WORK_KIND_NAMES,
+  workKindOverride,
+  type PhoebeConfig,
+  type WorkKindName,
+} from "../config-schema.ts";
 import type { AnyWorkKindDefinition } from "./definition.ts";
 import { validateWorkKindDefinition } from "./validate.ts";
 import { conflictsKind } from "./conflicts.ts";
@@ -61,6 +66,19 @@ export function buildRegistry(
 ): WorkKindRegistry {
   const registry = new Map<string, RegisteredWorkKind>();
 
+  // A kind block's `promptFile` re-points whichever definition lands under that
+  // name (#415), so the knob means the same thing for a custom kind as for a
+  // built-in. Built-ins reach the same value through `config.promptFiles`,
+  // which row selection has already folded the block into; re-applying it here
+  // is a no-op for them and the only path for a custom kind.
+  const withDeclaredPrompt = (
+    name: string,
+    definition: AnyWorkKindDefinition,
+  ): AnyWorkKindDefinition => {
+    const declared = workKindOverride(config.workKinds, name)?.promptFile;
+    return declared === undefined ? definition : { ...definition, promptFile: declared };
+  };
+
   for (const name of WORK_KIND_NAMES) {
     const definition = validateWorkKindDefinition(
       BUILT_IN_WORK_KIND_FACTORIES[name](config),
@@ -71,7 +89,7 @@ export function buildRegistry(
         `built-in work kind "${name}": its definition names itself "${definition.name}".`,
       );
     }
-    registry.set(name, { definition, options: undefined });
+    registry.set(name, { definition: withDeclaredPrompt(name, definition), options: undefined });
   }
 
   for (const custom of customs) {
@@ -88,7 +106,10 @@ export function buildRegistry(
           `Overriding built-ins is not supported — pick another name.`,
       );
     }
-    registry.set(custom.name, { definition, options: custom.options });
+    registry.set(custom.name, {
+      definition: withDeclaredPrompt(custom.name, definition),
+      options: custom.options,
+    });
   }
 
   return registry;

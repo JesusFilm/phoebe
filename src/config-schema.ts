@@ -34,8 +34,8 @@ export const WORK_KIND_NAMES = ["conflicts", "checks", "reviews", "issues", "res
 export type WorkKindName = (typeof WORK_KIND_NAMES)[number];
 
 /**
- * One work kind's agent override (#300): exactly these three knobs, each
- * optional, each falling back to the repo-level defaults when unset. The block
+ * One work kind's tuning block (#300, widened by #415): each knob optional,
+ * each falling back to the repo-level defaults when unset. The block
  * speaks for one provider — its own `provider`, else `defaultProvider` — and
  * its `model`/`effort` stay silent when a run's effective provider differs
  * (a `PHOEBE_AGENT` flip of a providerless block, or a `PHOEBE_<KIND>_AGENT`
@@ -52,6 +52,28 @@ export type WorkKindOverride = {
    * Absent / `undefined`: fall through to the next rung of the resolution ladder.
    */
   effort?: string | null;
+  /**
+   * Where this kind's prompt template lives, relative to the runtime root
+   * (#415) — the replacement for the top-level `promptFiles` block. A built-in
+   * reads its prompt from here first and falls back to `promptFiles.<key>`; a
+   * custom kind's declaration overrides its definition's own `promptFile`.
+   * Declaring both this and the matching `promptFiles` key for one built-in is
+   * a config error, not a merge.
+   */
+  promptFile?: string;
+  /**
+   * This kind's whole-unit wall-clock budget in ms (#415), resolved on the
+   * existing ladder: `PHOEBE_<KIND>_RUN_TIMEOUT_MS` → this field →
+   * `PHOEBE_RUN_TIMEOUT_MS` → the tenant's `runTimeoutMs`. A kind whose units
+   * are unusually long or short no longer has to bend the tenant-wide number.
+   */
+  runTimeoutMs?: number;
+  /**
+   * The sole off-switch for a kind (#415). `order` is priority, not
+   * membership — every registered kind a pipeline owns runs, named there or
+   * not — so taking a kind out of rotation means saying so here.
+   */
+  disabled?: boolean;
 };
 
 /**
@@ -99,6 +121,16 @@ const CUSTOM_WORK_KIND_NAME_MAX = 32;
  */
 export const CUSTOM_WORK_KINDS_KEY = "custom";
 
+/** The knobs one work-kind tuning block may hold (#300/#415). */
+const WORK_KIND_KNOBS = [
+  "provider",
+  "model",
+  "effort",
+  "promptFile",
+  "runTimeoutMs",
+  "disabled",
+] as const satisfies readonly (keyof WorkKindOverride)[];
+
 /** Keys no custom kind may claim: the built-ins plus the `custom` block itself. */
 const RESERVED_WORK_KIND_KEYS: readonly string[] = [...WORK_KIND_NAMES, CUSTOM_WORK_KINDS_KEY];
 
@@ -122,6 +154,258 @@ export function workKindOverride(
 ): WorkKindOverride | undefined {
   if (kind === CUSTOM_WORK_KINDS_KEY) return undefined;
   return workKinds[kind] as WorkKindOverride | undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Pipelines (#415)
+// ---------------------------------------------------------------------------
+
+/**
+ * The reserved default pipeline. It exists whether or not the tenant declares
+ * it — an engine child with no `--pipeline` flag runs this row — and declaring
+ * it is how a tenant tunes the work it was already doing.
+ */
+export const DEFAULT_PIPELINE_NAME = "work";
+
+/**
+ * One `pipelines.<name>` declaration: a named row of work with its own
+ * priority order, kind tuning, cadence, and concurrency. Every field is
+ * optional; {@link PIPELINE_DEFAULTS} fills the four scalars.
+ */
+export type PipelineDeclaration = {
+  /**
+   * Priority, not membership. Named kinds are polled first, in this sequence;
+   * every other kind this pipeline owns follows in declaration order. Taking a
+   * kind out of rotation is `kinds.<name>.disabled`, not omission here.
+   */
+  order?: readonly string[];
+  /** This pipeline's work-kind tuning blocks and `custom` declarations. */
+  kinds?: WorkKindsField;
+  /** Units this pipeline may hold in flight at once. Default 1. */
+  concurrency?: number;
+  /**
+   * Idle poll cadence in ms. Outranks `PHOEBE_POLL_INTERVAL_MS`; the env var
+   * is the fallback for a pipeline that declares nothing, then the default.
+   */
+  pollIntervalMs?: number;
+  /** Operator off-switch for this row. Hot — it never relaunches the row. */
+  disabled?: boolean;
+  /** Tenant-local scheduling priority; higher wins a contended slot. Hot. */
+  priority?: number;
+};
+
+/** The tenant's `pipelines` block, keyed by pipeline name. */
+export type PipelinesField = Record<string, PipelineDeclaration>;
+
+/**
+ * One pipeline as the engine sees it. The four scalars are filled; `order` and
+ * `kinds` carry whatever the tenant declared (aliases folded in for the `work`
+ * row). `pollIntervalMs` stays optional on purpose: absent means "declared
+ * nothing", which is what lets `PHOEBE_POLL_INTERVAL_MS` be the fallback rather
+ * than being outranked by a default nobody asked for.
+ */
+export type ResolvedPipeline = {
+  order: readonly string[];
+  kinds: WorkKindsField;
+  concurrency: number;
+  pollIntervalMs?: number;
+  disabled: boolean;
+  priority: number;
+};
+
+/** Per-pipeline defaults for the knobs a declaration may omit. */
+export const PIPELINE_DEFAULTS = {
+  concurrency: 1,
+  pollIntervalMs: 300_000,
+  disabled: false,
+  priority: 0,
+} as const;
+
+/** The knobs a `pipelines.<name>` block may hold — anything else is a typo. */
+const PIPELINE_KNOBS = [
+  "order",
+  "kinds",
+  "concurrency",
+  "pollIntervalMs",
+  "disabled",
+  "priority",
+] as const satisfies readonly (keyof PipelineDeclaration)[];
+
+/**
+ * Which `promptFiles` key holds each built-in kind's prompt. The two spellings
+ * differ (`promptFiles.issue` for the `issues` kind, `promptFiles.conflict`
+ * for `conflicts`), so the mapping is written down once here and read by both
+ * the alias-conflict check and row selection.
+ */
+export const PROMPT_FILE_KEY_BY_KIND = {
+  conflicts: "conflict",
+  checks: "checks",
+  reviews: "reviews",
+  issues: "issue",
+  research: "research",
+} as const satisfies Record<WorkKindName, keyof PromptFilesConfig>;
+
+/**
+ * The top-level fields `pipelines.work` replaces (#415). Each keeps working —
+ * an existing config needs no edit — but pairs with exactly one new field, and
+ * declaring both sides of a pair is an error rather than a silent merge.
+ */
+export const DEPRECATED_PIPELINE_ALIASES = [
+  { alias: "workOrder", replacement: "pipelines.work.order" },
+  { alias: "workKinds", replacement: "pipelines.work.kinds" },
+  { alias: "promptFiles", replacement: "pipelines.work.kinds.<name>.promptFile" },
+] as const satisfies readonly { alias: keyof PhoebeUserConfig; replacement: string }[];
+
+/**
+ * Which deprecated top-level fields this config still uses. Returned rather
+ * than warned about here: `resolveConfig` runs per tenant and inside the
+ * bootstrapper's reconcile loop, so the one-warning-at-load policy belongs to
+ * the CLI that loads the config, not to the pure resolver.
+ */
+export function deprecatedPipelineAliases(user: PhoebeUserConfig): readonly string[] {
+  return DEPRECATED_PIPELINE_ALIASES.filter(({ alias }) => user[alias] !== undefined).map(
+    ({ alias }) => alias,
+  );
+}
+
+/** The kind names one pipeline row claims: everything it orders or declares. */
+function claimedKindNames(row: PipelineDeclaration): string[] {
+  return [...(row.order ?? []), ...Object.keys(customKindEntries(row.kinds))];
+}
+
+/**
+ * Reject a malformed `pipelines` block (#415). Names reuse the custom-kind
+ * regex — so `#`, which the fleet's `slug:pipeline` tags reserve, can never
+ * appear in one — and each row's knobs are checked by type, because a
+ * mistyped `concurency` would sit inert forever looking configured.
+ *
+ * The cross-row pass is the partition invariant from #403: a kind belongs to at
+ * most one pipeline, so two rows naming the same kind is fatal for the tenant
+ * at load rather than a race between two engine children over the same PR.
+ */
+export function validatePipelinesField(pipelines: PipelinesField): void {
+  if (typeof pipelines !== "object" || pipelines === null || Array.isArray(pipelines)) {
+    throw new Error(
+      `phoebe.config.ts \`pipelines\` must be an object keyed by pipeline name — ` +
+        `got ${JSON.stringify(pipelines)}.`,
+    );
+  }
+
+  for (const [name, row] of Object.entries(pipelines)) {
+    if (!CUSTOM_WORK_KIND_NAME_RE.test(name) || name.length > CUSTOM_WORK_KIND_NAME_MAX) {
+      throw new Error(
+        `phoebe.config.ts \`pipelines\` names illegal pipeline "${name}". Pipeline names are ` +
+          `lowercase \`[a-z][a-z0-9-]*\`, at most ${CUSTOM_WORK_KIND_NAME_MAX} characters.`,
+      );
+    }
+    const at = `phoebe.config.ts \`pipelines.${name}\``;
+    if (typeof row !== "object" || row === null || Array.isArray(row)) {
+      throw new Error(
+        `${at} must be an object holding ${PIPELINE_KNOBS.join(", ")} — got ${JSON.stringify(row)}.`,
+      );
+    }
+    for (const knob of Object.keys(row)) {
+      if (!(PIPELINE_KNOBS as readonly string[]).includes(knob)) {
+        throw new Error(
+          `${at} names unknown knob "${knob}". A pipeline holds only ` +
+            `${PIPELINE_KNOBS.join(", ")}.`,
+        );
+      }
+    }
+    if (row.order !== undefined && !Array.isArray(row.order)) {
+      throw new Error(
+        `${at}.order must be an array of kind names — got ${JSON.stringify(row.order)}.`,
+      );
+    }
+    for (const knob of ["concurrency", "pollIntervalMs"] as const) {
+      const value = row[knob];
+      if (
+        value !== undefined &&
+        (typeof value !== "number" || !Number.isFinite(value) || value <= 0)
+      ) {
+        throw new Error(`${at}.${knob} must be a positive number — got ${JSON.stringify(value)}.`);
+      }
+    }
+    if (row.priority !== undefined && !Number.isInteger(row.priority)) {
+      throw new Error(`${at}.priority must be an integer — got ${JSON.stringify(row.priority)}.`);
+    }
+    if (row.disabled !== undefined && typeof row.disabled !== "boolean") {
+      throw new Error(`${at}.disabled must be a boolean — got ${JSON.stringify(row.disabled)}.`);
+    }
+    if (row.kinds !== undefined) {
+      validateWorkKindsField(row.kinds, `pipelines.${name}.kinds`);
+    }
+  }
+
+  const owner = new Map<string, string>();
+  for (const [name, row] of Object.entries(pipelines)) {
+    for (const kind of claimedKindNames(row)) {
+      const held = owner.get(kind);
+      if (held !== undefined && held !== name) {
+        throw new Error(
+          `phoebe.config.ts work kind "${kind}" is claimed by both \`pipelines.${held}\` and ` +
+            `\`pipelines.${name}\`. A kind belongs to at most one pipeline — the two rows are ` +
+            `separate processes and would race each other over the same work.`,
+        );
+      }
+      owner.set(kind, name);
+    }
+  }
+}
+
+/**
+ * Fold the deprecated top-level aliases into `pipelines.work` and fill the
+ * per-row defaults. The `work` row is materialized whether or not the tenant
+ * declared it, so every reader can index the block by name without a fallback.
+ */
+export function resolvePipelines(user: PhoebeUserConfig): Record<string, ResolvedPipeline> {
+  const declared = user.pipelines ?? {};
+  const names = new Set([DEFAULT_PIPELINE_NAME, ...Object.keys(declared)]);
+  const resolved: Record<string, ResolvedPipeline> = {};
+  for (const name of names) {
+    const row = declared[name] ?? {};
+    const isDefaultRow = name === DEFAULT_PIPELINE_NAME;
+    const order = row.order ?? (isDefaultRow ? user.workOrder : undefined) ?? [];
+    const kinds = row.kinds ?? (isDefaultRow ? user.workKinds : undefined) ?? {};
+    resolved[name] = {
+      order,
+      kinds,
+      concurrency: row.concurrency ?? PIPELINE_DEFAULTS.concurrency,
+      ...(row.pollIntervalMs !== undefined ? { pollIntervalMs: row.pollIntervalMs } : {}),
+      disabled: row.disabled ?? PIPELINE_DEFAULTS.disabled,
+      priority: row.priority ?? PIPELINE_DEFAULTS.priority,
+    };
+  }
+  return resolved;
+}
+
+/**
+ * Reject a config that declares both a deprecated alias and its replacement.
+ * A merge would have to guess which one the tenant meant; naming both fields
+ * and stopping is the honest answer.
+ */
+function validatePipelineAliasConflicts(user: PhoebeUserConfig): void {
+  const workRow = user.pipelines?.[DEFAULT_PIPELINE_NAME];
+  if (workRow === undefined) return;
+  const conflict = (alias: string, replacement: string): never => {
+    throw new Error(
+      `phoebe.config.ts declares both \`${alias}\` and \`${replacement}\`. ` +
+        `\`${alias}\` is the deprecated alias for \`${replacement}\` — keep one.`,
+    );
+  };
+  if (user.workOrder !== undefined && workRow.order !== undefined) {
+    conflict("workOrder", "pipelines.work.order");
+  }
+  if (user.workKinds !== undefined && workRow.kinds !== undefined) {
+    conflict("workKinds", "pipelines.work.kinds");
+  }
+  if (user.promptFiles === undefined || workRow.kinds === undefined) return;
+  for (const [kind, promptKey] of Object.entries(PROMPT_FILE_KEY_BY_KIND)) {
+    const declaredOnKind = workKindOverride(workRow.kinds, kind)?.promptFile;
+    if (declaredOnKind !== undefined && user.promptFiles[promptKey] !== undefined) {
+      conflict(`promptFiles.${promptKey}`, `pipelines.work.kinds.${kind}.promptFile`);
+    }
+  }
 }
 
 /**
@@ -307,6 +591,17 @@ export type PhoebeConfig = {
    * map to underscores in its env vars).
    */
   workKinds: WorkKindsField;
+  /**
+   * Every pipeline this tenant declares, defaults filled and the deprecated
+   * top-level aliases folded into the `work` row (#415). The `work` row is
+   * always present, declared or not.
+   *
+   * Unlike `engine`/`workspace`/`deployment`, this block survives into the
+   * resolved config: the supervisor's row enumerator and the cross-row
+   * partition check both need to see every row at once, and `selectPipelineRow`
+   * (src/pipeline-row.ts) reads it to flatten one row into the fields above.
+   */
+  pipelines: Record<string, ResolvedPipeline>;
   /** Env var holding each provider's API key — the only key the agent child inherits. */
   providerEnv: Record<ProviderName, string>;
   /**
@@ -442,13 +737,31 @@ export type PhoebeUserConfig = {
   /** Regex for the `Part of #M` feature-membership fallback (#341); default `` String.raw`Part of\s+#(\d+)` ``. */
   partOfPattern?: string;
   reviewsSuccessHeading?: string;
+  /** @deprecated Use `pipelines.<name>.kinds.<kind>.promptFile`. */
   promptFiles?: Partial<PromptFilesConfig>;
+  /** @deprecated Use `pipelines.work.order`. */
   workOrder?: readonly string[];
   defaultProvider?: ProviderName;
   defaultModels?: Partial<Record<ProviderName, string>>;
   defaultEfforts?: Partial<Record<ProviderName, string>>;
-  /** Per-work-kind overrides + custom kinds (#300/#303); see {@link PhoebeConfig.workKinds}. */
+  /**
+   * Per-work-kind overrides + custom kinds (#300/#303); see
+   * {@link PhoebeConfig.workKinds}.
+   *
+   * @deprecated Use `pipelines.work.kinds`.
+   */
   workKinds?: WorkKindsField;
+  /**
+   * Named pipelines (#415/#402): rows of work this tenant runs as separate
+   * engine children, each with its own priority order, kind tuning, cadence
+   * and concurrency. Tenant-only — a workspace root declaring it is a
+   * validation error, since the root supervises tenants rather than work.
+   *
+   * `work` is the reserved default row: it exists whether or not it is
+   * declared, and it is the home of the work-kind config the three deprecated
+   * top-level fields above used to hold.
+   */
+  pipelines?: PipelinesField;
   providerEnv?: Partial<Record<ProviderName, string>>;
   /** Whole-unit wall-clock timeout in ms (#72); default 45 min. */
   runTimeoutMs?: number;
@@ -618,6 +931,17 @@ export function validateUserConfig(user: PhoebeUserConfig): void {
   if (user.workKinds !== undefined) {
     validateWorkKindsField(user.workKinds);
   }
+  if (user.pipelines !== undefined) {
+    if (user.workspace !== undefined) {
+      throw new Error(
+        `phoebe.config.ts declares \`pipelines\` on a workspace root. Pipelines are rows of ` +
+          `work inside one tenant, so the block belongs on a tenant config — the root only ` +
+          `says which tenants exist.`,
+      );
+    }
+    validatePipelinesField(user.pipelines);
+    validatePipelineAliasConflicts(user);
+  }
   if (user.workspace !== undefined) {
     validateWorkspaceField(user.workspace);
   }
@@ -654,11 +978,11 @@ export function readDeploymentField(user: {
  * registry assembly, where path modules have been loaded too — this runs
  * synchronously inside `resolveConfig`, before any module import.
  */
-function validateCustomKindEntry(name: string, entry: CustomKindEntry): void {
-  const at = `phoebe.config.ts \`workKinds.custom.${name}\``;
+function validateCustomKindEntry(name: string, entry: CustomKindEntry, customAt: string): void {
+  const at = `phoebe.config.ts \`${customAt}.${name}\``;
   if (!CUSTOM_WORK_KIND_NAME_RE.test(name) || name.length > CUSTOM_WORK_KIND_NAME_MAX) {
     throw new Error(
-      `phoebe.config.ts \`workKinds.custom\` names illegal kind "${name}". ` +
+      `phoebe.config.ts \`${customAt}\` names illegal kind "${name}". ` +
         `Custom kind names are lowercase \`[a-z][a-z0-9-]*\`, at most ` +
         `${CUSTOM_WORK_KIND_NAME_MAX} characters.`,
     );
@@ -734,11 +1058,17 @@ function validateCustomKindEntry(name: string, entry: CustomKindEntry): void {
  * Two-pass (#350 Q2): parse the `custom` block first, then validate sibling
  * keys against built-ins ∪ the declared custom names — so a custom kind is
  * tuned by a sibling override block exactly like a built-in.
+ *
+ * `at` is the config path the errors name: `workKinds` for the deprecated
+ * top-level block, `pipelines.<name>.kinds` for a pipeline row (#415).
  */
-function validateWorkKindsField(workKinds: NonNullable<PhoebeUserConfig["workKinds"]>): void {
+function validateWorkKindsField(
+  workKinds: NonNullable<PhoebeUserConfig["workKinds"]>,
+  at = "workKinds",
+): void {
   if (typeof workKinds !== "object" || workKinds === null || Array.isArray(workKinds)) {
     throw new Error(
-      `phoebe.config.ts \`workKinds\` must be an object keyed by work kind ` +
+      `phoebe.config.ts \`${at}\` must be an object keyed by work kind ` +
         `(${WORK_KIND_NAMES.join(", ")}) — got ${JSON.stringify(workKinds)}.`,
     );
   }
@@ -749,12 +1079,12 @@ function validateWorkKindsField(workKinds: NonNullable<PhoebeUserConfig["workKin
   if (custom !== undefined) {
     if (typeof custom !== "object" || custom === null || Array.isArray(custom)) {
       throw new Error(
-        `phoebe.config.ts \`workKinds.custom\` must be an object keyed by kind name — ` +
+        `phoebe.config.ts \`${at}.custom\` must be an object keyed by kind name — ` +
           `got ${JSON.stringify(custom)}.`,
       );
     }
     for (const [name, entry] of Object.entries(custom)) {
-      validateCustomKindEntry(name, entry as CustomKindEntry);
+      validateCustomKindEntry(name, entry as CustomKindEntry, `${at}.${CUSTOM_WORK_KINDS_KEY}`);
       customNames.push(name);
     }
   }
@@ -765,33 +1095,60 @@ function validateWorkKindsField(workKinds: NonNullable<PhoebeUserConfig["workKin
     if (kind === CUSTOM_WORK_KINDS_KEY) continue;
     if (!legalKinds.includes(kind)) {
       throw new Error(
-        `phoebe.config.ts \`workKinds\` names unknown work kind "${kind}". ` +
+        `phoebe.config.ts \`${at}\` names unknown work kind "${kind}". ` +
           `Use one of: ${legalKinds.join(", ")}.`,
       );
     }
     if (typeof block !== "object" || block === null || Array.isArray(block)) {
       throw new Error(
-        `phoebe.config.ts \`workKinds.${kind}\` must be an object with optional ` +
-          `\`provider\`, \`model\`, \`effort\` — got ${JSON.stringify(block)}.`,
+        `phoebe.config.ts \`${at}.${kind}\` must be an object with optional ` +
+          `${WORK_KIND_KNOBS.map((knob) => `\`${knob}\``).join(", ")} — got ${JSON.stringify(block)}.`,
       );
     }
-    // A block holds exactly the three knobs — an unknown key (a typo'd knob, a
-    // hoped-for per-kind timeout) would sit inert forever, same failure mode as
-    // an unknown kind key. `model` and `effort` values are not validated here:
-    // `model` is a pass-through string, and `effort` accepts a string or null
-    // (the explicit clear) — the provider CLIs are the authority on string values.
+    // A block holds exactly the knobs above — an unknown key (a typo'd knob, a
+    // hoped-for one) would sit inert forever, same failure mode as an unknown
+    // kind key. `model` and `effort` values are not validated here: `model` is
+    // a pass-through string, and `effort` accepts a string or null (the
+    // explicit clear) — the provider CLIs are the authority on string values.
     for (const knob of Object.keys(block)) {
-      if (!["provider", "model", "effort"].includes(knob)) {
+      if (!(WORK_KIND_KNOBS as readonly string[]).includes(knob)) {
         throw new Error(
-          `phoebe.config.ts \`workKinds.${kind}\` names unknown knob "${knob}". ` +
-            `Each block holds only \`provider\`, \`model\`, \`effort\`.`,
+          `phoebe.config.ts \`${at}.${kind}\` names unknown knob "${knob}". ` +
+            `Each block holds only ${WORK_KIND_KNOBS.map((k) => `\`${k}\``).join(", ")}.`,
         );
       }
     }
-    const provider = (block as WorkKindOverride).provider;
+    const knobs = block as WorkKindOverride;
+    if (
+      knobs.promptFile !== undefined &&
+      (typeof knobs.promptFile !== "string" || knobs.promptFile.trim().length === 0)
+    ) {
+      throw new Error(
+        `phoebe.config.ts \`${at}.${kind}.promptFile\` must be a path string — ` +
+          `got ${JSON.stringify(knobs.promptFile)}.`,
+      );
+    }
+    if (
+      knobs.runTimeoutMs !== undefined &&
+      (typeof knobs.runTimeoutMs !== "number" ||
+        !Number.isFinite(knobs.runTimeoutMs) ||
+        knobs.runTimeoutMs <= 0)
+    ) {
+      throw new Error(
+        `phoebe.config.ts \`${at}.${kind}.runTimeoutMs\` must be a positive number of ` +
+          `milliseconds — got ${JSON.stringify(knobs.runTimeoutMs)}.`,
+      );
+    }
+    if (knobs.disabled !== undefined && typeof knobs.disabled !== "boolean") {
+      throw new Error(
+        `phoebe.config.ts \`${at}.${kind}.disabled\` must be a boolean — ` +
+          `got ${JSON.stringify(knobs.disabled)}.`,
+      );
+    }
+    const provider = knobs.provider;
     if (provider !== undefined && !(PROVIDER_NAMES as readonly string[]).includes(provider)) {
       throw new Error(
-        `phoebe.config.ts \`workKinds.${kind}.provider\` must be one of ` +
+        `phoebe.config.ts \`${at}.${kind}.provider\` must be one of ` +
           `${PROVIDER_NAMES.join(", ")} (got ${JSON.stringify(provider)}).`,
       );
     }
@@ -904,6 +1261,7 @@ export function resolveConfig(
     defaultModels: { ...CONFIG_DEFAULTS.defaultModels, ...user.defaultModels },
     defaultEfforts: { ...CONFIG_DEFAULTS.defaultEfforts, ...user.defaultEfforts },
     workKinds: { ...CONFIG_DEFAULTS.workKinds, ...user.workKinds },
+    pipelines: resolvePipelines(user),
     providerEnv: { ...CONFIG_DEFAULTS.providerEnv, ...user.providerEnv },
     runTimeoutMs: user.runTimeoutMs ?? CONFIG_DEFAULTS.runTimeoutMs,
     maxUnproductiveRuns:

@@ -797,8 +797,8 @@ describe("validateWorkOrder", () => {
     ]);
   });
 
-  test("throws on empty order", () => {
-    expect(() => validate([])).toThrow(/must not be empty/);
+  test("accepts an empty order — priority, not membership (#415)", () => {
+    expect(validate([])).toEqual([]);
   });
 
   test("throws on unknown kind", () => {

@@ -64,6 +64,19 @@ describe("parseCliArgs", () => {
     });
   });
 
+  test("forwards --pipeline and its value to the engine (#415)", () => {
+    expect(parseCliArgs(["--pipeline", "intake", "--dry-run"])).toEqual({
+      configPath: undefined,
+      help: false,
+      forward: ["--pipeline", "intake", "--dry-run"],
+    });
+    expect(parseCliArgs(["--pipeline=intake"]).forward).toEqual(["--pipeline=intake"]);
+  });
+
+  test("rejects --pipeline with no name", () => {
+    expect(() => parseCliArgs(["--pipeline"])).toThrow(/requires a pipeline name/);
+  });
+
   test("rejects an unknown flag instead of forwarding it into the void", () => {
     // The engine reads its flags with `argv.includes(...)`, so a forwarded
     // unknown flag is silently dropped — a typo would run the opposite of what

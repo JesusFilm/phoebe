@@ -30,6 +30,11 @@ a red-CI PR, which is handled before review feedback, which is handled before a
 brand-new issue is picked up, which is handled before a research ticket. That
 keeps already-open work flowing rather than piling up new branches.
 
+Priority is all it is. A kind left out of the order still runs, after the named
+ones; taking one out of rotation is `disabled: true` on its tuning block. The
+field itself is now the deprecated alias for `pipelines.work.order`. See
+[`configuration.md` → Pipelines](configuration.md#pipelines).
+
 - **Persistent mode** (no flags) runs all kinds and sleeps
   `PHOEBE_POLL_INTERVAL_MS` (default 300000) between empty cycles.
 - **`--run-once`** works at most one unit of the first _one-shot-eligible_ kind
@@ -179,8 +184,8 @@ the engine:
 
 The engine stays map-agnostic. It only selects the ticket, allocates the
 worktree, and runs the prompt. The resolution comment, close, and map update all
-happen inside the prompt. Disable the kind for a repo by omitting `research` from
-`workOrder`.
+happen inside the prompt. Disable the kind for a repo with
+`research: { disabled: true }` on its tuning block.
 
 ## `conflicts`, reconcile PRs that conflict with the base
 

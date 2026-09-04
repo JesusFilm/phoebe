@@ -1,7 +1,7 @@
 // Custom-kind loading (#350): the three declaration arms resolve to
 // definitions — inline as-is, path modules via dynamic import (default export,
-// plain or factory), wrappers carrying `options` — and the boot step warns
-// about declared-but-unscheduled kinds.
+// plain or factory), wrappers carrying `options` — and the boot step assembles
+// the registry from them.
 
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -131,31 +131,13 @@ describe("createWorkKindRegistry", () => {
     expect(registry.has("nudge")).toBe(true);
   });
 
-  test("warns when a declared custom kind is missing from workOrder", async () => {
+  test("stays quiet about a kind missing from the order — it still runs (#415)", async () => {
     const warned: string[] = [];
     const originalWarn = console.warn;
     console.warn = (...args: unknown[]) => warned.push(args.map(String).join(" "));
     try {
       const config = resolveConfig(
         userConfig({ workKinds: { custom: { nudge: inlineDefinition("nudge") } } }),
-      );
-      await createWorkKindRegistry(config, "/nowhere");
-    } finally {
-      console.warn = originalWarn;
-    }
-    expect(warned.join("\n")).toContain('Custom work kind "nudge" is declared but not listed');
-  });
-
-  test("stays quiet when every declared kind is scheduled", async () => {
-    const warned: string[] = [];
-    const originalWarn = console.warn;
-    console.warn = (...args: unknown[]) => warned.push(args.map(String).join(" "));
-    try {
-      const config = resolveConfig(
-        userConfig({
-          workOrder: ["nudge"],
-          workKinds: { custom: { nudge: inlineDefinition("nudge") } },
-        }),
       );
       await createWorkKindRegistry(config, "/nowhere");
     } finally {
