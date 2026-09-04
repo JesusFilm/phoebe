@@ -6,6 +6,8 @@
 import { describe, expect, test } from "vite-plus/test";
 import {
   CONFIG_DEFAULTS,
+  DEFAULT_PROMPT_FILE_BY_KIND,
+  PROMPT_FILE_KEY_BY_KIND,
   PROVIDER_NAMES,
   deprecatedPipelineAliases,
   resolveConfig,
@@ -809,5 +811,30 @@ describe("work-kind tuning knobs widened by #415", () => {
     reject({ promptFile: "  " }, /promptFile` must be a path string/);
     reject({ runTimeoutMs: -1 }, /runTimeoutMs` must be a positive number/);
     reject({ disabled: "true" }, /disabled` must be a boolean/);
+  });
+});
+
+describe("the built-in kinds' default prompt paths (#419)", () => {
+  test("every kind has one, and it is what the deprecated promptFiles block defaults to", () => {
+    for (const [kind, key] of Object.entries(PROMPT_FILE_KEY_BY_KIND)) {
+      const fromKind =
+        DEFAULT_PROMPT_FILE_BY_KIND[kind as keyof typeof DEFAULT_PROMPT_FILE_BY_KIND];
+      expect(fromKind, `default prompt path for "${kind}"`).toBe(CONFIG_DEFAULTS.promptFiles[key]);
+    }
+    expect(Object.keys(DEFAULT_PROMPT_FILE_BY_KIND).sort()).toEqual(
+      Object.keys(PROMPT_FILE_KEY_BY_KIND).sort(),
+    );
+  });
+
+  test("a kind reads its path through the resolved config, migrated or not", () => {
+    const declared = resolveConfig(
+      minimalUserConfig({
+        pipelines: { work: { kinds: { issues: { promptFile: "p/mine.md" } } } },
+      }),
+    );
+    expect(declared.pipelines["work"]!.kinds["issues"]).toEqual({ promptFile: "p/mine.md" });
+    expect(resolveConfig(minimalUserConfig()).promptFiles.issue).toBe(
+      DEFAULT_PROMPT_FILE_BY_KIND.issues,
+    );
   });
 });

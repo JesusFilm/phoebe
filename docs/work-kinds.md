@@ -23,9 +23,11 @@ built-in selects and executes a unit. Field references point at
 workOrder: ["conflicts", "checks", "reviews", "issues", "research"] # default
 ```
 
-Each cycle the engine gathers work data for every kind, then
-`selectFirstWorkUnit` returns the first kind (in `workOrder` order) that yields a
-unit. Order is priority: with the default, a conflicting PR is reconciled before
+Each cycle the engine gathers work data for every kind, then `selectWorkUnits`
+walks the kinds in `workOrder` order and takes units until the pipeline's free
+slots are full — one slot by default, so one unit. The walk is depth-first: a
+kind is asked again and again until it runs out before the next kind is asked at
+all. Order is priority: with the default, a conflicting PR is reconciled before
 a red-CI PR, which is handled before review feedback, which is handled before a
 brand-new issue is picked up, which is handled before a research ticket. That
 keeps already-open work flowing rather than piling up new branches.
@@ -366,6 +368,8 @@ export default {
   oneShotEligible: false,       // may a unit run under --run-once?
   promptFile: "prompts/my-kind-prompt.md",
   workspace: "worktree",        // or "scratch" / "readonly" — modes below
+  requiredEnv: ["SLACK_BOT_TOKEN"],  // env keys this kind's code reads
+  agentEnv: ["SLACK_BOT_TOKEN"],     // the subset its agent children may see
   model: "…", effort: "…",      // optional agent defaults (see tuning below)
   report: {
     noun: "…(s)",               // idle-report noun
@@ -401,7 +405,10 @@ Built-ins use `pr:123` / `issue:88` as convention. The optional `github` field
 is the timeout-escalation target: with it set, a unit that repeatedly times out
 gets the timeout marker, the `phoebe:quarantined` label and the escalation
 comment exactly like a built-in unit; without it, timeouts are counted in
-memory only and the engine logs that the unit has no escalation surface.
+memory only and the engine logs that the unit has no escalation surface. It is
+also the admission exclusion: the engine refuses to start a unit whose `github`
+object another running unit already holds, and a unit that declares none gets no
+exclusion and a log line saying so.
 
 ### The `ctx` surface
 
@@ -427,13 +434,21 @@ resolve. Everything arrives on `ctx` (types via `import type` from
   means unreadable — drop that candidate), `registerIssues(issues)` (feed the
   blocker index during fetch), `blockerStates()` (read it during select).
 - `ctx.clock` — `now()` / `sleep(ms)`, injected so time is testable.
+- `ctx.inFlight` — this kind's refs running right now, including any admitted
+  earlier in the same pass. `select` must not offer one of them. Filtering on
+  it is what lets your kind fill several slots when the pipeline's
+  `concurrency` is above 1; ignore it and the engine drops the repeated pick,
+  stops asking your kind for the rest of the pass, and logs why — so the cost is
+  one unit at a time, never two agents on one unit.
 - `ctx.log(message)` — logs with the uniform `[phoebe][<kind> <ref>]` prefix.
 
 `run` receives the same surface widened with:
 
-- `ctx.workspace` — `{ mode, dir }`: the workspace your definition's
+- `ctx.workspace` — `{ mode, dir, scratch }`: the workspace your definition's
   `workspace` field asked for, prepared and removed by the engine, and the
-  default cwd for a bare `ctx.agent.run(...)`. Three modes:
+  default cwd for a bare `ctx.agent.run(...)`. `dir` is the git shape the mode
+  names; `scratch` is a directory of your own to write anything into, and is on
+  every handle whatever the mode. Three modes:
   - `"worktree"` — a git worktree of the default branch, off the tenant's
     private clone, on the engine-named `<branchPrefix>workspace` branch. Repo
     context, and a branch to commit on.
@@ -451,9 +466,19 @@ resolve. Everything arrives on `ctx` (types via `import type` from
     a channel. Read [The don't-push contract](#the-dont-push-contract) for what
     the mode does and does not promise.
 
-  Every mode is created the first time `dir` is read, so a kind that builds its
-  own worktrees (as all five built-ins do) never pays for one, and a kind that
-  never reads `ctx.workspace.dir` never gets a directory.
+  Both are created the first time they are read, and independently, so a kind
+  that builds its own worktrees (as all five built-ins do) never pays for one,
+  and a kind that reads neither gets no directory at all. Both are per unit:
+  two units of your kind in flight together — which is what a row's
+  `concurrency` above 1 means — never share a path, so one unit's preparation
+  cannot clear the other's work.
+
+  `scratch` is why a `"readonly"` kind is usable and not merely safe. Reading
+  the repo and producing something needs a reading room _and_ a desk, and the
+  mode used to give you one or the other. It does leave `"scratch"` reading a
+  little oddly: it now means "no git shape, plus the scratch every kind has",
+  with `dir` and `scratch` the same directory. The mode is not renamed, so
+  nothing you have declared changes.
 
 - `ctx.signal` — an `AbortSignal` that fires when the unit's wall-clock budget
   expires. Pass it to async operations (fetch, sleep, agent helpers) or poll
@@ -484,15 +509,16 @@ The engine makes one check, at the unit boundary. A readonly tree left dirty or
 carrying commits is about to be deleted, so the engine warns as it deletes it:
 
 ```
-[phoebe] my-kind: the readonly workspace was modified (2 changed file(s), 0 commit(s))
+[phoebe] my-kind issue:88: the readonly workspace was modified (2 changed file(s), 0 commit(s))
 and is being discarded with the unit. A kind that means to publish should build its own
 worktree through ctx.agent.
 ```
 
 That reports work being lost. It is not a refusal, and the unit still succeeds.
-If your kind means to publish, declare `"scratch"` or `"worktree"` and go
-through `ctx.agent.prWorkflow` / `issueWorkflow`, which build their own
-branch-specific worktrees and own the push.
+The warning is about the _tree_: writing under `ctx.workspace.scratch` is what
+the scratch is there for, and is not warned about. If your kind means to
+publish, go through `ctx.agent.prWorkflow` / `issueWorkflow`, which build their
+own branch-specific worktrees and own the push.
 
 ### Reporting
 
@@ -521,18 +547,58 @@ one-line name used in logs and `--dry-run` output.
 - **Editing a kind module requires a restart**: the reconcile watch fingerprints
   the config file only, so it does not see kind-module edits.
 
+### Declared keys: `requiredEnv` and `agentEnv`
+
+A kind that reads a credential out of `ctx.env` says which one. `requiredEnv`
+names the keys the kind's own code reads; `agentEnv`, empty unless you set it,
+is the subset its agent children also see. The values still live in the
+tenant's one `.env` — there is no per-pipeline secret file and no per-pipeline
+config field.
+
+Declaring a key buys three things:
+
+- **A boot check.** Every key a scheduled kind declares must be present and
+  non-blank when the pipeline's engine child starts. A missing one fails the
+  boot naming the kind and the key, the way a missing prompt file does. Only
+  that row dies; its siblings boot. A kind you switch on later against a key
+  nobody added stays off with a logged error instead of taking the row down.
+- **Scope.** The supervisor takes every key a _sibling_ row declared and this
+  one did not out of this row's child env. An intake pipeline's Slack token
+  never reaches the work pipeline's child, and a key nobody declares reaches
+  every row exactly as before. `phoebe doctor` reports a scheduled kind whose
+  declared key is missing as a tenant finding.
+- **A narrower relaunch.** The `.env` reconcile digest is computed per row over
+  the keys that row would actually hold, so rotating the Slack token relaunches
+  the intake row alone. Rotating an undeclared key still relaunches every row
+  of the tenant.
+
+Declared keys are stripped from `installCommand`'s env and from prompt `!`
+expansions, always — a consumer's install script has no business with a
+credential a kind asked for, and until this landed every `.env` value reached
+the target repo's install hooks. The agent hop is the one place that reopens,
+per kind, for `agentEnv` only, because that is where a credential meets a
+prompt.
+
+Some keys cannot be declared at all: `GH_TOKEN`, `PHOEBE_GH_LOGIN`, the four
+git identity variables, anything under `PHOEBE_*` or `GH_APP_*`, and any value
+of `providerEnv`. The engine mints, leases or sets those, and letting a
+declaration move them would let one kind take the token away from a sibling
+row. Naming one is a validation error, as is an `agentEnv` key your
+`requiredEnv` does not list.
+
 ### The edges are edges
 
-Three capabilities are still deliberately absent, each a named extension point
+Two capabilities are still deliberately absent, each a named extension point
 with a designed attachment — not an oversight. The design record is
 [`docs/research/slack-responder-sketch.md`](research/slack-responder-sketch.md):
-kind-declared credentials (`requiredEnv` punching kind-scoped holes in the
-agent env allowlist), non-GitHub work sources (already possible by construction
-— your fetch may call anything reachable; ctx owes it no HTTP convenience), and
-a kind-extended agent tool surface (kind-declared MCP servers).
+non-GitHub work sources (already possible by construction — your fetch may call
+anything reachable; ctx owes it no HTTP convenience) and a kind-extended agent
+tool surface (kind-declared MCP servers).
 
-A fourth has landed, in both halves. `"scratch"` is the sketch's
-plain-directory mode, shipped under a name that admits there is still a
-directory. `"readonly"` is the worktree half, and the don't-push contract turned
-out to be a detached checkout plus a warning rather than a promise or a guard.
-See [The don't-push contract](#the-dont-push-contract).
+Two have landed. Kind-declared credentials arrived as `requiredEnv` and
+`agentEnv` above, with the sketch's kind-scoped hole in the agent allowlist
+opt-in per key. And the workspace modes arrived in both halves: `"scratch"` is
+the sketch's plain-directory mode, shipped under a name that admits there is
+still a directory, and `"readonly"` is the worktree half, where the don't-push
+contract turned out to be a detached checkout plus a warning rather than a
+promise or a guard. See [The don't-push contract](#the-dont-push-contract).

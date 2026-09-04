@@ -4,10 +4,14 @@
 // Also covers arm-aware token checks: the App arm and the PAT arm behave
 // differently, and the unverifiable state must never fail --check.
 
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
 import {
   buildDoctorReport,
   crashLoopCheck,
+  declaredEnvCheck,
   describeRepoProbe,
   fetchRepoLabels,
   formatDoctorReport,
@@ -483,6 +487,92 @@ describe("tenantRow config load failure regression", () => {
     expect(labelsResult?.detail).toMatch(/config load failed/);
     expect(driftResult?.state).toBe("unknown");
     expect(driftResult?.detail).toMatch(/config load failed/);
+  });
+});
+
+describe("tenantRow prompt-drift source (#419)", () => {
+  const okFetch = async () =>
+    new Response(JSON.stringify({ id: 1, name: "widget" }), { status: 200 });
+
+  /** A tenant dir holding a config and a vendored issues prompt with no blocker rule. */
+  function scaffoldTenant(configBody: string): string {
+    const dir = mkdtempSync(join(tmpdir(), "phoebe-doctor-drift-"));
+    writeFileSync(join(dir, "vendored-issues.md"), "# Issues\n\nDo the work.\n");
+    writeFileSync(
+      join(dir, "phoebe.config.ts"),
+      `export const config = {\n  repoSlug: "acme/widget",\n${configBody}};\n`,
+    );
+    return join(dir, "phoebe.config.ts");
+  }
+
+  async function driftCheckFor(configBody: string) {
+    const row = await tenantRow({
+      path: "tenant",
+      slug: "acme/widget",
+      arm: "pat",
+      token: "ghp_tok",
+      envLabel: "/etc/phoebe/.env",
+      fetchFn: okFetch as typeof fetch,
+      inContainer: false,
+      configPath: scaffoldTenant(configBody),
+    });
+    return row.checks.find((c) => c.id === "prompt-drift");
+  }
+
+  test("reads the kind block's promptFile", async () => {
+    const check = await driftCheckFor(
+      `  pipelines: { work: { kinds: { issues: { promptFile: "./vendored-issues.md" } } } },\n`,
+    );
+    expect(check?.state).toBe("warn");
+    expect(check?.detail).toMatch(/vendored-issues\.md/);
+    expect(check?.detail).toMatch(/no blocker-recording rule/);
+  });
+
+  test("still reads the deprecated promptFiles alias", async () => {
+    const check = await driftCheckFor(`  promptFiles: { issue: "./vendored-issues.md" },\n`);
+    expect(check?.state).toBe("warn");
+    expect(check?.detail).toMatch(/vendored-issues\.md/);
+  });
+
+  test("a config declaring neither is on the shipped default", async () => {
+    const check = await driftCheckFor("");
+    expect(check?.state).toBe("ok");
+    expect(check?.detail).toMatch(/shipped default/);
+  });
+});
+
+describe("declaredEnvCheck", () => {
+  test("a scheduled kind's missing key is a tenant finding", () => {
+    const check = declaredEnvCheck(
+      [{ pipeline: "intake", kind: "slack-intake", key: "SLACK_BOT_TOKEN" }],
+      "/etc/phoebe/repos/acme/widget/.env",
+    );
+    expect(check.state).toBe("fail");
+    expect(check.detail).toMatch(/intake\/slack-intake declares SLACK_BOT_TOKEN/);
+    expect(check.detail).toMatch(/repos\/acme\/widget\/\.env/);
+  });
+
+  test("nothing missing passes", () => {
+    expect(declaredEnvCheck([], "/etc/phoebe/.env").state).toBe("ok");
+  });
+
+  test("a config that would not load is unknown, not a shortfall", () => {
+    expect(declaredEnvCheck(null, "/etc/phoebe/.env").state).toBe("unknown");
+  });
+
+  test("the check only appears when the caller ran the scan", async () => {
+    const mockFetch = async () =>
+      new Response(JSON.stringify({ id: 1, name: "widget" }), { status: 200 });
+    const row = await tenantRow({
+      path: "tenant",
+      slug: "acme/widget",
+      arm: "pat",
+      token: "ghp_tok",
+      envLabel: "/etc/phoebe/.env",
+      fetchFn: mockFetch as typeof fetch,
+      inContainer: false,
+    });
+    expect(row.checks.find((check) => check.id === "declared-env")).toBeUndefined();
   });
 });
 

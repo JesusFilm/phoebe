@@ -87,9 +87,10 @@ clone (`src/git-model.ts`):
 2. Each cycle `git fetch origin` refreshes the clone.
 3. For a unit, `prepareWorktree` removes any stale worktree for the branch,
    adds a fresh one, and takes a lease on it (`git worktree lock`, reason
-   `pipeline=<name> pid=<n>`) so a sibling pipeline sharing the clone leaves it
-   alone. A tree another pipeline leases is not removed; the unit is skipped for
-   the cycle. The branch cases:
+   `pipeline=<name>#<kind>:<ref> pid=<n>`) so anything else sharing the clone
+   leaves it alone — a sibling pipeline, or a sibling unit of the same row when
+   `concurrency` is above 1. A tree someone else leases is not removed; the unit
+   is skipped for the cycle. The branch cases:
    - **Issues.** A new branch `<branchPrefix>issue-<n>` reset to the resolved
      base ref (`origin/main`, a blocker's branch when stacked, etc.).
    - **Conflicts, checks, and reviews.** A worktree on the PR's existing head
@@ -102,8 +103,14 @@ clone (`src/git-model.ts`):
 Worktree directory names are derived from the branch, lowercased with
 non-alphanumerics collapsed to `-`, so they are filesystem-safe and collision-
 resistant. A failed unit never kills the engine: `prepareWorktree` clears any
-stale worktree on the next attempt, breaking its own pipeline's leftover lease
-as it goes.
+stale worktree on the next attempt, breaking its own leftover lease as it goes.
+
+The two directories keyed by the unit rather than the branch — the plain
+`scratch/` workspace and the detached `worktrees/readonly/` tree — are
+`<kind>/<ref>`, with the kind-owned ref percent-encoded (`src/unit-scope.ts`).
+Children a unit spawns write through a prefix rather than inheriting the
+engine's stdout, so a row running several units at once produces a stream an
+operator can attribute line by line.
 
 Step 1 is conditional and serialized. A pipeline clones only when one of its
 kinds declares a `worktree` or `readonly` workspace, and the first clone on a
@@ -264,6 +271,20 @@ a verdict. Solo has one row, so the rule reduces to what it always did: that row
 is the engine, its death is the container's, and the threshold is unchanged.
 Every other unexpected exit respawns after the backoff, whatever the code; only
 an exit the supervisor asked for does not.
+
+**Slots across the matrix.** One broker serves every row in either arm, and it
+sizes itself off the matrix it is supervising: the effective cap is the largest
+`concurrency` any live row declares, or `PHOEBE_MAX_CONCURRENT_AGENTS` when the
+operator sets it. The number is recomputed on a reconcile that reshapes rows and
+never on a hot edit, because a slot already granted cannot be recalled. A row
+declaring more than the cap queues for it rather than being rewritten. Rows take
+turns per tenant, `priority` orders one tenant's rows among themselves, and a row
+holding no slot with work waiting may hold one over the cap — bounded by
+`PHOEBE_SLOT_FLOOR_BUDGET` — so a 45-minute unit elsewhere cannot stall an intake
+row for 45 minutes. A release gives back an over-cap slot before a regular one,
+and nothing is handed on while the cap is breached, so the breach never rolls
+forward. The knobs and the boot line are in
+[`configuration.md`](configuration.md#concurrency-the-rows-knob-and-the-fleets-cap).
 
 ### Reclaiming what a row leaves behind
 

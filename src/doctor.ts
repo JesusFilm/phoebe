@@ -17,6 +17,10 @@
 //                       floor? A violation deadlocks the deployment outright, not
 //                       merely slows it — the two checks are not the same thing.
 //
+// A tenant's scheduled work kinds may declare env keys of their own (#425);
+// doctor reports a missing one as a tenant finding, ahead of the engine child
+// refusing to boot on it.
+//
 // In workspace mode it also sweeps tenants — the same enumeration boot
 // supervises with (#91/#154), so doctor can never report a different fleet from
 // the one that is running. Per tenant: is a GH_TOKEN present the way the child
@@ -59,7 +63,14 @@ import {
   compareVersions,
   readDockerfilePin,
 } from "./upgrade.ts";
-import { CONFIG_DEFAULTS, resolveConfig } from "./config-schema.ts";
+import {
+  CONFIG_DEFAULTS,
+  DEFAULT_PIPELINE_NAME,
+  DEFAULT_PROMPT_FILE_BY_KIND,
+  resolveConfig,
+} from "./config-schema.ts";
+import { resolveDataBase } from "./paths.ts";
+import { enumerateDeclaredEnv } from "./pipeline-enumerate.ts";
 import {
   createWorktreeInspector,
   hasTenantData,
@@ -69,7 +80,9 @@ import {
   type StaleItem,
 } from "./stale-state.ts";
 import { enumerateWorkspaceTenants } from "./tenant-commands.ts";
-import { resolveDataBase } from "./paths.ts";
+
+/** A scheduled kind's declared key that its pipeline's env does not hold (#425). */
+export type MissingDeclaredEnvKey = { pipeline: string; kind: string; key: string };
 
 export type CheckState = "ok" | "warn" | "fail" | "unknown";
 
@@ -454,14 +467,83 @@ async function mapBounded<T, R>(
   return results;
 }
 
+/**
+ * Which declared keys (#425) a tenant's scheduled kinds cannot read. Null when
+ * the question could not be answered at all — a config that will not load, a
+ * custom kind module that throws — which the check reports as `unknown` rather
+ * than inventing a shortfall out of a different fault.
+ *
+ * Loading kind modules installs the resolved config on a process-wide holder,
+ * so this is deliberately awaited one tenant at a time, ahead of the concurrent
+ * repo probes.
+ */
+export async function scanDeclaredEnv(opts: {
+  configPath: string;
+  env: Record<string, string | undefined>;
+}): Promise<MissingDeclaredEnvKey[] | null> {
+  try {
+    const user = await loadUserConfig(opts.configPath);
+    const config = resolveConfig(user, { dataBase: resolveDataBase(process.env) });
+    const declarations = await enumerateDeclaredEnv(config, dirname(opts.configPath));
+    return declarations.flatMap(({ pipeline, kind, keys }) =>
+      keys
+        .filter((key) => {
+          const value = opts.env[key];
+          return value === undefined || value.trim().length === 0;
+        })
+        .map((key) => ({ pipeline, kind, key })),
+    );
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The tenant finding for a scheduled kind whose declared key is missing. The
+ * engine child would refuse to boot on exactly this, so doctor says so first —
+ * the same relationship the prompt-file check has with its boot assertion.
+ */
+export function declaredEnvCheck(
+  missing: MissingDeclaredEnvKey[] | null,
+  envLabel: string,
+): DoctorCheck {
+  if (missing === null) {
+    return {
+      id: "declared-env",
+      state: "unknown",
+      detail: "not evaluated (config or work-kind modules failed to load)",
+    };
+  }
+  if (missing.length === 0) {
+    return {
+      id: "declared-env",
+      state: "ok",
+      detail: "every scheduled kind can read the env keys it declares",
+    };
+  }
+  return {
+    id: "declared-env",
+    state: "fail",
+    detail:
+      `${missing.map((m) => `${m.pipeline}/${m.kind} declares ${m.key}`).join(", ")} — ` +
+      `not set in ${envLabel}. Those pipelines' children refuse to boot until the key is ` +
+      `set (or the kind is disabled).`,
+  };
+}
+
+/** A tenant's `.env` as its engine child would parse it; empty when unreadable. */
+function readTenantDotenv(envPath: string): Record<string, string> {
+  try {
+    return parseDotenv(readFileSync(envPath, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
 /** A tenant's GH_TOKEN, read exactly the way its engine child reads it. */
 function tenantToken(envPath: string): string | undefined {
-  try {
-    const value = parseDotenv(readFileSync(envPath, "utf8"))["GH_TOKEN"];
-    return value !== undefined && value.length > 0 ? value : undefined;
-  } catch {
-    return undefined;
-  }
+  const value = readTenantDotenv(envPath)["GH_TOKEN"];
+  return value !== undefined && value.length > 0 ? value : undefined;
 }
 
 /**
@@ -598,6 +680,12 @@ export async function tenantRow(fields: {
   inContainer: boolean;
   /** Path to this tenant's phoebe.config.ts, for reading `disabled` (#202). */
   configPath?: string;
+  /**
+   * What {@link scanDeclaredEnv} found, or undefined when the caller did not
+   * ask — the sweep runs the scan itself, sequentially, because loading kind
+   * modules is not safe to interleave.
+   */
+  declaredEnv?: MissingDeclaredEnvKey[] | null;
   /** Where tenant data lives, for the `stale-state` check (#426). */
   dataBase?: string;
   git?: GitRunner;
@@ -619,6 +707,7 @@ export async function tenantRow(fields: {
       const anyUser = user as {
         disabled?: unknown;
         promptFiles?: { issue?: unknown };
+        pipelines?: Record<string, { kinds?: Record<string, { promptFile?: unknown }> }>;
         readyLabel?: unknown;
         processingLabel?: unknown;
         prOptOutLabel?: unknown;
@@ -627,7 +716,12 @@ export async function tenantRow(fields: {
       if (typeof anyUser.readyLabel === "string") readyLabel = anyUser.readyLabel;
       if (typeof anyUser.processingLabel === "string") processingLabel = anyUser.processingLabel;
       if (typeof anyUser.prOptOutLabel === "string") prOptOutLabel = anyUser.prOptOutLabel;
-      const rawIssuePath = anyUser.promptFiles?.issue;
+      // The kind block first, the deprecated `promptFiles` alias second (#419):
+      // a migrated config carries the path under the kind that reads it, and
+      // declaring both is already fatal at load, so there is no third case.
+      const rawIssuePath =
+        anyUser.pipelines?.[DEFAULT_PIPELINE_NAME]?.kinds?.["issues"]?.promptFile ??
+        anyUser.promptFiles?.issue;
       if (typeof rawIssuePath === "string" && rawIssuePath.trim().length > 0) {
         issuePromptPath = rawIssuePath;
       }
@@ -645,6 +739,10 @@ export async function tenantRow(fields: {
         detail: "tenant is disabled — no agent work will start until `disabled` is removed",
       });
     }
+  }
+
+  if (fields.declaredEnv !== undefined) {
+    checks.push(declaredEnvCheck(fields.declaredEnv, fields.envLabel));
   }
 
   const tokenCheck = tenantTokenCheck(fields);
@@ -721,7 +819,7 @@ export async function tenantRow(fields: {
         detail: "not evaluated (config load failed)",
       });
     } else {
-      const defaultPath = CONFIG_DEFAULTS.promptFiles.issue;
+      const defaultPath = DEFAULT_PROMPT_FILE_BY_KIND.issues;
       const effectivePath = issuePromptPath ?? defaultPath;
       let promptContent: string | null = null;
       if (effectivePath !== defaultPath) {
@@ -1000,10 +1098,24 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
     // serial sweep over a fleet of unreachable tenants would take
     // tenant-count × 30s. Bounded (not Promise.all) so a big fleet cannot
     // stampede api.github.com either.
+    // Ahead of the bounded probes, and one at a time: the declared-key scan
+    // loads each tenant's kind modules, which install a process-wide resolved
+    // config on the way past (#425).
+    const declaredEnvByTenant = new Map<string, MissingDeclaredEnvKey[] | null>();
+    for (const tenant of enumeration.tenants) {
+      declaredEnvByTenant.set(
+        tenant.id,
+        await scanDeclaredEnv({
+          configPath: tenant.configPath,
+          env: readTenantDotenv(tenant.envPath),
+        }),
+      );
+    }
     tenants.push(
       ...(await mapBounded(enumeration.tenants, TENANT_PROBE_CONCURRENCY, (tenant) => {
         const tokenValue = tenantToken(tenant.envPath);
         return tenantRow({
+          declaredEnv: declaredEnvByTenant.get(tenant.id) ?? null,
           path: tenant.dir,
           slug: tenant.slug,
           // Per tenant, not per deployment: a fleet mixes arms whenever one
@@ -1035,6 +1147,9 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
       await tenantRow({
         path: deps.configDir,
         slug,
+        // Solo: the ambient container env is this tenant's env-file, so it is
+        // what the declared keys are checked against.
+        declaredEnv: await scanDeclaredEnv({ configPath, env: deps.env }),
         // Solo: the root is the tenant, so one env answers both halves.
         arm: resolveCredentialArm(deps.env),
         token: token !== undefined && token.length > 0 ? token : undefined,
@@ -1088,7 +1203,8 @@ liveness (in-container only); launcher version vs the engine's minBootstrap floo
 (a floor violation deadlocks the deployment — not the same as being merely stale).
 In workspace mode every tenant is swept — token present the way its child reads
 it, repo reachable with that token, the three workflow labels present in the
-repo, and (when the issues prompt is overridden) that it includes the
+repo, every env key a scheduled work kind declares set in that tenant's .env,
+and (when the issues prompt is overridden) that it includes the
 blocker-recording rule.
 
 The full five-permission token probe is scripts/verify-tenant-token.mjs.

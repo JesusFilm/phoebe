@@ -28,6 +28,7 @@ import {
   type PipelineOwnership,
   type StaleItem,
 } from "./stale-state.ts";
+import { unitOwner } from "./unit-scope.ts";
 import { formatLeaseReason } from "./worktree-lease.ts";
 
 const IDENTITY = [
@@ -113,18 +114,30 @@ function unitWorktree(branch: string, opts: { lease?: string; published?: boolea
     lockWorktree(
       paths.repoDir,
       dir,
-      formatLeaseReason({ pipeline: opts.lease, pid: 4242 }),
+      // As a live engine writes it since #423: the pipeline, then the unit that
+      // holds the tree. The sweep reads the pipeline segment alone.
+      formatLeaseReason({
+        owner: unitOwner(opts.lease, { kind: "issues", id: branch }),
+        pid: 4242,
+      }),
       testGit,
     );
   }
   return dir;
 }
 
-function readonlyWorktree(kind: string, opts: { lease?: string } = {}): string {
-  const dir = join(paths.worktreesDir, READONLY_WORKTREES_SEGMENT, kind);
+/** One unit's read-only workspace, at the per-unit path #423 gave it. */
+function readonlyWorktree(kind: string, opts: { lease?: string; ref?: string } = {}): string {
+  const ref = opts.ref ?? "1";
+  const dir = join(paths.worktreesDir, READONLY_WORKTREES_SEGMENT, kind, ref);
   addWorktreeDetached({ repoDir: paths.repoDir, worktreeDir: dir, ref: "origin/main" }, testGit);
   if (opts.lease !== undefined) {
-    lockWorktree(paths.repoDir, dir, formatLeaseReason({ pipeline: opts.lease, pid: 99 }), testGit);
+    lockWorktree(
+      paths.repoDir,
+      dir,
+      formatLeaseReason({ owner: unitOwner(opts.lease, { kind, id: ref }), pid: 99 }),
+      testGit,
+    );
   }
   return dir;
 }
@@ -341,6 +354,18 @@ describe("worktrees", () => {
     const dir = readonlyWorktree("research", { lease: "work" });
     sweep(owns(["work"], ["research"]));
     expect(existsSync(dir)).toBe(true);
+  });
+
+  test("a retired kind's directory survives while a tree the sweep kept is inside it", () => {
+    const kindDir = join(paths.worktreesDir, READONLY_WORKTREES_SEGMENT, "triage");
+    const dir = readonlyWorktree("triage", { lease: "intake" });
+    writeFileSync(join(dir, "notes.md"), "unsaved\n");
+
+    const result = sweep(owns(["work"], ["issues"]));
+
+    expect(result.kept.map((item) => item.path)).toEqual([dir]);
+    expect(existsSync(join(dir, "notes.md"))).toBe(true);
+    expect(existsSync(kindDir)).toBe(true);
   });
 
   test("a retired kind's read-only directory git has no record of is removed", () => {

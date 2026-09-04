@@ -7,6 +7,8 @@
 //     spread in the object (naive read returns undefined → duplicate key on write)
 //     shorthand property (naive read returns identifier text, not the value)
 //   * editConfigAppendWorkKind edits the real workOrder, ignoring comments.
+//   * editConfigMoveField relocates a field's source range — comments inside it
+//     included — and refuses anything computed or spread rather than moving it.
 //   * editConfigGetField / setField / removeField have happy-path coverage.
 //   * ConfigRefusal is detected by isConfigRefusal; plain Record is not.
 //   * configHandle delegates to the edit functions.
@@ -18,6 +20,8 @@ import {
   configHandle,
   editConfigAppendWorkKind,
   editConfigGetField,
+  editConfigListKeys,
+  editConfigMoveField,
   editConfigRemoveField,
   editConfigSetField,
   isConfigRefusal,
@@ -103,6 +107,19 @@ describe("resolveConfigObject — supported forms", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.content).toContain('"research"');
+  });
+
+  test("moveField delegates to editConfigMoveField (smoke test)", () => {
+    const content = MINIMAL(`\n  workOrder: ["conflicts"],`);
+    const result = configHandle.moveField(content, ["workOrder"], ["pipelines", "work", "order"]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.content).toContain(`order: ["conflicts"]`);
+    expect(configHandle.listKeys(result.content, ["pipelines", "work"])).toEqual({
+      ok: true,
+      found: true,
+      keys: ["order"],
+    });
   });
 });
 
@@ -538,11 +555,245 @@ describe("configHandle", () => {
     expect(result.content).toContain('"research"');
   });
 
+  test("moveField delegates to editConfigMoveField (smoke test)", () => {
+    const content = MINIMAL(`\n  workOrder: ["conflicts"],`);
+    const result = configHandle.moveField(content, ["workOrder"], ["pipelines", "work", "order"]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.content).toContain(`order: ["conflicts"]`);
+    expect(configHandle.listKeys(result.content, ["pipelines", "work"])).toEqual({
+      ok: true,
+      found: true,
+      keys: ["order"],
+    });
+  });
+
   test("there is no workspace or tenant method on the handle (shape check)", () => {
     expect("editWorkspace" in configHandle).toBe(false);
     expect("editTenants" in configHandle).toBe(false);
     expect("addTenant" in configHandle).toBe(false);
     expect("removeTenant" in configHandle).toBe(false);
     expect("reorderTenants" in configHandle).toBe(false);
+  });
+});
+
+// ------------------------------------------------------------------ moveField
+
+describe("editConfigMoveField", () => {
+  test("creates the destination blocks and leaves every other byte alone", () => {
+    const content = MINIMAL(`\n  workOrder: ["conflicts", "checks"],`);
+    const result = editConfigMoveField(content, ["workOrder"], ["pipelines", "work", "order"]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.content).toContain(
+      [
+        `  pipelines: {`,
+        `    work: {`,
+        `      order: ["conflicts", "checks"],`,
+        `    },`,
+        `  },`,
+      ].join("\n"),
+    );
+    expect(result.content).not.toContain("workOrder");
+    // Untouched: the import, the five required fields, the export.
+    expect(result.content).toContain(`import type { PhoebeUserConfig } from "phoebe-agent";`);
+    expect(result.content).toContain(`  testCommand: "npm test",`);
+    expect(result.content).toContain(`export default config;`);
+  });
+
+  test("comments inside the moved range travel with it, reindented", () => {
+    const content = MINIMAL(
+      [
+        ``,
+        `  workKinds: {`,
+        `    // conflicts is the expensive one.`,
+        `    conflicts: { effort: "high" },`,
+        `  },`,
+      ].join("\n"),
+    );
+    const result = editConfigMoveField(content, ["workKinds"], ["pipelines", "work", "kinds"]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.content).toContain(
+      [
+        `      kinds: {`,
+        `        // conflicts is the expensive one.`,
+        `        conflicts: { effort: "high" },`,
+        `      },`,
+      ].join("\n"),
+    );
+  });
+
+  test("folds a nested field into an existing nested block", () => {
+    const moved = editConfigMoveField(
+      MINIMAL(
+        [
+          ``,
+          `  workKinds: {`,
+          `    issues: { effort: "high" },`,
+          `  },`,
+          `  promptFiles: {`,
+          `    issue: "prompts/mine.md",`,
+          `  },`,
+        ].join("\n"),
+      ),
+      ["workKinds"],
+      ["pipelines", "work", "kinds"],
+    );
+    expect(moved.ok).toBe(true);
+    if (!moved.ok) return;
+
+    const folded = editConfigMoveField(
+      moved.content,
+      ["promptFiles", "issue"],
+      ["pipelines", "work", "kinds", "issues", "promptFile"],
+    );
+    expect(folded.ok).toBe(true);
+    if (!folded.ok) return;
+    expect(folded.content).toContain(
+      `        issues: { effort: "high", promptFile: "prompts/mine.md" },`,
+    );
+  });
+
+  test("creates the kind block when the destination kind has no entry yet", () => {
+    const content = MINIMAL(`\n  promptFiles: {\n    issue: "prompts/mine.md",\n  },`);
+    const result = editConfigMoveField(
+      content,
+      ["promptFiles", "issue"],
+      ["pipelines", "work", "kinds", "issues", "promptFile"],
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.content).toContain(
+      [
+        `  pipelines: {`,
+        `    work: {`,
+        `      kinds: {`,
+        `        issues: {`,
+        `          promptFile: "prompts/mine.md",`,
+        `        },`,
+        `      },`,
+        `    },`,
+        `  },`,
+      ].join("\n"),
+    );
+  });
+
+  test("the migrated config re-parses, so moves compose", () => {
+    let content = MINIMAL(
+      [
+        ``,
+        `  workOrder: ["checks"],`,
+        `  workKinds: {`,
+        `    checks: { effort: "low" },`,
+        `  },`,
+      ].join("\n"),
+    );
+    for (const [from, to] of [
+      [["workOrder"], ["pipelines", "work", "order"]],
+      [["workKinds"], ["pipelines", "work", "kinds"]],
+    ] as const) {
+      const step = editConfigMoveField(content, from, to);
+      expect(step.ok).toBe(true);
+      if (!step.ok) return;
+      content = step.content;
+    }
+    expect(content).toContain(`      order: ["checks"],`);
+    expect(content).toContain(`      kinds: {`);
+    const pipelines = editConfigGetField(content, "pipelines");
+    expect(pipelines.ok && pipelines.found).toBe(true);
+  });
+});
+
+describe("editConfigMoveField — refusals", () => {
+  const refuse = (extra: string, from: readonly string[] = ["workKinds"]): string => {
+    const result = editConfigMoveField(MINIMAL(extra), from, ["pipelines", "work", "kinds"]);
+    expect(result.ok).toBe(false);
+    return result.ok ? "" : result.reason;
+  };
+
+  test("refuses a spread inside the moved value", () => {
+    expect(refuse(`\n  workKinds: { ...BASE_KINDS, issues: { effort: "high" } },`)).toContain(
+      "spread",
+    );
+  });
+
+  test("refuses a reference as the moved value", () => {
+    expect(refuse(`\n  workKinds: KIND_TUNING,`)).toContain("computed value");
+  });
+
+  test("refuses a call expression nested in the moved value", () => {
+    expect(refuse(`\n  workKinds: { issues: tune("high") },`)).toContain("computed value");
+  });
+
+  test("refuses a template literal nested in the moved value", () => {
+    expect(refuse("\n  workKinds: { issues: { promptFile: `${DIR}/p.md` } },")).toContain(
+      "computed value",
+    );
+  });
+
+  test("refuses a computed key inside the moved value", () => {
+    expect(refuse(`\n  workKinds: { [kindName]: { effort: "high" } },`)).toContain("computed key");
+  });
+
+  test("refuses a shorthand property inside the moved value", () => {
+    expect(refuse(`\n  workKinds: { issues },`)).toContain("shorthand");
+  });
+
+  test("refuses when the field is absent", () => {
+    expect(refuse(``)).toContain("not found");
+  });
+
+  test("refuses when the destination already exists", () => {
+    const content = MINIMAL(
+      [
+        ``,
+        `  workKinds: { issues: { effort: "high" } },`,
+        `  pipelines: {`,
+        `    work: {`,
+        `      kinds: { checks: { effort: "low" } },`,
+        `    },`,
+        `  },`,
+      ].join("\n"),
+    );
+    const result = editConfigMoveField(content, ["workKinds"], ["pipelines", "work", "kinds"]);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toContain("already exists");
+  });
+
+  test("refuses when an intermediate on the path is not an object literal", () => {
+    const content = MINIMAL(
+      `\n  workKinds: { issues: { effort: "high" } },\n  pipelines: build(),`,
+    );
+    const result = editConfigMoveField(content, ["workKinds"], ["pipelines", "work", "kinds"]);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toContain("not a plain object literal");
+  });
+});
+
+// ------------------------------------------------------------------ listKeys
+
+describe("editConfigListKeys", () => {
+  test("lists a nested block's keys in source order", () => {
+    const content = MINIMAL(`\n  promptFiles: {\n    issue: "a.md",\n    conflict: "b.md",\n  },`);
+    const result = editConfigListKeys(content, ["promptFiles"]);
+    expect(result).toEqual({ ok: true, found: true, keys: ["issue", "conflict"] });
+  });
+
+  test("distinguishes an absent block from an empty one", () => {
+    expect(editConfigListKeys(MINIMAL(), ["promptFiles"])).toEqual({ ok: true, found: false });
+    expect(editConfigListKeys(MINIMAL(`\n  promptFiles: {},`), ["promptFiles"])).toEqual({
+      ok: true,
+      found: true,
+      keys: [],
+    });
+  });
+
+  test("refuses a block that is not an object literal", () => {
+    const result = editConfigListKeys(MINIMAL(`\n  promptFiles: loadPrompts(),`), ["promptFiles"]);
+    expect(result.ok).toBe(false);
   });
 });

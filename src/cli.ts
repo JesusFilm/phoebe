@@ -387,8 +387,14 @@ function parseCommandArgs(argv: readonly string[]): {
 
 function formatHealthColumns(listing: TenantListing): string {
   const flag = (label: string, on: boolean): string => `${on ? "✓" : "✗"} ${label}`;
-  const unit = listing.status?.currentUnit;
-  const state = unit ? `working ${unit.kind} ${unit.id}` : listing.status ? "idle" : "no status";
+  const units = listing.status?.currentUnits ?? [];
+  const quiet = listing.status?.waitingForSlot ? "waiting for slot" : "idle";
+  const state =
+    units.length > 0
+      ? `working ${units.map((current) => `${current.unit.kind} ${current.unit.id}`).join(", ")}`
+      : listing.status
+        ? quiet
+        : "no status";
   return (
     `${flag("config", listing.configValid)}  ${flag("env", listing.envPresent)}  ` +
     `${flag("data", listing.retainedData)}  arm: ${listing.arm}  ${state}`

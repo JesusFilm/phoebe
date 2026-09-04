@@ -16,8 +16,11 @@ import {
   setupGitCredentials,
   rowArgv,
   tenantFingerprint,
+  trackRows,
+  workspaceRowFingerprint,
 } from "./boot.ts";
 import type { SupervisedRow } from "./pipeline-rows.ts";
+import { createSlotBroker } from "./slot-broker.ts";
 
 describe("resolveEngineEntry", () => {
   test("a local source execs the engine CLI under the mounted dir", () => {
@@ -328,9 +331,11 @@ describe("rowArgv", () => {
       priority: 0,
       concurrency: 1,
       needsClone: true,
+      env: [],
       fingerprint: enumerated ? "abc123" : null,
     },
     enumerated,
+    siblingEnv: [],
   });
 
   test("names the row the child is to run", () => {
@@ -360,5 +365,190 @@ describe("rowArgv", () => {
       ]),
     ) //
       .toEqual(["--run-once"]);
+  });
+});
+
+describe("trackRows", () => {
+  const row = (
+    slug: string,
+    name: string,
+    knobs: { concurrency?: number; priority?: number } = {},
+  ): SupervisedRow => ({
+    id: `/etc/phoebe/repos/${slug}#${name}`,
+    tenant: {
+      id: `/etc/phoebe/repos/${slug}`,
+      slug,
+      dir: `/etc/phoebe/repos/${slug}`,
+      configPath: `/etc/phoebe/repos/${slug}/phoebe.config.ts`,
+      envPath: `/etc/phoebe/repos/${slug}/.env`,
+      gitIdentity: null,
+    },
+    pipeline: {
+      name,
+      disabled: false,
+      priority: knobs.priority ?? 0,
+      concurrency: knobs.concurrency ?? 1,
+      needsClone: true,
+      env: [],
+      fingerprint: "abc123",
+    },
+    enumerated: true,
+    siblingEnv: [],
+  });
+
+  /** Swap `console.log` for a recorder: the cap line is operator-facing output. */
+  function captureLog(): { lines: string[]; restore: () => void } {
+    const lines: string[] = [];
+    const original = console.log;
+    console.log = (...args: unknown[]) => lines.push(args.map(String).join(" "));
+    return {
+      lines,
+      restore: () => {
+        console.log = original;
+      },
+    };
+  }
+
+  const MATRIX = [
+    row("acme/widget", "work"),
+    row("acme/widget", "intake"),
+    row("acme/gadget", "work", { concurrency: 4 }),
+  ];
+
+  test("derives the cap from the live rows and logs the derivation once", () => {
+    const broker = createSlotBroker({ capacity: 1 });
+    const log = captureLog();
+    try {
+      const track = trackRows(broker, {});
+      track({ rows: MATRIX, reshaped: true });
+      expect(broker.capacity).toBe(4);
+      // Rows declaring 1, 1 and 4 derive 4, and the line says where from.
+      expect(log.lines).toEqual([
+        "[phoebe] boot: slot cap 4 — max(concurrency)=4 from acme/gadget:work; floorBudget=1",
+      ]);
+      // A second reshape saying the same thing does not repeat itself.
+      track({ rows: MATRIX, reshaped: true });
+      expect(log.lines).toHaveLength(1);
+    } finally {
+      log.restore();
+    }
+  });
+
+  test("the env replaces the derivation, and the over-cap row is named as queuing", () => {
+    const broker = createSlotBroker({ capacity: 1 });
+    const log = captureLog();
+    try {
+      trackRows(broker, { PHOEBE_MAX_CONCURRENT_AGENTS: "2" })({ rows: MATRIX, reshaped: true });
+      expect(broker.capacity).toBe(2);
+      expect(log.lines[0]).toContain("slot cap 2 — PHOEBE_MAX_CONCURRENT_AGENTS=2");
+      expect(log.lines[0]).toContain("acme/gadget:work(4)");
+    } finally {
+      log.restore();
+    }
+  });
+
+  test("a poll that reshaped nothing refreshes the ordering but not the cap", async () => {
+    const broker = createSlotBroker({ capacity: 1, floorBudget: 0 });
+    const log = captureLog();
+    try {
+      const track = trackRows(broker, {});
+      track({ rows: [row("acme/widget", "work"), row("acme/widget", "intake")], reshaped: true });
+      expect(broker.capacity).toBe(1);
+
+      await broker.acquire("/etc/phoebe/repos/acme/widget#work");
+      let urgent = false;
+      const waiting = [
+        broker.acquire("/etc/phoebe/repos/acme/widget#intake"),
+        broker.acquire("/etc/phoebe/repos/acme/widget#urgent").then(() => {
+          urgent = true;
+        }),
+      ];
+
+      // A hot `priority` edit: the row set is the same shape, so the cap holds
+      // still while the queue reorders behind it.
+      track({
+        rows: [
+          row("acme/widget", "work", { concurrency: 8 }),
+          row("acme/widget", "intake"),
+          row("acme/widget", "urgent", { priority: 5 }),
+        ],
+        reshaped: false,
+      });
+      expect(broker.capacity).toBe(1);
+      expect(log.lines).toHaveLength(1);
+
+      broker.release("/etc/phoebe/repos/acme/widget#work");
+      await Promise.race(waiting);
+      expect(urgent).toBe(true);
+    } finally {
+      log.restore();
+    }
+  });
+});
+
+describe("workspaceRowFingerprint", () => {
+  function tenantDir(env: string): {
+    dir: string;
+    row: (name: string, own: string[], siblings: string[]) => SupervisedRow;
+  } {
+    const dir = mkdtempSync(join(tmpdir(), "phoebe-row-fp-"));
+    writeFileSync(join(dir, ".env"), env);
+    return {
+      dir,
+      row: (name, own, siblings) => ({
+        id: `${dir}#${name}`,
+        tenant: {
+          id: dir,
+          slug: "acme/widget",
+          dir,
+          configPath: join(dir, "phoebe.config.ts"),
+          envPath: join(dir, ".env"),
+          gitIdentity: null,
+        },
+        pipeline: {
+          name,
+          disabled: false,
+          priority: 0,
+          concurrency: 1,
+          needsClone: true,
+          env: own,
+          fingerprint: "fp",
+        },
+        enumerated: true,
+        siblingEnv: siblings,
+      }),
+    };
+  }
+
+  test("rotating a declared key moves the declaring row and not its sibling", () => {
+    const before = tenantDir("SLACK_BOT_TOKEN=xoxb-1\nFOO=public\n");
+    const after = tenantDir("SLACK_BOT_TOKEN=xoxb-2\nFOO=public\n");
+    const intake = (t: ReturnType<typeof tenantDir>) => t.row("intake", ["SLACK_BOT_TOKEN"], []);
+    const work = (t: ReturnType<typeof tenantDir>) => t.row("work", [], ["SLACK_BOT_TOKEN"]);
+
+    expect(workspaceRowFingerprint(intake(after), "fp")).not.toBe(
+      workspaceRowFingerprint(intake(before), "fp"),
+    );
+    expect(workspaceRowFingerprint(work(after), "fp")).toBe(
+      workspaceRowFingerprint(work(before), "fp"),
+    );
+  });
+
+  test("rotating an undeclared key moves both rows", () => {
+    const before = tenantDir("SLACK_BOT_TOKEN=xoxb-1\nFOO=public\n");
+    const after = tenantDir("SLACK_BOT_TOKEN=xoxb-1\nFOO=changed\n");
+    for (const [own, siblings] of [
+      [["SLACK_BOT_TOKEN"], []],
+      [[], ["SLACK_BOT_TOKEN"]],
+    ] as const) {
+      expect(workspaceRowFingerprint(after.row("r", [...own], [...siblings]), "fp")).not.toBe(
+        workspaceRowFingerprint(before.row("r", [...own], [...siblings]), "fp"),
+      );
+    }
+  });
+
+  test("an unknown enumerated fingerprint stays unknown", () => {
+    const t = tenantDir("FOO=public\n");
+    expect(workspaceRowFingerprint(t.row("work", [], []), null)).toBeNull();
   });
 });

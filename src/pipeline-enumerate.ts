@@ -11,20 +11,23 @@
 // diffs opaque strings.
 //
 // One row of the answer is `{ name, disabled, priority, concurrency,
-// needsClone, fingerprint }` — everything the supervisor needs to spawn, order,
-// throttle and relaunch a row, and nothing about what the row does. The shape
-// is an object per row so the per-row `env` of #410 lands as a field rather
-// than a new command.
+// needsClone, env, fingerprint }` — everything the supervisor needs to spawn,
+// order, throttle, scrub and relaunch a row, and nothing about what the row
+// does. `env` is the declared-key half (#425): key *names*, never values, since
+// the supervisor already holds the tenant's `.env` and only needs to know which
+// of those keys this row is allowed to see.
 
 import { createHash } from "node:crypto";
 import { dirname } from "node:path";
 import { resolveConfig, type PhoebeConfig, type ResolvedPipeline } from "./config-schema.ts";
 import { applyEnvOverlay, loadUserConfig, resolveConfigPath } from "./load-config.ts";
 import { resolveDataBase } from "./paths.ts";
-import { rowOwnedKinds, selectPipelineRow } from "./pipeline-row.ts";
+import { resolveRowWorkOrder, rowOwnedKinds, selectPipelineRow } from "./pipeline-row.ts";
+import { declaredEnvKeys, type DeclaringKind } from "./work-kinds/declared-env.ts";
 import { setResolvedConfig } from "./resolved-config.ts";
 import { createWorkKindRegistry } from "./work-kinds/load-custom.ts";
 import type { WorkspaceMode } from "./work-kinds/definition.ts";
+import type { WorkKindRegistry } from "./work-kinds/registry.ts";
 
 /**
  * The output contract's version. Bumped when a field changes meaning; new
@@ -47,6 +50,13 @@ export type EnumeratedRow = {
    * it owns declares a `worktree` or `readonly` workspace (#403).
    */
   needsClone: boolean;
+  /**
+   * The keys this row's work declares (#425): the union of `requiredEnv` over
+   * the kinds it schedules. The supervisor subtracts it against its siblings'
+   * to decide what to take out of the row's child env, and digests the tenant's
+   * `.env` through it so a rotation relaunches only the rows that see the key.
+   */
+  env: string[];
   /** Opaque digest of the row's cold config; a move means relaunch this row. */
   fingerprint: string;
 };
@@ -108,30 +118,80 @@ export function rowFingerprint(name: string, row: ResolvedPipeline): string {
 
 /**
  * Enumerate the tenant's rows. Every row's work-kind registry is assembled on
- * the way past, which is what makes `needsClone` derivable — and what makes a
- * factory kind that self-checks its prompt files (#408) fail *here*, at
+ * the way past, which is what makes `needsClone` and `env` derivable — and what
+ * makes a factory kind that self-checks its prompt files (#408) fail *here*, at
  * enumeration, where the supervisor reads it as a tenant-level fault rather
  * than discovering it one spawn later.
- *
- * The resolved row config is installed before each registry is assembled, the
- * same ordering the engine-run path uses (src/cli.ts), so a custom kind's
- * factory sees the config it would see at run time.
  */
+/**
+ * Walk the tenant's rows, assembling each one's work-kind registry, and collect
+ * what `visit` makes of them. The resolved row config is installed before each
+ * registry is assembled, the same ordering the engine-run path uses
+ * (src/cli.ts), so a custom kind's factory sees the config it would see at run
+ * time — which also makes this sequential by construction.
+ */
+async function mapRows<T>(
+  config: PhoebeConfig,
+  configDir: string,
+  visit: (ctx: { name: string; row: ResolvedPipeline; registry: WorkKindRegistry }) => T,
+): Promise<T[]> {
+  const out: T[] = [];
+  for (const [name, row] of Object.entries(config.pipelines)) {
+    const rowConfig = selectPipelineRow(config, name);
+    setResolvedConfig(rowConfig);
+    out.push(visit({ name, row, registry: await createWorkKindRegistry(rowConfig, configDir) }));
+  }
+  return out;
+}
+
+/** The scheduled kinds of one row, paired with their definitions. */
+function scheduledKindsOf(
+  config: PhoebeConfig,
+  name: string,
+  row: ResolvedPipeline,
+  registry: WorkKindRegistry,
+): DeclaringKind[] {
+  return resolveRowWorkOrder({ pipelines: config.pipelines, pipeline: name, row }).flatMap(
+    (kind) => {
+      const registered = registry.get(kind);
+      return registered === undefined ? [] : [{ name: kind, definition: registered.definition }];
+    },
+  );
+}
+
+/** One scheduled kind's declaration, as `phoebe doctor` reads it (#425). */
+export type RowKindDeclaration = { pipeline: string; kind: string; keys: readonly string[] };
+
+/**
+ * Every scheduled kind's `requiredEnv`, row by row — the shape a caller that
+ * wants to *attribute* a missing key needs, where {@link EnumeratedRow}'s `env`
+ * is the union the supervisor scrubs by. Doctor's tenant sweep is the caller.
+ */
+export async function enumerateDeclaredEnv(
+  config: PhoebeConfig,
+  configDir: string,
+): Promise<RowKindDeclaration[]> {
+  const perRow = await mapRows(config, configDir, ({ name, row, registry }) =>
+    scheduledKindsOf(config, name, row, registry).map((kind) => ({
+      pipeline: name,
+      kind: kind.name,
+      keys: kind.definition.requiredEnv ?? [],
+    })),
+  );
+  return perRow.flat().filter((declaration) => declaration.keys.length > 0);
+}
+
 export async function enumeratePipelineRows(
   config: PhoebeConfig,
   configDir: string,
 ): Promise<EnumeratedRow[]> {
-  const rows: EnumeratedRow[] = [];
-  for (const [name, row] of Object.entries(config.pipelines)) {
-    const rowConfig = selectPipelineRow(config, name);
-    setResolvedConfig(rowConfig);
-    const registry = await createWorkKindRegistry(rowConfig, configDir);
+  return await mapRows(config, configDir, ({ name, row, registry }) => {
     // Every kind the row owns, disabled ones included: `disabled` is hot, and a
     // hot knob must not flip a fact the supervisor provisions against. A row
     // that switches its last worktree kind off keeps its clone until something
     // cold moves.
     const owned = rowOwnedKinds({ pipelines: config.pipelines, pipeline: name, row });
-    rows.push({
+    return {
       name,
       disabled: row.disabled,
       priority: row.priority,
@@ -140,10 +200,14 @@ export async function enumeratePipelineRows(
         const mode = registry.get(kind)?.definition.workspace;
         return mode !== undefined && CLONE_WORKSPACE_MODES.has(mode);
       }),
+      // `env`, unlike `needsClone`, is scoped to the kinds the row *schedules*:
+      // it is the reach of a live credential, and a kind switched off reads
+      // nothing. That makes `env` move with a hot `disabled`, which is right —
+      // the supervisor rebuilds the scrub from the enumeration it just read.
+      env: declaredEnvKeys(scheduledKindsOf(config, name, row, registry)),
       fingerprint: rowFingerprint(name, row),
-    });
-  }
-  return rows;
+    };
+  });
 }
 
 export type ParsedPipelinesArgs = {

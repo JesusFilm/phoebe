@@ -24,7 +24,7 @@
 // Work-unit execution is refused outside the container marker
 // (src/execution-gate.ts).
 
-import { execFileSync, execSync } from "node:child_process";
+import { execSync } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
 import { DEFAULT_PIPELINE_NAME, type PhoebeConfig } from "./config-schema.ts";
 import { selectProviderForKind } from "./provider-selection.ts";
@@ -90,8 +90,10 @@ import {
   type OriginHub,
 } from "./origin-hub.ts";
 import { formatLeaseReason, WorktreeLeasedError } from "./worktree-lease.ts";
+import { unitDir, unitOwner } from "./unit-scope.ts";
+import { prefixedWriter, runCommandPrefixed } from "./prefixed-output.ts";
 import { withCloneLock } from "./clone-lock.ts";
-import { readonlyWorktreeDir } from "./paths.ts";
+import { READONLY_WORKTREES_SEGMENT } from "./paths.ts";
 import { sweepScope, type SweepScope } from "./sweep-scope.ts";
 import { PROVIDERS } from "./providers/providers.ts";
 import { resolveIssueCoAuthorTrailer } from "./co-author.ts";
@@ -131,12 +133,18 @@ import type {
   WorkspaceHandle,
   WorkUnitGitHubTarget,
 } from "./work-kinds/definition.ts";
+import {
+  assertDeclaredEnvPresent,
+  declaredEnvKeys,
+  missingDeclaredEnv,
+  type DeclaringKind,
+} from "./work-kinds/declared-env.ts";
 import { buildRegistry, type WorkKindRegistry } from "./work-kinds/registry.ts";
 import {
   NONE_WORKABLE,
   oneShotWorkKinds,
   registeredKind,
-  selectFirstWorkUnit,
+  selectWorkUnits,
   type PickedWorkUnit,
   type WorkUnitSkip,
 } from "./work-kinds/walk.ts";
@@ -177,34 +185,50 @@ type CleanMergeOutcome = "pushed" | "conflicted" | "failed";
 // Helpers that hold no engine state
 // ---------------------------------------------------------------------------
 
+/**
+ * A git call inside one unit's worktree. `echo` takes the output a caller would
+ * once have let inherit the engine's stdout, so a concurrent pipeline's fetches
+ * and merges stay attributable (#423); `stdio: "pipe"` is the deliberate
+ * silence a caller asks for when it only wants the exit code or the stdout.
+ */
 function gitInWorktree(
   worktreeDir: string,
   args: string[],
-  opts?: { stdio?: "inherit" | "ignore" | "pipe" },
+  opts?: { stdio?: "inherit" | "ignore" | "pipe"; echo?: (line: string) => void },
 ): string {
-  return execFileSync("git", ["-C", worktreeDir, ...args], {
-    encoding: "utf8",
+  return defaultGit(["-C", worktreeDir, ...args], {
     timeout: CHILD_PROCESS_TIMEOUT_MS,
     ...(opts?.stdio ? { stdio: opts.stdio } : {}),
-  }) as unknown as string;
+    ...(opts?.echo ? { echo: opts.echo } : {}),
+  });
 }
 
 /**
  * Run a configured toolchain command (a shell string) inside a worktree. The
  * worktree may sit at a PR branch head, so the env drops the engine's own
- * credentials — the branch's install hooks run as this child (see shell-env.ts).
+ * credentials and every key this row's kinds declared — the branch's install
+ * hooks run as this child (see shell-env.ts).
+ *
+ * Its output streams through `echo` line by line rather than inheriting the
+ * engine's stdout (#423): an install is the longest-running child a unit has,
+ * and two of them interleaving unattributed is the worst of the concurrency
+ * cases. Awaited rather than sync so the lines still arrive as they are
+ * produced.
  */
 function runShellCommand(
   command: string,
   cwd: string,
   parentEnv: NodeJS.ProcessEnv,
   providerKeys: readonly string[],
-): void {
-  execSync(command, {
+  declaredKeys: readonly string[],
+  echo: (line: string) => void,
+): Promise<void> {
+  return runCommandPrefixed({
+    command,
     cwd,
-    env: buildInstallCommandEnv(parentEnv, providerKeys),
-    stdio: "inherit",
-    timeout: SHELL_COMMAND_TIMEOUT_MS,
+    env: buildInstallCommandEnv(parentEnv, providerKeys, declaredKeys),
+    timeoutMs: SHELL_COMMAND_TIMEOUT_MS,
+    echo,
   });
 }
 
@@ -213,11 +237,12 @@ function promptShell(
   cwd: string,
   parentEnv: NodeJS.ProcessEnv,
   providerKeys: readonly string[],
+  declaredKeys: readonly string[],
 ): (command: string) => string {
   return (command) =>
     execSync(command, {
       cwd,
-      env: buildPromptShellEnv(parentEnv, providerKeys),
+      env: buildPromptShellEnv(parentEnv, providerKeys, declaredKeys),
       encoding: "utf8",
       timeout: SHELL_COMMAND_TIMEOUT_MS,
     });
@@ -250,6 +275,12 @@ export type EngineRunOptions = {
   dryRun: boolean;
   /** How long an idle cycle waits before polling again. */
   pollIntervalMs: number;
+  /**
+   * How many units this row may hold in flight at once (#422) — the pipeline's
+   * declared `concurrency`. Defaults to 1, which is the serial loop; `runOnce`
+   * pins it there whatever the row says.
+   */
+  concurrency?: number;
 };
 
 export type EngineOptions = {
@@ -331,6 +362,10 @@ export type Engine = {
 export function createEngine(options: EngineOptions): Engine {
   const { config, env, drain, slotClient, credentialClient, emitUnitEvent } = options;
   const { runOnce, dryRun, pollIntervalMs } = options.run;
+  // `--run-once` means one unit, so it pins the row's concurrency to 1 rather
+  // than honouring a declaration that would have it admit several and then
+  // exit after the first (#422).
+  const concurrency = runOnce ? 1 : Math.max(1, Math.floor(options.run.concurrency ?? 1));
   const pipeline = options.pipeline ?? DEFAULT_PIPELINE_NAME;
   // Every line this engine writes carries `[phoebe:<slug>:<pipeline>]` (#418).
   // With two processes on one tenant interleaving at the kernel, an untagged
@@ -394,8 +429,41 @@ export function createEngine(options: EngineOptions): Engine {
     options.originHub ??
     createOriginHub(config, inContainer, git, { warn: (line) => log.warn(line) });
 
-  /** This process's lease stamp on any tree it creates (#418). */
-  const leaseReason = formatLeaseReason({ pipeline, pid: process.pid });
+  /**
+   * One unit's own view of everything this engine shares (#423).
+   *
+   * With several units in flight, "the pipeline" is no longer a fine enough
+   * owner for anything a unit touches: the lease it takes, the directories it
+   * is given, the stdout its children write to. This is that widening, in one
+   * object built at the top of a unit's run and handed to everything the unit
+   * does. What is *not* here is the clone itself — that stays shared, and
+   * `hub` differs only in where its children's output goes.
+   */
+  type UnitScope = {
+    ref: UnitRef;
+    /** `<pipeline>#<kind>:<ref>` — who holds this unit's leases (#423). */
+    owner: string;
+    /** This unit's lease stamp on any tree it creates (#418). */
+    leaseReason: string;
+    /** Print one line of a child's output, stamped with this unit. */
+    echo: (line: string) => void;
+    /** The origin hub with this unit's stamp on its children's output. */
+    hub: OriginHub;
+  };
+
+  function unitScope(ref: UnitRef): UnitScope {
+    const owner = unitOwner(pipeline, ref);
+    // The same shape `ctx.log` prints, so a kind's own lines and the lines its
+    // git and install children produce read as one stream.
+    const echo = prefixedWriter(`${log.tag}[${ref.kind} ${ref.id}]`, (line) => console.log(line));
+    return {
+      ref,
+      owner,
+      leaseReason: formatLeaseReason({ owner, pid: process.pid }),
+      echo,
+      hub: hub.withOutput(echo),
+    };
+  }
 
   // ---------------------------------------------------------------------------
   // Provider selection (multi-provider ready)
@@ -431,6 +499,41 @@ export function createEngine(options: EngineOptions): Engine {
   }
 
   const workOrder = validateWorkOrder(config.workOrder, [...registry.keys()]);
+
+  /** The scheduled kinds paired with their definitions, for the declared-key rules. */
+  const scheduledKinds = (kinds: readonly string[] = workOrder): DeclaringKind[] =>
+    kinds.map((kind) => ({ name: kind, definition: registeredKind(registry, kind).definition }));
+
+  /**
+   * Every key this row's scheduled kinds declared (#425) — the row's `env`, as
+   * the enumerator reports it to the supervisor. The consumer toolchain never
+   * sees these: `installCommand` and prompt `!` expansions run with all of them
+   * stripped, and only the agent hop reopens, per kind, for `agentEnv`.
+   */
+  const rowDeclaredEnv = declaredEnvKeys(scheduledKinds());
+
+  /**
+   * The kinds this cycle may actually gather: the work order minus any kind
+   * whose declared key this row cannot read. Boot already refused that state
+   * fatally (`assertDeclaredEnvPresent`), so this is the *hot* arm — a kind
+   * switched on against a key nobody added stays off, loudly and once, and the
+   * row keeps working everything else.
+   */
+  const loggedMissingEnv = new Set<string>();
+  const schedulableKinds = (kinds: readonly string[]): readonly string[] => {
+    const missing = missingDeclaredEnv(scheduledKinds(kinds), env);
+    if (missing.length === 0) return kinds;
+    for (const { kind, key } of missing) {
+      if (loggedMissingEnv.has(`${kind}\0${key}`)) continue;
+      loggedMissingEnv.add(`${kind}\0${key}`);
+      console.error(
+        `[phoebe] Work kind "${kind}" declares ${key}, which this pipeline's env does not ` +
+          `hold — the kind stays off until the key is set. Every other kind keeps running.`,
+      );
+    }
+    const off = new Set(missing.map((m) => m.kind));
+    return kinds.filter((kind) => !off.has(kind));
+  };
 
   // Which tracker objects this pipeline's sweeps may touch (#418). Partition by
   // ownership: a sweep repairs an object only when the kind that object belongs
@@ -594,6 +697,8 @@ export function createEngine(options: EngineOptions): Engine {
       return;
     }
     for (const unit of quarantined) {
+      // Never repair an object this pipeline is running (#422).
+      if (targetInFlight(unit.target)) continue;
       if (
         reason === "content-advanced" &&
         !decideAutoUnstick({ comments: unit.comments, currentBaseline: unit.currentBaseline })
@@ -684,6 +789,8 @@ export function createEngine(options: EngineOptions): Engine {
       return;
     }
     for (const pr of stackedPrs) {
+      // Never repair an object this pipeline is running (#422).
+      if (targetInFlight({ objectType: "pr", id: pr.number })) continue;
       const blockerIssueNumber = parseIssueNumberFromBranch(pr.baseRefName);
       if (blockerIssueNumber === null) continue;
       let blockerState: BlockerPrState;
@@ -764,6 +871,8 @@ export function createEngine(options: EngineOptions): Engine {
       return;
     }
     for (const integrationPr of integrationPrs) {
+      // Never repair an object this pipeline is running (#422).
+      if (targetInFlight({ objectType: "pr", id: integrationPr.number })) continue;
       try {
         const members = github.listMergedMemberPrs(integrationPr.featureIssueNumber);
         const closes = members
@@ -817,6 +926,13 @@ export function createEngine(options: EngineOptions): Engine {
       // on every row listed, and it is the only thing that tells the two issue
       // producers' units apart (#418).
       if (!scope.ownsIssue(issue.labels)) continue;
+      // And never re-arm an issue this very pipeline is running (#422). An
+      // `issues` unit between its claim and its first push is precisely an issue
+      // wearing the processing label with no PR yet — the shape this sweep was
+      // built to repair. Serial, that state could not coexist with the sweep;
+      // with a second unit in flight it can, so the in-flight set is what tells
+      // a stranded issue from a live one.
+      if (targetInFlight({ objectType: "issue", id: issue.number })) continue;
       const label = `issue #${issue.number}`;
       let hasPr: boolean;
       try {
@@ -891,13 +1007,14 @@ export function createEngine(options: EngineOptions): Engine {
     issueNumber: number;
     worktreeDir: string;
     baseRef: string;
+    scope: UnitScope;
   }): void {
     const trailer = issueCoAuthorTrailer(opts.issueNumber);
     if (trailer === null) {
       log.say(`No co-author credit for #${opts.issueNumber} (no creditable author).`);
       return;
     }
-    const outcome = hub.appendTrailerToCommits({
+    const outcome = opts.scope.hub.appendTrailerToCommits({
       worktreeDir: opts.worktreeDir,
       baseRef: opts.baseRef,
       trailer,
@@ -916,54 +1033,60 @@ export function createEngine(options: EngineOptions): Engine {
   // ---------------------------------------------------------------------------
 
   /**
-   * The plain-directory workspace (#358): one empty directory per kind under
+   * The plain-directory workspace (#358): one empty directory per unit under
    * the tenant's scratch root, with no clone and no git state. Cleared before
    * it is created, exactly as `prepareWorktree` clears a stale worktree at the
-   * same path — the path is derived from the kind and so is stable across
-   * runs, which is what makes a directory left behind by a killed run
+   * same path — the path is derived from the unit's identity and so is stable
+   * across runs, which is what makes a directory left behind by a killed run
    * self-healing rather than a leak the next run inherits.
+   *
+   * Per unit rather than per kind since #423: at `concurrency` above 1 two
+   * units of one kind are in flight together, and one kind-keyed directory
+   * would have the second unit's clearing delete the first's work.
    */
-  function prepareScratchDir(kind: string): string {
-    // `kind` is always a built-in name (a hardcoded literal from
-    // `WORK_KIND_NAMES`) or a custom kind validated against
-    // `CUSTOM_WORK_KIND_NAME_RE` at config load, so it is already a safe,
-    // collision-free path segment — no further normalization needed.
-    const dir = join(config.paths.scratchDir, kind);
+  function prepareScratchDir(ref: UnitRef): string {
+    const dir = unitDir(config.paths.scratchDir, ref);
     rmSync(dir, { recursive: true, force: true });
     mkdirSync(dir, { recursive: true });
     return dir;
   }
 
   /**
-   * Give up a worktree path: drop this pipeline's lease on it, then remove it.
+   * Give up a worktree path: drop this unit's lease on it, then remove it.
    *
    * Both ends of a tree's life go through here — the clearing that precedes
    * `prepareWorktree` and the teardown that follows a unit — because they are
    * the same act, and because both used to assume this process owned
-   * `worktrees/` outright. It no longer does (#418). A tree leased by anyone
-   * else ends the attempt with a `WorktreeLeasedError` before the removal that
-   * would otherwise take a live agent's tree apart; our own leftover lease,
-   * from a run some predecessor was killed in the middle of, is simply
-   * dropped — same tree, and this is the run rebuilding it.
+   * `worktrees/` outright. It no longer does (#418), and since #423 neither
+   * does this unit: a tree leased by anyone else, a sibling unit of this very
+   * pipeline included, ends the attempt with a `WorktreeLeasedError` before the
+   * removal that would otherwise take a live agent's tree apart. Our own
+   * leftover lease, from a run some predecessor was killed in the middle of, is
+   * simply dropped — same tree, same unit, and this is the run rebuilding it.
    */
-  function releaseWorktree(worktreeDir: string): void {
-    const lease = hub.worktreeLease(worktreeDir);
-    if (lease.locked && lease.pipeline !== pipeline) {
-      throw new WorktreeLeasedError(worktreeDir, lease.pipeline);
+  function releaseWorktree(worktreeDir: string, scope: UnitScope): void {
+    const lease = scope.hub.worktreeLease(worktreeDir);
+    if (lease.locked && lease.holder !== scope.owner) {
+      throw new WorktreeLeasedError(worktreeDir, lease.holder);
     }
-    if (lease.locked) hub.unlockWorktree(worktreeDir);
-    hub.removeWorktree(worktreeDir);
+    if (lease.locked) scope.hub.unlockWorktree(worktreeDir);
+    scope.hub.removeWorktree(worktreeDir);
   }
 
-  function prepareWorktree(opts: { branch: BranchRef; baseRef?: string }): string {
-    const worktreeDir = hub.worktreeDirFor(opts.branch);
-    releaseWorktree(worktreeDir);
+  function prepareWorktree(opts: {
+    branch: BranchRef;
+    baseRef?: string;
+    scope: UnitScope;
+  }): string {
+    const { scope } = opts;
+    const worktreeDir = scope.hub.worktreeDirFor(opts.branch);
+    releaseWorktree(worktreeDir, scope);
     if (opts.baseRef) {
-      hub.addWorktreeForNew({ worktreeDir, branch: opts.branch, baseRef: opts.baseRef });
+      scope.hub.addWorktreeForNew({ worktreeDir, branch: opts.branch, baseRef: opts.baseRef });
     } else {
-      hub.addWorktreeForExisting({ worktreeDir, branch: opts.branch });
+      scope.hub.addWorktreeForExisting({ worktreeDir, branch: opts.branch });
     }
-    hub.lockWorktree(worktreeDir, leaseReason);
+    scope.hub.lockWorktree(worktreeDir, scope.leaseReason);
     return worktreeDir;
   }
 
@@ -975,6 +1098,7 @@ export function createEngine(options: EngineOptions): Engine {
    */
   async function runAgentInWorktree(opts: {
     picked: PickedWorkUnit;
+    scope: UnitScope;
     worktreeDir: string;
     promptFile: string;
     promptArgs: Record<string, string>;
@@ -986,12 +1110,17 @@ export function createEngine(options: EngineOptions): Engine {
     const prompt = renderPrompt(
       loadPromptTemplate(opts.promptFile),
       { ...buildDefaultPromptArgs(config), ...opts.promptArgs },
-      promptShell(opts.worktreeDir, env, Object.values(config.providerEnv)),
+      promptShell(opts.worktreeDir, env, Object.values(config.providerEnv), rowDeclaredEnv),
     );
     const agentEnv = buildAgentEnv({
       parentEnv: env,
       provider: provider.name,
       providerEnv: config.providerEnv,
+      // The running kind's own opening (#425) — its `agentEnv`, and no sibling
+      // kind's: the hole is per definition, not per row.
+      ...(opts.picked.definition.agentEnv !== undefined
+        ? { agentEnv: opts.picked.definition.agentEnv }
+        : {}),
     });
     // The deadline is held by the outer `runPickedUnit` (#359): the signal
     // already fires when the whole-unit budget expires, killing the child and
@@ -1005,6 +1134,7 @@ export function createEngine(options: EngineOptions): Engine {
       env: agentEnv,
       signal: opts.signal,
       tenant: config.repoSlug,
+      unit: `${opts.scope.ref.kind} ${opts.scope.ref.id}`,
     });
     if (exitCode !== 0) {
       log.say(`Agent exited with code ${exitCode}.`);
@@ -1012,13 +1142,14 @@ export function createEngine(options: EngineOptions): Engine {
   }
 
   function tryCleanMerge(
+    scope: UnitScope,
     branch: BranchRef,
     mergedBlockerPrNumbers: readonly PrNumber[] = [],
     baseBranch: string = config.defaultBranch,
   ): CleanMergeOutcome {
     let worktreeDir: string;
     try {
-      worktreeDir = prepareWorktree({ branch });
+      worktreeDir = prepareWorktree({ branch, scope });
     } catch {
       return "failed";
     }
@@ -1026,21 +1157,25 @@ export function createEngine(options: EngineOptions): Engine {
     try {
       for (const blockerPrNumber of mergedBlockerPrNumbers) {
         gitInWorktree(worktreeDir, ["fetch", "origin", `pull/${blockerPrNumber}/head`], {
-          stdio: "inherit",
+          echo: scope.echo,
         });
         gitInWorktree(worktreeDir, ["merge", "FETCH_HEAD"], { stdio: "pipe" });
       }
-      gitInWorktree(worktreeDir, ["fetch", "origin", baseBranch], { stdio: "inherit" });
+      gitInWorktree(worktreeDir, ["fetch", "origin", baseBranch], { echo: scope.echo });
       gitInWorktree(worktreeDir, ["merge", `origin/${baseBranch}`], { stdio: "pipe" });
-      hub.pushBranch(worktreeDir, branch);
-      releaseWorktree(worktreeDir);
+      scope.hub.pushBranch(worktreeDir, branch);
+      releaseWorktree(worktreeDir, scope);
       return "pushed";
     } catch {
       try {
-        const unmerged = gitInWorktree(worktreeDir, ["diff", "--name-only", "--diff-filter=U"]);
+        // Piped, not echoed: the caller reads this list to decide the outcome,
+        // and printing it would say "conflict" twice.
+        const unmerged = gitInWorktree(worktreeDir, ["diff", "--name-only", "--diff-filter=U"], {
+          stdio: "pipe",
+        });
         if (unmerged.trim()) {
           gitInWorktree(worktreeDir, ["merge", "--abort"], { stdio: "ignore" });
-          releaseWorktree(worktreeDir);
+          releaseWorktree(worktreeDir, scope);
           return "conflicted";
         }
       } catch {
@@ -1051,23 +1186,24 @@ export function createEngine(options: EngineOptions): Engine {
       } catch {
         // Best-effort.
       }
-      releaseWorktree(worktreeDir);
+      releaseWorktree(worktreeDir, scope);
       return "failed";
     }
   }
 
   /** Blocker-first merge attempt, mirroring `cmd && … || true` hook semantics. */
   function attemptBlockerFirstMerges(
+    scope: UnitScope,
     worktreeDir: string,
     mergedBlockerPrNumbers: readonly PrNumber[],
     baseBranch: string = config.defaultBranch,
   ): void {
     try {
       for (const n of mergedBlockerPrNumbers) {
-        gitInWorktree(worktreeDir, ["fetch", "origin", `pull/${n}/head`], { stdio: "inherit" });
+        gitInWorktree(worktreeDir, ["fetch", "origin", `pull/${n}/head`], { echo: scope.echo });
         gitInWorktree(worktreeDir, ["merge", "FETCH_HEAD"], { stdio: "pipe" });
       }
-      gitInWorktree(worktreeDir, ["fetch", "origin", baseBranch], { stdio: "inherit" });
+      gitInWorktree(worktreeDir, ["fetch", "origin", baseBranch], { echo: scope.echo });
       gitInWorktree(worktreeDir, ["merge", `origin/${baseBranch}`], { stdio: "pipe" });
     } catch {
       // Conflicts stay in the tree for the agent to resolve.
@@ -1083,6 +1219,7 @@ export function createEngine(options: EngineOptions): Engine {
    */
   async function runAgentWorkflow(opts: {
     picked: PickedWorkUnit;
+    scope: UnitScope;
     pr: { prNumber: PrNumber; headRefName: BranchRef };
     promptFile: string;
     promptArgs: Record<string, string>;
@@ -1093,31 +1230,40 @@ export function createEngine(options: EngineOptions): Engine {
     signal: AbortSignal;
   }): Promise<void> {
     const branch = opts.pr.headRefName;
+    const { scope } = opts;
 
-    hub.fetch();
-    const originShaBefore = hub.branchHead(branch);
+    scope.hub.fetch();
+    const originShaBefore = scope.hub.branchHead(branch);
 
-    const worktreeDir = prepareWorktree({ branch });
+    const worktreeDir = prepareWorktree({ branch, scope });
     try {
-      runShellCommand(config.installCommand, worktreeDir, env, Object.values(config.providerEnv));
+      await runShellCommand(
+        config.installCommand,
+        worktreeDir,
+        env,
+        Object.values(config.providerEnv),
+        rowDeclaredEnv,
+        scope.echo,
+      );
       // Presence, not length: an empty list still primes the tree with the
       // base-branch merge (reproducing the conflict for the agent to solve).
       if (opts.primeBlockerMerges !== undefined) {
-        attemptBlockerFirstMerges(worktreeDir, opts.primeBlockerMerges, opts.baseBranch);
+        attemptBlockerFirstMerges(scope, worktreeDir, opts.primeBlockerMerges, opts.baseBranch);
       }
       opts.beforeAgent?.(worktreeDir);
 
       await runAgentInWorktree({
         picked: opts.picked,
+        scope,
         worktreeDir,
         promptFile: opts.promptFile,
         promptArgs: opts.promptArgs,
         signal: opts.signal,
       });
 
-      hub.fetch();
-      const originShaAfter = hub.branchHead(branch);
-      const localCommitCount = hub.commitCount(worktreeDir, `origin/${branch}..HEAD`);
+      scope.hub.fetch();
+      const originShaAfter = scope.hub.branchHead(branch);
+      const localCommitCount = scope.hub.commitCount(worktreeDir, `origin/${branch}..HEAD`);
 
       await opts.onResult({
         worktreeDir,
@@ -1125,10 +1271,10 @@ export function createEngine(options: EngineOptions): Engine {
         originShaBefore,
         originShaAfter,
         localCommitCount,
-        push: () => hub.pushBranch(worktreeDir, branch),
+        push: () => scope.hub.pushBranch(worktreeDir, branch),
       });
     } finally {
-      releaseWorktree(worktreeDir);
+      releaseWorktree(worktreeDir, scope);
     }
   }
 
@@ -1191,6 +1337,7 @@ export function createEngine(options: EngineOptions): Engine {
    */
   async function runOneIssue(opts: {
     picked: PickedWorkUnit;
+    scope: UnitScope;
     issueNumber: number;
     issueTitle: string;
     worktreeBase: string;
@@ -1219,26 +1366,35 @@ export function createEngine(options: EngineOptions): Engine {
         ? featureBranch(featureIssueNumber)
         : prBase;
 
-    hub.fetch();
-    const worktreeDir = prepareWorktree({ branch: agentBranch, baseRef: worktreeBase });
+    const { scope } = opts;
+    scope.hub.fetch();
+    const worktreeDir = prepareWorktree({ branch: agentBranch, baseRef: worktreeBase, scope });
     try {
-      runShellCommand(config.installCommand, worktreeDir, env, Object.values(config.providerEnv));
+      await runShellCommand(
+        config.installCommand,
+        worktreeDir,
+        env,
+        Object.values(config.providerEnv),
+        rowDeclaredEnv,
+        scope.echo,
+      );
 
       await runAgentInWorktree({
         picked: opts.picked,
+        scope,
         worktreeDir,
         promptFile,
         promptArgs: { ISSUE_NUMBER: String(issueNumber), PR_BASE: intendedPrBase },
         signal: opts.signal,
       });
 
-      const newCommitCount = hub.commitCount(worktreeDir, `${worktreeBase}..HEAD`);
+      const newCommitCount = scope.hub.commitCount(worktreeDir, `${worktreeBase}..HEAD`);
 
       if (newCommitCount > 0) {
         if (config.creditIssueAuthor) {
-          stampIssueAuthorCredit({ issueNumber, worktreeDir, baseRef: worktreeBase });
+          stampIssueAuthorCredit({ issueNumber, worktreeDir, baseRef: worktreeBase, scope });
         }
-        hub.pushBranchWithLease(worktreeDir, agentBranch);
+        scope.hub.pushBranchWithLease(worktreeDir, agentBranch);
         const existingPr = github.findIssuePr(issueNumber);
         if (existingPr === null) {
           const prTitle = `Phoebe: ${issueTitle} (#${issueNumber})`;
@@ -1269,7 +1425,7 @@ export function createEngine(options: EngineOptions): Engine {
         log.say("No commits — skipping PR creation.");
       }
     } finally {
-      releaseWorktree(worktreeDir);
+      releaseWorktree(worktreeDir, scope);
     }
   }
 
@@ -1284,6 +1440,7 @@ export function createEngine(options: EngineOptions): Engine {
    */
   function createAgentHelpers(
     picked: PickedWorkUnit,
+    scope: UnitScope,
     workspaceDir: () => string,
     signal: AbortSignal,
   ): AgentHelpers {
@@ -1292,6 +1449,7 @@ export function createEngine(options: EngineOptions): Engine {
       run: (opts = {}) =>
         runAgentInWorktree({
           picked,
+          scope,
           worktreeDir: opts.worktreeDir ?? workspaceDir(),
           promptFile: opts.promptFile ?? defaultPromptFile,
           promptArgs: opts.promptArgs ?? {},
@@ -1300,6 +1458,7 @@ export function createEngine(options: EngineOptions): Engine {
       prWorkflow: (opts) =>
         runAgentWorkflow({
           picked,
+          scope,
           pr: opts.pr,
           promptFile: opts.promptFile ?? defaultPromptFile,
           promptArgs: opts.promptArgs,
@@ -1314,6 +1473,7 @@ export function createEngine(options: EngineOptions): Engine {
       issueWorkflow: (opts) =>
         runOneIssue({
           picked,
+          scope,
           issueNumber: opts.issueNumber,
           issueTitle: opts.issueTitle,
           worktreeBase: opts.worktreeBase,
@@ -1329,25 +1489,29 @@ export function createEngine(options: EngineOptions): Engine {
           signal,
         }),
       cleanMerge: (branch, blockerPrNumbers = [], baseBranch) =>
-        tryCleanMerge(branch, blockerPrNumbers, baseBranch),
+        tryCleanMerge(scope, branch, blockerPrNumbers, baseBranch),
     };
   }
 
   /**
    * The read-only workspace (#397): a worktree of the default branch detached
-   * at `origin/<defaultBranch>`, one directory per kind so it can never share a
-   * path with the branch-slug dirs `worktreeDirFor` hands out.
+   * at `origin/<defaultBranch>`, under `readonly/<kind>/<ref>` so it can never
+   * share a path with the branch-slug dirs `worktreeDirFor` hands out, nor with
+   * a sibling unit of its own kind (#423).
    *
    * Detached is the whole of the don't-push contract. No local ref is created
    * or moved, and `git push` with no refspec fails out of a detached HEAD, so
    * the kind cannot publish by habit. It can still publish on purpose — it
    * holds `ctx.env` and the token — and the engine does not pretend otherwise.
    */
-  function prepareReadonlyWorktree(kind: string): string {
-    const worktreeDir = readonlyWorktreeDir(config.paths.worktreesDir, kind);
-    releaseWorktree(worktreeDir);
-    hub.addWorktreeDetached({ worktreeDir, ref: `origin/${config.defaultBranch}` });
-    hub.lockWorktree(worktreeDir, leaseReason);
+  function prepareReadonlyWorktree(scope: UnitScope): string {
+    const worktreeDir = unitDir(
+      join(config.paths.worktreesDir, READONLY_WORKTREES_SEGMENT),
+      scope.ref,
+    );
+    releaseWorktree(worktreeDir, scope);
+    scope.hub.addWorktreeDetached({ worktreeDir, ref: `origin/${config.defaultBranch}` });
+    scope.hub.lockWorktree(worktreeDir, scope.leaseReason);
     return worktreeDir;
   }
 
@@ -1358,19 +1522,23 @@ export function createEngine(options: EngineOptions): Engine {
    * swallowed: this runs on the unit-teardown path, where a throw would replace
    * whatever actually happened to the unit.
    */
-  function warnIfReadonlyTreeTouched(kind: string, dir: string): void {
+  function warnIfReadonlyTreeTouched(scope: UnitScope, dir: string): void {
+    // Named for the unit, not the kind: two units of one kind can be discarding
+    // trees at the same time, and "which one lost work" is the whole point of
+    // the line (#423).
+    const unit = `${scope.ref.kind} ${scope.ref.id}`;
     try {
-      const changed = hub.dirtyFileCount(dir);
-      const commits = hub.commitCount(dir, `origin/${config.defaultBranch}..HEAD`);
+      const changed = scope.hub.dirtyFileCount(dir);
+      const commits = scope.hub.commitCount(dir, `origin/${config.defaultBranch}..HEAD`);
       if (changed === 0 && commits === 0) return;
       log.warn(
-        `${kind}: the readonly workspace was modified ` +
+        `${unit}: the readonly workspace was modified ` +
           `(${changed} changed file(s), ${commits} commit(s)) and is being discarded with the ` +
           `unit. A kind that means to publish should build its own worktree through ctx.agent.`,
       );
     } catch (error) {
       log.warn(
-        `${kind}: could not inspect the readonly workspace before removing it — ` +
+        `${unit}: could not inspect the readonly workspace before removing it — ` +
           `${error instanceof Error ? error.message : String(error)}`,
       );
     }
@@ -1382,31 +1550,46 @@ export function createEngine(options: EngineOptions): Engine {
    * agent helpers use as their default cwd, and the removal the unit boundary
    * runs.
    *
-   * Every mode shares one shape — create on first read of `dir`, remove only
-   * what was created — so laziness is a property of the workspace seam rather
-   * than of the worktree arm that happened to get it first.
+   * Two things are prepared, not one (#423). The git shape is what the mode
+   * names — a worktree, a detached worktree, or nothing at all — and the
+   * scratch directory is on every handle, because "which git shape" and "where
+   * may I write" turned out to be different questions: a `readonly` kind that
+   * has to produce something had a reading room and no desk. `scratch` mode is
+   * the degenerate case where they are the same directory.
+   *
+   * Both follow one shape — create on first read, remove only what was created
+   * — so laziness is a property of the workspace seam rather than of the
+   * worktree arm that happened to get it first, and a kind that reads only one
+   * of the two pays only for that one.
    */
-  function lazyWorkspace(picked: PickedWorkUnit): {
+  function lazyWorkspace(
+    picked: PickedWorkUnit,
+    scope: UnitScope,
+  ): {
     handle: WorkspaceHandle;
     dir: () => string;
     remove: () => void;
   } {
     const mode = picked.definition.workspace;
+    let scratch: string | null = null;
+    const materializeScratch = (): string => {
+      scratch ??= prepareScratchDir(scope.ref);
+      return scratch;
+    };
+
     let dir: string | null = null;
     const materialize = (): string => {
+      if (mode === "scratch") return materializeScratch();
       if (dir === null) {
-        if (mode === "scratch") {
-          dir = prepareScratchDir(picked.kind);
-        } else if (mode === "readonly") {
-          hub.fetch();
-          dir = prepareReadonlyWorktree(picked.kind);
-        } else {
-          hub.fetch();
-          dir = prepareWorktree({
-            branch: asBranchRef(`${config.branchPrefix}workspace`),
-            baseRef: `origin/${config.defaultBranch}`,
-          });
-        }
+        scope.hub.fetch();
+        dir =
+          mode === "readonly"
+            ? prepareReadonlyWorktree(scope)
+            : prepareWorktree({
+                branch: asBranchRef(`${config.branchPrefix}workspace`),
+                baseRef: `origin/${config.defaultBranch}`,
+                scope,
+              });
       }
       return dir;
     };
@@ -1416,16 +1599,18 @@ export function createEngine(options: EngineOptions): Engine {
         get dir(): string {
           return materialize();
         },
+        get scratch(): string {
+          return materializeScratch();
+        },
       },
       dir: materialize,
       remove: () => {
+        // The scratch first, so a git shape someone else turns out to hold —
+        // which ends this in a throw — does not strand the directory.
+        if (scratch !== null) rmSync(scratch, { recursive: true, force: true });
         if (dir === null) return;
-        if (mode === "scratch") {
-          rmSync(dir, { recursive: true, force: true });
-          return;
-        }
-        if (mode === "readonly") warnIfReadonlyTreeTouched(picked.kind, dir);
-        releaseWorktree(dir);
+        if (mode === "readonly") warnIfReadonlyTreeTouched(scope, dir);
+        releaseWorktree(dir, scope);
       },
     };
   }
@@ -1450,7 +1635,8 @@ export function createEngine(options: EngineOptions): Engine {
    * it pays then, and only a materialized workspace is removed afterwards.
    */
   async function runPickedUnit(picked: PickedWorkUnit, ctx: WorkKindCtx): Promise<void> {
-    const workspace = lazyWorkspace(picked);
+    const scope = unitScope(unitRefOf(picked));
+    const workspace = lazyWorkspace(picked, scope);
     try {
       await runWithDeadline({
         ms: runTimeoutMsFor(picked.kind),
@@ -1461,7 +1647,7 @@ export function createEngine(options: EngineOptions): Engine {
               console.log(`${log.tag}[${picked.kind} ${picked.unit.ref}] ${message}`),
             workspace: workspace.handle,
             signal,
-            agent: createAgentHelpers(picked, workspace.dir, signal),
+            agent: createAgentHelpers(picked, scope, workspace.dir, signal),
           };
           return picked.definition.run(picked.unit, runCtx);
         },
@@ -1469,6 +1655,242 @@ export function createEngine(options: EngineOptions): Engine {
     } finally {
       workspace.remove();
     }
+  }
+
+  // --- The in-flight set (#422) ------------------------------------------------
+  // What this pipeline is running right now. A pass tops the set up to the row's
+  // `concurrency` and then waits for whichever comes first: a unit settling or
+  // the poll interval. At concurrency 1 the set holds at most one unit and the
+  // loop reduces to the serial one it has always been.
+
+  type InFlightUnit = {
+    ref: UnitRef;
+    /** The unit's GitHub object, when it declared one — what admission excludes on. */
+    target: WorkUnitGitHubTarget | undefined;
+    /** Settles when the unit finishes, whatever the outcome. Never rejects. */
+    settled: Promise<void>;
+  };
+
+  /**
+   * What became of an admitted unit, as far as the *loop* is concerned.
+   *
+   * `worked` means a slot freed and the pass should reconsider admission at
+   * once. `skipped` means the unit never started, because a tree it needed was
+   * leased — and that is worth waiting a poll interval over rather than
+   * reconsidering, since the holder will be minutes rather than microseconds.
+   * Waking on it would spin the loop through a gather per pass for as long as
+   * the sibling holds the tree, which is what makes the distinction load-bearing
+   * now that a sibling *unit* can be the holder (#423).
+   */
+  type UnitOutcome = "worked" | "skipped";
+
+  const inFlight = new Map<string, InFlightUnit>();
+  /** This kind's running refs — what `ctx.inFlight` and the selection walk read. */
+  const inFlightRefs = new Map<string, Set<string>>();
+  /** The first error a `--run-once` unit threw, rethrown once nothing is running. */
+  let fatalError: unknown;
+
+  function inFlightKey(ref: UnitRef): string {
+    return `${ref.kind} ${ref.id}`;
+  }
+
+  function refsInFlight(kind: string): Set<string> {
+    const existing = inFlightRefs.get(kind);
+    if (existing) return existing;
+    const fresh = new Set<string>();
+    inFlightRefs.set(kind, fresh);
+    return fresh;
+  }
+
+  /**
+   * Is this GitHub object one of the units running right now? Both the admission
+   * exclusion and the four sweeps ask it, of the unit's structural `github`
+   * field rather than of its ref: refs are kind-owned and nothing may parse one,
+   * but the target is the window the engine already has (#352).
+   */
+  function targetInFlight(target: UnitTarget): boolean {
+    for (const unit of inFlight.values()) {
+      if (unit.target?.objectType === target.objectType && unit.target.id === target.id) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Woken when any in-flight unit settles, so a pass that has nothing else to
+  // wait for reconsiders admission immediately rather than sleeping out a poll
+  // interval behind a slot that is already free.
+  const settleWakers = new Set<() => void>();
+
+  function announceSettled(): void {
+    for (const wake of settleWakers) wake();
+  }
+
+  /**
+   * Wait for the next pass: whichever comes first of a unit settling, the poll
+   * interval, or a drain. With nothing running there is nothing to settle, so
+   * this is the idle poll the loop has always done.
+   */
+  async function waitForNextPass(): Promise<void> {
+    if (inFlight.size === 0) {
+      await drain.wait(pollIntervalMs);
+      return;
+    }
+    let forget = (): void => {};
+    const settled = new Promise<void>((resolve) => {
+      const wake = (): void => resolve();
+      settleWakers.add(wake);
+      forget = () => settleWakers.delete(wake);
+    });
+    try {
+      await Promise.race([drain.wait(pollIntervalMs), settled]);
+    } finally {
+      forget();
+    }
+  }
+
+  /** Await every unit still running. The exit path of every way the loop stops. */
+  async function settleInFlight(): Promise<void> {
+    while (inFlight.size > 0) {
+      await Promise.all([...inFlight.values()].map((unit) => unit.settled));
+    }
+  }
+
+  /**
+   * Run one admitted unit to settlement and report its outcome on the event
+   * rail. Throws only under `runOnce`, where the unit's outcome is the process's
+   * exit code; the loop absorbs that and rethrows once nothing is left running.
+   * Otherwise a failed unit must not kill the daemon — `prepareWorktree` clears
+   * any stale worktree on the next attempt.
+   */
+  async function workUnit(picked: PickedWorkUnit, ctx: WorkKindCtx): Promise<UnitOutcome> {
+    const ref = unitRefOf(picked);
+    try {
+      await runPickedUnit(picked, ctx);
+      emitUnitEvent({ unit: ref, event: "completed" });
+    } catch (error) {
+      if (error instanceof WorktreeLeasedError) {
+        // Not a failure: someone else is working the tree this unit needs — a
+        // sibling pipeline (#418) or a sibling unit of this one (#423). Say so
+        // and leave the unit alone; the holder will release it, and the next
+        // cycle picks the unit up again.
+        emitUnitEvent({ unit: ref, event: "skipped", detail: error.message });
+        log.say(`Skipped ${describeUnit(picked)} — ${error.message}.`);
+        return "skipped";
+      }
+      if (error instanceof RunTimeoutError) {
+        // A whole-unit timeout (#72): the agent was killed, the slot releases in
+        // `finally`, and the engine survives (never told to the supervisor, #60
+        // orthogonality). #75 layers the poison-unit quarantine on this event.
+        emitUnitEvent({
+          unit: ref,
+          event: "timed-out",
+          detail: `${Math.round(error.elapsedMs / 1000)}s budget exceeded`,
+        });
+        // Count this timeout on the unit and, at K consecutive, quarantine it so
+        // a genuinely poisonous unit stops being re-picked forever (#75).
+        recordUnitTimeout(picked, emitUnitEvent);
+      } else {
+        // A non-timeout failure: drop the unit from the snapshot and record the
+        // error so `phoebe list` shows it (the durable record is still the
+        // per-work-kind watermark/failure-comment on GitHub; this is the
+        // at-a-glance snapshot).
+        emitUnitEvent({
+          unit: ref,
+          event: "failed",
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      }
+      if (runOnce) throw error;
+      log.fail(
+        `Failed executing ${describeUnit(picked)} — ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      slotClient?.release();
+    }
+    return "worked";
+  }
+
+  /** What one admission attempt did, and what the pass should do next. */
+  type Admission = "started" | "refused" | "drain" | "stop";
+
+  /**
+   * Admit one selected unit: refuse it if its GitHub object is already busy,
+   * take a broker slot for it, and start it without awaiting — the pass returns
+   * to admission and the loop's wait is what watches for it settling.
+   *
+   * The credential lease is checked once per pass, before this runs and ahead of
+   * the slot request (#422). That ordering is the point: a failed refresh has no
+   * slot to give back, so the branch that used to release one is gone.
+   */
+  async function admit(picked: PickedWorkUnit, ctx: WorkKindCtx): Promise<Admission> {
+    const ref = unitRefOf(picked);
+    const target = picked.unit.github;
+    if (target) {
+      // Two units on one PR would be two agents pushing one branch.
+      if (targetInFlight(target)) {
+        log.say(
+          `Not admitting ${describeUnit(picked)} — ` +
+            `${describeUnitTarget(target)} is already in flight.`,
+        );
+        return "refused";
+      }
+    } else {
+      // A unit with no `github` field is opaque to the engine, so there is
+      // nothing to exclude it against. That is a defined degraded behaviour
+      // (docs/research/slack-responder-sketch.md), not a fault — but it is the
+      // kind of thing an operator should be able to find in the log afterwards.
+      log.say(`${describeUnit(picked)} declares no GitHub target — admitted with no exclusion.`);
+    }
+
+    // A concurrency slot for the whole unit execution (#59): the supervisor's
+    // global cap bounds how many repos run a unit at once. Held through worktree
+    // + install + agent + test + push, released in `workUnit`'s `finally` so
+    // timeout, error, and normal completion share one leak-free release path
+    // (#72). Standalone (unbrokered) engines skip this entirely.
+    if (slotClient) {
+      emitUnitEvent({ unit: ref, event: "waiting-for-slot" });
+      try {
+        await slotClient.acquire();
+      } catch (error) {
+        if (error instanceof BrokerDisconnectedError) {
+          // The supervisor's channel closed while we waited for a slot. Stop
+          // rather than run unbrokered (which, across a fleet, would bypass the
+          // global cap); the supervisor is gone or will respawn us afresh.
+          log.fail(`${error.message} — stopping this engine.`);
+          return "stop";
+        }
+        throw error;
+      }
+    }
+
+    // A drain that arrived while awaiting the slot must not let this unit start
+    // — "start no new one". Give the slot straight back.
+    if (drain.requested) {
+      slotClient?.release();
+      log.say("Drain requested before starting the next unit — exiting 0.");
+      return "drain";
+    }
+
+    emitUnitEvent({ unit: ref, event: "started", runBudgetMs: runTimeoutMsFor(picked.kind) });
+    refsInFlight(ref.kind).add(ref.id);
+    const key = inFlightKey(ref);
+    let outcome: UnitOutcome = "worked";
+    const settled = workUnit(picked, ctx)
+      .then((result) => {
+        outcome = result;
+      })
+      .catch((error: unknown) => {
+        fatalError ??= error;
+      })
+      .finally(() => {
+        inFlight.delete(key);
+        refsInFlight(ref.kind).delete(ref.id);
+        if (outcome === "worked") announceSettled();
+      });
+    inFlight.set(key, { ref, target, settled });
+    return "started";
   }
 
   const workSource: WorkSource = createWorkSource({
@@ -1479,6 +1901,7 @@ export function createEngine(options: EngineOptions): Engine {
     env,
     config,
     registry,
+    inFlight: refsInFlight,
   });
 
   /**
@@ -1598,7 +2021,12 @@ export function createEngine(options: EngineOptions): Engine {
 
     while (true) {
       if (drain.requested) {
-        log.say("Drain requested — starting no new work unit; exiting 0.");
+        log.say(
+          inFlight.size === 0
+            ? "Drain requested — starting no new work unit; exiting 0."
+            : `Drain requested — starting no new work unit; awaiting ${inFlight.size} ` +
+                `in flight, then exiting 0.`,
+        );
         break;
       }
 
@@ -1626,12 +2054,12 @@ export function createEngine(options: EngineOptions): Engine {
           }
           if (error instanceof CredentialRefreshBlockedError) {
             log.warn("Credential refresh unavailable — skipping work this cycle.");
-            await drain.wait(pollIntervalMs);
+            await waitForNextPass();
             continue;
           }
           if (error instanceof CredentialLeaseTimedOutError) {
             log.warn("Credential lease timed out — skipping work this cycle.");
-            await drain.wait(pollIntervalMs);
+            await waitForNextPass();
             continue;
           }
           throw error;
@@ -1642,7 +2070,7 @@ export function createEngine(options: EngineOptions): Engine {
         if (!creds) {
           log.fail("App mode active but GH_APP_ID or GH_APP_PRIVATE_KEY is missing.");
           if (runOnce) break;
-          await drain.wait(pollIntervalMs);
+          await waitForNextPass();
           continue;
         }
         const mintResult = await mintInstallationToken(config.repoSlug, creds);
@@ -1650,7 +2078,7 @@ export function createEngine(options: EngineOptions): Engine {
           const statusLabel = mintResult.status !== null ? ` HTTP ${mintResult.status}` : "";
           log.fail(`App mode mint failed${statusLabel}: ${mintResult.reason}`);
           if (runOnce) break;
-          await drain.wait(pollIntervalMs);
+          await waitForNextPass();
           continue;
         }
         // Inject the minted token as GH_TOKEN so all gh calls this cycle use it,
@@ -1673,9 +2101,9 @@ export function createEngine(options: EngineOptions): Engine {
       }
 
       // Disabled short-circuit (#202): if the tenant declares `disabled: true`,
-      // start no new work this cycle. Any run already in flight finished before
-      // looping back here, satisfying the "drain, don't cancel" contract. Clear
-      // any lingering quarantine state so a re-enabled tenant starts clean.
+      // start no new work this cycle. Runs already in flight finish on their own
+      // terms, satisfying the "drain, don't cancel" contract. Clear any lingering
+      // quarantine state so a re-enabled tenant starts clean.
       if (config.disabled) {
         if (!dryRun) {
           sweepQuarantine("tenant-disabled");
@@ -1690,51 +2118,67 @@ export function createEngine(options: EngineOptions): Engine {
           "Tenant is disabled — no new work will be started this cycle. " +
             "Remove `disabled: true` from phoebe.config.ts to re-enable.",
         );
-        await drain.wait(pollIntervalMs);
+        await waitForNextPass();
         continue;
       }
 
       // Sweeps before selecting (#153, #366, #380): skipped under `--dry-run`,
-      // which must not write to GitHub.
+      // which must not write to GitHub. They run on every pass, including one
+      // with no free slot — repairing objects nobody is holding is the work a
+      // pass owes whatever it can admit, and each sweep now skips the objects
+      // this pipeline is itself running (#422).
       if (!dryRun) {
         sweepStrandedUnits();
         sweepQuarantine("content-advanced");
         sweepStaleNativeStacks();
         sweepFeatureCloses();
       }
-      const fetchKinds = runOnce ? oneShotWorkKinds(workOrder, registry) : workOrder;
+
+      // Rolling top-up (#422): a pass admits at most as many units as the row
+      // has free slots. With none free there is nothing selection could do with
+      // an answer, so skip the gather entirely and wait.
+      const free = concurrency - inFlight.size;
+      if (free <= 0) {
+        await waitForNextPass();
+        continue;
+      }
+
+      const fetchKinds = schedulableKinds(
+        runOnce ? oneShotWorkKinds(workOrder, registry) : workOrder,
+      );
       const cycle = await workSource.gatherCycle(fetchKinds);
-      const { unit: picked, skipped } = selectFirstWorkUnit({
+      const { units, skipped } = selectWorkUnits({
         registry,
         kinds: cycle.record.kindsGathered,
         gathered: cycle.record.gathered,
         ctxFor: cycle.ctxFor,
+        limit: free,
+        inFlight: refsInFlight,
+        onDropped: (kind, ref) =>
+          log.say(
+            `${kind} offered ${ref}, which this pipeline is already running — dropped, and ` +
+              `${kind} is not asked again this cycle. Its \`select\` is ignoring \`ctx.inFlight\`.`,
+          ),
       });
 
-      if (!picked) {
+      if (units.length === 0) {
         if (runOnce) {
           log.say(RUN_ONCE_NOTHING_MESSAGE);
-        } else {
+        } else if (inFlight.size === 0) {
+          // A pass that found nothing new while units are running is not idle,
+          // and reporting it as such every poll would bury the real idle line.
           logIdleCycle(cycle, skipped);
         }
         if (runOnce || dryRun) break;
-        // Interruptible idle poll — a SIGTERM mid-sleep wakes it, the next
-        // iteration's drain check breaks, and shutdown does not wait a full cycle.
-        await drain.wait(pollIntervalMs);
+        await waitForNextPass();
         continue;
-      }
-
-      // A drain that arrived during the fetch/selection above must not let this
-      // freshly-picked unit start — "start no new one". The in-flight unit (if any)
-      // already finished before we looped back here, so exit now.
-      if (drain.requested) {
-        log.say("Drain requested before starting the next unit — exiting 0.");
-        break;
       }
 
       const decision = executionDecision({ dryRun, inContainer });
       if (decision === "dry-run") {
-        log.say(`Would execute: ${describeUnit(picked)}.`);
+        for (const picked of units) {
+          log.say(`Would execute: ${describeUnit(picked)}.`);
+        }
         break;
       }
       if (decision === "refuse") {
@@ -1742,124 +2186,65 @@ export function createEngine(options: EngineOptions): Engine {
         process.exit(1);
       }
 
-      // Acquire a concurrency slot for the whole unit execution (#59): the
-      // supervisor's global cap bounds how many repos run a unit at once. Held
-      // through worktree + install + agent + test + push, released in `finally`
-      // so timeout, error, and normal completion share one leak-free release
-      // path (#72). Standalone (unbrokered) engines skip this entirely.
-      if (slotClient) {
-        try {
-          await slotClient.acquire();
-        } catch (error) {
-          if (error instanceof BrokerDisconnectedError) {
-            // The supervisor's channel closed while we waited for a slot. Stop
-            // rather than run unbrokered (which, across a fleet, would bypass the
-            // global cap); the supervisor is gone or will respawn us afresh.
-            log.fail(`${error.message} — stopping this engine.`);
-            break;
-          }
-          throw error;
-        }
+      // A drain that arrived during the fetch/selection above must not let these
+      // freshly-picked units start — "start no new one". Anything already
+      // running is awaited on the way out.
+      if (drain.requested) {
+        log.say("Drain requested before starting the next unit — exiting 0.");
+        break;
       }
 
-      // Credential lease — call site 2: after the slot grant, before the agent
-      // spawns (#211). The slot acquire can block arbitrarily long behind the
-      // concurrency cap; a lease taken before acquiring would be worthless in a
-      // busy fleet. A disconnect or a blocked answer releases the slot and loops —
-      // no drain, no kill, no hang.
+      // Credential lease — call site 2: admission, ahead of the slot request
+      // (#422). One live lease per pipeline process, refreshed in place, so a
+      // pass admitting three units refreshes once — the lease belongs to the
+      // process, not to the unit. A failed refresh blocks admission and leaves
+      // `GH_TOKEN` exactly as it was, so whatever is already running finishes on
+      // the token it was handed. There is no slot to release: nothing has been
+      // requested yet.
       if (credentialClient) {
         try {
           const token = await credentialClient.requestLease(credentialBudgetMs);
           if (token !== null) env["GH_TOKEN"] = token;
         } catch (error) {
-          slotClient?.release();
           if (error instanceof BrokerDisconnectedError) {
             log.fail(`${error.message} — stopping this engine.`);
             break;
           }
           if (error instanceof CredentialRefreshBlockedError) {
-            log.warn(`Credential refresh unavailable after slot grant — unit admission blocked.`);
-            await drain.wait(pollIntervalMs);
+            log.warn("Credential refresh unavailable — admitting no unit this cycle.");
+            await waitForNextPass();
             continue;
           }
           if (error instanceof CredentialLeaseTimedOutError) {
-            log.warn(`Credential lease timed out after slot grant — unit admission skipped.`);
-            await drain.wait(pollIntervalMs);
+            log.warn("Credential lease timed out — admitting no unit this cycle.");
+            await waitForNextPass();
             continue;
           }
           throw error;
         }
       }
 
-      // A drain that arrived while awaiting the credential lease must not let this
-      // unit start — "start no new one". Release the already-acquired slot.
-      if (drain.requested) {
-        slotClient?.release();
-        log.say("Drain requested before starting the next unit — exiting 0.");
-        break;
+      let stopping = false;
+      for (const picked of units) {
+        const admission = await admit(picked, cycle.ctxFor(picked.kind));
+        if (admission === "stop" || admission === "drain") {
+          stopping = true;
+          break;
+        }
       }
+      if (stopping) break;
 
-      const ref = unitRefOf(picked);
-      emitUnitEvent({ unit: ref, event: "started" });
-      try {
-        await runPickedUnit(picked, cycle.ctxFor(picked.kind));
-        emitUnitEvent({ unit: ref, event: "completed" });
-      } catch (error) {
-        if (error instanceof WorktreeLeasedError) {
-          // Not a failure: another pipeline is working the tree this unit needs
-          // (#418). Say so and leave the unit alone — the sibling will release
-          // it, and the next cycle picks the unit up again.
-          emitUnitEvent({ unit: ref, event: "skipped", detail: error.message });
-          log.say(`Skipped ${describeUnit(picked)} — ${error.message}.`);
-          if (runOnce) break;
-          await drain.wait(pollIntervalMs);
-          continue;
-        }
-        if (error instanceof RunTimeoutError) {
-          // A whole-unit timeout (#72): the agent was killed, the slot releases in
-          // `finally`, and the engine survives (never told to the supervisor, #60
-          // orthogonality). #75 layers the poison-unit quarantine on this event.
-          emitUnitEvent({
-            unit: ref,
-            event: "timed-out",
-            detail: `${Math.round(error.elapsedMs / 1000)}s budget exceeded`,
-          });
-          // Count this timeout on the unit and, at K consecutive, quarantine it so
-          // a genuinely poisonous unit stops being re-picked forever (#75).
-          recordUnitTimeout(picked, emitUnitEvent);
-        } else {
-          // A non-timeout failure: clear the current unit and record the error so
-          // `phoebe list` shows it (the durable record is still the per-work-kind
-          // watermark/failure-comment on GitHub; this is the at-a-glance snapshot).
-          emitUnitEvent({
-            unit: ref,
-            event: "failed",
-            detail: error instanceof Error ? error.message : String(error),
-          });
-        }
-        if (runOnce) {
-          throw error;
-        }
-        // A failed unit must not kill the daemon — prepareWorktree clears any
-        // stale worktree on the next attempt.
-        log.fail(
-          `Failed executing ${describeUnit(picked)} — ` +
-            `${error instanceof Error ? error.message : String(error)}`,
-        );
-        await drain.wait(pollIntervalMs);
-        continue;
-      } finally {
-        slotClient?.release();
-      }
-
+      // `--run-once` is pinned to concurrency 1, so exactly one unit was
+      // admitted: leave the loop and await it on the way out.
       if (runOnce) break;
-      // Drain requested while the unit ran: it is finished, so exit now rather
-      // than picking up another. This is the graceful-drain boundary.
-      if (drain.requested) {
-        log.say("Finished the in-flight unit under drain — exiting 0.");
-        break;
-      }
+      await waitForNextPass();
     }
+
+    // Every way out of the loop lands here: the units still running are finished,
+    // never cancelled, and only then does the engine return. Drain generalizes to
+    // exactly this — admit nothing, await everything, exit 0.
+    await settleInFlight();
+    if (fatalError !== undefined) throw fatalError;
   }
 
   return { runLoop };
@@ -1906,13 +2291,29 @@ export async function runEngine(
   // by the CLI, so the name is read back here only for the cadence — declared on
   // the row, which outranks `PHOEBE_POLL_INTERVAL_MS` — and for the log line.
   const pipeline = parsePipelineName(argv);
-  const pollIntervalMs = resolvePollIntervalMs(pipelineRow(config, pipeline), process.env);
+  // And in the same posture, the declared keys (#425): a scheduled kind whose
+  // `requiredEnv` this row cannot read is a startup failure naming the kind and
+  // the key, not a unit that dies weeks later holding an empty string. The
+  // supervisor has already scrubbed this env, so "cannot read" here means what
+  // the kind would mean by it.
+  assertDeclaredEnvPresent({
+    repoSlug: config.repoSlug,
+    pipeline,
+    kinds: workOrder.map((kind) => ({
+      name: kind,
+      definition: registeredKind(registry, kind).definition,
+    })),
+    env: process.env,
+  });
+  const row = pipelineRow(config, pipeline);
+  const pollIntervalMs = resolvePollIntervalMs(row, process.env);
+  const concurrency = row.concurrency;
   const log = createEngineLog(config.repoSlug, pipeline);
 
   console.log(
     runOnce
       ? `${log.tag} Run-once mode (pipeline ${pipeline}) — will work at most one unit of the first one-shot-eligible kind in WORK_ORDER, then exit.`
-      : `${log.tag} Persistent mode (pipeline ${pipeline}) — idle poll every ${pollIntervalMs}ms. SIGTERM drains: finish the current unit, then exit 0.`,
+      : `${log.tag} Persistent mode (pipeline ${pipeline}) — up to ${concurrency} unit(s) in flight, idle poll every ${pollIntervalMs}ms. SIGTERM drains: finish what is in flight, then exit 0.`,
   );
   if (dryRun) {
     log.say("Dry-run — selection only, nothing executes.");
@@ -1998,7 +2399,7 @@ export async function runEngine(
       slotClient,
       credentialClient,
       emitUnitEvent,
-      run: { runOnce, dryRun, pollIntervalMs },
+      run: { runOnce, dryRun, pollIntervalMs, concurrency },
     });
     await engine.runLoop();
   } finally {

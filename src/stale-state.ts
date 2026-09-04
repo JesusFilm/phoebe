@@ -387,10 +387,17 @@ export function scanStaleState(deps: {
   // residue of a `worktree remove` that failed, or of a clone rebuilt under it.
   // Only unowned kinds: an owned kind's directory is either registered (handled
   // above) or being built right now by a live row.
+  //
+  // The kind's trees sit one level down, at `readonly/<kind>/<ref>`, one per
+  // unit (#423), so "git has no record of it" has to hold for the whole subtree:
+  // a registered tree inside was classified on its own terms above, and deleting
+  // the kind directory would take one the sweep deliberately kept with it. Once
+  // those trees are gone the empty directory is nobody's, and the next sweep
+  // reclaims it.
   for (const kind of childDirectories(join(paths.worktreesDir, READONLY_WORKTREES_SEGMENT))) {
     if (ownership.kinds.has(kind)) continue;
     const dir = join(paths.worktreesDir, READONLY_WORKTREES_SEGMENT, kind);
-    if (seen.has(canonical(dir))) continue;
+    if ([...seen].some((path) => path === canonical(dir) || isInside(dir, path))) continue;
     items.push({
       tier: "readonly",
       path: dir,

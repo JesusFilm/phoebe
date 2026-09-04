@@ -356,7 +356,9 @@ must be material before first boot.
 
 - One container, one shared engine version (`engine` only on the root).
 - `paths` still derive from each tenant's `repoSlug` under `/data/repos/…`.
-- Fleet-wide `PHOEBE_MAX_CONCURRENT_AGENTS` (default 1).
+- One fleet-wide slot cap, derived from the rows' `concurrency` and overridable
+  with `PHOEBE_MAX_CONCURRENT_AGENTS`
+  ([configuration.md](configuration.md#concurrency-the-rows-knob-and-the-fleets-cap)).
 - Log lines tagged `[phoebe:<owner>/<repo>:<pipeline>]` (match as a prefix).
 - Trust domain: one container = co-locate only mutually trusted repos
   ([`trust.md`](trust.md#one-container--one-trust-domain)).

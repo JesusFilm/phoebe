@@ -301,10 +301,15 @@ one trust domain.
 | Check every tenant's GitHub token | `node scripts/verify-tenant-token.mjs --all` (host-side, in the deployment dir). One section per tenant; `--check` exits non-zero when any is short a grant. See [Checking a tenant's GitHub token](#checking-a-tenants-github-token).                                                                                                                                                                                                                                                                  |
 | See every tenant + its health     | `phoebe list` (in-container): config present? `.env` present? retained data? current unit (read from each tenant's `work` row, `state/work/status.json`). Rows that cannot boot show `held — <reason>`. Use `--json` for scriptable output and `--check` to exit non-zero when the declaration is not fully honoured (declared-arm accounting, meaning `N of M`, declared order, and `undeclared`, lives in [`workspace.md` → Declaring the fleet](workspace.md#declaring-the-fleet-workspacetenants)). |
 
-**Concurrency across tenants.** Only `PHOEBE_MAX_CONCURRENT_AGENTS` work units
-(default **1**) execute at once across the whole fleet. It is a bootstrapper-brokered,
-FIFO round-robin cap so N repos don't thrash the host. Idle polling stays
-per-repo and parallel.
+**Concurrency across tenants.** One bootstrapper-brokered cap decides how many
+work units execute at once across the whole container, so N repos don't thrash
+the host. It defaults to the largest `concurrency` any live row declares — 1
+unless a row asks for more — and `PHOEBE_MAX_CONCURRENT_AGENTS` replaces that,
+even when lower. Rows queue for it, tenants take turns, and a row starved of a
+slot may hold one over the cap (`PHOEBE_SLOT_FLOOR_BUDGET`, default 1), so the
+worst case is the cap plus that budget. Boot prints both numbers and their
+derivation on one line. Idle polling stays per-row and parallel. The knobs are
+in [`configuration.md`](configuration.md#concurrency-the-rows-knob-and-the-fleets-cap).
 
 **Reading the logs.** Every engine line is tagged
 `[phoebe:<owner>/<repo>:<pipeline>]` — the pipeline row included, and the
@@ -316,6 +321,13 @@ string stops matching. Agent output uses the combined bracket
 stay visually distinct from unit-event lines. stderr lines add a further suffix:
 `[<owner>/<repo>:<command>:stderr]`.
 The container writes no log files. Stdout is the whole story.
+
+**Which unit said it.** Anything produced on behalf of one work unit adds a
+second bracket naming it: `[phoebe:<owner>/<repo>:<row>][<kind> <ref>]` on a
+kind's own logging and on the git and install output its children produce, and
+`[<owner>/<repo>:<command>][<kind> <ref>]` on the agent's. It is there whatever
+the row's `concurrency`, so `[issues issue:88]` greps one unit's whole story —
+its clone traffic, its install, its agent — out of a row running several.
 
 **When a unit hangs.** A work unit that exceeds its wall-clock budget
 (`PHOEBE_RUN_TIMEOUT_MS`, default 45 min) is aborted so it can't starve the
