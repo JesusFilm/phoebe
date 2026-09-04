@@ -107,12 +107,13 @@ function registeredKindNames(row: ResolvedPipeline): string[] {
 }
 
 /**
- * This row's work order: the kinds it names first, in that sequence, then
- * every other kind it owns in declaration order — minus anything switched off
- * with `kinds.<name>.disabled`, the sole off-switch now that omission from
- * `order` means "no opinion about priority" rather than "never run this".
+ * Every kind this row owns, in priority order: the ones it names first, in that
+ * sequence, then the rest in declaration order. Switched-off kinds are still
+ * here — `disabled` decides what the row *runs*, not what it owns, which is
+ * what lets the enumerator (#417) derive a row's need for a git clone from a
+ * fact no hot knob can flip.
  */
-export function resolveRowWorkOrder(opts: {
+export function rowOwnedKinds(opts: {
   pipelines: Record<string, ResolvedPipeline>;
   pipeline: string;
   row: ResolvedPipeline;
@@ -133,8 +134,21 @@ export function resolveRowWorkOrder(opts: {
   );
   // Deduped: a kind named twice in `order` would otherwise be gathered twice a
   // cycle for no gain. First mention wins, so it keeps the priority it was given.
-  return [...new Set([...row.order, ...rest])].filter(
-    (kind) => workKindOverride(row.kinds, kind)?.disabled !== true,
+  return [...new Set([...row.order, ...rest])];
+}
+
+/**
+ * This row's work order: the kinds it owns, minus anything switched off with
+ * `kinds.<name>.disabled` — the sole off-switch now that omission from `order`
+ * means "no opinion about priority" rather than "never run this".
+ */
+export function resolveRowWorkOrder(opts: {
+  pipelines: Record<string, ResolvedPipeline>;
+  pipeline: string;
+  row: ResolvedPipeline;
+}): readonly string[] {
+  return rowOwnedKinds(opts).filter(
+    (kind) => workKindOverride(opts.row.kinds, kind)?.disabled !== true,
   );
 }
 

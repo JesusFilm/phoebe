@@ -202,8 +202,11 @@ exist, not what work happens inside one.
 
 Hot means the supervisor acts on a change without relaunching the row. Cold
 knobs relaunch it. `disabled` is hot at all three scopes: tenant, pipeline, and
-[kind](#per-work-kind-overrides). That is the shape the supervisor will read;
-the ticket that teaches it to spawn and reap rows comes later, so today this
+[kind](#per-work-kind-overrides). The supervisor reads that shape by asking the
+engine — `phoebe pipelines` prints this tenant's rows as JSON, and the hot knobs
+are exactly what its per-row fingerprint leaves out
+([architecture.md](architecture.md#asking-the-engine-which-rows-a-tenant-has)).
+The ticket that teaches it to spawn and reap rows comes later, so today this
 release validates the pipeline-level `disabled`, `priority` and `concurrency`
 without acting on them. A kind's `disabled` is live now, since it is what took
 over from omission.

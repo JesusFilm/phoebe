@@ -37,6 +37,7 @@ import {
   type RunOutcome,
 } from "./crash-loop.ts";
 import { readEngineSource, type ResolvedEngineSource } from "./engine-source.ts";
+import { createRowEnumerator, type RowEnumerator } from "./pipeline-rows.ts";
 import { lsRemoteBranchSha, materializeGithubEngine } from "./github-engine.ts";
 import { buildEngineChildEnv, envReconcileDigest, parseDotenv } from "./engine-child-env.ts";
 import { attachCredentialHandler, type CredentialCache } from "./credential-ipc.ts";
@@ -281,6 +282,24 @@ async function loadMountedConfig(
  * notices both that the quarantine still applies and that the branch has moved
  * past it. A fallback then checks out the last-good commit in the same clone.
  */
+/**
+ * Probe a freshly materialized checkout for row enumeration and say so, once
+ * (#417). The line is worth printing on every launch: on an engine without the
+ * subcommand it is the whole explanation for why a tenant's declared `intake`
+ * row is not running, and the answer can legitimately change under the same
+ * config the moment the engine ref moves.
+ */
+function probeRowEnumeration(entry: string): RowEnumerator {
+  const rows = createRowEnumerator({ entry });
+  console.log(
+    rows.supported()
+      ? "[phoebe] boot: engine supports pipeline enumeration — rows are read per tenant."
+      : "[phoebe] boot: engine has no `pipelines` subcommand — every tenant runs one implicit " +
+          "`work` row.",
+  );
+  return rows;
+}
+
 async function launchTarget(configPath: string, guard: CrashGuard): Promise<LaunchedEngine> {
   const fingerprint = configFingerprint(configPath);
   const source = readEngineSource(await loadMountedConfig(configPath, fingerprint));
@@ -304,6 +323,7 @@ async function launchTarget(configPath: string, guard: CrashGuard): Promise<Laun
       guarded: false,
       quarantinedSha: null,
       sample,
+      rows: probeRowEnumeration(entry),
     };
   }
 
@@ -338,6 +358,7 @@ async function launchTarget(configPath: string, guard: CrashGuard): Promise<Laun
     guarded,
     quarantinedSha,
     sample,
+    rows: probeRowEnumeration(entry),
   };
 }
 
