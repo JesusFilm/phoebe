@@ -49,8 +49,15 @@ import {
   buildUnstickComment,
 } from "./quarantine.ts";
 import { createEngine, type EngineRunOptions } from "./main.ts";
-import type { UnitRef } from "./unit-event.ts";
-import type { AnyWorkKindDefinition, WorkspaceMode } from "./work-kinds/definition.ts";
+import type { DrainSignal } from "./drain.ts";
+import { CredentialRefreshBlockedError, type CredentialClient } from "./credential-client.ts";
+import type { SlotClient } from "./slot-client.ts";
+import { createEmitUnitEvent, type StatusSnapshot, type UnitRef } from "./unit-event.ts";
+import type {
+  AnyWorkKindDefinition,
+  WorkspaceMode,
+  WorkUnitGitHubTarget,
+} from "./work-kinds/definition.ts";
 import { buildRegistry, type LoadedCustomKind } from "./work-kinds/registry.ts";
 
 // ---------------------------------------------------------------------------
@@ -2283,5 +2290,460 @@ describe("the worktree lease at the unit boundary", () => {
     ]);
     expect(worktreeArgv).toContainEqual(["worktree", "unlock", WORKSPACE_DIR]);
     expect(worktreeArgv).toContainEqual(["worktree", "remove", "--force", WORKSPACE_DIR]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rolling top-up: several units in flight inside one pipeline (#422)
+// ---------------------------------------------------------------------------
+
+/**
+ * A drain latch the test drives by hand. `wait` never times out on its own, so
+ * the loop only moves when the test says so — `tick()` wakes an idle poll,
+ * `request()` drains — and a pass that neither settles a unit nor is ticked is
+ * a hung test rather than a flaky one.
+ */
+function manualDrain(): DrainSignal & { request(): void; tick(): void } {
+  let requested = false;
+  const wakers = new Set<() => void>();
+  const wakeAll = (): void => {
+    for (const wake of wakers) wake();
+  };
+  return {
+    get requested() {
+      return requested;
+    },
+    wait: () =>
+      requested
+        ? Promise.resolve()
+        : new Promise<void>((resolve) => {
+            const wake = (): void => {
+              wakers.delete(wake);
+              resolve();
+            };
+            wakers.add(wake);
+          }),
+    dispose: () => {},
+    request: () => {
+      requested = true;
+      wakeAll();
+    },
+    tick: wakeAll,
+  };
+}
+
+/** One work kind whose units block in `run` until the test releases them. */
+type GatedKind = {
+  kind: LoadedCustomKind;
+  /** Refs whose `run` has been entered, in admission order. */
+  started: string[];
+  /** Let one running unit finish; `error` makes it finish by throwing. */
+  release(ref: string, error?: Error): Promise<void>;
+  /** Put one more unit on the kind's list, for the next gather to see. */
+  offer(id: number): void;
+};
+
+/**
+ * A kind offering one unit per entry of `refs`, each blocking in `run`. It is
+ * the instrument every test below uses: the engine's concurrency is observable
+ * as which units are inside `run` at the same moment.
+ *
+ * `ignoresInFlight` models the careless kind the contract has to survive — its
+ * `select` always offers its first ref, whatever is already running.
+ */
+function gatedKind(opts: {
+  refs: readonly number[];
+  ignoresInFlight?: boolean;
+  /** The GitHub object each unit declares; omitted ⇒ the unit declares none. */
+  target?: (id: number) => WorkUnitGitHubTarget;
+  name?: string;
+}): GatedKind {
+  const name = opts.name ?? "gated";
+  const refs = [...opts.refs];
+  const started: string[] = [];
+  const gates = new Map<string, (error?: Error) => void>();
+  const settled = new Map<string, Promise<void>>();
+  return {
+    started,
+    async release(ref, error) {
+      gates.get(ref)?.(error);
+      await settled.get(ref);
+    },
+    offer: (id) => refs.push(id),
+    kind: {
+      name,
+      options: undefined,
+      definition: {
+        name,
+        oneShotEligible: true,
+        promptFile: `prompts/${name}.md`,
+        workspace: "scratch",
+        report: {
+          noun: `${name} unit(s)`,
+          describe: (unit: { ref: string }) => `${name} ${unit.ref}`,
+        },
+        fetch: () => Promise.resolve({ refs: [...refs] }),
+        select: (gathered: { refs: readonly number[] }, ctx) => {
+          const free = opts.ignoresInFlight
+            ? gathered.refs
+            : gathered.refs.filter((id) => !ctx.inFlight.has(`u:${id}`));
+          const pick = free[0];
+          return {
+            unit:
+              pick === undefined
+                ? null
+                : {
+                    ref: `u:${pick}`,
+                    ...(opts.target ? { github: opts.target(pick) } : {}),
+                  },
+            skipped: [],
+            total: gathered.refs.length,
+          };
+        },
+        run: (unit: { ref: string }) => {
+          started.push(unit.ref);
+          // Handed out once: a real kind stops offering a unit it has worked,
+          // and without that the gate would re-offer the same ref forever.
+          const at = refs.indexOf(Number(unit.ref.slice(2)));
+          if (at !== -1) refs.splice(at, 1);
+          const promise = new Promise<void>((resolve, reject) => {
+            gates.set(unit.ref, (error) => (error ? reject(error) : resolve()));
+          });
+          settled.set(
+            unit.ref,
+            promise.catch(() => {}),
+          );
+          return promise;
+        },
+      } as AnyWorkKindDefinition,
+    },
+  };
+}
+
+/** An engine running `kinds` for real, with the drain latch the test drives. */
+function concurrentEngine(opts: {
+  kinds: readonly GatedKind[];
+  concurrency: number;
+  workOrder?: readonly string[];
+  github?: GitHubStubOverrides;
+  credentialClient?: CredentialClient;
+  slotClient?: SlotClient;
+}): {
+  drain: ReturnType<typeof manualDrain>;
+  lines: string[];
+  status: () => StatusSnapshot | null;
+  env: NodeJS.ProcessEnv;
+  loop: () => Promise<void>;
+} {
+  const drain = manualDrain();
+  const config = resolveConfig({
+    ...minimalUser(),
+    workOrder: opts.workOrder ?? opts.kinds.map((gated) => gated.kind.name),
+  });
+  const env: NodeJS.ProcessEnv = { GH_TOKEN: "t0" };
+  let snapshot: StatusSnapshot | null = null;
+  const lines: string[] = [];
+  const engine = createEngine({
+    config,
+    registry: buildRegistry(
+      config,
+      opts.kinds.map((gated) => gated.kind),
+    ),
+    env,
+    inContainer: true,
+    github: stubGitHub({
+      resolveLogin: () => PHOEBE_LOGIN,
+      newestUnitMarkerAuthor: () => PHOEBE_LOGIN,
+      ...opts.github,
+    }),
+    git: stubGit({}).git,
+    clock: { sleep: () => Promise.resolve(), now: () => new Date("2026-08-19T00:00:00Z") },
+    drain,
+    slotClient: opts.slotClient ?? null,
+    credentialClient: opts.credentialClient ?? null,
+    emitUnitEvent: createEmitUnitEvent({
+      tenant: config.repoSlug,
+      pipeline: "work",
+      statusPath: "status.json",
+      log: (line) => lines.push(line),
+      read: () => snapshot,
+      write: (_path, next) => {
+        snapshot = next;
+      },
+    }),
+    run: {
+      runOnce: false,
+      dryRun: false,
+      pollIntervalMs: 1_000,
+      concurrency: opts.concurrency,
+    },
+  });
+  return {
+    drain,
+    lines,
+    env,
+    status: () => snapshot,
+    loop: async () => {
+      const original = { log: console.log, warn: console.warn, error: console.error };
+      const restore = (): void => {
+        Object.assign(console, original);
+      };
+      const record = (...args: unknown[]): void => {
+        lines.push(args.map((arg) => String(arg)).join(" "));
+      };
+      console.log = record;
+      console.warn = record;
+      console.error = record;
+      // Also on the way out of a test that threw mid-loop, so one failure does
+      // not silence the rest of the file.
+      onTestFinished(restore);
+      try {
+        await engine.runLoop();
+      } finally {
+        restore();
+      }
+    },
+  };
+}
+
+/** Give the loop room to run its passes up to its next await on the test. */
+async function settle(): Promise<void> {
+  for (let i = 0; i < 50; i++) await Promise.resolve();
+}
+
+describe("rolling top-up inside one pipeline", () => {
+  test("concurrency 2 has both units running before either finishes", async () => {
+    const gated = gatedKind({ refs: [1, 2] });
+    const engine = concurrentEngine({ kinds: [gated], concurrency: 2 });
+    const loop = engine.loop();
+    await settle();
+
+    // Both entered `run`, and the snapshot says so with a start time each.
+    expect(gated.started).toEqual(["u:1", "u:2"]);
+    const running = engine.status()?.currentUnits ?? [];
+    expect(running.map((current) => current.unit.id)).toEqual(["u:1", "u:2"]);
+    expect(running.every((current) => current.startedAt.length > 0)).toBe(true);
+    expect(running.every((current) => current.runBudgetMs !== null)).toBe(true);
+
+    engine.drain.request();
+    await gated.release("u:1");
+    await gated.release("u:2");
+    await loop;
+    expect(engine.status()?.currentUnits).toEqual([]);
+  });
+
+  test("concurrency 1 admits the second unit only once the first has settled", async () => {
+    const gated = gatedKind({ refs: [1, 2] });
+    const engine = concurrentEngine({ kinds: [gated], concurrency: 1 });
+    const loop = engine.loop();
+    await settle();
+
+    expect(gated.started).toEqual(["u:1"]);
+    await gated.release("u:1");
+    await settle();
+    expect(gated.started).toEqual(["u:1", "u:2"]);
+
+    engine.drain.request();
+    await gated.release("u:2");
+    await loop;
+  });
+
+  test("a settled failure is reconsidered immediately, with no poll sleep", async () => {
+    const gated = gatedKind({ refs: [1, 2] });
+    const engine = concurrentEngine({ kinds: [gated], concurrency: 1 });
+    const loop = engine.loop();
+    await settle();
+
+    // No `tick()` between the two: the settle is what wakes the pass.
+    await gated.release("u:1", new Error("push rejected"));
+    await settle();
+    expect(gated.started).toEqual(["u:1", "u:2"]);
+    expect(engine.status()?.lastError).toBe("push rejected");
+
+    engine.drain.request();
+    await gated.release("u:2");
+    await loop;
+  });
+
+  test("a kind ignoring ctx.inFlight runs one unit at a time, and the drop is logged", async () => {
+    const gated = gatedKind({ refs: [1, 2], ignoresInFlight: true });
+    const engine = concurrentEngine({ kinds: [gated], concurrency: 2 });
+    const loop = engine.loop();
+    await settle();
+
+    expect(gated.started).toEqual(["u:1"]);
+    expect(
+      engine.lines.some(
+        (line) => line.includes("gated offered u:1") && line.includes("already running"),
+      ),
+    ).toBe(true);
+
+    engine.drain.request();
+    await gated.release("u:1");
+    await loop;
+  });
+
+  test("two units on the same GitHub object are never in flight together", async () => {
+    const gated = gatedKind({
+      refs: [1, 2],
+      // Distinct refs, one shared PR — exactly what admission must refuse.
+      target: () => ({ objectType: "pr", id: 7 }),
+    });
+    const engine = concurrentEngine({ kinds: [gated], concurrency: 2 });
+    const loop = engine.loop();
+    await settle();
+
+    expect(gated.started).toEqual(["u:1"]);
+    expect(
+      engine.lines.some(
+        (line) => line.includes("Not admitting gated u:2") && line.includes("PR #7"),
+      ),
+    ).toBe(true);
+
+    engine.drain.request();
+    await gated.release("u:1");
+    await loop;
+  });
+
+  test("a unit with no GitHub target is admitted, and the absent exclusion is logged", async () => {
+    const gated = gatedKind({ refs: [1] });
+    const engine = concurrentEngine({ kinds: [gated], concurrency: 2 });
+    const loop = engine.loop();
+    await settle();
+
+    expect(gated.started).toEqual(["u:1"]);
+    expect(engine.lines.some((line) => line.includes("gated u:1 declares no GitHub target"))).toBe(
+      true,
+    );
+
+    engine.drain.request();
+    await gated.release("u:1");
+    await loop;
+  });
+
+  test("draining with two units in flight waits for both, then exits", async () => {
+    const gated = gatedKind({ refs: [1, 2] });
+    const engine = concurrentEngine({ kinds: [gated], concurrency: 2 });
+    const loop = engine.loop();
+    await settle();
+    expect(gated.started).toEqual(["u:1", "u:2"]);
+
+    engine.drain.request();
+    let exited = false;
+    void loop.then(() => {
+      exited = true;
+    });
+    await settle();
+    // Neither unit has finished, so neither has the loop.
+    expect(exited).toBe(false);
+
+    await gated.release("u:1");
+    await settle();
+    expect(exited).toBe(false);
+
+    await gated.release("u:2");
+    await loop;
+    expect(exited).toBe(true);
+    expect(engine.lines.some((line) => line.includes("awaiting 2 in flight"))).toBe(true);
+  });
+
+  test("priority still means priority: the first kind fills both slots", async () => {
+    const first = gatedKind({ refs: [1, 2], name: "first" });
+    const second = gatedKind({ refs: [3], name: "second" });
+    const engine = concurrentEngine({ kinds: [first, second], concurrency: 2 });
+    const loop = engine.loop();
+    await settle();
+
+    expect(first.started).toEqual(["u:1", "u:2"]);
+    expect(second.started).toEqual([]);
+
+    engine.drain.request();
+    await first.release("u:1");
+    await first.release("u:2");
+    await loop;
+  });
+
+  test("the stranded-unit sweep leaves an issue this pipeline is running alone", async () => {
+    const gated = gatedKind({
+      refs: [88],
+      target: (id) => ({ objectType: "issue", id }),
+    });
+    const rearmed: number[] = [];
+    const engine = concurrentEngine({
+      kinds: [gated],
+      concurrency: 2,
+      // `issues` is in the order so the row owns issue-shaped objects and the
+      // stranded sweep actually runs; it offers nothing itself.
+      workOrder: ["gated", "issues"],
+      github: {
+        listReadyIssues: () => [],
+        // Claimed only once its unit is running: the first pass sweeps before
+        // it admits anything, and an issue nobody holds is fair game.
+        listLabeledIssues: () =>
+          gated.started.length > 0 ? [anIssue(88, { labels: ["processing"] })] : [],
+        blockerPrState: () => ({ hasOpenPr: false, hasMergedPr: false }),
+        removeIssueLabel: (issueNumber) => rearmed.push(issueNumber),
+      },
+    });
+    const loop = engine.loop();
+    await settle();
+    expect(gated.started).toEqual(["u:88"]);
+
+    // A second pass, with the unit still between its claim and its first push.
+    engine.drain.tick();
+    await settle();
+    expect(rearmed).toEqual([]);
+
+    engine.drain.request();
+    await gated.release("u:88");
+    await loop;
+  });
+
+  test("a blocked credential refresh admits nothing while the running unit finishes", async () => {
+    const gated = gatedKind({ refs: [1] });
+    let leases = 0;
+    const slots = { acquired: 0, released: 0 };
+    const engine = concurrentEngine({
+      kinds: [gated],
+      concurrency: 2,
+      slotClient: {
+        acquire: () => {
+          slots.acquired += 1;
+          return Promise.resolve();
+        },
+        release: () => {
+          slots.released += 1;
+        },
+      },
+      credentialClient: {
+        requestLease: () => {
+          leases += 1;
+          // 1 and 2 are the first pass's top-of-poll and its admission; 3 is
+          // the second pass's top-of-poll; 4 is the admission that fails.
+          if (leases >= 4) return Promise.reject(new CredentialRefreshBlockedError());
+          return Promise.resolve(`t${leases}`);
+        },
+      },
+    });
+    const loop = engine.loop();
+    await settle();
+    expect(gated.started).toEqual(["u:1"]);
+
+    // A second unit appears, and the lease that would admit it fails.
+    gated.offer(2);
+    engine.drain.tick();
+    await settle();
+
+    expect(gated.started).toEqual(["u:1"]);
+    // The cell was not cleared, so the running unit still has a token — and no
+    // slot was taken for the unit that was never admitted, so none was given
+    // back either.
+    expect(engine.env["GH_TOKEN"]).toBe("t3");
+    expect(slots).toEqual({ acquired: 1, released: 0 });
+
+    engine.drain.request();
+    await gated.release("u:1");
+    await loop;
+    expect(slots).toEqual({ acquired: 1, released: 1 });
   });
 });
