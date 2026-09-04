@@ -1039,7 +1039,15 @@ describe("superviseFleet — solo's one row", () => {
 
 /** One enumerated row, with only the two fields the supervisor diffs on varied. */
 function pipelineRow(name: string, fingerprint: string | null): PipelineRow {
-  return { name, disabled: false, priority: 0, concurrency: 1, needsClone: true, fingerprint };
+  return {
+    name,
+    disabled: false,
+    priority: 0,
+    concurrency: 1,
+    needsClone: true,
+    env: [],
+    fingerprint,
+  };
 }
 
 /** Where a slug's tenant keeps its config — the key the enumerator is asked by. */
@@ -1059,6 +1067,7 @@ function matrixHarness(
     rows?: Record<string, PipelineRow[] | Error>;
     supported?: boolean;
     decide?: (run: FleetRun) => RowExitAction;
+    rowFingerprint?: (row: SupervisedRow, enumerated: string | null) => string | null;
   } = {},
 ) {
   const clock = gatedClock();
@@ -1120,6 +1129,7 @@ function matrixHarness(
       },
       wait: clock.wait,
     },
+    ...(options.rowFingerprint ? { rowFingerprint: options.rowFingerprint } : {}),
     onRowsError: (info) => rowErrors.push(info),
     onRunEnd: (run) => runs.push(run),
     ...(options.decide ? { rowExit: { decide: options.decide } } : {}),
@@ -1331,5 +1341,58 @@ describe("superviseFleet — the (tenant × pipeline) matrix", () => {
     await settle();
     expect(h.spawned[0]?.fake.kills).toContain("SIGTERM");
     expect(h.spawned).toHaveLength(2);
+  });
+});
+
+describe("declared keys across the matrix (#425)", () => {
+  const WIDGET = configOf("acme/widget");
+  const declaring = (name: string, fp: string, env: string[]): PipelineRow => ({
+    ...pipelineRow(name, fp),
+    env,
+  });
+
+  test("each row learns what its siblings declared, and nothing it declared itself", async () => {
+    const h = matrixHarness({
+      rows: {
+        [WIDGET]: [
+          declaring("work", "w1", []),
+          declaring("intake", "i1", ["SLACK_BOT_TOKEN"]),
+          declaring("triage", "t1", ["LINEAR_KEY"]),
+        ],
+      },
+    });
+    await settle();
+    expect(h.named("work")[0]?.row.siblingEnv).toEqual(["LINEAR_KEY", "SLACK_BOT_TOKEN"]);
+    expect(h.named("intake")[0]?.row.siblingEnv).toEqual(["LINEAR_KEY"]);
+    h.requestStop();
+    await h.result;
+  });
+
+  test("a `.env` rotation only the intake row can see relaunches it alone", async () => {
+    let slackToken = "xoxb-1";
+    const h = matrixHarness({
+      rows: {
+        [WIDGET]: [declaring("work", "w1", []), declaring("intake", "i1", ["SLACK_BOT_TOKEN"])],
+      },
+      // The supervisor's half of the row fingerprint: the tenant's `.env` as
+      // this row would hold it, which is boot.ts's `workspaceRowFingerprint`.
+      rowFingerprint: (row, enumerated) =>
+        enumerated === null
+          ? null
+          : `${enumerated}:${row.pipeline.env.includes("SLACK_BOT_TOKEN") ? slackToken : ""}`,
+    });
+    await settle();
+    expect(h.spawned).toHaveLength(2);
+
+    slackToken = "xoxb-2";
+    // The tenant fingerprint moves too — a `.env` edit is a tenant-wide stat
+    // change — which is what makes "only intake relaunched" the real claim.
+    h.setSamples([sample("acme/widget", "fp2")]);
+    h.tick();
+    await settle();
+    expect(h.named("intake")).toHaveLength(2);
+    expect(h.named("work")).toHaveLength(1);
+    h.requestStop();
+    await h.result;
   });
 });

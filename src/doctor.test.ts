@@ -8,6 +8,7 @@ import { describe, expect, test } from "vite-plus/test";
 import {
   buildDoctorReport,
   crashLoopCheck,
+  declaredEnvCheck,
   describeRepoProbe,
   fetchRepoLabels,
   formatDoctorReport,
@@ -482,5 +483,40 @@ describe("tenantRow config load failure regression", () => {
     expect(labelsResult?.detail).toMatch(/config load failed/);
     expect(driftResult?.state).toBe("unknown");
     expect(driftResult?.detail).toMatch(/config load failed/);
+  });
+});
+
+describe("declaredEnvCheck", () => {
+  test("a scheduled kind's missing key is a tenant finding", () => {
+    const check = declaredEnvCheck(
+      [{ pipeline: "intake", kind: "slack-intake", key: "SLACK_BOT_TOKEN" }],
+      "/etc/phoebe/repos/acme/widget/.env",
+    );
+    expect(check.state).toBe("fail");
+    expect(check.detail).toMatch(/intake\/slack-intake declares SLACK_BOT_TOKEN/);
+    expect(check.detail).toMatch(/repos\/acme\/widget\/\.env/);
+  });
+
+  test("nothing missing passes", () => {
+    expect(declaredEnvCheck([], "/etc/phoebe/.env").state).toBe("ok");
+  });
+
+  test("a config that would not load is unknown, not a shortfall", () => {
+    expect(declaredEnvCheck(null, "/etc/phoebe/.env").state).toBe("unknown");
+  });
+
+  test("the check only appears when the caller ran the scan", async () => {
+    const mockFetch = async () =>
+      new Response(JSON.stringify({ id: 1, name: "widget" }), { status: 200 });
+    const row = await tenantRow({
+      path: "tenant",
+      slug: "acme/widget",
+      arm: "pat",
+      token: "ghp_tok",
+      envLabel: "/etc/phoebe/.env",
+      fetchFn: mockFetch as typeof fetch,
+      inContainer: false,
+    });
+    expect(row.checks.find((check) => check.id === "declared-env")).toBeUndefined();
   });
 });

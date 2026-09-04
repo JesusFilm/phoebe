@@ -16,6 +16,7 @@ import {
   setupGitCredentials,
   rowArgv,
   tenantFingerprint,
+  workspaceRowFingerprint,
 } from "./boot.ts";
 import type { SupervisedRow } from "./pipeline-rows.ts";
 
@@ -328,9 +329,11 @@ describe("rowArgv", () => {
       priority: 0,
       concurrency: 1,
       needsClone: true,
+      env: [],
       fingerprint: enumerated ? "abc123" : null,
     },
     enumerated,
+    siblingEnv: [],
   });
 
   test("names the row the child is to run", () => {
@@ -360,5 +363,72 @@ describe("rowArgv", () => {
       ]),
     ) //
       .toEqual(["--run-once"]);
+  });
+});
+
+describe("workspaceRowFingerprint", () => {
+  function tenantDir(env: string): {
+    dir: string;
+    row: (name: string, own: string[], siblings: string[]) => SupervisedRow;
+  } {
+    const dir = mkdtempSync(join(tmpdir(), "phoebe-row-fp-"));
+    writeFileSync(join(dir, ".env"), env);
+    return {
+      dir,
+      row: (name, own, siblings) => ({
+        id: `${dir}#${name}`,
+        tenant: {
+          id: dir,
+          slug: "acme/widget",
+          dir,
+          configPath: join(dir, "phoebe.config.ts"),
+          envPath: join(dir, ".env"),
+          gitIdentity: null,
+        },
+        pipeline: {
+          name,
+          disabled: false,
+          priority: 0,
+          concurrency: 1,
+          needsClone: true,
+          env: own,
+          fingerprint: "fp",
+        },
+        enumerated: true,
+        siblingEnv: siblings,
+      }),
+    };
+  }
+
+  test("rotating a declared key moves the declaring row and not its sibling", () => {
+    const before = tenantDir("SLACK_BOT_TOKEN=xoxb-1\nFOO=public\n");
+    const after = tenantDir("SLACK_BOT_TOKEN=xoxb-2\nFOO=public\n");
+    const intake = (t: ReturnType<typeof tenantDir>) => t.row("intake", ["SLACK_BOT_TOKEN"], []);
+    const work = (t: ReturnType<typeof tenantDir>) => t.row("work", [], ["SLACK_BOT_TOKEN"]);
+
+    expect(workspaceRowFingerprint(intake(after), "fp")).not.toBe(
+      workspaceRowFingerprint(intake(before), "fp"),
+    );
+    expect(workspaceRowFingerprint(work(after), "fp")).toBe(
+      workspaceRowFingerprint(work(before), "fp"),
+    );
+  });
+
+  test("rotating an undeclared key moves both rows", () => {
+    const before = tenantDir("SLACK_BOT_TOKEN=xoxb-1\nFOO=public\n");
+    const after = tenantDir("SLACK_BOT_TOKEN=xoxb-1\nFOO=changed\n");
+    for (const [own, siblings] of [
+      [["SLACK_BOT_TOKEN"], []],
+      [[], ["SLACK_BOT_TOKEN"]],
+    ] as const) {
+      expect(workspaceRowFingerprint(after.row("r", [...own], [...siblings]), "fp")).not.toBe(
+        workspaceRowFingerprint(before.row("r", [...own], [...siblings]), "fp"),
+      );
+    }
+  });
+
+  test("an unknown enumerated fingerprint stays unknown", () => {
+    const t = tenantDir("FOO=public\n");
+    expect(workspaceRowFingerprint(t.row("work", [], []), null)).toBeNull();
   });
 });

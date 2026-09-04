@@ -47,6 +47,7 @@ import { readEngineSource, type ResolvedEngineSource } from "./engine-source.ts"
 import {
   createRowEnumerator,
   rowLabel,
+  siblingOnlyEnvKeys,
   type RowEnumerator,
   type SupervisedRow,
 } from "./pipeline-rows.ts";
@@ -562,6 +563,9 @@ function runFleet(opts: {
       // base and the App bot fallback, below the tenant's own `.env`.
       configIdentity: tenant.gitIdentity,
       tenantEnv: readTenantEnv(tenant.envPath),
+      // The subtractive row scrub (#425): this tenant's `.env` reaches the row
+      // whole except for the keys a sibling row declared and this one did not.
+      scrubKeys: siblingOnlyEnvKeys(row),
     });
     let settle!: (exit: EngineExit) => void;
     const exited = new Promise<EngineExit>((resolve) => {
@@ -641,6 +645,7 @@ function runFleet(opts: {
         `[phoebe] boot: tenant discovery failed — ${describe(error)}. ` +
           `Skipping the row axis this poll (the running fleet is left intact).`,
       ),
+    rowFingerprint: workspaceRowFingerprint,
     onRowsError: ({ tenantId, error }) =>
       console.warn(
         `[phoebe] boot: could not enumerate rows for ${tenantId} — ${describe(error)}. ` +
@@ -652,6 +657,36 @@ function runFleet(opts: {
     },
     rowExit: rowExitPolicy(opts.guard),
   });
+}
+
+/**
+ * A row's reconcile fingerprint: what the engine said about the row's config,
+ * narrowed by the tenant's `.env` *as this row would hold it* (#425).
+ *
+ * The tenant fingerprint still counts every `.env` key, so an edit there is
+ * always noticed. What this decides is *who relaunches*: a rotated key that
+ * only the intake row can see moves only the intake row's digest, and because
+ * the supervisor never fans a tenant-wide change out to rows that already
+ * accounted for it, the work row keeps running. A rotated undeclared key is
+ * visible to every row and moves all of them, which is the behaviour a
+ * single-row tenant has always had.
+ *
+ * A null enumerated fingerprint stays null — the implicit row of a checkout
+ * that cannot enumerate declares nothing and relaunches on the tenant axis.
+ */
+export function workspaceRowFingerprint(
+  row: SupervisedRow,
+  enumerated: string | null,
+): string | null {
+  if (enumerated === null) return null;
+  const hidden = siblingOnlyEnvKeys(row);
+  let digest: string;
+  try {
+    digest = envReconcileDigest(readFileSync(row.tenant.envPath, "utf8"), hidden);
+  } catch {
+    digest = "";
+  }
+  return `${enumerated}:${digest}`;
 }
 
 /**
@@ -1208,6 +1243,17 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       settle = resolve;
     });
     const { env, overridden } = soloIdentityEnv(process.env, soloIdentity);
+    // Solo's arm of the subtractive row scrub (#425). There is no per-tenant
+    // `.env` here — the container env *is* the tenant's — so the subtraction
+    // runs against what the child would otherwise inherit. Materializing a copy
+    // is the only way to take a key away from an inherited env, so a row with
+    // nothing to scrub keeps the null: the child then inherits verbatim, as it
+    // always has.
+    const scrubKeys = siblingOnlyEnvKeys(row);
+    const childEnv = env ?? (scrubKeys.length > 0 ? { ...process.env } : null);
+    if (childEnv !== null) {
+      for (const key of scrubKeys) delete childEnv[key];
+    }
     if (soloIdentity !== null && overridden.length > 0) {
       // The declaration lost, which is the rule — but say so. A leftover
       // `GIT_AUTHOR_NAME` on the container env would otherwise make a repo's
@@ -1221,9 +1267,10 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     // Solo's config is the root's, resolved from cwd exactly as it always was:
     // `relocated` is false, so this argv is today's plus the row's `--pipeline`.
     const child = spawnSoloChild(engine.entry, rowArgv(row, configPath, false, argv), {
-      // `env` is null when nothing is declared: the child then inherits the
-      // supervisor's env exactly as it always has.
-      ...(env === null ? {} : { env }),
+      // Null when neither a `gitIdentity` nor a sibling declaration asked for a
+      // change: the child then inherits the supervisor's env exactly as it
+      // always has.
+      ...(childEnv === null ? {} : { env: childEnv }),
       onExit: (code: number | null, signal: NodeJS.Signals | null) => settle({ code, signal }),
       onSpawnError: (error: Error) => {
         console.error(`[phoebe] boot: engine failed to spawn — ${error.message}`);
