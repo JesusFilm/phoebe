@@ -349,10 +349,12 @@ because the row beside it wrote a second ago, and an idle row is not sick for be
 idle a week.
 
 The one staleness claim is `wedged?`, and it is anchored to the only deadline the
-snapshot carries, the in-flight unit's own run budget. A working row whose oldest
-unit has outlived its budget plus one poll interval gets `wedged? <age>` beside the
-state it is still reporting. It is a question, not a verdict, because nothing
-reading disk can see whether the process is alive.
+snapshot carries, each in-flight unit's own run budget. A working row gets
+`wedged? <age>` beside the state it is still reporting once any of its units has
+outlived its own budget plus one poll interval, so a unit admitted late on a short
+budget can raise the flag while an older one beside it is still well inside its
+own. The age is the oldest unit's. It is a question, not a verdict, because
+nothing reading disk can see whether the process is alive.
 
 There is no per-pipeline stop verb. Hot `disabled: true` is the stop, and it is one
 edit with no relaunch. Today the flag is validated, enumerated and shown as

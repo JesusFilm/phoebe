@@ -329,8 +329,9 @@ own `state/<name>/status.json` and nothing else:
 - `working k/N <units>` — `N` is the row's declared `concurrency`.
 - `waiting for slot` — a pass picked a unit and is queued on the fleet cap.
 - `idle`.
-- `wedged? <age>` beside a working row whose oldest unit has been running
-  longer than its own run budget plus one poll interval.
+- `wedged? <age>` beside a working row with a unit that has been running longer
+  than its own run budget plus one poll interval. Each unit is weighed against
+  its own budget; `<age>` is the oldest unit's.
 
 `wedged?` is a question, not a verdict: `list` reads files, not processes. An
 idle row is never wedged however long it has been idle, and rows are never
