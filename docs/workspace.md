@@ -339,7 +339,12 @@ docker compose --env-file ../.env up -d
 1. Selects workspace mode from the root `workspace` block,
 2. Discovers children (walks to `depth`, or resolves the declared `tenants`
    list, see [Declaring the fleet](#declaring-the-fleet-workspacetenants)),
-3. Hands the discovered set to the #57 fleet (one engine child per tenant,
+3. Sweeps each tenant's stale state — the disk of pipeline rows the config no
+   longer declares — before spawning anything, and again after a later row-set
+   change has drained the rows it removed
+   ([Reclaiming what a row leaves behind](architecture.md#reclaiming-what-a-row-leaves-behind)).
+   A sweep that fails never holds up a spawn,
+4. Hands the discovered set to the #57 fleet (one engine child per row,
    env-scrub, shared concurrency cap, reconcile re-reads the block every poll).
 
 See the mount notes beside the scaffolded templates

@@ -32,6 +32,7 @@
 import { statSync } from "node:fs";
 import { type ResolvedEngineSource } from "./engine-source.ts";
 import type { RowEnumerator } from "./pipeline-rows.ts";
+import type { StateSweeper } from "./state-sweep.ts";
 
 /** How often the watch samples the config and the tracked ref. */
 export const DEFAULT_RECONCILE_INTERVAL_MS = 60_000;
@@ -95,6 +96,12 @@ export type LaunchedEngine = {
    * so the answer never outlives the checkout it came from.
    */
   rows?: RowEnumerator;
+  /**
+   * This checkout's stale-state sweeper (#426). Its home is the launch for the
+   * same reason the enumerator's is: what a row owns on disk is the engine
+   * commit's answer, and an upgrade may change it.
+   */
+  stateSweep?: StateSweeper;
 };
 
 export type EngineExit = { code: number | null; signal: NodeJS.Signals | null };

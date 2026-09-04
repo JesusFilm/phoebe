@@ -115,7 +115,12 @@ export type RowEnumerator = {
   rowsFor: (target: EnumerateTarget) => readonly PipelineRow[];
 };
 
-function engineCommandFor(entry: string): EngineCommand {
+/**
+ * Run the engine CLI at `entry` as a child process. Shared with the stale-state
+ * sweeper (#426), which asks the same checkout a different question the same
+ * way — one process, one JSON answer, a status that says whether to believe it.
+ */
+export function engineCommandFor(entry: string): EngineCommand {
   return (args, { cwd }) => {
     const result = spawnSync(process.execPath, [entry, ...args], {
       encoding: "utf8",
@@ -130,11 +135,11 @@ function engineCommandFor(entry: string): EngineCommand {
 }
 
 /**
- * The JSON object the subcommand prints as the *last* line of stdout. Last
- * rather than only: a custom kind module loads during enumeration and may print
+ * The JSON object a subcommand prints as the *last* line of stdout. Last rather
+ * than only: a custom kind module loads during enumeration and may print
  * whatever it likes on the way past.
  */
-function lastJsonLine(stdout: string): unknown {
+export function lastJsonLine(stdout: string): unknown {
   const lines = stdout
     .split("\n")
     .map((line) => line.trim())
@@ -149,7 +154,7 @@ function lastJsonLine(stdout: string): unknown {
 }
 
 /** The first line of a failed command worth showing an operator. */
-function diagnosis(result: EngineCommandResult): string {
+export function diagnosis(result: EngineCommandResult): string {
   const stderr = result.stderr.trim();
   if (stderr.length > 0) return stderr.split("\n").slice(-3).join(" ");
   const stdout = result.stdout.trim();
