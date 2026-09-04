@@ -4,10 +4,10 @@
 // `-R`, or a GraphQL cursor that never advances. Those three are what this file
 // covers; per the design record there is no obligation to reach every method.
 
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, test } from "vite-plus/test";
+import { afterEach, describe, expect, test } from "vite-plus/test";
 import { asBranchRef, asPrNumber, asSha } from "./branded.ts";
 import { resolveConfig, type PhoebeUserConfig } from "./config-schema.ts";
 import {
@@ -929,7 +929,7 @@ describe("createFeatureBranch", () => {
     error.stderr = text;
     return error;
   };
-  /** An executor whose first call (the branch probe) throws `probeError`, then replies in order. */
+  /** An executor whose second call (the branch probe) throws `probeError`, otherwise replying in order. */
   function probingExec(
     probeError: Error | null,
     replies: readonly string[],
@@ -939,7 +939,7 @@ describe("createFeatureBranch", () => {
     let n = 0;
     const wrapped: GhExecutor = (args, opts) => {
       n++;
-      if (n === 1 && probeError) {
+      if (n === 2 && probeError) {
         calls.push({ args, ...opts });
         throw probeError;
       }
@@ -967,8 +967,8 @@ describe("createFeatureBranch", () => {
     const { github, calls } = probingExec(ghError("Not Found (HTTP 404)"), seedReplies);
     github.createFeatureBranch(341);
     expect(calls.map((c) => c.args)).toEqual([
-      ["api", "repos/acme/widget/git/ref/heads/phoebe/feature-341"],
       ["api", "repos/acme/widget/git/ref/heads/main"],
+      ["api", "repos/acme/widget/git/ref/heads/phoebe/feature-341"],
       ["api", `repos/acme/widget/git/commits/${SHA}`],
       ["api", "--method", "POST", "repos/acme/widget/git/commits", "--input", "-"],
       ["api", "--method", "POST", "repos/acme/widget/git/refs", "--input", "-"],
@@ -988,8 +988,18 @@ describe("createFeatureBranch", () => {
   });
 
   test("uses an existing branch as-is and mints nothing", () => {
-    const { github, calls } = probingExec(null, [JSON.stringify({ object: { sha: SHA } })]);
+    const ref = JSON.stringify({ object: { sha: SHA } });
+    const { github, calls } = probingExec(null, [ref, ref]);
     github.createFeatureBranch(341);
+    expect(calls).toHaveLength(2);
+  });
+
+  test("surfaces a repository-level failure from the default-branch read, not the probe", () => {
+    const { github, calls } = probingExec(null, [], {
+      call: 1,
+      error: ghError("Not Found (HTTP 404)"),
+    });
+    expect(() => github.createFeatureBranch(341)).toThrow("Not Found");
     expect(calls).toHaveLength(1);
   });
 
@@ -1278,21 +1288,28 @@ describe("updatePrBody", () => {
 });
 
 describe("createGhExecutor", () => {
+  const posix = test.skipIf(process.platform === "win32");
+  const tempDirs: string[] = [];
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
   /** A fake `gh` on PATH that echoes its stdin, so forwarded input is observable. */
   function fakeGhOnPath(): NodeJS.ProcessEnv {
     const dir = mkdtempSync(join(tmpdir(), "phoebe-gh-"));
+    tempDirs.push(dir);
     const gh = join(dir, "gh");
     writeFileSync(gh, "#!/bin/sh\ncat\n");
     chmodSync(gh, 0o755);
     return { PATH: `${dir}:${process.env.PATH ?? ""}` };
   }
 
-  test("forwards input on the captured path", () => {
+  posix("forwards input on the captured path", () => {
     const exec = createGhExecutor(fakeGhOnPath());
     expect(exec(["api", "--input", "-"], { input: '{"ref":"x"}' })).toBe('{"ref":"x"}');
   });
 
-  test("forwards input on the inherit path without throwing", () => {
+  posix("forwards input on the inherit path without throwing", () => {
     const exec = createGhExecutor(fakeGhOnPath());
     expect(() => exec(["api", "--input", "-"], { input: "{}", inherit: true })).not.toThrow();
   });

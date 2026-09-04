@@ -405,6 +405,10 @@ export type GhExecutor = (
   opts?: { input?: string; inherit?: boolean },
 ) => string;
 
+/**
+ * The real executor: `gh` as a child process with `env`. Captured by default;
+ * `inherit` streams output through. `input` is forwarded on both paths.
+ */
 export function createGhExecutor(env: NodeJS.ProcessEnv): GhExecutor {
   return (args, opts) => {
     if (opts?.inherit) {
@@ -835,15 +839,19 @@ export function createGitHubClient({
       type GitRef = { object: { sha: string } };
       type GitCommit = { tree: { sha: string } };
       type NewCommit = { sha: string };
-      const errorText = (error: unknown): string =>
-        `${(error as { stderr?: string }).stderr ?? ""}\n${error instanceof Error ? error.message : String(error)}`;
+      // The raw `gh` error, stderr first: the classifiers below read status text.
+      const ghErrorText = (error: unknown): string =>
+        `${(error as { stderr?: string }).stderr ?? ""}\n${errorText(error)}`;
 
-      // Probe first: a branch that exists is simply used, and no commit is minted.
+      // Read the default branch first so a repository-level failure (no access,
+      // wrong slug) surfaces here with its own message. After that, a 404 on
+      // the feature ref can only mean the branch is absent.
+      const head = ghApiJson<GitRef>(`repos/${slug}/git/ref/heads/${config.defaultBranch}`);
       try {
         exec(["api", `repos/${slug}/git/ref/heads/${branch}`]);
-        return;
+        return; // An existing branch is used as-is; nothing is minted.
       } catch (error) {
-        if (!/\b404\b|Not Found/i.test(errorText(error))) {
+        if (!/\b404\b|Not Found/i.test(ghErrorText(error))) {
           throw error;
         }
       }
@@ -852,7 +860,6 @@ export function createGitHubClient({
       // GitHub refuses a pull request whose head and base share a commit, so a
       // branch cut straight from the default branch could never carry the draft
       // integration PR the arm opens on first use.
-      const head = ghApiJson<GitRef>(`repos/${slug}/git/ref/heads/${config.defaultBranch}`);
       const headCommit = ghApiJson<GitCommit>(`repos/${slug}/git/commits/${head.object.sha}`);
       const seed = JSON.parse(
         exec(["api", "--method", "POST", `repos/${slug}/git/commits`, "--input", "-"], {
@@ -872,7 +879,7 @@ export function createGitHubClient({
       } catch (error) {
         // Two members picked up back to back can race the probe; the loser's
         // 422 names the reason. Any other 422 (a malformed body, say) is real.
-        if (!/Reference already exists/i.test(errorText(error))) {
+        if (!/Reference already exists/i.test(ghErrorText(error))) {
           throw error;
         }
       }
