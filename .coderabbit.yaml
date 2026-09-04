@@ -1,0 +1,15 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+#
+# By default CodeRabbit only auto-reviews PRs whose base is the repository's
+# default branch, so PRs stacked onto a long-lived feature branch (the
+# `phoebe/feature-<issue>` integration branches) opened with no review at all —
+# "Auto reviews are disabled on base/target branches other than the default
+# branch." `base_branches` is a list of regexes matched against the PR's base,
+# and it replaces rather than extends the default, so `main` has to be listed
+# explicitly alongside the feature-branch pattern.
+reviews:
+  auto_review:
+    enabled: true
+    base_branches:
+      - main
+      - "phoebe/feature-.*"
