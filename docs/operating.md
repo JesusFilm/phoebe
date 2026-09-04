@@ -173,7 +173,7 @@ commands and [`work-kinds.md`](work-kinds.md) for the full selection rules.
 
 ## Checking the deployment's health: `phoebe doctor`
 
-`phoebe doctor` (report-only) runs seven checks and exits 1 when any fails:
+`phoebe doctor` (report-only) runs eight checks and exits 1 when any fails:
 
 - **cli.** Installed `phoebe-agent` against the npm registry's latest.
 - **engine.** The configured pin against the latest release tag, plus the commit
@@ -195,6 +195,17 @@ In workspace mode it also sweeps every tenant, using the same enumeration boot
 supervises with, checking each tenant's `GH_TOKEN` is present the way its
 engine child reads it, and that its repo answers to that token. Held tenants
 surface as failures with their hold reason. `--json` for scripts.
+
+The eighth check is per tenant and is the only one that reads the data volume:
+
+- **stale-state.** State under a tenant's data directory that no pipeline row
+  owns — a deleted or renamed row's `state/<pipeline>/`, a retired kind's
+  scratch or read-only tree, a worktree whose lease names a pipeline that no
+  longer exists. Most of it the next boot reclaims by itself ([the stale-state
+  sweep](architecture.md#reclaiming-what-a-row-leaves-behind)); what this names
+  by path is the tier that sweep refuses to touch — a worktree that is dirty or
+  holds commits `origin` has not seen — with a one-line hint for reclaiming it
+  by hand. **Warn, never fail**: accumulated dirt is a chore, not a fault.
 
 Division of labor: `phoebe upgrade` moves you between versions; `phoebe migrate`
 reshapes your files for the version you are moving to; `phoebe doctor` tells you
@@ -285,6 +296,7 @@ one trust domain.
 | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Add a repo                        | Place the checkout under the root (`git clone` / `git submodule add`), then `phoebe init --tenant <dir>` (host-side) and, on the declared arm, add the dir to `workspace.tenants` yourself. Phoebe never edits your fleet declaration; `workspace.tenants` is yours. The bootstrapper discovers it next poll. Fill in its `.env`.                                                                                                                                                                                                     |
 | Remove a repo                     | Drop the child from `workspace.tenants` and/or delete its config dir (host-side; Phoebe never edits your fleet declaration). Reversible, because the tenant's `/data` is retained and re-adding re-uses it.                                                                                                                                                                                                                                                                                                                           |
+| Reclaim a deleted pipeline's disk | Nothing to do: the next boot, and any later row-set change, sweeps the state of rows the config no longer declares. A worktree that is dirty or holds unpushed commits is left for you, named by `phoebe doctor`'s `stale-state` check. Run `phoebe sweep-state` (in-container) to do it now.                                                                                                                                                                                                                                         |
 | Reclaim a removed repo's disk     | `phoebe purge <owner/repo> --yes` (in-container). Destructive; refuses while a live config still claims the slug.                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | Apply deployment migrations       | `phoebe migrate` (host-side, in the deployment dir). Rewrites config content and scaffolds missing artifacts across root and fleet; lists uncommitted paths for you to review and commit per repo. See [`upgrading.md` → phoebe migrate](upgrading.md#phoebe-migrate-reshaping-your-files-for-the-current-ref).                                                                                                                                                                                                                       |
 | Check every tenant's GitHub token | `node scripts/verify-tenant-token.mjs --all` (host-side, in the deployment dir). One section per tenant; `--check` exits non-zero when any is short a grant. See [Checking a tenant's GitHub token](#checking-a-tenants-github-token).                                                                                                                                                                                                                                                                                                |

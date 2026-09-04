@@ -279,6 +279,39 @@ and nothing is handed on while the cap is breached, so the breach never rolls
 forward. The knobs and the boot line are in
 [`configuration.md`](configuration.md#concurrency-the-rows-knob-and-the-fleets-cap).
 
+### Reclaiming what a row leaves behind
+
+Deleting a pipeline, renaming one, or retiring a work kind leaves disk with no
+owner: `state/<pipeline>/` and its snapshot, `scratch/<kind>` and
+`readonly/<kind>` trees, and worktrees locked by a lease whose pipeline no
+longer exists. The **stale-state sweep** reclaims them — `phoebe sweep-state`,
+a one-shot engine command the supervisor invokes per tenant at two moments and
+never on a timer: at facility boot before any row spawns, and after a row-set
+change once the rows it took down have drained. Both are moments when the disk
+in question is provably nobody's.
+
+It is a stateless diff of disk against the row enumeration, with no cursor and
+no memory of the last sweep. State is orphaned only when its pipeline name — or,
+for kind-keyed state, its kind — is absent from the enumeration. So a
+`disabled` row is still enumerated and its state is _stopped_, not orphaned; a
+rename is a delete plus a create; a kind that moved to another row keeps its
+scratch; and an enumeration that fails means _unknown_, which skips the sweep
+entirely rather than reading it as "everything is orphaned".
+
+Deletion is tiered. Leases, orphaned state directories, and unowned scratch and
+read-only trees go without asking, as do _clean_ worktrees. A worktree that is
+dirty, or that holds commits `origin` has not seen, is never auto-deleted: it is
+reported with its exact path and a one-line reclaim hint, and `phoebe doctor`'s
+warn-only `stale-state` check keeps reporting it between sweeps. Worktrees are
+classified by the lease rather than by name, because they are branch-keyed:
+locked by a live row is untouchable, and orphan-locked or unlocked is a
+candidate — which makes the sweep the second thing allowed to break a lease,
+after a pipeline breaking its own at boot.
+
+The sweep is never load-bearing. A per-item failure continues to the next item,
+and a whole sweep that fails is one log line: the supervisor spawns exactly as
+if it had never run.
+
 ## One cycle, end to end
 
 Every step below is one walk over the **work-kind registry** — the built-in

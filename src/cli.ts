@@ -145,7 +145,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedArgs {
       const version = installedVersion();
       throw new Error(
         `Unknown command \`${arg}\` for \`phoebe\`${version === null ? "" : ` (phoebe-agent v${version})`}. ` +
-          `Known commands: boot, init, list, purge, upgrade, doctor, migrate, stop, start, pipelines. If \`${arg}\` was added in a newer ` +
+          `Known commands: boot, init, list, purge, upgrade, doctor, migrate, stop, start, pipelines, sweep-state. If \`${arg}\` was added in a newer ` +
           `release, upgrade first: \`pnpm dlx phoebe-agent@latest upgrade\`. See \`phoebe --help\`.`,
       );
     }
@@ -287,6 +287,8 @@ Usage:
   phoebe migrate [--config <path>] Apply deployment migrations (idempotent)
   phoebe pipelines [--config <path>]
                                    Print this tenant's pipeline rows as JSON (for the supervisor)
+  phoebe sweep-state [--config <path>]
+                                   Delete tenant state no pipeline row owns
   phoebe stop [--now]              Drain and stop the deployment container (host-side)
   phoebe start [--build]           Bring the deployment container up detached (host-side)
   phoebe [--config <path>] [flags] Run the engine
@@ -656,6 +658,13 @@ export async function runCli(): Promise<void> {
   if (args[0] === "pipelines") {
     const { runPipelinesCli } = await import("./pipeline-enumerate.ts");
     return await runPipelinesCli(args.slice(1));
+  }
+  // Reclaiming disk no row owns (#426): the supervisor's pre-spawn and
+  // post-drain sweep, and an operator's hand run. Lazy for the same reason as
+  // its neighbours.
+  if (args[0] === "sweep-state") {
+    const { runSweepStateCli } = await import("./stale-state.ts");
+    return await runSweepStateCli(args.slice(1));
   }
   if (args[0] === "migrate") {
     const { runMigrateCli } = await import("./migrate.ts");

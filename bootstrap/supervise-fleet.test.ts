@@ -1073,6 +1073,8 @@ function matrixHarness(
     supported?: boolean;
     decide?: (run: FleetRun) => RowExitAction;
     rowFingerprint?: (row: SupervisedRow, enumerated: string | null) => string | null;
+    /** How the checkout's stale-state sweeper (#426) behaves, if it has one. */
+    sweep?: "ok" | "fail" | "absent";
   } = {},
 ) {
   const clock = gatedClock();
@@ -1085,6 +1087,11 @@ function matrixHarness(
   let rows: Record<string, PipelineRow[] | Error> = options.rows ?? {};
   const spawned: Array<{ row: SupervisedRow; fake: ReturnType<typeof fakeChild> }> = [];
   const rowErrors: Array<{ tenantId: string; error: unknown }> = [];
+  // One ordered log of everything the loop did, so "before any row spawns" and
+  // "after the removed rows drained" are assertions rather than hopes.
+  const events: string[] = [];
+  const sweeps: Array<{ tenantId: string; trigger: string }> = [];
+  const sweepErrors: Array<{ tenantId: string; trigger: string }> = [];
   const runs: FleetRun[] = [];
   const matrices: Array<{ rows: SupervisedRow[]; reshaped: boolean }> = [];
   let enumerations = 0;
@@ -1122,10 +1129,22 @@ function matrixHarness(
       confirmEngineSource: async () => ({ ...engineState.source }),
       sample: () => ({ config: engineState.config, remoteSha: engineState.remoteSha }),
       rows: enumerator(),
+      ...((options.sweep ?? "ok") === "absent"
+        ? {}
+        : {
+            stateSweep: {
+              sweep: ({ configPath }: { configPath: string }) => {
+                events.push(`sweep:${configPath}`);
+                if (options.sweep === "fail") throw new Error("config will not load");
+                return { removed: 1, failed: 0, kept: [] };
+              },
+            },
+          }),
     }),
     discover: () => samples,
     spawn: (row) => {
       const fake = fakeChild();
+      events.push(`spawn:${row.pipeline.name}`);
       spawned.push({ row, fake });
       return fake.child;
     },
@@ -1138,6 +1157,8 @@ function matrixHarness(
     ...(options.rowFingerprint ? { rowFingerprint: options.rowFingerprint } : {}),
     onRowsError: (info) => rowErrors.push(info),
     onRows: ({ rows: live, reshaped }) => matrices.push({ rows: [...live], reshaped }),
+    onStateSweep: ({ tenantId, trigger }) => sweeps.push({ tenantId, trigger }),
+    onStateSweepError: ({ tenantId, trigger }) => sweepErrors.push({ tenantId, trigger }),
     onRunEnd: (run) => runs.push(run),
     ...(options.decide ? { rowExit: { decide: options.decide } } : {}),
   });
@@ -1147,6 +1168,9 @@ function matrixHarness(
     result,
     spawned,
     rowErrors,
+    events,
+    sweeps,
+    sweepErrors,
     runs,
     matrices,
     named,
@@ -1497,5 +1521,95 @@ describe("declared keys across the matrix (#425)", () => {
     expect(h.named("work")).toHaveLength(1);
     h.requestStop();
     await h.result;
+  });
+});
+
+// The stale-state sweep's two triggers (#426). Both are about *when*: the sweep
+// deletes disk, so it may only run at a moment when the rows that disk belonged
+// to are down — and it must never be what stops a row from starting.
+describe("superviseFleet — the stale-state sweep's triggers", () => {
+  const WIDGET = configOf("acme/widget");
+  const WIDGET_ID = tenant("acme/widget").id;
+  const TWO_ROWS = { [WIDGET]: [pipelineRow("work", "w1"), pipelineRow("intake", "i1")] };
+
+  test("facility boot sweeps once per tenant, before any row spawns", async () => {
+    const h = matrixHarness({ rows: TWO_ROWS });
+    await settle();
+
+    expect(h.events).toEqual([`sweep:${WIDGET}`, "spawn:work", "spawn:intake"]);
+    expect(h.sweeps).toEqual([{ tenantId: WIDGET_ID, trigger: "boot" }]);
+  });
+
+  test("a sweep that fails is reported, and every row spawns anyway", async () => {
+    const h = matrixHarness({ rows: TWO_ROWS, sweep: "fail" });
+    await settle();
+
+    expect(h.sweepErrors).toEqual([{ tenantId: WIDGET_ID, trigger: "boot" }]);
+    expect(h.spawned.map((s) => s.row.pipeline.name)).toEqual(["work", "intake"]);
+  });
+
+  test("an engine checkout with no sweeper spawns exactly as before", async () => {
+    const h = matrixHarness({ rows: TWO_ROWS, sweep: "absent" });
+    await settle();
+
+    expect(h.events).toEqual(["spawn:work", "spawn:intake"]);
+    expect(h.sweeps).toEqual([]);
+    expect(h.sweepErrors).toEqual([]);
+  });
+
+  test("a tenant whose rows will not enumerate is not swept", async () => {
+    const h = matrixHarness({ rows: { [WIDGET]: new PipelineEnumerationError("no such kind") } });
+    await settle();
+
+    expect(h.sweeps).toEqual([]);
+    expect(h.spawned).toEqual([]);
+  });
+
+  test("a row that vanished is swept after it drains and before anything respawns", async () => {
+    const h = matrixHarness({ rows: TWO_ROWS });
+    await settle();
+    const intake = h.named("intake")[0]!;
+
+    // `intake` deleted and `work` re-tuned in one edit: the sweep sits between
+    // the drain of both and the respawn of the one that is coming back.
+    h.setRows({ [WIDGET]: [pipelineRow("work", "w2")] });
+    h.setSamples([sample("acme/widget", "fp2")]);
+    h.tick();
+    await settle();
+
+    expect(intake.fake.kills).toContain("SIGTERM");
+    expect(h.events).toEqual([
+      `sweep:${WIDGET}`,
+      "spawn:work",
+      "spawn:intake",
+      `sweep:${WIDGET}`,
+      "spawn:work",
+    ]);
+    expect(h.sweeps.map((s) => s.trigger)).toEqual(["boot", "row-change"]);
+  });
+
+  test("a row that only appeared orphans nothing, so nothing is swept for it", async () => {
+    const h = matrixHarness({ rows: { [WIDGET]: [pipelineRow("work", "w1")] } });
+    await settle();
+
+    h.setRows(TWO_ROWS);
+    h.setSamples([sample("acme/widget", "fp2")]);
+    h.tick();
+    await settle();
+
+    expect(h.named("intake")).toHaveLength(1);
+    expect(h.sweeps.map((s) => s.trigger)).toEqual(["boot"]);
+  });
+
+  test("an engine upgrade is not a row-set change and does not sweep", async () => {
+    const h = matrixHarness({ rows: TWO_ROWS });
+    await settle();
+
+    h.moveEngineRef(SHA_B);
+    h.tick();
+    await settle();
+
+    expect(h.spawned).toHaveLength(4);
+    expect(h.sweeps.map((s) => s.trigger)).toEqual(["boot"]);
   });
 });

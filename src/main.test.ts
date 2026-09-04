@@ -1752,7 +1752,9 @@ describe("a custom kind in the walk", () => {
       github: { ...prWorld([{ number: 44, issueNumber: 4 }]) },
     });
 
-    expect(selection(result)).toBe("[phoebe] Would execute: stale-PR nudge for PR #44.");
+    expect(selection(result)).toBe(
+      "[phoebe:acme/widget:work] Would execute: stale-PR nudge for PR #44.",
+    );
   });
 
   test("workOrder rejects a kind nobody registered", async () => {

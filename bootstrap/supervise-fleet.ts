@@ -33,6 +33,12 @@
 //     tenant-wide — a git identity, a repo slug, an edited `.env` — and fans out
 //     to every row of that tenant.
 //
+// The loop also owns the stale-state sweep's two triggers (#426), because it is
+// the only thing that knows when a row is down: boot before the first spawn, and
+// a row-set change after the rows it removed have drained and before anything is
+// respawned. Both are moments when the disk in question is provably nobody's.
+// The sweep never blocks a spawn — a failure is one log line.
+//
 // A row that dies on its own is that row's problem: its slot is reclaimed and it
 // is respawned with backoff, leaving the shared engine and every sibling
 // untouched. The container comes down only under the universality rule — every
@@ -61,6 +67,7 @@ import {
   type RowSample,
   type SupervisedRow,
 } from "./pipeline-rows.ts";
+import type { StateSweepOutcome, StateSweepTrigger } from "./state-sweep.ts";
 import {
   diffFleet,
   DuplicateOriginSlugError,
@@ -238,6 +245,21 @@ export type SuperviseFleetDeps = {
    * tries again — so this fires once per poll for as long as the fault lasts.
    */
   onRowsError?: (info: { tenantId: string; error: unknown }) => void;
+  /** One tenant's stale-state sweep finished — what it reclaimed and what it refused. */
+  onStateSweep?: (info: {
+    tenantId: string;
+    trigger: StateSweepTrigger;
+    outcome: StateSweepOutcome;
+  }) => void;
+  /**
+   * One tenant's sweep failed as a whole. Its disk is untouched and its rows
+   * spawn anyway: reclaiming stale state is never worth a row not running.
+   */
+  onStateSweepError?: (info: {
+    tenantId: string;
+    trigger: StateSweepTrigger;
+    error: unknown;
+  }) => void;
   /**
    * Every finished run of every row, however it ended — drained for a reconcile,
    * stopped with the container, or crashed. The crash-loop guard's bookkeeping
@@ -418,16 +440,56 @@ export async function superviseFleet(deps: SuperviseFleetDeps): Promise<EngineEx
   let waking = rearm();
 
   /**
+   * Reclaim the disk of rows this tenant no longer has (#426), for every tenant
+   * named in `tenantIds`. Called at exactly two moments, both of them ones where
+   * the rows in question are provably down: facility boot before anything
+   * spawns, and a row-set change once the rows it removed have drained. Never on
+   * a timer.
+   *
+   * A tenant whose enumeration is held is skipped — unknown rows cannot tell an
+   * orphan from a row that is merely stopped — and one tenant's failure is a log
+   * line, not a reason to stop sweeping the next or to delay a spawn.
+   */
+  const sweepStaleState = (
+    samples: readonly TenantSample[],
+    tenantIds: ReadonlySet<string>,
+    trigger: StateSweepTrigger,
+  ): void => {
+    const sweeper = engine.stateSweep;
+    if (sweeper === undefined) return;
+    for (const { tenant } of samples) {
+      if (!tenantIds.has(tenant.id)) continue;
+      try {
+        const outcome = sweeper.sweep({ configPath: tenant.configPath, cwd: tenant.dir });
+        deps.onStateSweep?.({ tenantId: tenant.id, trigger, outcome });
+      } catch (error) {
+        deps.onStateSweepError?.({ tenantId: tenant.id, trigger, error });
+      }
+    }
+  };
+
+  /**
    * Enumerate every tenant against the engine that is running now, and spawn the
    * whole matrix. The only way a fleet comes up — at boot and after an engine
    * relaunch alike — so an upgrade can never respawn a row list the old checkout
    * reported.
+   *
+   * `sweep` is set for the boot call alone. An engine relaunch drains the fleet
+   * and comes back through here too, but a new engine ref is not a row-set
+   * change: what it enumerates differently is reported by doctor and reclaimed
+   * at the next trigger, rather than by a sweep on every upgrade.
    */
-  const spawnFleetFromDiscovery = async (): Promise<void> => {
+  const spawnFleetFromDiscovery = async (opts: { sweep?: boolean } = {}): Promise<void> => {
     const samples = normalizeDiscover(await deps.discover()).samples;
     const { rows, held } = expand(samples);
     for (const { tenant, fingerprint } of samples) {
       if (!held.has(tenant.id)) tenantFingerprints.set(tenant.id, fingerprint);
+    }
+    if (opts.sweep === true) {
+      const enumerated = new Set(
+        samples.map(({ tenant }) => tenant.id).filter((id) => !held.has(id)),
+      );
+      sweepStaleState(samples, enumerated, "boot");
     }
     // Announced before anything spawns: a child must never be able to ask for a
     // slot the broker has not been sized and ordered for.
@@ -543,7 +605,9 @@ export async function superviseFleet(deps: SuperviseFleetDeps): Promise<EngineEx
 
   // Initial fleet: one child per row of every discovered tenant. A tenant whose
   // rows will not enumerate contributes none and is retried at the next poll.
-  await spawnFleetFromDiscovery();
+  // Facility boot is the stale-state sweep's first trigger, and it runs here —
+  // before a single row spawns, when nothing on this tenant's disk can be in use.
+  await spawnFleetFromDiscovery({ sweep: true });
 
   while (true) {
     if (deps.stop.requested) return await stopAndDrain();
@@ -744,9 +808,15 @@ export async function superviseFleet(deps: SuperviseFleetDeps): Promise<EngineEx
     }
     deps.onRows?.({ rows: live, reshaped });
     const fingerprintById = new Map(desired.map((s) => [s.row.id, s.fingerprint] as const));
+    // Which tenants this reconcile could have orphaned state for. A row that
+    // vanished takes its whole keyspace with it; a row that merely *changed* may
+    // have retired a kind, which orphans that kind's scratch and read-only
+    // trees. A row that only appeared orphans nothing, so it is not a trigger.
+    const sweepable = new Set<string>();
     for (const id of diff.removed) {
       const record = children.get(id);
       if (record) {
+        sweepable.add(record.row.tenant.id);
         await drain(record);
         children.delete(id);
       }
@@ -754,9 +824,20 @@ export async function superviseFleet(deps: SuperviseFleetDeps): Promise<EngineEx
     for (const row of changed) {
       const record = children.get(row.id);
       if (record) {
+        sweepable.add(row.tenant.id);
         await drain(record);
         children.delete(row.id);
       }
+    }
+    // Every row this reconcile takes down is down and none is back up yet: the
+    // one window in a running facility where a vanished row's disk is provably
+    // nobody's (#426). Held tenants are excluded — unknown rows cannot tell an
+    // orphan from a row that is merely stopped.
+    for (const id of [...sweepable]) {
+      if (held.has(id) || tenantHold.has(id)) sweepable.delete(id);
+    }
+    if (sweepable.size > 0) sweepStaleState(samples, sweepable, "row-change");
+    for (const row of changed) {
       spawnFor(row, fingerprintById.get(row.id) ?? null);
     }
     for (const row of diff.added) {
