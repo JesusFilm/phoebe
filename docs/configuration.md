@@ -387,7 +387,7 @@ than the provider one.
 | `runTimeoutMs` | tenant `runTimeoutMs` | cold | This kind's whole-unit wall-clock budget. Ladder: `PHOEBE_<KIND>_RUN_TIMEOUT_MS`, then this field, then `PHOEBE_RUN_TIMEOUT_MS`, then the tenant field.                                                                                                                                                                                                                                                         |
 | `disabled`     | `false`               | hot  | The only off-switch for a kind. Since `order` is priority rather than membership, leaving a kind out of it no longer stops it running.                                                                                                                                                                                                                                                                          |
 | `module`       | the shipped built-in  | cold | **Replace this built-in's definition** with a tenant module (#465), loaded exactly like a [custom kind](#custom-work-kinds)'s. The tuning knobs keep applying to whatever definition lands under the name. `issues: "./kinds/my-issues.ts"` is string sugar for `{ module: … }`. The module's definition must name itself after the key. Same trust posture as any kind module: registering it is executing it. |
-| `options`      | —                     | cold | The replacement's `ctx.options` payload; only legal beside `module` — the shipped built-ins never read it.                                                                                                                                                                                                                                                                                                      |
+| _(any other)_  | —                     | cold | With `module`, the block's remaining root fields are the replacement's `ctx.options` payload. Without `module` they are boot errors — the shipped built-ins never read `ctx.options`.                                                                                                                                                                                                                           |
 
 Unknown kind keys and unknown provider values are boot-time config errors;
 `model` and `effort` are unvalidated pass-through strings — the CLIs are the
@@ -421,9 +421,9 @@ kinds: {
   "docs-request": { name: "docs-request", /* … */ },
   // 2. Path sugar for the zero-knob module case.
   "label-echo": "./kinds/label-echo.ts",
-  // 3. Module plus tenant knobs (`ctx.options`), plus the same tuning knobs
-  //    a built-in's block holds — declaration and tuning share the key.
-  "stale-pr-nudger": { module: "./kinds/stale-pr-nudger.ts", options: { staleDays: 7 }, effort: "low" },
+  // 3. One flat block: `module`, the same tuning knobs a built-in's block
+  //    holds, and — every other root field — the kind's options (`ctx.options`).
+  "stale-pr-nudger": { module: "./kinds/stale-pr-nudger.ts", staleDays: 7, effort: "low" },
 },
 ```
 
@@ -439,15 +439,17 @@ kinds: {
   which is also why kind code uses only _type_ imports from `phoebe-agent`.
   The module's `default` export is the definition or a `(config) => definition`
   factory.
-- **`options`** must be a plain object; it reaches the kind unvalidated as
-  `ctx.options` (the kind validates). Inline entries carry no `options` —
-  close over values instead. Wrapper fields beyond `module`, `options`, and
-  the tuning knobs are boot errors.
-- **Tuning** rides on the `{ module, ... }` wrapper: the same knobs a
-  built-in's block holds (`provider`, `model`, `effort`, `promptFile`,
-  `runTimeoutMs`, `disabled`). The string and inline arms carry none — an
-  inline definition's `promptFile`/`model`/`effort` live on the definition
-  itself, and a string entry that needs tuning graduates to the wrapper.
+- **Options are the block's own root fields.** Everything beside `module` and
+  the tuning knobs reaches the kind unvalidated as `ctx.options` (the kind
+  validates); `module` and the knob names are reserved words a kind's options
+  cannot use, and there is no unknown-field check inside a module block — the
+  kind is the authority on its own options. Inline entries carry none — close
+  over values instead.
+- **Tuning knobs are the same as a built-in's** (`provider`, `model`,
+  `effort`, `promptFile`, `runTimeoutMs`, `disabled`), declared in the same
+  block. The string and inline arms carry none — an inline definition's
+  `promptFile`/`model`/`effort` live on the definition itself, and a string
+  entry that needs tuning or options graduates to the block form.
 - **Prefer the module arms for real logic.** The bootstrapper imports every
   tenant's config on boot and each reconcile, so an inline definition's code
   runs in the supervisor process too — the one holding the deployment's

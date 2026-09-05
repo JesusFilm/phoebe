@@ -93,14 +93,23 @@ describe("loadCustomKinds", () => {
     expect(loaded[0]?.definition.report.noun).toBe("needs-robot nudge(s)");
   });
 
-  test("a wrapper entry carries its options through untouched", async () => {
+  test("a module block's extra root fields arrive as the kind's options", async () => {
     const dir = moduleDir(PLAIN_MODULE_SOURCE);
-    const options = { staleDays: 7 };
     const config = resolveConfig(
-      userConfig({ workKinds: { nudge: { module: "./nudge.mjs", options } } }),
+      userConfig({
+        workKinds: { nudge: { module: "./nudge.mjs", staleDays: 7, effort: "low" } },
+      }),
     );
     const loaded = await loadCustomKinds(config, dir);
-    expect(loaded[0]?.options).toBe(options);
+    // The knobs are the engine's; only the rest reaches the kind.
+    expect(loaded[0]?.options).toEqual({ staleDays: 7 });
+  });
+
+  test("a module block with no extra fields yields undefined options", async () => {
+    const dir = moduleDir(PLAIN_MODULE_SOURCE);
+    const config = resolveConfig(userConfig({ workKinds: { nudge: { module: "./nudge.mjs" } } }));
+    const loaded = await loadCustomKinds(config, dir);
+    expect(loaded[0]?.options).toBeUndefined();
   });
 
   test("a missing module is a boot error naming the entry and both paths", async () => {
@@ -129,14 +138,13 @@ describe("built-in replacement modules (#465)", () => {
     expect([...registry.keys()]).toContain("conflicts");
   });
 
-  test("a built-in module knob carries options and keeps the tuning knobs inert here", async () => {
+  test("a built-in module block's root options reach the registry, knobs excluded", async () => {
     const dir = moduleDir(ISSUES_MODULE_SOURCE, "issues.mjs");
-    const options = { max: 3 };
     const config = resolveConfig(
-      userConfig({ workKinds: { issues: { module: "./issues.mjs", options, effort: "low" } } }),
+      userConfig({ workKinds: { issues: { module: "./issues.mjs", max: 3, effort: "low" } } }),
     );
     const registry = await createWorkKindRegistry(config, dir);
-    expect(registry.get("issues")?.options).toBe(options);
+    expect(registry.get("issues")?.options).toEqual({ max: 3 });
   });
 
   test("a replacement whose definition names another kind is a boot error", async () => {

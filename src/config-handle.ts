@@ -916,18 +916,17 @@ function removeProp(source: string, obj: BNode, prop: BNode): string {
     removeStart = props[propIdx - 1]!.end as number;
     removeEnd = prop.end as number;
     if (source[removeEnd] === ",") removeEnd++;
-  } else {
-    // Not last: remove this prop and following separator
+  } else if (propIdx === 0) {
+    // First: remove this prop and its following separator.
     removeStart = prop.start as number;
     removeEnd = prop.end as number;
     if (source[removeEnd] === ",") removeEnd++;
     while (removeEnd < source.length && source[removeEnd] === " ") removeEnd++;
-    if (propIdx > 0) {
-      removeStart = props[propIdx - 1]!.end as number;
-      removeEnd = prop.end as number;
-      if (source[removeEnd] === ",") removeEnd++;
-      while (removeEnd < source.length && source[removeEnd] === " ") removeEnd++;
-    }
+  } else {
+    // Middle: the leading separator travels with the prop; the trailing comma
+    // stays — it now separates the neighbours (#465).
+    removeStart = props[propIdx - 1]!.end as number;
+    removeEnd = prop.end as number;
   }
 
   return source.slice(0, removeStart) + source.slice(removeEnd);

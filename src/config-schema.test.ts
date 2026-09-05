@@ -239,7 +239,7 @@ describe("validateUserConfig", () => {
           workKinds: {
             inline: inlineKind,
             pathed: "./kinds/pathed.ts",
-            wrapped: { module: "../kinds/wrapped.ts", options: { staleDays: 7 } },
+            wrapped: { module: "../kinds/wrapped.ts", staleDays: 7 },
           },
         }),
       ),
@@ -295,7 +295,7 @@ describe("validateUserConfig", () => {
       validateUserConfig(
         minimalUserConfig({
           workKinds: {
-            issues: { module: "./kinds/my-issues.ts", options: { max: 3 }, effort: "low" },
+            issues: { module: "./kinds/my-issues.ts", max: 3, effort: "low" },
           },
         }),
       ),
@@ -308,19 +308,30 @@ describe("validateUserConfig", () => {
     ).toThrow(/bare specifier/);
   });
 
-  test("a built-in's options without a module is an error — nothing would read it", () => {
+  test("a built-in's extra field without a module is an error — nothing would read it", () => {
     expect(() =>
       validateUserConfig(
         minimalUserConfig({
-          workKinds: { issues: { options: { max: 3 } } } as unknown as never,
+          workKinds: { issues: { max: 3 } } as unknown as never,
         }),
       ),
-    ).toThrow(/declares `options` without `module`/);
+    ).toThrow(/unknown knob "max".*only read by a replacement/s);
+  });
+
+  test("the retired options wrapper is a tombstone on any module block", () => {
+    for (const kinds of [
+      { issues: { module: "./kinds/my-issues.ts", options: { max: 3 } } },
+      { nudge: { module: "./kinds/nudge.ts", options: { max: 3 } } },
+    ]) {
+      expect(() =>
+        validateUserConfig(minimalUserConfig({ workKinds: kinds as unknown as never })),
+      ).toThrow(/declares `options`.*root fields.*phoebe migrate/s);
+    }
   });
 
   test("workKindOverride picks the same knobs off every object entry", () => {
     const kinds = {
-      issues: { module: "./kinds/my-issues.ts", options: { max: 3 }, effort: "low" },
+      issues: { module: "./kinds/my-issues.ts", max: 3, effort: "low" },
       nudge: { module: "./kinds/nudge.ts", model: "composer-mini" },
       pathed: "./kinds/pathed.ts",
     };
@@ -333,9 +344,10 @@ describe("validateUserConfig", () => {
     expect(builtInKindModule({ issues: "./kinds/my-issues.ts" }, "issues")).toEqual({
       module: "./kinds/my-issues.ts",
     });
+    // Root fields beside module and the knobs are the options payload.
     expect(
       builtInKindModule(
-        { issues: { module: "./kinds/my-issues.ts", options: { max: 3 } } },
+        { issues: { module: "./kinds/my-issues.ts", max: 3, effort: "low" } },
         "issues",
       ),
     ).toEqual({ module: "./kinds/my-issues.ts", options: { max: 3 } });
@@ -369,51 +381,12 @@ describe("validateUserConfig", () => {
     ).toThrow(/bare specifier.*node_modules/s);
   });
 
-  test("rejects an unknown wrapper field", () => {
+  test("a module block's extra root fields are accepted as the kind's options", () => {
     expect(() =>
       validateUserConfig(
         minimalUserConfig({
           workKinds: {
-            nudge: { module: "./kinds/nudge.ts", option: {} } as unknown as never,
-          },
-        }),
-      ),
-    ).toThrow(/unknown wrapper field "option"/);
-  });
-
-  test("rejects non-object wrapper options", () => {
-    expect(() =>
-      validateUserConfig(
-        minimalUserConfig({
-          workKinds: {
-            nudge: { module: "./kinds/nudge.ts", options: 7 } as unknown as never,
-          },
-        }),
-      ),
-    ).toThrow(/options must be a plain object/);
-  });
-
-  test("rejects wrapper options that are objects but not plain records", () => {
-    for (const options of [new Date(), new Map(), Object.create({ inherited: true })]) {
-      expect(() =>
-        validateUserConfig(
-          minimalUserConfig({
-            workKinds: {
-              nudge: { module: "./kinds/nudge.ts", options } as unknown as never,
-            },
-          }),
-        ),
-      ).toThrow(/options must be a plain object/);
-    }
-    // A null-prototype record is still a plain record.
-    expect(() =>
-      validateUserConfig(
-        minimalUserConfig({
-          workKinds: {
-            nudge: {
-              module: "./kinds/nudge.ts",
-              options: Object.create(null),
-            } as unknown as never,
+            nudge: { module: "./kinds/nudge.ts", staleDays: 7, channel: "C123" },
           },
         }),
       ),

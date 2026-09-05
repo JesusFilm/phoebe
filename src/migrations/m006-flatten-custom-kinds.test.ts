@@ -4,7 +4,8 @@
 //   detect: null when the config is absent or no `custom` block exists, under
 //           `workKinds` or under any `pipelines.<name>.kinds`.
 //   apply: lifts each `custom.<name>` entry up one level, comments intact,
-//          removes the empty `custom` block, and leaves every other byte alone.
+//          removes the empty `custom` block, unwraps a wrapper's `options`
+//          into the entry root, and leaves every other byte alone.
 //   apply: ConfigRefusal, config untouched, when a custom kind also has a
 //          sibling tuning block (the fold is a value edit) or the block is
 //          not a plain literal.
@@ -120,12 +121,13 @@ describe("m006 apply", () => {
       [
         `  workKinds: {`,
         `    issues: { effort: "high" },`,
-        `    "stale-pr-nudger": { module: "./kinds/nudger.ts", options: { staleDays: 7 } },`,
+        `    "stale-pr-nudger": { module: "./kinds/nudger.ts", staleDays: 7 },`,
         `    digest: "./kinds/digest.ts",`,
         `  },`,
       ].join("\n"),
     );
     expect(migrated).not.toContain("custom");
+    expect(migrated).not.toContain("options");
   });
 
   test("flattens inside a pipeline's kinds block", () => {

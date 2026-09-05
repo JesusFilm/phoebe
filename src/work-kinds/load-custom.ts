@@ -1,6 +1,6 @@
 // Loading a tenant's custom work kinds (#350, flattened by #465): resolve each
-// non-built-in `kinds.<name>` entry — inline definition, path string, or
-// `{ module, options, ...knobs }` wrapper — into a definition, then assemble
+// non-built-in `kinds.<name>` entry — inline definition, path string, or a
+// `{ module, ...knobs, ...options }` block — into a definition, then assemble
 // the registry. Path modules load with the same dynamic-import machinery as the
 // config itself (native Node type-stripping), resolved against the config
 // file's directory. Editing a kind module requires a restart: the reconcile
@@ -12,6 +12,7 @@ import {
   WORK_KIND_NAMES,
   builtInKindModule,
   customKindEntries,
+  moduleEntryOptions,
   type CustomKindEntry,
   type PhoebeConfig,
 } from "../config-schema.ts";
@@ -94,11 +95,11 @@ async function resolveEntry(
     };
   }
   if ("module" in entry && typeof (entry as { module?: unknown }).module === "string") {
-    const wrapper = entry as { module: string; options?: Record<string, unknown> };
+    const block = entry as { module: string };
     return {
       name,
-      definition: await importKindModule(at, wrapper.module, configDir, config),
-      options: wrapper.options,
+      definition: await importKindModule(at, block.module, configDir, config),
+      options: moduleEntryOptions(block),
     };
   }
   return { name, definition: entry as AnyWorkKindDefinition, options: undefined };
