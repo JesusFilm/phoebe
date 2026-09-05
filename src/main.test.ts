@@ -3053,10 +3053,14 @@ describe("per-unit isolation under concurrency", () => {
  * the label path has nowhere to write and the count lives in the engine's
  * memory instead.
  *
- * `state` is what a test moves — the unit's `revision`, and for the mid-count
- * hand-over the `github` target it gains. `honoursQuarantine` picks between the
- * two kinds the engine has to survive: one that filters `ctx.quarantined` in
- * `select`, and the careless one that does not.
+ * `state` is what a test moves — the unit's `revision`, for the mid-count
+ * hand-over the `github` target it gains, and `offers`, how many further passes
+ * may admit it. Left null, every pass admits it, which is what a test driving
+ * the ref all the way to the threshold wants; set, the timeout count is exact,
+ * so a test can flip the rest of `state` at a count it chose rather than racing
+ * the 1ms run budget. `honoursQuarantine` picks between the two kinds the engine
+ * has to survive: one that filters `ctx.quarantined` in `select`, and the
+ * careless one that does not.
  */
 function hangingKind(opts: { name?: string; ref?: string; honoursQuarantine?: boolean } = {}): {
   kind: LoadedCustomKind;
@@ -3064,15 +3068,25 @@ function hangingKind(opts: { name?: string; ref?: string; honoursQuarantine?: bo
   started: string[];
   /** What `ctx.quarantined` held at each `select`, oldest first. */
   seen: string[][];
-  state: { revision: string | undefined; target: WorkUnitGitHubTarget | undefined };
+  state: {
+    revision: string | undefined;
+    target: WorkUnitGitHubTarget | undefined;
+    /** Passes still allowed to admit the unit; null is "as many as it takes". */
+    offers: number | null;
+  };
 } {
   const name = opts.name ?? "opaque";
   const ref = opts.ref ?? "thread:1";
   const started: string[] = [];
   const seen: string[][] = [];
-  const state: { revision: string | undefined; target: WorkUnitGitHubTarget | undefined } = {
+  const state: {
+    revision: string | undefined;
+    target: WorkUnitGitHubTarget | undefined;
+    offers: number | null;
+  } = {
     revision: undefined,
     target: undefined,
+    offers: null,
   };
   return {
     started,
@@ -3094,7 +3108,9 @@ function hangingKind(opts: { name?: string; ref?: string; honoursQuarantine?: bo
         select: (_gathered: unknown, ctx) => {
           seen.push([...ctx.quarantined]);
           const held = opts.honoursQuarantine === true && ctx.quarantined.has(ref);
-          const offer = !held && !ctx.inFlight.has(ref);
+          const spent = state.offers !== null && state.offers <= 0;
+          const offer = !held && !spent && !ctx.inFlight.has(ref);
+          if (offer && state.offers !== null) state.offers -= 1;
           return {
             unit: offer
               ? {
@@ -3208,6 +3224,9 @@ describe("the in-memory quarantine for units with no GitHub target", () => {
 
   test("a ref that gains a GitHub target hands over to the label path at one", async () => {
     const hanging = hangingKind();
+    // Two timeouts and no more, so the hand-over below happens at a count this
+    // test picked rather than at whatever the 1ms budget got through first.
+    hanging.state.offers = 2;
     const posted: { id: number; body: string }[] = [];
     const engine = concurrentEngine({
       kinds: [hanging],
@@ -3220,10 +3239,11 @@ describe("the in-memory quarantine for units with no GitHub target", () => {
     });
     const loop = engine.loop();
 
-    await waitUntil(() => hanging.started.length >= 2, "the timeouts with no target");
+    await waitUntil(() => hanging.started.length === 2, "the timeouts with no target");
 
     // The unit's PR now exists, so the label path owns the write half from here.
     hanging.state.target = { objectType: "pr", id: 7 };
+    hanging.state.offers = 1;
     engine.drain.tick();
     await waitUntil(() => posted.length > 0, "the first timeout marker");
 
