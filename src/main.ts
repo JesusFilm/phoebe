@@ -1794,17 +1794,37 @@ export function createEngine(options: EngineOptions): Engine {
   // wait for reconsiders admission immediately rather than sleeping out a poll
   // interval behind a slot that is already free.
   const settleWakers = new Set<() => void>();
+  /**
+   * A settle that arrived with nobody listening (#456). The loop is only inside
+   * the registration window below for part of each pass, so a unit that finishes
+   * while a sibling admission is parked in `slotClient.acquire()` fires into an
+   * empty waker set — and the next wait would then sleep out a whole poll
+   * interval behind a slot that is already free. The latch carries that settle
+   * across the gap: set here, consumed once by the next wait. Bounded by
+   * construction, since consuming it clears it, so it costs one extra pass and
+   * cannot spin.
+   */
+  let pendingWake = false;
 
   function announceSettled(): void {
+    if (settleWakers.size === 0) {
+      pendingWake = true;
+      return;
+    }
     for (const wake of settleWakers) wake();
   }
 
   /**
    * Wait for the next pass: whichever comes first of a unit settling, the poll
-   * interval, or a drain. With nothing running there is nothing to settle, so
-   * this is the idle poll the loop has always done.
+   * interval, or a drain. A settle latched while nothing was listening counts as
+   * the first of those and returns at once. With nothing running there is
+   * nothing left to settle, so this is the idle poll the loop has always done.
    */
   async function waitForNextPass(): Promise<void> {
+    if (pendingWake) {
+      pendingWake = false;
+      return;
+    }
     if (inFlight.size === 0) {
       await drain.wait(pollIntervalMs);
       return;
