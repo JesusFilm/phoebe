@@ -56,9 +56,10 @@ export const BUILT_IN_WORK_KIND_FACTORIES: Record<
 
 /**
  * Assemble the registry: built-ins first, then the tenant's custom kinds.
- * Every definition — built-in or not — passes the same validation; a custom
- * kind colliding with a built-in name is a boot error (shadowing built-ins is
- * out of scope in v1).
+ * Every definition — built-in, custom, or a built-in's replacement — passes
+ * the same validation. A loaded kind bearing a built-in name is that
+ * built-in's declared replacement module (#465): it takes the shipped
+ * factory's slot, and the name's tuning knobs keep applying to it.
  */
 export function buildRegistry(
   config: PhoebeConfig,
@@ -83,32 +84,36 @@ export function buildRegistry(
     return declared === undefined ? definition : { ...definition, promptFile: declared };
   };
 
+  const replacements = new Map(
+    customs
+      .filter((custom) => (WORK_KIND_NAMES as readonly string[]).includes(custom.name))
+      .map((custom) => [custom.name, custom]),
+  );
+
   for (const name of WORK_KIND_NAMES) {
+    const replacement = replacements.get(name);
+    const at = replacement === undefined ? `built-in work kind "${name}"` : `kinds.${name}`;
     const definition = validateWorkKindDefinition(
-      BUILT_IN_WORK_KIND_FACTORIES[name](config),
-      `built-in work kind "${name}"`,
+      replacement?.definition ?? BUILT_IN_WORK_KIND_FACTORIES[name](config),
+      at,
       providerKeys,
     );
     if (definition.name !== name) {
-      throw new Error(
-        `built-in work kind "${name}": its definition names itself "${definition.name}".`,
-      );
+      throw new Error(`${at}: its definition names itself "${definition.name}", not "${name}".`);
     }
-    registry.set(name, { definition: withDeclaredPrompt(name, definition), options: undefined });
+    registry.set(name, {
+      definition: withDeclaredPrompt(name, definition),
+      options: replacement?.options,
+    });
   }
 
   for (const custom of customs) {
-    const at = `workKinds.custom.${custom.name}`;
+    if (replacements.has(custom.name)) continue;
+    const at = `kinds.${custom.name}`;
     const definition = validateWorkKindDefinition(custom.definition, at, providerKeys);
     if (definition.name !== custom.name) {
       throw new Error(
         `${at}: the definition's \`name\` ("${definition.name}") must match its declaration key.`,
-      );
-    }
-    if (registry.has(custom.name)) {
-      throw new Error(
-        `${at}: "${custom.name}" collides with a built-in work kind. ` +
-          `Overriding built-ins is not supported — pick another name.`,
       );
     }
     registry.set(custom.name, {

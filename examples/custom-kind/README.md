@@ -3,7 +3,7 @@
 **Who this is for:** anyone about to write their own work kind who wants to see
 two real ones before starting. This is not a deployment topology (those live in
 [`solo/`](../solo/) and [`workspace/`](../workspace/)) — it is a solo-shaped
-config whose whole point is the `workKinds.custom` block.
+config whose whole point is its custom entries in `pipelines.work.kinds`.
 
 Two kinds, deliberately at the two ends of the effort scale:
 
@@ -31,7 +31,7 @@ Conventions to copy (they are load-bearing, not style):
   can never resolve. Everything a kind can _do_ arrives on `ctx`; the package
   supplies only types, via `import type` + `satisfies WorkKindDefinition`.
 - **`promptFile` paths resolve against the runtime root** (like the built-ins'
-  prompts); module paths in `workKinds.custom` resolve against the config
+  prompts); module paths in a kind declaration resolve against the config
   file's directory.
 
 Authoring reference: [`docs/work-kinds.md` → Writing your own kind](../../docs/work-kinds.md#writing-your-own-kind).

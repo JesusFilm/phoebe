@@ -688,7 +688,7 @@ function insertAtPath(
   );
   for (let d = remaining.length - 1; d >= 1; d--) {
     const indentHere = elemIndent + "  ".repeat(d - 1);
-    text = `{\n${indentHere}  ${remaining[d]!}: ${text},\n${indentHere}}`;
+    text = `{\n${indentHere}  ${propertyKeySource(remaining[d]!)}: ${text},\n${indentHere}}`;
   }
   return { ok: true, content: insertProperty(source, obj, remaining[0]!, text) };
 }
@@ -741,6 +741,23 @@ export function editConfigMoveField(
   const without = removeProp(source, located.parent, located.prop);
 
   return insertAtPath(without, to, valueSource, originIndent);
+}
+
+/**
+ * Remove the field at `path`, at any depth. No-ops when the path names
+ * nothing — the nested sibling of {@link editConfigRemoveField}, added for
+ * migrations that retire a nested block (#465).
+ */
+export function editConfigRemoveFieldAt(source: string, path: readonly string[]): ConfigEditResult {
+  if (path.length === 0) return { ok: false, reason: "remove needs a path" };
+  const resolved = resolveConfigObject(source);
+  if (!resolved.ok) return resolved;
+
+  const located = locatePath(source, resolved.configObj, path);
+  if (!located.ok) return located;
+  if (!located.found) return { ok: true, content: source };
+
+  return { ok: true, content: removeProp(source, located.parent, located.prop) };
 }
 
 /**
@@ -804,7 +821,13 @@ function objectIndent(source: string, obj: BNode): { multiLine: boolean; elemInd
   return { multiLine: true, elemIndent };
 }
 
-function insertProperty(source: string, obj: BNode, key: string, valueSource: string): string {
+/** `key` as property-key source: quoted when it is not a legal identifier (#465). */
+function propertyKeySource(key: string): string {
+  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key) ? key : JSON.stringify(key);
+}
+
+function insertProperty(source: string, obj: BNode, rawKey: string, valueSource: string): string {
+  const key = propertyKeySource(rawKey);
   const closingBracePos = (obj.end as number) - 1;
   const { multiLine: isMultiLine, elemIndent } = objectIndent(source, obj);
   const props = obj.properties as BNode[];
@@ -893,18 +916,17 @@ function removeProp(source: string, obj: BNode, prop: BNode): string {
     removeStart = props[propIdx - 1]!.end as number;
     removeEnd = prop.end as number;
     if (source[removeEnd] === ",") removeEnd++;
-  } else {
-    // Not last: remove this prop and following separator
+  } else if (propIdx === 0) {
+    // First: remove this prop and its following separator.
     removeStart = prop.start as number;
     removeEnd = prop.end as number;
     if (source[removeEnd] === ",") removeEnd++;
     while (removeEnd < source.length && source[removeEnd] === " ") removeEnd++;
-    if (propIdx > 0) {
-      removeStart = props[propIdx - 1]!.end as number;
-      removeEnd = prop.end as number;
-      if (source[removeEnd] === ",") removeEnd++;
-      while (removeEnd < source.length && source[removeEnd] === " ") removeEnd++;
-    }
+  } else {
+    // Middle: the leading separator travels with the prop; the trailing comma
+    // stays — it now separates the neighbours (#465).
+    removeStart = props[propIdx - 1]!.end as number;
+    removeEnd = prop.end as number;
   }
 
   return source.slice(0, removeStart) + source.slice(removeEnd);

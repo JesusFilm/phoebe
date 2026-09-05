@@ -183,7 +183,7 @@ seconds while `work` keeps its five-minute cadence.
 ```ts
 pipelines: {
   work: { order: ["conflicts", "checks"], concurrency: 2 },
-  intake: { pollIntervalMs: 15_000, kinds: { custom: { slack: "./kinds/slack.ts" } } },
+  intake: { pollIntervalMs: 15_000, kinds: { slack: "./kinds/slack.ts" } },
 },
 ```
 
@@ -195,7 +195,7 @@ exist, not what work happens inside one.
 | Knob             | Default  | Hot? | Meaning                                                                                                                                                                                                                                                                                                             |
 | ---------------- | -------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `order`          | `[]`     | cold | Priority, not membership. Named kinds are polled first, in this sequence; every other kind this pipeline owns follows in declaration order. An unknown name is a boot error.                                                                                                                                        |
-| `kinds`          | `{}`     | cold | This pipeline's [per-kind tuning blocks](#per-work-kind-overrides) and [`custom` declarations](#custom-work-kinds-workkindscustom), the same shape the deprecated top-level `workKinds` had.                                                                                                                        |
+| `kinds`          | `{}`     | cold | This pipeline's [per-kind tuning blocks](#per-work-kind-overrides) and [custom-kind declarations](#custom-work-kinds) in one flat namespace, the same shape the deprecated top-level `workKinds` has.                                                                                                               |
 | `concurrency`    | `1`      | cold | How many units this pipeline may hold in flight at once. A pass tops the pipeline up to this many and waits on whichever comes first: a unit finishing, or the poll interval. `--run-once` pins it to 1. Also the input the fleet's [slot cap](#concurrency-the-pipelines-knob-and-the-fleets-cap) is derived from. |
 | `pollIntervalMs` | `300000` | cold | Idle poll cadence. **Outranks `PHOEBE_POLL_INTERVAL_MS`**; the env var is the fallback for a pipeline that declares nothing, and the default applies when neither does.                                                                                                                                             |
 | `disabled`       | `false`  | hot  | Operator off-switch for this pipeline.                                                                                                                                                                                                                                                                              |
@@ -340,13 +340,13 @@ See [`work-kinds.md`](work-kinds.md).
 
 ## Providers & models
 
-| Field             | Default                                                                          | Meaning                                                                                                                                                                                                                                                                                                                |
-| ----------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `defaultProvider` | `"cursor"`                                                                       | Which agent CLI to drive: `cursor`, `claude`, or `codex`.                                                                                                                                                                                                                                                              |
-| `defaultModels`   | `{ cursor: "composer-2.5", claude: "claude-sonnet-4-6", codex: "gpt-5.4-mini" }` | Per-provider model. Merged key-by-key.                                                                                                                                                                                                                                                                                 |
-| `defaultEfforts`  | `{}`                                                                             | Per-provider reasoning effort, merged key-by-key. Only `claude` honours it today (`--effort`, one of `low`, `medium`, `high`, `xhigh`, `max`); `cursor` and `codex` ignore it. A provider left unset gets **no** effort flag, so its CLI default stands.                                                               |
-| `providerEnv`     | `{ cursor: "CURSOR_API_KEY", claude: "ANTHROPIC_API_KEY", codex: "OPENAI_KEY" }` | Env var holding each provider's API key. This is the only key the agent child inherits for the active provider.                                                                                                                                                                                                        |
-| `workKinds`       | `{}`                                                                             | **Deprecated alias** for [`pipelines.work.kinds`](#pipelines); still honoured. Per-work-kind overrides, e.g. `{ reviews: { provider: "claude", model: "claude-haiku-4-5", effort: "low" } }`. Keys are the work kinds (built-in or custom); the reserved `custom` key declares tenant-authored kinds, described below. |
+| Field             | Default                                                                          | Meaning                                                                                                                                                                                                                                                                                                                     |
+| ----------------- | -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `defaultProvider` | `"cursor"`                                                                       | Which agent CLI to drive: `cursor`, `claude`, or `codex`.                                                                                                                                                                                                                                                                   |
+| `defaultModels`   | `{ cursor: "composer-2.5", claude: "claude-sonnet-4-6", codex: "gpt-5.4-mini" }` | Per-provider model. Merged key-by-key.                                                                                                                                                                                                                                                                                      |
+| `defaultEfforts`  | `{}`                                                                             | Per-provider reasoning effort, merged key-by-key. Only `claude` honours it today (`--effort`, one of `low`, `medium`, `high`, `xhigh`, `max`); `cursor` and `codex` ignore it. A provider left unset gets **no** effort flag, so its CLI default stands.                                                                    |
+| `providerEnv`     | `{ cursor: "CURSOR_API_KEY", claude: "ANTHROPIC_API_KEY", codex: "OPENAI_KEY" }` | Env var holding each provider's API key. This is the only key the agent child inherits for the active provider.                                                                                                                                                                                                             |
+| `workKinds`       | `{}`                                                                             | **Deprecated alias** for [`pipelines.work.kinds`](#pipelines); still honoured. Per-work-kind overrides, e.g. `{ reviews: { provider: "claude", model: "claude-haiku-4-5", effort: "low" } }`. Keys are the work kinds — a built-in name is a tuning block, any other name declares a tenant-authored kind, described below. |
 
 `PHOEBE_AGENT`, `PHOEBE_MODEL`, and `PHOEBE_EFFORT` override `defaultProvider`
 and the active provider's entry in `defaultModels` / `defaultEfforts` for one
@@ -381,11 +381,13 @@ config outranks global env, per the ladder above.
 A kind block holds three more knobs. They resolve on their own ladders rather
 than the provider one.
 
-| Knob           | Default               | Hot? | Meaning                                                                                                                                                 |
-| -------------- | --------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `promptFile`   | the kind's own        | cold | Where this kind's prompt template lives, relative to the runtime root. Replaces the [`promptFiles`](#prompt-files) block.                               |
-| `runTimeoutMs` | tenant `runTimeoutMs` | cold | This kind's whole-unit wall-clock budget. Ladder: `PHOEBE_<KIND>_RUN_TIMEOUT_MS`, then this field, then `PHOEBE_RUN_TIMEOUT_MS`, then the tenant field. |
-| `disabled`     | `false`               | hot  | The only off-switch for a kind. Since `order` is priority rather than membership, leaving a kind out of it no longer stops it running.                  |
+| Knob           | Default               | Hot? | Meaning                                                                                                                                                                                                                                                                                                                                                                                                       |
+| -------------- | --------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `promptFile`   | the kind's own        | cold | Where this kind's prompt template lives, relative to the runtime root. Replaces the [`promptFiles`](#prompt-files) block.                                                                                                                                                                                                                                                                                     |
+| `runTimeoutMs` | tenant `runTimeoutMs` | cold | This kind's whole-unit wall-clock budget. Ladder: `PHOEBE_<KIND>_RUN_TIMEOUT_MS`, then this field, then `PHOEBE_RUN_TIMEOUT_MS`, then the tenant field.                                                                                                                                                                                                                                                       |
+| `disabled`     | `false`               | hot  | The only off-switch for a kind. Since `order` is priority rather than membership, leaving a kind out of it no longer stops it running.                                                                                                                                                                                                                                                                        |
+| `path`         | the shipped built-in  | cold | **Replace this built-in's definition** with a tenant module (#465), loaded exactly like a [custom kind](#custom-work-kinds)'s. The tuning knobs keep applying to whatever definition lands under the name. `issues: "./kinds/my-issues.ts"` is string sugar for `{ path: … }`. The module's definition must name itself after the key. Same trust posture as any kind module: registering it is executing it. |
+| _(any other)_  | —                     | cold | With `path`, the block's remaining root fields are the replacement's `ctx.options` payload. Without `path` they are boot errors — the shipped built-ins never read `ctx.options`.                                                                                                                                                                                                                             |
 
 Unknown kind keys and unknown provider values are boot-time config errors;
 `model` and `effort` are unvalidated pass-through strings — the CLIs are the
@@ -401,46 +403,57 @@ Pro/Max subscription instead of API-key billing, point `providerEnv.claude` at
 `CLAUDE_CODE_OAUTH_TOKEN`. See
 [`claude-subscription-auth.md`](claude-subscription-auth.md).
 
-### Custom work kinds (`workKinds.custom`)
+### Custom work kinds
 
-`workKinds.custom.<name>` registers a tenant-authored work kind beside the
-built-ins. This section owns the field's syntax; what a kind _is_ — the
-definition object, the `ctx` surface, the `ref` contract — lives in
+Any `kinds` key that is not a built-in name registers a tenant-authored work
+kind beside the built-ins (#465 — the reserved `custom` sub-block this used to
+require is retired; `phoebe migrate` flattens an old config). This section owns
+the field's syntax; what a kind _is_ — the definition object, the `ctx`
+surface, the `ref` contract — lives in
 [`work-kinds.md` → Writing your own kind](work-kinds.md#writing-your-own-kind),
 and a runnable reference in [`examples/custom-kind/`](../examples/custom-kind/).
 
 Each entry takes one of three forms:
 
 ```ts
-workKinds: {
-  custom: {
-    // 1. Inline definition object — close over any values you need.
-    "docs-request": { name: "docs-request", /* … */ },
-    // 2. Path sugar for the zero-knob module case.
-    "label-echo": "./kinds/label-echo.ts",
-    // 3. Module plus tenant knobs, delivered to the kind as `ctx.options`.
-    "stale-pr-nudger": { module: "./kinds/stale-pr-nudger.ts", options: { staleDays: 7 } },
-  },
-  // Custom kinds are tuned by sibling blocks exactly like built-ins.
-  "stale-pr-nudger": { effort: "low" },
+kinds: {
+  // 1. Inline definition object — close over any values you need.
+  "docs-request": { name: "docs-request", /* … */ },
+  // 2. Path sugar for the zero-knob module case.
+  "label-echo": "./kinds/label-echo.ts",
+  // 3. One flat block: `path`, the same tuning knobs a built-in's block
+  //    holds, and — every other root field — the kind's options (`ctx.options`).
+  "stale-pr-nudger": { path: "./kinds/stale-pr-nudger.ts", staleDays: 7, effort: "low" },
 },
 ```
 
-- **Names** are lowercase `[a-z][a-z0-9-]*`, at most 32 characters. The five
-  built-in names and `custom` itself are reserved; a collision is a boot error.
+- **Names** are lowercase `[a-z][a-z0-9-]*`, at most 32 characters. A key
+  naming a built-in is that built-in's tuning block — where `path` means
+  [replace its definition](#per-work-kind-overrides) rather than declare a new
+  kind — and `custom` is reserved (a tombstone from the retired sub-block). An
+  object under an unknown name that is none of the three forms — a typo'd
+  tuning block, say — is rejected at validation, naming the legal kinds.
 - **Module paths** resolve against the config file's directory and must start
   with `./`, `../`, or `/`. Bare specifiers are rejected at validation: kind
   modules load from the tenant checkout, where no `node_modules` is reachable —
   which is also why kind code uses only _type_ imports from `phoebe-agent`.
   The module's `default` export is the definition or a `(config) => definition`
   factory.
-- **`options`** must be a plain object; it reaches the kind unvalidated as
-  `ctx.options` (the kind validates). Inline entries carry no `options` —
-  close over values instead. Unknown wrapper fields are boot errors.
+- **Options are the block's own root fields.** Everything beside `path` and
+  the tuning knobs reaches the kind unvalidated as `ctx.options` (the kind
+  validates); `path` and the knob names are reserved words a kind's options
+  cannot use, and there is no unknown-field check inside a path block — the
+  kind is the authority on its own options. Inline entries carry none — close
+  over values instead.
+- **Tuning knobs are the same as a built-in's** (`provider`, `model`,
+  `effort`, `promptFile`, `runTimeoutMs`, `disabled`), declared in the same
+  block. The string and inline arms carry none — an inline definition's
+  `promptFile`/`model`/`effort` live on the definition itself, and a string
+  entry that needs tuning or options graduates to the block form.
 - **Prefer the module arms for real logic.** The bootstrapper imports every
   tenant's config on boot and each reconcile, so an inline definition's code
   runs in the supervisor process too — the one holding the deployment's
-  credentials. A `module:` path is imported only by the engine child, after
+  credentials. A `path:` module is imported only by the engine child, after
   the per-child env scrub. Keep inline for closing over a few values, and
   remember either way that registering a kind is executing it: see
   [`trust.md` → The config is code](trust.md#the-config-is-code).
@@ -458,9 +471,9 @@ workKinds: {
 
 ## Prompt files
 
-| Field         | Default keys                                                                                                                                                                                      | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `promptFiles` | `{ issue: "prompts/issues-prompt.md", conflict: "prompts/conflict-prompt.md", checks: "prompts/checks-prompt.md", reviews: "prompts/reviews-prompt.md", research: "prompts/research-prompt.md" }` | **Overrides for the built-in kinds' prompt paths** — each kind's definition owns its prompt, and these keys re-point the built-ins'. Paths are relative to the **runtime root** (the process working directory, which is the consumer checkout on the host, or `/etc/phoebe` in the container where compose mounts `phoebe.config.ts` and `prompts/`). Resolved only from that base, never from the installed package. `phoebe init` copies the shipped defaults into `prompts/`. Edit them to override, or point a key at another runtime-root-relative path. A [custom kind](#custom-work-kinds-workkindscustom)'s prompt lives in its own definition's `promptFile` (same runtime-root resolution, no override key here). |
+| Field         | Default keys                                                                                                                                                                                      | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `promptFiles` | `{ issue: "prompts/issues-prompt.md", conflict: "prompts/conflict-prompt.md", checks: "prompts/checks-prompt.md", reviews: "prompts/reviews-prompt.md", research: "prompts/research-prompt.md" }` | **Overrides for the built-in kinds' prompt paths** — each kind's definition owns its prompt, and these keys re-point the built-ins'. Paths are relative to the **runtime root** (the process working directory, which is the consumer checkout on the host, or `/etc/phoebe` in the container where compose mounts `phoebe.config.ts` and `prompts/`). Resolved only from that base, never from the installed package. `phoebe init` copies the shipped defaults into `prompts/`. Edit them to override, or point a key at another runtime-root-relative path. A [custom kind](#custom-work-kinds)'s prompt lives in its own definition's `promptFile` (same runtime-root resolution, no override key here). |
 
 `promptFiles` is a deprecated alias. A kind's prompt path now lives on its own
 tuning block, at [`pipelines.<pipeline>.kinds.<name>.promptFile`](#pipelines). A

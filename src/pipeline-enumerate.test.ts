@@ -35,7 +35,7 @@ async function enumerate(overrides: Partial<PhoebeUserConfig> = {}, configDir = 
   );
 }
 
-/** A kind module on disk, as a tenant declares it: `custom: { nudge: "./nudge.ts" }`. */
+/** A kind module on disk, as a tenant declares it: `nudge: "./nudge.ts"`. */
 function kindModule(source: string): { dir: string; path: string } {
   const dir = mkdtempSync(join(tmpdir(), "phoebe-enumerate-"));
   const path = join(dir, "nudge.ts");
@@ -127,17 +127,15 @@ describe("enumeratePipelines", () => {
       pipelines: {
         intake: {
           kinds: {
-            custom: {
-              nudge: {
-                name: "nudge",
-                oneShotEligible: true,
-                promptFile: "prompts/custom.md",
-                workspace: "scratch" as const,
-                report: { noun: "nudge(s)", describe: (unit: { ref: string }) => unit.ref },
-                fetch: () => Promise.resolve([]),
-                select: () => ({ unit: null, skipped: [], total: 0 }),
-                run,
-              },
+            nudge: {
+              name: "nudge",
+              oneShotEligible: true,
+              promptFile: "prompts/custom.md",
+              workspace: "scratch" as const,
+              report: { noun: "nudge(s)", describe: (unit: { ref: string }) => unit.ref },
+              fetch: () => Promise.resolve([]),
+              select: () => ({ unit: null, skipped: [], total: 0 }),
+              run,
             },
           },
         },
@@ -163,7 +161,7 @@ describe("enumeratePipelines", () => {
       {
         pipelines: {
           work: { order: ["conflicts", "checks", "reviews", "issues", "research"] },
-          intake: { kinds: { custom: { nudge: "./nudge.ts" } } },
+          intake: { kinds: { nudge: "./nudge.ts" } },
         },
       },
       dir,
@@ -179,7 +177,7 @@ describe("enumeratePipelines", () => {
           work: { order: ["conflicts", "reviews", "issues", "research"] },
           intake: {
             order: ["checks"],
-            kinds: { checks: { disabled: true }, custom: { nudge: "./nudge.ts" } },
+            kinds: { checks: { disabled: true }, nudge: "./nudge.ts" },
           },
         },
       },
@@ -191,7 +189,7 @@ describe("enumeratePipelines", () => {
   test("a kind module that throws on load surfaces as an enumerate failure", async () => {
     const { dir } = kindModule(`throw new Error("prompts/nudge.md is missing");\n`);
     await expect(
-      enumerate({ pipelines: { intake: { kinds: { custom: { nudge: "./nudge.ts" } } } } }, dir),
+      enumerate({ pipelines: { intake: { kinds: { nudge: "./nudge.ts" } } } }, dir),
     ).rejects.toThrow(/prompts\/nudge.md is missing/);
   });
 });
@@ -219,7 +217,7 @@ describe("the per-pipeline `env` (#425)", () => {
   test("the declaring pipeline reports the key and its sibling does not", async () => {
     const { dir } = kindModule(DECLARING_KIND_SOURCE);
     const pipelines = await enumerate(
-      { pipelines: { intake: { kinds: { custom: { nudge: "./nudge.ts" } } } } },
+      { pipelines: { intake: { kinds: { nudge: "./nudge.ts" } } } },
       dir,
     );
     expect(pipelines.find((pipeline) => pipeline.name === "intake")?.env).toEqual([
@@ -233,7 +231,7 @@ describe("the per-pipeline `env` (#425)", () => {
     const pipelines = await enumerate(
       {
         pipelines: {
-          intake: { kinds: { custom: { nudge: "./nudge.ts" }, nudge: { disabled: true } } },
+          intake: { kinds: { nudge: { path: "./nudge.ts", disabled: true } } },
         },
       },
       dir,
@@ -246,10 +244,9 @@ describe("enumerateDeclaredEnv", () => {
   test("attributes each declared key to the pipeline and kind that named it", async () => {
     const { dir } = kindModule(DECLARING_KIND_SOURCE);
     const declarations = await enumerateDeclaredEnv(
-      resolveConfig(
-        userConfig({ pipelines: { intake: { kinds: { custom: { nudge: "./nudge.ts" } } } } }),
-        { dataBase: "/tmp/phoebe-test" },
-      ),
+      resolveConfig(userConfig({ pipelines: { intake: { kinds: { nudge: "./nudge.ts" } } } }), {
+        dataBase: "/tmp/phoebe-test",
+      }),
       dir,
     );
     expect(declarations).toEqual([

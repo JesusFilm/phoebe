@@ -1,7 +1,7 @@
 // Reference illustration — custom work kinds (issue #303).
 //
-// A solo-shaped config whose point is the `pipelines.work.kinds.custom` block: it
-// declares one full-form kind loaded from a module in the repo
+// A solo-shaped config whose point is custom entries in `pipelines.work.kinds`:
+// it declares one full-form kind loaded from a module in the repo
 // (kinds/stale-pr-nudger.ts) and one prompt-only producer written inline
 // below. Both implement the same contract as the five built-ins; after boot
 // the engine treats all of them identically — the pipeline's `order`, per-kind
@@ -19,7 +19,7 @@ import type { Issue, PhoebeUserConfig, WorkKindDefinition } from "phoebe-agent";
 // A new issue-keyed producer is a label, a prompt file, and one
 // `ctx.agent.issueWorkflow` call — the same skeleton the built-in `issues` and
 // `research` kinds run on. Inline definitions close over any values they need
-// (no `options`; that is the `{ module, options }` wrapper's job).
+// (no options; a path block's root fields are its options instead).
 
 const DOCS_LABEL = "docs-wanted";
 
@@ -93,17 +93,18 @@ const config: PhoebeUserConfig = {
       order: ["conflicts", "issues", "stale-pr-nudger", "docs-request"],
 
       kinds: {
-        custom: {
-          // Full form: a module in this repo (path relative to this config
-          // file's directory), plus tenant knobs the kind reads back as
-          // `ctx.options`.
-          "stale-pr-nudger": { module: "./kinds/stale-pr-nudger.ts", options: { staleDays: 7 } },
-          // Cheap case: the inline definition above. A bare path string also
-          // works when there are no knobs: `"docs-request": "./kinds/docs.ts"`.
-          "docs-request": docsRequestKind,
+        // Full form: a module in this repo (path relative to this config
+        // file's directory), tuning knobs — the same a built-in's block holds
+        // — and every other root field is the kind's options, read back as
+        // `ctx.options` (#465).
+        "stale-pr-nudger": {
+          path: "./kinds/stale-pr-nudger.ts",
+          staleDays: 7,
+          effort: "low",
         },
-        // Custom kinds are tuned exactly like built-ins.
-        "stale-pr-nudger": { effort: "low" },
+        // Cheap case: the inline definition above. A bare path string also
+        // works when there are no knobs: `"docs-request": "./kinds/docs.ts"`.
+        "docs-request": docsRequestKind,
       },
     },
   },

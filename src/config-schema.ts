@@ -77,47 +77,67 @@ export type WorkKindOverride = {
 };
 
 /**
- * One `workKinds.custom.<name>` declaration (#303/#350) — a tenant-authored
- * work kind the engine registers beside the built-ins. Three arms:
+ * A module-backed kind block (#465): the kind's `path`, the same tuning knobs
+ * a built-in's block holds ({@link WorkKindOverride}), and — the index
+ * signature — the kind's options, declared directly at the block root and
+ * passed to the kind as `ctx.options` (unvalidated; the kind validates them).
+ * `path` and the knob names are reserved words a kind's options cannot use.
  *
- *   - an inline definition object (close over values in the config file;
- *     inline entries carry no `options`),
- *   - a path string — sugar for the zero-knob module case,
- *   - `{ module, options? }` — a module path plus tenant knobs, passed through
- *     unvalidated as `ctx.options` (the kind validates them).
- *
- * Module paths resolve against the config file's directory and must be
- * relative (`./`, `../`) or absolute: tenant configs load from a container
- * mount with no reachable `node_modules`, so a bare specifier can never
- * resolve. The module's `default` export is the definition, or a
- * `(config) => definition` factory — the same shape the built-ins use.
+ * Paths resolve against the config file's directory and must be relative
+ * (`./`, `../`) or absolute: tenant configs load from a container mount with
+ * no reachable `node_modules`, so a bare specifier can never resolve. The
+ * module's `default` export is the definition, or a `(config) => definition`
+ * factory — the same shape the built-ins use.
  */
-export type CustomKindEntry =
-  | AnyWorkKindDefinition
-  | string
-  | { module: string; options?: Record<string, unknown> };
+export type PathKindEntry = { path: string } & WorkKindOverride & {
+    [option: string]: unknown;
+  };
 
 /**
- * The `workKinds` field, widened for custom kinds (#350 Q10): `custom` stays
- * precisely typed; sibling keys loosen to an index signature so a tenant can
- * tune a custom kind with the same override block as a built-in without casts.
- * Runtime two-pass validation (`validateWorkKindsField`) remains the
- * authoritative typo net.
+ * One custom-kind declaration (#303/#350, flattened by #465) — a tenant-authored
+ * work kind the engine registers beside the built-ins, declared directly under
+ * `kinds.<name>` beside the built-ins' tuning blocks. Three arms:
+ *
+ *   - an inline definition object (close over values in the config file;
+ *     inline entries carry no options — their knobs, `promptFile`, `model`,
+ *     `effort`, live on the definition itself),
+ *   - a path string — sugar for the zero-knob module case,
+ *   - a {@link PathKindEntry} block — path, knobs, and options in one flat
+ *     block, the same shape a built-in's is.
+ */
+export type CustomKindEntry = AnyWorkKindDefinition | string | PathKindEntry;
+
+/**
+ * What a built-in kind's key may hold (#465): its tuning block, or — with
+ * `path` (or the path-string sugar) — a {@link PathKindEntry} replacing the
+ * shipped definition with the tenant's module, loaded exactly like a custom
+ * kind's. The tuning knobs keep applying to whatever definition lands under
+ * the name; options at the block root are only legal beside `path`, because
+ * the shipped built-ins never read `ctx.options`.
+ */
+export type BuiltInKindEntry = string | WorkKindOverride | PathKindEntry;
+
+/**
+ * The `kinds` field, one flat namespace (#465): a key naming a built-in is its
+ * tuning block (optionally replacing the definition by `path`); any other key
+ * is a custom-kind declaration. Runtime validation (`validateWorkKindsField`)
+ * remains the authoritative typo net — an object under an unknown key that is
+ * neither a `{ path }` block nor an inline definition is rejected as a
+ * mistyped tuning block.
  */
 export type WorkKindsField = {
-  [kind: string]: WorkKindOverride | Record<string, CustomKindEntry> | undefined;
-} & {
-  custom?: Record<string, CustomKindEntry>;
-};
+  [kind: string]: BuiltInKindEntry | CustomKindEntry | undefined;
+} & Partial<Record<WorkKindName, BuiltInKindEntry>>;
 
 /** Legal custom-kind names: env-safe lowercase, hyphens allowed, ≤32 chars. */
 export const CUSTOM_WORK_KIND_NAME_RE = /^[a-z][a-z0-9-]*$/;
 const CUSTOM_WORK_KIND_NAME_MAX = 32;
 
 /**
- * The one reserved `workKinds` key that holds custom-kind declarations rather
- * than an override block. Named once so every read, guard, and validation pass
- * agrees on the spelling.
+ * The key that used to hold custom-kind declarations (#303, retired by #465).
+ * Kept only as a tombstone: a config still carrying a `custom` block fails at
+ * load with a pointer at the flattening, rather than silently registering a
+ * kind named "custom".
  */
 export const CUSTOM_WORK_KINDS_KEY = "custom";
 
@@ -131,29 +151,76 @@ const WORK_KIND_KNOBS = [
   "disabled",
 ] as const satisfies readonly (keyof WorkKindOverride)[];
 
-/** Keys no custom kind may claim: the built-ins plus the `custom` block itself. */
-const RESERVED_WORK_KIND_KEYS: readonly string[] = [...WORK_KIND_NAMES, CUSTOM_WORK_KINDS_KEY];
-
-/** The validated `custom` block of a `workKinds` field, or an empty record. */
+/**
+ * The custom-kind declarations of a `kinds` field (#465): every entry whose key
+ * is not a built-in name. Called on validated fields, where the tombstone has
+ * already rejected a leftover `custom` block.
+ */
 export function customKindEntries(
   workKinds: WorkKindsField | undefined,
 ): Record<string, CustomKindEntry> {
-  const custom = workKinds?.[CUSTOM_WORK_KINDS_KEY];
-  if (custom === undefined) return {};
-  return custom as Record<string, CustomKindEntry>;
+  if (workKinds === undefined) return {};
+  return Object.fromEntries(
+    Object.entries(workKinds).filter(
+      ([kind, entry]) =>
+        entry !== undefined && !(WORK_KIND_NAMES as readonly string[]).includes(kind),
+    ),
+  ) as Record<string, CustomKindEntry>;
 }
 
 /**
- * The override block declared for `kind`, typed past the widened field. Safe
- * because `custom` is a reserved key — no kind is ever named `custom`, so a
- * kind-keyed read can only land on an override block (or nothing).
+ * The tuning knobs declared for `kind`, picked uniformly off its entry (#465):
+ * every object entry — a built-in's block, a custom kind's `{ path, ... }`
+ * wrapper — carries the same knobs. The string arm and an inline definition
+ * carry none (an inline definition's knobs live on the definition itself).
  */
 export function workKindOverride(
   workKinds: WorkKindsField,
   kind: string,
 ): WorkKindOverride | undefined {
-  if (kind === CUSTOM_WORK_KINDS_KEY) return undefined;
-  return workKinds[kind] as WorkKindOverride | undefined;
+  const entry = workKinds[kind];
+  if (entry === undefined || typeof entry === "string") return undefined;
+  const isBuiltIn = (WORK_KIND_NAMES as readonly string[]).includes(kind);
+  if (!isBuiltIn && !("path" in entry)) return undefined;
+  const knobs: Record<string, unknown> = {};
+  for (const knob of WORK_KIND_KNOBS) {
+    if (knob in entry) knobs[knob] = (entry as Record<string, unknown>)[knob];
+  }
+  return knobs as WorkKindOverride;
+}
+
+/**
+ * A path block's options (#465): every root field that is not `path` and not a
+ * tuning knob, exactly as declared — the payload the kind reads back as
+ * `ctx.options`. `undefined` when the block declares none, so a zero-option
+ * kind sees the same `ctx.options` as the string arm gives it.
+ */
+export function pathEntryOptions(entry: object): Record<string, unknown> | undefined {
+  const options = Object.fromEntries(
+    Object.entries(entry).filter(
+      ([key]) => key !== "path" && !(WORK_KIND_KNOBS as readonly string[]).includes(key),
+    ),
+  );
+  return Object.keys(options).length > 0 ? options : undefined;
+}
+
+/**
+ * The replacement module declared for a built-in kind, when any (#465): the
+ * `path` and root options off its block, or the path-string sugar.
+ * `undefined` means the shipped definition stands.
+ */
+export function builtInKindPath(
+  workKinds: WorkKindsField | undefined,
+  kind: WorkKindName,
+): { path: string; options?: Record<string, unknown> } | undefined {
+  const entry = workKinds?.[kind];
+  if (entry === undefined) return undefined;
+  if (typeof entry === "string") return { path: entry };
+  if (typeof entry === "object" && "path" in entry && typeof entry.path === "string") {
+    const options = pathEntryOptions(entry);
+    return options === undefined ? { path: entry.path } : { path: entry.path, options };
+  }
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -179,7 +246,7 @@ export type PipelineDeclaration = {
    * kind out of rotation is `kinds.<name>.disabled`, not omission here.
    */
   order?: readonly string[];
-  /** This pipeline's work-kind tuning blocks and `custom` declarations. */
+  /** This pipeline's work-kind tuning blocks and custom-kind declarations, one flat namespace (#465). */
   kinds?: WorkKindsField;
   /** Units this pipeline may hold in flight at once. Default 1. */
   concurrency?: number;
@@ -604,10 +671,10 @@ export type PhoebeConfig = {
    * `null` (explicit clear: suppress the effort flag even when `defaultEfforts`
    * names one for this provider) — the CLIs are the authority on string values.
    *
-   * `workKinds.custom.<name>` declares tenant-authored kinds (#303); see
-   * {@link CustomKindEntry}. Custom kinds are tuned by sibling blocks and
-   * `PHOEBE_<KIND>_*` env vars exactly like built-ins (hyphens in a kind name
-   * map to underscores in its env vars).
+   * Any non-built-in key declares a tenant-authored kind (#303/#465); see
+   * {@link CustomKindEntry}. Custom kinds are tuned by knobs on their
+   * `{ path, ... }` block and `PHOEBE_<KIND>_*` env vars exactly like
+   * built-ins (hyphens in a kind name map to underscores in its env vars).
    */
   workKinds: WorkKindsField;
   /**
@@ -993,79 +1060,146 @@ export function readDeploymentField(user: {
 }
 
 /**
- * Reject a malformed custom-kind declaration's *shape* (#350): its name, which
- * of the three entry arms it is, wrapper fields, and path form. Definition
- * members (functions present, workspace known) are validated later, at
- * registry assembly, where path modules have been loaded too — this runs
- * synchronously inside `resolveConfig`, before any module import.
+ * Reject a malformed custom-kind declaration's *shape* (#350, flattened by
+ * #465): its name, which of the three entry arms it is, wrapper fields, and
+ * path form. Definition members (functions present, workspace known) are
+ * validated later, at registry assembly, where path modules have been loaded
+ * too — this runs synchronously inside `resolveConfig`, before any module
+ * import. Built-in names never reach here: `validateWorkKindsField` routes
+ * them to tuning-block validation first.
  */
-function validateCustomKindEntry(name: string, entry: CustomKindEntry, customAt: string): void {
-  const at = `phoebe.config.ts \`${customAt}.${name}\``;
+function validateCustomKindEntry(name: string, entry: CustomKindEntry, kindsAt: string): void {
+  const at = `phoebe.config.ts \`${kindsAt}.${name}\``;
   if (!CUSTOM_WORK_KIND_NAME_RE.test(name) || name.length > CUSTOM_WORK_KIND_NAME_MAX) {
     throw new Error(
-      `phoebe.config.ts \`${customAt}\` names illegal kind "${name}". ` +
+      `phoebe.config.ts \`${kindsAt}\` names illegal kind "${name}". ` +
         `Custom kind names are lowercase \`[a-z][a-z0-9-]*\`, at most ` +
         `${CUSTOM_WORK_KIND_NAME_MAX} characters.`,
     );
   }
-  if (RESERVED_WORK_KIND_KEYS.includes(name)) {
-    throw new Error(
-      `${at} collides with a reserved name. The built-in kinds ` +
-        `(${WORK_KIND_NAMES.join(", ")}) and \`custom\` cannot be redeclared.`,
-    );
-  }
-
-  const assertModulePath = (path: unknown): void => {
-    if (typeof path !== "string" || path.trim().length === 0) {
-      throw new Error(`${at} must name a module path — got ${JSON.stringify(path)}.`);
-    }
-    if (!path.startsWith("./") && !path.startsWith("../") && !isAbsolute(path)) {
-      throw new Error(
-        `${at} names module "${path}", which is a bare specifier. Kind modules load ` +
-          `from the tenant checkout, where no \`node_modules\` is reachable — use a ` +
-          `path starting with \`./\`, \`../\`, or \`/\`, resolved against the config ` +
-          `file's directory.`,
-      );
-    }
-  };
 
   if (typeof entry === "string") {
-    assertModulePath(entry);
+    assertModulePath(at, entry);
     return;
   }
   if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
     throw new Error(
       `${at} must be an inline definition object, a module path string, or ` +
-        `\`{ module, options? }\` — got ${JSON.stringify(entry)}.`,
+        `\`{ path, ...knobs, ...options }\` — got ${JSON.stringify(entry)}.`,
     );
   }
-  if ("module" in entry) {
-    // The wrapper arm. Unknown wrapper fields are boot errors — no inert keys.
-    for (const key of Object.keys(entry)) {
-      if (key !== "module" && key !== "options") {
-        throw new Error(
-          `${at} names unknown wrapper field "${key}". A module entry holds only ` +
-            `\`module\` and \`options\`.`,
-        );
-      }
-    }
-    assertModulePath((entry as { module: unknown }).module);
-    const options = (entry as { options?: unknown }).options;
-    // A plain record, as documented: class instances (a Date, a Map) would
-    // survive this boot check only to surprise the kind reading `ctx.options`.
-    const isPlainObject =
-      typeof options === "object" &&
-      options !== null &&
-      !Array.isArray(options) &&
-      [Object.prototype, null].includes(Object.getPrototypeOf(options) as object | null);
-    if (options !== undefined && !isPlainObject) {
-      throw new Error(
-        `${at}.options must be a plain object when present — got ${JSON.stringify(options)}.`,
-      );
-    }
+  if ("path" in entry || "module" in entry) {
+    // The path-block arm: `path`, knobs, and every other root field is the
+    // kind's options payload — no field list to typo against, the kind is the
+    // authority on its own options. (`module` is the knob's retired spelling;
+    // routed here so its tombstone fires instead of the typo net below.)
+    assertPathBlock(at, entry as Record<string, unknown>);
+    validateKnobValues(entry as Record<string, unknown>, `${kindsAt}.${name}`);
     return;
   }
-  // The inline-definition arm: member validation happens at registry assembly.
+  if (DEFINITION_DISCRIMINANTS.some((member) => member in entry)) {
+    // The inline-definition arm: member validation happens at registry assembly.
+    return;
+  }
+  // Neither arm — almost certainly a tuning block under a mistyped kind name.
+  // This is the typo net the reserved `custom` key used to provide (#465).
+  throw new Error(
+    `phoebe.config.ts \`${kindsAt}\` names unknown work kind "${name}". A tuning block is ` +
+      `only legal for a declared kind — use one of: ${WORK_KIND_NAMES.join(", ")}. To declare ` +
+      `"${name}" as a custom kind, use a module path string, a \`{ path, ...knobs, ...options }\` ` +
+      `block, or an inline definition.`,
+  );
+}
+
+/**
+ * The members whose presence marks an object as an inline work-kind definition
+ * rather than a mistyped tuning block (#465). The `fetch`/`select`/`run` triple
+ * is the definition contract's core; any one of them is enough to route the
+ * object to registry-assembly validation, which then names whatever is missing.
+ */
+const DEFINITION_DISCRIMINANTS = ["fetch", "select", "run"] as const;
+
+/** A kind-module path is relative-or-absolute, never bare (#350). */
+function assertModulePath(at: string, path: unknown): void {
+  if (typeof path !== "string" || path.trim().length === 0) {
+    throw new Error(`${at} must name a module path — got ${JSON.stringify(path)}.`);
+  }
+  if (!path.startsWith("./") && !path.startsWith("../") && !isAbsolute(path)) {
+    throw new Error(
+      `${at} names module "${path}", which is a bare specifier. Kind modules load ` +
+        `from the tenant checkout, where no \`node_modules\` is reachable — use a ` +
+        `path starting with \`./\`, \`../\`, or \`/\`, resolved against the config ` +
+        `file's directory.`,
+    );
+  }
+}
+
+/**
+ * The shared checks for a `{ path, ... }` block (#465): the retired `module`
+ * spelling, the path form, and the retired `options` wrapper — a leftover
+ * `options: { … }` would otherwise silently become one big option literally
+ * named "options".
+ */
+function assertPathBlock(at: string, entry: Record<string, unknown>): void {
+  if (entry["module"] !== undefined) {
+    throw new Error(
+      `${at} declares \`module\`. The knob is named \`path\` (#465) — rename it ` +
+        `(\`phoebe migrate\` does this).`,
+    );
+  }
+  assertModulePath(at, entry["path"]);
+  if (entry["options"] !== undefined) {
+    throw new Error(
+      `${at} declares \`options\`. The wrapper was retired (#465): a kind's options are ` +
+        `the block's own root fields, beside \`path\` and the tuning knobs — move each ` +
+        `\`options.<key>\` up one level (\`phoebe migrate\` does this).`,
+    );
+  }
+}
+
+/**
+ * The knob *values* one tuning block (or wrapper) may hold (#300/#465): key
+ * membership is the caller's job — a built-in block allows only knobs, a
+ * path block allows options beside them — but the value checks are
+ * identical. `model` and `effort` are deliberately not validated — they are
+ * pass-through strings and the provider CLIs are the authority on what they
+ * accept.
+ */
+function validateKnobValues(block: Record<string, unknown>, at: string): void {
+  const knobs = block as WorkKindOverride;
+  if (
+    knobs.promptFile !== undefined &&
+    (typeof knobs.promptFile !== "string" || knobs.promptFile.trim().length === 0)
+  ) {
+    throw new Error(
+      `phoebe.config.ts \`${at}.promptFile\` must be a path string — ` +
+        `got ${JSON.stringify(knobs.promptFile)}.`,
+    );
+  }
+  if (
+    knobs.runTimeoutMs !== undefined &&
+    (typeof knobs.runTimeoutMs !== "number" ||
+      !Number.isFinite(knobs.runTimeoutMs) ||
+      knobs.runTimeoutMs <= 0)
+  ) {
+    throw new Error(
+      `phoebe.config.ts \`${at}.runTimeoutMs\` must be a positive number of ` +
+        `milliseconds — got ${JSON.stringify(knobs.runTimeoutMs)}.`,
+    );
+  }
+  if (knobs.disabled !== undefined && typeof knobs.disabled !== "boolean") {
+    throw new Error(
+      `phoebe.config.ts \`${at}.disabled\` must be a boolean — ` +
+        `got ${JSON.stringify(knobs.disabled)}.`,
+    );
+  }
+  const provider = knobs.provider;
+  if (provider !== undefined && !(PROVIDER_NAMES as readonly string[]).includes(provider)) {
+    throw new Error(
+      `phoebe.config.ts \`${at}.provider\` must be one of ` +
+        `${PROVIDER_NAMES.join(", ")} (got ${JSON.stringify(provider)}).`,
+    );
+  }
 }
 
 /**
@@ -1076,9 +1210,9 @@ function validateCustomKindEntry(name: string, entry: CustomKindEntry, customAt:
  * `model` and `effort` are deliberately not validated — they are pass-through
  * strings and the provider CLIs are the authority on what they accept.
  *
- * Two-pass (#350 Q2): parse the `custom` block first, then validate sibling
- * keys against built-ins ∪ the declared custom names — so a custom kind is
- * tuned by a sibling override block exactly like a built-in.
+ * One pass over one flat namespace (#465): a built-in key is a tuning block,
+ * any other key is a custom-kind declaration. The retired `custom` sub-block
+ * (#350) is a tombstone — rejected with a pointer at the flattening.
  *
  * `at` is the config path the errors name: `workKinds` for the deprecated
  * top-level block, `pipelines.<name>.kinds` for a pipeline (#415).
@@ -1094,85 +1228,50 @@ function validateWorkKindsField(
     );
   }
 
-  // Pass 1: the `custom` block's shape.
-  const custom = workKinds[CUSTOM_WORK_KINDS_KEY];
-  const customNames: string[] = [];
-  if (custom !== undefined) {
-    if (typeof custom !== "object" || custom === null || Array.isArray(custom)) {
-      throw new Error(
-        `phoebe.config.ts \`${at}.custom\` must be an object keyed by kind name — ` +
-          `got ${JSON.stringify(custom)}.`,
-      );
-    }
-    for (const [name, entry] of Object.entries(custom)) {
-      validateCustomKindEntry(name, entry as CustomKindEntry, `${at}.${CUSTOM_WORK_KINDS_KEY}`);
-      customNames.push(name);
-    }
-  }
-
-  // Pass 2: sibling override blocks, against the widened name set.
-  const legalKinds = [...WORK_KIND_NAMES, ...customNames];
   for (const [kind, block] of Object.entries(workKinds)) {
-    if (kind === CUSTOM_WORK_KINDS_KEY) continue;
-    if (!legalKinds.includes(kind)) {
+    if (kind === CUSTOM_WORK_KINDS_KEY) {
       throw new Error(
-        `phoebe.config.ts \`${at}\` names unknown work kind "${kind}". ` +
-          `Use one of: ${legalKinds.join(", ")}.`,
+        `phoebe.config.ts \`${at}.custom\` was retired (#465): custom kinds are declared ` +
+          `directly under \`${at}\`, beside the built-ins' tuning blocks. Move each ` +
+          `\`${at}.custom.<name>\` entry up one level (\`phoebe migrate\` does this), and fold ` +
+          `any sibling tuning block for a custom kind into its \`{ path, ... }\` block.`,
       );
+    }
+    if (!(WORK_KIND_NAMES as readonly string[]).includes(kind)) {
+      validateCustomKindEntry(kind, block as CustomKindEntry, at);
+      continue;
+    }
+    // A built-in's entry: the path-string sugar for `{ path }`, or its block
+    // (#465). With `path`, the shipped definition is replaced and extra root
+    // fields are the replacement's `ctx.options`. Without it, the block holds
+    // knobs only: the shipped built-ins never read `ctx.options`, so an extra
+    // field would sit inert forever — same failure mode as a typo'd knob, and
+    // the same error.
+    if (typeof block === "string") {
+      assertModulePath(`phoebe.config.ts \`${at}.${kind}\``, block);
+      continue;
     }
     if (typeof block !== "object" || block === null || Array.isArray(block)) {
       throw new Error(
-        `phoebe.config.ts \`${at}.${kind}\` must be an object with optional ` +
-          `${WORK_KIND_KNOBS.map((knob) => `\`${knob}\``).join(", ")} — got ${JSON.stringify(block)}.`,
+        `phoebe.config.ts \`${at}.${kind}\` must be a module path string or an object with ` +
+          `optional ${WORK_KIND_KNOBS.map((knob) => `\`${knob}\``).join(", ")}, \`path\` — ` +
+          `got ${JSON.stringify(block)}.`,
       );
     }
-    // A block holds exactly the knobs above — an unknown key (a typo'd knob, a
-    // hoped-for one) would sit inert forever, same failure mode as an unknown
-    // kind key. `model` and `effort` values are not validated here: `model` is
-    // a pass-through string, and `effort` accepts a string or null (the
-    // explicit clear) — the provider CLIs are the authority on string values.
-    for (const knob of Object.keys(block)) {
-      if (!(WORK_KIND_KNOBS as readonly string[]).includes(knob)) {
-        throw new Error(
-          `phoebe.config.ts \`${at}.${kind}\` names unknown knob "${knob}". ` +
-            `Each block holds only ${WORK_KIND_KNOBS.map((k) => `\`${k}\``).join(", ")}.`,
-        );
+    if ("path" in block || "module" in block) {
+      assertPathBlock(`phoebe.config.ts \`${at}.${kind}\``, block as Record<string, unknown>);
+    } else {
+      for (const knob of Object.keys(block)) {
+        if (!(WORK_KIND_KNOBS as readonly string[]).includes(knob)) {
+          throw new Error(
+            `phoebe.config.ts \`${at}.${kind}\` names unknown knob "${knob}". ` +
+              `Each block holds only ${WORK_KIND_KNOBS.map((k) => `\`${k}\``).join(", ")}, ` +
+              `\`path\` — options are only read by a replacement \`path\` module.`,
+          );
+        }
       }
     }
-    const knobs = block as WorkKindOverride;
-    if (
-      knobs.promptFile !== undefined &&
-      (typeof knobs.promptFile !== "string" || knobs.promptFile.trim().length === 0)
-    ) {
-      throw new Error(
-        `phoebe.config.ts \`${at}.${kind}.promptFile\` must be a path string — ` +
-          `got ${JSON.stringify(knobs.promptFile)}.`,
-      );
-    }
-    if (
-      knobs.runTimeoutMs !== undefined &&
-      (typeof knobs.runTimeoutMs !== "number" ||
-        !Number.isFinite(knobs.runTimeoutMs) ||
-        knobs.runTimeoutMs <= 0)
-    ) {
-      throw new Error(
-        `phoebe.config.ts \`${at}.${kind}.runTimeoutMs\` must be a positive number of ` +
-          `milliseconds — got ${JSON.stringify(knobs.runTimeoutMs)}.`,
-      );
-    }
-    if (knobs.disabled !== undefined && typeof knobs.disabled !== "boolean") {
-      throw new Error(
-        `phoebe.config.ts \`${at}.${kind}.disabled\` must be a boolean — ` +
-          `got ${JSON.stringify(knobs.disabled)}.`,
-      );
-    }
-    const provider = knobs.provider;
-    if (provider !== undefined && !(PROVIDER_NAMES as readonly string[]).includes(provider)) {
-      throw new Error(
-        `phoebe.config.ts \`${at}.${kind}.provider\` must be one of ` +
-          `${PROVIDER_NAMES.join(", ")} (got ${JSON.stringify(provider)}).`,
-      );
-    }
+    validateKnobValues(block as Record<string, unknown>, `${at}.${kind}`);
   }
 }
 

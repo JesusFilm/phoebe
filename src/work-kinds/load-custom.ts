@@ -1,14 +1,21 @@
-// Loading a tenant's custom work kinds (#350): resolve each
-// `workKinds.custom.<name>` entry — inline definition, path string, or
-// `{ module, options }` wrapper — into a definition, then assemble the
-// registry. Path modules load with the same dynamic-import machinery as the
+// Loading a tenant's custom work kinds (#350, flattened by #465): resolve each
+// non-built-in `kinds.<name>` entry — inline definition, path string, or a
+// `{ path, ...knobs, ...options }` block — into a definition, then assemble
+// the registry. Path modules load with the same dynamic-import machinery as the
 // config itself (native Node type-stripping), resolved against the config
 // file's directory. Editing a kind module requires a restart: the reconcile
 // watch fingerprints the config file only (documented v1 limitation).
 
 import { resolve as resolvePath } from "node:path";
 import { pathToFileURL } from "node:url";
-import { customKindEntries, type CustomKindEntry, type PhoebeConfig } from "../config-schema.ts";
+import {
+  WORK_KIND_NAMES,
+  builtInKindPath,
+  customKindEntries,
+  pathEntryOptions,
+  type CustomKindEntry,
+  type PhoebeConfig,
+} from "../config-schema.ts";
 import type { AnyWorkKindDefinition } from "./definition.ts";
 import { buildRegistry, type LoadedCustomKind, type WorkKindRegistry } from "./registry.ts";
 
@@ -45,9 +52,12 @@ async function importKindModule(
 }
 
 /**
- * Resolve every declared custom kind to `{ name, definition, options }`.
- * The entries' *shape* was already validated by `resolveConfig`; definition
- * members are validated at registry assembly.
+ * Resolve every declared kind module to `{ name, definition, options }`: the
+ * custom kinds, plus any built-in whose block declares a replacement `path`
+ * (#465) — the same loading machinery for both, so a replaced built-in is a
+ * custom kind that happens to claim a shipped name. The entries' *shape* was
+ * already validated by `resolveConfig`; definition members are validated at
+ * registry assembly.
  */
 export async function loadCustomKinds(
   config: PhoebeConfig,
@@ -55,8 +65,17 @@ export async function loadCustomKinds(
 ): Promise<LoadedCustomKind[]> {
   const loaded: LoadedCustomKind[] = [];
   for (const [name, entry] of Object.entries(customKindEntries(config.workKinds))) {
-    const at = `workKinds.custom.${name}`;
+    const at = `kinds.${name}`;
     loaded.push(await resolveEntry(at, name, entry, configDir, config));
+  }
+  for (const name of WORK_KIND_NAMES) {
+    const declared = builtInKindPath(config.workKinds, name);
+    if (declared === undefined) continue;
+    loaded.push({
+      name,
+      definition: await importKindModule(`kinds.${name}`, declared.path, configDir, config),
+      options: declared.options,
+    });
   }
   return loaded;
 }
@@ -75,12 +94,12 @@ async function resolveEntry(
       options: undefined,
     };
   }
-  if ("module" in entry && typeof (entry as { module?: unknown }).module === "string") {
-    const wrapper = entry as { module: string; options?: Record<string, unknown> };
+  if ("path" in entry && typeof (entry as { path?: unknown }).path === "string") {
+    const block = entry as { path: string };
     return {
       name,
-      definition: await importKindModule(at, wrapper.module, configDir, config),
-      options: wrapper.options,
+      definition: await importKindModule(at, block.path, configDir, config),
+      options: pathEntryOptions(block),
     };
   }
   return { name, definition: entry as AnyWorkKindDefinition, options: undefined };

@@ -157,7 +157,7 @@ function ownershipOf(overrides: Partial<PhoebeUserConfig> = {}): PipelineOwnersh
   return pipelineOwnership(resolveConfig(userConfig(overrides), { dataBase: "/tmp/phoebe-test" }));
 }
 
-const CUSTOM_KIND = { module: "./triage.ts" };
+const CUSTOM_KIND = { path: "./triage.ts" };
 
 describe("pipelineOwnership", () => {
   test("a config with no pipelines block owns the work pipeline and every built-in", () => {
@@ -170,7 +170,7 @@ describe("pipelineOwnership", () => {
     const ownership = ownershipOf({
       pipelines: {
         work: {},
-        intake: { disabled: true, kinds: { custom: { triage: CUSTOM_KIND } } },
+        intake: { disabled: true, kinds: { triage: CUSTOM_KIND } },
       },
     });
     expect(ownership.pipelines.has("intake")).toBe(true);
@@ -179,10 +179,10 @@ describe("pipelineOwnership", () => {
 
   test("a kind that moved between pipelines is still owned", () => {
     const before = ownershipOf({
-      pipelines: { work: {}, intake: { kinds: { custom: { triage: CUSTOM_KIND } } } },
+      pipelines: { work: {}, intake: { kinds: { triage: CUSTOM_KIND } } },
     });
     const after = ownershipOf({
-      pipelines: { work: { kinds: { custom: { triage: CUSTOM_KIND } } }, intake: {} },
+      pipelines: { work: { kinds: { triage: CUSTOM_KIND } }, intake: {} },
     });
     expect(before.kinds.has("triage")).toBe(true);
     expect(after.kinds.has("triage")).toBe(true);
@@ -256,10 +256,9 @@ describe("scratch directories", () => {
     const dir = scratchDirFor("triage");
     sweep(
       pipelineOwnership(
-        resolveConfig(
-          userConfig({ pipelines: { work: { kinds: { custom: { triage: CUSTOM_KIND } } } } }),
-          { dataBase: "/tmp/phoebe-test" },
-        ),
+        resolveConfig(userConfig({ pipelines: { work: { kinds: { triage: CUSTOM_KIND } } } }), {
+          dataBase: "/tmp/phoebe-test",
+        }),
       ),
     );
     expect(existsSync(dir)).toBe(true);

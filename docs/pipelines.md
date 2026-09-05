@@ -55,7 +55,7 @@ exist, not what happens inside one.
 ```ts
 pipelines: {
   work: { order: ["conflicts", "checks"], concurrency: 2 },
-  intake: { pollIntervalMs: 15_000, kinds: { custom: { slack: "./kinds/slack.ts" } } },
+  intake: { pollIntervalMs: 15_000, kinds: { slack: "./kinds/slack.ts" } },
 },
 ```
 

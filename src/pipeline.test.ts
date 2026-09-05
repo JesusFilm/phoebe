@@ -140,7 +140,7 @@ describe("selectPipeline", () => {
     const config = resolveConfig(
       userConfig({
         pipelines: {
-          intake: { kinds: { custom: { slack: inlineKind("slack") } } },
+          intake: { kinds: { slack: inlineKind("slack") } },
           work: { order: ["issues"] },
         },
       }),
@@ -235,8 +235,8 @@ describe("cross-pipeline validation", () => {
       validateUserConfig(
         userConfig({
           pipelines: {
-            intake: { kinds: { custom: { slack: inlineKind("slack") } } },
-            triage: { kinds: { custom: { slack: inlineKind("slack") } } },
+            intake: { kinds: { slack: inlineKind("slack") } },
+            triage: { kinds: { slack: inlineKind("slack") } },
           },
         }),
       ),
