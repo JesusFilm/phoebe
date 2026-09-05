@@ -1,6 +1,6 @@
 // Loading a tenant's custom work kinds (#350, flattened by #465): resolve each
 // non-built-in `kinds.<name>` entry — inline definition, path string, or a
-// `{ module, ...knobs, ...options }` block — into a definition, then assemble
+// `{ path, ...knobs, ...options }` block — into a definition, then assemble
 // the registry. Path modules load with the same dynamic-import machinery as the
 // config itself (native Node type-stripping), resolved against the config
 // file's directory. Editing a kind module requires a restart: the reconcile
@@ -10,9 +10,9 @@ import { resolve as resolvePath } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   WORK_KIND_NAMES,
-  builtInKindModule,
+  builtInKindPath,
   customKindEntries,
-  moduleEntryOptions,
+  pathEntryOptions,
   type CustomKindEntry,
   type PhoebeConfig,
 } from "../config-schema.ts";
@@ -53,7 +53,7 @@ async function importKindModule(
 
 /**
  * Resolve every declared kind module to `{ name, definition, options }`: the
- * custom kinds, plus any built-in whose block declares a replacement `module`
+ * custom kinds, plus any built-in whose block declares a replacement `path`
  * (#465) — the same loading machinery for both, so a replaced built-in is a
  * custom kind that happens to claim a shipped name. The entries' *shape* was
  * already validated by `resolveConfig`; definition members are validated at
@@ -69,11 +69,11 @@ export async function loadCustomKinds(
     loaded.push(await resolveEntry(at, name, entry, configDir, config));
   }
   for (const name of WORK_KIND_NAMES) {
-    const declared = builtInKindModule(config.workKinds, name);
+    const declared = builtInKindPath(config.workKinds, name);
     if (declared === undefined) continue;
     loaded.push({
       name,
-      definition: await importKindModule(`kinds.${name}`, declared.module, configDir, config),
+      definition: await importKindModule(`kinds.${name}`, declared.path, configDir, config),
       options: declared.options,
     });
   }
@@ -94,12 +94,12 @@ async function resolveEntry(
       options: undefined,
     };
   }
-  if ("module" in entry && typeof (entry as { module?: unknown }).module === "string") {
-    const block = entry as { module: string };
+  if ("path" in entry && typeof (entry as { path?: unknown }).path === "string") {
+    const block = entry as { path: string };
     return {
       name,
-      definition: await importKindModule(at, block.module, configDir, config),
-      options: moduleEntryOptions(block),
+      definition: await importKindModule(at, block.path, configDir, config),
+      options: pathEntryOptions(block),
     };
   }
   return { name, definition: entry as AnyWorkKindDefinition, options: undefined };

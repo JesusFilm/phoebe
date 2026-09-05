@@ -231,7 +231,7 @@ describe("the per-pipeline `env` (#425)", () => {
     const pipelines = await enumerate(
       {
         pipelines: {
-          intake: { kinds: { nudge: { module: "./nudge.ts", disabled: true } } },
+          intake: { kinds: { nudge: { path: "./nudge.ts", disabled: true } } },
         },
       },
       dir,

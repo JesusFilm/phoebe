@@ -19,7 +19,7 @@ import type { Issue, PhoebeUserConfig, WorkKindDefinition } from "phoebe-agent";
 // A new issue-keyed producer is a label, a prompt file, and one
 // `ctx.agent.issueWorkflow` call — the same skeleton the built-in `issues` and
 // `research` kinds run on. Inline definitions close over any values they need
-// (no options; a module block's root fields are its options instead).
+// (no options; a path block's root fields are its options instead).
 
 const DOCS_LABEL = "docs-wanted";
 
@@ -98,7 +98,7 @@ const config: PhoebeUserConfig = {
         // — and every other root field is the kind's options, read back as
         // `ctx.options` (#465).
         "stale-pr-nudger": {
-          module: "./kinds/stale-pr-nudger.ts",
+          path: "./kinds/stale-pr-nudger.ts",
           staleDays: 7,
           effort: "low",
         },

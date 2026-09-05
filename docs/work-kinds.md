@@ -437,7 +437,7 @@ resolve. Everything arrives on `ctx` (types via `import type` from
 - `ctx.kind` — this kind's registered name.
 - `ctx.config` — the full resolved config, read-only. A kind is trusted as the
   tenant; depend on what you need, sparingly.
-- `ctx.options` — the declaration block's root fields beside `module` and the
+- `ctx.options` — the declaration block's root fields beside `path` and the
   tuning knobs (`unknown`; validate it yourself). Inline definitions close over
   their values instead.
 - `ctx.env` — the engine's environment, credentials included (`GH_TOKEN`, the

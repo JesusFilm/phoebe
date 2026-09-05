@@ -312,7 +312,7 @@ describe("custom kind names", () => {
   test("wrapper knobs tune a custom kind like a built-in's block", () => {
     const config = selectionConfig({
       workKinds: {
-        "my-kind": { module: "./kinds/my-kind.ts", model: "composer-mini" },
+        "my-kind": { path: "./kinds/my-kind.ts", model: "composer-mini" },
       },
     });
     const picked = selectProviderForKind({ kind: "my-kind", env: {}, config });
@@ -322,7 +322,7 @@ describe("custom kind names", () => {
   test("the per-kind env var outranks the custom kind's block", () => {
     const config = selectionConfig({
       workKinds: {
-        "my-kind": { module: "./kinds/my-kind.ts", model: "composer-mini" },
+        "my-kind": { path: "./kinds/my-kind.ts", model: "composer-mini" },
       },
     });
     const picked = selectProviderForKind({
@@ -349,7 +349,7 @@ describe("definition-level defaults (#303)", () => {
 
   test("lose to the wrapper's knobs and to the global env", () => {
     const config = selectionConfig({
-      workKinds: { "my-kind": { module: "./k.ts", model: "from-block" } },
+      workKinds: { "my-kind": { path: "./k.ts", model: "from-block" } },
     });
     expect(
       selectProviderForKind({

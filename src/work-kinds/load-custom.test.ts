@@ -97,7 +97,7 @@ describe("loadCustomKinds", () => {
     const dir = moduleDir(PLAIN_MODULE_SOURCE);
     const config = resolveConfig(
       userConfig({
-        workKinds: { nudge: { module: "./nudge.mjs", staleDays: 7, effort: "low" } },
+        workKinds: { nudge: { path: "./nudge.mjs", staleDays: 7, effort: "low" } },
       }),
     );
     const loaded = await loadCustomKinds(config, dir);
@@ -107,7 +107,7 @@ describe("loadCustomKinds", () => {
 
   test("a module block with no extra fields yields undefined options", async () => {
     const dir = moduleDir(PLAIN_MODULE_SOURCE);
-    const config = resolveConfig(userConfig({ workKinds: { nudge: { module: "./nudge.mjs" } } }));
+    const config = resolveConfig(userConfig({ workKinds: { nudge: { path: "./nudge.mjs" } } }));
     const loaded = await loadCustomKinds(config, dir);
     expect(loaded[0]?.options).toBeUndefined();
   });
@@ -141,7 +141,7 @@ describe("built-in replacement modules (#465)", () => {
   test("a built-in module block's root options reach the registry, knobs excluded", async () => {
     const dir = moduleDir(ISSUES_MODULE_SOURCE, "issues.mjs");
     const config = resolveConfig(
-      userConfig({ workKinds: { issues: { module: "./issues.mjs", max: 3, effort: "low" } } }),
+      userConfig({ workKinds: { issues: { path: "./issues.mjs", max: 3, effort: "low" } } }),
     );
     const registry = await createWorkKindRegistry(config, dir);
     expect(registry.get("issues")?.options).toEqual({ max: 3 });

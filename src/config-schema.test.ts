@@ -9,7 +9,7 @@ import {
   DEFAULT_PROMPT_FILE_BY_KIND,
   PROMPT_FILE_KEY_BY_KIND,
   PROVIDER_NAMES,
-  builtInKindModule,
+  builtInKindPath,
   deprecatedPipelineAliases,
   resolveConfig,
   validateUserConfig,
@@ -239,7 +239,7 @@ describe("validateUserConfig", () => {
           workKinds: {
             inline: inlineKind,
             pathed: "./kinds/pathed.ts",
-            wrapped: { module: "../kinds/wrapped.ts", staleDays: 7 },
+            wrapped: { path: "../kinds/wrapped.ts", staleDays: 7 },
           },
         }),
       ),
@@ -251,7 +251,7 @@ describe("validateUserConfig", () => {
       validateUserConfig(
         minimalUserConfig({
           workKinds: {
-            nudge: { module: "./kinds/nudge.ts", model: "claude-haiku-4-5", effort: "low" },
+            nudge: { path: "./kinds/nudge.ts", model: "claude-haiku-4-5", effort: "low" },
           },
         }),
       ),
@@ -263,7 +263,7 @@ describe("validateUserConfig", () => {
       validateUserConfig(
         minimalUserConfig({
           workKinds: {
-            nudge: { module: "./kinds/nudge.ts", provider: "gemini" } as unknown as never,
+            nudge: { path: "./kinds/nudge.ts", provider: "gemini" } as unknown as never,
           },
         }),
       ),
@@ -272,7 +272,7 @@ describe("validateUserConfig", () => {
       validateUserConfig(
         minimalUserConfig({
           workKinds: {
-            nudge: { module: "./kinds/nudge.ts", runTimeoutMs: -1 } as unknown as never,
+            nudge: { path: "./kinds/nudge.ts", runTimeoutMs: -1 } as unknown as never,
           },
         }),
       ),
@@ -287,7 +287,7 @@ describe("validateUserConfig", () => {
     ).toThrow(/unknown work kind "nudgee".*issues/s);
   });
 
-  test("a built-in accepts a replacement module: path-string sugar or the module knob", () => {
+  test("a built-in accepts a replacement module: path-string sugar or the path knob", () => {
     expect(() =>
       validateUserConfig(minimalUserConfig({ workKinds: { issues: "./kinds/my-issues.ts" } })),
     ).not.toThrow();
@@ -295,7 +295,7 @@ describe("validateUserConfig", () => {
       validateUserConfig(
         minimalUserConfig({
           workKinds: {
-            issues: { module: "./kinds/my-issues.ts", max: 3, effort: "low" },
+            issues: { path: "./kinds/my-issues.ts", max: 3, effort: "low" },
           },
         }),
       ),
@@ -318,10 +318,21 @@ describe("validateUserConfig", () => {
     ).toThrow(/unknown knob "max".*only read by a replacement/s);
   });
 
+  test("the retired module spelling is a tombstone on any path block", () => {
+    for (const kinds of [
+      { issues: { module: "./kinds/my-issues.ts" } },
+      { nudge: { module: "./kinds/nudge.ts", staleDays: 7 } },
+    ]) {
+      expect(() =>
+        validateUserConfig(minimalUserConfig({ workKinds: kinds as unknown as never })),
+      ).toThrow(/declares `module`.*named `path`.*phoebe migrate/s);
+    }
+  });
+
   test("the retired options wrapper is a tombstone on any module block", () => {
     for (const kinds of [
-      { issues: { module: "./kinds/my-issues.ts", options: { max: 3 } } },
-      { nudge: { module: "./kinds/nudge.ts", options: { max: 3 } } },
+      { issues: { path: "./kinds/my-issues.ts", options: { max: 3 } } },
+      { nudge: { path: "./kinds/nudge.ts", options: { max: 3 } } },
     ]) {
       expect(() =>
         validateUserConfig(minimalUserConfig({ workKinds: kinds as unknown as never })),
@@ -331,8 +342,8 @@ describe("validateUserConfig", () => {
 
   test("workKindOverride picks the same knobs off every object entry", () => {
     const kinds = {
-      issues: { module: "./kinds/my-issues.ts", max: 3, effort: "low" },
-      nudge: { module: "./kinds/nudge.ts", model: "composer-mini" },
+      issues: { path: "./kinds/my-issues.ts", max: 3, effort: "low" },
+      nudge: { path: "./kinds/nudge.ts", model: "composer-mini" },
       pathed: "./kinds/pathed.ts",
     };
     expect(workKindOverride(kinds, "issues")).toEqual({ effort: "low" });
@@ -340,19 +351,19 @@ describe("validateUserConfig", () => {
     expect(workKindOverride(kinds, "pathed")).toBeUndefined();
   });
 
-  test("builtInKindModule reads the string sugar and the module knob, nothing else", () => {
-    expect(builtInKindModule({ issues: "./kinds/my-issues.ts" }, "issues")).toEqual({
-      module: "./kinds/my-issues.ts",
+  test("builtInKindPath reads the string sugar and the path knob, nothing else", () => {
+    expect(builtInKindPath({ issues: "./kinds/my-issues.ts" }, "issues")).toEqual({
+      path: "./kinds/my-issues.ts",
     });
-    // Root fields beside module and the knobs are the options payload.
+    // Root fields beside path and the knobs are the options payload.
     expect(
-      builtInKindModule(
-        { issues: { module: "./kinds/my-issues.ts", max: 3, effort: "low" } },
+      builtInKindPath(
+        { issues: { path: "./kinds/my-issues.ts", max: 3, effort: "low" } },
         "issues",
       ),
-    ).toEqual({ module: "./kinds/my-issues.ts", options: { max: 3 } });
-    expect(builtInKindModule({ issues: { effort: "low" } }, "issues")).toBeUndefined();
-    expect(builtInKindModule(undefined, "issues")).toBeUndefined();
+    ).toEqual({ path: "./kinds/my-issues.ts", options: { max: 3 } });
+    expect(builtInKindPath({ issues: { effort: "low" } }, "issues")).toBeUndefined();
+    expect(builtInKindPath(undefined, "issues")).toBeUndefined();
   });
 
   test("the retired custom block is a tombstone pointing at the flattening", () => {
@@ -386,7 +397,7 @@ describe("validateUserConfig", () => {
       validateUserConfig(
         minimalUserConfig({
           workKinds: {
-            nudge: { module: "./kinds/nudge.ts", staleDays: 7, channel: "C123" },
+            nudge: { path: "./kinds/nudge.ts", staleDays: 7, channel: "C123" },
           },
         }),
       ),

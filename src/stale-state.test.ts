@@ -157,7 +157,7 @@ function ownershipOf(overrides: Partial<PhoebeUserConfig> = {}): PipelineOwnersh
   return pipelineOwnership(resolveConfig(userConfig(overrides), { dataBase: "/tmp/phoebe-test" }));
 }
 
-const CUSTOM_KIND = { module: "./triage.ts" };
+const CUSTOM_KIND = { path: "./triage.ts" };
 
 describe("pipelineOwnership", () => {
   test("a config with no pipelines block owns the work pipeline and every built-in", () => {

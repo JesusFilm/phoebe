@@ -33,10 +33,10 @@ const CONFIG_REL_PATH = "phoebe.config.ts";
 export const FLATTEN_CUSTOM_INSTRUCTION =
   `In ${CONFIG_REL_PATH}, move each \`custom.<name>\` entry up one level, directly into the ` +
   `\`kinds\` (or \`workKinds\`) block that held \`custom\`, then delete the empty \`custom\` ` +
-  `block. Inside a \`{ module, options }\` entry, move each \`options.<key>\` up beside ` +
-  `\`module\` and delete the empty \`options\` — a kind's options are the block's own root ` +
-  `fields now. If a sibling block tunes a custom kind, fold its knobs in the same way. ` +
-  `The engine refuses to boot until this is done.`;
+  `block. Inside a \`{ module, options }\` entry, rename \`module\` to \`path\` and move ` +
+  `each \`options.<key>\` up beside it, deleting the empty \`options\` — a kind's options ` +
+  `are the block's own root fields now. If a sibling block tunes a custom kind, fold its ` +
+  `knobs in the same way. The engine refuses to boot until this is done.`;
 
 /** One `custom` block found in the config: where it sits and what it declares. */
 type CustomBlock = {
@@ -122,14 +122,25 @@ export const flattenCustomKindsMigration: Migration = {
       if (!removed.ok) return refuse(removed.reason);
       next = removed.content;
 
-      // The wrapper's `options` retired with the `custom` block: a kind's
-      // options are the entry's own root fields now, so each `options.<key>`
-      // moves up beside `module` — leaving it would trip the options tombstone.
+      // The wrapper's spellings retired with the `custom` block: `module` is
+      // now the `path` knob, and a kind's options are the entry's own root
+      // fields — so the knob renames and each `options.<key>` moves up beside
+      // it. Leaving either would trip its tombstone at load.
       for (const name of found.names) {
-        // A string or inline entry has no `options` to unwrap; only walk into
-        // an entry that is itself an object literal carrying the key.
+        // A string or inline entry has nothing to rewrite; only walk into an
+        // entry that is itself an object literal carrying the old keys.
         const entryKeys = editConfigListKeys(next, [...block.base, name]);
-        if (!entryKeys.ok || !entryKeys.found || !entryKeys.keys.includes("options")) continue;
+        if (!entryKeys.ok || !entryKeys.found) continue;
+        if (entryKeys.keys.includes("module")) {
+          const renamed = editConfigMoveField(
+            next,
+            [...block.base, name, "module"],
+            [...block.base, name, "path"],
+          );
+          if (!renamed.ok) return refuse(renamed.reason);
+          next = renamed.content;
+        }
+        if (!entryKeys.keys.includes("options")) continue;
         const optionsPath = [...block.base, name, "options"];
         const optionKeys = editConfigListKeys(next, optionsPath);
         if (!optionKeys.ok) return refuse(optionKeys.reason);
