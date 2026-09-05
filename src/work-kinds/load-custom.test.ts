@@ -118,6 +118,42 @@ describe("loadCustomKinds", () => {
   });
 });
 
+describe("built-in replacement modules (#465)", () => {
+  const ISSUES_MODULE_SOURCE = PLAIN_MODULE_SOURCE.replace('name: "nudge"', 'name: "issues"');
+
+  test("a built-in path-string entry loads the replacement into its slot", async () => {
+    const dir = moduleDir(ISSUES_MODULE_SOURCE, "issues.mjs");
+    const config = resolveConfig(userConfig({ workKinds: { issues: "./issues.mjs" } }));
+    const registry = await createWorkKindRegistry(config, dir);
+    expect(registry.get("issues")?.definition.report.noun).toBe("thing(s)");
+    expect([...registry.keys()]).toContain("conflicts");
+  });
+
+  test("a built-in module knob carries options and keeps the tuning knobs inert here", async () => {
+    const dir = moduleDir(ISSUES_MODULE_SOURCE, "issues.mjs");
+    const options = { max: 3 };
+    const config = resolveConfig(
+      userConfig({ workKinds: { issues: { module: "./issues.mjs", options, effort: "low" } } }),
+    );
+    const registry = await createWorkKindRegistry(config, dir);
+    expect(registry.get("issues")?.options).toBe(options);
+  });
+
+  test("a replacement whose definition names another kind is a boot error", async () => {
+    const dir = moduleDir(PLAIN_MODULE_SOURCE, "issues.mjs");
+    const config = resolveConfig(userConfig({ workKinds: { issues: "./issues.mjs" } }));
+    await expect(createWorkKindRegistry(config, dir)).rejects.toThrow(
+      /kinds\.issues: its definition names itself "nudge", not "issues"/,
+    );
+  });
+
+  test("a built-in block without a module keeps the shipped definition", async () => {
+    const config = resolveConfig(userConfig({ workKinds: { issues: { effort: "low" } } }));
+    const registry = await createWorkKindRegistry(config, "/nowhere");
+    expect(registry.get("issues")?.definition.report.noun).toMatch(/issue/);
+  });
+});
+
 describe("createWorkKindRegistry", () => {
   test("assembles built-ins plus customs and validates the lot", async () => {
     const config = resolveConfig(

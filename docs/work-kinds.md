@@ -605,9 +605,10 @@ printed.
 
 ### Names, prompts, and tuning
 
-- **Names** are lowercase `[a-z][a-z0-9-]*`, at most 32 characters. The five
-  built-in names and `custom` are reserved; colliding with a built-in is a boot
-  error (overriding built-ins is not supported).
+- **Names** are lowercase `[a-z][a-z0-9-]*`, at most 32 characters, and
+  `custom` is reserved. A declaration under a built-in name is not a collision
+  but a **replacement** (#465): the module takes the shipped definition's slot,
+  and its definition must name itself after the key.
 - **`promptFile` resolves against the runtime root**, exactly like the
   built-ins' prompts, and joins the boot-time existence check when the kind is
   scheduled. Note the wart: _module_ paths in a kind declaration resolve

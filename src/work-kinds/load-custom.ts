@@ -8,7 +8,13 @@
 
 import { resolve as resolvePath } from "node:path";
 import { pathToFileURL } from "node:url";
-import { customKindEntries, type CustomKindEntry, type PhoebeConfig } from "../config-schema.ts";
+import {
+  WORK_KIND_NAMES,
+  builtInKindModule,
+  customKindEntries,
+  type CustomKindEntry,
+  type PhoebeConfig,
+} from "../config-schema.ts";
 import type { AnyWorkKindDefinition } from "./definition.ts";
 import { buildRegistry, type LoadedCustomKind, type WorkKindRegistry } from "./registry.ts";
 
@@ -45,9 +51,12 @@ async function importKindModule(
 }
 
 /**
- * Resolve every declared custom kind to `{ name, definition, options }`.
- * The entries' *shape* was already validated by `resolveConfig`; definition
- * members are validated at registry assembly.
+ * Resolve every declared kind module to `{ name, definition, options }`: the
+ * custom kinds, plus any built-in whose block declares a replacement `module`
+ * (#465) — the same loading machinery for both, so a replaced built-in is a
+ * custom kind that happens to claim a shipped name. The entries' *shape* was
+ * already validated by `resolveConfig`; definition members are validated at
+ * registry assembly.
  */
 export async function loadCustomKinds(
   config: PhoebeConfig,
@@ -57,6 +66,15 @@ export async function loadCustomKinds(
   for (const [name, entry] of Object.entries(customKindEntries(config.workKinds))) {
     const at = `kinds.${name}`;
     loaded.push(await resolveEntry(at, name, entry, configDir, config));
+  }
+  for (const name of WORK_KIND_NAMES) {
+    const declared = builtInKindModule(config.workKinds, name);
+    if (declared === undefined) continue;
+    loaded.push({
+      name,
+      definition: await importKindModule(`kinds.${name}`, declared.module, configDir, config),
+      options: declared.options,
+    });
   }
   return loaded;
 }

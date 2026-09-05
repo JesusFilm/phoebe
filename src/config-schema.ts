@@ -103,15 +103,28 @@ export type CustomKindEntry =
   | ({ module: string; options?: Record<string, unknown> } & WorkKindOverride);
 
 /**
+ * What a built-in kind's key may hold: its tuning block — now with `module` as
+ * one more knob (#465). Declaring `module` (or the path-string sugar) replaces
+ * the built-in's shipped definition with the tenant's module, loaded exactly
+ * like a custom kind's; the tuning knobs keep applying to whatever definition
+ * lands under the name. `options` reaches the replacement as `ctx.options` and
+ * is only legal beside `module` — the shipped built-ins never read it.
+ */
+export type BuiltInKindEntry =
+  | string
+  | (WorkKindOverride & { module?: string; options?: Record<string, unknown> });
+
+/**
  * The `kinds` field, one flat namespace (#465): a key naming a built-in is its
- * tuning block; any other key is a custom-kind declaration. Runtime validation
- * (`validateWorkKindsField`) remains the authoritative typo net — an object
- * under an unknown key that is neither a `{ module }` wrapper nor an inline
- * definition is rejected as a mistyped tuning block.
+ * tuning block (optionally replacing the definition by `module`); any other key
+ * is a custom-kind declaration. Runtime validation (`validateWorkKindsField`)
+ * remains the authoritative typo net — an object under an unknown key that is
+ * neither a `{ module }` wrapper nor an inline definition is rejected as a
+ * mistyped tuning block.
  */
 export type WorkKindsField = {
-  [kind: string]: WorkKindOverride | CustomKindEntry | undefined;
-} & Partial<Record<WorkKindName, WorkKindOverride>>;
+  [kind: string]: BuiltInKindEntry | CustomKindEntry | undefined;
+} & Partial<Record<WorkKindName, BuiltInKindEntry>>;
 
 /** Legal custom-kind names: env-safe lowercase, hyphens allowed, ≤32 chars. */
 export const CUSTOM_WORK_KIND_NAME_RE = /^[a-z][a-z0-9-]*$/;
@@ -153,10 +166,10 @@ export function customKindEntries(
 }
 
 /**
- * The tuning knobs declared for `kind`. A built-in's entry is its tuning block;
- * a custom kind's knobs ride on its `{ module, ... }` wrapper (#465) — the
- * string and inline-definition arms carry none (an inline definition's knobs
- * live on the definition itself).
+ * The tuning knobs declared for `kind`, picked uniformly off its entry (#465):
+ * every object entry — a built-in's block, a custom kind's `{ module, ... }`
+ * wrapper — carries the same knobs. The string arm and an inline definition
+ * carry none (an inline definition's knobs live on the definition itself).
  */
 export function workKindOverride(
   workKinds: WorkKindsField,
@@ -164,13 +177,32 @@ export function workKindOverride(
 ): WorkKindOverride | undefined {
   const entry = workKinds[kind];
   if (entry === undefined || typeof entry === "string") return undefined;
-  if ((WORK_KIND_NAMES as readonly string[]).includes(kind)) return entry as WorkKindOverride;
-  if (!("module" in entry)) return undefined;
+  const isBuiltIn = (WORK_KIND_NAMES as readonly string[]).includes(kind);
+  if (!isBuiltIn && !("module" in entry)) return undefined;
   const knobs: Record<string, unknown> = {};
   for (const knob of WORK_KIND_KNOBS) {
     if (knob in entry) knobs[knob] = (entry as Record<string, unknown>)[knob];
   }
   return knobs as WorkKindOverride;
+}
+
+/**
+ * The replacement module declared for a built-in kind, when any (#465): the
+ * `module`/`options` pair off its block, or the path-string sugar. `undefined`
+ * means the shipped definition stands.
+ */
+export function builtInKindModule(
+  workKinds: WorkKindsField | undefined,
+  kind: WorkKindName,
+): { module: string; options?: Record<string, unknown> } | undefined {
+  const entry = workKinds?.[kind];
+  if (entry === undefined) return undefined;
+  if (typeof entry === "string") return { module: entry };
+  if (typeof entry === "object" && "module" in entry && typeof entry.module === "string") {
+    const options = (entry as { options?: Record<string, unknown> }).options;
+    return options === undefined ? { module: entry.module } : { module: entry.module, options };
+  }
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -1028,22 +1060,8 @@ function validateCustomKindEntry(name: string, entry: CustomKindEntry, kindsAt: 
     );
   }
 
-  const assertModulePath = (path: unknown): void => {
-    if (typeof path !== "string" || path.trim().length === 0) {
-      throw new Error(`${at} must name a module path — got ${JSON.stringify(path)}.`);
-    }
-    if (!path.startsWith("./") && !path.startsWith("../") && !isAbsolute(path)) {
-      throw new Error(
-        `${at} names module "${path}", which is a bare specifier. Kind modules load ` +
-          `from the tenant checkout, where no \`node_modules\` is reachable — use a ` +
-          `path starting with \`./\`, \`../\`, or \`/\`, resolved against the config ` +
-          `file's directory.`,
-      );
-    }
-  };
-
   if (typeof entry === "string") {
-    assertModulePath(entry);
+    assertModulePath(at, entry);
     return;
   }
   if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
@@ -1067,20 +1085,8 @@ function validateCustomKindEntry(name: string, entry: CustomKindEntry, kindsAt: 
         );
       }
     }
-    assertModulePath((entry as { module: unknown }).module);
-    const options = (entry as { options?: unknown }).options;
-    // A plain record, as documented: class instances (a Date, a Map) would
-    // survive this boot check only to surprise the kind reading `ctx.options`.
-    const isPlainObject =
-      typeof options === "object" &&
-      options !== null &&
-      !Array.isArray(options) &&
-      [Object.prototype, null].includes(Object.getPrototypeOf(options) as object | null);
-    if (options !== undefined && !isPlainObject) {
-      throw new Error(
-        `${at}.options must be a plain object when present — got ${JSON.stringify(options)}.`,
-      );
-    }
+    assertModulePath(at, (entry as { module: unknown }).module);
+    assertPlainOptions(at, (entry as { options?: unknown }).options);
     validateKnobValues(entry as Record<string, unknown>, `${kindsAt}.${name}`);
     return;
   }
@@ -1105,6 +1111,39 @@ function validateCustomKindEntry(name: string, entry: CustomKindEntry, kindsAt: 
  * object to registry-assembly validation, which then names whatever is missing.
  */
 const DEFINITION_DISCRIMINANTS = ["fetch", "select", "run"] as const;
+
+/** A kind-module path is relative-or-absolute, never bare (#350). */
+function assertModulePath(at: string, path: unknown): void {
+  if (typeof path !== "string" || path.trim().length === 0) {
+    throw new Error(`${at} must name a module path — got ${JSON.stringify(path)}.`);
+  }
+  if (!path.startsWith("./") && !path.startsWith("../") && !isAbsolute(path)) {
+    throw new Error(
+      `${at} names module "${path}", which is a bare specifier. Kind modules load ` +
+        `from the tenant checkout, where no \`node_modules\` is reachable — use a ` +
+        `path starting with \`./\`, \`../\`, or \`/\`, resolved against the config ` +
+        `file's directory.`,
+    );
+  }
+}
+
+/**
+ * `options` must be a plain record when present: class instances (a Date, a
+ * Map) would survive this boot check only to surprise the kind reading
+ * `ctx.options`.
+ */
+function assertPlainOptions(at: string, options: unknown): void {
+  const isPlainObject =
+    typeof options === "object" &&
+    options !== null &&
+    !Array.isArray(options) &&
+    [Object.prototype, null].includes(Object.getPrototypeOf(options) as object | null);
+  if (options !== undefined && !isPlainObject) {
+    throw new Error(
+      `${at}.options must be a plain object when present — got ${JSON.stringify(options)}.`,
+    );
+  }
+}
 
 /**
  * The knob *values* one tuning block (or wrapper) may hold (#300/#465): key
@@ -1190,23 +1229,49 @@ function validateWorkKindsField(
       validateCustomKindEntry(kind, block as CustomKindEntry, at);
       continue;
     }
+    // A built-in's entry: the path-string sugar for `{ module }`, or a tuning
+    // block whose knobs now include `module` (replace the shipped definition)
+    // and `options` (the replacement's `ctx.options` payload) — #465.
+    if (typeof block === "string") {
+      assertModulePath(`phoebe.config.ts \`${at}.${kind}\``, block);
+      continue;
+    }
     if (typeof block !== "object" || block === null || Array.isArray(block)) {
       throw new Error(
-        `phoebe.config.ts \`${at}.${kind}\` must be an object with optional ` +
-          `${WORK_KIND_KNOBS.map((knob) => `\`${knob}\``).join(", ")} — got ${JSON.stringify(block)}.`,
+        `phoebe.config.ts \`${at}.${kind}\` must be a module path string or an object with ` +
+          `optional ${WORK_KIND_KNOBS.map((knob) => `\`${knob}\``).join(", ")}, \`module\`, ` +
+          `\`options\` — got ${JSON.stringify(block)}.`,
       );
     }
     // A block holds exactly the knobs above — an unknown key (a typo'd knob, a
     // hoped-for one) would sit inert forever, same failure mode as an unknown
     // kind key.
     for (const knob of Object.keys(block)) {
-      if (!(WORK_KIND_KNOBS as readonly string[]).includes(knob)) {
+      if (
+        knob !== "module" &&
+        knob !== "options" &&
+        !(WORK_KIND_KNOBS as readonly string[]).includes(knob)
+      ) {
         throw new Error(
           `phoebe.config.ts \`${at}.${kind}\` names unknown knob "${knob}". ` +
-            `Each block holds only ${WORK_KIND_KNOBS.map((k) => `\`${k}\``).join(", ")}.`,
+            `Each block holds only ${WORK_KIND_KNOBS.map((k) => `\`${k}\``).join(", ")}, ` +
+            `\`module\`, \`options\`.`,
         );
       }
     }
+    const blockAt = `phoebe.config.ts \`${at}.${kind}\``;
+    const withModule = block as { module?: unknown; options?: unknown };
+    if (withModule.module !== undefined) {
+      assertModulePath(blockAt, withModule.module);
+    } else if (withModule.options !== undefined) {
+      // The shipped built-ins never read `ctx.options`, so an options payload
+      // with no replacement module would sit inert forever.
+      throw new Error(
+        `${blockAt} declares \`options\` without \`module\`. Only a replacement module ` +
+          `reads \`ctx.options\` — the shipped built-in ignores it.`,
+      );
+    }
+    assertPlainOptions(blockAt, withModule.options);
     validateKnobValues(block as Record<string, unknown>, `${at}.${kind}`);
   }
 }

@@ -9,9 +9,11 @@ import {
   DEFAULT_PROMPT_FILE_BY_KIND,
   PROMPT_FILE_KEY_BY_KIND,
   PROVIDER_NAMES,
+  builtInKindModule,
   deprecatedPipelineAliases,
   resolveConfig,
   validateUserConfig,
+  workKindOverride,
   type PhoebeUserConfig,
 } from "./config-schema.ts";
 
@@ -283,6 +285,62 @@ describe("validateUserConfig", () => {
         minimalUserConfig({ workKinds: { nudgee: { effort: "low" } } as unknown as never }),
       ),
     ).toThrow(/unknown work kind "nudgee".*issues/s);
+  });
+
+  test("a built-in accepts a replacement module: path-string sugar or the module knob", () => {
+    expect(() =>
+      validateUserConfig(minimalUserConfig({ workKinds: { issues: "./kinds/my-issues.ts" } })),
+    ).not.toThrow();
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({
+          workKinds: {
+            issues: { module: "./kinds/my-issues.ts", options: { max: 3 }, effort: "low" },
+          },
+        }),
+      ),
+    ).not.toThrow();
+  });
+
+  test("a built-in's replacement path must not be a bare specifier", () => {
+    expect(() =>
+      validateUserConfig(minimalUserConfig({ workKinds: { issues: "some-package/kind" } })),
+    ).toThrow(/bare specifier/);
+  });
+
+  test("a built-in's options without a module is an error — nothing would read it", () => {
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({
+          workKinds: { issues: { options: { max: 3 } } } as unknown as never,
+        }),
+      ),
+    ).toThrow(/declares `options` without `module`/);
+  });
+
+  test("workKindOverride picks the same knobs off every object entry", () => {
+    const kinds = {
+      issues: { module: "./kinds/my-issues.ts", options: { max: 3 }, effort: "low" },
+      nudge: { module: "./kinds/nudge.ts", model: "composer-mini" },
+      pathed: "./kinds/pathed.ts",
+    };
+    expect(workKindOverride(kinds, "issues")).toEqual({ effort: "low" });
+    expect(workKindOverride(kinds, "nudge")).toEqual({ model: "composer-mini" });
+    expect(workKindOverride(kinds, "pathed")).toBeUndefined();
+  });
+
+  test("builtInKindModule reads the string sugar and the module knob, nothing else", () => {
+    expect(builtInKindModule({ issues: "./kinds/my-issues.ts" }, "issues")).toEqual({
+      module: "./kinds/my-issues.ts",
+    });
+    expect(
+      builtInKindModule(
+        { issues: { module: "./kinds/my-issues.ts", options: { max: 3 } } },
+        "issues",
+      ),
+    ).toEqual({ module: "./kinds/my-issues.ts", options: { max: 3 } });
+    expect(builtInKindModule({ issues: { effort: "low" } }, "issues")).toBeUndefined();
+    expect(builtInKindModule(undefined, "issues")).toBeUndefined();
   });
 
   test("the retired custom block is a tombstone pointing at the flattening", () => {

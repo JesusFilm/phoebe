@@ -62,12 +62,23 @@ describe("buildRegistry", () => {
     expect(registry.get("issues")?.options).toBeUndefined();
   });
 
-  test("a custom kind colliding with a built-in name is a boot error", () => {
+  test("a loaded kind bearing a built-in name replaces that built-in (#465)", () => {
+    const replacement = customDefinition("issues");
+    const registry = buildRegistry(testConfig(), [
+      { name: "issues", definition: replacement, options: { staleDays: 7 } },
+    ]);
+    expect(registry.get("issues")?.definition.report.noun).toBe(replacement.report.noun);
+    expect(registry.get("issues")?.options).toEqual({ staleDays: 7 });
+    // The other built-ins still come from their factories.
+    expect(registry.has("conflicts")).toBe(true);
+  });
+
+  test("a replacement whose definition names another kind is a boot error", () => {
     expect(() =>
       buildRegistry(testConfig(), [
-        { name: "issues", definition: customDefinition("issues"), options: undefined },
+        { name: "issues", definition: customDefinition("nudge"), options: undefined },
       ]),
-    ).toThrow(/collides with a built-in/);
+    ).toThrow(/kinds\.issues: its definition names itself "nudge", not "issues"/);
   });
 
   test("a definition whose name differs from its declaration key is a boot error", () => {

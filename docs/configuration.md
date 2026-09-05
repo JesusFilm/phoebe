@@ -381,11 +381,13 @@ config outranks global env, per the ladder above.
 A kind block holds three more knobs. They resolve on their own ladders rather
 than the provider one.
 
-| Knob           | Default               | Hot? | Meaning                                                                                                                                                 |
-| -------------- | --------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `promptFile`   | the kind's own        | cold | Where this kind's prompt template lives, relative to the runtime root. Replaces the [`promptFiles`](#prompt-files) block.                               |
-| `runTimeoutMs` | tenant `runTimeoutMs` | cold | This kind's whole-unit wall-clock budget. Ladder: `PHOEBE_<KIND>_RUN_TIMEOUT_MS`, then this field, then `PHOEBE_RUN_TIMEOUT_MS`, then the tenant field. |
-| `disabled`     | `false`               | hot  | The only off-switch for a kind. Since `order` is priority rather than membership, leaving a kind out of it no longer stops it running.                  |
+| Knob           | Default               | Hot? | Meaning                                                                                                                                                                                                                                                                                                                                                                                                         |
+| -------------- | --------------------- | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `promptFile`   | the kind's own        | cold | Where this kind's prompt template lives, relative to the runtime root. Replaces the [`promptFiles`](#prompt-files) block.                                                                                                                                                                                                                                                                                       |
+| `runTimeoutMs` | tenant `runTimeoutMs` | cold | This kind's whole-unit wall-clock budget. Ladder: `PHOEBE_<KIND>_RUN_TIMEOUT_MS`, then this field, then `PHOEBE_RUN_TIMEOUT_MS`, then the tenant field.                                                                                                                                                                                                                                                         |
+| `disabled`     | `false`               | hot  | The only off-switch for a kind. Since `order` is priority rather than membership, leaving a kind out of it no longer stops it running.                                                                                                                                                                                                                                                                          |
+| `module`       | the shipped built-in  | cold | **Replace this built-in's definition** with a tenant module (#465), loaded exactly like a [custom kind](#custom-work-kinds)'s. The tuning knobs keep applying to whatever definition lands under the name. `issues: "./kinds/my-issues.ts"` is string sugar for `{ module: … }`. The module's definition must name itself after the key. Same trust posture as any kind module: registering it is executing it. |
+| `options`      | —                     | cold | The replacement's `ctx.options` payload; only legal beside `module` — the shipped built-ins never read it.                                                                                                                                                                                                                                                                                                      |
 
 Unknown kind keys and unknown provider values are boot-time config errors;
 `model` and `effort` are unvalidated pass-through strings — the CLIs are the
@@ -425,8 +427,10 @@ kinds: {
 },
 ```
 
-- **Names** are lowercase `[a-z][a-z0-9-]*`, at most 32 characters. The five
-  built-in names and `custom` are reserved; a collision is a boot error. An
+- **Names** are lowercase `[a-z][a-z0-9-]*`, at most 32 characters. A key
+  naming a built-in is that built-in's tuning block — where `module` means
+  [replace its definition](#per-work-kind-overrides) rather than declare a new
+  kind — and `custom` is reserved (a tombstone from the retired sub-block). An
   object under an unknown name that is none of the three forms — a typo'd
   tuning block, say — is rejected at validation, naming the legal kinds.
 - **Module paths** resolve against the config file's directory and must start
