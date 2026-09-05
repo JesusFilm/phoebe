@@ -1,7 +1,0 @@
----
-"phoebe-agent": minor
----
-
-`phoebe migrate` now moves `workOrder`, `workKinds` and `promptFiles` into the `pipelines.work` block a tenant config declares its work in since #415 (issue #419). The move is a byte-range splice: each field's source range is lifted into the new block — comments inside it travel with it — and every byte outside the ranges it touches is left alone. Each `promptFiles.<key>` folds onto the kind that reads it, spending the odd singular spellings on the way (`issue` → `issues.promptFile`, `conflict` → `conflicts.promptFile`). A field whose value is computed or holds a spread is reported `manual` with the edit to make by hand, and the config is left untouched. The migrated file is then loaded and its resolved work order, kind tuning and prompt paths compared against what the file resolved to before, so a move that would quietly change what a tenant runs reverts instead of landing.
-
-Two followers of the move: `phoebe init` scaffolds prompt files from the built-in kinds' own default paths, so a fresh config carries no `promptFiles` block at all, and `phoebe doctor`'s prompt-drift check reads `pipelines.work.kinds.issues.promptFile` before the deprecated alias. The old fields keep working either way. Migrate as part of an engine-ref flip rather than ahead of one: an older engine has never heard of `pipelines` and would read a migrated config as a tenant that declares no work. See docs/upgrading.md.
