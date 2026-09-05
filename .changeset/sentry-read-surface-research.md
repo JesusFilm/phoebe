@@ -1,0 +1,5 @@
+---
+"phoebe-agent": patch
+---
+
+Research record: the Sentry read a poll loop needs (docs/research/sentry-read-surface.md, issue #470). Read from Sentry's API reference, its published OpenAPI document and the `getsentry/sentry` source: three calls do the whole loop (org issues list, latest event, external issue link), the group detail call is skippable because the event carries the release; `event:read` covers the read side and `event:write` the link; the list gives count, first/last seen, level and culprit but never a release; frames arrive camelCased with `pre_context`/`context_line`/`post_context` folded into one `[[lineNo, text]]` array; `llmFormat=markdown` renders the whole event for a prompt. Rate limits are undocumented but 20/s per org in the source, so not a design constraint. The Sentry App external issue is the only watermark a machine token can write, and it reads back free in `annotations`. GlitchTip serves the same paths and frame shape (four named divergences); Bugsink deliberately does not, and needs its own adapter.
