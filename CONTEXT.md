@@ -70,7 +70,7 @@ _Avoid_: task, job, item, unit of work
 **Work kind**:
 A category of work unit defined by one registered definition — fetch, select, run, and
 prompt. Five ship built-in (`issues`, `research`, `conflicts`, `checks`, `reviews`); a
-tenant may register custom kinds in its config.
+tenant may register custom kinds in its config, and may opt into catalog kinds.
 _Avoid_: work type, category
 
 **Work kind definition**:
@@ -81,6 +81,12 @@ _Avoid_: kind spec, kind config
 **Custom kind**:
 A tenant-registered work kind, indistinguishable from a built-in after boot.
 _Avoid_: plugin kind, user-defined kind
+
+**Catalog kind**:
+An engine-shipped work kind that registers only when a tenant declares it, loaded
+like a custom kind from the engine's own catalog (`phoebe-agent/kinds/<name>`).
+Neither always-on like a built-in nor tenant-authored like a custom kind.
+_Avoid_: optional built-in, shipped kind, plugin
 
 **Work order**:
 The configured priority of one pipeline's work kinds (`pipelines.<name>.order`). Priority
