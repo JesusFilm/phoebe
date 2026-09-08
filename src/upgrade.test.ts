@@ -192,6 +192,23 @@ export default config;
     expect(result.content).toContain("https://github.com/acme/widget.git");
   });
 
+  test("inserts a block when `engine:` only appears inside a string literal", () => {
+    const withNote = `import type { PhoebeUserConfig } from "phoebe-agent";
+
+const note = "engine: pinned by ops, do not touch";
+const config: PhoebeUserConfig = {
+  repoSlug: "acme/widget",
+};
+
+export default config;
+`;
+    const result = rewriteEngineRef(withNote, "v0.4.0");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.content).toContain('  engine: { source: "github", ref: "v0.4.0" },\n};');
+    expect(result.content).toContain('const note = "engine: pinned by ops, do not touch";');
+  });
+
   test("still refuses an `engine` property it cannot read as a block", () => {
     for (const binding of [
       "  engine: makeEngine(),",

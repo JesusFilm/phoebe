@@ -211,8 +211,14 @@ const GITHUB_SOURCE = /(\bsource\s*:\s*(['"])github\2)/;
  * (`"engine":`), or a computed one (`["engine"]:`). The last two bind an engine
  * that ENGINE_BLOCK cannot see, so they still have to refuse — the bare word in
  * a sentence does not, and a config's comments talk about the engine constantly.
+ *
+ * The leading `[{,\n]` (or start of file) is load-bearing: it anchors "engine"
+ * to a key position so a string literal that merely contains the text
+ * `engine:` — e.g. `const note = "engine:";` — cannot match. Inside that
+ * string, "engine" is preceded by the opening quote, not by an object-key
+ * delimiter, so the match never starts.
  */
-const ENGINE_PROPERTY = /\bengine\b\s*['"`]?\s*\]?\s*:/;
+const ENGINE_PROPERTY = /(?:^|[{,\n])\s*\[?\s*(['"`]?)engine\1\s*\]?\s*:/;
 
 /**
  * Replace every character inside a `//` or block comment with a space, leaving
