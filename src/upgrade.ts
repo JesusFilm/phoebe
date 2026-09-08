@@ -207,6 +207,59 @@ const REF_LITERAL = /(\bref\s*:\s*)(['"])((?:[^'"\\])*)\2/g;
 const GITHUB_SOURCE = /(\bsource\s*:\s*(['"])github\2)/;
 
 /**
+ * `engine` sitting in a property position: a bare key (`engine:`), a quoted one
+ * (`"engine":`), or a computed one (`["engine"]:`). The last two bind an engine
+ * that ENGINE_BLOCK cannot see, so they still have to refuse — the bare word in
+ * a sentence does not, and a config's comments talk about the engine constantly.
+ *
+ * The leading `[{,\n]` (or start of file) is load-bearing: it anchors "engine"
+ * to a key position so a string literal that merely contains the text
+ * `engine:` — e.g. `const note = "engine:";` — cannot match. Inside that
+ * string, "engine" is preceded by the opening quote, not by an object-key
+ * delimiter, so the match never starts.
+ */
+const ENGINE_PROPERTY = /(?:^|[{,\n])\s*\[?\s*(['"`]?)engine\1\s*\]?\s*:/;
+
+/**
+ * Replace every character inside a `//` or block comment with a space, leaving
+ * newlines and every other offset where it was. Quote-aware, because configs
+ * are full of `https://` inside string literals and blanking from there to the
+ * end of the line would swallow real code.
+ *
+ * A scanner, not a parser: a regex literal or a nested template expression can
+ * desync it. The one caller only asks whether an `engine` is bound somewhere it
+ * cannot read, so a desync lands on one side or the other of a refuse-or-insert
+ * choice this function is already making by hand.
+ */
+function blankComments(source: string): string {
+  const out = source.split("");
+  let i = 0;
+  while (i < source.length) {
+    const c = source[i]!;
+    if (c === '"' || c === "'" || c === "`") {
+      for (i += 1; i < source.length; i += 1) {
+        if (source[i] === "\\") i += 1;
+        else if (source[i] === c) break;
+      }
+      i += 1;
+      continue;
+    }
+    if (c === "/" && source[i + 1] === "/") {
+      for (; i < source.length && source[i] !== "\n"; i += 1) out[i] = " ";
+      continue;
+    }
+    if (c === "/" && source[i + 1] === "*") {
+      const end = source.indexOf("*/", i + 2);
+      const stop = end === -1 ? source.length : end + 2;
+      for (; i < stop; i += 1) if (source[i] !== "\n") out[i] = " ";
+      continue;
+    }
+    i += 1;
+  }
+  return out.join("");
+}
+
+/**
  * Surgically rewrite (or insert) `engine.ref` in a root `phoebe.config.ts`.
  * Strict-literal only: the config is user-owned TypeScript, and a bad rewrite
  * bricks a deployment, so anything this cannot parse unambiguously — two
@@ -274,7 +327,7 @@ export function rewriteEngineRef(content: string, newRef: string): RewriteResult
   // No engine block at all — the config runs the default (`main`). Insert a
   // whole block, but only into the one unambiguous shape: a single top-level
   // object literal closed by a column-0 `};` (the scaffolded form).
-  if (/\bengine\b/.test(content)) {
+  if (ENGINE_PROPERTY.test(blankComments(content))) {
     return { ok: false, reason: "`engine` is present but not a plain `engine: { ... }` block" };
   }
   const closings = content.match(/^\};/gm)?.length ?? 0;
