@@ -151,6 +151,10 @@ things comes first: a unit settling, the poll interval elapsing, or a drain. A
 pass with no free slot skips the gather entirely, because there is nothing
 selection could do with the answer.
 
+A unit that settles while the pass is busy elsewhere, admitting a sibling or
+waiting on a slot, is not lost. The settle latches, and the next wait returns on
+it straight away rather than sleeping the interval out behind a free slot.
+
 Slots fill depth-first, so `order` still means priority. A kind is asked again and
 again until it runs out before the next kind is asked at all. Filling k slots from
 one gather is what `ctx.inFlight` is for, the kind's refs running right now,

@@ -2700,6 +2700,93 @@ describe("rolling top-up inside one pipeline", () => {
     await loop;
   });
 
+  test("a settle that lands while a sibling admission is blocked still wakes the pass", async () => {
+    // #456: `u:1` finishes while the pass is parked inside `acquire()` for
+    // `u:2`, so no waker is registered to hear it. The latch has to carry it.
+    const gated = gatedKind({ refs: [1, 2] });
+    const grants: Array<() => void> = [];
+    let acquires = 0;
+    const engine = concurrentEngine({
+      kinds: [gated],
+      concurrency: 2,
+      slotClient: {
+        acquire: () => {
+          acquires += 1;
+          // The second unit of the first pass waits on the test for its slot.
+          if (acquires === 2) return new Promise<void>((resolve) => grants.push(resolve));
+          return Promise.resolve();
+        },
+        release: () => {},
+      },
+    });
+    const loop = engine.loop();
+    await settle();
+
+    expect(gated.started).toEqual(["u:1"]);
+    expect(grants).toHaveLength(1);
+
+    gated.offer(3);
+    await gated.release("u:1");
+    await settle();
+    grants[0]?.();
+    await settle();
+
+    // No `tick()` anywhere: had the settle been dropped, the pass that admitted
+    // `u:2` would be asleep for a poll interval and `u:3` would still be waiting.
+    expect(gated.started).toEqual(["u:1", "u:2", "u:3"]);
+
+    engine.drain.request();
+    await gated.release("u:2");
+    await gated.release("u:3");
+    await loop;
+  });
+
+  test("a settle latched with nothing left in flight wakes the idle pass", async () => {
+    // The `inFlight.size === 0` branch of the wait: the unit settles while the
+    // pass is held at its top-of-poll credential lease, and by the time the pass
+    // reaches the wait there is nothing running to register a waker against.
+    const gated = gatedKind({ refs: [1] });
+    const held: Array<() => void> = [];
+    let holdLeases = false;
+    const engine = concurrentEngine({
+      kinds: [gated],
+      concurrency: 1,
+      credentialClient: {
+        requestLease: () =>
+          holdLeases
+            ? new Promise<string>((resolve) => held.push(() => resolve("t")))
+            : Promise.resolve("t"),
+      },
+    });
+    const loop = engine.loop();
+    await settle();
+    expect(gated.started).toEqual(["u:1"]);
+
+    // Park the next pass at its first lease, then let the only running unit go.
+    holdLeases = true;
+    engine.drain.tick();
+    await settle();
+    expect(held).toHaveLength(1);
+    await gated.release("u:1");
+    await settle();
+
+    // That pass finds no work and waits with nothing in flight. The latch is
+    // what gets it round again — the second held lease is the proof it did.
+    held[0]?.();
+    await settle();
+    expect(held).toHaveLength(2);
+
+    gated.offer(2);
+    holdLeases = false;
+    held[1]?.();
+    await settle();
+    expect(gated.started).toEqual(["u:1", "u:2"]);
+
+    engine.drain.request();
+    await gated.release("u:2");
+    await loop;
+  });
+
   test("a kind ignoring ctx.inFlight runs one unit at a time, and the drop is logged", async () => {
     const gated = gatedKind({ refs: [1, 2], ignoresInFlight: true });
     const engine = concurrentEngine({ kinds: [gated], concurrency: 2 });
