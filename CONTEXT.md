@@ -136,6 +136,12 @@ A unit a person now owns, recorded by its kind in the external system so selecti
 it. The engine stores none of them; a handover reaches it as a skip reason from `select`.
 _Avoid_: escalation (that is the quarantine comment), parked
 
+**Landed member**:
+A feature member whose own pull request has merged into the feature branch and now waits
+on the integration PR. Labelled so selection skips it; the state lapses when the feature
+ends.
+_Avoid_: done, merged member, integrated (that is what has not happened yet)
+
 ### Running
 
 **Origin hub**:
