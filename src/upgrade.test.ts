@@ -172,6 +172,41 @@ export default config;
     expect(result.content).toContain('  engine: { source: "github", ref: "v0.4.0" },\n};');
   });
 
+  test("inserts a block when the only `engine` in the file is prose (#478)", () => {
+    const prose = `import type { PhoebeUserConfig } from "phoebe-agent";
+
+// installCommand is run by the engine in each worktree.
+/* Requires engine: v0.3.0 or newer — it moves the engine child's cwd. */
+const config: PhoebeUserConfig = {
+  repoSlug: "acme/widget",
+  repoUrl: "https://github.com/acme/widget.git", // the // above sits in a string
+  // To upgrade, edit engine.ref — see the docs.
+};
+
+export default config;
+`;
+    const result = rewriteEngineRef(prose, "v0.4.0");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.content).toContain('  engine: { source: "github", ref: "v0.4.0" },\n};');
+    expect(result.content).toContain("https://github.com/acme/widget.git");
+  });
+
+  test("still refuses an `engine` property it cannot read as a block", () => {
+    for (const binding of [
+      "  engine: makeEngine(),",
+      '  engine: { source: "github", ref: pins.engine, extra: { deep: true } },',
+      '  "engine": { source: "github", ref: "v0.3.1" },',
+      '  ["engine"]: { source: "github", ref: "v0.3.1" },',
+    ]) {
+      const opaque = scaffold.replace(`  engine: { source: "github", ref: "v0.3.1" },`, binding);
+      const result = rewriteEngineRef(opaque, "v0.4.0");
+      expect(result.ok).toBe(false);
+      if (result.ok) continue;
+      expect(result.reason).toMatch(/not a plain `engine: \{ \.\.\. \}` block/);
+    }
+  });
+
   test("refuses a local source", () => {
     const local = scaffold.replace(`{ source: "github", ref: "v0.3.1" }`, `{ source: "local" }`);
     const result = rewriteEngineRef(local, "v0.4.0");
