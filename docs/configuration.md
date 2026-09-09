@@ -92,8 +92,11 @@ and [`preparing-work.md`](preparing-work.md) for why `researchLabel` defaults to
 wayfinder-shaped value and what to set it to if you use something else.
 
 `mergedLabel` is created on demand, the way `processingLabel` is, and no human
-ever applies it. This ticket only provisions the label; applying it to landed
-members and reading it back is later work.
+ever applies it. Phoebe puts it on a feature member as that member's PR merges
+into the feature branch, takes `processingLabel` off in the same pass, and then
+leaves it alone. A member wearing it is done and waiting on the integration PR,
+which is why Phoebe never picks it up or re-arms it again. See
+[`feature-branches.md`](feature-branches.md) for the whole arc.
 
 `featureLabel` is opt-in and Phoebe never creates it: like `readyLabel` it is a
 human's deliberate gesture. A repo that never adds the label simply has no

@@ -16,9 +16,14 @@
 //   • **Only ever append, inside markers.** The sweep re-runs every cycle, so a
 //     rebuild would fight a human editing the same body, and a short read of the
 //     merged list would silently drop lines. Existing lines are never removed.
+//
+// The same enumeration answers a second question (#449, ticket #486): which of
+// those members is still owed the swap from `processingLabel` to `mergedLabel`.
+// It lives here because it reads the same merged-member list — one sweep owns
+// both, so a member's label and its `Closes` line stay in lockstep.
 
 import type { BranchRef, PrNumber } from "./branded.ts";
-import { parseIssueNumberFromBranch } from "./orchestrator.ts";
+import { isLandedMember, parseIssueNumberFromBranch } from "./orchestrator.ts";
 
 /** A member PR that merged into a feature branch, as the sweep reads it. */
 export type MergedMemberPr = {
@@ -103,4 +108,37 @@ export function withClosesSection(
   }
   const head = body.trim() ? `${body.trimEnd()}\n\n` : "";
   return { body: `${head}${section}\n`, added };
+}
+
+/** A merged member's issue, as the swap picker reads it. */
+export type MergedMemberIssue = {
+  issueNumber: number;
+  /** Every label the issue wears, read fresh in the cycle that will write to it. */
+  labels: readonly string[];
+};
+
+/**
+ * The members whose label swap is still owed: those with a merged member PR
+ * that are not landed members already (#449, ticket #486).
+ *
+ * The whole decision, and pure, so the sweep beside it is a loop over an
+ * answer rather than a condition spread across two writes. Idempotent for the
+ * same reason {@link withClosesSection} is — the answer is a function of what
+ * the member already wears, so the first cycle after a merge picks it and every
+ * later cycle picks nothing. One entry per issue however many of its PRs
+ * merged, since the labels are the issue's, not the PR's.
+ */
+export function membersToMark(
+  members: readonly MergedMemberIssue[],
+  mergedLabel: string,
+): MergedMemberIssue[] {
+  const picked = new Set<number>();
+  const owed: MergedMemberIssue[] = [];
+  for (const member of members) {
+    if (isLandedMember(member, mergedLabel)) continue;
+    if (picked.has(member.issueNumber)) continue;
+    picked.add(member.issueNumber);
+    owed.push(member);
+  }
+  return owed;
 }

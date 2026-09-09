@@ -8,6 +8,7 @@ import {
   CLOSES_SECTION_END,
   CLOSES_SECTION_START,
   memberIssueNumber,
+  membersToMark,
   withClosesSection,
 } from "./feature-closes.ts";
 import { issueBranch } from "./orchestrator.ts";
@@ -149,5 +150,49 @@ describe("withClosesSection, with a human's Closes lines below the block", () =>
       "Closes #417",
       ...stray,
     ]);
+  });
+});
+
+// The swap picker (#449, ticket #486): which merged members are still owed the
+// `processing` → `mergedLabel` swap the sweep performs beside the `Closes` line.
+describe("membersToMark", () => {
+  const MERGED = "merged-to-feature";
+
+  /** A merged member's issue, as the picker reads it. */
+  function landed(issueNumber: number, ...labels: string[]) {
+    return { issueNumber, labels };
+  }
+
+  test("picks a member whose PR merged and that is not marked yet", () => {
+    const claimed = landed(381, "ready-for-agent", "processing");
+    expect(membersToMark([claimed], MERGED)).toEqual([claimed]);
+  });
+
+  test("picks nothing when no member PR has merged", () => {
+    expect(membersToMark([], MERGED)).toEqual([]);
+  });
+
+  test("skips a member already wearing the label, however many cycles run", () => {
+    const swapped = landed(381, "ready-for-agent", MERGED);
+    expect(membersToMark([swapped], MERGED)).toEqual([]);
+    expect(membersToMark(membersToMark([swapped], MERGED), MERGED)).toEqual([]);
+  });
+
+  test("picks the unmarked members out of a mixed feature", () => {
+    const owed = landed(382, "processing");
+    expect(
+      membersToMark([landed(381, MERGED), owed, landed(383, "ready-for-agent", MERGED)], MERGED),
+    ).toEqual([owed]);
+  });
+
+  test("names a member once when two of its PRs merged", () => {
+    expect(membersToMark([landed(381, "processing"), landed(381, "processing")], MERGED)).toEqual([
+      landed(381, "processing"),
+    ]);
+  });
+
+  test("reads the tenant's own name for the label, not the default", () => {
+    expect(membersToMark([landed(381, "landed")], "landed")).toEqual([]);
+    expect(membersToMark([landed(381, MERGED)], "landed")).toEqual([landed(381, MERGED)]);
   });
 });

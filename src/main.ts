@@ -119,7 +119,13 @@ import {
   type StackedOn,
 } from "./orchestrator.ts";
 import { featureBranch, resolveFeature, type Feature } from "./feature-branch.ts";
-import { memberIssueNumber, withClosesSection } from "./feature-closes.ts";
+import {
+  memberIssueNumber,
+  membersToMark,
+  withClosesSection,
+  type MergedMemberIssue,
+} from "./feature-closes.ts";
+import { addLabelCreatingIfMissing, mergedLabelOf } from "./labels.ts";
 import {
   createWorkSource,
   type Clock,
@@ -947,23 +953,86 @@ export function createEngine(options: EngineOptions): Engine {
     for (const integrationPr of integrationPrs) {
       // Never repair an object this pipeline is running (#422).
       if (targetInFlight({ objectType: "pr", id: integrationPr.number })) continue;
+      let closes: number[];
       try {
         const members = github.listMergedMemberPrs(integrationPr.featureIssueNumber);
-        const closes = members
+        closes = members
           .map(memberIssueNumber)
           .filter((issueNumber): issueNumber is number => issueNumber !== null);
         const update = withClosesSection(integrationPr.body, closes);
-        if (!update) continue;
-        github.updatePrBody(integrationPr.number, update.body);
-        log.say(
-          `Integration PR #${integrationPr.number} now closes ` +
-            `${update.added.map((n) => `#${n}`).join(", ")} — ` +
-            `merged into ${featureBranch(integrationPr.featureIssueNumber)}.`,
-        );
+        if (update) {
+          github.updatePrBody(integrationPr.number, update.body);
+          log.say(
+            `Integration PR #${integrationPr.number} now closes ` +
+              `${update.added.map((n) => `#${n}`).join(", ")} — ` +
+              `merged into ${featureBranch(integrationPr.featureIssueNumber)}.`,
+          );
+        }
       } catch (error) {
         log.fail(
           `Could not maintain the Closes list on integration PR ` +
             `#${integrationPr.number} — ` +
+            `${error instanceof Error ? error.message : String(error)}`,
+        );
+        continue;
+      }
+      // The same enumeration marks the members, so the label and the `Closes`
+      // line can never disagree by more than one failed write. Not gated on the
+      // body edit: a member a human already wrote a `Closes` line for earns no
+      // edit and is still owed its label.
+      markLandedMembers(closes, integrationPr.featureIssueNumber);
+    }
+  }
+
+  /**
+   * Swap `processingLabel` for `mergedLabel` on every member of
+   * `featureIssueNumber` whose PR has merged into the feature branch (#449,
+   * ticket #486) — the moment an open member stops being a live claim and
+   * becomes a landed member, done and waiting on the integration PR.
+   *
+   * Add first, remove second. A failure between the two leaves the member
+   * wearing both labels, and every reader treats that as landed; the other
+   * order would leave it wearing neither, which is finished work handed back
+   * out. `readyLabel` is never touched — that one is the human's.
+   *
+   * Costs one label read per merged member per cycle, and nothing else once the
+   * swap is done: `membersToMark` skips a member already wearing the label, so
+   * a feature's later cycles write nothing however long it stays open.
+   */
+  function markLandedMembers(
+    memberIssueNumbers: readonly number[],
+    featureIssueNumber: number,
+  ): void {
+    const members: MergedMemberIssue[] = [];
+    for (const issueNumber of memberIssueNumbers) {
+      try {
+        members.push({ issueNumber, labels: github.issueLabels(issueNumber) });
+      } catch (error) {
+        // Best-effort per member: one unreadable issue does not cost its
+        // siblings their swap, and the next cycle reads it again.
+        log.fail(
+          `Could not read the labels of member #${issueNumber} — ` +
+            `${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+    for (const member of membersToMark(members, config.mergedLabel)) {
+      const claimed = member.labels.includes(config.processingLabel);
+      try {
+        addLabelCreatingIfMissing(github, member.issueNumber, mergedLabelOf(config), (line) =>
+          log.say(line),
+        );
+        if (claimed) {
+          github.removeIssueLabel(member.issueNumber, config.processingLabel);
+        }
+        log.say(
+          `Member #${member.issueNumber} landed on ${featureBranch(featureIssueNumber)} — ` +
+            `${config.mergedLabel} added` +
+            `${claimed ? `, ${config.processingLabel} removed` : ""}.`,
+        );
+      } catch (error) {
+        log.fail(
+          `Could not mark member #${member.issueNumber} as landed — ` +
             `${error instanceof Error ? error.message : String(error)}`,
         );
       }

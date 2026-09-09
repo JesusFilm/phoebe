@@ -101,6 +101,31 @@ function anIssue(number: number, overrides: Partial<Issue> = {}): Issue {
 }
 
 /**
+ * Records every label write a sweep makes, in the order it makes them. Shared
+ * by the two sweeps that write labels — the feature-closes swap and the
+ * stranded-unit re-arm — so both are read the same way, and so a sweep that
+ * writes when it should be idempotent shows up as an entry nobody expected.
+ * Any method a test does not declare still throws.
+ */
+function labelWriteRecorder(): { writes: string[]; overrides: GitHubStubOverrides } {
+  const writes: string[] = [];
+  return {
+    writes,
+    overrides: {
+      addIssueLabel: (issueNumber, label) => {
+        writes.push(`add-label issue #${issueNumber} ${label}`);
+      },
+      removeIssueLabel: (issueNumber, label) => {
+        writes.push(`remove-label issue #${issueNumber} ${label}`);
+      },
+      createLabel: (name) => {
+        writes.push(`create-label ${name}`);
+      },
+    },
+  };
+}
+
+/**
  * One open PR as the cycle sees it. Branches are built with `issueBranch` so
  * the fixture and the parser agree on the prefix without either naming it.
  */
@@ -1304,7 +1329,8 @@ describe("keeping the feature branch current with the default branch", () => {
 // The feature-closes sweep runs wet, before selection, and keeps each live
 // feature's integration PR body listing one `Closes #N` per member PR that has
 // merged into the feature branch — the only way merging that PR into the
-// default branch closes the whole set (#380).
+// default branch closes the whole set (#380). The same pass swaps
+// processingLabel for mergedLabel on each of those members (#449).
 describe("the feature-closes sweep", () => {
   /** A wet `--run-once` cycle: it sweeps, finds no work, and exits. */
   function sweepCycle(github: GitHubStubOverrides) {
@@ -1316,10 +1342,23 @@ describe("the feature-closes sweep", () => {
     });
   }
 
+  /** A merged member PR, and the labels its issue wears when the sweep reads it. */
+  type MemberFixture = { issueNumber: number; labels: string[] };
+
+  /** A member mid-flight: claimed by the run that opened the PR that has now merged. */
+  function claimedMember(issueNumber: number): MemberFixture {
+    return { issueNumber, labels: ["ready-for-agent", "processing"] };
+  }
+
+  /** The same member after a cycle has swapped its labels. */
+  function landedMember(issueNumber: number): MemberFixture {
+    return { issueNumber, labels: ["ready-for-agent", "merged-to-feature"] };
+  }
+
   /** One live feature: integration PR #99 on the branch for feature #341. */
   function featureWorld(opts: {
     body: string;
-    mergedMembers: readonly number[];
+    mergedMembers: readonly MemberFixture[];
     bodies: string[];
   }): GitHubStubOverrides {
     return {
@@ -1328,11 +1367,13 @@ describe("the feature-closes sweep", () => {
       ],
       listMergedMemberPrs: (featureIssueNumber) =>
         featureIssueNumber === 341
-          ? opts.mergedMembers.map((issueNumber) => ({
-              number: asPrNumber(400 + issueNumber),
-              headRefName: issueBranch(issueNumber),
+          ? opts.mergedMembers.map((member) => ({
+              number: asPrNumber(400 + member.issueNumber),
+              headRefName: issueBranch(member.issueNumber),
             }))
           : [],
+      issueLabels: (issueNumber) =>
+        opts.mergedMembers.find((member) => member.issueNumber === issueNumber)?.labels ?? [],
       updatePrBody: (prNumber, body) => {
         expect(prNumber).toBe(99);
         opts.bodies.push(body);
@@ -1342,9 +1383,11 @@ describe("the feature-closes sweep", () => {
 
   test("a merged member PR earns a Closes line on the integration PR", async () => {
     const bodies: string[] = [];
-    const result = await sweepCycle(
-      featureWorld({ body: "Part of #341.", mergedMembers: [381], bodies }),
-    );
+    const { overrides } = labelWriteRecorder();
+    const result = await sweepCycle({
+      ...featureWorld({ body: "Part of #341.", mergedMembers: [claimedMember(381)], bodies }),
+      ...overrides,
+    });
 
     expect(bodies).toHaveLength(1);
     expect(bodies[0]).toContain(CLOSES_SECTION_START);
@@ -1355,12 +1398,129 @@ describe("the feature-closes sweep", () => {
     );
   });
 
+  test("the member is marked landed: mergedLabel on, then processingLabel off", async () => {
+    const bodies: string[] = [];
+    const { writes, overrides } = labelWriteRecorder();
+    const result = await sweepCycle({
+      ...featureWorld({ body: "Part of #341.", mergedMembers: [claimedMember(381)], bodies }),
+      ...overrides,
+    });
+
+    // Add first, remove second: a failure between the two leaves the member
+    // wearing both labels rather than neither.
+    expect(writes).toEqual([
+      "add-label issue #381 merged-to-feature",
+      "remove-label issue #381 processing",
+    ]);
+    // readyLabel is the human's and is never touched.
+    expect(writes.join("\n")).not.toContain("ready-for-agent");
+    expect(result.lines).toContain(
+      `[phoebe:acme/widget:work] Member #381 landed on ${featureBranch(341)} — ` +
+        `merged-to-feature added, processing removed.`,
+    );
+  });
+
   test("a second cycle over the same merged member writes nothing", async () => {
     const bodies: string[] = [];
-    await sweepCycle(featureWorld({ body: "Part of #341.", mergedMembers: [381], bodies }));
-    await sweepCycle(featureWorld({ body: bodies[0]!, mergedMembers: [381], bodies }));
+    const first = labelWriteRecorder();
+    await sweepCycle({
+      ...featureWorld({ body: "Part of #341.", mergedMembers: [claimedMember(381)], bodies }),
+      ...first.overrides,
+    });
+    // The stub holds no state, so the second cycle's world declares what the
+    // first one wrote: the new body, and the member wearing its new label.
+    const second = labelWriteRecorder();
+    await sweepCycle({
+      ...featureWorld({ body: bodies[0]!, mergedMembers: [landedMember(381)], bodies }),
+      ...second.overrides,
+    });
 
     expect(bodies).toHaveLength(1);
+    expect(second.writes).toEqual([]);
+  });
+
+  test("a member whose Closes line a human wrote is still marked landed", async () => {
+    // No body edit is owed — the line is already there — and the label still is.
+    const bodies: string[] = [];
+    const { writes, overrides } = labelWriteRecorder();
+    await sweepCycle({
+      ...featureWorld({
+        body: "Part of #341.\n\nCloses #381\n",
+        mergedMembers: [claimedMember(381)],
+        bodies,
+      }),
+      ...overrides,
+    });
+
+    expect(bodies).toEqual([]);
+    expect(writes).toEqual([
+      "add-label issue #381 merged-to-feature",
+      "remove-label issue #381 processing",
+    ]);
+  });
+
+  test("a member wearing no claim is marked without a remove", async () => {
+    const bodies: string[] = [];
+    const { writes, overrides } = labelWriteRecorder();
+    const result = await sweepCycle({
+      ...featureWorld({
+        body: "Part of #341.",
+        mergedMembers: [{ issueNumber: 381, labels: ["ready-for-agent"] }],
+        bodies,
+      }),
+      ...overrides,
+    });
+
+    expect(writes).toEqual(["add-label issue #381 merged-to-feature"]);
+    expect(result.lines).toContain(
+      `[phoebe:acme/widget:work] Member #381 landed on ${featureBranch(341)} — ` +
+        `merged-to-feature added.`,
+    );
+  });
+
+  test("one member's failed label write does not cost its siblings the swap", async () => {
+    const bodies: string[] = [];
+    const { writes, overrides } = labelWriteRecorder();
+    const result = await sweepCycle({
+      ...featureWorld({
+        body: "Part of #341.",
+        mergedMembers: [claimedMember(381), claimedMember(382)],
+        bodies,
+      }),
+      ...overrides,
+      addIssueLabel: (issueNumber, label) => {
+        if (issueNumber === 381) throw new Error("label write exploded");
+        writes.push(`add-label issue #${issueNumber} ${label}`);
+      },
+    });
+
+    expect(result.lines.join("\n")).toContain("label write exploded");
+    expect(writes).toEqual([
+      "add-label issue #382 merged-to-feature",
+      "remove-label issue #382 processing",
+    ]);
+  });
+
+  test("a feature whose integration PR is no longer open is not swept", async () => {
+    // The listing is open-only, so a retired feature drops out before any read
+    // of its members — which is the whole reason nothing has to clear the label
+    // when the integration PR merges (#450).
+    const bodies: string[] = [];
+    let membersRead = false;
+    const { writes, overrides } = labelWriteRecorder();
+    await sweepCycle({
+      ...featureWorld({ body: "Part of #341.", mergedMembers: [claimedMember(381)], bodies }),
+      ...overrides,
+      listFeatureIntegrationPrs: () => [],
+      listMergedMemberPrs: () => {
+        membersRead = true;
+        return [];
+      },
+    });
+
+    expect(membersRead).toBe(false);
+    expect(writes).toEqual([]);
+    expect(bodies).toEqual([]);
   });
 
   test("a feature whose members have not merged is left alone", async () => {
@@ -1395,6 +1555,9 @@ describe("the feature-closes sweep", () => {
         if (featureIssueNumber === 7) throw new Error("gh exploded");
         return [{ number: asPrNumber(22), headRefName: issueBranch(381) }];
       },
+      // #381 was marked on an earlier cycle, so the swap owes it nothing and
+      // every label write here would be a bug.
+      issueLabels: () => ["merged-to-feature"],
       updatePrBody: (prNumber, body) => {
         bodies.push(`${prNumber}:${body}`);
       },
@@ -1462,19 +1625,17 @@ describe("the stranded-unit sweep", () => {
     return anIssue(number, { labels: ["processing", ...extraLabels] });
   }
 
-  /** Records the writes the sweep makes; any un-declared method still throws. */
+  /**
+   * The shared label recorder plus the quarantine and comment writes only this
+   * sweep makes; any un-declared method still throws.
+   */
   function writeRecorder(): { writes: string[]; overrides: GitHubStubOverrides } {
-    const writes: string[] = [];
+    const { writes, overrides } = labelWriteRecorder();
     return {
       writes,
       overrides: {
+        ...overrides,
         resolveLogin: () => PHOEBE_LOGIN,
-        removeIssueLabel: (issueNumber, label) => {
-          writes.push(`remove-label issue #${issueNumber} ${label}`);
-        },
-        addIssueLabel: (issueNumber, label) => {
-          writes.push(`add-label issue #${issueNumber} ${label}`);
-        },
         addQuarantineLabel: (target) => {
           writes.push(`quarantine-label ${target.objectType} #${target.id}`);
         },
