@@ -1,5 +1,50 @@
 # phoebe-agent
 
+## 0.12.1
+
+### Patch Changes
+
+- 6065b09: `phoebe upgrade` can now insert a missing `engine` block into a config written as `defineConfig({ ... });` (#479). The insert branch only recognised a top-level object closed by a column-0 `};`, which is the shape the templates scaffold — a `defineConfig` config, the documented modern form and the one this repo's own root config uses, closes with `});` and always fell through to the "apply the edit yourself" advisory instead.
+
+  Both closings now count, and the strictness is unchanged: exactly one closing of exactly one shape, or the upgrade refuses. A file carrying both is as ambiguous as one carrying two of either.
+
+- c2f0398: `phoebe upgrade` no longer refuses a config whose only `engine` is a word in a comment (#478). The guard that catches an engine bound in a shape the rewriter cannot read tested the raw file for the bare word `engine`, so a config with no `engine` field at all — but with prose about the engine in its comments, which the scaffolded template ships — was told "`engine` is present but not a plain `engine: { ... }` block", naming a field its owner could not find.
+
+  The guard now looks for `engine` in a property position (`engine:`, `"engine":`, `["engine"]:`), with comments blanked out first. A quoted or computed key still refuses rather than letting `upgrade` insert a second block; prose stays prose.
+
+- 9994052: `createLabel` runs through the captured `gh` executor so a concurrent
+  create's "already exists" error is recoverable, and `phoebe doctor` reads
+  each workspace tenant's `PHOEBE_*` overlay from that tenant's `.env` rather
+  than the doctor process's own environment.
+- 3a14412: A **landed member** — an open feature member wearing `mergedLabel`, its own PR already merged into the feature branch — is now finished work as far as the engine is concerned (#485). Selection skips it, the unresolved-blocker report never names it, and the stranded-unit sweep leaves it untouched instead of reading it as a claim that died before producing a PR and re-arming it. `readyLabel` stays on it; that label is the human's.
+
+  On a quiet cycle the issue producer's idle line stops folding landed members into the misleading `(blocked or waiting on blocker PR)` fallback. It counts them apart and names the feature they wait on — `(2 in progress, 5 landed on feature #400)` — one phrase per feature, blockers still named first.
+
+  Nothing applies `mergedLabel` yet, so this changes no live behaviour on its own. It lands first on purpose: skipping a label nobody wears is harmless, and it means the sweep that starts applying it can never hand a finished member back out.
+
+- 10a3666: Something now applies `mergedLabel` (#486). When a member PR merges into its feature branch, the feature-closes sweep marks the member in the same pass that appends its `Closes` line to the integration PR body. `mergedLabel` goes on, then `processingLabel` comes off. One sweep owns both writes, so the label and the line cannot drift apart.
+
+  Add first, remove second. A write that fails between the two leaves the member wearing both labels, which every reader treats as landed. The other order would leave it wearing neither, and that is finished work handed back out. `readyLabel` is untouched; that one is the human's.
+
+  So a done-but-open member stops looking stuck in `processing`. It reads as landed, waiting on the integration PR, and the queue's idle line counts it that way. A member already wearing the label is skipped, so later cycles write nothing. A feature whose integration PR is no longer open is never read at all, which is why nothing has to clear the label when the feature merges.
+
+- ae13b31: Docs: the feature-member lifecycle now reads end to end (#489). `feature-branches.md` is the canonical home — it says where a landed member is visible (its label, the idle line's `3 landed on feature #400`, `phoebe doctor`, never `phoebe list`), and it names the **stray member**: an open member still wearing a Phoebe label under a feature that has ended, the four ways one arises, the `stray-members` check's two repair hints, and the fact that a lifecycle label on a closed issue is archaeology rather than a bug.
+
+  `operating.md` keeps the levers and points at that account: the `processingLabel` section now says each automatic re-arm counts as an unproductive run and `maxUnproductiveRuns` of them quarantines the issue, the unit-hang paragraph cross-references it, the `featureLabel` section says what a member wears between the two merges, and the cancel row of the quick reference ends in `phoebe doctor`. The unit-hang paragraph also stops naming the deprecated `PHOEBE_MAX_UNIT_TIMEOUTS`.
+
+- b665fcd: New config field `mergedLabel`, default `merged-to-feature`, names the label a **landed member** wears — a feature member whose own PR has merged into the feature branch and now waits on the integration PR (#449). It sits in the same family as `processingLabel`: plain, lowercase, overridable in the config file or through `PHOEBE_MERGED_LABEL`, and created by the engine the first time it needs it, so a repo that has never heard of the label needs no setup. `phoebe doctor`'s `labels` check lists it beside ready, processing and opt-out, and names the `gh label create` fix when it is missing.
+
+  The add-then-heal write that creates a missing label now lives in one place (`src/labels.ts`) and carries a description per label role, so the landed-member label is not created wearing "Phoebe is working this issue". Nothing applies the label yet — that is the sweep's job, in a later change.
+
+- 536adc1: A pipeline no longer sleeps out a poll interval behind a slot that is already free (#456). The engine wakes its loop when an in-flight unit settles, but that only reached wakers registered at that instant, and the loop sits inside the registration window for part of each pass. A unit finishing while a sibling admission was parked in `slotClient.acquire()` fired into an empty waker set, so the next wait — the idle one in particular — slept a full interval before reconsidering admission.
+
+  The settle now latches when nobody is listening, and the next wait consumes the latch and returns at once. Consuming clears it, so the worst case is one extra pass and the loop cannot spin. This closes the part of the settle-vs-poll race #422 left open; the added latency was bounded at one idle poll and never a hang.
+
+- 1b82950: Research record: the Sentry read a poll loop needs (docs/research/sentry-read-surface.md, issue #470). Read from Sentry's API reference, its published OpenAPI document and the `getsentry/sentry` source: three calls do the whole loop (org issues list, latest event, external issue link), the group detail call is skippable because the event carries the release; `event:read` covers the read side and `event:write` the link; the list gives count, first/last seen, level and culprit but never a release; frames arrive camelCased with `pre_context`/`context_line`/`post_context` folded into one `[[lineNo, text]]` array; `llmFormat=markdown` renders the whole event for a prompt. Rate limits are undocumented but 20/s per org in the source, so not a design constraint. The Sentry App external issue is the only watermark a machine token can write, and it reads back free in `annotations`. GlitchTip serves the same paths and frame shape (four named divergences); Bugsink deliberately does not, and needs its own adapter.
+- 351ad57: `phoebe doctor` gains a per-tenant `stray-members` check. When a feature ends — its integration PR merged or closed, or its parent issue closed — routing stops seeing the members underneath it, so whichever of `readyLabel`, `researchLabel`, `processingLabel` or `mergedLabel` a member was wearing at that moment stays on it, and nothing is coming to take it off. The check names each one with its feature and the one repair Phoebe deliberately does not make: close it when the integration PR merged, and when the feature was cancelled either close it or strip the label, which routes it back onto the default branch as an ordinary ticket. Report-only, warn and never fail, like `stale-state`, and the exit code stays 0.
+
+  The membership walk now reports the feature parent's own state (`resolveFeatureMembership`) rather than folding a retired feature into "no feature", so a stray can be told from an issue that never belonged to a feature at all. `resolveFeature` and everything that routes through it are unchanged. The cost is one tracker query per watched label plus the issue graph above whatever those return, paid when you run doctor and never per cycle.
+
 ## 0.12.0
 
 ### Minor Changes
