@@ -83,12 +83,17 @@ does not force you to supply the rest.
 | `readyLabel`      | `"ready-for-agent"`    | Only issues carrying this label are picked up by the `issues` kind. |
 | `researchLabel`   | `"wayfinder:research"` | Open issues with this label are picked up by the `research` kind.   |
 | `processingLabel` | `"processing"`         | The engine applies this to an issue it has claimed.                 |
+| `mergedLabel`     | `"merged-to-feature"`  | A feature member whose own PR has merged, awaiting integration.     |
 | `featureLabel`    | `"phoebe:feature"`     | A **parent** issue wearing this puts its children on one branch.    |
 | `prOptOutLabel`   | `"ready-for-human"`    | PRs with this label are excluded from every PR scan.                |
 
 See [`operating.md`](operating.md) for how a human drives Phoebe with these,
 and [`preparing-work.md`](preparing-work.md) for why `researchLabel` defaults to a
 wayfinder-shaped value and what to set it to if you use something else.
+
+`mergedLabel` is created on demand, the way `processingLabel` is, and no human
+ever applies it. This ticket only provisions the label; applying it to landed
+members and reading it back is later work.
 
 `featureLabel` is opt-in and Phoebe never creates it: like `readyLabel` it is a
 human's deliberate gesture. A repo that never adds the label simply has no
@@ -855,6 +860,7 @@ config-file territory.
 | `PHOEBE_READY_LABEL`             | `readyLabel`            |                                                         |
 | `PHOEBE_RESEARCH_LABEL`          | `researchLabel`         |                                                         |
 | `PHOEBE_PROCESSING_LABEL`        | `processingLabel`       |                                                         |
+| `PHOEBE_MERGED_LABEL`            | `mergedLabel`           |                                                         |
 | `PHOEBE_FEATURE_LABEL`           | `featureLabel`          |                                                         |
 | `PHOEBE_PR_OPT_OUT_LABEL`        | `prOptOutLabel`         |                                                         |
 | `PHOEBE_INSTALL_COMMAND`         | `installCommand`        |                                                         |
