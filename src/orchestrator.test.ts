@@ -16,6 +16,7 @@ import {
   followUpPrComment,
   formatFailingChecksForPrompt,
   hasNewNonPhoebeReviewActivity,
+  isLandedMember,
   isPhoebeHeadBranch,
   isPrInScope,
   isPrMergeConflicting,
@@ -467,6 +468,22 @@ describe("unresolvedBlockerNumbers", () => {
     ]);
     expect(unresolvedBlockerNumbers(issues, states, undefined, "processing")).toEqual([99]);
   });
+
+  test("excludes landed members from the unresolved-blocker report (#485)", () => {
+    const issues = [
+      issue({
+        number: 102,
+        body: "Blocked by #98",
+        labels: ["ready-for-agent", installedConfig.mergedLabel],
+      }),
+      issue({ number: 103, body: "Blocked by #99" }),
+    ];
+    const states = new Map<number, BlockerPrState>([
+      [98, { hasOpenPr: false, hasMergedPr: false, blockerCompleted: false }],
+      [99, { hasOpenPr: false, hasMergedPr: false, blockerCompleted: false }],
+    ]);
+    expect(unresolvedBlockerNumbers(issues, states, undefined, "processing")).toEqual([99]);
+  });
 });
 
 describe("selectIssue", () => {
@@ -518,6 +535,35 @@ describe("selectIssue", () => {
       issue({ number: 11, labels: ["ready-for-agent", "processing"] }),
     ];
     expect(selectIssue(issues, new Map(), undefined, "processing")).toBeNull();
+  });
+
+  test("skips a landed member even though it still carries readyLabel (#485)", () => {
+    const issues = [
+      issue({ number: 10, labels: ["ready-for-agent", installedConfig.mergedLabel] }),
+      issue({ number: 11, labels: ["ready-for-agent"] }),
+    ];
+    const picked = selectIssue(issues, new Map(), undefined, "processing");
+    expect(picked?.issue.number).toBe(11);
+  });
+
+  test("returns null when every issue is a landed member (#485)", () => {
+    const issues = [
+      issue({ number: 10, labels: ["ready-for-agent", installedConfig.mergedLabel] }),
+      issue({ number: 11, labels: ["ready-for-agent", installedConfig.mergedLabel] }),
+    ];
+    expect(selectIssue(issues, new Map(), undefined, "processing")).toBeNull();
+  });
+});
+
+describe("isLandedMember", () => {
+  test("reads the configured label and nothing else", () => {
+    expect(
+      isLandedMember({ labels: ["ready-for-agent", "merged-to-feature"] }, "merged-to-feature"),
+    ).toBe(true);
+    expect(isLandedMember({ labels: ["ready-for-agent", "processing"] }, "merged-to-feature")).toBe(
+      false,
+    );
+    expect(isLandedMember({ labels: ["landed"] }, "landed")).toBe(true);
   });
 });
 
