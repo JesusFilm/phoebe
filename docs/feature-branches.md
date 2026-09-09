@@ -207,8 +207,10 @@ tenants and pipelines and never looks at an issue.
 Nothing takes the label off. Merging the integration PR closes the members
 through the `Closes` block above, and every listing Phoebe reads is open issues
 only, so the label goes quiet on its own. Should the label swap fail halfway, the
-member is left wearing both `mergedLabel` and `processingLabel` — visibly stalled
-rather than back in the queue — and the next cycle finishes the job.
+member is left wearing both `mergedLabel` and `processingLabel`. Every reader
+treats that as landed, so nothing comes back to strip `processingLabel` and
+nothing needs to; the other order would have left it wearing neither, which is
+finished work handed back out.
 
 ## What the janitors do with a feature
 
