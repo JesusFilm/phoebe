@@ -287,14 +287,15 @@ describe("crashLoopCheck", () => {
 });
 
 describe("labelsCheck", () => {
-  test("all labels present — ok, names the repo", () => {
+  test("all labels present — ok, names the repo and every label it checked", () => {
     const check = labelsCheck({
       missing: [],
-      present: ["ready-for-agent", "processing", "ready-for-human"],
+      present: ["ready-for-agent", "processing", "merged-to-feature", "ready-for-human"],
       slug: "acme/widget",
     });
     expect(check.state).toBe("ok");
     expect(check.detail).toMatch(/acme\/widget/);
+    expect(check.detail).toMatch(/mergedLabel/);
   });
 
   test("one label missing — fail, names the label and the fix command", () => {
@@ -319,6 +320,16 @@ describe("labelsCheck", () => {
     expect(check.detail).toMatch(/processing/);
     expect(check.detail).toMatch(/ready-for-human/);
     expect(check.detail).toMatch(/gh label create/);
+  });
+
+  test("a missing mergedLabel fails with its own create command (#449)", () => {
+    const check = labelsCheck({
+      missing: ["merged-to-feature"],
+      present: ["ready-for-agent", "processing", "ready-for-human"],
+      slug: "acme/widget",
+    });
+    expect(check.state).toBe("fail");
+    expect(check.detail).toContain(`gh label create "merged-to-feature" --repo acme/widget`);
   });
 
   test("a missing-labels fail fails the tenant row", () => {
@@ -463,6 +474,38 @@ describe("tenantRow label access regression", () => {
     const labelsResult = row.checks.find((c) => c.id === "labels");
     expect(labelsResult?.state).toBe("unknown");
     expect(labelsResult?.detail).toMatch(/Issues:read/);
+  });
+});
+
+describe("tenantRow landed-member label (#449)", () => {
+  test("a repo without mergedLabel fails labels and prints the create command", async () => {
+    const mockFetch = async (url: string | URL | Request) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+      if (urlStr.includes("/labels")) {
+        return new Response(
+          JSON.stringify(
+            ["ready-for-agent", "processing", "ready-for-human"].map((name) => ({ name })),
+          ),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ id: 1, name: "widget" }), { status: 200 });
+    };
+    const row = await tenantRow({
+      path: "tenant",
+      slug: "acme/widget",
+      arm: "pat",
+      token: "ghp_tok",
+      envLabel: "/etc/phoebe/.env",
+      fetchFn: mockFetch as typeof fetch,
+      inContainer: false,
+    });
+    const labelsResult = row.checks.find((c) => c.id === "labels");
+    expect(labelsResult?.state).toBe("fail");
+    expect(labelsResult?.detail).toContain("merged-to-feature");
+    expect(labelsResult?.detail).toContain(
+      `gh label create "merged-to-feature" --repo acme/widget`,
+    );
   });
 });
 
