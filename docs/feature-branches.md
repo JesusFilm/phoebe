@@ -183,6 +183,33 @@ The sweep that maintains the block runs every cycle and is not part of janitor
 scope, so `draftPrs`, `prScope` and `prOptOutLabel` do not reach it. Whatever
 else you switch off, the `Closes` lines keep accruing.
 
+## What a member issue looks like once it lands
+
+The same sweep, in the same pass, marks the member itself. As a member PR merges
+into the feature branch its issue gains `mergedLabel` (`merged-to-feature` by
+default) and loses `processingLabel`, in that order. The two writes and the
+`Closes` line answer one question — has this member's work reached the feature
+branch — so one sweep makes all three, and the label never disagrees with the
+block.
+
+A member wearing `mergedLabel` is a **landed member**: done, waiting on the
+integration PR. Phoebe never selects it again, never names it as blocked, and
+never re-arms it, which is what stops the stranded-unit sweep from reading a
+finished member as a run that died before producing a PR. It keeps `readyLabel`,
+since that one is yours.
+
+Three places show you one: the label on the issue, the cycle's idle line while
+the queue is quiet — `(2 in progress, 3 landed on feature #400)`, one phrase per
+feature, ascending by feature number — and `phoebe doctor`, once the feature has
+ended and the label has nothing left to wait for. Not `phoebe list`, which counts
+tenants and pipelines and never looks at an issue.
+
+Nothing takes the label off. Merging the integration PR closes the members
+through the `Closes` block above, and every listing Phoebe reads is open issues
+only, so the label goes quiet on its own. Should the label swap fail halfway, the
+member is left wearing both `mergedLabel` and `processingLabel` — visibly stalled
+rather than back in the queue — and the next cycle finishes the job.
+
 ## What the janitors do with a feature
 
 Member PRs are in scope. The cycle's PR listing is made once per base: the
@@ -269,6 +296,38 @@ strip every label that selects them — `readyLabel` on the implementation
 children and `researchLabel` on the research ones. Miss the research children and
 Phoebe will work them onto `main` one at a time, which is exactly the outcome
 cancelling was meant to prevent.
+
+### The stray member
+
+The one you miss becomes a **stray member**: an issue still open, still wearing a
+label Phoebe reads — `readyLabel`, `researchLabel`, `processingLabel` or
+`mergedLabel` — under a feature that has ended. Ending is what makes it stray.
+While the feature is live the same label is the arm working. Four ways one
+arises, and only the last is about cancelling:
+
+- `mergedLabel` outlives the integration PR it was waiting on, because that
+  member's `Closes` line never reached the block.
+- A member sits in `processingLabel` with a PR the feature-closes sweep never
+  saw, because it merged after the integration PR did.
+- A member sits in `processingLabel` with a PR that merged into a blocker's
+  branch rather than the feature branch — the stacked-member case
+  [the head-branch rule](#how-the-member-issues-actually-close) already warns
+  about.
+- A cancelled feature strands every member in whatever state it was in.
+
+`phoebe doctor` finds them. The per-tenant `stray-members` check names each one
+with its feature and one repair, and warns rather than fails, because none of the
+four is a fault in itself. Which repair depends on how the feature ended, so
+there are two hints. Merged: `close #<n>` — the work is on the default branch and
+only the issue is behind. Cancelled:
+`close #<n>, or strip "<label>" to re-route it onto the default branch` — the
+close-or-strip choice above, offered one member at a time. Phoebe makes neither
+repair. From outside, all four strays look the same, and only you know whether
+cancelling meant abandoning the ticket or sending it back to `main` alone.
+
+Once the issue is closed you can leave the label where it is. A lifecycle label
+on a closed issue is archaeology: every listing Phoebe reads is open issues only,
+so nothing reads it again and nothing removes it.
 
 ## Related reading
 
