@@ -397,6 +397,57 @@ describe("issueProducerKind.select — feature arm routing", () => {
   });
 });
 
+describe("issueProducerKind idle line — landed members (#485)", () => {
+  function idleLine(issues: Issue[], featureFor: (n: number) => Feature | null): string {
+    const kind = buildKind(issues);
+    return kind.report.idle!({ issues }, issues.length, makeSelectCtx(featureFor));
+  }
+
+  const landed = (n: number): Issue =>
+    anIssue(n, { labels: [BASE_CONFIG.readyLabel, BASE_CONFIG.mergedLabel] });
+  const inProgress = (n: number): Issue =>
+    anIssue(n, { labels: [BASE_CONFIG.readyLabel, BASE_CONFIG.processingLabel] });
+
+  test("counts landed members apart from in-progress ones and names the feature", () => {
+    const issues = [inProgress(1), inProgress(2), landed(11), landed(12), landed(13)];
+    expect(idleLine(issues, () => liveFeature(400))).toContain(
+      "(2 in progress, 3 landed on feature #400)",
+    );
+  });
+
+  test("one phrase per feature, ascending, with no in-progress count to lead", () => {
+    const issues = [landed(11), landed(12), landed(21)];
+    const line = idleLine(issues, (n) => liveFeature(n < 20 ? 400 : 300));
+    expect(line).toContain("(1 landed on feature #300, 2 landed on feature #400)");
+  });
+
+  test("landed members never reach the blocked-or-waiting fallback", () => {
+    expect(idleLine([landed(11)], () => liveFeature(400))).not.toContain(
+      "blocked or waiting on blocker PR",
+    );
+  });
+
+  test("a member wearing both labels mid-swap counts once, as landed", () => {
+    const bothLabels = anIssue(11, {
+      labels: [BASE_CONFIG.readyLabel, BASE_CONFIG.processingLabel, BASE_CONFIG.mergedLabel],
+    });
+    expect(idleLine([bothLabels], () => liveFeature(400))).toContain("(1 landed on feature #400)");
+  });
+
+  test("a landed member whose feature the cycle cannot name still counts", () => {
+    expect(idleLine([landed(11)], () => null)).toContain("(1 landed)");
+  });
+
+  test("named blockers still come first", () => {
+    const issues = [landed(11), anIssue(12, { body: "Blocked by #98" })];
+    expect(idleLine(issues, () => null)).toContain("(waiting on blockers #98)");
+  });
+
+  test("with nothing landed and nothing claimed the fallback is unchanged", () => {
+    expect(idleLine([anIssue(11)], () => null)).toContain("(blocked or waiting on blocker PR)");
+  });
+});
+
 describe("issueProducerKind.run — feature branch and draft PR creation", () => {
   function makeRunCtxWithFeature(
     opts: {

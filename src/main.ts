@@ -108,6 +108,7 @@ import {
 import {
   buildInitialPrBody,
   followUpPrComment,
+  isLandedMember,
   issueBranch,
   parseIssueNumberFromBranch,
   stackedPrComment,
@@ -979,6 +980,9 @@ export function createEngine(options: EngineOptions): Engine {
    * them, so a re-armed quarantined issue is not picked. By the time
    * `sweepQuarantine` lifts the quarantine label the issue already carries
    * `readyLabel`, so `sweepQuarantine` needs no change.
+   *
+   * Landed members are the one exception: they are finished, not stranded, and
+   * the sweep leaves them untouched (#485).
    */
   function sweepStrandedUnits(): void {
     if (!scope.issues) return;
@@ -1006,6 +1010,12 @@ export function createEngine(options: EngineOptions): Engine {
       // with a second unit in flight it can, so the in-flight set is what tells
       // a stranded issue from a live one.
       if (targetInFlight({ objectType: "issue", id: issue.number })) continue;
+      // A landed member looks exactly like a stranded claim from here — open, no
+      // PR on its issue branch — but its PR merged into the feature branch and
+      // was deleted with it. Re-arming would hand finished work back out and
+      // accrue a timeout against a run that succeeded, so it is left alone
+      // before any read or write (#485).
+      if (isLandedMember(issue, config.mergedLabel)) continue;
       const label = `issue #${issue.number}`;
       let hasPr: boolean;
       try {

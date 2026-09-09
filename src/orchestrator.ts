@@ -206,6 +206,21 @@ export function isCompletedBlockerIssue(view: {
 }
 
 /**
+ * A **landed member**: an open feature member wearing `mergedLabel`, its own PR
+ * already merged into the feature branch and now waiting on the integration PR
+ * (#485). The work is done, so Phoebe never picks it up again and never re-arms
+ * it — selection, blocker resolution and the stranded-unit sweep skip it exactly
+ * as they skip a claim, the difference being that a claim is eventually released
+ * and this label never is. `readyLabel` stays put; that one is the human's.
+ *
+ * The label is a parameter rather than a read off the module holder so the sweep
+ * in src/main.ts, which reads only the config it was handed, can share the check.
+ */
+export function isLandedMember(issue: { labels: readonly string[] }, mergedLabel: string): boolean {
+  return issue.labels.includes(mergedLabel);
+}
+
+/**
  * Blocker issue numbers that are holding back otherwise-eligible issues this
  * cycle, ascending. Names in the idle log what the bare skip count cannot: a
  * blocker with no Phoebe PR looks identical to one nobody has started.
@@ -214,7 +229,8 @@ export function isCompletedBlockerIssue(view: {
  * log never names a blocker that is not actually what is holding the issue.
  * `featureOf` is passed through for the same reason: without it a member waiting
  * across its feature's boundary (#383) reads as workable here and its blocker
- * goes unnamed.
+ * goes unnamed. A landed member is never named: it waits on its feature's
+ * integration PR, not on a blocker, and the idle line counts it apart (#485).
  */
 export function unresolvedBlockerNumbers(
   issues: readonly Issue[],
@@ -227,6 +243,7 @@ export function unresolvedBlockerNumbers(
   for (const issue of issues) {
     if (issue.labels.includes(PHOEBE_QUARANTINE_LABEL)) continue;
     if (processingLabel && issue.labels.includes(processingLabel)) continue;
+    if (isLandedMember(issue, config.mergedLabel)) continue;
     if (resolveWorktreeBase(issue, blockerStates, phoebeBase, featureOf)) continue;
     const gating = parseBlockedBy(issue.body)[0];
     if (gating !== undefined) {
@@ -247,11 +264,14 @@ export function selectIssue(
   // Quarantined issues/research tickets (#75) are skipped for work until a human
   // clears the label or the issue is edited (the auto-un-stick sweep).
   // Already-claimed issues (carrying processingLabel) are skipped so the engine
-  // never double-picks an issue that another run is already working (#365).
+  // never double-picks an issue that another run is already working (#365), and
+  // landed members (carrying mergedLabel) so a member whose work is done is never
+  // handed out a second time (#485).
   const eligible = issues.filter(
     (issue) =>
       !issue.labels.includes(PHOEBE_QUARANTINE_LABEL) &&
-      (!processingLabel || !issue.labels.includes(processingLabel)),
+      (!processingLabel || !issue.labels.includes(processingLabel)) &&
+      !isLandedMember(issue, config.mergedLabel),
   );
   const sorted = [...eligible].sort(compareIssues);
   for (const issue of sorted) {
