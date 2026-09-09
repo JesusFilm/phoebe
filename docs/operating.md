@@ -49,7 +49,11 @@ The engine swaps `readyLabel` for `processingLabel` (default `processing`) befor
 starting the agent. If you see `processingLabel`, a run is (or was) working that
 issue — don't start on it yourself. If a run dies and leaves the label stranded,
 the stale-label sweep reconciles it automatically; you do not need to requeue by
-hand.
+hand. Each of those automatic re-arms counts as an unproductive run against the
+issue, and `maxUnproductiveRuns` of them in a row (default 3) quarantines it, so
+a claim that keeps dying before any PR exists ends up in front of a human instead
+of looping — same label, same ways out as [a unit that
+hangs](#running-many-repos-in-one-container).
 
 **Label ownership.** `readyLabel` is yours to apply and remove; `processingLabel`
 is Phoebe's. To pause a queued issue, remove `readyLabel`. Applying
@@ -87,7 +91,10 @@ children stop going to the default branch one at a time. They branch off
 one draft integration PR from that branch to the default branch. You merge the
 member PRs into the branch, mark the integration PR ready when the set is
 complete, and merge it. That last merge is what puts the feature on the default
-branch and closes the member issues.
+branch and closes the member issues. Between the two merges the member issue
+wears `mergedLabel` (`merged-to-feature`) in place of `processingLabel` — done,
+not in flight, and never picked up again; the whole arc is in
+[`feature-branches.md`](feature-branches.md#what-a-member-issue-looks-like-once-it-lands).
 
 The label is yours, like `readyLabel`. Phoebe never applies it and never treats a
 parent issue as a feature without it.
@@ -98,7 +105,8 @@ member PRs that are already open. Any member still carrying a label Phoebe
 selects on becomes an ordinary ticket bound for the default branch the next time
 it comes up, so close the members you are abandoning or strip their labels —
 `readyLabel` on the implementation children, `researchLabel` on the research
-ones.
+ones. Then run `phoebe doctor`: its `stray-members` check names every member the
+retired feature left labelled, including the one you missed.
 
 To take one feature away from the janitors without cancelling it, put
 `prOptOutLabel` on its integration PR: that drops the whole feature, members
@@ -286,18 +294,18 @@ See the [environment overlay table](configuration.md#environment-overlay-phoebe_
 
 ## Quick reference
 
-| I want to…                                    | Do this                                                                                                                                            |
-| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Queue an issue for Phoebe                     | Add `readyLabel` (`ready-for-agent`).                                                                                                              |
-| Pause a queued issue                          | Remove `readyLabel`.                                                                                                                               |
-| Bump an issue up the queue                    | Word it as a bug/fix, or it waits its turn by age.                                                                                                 |
-| Sequence-dependent issues                     | `Blocked by #N` in the body.                                                                                                                       |
-| Land a group of issues in one merge           | Add `featureLabel` (`phoebe:feature`) to their parent issue.                                                                                       |
-| Cancel a feature                              | Close its draft integration PR, then close or unlabel the members you are abandoning (`readyLabel` and `researchLabel` alike).                     |
-| Take a PR away from Phoebe                    | Add `prOptOutLabel` (`ready-for-human`), which works for any PR. Under the default `draftPrs`, marking a **non-Phoebe** PR draft also opts it out. |
-| Hand a PR back                                | Remove the label / mark ready-for-review.                                                                                                          |
-| Force a janitor to retry                      | Push, advance the base, post new review feedback, or delete the newest failure comment.                                                            |
-| Let Phoebe maintain all PRs, not just its own | `prScope: "all"`.                                                                                                                                  |
+| I want to…                                    | Do this                                                                                                                                                                         |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Queue an issue for Phoebe                     | Add `readyLabel` (`ready-for-agent`).                                                                                                                                           |
+| Pause a queued issue                          | Remove `readyLabel`.                                                                                                                                                            |
+| Bump an issue up the queue                    | Word it as a bug/fix, or it waits its turn by age.                                                                                                                              |
+| Sequence-dependent issues                     | `Blocked by #N` in the body.                                                                                                                                                    |
+| Land a group of issues in one merge           | Add `featureLabel` (`phoebe:feature`) to their parent issue.                                                                                                                    |
+| Cancel a feature                              | Close its draft integration PR, then close or unlabel the members you are abandoning (`readyLabel` and `researchLabel` alike), then run `phoebe doctor` to catch stray members. |
+| Take a PR away from Phoebe                    | Add `prOptOutLabel` (`ready-for-human`), which works for any PR. Under the default `draftPrs`, marking a **non-Phoebe** PR draft also opts it out.                              |
+| Hand a PR back                                | Remove the label / mark ready-for-review.                                                                                                                                       |
+| Force a janitor to retry                      | Push, advance the base, post new review feedback, or delete the newest failure comment.                                                                                         |
+| Let Phoebe maintain all PRs, not just its own | `prScope: "all"`.                                                                                                                                                               |
 
 ## Running many repos in one container
 
@@ -401,11 +409,14 @@ its clone traffic, its install, its agent — out of a pipeline running several.
 **When a unit hangs.** A work unit that exceeds its wall-clock budget
 (`PHOEBE_RUN_TIMEOUT_MS`, default 45 min) is aborted so it can't starve the
 fleet, and the engine moves on. A unit that hangs **every** time is quarantined
-after `PHOEBE_MAX_UNIT_TIMEOUTS` (default 3) consecutive timeouts: Phoebe applies
-a `phoebe:quarantined` label and posts one escalation comment asking for a human.
+after `PHOEBE_MAX_UNPRODUCTIVE_RUNS` (default 3) consecutive timeouts: Phoebe
+applies a `phoebe:quarantined` label and posts one escalation comment asking for
+a human. An issue unit can arrive at the same quarantine without ever hanging,
+by [accruing unproductive runs](#processinglabel-means-in-flight), and the two
+ways out below cover that case too.
 
 There are two ways out, and both give the unit a **fresh** allowance of
-`PHOEBE_MAX_UNIT_TIMEOUTS` timeouts, not a single retry:
+`PHOEBE_MAX_UNPRODUCTIVE_RUNS` runs, not a single retry:
 
 - **Change the content.** Push to the PR, or edit the issue body. Each cycle
   Phoebe sweeps the quarantined units and compares them against the baseline
