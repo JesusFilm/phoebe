@@ -11,7 +11,7 @@ import {
   type BaseResolution,
   type Issue,
 } from "../orchestrator.ts";
-import { isLabelNotFoundError } from "../gh-error.ts";
+import { addLabelCreatingIfMissing, processingLabelOf } from "../labels.ts";
 import {
   defineWorkKind,
   type WorkKindCtx,
@@ -60,24 +60,14 @@ function idleBlockerReason(issues: readonly Issue[], ctx: WorkKindCtx): string {
  * A pre-check before the add tightens the race window to the network round-trip
  * of a single API call; it is not atomic (GitHub labels have no test-and-set),
  * but it gives the caller a reliable skip signal when another instance already
- * owns the issue. A missing label is self-healed once — created, then the add
- * retried. Any other failure propagates, aborting the unit without running the
- * agent.
+ * owns the issue. A repo that has never seen the label gets it created on the
+ * way through (src/labels.ts); any other failure propagates, aborting the unit
+ * without running the agent.
  */
 function claimIssue(issueNumber: number, ctx: WorkKindRunCtx): boolean {
-  const label = ctx.config.processingLabel;
-  if (ctx.github.issueLabels(issueNumber).includes(label)) return false;
-  try {
-    ctx.github.addIssueLabel(issueNumber, label);
-  } catch (err) {
-    if (isLabelNotFoundError(err)) {
-      ctx.log(`Label "${label}" not found — creating it and retrying the claim.`);
-      ctx.github.createLabel(label);
-      ctx.github.addIssueLabel(issueNumber, label);
-    } else {
-      throw err;
-    }
-  }
+  const label = processingLabelOf(ctx.config);
+  if (ctx.github.issueLabels(issueNumber).includes(label.name)) return false;
+  addLabelCreatingIfMissing(ctx.github, issueNumber, label, ctx.log);
   return true;
 }
 

@@ -61,6 +61,12 @@ describe("applyEnvOverlay", () => {
     }
   });
 
+  test("PHOEBE_MERGED_LABEL overlays the landed-member label (#449)", () => {
+    expect(applyEnvOverlay(baseUser(), { PHOEBE_MERGED_LABEL: "landed" }).mergedLabel).toBe(
+      "landed",
+    );
+  });
+
   test("PHOEBE_PR_SCOPE overlays and validates the enum", () => {
     expect(applyEnvOverlay(baseUser(), { PHOEBE_PR_SCOPE: "all" }).prScope).toBe("all");
     expect(() => applyEnvOverlay(baseUser(), { PHOEBE_PR_SCOPE: "bogus" })).toThrow(

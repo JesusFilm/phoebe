@@ -529,6 +529,7 @@ describe("resolveConfig", () => {
     expect(resolved.readyLabel).toBe(CONFIG_DEFAULTS.readyLabel);
     expect(resolved.researchLabel).toBe(CONFIG_DEFAULTS.researchLabel);
     expect(resolved.processingLabel).toBe(CONFIG_DEFAULTS.processingLabel);
+    expect(resolved.mergedLabel).toBe(CONFIG_DEFAULTS.mergedLabel);
     expect(resolved.featureLabel).toBe(CONFIG_DEFAULTS.featureLabel);
     expect(resolved.featureBranchCatchUp).toBe(CONFIG_DEFAULTS.featureBranchCatchUp);
     expect(resolved.readyCommand).toBe(CONFIG_DEFAULTS.readyCommand);
@@ -572,6 +573,12 @@ describe("resolveConfig", () => {
     expect(resolveConfig(minimalUserConfig({ creditIssueAuthor: false })).creditIssueAuthor).toBe(
       false,
     );
+  });
+
+  test("mergedLabel defaults to merged-to-feature and is overridable (#449)", () => {
+    expect(CONFIG_DEFAULTS.mergedLabel).toBe("merged-to-feature");
+    expect(resolveConfig(minimalUserConfig()).mergedLabel).toBe("merged-to-feature");
+    expect(resolveConfig(minimalUserConfig({ mergedLabel: "landed" })).mergedLabel).toBe("landed");
   });
 
   test("featureLabel defaults to phoebe:feature and is overridable (#341)", () => {
