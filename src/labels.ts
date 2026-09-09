@@ -11,7 +11,7 @@
 // label list: a landed member wearing "Phoebe is working this issue" would be
 // a lie told by the engine that created it.
 
-import { isLabelNotFoundError } from "./gh-error.ts";
+import { isLabelAlreadyExistsError, isLabelNotFoundError } from "./gh-error.ts";
 
 /** A label Phoebe applies itself: the tenant's name for it, and what it means. */
 export type PhoebeLabel = {
@@ -63,7 +63,14 @@ export function addLabelCreatingIfMissing(
   } catch (err) {
     if (!isLabelNotFoundError(err)) throw err;
     log(`Label "${label.name}" not found — creating it and retrying the add.`);
-    github.createLabel(label.name, label.description);
+    try {
+      github.createLabel(label.name, label.description);
+    } catch (createErr) {
+      // Another process won the race and created it first — that still gets
+      // us a label to add, so treat it as success rather than failing the claim.
+      if (!isLabelAlreadyExistsError(createErr)) throw createErr;
+      log(`Label "${label.name}" already exists — another process created it first.`);
+    }
     github.addIssueLabel(issueNumber, label.name);
   }
 }

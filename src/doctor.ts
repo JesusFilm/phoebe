@@ -51,7 +51,7 @@ import {
 import { TENANT_CONFIG_FILE } from "../bootstrap/tenants.ts";
 import { isInsideContainer } from "./execution-gate.ts";
 import { defaultGit, type GitRunner } from "./git-model.ts";
-import { loadUserConfig } from "./load-config.ts";
+import { applyEnvOverlay, loadUserConfig } from "./load-config.ts";
 import {
   latestReleaseTag,
   installedCliVersion,
@@ -704,7 +704,7 @@ export async function tenantRow(fields: {
   if (fields.configPath !== undefined) {
     let disabled = false;
     try {
-      const user = await loadUserConfig(fields.configPath);
+      const user = applyEnvOverlay(await loadUserConfig(fields.configPath), process.env);
       const anyUser = user as {
         disabled?: unknown;
         promptFiles?: { issue?: unknown };
