@@ -509,6 +509,50 @@ describe("tenantRow landed-member label (#449)", () => {
   });
 });
 
+describe("tenantRow applies the PHOEBE_* env overlay to label names", () => {
+  test("PHOEBE_MERGED_LABEL overrides the config file's mergedLabel", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "phoebe-doctor-env-overlay-"));
+    writeFileSync(
+      join(dir, "phoebe.config.ts"),
+      `export const config = {\n  repoSlug: "acme/widget",\n  mergedLabel: "config-label",\n};\n`,
+    );
+    const mockFetch = async (url: string | URL | Request) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+      if (urlStr.includes("/labels")) {
+        return new Response(
+          JSON.stringify(
+            ["ready-for-agent", "processing", "env-label", "ready-for-human"].map((name) => ({
+              name,
+            })),
+          ),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ id: 1, name: "widget" }), { status: 200 });
+    };
+    const previous = process.env.PHOEBE_MERGED_LABEL;
+    process.env.PHOEBE_MERGED_LABEL = "env-label";
+    try {
+      const row = await tenantRow({
+        path: "tenant",
+        slug: "acme/widget",
+        arm: "pat",
+        token: "ghp_tok",
+        envLabel: "/etc/phoebe/.env",
+        fetchFn: mockFetch as typeof fetch,
+        inContainer: false,
+        configPath: join(dir, "phoebe.config.ts"),
+      });
+      const labelsResult = row.checks.find((c) => c.id === "labels");
+      expect(labelsResult?.state).toBe("ok");
+      expect(labelsResult?.detail).not.toContain("config-label");
+    } finally {
+      if (previous === undefined) delete process.env.PHOEBE_MERGED_LABEL;
+      else process.env.PHOEBE_MERGED_LABEL = previous;
+    }
+  });
+});
+
 describe("tenantRow config load failure regression", () => {
   test("config import failure — labels and prompt-drift both unknown", async () => {
     const mockFetch = async () =>

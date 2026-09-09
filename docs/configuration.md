@@ -92,7 +92,8 @@ and [`preparing-work.md`](preparing-work.md) for why `researchLabel` defaults to
 wayfinder-shaped value and what to set it to if you use something else.
 
 `mergedLabel` is created on demand, the way `processingLabel` is, and no human
-ever applies it: it is the engine saying a member has landed.
+ever applies it. This ticket only provisions the label; applying it to landed
+members and reading it back is later work.
 
 `featureLabel` is opt-in and Phoebe never creates it: like `readyLabel` it is a
 human's deliberate gesture. A repo that never adds the label simply has no

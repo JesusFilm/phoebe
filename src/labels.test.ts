@@ -97,6 +97,29 @@ describe("addLabelCreatingIfMissing", () => {
     expect(creates).toBe(0);
   });
 
+  test("a concurrent create by another process still lets the add through", () => {
+    const repo = repoWithLabels([]);
+    const realCreate = repo.createLabel.bind(repo);
+    let calls = 0;
+    repo.createLabel = (name, description) => {
+      calls++;
+      // Another process creates the label first, so ours races and loses.
+      realCreate(name, description);
+      const err = new Error("gh failed") as Error & { stderr: string };
+      err.stderr = `GraphQL: Label already exists (createLabel): ${name}`;
+      throw err;
+    };
+    const logs: string[] = [];
+
+    addLabelCreatingIfMissing(repo, 11, mergedLabelOf({ mergedLabel: "landed" }), (line) =>
+      logs.push(line),
+    );
+
+    expect(calls).toBe(1);
+    expect(repo.writes).toContain("add:11:landed");
+    expect(logs.some((line) => /already exists/.test(line))).toBe(true);
+  });
+
   test("a retry that still fails propagates the label-not-found error", () => {
     const repo: LabelWriter = {
       addIssueLabel: () => {
