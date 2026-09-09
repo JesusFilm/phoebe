@@ -138,6 +138,17 @@ export function isLabelNotFoundError(error: unknown): boolean {
   return /Label not found/i.test(stderr);
 }
 
+/**
+ * Whether a failed `gh label create` call was rejected because a label of
+ * that name already exists — the shape of a race where another process (or
+ * another tenant run) created it between our "not found" and our create.
+ */
+export function isLabelAlreadyExistsError(error: unknown): boolean {
+  const stderr = stderrText(error);
+  if (stderr === null) return false;
+  return /already exists/i.test(stderr);
+}
+
 function stderrText(error: unknown): string | null {
   if (error == null || typeof error !== "object") return null;
   const s = (error as Record<string, unknown>).stderr;
