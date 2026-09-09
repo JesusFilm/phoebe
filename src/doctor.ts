@@ -3,8 +3,9 @@
 // is actually working. (A `--fix` mode that repairs at the current pin is a
 // mapped follow-up.)
 //
-// Seven deployment checks, all reads of state that already exists (an eighth,
-// `stale-state`, is per tenant and lives in the tenant sweep below):
+// Seven deployment checks, all reads of state that already exists (three more —
+// `labels`, `stray-members` and `stale-state` — are per tenant and live in the
+// tenant sweep below):
 //   1. cli            — installed bootstrapper vs the npm registry's latest
 //   2. engine         — configured pin vs the latest release tag, plus the commit
 //                       actually materialized in the engine checkout
@@ -24,9 +25,11 @@
 // In workspace mode it also sweeps tenants — the same enumeration boot
 // supervises with (#91/#154), so doctor can never report a different fleet from
 // the one that is running. Per tenant: is a GH_TOKEN present the way the child
-// would read it, does the tenant repo answer to it, and — the one check that
-// reads the data volume rather than the tracker — is there state under
-// `/data/repos` that no pipeline owns (#426, warn-only). The full
+// would read it, does the tenant repo answer to it, do the workflow labels
+// exist, is any open member of a retired feature still wearing one (#487,
+// warn-only), and — the one check that reads the data volume rather than the
+// tracker — is there state under `/data/repos` that no pipeline owns (#426,
+// warn-only). The full
 // five-permission grant probe stays in scripts/verify-tenant-token.mjs (it ships
 // with the repo, not the package); doctor's per-tenant probe is the
 // reachability slice of it.
@@ -50,7 +53,9 @@ import {
 } from "../bootstrap/github-engine.ts";
 import { TENANT_CONFIG_FILE } from "../bootstrap/tenants.ts";
 import { isInsideContainer } from "./execution-gate.ts";
+import { featureBranch } from "./feature-branch.ts";
 import { defaultGit, type GitRunner } from "./git-model.ts";
+import { parseParentIssueUrl, pickIntegrationPr } from "./github-client.ts";
 import { applyEnvOverlay, loadUserConfig } from "./load-config.ts";
 import {
   latestReleaseTag,
@@ -79,6 +84,13 @@ import {
   tenantDataDir,
   type StaleItem,
 } from "./stale-state.ts";
+import {
+  readMemberships,
+  scanStrayMembers,
+  type FeatureGraphSource,
+  type LabelledIssue,
+  type StrayMember,
+} from "./stray-members.ts";
 import { enumerateWorkspaceTenants } from "./tenant-commands.ts";
 
 /** A scheduled kind's declared key that its pipeline's env does not hold (#425). */
@@ -357,6 +369,246 @@ export function labelsCheck(fields: {
     state: "fail",
     detail: `label(s) missing from ${fields.slug}: ${fields.missing.join(", ")}. Fix: ${fixes}`,
   };
+}
+
+/** One authenticated GitHub REST read, or `null` when it fails or is refused. */
+async function githubJson(url: string, token: string, fetchFn: typeof fetch): Promise<unknown> {
+  let res: Response;
+  try {
+    res = await fetchFn(url, {
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+      headers: {
+        accept: "application/vnd.github+json",
+        "x-github-api-version": "2022-11-28",
+        "user-agent": "phoebe-doctor",
+        authorization: `Bearer ${token}`,
+      },
+    });
+  } catch {
+    return null;
+  }
+  if (res.status !== 200) return null;
+  try {
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+/** How many pages of open labelled issues the stray scan will pay for. */
+const STRAY_ISSUE_PAGES = 5;
+
+type RestIssue = {
+  number: number;
+  title: string;
+  state: string;
+  body: string | null;
+  labels: Array<{ name: string }>;
+  parent_issue_url?: string | null;
+  pull_request?: unknown;
+};
+
+function isRestIssue(value: unknown): value is RestIssue {
+  const row = value as Record<string, unknown> | null;
+  return (
+    typeof row === "object" &&
+    row !== null &&
+    typeof row["number"] === "number" &&
+    typeof row["title"] === "string" &&
+    Array.isArray(row["labels"])
+  );
+}
+
+function labelNames(issue: RestIssue): string[] {
+  return issue.labels
+    .filter((label): label is { name: string } => typeof label?.name === "string")
+    .map((label) => label.name);
+}
+
+/**
+ * Every open issue in the repo wearing at least one of `labels`, deduplicated —
+ * the population the stray-member check walks, and the whole of what it costs.
+ * `null` when any read failed, or a label's page walk hit `STRAY_ISSUE_PAGES`
+ * before running out of issues: either way the list would be short, and a short
+ * list reads as "fewer strays" — the one wrong answer this check must not give.
+ *
+ * One request per label because GitHub's `labels` filter is an AND, so the four
+ * names cannot be asked for in a single query.
+ */
+export async function fetchOpenLabelledIssues(
+  slug: string,
+  token: string,
+  fetchFn: typeof fetch,
+  labels: readonly string[],
+): Promise<LabelledIssue[] | null> {
+  const byNumber = new Map<number, LabelledIssue>();
+  for (const label of new Set(labels)) {
+    let complete = false;
+    for (let page = 1; page <= STRAY_ISSUE_PAGES; page++) {
+      const body = await githubJson(
+        `https://api.github.com/repos/${slug}/issues?state=open&per_page=100&page=${page}` +
+          `&labels=${encodeURIComponent(label)}`,
+        token,
+        fetchFn,
+      );
+      if (!Array.isArray(body)) return null;
+      for (const row of body) {
+        // `/issues` lists pull requests too; a PR is not a feature member.
+        if (!isRestIssue(row) || row.pull_request !== undefined) continue;
+        byNumber.set(row.number, {
+          number: row.number,
+          title: row.title,
+          labels: labelNames(row),
+        });
+      }
+      if (body.length < 100) {
+        complete = true;
+        break;
+      }
+    }
+    // A capped page walk is a short list, and a short list reads as "fewer
+    // strays" — the one wrong answer this check must not give.
+    if (!complete) return null;
+  }
+  return [...byNumber.values()];
+}
+
+/**
+ * The membership walk's two reads, over the REST API doctor already probes the
+ * repo with. `null` from either one means "could not read", which the walk
+ * treats as unaffiliated — a graph doctor cannot see is never reported as a
+ * leftover.
+ */
+export function restFeatureGraphSource(fields: {
+  slug: string;
+  token: string;
+  fetchFn: typeof fetch;
+  branchPrefix: string;
+}): FeatureGraphSource {
+  const { slug, token, fetchFn, branchPrefix } = fields;
+  const owner = slug.split("/")[0] ?? "";
+  return {
+    async issueGraphNode(issueNumber) {
+      const raw = await githubJson(
+        `https://api.github.com/repos/${slug}/issues/${issueNumber}`,
+        token,
+        fetchFn,
+      );
+      if (!isRestIssue(raw)) return null;
+      return {
+        number: raw.number,
+        title: raw.title,
+        labels: labelNames(raw),
+        body: raw.body ?? "",
+        closed: (raw.state ?? "").toLowerCase() === "closed",
+        parentNumber: parseParentIssueUrl(raw.parent_issue_url, slug),
+      };
+    },
+    async featureIntegrationPr(featureIssueNumber) {
+      const head = `${owner}:${featureBranch(featureIssueNumber, branchPrefix)}`;
+      const raw = await githubJson(
+        `https://api.github.com/repos/${slug}/pulls?state=all&per_page=100` +
+          `&head=${encodeURIComponent(head)}`,
+        token,
+        fetchFn,
+      );
+      if (!Array.isArray(raw)) return null;
+      const rows = raw
+        .filter(
+          (row): row is { number: number; state: string; merged_at?: string | null } =>
+            typeof row === "object" &&
+            row !== null &&
+            typeof (row as Record<string, unknown>)["number"] === "number" &&
+            typeof (row as Record<string, unknown>)["state"] === "string",
+        )
+        // The REST list says open/closed and dates the merge separately, while
+        // `pickIntegrationPr` reads the three-state vocabulary `gh pr list` uses.
+        .map((row) => ({
+          number: row.number,
+          state: row.merged_at ? "MERGED" : row.state,
+        }));
+      return { pr: pickIntegrationPr(rows) };
+    },
+  };
+}
+
+/**
+ * The `stray-members` check (#448/#487) — open members of a feature that has
+ * ended, still wearing a label Phoebe reads.
+ *
+ * Warn, never fail, on the same reasoning as `stale-state`: a leftover label is
+ * a chore, and a doctor that exits 1 over one trains an operator to ignore its
+ * exit code. Every finding names the member, the feature, and the one repair
+ * Phoebe deliberately did not make. Pure, for tests.
+ */
+export function strayMembersCheck(fields: {
+  slug: string;
+  strays: readonly StrayMember[];
+}): DoctorCheck {
+  const { slug, strays } = fields;
+  if (strays.length === 0) {
+    return {
+      id: "stray-members",
+      state: "ok",
+      detail: `no open member of a retired feature is still labelled in ${slug}`,
+    };
+  }
+  const parts = [`${strays.length} stray member(s) in ${slug}`];
+  for (const stray of strays) {
+    const ended = stray.end === "merged" ? "merged" : "was cancelled";
+    parts.push(
+      `#${stray.issueNumber} "${stray.issueTitle}" still wears ` +
+        `${stray.labels.map((name) => JSON.stringify(name)).join(", ")} after feature ` +
+        `#${stray.featureIssueNumber} "${stray.featureTitle}" ${ended} — ${stray.hint}`,
+    );
+  }
+  return { id: "stray-members", state: "warn", detail: parts.join("; ") };
+}
+
+/**
+ * Walk the tenant's labelled issues and report the ones whose feature has
+ * ended. Unknown — never a finding — when the issue list could not be read.
+ */
+export async function tenantStrayMembers(fields: {
+  slug: string;
+  token: string;
+  fetchFn: typeof fetch;
+  watched: readonly string[];
+  walk: { featureLabel: string; branchPrefix: string; partOfPattern: string };
+}): Promise<DoctorCheck> {
+  const issues = await fetchOpenLabelledIssues(
+    fields.slug,
+    fields.token,
+    fields.fetchFn,
+    fields.watched,
+  );
+  if (issues === null) {
+    return {
+      id: "stray-members",
+      state: "unknown",
+      detail:
+        `could not list open labelled issues for ${fields.slug} — token may lack ` +
+        `Issues:read permission, or one label has more than ${STRAY_ISSUE_PAGES * 100} ` +
+        `open issues. Grant the permission or trim the label and re-run \`phoebe doctor\`.`,
+    };
+  }
+  const source = restFeatureGraphSource({
+    slug: fields.slug,
+    token: fields.token,
+    fetchFn: fields.fetchFn,
+    branchPrefix: fields.walk.branchPrefix,
+  });
+  const memberships = await readMemberships({
+    issueNumbers: issues.map((issue) => issue.number),
+    source,
+    walk: fields.walk,
+  });
+  const strays = scanStrayMembers({
+    issues,
+    watched: fields.watched,
+    membership: (issueNumber) => memberships.get(issueNumber) ?? { state: "none" },
+  });
+  return strayMembersCheck({ slug: fields.slug, strays });
 }
 
 /**
@@ -697,9 +949,13 @@ export async function tenantRow(fields: {
   let configLoaded = false;
   let issuePromptPath: string | undefined;
   let readyLabel: string = CONFIG_DEFAULTS.readyLabel;
+  let researchLabel: string = CONFIG_DEFAULTS.researchLabel;
   let processingLabel: string = CONFIG_DEFAULTS.processingLabel;
   let mergedLabel: string = CONFIG_DEFAULTS.mergedLabel;
   let prOptOutLabel: string = CONFIG_DEFAULTS.prOptOutLabel;
+  let featureLabel: string = CONFIG_DEFAULTS.featureLabel;
+  let branchPrefix: string = CONFIG_DEFAULTS.branchPrefix;
+  let partOfPattern: string = CONFIG_DEFAULTS.partOfPattern;
 
   if (fields.configPath !== undefined) {
     let disabled = false;
@@ -710,15 +966,23 @@ export async function tenantRow(fields: {
         promptFiles?: { issue?: unknown };
         pipelines?: Record<string, { kinds?: Record<string, { promptFile?: unknown }> }>;
         readyLabel?: unknown;
+        researchLabel?: unknown;
         processingLabel?: unknown;
         mergedLabel?: unknown;
         prOptOutLabel?: unknown;
+        featureLabel?: unknown;
+        branchPrefix?: unknown;
+        partOfPattern?: unknown;
       };
       disabled = anyUser.disabled === true;
       if (typeof anyUser.readyLabel === "string") readyLabel = anyUser.readyLabel;
+      if (typeof anyUser.researchLabel === "string") researchLabel = anyUser.researchLabel;
       if (typeof anyUser.processingLabel === "string") processingLabel = anyUser.processingLabel;
       if (typeof anyUser.mergedLabel === "string") mergedLabel = anyUser.mergedLabel;
       if (typeof anyUser.prOptOutLabel === "string") prOptOutLabel = anyUser.prOptOutLabel;
+      if (typeof anyUser.featureLabel === "string") featureLabel = anyUser.featureLabel;
+      if (typeof anyUser.branchPrefix === "string") branchPrefix = anyUser.branchPrefix;
+      if (typeof anyUser.partOfPattern === "string") partOfPattern = anyUser.partOfPattern;
       // The kind block first, the deprecated `promptFiles` alias second (#419):
       // a migrated config carries the path under the kind that reads it, and
       // declaring both is already fatal at load, so there is no third case.
@@ -810,6 +1074,36 @@ export async function tenantRow(fields: {
           ? "no token"
           : "repo check did not pass";
     checks.push({ id: "labels", state: "unknown", detail: `not probed (${reason})` });
+  }
+
+  // Stray-members check: open members a retired feature left labelled (#487).
+  // Gated exactly like `labels` — it reads the tracker with the tenant's token,
+  // and its cost is one query per watched label plus the graph above whatever
+  // those return, paid here and nowhere else.
+  if (fields.configPath !== undefined && !configLoaded) {
+    checks.push({
+      id: "stray-members",
+      state: "unknown",
+      detail: "not evaluated (config load failed)",
+    });
+  } else if (fields.slug !== null && repoPassed && fields.token !== undefined) {
+    checks.push(
+      await tenantStrayMembers({
+        slug: fields.slug,
+        token: fields.token,
+        fetchFn: fields.fetchFn,
+        watched: [readyLabel, researchLabel, processingLabel, mergedLabel],
+        walk: { featureLabel, branchPrefix, partOfPattern },
+      }),
+    );
+  } else {
+    const reason =
+      fields.slug === null
+        ? "no repoSlug"
+        : fields.token === undefined
+          ? "no token"
+          : "repo check did not pass";
+    checks.push({ id: "stray-members", state: "unknown", detail: `not probed (${reason})` });
   }
 
   // Prompt-drift check: warn when a vendored issues prompt lacks the
@@ -1206,9 +1500,9 @@ liveness (in-container only); launcher version vs the engine's minBootstrap floo
 (a floor violation deadlocks the deployment — not the same as being merely stale).
 In workspace mode every tenant is swept — token present the way its child reads
 it, repo reachable with that token, the four workflow labels present in the
-repo, every env key a scheduled work kind declares set in that tenant's .env,
-and (when the issues prompt is overridden) that it includes the
-blocker-recording rule.
+repo, no open member of a retired feature left wearing one, every env key a
+scheduled work kind declares set in that tenant's .env, and (when the issues
+prompt is overridden) that it includes the blocker-recording rule.
 
 The full five-permission token probe is scripts/verify-tenant-token.mjs.
 Exit code is 1 when any check fails. \`phoebe upgrade\` moves versions;

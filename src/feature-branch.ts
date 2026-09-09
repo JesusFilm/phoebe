@@ -72,12 +72,35 @@ export type Feature = {
 };
 
 /**
+ * The three config fields a membership walk reads. Every caller inside the
+ * engine leaves them alone and gets the installed config; `phoebe doctor` runs
+ * before any config is installed, and in workspace mode against a fleet of
+ * tenants at once, so it passes each tenant's own (#487).
+ */
+export type FeatureWalkConfig = {
+  featureLabel: string;
+  branchPrefix: string;
+  partOfPattern: string;
+};
+
+function installedWalkConfig(): FeatureWalkConfig {
+  return {
+    featureLabel: config.featureLabel,
+    branchPrefix: config.branchPrefix,
+    partOfPattern: config.partOfPattern,
+  };
+}
+
+/**
  * The integration branch for a feature, derived from the parent issue number —
  * the same shape as `issueBranch`, and inside `branchPrefix` so a
  * `prScope: "phoebe"` tenant admits its PRs.
  */
-export function featureBranch(featureIssueNumber: number): BranchRef {
-  return asBranchRef(`${config.branchPrefix}feature-${featureIssueNumber}`);
+export function featureBranch(
+  featureIssueNumber: number,
+  branchPrefix: string = config.branchPrefix,
+): BranchRef {
+  return asBranchRef(`${branchPrefix}feature-${featureIssueNumber}`);
 }
 
 /**
@@ -100,40 +123,106 @@ export function parseFeatureIssueNumber(branch: BranchRef): number | null {
  * `config.partOfPattern` in the same shape as `blockedByPattern` — capture
  * group 1 must yield the parent issue number.
  */
-export function parsePartOf(body: string): number | null {
-  const match = new RegExp(config.partOfPattern, "i").exec(body);
+export function parsePartOf(body: string, pattern: string = config.partOfPattern): number | null {
+  const match = new RegExp(pattern, "i").exec(body);
   return match ? Number(match[1]) : null;
 }
 
 /** The parent of one node: the native link first, the body declaration second. */
-function parentOf(node: IssueGraphNode): number | null {
-  return node.parentNumber ?? parsePartOf(node.body);
+function parentOf(node: IssueGraphNode, partOfPattern: string): number | null {
+  return node.parentNumber ?? parsePartOf(node.body, partOfPattern);
 }
+
+/** How a feature ended: its integration PR landed, or the feature was called off. */
+export type FeatureEnd = "merged" | "cancelled";
+
+/**
+ * What the nearest opted-in ancestor says about a member issue.
+ *
+ * `resolveFeature` folds the last two arms together, because routing asks only
+ * "is there a branch to aim at?" and a retired feature and no feature at all
+ * both answer no. Doctor's stray-member check has to tell them apart: an open
+ * member still wearing a label Phoebe reads is unremarkable under a live
+ * feature and a leftover under a retired one (#487).
+ */
+export type FeatureMembership =
+  | { state: "none" }
+  | { state: "live"; feature: Feature }
+  | { state: "retired"; feature: Feature; end: FeatureEnd };
 
 /**
  * A feature is live until its integration PR reaches a terminal state — merged
  * or closed. Closing that PR is the cancel lever; the parent issue closing is
  * the belt-and-braces fallback for a feature abandoned without touching it.
  * A branch with no PR yet is live: #379 has simply not opened it.
+ *
+ * The PR is read before the parent's own state is consulted, because the PR is
+ * the more specific answer. A feature that landed and then had its parent
+ * closed behind it ended by merging, and calling that a cancellation would
+ * point its leftover members at the wrong repair.
  */
-function liveFeature(parent: IssueGraphNode, reader: FeatureGraphReader): Feature | null {
-  if (parent.closed) {
-    return null;
-  }
+function featureState(
+  parent: IssueGraphNode,
+  reader: FeatureGraphReader,
+  walk: FeatureWalkConfig,
+): FeatureMembership {
   const read = reader.featureIntegrationPr(parent.number);
   if (!read) {
-    return null;
+    return { state: "none" };
   }
   const pr = read.pr;
-  if (pr && pr.state !== "OPEN") {
-    return null;
-  }
-  return {
+  const feature: Feature = {
     issueNumber: parent.number,
     title: parent.title,
-    branch: featureBranch(parent.number),
+    branch: featureBranch(parent.number, walk.branchPrefix),
     ...(pr ? { integrationPrNumber: pr.number } : {}),
   };
+  if (pr && pr.state !== "OPEN") {
+    return { state: "retired", feature, end: pr.state === "MERGED" ? "merged" : "cancelled" };
+  }
+  if (parent.closed) {
+    return { state: "retired", feature, end: "cancelled" };
+  }
+  return { state: "live", feature };
+}
+
+/**
+ * The feature an issue belongs to, and what state that feature is in.
+ *
+ * `none` covers every way the walk comes up empty: no opted-in ancestor, a
+ * chain too deep or too circular to follow, and a read that failed. An
+ * unreadable graph is never guessed at in either direction — not routed onto a
+ * branch, and not reported as a leftover.
+ */
+export function resolveFeatureMembership(
+  issueNumber: number,
+  reader: FeatureGraphReader,
+  walk: FeatureWalkConfig = installedWalkConfig(),
+): FeatureMembership {
+  let node = reader.issueGraphNode(issueNumber);
+  if (!node) {
+    return { state: "none" };
+  }
+  // A cycle in the graph is only reachable through hand-authored `Part of`
+  // lines, which nothing validates — the seen set keeps one from re-reading the
+  // same ancestors until the depth cap happens to stop it.
+  const seen = new Set<number>([issueNumber]);
+  for (let depth = 0; depth < MAX_FEATURE_ANCESTOR_DEPTH; depth++) {
+    const parentNumber = parentOf(node, walk.partOfPattern);
+    if (parentNumber === null || seen.has(parentNumber)) {
+      return { state: "none" };
+    }
+    seen.add(parentNumber);
+    const parent = reader.issueGraphNode(parentNumber);
+    if (!parent) {
+      return { state: "none" };
+    }
+    if (parent.labels.includes(walk.featureLabel)) {
+      return featureState(parent, reader, walk);
+    }
+    node = parent;
+  }
+  return { state: "none" };
 }
 
 /**
@@ -143,28 +232,6 @@ function liveFeature(parent: IssueGraphNode, reader: FeatureGraphReader): Featur
  * bound for the default branch.
  */
 export function resolveFeature(issueNumber: number, reader: FeatureGraphReader): Feature | null {
-  let node = reader.issueGraphNode(issueNumber);
-  if (!node) {
-    return null;
-  }
-  // A cycle in the graph is only reachable through hand-authored `Part of`
-  // lines, which nothing validates — the seen set keeps one from re-reading the
-  // same ancestors until the depth cap happens to stop it.
-  const seen = new Set<number>([issueNumber]);
-  for (let depth = 0; depth < MAX_FEATURE_ANCESTOR_DEPTH; depth++) {
-    const parentNumber = parentOf(node);
-    if (parentNumber === null || seen.has(parentNumber)) {
-      return null;
-    }
-    seen.add(parentNumber);
-    const parent = reader.issueGraphNode(parentNumber);
-    if (!parent) {
-      return null;
-    }
-    if (parent.labels.includes(config.featureLabel)) {
-      return liveFeature(parent, reader);
-    }
-    node = parent;
-  }
-  return null;
+  const membership = resolveFeatureMembership(issueNumber, reader);
+  return membership.state === "live" ? membership.feature : null;
 }
