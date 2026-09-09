@@ -288,12 +288,12 @@ export type GitHubClient = {
   /** Remove `label` from an issue. */
   removeIssueLabel(issueNumber: number, label: string): void;
   /**
-   * Create `label` in the repository with the defaults Phoebe uses for its
-   * own markers — yellow (`FBCA04`) and a "Phoebe is working this issue"
-   * description. Called only after a `isLabelNotFoundError` to self-heal a
-   * missing `processingLabel` before retrying the add.
+   * Create `label` in the repository, yellow (`FBCA04`) like every marker
+   * Phoebe owns, with `description` as the text a human reads beside it.
+   * Called only after a `isLabelNotFoundError`, to self-heal a label the repo
+   * has never seen before retrying the add — see src/labels.ts.
    */
-  createLabel(name: string): void;
+  createLabel(name: string, description: string): void;
 
   // Identity
   /**
@@ -1356,16 +1356,8 @@ export function createGitHubClient({
       ghWrite(["issue", "edit", String(issueNumber), "--remove-label", label]);
     },
 
-    createLabel: (name) => {
-      ghWrite([
-        "label",
-        "create",
-        name,
-        "--description",
-        "Phoebe is working this issue",
-        "--color",
-        "FBCA04",
-      ]);
+    createLabel: (name, description) => {
+      ghWrite(["label", "create", name, "--description", description, "--color", "FBCA04"]);
     },
 
     resolveLogin: (envLogin) => {
