@@ -138,9 +138,15 @@ _Avoid_: escalation (that is the quarantine comment), parked
 
 **Landed member**:
 A feature member whose own pull request has merged into the feature branch and now waits
-on the integration PR. Labelled so selection skips it; the state lapses when the feature
-ends.
+on the integration PR. Labelled so selection skips it. The label is never removed: on a
+closed member it is history, on an open one after the feature ends it marks a stray member.
 _Avoid_: done, merged member, integrated (that is what has not happened yet)
+
+**Stray member**:
+A feature member still open and still wearing a label Phoebe reads after its feature has
+ended. Phoebe neither works nor repairs it; a person closes it or strips the label to
+re-route it. Reported by `phoebe doctor`.
+_Avoid_: stranded (that is a claim with no pull request), orphaned, abandoned, leftover
 
 ### Running
 
