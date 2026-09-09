@@ -597,8 +597,8 @@ export type PhoebeConfig = {
   /**
    * Label marking a **landed member** (#449): a feature member whose own PR has
    * merged into the feature branch and now waits on the integration PR. Same
-   * family as `processingLabel` — plain, lowercase, applied by Phoebe and
-   * created on demand, never a human's gesture.
+   * family as `processingLabel` — plain, lowercase, created on demand, never a
+   * human's gesture. Provisioned here; not yet applied or read by the engine.
    */
   mergedLabel: string;
   /**
