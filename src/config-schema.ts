@@ -598,7 +598,10 @@ export type PhoebeConfig = {
    * Label marking a **landed member** (#449): a feature member whose own PR has
    * merged into the feature branch and now waits on the integration PR. Same
    * family as `processingLabel` — plain, lowercase, created on demand, never a
-   * human's gesture. Provisioned here; not yet applied or read by the engine.
+   * human's gesture. The feature-closes sweep applies it as the member's PR
+   * merges into the feature branch (#486); selection, blocker resolution and
+   * the stranded-unit sweep read it and leave the member alone (#485). Nothing
+   * ever removes it.
    */
   mergedLabel: string;
   /**
