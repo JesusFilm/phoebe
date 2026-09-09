@@ -1689,8 +1689,8 @@ describe("the member lifecycle", () => {
         `merged into ${featureBranch(FEATURE)}.`,
     );
     expect(result.lines).toContain(
-      `${TAG} Member issue #${MEMBER} marked landed — ` +
-        `merged into ${featureBranch(FEATURE)}, awaiting integration.`,
+      `${TAG} Member #${MEMBER} landed on ${featureBranch(FEATURE)} — ` +
+        `merged-to-feature added, processing removed.`,
     );
   });
 
