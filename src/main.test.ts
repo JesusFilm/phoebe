@@ -45,8 +45,10 @@ import {
 } from "./orchestrator.ts";
 import {
   buildQuarantineBaselineMarker,
+  buildQuarantineComment,
   buildUnitTimeoutMarker,
   buildUnstickComment,
+  PHOEBE_QUARANTINE_LABEL,
 } from "./quarantine.ts";
 import { createEngine, type EngineRunOptions } from "./main.ts";
 import type { DrainSignal } from "./drain.ts";
@@ -1576,6 +1578,140 @@ describe("the feature-closes sweep", () => {
     });
 
     expect(result.lines.join("\n")).toContain("pr list exploded");
+    expect(result.lines).toContain(`${TAG} ${RUN_ONCE_NOTHING_MESSAGE}`);
+  });
+});
+
+// The 2026-09-04 hang, pinned end to end (#488). Fourteen members of one
+// feature sat open wearing `processing` after their PRs had merged into the
+// feature branch: GitHub honours a closing keyword only on the default branch,
+// so nothing closed them, and `processing` was the only thing keeping the queue
+// from handing the finished work out again. Three worlds walk the whole route a
+// member takes — claimed, landed, retired — as three run-once cycles, each one
+// declaring what the last one left behind. Writes and printed lines only; no
+// engine internals, and no state carried by the stub between cycles.
+describe("the member lifecycle", () => {
+  const FEATURE = 341;
+  const MEMBER = 381;
+  const MEMBER_PR = 400;
+  const INTEGRATION_PR = 99;
+
+  /** The member as the queue lists it, wearing whatever this world put on it. */
+  function member(labels: readonly string[]): Issue {
+    return anIssue(MEMBER, { labels: [...labels], body: `Part of #${FEATURE}.` });
+  }
+
+  /** A wet `--run-once` cycle over one hand-declared world. */
+  function cycle(github: GitHubStubOverrides) {
+    return runCycle({
+      env: { GH_TOKEN: "a-token" },
+      config: { workOrder: ["issues"] },
+      github: {
+        listQuarantinedIssues: () => [],
+        listNativelyStackedPrs: () => [],
+        resolveLogin: () => PHOEBE_LOGIN,
+        newestUnitMarkerAuthor: () => PHOEBE_LOGIN,
+        ...github,
+      },
+      run: { runOnce: true, dryRun: false },
+    });
+  }
+
+  /** The feature's integration PR, open with `body`. */
+  function integrationPr(body: string): GitHubStubOverrides {
+    return {
+      listFeatureIntegrationPrs: () => [
+        { number: asPrNumber(INTEGRATION_PR), featureIssueNumber: FEATURE, body, labels: [] },
+      ],
+    };
+  }
+
+  test("claimed: the member is mid-run, and nothing is written about it", async () => {
+    // The member wears the claim, its PR is open against the feature branch, and
+    // the integration PR has nothing new to close. Both sweeps see the member,
+    // and both are meant to leave it exactly as it is.
+    const { writes, overrides } = labelWriteRecorder();
+    const result = await cycle({
+      ...overrides,
+      ...integrationPr(`Part of #${FEATURE}.`),
+      listReadyIssues: () => [member(["ready-for-agent", "processing"])],
+      listLabeledIssues: () => [member(["ready-for-agent", "processing"])],
+      blockerPrState: () => ({
+        hasOpenPr: true,
+        openPrNumber: asPrNumber(MEMBER_PR),
+        hasMergedPr: false,
+      }),
+      listMergedMemberPrs: () => [],
+    });
+
+    expect(writes).toEqual([]);
+    expect(result.lines.join("\n")).not.toContain(`#${MEMBER}`);
+    expect(result.lines).toContain(`${TAG} ${RUN_ONCE_NOTHING_MESSAGE}`);
+  });
+
+  test("landed: the Closes line is written and the labels swap in order", async () => {
+    // The member's PR has merged into the feature branch. `blockerPrState`
+    // still finds it — a merged PR is not a deleted one — so the stranded sweep
+    // passes over the member and the feature-closes sweep does the marking.
+    const bodies: string[] = [];
+    const { writes, overrides } = labelWriteRecorder();
+    const result = await cycle({
+      ...overrides,
+      ...integrationPr(`Part of #${FEATURE}.`),
+      listReadyIssues: () => [member(["ready-for-agent", "processing"])],
+      listLabeledIssues: () => [member(["ready-for-agent", "processing"])],
+      blockerPrState: () => ({
+        hasOpenPr: false,
+        hasMergedPr: true,
+        mergedPrNumber: asPrNumber(MEMBER_PR),
+      }),
+      listMergedMemberPrs: (featureIssueNumber) =>
+        featureIssueNumber === FEATURE
+          ? [{ number: asPrNumber(MEMBER_PR), headRefName: issueBranch(MEMBER) }]
+          : [],
+      issueLabels: () => ["ready-for-agent", "processing"],
+      updatePrBody: (prNumber, body) => {
+        expect(prNumber).toBe(INTEGRATION_PR);
+        bodies.push(body);
+      },
+    });
+
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).toContain(`Closes #${MEMBER}`);
+    // Add before remove: a failure between the two must leave the member
+    // wearing both labels, never neither.
+    expect(writes).toEqual([
+      `add-label issue #${MEMBER} merged-to-feature`,
+      `remove-label issue #${MEMBER} processing`,
+    ]);
+    expect(result.lines).toContain(
+      `${TAG} Integration PR #${INTEGRATION_PR} now closes #${MEMBER} — ` +
+        `merged into ${featureBranch(FEATURE)}.`,
+    );
+    expect(result.lines).toContain(
+      `${TAG} Member #${MEMBER} landed on ${featureBranch(FEATURE)} — ` +
+        `merged-to-feature added, processing removed.`,
+    );
+  });
+
+  test("retired: the integration PR merged, and Phoebe writes nothing at all", async () => {
+    // GitHub's `Closes` cascade closed the member the moment the integration PR
+    // reached the default branch, which takes both of them out of every listing
+    // Phoebe makes — all of them are open-only. Nothing is left to write, and
+    // every write method is unstubbed here, so any attempt at one throws.
+    const result = await cycle({
+      listFeatureIntegrationPrs: () => [],
+      listReadyIssues: () => [],
+      listLabeledIssues: () => [],
+      listMergedMemberPrs: () => {
+        throw new Error("a retired feature must not be enumerated");
+      },
+    });
+
+    // The stub names itself in the message it throws, so this covers every
+    // write method at once — the labels, the PR body and the comments.
+    expect(result.lines.join("\n")).not.toContain("stubGitHub:");
+    expect(result.lines.join("\n")).not.toContain(`#${MEMBER}`);
     expect(result.lines).toContain(`${TAG} ${RUN_ONCE_NOTHING_MESSAGE}`);
   });
 });
@@ -3529,6 +3665,140 @@ describe("the in-memory quarantine for units with no GitHub target", () => {
     // The in-memory entry went with it: nothing carried over, and the ref never
     // reached the threshold, so `ctx.quarantined` stayed empty throughout.
     expect(hanging.seen.every((refs) => refs.length === 0)).toBe(true);
+
+    engine.drain.request();
+    await loop;
+  });
+});
+
+// The livelock the accrual decision (#452) left standing, walked end to end
+// (#488): a member claimed and then dropped by a feature scaffold that throws
+// never opens a PR, so every cycle re-arms it and hands it straight back out.
+// The stranded sweep already counts those runs — this is the test that the
+// count actually reaches K and stops the churn, over the real `issues` kind
+// rather than a stand-in. It needs the persistent loop: `--run-once` rethrows a
+// failed unit, so it cannot host a route that fails four times.
+describe("a claim whose run throws before any PR accrues to quarantine", () => {
+  const FEATURE = 341;
+  const MEMBER = 381;
+  /** Runs the member gets before the count reaches `maxUnproductiveRuns`. */
+  const RUNS = 3;
+  const BASELINE = "body:aabbcc";
+
+  /** One issue as the membership walk reads it. */
+  function graphNode(issueNumber: number, overrides: Partial<IssueGraphNode> = {}): IssueGraphNode {
+    return {
+      number: issueNumber,
+      title: `Ticket ${issueNumber}`,
+      labels: [],
+      body: "",
+      closed: false,
+      parentNumber: null,
+      ...overrides,
+    };
+  }
+
+  test("the K-th pass writes the quarantine label and the escalation comment", async () => {
+    const { writes, overrides } = labelWriteRecorder();
+    // The world each pass sees, advanced by the pass itself. Passes 1–3 hand
+    // the member out and lose it in the scaffolding; each of passes 2–4 opens
+    // by finding the claim it left behind and re-arming it. Everything after
+    // that is the fixed point: nothing claimed, and a member selection skips.
+    let pass = 0;
+    const engine = concurrentEngine({
+      kinds: [],
+      concurrency: 1,
+      workOrder: ["issues"],
+      github: {
+        ...overrides,
+        listQuarantinedIssues: () => [],
+        listNativelyStackedPrs: () => [],
+        listFeatureIntegrationPrs: () => [],
+        // The stranded sweep's listing is the first GitHub read of every pass,
+        // so it is where the pass counter turns over.
+        listLabeledIssues: () => {
+          pass += 1;
+          return pass > 1 && pass <= RUNS + 1
+            ? [anIssue(MEMBER, { labels: ["ready-for-agent", "processing"] })]
+            : [];
+        },
+        blockerPrState: () => ({ hasOpenPr: false, hasMergedPr: false }),
+        issueTimeoutInputs: () => ({
+          comments:
+            pass > 2
+              ? [
+                  {
+                    body: buildUnitTimeoutMarker(pass - 2),
+                    createdAt: "2026-01-01T00:00:00Z",
+                    authorLogin: PHOEBE_LOGIN,
+                  },
+                ]
+              : [],
+          extraActivityAt: null,
+          baseline: BASELINE,
+        }),
+        addQuarantineLabel: (target) => {
+          writes.push(`add-label ${target.objectType} #${target.id} ${PHOEBE_QUARANTINE_LABEL}`);
+        },
+        postUnitComment: (target, body) => {
+          writes.push(`comment issue #${target.id} ${body}`);
+        },
+        listReadyIssues: () => [
+          anIssue(MEMBER, {
+            labels:
+              pass > RUNS ? ["ready-for-agent", PHOEBE_QUARANTINE_LABEL] : ["ready-for-agent"],
+          }),
+        ],
+        issueLabels: () => ["ready-for-agent"],
+        issueGraphNode: (issueNumber) =>
+          issueNumber === MEMBER
+            ? graphNode(MEMBER, { parentNumber: FEATURE })
+            : graphNode(issueNumber, { labels: ["phoebe:feature"] }),
+        // The feature is live with no integration PR yet — which is precisely what
+        // the run below fails to change.
+        featureIntegrationPr: () => null,
+        createFeatureBranch: () => {
+          throw new Error("feature scaffolding exploded");
+        },
+      },
+    });
+    const loop = engine.loop();
+
+    await waitUntil(
+      () => writes.includes(`add-label issue #${MEMBER} ${PHOEBE_QUARANTINE_LABEL}`),
+      "the member to be quarantined",
+    );
+
+    // The whole route, in order: three claims that die in the scaffolding, a
+    // re-arm and a marker after each, and the quarantine on the K-th of them —
+    // not before.
+    const claim = `add-label issue #${MEMBER} processing`;
+    const rearm = `remove-label issue #${MEMBER} processing`;
+    expect(writes).toEqual([
+      claim,
+      rearm,
+      `comment issue #${MEMBER} ${buildUnitTimeoutMarker(1)}`,
+      claim,
+      rearm,
+      `comment issue #${MEMBER} ${buildUnitTimeoutMarker(2)}`,
+      claim,
+      rearm,
+      `comment issue #${MEMBER} ${buildUnitTimeoutMarker(3)}`,
+      `add-label issue #${MEMBER} ${PHOEBE_QUARANTINE_LABEL}`,
+      `comment issue #${MEMBER} ` +
+        buildQuarantineComment({
+          kind: "issues",
+          id: MEMBER,
+          k: RUNS,
+          baseline: BASELINE,
+          cause: "unproductive",
+        }),
+    ]);
+    // Three runs, each one dying in the scaffolding before it could open a PR —
+    // which is the whole reason the count had anything to accrue.
+    expect(
+      engine.lines.filter((line) => line.includes(`Failed executing issue #${MEMBER}`)),
+    ).toHaveLength(RUNS);
 
     engine.drain.request();
     await loop;

@@ -792,9 +792,7 @@ function readTenantDotenv(envPath: string): Record<string, string> {
   }
 }
 
-/** A tenant's GH_TOKEN, read exactly the way its engine child reads it. */
-function tenantToken(envPath: string): string | undefined {
-  const value = readTenantDotenv(envPath)["GH_TOKEN"];
+function nonEmpty(value: string | undefined): string | undefined {
   return value !== undefined && value.length > 0 ? value : undefined;
 }
 
@@ -940,6 +938,13 @@ export async function tenantRow(fields: {
   declaredEnv?: MissingDeclaredEnvKey[] | null;
   /** Where tenant data lives, for the `stale-state` check (#426). */
   dataBase?: string;
+  /**
+   * The env this tenant's engine child runs under — its `.env` in workspace
+   * mode, the ambient env in solo mode. The `PHOEBE_*` overlay is read from
+   * here so the label names doctor checks are the ones the child uses.
+   * Defaults to the ambient env.
+   */
+  env?: NodeJS.ProcessEnv;
   git?: GitRunner;
 }): Promise<TenantDoctorRow> {
   const checks: DoctorCheck[] = [];
@@ -960,7 +965,10 @@ export async function tenantRow(fields: {
   if (fields.configPath !== undefined) {
     let disabled = false;
     try {
-      const user = applyEnvOverlay(await loadUserConfig(fields.configPath), process.env);
+      const user = applyEnvOverlay(
+        await loadUserConfig(fields.configPath),
+        fields.env ?? process.env,
+      );
       const anyUser = user as {
         disabled?: unknown;
         promptFiles?: { issue?: unknown };
@@ -1398,19 +1406,23 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
     // Ahead of the bounded probes, and one at a time: the declared-key scan
     // loads each tenant's kind modules, which install a process-wide resolved
     // config on the way past (#425).
+    // Each tenant's `.env` is read once, as its engine child parses it, and
+    // that one snapshot feeds the declared-key scan, the token, and the
+    // PHOEBE_* overlay — so an edit mid-sweep cannot split one report.
+    const dotenvByTenant = new Map<string, Record<string, string>>();
     const declaredEnvByTenant = new Map<string, MissingDeclaredEnvKey[] | null>();
     for (const tenant of enumeration.tenants) {
+      const tenantEnv = readTenantDotenv(tenant.envPath);
+      dotenvByTenant.set(tenant.id, tenantEnv);
       declaredEnvByTenant.set(
         tenant.id,
-        await scanDeclaredEnv({
-          configPath: tenant.configPath,
-          env: readTenantDotenv(tenant.envPath),
-        }),
+        await scanDeclaredEnv({ configPath: tenant.configPath, env: tenantEnv }),
       );
     }
     tenants.push(
       ...(await mapBounded(enumeration.tenants, TENANT_PROBE_CONCURRENCY, (tenant) => {
-        const tokenValue = tenantToken(tenant.envPath);
+        const tenantEnv = dotenvByTenant.get(tenant.id) ?? {};
+        const tokenValue = nonEmpty(tenantEnv["GH_TOKEN"]);
         return tenantRow({
           declaredEnv: declaredEnvByTenant.get(tenant.id) ?? null,
           path: tenant.dir,
@@ -1425,6 +1437,9 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
           inContainer,
           configPath: tenant.configPath,
           dataBase,
+          // The tenant's own `.env`, so a per-tenant PHOEBE_MERGED_LABEL (or
+          // any other overlay key) is checked as its engine child reads it.
+          env: tenantEnv,
           git,
         });
       })),
@@ -1455,6 +1470,7 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
         inContainer,
         configPath,
         dataBase,
+        env: deps.env,
         git,
       }),
     );

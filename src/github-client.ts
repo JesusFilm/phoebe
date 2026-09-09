@@ -1357,7 +1357,19 @@ export function createGitHubClient({
     },
 
     createLabel: (name, description) => {
-      ghWrite(["label", "create", name, "--description", description, "--color", "FBCA04"]);
+      // Captured exec (not ghWrite/inherit) so callers can inspect the error
+      // with `isLabelAlreadyExistsError` when another process created it first.
+      exec([
+        "label",
+        "create",
+        name,
+        "--description",
+        description,
+        "--color",
+        "FBCA04",
+        "-R",
+        config.repoSlug,
+      ]);
     },
 
     resolveLogin: (envLogin) => {

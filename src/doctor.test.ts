@@ -531,8 +531,46 @@ describe("tenantRow applies the PHOEBE_* env overlay to label names", () => {
       }
       return new Response(JSON.stringify({ id: 1, name: "widget" }), { status: 200 });
     };
+    const row = await tenantRow({
+      path: "tenant",
+      slug: "acme/widget",
+      arm: "pat",
+      token: "ghp_tok",
+      envLabel: "/etc/phoebe/.env",
+      fetchFn: mockFetch as typeof fetch,
+      inContainer: false,
+      configPath: join(dir, "phoebe.config.ts"),
+      // The tenant's own env, not the doctor process's: in workspace mode
+      // each tenant's `.env` is what its engine child reads.
+      env: { PHOEBE_MERGED_LABEL: "env-label" },
+    });
+    const labelsResult = row.checks.find((c) => c.id === "labels");
+    expect(labelsResult?.state).toBe("ok");
+    expect(labelsResult?.detail).not.toContain("config-label");
+  });
+
+  test("the doctor process's own env does not leak into a tenant row", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "phoebe-doctor-env-isolation-"));
+    writeFileSync(
+      join(dir, "phoebe.config.ts"),
+      `export const config = {\n  repoSlug: "acme/widget",\n  mergedLabel: "config-label",\n};\n`,
+    );
+    const mockFetch = async (url: string | URL | Request) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+      if (urlStr.includes("/labels")) {
+        return new Response(
+          JSON.stringify(
+            ["ready-for-agent", "processing", "config-label", "ready-for-human"].map((name) => ({
+              name,
+            })),
+          ),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ id: 1, name: "widget" }), { status: 200 });
+    };
     const previous = process.env.PHOEBE_MERGED_LABEL;
-    process.env.PHOEBE_MERGED_LABEL = "env-label";
+    process.env.PHOEBE_MERGED_LABEL = "ambient-label";
     try {
       const row = await tenantRow({
         path: "tenant",
@@ -543,10 +581,11 @@ describe("tenantRow applies the PHOEBE_* env overlay to label names", () => {
         fetchFn: mockFetch as typeof fetch,
         inContainer: false,
         configPath: join(dir, "phoebe.config.ts"),
+        env: {},
       });
       const labelsResult = row.checks.find((c) => c.id === "labels");
       expect(labelsResult?.state).toBe("ok");
-      expect(labelsResult?.detail).not.toContain("config-label");
+      expect(labelsResult?.detail).not.toContain("ambient-label");
     } finally {
       if (previous === undefined) delete process.env.PHOEBE_MERGED_LABEL;
       else process.env.PHOEBE_MERGED_LABEL = previous;
