@@ -172,6 +172,31 @@ export default config;
     expect(result.content).toContain('  engine: { source: "github", ref: "v0.4.0" },\n};');
   });
 
+  test("inserts a whole engine block into a defineConfig config without one", () => {
+    const defineShaped = `import { defineConfig } from "phoebe-agent";
+
+export default defineConfig({
+  repoSlug: "acme/widget",
+});
+`;
+    const result = rewriteEngineRef(defineShaped, "v0.4.0");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.previousRef).toBeNull();
+    expect(result.content).toContain('  engine: { source: "github", ref: "v0.4.0" },\n});');
+    expect(result.content).not.toContain("};\n");
+  });
+
+  test("refuses a file carrying both a `};` and a `});` closing", () => {
+    const both =
+      scaffold.replace(`  engine: { source: "github", ref: "v0.3.1" },\n`, "") +
+      `\nregister({\n  name: "widget",\n});\n`;
+    const result = rewriteEngineRef(both, "v0.4.0");
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/single top-level config object/);
+  });
+
   test("inserts a block when the only `engine` in the file is prose (#478)", () => {
     const prose = `import type { PhoebeUserConfig } from "phoebe-agent";
 

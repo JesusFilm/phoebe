@@ -205,6 +205,10 @@ export function redactToken(message: string, token: string | undefined): string 
 const ENGINE_BLOCK = /\bengine\s*:\s*\{([^{}]*)\}/g;
 const REF_LITERAL = /(\bref\s*:\s*)(['"])((?:[^'"\\])*)\2/g;
 const GITHUB_SOURCE = /(\bsource\s*:\s*(['"])github\2)/;
+/** The closing of a top-level `const config = { ... };`. */
+const OBJECT_CLOSING = /^\};/gm;
+/** The closing of a top-level `defineConfig({ ... });`. */
+const CALL_CLOSING = /^\}\);/gm;
 
 /**
  * `engine` sitting in a property position: a bare key (`engine:`), a quoted one
@@ -325,18 +329,22 @@ export function rewriteEngineRef(content: string, newRef: string): RewriteResult
   }
 
   // No engine block at all — the config runs the default (`main`). Insert a
-  // whole block, but only into the one unambiguous shape: a single top-level
-  // object literal closed by a column-0 `};` (the scaffolded form).
+  // whole one, but only into a shape whose top-level object is unambiguous.
   if (ENGINE_PROPERTY.test(blankComments(content))) {
     return { ok: false, reason: "`engine` is present but not a plain `engine: { ... }` block" };
   }
-  const closings = content.match(/^\};/gm)?.length ?? 0;
-  if (closings !== 1) {
+  // Two shapes close a top-level config unambiguously: the scaffolded
+  // `const config = { ... };` and the documented `defineConfig({ ... });`.
+  // Exactly one closing of exactly one shape, or this refuses — a file
+  // carrying both is as ambiguous as one carrying two of either.
+  const objectClosings = content.match(OBJECT_CLOSING)?.length ?? 0;
+  const callClosings = content.match(CALL_CLOSING)?.length ?? 0;
+  if (objectClosings + callClosings !== 1) {
     return { ok: false, reason: "could not find a single top-level config object to insert into" };
   }
   const inserted = content.replace(
-    /^\};/m,
-    () => `  engine: { source: "github", ref: ${JSON.stringify(newRef)} },\n};`,
+    objectClosings === 1 ? OBJECT_CLOSING : CALL_CLOSING,
+    (m) => `  engine: { source: "github", ref: ${JSON.stringify(newRef)} },\n${m}`,
   );
   return { ok: true, content: inserted, previousRef: null };
 }
