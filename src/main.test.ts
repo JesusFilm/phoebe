@@ -500,6 +500,22 @@ describe("processingLabel skips", () => {
 
     expect(selection(result)).toBeUndefined();
   });
+
+  test("issues: a landed member is invisible to selection despite readyLabel (#485)", async () => {
+    const result = await runCycle({
+      config: { workOrder: ["issues"] },
+      github: {
+        listReadyIssues: () => [
+          anIssue(7, { labels: ["ready-for-agent", "merged-to-feature"] }),
+          anIssue(8),
+        ],
+      },
+    });
+
+    expect(selection(result)).toBe(
+      "[phoebe:acme/widget:work] Would execute: issue #8 — base origin/main.",
+    );
+  });
 });
 
 // A deleted account has no login. Nothing else in the cycle has no login either
@@ -1490,6 +1506,20 @@ describe("the stranded-unit sweep", () => {
     expect(result.lines).toContain(
       "[phoebe:acme/widget:work] Re-armed issue #7 — stranded with no PR.",
     );
+  });
+
+  test("a landed member with no PR is left alone (#485)", async () => {
+    const { writes, overrides } = writeRecorder();
+    const result = await sweepCycle({
+      ...overrides,
+      listLabeledIssues: () => [claimed(7, ["ready-for-agent", "merged-to-feature"])],
+      blockerPrState: () => {
+        throw new Error("the sweep must not ask about a landed member's PRs");
+      },
+    });
+
+    expect(writes).toEqual([]);
+    expect(result.lines.find((line) => line.includes("Re-armed issue #7"))).toBeUndefined();
   });
 
   test("the counter increments from the last recorded value", async () => {

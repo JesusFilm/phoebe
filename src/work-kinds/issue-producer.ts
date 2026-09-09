@@ -6,6 +6,7 @@
 // PR-opening workflow) is the shared shape.
 
 import {
+  isLandedMember,
   selectIssue,
   unresolvedBlockerNumbers,
   type BaseResolution,
@@ -30,14 +31,40 @@ export type IssueProducerUnit = {
 };
 
 /**
+ * One phrase per feature whose landed members are sitting in the queue —
+ * `5 landed on feature #400` — ascending by feature number, so a quiet cycle
+ * says which integration PR the finished work is waiting on (#485). A landed
+ * member the cycle cannot place (its feature retired, or the graph read failed)
+ * falls back to a bare `landed`, which sorts last.
+ */
+function landedCounts(issues: readonly Issue[], ctx: WorkKindCtx): string[] {
+  const perFeature = new Map<number, number>();
+  let unplaced = 0;
+  for (const issue of issues) {
+    if (!isLandedMember(issue, ctx.config.mergedLabel)) continue;
+    const feature = ctx.cycle.feature(issue.number);
+    if (feature) {
+      perFeature.set(feature.issueNumber, (perFeature.get(feature.issueNumber) ?? 0) + 1);
+    } else {
+      unplaced += 1;
+    }
+  }
+  const phrases = [...perFeature.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([featureNumber, count]) => `${count} landed on feature #${featureNumber}`);
+  if (unplaced > 0) phrases.push(`${unplaced} landed`);
+  return phrases;
+}
+
+/**
  * Why nothing was workable, naming the blockers when there are any — the bare
- * count is indistinguishable from a legitimate wait (#219). When all
- * unblocked issues carry processingLabel the queue is temporarily full, not
- * stuck (#365).
+ * count is indistinguishable from a legitimate wait (#219). When all unblocked
+ * issues carry processingLabel the queue is temporarily full, not stuck (#365),
+ * and a landed member is neither: it is done and waiting on its feature, so it
+ * is counted apart rather than swept into the fallback (#485). Named blockers
+ * first, then the in-progress and landed counts, then the fallback.
  */
 function idleBlockerReason(issues: readonly Issue[], ctx: WorkKindCtx): string {
-  const label = ctx.config.processingLabel;
-  const processingCount = label ? issues.filter((i) => i.labels.includes(label)).length : 0;
   const waiting = unresolvedBlockerNumbers(
     issues,
     ctx.cycle.blockerStates(),
@@ -46,7 +73,16 @@ function idleBlockerReason(issues: readonly Issue[], ctx: WorkKindCtx): string {
     (issueNumber) => ctx.cycle.feature(issueNumber),
   );
   if (waiting.length > 0) return `(waiting on blockers ${waiting.map((n) => `#${n}`).join(", ")})`;
-  if (processingCount > 0) return `(${processingCount} already in progress)`;
+  // Landed wins over in-progress for an issue wearing both, which is what the
+  // swap looks like mid-flight — otherwise one member would be counted twice and
+  // the numbers would not add up to the queue.
+  const label = ctx.config.processingLabel;
+  const processingCount = issues.filter(
+    (i) => label && i.labels.includes(label) && !isLandedMember(i, ctx.config.mergedLabel),
+  ).length;
+  const counts = processingCount > 0 ? [`${processingCount} in progress`] : [];
+  counts.push(...landedCounts(issues, ctx));
+  if (counts.length > 0) return `(${counts.join(", ")})`;
   return "(blocked or waiting on blocker PR)";
 }
 
