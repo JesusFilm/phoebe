@@ -183,6 +183,27 @@ The sweep that maintains the block runs every cycle and is not part of janitor
 scope, so `draftPrs`, `prScope` and `prOptOutLabel` do not reach it. Whatever
 else you switch off, the `Closes` lines keep accruing.
 
+## What a member issue looks like once it lands
+
+The same sweep, in the same pass, marks the member itself. As a member PR merges
+into the feature branch its issue gains `mergedLabel` (`merged-to-feature` by
+default) and loses `processingLabel`, in that order. The two writes and the
+`Closes` line answer one question — has this member's work reached the feature
+branch — so one sweep makes all three, and the label never disagrees with the
+block.
+
+A member wearing `mergedLabel` is a **landed member**: done, waiting on the
+integration PR. Phoebe never selects it again, never names it as blocked, and
+never re-arms it, which is what stops the stranded-unit sweep from reading a
+finished member as a run that died before producing a PR. It keeps `readyLabel`,
+since that one is yours.
+
+Nothing takes the label off. Merging the integration PR closes the members
+through the `Closes` block above, and every listing Phoebe reads is open issues
+only, so the label goes quiet on its own. Should the label swap fail halfway, the
+member is left wearing both `mergedLabel` and `processingLabel` — visibly stalled
+rather than back in the queue — and the next cycle finishes the job.
+
 ## What the janitors do with a feature
 
 Member PRs are in scope. The cycle's PR listing is made once per base: the

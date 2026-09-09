@@ -16,6 +16,11 @@
 //   • **Only ever append, inside markers.** The sweep re-runs every cycle, so a
 //     rebuild would fight a human editing the same body, and a short read of the
 //     merged list would silently drop lines. Existing lines are never removed.
+//
+// The same merged-member list also says which members are newly landed and so
+// due the `mergedLabel` swap (#486). Both decisions live here, pure, because one
+// sweep makes them together off one read: a member with a `Closes` line and no
+// label, or a label and no line, would be two answers to the same question.
 
 import type { BranchRef, PrNumber } from "./branded.ts";
 import { parseIssueNumberFromBranch } from "./orchestrator.ts";
@@ -103,4 +108,33 @@ export function withClosesSection(
   }
   const head = body.trim() ? `${body.trimEnd()}\n\n` : "";
   return { body: `${head}${section}\n`, added };
+}
+
+/** A merged member and the labels its own issue wears, as the swap reads it. */
+export type MemberLabels = {
+  issueNumber: number;
+  labels: readonly string[];
+};
+
+/**
+ * The member issues to mark landed this cycle, ascending: those whose PR has
+ * merged into the feature branch and that do not already wear `mergedLabel`
+ * (#486).
+ *
+ * The same sweep that appends a member's `Closes` line decides this, off the
+ * same list, so the line and the label can never disagree about which members
+ * have landed. Idempotent for the same reason `withClosesSection` is: the
+ * answer is a function of what the issue already wears, so a second cycle over
+ * a member marked by the first picks nothing and writes nothing.
+ */
+export function membersToMarkLanded(
+  members: readonly MemberLabels[],
+  mergedLabel: string,
+): number[] {
+  const landed = new Set<number>();
+  for (const member of members) {
+    if (member.labels.includes(mergedLabel)) continue;
+    landed.add(member.issueNumber);
+  }
+  return [...landed].sort((a, b) => a - b);
 }

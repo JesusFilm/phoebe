@@ -8,6 +8,7 @@ import {
   CLOSES_SECTION_END,
   CLOSES_SECTION_START,
   memberIssueNumber,
+  membersToMarkLanded,
   withClosesSection,
 } from "./feature-closes.ts";
 import { issueBranch } from "./orchestrator.ts";
@@ -149,5 +150,59 @@ describe("withClosesSection, with a human's Closes lines below the block", () =>
       "Closes #417",
       ...stray,
     ]);
+  });
+});
+
+// Which merged members are newly landed and so due the label swap (#486). The
+// decision beside the `Closes` picker, off the same list of merged member PRs.
+describe("membersToMarkLanded", () => {
+  test("picks a merged member that is not marked yet", () => {
+    expect(
+      membersToMarkLanded(
+        [{ issueNumber: 381, labels: ["ready-for-agent", "processing"] }],
+        "merged-to-feature",
+      ),
+    ).toEqual([381]);
+  });
+
+  test("skips a member already wearing the label, so a second cycle writes nothing", () => {
+    const marked = [
+      { issueNumber: 381, labels: ["ready-for-agent", "merged-to-feature"] },
+      { issueNumber: 382, labels: ["merged-to-feature"] },
+    ];
+    expect(membersToMarkLanded(marked, "merged-to-feature")).toEqual([]);
+  });
+
+  test("reads the tenant's own label name, not the default", () => {
+    const members = [{ issueNumber: 381, labels: ["landed"] }];
+    expect(membersToMarkLanded(members, "landed")).toEqual([]);
+    expect(membersToMarkLanded(members, "merged-to-feature")).toEqual([381]);
+  });
+
+  test("names each member once, ascending", () => {
+    // Two merged PRs for one issue is one member: a member reopened and merged
+    // again earns one swap, not two.
+    const members = [
+      { issueNumber: 383, labels: [] },
+      { issueNumber: 381, labels: [] },
+      { issueNumber: 383, labels: [] },
+    ];
+    expect(membersToMarkLanded(members, "merged-to-feature")).toEqual([381, 383]);
+  });
+
+  test("an unmarked member beside a marked one is still picked", () => {
+    expect(
+      membersToMarkLanded(
+        [
+          { issueNumber: 381, labels: ["merged-to-feature"] },
+          { issueNumber: 382, labels: ["processing"] },
+        ],
+        "merged-to-feature",
+      ),
+    ).toEqual([382]);
+  });
+
+  test("no merged members is no swap", () => {
+    expect(membersToMarkLanded([], "merged-to-feature")).toEqual([]);
   });
 });

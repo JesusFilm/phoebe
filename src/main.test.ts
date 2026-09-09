@@ -31,7 +31,7 @@ import {
 import { resolveConfig, type PhoebeUserConfig } from "./config-schema.ts";
 import type { GitRunner } from "./git-model.ts";
 import { featureBranch, type IssueGraphNode } from "./feature-branch.ts";
-import { CLOSES_SECTION_START } from "./feature-closes.ts";
+import { CLOSES_SECTION_START, withClosesSection } from "./feature-closes.ts";
 import type { QuarantinedUnit } from "./github-client.ts";
 import { stubGitHub, type GitHubStubOverrides } from "./github-stub.ts";
 import {
@@ -1301,11 +1301,47 @@ describe("keeping the feature branch current with the default branch", () => {
   });
 });
 
+/**
+ * Records the label writes a sweep makes, in the order it makes them, and
+ * nothing else — every other method stays unstubbed and loud. Shared by the two
+ * sweeps that write labels onto an issue: what both have to prove is the order
+ * of a pair of writes and that a second cycle over the same world writes
+ * nothing at all (#486).
+ */
+function labelWriteRecorder(): { writes: string[]; overrides: GitHubStubOverrides } {
+  const writes: string[] = [];
+  return {
+    writes,
+    overrides: {
+      addIssueLabel: (issueNumber, label) => {
+        writes.push(`add-label issue #${issueNumber} ${label}`);
+      },
+      removeIssueLabel: (issueNumber, label) => {
+        writes.push(`remove-label issue #${issueNumber} ${label}`);
+      },
+    },
+  };
+}
+
 // The feature-closes sweep runs wet, before selection, and keeps each live
 // feature's integration PR body listing one `Closes #N` per member PR that has
 // merged into the feature branch — the only way merging that PR into the
-// default branch closes the whole set (#380).
+// default branch closes the whole set (#380). The same pass marks each newly
+// landed member: `mergedLabel` on, `processingLabel` off (#486).
 describe("the feature-closes sweep", () => {
+  /** A member PR that merged, and the labels the issue it speaks for wears. */
+  type MergedMember = { issue: number; labels: readonly string[] };
+
+  /** A member mid-run: claimed by Phoebe, not marked landed yet. */
+  function claimedMember(issue: number): MergedMember {
+    return { issue, labels: ["ready-for-agent", "processing"] };
+  }
+
+  /** The same member after a cycle has swapped its labels. */
+  function landedMember(issue: number): MergedMember {
+    return { issue, labels: ["ready-for-agent", "merged-to-feature"] };
+  }
+
   /** A wet `--run-once` cycle: it sweeps, finds no work, and exits. */
   function sweepCycle(github: GitHubStubOverrides) {
     return runCycle({
@@ -1319,7 +1355,7 @@ describe("the feature-closes sweep", () => {
   /** One live feature: integration PR #99 on the branch for feature #341. */
   function featureWorld(opts: {
     body: string;
-    mergedMembers: readonly number[];
+    mergedMembers: readonly MergedMember[];
     bodies: string[];
   }): GitHubStubOverrides {
     return {
@@ -1328,11 +1364,16 @@ describe("the feature-closes sweep", () => {
       ],
       listMergedMemberPrs: (featureIssueNumber) =>
         featureIssueNumber === 341
-          ? opts.mergedMembers.map((issueNumber) => ({
-              number: asPrNumber(400 + issueNumber),
-              headRefName: issueBranch(issueNumber),
+          ? opts.mergedMembers.map((member) => ({
+              number: asPrNumber(400 + member.issue),
+              headRefName: issueBranch(member.issue),
             }))
           : [],
+      issueLabels: (issueNumber) => {
+        const member = opts.mergedMembers.find((m) => m.issue === issueNumber);
+        expect(member, `labels read for #${issueNumber}, which is not a member`).toBeDefined();
+        return [...(member?.labels ?? [])];
+      },
       updatePrBody: (prNumber, body) => {
         expect(prNumber).toBe(99);
         opts.bodies.push(body);
@@ -1342,9 +1383,11 @@ describe("the feature-closes sweep", () => {
 
   test("a merged member PR earns a Closes line on the integration PR", async () => {
     const bodies: string[] = [];
-    const result = await sweepCycle(
-      featureWorld({ body: "Part of #341.", mergedMembers: [381], bodies }),
-    );
+    const { writes, overrides } = labelWriteRecorder();
+    const result = await sweepCycle({
+      ...featureWorld({ body: "Part of #341.", mergedMembers: [claimedMember(381)], bodies }),
+      ...overrides,
+    });
 
     expect(bodies).toHaveLength(1);
     expect(bodies[0]).toContain(CLOSES_SECTION_START);
@@ -1353,14 +1396,106 @@ describe("the feature-closes sweep", () => {
     expect(result.lines).toContain(
       `[phoebe:acme/widget:work] Integration PR #99 now closes #381 — merged into ${featureBranch(341)}.`,
     );
+    // The line and the swap in one pass: the member is legible as landed the
+    // same cycle the integration PR starts closing it (#486).
+    expect(writes).toEqual([
+      "add-label issue #381 merged-to-feature",
+      "remove-label issue #381 processing",
+    ]);
+    expect(result.lines).toContain(
+      `[phoebe:acme/widget:work] Member issue #381 marked landed — ` +
+        `merged into ${featureBranch(341)}, awaiting integration.`,
+    );
+  });
+
+  test("the label goes on before the claim comes off", async () => {
+    // A failure between the two writes must leave the member wearing both, not
+    // neither: both labels read as "not workable", no label at all reads as a
+    // finished ticket back in the pool.
+    const bodies: string[] = [];
+    const { writes, overrides } = labelWriteRecorder();
+    const result = await sweepCycle({
+      ...featureWorld({ body: "Part of #341.", mergedMembers: [claimedMember(381)], bodies }),
+      ...overrides,
+      removeIssueLabel: () => {
+        throw new Error("label remove exploded");
+      },
+    });
+
+    expect(writes).toEqual(["add-label issue #381 merged-to-feature"]);
+    expect(result.lines.join("\n")).toContain(
+      "Could not mark member issue #381 as landed — label remove exploded",
+    );
   });
 
   test("a second cycle over the same merged member writes nothing", async () => {
     const bodies: string[] = [];
-    await sweepCycle(featureWorld({ body: "Part of #341.", mergedMembers: [381], bodies }));
-    await sweepCycle(featureWorld({ body: bodies[0]!, mergedMembers: [381], bodies }));
+    const { writes, overrides } = labelWriteRecorder();
+    await sweepCycle({
+      ...featureWorld({ body: "Part of #341.", mergedMembers: [claimedMember(381)], bodies }),
+      ...overrides,
+    });
+    // The world the first cycle left behind: the line written, the swap done.
+    await sweepCycle({
+      ...featureWorld({ body: bodies[0]!, mergedMembers: [landedMember(381)], bodies }),
+      ...overrides,
+    });
 
     expect(bodies).toHaveLength(1);
+    expect(writes).toEqual([
+      "add-label issue #381 merged-to-feature",
+      "remove-label issue #381 processing",
+    ]);
+  });
+
+  test("a member whose line landed but whose swap failed is marked next cycle", async () => {
+    // The body already says everything it will say, so the `Closes` write is a
+    // no-op — the swap must not be gated on it.
+    const bodies: string[] = [];
+    const { writes, overrides } = labelWriteRecorder();
+    const listed = withClosesSection("Part of #341.", [381])!.body;
+    await sweepCycle({
+      ...featureWorld({ body: listed, mergedMembers: [claimedMember(381)], bodies }),
+      ...overrides,
+    });
+
+    expect(bodies).toEqual([]);
+    expect(writes).toEqual([
+      "add-label issue #381 merged-to-feature",
+      "remove-label issue #381 processing",
+    ]);
+  });
+
+  test("an unmarked member beside a marked one is the only one written", async () => {
+    const bodies: string[] = [];
+    const { writes, overrides } = labelWriteRecorder();
+    await sweepCycle({
+      ...featureWorld({
+        body: "Part of #341.",
+        mergedMembers: [landedMember(381), claimedMember(382)],
+        bodies,
+      }),
+      ...overrides,
+    });
+
+    expect(writes).toEqual([
+      "add-label issue #382 merged-to-feature",
+      "remove-label issue #382 processing",
+    ]);
+  });
+
+  test("no member is written when the feature has no open integration PR", async () => {
+    // Nothing to sweep: the listing is open PRs only, so a merged or closed
+    // integration PR takes its whole feature out of the sweep's sight, label
+    // writes included. addIssueLabel and issueLabels are unstubbed and throw.
+    const result = await sweepCycle({
+      listFeatureIntegrationPrs: () => [],
+      listMergedMemberPrs: () => {
+        throw new Error("no feature should be enumerated");
+      },
+    });
+
+    expect(result.lines.join("\n")).not.toContain("marked landed");
   });
 
   test("a feature whose members have not merged is left alone", async () => {
@@ -1395,6 +1530,7 @@ describe("the feature-closes sweep", () => {
         if (featureIssueNumber === 7) throw new Error("gh exploded");
         return [{ number: asPrNumber(22), headRefName: issueBranch(381) }];
       },
+      issueLabels: () => ["ready-for-agent", "merged-to-feature"],
       updatePrBody: (prNumber, body) => {
         bodies.push(`${prNumber}:${body}`);
       },
@@ -1464,17 +1600,14 @@ describe("the stranded-unit sweep", () => {
 
   /** Records the writes the sweep makes; any un-declared method still throws. */
   function writeRecorder(): { writes: string[]; overrides: GitHubStubOverrides } {
-    const writes: string[] = [];
+    // The label writes through the shared recorder, so the two sweeps that
+    // write labels are read the same way; the rest is this sweep's own.
+    const { writes, overrides: labelWrites } = labelWriteRecorder();
     return {
       writes,
       overrides: {
+        ...labelWrites,
         resolveLogin: () => PHOEBE_LOGIN,
-        removeIssueLabel: (issueNumber, label) => {
-          writes.push(`remove-label issue #${issueNumber} ${label}`);
-        },
-        addIssueLabel: (issueNumber, label) => {
-          writes.push(`add-label issue #${issueNumber} ${label}`);
-        },
         addQuarantineLabel: (target) => {
           writes.push(`quarantine-label ${target.objectType} #${target.id}`);
         },

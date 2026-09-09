@@ -119,7 +119,13 @@ import {
   type StackedOn,
 } from "./orchestrator.ts";
 import { featureBranch, resolveFeature, type Feature } from "./feature-branch.ts";
-import { memberIssueNumber, withClosesSection } from "./feature-closes.ts";
+import {
+  memberIssueNumber,
+  membersToMarkLanded,
+  withClosesSection,
+  type MemberLabels,
+} from "./feature-closes.ts";
+import { addLabelCreatingIfMissing, mergedLabelOf } from "./labels.ts";
 import {
   createWorkSource,
   type Clock,
@@ -925,6 +931,12 @@ export function createEngine(options: EngineOptions): Engine {
    * so this is what makes merging the integration PR close the whole set — at
    * the moment the work actually reaches that branch, and never before.
    *
+   * The same pass marks each newly landed member: `mergedLabel` on, then
+   * `processingLabel` off (#486). One sweep owns both writes because both answer
+   * the same question — has this member's PR reached the feature branch — and a
+   * `Closes` line without the label, or a label without the line, would be two
+   * answers to it.
+   *
    * A sweep rather than a post-run hook: a member PR merges long after the run
    * that opened it, usually while Phoebe is doing something else entirely.
    * Best-effort like its neighbours — one feature's failure does not stop the
@@ -953,17 +965,74 @@ export function createEngine(options: EngineOptions): Engine {
           .map(memberIssueNumber)
           .filter((issueNumber): issueNumber is number => issueNumber !== null);
         const update = withClosesSection(integrationPr.body, closes);
-        if (!update) continue;
-        github.updatePrBody(integrationPr.number, update.body);
-        log.say(
-          `Integration PR #${integrationPr.number} now closes ` +
-            `${update.added.map((n) => `#${n}`).join(", ")} — ` +
-            `merged into ${featureBranch(integrationPr.featureIssueNumber)}.`,
-        );
+        if (update) {
+          github.updatePrBody(integrationPr.number, update.body);
+          log.say(
+            `Integration PR #${integrationPr.number} now closes ` +
+              `${update.added.map((n) => `#${n}`).join(", ")} — ` +
+              `merged into ${featureBranch(integrationPr.featureIssueNumber)}.`,
+          );
+        }
+        // Not gated on `update`: a cycle that wrote the line and then failed the
+        // label swap must be able to finish the job on the next one, and by then
+        // the body already says everything it will ever say.
+        markLandedMembers(closes, integrationPr.featureIssueNumber);
       } catch (error) {
         log.fail(
           `Could not maintain the Closes list on integration PR ` +
             `#${integrationPr.number} — ` +
+            `${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Swap `processingLabel` for `mergedLabel` on every member of `featureIssue`
+   * whose PR has merged into the feature branch and that is not marked already
+   * (#486) — the moment a member issue becomes legible as landed.
+   *
+   * Add first, remove second. A failure between the two leaves the member
+   * wearing both labels, which reads as landed everywhere Phoebe looks and so
+   * costs nothing but a stale claim; the other order would leave it wearing
+   * neither, and a member with no claim and no landing is a finished ticket back
+   * in the pool. The next cycle finishes the swap either way.
+   *
+   * Nothing ever clears `mergedLabel`. Merging the integration PR closes the
+   * members through GitHub's `Closes` cascade, every Phoebe read is open-only,
+   * and a label on a closed issue is inert — so there is no write at merge time
+   * and no sweep to write it.
+   *
+   * The labels are read per member rather than off a listing: a member closed by
+   * hand while its feature is still live is not in any open-issue listing, and
+   * reading it there would have this sweep re-marking it every cycle forever.
+   */
+  function markLandedMembers(memberIssueNumbers: readonly number[], featureIssue: number): void {
+    const members: MemberLabels[] = [];
+    // Deduplicated: two merged PRs naming one issue is one member, and one read.
+    for (const issueNumber of new Set(memberIssueNumbers)) {
+      try {
+        members.push({ issueNumber, labels: github.issueLabels(issueNumber) });
+      } catch (error) {
+        log.fail(
+          `Could not read the labels on member issue #${issueNumber} — ` +
+            `${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+    for (const issueNumber of membersToMarkLanded(members, config.mergedLabel)) {
+      try {
+        addLabelCreatingIfMissing(github, issueNumber, mergedLabelOf(config), (line) =>
+          log.say(line),
+        );
+        github.removeIssueLabel(issueNumber, config.processingLabel);
+        log.say(
+          `Member issue #${issueNumber} marked landed — ` +
+            `merged into ${featureBranch(featureIssue)}, awaiting integration.`,
+        );
+      } catch (error) {
+        log.fail(
+          `Could not mark member issue #${issueNumber} as landed — ` +
             `${error instanceof Error ? error.message : String(error)}`,
         );
       }
