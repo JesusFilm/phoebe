@@ -428,8 +428,9 @@ function labelNames(issue: RestIssue): string[] {
 /**
  * Every open issue in the repo wearing at least one of `labels`, deduplicated —
  * the population the stray-member check walks, and the whole of what it costs.
- * `null` when any read failed: a short list would read as "fewer strays", which
- * is the one wrong answer this check must not give.
+ * `null` when any read failed, or a label's page walk hit `STRAY_ISSUE_PAGES`
+ * before running out of issues: either way the list would be short, and a short
+ * list reads as "fewer strays" — the one wrong answer this check must not give.
  *
  * One request per label because GitHub's `labels` filter is an AND, so the four
  * names cannot be asked for in a single query.
@@ -442,6 +443,7 @@ export async function fetchOpenLabelledIssues(
 ): Promise<LabelledIssue[] | null> {
   const byNumber = new Map<number, LabelledIssue>();
   for (const label of new Set(labels)) {
+    let complete = false;
     for (let page = 1; page <= STRAY_ISSUE_PAGES; page++) {
       const body = await githubJson(
         `https://api.github.com/repos/${slug}/issues?state=open&per_page=100&page=${page}` +
@@ -459,8 +461,14 @@ export async function fetchOpenLabelledIssues(
           labels: labelNames(row),
         });
       }
-      if (body.length < 100) break;
+      if (body.length < 100) {
+        complete = true;
+        break;
+      }
     }
+    // A capped page walk is a short list, and a short list reads as "fewer
+    // strays" — the one wrong answer this check must not give.
+    if (!complete) return null;
   }
   return [...byNumber.values()];
 }
@@ -580,7 +588,8 @@ export async function tenantStrayMembers(fields: {
       state: "unknown",
       detail:
         `could not list open labelled issues for ${fields.slug} — token may lack ` +
-        `Issues:read permission. Grant it and re-run \`phoebe doctor\`.`,
+        `Issues:read permission, or one label has more than ${STRAY_ISSUE_PAGES * 100} ` +
+        `open issues. Grant the permission or trim the label and re-run \`phoebe doctor\`.`,
     };
   }
   const source = restFeatureGraphSource({

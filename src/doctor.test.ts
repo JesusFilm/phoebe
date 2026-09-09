@@ -889,6 +889,33 @@ describe("tenantRow stray members (#487)", () => {
     expect(check?.detail).toMatch(/Issues:read/);
   });
 
+  test("a label with more open issues than the page cap is unknown, not a short list", async () => {
+    const fullPage = Array.from({ length: 100 }, (_, i) => ({
+      number: i + 1,
+      title: `Issue ${i + 1}`,
+      labels: [{ name: "merged-to-feature" }],
+    }));
+    const capped = async (url: string | URL | Request) => {
+      const href = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+      const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
+      if (href.includes("/labels?")) {
+        return json(
+          ["ready-for-agent", "processing", "merged-to-feature", "ready-for-human"].map((name) => ({
+            name,
+          })),
+        );
+      }
+      if (href.includes("/issues?")) {
+        return href.includes(encodeURIComponent("merged-to-feature")) ? json(fullPage) : json([]);
+      }
+      return json({ id: 1, name: "widget" });
+    };
+    const row = await tenantRow({ ...tenant, fetchFn: capped as typeof fetch });
+    const check = row.checks.find((c) => c.id === "stray-members");
+    expect(check?.state).toBe("unknown");
+    expect(check?.detail).toMatch(/more than \d+ open issues/);
+  });
+
   test("not probed when the repo check did not pass", async () => {
     const unreachable = async () => new Response(null, { status: 404 });
     const row = await tenantRow({ ...tenant, fetchFn: unreachable as typeof fetch });
