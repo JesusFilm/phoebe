@@ -595,6 +595,13 @@ export type PhoebeConfig = {
   /** Label the agent applies to an issue it has claimed and is working. */
   processingLabel: string;
   /**
+   * Label marking a **landed member** (#449): a feature member whose own PR has
+   * merged into the feature branch and now waits on the integration PR. Same
+   * family as `processingLabel` — plain, lowercase, applied by Phoebe and
+   * created on demand, never a human's gesture.
+   */
+  mergedLabel: string;
+  /**
    * Label a **parent** issue carries to say "my children land on one branch"
    * (#341). Children of an issue wearing it base off `<branchPrefix>feature-<n>`
    * instead of `defaultBranch`, and reach it through a single human-owned
@@ -813,6 +820,8 @@ export type PhoebeUserConfig = {
   readyLabel?: string;
   researchLabel?: string;
   processingLabel?: string;
+  /** Label marking a landed member awaiting integration (#449); default `merged-to-feature`. */
+  mergedLabel?: string;
   /** Opt-in label on a parent issue whose children share a feature branch (#341); default `phoebe:feature`. */
   featureLabel?: string;
   prScope?: PhoebeConfig["prScope"];
@@ -879,6 +888,7 @@ export const CONFIG_DEFAULTS = {
   readyLabel: "ready-for-agent",
   researchLabel: "wayfinder:research",
   processingLabel: "processing",
+  mergedLabel: "merged-to-feature",
   featureLabel: "phoebe:feature",
   prScope: "phoebe" as const,
   draftPrs: "skip-non-phoebe" as const,
@@ -1367,6 +1377,7 @@ export function resolveConfig(
     readyLabel: user.readyLabel ?? CONFIG_DEFAULTS.readyLabel,
     researchLabel: user.researchLabel ?? CONFIG_DEFAULTS.researchLabel,
     processingLabel: user.processingLabel ?? CONFIG_DEFAULTS.processingLabel,
+    mergedLabel: user.mergedLabel ?? CONFIG_DEFAULTS.mergedLabel,
     featureLabel: user.featureLabel ?? CONFIG_DEFAULTS.featureLabel,
     prScope: user.prScope ?? CONFIG_DEFAULTS.prScope,
     draftPrs: user.draftPrs ?? CONFIG_DEFAULTS.draftPrs,

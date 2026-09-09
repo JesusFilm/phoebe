@@ -330,8 +330,8 @@ export async function fetchRepoLabels(
 }
 
 /**
- * Verify that `readyLabel`, `processingLabel`, and `prOptOutLabel` exist in
- * the tenant's repo. Fails and names each missing label with the exact
+ * Verify that `readyLabel`, `processingLabel`, `mergedLabel` and
+ * `prOptOutLabel` exist in the tenant's repo. Fails and names each missing label with the exact
  * `gh label create` command to fix it. Pure, for tests.
  */
 export function labelsCheck(fields: {
@@ -346,7 +346,7 @@ export function labelsCheck(fields: {
     return {
       id: "labels",
       state: "ok",
-      detail: `readyLabel, processingLabel, and prOptOutLabel all exist in ${fields.slug}`,
+      detail: `readyLabel, processingLabel, mergedLabel, and prOptOutLabel all exist in ${fields.slug}`,
     };
   }
   const fixes = fields.missing
@@ -692,12 +692,13 @@ export async function tenantRow(fields: {
 }): Promise<TenantDoctorRow> {
   const checks: DoctorCheck[] = [];
 
-  // Load the user config once: captures `disabled`, the three label names,
+  // Load the user config once: captures `disabled`, the four label names,
   // and the issues prompt path override — all from a single file read.
   let configLoaded = false;
   let issuePromptPath: string | undefined;
   let readyLabel: string = CONFIG_DEFAULTS.readyLabel;
   let processingLabel: string = CONFIG_DEFAULTS.processingLabel;
+  let mergedLabel: string = CONFIG_DEFAULTS.mergedLabel;
   let prOptOutLabel: string = CONFIG_DEFAULTS.prOptOutLabel;
 
   if (fields.configPath !== undefined) {
@@ -710,11 +711,13 @@ export async function tenantRow(fields: {
         pipelines?: Record<string, { kinds?: Record<string, { promptFile?: unknown }> }>;
         readyLabel?: unknown;
         processingLabel?: unknown;
+        mergedLabel?: unknown;
         prOptOutLabel?: unknown;
       };
       disabled = anyUser.disabled === true;
       if (typeof anyUser.readyLabel === "string") readyLabel = anyUser.readyLabel;
       if (typeof anyUser.processingLabel === "string") processingLabel = anyUser.processingLabel;
+      if (typeof anyUser.mergedLabel === "string") mergedLabel = anyUser.mergedLabel;
       if (typeof anyUser.prOptOutLabel === "string") prOptOutLabel = anyUser.prOptOutLabel;
       // The kind block first, the deprecated `promptFiles` alias second (#419):
       // a migrated config carries the path under the kind that reads it, and
@@ -776,7 +779,7 @@ export async function tenantRow(fields: {
     });
   }
 
-  // Labels check: verify the three workflow labels exist in the tenant's repo.
+  // Labels check: verify the four workflow labels exist in the tenant's repo.
   // Only runs when the repo check passed (token works), a slug is known, and
   // the config was loaded (label names are tenant-specific).
   if (fields.configPath !== undefined && !configLoaded) {
@@ -794,7 +797,7 @@ export async function tenantRow(fields: {
           `Grant it and re-run \`phoebe doctor\`.`,
       });
     } else {
-      const labelNames = [readyLabel, processingLabel, prOptOutLabel];
+      const labelNames = [readyLabel, processingLabel, mergedLabel, prOptOutLabel];
       const missing = labelNames.filter((name) => !allLabels.includes(name));
       const present = labelNames.filter((name) => allLabels.includes(name));
       checks.push(labelsCheck({ missing, present, slug: fields.slug }));
@@ -1202,7 +1205,7 @@ crash-loop/quarantine state (are you silently on last-known-good?); supervisor
 liveness (in-container only); launcher version vs the engine's minBootstrap floor
 (a floor violation deadlocks the deployment — not the same as being merely stale).
 In workspace mode every tenant is swept — token present the way its child reads
-it, repo reachable with that token, the three workflow labels present in the
+it, repo reachable with that token, the four workflow labels present in the
 repo, every env key a scheduled work kind declares set in that tenant's .env,
 and (when the issues prompt is overridden) that it includes the
 blocker-recording rule.
