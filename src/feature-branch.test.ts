@@ -12,6 +12,7 @@ import {
   parseFeatureIssueNumber,
   parsePartOf,
   resolveFeature,
+  resolveFeatureMembership,
   type FeatureGraphReader,
   type IntegrationPr,
   type IssueGraphNode,
@@ -272,5 +273,110 @@ describe("resolveFeature", () => {
     }
     chain.push({ number: 13, labels: [FEATURE_LABEL] });
     expect(resolveFeature(1, readerOver(chain))).toBeNull();
+  });
+});
+
+describe("resolveFeatureMembership", () => {
+  test("reports a live feature with its branch and integration PR", () => {
+    const reader = readerOver(
+      [
+        { number: 20, parentNumber: 1 },
+        { number: 1, title: "Map", labels: [FEATURE_LABEL] },
+      ],
+      { integrationPrs: { 1: { number: asPrNumber(99), state: "OPEN" } } },
+    );
+    expect(resolveFeatureMembership(20, reader)).toEqual({
+      state: "live",
+      feature: {
+        issueNumber: 1,
+        title: "Map",
+        branch: "phoebe/feature-1",
+        integrationPrNumber: 99,
+      },
+    });
+  });
+
+  test("reports a merged integration PR as a feature that ended by merging", () => {
+    const reader = readerOver(
+      [
+        { number: 20, parentNumber: 1 },
+        { number: 1, labels: [FEATURE_LABEL] },
+      ],
+      { integrationPrs: { 1: { number: asPrNumber(99), state: "MERGED" } } },
+    );
+    const membership = resolveFeatureMembership(20, reader);
+    expect(membership.state).toBe("retired");
+    expect(membership).toMatchObject({ end: "merged" });
+  });
+
+  test("reports a closed integration PR as a cancellation", () => {
+    const reader = readerOver(
+      [
+        { number: 20, parentNumber: 1 },
+        { number: 1, labels: [FEATURE_LABEL] },
+      ],
+      { integrationPrs: { 1: { number: asPrNumber(99), state: "CLOSED" } } },
+    );
+    expect(resolveFeatureMembership(20, reader)).toMatchObject({
+      state: "retired",
+      end: "cancelled",
+    });
+  });
+
+  test("reports a closed parent with no PR as a cancellation", () => {
+    const reader = readerOver([
+      { number: 20, parentNumber: 1 },
+      { number: 1, labels: [FEATURE_LABEL], closed: true },
+    ]);
+    expect(resolveFeatureMembership(20, reader)).toMatchObject({
+      state: "retired",
+      end: "cancelled",
+    });
+  });
+
+  test("a feature that merged and then had its parent closed still ended by merging", () => {
+    // The PR is the more specific answer, and it decides which repair a stray
+    // member is pointed at (#487).
+    const reader = readerOver(
+      [
+        { number: 20, parentNumber: 1 },
+        { number: 1, labels: [FEATURE_LABEL], closed: true },
+      ],
+      { integrationPrs: { 1: { number: asPrNumber(99), state: "MERGED" } } },
+    );
+    expect(resolveFeatureMembership(20, reader)).toMatchObject({
+      state: "retired",
+      end: "merged",
+    });
+  });
+
+  test("is `none` for an issue with no opted-in ancestor", () => {
+    const reader = readerOver([{ number: 20, parentNumber: 1 }, { number: 1 }]);
+    expect(resolveFeatureMembership(20, reader)).toEqual({ state: "none" });
+  });
+
+  test("is `none` when the integration PR could not be read — not a retired feature", () => {
+    const reader = readerOver(
+      [
+        { number: 20, parentNumber: 1 },
+        { number: 1, labels: [FEATURE_LABEL] },
+      ],
+      { unreadablePrs: [1] },
+    );
+    expect(resolveFeatureMembership(20, reader)).toEqual({ state: "none" });
+  });
+
+  test("honours a walk config other than the installed one", () => {
+    const reader = readerOver([
+      { number: 20, body: "Belongs to #1" },
+      { number: 1, labels: ["epic"] },
+    ]);
+    expect(
+      resolveFeatureMembership(20, reader, {
+        featureLabel: "epic",
+        branchPrefix: "bot/",
+        partOfPattern: String.raw`Belongs to\s+#(\d+)`,
+      }),
+    ).toMatchObject({ state: "live", feature: { branch: "bot/feature-1" } });
   });
 });

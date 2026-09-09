@@ -19,6 +19,7 @@ import {
   launcherFloorCheck,
   promptDriftCheck,
   staleStateCheck,
+  strayMembersCheck,
   tenantRow,
   tenantTokenCheck,
 } from "./doctor.ts";
@@ -724,5 +725,177 @@ describe("staleStateCheck", () => {
       ],
     );
     expect(report.ok).toBe(true);
+  });
+});
+
+describe("strayMembersCheck", () => {
+  const slug = "acme/widget";
+  const stray = {
+    issueNumber: 20,
+    issueTitle: "Landed member",
+    labels: ["merged-to-feature"],
+    featureIssueNumber: 448,
+    featureTitle: "Feature-member lifecycle",
+    end: "merged" as const,
+    hint: "close #20",
+  };
+
+  test("a repo with no strays is ok", () => {
+    expect(strayMembersCheck({ slug, strays: [] })).toEqual({
+      id: "stray-members",
+      state: "ok",
+      detail: `no open member of a retired feature is still labelled in ${slug}`,
+    });
+  });
+
+  test("a stray is a warn naming the member, the feature and the repair", () => {
+    const check = strayMembersCheck({ slug, strays: [stray] });
+    expect(check.state).toBe("warn");
+    expect(check.detail).toContain("1 stray member(s)");
+    expect(check.detail).toContain(`#20 "Landed member"`);
+    expect(check.detail).toContain(`#448 "Feature-member lifecycle" merged`);
+    expect(check.detail).toContain("close #20");
+  });
+
+  test("a cancelled feature's stray offers the label strip as well as the close", () => {
+    const check = strayMembersCheck({
+      slug,
+      strays: [
+        {
+          ...stray,
+          labels: ["processing"],
+          end: "cancelled",
+          hint: `close #20, or strip "processing" to re-route it onto the default branch`,
+        },
+      ],
+    });
+    expect(check.detail).toContain("was cancelled");
+    expect(check.detail).toContain("re-route it onto the default branch");
+  });
+
+  test("strays leave the report exiting 0, and --json carries them", () => {
+    const report = buildDoctorReport(
+      [],
+      [{ path: "tenant", slug, checks: [strayMembersCheck({ slug, strays: [stray] })] }],
+    );
+    expect(report.ok).toBe(true);
+    expect(JSON.parse(JSON.stringify(report))).toMatchObject({
+      tenants: [{ checks: [{ id: "stray-members", state: "warn" }] }],
+    });
+  });
+});
+
+describe("tenantRow stray members (#487)", () => {
+  /** A tracker with one member of a feature whose integration PR has merged. */
+  function trackerFetch(overrides: { parentClosed?: boolean; prState?: string } = {}) {
+    return async (url: string | URL | Request) => {
+      const href = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+      const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
+      if (href.includes("/labels?")) {
+        return json(
+          ["ready-for-agent", "processing", "merged-to-feature", "ready-for-human"].map((name) => ({
+            name,
+          })),
+        );
+      }
+      if (href.includes("/issues?")) {
+        return json(
+          href.includes(encodeURIComponent("merged-to-feature"))
+            ? [{ number: 20, title: "Landed member", labels: [{ name: "merged-to-feature" }] }]
+            : [],
+        );
+      }
+      if (href.endsWith("/issues/20")) {
+        return json({
+          number: 20,
+          title: "Landed member",
+          state: "open",
+          body: "",
+          labels: [{ name: "merged-to-feature" }],
+          parent_issue_url: "https://api.github.com/repos/acme/widget/issues/448",
+        });
+      }
+      if (href.endsWith("/issues/448")) {
+        return json({
+          number: 448,
+          title: "Feature-member lifecycle",
+          state: overrides.parentClosed === true ? "closed" : "open",
+          body: "",
+          labels: [{ name: "phoebe:feature" }],
+        });
+      }
+      if (href.includes("/pulls?")) {
+        expect(href).toContain(encodeURIComponent("acme:phoebe/feature-448"));
+        const state = overrides.prState ?? "MERGED";
+        return json([
+          {
+            number: 99,
+            state: state === "MERGED" ? "closed" : state.toLowerCase(),
+            merged_at: state === "MERGED" ? "2026-01-01T00:00:00Z" : null,
+          },
+        ]);
+      }
+      return json({ id: 1, name: "widget" });
+    };
+  }
+
+  const tenant = {
+    path: "tenant",
+    slug: "acme/widget",
+    arm: "pat" as const,
+    token: "ghp_tok",
+    envLabel: "/etc/phoebe/.env",
+    inContainer: false,
+  };
+
+  test("a member left labelled by a merged feature is a warn naming both", async () => {
+    const row = await tenantRow({ ...tenant, fetchFn: trackerFetch() as typeof fetch });
+    const check = row.checks.find((c) => c.id === "stray-members");
+    expect(check?.state).toBe("warn");
+    expect(check?.detail).toContain(`#20 "Landed member"`);
+    expect(check?.detail).toContain(`#448 "Feature-member lifecycle" merged`);
+    expect(check?.detail).toContain("close #20");
+  });
+
+  test("a cancelled feature's member gets the strip-the-label repair", async () => {
+    const row = await tenantRow({
+      ...tenant,
+      fetchFn: trackerFetch({ prState: "CLOSED" }) as typeof fetch,
+    });
+    const check = row.checks.find((c) => c.id === "stray-members");
+    expect(check?.state).toBe("warn");
+    expect(check?.detail).toContain("was cancelled");
+    expect(check?.detail).toContain(`strip "merged-to-feature"`);
+  });
+
+  test("a member of a live feature is not reported", async () => {
+    const row = await tenantRow({
+      ...tenant,
+      fetchFn: trackerFetch({ prState: "OPEN" }) as typeof fetch,
+    });
+    expect(row.checks.find((c) => c.id === "stray-members")?.state).toBe("ok");
+  });
+
+  test("an issue list the token cannot read is unknown, not a finding", async () => {
+    const denied = async (url: string | URL | Request) => {
+      const href = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+      if (href.includes("/issues?")) return new Response(null, { status: 403 });
+      if (href.includes("/labels?")) return new Response(JSON.stringify([]), { status: 200 });
+      return new Response(JSON.stringify({ id: 1, name: "widget" }), { status: 200 });
+    };
+    const row = await tenantRow({ ...tenant, fetchFn: denied as typeof fetch });
+    const check = row.checks.find((c) => c.id === "stray-members");
+    expect(check?.state).toBe("unknown");
+    expect(check?.detail).toMatch(/Issues:read/);
+  });
+
+  test("not probed when the repo check did not pass", async () => {
+    const unreachable = async () => new Response(null, { status: 404 });
+    const row = await tenantRow({ ...tenant, fetchFn: unreachable as typeof fetch });
+    expect(row.checks.find((c) => c.id === "stray-members")).toEqual({
+      id: "stray-members",
+      state: "unknown",
+      detail: "not probed (repo check did not pass)",
+    });
   });
 });
