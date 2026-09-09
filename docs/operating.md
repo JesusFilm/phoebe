@@ -175,7 +175,7 @@ per-pipeline stop verb, because hot `disabled: true` is the stop.
 
 ## Checking the deployment's health: `phoebe doctor`
 
-`phoebe doctor` (report-only) runs eight checks and exits 1 when any fails:
+`phoebe doctor` (report-only) runs ten checks and exits 1 when any fails:
 
 - **cli.** Installed `phoebe-agent` against the npm registry's latest.
 - **engine.** The configured pin against the latest release tag, plus the commit
@@ -198,9 +198,25 @@ supervises with, checking each tenant's `GH_TOKEN` is present the way its
 engine child reads it, and that its repo answers to that token. Held tenants
 surface as failures with their hold reason. `--json` for scripts.
 
-The eighth check is per tenant and is the only one that reads the data volume:
+The other three run per tenant:
 
-- **stale-state.** State under a tenant's data directory that no pipeline
+- **labels.** The four workflow labels — `readyLabel`, `processingLabel`,
+  `mergedLabel` and `prOptOutLabel` — exist in the tenant's repo. Any that does
+  not is named with the `gh label create` command that makes it.
+- **stray-members.** Open members of a [feature](feature-branches.md) that has
+  ended, still wearing a label Phoebe reads. A feature ends when its integration
+  PR merges or closes, or when its parent issue closes; from that moment routing
+  stops seeing the members underneath it, so whichever of `readyLabel`,
+  `researchLabel`, `processingLabel` or `mergedLabel` a member was wearing stays
+  on it and nothing is coming to take it off. Each one is named with its feature
+  and one repair: close it when the integration PR merged, and when the feature
+  was cancelled either close it or strip the label, which sends it back to the
+  default branch as an ordinary ticket. Phoebe changes nothing itself — which
+  repair is right depends on what you meant by cancelling. The cost is one
+  tracker query per label plus the issue graph above whatever they return, paid
+  when you run doctor and never per cycle. **Warn, never fail.**
+- **stale-state.** The only check that reads the data volume rather than the
+  tracker: state under a tenant's data directory that no pipeline
   owns — a deleted or renamed pipeline's `state/<pipeline>/`, a retired kind's
   scratch or read-only tree, a worktree whose lease names a pipeline that no
   longer exists. Most of it the next boot reclaims by itself ([the stale-state
