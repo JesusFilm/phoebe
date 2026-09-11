@@ -1,0 +1,409 @@
+<!doctype html>
+<!--
+  PROTOTYPE — throwaway. Not production, not served by anything.
+
+  Plan: three variants of the Phoebe console (fleet page, one deployment's
+  page, effective-config page), switchable via `?variant=A|B|C` and a floating
+  bottom bar. Pages are hash routes: #/fleet, #/d/<fp>, #/d/<fp>/config.
+  Fixture data below is shaped by the map's decisions (#501 report sections,
+  #502 effective-config leaves, #503 edit receipts, #504 secret presence,
+  #505 identity, #506 connection panel, #507 fleet row, #508 status order).
+
+  Run: open this file in a browser. No build, no server, no persistence.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Phoebe console — prototype</title>
+<style>
+  :root{--bg:#fafafa;--fg:#111;--mut:#666;--line:#ddd;--ok:#1a7f37;--warn:#9a6700;--fail:#b91c1c;--dark:#444;--acc:#1f4fd8;--chip:#eee;--mono:ui-monospace,SFMono-Regular,Menlo,monospace}
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.45 system-ui,sans-serif;color:var(--fg);background:var(--bg)}
+  a{color:var(--acc);text-decoration:none}a:hover{text-decoration:underline}
+  code,.mono{font-family:var(--mono);font-size:12.5px}
+  .mut{color:var(--mut)}.ok{color:var(--ok)}.warn{color:var(--warn)}.fail{color:var(--fail)}.dark{color:var(--dark)}
+  .chip{display:inline-block;padding:0 6px;border-radius:9px;background:var(--chip);font-size:12px;margin-right:4px;white-space:nowrap}
+  .chip.ok{background:#dcfce7}.chip.warn{background:#fef3c7}.chip.fail{background:#fee2e2;color:#7f1d1d}.chip.dark{background:#333;color:#fff}.chip.src{background:#e8eefc;color:#1e3a8a}
+  .chip.overlay,.chip.toggle{background:#fde68a;color:#6b4b00}.chip.alias{background:#fbcfe8;color:#831843}.chip.inherited,.chip.default{background:#eee;color:#555}.chip.derived{background:#e0e7ff}
+  button{font:inherit;padding:3px 10px;border:1px solid #bbb;border-radius:6px;background:#fff;cursor:pointer}button:hover{background:#f0f0f0}button.primary{background:var(--acc);color:#fff;border-color:var(--acc)}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}th{font-weight:600;font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.03em}
+  tr.attn td{background:#fff8f0}tr.darkrow td{background:#f1f1f1}
+  h1{font-size:18px;margin:0 0 12px}h2{font-size:15px;margin:18px 0 8px}h3{font-size:13px;margin:12px 0 6px;color:var(--mut);text-transform:uppercase;letter-spacing:.03em}
+  .top{display:flex;align-items:center;gap:16px;padding:10px 20px;border-bottom:1px solid var(--line);background:#fff}
+  .top .brand{font-weight:700}.top .sp{flex:1}
+  .wrap{padding:16px 20px;max-width:1300px}
+  .card{background:#fff;border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin-bottom:12px}
+  .grid{display:grid;gap:12px}.g2{grid-template-columns:1fr 1fr}.g3{grid-template-columns:repeat(3,1fr)}.gcards{grid-template-columns:repeat(auto-fill,minmax(360px,1fr))}
+  .kv{display:grid;grid-template-columns:max-content 1fr;gap:2px 14px}.kv dt{color:var(--mut)}.kv dd{margin:0}
+  pre{background:#fff;border:1px solid var(--line);border-radius:6px;padding:10px;overflow:auto;font-size:12.5px;margin:0}
+  .rowline{padding:2px 0}.indent{padding-left:18px}.indent2{padding-left:36px}
+  .side{display:grid;grid-template-columns:260px 1fr;min-height:calc(100vh - 44px)}
+  .side>nav{border-right:1px solid var(--line);background:#fff;padding:10px 0}
+  .side>nav a{display:block;padding:6px 14px;color:inherit}.side>nav a.cur{background:#eef2ff;font-weight:600}.side>nav .sub{padding-left:26px;font-size:13px}
+  .tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin-bottom:12px}.tabs a{padding:8px 12px;color:inherit;border-bottom:2px solid transparent}.tabs a.cur{border-color:var(--acc);font-weight:600}
+  .split{display:grid;grid-template-columns:280px 1fr;gap:14px}
+  .list a{display:block;padding:6px 10px;border-radius:6px;color:inherit}.list a.cur{background:#eef2ff}
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;z-index:50}
+  .modal .box{background:#fff;border-radius:10px;padding:18px;width:560px;max-width:95vw;box-shadow:0 10px 40px rgba(0,0,0,.3)}
+  .modal input,.modal textarea{width:100%;font:inherit;padding:6px;border:1px solid #bbb;border-radius:6px}
+  .switch{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);background:#111;color:#fff;border-radius:999px;padding:6px 10px;display:flex;gap:10px;align-items:center;font-size:13px;box-shadow:0 4px 18px rgba(0,0,0,.4);z-index:60}
+  .switch button{background:#333;color:#fff;border:0;border-radius:999px;padding:2px 9px}
+  .bar{height:6px;background:#eee;border-radius:3px;overflow:hidden;display:flex}.bar i{display:block;height:100%}
+  .cfg-tree details{margin-left:14px}.cfg-tree summary{cursor:pointer;font-weight:600;padding:2px 0}
+  .leaf{display:grid;grid-template-columns:260px 1fr auto;gap:10px;padding:3px 0;border-bottom:1px dotted #eee;align-items:baseline}
+  .filter{padding:5px 8px;border:1px solid #bbb;border-radius:6px;font:inherit;width:280px}
+  .toast{position:fixed;right:16px;top:16px;background:#111;color:#fff;padding:8px 12px;border-radius:8px;z-index:70;max-width:380px;font-size:13px}
+  .stat{font-size:22px;font-weight:600}.stat small{font-size:12px;font-weight:400;color:var(--mut);display:block}
+  .pipe{border-left:3px solid #ddd;padding:4px 10px;margin:4px 0}.pipe.working{border-color:var(--ok)}.pipe.wedged{border-color:var(--fail)}.pipe.crash{border-color:var(--warn)}
+  .hdrline{font-family:var(--mono);font-size:12.5px;white-space:pre-wrap;background:#fff;border:1px solid var(--line);padding:8px 10px;border-radius:6px}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+// ───────────────────────────── fixture ─────────────────────────────
+// Times are relative to NOW so ages read naturally.
+const NOW = Date.now();
+const ago = (s) => new Date(NOW - s*1000).toISOString();
+const S = 1, M = 60, H = 3600, D = 86400;
+
+// Doctor report (DoctorReport: deployment checks + per-tenant rows). CheckState: ok|warn|fail|unknown
+function doctor(deploy, tenants) { return { deployment: deploy, tenants }; }
+const chk = (id, state, detail) => ({ id, state, detail });
+
+const DEPLOYMENTS = [
+  {
+    // #505 identity, #508 relay section (deployment-held), plus relay-side facts (#506/#507 §8)
+    identity: { name: "youtube-studio", keyFingerprint: "SHA256:k9Qx…3fZ", arm: "solo", relayUrl: "https://relay.example.org" },
+    relayView: { state: "connected", connectedSince: ago(6*H), lastHeard: ago(12*S), protocol: 1, lastClose: null, replaced: false },
+    reportAt: ago(12*S),
+    bootstrapper: {
+      engineRef: "v0.12.0", runningSha: "ae13b31", crashLoop: { lastGoodSha: "ae13b31", failingSha: null, failureCount: 0 },
+      reconcile: { state: "idle", lastEditId: "edit_01J9" }, slots: { cap: 2, held: 1 },
+      updatedAt: ago(40*S)
+    },
+    fleet: [
+      { tenant: { path: "/etc/phoebe", slug: "JesusFilm/youtube-studio", config: true, env: true, data: true, arm: "app", held: null, disabled: false },
+        pipelines: [
+          { name: "work", provenance: "enumerated", process: { state: "running", since: ago(6*H), restarts: 0 }, state: "working", since: ago(23*M), wedged: false,
+            units: [{ id: "#512", kind: "issue", startedAt: ago(23*M), budgetMin: 60 }], lastPassAt: ago(3*M), pollIntervalMs: 300000 },
+          { name: "research", provenance: "enumerated", process: { state: "running", since: ago(6*H), restarts: 0 }, state: "idle", since: ago(2*H), wedged: false, units: [], lastPassAt: ago(4*M), pollIntervalMs: 300000 },
+          { name: "old-triage", provenance: "stale", process: null, state: "no status", since: null, wedged: false, units: [] },
+        ] },
+    ],
+    doctor: { at: ago(3*H), trigger: "schedule", running: null, lastAttempt: null,
+      report: doctor([chk("cli","ok","phoebe-agent 0.12.0"), chk("engine","ok","v0.12.0 → ae13b31"), chk("supervisor","ok","phoebe boot is pid 1"), chk("launcher-floor","ok",""), chk("crash-loop","ok",""), chk("config","ok","phoebe.config.ts loads"), chk("relay","warn","paired; remove PHOEBE_RELAY_TOKEN from .env")],
+        [{ slug: "JesusFilm/youtube-studio", checks: [chk("discovery","ok",""), chk("token","ok","app installation token minted"), chk("repo","ok","push access"), chk("labels","ok","7/7 present"), chk("declared-env","warn","ANTHROPIC_API_KEY set in both store and .env (store wins)"), chk("prompt-drift","ok",""), chk("stale-state","warn","state/old-triage/ no enumerated pipeline"), chk("stray-members","ok",""), chk("disabled","ok","")] }]) },
+    // #504 env section: presence & provenance only
+    env: [
+      { key: "GH_TOKEN", scope: "tenant", present: true, source: "store", setAt: ago(2*D), by: "mike@example.org" },
+      { key: "GH_TOKEN", scope: "deployment", present: true, source: "ambient" },
+      { key: "PHOEBE_APP_ID", scope: "deployment", present: true, source: "appArm" },
+      { key: "PHOEBE_APP_KEY_B64", scope: "deployment", present: true, source: "appArm" },
+      { key: "ANTHROPIC_API_KEY", scope: "tenant", present: true, source: "store", setAt: ago(5*D), by: "mike@example.org", shadowed: "tenantEnv" },
+      { key: "OPENAI_API_KEY", scope: "tenant", present: false, source: null },
+    ],
+    configFingerprint: "sha256:7c1e…a0",
+    pendingEdits: [{ id: "edit_01J9", path: "pipelines.work.maxConcurrentUnits", value: 2, at: ago(1*H), by: "mike@example.org" }],
+    config: null, // filled below
+  },
+  {
+    identity: { name: "jesusfilm-workspace", keyFingerprint: "SHA256:p2Lm…9aB", arm: "workspace", relayUrl: "https://relay.example.org" },
+    relayView: { state: "connected", connectedSince: ago(20*M), lastHeard: ago(4*S), protocol: 1, lastClose: { code: 1012, at: ago(20*M+3) }, replaced: false },
+    reportAt: ago(4*S),
+    bootstrapper: {
+      engineRef: "main", runningSha: "9994052", crashLoop: { lastGoodSha: "9994052", failingSha: "c0ffee1", failureCount: 3 },
+      reconcile: { state: "reconciling", reason: "config", startedAt: ago(35*S), lastEditId: "edit_01JA" }, slots: { cap: 3, held: 3 },
+      updatedAt: ago(4*S)
+    },
+    fleet: [
+      { tenant: { path: "apps/api", slug: "JesusFilm/api", config: true, env: true, data: true, arm: "pat", held: null, disabled: false },
+        pipelines: [
+          { name: "work", provenance: "enumerated", process: { state: "running", since: ago(3*D), restarts: 0 }, state: "working", since: ago(2*H+10*M), wedged: true,
+            wedgedWhy: "oldest unit #77 has outlived its 90 min budget + 5 min poll interval (in flight 2 h 10 m)", units: [{ id: "#77", kind: "issue", startedAt: ago(2*H+10*M), budgetMin: 90 }, { id: "#80", kind: "issue", startedAt: ago(30*M), budgetMin: 90 }], lastPassAt: ago(2*M), pollIntervalMs: 300000 },
+          { name: "sentry", provenance: "enumerated", process: { state: "running", since: ago(1*D), restarts: 0 }, state: "idle", since: ago(1*D), wedged: true,
+            wedgedWhy: "no pass for 17 min (3 × 5 min poll interval) while not waiting for a slot", units: [], lastPassAt: ago(17*M), pollIntervalMs: 300000 },
+        ] },
+      { tenant: { path: "apps/web", slug: "JesusFilm/web", config: true, env: true, data: true, arm: "pat", held: null, disabled: false },
+        pipelines: [
+          { name: "work", provenance: "enumerated", process: { state: "exited", exit: { code: 1, signal: null, at: ago(6*S) }, respawnIn: 4, restarts: 11, crashLooping: true }, state: "waiting for slot", since: ago(9*M), wedged: false, units: [], lastPassAt: ago(9*M), pollIntervalMs: 300000 },
+          { name: "research", provenance: "disk", process: null, state: "no status", since: null, wedged: false, units: [] },
+        ] },
+      { tenant: { path: "apps/legacy", slug: null, config: true, env: false, data: false, arm: null, held: "phoebe.config.ts: pipelines.work.kinds.issue.provider: unknown provider \"claude-code-v1\"", disabled: false }, pipelines: [] },
+      { tenant: { path: "apps/docs", slug: "JesusFilm/docs", config: true, env: true, data: true, arm: "pat", held: null, disabled: true }, pipelines: [] },
+    ],
+    doctor: { at: ago(6*H), trigger: "boot", running: { since: ago(40*S), trigger: "reconcile" }, lastAttempt: { at: ago(12*H), outcome: "timed-out" },
+      report: doctor([chk("cli","ok",""), chk("engine","fail","c0ffee1 quarantined after 3 failures; running lastGood 9994052"), chk("supervisor","ok",""), chk("launcher-floor","ok",""), chk("crash-loop","fail","apps/web work: 11 restarts under 60 s"), chk("config","ok",""), chk("relay","ok","paired")],
+        [{ slug: "JesusFilm/api", checks: [chk("discovery","ok",""), chk("token","ok",""), chk("repo","ok",""), chk("labels","warn","missing phoebe:feature"), chk("declared-env","ok",""), chk("prompt-drift","ok",""), chk("stale-state","ok",""), chk("stray-members","unknown","deadline passed"), chk("disabled","ok","")] },
+         { slug: "JesusFilm/web", checks: [chk("discovery","ok",""), chk("token","fail","401 bad credentials"), chk("repo","unknown","no token"), chk("labels","unknown","no token"), chk("declared-env","fail","ANTHROPIC_API_KEY missing for kinds issue, research"), chk("prompt-drift","ok",""), chk("stale-state","warn","state/research/ from disk only"), chk("stray-members","unknown","no token"), chk("disabled","ok","")] },
+         { slug: "apps/legacy", checks: [chk("discovery","fail","held: unknown provider \"claude-code-v1\"")] },
+         { slug: "JesusFilm/docs", checks: [chk("disabled","ok","disabled in config")] }]) },
+    env: [
+      { key: "GH_TOKEN", scope: "deployment", present: true, source: "ambient" },
+      { key: "GH_TOKEN", scope: "tenant", tenant: "JesusFilm/api", present: true, source: "tenantEnv" },
+      { key: "ANTHROPIC_API_KEY", scope: "tenant", tenant: "JesusFilm/api", present: true, source: "tenantEnv" },
+      { key: "GH_TOKEN", scope: "tenant", tenant: "JesusFilm/web", present: true, source: "tenantEnv" },
+      { key: "ANTHROPIC_API_KEY", scope: "tenant", tenant: "JesusFilm/web", present: false, source: null },
+      { key: "SENTRY_AUTH_TOKEN", scope: "tenant", tenant: "JesusFilm/api", present: true, source: "store", setAt: ago(3*H), by: "sam@example.org" },
+    ],
+    configFingerprint: "sha256:19bd…4e",
+    pendingEdits: [],
+    config: null,
+  },
+  {
+    identity: { name: "youtube-studio", keyFingerprint: "SHA256:aa41…c7Q", arm: "solo", relayUrl: "https://relay.example.org" },
+    relayView: { state: "dark", darkSince: ago(2*D), lastHeard: ago(2*D+60), connectedSince: null, protocol: 1, lastClose: { code: 1006, at: ago(2*D+60) }, replaced: true },
+    reportAt: ago(2*D+60),
+    bootstrapper: { engineRef: "v0.11.2", runningSha: "351ad57", crashLoop: { lastGoodSha: "351ad57", failingSha: null, failureCount: 0 }, reconcile: { state: "idle" }, slots: { cap: 2, held: 0 }, updatedAt: ago(2*D+60) },
+    fleet: [ { tenant: { path: "/etc/phoebe", slug: "JesusFilm/youtube-studio", config: true, env: true, data: true, arm: "pat", held: null, disabled: false },
+      pipelines: [ { name: "work", provenance: "enumerated", process: { state: "running", since: ago(9*D), restarts: 0 }, state: "idle", since: ago(3*D), wedged: false, units: [], lastPassAt: ago(2*D+2*M), pollIntervalMs: 300000 } ] } ],
+    doctor: { at: ago(2*D+3*H), trigger: "schedule", running: null, lastAttempt: null, report: doctor([chk("cli","ok",""), chk("engine","ok",""), chk("supervisor","ok",""), chk("launcher-floor","ok",""), chk("crash-loop","ok",""), chk("config","ok",""), chk("relay","ok","paired")], [{ slug: "JesusFilm/youtube-studio", checks: [chk("discovery","ok",""), chk("token","ok",""), chk("repo","ok",""), chk("labels","ok",""), chk("declared-env","ok",""), chk("prompt-drift","ok",""), chk("stale-state","ok",""), chk("stray-members","ok",""), chk("disabled","ok","")] }]) },
+    env: [ { key: "GH_TOKEN", scope: "tenant", present: true, source: "ambient" }, { key: "GH_TOKEN", scope: "deployment", present: true, source: "ambient" }, { key: "ANTHROPIC_API_KEY", scope: "tenant", present: true, source: "ambient" } ],
+    configFingerprint: "sha256:5510…0f", pendingEdits: [], config: null,
+  },
+  {
+    identity: { name: "phoebe-demo", keyFingerprint: "SHA256:zz09…1Hq", arm: "solo", relayUrl: "https://relay.example.org" },
+    relayView: { state: "unseen", lastHeard: null, connectedSince: null, protocol: null, lastClose: null, replaced: false, pairedAt: ago(30*M) },
+    reportAt: null, bootstrapper: null, fleet: [], doctor: null, env: [], configFingerprint: null, pendingEdits: [], config: null,
+  },
+];
+
+// #502 effective config tree. leaf = { value, source, via?, from?, reader, shadowed?, opaque? }
+const L = (value, source, extra={}) => ({ value, source, reader: "engine", ...extra });
+function configFor(d) {
+  if (!d.bootstrapper) return null;
+  const solo = d.identity.arm === "solo";
+  const global = {
+    "engine.ref": L(d.bootstrapper.engineRef, "file", { reader: "bootstrapper", via: "phoebe.config.ts" }),
+    "engine.source": L("git", "default", { reader: "bootstrapper" }),
+    "relay.url": L(d.identity.relayUrl, "file", { reader: "bootstrapper", via: "phoebe.config.ts" }),
+    "relay.name": L(d.identity.name, solo ? "derived" : "default", { reader: "bootstrapper", via: solo ? "repoSlug" : "root dirname" }),
+    "gitIdentity.name": L("Phoebe", "file", { reader: "bootstrapper", via: "phoebe.config.ts" }),
+    "gitIdentity.email": L("phoebe@example.org", "overlay", { reader: "bootstrapper", via: "PHOEBE_GIT_EMAIL", from: "rootEnv", shadowed: [{ source: "file", via: "phoebe.config.ts", value: "bot@example.org" }] }),
+    "deployment": L("{ compose: 'templates/container/compose.yml', volume: 'phoebe-data' }", "file", { reader: "bootstrapper", opaque: true, via: "phoebe.config.ts" }),
+    ...(solo ? {} : { "workspace.depth": L(2, "file", { reader: "bootstrapper", via: "phoebe.config.ts" }), "workspace.tenants": L("[4 declared]", "file", { reader: "bootstrapper", opaque: true, via: "phoebe.config.ts" }) }),
+    "pollIntervalMs": L(300000, "default", { reader: "both" }),
+    "logLevel": L("debug", "toggle", { reader: "engine", via: "PHOEBE_LOG_LEVEL", from: "process", shadowed: [{ source: "default", via: "", value: "info" }] }),
+    "github.owner": L(solo ? "JesusFilm" : "JesusFilm", "file", { via: "phoebe.config.ts" }),
+    "github.repo": L(solo ? "youtube-studio" : "api", "alias", { via: "repository (deprecated alias of github.repo)" }),
+  };
+  const kindsIssue = {
+    "kinds.issue.provider": L("claude-code", "file", { via: "phoebe.config.ts" }),
+    "kinds.issue.model": L("claude-fable-5-1", "overlay", { via: "PHOEBE_MODEL", from: solo ? "rootEnv" : "tenantEnv", shadowed: [{ source: "file", via: "phoebe.config.ts", value: "claude-opus-5" }] }),
+    "kinds.issue.runBudgetMin": L(90, "inherited", { via: "pipelines.work.runBudgetMin" }),
+    "kinds.issue.requiredEnv": L(["ANTHROPIC_API_KEY"], "derived", { via: "provider claude-code" }),
+    "kinds.issue.prompt": L("prompts/issue.md", "default"),
+  };
+  return {
+    fingerprint: d.configFingerprint,
+    warnings: [{ path: "github.repo", message: "`repository` is a deprecated alias of `github.repo`; rename in phoebe.config.ts" }],
+    global,
+    pipelines: {
+      work: { "maxConcurrentUnits": L(2, "file", { via: "phoebe.config.ts" }), "runBudgetMin": L(90, "file", { via: "phoebe.config.ts" }), "labels.ready": L("ready-for-agent", "default"), ...kindsIssue,
+        "kinds.research.provider": L("claude-code", "inherited", { via: "pipelines.work.kinds.issue.provider" }), "kinds.research.model": L("claude-sonnet-5", "toggle", { via: "PHOEBE_RESEARCH_MODEL", from: "process" }), "kinds.research.runBudgetMin": L(30, "file", { via: "phoebe.config.ts" }) },
+      ...(solo ? { research: { "maxConcurrentUnits": L(1, "default"), "runBudgetMin": L(30, "file", { via: "phoebe.config.ts" }), "kinds.research.provider": L("claude-code", "file", { via: "phoebe.config.ts" }), "kinds.research.model": L("claude-sonnet-5", "file", { via: "phoebe.config.ts" }) } }
+               : { sentry: { "maxConcurrentUnits": L(1, "default"), "runBudgetMin": L(45, "file", { via: "phoebe.config.ts" }), "kinds.sentry.provider": L("claude-code", "file", { via: "phoebe.config.ts" }), "kinds.sentry.dsnEnv": L("SENTRY_AUTH_TOKEN", "file", { via: "phoebe.config.ts" }) } }),
+    },
+  };
+}
+DEPLOYMENTS.forEach(d => d.config = configFor(d));
+
+// ───────────────────────────── helpers ─────────────────────────────
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+function age(iso) { if (!iso) return "never"; const s = Math.max(0, Math.round((NOW - new Date(iso))/1000));
+  if (s < 60) return s + " s"; if (s < 3600) return Math.round(s/60) + " min"; if (s < 86400) return (s/3600).toFixed(s<7200?1:0) + " h"; return Math.round(s/86400) + " d"; }
+const fp = (d) => d.identity.keyFingerprint;
+const dep = (f) => DEPLOYMENTS.find(d => d.identity.keyFingerprint === f);
+const flatPipes = (d) => d.fleet.flatMap(t => t.pipelines.map(p => ({ t: t.tenant, p })));
+function doctorCounts(d) { if (!d.doctor) return null; const all = [...d.doctor.report.deployment, ...d.doctor.report.tenants.flatMap(t => t.checks)];
+  return { fail: all.filter(c => c.state==="fail").length, warn: all.filter(c => c.state==="warn").length, unknown: all.filter(c => c.state==="unknown").length }; }
+// #507 §9: fleet row facts + sort
+function rowFacts(d) {
+  const ps = flatPipes(d).filter(x => x.p.provenance === "enumerated");
+  const counts = {}; ps.forEach(x => counts[x.p.state] = (counts[x.p.state]||0)+1);
+  const wedged = ps.filter(x => x.p.wedged).length, crash = ps.filter(x => x.p.process?.crashLooping).length;
+  const held = d.fleet.filter(t => t.tenant.held).length; const dc = doctorCounts(d);
+  const attention = (d.relayView.state === "dark") || wedged || crash || (dc && dc.fail);
+  return { counts, wedged, crash, held, dc, attention };
+}
+function sortedFleet() { return [...DEPLOYMENTS].sort((a,b) => { const ra = rank(a), rb = rank(b); return ra - rb || a.identity.name.localeCompare(b.identity.name); });
+  function rank(d){ if (d.relayView.state==="dark") return 0; const f = rowFacts(d); return (f.wedged||f.crash||(f.dc&&f.dc.fail)) ? 1 : 2; } }
+function connText(d) { const r = d.relayView;
+  if (r.state === "connected") return `<span class="ok">● connected</span> <span class="mut">${age(r.connectedSince)}</span>`;
+  if (r.state === "disconnected") return `<span class="warn">○ disconnected ${age(r.lastHeard)}</span>`;
+  if (r.state === "dark") return `<span class="chip dark">dark ${age(r.darkSince)}</span>${r.replaced ? ' <span class="chip warn">replaced?</span>' : ""}`;
+  return `<span class="mut">◌ unseen</span> <span class="mut">paired ${age(r.pairedAt)} ago</span>`; }
+function doctorText(d) { if (!d.doctor) return '<span class="mut">never</span>'; const c = doctorCounts(d);
+  const base = (c.fail ? `<span class="fail">${c.fail} fail</span> ` : "") + (c.warn ? `<span class="warn">${c.warn} warn</span> ` : "") + (!c.fail && !c.warn ? `<span class="ok">ok</span> ` : "") + `<span class="mut">${age(d.doctor.at)} ago</span>`;
+  return d.doctor.running ? base + ` <span class="chip">running ${age(d.doctor.running.since)}</span>` : base; }
+function engineText(d) { if (!d.bootstrapper) return '<span class="mut">—</span>'; const b = d.bootstrapper;
+  return `<code>${esc(b.engineRef)}</code> → <code>${b.runningSha}</code>` + (b.crashLoop.failingSha ? ` <span class="chip fail">quarantined ${b.crashLoop.failingSha}</span>` : "") + (b.reconcile.state==="reconciling" ? ` <span class="chip warn">reconciling (${b.reconcile.reason}) ${age(b.reconcile.startedAt)}</span>` : ""); }
+function processLine(p) { const pr = p.process; if (!pr) return `<span class="mut">no process (${p.provenance})</span>`;
+  if (pr.state === "running") return `running since ${age(pr.since)} ago` + (pr.restarts ? `, ${pr.restarts} restarts` : "");
+  if (pr.state === "draining") return `draining since ${age(pr.since)} ago`;
+  return `<span class="${pr.crashLooping?"warn":""}">exited (code ${pr.exit.code}${pr.exit.signal?", "+pr.exit.signal:""}) ${age(pr.exit.at)} ago, respawn in ${pr.respawnIn} s${pr.crashLooping?`, crash-looping (${pr.restarts} restarts)`:""}</span>`; }
+function stateLine(p) { const units = p.units?.length ? ` — ${p.units.map(u => `${u.id} (${age(u.startedAt)})`).join(", ")}` : "";
+  return `${p.state}${p.since ? ` since ${age(p.since)} ago` : ""}${units}` + (p.wedged ? ` <span class="chip fail">wedged?</span>` : ""); }
+function toast(msg) { const t = document.createElement("div"); t.className = "toast"; t.innerHTML = msg; document.body.appendChild(t); setTimeout(() => t.remove(), 4200); }
+// stubs for the read-only affordances; they only narrate what the wire would carry
+function runDoctor(f) { const targets = f ? [dep(f)] : DEPLOYMENTS; const lines = targets.map(d => `${d.identity.name}: ${d.relayView.state==="connected" ? (d.doctor?.running ? "joined running doctor" : "doctor-run receipt: started") : "undelivered (" + d.relayView.state + ")"}`);
+  toast(`<b>Run doctor</b><br>${lines.join("<br>")}`); }
+function editable(path, leaf) { if (leaf.opaque) return { ok:false, why:"opaque value; edit the file" }; if (path === "engine.ref") return { ok:false, why:"engine.ref is upgrade's job: phoebe upgrade" }; if (path.startsWith("relay.")) return { ok:false, why:"relay block is bootstrapper-only; local file edit" }; if (path === "workspace.tenants") return { ok:false, why:"fleet declaration; local file edit" };
+  if (leaf.source === "overlay" || leaf.source === "toggle") return { ok:false, why:`set by env ${leaf.via}` }; if (leaf.source === "derived") return { ok:false, why:"derived, not a file field" }; return { ok:true, insert: leaf.source !== "file" && leaf.source !== "alias" }; }
+let modal = null;
+function openEdit(f, path, cur) { modal = { f, path, cur, value: JSON.stringify(cur.value), receipt: null }; render(); }
+function submitEdit() { const d = dep(modal.f); const v = $("#editval").value; let parsed; try { parsed = JSON.parse(v); } catch { parsed = v; }
+  const refused = d.relayView.state !== "connected"; modal.receipt = refused ? { state: "refused", reason: "undelivered", instruction: `phoebe config set ${modal.path} ${JSON.stringify(parsed)}` } : { state: "written", id: "edit_" + Math.random().toString(36).slice(2,6).toUpperCase(), fingerprint: d.configFingerprint }; render(); }
+function secretSet(f, key, tenant) { modal = { f, secret: key, tenant, receipt: null }; render(); }
+function submitSecret() { const d = dep(modal.f); modal.receipt = d.relayView.state==="connected" ? { state: "written", id: "sec_" + Math.random().toString(36).slice(2,6).toUpperCase(), note: "doctor re-run scheduled (#507 §6)" } : { state: "refused", reason: "undelivered", instruction: `printf '%s' "$VALUE" | phoebe secret set ${modal.secret}` }; render(); }
+function closeModal() { modal = null; render(); }
+
+// ───────────────────────────── routing ─────────────────────────────
+const VARIANTS = { A: "Ops table (status order)", B: "Tiles and drawer", C: "Sidebar inspector" };
+function variant() { return new URLSearchParams(location.search).get("variant") || "A"; }
+function setVariant(v) { const u = new URL(location.href); u.searchParams.set("variant", v); history.replaceState(null, "", u); render(); }
+function route() { const h = location.hash.replace(/^#\/?/, "").split("/"); if (h[0] === "d" && h[1]) return { page: h[2] === "config" ? "config" : (h[2] || "deployment"), f: decodeURIComponent(h[1]) }; if (h[0]==="people") return { page: "people" }; return { page: "fleet" }; }
+const href = (f, sub) => `#/d/${encodeURIComponent(f)}${sub ? "/" + sub : ""}`;
+window.addEventListener("hashchange", render);
+window.addEventListener("keydown", (e) => { const t = e.target; if (t.matches("input,textarea,[contenteditable]")) return; const ks = Object.keys(VARIANTS); const i = ks.indexOf(variant()); if (e.key === "ArrowLeft") setVariant(ks[(i-1+ks.length)%ks.length]); if (e.key === "ArrowRight") setVariant(ks[(i+1)%ks.length]); });
+
+// ───────────────────────────── shared bits ─────────────────────────────
+function topbar(extra="") { return `<div class="top"><span class="brand">Phoebe console</span><a href="#/fleet">Fleet</a><a href="#/people">People</a><span class="sp"></span>${extra}<span class="mut">mike@example.org</span></div>`; }
+function switcher() { const ks = Object.keys(VARIANTS), v = variant(), i = ks.indexOf(v);
+  return `<div class="switch"><button onclick="setVariant('${ks[(i-1+ks.length)%ks.length]}')">←</button><span>${v} — ${VARIANTS[v]}</span><button onclick="setVariant('${ks[(i+1)%ks.length]}')">→</button></div>`; }
+function modalHtml() { if (!modal) return ""; const d = dep(modal.f);
+  if (modal.secret) return `<div class="modal" onclick="if(event.target===this)closeModal()"><div class="box"><h2>Set secret <code>${modal.secret}</code>${modal.tenant?` on ${modal.tenant}`:""}</h2>
+    <p class="mut">Encrypted in this browser to the deployment key ${fp(d)}; the relay forwards an envelope it cannot open. The console never reads a secret back.</p>
+    ${modal.receipt ? receiptHtml(modal.receipt) : `<textarea id="secval" rows="3" placeholder="paste value"></textarea><p><button class="primary" onclick="submitSecret()">Set</button> <button onclick="closeModal()">Cancel</button></p>`}
+    ${modal.receipt ? `<p><button onclick="closeModal()">Close</button></p>` : ""}</div></div>`;
+  return `<div class="modal" onclick="if(event.target===this)closeModal()"><div class="box"><h2>Edit <code>${modal.path}</code></h2>
+    <p class="mut">Field patch <code>{ path, value }</code> against fingerprint <code>${d.configFingerprint}</code>; written in place by the bootstrapper, then reconcile (reason: config). Refused if the config changed since you loaded it.</p>
+    <dl class="kv"><dt>current</dt><dd><code>${esc(JSON.stringify(modal.cur.value))}</code> <span class="chip src ${modal.cur.source}">${modal.cur.source}</span> ${modal.cur.via?`<span class="mut">via ${esc(modal.cur.via)}</span>`:""}</dd></dl>
+    ${modal.receipt ? receiptHtml(modal.receipt) : `<p><input id="editval" value="${esc(modal.value)}"></p><p><button class="primary" onclick="submitEdit()">Write</button> <button onclick="closeModal()">Cancel</button></p>`}
+    ${modal.receipt ? `<p><button onclick="closeModal()">Close</button></p>` : ""}</div></div>`; }
+function receiptHtml(r) { return r.state === "written" ? `<p><span class="chip ok">receipt: written</span> <code>${r.id}</code>${r.note?` <span class="mut">${r.note}</span>`:""}</p><p class="mut">Receipt ends here. Watch the report: reconcile → idle with <code>lastEditId=${r.id}</code>, and the leaf shows <span class="chip src file">file</span> with the new value.</p>` : `<p><span class="chip fail">receipt: refused</span> ${r.reason}</p><p>Apply by hand on the host:</p><pre>${esc(r.instruction)}</pre>`; }
+function peoplePage() { return `${topbar()}<div class="wrap"><h1>People</h1><p class="mut">Everyone here can see every deployment, edit config, set secrets, and mint pairing tokens. No roles.</p><table><tr><th>email</th><th>from</th><th></th></tr>
+  <tr><td>mike@example.org</td><td>first login (seed)</td><td><button disabled>remove</button> <span class="mut">not yourself</span></td></tr><tr><td>sam@example.org</td><td>console</td><td><button onclick="toast('removed sam@example.org')">remove</button></td></tr><tr><td>ops@example.org</td><td>ALLOWED_EMAILS</td><td><button disabled>remove</button> <span class="mut">from environment</span></td></tr></table>
+  <p><input class="filter" placeholder="email"> <button>Add</button></p><h2>Pair a deployment</h2><p><button class="primary" onclick="toast('pairing token <code>pt_7Hq…</code> — shown once, expires in 15 min.<br>Set <code>relay.url</code> in phoebe.config.ts and <code>PHOEBE_RELAY_TOKEN</code> in .env, then boot.')">Mint pairing token</button></p></div>`; }
+
+// ───────────────────────────── variant A: ops table, status order ─────────────────────────────
+// Fleet is one dense table (the #507 §9 row, literally). Deployment page is `phoebe status`'s text
+// order as stacked panels. Config is one line per leaf, like `phoebe config`'s human output.
+const A = {
+  fleet() { const rows = sortedFleet().map(d => { const f = rowFacts(d); const cls = d.relayView.state==="dark" ? "darkrow" : f.attention ? "attn" : "";
+      const pc = Object.entries(f.counts).map(([k,v]) => `${v} ${k}`).join(", ") || "—";
+      return `<tr class="${cls}"><td><a href="${href(fp(d))}"><b>${d.identity.name}</b></a><br><span class="mut mono">${fp(d)} · ${d.identity.arm}</span></td><td>${connText(d)}</td>
+        <td>${pc}${f.wedged?` <span class="chip fail">${f.wedged} wedged</span>`:""}${f.crash?` <span class="chip warn">${f.crash} crash-looping</span>`:""}</td><td>${engineText(d)}</td><td>${doctorText(d)}</td><td>${f.held?`<span class="warn">${f.held} held</span>`:"—"}</td><td>${d.reportAt?age(d.reportAt)+" ago":"—"}</td></tr>`; }).join("");
+    return `${topbar(`<button onclick="runDoctor()">Run doctor (fleet)</button>`)}<div class="wrap"><h1>Fleet <span class="mut">${DEPLOYMENTS.length} deployments</span></h1>
+      <table><tr><th>deployment</th><th>connection</th><th>pipelines</th><th>engine</th><th>doctor</th><th>held</th><th>report</th></tr>${rows}</table>
+      <p class="mut">Sorted: dark first, then wedged / doctor fail / crash-loop, then name. No score.</p></div>`; },
+  deployment(d) { const b = d.bootstrapper; const r = d.relayView;
+    const head = !b ? `<div class="hdrline">no deployment report: this link has never connected</div>` :
+      `<div class="hdrline">${d.identity.name}  ${d.identity.arm}  ${fp(d)}
+bootstrapper  engine ${esc(b.engineRef)} → ${b.runningSha}${b.crashLoop.failingSha?`  quarantined ${b.crashLoop.failingSha} (${b.crashLoop.failureCount} failures)`:""}  reconcile ${b.reconcile.state}${b.reconcile.reason?` (${b.reconcile.reason}, ${age(b.reconcile.startedAt)})`:""}  slots ${b.slots.held}/${b.slots.cap}  report ${age(d.reportAt)} ago
+relay         ${r.state}${r.connectedSince?` since ${age(r.connectedSince)} ago`:""}${r.darkSince?` since ${age(r.darkSince)} ago`:""}  last heard ${age(r.lastHeard)} ago  protocol ${r.protocol ?? "—"}${r.lastClose?`  last close ${r.lastClose.code} ${age(r.lastClose.at)} ago`:""}${r.replaced?"  replaced?":""}</div>`;
+    const fleet = d.fleet.map(t => { const tn = t.tenant; return `<div class="rowline"><b>${esc(tn.path)}</b> ${tn.slug?`<code>${tn.slug}</code>`:""} <span class="chip">${tn.config?"config":"no config"}</span><span class="chip">${tn.env?"env":"no env"}</span><span class="chip">${tn.data?"data":"no data"}</span>${tn.arm?`<span class="chip">${tn.arm}</span>`:""}${tn.disabled?`<span class="chip">disabled</span>`:""}${tn.held?` <span class="fail">held: ${esc(tn.held)}</span>`:""}</div>` +
+      t.pipelines.map(p => `<div class="indent rowline"><b>${p.name}</b>${p.provenance!=="enumerated"?` <span class="chip">${p.provenance}</span>`:""}<div class="indent2 mut">${processLine(p)}</div><div class="indent2">${stateLine(p)}</div>${p.wedged?`<div class="indent2 fail">${esc(p.wedgedWhy)}</div>`:""}</div>`).join(""); }).join("");
+    const doc = d.doctor ? `<table><tr><th>check</th><th>state</th><th>detail</th></tr>${d.doctor.report.deployment.map(c => `<tr><td>${c.id}</td><td class="${c.state}">${c.state}</td><td>${esc(c.detail)}</td></tr>`).join("")}${d.doctor.report.tenants.map(t => t.checks.map((c,i) => `<tr><td>${i===0?`<b>${t.slug}</b> `:""}${c.id}</td><td class="${c.state}">${c.state}</td><td>${esc(c.detail)}</td></tr>`).join("")).join("")}</table>` : `<p class="mut">never</p>`;
+    const env = d.env.length ? `<table><tr><th>key</th><th>scope</th><th>present</th><th>source</th><th>set</th><th></th></tr>${d.env.map(e => `<tr><td><code>${e.key}</code>${e.tenant?` <span class="mut">${e.tenant}</span>`:""}</td><td>${e.scope}</td><td>${e.present?"yes":"<span class=warn>no</span>"}</td><td>${e.source??"—"}${e.shadowed?` <span class="chip warn">shadows ${e.shadowed}</span>`:""}</td><td class="mut">${e.setAt?`${age(e.setAt)} ago by ${e.by}`:""}</td><td>${e.scope==="tenant"?`<button onclick="secretSet('${fp(d)}','${e.key}',${e.tenant?`'${e.tenant}'`:"null"})">set</button>${e.source==="store"?` <button onclick="toast('cleared ${e.key}: .env / ambient governs again')">clear</button>`:""}`:`<span class="mut">deployment-scope: edit .env, restart</span>`}</td></tr>`).join("")}</table>` : `<p class="mut">—</p>`;
+    return `${topbar(`<a href="#/fleet">← fleet</a>`)}<div class="wrap"><h1>${d.identity.name} <span class="mut">${d.identity.arm}</span> <a href="${href(fp(d),"config")}" style="font-size:13px;margin-left:12px">effective config →</a></h1>${head}
+      <h2>Fleet</h2>${fleet || '<p class="mut">—</p>'}
+      <h2>Doctor <span class="mut" style="font-weight:400">${d.doctor?`${d.doctor.trigger} · ${age(d.doctor.at)} ago${d.doctor.running?` · running since ${age(d.doctor.running.since)} (${d.doctor.running.trigger})`:""}${d.doctor.lastAttempt?` · last attempt ${d.doctor.lastAttempt.outcome} ${age(d.doctor.lastAttempt.at)} ago`:""}`:""}</span> <button onclick="runDoctor('${fp(d)}')" ${r.state!=="connected"?"disabled title='undelivered'":""}>Run doctor</button></h2>${doc}
+      <h2>Secrets <span class="mut" style="font-weight:400">presence and provenance only</span></h2>${env}
+      ${d.pendingEdits.length?`<h2>Edits not yet in a commit</h2><table>${d.pendingEdits.map(e=>`<tr><td><code>${e.path}</code> = <code>${esc(JSON.stringify(e.value))}</code></td><td class="mut">${e.id} · ${age(e.at)} ago · ${e.by}</td></tr>`).join("")}</table>`:""}</div>`; },
+  config(d) { const c = d.config; if (!c) return `${topbar()}<div class="wrap"><p class="mut">no report, no config</p></div>`;
+    const line = (path, leaf, sub) => { const e = editable(path, leaf); const full = sub ? `${sub}.${path}` : path;
+      return `<div class="leaf"><code>${esc(path)}</code><span><code>${esc(JSON.stringify(leaf.value))}</code> <span class="chip src ${leaf.source}">${leaf.source}</span>${leaf.via?`<span class="mut">via ${esc(leaf.via)}</span>`:""}${leaf.from?` <span class="mut">(${leaf.from})</span>`:""}${leaf.reader!=="engine"?` <span class="chip">${leaf.reader}</span>`:""}${leaf.opaque?` <span class="chip">opaque</span>`:""}${(leaf.shadowed||[]).map(s=>`<div class="mut indent">shadowed: <code>${esc(JSON.stringify(s.value))}</code> (${s.source}${s.via?" via "+esc(s.via):""})</div>`).join("")}</span><span>${e.ok?`<button onclick='openEdit(${JSON.stringify(fp(d))},${JSON.stringify(full)},${JSON.stringify(leaf)})'>${e.insert?"set":"edit"}</button>`:`<span class="mut" title="${esc(e.why)}">${esc(e.why)}</span>`}</span></div>`; };
+    return `${topbar(`<a href="${href(fp(d))}">← ${d.identity.name}</a>`)}<div class="wrap"><h1>Effective config <span class="mut">${d.identity.name} · fingerprint <code>${c.fingerprint}</code></span></h1>
+      ${c.warnings.map(w=>`<div class="card warn">⚠ <code>${w.path}</code>: ${esc(w.message)}</div>`).join("")}
+      <h2>global</h2>${Object.entries(c.global).map(([p,l])=>line(p,l)).join("")}
+      ${Object.entries(c.pipelines).map(([name,fields])=>`<h2>pipelines.${name}</h2>${Object.entries(fields).map(([p,l])=>line(p,l,`pipelines.${name}`)).join("")}`).join("")}
+      <p class="mut">One line per leaf, every source shown including defaults; shadowed values under the winner. Edit is offered only on plain file literals or insertable paths; everything else says why and hands you the file.</p></div>`; },
+};
+
+// ───────────────────────────── variant B: tiles and drawer ─────────────────────────────
+// Fleet is a tile per deployment with a pipeline strip. Deployment page is split: tenants/pipelines
+// on the left as a list, the selected thing on the right, doctor and secrets as cards. Config is a
+// collapsible tree with inline edit and a source legend.
+const B = {
+  fleet() { const tiles = sortedFleet().map(d => { const f = rowFacts(d); const ps = flatPipes(d).filter(x=>x.p.provenance==="enumerated");
+      const strip = ps.map(x => `<div class="pipe ${x.p.wedged?"wedged":x.p.process?.crashLooping?"crash":x.p.state==="working"?"working":""}"><b>${esc(x.t.path.split("/").pop())}/${x.p.name}</b> <span class="mut">${x.p.state}${x.p.since?` · ${age(x.p.since)}`:""}</span>${x.p.units?.length?` <span class="mut">${x.p.units.map(u=>u.id).join(" ")}</span>`:""}${x.p.wedged?` <span class="chip fail">wedged?</span>`:""}${x.p.process?.crashLooping?` <span class="chip warn">crash-looping</span>`:""}</div>`).join("");
+      return `<div class="card" style="${d.relayView.state==="dark"?"opacity:.75;background:#f3f3f3":""}"><div style="display:flex;justify-content:space-between;align-items:baseline"><a href="${href(fp(d))}"><b style="font-size:16px">${d.identity.name}</b></a>${connText(d)}</div><div class="mut mono" style="font-size:11px">${fp(d)} · ${d.identity.arm}</div>
+        <div class="grid g3" style="margin:10px 0"><div class="stat">${ps.length}<small>pipelines${f.wedged?` · <span class="fail">${f.wedged} wedged</span>`:""}${f.crash?` · <span class="warn">${f.crash} crash</span>`:""}</small></div><div class="stat" style="font-size:14px">${engineText(d)}<small>engine</small></div><div class="stat" style="font-size:14px">${doctorText(d)}<small>doctor${f.held?` · <span class="warn">${f.held} held</span>`:""}</small></div></div>${strip || `<p class="mut">${d.reportAt?"no pipelines":"never reported"}</p>`}</div>`; }).join("");
+    return `${topbar(`<button onclick="runDoctor()">Run doctor on every connected deployment</button>`)}<div class="wrap"><h1>Fleet</h1><div class="grid gcards">${tiles}</div></div>`; },
+  deployment(d) { let sel = new URLSearchParams(location.hash.split("?")[1]||"").get("sel") || "overview"; const r = d.relayView;
+    if (sel.startsWith("t:") && !d.fleet.some(t=>t.tenant.path===sel.slice(2))) sel = "overview";
+    if (sel.startsWith("p:") && !d.fleet.some(t=>t.pipelines.some(p=>`p:${t.tenant.path}/${p.name}`===sel))) sel = "overview";
+    const nav = `<div class="list"><a class="${sel==="overview"?"cur":""}" href="${href(fp(d))}?sel=overview">Overview</a>${d.fleet.map(t=>`<a class="${sel==="t:"+t.tenant.path?"cur":""}" href="${href(fp(d))}?sel=t:${esc(t.tenant.path)}">${esc(t.tenant.path)}${t.tenant.held?' <span class="chip fail">held</span>':""}${t.tenant.disabled?' <span class="chip">disabled</span>':""}</a>${t.pipelines.map(p=>`<a class="${sel==="p:"+t.tenant.path+"/"+p.name?"cur":""}" style="padding-left:24px" href="${href(fp(d))}?sel=p:${esc(t.tenant.path)}/${p.name}">${p.name} <span class="mut">${p.state}</span>${p.wedged?' <span class="chip fail">wedged?</span>':""}${p.process?.crashLooping?' <span class="chip warn">crash</span>':""}</a>`).join("")}`).join("")}<a class="${sel==="doctor"?"cur":""}" href="${href(fp(d))}?sel=doctor">Doctor</a><a class="${sel==="secrets"?"cur":""}" href="${href(fp(d))}?sel=secrets">Secrets</a><a href="${href(fp(d),"config")}">Effective config →</a></div>`;
+    let main;
+    if (sel === "overview") { const b = d.bootstrapper; main = !b ? `<div class="card mut">no deployment report: never connected</div>` : `<div class="grid g2"><div class="card"><h3>Bootstrapper</h3><dl class="kv"><dt>engine</dt><dd>${engineText(d)}</dd><dt>crash-loop</dt><dd>${b.crashLoop.failingSha?`<span class="fail">failing ${b.crashLoop.failingSha} × ${b.crashLoop.failureCount}, last good ${b.crashLoop.lastGoodSha}</span>`:"none"}</dd><dt>reconcile</dt><dd>${b.reconcile.state}${b.reconcile.reason?` (${b.reconcile.reason}) since ${age(b.reconcile.startedAt)}`:""}${b.reconcile.lastEditId?` <span class="mut">last edit ${b.reconcile.lastEditId}</span>`:""}</dd><dt>slots</dt><dd>${b.slots.held} / ${b.slots.cap}</dd><dt>report</dt><dd>${age(d.reportAt)} ago</dd></dl></div>
+      <div class="card"><h3>Connection <span class="mut">(relay's facts)</span></h3><dl class="kv"><dt>state</dt><dd>${connText(d)}</dd><dt>last heard</dt><dd>${age(r.lastHeard)} ago</dd><dt>protocol</dt><dd>${r.protocol??"—"}</dd><dt>last close</dt><dd>${r.lastClose?`${r.lastClose.code} · ${age(r.lastClose.at)} ago`:"—"}</dd></dl></div></div>
+      ${d.pendingEdits.length?`<div class="card"><h3>Edits not yet in a commit</h3>${d.pendingEdits.map(e=>`<div><code>${e.path}</code> = <code>${esc(JSON.stringify(e.value))}</code> <span class="mut">${age(e.at)} ago · ${e.by}</span></div>`).join("")}</div>`:""}`; }
+    else if (sel.startsWith("t:")) { const t = d.fleet.find(t=>t.tenant.path===sel.slice(2)); const tn=t.tenant; main = `<div class="card"><h3>Tenant</h3><dl class="kv"><dt>path</dt><dd>${esc(tn.path)}</dd><dt>repo</dt><dd>${tn.slug?`<code>${tn.slug}</code>`:"—"}</dd><dt>arm</dt><dd>${tn.arm??"—"}</dd><dt>files</dt><dd>${["config","env","data"].map(k=>`<span class="chip ${tn[k]?"ok":"warn"}">${k}</span>`).join("")}</dd>${tn.held?`<dt>held</dt><dd class="fail">${esc(tn.held)}</dd>`:""}${tn.disabled?`<dt>disabled</dt><dd>yes</dd>`:""}</dl></div>${t.pipelines.map(p=>`<div class="card"><b>${p.name}</b> — ${stateLine(p)}<div class="mut">${processLine(p)}</div></div>`).join("")}`; }
+    else if (sel.startsWith("p:")) { const [tp, pn] = [sel.slice(2).slice(0, sel.slice(2).lastIndexOf("/")), sel.slice(sel.lastIndexOf("/")+1)]; const t = d.fleet.find(t=>t.tenant.path===tp); const p = t.pipelines.find(p=>p.name===pn);
+      main = `<div class="card"><h3>Process</h3>${processLine(p)}</div><div class="card"><h3>State</h3>${stateLine(p)}${p.wedged?`<div class="fail" style="margin-top:6px">${esc(p.wedgedWhy)}</div>`:""}${p.units?.length?`<table style="margin-top:8px"><tr><th>unit</th><th>kind</th><th>in flight</th><th>budget</th></tr>${p.units.map(u=>`<tr><td><a href="#">${u.id}</a></td><td>${u.kind}</td><td>${age(u.startedAt)}</td><td>${u.budgetMin} min</td></tr>`).join("")}</table>`:""}</div><div class="card"><h3>Raw status.json</h3><pre>${esc(JSON.stringify({ currentUnits: p.units||[], waitingForSlot: p.state==="waiting for slot", updatedAt: p.since }, null, 2))}</pre></div>`; }
+    else if (sel === "doctor") { main = !d.doctor ? `<div class="card mut">never</div>` : `<div class="card"><div style="display:flex;justify-content:space-between"><span>${doctorText(d)} <span class="mut">· trigger ${d.doctor.trigger}${d.doctor.lastAttempt?` · last attempt ${d.doctor.lastAttempt.outcome} ${age(d.doctor.lastAttempt.at)} ago`:""}</span></span><button onclick="runDoctor('${fp(d)}')" ${r.state!=="connected"?"disabled":""}>Run doctor</button></div></div>
+      <div class="card"><h3>Deployment</h3>${d.doctor.report.deployment.map(c=>`<div><span class="chip ${c.state}">${c.state}</span> ${c.id} <span class="mut">${esc(c.detail)}</span></div>`).join("")}</div>${d.doctor.report.tenants.map(t=>`<div class="card"><h3>${t.slug}</h3>${t.checks.map(c=>`<div><span class="chip ${c.state}">${c.state}</span> ${c.id} <span class="mut">${esc(c.detail)}</span></div>`).join("")}</div>`).join("")}`; }
+    else if (sel === "secrets") { const groups = {}; d.env.forEach(e => { const g = e.scope==="deployment" ? "deployment" : (e.tenant || d.fleet[0]?.tenant.slug || "tenant"); (groups[g] ||= []).push(e); });
+      main = Object.entries(groups).map(([g,es])=>`<div class="card"><h3>${g}${g==="deployment"?' <span class="mut">(edit .env on the host, then restart)</span>':""}</h3>${es.map(e=>`<div class="leaf"><code>${e.key}</code><span>${e.present?`<span class="chip ok">present</span> ${e.source}`:`<span class="chip warn">absent</span>`}${e.shadowed?` <span class="chip warn">shadows ${e.shadowed}</span>`:""}${e.setAt?` <span class="mut">set ${age(e.setAt)} ago by ${e.by}</span>`:""}</span><span>${e.scope==="tenant"?`<button onclick="secretSet('${fp(d)}','${e.key}',${e.tenant?`'${e.tenant}'`:"null"})">${e.present?"rotate":"set"}</button>${e.source==="store"?` <button onclick="toast('cleared')">clear</button>`:""}`:""}</span></div>`).join("")}</div>`).join("") + `<p class="mut">No value, no last-4, no hash. "Does it work" is doctor's <code>token</code> and <code>declared-env</code> checks.</p>`; }
+    return `${topbar(`<a href="#/fleet">← fleet</a>`)}<div class="wrap"><h1>${d.identity.name} ${connText(d)}</h1><div class="split"><div>${nav}</div><div>${main}</div></div></div>`; },
+  config(d) { const c = d.config; if (!c) return `${topbar()}<div class="wrap"><p class="mut">no report</p></div>`;
+    const leaf = (path, l, full) => { const e = editable(full, l); return `<div class="leaf"><code>${esc(path)}</code><span><code>${esc(JSON.stringify(l.value))}</code> <span class="chip src ${l.source}">${l.source}${l.via?` · ${esc(l.via)}`:""}</span>${l.from?`<span class="chip">${l.from}</span>`:""}${l.reader!=="engine"?`<span class="chip">${l.reader}</span>`:""}${(l.shadowed||[]).map(s=>`<span class="chip" title="shadowed">↓ ${s.source} ${esc(JSON.stringify(s.value))}</span>`).join("")}</span><span>${e.ok?`<a href="javascript:void 0" onclick='openEdit(${JSON.stringify(fp(d))},${JSON.stringify(full)},${JSON.stringify(l)})'>${e.insert?"set…":"edit…"}</a>`:`<span class="mut">🔒 ${esc(e.why)}</span>`}</span></div>`; };
+    // group global by first segment, pipelines → kinds nested
+    const groups = {}; Object.entries(c.global).forEach(([p,l]) => { const [h, ...rest] = p.split("."); (groups[h] ||= []).push([rest.join(".") || h, l, p]); });
+    const tree = Object.entries(groups).map(([h,ls])=>`<details open><summary>${h}</summary>${ls.map(([p,l,full])=>leaf(p,l,full)).join("")}</details>`).join("");
+    const pipes = Object.entries(c.pipelines).map(([name,fields]) => { const own = Object.entries(fields).filter(([p])=>!p.startsWith("kinds.")); const kinds = {}; Object.entries(fields).filter(([p])=>p.startsWith("kinds.")).forEach(([p,l])=>{ const [,k,...rest]=p.split("."); (kinds[k] ||= []).push([rest.join("."), l, `pipelines.${name}.${p}`]); });
+      return `<details open><summary>pipelines.${name}</summary>${own.map(([p,l])=>leaf(p,l,`pipelines.${name}.${p}`)).join("")}${Object.entries(kinds).map(([k,ls])=>`<details open><summary>kinds.${k}</summary>${ls.map(([p,l,full])=>leaf(p,l,full)).join("")}</details>`).join("")}</details>`; }).join("");
+    return `${topbar(`<a href="${href(fp(d))}">← ${d.identity.name}</a>`)}<div class="wrap"><h1>Effective config <span class="mut">${d.identity.name}</span></h1>
+      <div class="card"><b>Legend</b> ${["default","file","alias","overlay","toggle","derived","inherited"].map(s=>`<span class="chip src ${s}">${s}</span>`).join("")} <span class="mut">· overlay and toggle are both "set by env" today; #513 decides whether they merge.</span> <span class="mut" style="float:right">fingerprint <code>${c.fingerprint}</code></span></div>
+      ${c.warnings.map(w=>`<div class="card warn">⚠ <code>${w.path}</code> — ${esc(w.message)}</div>`).join("")}
+      <div class="card cfg-tree">${tree}${pipes}</div></div>`; },
+};
+
+// ───────────────────────────── variant C: sidebar inspector ─────────────────────────────
+// The fleet is a persistent left rail (always visible, so "alive" is never more than a glance
+// away); the main pane is one deployment with tabs. Config is a filterable table grouped by source.
+const C = {
+  rail(cur) { return `<nav><div style="padding:4px 14px" class="mut">FLEET <button style="float:right;font-size:11px;padding:1px 6px" onclick="runDoctor()">doctor all</button></div>${sortedFleet().map(d => { const f = rowFacts(d); const dot = d.relayView.state==="connected"?"ok":d.relayView.state==="dark"?"dark":"mut";
+    return `<a class="${cur===fp(d)?"cur":""}" href="${href(fp(d))}"><span class="${dot}">●</span> ${d.identity.name}${d.relayView.replaced?' <span class="chip warn">replaced?</span>':""}<div class="sub mut">${d.relayView.state}${f.wedged?` · <span class="fail">${f.wedged} wedged</span>`:""}${f.crash?` · <span class="warn">crash-loop</span>`:""}${f.dc?.fail?` · <span class="fail">doctor ${f.dc.fail}</span>`:""}${f.held?` · ${f.held} held`:""}</div></a>`; }).join("")}<a href="#/people" style="margin-top:12px">People</a></nav>`; },
+  fleet() { const d = sortedFleet()[0]; // fleet page = rail + a compact overview grid
+    const cells = sortedFleet().map(d => { const f = rowFacts(d); const ps = flatPipes(d).filter(x=>x.p.provenance==="enumerated"); const tot = ps.length||1;
+      const bar = ps.length ? `<div class="bar">${ps.map(x=>`<i style="width:${100/tot}%;background:${x.p.wedged?"#b91c1c":x.p.process?.crashLooping?"#9a6700":x.p.state==="working"?"#1a7f37":x.p.state==="waiting for slot"?"#60a5fa":"#cfcfcf"}" title="${x.t.path}/${x.p.name}: ${x.p.state}"></i>`).join("")}</div>` : "";
+      return `<div class="card"><a href="${href(fp(d))}"><b>${d.identity.name}</b></a> ${connText(d)}<div style="margin:8px 0">${bar}</div><div class="mut" style="font-size:12px">${ps.length} pipelines · ${engineText(d)} · doctor ${doctorText(d)}</div></div>`; }).join("");
+    return `${topbar()}<div class="side">${this.rail(null)}<div class="wrap"><h1>Fleet</h1><p class="mut">Bars: one segment per pipeline — green working, blue waiting for slot, grey idle, red wedged, amber crash-looping.</p><div class="grid g2">${cells}</div></div></div>`; },
+  deployment(d, tab="overview") { const r = d.relayView; const b = d.bootstrapper;
+    const tabs = ["overview","pipelines","doctor","secrets","config"].map(t=>`<a class="${tab===t?"cur":""}" href="${href(fp(d), t==="overview"?"":t)}">${t}</a>`).join("");
+    let body;
+    if (tab === "overview") body = !b ? `<p class="mut">no deployment report: never connected. Paired ${age(r.pairedAt)} ago.</p>` : `<div class="grid g3"><div class="card"><div class="stat">${connText(d)}<small>connection · last heard ${age(r.lastHeard)} ago · protocol ${r.protocol}${r.lastClose?` · last close ${r.lastClose.code}`:""}</small></div></div><div class="card"><div class="stat" style="font-size:15px">${engineText(d)}<small>engine · reconcile ${b.reconcile.state}${b.reconcile.reason?` (${b.reconcile.reason})`:""} · slots ${b.slots.held}/${b.slots.cap}</small></div></div><div class="card"><div class="stat" style="font-size:15px">${doctorText(d)}<small>doctor · ${d.doctor?.trigger??""}</small></div></div></div>
+      <h3>Pipelines at a glance</h3>${flatPipes(d).filter(x=>x.p.provenance==="enumerated").map(x=>`<div class="pipe ${x.p.wedged?"wedged":x.p.process?.crashLooping?"crash":x.p.state==="working"?"working":""}"><b>${esc(x.t.path)}/${x.p.name}</b> — ${stateLine(x.p)}<div class="mut">${processLine(x.p)}</div>${x.p.wedged?`<div class="fail">${esc(x.p.wedgedWhy)}</div>`:""}</div>`).join("")}
+      ${d.fleet.filter(t=>t.tenant.held).map(t=>`<div class="card fail">held: <b>${esc(t.tenant.path)}</b> — ${esc(t.tenant.held)}</div>`).join("")}
+      ${d.pendingEdits.length?`<h3>Edits not yet in a commit</h3>${d.pendingEdits.map(e=>`<div><code>${e.path}</code> = <code>${esc(JSON.stringify(e.value))}</code> <span class="mut">${age(e.at)} ago · ${e.by}</span></div>`).join("")}`:""}`;
+    else if (tab === "pipelines") body = `<table><tr><th>tenant</th><th>pipeline</th><th>process</th><th>state</th><th>units</th><th>provenance</th></tr>${d.fleet.flatMap(t => t.pipelines.length ? t.pipelines.map(p=>`<tr class="${p.wedged?"attn":""}"><td>${esc(t.tenant.path)}${t.tenant.disabled?' <span class="chip">disabled</span>':""}</td><td><b>${p.name}</b></td><td class="mut">${processLine(p)}</td><td>${stateLine(p)}${p.wedged?`<div class="fail">${esc(p.wedgedWhy)}</div>`:""}</td><td>${(p.units||[]).map(u=>`${u.id} <span class="mut">${age(u.startedAt)}/${u.budgetMin} min</span>`).join("<br>")||"—"}</td><td>${p.provenance}</td></tr>`) : [`<tr><td>${esc(t.tenant.path)}</td><td colspan=5 class="${t.tenant.held?"fail":"mut"}">${t.tenant.held?"held: "+esc(t.tenant.held):t.tenant.disabled?"disabled":"no pipelines"}</td></tr>`]).join("")}</table>`;
+    else if (tab === "doctor") body = !d.doctor ? `<p class="mut">never</p>` : `<p>${doctorText(d)} <button onclick="runDoctor('${fp(d)}')" ${r.state!=="connected"?"disabled":""}>Run doctor</button>${d.doctor.lastAttempt?` <span class="mut">last attempt ${d.doctor.lastAttempt.outcome} ${age(d.doctor.lastAttempt.at)} ago</span>`:""}</p><div class="grid g2"><div class="card"><h3>deployment</h3>${d.doctor.report.deployment.map(c=>`<div><span class="${c.state}">■</span> ${c.id} <span class="mut">${esc(c.detail)}</span></div>`).join("")}</div>${d.doctor.report.tenants.map(t=>`<div class="card"><h3>${t.slug}</h3>${t.checks.map(c=>`<div><span class="${c.state}">■</span> ${c.id} <span class="mut">${esc(c.detail)}</span></div>`).join("")}</div>`).join("")}</div>`;
+    else if (tab === "secrets") body = `<table><tr><th>key</th><th>scope</th><th>tenant</th><th>present</th><th>source</th><th>set</th><th></th></tr>${d.env.map(e=>`<tr><td><code>${e.key}</code></td><td>${e.scope}</td><td>${e.tenant??(e.scope==="tenant"?d.fleet[0]?.tenant.slug??"":"")}</td><td>${e.present?`<span class="ok">●</span>`:`<span class="warn">○</span>`}</td><td>${e.source??"—"}${e.shadowed?` <span class="chip warn">shadows ${e.shadowed}</span>`:""}</td><td class="mut">${e.setAt?`${age(e.setAt)} ago · ${e.by}`:""}</td><td>${e.scope==="tenant"?`<button onclick="secretSet('${fp(d)}','${e.key}',${e.tenant?`'${e.tenant}'`:"null"})">set</button>${e.source==="store"?` <button onclick="toast('cleared')">clear</button>`:""}`:`<span class="mut">host .env</span>`}</td></tr>`).join("")}</table>`;
+    return `${topbar()}<div class="side">${this.rail(fp(d))}<div class="wrap"><h1>${d.identity.name} <span class="mut" style="font-size:12px">${fp(d)} · ${d.identity.arm} · report ${d.reportAt?age(d.reportAt)+" ago":"—"}</span></h1><div class="tabs">${tabs}</div>${body}</div></div>`; },
+  config(d) { const c = d.config; if (!c) return this.deployment(d, "config").replace("</div></div></div>", `<p class="mut">no report</p></div></div></div>`);
+    const q = (new URLSearchParams(location.hash.split("?")[1]||"").get("q")||"").toLowerCase(); const src = new URLSearchParams(location.hash.split("?")[1]||"").get("src")||"";
+    const rows = []; Object.entries(c.global).forEach(([p,l])=>rows.push([p,l])); Object.entries(c.pipelines).forEach(([n,f])=>Object.entries(f).forEach(([p,l])=>rows.push([`pipelines.${n}.${p}`,l])));
+    const vis = rows.filter(([p,l]) => (!q || p.toLowerCase().includes(q) || JSON.stringify(l.value).toLowerCase().includes(q)) && (!src || l.source===src));
+    const counts = {}; rows.forEach(([,l])=>counts[l.source]=(counts[l.source]||0)+1);
+    const table = `<table><tr><th>path</th><th>value</th><th>source</th><th>reader</th><th></th></tr>${vis.map(([p,l])=>{ const e = editable(p,l); return `<tr><td><code>${esc(p)}</code></td><td><code>${esc(JSON.stringify(l.value))}</code>${(l.shadowed||[]).map(s=>`<div class="mut" style="font-size:12px">shadows ${s.source} <code>${esc(JSON.stringify(s.value))}</code></div>`).join("")}</td><td><span class="chip src ${l.source}">${l.source}</span>${l.via?`<div class="mut" style="font-size:12px">${esc(l.via)}${l.from?` (${l.from})`:""}</div>`:""}</td><td class="mut">${l.reader}${l.opaque?" · opaque":""}</td><td>${e.ok?`<button onclick='openEdit(${JSON.stringify(fp(d))},${JSON.stringify(p)},${JSON.stringify(l)})'>${e.insert?"set":"edit"}</button>`:`<span class="mut" style="font-size:12px">${esc(e.why)}</span>`}</td></tr>`; }).join("")}</table>`;
+    const body = `<p><input class="filter" placeholder="filter path or value" value="${esc(q)}" oninput="location.hash='${href(fp(d),"config")}?q='+encodeURIComponent(this.value)+'&src=${src}'"> ${Object.entries(counts).map(([s,n])=>`<a class="chip src ${s}" style="${src===s?"outline:2px solid #1f4fd8":""}" href="${href(fp(d),"config")}?q=${encodeURIComponent(q)}&src=${src===s?"":s}">${s} ${n}</a>`).join("")} <span class="mut">fingerprint <code>${c.fingerprint}</code></span></p>${c.warnings.map(w=>`<div class="card warn">⚠ <code>${w.path}</code> — ${esc(w.message)}</div>`).join("")}${table}`;
+    return `${topbar()}<div class="side">${this.rail(fp(d))}<div class="wrap"><h1>${d.identity.name} <span class="mut" style="font-size:12px">effective config</span></h1><div class="tabs">${["overview","pipelines","doctor","secrets","config"].map(t=>`<a class="${t==="config"?"cur":""}" href="${href(fp(d), t==="overview"?"":t)}">${t}</a>`).join("")}</div>${body}</div></div>`; },
+};
+C.deployment = C.deployment.bind(C); C.config = C.config.bind(C); C.fleet = C.fleet.bind(C);
+
+// ───────────────────────────── render ─────────────────────────────
+function render() { const V = { A, B, C }[variant()] || A; const r = route(); let html;
+  if (r.page === "people") html = peoplePage();
+  else if (r.page === "fleet") html = V.fleet();
+  else { const d = dep(r.f.split("?")[0]); if (!d) html = `${topbar()}<div class="wrap">unknown deployment</div>`;
+    else if (r.page === "config") html = V.config(d);
+    else html = V === C ? C.deployment(d, r.page === "deployment" ? "overview" : r.page) : V.deployment(d); }
+  $("#app").innerHTML = html + modalHtml() + switcher(); }
+if (!location.hash) location.hash = "#/fleet"; render();
+</script>
+</body>
+</html>
