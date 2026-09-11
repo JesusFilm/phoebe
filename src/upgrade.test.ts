@@ -24,6 +24,7 @@ import {
   upgradeCliHalf,
   upgradeEngineHalf,
 } from "./upgrade.ts";
+import { ensureReportingConsent } from "./reporting-consent.ts";
 
 describe("redactToken", () => {
   test("strips every occurrence of the token, tolerating an absent one", () => {
@@ -372,6 +373,7 @@ function makeIo(overrides: {
 }) {
   const stdout: string[] = [];
   const stderr: string[] = [];
+  const faults: string[] = [];
   return {
     git: (_args: readonly string[]) => VALID_LS_REMOTE,
     npm: (_args: readonly string[]) => "",
@@ -385,8 +387,12 @@ function makeIo(overrides: {
     readDockerfile: overrides.readDockerfile ?? (() => null),
     writeDockerfile: overrides.writeDockerfile ?? (() => {}),
     isInContainer: () => false,
+    reportFault: (stage: string, error: Error) => {
+      faults.push(`${stage}: ${error.message}`);
+    },
     _stdout: stdout,
     _stderr: stderr,
+    _faults: faults,
   };
 }
 
@@ -445,6 +451,8 @@ describe("upgradeEngineHalf migration ordering", () => {
     expect(process.exitCode).toBe(1);
     expect(readFileSync(configPath, "utf8")).toBe(originalContent);
     expect(io._stderr.some((line) => line.includes("migrations failed"))).toBe(true);
+    // Reported by stage rather than by throw (#474): the command exits 1.
+    expect(io._faults).toEqual(["migrate: the target engine's migrations failed (exit 1)"]);
   });
 
   test("migrations run the target ref's checkout, not the current pin", () => {
@@ -630,6 +638,7 @@ function makeCliIo(overrides: {
       dockerfileRef.value = content;
     },
     isInContainer: () => false,
+    reportFault: () => {},
     _stdout: stdout,
     _stderr: stderr,
   };
@@ -679,5 +688,71 @@ describe("upgradeCliHalf — container deployment", () => {
     });
     upgradeCliHalf({ releaseTag: "v0.7.2", io });
     expect(npmCalls.some((args) => args.includes("phoebe-agent@0.7.2"))).toBe(true);
+  });
+});
+
+describe("ensureReportingConsent (#474)", () => {
+  function run(content: string, answer: boolean | null) {
+    const dir = mkdtempSync(join(tmpdir(), "phoebe-consent-test-"));
+    const configPath = join(dir, "phoebe.config.ts");
+    writeFileSync(configPath, content);
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    let asked = 0;
+    const done = ensureReportingConsent({
+      configPath,
+      ask: async () => {
+        asked += 1;
+        return answer;
+      },
+      stdout: (l) => stdout.push(l),
+      stderr: (l) => stderr.push(l),
+    });
+    return done.then(() => ({
+      content: readFileSync(configPath, "utf8"),
+      stdout,
+      stderr,
+      asked: () => asked,
+    }));
+  }
+
+  test("a config with no block is asked once and the answer is written beside engine", async () => {
+    const r = await run(SCAFFOLD, true);
+    expect(r.asked()).toBe(1);
+    expect(r.content).toContain("reporting: { maintainers: true },");
+    expect(r.stdout[0]).toContain("reporting: { maintainers: true } written");
+  });
+
+  test("no is an answer too, and it is written", async () => {
+    const r = await run(SCAFFOLD, false);
+    expect(r.content).toContain("reporting: { maintainers: false },");
+  });
+
+  test("a present block is never asked again", async () => {
+    const withBlock = SCAFFOLD.replace(
+      'engine: { source: "github", ref: "v0.3.1" },',
+      'engine: { source: "github", ref: "v0.3.1" },\n  reporting: { maintainers: false },',
+    );
+    const r = await run(withBlock, true);
+    expect(r.asked()).toBe(0);
+    expect(r.content).toBe(withBlock);
+  });
+
+  test("an unreadable config is a line on stderr, not a rejected upgrade", async () => {
+    const stderr: string[] = [];
+    await ensureReportingConsent({
+      configPath: "/nowhere/phoebe.config.ts",
+      ask: async () => true,
+      stdout: () => {},
+      stderr: (l) => stderr.push(l),
+    });
+    expect(stderr[0]).toContain("could not read /nowhere/phoebe.config.ts");
+  });
+
+  test("no TTY leaves the block absent and says nothing", async () => {
+    const r = await run(SCAFFOLD, null);
+    expect(r.asked()).toBe(1);
+    expect(r.content).toBe(SCAFFOLD);
+    expect(r.stdout).toEqual([]);
   });
 });

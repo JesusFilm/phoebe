@@ -22,6 +22,7 @@ export type {
   PathsConfig,
   PromptFilesConfig,
   ProviderName,
+  ReportingField,
   WorkKindOverride,
   WorkKindsField,
   WorkspaceField,

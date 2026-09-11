@@ -49,6 +49,14 @@ export const DEFAULT_TEMPLATE_PARAMS: TemplateParams = {
 };
 
 /**
+ * The scaffolded config's crash-reporting line (#474), exactly as both config
+ * templates carry it. Not a `{{TOKEN}}`: the templates stay parseable TypeScript
+ * (the vendored parser's own test reads one), so the consent answer is written
+ * by swapping this line rather than rendering a placeholder.
+ */
+export const REPORTING_TEMPLATE_LINE = "reporting: { maintainers: false },";
+
+/**
  * One consumer-owned output produced by init. Sources are one of:
  *  - `template`: a file under the shipped `templates/` tree, rendered with
  *    placeholder substitution.
@@ -253,6 +261,13 @@ export type RunInitOptions = {
   profile?: InitProfile;
   /** Override template params (`installCommand`, `cliBin`). */
   params?: Partial<TemplateParams>;
+  /**
+   * The answer to the one consent question `phoebe init` asks on a TTY (#474):
+   * whether Phoebe's own crash reports go to the maintainers. Written into the
+   * scaffolded config's `reporting` block; absent or false leaves the template's
+   * `maintainers: false`.
+   */
+  reportingMaintainers?: boolean;
   /** Root for shipped `templates/` and `prompts/` (test seam). Defaults to
    *  the walk-up from this module. */
   packageRoot?: string;
@@ -323,7 +338,7 @@ export function runInit(opts: RunInitOptions): InitReport {
         moduleDir,
       );
       const rendered = renderTemplate(rawTemplate, params);
-      writeFileSync(destAbs, rendered);
+      writeFileSync(destAbs, withReportingConsent(rendered, output, opts.reportingMaintainers));
     } else {
       // Shipped prompts ship verbatim — the engine's own render step handles
       // their `{{PLACEHOLDER}}` tokens at run time.
@@ -334,6 +349,25 @@ export function runInit(opts: RunInitOptions): InitReport {
   }
 
   return report;
+}
+
+/**
+ * Write a "yes" to the consent question into a scaffolded config. Only the
+ * config templates carry the line; a template that should and does not is a
+ * drift this throws on rather than scaffolding a silent "no".
+ */
+function withReportingConsent(
+  rendered: string,
+  output: PlannedOutput,
+  consented: boolean | undefined,
+): string {
+  if (consented !== true || output.destRelPath !== "phoebe.config.ts") return rendered;
+  if (!rendered.includes(REPORTING_TEMPLATE_LINE)) {
+    throw new Error(
+      `Template ${output.destRelPath} carries no \`${REPORTING_TEMPLATE_LINE}\` line to record consent on.`,
+    );
+  }
+  return rendered.replace(REPORTING_TEMPLATE_LINE, "reporting: { maintainers: true },");
 }
 
 /**

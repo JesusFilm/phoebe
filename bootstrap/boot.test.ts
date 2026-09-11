@@ -653,3 +653,105 @@ describe("solo's labelled pipeline lines", () => {
     expect(capture.lines[1]).toContain("pipeline acme/widget:intake exited (SIGKILL)");
   });
 });
+
+describe("crash reporting hooks (#474)", () => {
+  async function loadHooks() {
+    return await import("./boot.ts");
+  }
+
+  function fakeReporter() {
+    const events: Array<Record<string, unknown>> = [];
+    return {
+      events,
+      reporter: {
+        enabled: true,
+        report: async (event: Record<string, unknown>) => {
+          events.push(event);
+        },
+        flush: async () => {},
+      },
+    };
+  }
+
+  test("a quarantine and a fallback crash are reported fatal; the rest of the guard's events are not", async () => {
+    const { reportCrashGuardEvent } = await loadHooks();
+    const { events, reporter } = fakeReporter();
+    reportCrashGuardEvent(reporter, {
+      kind: "crash",
+      sha: "a",
+      exitCode: 1,
+      elapsedMs: 5,
+      failureCount: 1,
+      threshold: 3,
+    });
+    reportCrashGuardEvent(reporter, { kind: "last-good", sha: "a" });
+    reportCrashGuardEvent(reporter, {
+      kind: "fallback",
+      quarantinedSha: "bad",
+      lastGoodSha: "good",
+      failureCount: 3,
+    });
+    reportCrashGuardEvent(reporter, {
+      kind: "fallback-crashed",
+      sha: "good",
+      quarantinedSha: "bad",
+      exitCode: 1,
+      elapsedMs: 2,
+    });
+    expect(
+      events.map((e) => [e["level"], (e["tags"] as Record<string, unknown>)["stage"]]),
+    ).toEqual([
+      ["fatal", "crash-loop"],
+      ["fatal", "crash-loop"],
+    ]);
+    expect((events[0]!["error"] as Error).message).toContain("bad crash-looped 3×");
+  });
+
+  test("a fast non-zero exit is reported per pipeline, naming the tenant for includeRef to gate", async () => {
+    const { recordRunEnd } = await loadHooks();
+    const { events, reporter } = fakeReporter();
+    const recorded: unknown[] = [];
+    const guard = {
+      fallbackFor: () => null,
+      record: (run: unknown) => recorded.push(run),
+      noteAlive: () => {},
+      shouldRetry: () => false,
+    };
+    const onRunEnd = recordRunEnd(guard, reporter);
+    const engine = { sha: "abc", guarded: true } as never;
+    const pipeline = { tenant: { slug: "acme/widget" }, pipeline: { name: "work" } } as never;
+    onRunEnd({
+      engine,
+      exit: { code: 1, signal: null },
+      elapsedMs: 800,
+      requestedStop: false,
+      pipelineId: "t#work",
+      tenantId: "t",
+      pipeline,
+      everyPipelineCrashLooping: false,
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ phase: "boot", level: "error", tenant: "acme/widget" });
+    expect(events[0]!["tags"] as Record<string, unknown>).toMatchObject({
+      stage: "fast-exit",
+      exitCode: 1,
+      pipeline: "work",
+    });
+    // One pipeline's crash is not yet evidence against the commit.
+    expect(recorded).toEqual([]);
+
+    // A healthy run reports nothing and reaches the guard.
+    onRunEnd({
+      engine,
+      exit: { code: 0, signal: null },
+      elapsedMs: 120_000,
+      requestedStop: false,
+      pipelineId: "t#work",
+      tenantId: "t",
+      pipeline,
+      everyPipelineCrashLooping: false,
+    });
+    expect(events).toHaveLength(1);
+    expect(recorded).toHaveLength(1);
+  });
+});

@@ -46,8 +46,12 @@ Whatever you use, whether that is a skill suite, a refinement meeting, or you an
 a text editor on a Sunday, the output has to be an issue that clears this bar:
 
 - **It carries the `readyLabel`** (default `ready-for-agent`). Phoebe only ever
-  reads this label; applying it is a deliberate human act. This is the lever, and
-  nothing else in the system substitutes for it.
+  reads this label; applying it is a deliberate human decision, made per issue
+  as a click or made once as a standing decision in config. This is the lever,
+  and nothing else in the system substitutes for it. An intake kind such as
+  [`sentry`](work-kinds.md#sentry-triage-production-errors-opt-in) applies the
+  label itself only where a tenant opted in with `applyReadyLabel`, and
+  otherwise leaves a `triaged` label for a person to flip.
 - **It is sized to one unit of work.** Phoebe works one issue start to finish in
   a single cycle, on one branch, in one worktree. An issue that is really five
   issues will come back as one confused pull request.

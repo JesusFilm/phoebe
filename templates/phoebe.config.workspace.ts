@@ -14,9 +14,9 @@
 
 import type { PhoebeUserConfig } from "{{CLI_BIN}}";
 
-// Only these two fields are read from the deployment root; the five required
+// Only these three fields are read from the deployment root; the five required
 // per-repo fields live on each child. `Pick` says exactly that.
-const config: Pick<PhoebeUserConfig, "engine" | "workspace"> = {
+const config: Pick<PhoebeUserConfig, "engine" | "workspace" | "reporting"> = {
   // Which engine `phoebe boot` runs (shared across every child tenant).
   // Edit `ref` and the running container drains and relaunches on the new code
   // at the next work-unit boundary — no rebuild, no restart.
@@ -27,6 +27,12 @@ const config: Pick<PhoebeUserConfig, "engine" | "workspace"> = {
   // `repo` defaults to the upstream engine repo; set it to run a fork.
   // For a checkout on your own machine, see container/compose.local.yml.
   engine: { source: "github", ref: "main" },
+
+  // Where Phoebe reports its *own* faults (boot and upgrade failures, never a
+  // tenant's). `maintainers` sends to the Phoebe project; `dsn` to your own.
+  // Nothing identifying leaves unless `includeRef: true`. Delete the block to
+  // opt out. See docs/operating.md → Crash reporting.
+  reporting: { maintainers: false },
 
   // Workspace discovery: scan this many directory levels under the root for
   // children that carry a root-level `phoebe.config.ts`. Default is 1

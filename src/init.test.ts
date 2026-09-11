@@ -183,6 +183,26 @@ describe("mergeGitignore", () => {
 });
 
 describe("runInit", () => {
+  test("records the crash-reporting consent in the scaffolded config (#474)", () => {
+    const declined = makeTempDir();
+    runInit({ targetDir: declined });
+    expect(readFileSync(join(declined, "phoebe.config.ts"), "utf8")).toContain(
+      "reporting: { maintainers: false },",
+    );
+
+    const consented = makeTempDir();
+    runInit({ targetDir: consented, reportingMaintainers: true });
+    expect(readFileSync(join(consented, "phoebe.config.ts"), "utf8")).toContain(
+      "reporting: { maintainers: true },",
+    );
+
+    const workspace = makeTempDir();
+    runInit({ targetDir: workspace, profile: "workspace", reportingMaintainers: true });
+    expect(readFileSync(join(workspace, "phoebe.config.ts"), "utf8")).toContain(
+      "reporting: { maintainers: true },",
+    );
+  });
+
   test("writes every planned file into an empty directory", () => {
     const target = makeTempDir();
     const report = runInit({ targetDir: target });

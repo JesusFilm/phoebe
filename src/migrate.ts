@@ -1010,6 +1010,37 @@ Exit code: 0 when the root migrated and validated; 1 when any migration failed.
   With --check: 1 when ≥1 migration is applicable, 0 when none.
 `;
 
+/**
+ * A migration's `apply` or `verify` throwing is one of Phoebe's own faults
+ * (#474). The runner records it as a `failed` row and exits 1 rather than
+ * throwing, so the report is made here, one event per failed row across the
+ * root and every child, naming the migration and what it said.
+ */
+async function reportFailedMigrations(
+  configPath: string,
+  fleet: FleetMigrateReport,
+): Promise<void> {
+  const failed = [
+    ...fleet.rootReport.results.map((r) => ({ tenant: undefined as string | undefined, r })),
+    ...fleet.tenantEntries.flatMap((e) =>
+      (e.report?.results ?? []).map((r) => ({ tenant: e.slug ?? undefined, r })),
+    ),
+  ].filter(({ r }) => r.state === "failed");
+  if (failed.length === 0) return;
+  const { createCrashReporterForConfig } = await import("./crash-reporter.ts");
+  const reporter = await createCrashReporterForConfig(configPath);
+  for (const { tenant, r } of failed) {
+    void reporter.report({
+      phase: "migrate",
+      level: "error",
+      error: new Error(`${r.id} failed: ${r.detail}`),
+      ...(tenant !== undefined ? { tenant } : {}),
+      tags: { stage: "migrate", migration: r.id },
+    });
+  }
+  await reporter.flush();
+}
+
 export async function runMigrateCli(argv: readonly string[]): Promise<void> {
   const parsed = parseMigrateArgs(argv);
   if (parsed.help) {
@@ -1019,6 +1050,7 @@ export async function runMigrateCli(argv: readonly string[]): Promise<void> {
 
   const configPath = resolveConfigPath(parsed.configPath, process.cwd());
   const fleet = await runFleetMigrate({ configPath, check: parsed.check });
+  if (!parsed.check) await reportFailedMigrations(configPath, fleet);
 
   if (parsed.json) {
     process.stdout.write(

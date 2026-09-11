@@ -1314,3 +1314,81 @@ describe("createGhExecutor", () => {
     expect(() => exec(["api", "--input", "-"], { input: "{}", inherit: true })).not.toThrow();
   });
 });
+
+describe("issue filing surface (sentry kind)", () => {
+  test("createIssue streams the body on stdin and reads the number off the printed URL", () => {
+    const { github, calls } = clientWith(["https://github.com/acme/widget/issues/42\n"]);
+    expect(github.createIssue({ title: "Sentry: boom", body: "the body" })).toBe(42);
+    expect(calls[0]?.args).toEqual([
+      "issue",
+      "create",
+      "--title",
+      "Sentry: boom",
+      "--body-file",
+      "-",
+      "-R",
+      "acme/widget",
+    ]);
+    expect(calls[0]?.input).toBe("the body");
+  });
+
+  test("createIssue refuses to guess when gh prints no URL", () => {
+    const { github } = clientWith(["something else"]);
+    expect(() => github.createIssue({ title: "t", body: "b" })).toThrow(
+      "did not print an issue URL",
+    );
+  });
+
+  test("issueState reads the REST close reason", () => {
+    const { github, calls } = clientWith([
+      JSON.stringify({
+        state: "closed",
+        state_reason: "not_planned",
+        closed_at: "2026-09-10T00:00:00Z",
+      }),
+    ]);
+    expect(github.issueState(7)).toEqual({
+      state: "closed",
+      stateReason: "not_planned",
+      closedAt: "2026-09-10T00:00:00Z",
+    });
+    expect(calls[0]?.args).toEqual(["api", "repos/acme/widget/issues/7"]);
+  });
+
+  test("listIssuesMentioning searches every state, drops PRs, and walks pages until a short one", () => {
+    const fullPage = Array.from({ length: 100 }, (_, i) => ({
+      number: i + 1,
+      body: `<!-- phoebe-sentry group=${i + 1} -->`,
+      state: "open",
+    }));
+    const { github, calls } = clientWith([
+      JSON.stringify({ items: fullPage }),
+      JSON.stringify({
+        items: [
+          {
+            number: 200,
+            body: "x",
+            state: "closed",
+            state_reason: "completed",
+            closed_at: "2026-09-01T00:00:00Z",
+          },
+          { number: 201, body: "pr", state: "open", pull_request: { url: "…" } },
+        ],
+      }),
+    ]);
+    const hits = github.listIssuesMentioning("phoebe-sentry");
+    expect(hits).toHaveLength(101);
+    expect(hits[100]).toEqual({
+      number: 200,
+      body: "x",
+      state: "closed",
+      stateReason: "completed",
+      closedAt: "2026-09-01T00:00:00Z",
+    });
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.args[1]).toBe(
+      `search/issues?q=${encodeURIComponent('repo:acme/widget "phoebe-sentry" in:body is:issue')}&per_page=100&page=1&sort=created&order=desc`,
+    );
+    expect(calls[1]?.args[1]).toContain("page=2");
+  });
+});

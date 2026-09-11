@@ -27,6 +27,14 @@ import {
 } from "./config-schema.ts";
 import { createWorkKindRegistry } from "./work-kinds/load-custom.ts";
 import {
+  createCrashReporter,
+  createCrashReporterForConfig,
+  NO_CRASH_REPORTER,
+  type CrashPhase,
+  type CrashReporter,
+} from "./crash-reporter.ts";
+import { promptReportingConsent } from "./reporting-consent.ts";
+import {
   copyShippedPromptsInto,
   formatInitReport,
   initTenant,
@@ -575,6 +583,38 @@ export function assertNotWorkspaceRoot(
   );
 }
 
+/** The crash reporter for the config under cwd, or the silent one (#474). */
+async function reporterForCwd(): Promise<CrashReporter> {
+  try {
+    return await createCrashReporterForConfig(resolveConfigPath(undefined, process.cwd()), {
+      debug: (line) => console.error(`[phoebe] ${line}`),
+    });
+  } catch {
+    return NO_CRASH_REPORTER;
+  }
+}
+
+/**
+ * Run an operator command, reporting a throw to the crash reporter before it
+ * propagates (#474). The report never changes the exit path: the send is
+ * awaited only up to its own short timeout, and a failed send is silent. A
+ * command that fails by exit code rather than by throwing — `upgrade` refusing
+ * the flip, `migrate` recording a failed migration — reports that itself,
+ * naming the stage, because only it knows which.
+ */
+async function withCrashReport(phase: CrashPhase, run: () => Promise<void>): Promise<void> {
+  let reporter = await reporterForCwd();
+  try {
+    await run();
+  } catch (error) {
+    // `upgrade` may have written the consent block during the run, so a
+    // reporter that was silent going in is read once more before reporting.
+    if (!reporter.enabled) reporter = await reporterForCwd();
+    await reporter.report({ phase, level: "error", error });
+    throw error;
+  }
+}
+
 /**
  * Engine-CLI entry point. Loads the consumer's config, overlays env, installs
  * the resolved config, then runs the engine (or scaffolds via `init`). The
@@ -610,15 +650,42 @@ export async function runCli(): Promise<void> {
           `  repoSlug: ${result.repoSlug}\n` +
           `  repoUrl:  ${result.repoUrl}\n` +
           `\nFill in ${result.tenantDir}/.env (copy .env.example).\n` +
-          registrationAdvice,
+          registrationAdvice +
+          `\nCrash reporting is the root config's decision (docs/operating.md → Crash reporting). ` +
+          `To opt in, add beside \`engine\` in ${rootDir}/phoebe.config.ts:\n` +
+          `  reporting: { maintainers: true },\n`,
       );
       // Trust-domain note on every run — fires exactly when co-tenancy matters
       // (#61): a second tenant is being added to one container.
       process.stderr.write(`\n${TRUST_DOMAIN_NOTE}\n`);
       return;
     }
-    const report = runInit({ targetDir: parsed.targetDir, profile: parsed.profile });
-    process.stdout.write(formatInitReport(report, parsed.targetDir));
+    // The one consent question (#474), asked on a TTY before the scaffold is
+    // written so the answer lands in the config as `reporting.maintainers`.
+    // Non-TTY writes `false`. A refusal such as "config already exists" is a
+    // skip in the report, not a throw, so it is never reported.
+    const consent = (await promptReportingConsent()) ?? false;
+    const reporter = createCrashReporter({
+      reporting: { maintainers: consent },
+      context: {
+        bootstrapVersion: null,
+        engineRef: null,
+        engineSha: null,
+        deploymentArm: parsed.profile === "workspace" ? "workspace" : "solo",
+        credentialArm: null,
+      },
+    });
+    try {
+      const report = runInit({
+        targetDir: parsed.targetDir,
+        profile: parsed.profile,
+        reportingMaintainers: consent,
+      });
+      process.stdout.write(formatInitReport(report, parsed.targetDir));
+    } catch (error) {
+      await reporter.report({ phase: "init", level: "error", error });
+      throw error;
+    }
     return;
   }
 
@@ -633,11 +700,13 @@ export async function runCli(): Promise<void> {
   // engine-run path from loading their bootstrap / Docker dependencies.
   if (args[0] === "upgrade") {
     const { runUpgradeCli } = await import("./upgrade.ts");
-    return await runUpgradeCli(args.slice(1));
+    return await withCrashReport("upgrade", () => runUpgradeCli(args.slice(1)));
   }
   if (args[0] === "doctor") {
     const { runDoctorCli } = await import("./doctor.ts");
-    return await runDoctorCli(args.slice(1));
+    // The command itself throwing, never its findings: a failed check is a
+    // report with exit 1, and exit codes are not exceptions.
+    return await withCrashReport("doctor", () => runDoctorCli(args.slice(1)));
   }
   // The supervisor's one question about a tenant's config (#417): which pipelines it
   // declares, and their fingerprints. Lazy like its neighbours — the
@@ -655,7 +724,7 @@ export async function runCli(): Promise<void> {
   }
   if (args[0] === "migrate") {
     const { runMigrateCli } = await import("./migrate.ts");
-    return await runMigrateCli(args.slice(1));
+    return await withCrashReport("migrate", () => runMigrateCli(args.slice(1)));
   }
   if (args[0] === "stop") {
     const { runStopCli } = await import("./stop.ts");

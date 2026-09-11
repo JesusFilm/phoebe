@@ -39,6 +39,8 @@ import {
   type GithubSource,
 } from "../bootstrap/github-engine.ts";
 import { matchConfigFlag } from "./cli-flags.ts";
+import { createCrashReporterForConfig, type CrashReporter } from "./crash-reporter.ts";
+import { ensureReportingConsent, promptReportingConsent } from "./reporting-consent.ts";
 import { isInsideContainer } from "./execution-gate.ts";
 import { defaultGit, type GitRunner } from "./git-model.ts";
 import { loadUserConfig, resolveConfigPath } from "./load-config.ts";
@@ -601,6 +603,11 @@ type UpgradeIo = {
   writeDockerfile?: (content: string) => void;
   /** Whether this process is running inside the Phoebe container. Injectable for tests. */
   isInContainer?: () => boolean;
+  /**
+   * A failure the command reports by exit code rather than by throwing (#474):
+   * the target's migrations failing, the ref rewrite refused. Named by stage.
+   */
+  reportFault?: (stage: "migrate" | "flip", error: Error) => void;
 };
 
 /**
@@ -672,7 +679,13 @@ export async function runUpgradeCli(argv: readonly string[]): Promise<void> {
       existsSync(dockerfilePath) ? readFileSync(dockerfilePath, "utf8") : null,
     writeDockerfile: (content) => writeFileSync(dockerfilePath, content, "utf8"),
     isInContainer: isInsideContainer,
+    // Bound once the consent question has had its chance to write the block,
+    // so a "yes" given on this very run covers this run's own failure.
+    reportFault: (stage, error) => {
+      void reporter?.report({ phase: "upgrade", level: "error", error, tags: { stage } });
+    },
   };
+  let reporter: CrashReporter | undefined;
   if (parsed.help) {
     process.stdout.write(UPGRADE_HELP_TEXT);
     return;
@@ -752,6 +765,13 @@ export async function runUpgradeCli(argv: readonly string[]): Promise<void> {
   let engineMoved = true;
   if (target === "engine" || target === "both") {
     const { configPath, source } = await engineConfig();
+    await ensureReportingConsent({
+      configPath,
+      ask: promptReportingConsent,
+      stdout: io.stdout,
+      stderr: io.stderr,
+    });
+    reporter = await createCrashReporterForConfig(configPath);
     engineMoved = upgradeEngineHalf({
       configPath,
       source,
@@ -766,10 +786,12 @@ export async function runUpgradeCli(argv: readonly string[]): Promise<void> {
       // The whole point of `--both` is landing both halves on one version; a
       // refused engine rewrite must not leave the deployment straddling two.
       io.stderr("cli: skipped — the engine half was refused, so the CLI stays where it is.");
+      await reporter?.flush();
       return;
     }
     upgradeCliHalf({ releaseTag, io });
   }
+  await reporter?.flush();
 }
 
 function formatCheckReport(report: UpgradeCheckReport): string {
@@ -880,6 +902,10 @@ export function upgradeEngineHalf(opts: {
       `engine: the target engine's migrations failed (exit ${String(migrateExitCode)}) ` +
         `— leaving engine.ref unchanged.`,
     );
+    io.reportFault(
+      "migrate",
+      new Error(`the target engine's migrations failed (exit ${String(migrateExitCode)})`),
+    );
     process.exitCode = 1;
     return false;
   }
@@ -892,6 +918,7 @@ export function upgradeEngineHalf(opts: {
         `Apply the edit yourself (edit in place — an atomic save breaks the bind-mount watch):\n` +
         `  ${engineEditInstruction(ref)}`,
     );
+    io.reportFault("flip", new Error(`refused to rewrite engine.ref — ${result.reason}`));
     process.exitCode = 1;
     return false;
   }

@@ -188,3 +188,64 @@ describe("createWorkKindRegistry", () => {
     expect(warned).toEqual([]);
   });
 });
+
+describe("catalog kinds (phoebe-agent/ paths)", () => {
+  test("resolve against the engine root, a directory meaning its index.ts", async () => {
+    const { resolveKindModulePath, ENGINE_ROOT } = await import("./load-custom.ts");
+    expect(resolveKindModulePath("phoebe-agent/kinds/sentry", "/nowhere")).toBe(
+      join(ENGINE_ROOT, "kinds", "sentry", "index.ts"),
+    );
+    expect(resolveKindModulePath("./kinds/x.ts", "/tenant")).toBe("/tenant/kinds/x.ts");
+  });
+
+  test("the sentry catalog kind registers from a pipeline declaration with its options", async () => {
+    const config = resolveConfig(
+      userConfig({
+        pipelines: {
+          intake: {
+            kinds: { sentry: { path: "phoebe-agent/kinds/sentry", org: "acme", project: 4507 } },
+          },
+        },
+      }),
+    );
+    const { selectPipeline } = await import("../pipeline.ts");
+    const registry = await createWorkKindRegistry(selectPipeline(config, "intake"), "/nowhere");
+    const sentry = registry.get("sentry");
+    expect(sentry?.definition.workspace).toBe("readonly");
+    expect(sentry?.definition.requiredEnv).toEqual(["SENTRY_AUTH_TOKEN"]);
+    expect(sentry?.options).toEqual({ org: "acme", project: 4507 });
+  });
+
+  test("a bad options block fails registration naming the block", async () => {
+    const config = resolveConfig(
+      userConfig({
+        pipelines: {
+          intake: { kinds: { sentry: { path: "phoebe-agent/kinds/sentry", org: "acme" } } },
+        },
+      }),
+    );
+    const { selectPipeline } = await import("../pipeline.ts");
+    await expect(
+      createWorkKindRegistry(selectPipeline(config, "intake"), "/nowhere"),
+    ).rejects.toThrow("kinds.sentry: `project` must be the numeric project id");
+  });
+
+  test("a factory receives the block's options as its second argument", async () => {
+    const dir = moduleDir(`export default (config, options) => ({
+  name: "nudge",
+  oneShotEligible: true,
+  promptFile: "prompts/custom.md",
+  workspace: "worktree",
+  report: { noun: String(options.staleDays) + " day(s)", describe: (unit) => unit.ref },
+  fetch: () => Promise.resolve([]),
+  select: () => ({ unit: null, skipped: [], total: 0 }),
+  run: () => Promise.resolve(),
+});
+`);
+    const config = resolveConfig(
+      userConfig({ workKinds: { nudge: { path: "./nudge.mjs", staleDays: 7 } } }),
+    );
+    const loaded = await loadCustomKinds(config, dir);
+    expect(loaded[0]?.definition.report.noun).toBe("7 day(s)");
+  });
+});

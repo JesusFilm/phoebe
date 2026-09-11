@@ -35,6 +35,15 @@ const config: PhoebeUserConfig = {
   // For a checkout on your own machine, see container/compose.local.yml.
   engine: { source: "github", ref: "main" },
 
+  // Where Phoebe reports its *own* faults — a failed engine clone, a crash-loop
+  // quarantine, `phoebe upgrade` throwing. Never a tenant's failures, never the
+  // work loop. `maintainers` sends to the Phoebe project (a DSN the engine
+  // carries); `dsn` sends to your own Sentry project; both may be set. Nothing
+  // identifying leaves unless `includeRef: true` (then the repo slug and, where
+  // a fault names one, the unit ref). Delete the block or set both off to opt
+  // out. See docs/operating.md → Crash reporting.
+  reporting: { maintainers: false },
+
   // How this repo's commits are attributed (optional). Declaring it here means
   // every deployment that runs this repo agrees on the attribution, instead of
   // each one restating it in its `.env` — which still overrides this if it does.
