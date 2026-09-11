@@ -14,7 +14,6 @@ import {
   compareVersions,
   dockerfileEditInstruction,
   engineEditInstruction,
-  ensureReportingConsent,
   latestReleaseTag,
   parseUpgradeArgs,
   readDockerfilePin,
@@ -25,6 +24,7 @@ import {
   upgradeCliHalf,
   upgradeEngineHalf,
 } from "./upgrade.ts";
+import { ensureReportingConsent } from "./reporting-consent.ts";
 
 describe("redactToken", () => {
   test("strips every occurrence of the token, tolerating an absent one", () => {
@@ -373,6 +373,7 @@ function makeIo(overrides: {
 }) {
   const stdout: string[] = [];
   const stderr: string[] = [];
+  const faults: string[] = [];
   return {
     git: (_args: readonly string[]) => VALID_LS_REMOTE,
     npm: (_args: readonly string[]) => "",
@@ -386,8 +387,12 @@ function makeIo(overrides: {
     readDockerfile: overrides.readDockerfile ?? (() => null),
     writeDockerfile: overrides.writeDockerfile ?? (() => {}),
     isInContainer: () => false,
+    reportFault: (stage: string, error: Error) => {
+      faults.push(`${stage}: ${error.message}`);
+    },
     _stdout: stdout,
     _stderr: stderr,
+    _faults: faults,
   };
 }
 
@@ -446,6 +451,8 @@ describe("upgradeEngineHalf migration ordering", () => {
     expect(process.exitCode).toBe(1);
     expect(readFileSync(configPath, "utf8")).toBe(originalContent);
     expect(io._stderr.some((line) => line.includes("migrations failed"))).toBe(true);
+    // Reported by stage rather than by throw (#474): the command exits 1.
+    expect(io._faults).toEqual(["migrate: the target engine's migrations failed (exit 1)"]);
   });
 
   test("migrations run the target ref's checkout, not the current pin", () => {
@@ -631,6 +638,7 @@ function makeCliIo(overrides: {
       dockerfileRef.value = content;
     },
     isInContainer: () => false,
+    reportFault: () => {},
     _stdout: stdout,
     _stderr: stderr,
   };

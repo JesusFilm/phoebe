@@ -857,8 +857,8 @@ simply never causes a fallback.) Every fallback event is logged with both SHAs
 Bootstrapper- and operator-command-only, and off unless you say otherwise.
 `reporting` says where Phoebe's **own** faults go — a failed engine clone, a
 crash-loop quarantine, `phoebe upgrade` throwing — never a tenant's failures and
-never anything from the work loop. It lives beside `engine` (the root config in
-workspace mode, the tenant config in solo), is read at boot and by the operator
+never anything from the work loop. It lives beside `engine` (the root config of
+a workspace deployment, the tenant config of a solo one), is read at boot and by the operator
 commands, and never reaches the resolved config: not `PHOEBE_*`-overlayable, not
 an env var, so no kind can declare it.
 

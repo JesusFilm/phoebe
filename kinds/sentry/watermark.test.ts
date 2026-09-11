@@ -9,6 +9,7 @@ import {
   renderMarker,
   SKIP_ALREADY_FILED,
   SKIP_AWAITING_RESOLUTION,
+  SKIP_DUPLICATE,
   SKIP_NOT_PLANNED,
   type FiledIssue,
 } from "./watermark.ts";
@@ -55,6 +56,13 @@ describe("decideGroup", () => {
         "2026-09-12T00:00:00Z",
       ),
     ).toEqual({ action: "skip", reason: SKIP_NOT_PLANNED });
+  });
+
+  test("closed as duplicate → skip forever; the other issue is the record", () => {
+    expect(decideGroup([issue({ stateReason: "duplicate" })], "2026-09-12T00:00:00Z")).toEqual({
+      action: "skip",
+      reason: SKIP_DUPLICATE,
+    });
   });
 
   test("closed completed and seen since → a new issue, regression of the newest close", () => {

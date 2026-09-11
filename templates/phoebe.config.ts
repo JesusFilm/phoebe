@@ -37,8 +37,8 @@ const config: PhoebeUserConfig = {
 
   // Where Phoebe reports its *own* faults — a failed engine clone, a crash-loop
   // quarantine, `phoebe upgrade` throwing. Never a tenant's failures, never the
-  // work loop. `maintainers` sends to the Phoebe project (a DSN baked into the
-  // engine); `dsn` sends to your own Sentry project; both may be set. Nothing
+  // work loop. `maintainers` sends to the Phoebe project (a DSN the engine
+  // carries); `dsn` sends to your own Sentry project; both may be set. Nothing
   // identifying leaves unless `includeRef: true` (then the repo slug and, where
   // a fault names one, the unit ref). Delete the block or set both off to opt
   // out. See docs/operating.md → Crash reporting.

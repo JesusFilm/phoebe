@@ -35,13 +35,15 @@ export type GroupDecision =
 
 export const SKIP_ALREADY_FILED = "already filed";
 export const SKIP_NOT_PLANNED = "closed as not planned";
+export const SKIP_DUPLICATE = "closed as duplicate";
 export const SKIP_AWAITING_RESOLUTION = "fixed, awaiting resolution";
 
 /**
  * What to do with an unresolved group given the issues already linked to it.
  * An open issue anywhere means the group is spoken for. A close as not
  * planned is a person's decision and holds forever — it is also the one
- * suppression channel for noise (#472). A close as completed is a fix: if the
+ * suppression channel for noise (#472) — and a close as duplicate is the same
+ * kind of decision pointing elsewhere. A close as completed is a fix: if the
  * group has been seen since, the fix did not hold and a **new** issue is
  * filed opening "Regression of #N"; if not, Sentry has not aged the group out
  * yet and the kind waits.
@@ -53,6 +55,11 @@ export function decideGroup(filed: readonly FiledIssue[], lastSeen: string): Gro
   }
   if (filed.some((issue) => issue.stateReason === "not_planned")) {
     return { action: "skip", reason: SKIP_NOT_PLANNED };
+  }
+  // A close as duplicate is a person saying the crash lives on another issue;
+  // that issue is the record now, and a new one here would duplicate it again.
+  if (filed.some((issue) => issue.stateReason === "duplicate")) {
+    return { action: "skip", reason: SKIP_DUPLICATE };
   }
   // Every linked issue is closed and none was a decision to drop it: the newest
   // close is the fix whose survival the group's last sighting judges.

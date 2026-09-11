@@ -113,15 +113,13 @@ function renderFrames(event: SentryEvent): string {
 
 function renderSymptom(input: SymptomInput): string {
   const { group, event, options } = input;
-  const environments = new Set<string>();
-  if (event.environment !== null) environments.add(event.environment);
   const rows: Array<[string, string]> = [
     ["Level", group.level],
     ["Events", `${group.count} in the last ${options.window}`],
     ["First seen", group.firstSeen || "unknown"],
     ["Last seen", group.lastSeen || "unknown"],
     ["Release", event.release ?? "none on the latest event"],
-    ["Environment", environments.size > 0 ? [...environments].join(", ") : "unknown"],
+    ["Environment", event.environment ?? "unknown"],
     ["Transaction", event.transaction ?? "unknown"],
     ["Sentry", group.permalink.length > 0 ? group.permalink : `group ${group.id}`],
   ];

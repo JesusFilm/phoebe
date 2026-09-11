@@ -312,10 +312,11 @@ the tenant's repository or GitHub misbehaving, not Phoebe, and they stay in the
 container's own log.
 
 What leaves the box, per event: `phase`, `bootstrapVersion`, `engineRef` and
-`engineSha`, the `node` version, `mode` (`solo` or `workspace`), `arm` (`pat` or
-`app`), the error's class, message and stack, plus the stage the fault happened
-at (`launch`, `fast-exit`, `crash-loop`) and, for an exit, the code and the
-pipeline name. Stacks are Phoebe's own frames; any path under
+`engineSha` (unknown for the operator commands, which run outside a checkout),
+the `node` version, `deploymentArm` (`solo` or `workspace`), `credentialArm`
+(`pat` or `app`), the error's class, message and stack, plus the stage the fault
+happened at (`launch`, `fast-exit`, `crash-loop`, `migrate`, `flip`) and, for an
+exit, the code and the pipeline name; a failed migration names its id. Stacks are Phoebe's own frames; any path under
 `/data/repos/<owner>/<repo>` is rewritten to `<tenant>` before sending. The
 tenant `repoSlug`, and a unit ref where a fault names one, are sent only under
 `includeRef: true`; otherwise the tenant tag reads `redacted`.
@@ -327,6 +328,9 @@ one place Phoebe waits is the bootstrapper's own exit, so a crash-loop report is
 not lost to the process ending.
 
 To turn it off, set `maintainers: false` and remove `dsn`, or delete the block.
+Until the maintainers' project exists and its DSN ships in an engine release,
+`maintainers: true` records your answer and sends nothing; the boot log says so
+at debug level.
 This repository's own tenant consumes the maintainers' project through the
 [`sentry` kind](work-kinds.md#sentry-triage-production-errors-opt-in), which is
 how a crash report becomes a front-loaded issue here.

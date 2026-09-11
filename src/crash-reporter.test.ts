@@ -17,8 +17,8 @@ const context: CrashContext = {
   bootstrapVersion: "0.12.1",
   engineRef: "main",
   engineSha: "abc123",
-  mode: "workspace",
-  arm: "app",
+  deploymentArm: "workspace",
+  credentialArm: "app",
 };
 const NOW = new Date("2026-09-11T12:00:00Z");
 
@@ -75,8 +75,8 @@ describe("buildCrashPayload", () => {
         engineRef: "main",
         engineSha: "abc123",
         node: process.version,
-        mode: "workspace",
-        arm: "app",
+        deploymentArm: "workspace",
+        credentialArm: "app",
         tenant: "redacted",
         stage: "clone",
         exitCode: "1",
@@ -104,13 +104,13 @@ describe("buildCrashPayload", () => {
         tenant: "acme/widget",
         ref: "issue:3",
       },
-      { ...context, engineSha: null, mode: null },
+      { ...context, engineSha: null, deploymentArm: null },
       { includeRef: true, now: NOW, eventId: "e2" },
     );
     const tags = payload["tags"] as Record<string, string>;
     expect(tags["tenant"]).toBe("acme/widget");
     expect(tags["ref"]).toBe("issue:3");
-    expect(tags["mode"]).toBe("unknown");
+    expect(tags["deploymentArm"]).toBe("unknown");
     expect(payload["release"]).toBeUndefined();
     expect(payload["exception"]).toEqual({ values: [{ type: "Error", value: "plain string" }] });
   });

@@ -524,7 +524,7 @@ function createBootCrashGuard(reporter: CrashReporter): CrashGuard {
  */
 function createBootReporter(
   rootConfig: Record<string, unknown>,
-  mode: "solo" | "workspace",
+  deploymentArm: "solo" | "workspace",
 ): CrashReporter {
   let reporting;
   try {
@@ -547,8 +547,8 @@ function createBootReporter(
       bootstrapVersion: LAUNCHER_VERSION,
       engineRef,
       engineSha: null,
-      mode,
-      arm: resolveCredentialArm(process.env as Record<string, string | undefined>),
+      deploymentArm,
+      credentialArm: resolveCredentialArm(process.env as Record<string, string | undefined>),
     },
     debug: (line) => console.log(`[phoebe] boot: ${line}`),
   });

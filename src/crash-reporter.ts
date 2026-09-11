@@ -16,7 +16,10 @@
 // (the Phoebe project's DSN, baked in below) and `reporting.dsn` (the
 // consumer's own). Neither set means no client and no network call.
 
-import type { ReportingField } from "./config-schema.ts";
+import { readEngineSource } from "../bootstrap/engine-source.ts";
+import { resolveCredentialArm, type CredentialArm } from "../bootstrap/credential-arm.ts";
+import { readReportingField, type ReportingField } from "./config-schema.ts";
+import { loadUserConfig } from "./load-config.ts";
 import { parseDsn, type FetchLike, type ParsedDsn } from "./sentry-protocol.ts";
 
 /**
@@ -35,8 +38,9 @@ export type CrashContext = {
   bootstrapVersion: string | null;
   engineRef: string | null;
   engineSha: string | null;
-  mode: "solo" | "workspace" | null;
-  arm: "pat" | "app" | null;
+  /** The deployment arm: one tenant, or a fleet. */
+  deploymentArm: "solo" | "workspace" | null;
+  credentialArm: CredentialArm | null;
 };
 
 /** One fault. `error` is whatever was thrown; `message` overrides its text. */
@@ -144,13 +148,13 @@ export function buildCrashPayload(
     engineRef: context.engineRef ?? "unknown",
     engineSha: context.engineSha ?? "unknown",
     node: process.version,
-    mode: context.mode ?? "unknown",
-    arm: context.arm ?? "unknown",
+    deploymentArm: context.deploymentArm ?? "unknown",
+    credentialArm: context.credentialArm ?? "unknown",
     tenant: opts.includeRef ? (event.tenant ?? "none") : "redacted",
   };
   if (opts.includeRef && event.ref !== undefined) tags["ref"] = event.ref;
   for (const [key, raw] of Object.entries(event.tags ?? {})) {
-    if (raw === undefined) continue;
+    if (raw === undefined || raw === null) continue;
     tags[key] = redactTenantPaths(String(raw));
   }
   const exception: Record<string, unknown> = { type, value: redactTenantPaths(value) };
@@ -283,3 +287,37 @@ export const NO_CRASH_REPORTER: CrashReporter = {
   report: () => Promise.resolve(),
   flush: () => Promise.resolve(),
 };
+
+/**
+ * The reporter for an operator command (#474): built from the `reporting`
+ * block of the config at `configPath` when it loads and carries one, the
+ * silent reporter otherwise. A config that cannot load is exactly the kind of
+ * fault a command then reports on — but with no block to read there is
+ * nowhere to send it, so the command simply runs. The engine SHA is unknown
+ * here: these commands run on the host, before or beside any checkout.
+ */
+export async function createCrashReporterForConfig(
+  configPath: string,
+  deps: { env?: NodeJS.ProcessEnv; debug?: (line: string) => void } = {},
+): Promise<CrashReporter> {
+  const env = deps.env ?? process.env;
+  try {
+    const user = (await loadUserConfig(configPath)) as Record<string, unknown>;
+    const reporting = readReportingField(user);
+    if (reporting === undefined) return NO_CRASH_REPORTER;
+    const source = readEngineSource(user);
+    return createCrashReporter({
+      reporting,
+      context: {
+        bootstrapVersion: null,
+        engineRef: source.source === "github" ? source.ref : "local",
+        engineSha: null,
+        deploymentArm: user["workspace"] !== undefined ? "workspace" : "solo",
+        credentialArm: resolveCredentialArm(env as Record<string, string | undefined>),
+      },
+      ...(deps.debug !== undefined ? { debug: deps.debug } : {}),
+    });
+  } catch {
+    return NO_CRASH_REPORTER;
+  }
+}
