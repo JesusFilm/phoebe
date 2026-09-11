@@ -79,6 +79,18 @@ describe("parseTriageDraft", () => {
     expect(parsed).toEqual({ ok: true, draft: { verdict: "not-ready", duplicateOf: 12 } });
   });
 
+  test("a duplicateOf that is not an issue number forces not-ready and says so", () => {
+    const parsed = parseTriageDraft(
+      JSON.stringify({ verdict: "ready", duplicateOf: "12", cause: "c" }),
+    );
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      expect(parsed.draft.verdict).toBe("not-ready");
+      expect(parsed.draft.duplicateOf).toBeUndefined();
+      expect(parsed.draft.openQuestion).toContain('not as an issue number ("12")');
+    }
+  });
+
   test.each([
     ["{not json", "not JSON"],
     ["[]", "not a JSON object"],

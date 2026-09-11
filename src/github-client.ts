@@ -1399,8 +1399,11 @@ export function createGitHubClient({
 
     createIssue: (opts) => {
       // Captured: `gh issue create` prints the new issue's URL, and the number
-      // is its last path segment.
-      const out = exec(
+      // is its last path segment. `rawExec`, not the retrying `exec`: a create
+      // that succeeded on GitHub and then failed to answer would be retried
+      // into a second issue for the same unit, and the caller's watermark is
+      // the body of the first. A transient failure here is a failed run.
+      const out = rawExec(
         ["issue", "create", "--title", opts.title, "--body-file", "-", "-R", config.repoSlug],
         { input: opts.body },
       );

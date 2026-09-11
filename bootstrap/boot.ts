@@ -1481,10 +1481,12 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       throw error;
     } finally {
       stop.dispose();
+      // A crash-loop report raced against the process ending is a report lost;
+      // the flush waits it out, bounded by the reporter's own timeout (#474).
+      // In the `finally` so a supervisor that threw still flushes before the
+      // CLI's exit(1) can drop what was queued.
+      await reporter.flush();
     }
-    // A crash-loop report raced against the process ending is a report lost;
-    // the flush waits it out, bounded by the reporter's own timeout (#474).
-    await reporter.flush();
     propagateExit(fleetExit.code, fleetExit.signal);
     return;
   }
@@ -1640,8 +1642,8 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     // Drop the listeners before propagating: re-raising the engine's killing
     // signal must actually kill this process, and our own latch would swallow it.
     stop.dispose();
+    await reporter.flush();
   }
-  await reporter.flush();
   propagateExit(exit.code, exit.signal);
 }
 

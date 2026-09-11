@@ -79,8 +79,9 @@ describe("passesGates", () => {
     expect(passesGates(group({ lastSeen: "2026-09-09T00:00:00Z" }), opts, NOW)).toBe(false);
   });
 
-  test("an unparseable lastSeen does not fail the window gate", () => {
-    expect(passesGates(group({ lastSeen: "" }), options(), NOW)).toBe(true);
+  test("a count or lastSeen that cannot be read fails closed", () => {
+    expect(passesGates(group({ lastSeen: "" }), options(), NOW)).toBe(false);
+    expect(passesGates(group({ count: Number.NaN }), options(), NOW)).toBe(false);
   });
 });
 

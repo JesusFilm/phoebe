@@ -25,15 +25,22 @@ describe("parseDsn", () => {
   });
 
   test("keeps a self-hosted path prefix and ignores a legacy secret", () => {
-    const parsed = parseDsn("http://key:secret@sentry.internal:9000/prefix/42");
+    const parsed = parseDsn("https://key:secret@sentry.internal:9000/prefix/42");
     expect(parsed.pathPrefix).toBe("/prefix");
     expect(parsed.host).toBe("sentry.internal:9000");
-    expect(parsed.envelopeUrl).toBe("http://sentry.internal:9000/prefix/api/42/envelope/");
+    expect(parsed.envelopeUrl).toBe("https://sentry.internal:9000/prefix/api/42/envelope/");
+  });
+
+  test("plain http is for localhost only", () => {
+    expect(parseDsn("http://key@localhost:9000/1").envelopeUrl).toBe(
+      "http://localhost:9000/api/1/envelope/",
+    );
+    expect(() => parseDsn("http://key@sentry.internal/1")).toThrow("must be https");
   });
 
   test.each([
     ["not a url", "not a URL"],
-    ["ftp://key@host/1", "must be http(s)"],
+    ["ftp://key@host/1", "must be https"],
     ["https://host/1", "no public key"],
     ["https://key@host/", "numeric project id"],
     ["https://key@host/abc", "numeric project id"],
@@ -50,9 +57,11 @@ describe("normalizeCollectorUrl", () => {
     );
   });
 
-  test("refuses a relative or non-http value", () => {
+  test("refuses a relative value, and plain http anywhere but localhost", () => {
     expect(() => normalizeCollectorUrl("sentry.io")).toThrow("absolute URL");
-    expect(() => normalizeCollectorUrl("ftp://sentry.io")).toThrow("http(s)");
+    expect(() => normalizeCollectorUrl("ftp://sentry.io")).toThrow("must be https");
+    expect(() => normalizeCollectorUrl("http://glitchtip.corp")).toThrow("must be https");
+    expect(normalizeCollectorUrl("http://localhost:8000/")).toBe("http://localhost:8000");
   });
 });
 

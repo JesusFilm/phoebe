@@ -32,6 +32,20 @@ describe("redactTenantPaths", () => {
   });
 });
 
+describe("redactTenantPaths with a non-default data base", () => {
+  test("PHOEBE_DATA_DIR's layout is redacted too", () => {
+    expect(
+      redactTenantPaths(
+        "at f (/home/me/phoebe-data/acme/widget/repo/x.ts:1:1)",
+        "/home/me/phoebe-data/",
+      ),
+    ).toBe("at f (<tenant>/repo/x.ts:1:1)");
+    expect(redactTenantPaths("/data/repos/acme/widget/x", "/home/me/phoebe-data")).toBe(
+      "/data/repos/acme/widget/x",
+    );
+  });
+});
+
 describe("parseStackFrames", () => {
   test("reads named and anonymous frames, innermost last", () => {
     const frames = parseStackFrames(

@@ -20,6 +20,24 @@ export type ParsedDsn = {
 };
 
 /**
+ * Is this host one the machine itself answers? A self-hosted collector on the
+ * developer's own box is the one place plain HTTP is tolerable: nothing
+ * leaves the host. Everywhere else a token or an envelope crosses a network,
+ * and only TLS may carry it.
+ */
+function isLoopbackHost(hostname: string): boolean {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
+}
+
+function assertTransport(url: URL, what: string): void {
+  if (url.protocol === "https:") return;
+  if (url.protocol === "http:" && isLoopbackHost(url.hostname)) return;
+  throw new Error(
+    `${what} must be https (plain http is allowed for localhost only): ${JSON.stringify(url.href)}`,
+  );
+}
+
+/**
  * Parse a DSN or throw a message naming what is wrong. The shape is the SDK
  * standard: scheme, a public key as the URL's username, a host, an optional
  * path, and the numeric project id as the last path segment. A secret key
@@ -32,9 +50,7 @@ export function parseDsn(dsn: string): ParsedDsn {
   } catch {
     throw new Error(`Sentry DSN is not a URL: ${JSON.stringify(dsn)}`);
   }
-  if (url.protocol !== "https:" && url.protocol !== "http:") {
-    throw new Error(`Sentry DSN must be http(s), got ${url.protocol.replace(/:$/, "")}.`);
-  }
+  assertTransport(url, "Sentry DSN");
   if (url.username.length === 0) {
     throw new Error("Sentry DSN carries no public key (expected https://<key>@<host>/<project>).");
   }
@@ -68,9 +84,7 @@ export function normalizeCollectorUrl(raw: string): string {
   } catch {
     throw new Error(`collector url is not an absolute URL: ${JSON.stringify(raw)}`);
   }
-  if (url.protocol !== "https:" && url.protocol !== "http:") {
-    throw new Error(`collector url must be http(s): ${JSON.stringify(raw)}`);
-  }
+  assertTransport(url, "collector url");
   return `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, "")}`;
 }
 

@@ -586,7 +586,9 @@ export function assertNotWorkspaceRoot(
 /** The crash reporter for the config under cwd, or the silent one (#474). */
 async function reporterForCwd(): Promise<CrashReporter> {
   try {
-    return await createCrashReporterForConfig(resolveConfigPath(undefined, process.cwd()));
+    return await createCrashReporterForConfig(resolveConfigPath(undefined, process.cwd()), {
+      debug: (line) => console.error(`[phoebe] ${line}`),
+    });
   } catch {
     return NO_CRASH_REPORTER;
   }
@@ -601,10 +603,13 @@ async function reporterForCwd(): Promise<CrashReporter> {
  * naming the stage, because only it knows which.
  */
 async function withCrashReport(phase: CrashPhase, run: () => Promise<void>): Promise<void> {
-  const reporter = await reporterForCwd();
+  let reporter = await reporterForCwd();
   try {
     await run();
   } catch (error) {
+    // `upgrade` may have written the consent block during the run, so a
+    // reporter that was silent going in is read once more before reporting.
+    if (!reporter.enabled) reporter = await reporterForCwd();
     await reporter.report({ phase, level: "error", error });
     throw error;
   }

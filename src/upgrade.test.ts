@@ -738,6 +738,17 @@ describe("ensureReportingConsent (#474)", () => {
     expect(r.content).toBe(withBlock);
   });
 
+  test("an unreadable config is a line on stderr, not a rejected upgrade", async () => {
+    const stderr: string[] = [];
+    await ensureReportingConsent({
+      configPath: "/nowhere/phoebe.config.ts",
+      ask: async () => true,
+      stdout: () => {},
+      stderr: (l) => stderr.push(l),
+    });
+    expect(stderr[0]).toContain("could not read /nowhere/phoebe.config.ts");
+  });
+
   test("no TTY leaves the block absent and says nothing", async () => {
     const r = await run(SCAFFOLD, null);
     expect(r.asked()).toBe(1);

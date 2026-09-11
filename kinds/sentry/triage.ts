@@ -68,8 +68,19 @@ export function parseTriageDraft(text: string): ParsedTriage {
   if (change !== undefined) draft.change = change;
   if (test !== undefined) draft.test = test;
   if (openQuestion !== undefined) draft.openQuestion = openQuestion;
-  if (typeof duplicateOf === "number" && Number.isInteger(duplicateOf) && duplicateOf > 0) {
-    draft.duplicateOf = duplicateOf;
+  if (duplicateOf !== undefined && duplicateOf !== null) {
+    if (typeof duplicateOf === "number" && Number.isInteger(duplicateOf) && duplicateOf > 0) {
+      draft.duplicateOf = duplicateOf;
+    } else {
+      // The agent meant "a human already filed this" and got the number wrong.
+      // The claim still stands, so the verdict cannot be ready; the number is
+      // dropped and the open question says why.
+      draft.verdict = "not-ready";
+      draft.openQuestion =
+        `The triage named a duplicate but not as an issue number (${JSON.stringify(duplicateOf)}); ` +
+        `find the human-filed issue this crash belongs to.` +
+        (draft.openQuestion !== undefined ? `\n\n${draft.openQuestion}` : "");
+    }
   }
   // A duplicate is never ready: the human merges or closes it (#472).
   if (draft.duplicateOf !== undefined) draft.verdict = "not-ready";

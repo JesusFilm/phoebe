@@ -20,6 +20,7 @@ import { readEngineSource } from "../bootstrap/engine-source.ts";
 import { resolveCredentialArm, type CredentialArm } from "../bootstrap/credential-arm.ts";
 import { readReportingField, type ReportingField } from "./config-schema.ts";
 import { loadUserConfig } from "./load-config.ts";
+import { DEFAULT_DATA_BASE, resolveDataBase } from "./paths.ts";
 import { parseDsn, type FetchLike, type ParsedDsn } from "./sentry-protocol.ts";
 
 /**
@@ -71,20 +72,18 @@ export type CrashReporter = {
 export const CRASH_REPORT_TIMEOUT_MS = 3_000;
 const SENTRY_CLIENT = "phoebe-crash-reporter/1";
 
-/** The tenant data root whose per-tenant paths are scrubbed from stacks. */
-const TENANT_DATA_ROOT = "/data/repos/";
-
 /**
- * Rewrite `/data/repos/<owner>/<repo>` to `<tenant>` wherever it appears, so a
+ * Rewrite `<dataBase>/<owner>/<repo>` to `<tenant>` wherever it appears, so a
  * stack that ran inside a tenant's clone names no repository. Applied to every
  * string that leaves the box whatever `includeRef` says — the slug is one tag
- * under one switch, not something a stack frame gets to leak.
+ * under one switch, not something a stack frame gets to leak. `dataBase` is
+ * the deployment's resolved tenant root (`PHOEBE_DATA_DIR` overrides the
+ * default), threaded in by the reporter so a host/dev layout redacts too.
  */
-export function redactTenantPaths(text: string): string {
-  return text.replaceAll(
-    new RegExp(`${TENANT_DATA_ROOT.replaceAll("/", "\\/")}[^/\\s]+\\/[^/\\s]+`, "g"),
-    "<tenant>",
-  );
+export function redactTenantPaths(text: string, dataBase: string = DEFAULT_DATA_BASE): string {
+  const root = dataBase.replace(/\/+$/, "");
+  const escaped = root.replaceAll(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+  return text.replaceAll(new RegExp(`${escaped}\\/[^/\\s]+\\/[^/\\s]+`, "g"), "<tenant>");
 }
 
 type Frame = { filename: string; function: string; lineno?: number; colno?: number };
@@ -141,8 +140,9 @@ function errorParts(
 export function buildCrashPayload(
   event: CrashEvent,
   context: CrashContext,
-  opts: { includeRef: boolean; now: Date; eventId: string },
+  opts: { includeRef: boolean; now: Date; eventId: string; dataBase?: string },
 ): Record<string, unknown> {
+  const redact = (text: string): string => redactTenantPaths(text, opts.dataBase);
   const { type, value, stack } = errorParts(event.error, event.message);
   const tags: Record<string, string> = {
     phase: event.phase,
@@ -157,11 +157,11 @@ export function buildCrashPayload(
   if (opts.includeRef && event.ref !== undefined) tags["ref"] = event.ref;
   for (const [key, raw] of Object.entries(event.tags ?? {})) {
     if (raw === undefined || raw === null) continue;
-    tags[key] = redactTenantPaths(String(raw));
+    tags[key] = redact(String(raw));
   }
-  const exception: Record<string, unknown> = { type, value: redactTenantPaths(value) };
+  const exception: Record<string, unknown> = { type, value: redact(value) };
   if (stack !== null) {
-    exception["stacktrace"] = { frames: parseStackFrames(redactTenantPaths(stack)) };
+    exception["stacktrace"] = { frames: parseStackFrames(redact(stack)) };
   }
   return {
     event_id: opts.eventId,
@@ -210,6 +210,8 @@ export function createCrashReporter(deps: {
   timeoutMs?: number;
   /** Test seam over the baked-in constant. */
   maintainersDsn?: string | null;
+  /** The tenant data root to redact; defaults to the deployment's resolved one. */
+  dataBase?: string;
 }): CrashReporter {
   const debug = deps.debug ?? (() => {});
   const now = deps.now ?? (() => new Date());
@@ -217,6 +219,7 @@ export function createCrashReporter(deps: {
   const timeoutMs = deps.timeoutMs ?? CRASH_REPORT_TIMEOUT_MS;
   const maintainersDsn = deps.maintainersDsn === undefined ? MAINTAINERS_DSN : deps.maintainersDsn;
   const includeRef = deps.reporting?.includeRef ?? false;
+  const dataBase = deps.dataBase ?? resolveDataBase();
 
   const targets: ParsedDsn[] = [];
   const add = (label: string, dsn: string | null | undefined): void => {
@@ -270,6 +273,7 @@ export function createCrashReporter(deps: {
         includeRef,
         now: at,
         eventId: crypto.randomUUID().replaceAll("-", ""),
+        dataBase,
       });
       const sends = targets.map((dsn) => send(dsn, buildEnvelope(dsn, payload, at)));
       const settled = Promise.allSettled(sends).then(() => undefined);
@@ -305,7 +309,18 @@ export async function createCrashReporterForConfig(
   const env = deps.env ?? process.env;
   try {
     const user = (await loadUserConfig(configPath)) as Record<string, unknown>;
-    const reporting = readReportingField(user);
+    let reporting: ReportingField | undefined;
+    try {
+      reporting = readReportingField(user);
+    } catch (error) {
+      // A block that does not validate is the operator's mistake, and a
+      // command running with reporting silently off would hide it; the engine
+      // refuses the same config more loudly at its own boot.
+      deps.debug?.(
+        `crash reporter: ${error instanceof Error ? error.message : String(error)} — reporting is off for this command.`,
+      );
+      return NO_CRASH_REPORTER;
+    }
     if (reporting === undefined) return NO_CRASH_REPORTER;
     const source = readEngineSource(user);
     return createCrashReporter({
@@ -318,8 +333,11 @@ export async function createCrashReporterForConfig(
         credentialArm: resolveCredentialArm(env as Record<string, string | undefined>),
       },
       ...(deps.debug !== undefined ? { debug: deps.debug } : {}),
+      dataBase: resolveDataBase(env),
     });
   } catch {
+    // The config itself would not load: the command that needed it is about
+    // to say so, and with no block to read there is nowhere to report to.
     return NO_CRASH_REPORTER;
   }
 }

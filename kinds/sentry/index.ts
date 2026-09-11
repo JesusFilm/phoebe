@@ -74,6 +74,16 @@ export const MOST_CAPABLE_MODEL: Partial<Record<ProviderName, string>> = {
 };
 export const TRIAGE_EFFORT = "high";
 
+/**
+ * How many unfiled groups get their latest event read per cycle. Only the
+ * loudest few can be selected in one pass, and each read is a request with a
+ * timeout, so reading every unfiled group would let a slow collector hold the
+ * cycle for the whole list. The rest are counted as skipped and come round
+ * again once the loud ones are filed.
+ */
+export const EVENT_READS_PER_CYCLE = 10;
+export const SKIP_BEYOND_BUDGET = "beyond this cycle's event budget";
+
 /** One unit: one unresolved group, with the latest event already in hand. */
 export type SentryUnit = {
   ref: string;
@@ -186,6 +196,10 @@ export function createSentryKind(
           skipped.push(decision.reason);
           continue;
         }
+        if (candidates.length >= EVENT_READS_PER_CYCLE) {
+          skipped.push(SKIP_BEYOND_BUDGET);
+          continue;
+        }
         let event: SentryEvent;
         try {
           event = await source.latestEvent(group.id);
@@ -283,8 +297,22 @@ export function createSentryKind(
         title: renderTitle(unit.group),
         body: renderBody(symptom, triage),
       });
+      // From here the issue exists and carries the marker, so the group is
+      // filed whatever happens next: a throw now would make the next cycle
+      // skip the group with these side effects never retried, and a retry of
+      // the create would file a duplicate. So the labels are attempted, and a
+      // failure is logged loudly for a person to repair rather than thrown.
       for (const label of labelsFor(triage, options, config.readyLabel)) {
-        addLabelCreatingIfMissing(ctx.github, issueNumber, labelOf(label), (line) => ctx.log(line));
+        try {
+          addLabelCreatingIfMissing(ctx.github, issueNumber, labelOf(label), (line) =>
+            ctx.log(line),
+          );
+        } catch (error) {
+          ctx.log(
+            `${unit.ref}: filed #${issueNumber} but could not add label "${label}" — add it by hand. ` +
+              `${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
       }
       const verdict = triage.ok ? triage.draft.verdict : "not-ready";
       ctx.log(

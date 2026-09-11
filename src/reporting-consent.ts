@@ -38,7 +38,13 @@ export async function ensureReportingConsent(opts: {
   stdout: (line: string) => void;
   stderr: (line: string) => void;
 }): Promise<void> {
-  const content = readFileSync(opts.configPath, "utf8");
+  let content: string;
+  try {
+    content = readFileSync(opts.configPath, "utf8");
+  } catch (error) {
+    opts.stderr(`reporting: could not read ${opts.configPath} (${describe(error)}) — not asking.`);
+    return;
+  }
   const existing = editConfigGetField(content, "reporting");
   if (!existing.ok) {
     opts.stderr(`reporting: could not read ${opts.configPath} (${existing.reason}) — not asking.`);
@@ -55,9 +61,21 @@ export async function ensureReportingConsent(opts: {
     );
     return;
   }
-  writeFileSync(opts.configPath, result.content);
+  try {
+    writeFileSync(opts.configPath, result.content);
+  } catch (error) {
+    opts.stderr(
+      `reporting: could not write the answer to ${opts.configPath} (${describe(error)}) — ` +
+        `add \`reporting: { maintainers: ${answer} }\` by hand.`,
+    );
+    return;
+  }
   opts.stdout(
     `reporting: { maintainers: ${answer} } written to ${opts.configPath}` +
       (answer ? " — thank you." : "."),
   );
+}
+
+function describe(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

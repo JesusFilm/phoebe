@@ -392,7 +392,11 @@ and gets out again only when a release moves, which is the one moment a
 re-triage is worth paying for. `is:unresolved` is not a gate but the
 definition of a candidate: a group a person resolved or ignored in Sentry is
 simply not a unit. Selection takes the highest event count first, ties by the
-most recent sighting: the loudest crash costs the most right now.
+most recent sighting: the loudest crash costs the most right now. Two bounds
+keep a cycle short whatever the project's size: the list walk stops after five
+pages of a hundred, and only the ten loudest unfiled groups have their latest
+event read in one cycle (the rest are counted as skipped and come round again).
+A project that runs into either bound wants a tighter `minEvents` or `window`.
 
 **The watermark is GitHub itself.** Every filed issue carries
 `<!-- phoebe-sentry group=<id> -->`, and each cycle runs one search for that

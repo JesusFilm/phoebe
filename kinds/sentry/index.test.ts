@@ -184,6 +184,25 @@ describe("fetch", () => {
     ]);
   });
 
+  test("only the loudest few get their event read per cycle; the rest are counted, not read", async () => {
+    const groups = Array.from({ length: 12 }, (_, i) => group(String(i + 1), { count: 100 - i }));
+    let reads = 0;
+    const kind = createSentryKind(config(), options, {
+      createSource: () => ({
+        listUnresolvedGroups: async () => groups,
+        latestEvent: async () => {
+          reads += 1;
+          return event("r");
+        },
+      }),
+    });
+    const gathered = await kind.fetch(ctxWith({ listIssuesMentioning: () => [] }));
+    expect(reads).toBe(10);
+    expect(gathered.candidates).toHaveLength(10);
+    expect(gathered.candidates[0]?.ref).toBe("sentry:1");
+    expect(gathered.skipped).toEqual([{ reason: "beyond this cycle's event budget", count: 2 }]);
+  });
+
   test("a failed list propagates — the cycle dies, the restart loop recovers", async () => {
     const kind = createSentryKind(config(), options, {
       createSource: () => ({
@@ -252,6 +271,8 @@ describe("run", () => {
       labelMissing?: string;
       duplicateState?: "open" | "closed";
       withReadyPolicy?: boolean;
+      /** Every label add fails this way, whatever the label. */
+      labelError?: Error;
     } = {},
   ): RunHarness {
     const scratch = mkdtempSync(join(tmpdir(), "phoebe-sentry-run-"));
@@ -267,6 +288,7 @@ describe("run", () => {
         return 77;
       },
       addIssueLabel: (_n, label) => {
+        if (opts.labelError !== undefined) throw opts.labelError;
         if (opts.labelMissing === label && !createdLabels.includes(label)) {
           throw Object.assign(new Error("gh failed"), {
             stderr: `failed to update: 'Label not found: ${label}'`,
@@ -400,6 +422,18 @@ describe("run", () => {
     expect(h.created[0]?.body).toContain("## Agent output (unparsed)");
     expect(h.created[0]?.body).toContain("I looked and it seems fine");
     expect(h.labels).toEqual(["sentry"]);
+  });
+
+  test("a label that cannot be added after the issue exists is logged, not thrown", async () => {
+    const h = harness({
+      draft: JSON.stringify({ verdict: "ready", cause: "c", change: "h", test: "t" }),
+      labelError: new Error("HTTP 403"),
+    });
+    await kind().run(unit, h.ctx);
+    expect(h.created).toHaveLength(1);
+    expect(
+      h.logged.some((l) => l.includes('could not add label "sentry"') && l.includes("HTTP 403")),
+    ).toBe(true);
   });
 
   test("no draft at all throws and files nothing", async () => {

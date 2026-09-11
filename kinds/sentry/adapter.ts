@@ -57,8 +57,15 @@ export type SentrySource = {
   latestEvent(groupId: string, signal?: AbortSignal): Promise<SentryEvent>;
 };
 
-/** Pages of 100 the list walk follows before stopping; the noise floor should bite first. */
-const MAX_LIST_PAGES = 5;
+/**
+ * Pages of 100 the list walk follows before stopping. The list is sorted by
+ * frequency, so the loudest groups — the ones select takes first — are always
+ * on the first page; a project with more than this many unresolved groups
+ * above the floor inside the window is asking for a tighter `minEvents` or
+ * `window`, not a longer walk. No cursor is carried across cycles: the kind
+ * keeps no state of its own (#471).
+ */
+export const MAX_LIST_PAGES = 5;
 const REQUEST_TIMEOUT_MS = 30_000;
 
 const WINDOW_UNIT_MS: Record<string, number> = {
@@ -155,13 +162,15 @@ function readGroup(raw: RawGroup): SentryGroup {
 /**
  * The gates, applied client-side whatever the collector: the level set, the
  * event floor, and the window on `lastSeen`. Redundant for Sentry, which
- * already filtered server-side; the whole floor for GlitchTip.
+ * already filtered server-side; the whole floor for GlitchTip. A row whose
+ * count or `lastSeen` cannot be read fails closed — a gate that cannot be
+ * judged is not passed.
  */
 export function passesGates(group: SentryGroup, options: SentryKindOptions, now: Date): boolean {
   if (!options.levels.includes(group.level)) return false;
-  if (group.count < options.minEvents) return false;
+  if (!Number.isFinite(group.count) || group.count < options.minEvents) return false;
   const lastSeen = Date.parse(group.lastSeen);
-  if (Number.isNaN(lastSeen)) return true;
+  if (Number.isNaN(lastSeen)) return false;
   return now.getTime() - lastSeen <= windowMs(options.window);
 }
 
