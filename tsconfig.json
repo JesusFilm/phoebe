@@ -15,5 +15,13 @@
     "verbatimModuleSyntax": true,
     "erasableSyntaxOnly": true
   },
-  "include": ["src", "bootstrap", "examples", "scripts", "phoebe.config.ts", "vite.config.ts"]
+  "include": [
+    "src",
+    "bootstrap",
+    "kinds",
+    "examples",
+    "scripts",
+    "phoebe.config.ts",
+    "vite.config.ts"
+  ]
 }

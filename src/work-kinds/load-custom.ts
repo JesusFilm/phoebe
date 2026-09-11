@@ -3,12 +3,17 @@
 // `{ path, ...knobs, ...options }` block — into a definition, then assemble
 // the registry. Path modules load with the same dynamic-import machinery as the
 // config itself (native Node type-stripping), resolved against the config
-// file's directory. Editing a kind module requires a restart: the reconcile
-// watch fingerprints the config file only (documented v1 limitation).
+// file's directory — or, for a `phoebe-agent/` path, against the engine root:
+// that prefix is how a tenant declares a **catalog kind** (#473), a kind that
+// ships in the engine checkout and registers only on declaration. Editing a
+// kind module requires a restart: the reconcile watch fingerprints the config
+// file only (documented v1 limitation).
 
-import { resolve as resolvePath } from "node:path";
+import { statSync } from "node:fs";
+import { join, resolve as resolvePath } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  CATALOG_KIND_PREFIX,
   WORK_KIND_NAMES,
   builtInKindPath,
   customKindEntries,
@@ -19,13 +24,38 @@ import {
 import type { AnyWorkKindDefinition } from "./definition.ts";
 import { buildRegistry, type LoadedCustomKind, type WorkKindRegistry } from "./registry.ts";
 
+/**
+ * The engine checkout's root — two levels up from this file. The catalog lives
+ * under it (`<root>/kinds/<name>/`), and the engine can only be running from a
+ * checkout, so the path is known without configuration.
+ */
+export const ENGINE_ROOT = resolvePath(import.meta.dirname, "..", "..");
+
+/**
+ * Where a kind module's path lands on disk. A `phoebe-agent/` path is a catalog
+ * entry: it resolves against the engine root, and a directory means its
+ * `index.ts` (Node's ESM loader does not look for one itself). Every other path
+ * resolves against the config file's directory, exactly as before.
+ */
+export function resolveKindModulePath(modulePath: string, configDir: string): string {
+  if (!modulePath.startsWith(CATALOG_KIND_PREFIX)) return resolvePath(configDir, modulePath);
+  const inCatalog = resolvePath(ENGINE_ROOT, modulePath.slice(CATALOG_KIND_PREFIX.length));
+  try {
+    if (statSync(inCatalog).isDirectory()) return join(inCatalog, "index.ts");
+  } catch {
+    // Absent: let the import below fail with the resolved path in its message.
+  }
+  return inCatalog;
+}
+
 async function importKindModule(
   at: string,
   modulePath: string,
   configDir: string,
   config: PhoebeConfig,
+  options: Record<string, unknown> | undefined,
 ): Promise<AnyWorkKindDefinition> {
-  const absolute = resolvePath(configDir, modulePath);
+  const absolute = resolveKindModulePath(modulePath, configDir);
   let mod: unknown;
   try {
     mod = await import(pathToFileURL(absolute).href);
@@ -43,11 +73,16 @@ async function importKindModule(
     );
   }
   // A factory — the same shape the built-in modules use — gets the resolved
-  // config; a plain object is the definition itself.
+  // config and, second, the block's options, so a kind can validate its options
+  // at registration and fail the boot (or `phoebe pipelines`) loudly rather
+  // than mid-unit. A plain object is the definition itself.
   return typeof exported === "function"
-    ? ((exported as (config: PhoebeConfig) => AnyWorkKindDefinition)(
-        config,
-      ) as AnyWorkKindDefinition)
+    ? ((
+        exported as (
+          config: PhoebeConfig,
+          options: Record<string, unknown> | undefined,
+        ) => AnyWorkKindDefinition
+      )(config, options) as AnyWorkKindDefinition)
     : (exported as AnyWorkKindDefinition);
 }
 
@@ -73,7 +108,13 @@ export async function loadCustomKinds(
     if (declared === undefined) continue;
     loaded.push({
       name,
-      definition: await importKindModule(`kinds.${name}`, declared.path, configDir, config),
+      definition: await importKindModule(
+        `kinds.${name}`,
+        declared.path,
+        configDir,
+        config,
+        declared.options,
+      ),
       options: declared.options,
     });
   }
@@ -90,16 +131,17 @@ async function resolveEntry(
   if (typeof entry === "string") {
     return {
       name,
-      definition: await importKindModule(at, entry, configDir, config),
+      definition: await importKindModule(at, entry, configDir, config, undefined),
       options: undefined,
     };
   }
   if ("path" in entry && typeof (entry as { path?: unknown }).path === "string") {
     const block = entry as { path: string };
+    const options = pathEntryOptions(block);
     return {
       name,
-      definition: await importKindModule(at, block.path, configDir, config),
-      options: pathEntryOptions(block),
+      definition: await importKindModule(at, block.path, configDir, config, options),
+      options,
     };
   }
   return { name, definition: entry as AnyWorkKindDefinition, options: undefined };

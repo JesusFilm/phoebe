@@ -445,8 +445,15 @@ kinds: {
   with `./`, `../`, or `/`. Bare specifiers are rejected at validation: kind
   modules load from the tenant checkout, where no `node_modules` is reachable —
   which is also why kind code uses only _type_ imports from `phoebe-agent`.
-  The module's `default` export is the definition or a `(config) => definition`
-  factory.
+  The module's `default` export is the definition or a
+  `(config, options) => definition` factory (the second argument is the block's
+  options, so a factory can validate them at registration).
+- **The one exception is the `phoebe-agent/` prefix**, which names a **catalog
+  kind**: a kind shipped in the engine checkout that registers only when
+  declared. `path: "phoebe-agent/kinds/sentry"` resolves against the engine
+  root, not the config's directory, and the block is otherwise an ordinary
+  path block — knobs, options, env vars and all. The catalog today is
+  [`sentry`](work-kinds.md#sentry-triage-production-errors-opt-in).
 - **Options are the block's own root fields.** Everything beside `path` and
   the tuning knobs reaches the kind unvalidated as `ctx.options` (the kind
   validates); `path` and the knob names are reserved words a kind's options
@@ -844,6 +851,29 @@ failure. (A pinned launch still _records_ what it proved, which costs nothing,
 and gives a deployment later moved onto a branch something to fall back to. It
 simply never causes a fallback.) Every fallback event is logged with both SHAs
 (`[phoebe] boot: …`).
+
+## Crash reporting (`reporting`)
+
+Bootstrapper- and operator-command-only, and off unless you say otherwise.
+`reporting` says where Phoebe's **own** faults go — a failed engine clone, a
+crash-loop quarantine, `phoebe upgrade` throwing — never a tenant's failures and
+never anything from the work loop. It lives beside `engine` (the root config in
+workspace mode, the tenant config in solo), is read at boot and by the operator
+commands, and never reaches the resolved config: not `PHOEBE_*`-overlayable, not
+an env var, so no kind can declare it.
+
+| Field         | Default | Meaning                                                                                                                                                |
+| ------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `maintainers` | `false` | Send to the Phoebe maintainers' Sentry project, whose DSN is baked into the engine (a DSN is a public client key; rotating it is a release).           |
+| `dsn`         | unset   | Send to your own Sentry (or GlitchTip) project. Both targets set means both get the same envelope.                                                     |
+| `includeRef`  | `false` | Include the identifying fields — the tenant `repoSlug` and, where a fault names one, the unit ref — as one unit. Off, the tenant tag reads `redacted`. |
+
+Neither target set means no client is built and no network call is made; that
+absence is the opt-out, and there is no third switch. `phoebe init` asks the
+`maintainers` question once on a TTY and writes the answer; `phoebe upgrade`
+asks it once more only for a config that has no block at all, and a present
+block, `true` or `false`, is never asked again. What each event carries and how
+it is sent is [`operating.md` → Crash reporting](operating.md#crash-reporting).
 
 ## Environment overlay (`PHOEBE_*`)
 

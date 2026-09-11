@@ -11,6 +11,7 @@ import {
   PROVIDER_NAMES,
   builtInKindPath,
   deprecatedPipelineAliases,
+  readReportingField,
   resolveConfig,
   validateUserConfig,
   workKindOverride,
@@ -896,5 +897,36 @@ describe("the built-in kinds' default prompt paths (#419)", () => {
     expect(resolveConfig(minimalUserConfig()).promptFiles.issue).toBe(
       DEFAULT_PROMPT_FILE_BY_KIND.issues,
     );
+  });
+});
+
+describe("reporting field (#474)", () => {
+  const resolve = resolveConfig;
+  const base = {
+    repoSlug: "acme/widget",
+    repoUrl: "https://github.com/acme/widget.git",
+    installCommand: "npm ci",
+    checkCommand: "npm run check",
+    testCommand: "npm test",
+  };
+
+  test("a well-formed block validates, is read back, and never reaches the resolved config", () => {
+    const user = {
+      ...base,
+      reporting: { maintainers: true, dsn: "https://k@h/1", includeRef: false },
+    };
+    expect(readReportingField(user)).toEqual(user.reporting);
+    expect("reporting" in resolve(user)).toBe(false);
+    expect(readReportingField({ ...base, reporting: undefined })).toBeUndefined();
+  });
+
+  test.each([
+    [{ maintainer: true }, 'names unknown field "maintainer"'],
+    [{ maintainers: "yes" }, "`reporting.maintainers` must be a boolean"],
+    [{ includeRef: 1 }, "`reporting.includeRef` must be a boolean"],
+    [{ dsn: "" }, "`reporting.dsn` must be a non-empty DSN string"],
+    ["on", "`reporting` must be an object"],
+  ])("rejects %j at resolve time", (reporting, message) => {
+    expect(() => resolve({ ...base, reporting } as never)).toThrow(message);
   });
 });

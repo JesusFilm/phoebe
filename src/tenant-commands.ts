@@ -147,6 +147,11 @@ GH_TOKEN=
 CURSOR_API_KEY=
 ANTHROPIC_API_KEY=
 OPENAI_KEY=
+
+# --- Sentry work kind (optional) ---
+# Only for a tenant that declares the \`sentry\` catalog kind (docs/work-kinds.md).
+# A Sentry auth token with the \`event:read\` scope; the same name sentry-cli uses.
+# SENTRY_AUTH_TOKEN=
 `;
 
 /**

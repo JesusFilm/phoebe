@@ -15,8 +15,10 @@ they are declared, supervised and watched, read [`pipelines.md`](pipelines.md).
 A kind is one registered **definition** — name, prompt, eligibility, reporting,
 and a `fetch`/`select`/`run` triple. Five ship built-in: three **janitors** that
 keep open PRs moving (`conflicts`, `checks`, `reviews`) and two **producers**
-that start new work (`issues`, and `research` for wayfinder research tickets); a
-tenant may register more directly under
+that start new work (`issues`, and `research` for wayfinder research tickets).
+One more ships as a **catalog kind**, registered only when a tenant declares it:
+[`sentry`](#sentry-triage-production-errors-opt-in), which turns production
+errors into agent-ready issues. A tenant may register more directly under
 [`pipelines.<pipeline>.kinds`](configuration.md#custom-work-kinds)
 (see [Writing your own kind](#writing-your-own-kind)). Field references point at
 [`configuration.md`](configuration.md); the runtime plumbing is
@@ -318,6 +320,119 @@ bot's own GitHub login (`phoebeLogin`), fetched once per cycle:
    summary and no push, the comment notes the failure and Phoebe retries on new
    activity.
 
+## `sentry`, triage production errors (opt-in)
+
+The one **catalog kind**: it ships in the engine checkout but registers only
+when a tenant declares it, so no deployment carries it by accident and no boot
+demands a Sentry token nobody set. It polls one Sentry project for unresolved
+error groups, triages each new one against the repository with a read-only
+agent run, and files a GitHub issue that clears the bar in
+[`preparing-work.md`](preparing-work.md): the located cause and the decision,
+not the symptom. The `issues` kind then picks the issue up on a later cycle.
+Phoebe hosts no receiver and opens no port; the collector is Sentry (SaaS or
+self-hosted), or GlitchTip, which speaks the same read protocol. The kind reaches
+it with `fetch` straight from the engine child, the same way it reaches GitHub;
+there is no proxy knob.
+
+Declare it under a pipeline of its own so its token never reaches the `work`
+pipeline's child:
+
+```ts
+pipelines: {
+  intake: {
+    pollIntervalMs: 300_000,
+    kinds: {
+      sentry: {
+        path: "phoebe-agent/kinds/sentry",
+        org: "acme",
+        project: 4507000000000000, // the `project=` value in any Sentry issues URL
+        // url: "https://sentry.io", collector: "sentry",
+        // window: "24h", minEvents: 2, environments: ["production"], levels: ["error", "fatal"],
+        // label: "sentry", triagedLabel: "triaged", applyReadyLabel: false,
+      },
+    },
+  },
+},
+```
+
+The `phoebe-agent/` prefix resolves against the engine checkout rather than the
+config file's directory ([`configuration.md`](configuration.md#custom-work-kinds));
+everything else about the block is a custom kind's. The token is the one env
+key: `SENTRY_AUTH_TOKEN` in the tenant's `.env`, scope `event:read`, declared
+as `requiredEnv` and never opened to the agent. Only the two required fields
+have no default:
+
+| Option            | Default               | Meaning                                                                                                   |
+| ----------------- | --------------------- | --------------------------------------------------------------------------------------------------------- |
+| `org`             | required              | The organization slug in every Sentry URL.                                                                |
+| `project`         | required              | The **numeric** project id (`project=` in a Sentry issues URL); slug resolution needs a wider scope.      |
+| `url`             | `"https://sentry.io"` | The collector's origin, for self-hosted Sentry or GlitchTip.                                              |
+| `collector`       | `"sentry"`            | `"sentry"` or `"glitchtip"`: the read-surface policy. Bugsink reads differently and is not covered.       |
+| `window`          | `"24h"`               | A group must have been seen inside this period. Sentry's `statsPeriod` grammar: `30m`, `24h`, `7d`, `2w`. |
+| `minEvents`       | `2`                   | Events in the window before a group is a candidate.                                                       |
+| `environments`    | `["production"]`      | Environments a candidate must have been seen in.                                                          |
+| `levels`          | `["error", "fatal"]`  | Levels a candidate may carry.                                                                             |
+| `label`           | `"sentry"`            | On every filed issue, for humans to filter by. Created on demand.                                         |
+| `triagedLabel`    | `"triaged"`           | On a ready verdict when `applyReadyLabel` is off; a human flips it to `readyLabel`. Created on demand.    |
+| `applyReadyLabel` | `false`               | Apply the tenant's `readyLabel` to a ready verdict directly.                                              |
+
+A bad block fails registration, so `phoebe pipelines` and the pipeline's boot
+name the field rather than a unit dying later. The tuning knobs (`model`,
+`effort`, `runTimeoutMs`, `disabled`, `promptFile`) and `PHOEBE_SENTRY_*` apply
+as for any kind. The definition defaults to the provider's most capable model at
+high effort: one triage per group per release is cheap next to a confident
+wrong ticket. Its prompt is an absolute path into the engine checkout; a tenant
+who wants to edit it copies it out and re-points `promptFile`.
+
+**One unit is one group**, `ref` `sentry:<groupId>`. Sentry already merges
+events across releases into a group, so a per-release unit would file the very
+duplicate the watermark prevents. The unit's `revision` is the latest event's
+release string: a group whose triage keeps timing out is quarantined in memory
+and gets out again only when a release moves, which is the one moment a
+re-triage is worth paying for. `is:unresolved` is not a gate but the
+definition of a candidate: a group a person resolved or ignored in Sentry is
+simply not a unit. Selection takes the highest event count first, ties by the
+most recent sighting: the loudest crash costs the most right now.
+
+**The watermark is GitHub itself.** Every filed issue carries
+`<!-- phoebe-sentry group=<id> -->`, and each cycle runs one search for that
+marker across every state. Then, per group:
+
+| Linked issue          | Group                        | Action                                                          |
+| --------------------- | ---------------------------- | --------------------------------------------------------------- |
+| open                  | any                          | skip (`already filed`)                                          |
+| closed as not planned | any                          | skip forever (`closed as not planned`): a person decided        |
+| closed as completed   | last seen after `closed_at`  | file a **new** issue opening "Regression of #N", same marker    |
+| closed as completed   | last seen before `closed_at` | skip (`fixed, awaiting resolution`): Sentry has not aged it out |
+
+A new issue rather than a reopen, because the old ticket's front-loading is
+stale; and never a comment, which the `issues` kind cannot see on a closed
+issue. Nothing is ever written to Sentry.
+
+**The agent does the front-loading; the kind files.** `run` writes the group
+and its latest event to `scratch/group.json` and `scratch/event.json`, runs the
+prompt in a `readonly` checkout of the default branch (the fix lands there, so
+the ticket is about the code as it is now), and reads back
+`scratch/triage.json`: a `verdict` of `ready` or `not-ready`, with `cause`,
+`change`, `test`, an `openQuestion` for the not-ready case, and `duplicateOf`
+when a human already filed it. The kind renders the symptom block from Sentry
+data so it cannot be hallucinated (title, culprit, level, count in window,
+first and last seen, release, transaction, the in-app frames, the permalink),
+adds the agent's sections, stamps the marker, sets the labels and creates the
+issue as `Sentry: <title> (<culprit>)`. The `issues` kind's priority inference
+reads crash and error wording, so these sort as bugs for free.
+
+Two outcomes, never none: every successful run files an issue, because without
+one there is no watermark. A ready verdict wears `label` plus `triagedLabel`, or
+plus `readyLabel` when `applyReadyLabel` is on. A not-ready verdict wears
+`label` alone and says what is still open; a "this is noise" verdict is a
+not-ready issue the human closes as not planned, which the regression rule then
+honours forever. A duplicate files not-ready, says "Possibly duplicate of #N",
+and the kind posts one comment on #N if it is open. An absent draft throws (a
+failed run in the contract's own terms; nothing is filed because there is
+nothing to say); a present but unparseable one files not-ready with the raw text
+under **Agent output (unparsed)**.
+
 ## Watermarks
 
 Janitors record their progress as **hidden HTML-comment markers** on the PR so
@@ -329,11 +444,12 @@ move whatever the marker is keyed on (see the table below) or remove the newest
 matching comment. See [`operating.md`](operating.md#watermark-comments) for the
 operator's view.
 
-| Kind        | Marker                   | Keyed on                    | Effect                                                |
-| ----------- | ------------------------ | --------------------------- | ----------------------------------------------------- |
-| `conflicts` | `phoebe-conflict-fail`   | `prHead` + `mainHead`       | Skip re-fixing until either the PR or the base moves. |
-| `checks`    | `phoebe-checks-fail`     | `prHead`                    | Skip re-fixing until the PR head moves.               |
-| `reviews`   | `phoebe-reviews-handled` | `latest` activity timestamp | Only re-run on review activity newer than this.       |
+| Kind        | Marker                   | Keyed on                    | Effect                                                                                                                                             |
+| ----------- | ------------------------ | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `conflicts` | `phoebe-conflict-fail`   | `prHead` + `mainHead`       | Skip re-fixing until either the PR or the base moves.                                                                                              |
+| `checks`    | `phoebe-checks-fail`     | `prHead`                    | Skip re-fixing until the PR head moves.                                                                                                            |
+| `reviews`   | `phoebe-reviews-handled` | `latest` activity timestamp | Only re-run on review activity newer than this.                                                                                                    |
+| `sentry`    | `phoebe-sentry`          | the Sentry group id         | In the filed issue's body, not a comment; read back by one search per cycle across every state ([above](#sentry-triage-production-errors-opt-in)). |
 
 ## Writing your own kind
 

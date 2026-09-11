@@ -26,6 +26,14 @@ import {
   type PhoebeUserConfig,
 } from "./config-schema.ts";
 import { createWorkKindRegistry } from "./work-kinds/load-custom.ts";
+import { readReportingField } from "./config-schema.ts";
+import {
+  createCrashReporter,
+  NO_CRASH_REPORTER,
+  type CrashPhase,
+  type CrashReporter,
+} from "./crash-reporter.ts";
+import { readEngineSource } from "../bootstrap/engine-source.ts";
 import {
   copyShippedPromptsInto,
   formatInitReport,
@@ -576,6 +584,50 @@ export function assertNotWorkspaceRoot(
 }
 
 /**
+ * The crash reporter for one operator command (#474): built from the
+ * `reporting` block of the config under cwd when there is one that loads,
+ * and the silent reporter otherwise. A config that cannot load is exactly
+ * the kind of fault these commands then report on — but with no block to read
+ * there is nowhere to send it, so the command simply runs.
+ */
+async function reporterForCwd(): Promise<CrashReporter> {
+  try {
+    const configPath = resolveConfigPath(undefined, process.cwd());
+    const user = (await loadUserConfig(configPath)) as Record<string, unknown>;
+    const reporting = readReportingField(user);
+    if (reporting === undefined) return NO_CRASH_REPORTER;
+    const source = readEngineSource(user);
+    return createCrashReporter({
+      reporting,
+      context: {
+        bootstrapVersion: null,
+        engineRef: source.source === "github" ? source.ref : "local",
+        engineSha: null,
+        mode: user["workspace"] !== undefined ? "workspace" : "solo",
+        arm: process.env["GH_TOKEN"] ? "pat" : process.env["GH_APP_ID"] ? "app" : null,
+      },
+    });
+  } catch {
+    return NO_CRASH_REPORTER;
+  }
+}
+
+/**
+ * Run an operator command, reporting a throw to the crash reporter before it
+ * propagates. The report never changes the exit path: the send is awaited
+ * only up to its own short timeout, and a failed send is silent.
+ */
+async function reported(phase: CrashPhase, run: () => Promise<void>): Promise<void> {
+  const reporter = await reporterForCwd();
+  try {
+    await run();
+  } catch (error) {
+    await reporter.report({ phase, level: "error", error });
+    throw error;
+  }
+}
+
+/**
  * Engine-CLI entry point. Loads the consumer's config, overlays env, installs
  * the resolved config, then runs the engine (or scaffolds via `init`). The
  * bootstrapper (bootstrap/cli.ts) delegates here so the engine keeps a single
@@ -610,15 +662,42 @@ export async function runCli(): Promise<void> {
           `  repoSlug: ${result.repoSlug}\n` +
           `  repoUrl:  ${result.repoUrl}\n` +
           `\nFill in ${result.tenantDir}/.env (copy .env.example).\n` +
-          registrationAdvice,
+          registrationAdvice +
+          `Crash reporting is a root-config decision: add \`reporting: { maintainers: true }\` ` +
+          `beside \`engine\` in the root phoebe.config.ts to opt in (docs/operating.md).\n`,
       );
       // Trust-domain note on every run — fires exactly when co-tenancy matters
       // (#61): a second tenant is being added to one container.
       process.stderr.write(`\n${TRUST_DOMAIN_NOTE}\n`);
       return;
     }
-    const report = runInit({ targetDir: parsed.targetDir, profile: parsed.profile });
-    process.stdout.write(formatInitReport(report, parsed.targetDir));
+    // The one consent question (#474), asked on a TTY before the scaffold is
+    // written so the answer lands in the config as `reporting.maintainers`.
+    // Non-TTY writes `false`. A refusal such as "config already exists" is a
+    // skip in the report, not a throw, so it is never reported.
+    const { promptReportingConsent } = await import("./upgrade.ts");
+    const consent = (await promptReportingConsent()) ?? false;
+    const reporter = createCrashReporter({
+      reporting: { maintainers: consent },
+      context: {
+        bootstrapVersion: null,
+        engineRef: null,
+        engineSha: null,
+        mode: parsed.profile === "workspace" ? "workspace" : "solo",
+        arm: null,
+      },
+    });
+    try {
+      const report = runInit({
+        targetDir: parsed.targetDir,
+        profile: parsed.profile,
+        reportingMaintainers: consent,
+      });
+      process.stdout.write(formatInitReport(report, parsed.targetDir));
+    } catch (error) {
+      await reporter.report({ phase: "init", level: "error", error });
+      throw error;
+    }
     return;
   }
 
@@ -633,11 +712,13 @@ export async function runCli(): Promise<void> {
   // engine-run path from loading their bootstrap / Docker dependencies.
   if (args[0] === "upgrade") {
     const { runUpgradeCli } = await import("./upgrade.ts");
-    return await runUpgradeCli(args.slice(1));
+    return await reported("upgrade", () => runUpgradeCli(args.slice(1)));
   }
   if (args[0] === "doctor") {
     const { runDoctorCli } = await import("./doctor.ts");
-    return await runDoctorCli(args.slice(1));
+    // The command itself throwing, never its findings: a failed check is a
+    // report with exit 1, and exit codes are not exceptions.
+    return await reported("doctor", () => runDoctorCli(args.slice(1)));
   }
   // The supervisor's one question about a tenant's config (#417): which pipelines it
   // declares, and their fingerprints. Lazy like its neighbours — the
@@ -655,7 +736,7 @@ export async function runCli(): Promise<void> {
   }
   if (args[0] === "migrate") {
     const { runMigrateCli } = await import("./migrate.ts");
-    return await runMigrateCli(args.slice(1));
+    return await reported("migrate", () => runMigrateCli(args.slice(1)));
   }
   if (args[0] === "stop") {
     const { runStopCli } = await import("./stop.ts");

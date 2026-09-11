@@ -17,6 +17,7 @@
   "files": [
     "bootstrap",
     "src",
+    "kinds",
     "prompts",
     "templates",
     "!**/*.test.ts",

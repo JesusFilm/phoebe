@@ -129,6 +129,16 @@ export type WorkKindsField = {
   [kind: string]: BuiltInKindEntry | CustomKindEntry | undefined;
 } & Partial<Record<WorkKindName, BuiltInKindEntry>>;
 
+/**
+ * The one bare-looking module path a kind declaration may use (#473): a path
+ * under this prefix names a **catalog kind** — a kind shipped in the engine
+ * checkout, resolved against the engine root rather than the config file's
+ * directory (`phoebe-agent/kinds/sentry` → `<engine>/kinds/sentry/`). The
+ * engine registers it exactly as it would a tenant's own module, so every
+ * knob, env var and option a custom kind takes applies to it unchanged.
+ */
+export const CATALOG_KIND_PREFIX = "phoebe-agent/";
+
 /** Legal custom-kind names: env-safe lowercase, hyphens allowed, ≤32 chars. */
 export const CUSTOM_WORK_KIND_NAME_RE = /^[a-z][a-z0-9-]*$/;
 const CUSTOM_WORK_KIND_NAME_MAX = 32;
@@ -556,6 +566,28 @@ export type DeploymentField = {
   stopNowCommand?: string;
 };
 
+/**
+ * The crash reporter's switch (#474): where Phoebe's *own* install and
+ * upgrade faults go. Bootstrapper- and operator-command-only — the engine's
+ * work loop never reports, so `resolveConfig` drops it like `engine`. It lives
+ * beside `engine` (the root config in workspace mode, the tenant config in
+ * solo), is never `PHOEBE_*`-overlayable and never an env var, so no kind can
+ * declare it. Both targets unset means no client is built and nothing is sent;
+ * that absence is the opt-out.
+ */
+export type ReportingField = {
+  /** Send to the Phoebe maintainers' project (a DSN baked into the engine). Default false. */
+  maintainers?: boolean;
+  /** Send to the consumer's own project. */
+  dsn?: string;
+  /**
+   * Include the identifying fields — the tenant `repoSlug` and, where a fault
+   * names one, the unit ref — as one unit. Off, the tenant tag is `redacted`.
+   * Default false.
+   */
+  includeRef?: boolean;
+};
+
 export type PromptFilesConfig = {
   issue: string;
   conflict: string;
@@ -771,6 +803,12 @@ export type PhoebeUserConfig = {
    * it the same way it drops `engine`.
    */
   workspace?: WorkspaceField;
+  /**
+   * Where Phoebe's own faults are reported (#474); see {@link ReportingField}.
+   * Read by `phoebe boot` and the operator commands; the engine never reads it
+   * and `resolveConfig` drops it — the `engine` precedent.
+   */
+  reporting?: ReportingField;
   /**
    * Bootstrapper-only asset directory (#98). Relocates where this tenant's
    * co-located `.env` and prompt/asset files live to a subdirectory of the dir
@@ -1055,6 +1093,58 @@ export function validateUserConfig(user: PhoebeUserConfig): void {
   if (user.deployment !== undefined) {
     validateDeploymentField(user.deployment);
   }
+  if (user.reporting !== undefined) {
+    validateReportingField(user.reporting);
+  }
+}
+
+/**
+ * Reject a malformed `reporting` block: three optional fields, each typed, and
+ * nothing else — a typo'd `maintainer: true` would otherwise sit inert while
+ * the operator believed they had consented.
+ */
+export function validateReportingField(reporting: ReportingField): void {
+  if (typeof reporting !== "object" || reporting === null || Array.isArray(reporting)) {
+    throw new Error(
+      `phoebe.config.ts \`reporting\` must be an object with optional \`maintainers\`, ` +
+        `\`dsn\` and \`includeRef\` (got ${JSON.stringify(reporting)}).`,
+    );
+  }
+  for (const key of Object.keys(reporting)) {
+    if (key !== "maintainers" && key !== "dsn" && key !== "includeRef") {
+      throw new Error(
+        `phoebe.config.ts \`reporting\` names unknown field "${key}". The block holds only ` +
+          `\`maintainers\`, \`dsn\` and \`includeRef\`.`,
+      );
+    }
+  }
+  for (const key of ["maintainers", "includeRef"] as const) {
+    if (reporting[key] !== undefined && typeof reporting[key] !== "boolean") {
+      throw new Error(
+        `phoebe.config.ts \`reporting.${key}\` must be a boolean (got ${JSON.stringify(reporting[key])}).`,
+      );
+    }
+  }
+  if (
+    reporting.dsn !== undefined &&
+    (typeof reporting.dsn !== "string" || reporting.dsn.trim().length === 0)
+  ) {
+    throw new Error(
+      `phoebe.config.ts \`reporting.dsn\` must be a non-empty DSN string when present ` +
+        `(got ${JSON.stringify(reporting.dsn)}).`,
+    );
+  }
+}
+
+/**
+ * Read the validated `reporting` block off a loaded config — root or tenant,
+ * before or instead of `resolveConfig`, which drops it. `undefined` when the
+ * block is absent, which every reader treats as "send nothing".
+ */
+export function readReportingField(user: { reporting?: unknown }): ReportingField | undefined {
+  if (user.reporting === undefined) return undefined;
+  validateReportingField(user.reporting as ReportingField);
+  return user.reporting as ReportingField;
 }
 
 /**
@@ -1132,17 +1222,31 @@ function validateCustomKindEntry(name: string, entry: CustomKindEntry, kindsAt: 
  */
 const DEFINITION_DISCRIMINANTS = ["fetch", "select", "run"] as const;
 
-/** A kind-module path is relative-or-absolute, never bare (#350). */
+/**
+ * A kind-module path is relative-or-absolute, never bare (#350) — with the one
+ * carve-out of the catalog prefix (#473), which is not a specifier the module
+ * loader sees but a name the engine resolves against its own checkout.
+ */
 function assertModulePath(at: string, path: unknown): void {
   if (typeof path !== "string" || path.trim().length === 0) {
     throw new Error(`${at} must name a module path — got ${JSON.stringify(path)}.`);
+  }
+  if (path.startsWith(CATALOG_KIND_PREFIX)) {
+    if (path.length === CATALOG_KIND_PREFIX.length) {
+      throw new Error(
+        `${at} names "${path}", which is the catalog prefix and nothing else — name a ` +
+          `catalog kind, e.g. \`${CATALOG_KIND_PREFIX}kinds/sentry\`.`,
+      );
+    }
+    return;
   }
   if (!path.startsWith("./") && !path.startsWith("../") && !isAbsolute(path)) {
     throw new Error(
       `${at} names module "${path}", which is a bare specifier. Kind modules load ` +
         `from the tenant checkout, where no \`node_modules\` is reachable — use a ` +
-        `path starting with \`./\`, \`../\`, or \`/\`, resolved against the config ` +
-        `file's directory.`,
+        `path starting with \`./\`, \`../\`, or \`/\` (resolved against the config ` +
+        `file's directory), or \`${CATALOG_KIND_PREFIX}kinds/<name>\` for a kind the ` +
+        `engine ships.`,
     );
   }
 }

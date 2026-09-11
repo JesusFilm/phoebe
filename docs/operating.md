@@ -148,11 +148,12 @@ Phoebe keeps no memory between cycles; it records janitor progress as hidden
 HTML-comment markers on the PR. You normally never see them, but they explain
 "why isn't Phoebe re-fixing this?":
 
-| Marker                   | Meaning                                                                                                                          |
-| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
-| `phoebe-conflict-fail`   | A conflict fix already failed against this exact PR-head + base-head pair; Phoebe waits for either side to move before retrying. |
-| `phoebe-checks-fail`     | A CI fix already failed at this PR head; Phoebe waits for a new push before retrying.                                            |
-| `phoebe-reviews-handled` | Review feedback up to a timestamp was handled; Phoebe only re-runs on newer review activity.                                     |
+| Marker                   | Meaning                                                                                                                                                                                                    |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `phoebe-conflict-fail`   | A conflict fix already failed against this exact PR-head + base-head pair; Phoebe waits for either side to move before retrying.                                                                           |
+| `phoebe-checks-fail`     | A CI fix already failed at this PR head; Phoebe waits for a new push before retrying.                                                                                                                      |
+| `phoebe-reviews-handled` | Review feedback up to a timestamp was handled; Phoebe only re-runs on newer review activity.                                                                                                               |
+| `phoebe-sentry`          | In an issue body, not a comment: this issue was filed from that Sentry group. Closing it as **not planned** silences the group for good; closing as **completed** lets a later sighting file a regression. |
 
 **To force a retry**, move the thing the watermark is keyed on: push a commit
 (new PR head), merge/advance the base branch, or post fresh review activity.
@@ -285,6 +286,50 @@ there is nothing to mutate. It is safe against production, but note that it does
 issue write-method requests, which matters if you are approving it through
 a network policy. It never prints the token, and `--all` does not abort when one
 tenant fails.
+
+## Crash reporting
+
+Phoebe can report its **own** faults to a Sentry project — the maintainers',
+yours, or both — and does nothing of the kind until you turn it on with the
+`reporting` block beside `engine` in your config
+([`configuration.md`](configuration.md#crash-reporting-reporting)). `phoebe init`
+asks once on a terminal and writes the answer; `phoebe upgrade` asks once more
+only if your config has no block at all.
+
+What is reported is Phoebe's install and upgrade faults, and only those:
+
+| Phase            | Events                                                                                                                                                         | Level                                |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| boot             | the engine clone, fetch or materialize failing; an engine child exiting non-zero inside the healthy window; the crash-loop guard quarantining an engine commit | quarantine `fatal`, the rest `error` |
+| `phoebe upgrade` | any failure in fetch, migrate, validate or flip                                                                                                                | `error`                              |
+| `phoebe migrate` | a migration's apply or verify throwing                                                                                                                         | `error`                              |
+| `phoebe init`    | the scaffold throwing (a refusal such as "config already exists" is not a throw)                                                                               | `error`                              |
+| `phoebe doctor`  | the command itself throwing, never its findings                                                                                                                | `error`                              |
+
+**Not reported:** a tenant's `installCommand` failing, the catch-and-continue
+sites in the engine cycle, unit timeouts and the quarantine of a unit. Those are
+the tenant's repository or GitHub misbehaving, not Phoebe, and they stay in the
+container's own log.
+
+What leaves the box, per event: `phase`, `bootstrapVersion`, `engineRef` and
+`engineSha`, the `node` version, `mode` (`solo` or `workspace`), `arm` (`pat` or
+`app`), the error's class, message and stack, plus the stage the fault happened
+at (`launch`, `fast-exit`, `crash-loop`) and, for an exit, the code and the
+pipeline name. Stacks are Phoebe's own frames; any path under
+`/data/repos/<owner>/<repo>` is rewritten to `<tenant>` before sending. The
+tenant `repoSlug`, and a unit ref where a fault names one, are sent only under
+`includeRef: true`; otherwise the tenant tag reads `redacted`.
+
+Transport is one HTTPS POST to the project's envelope endpoint, with no SDK and
+no dependency: one attempt, a three-second timeout, and a failed send logged at
+debug level. A report never changes a command's exit code or delays a boot; the
+one place Phoebe waits is the bootstrapper's own exit, so a crash-loop report is
+not lost to the process ending.
+
+To turn it off, set `maintainers: false` and remove `dsn`, or delete the block.
+This repository's own tenant consumes the maintainers' project through the
+[`sentry` kind](work-kinds.md#sentry-triage-production-errors-opt-in), which is
+how a crash report becomes a front-loaded issue here.
 
 ## One-off overrides without editing config
 

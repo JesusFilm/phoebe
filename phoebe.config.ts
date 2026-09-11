@@ -113,7 +113,23 @@ export const config = defineConfig({
   // by-hand engine run against this repo belongs there too (`cd .phoebe && node
   // ../src/cli.ts --dry-run --run-once`), not at the repo root, where `..` would
   // leave the checkout and the startup check would say so.
+  //
+  // Dogfood for the crash reporter (#474): this tenant triages the maintainers'
+  // Sentry project — the one every consumer's `reporting: { maintainers: true }`
+  // sends to — through the `sentry` catalog kind, so a crash report anywhere
+  // becomes a front-loaded issue here. Declared on its own pipeline so the token
+  // never reaches the `work` pipeline's child. Left commented until the
+  // maintainers' project exists: fill `org` and the numeric `project` from its
+  // issues URL, add SENTRY_AUTH_TOKEN (scope event:read) to .phoebe/.env, and
+  // uncomment. See docs/work-kinds.md → sentry.
+  //
   pipelines: {
+    // intake: {
+    //   pollIntervalMs: 900_000,
+    //   kinds: {
+    //     sentry: { path: "phoebe-agent/kinds/sentry", org: "jesusfilm", project: 0 },
+    //   },
+    // },
     work: {
       kinds: {
         conflicts: { effort: "high", promptFile: "../prompts/conflict-prompt.md" },

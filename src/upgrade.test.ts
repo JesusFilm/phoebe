@@ -14,6 +14,7 @@ import {
   compareVersions,
   dockerfileEditInstruction,
   engineEditInstruction,
+  ensureReportingConsent,
   latestReleaseTag,
   parseUpgradeArgs,
   readDockerfilePin,
@@ -679,5 +680,60 @@ describe("upgradeCliHalf — container deployment", () => {
     });
     upgradeCliHalf({ releaseTag: "v0.7.2", io });
     expect(npmCalls.some((args) => args.includes("phoebe-agent@0.7.2"))).toBe(true);
+  });
+});
+
+describe("ensureReportingConsent (#474)", () => {
+  function run(content: string, answer: boolean | null) {
+    const dir = mkdtempSync(join(tmpdir(), "phoebe-consent-test-"));
+    const configPath = join(dir, "phoebe.config.ts");
+    writeFileSync(configPath, content);
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    let asked = 0;
+    const done = ensureReportingConsent({
+      configPath,
+      ask: async () => {
+        asked += 1;
+        return answer;
+      },
+      stdout: (l) => stdout.push(l),
+      stderr: (l) => stderr.push(l),
+    });
+    return done.then(() => ({
+      content: readFileSync(configPath, "utf8"),
+      stdout,
+      stderr,
+      asked: () => asked,
+    }));
+  }
+
+  test("a config with no block is asked once and the answer is written beside engine", async () => {
+    const r = await run(SCAFFOLD, true);
+    expect(r.asked()).toBe(1);
+    expect(r.content).toContain("reporting: { maintainers: true },");
+    expect(r.stdout[0]).toContain("reporting: { maintainers: true } written");
+  });
+
+  test("no is an answer too, and it is written", async () => {
+    const r = await run(SCAFFOLD, false);
+    expect(r.content).toContain("reporting: { maintainers: false },");
+  });
+
+  test("a present block is never asked again", async () => {
+    const withBlock = SCAFFOLD.replace(
+      'engine: { source: "github", ref: "v0.3.1" },',
+      'engine: { source: "github", ref: "v0.3.1" },\n  reporting: { maintainers: false },',
+    );
+    const r = await run(withBlock, true);
+    expect(r.asked()).toBe(0);
+    expect(r.content).toBe(withBlock);
+  });
+
+  test("no TTY leaves the block absent and says nothing", async () => {
+    const r = await run(SCAFFOLD, null);
+    expect(r.asked()).toBe(1);
+    expect(r.content).toBe(SCAFFOLD);
+    expect(r.stdout).toEqual([]);
   });
 });

@@ -35,6 +35,12 @@ import { dirname, join, relative } from "node:path";
 import { installDrainSignal } from "../src/drain.ts";
 import { defaultGit, type GitRunner } from "../src/git-model.ts";
 import { loadUserConfig, resolveConfigPath } from "../src/load-config.ts";
+import { readReportingField } from "../src/config-schema.ts";
+import {
+  createCrashReporter,
+  NO_CRASH_REPORTER,
+  type CrashReporter,
+} from "../src/crash-reporter.ts";
 import {
   crashLoopStatePath,
   createCrashGuard,
@@ -499,11 +505,98 @@ function watchedRefSha(source: ResolvedEngineSource, token: string | undefined):
  * constant (the engine checkout base), not a per-tenant path, so it no longer
  * depends on loading any config and cannot drift with a mid-flight config edit.
  */
-function createBootCrashGuard(): CrashGuard {
+function createBootCrashGuard(reporter: CrashReporter): CrashGuard {
   return createCrashGuard({
     statePath: crashLoopStatePath(engineBaseDir()),
-    onEvent: logCrashGuardEvent,
+    onEvent: (event) => {
+      logCrashGuardEvent(event);
+      reportCrashGuardEvent(reporter, event);
+    },
   });
+}
+
+/**
+ * The crash reporter for this container (#474), from the root config's
+ * `reporting` block. Built once at boot from the config as first loaded: the
+ * block is boot-time (cold), so an edit takes the next container start. A
+ * block that fails validation is reported on stderr and reporting stays off —
+ * the engine's own `resolveConfig` will refuse the same config more loudly.
+ */
+function createBootReporter(
+  rootConfig: Record<string, unknown>,
+  mode: "solo" | "workspace",
+): CrashReporter {
+  let reporting;
+  try {
+    reporting = readReportingField(rootConfig);
+  } catch (error) {
+    console.error(`[phoebe] boot: ${describe(error)} — crash reporting is off.`);
+    return NO_CRASH_REPORTER;
+  }
+  if (reporting === undefined) return NO_CRASH_REPORTER;
+  let engineRef: string | null = null;
+  try {
+    const source = readEngineSource(rootConfig);
+    engineRef = source.source === "github" ? source.ref : "local";
+  } catch {
+    // The launch path reports the bad field itself; the tag just stays unknown.
+  }
+  return createCrashReporter({
+    reporting,
+    context: {
+      bootstrapVersion: LAUNCHER_VERSION,
+      engineRef,
+      engineSha: null,
+      mode,
+      arm: resolveCredentialArm(process.env as Record<string, string | undefined>),
+    },
+    debug: (line) => console.log(`[phoebe] boot: ${line}`),
+  });
+}
+
+/**
+ * Which guard verdicts leave the box (#474): a quarantine is `fatal` — the
+ * container is now silently running older code than its config asks for —
+ * and the fallback itself dying is the same story one step worse. A plain
+ * fast crash is not reported here: `recordRunEnd` already reported the exit
+ * that produced it, per pipeline, and the count is the guard's own business.
+ */
+export function reportCrashGuardEvent(reporter: CrashReporter, event: CrashGuardEvent): void {
+  switch (event.kind) {
+    case "fallback":
+      void reporter.report({
+        phase: "boot",
+        level: "fatal",
+        error: new Error(
+          `engine ${event.quarantinedSha} crash-looped ${event.failureCount}× — pinned to ${event.lastGoodSha}`,
+        ),
+        tags: {
+          stage: "crash-loop",
+          engineSha: event.quarantinedSha,
+          lastGoodSha: event.lastGoodSha,
+          failureCount: event.failureCount,
+        },
+      });
+      return;
+    case "fallback-crashed":
+      void reporter.report({
+        phase: "boot",
+        level: "fatal",
+        error: new Error(
+          `last-good engine ${event.sha} crashed too (exit ${event.exitCode}); ${event.quarantinedSha} stays quarantined`,
+        ),
+        tags: {
+          stage: "crash-loop",
+          engineSha: event.sha,
+          quarantinedSha: event.quarantinedSha,
+          exitCode: event.exitCode,
+          elapsedMs: event.elapsedMs,
+        },
+      });
+      return;
+    default:
+      return;
+  }
 }
 
 /**
@@ -678,6 +771,7 @@ export function trackPipelines(
 function runFleet(opts: {
   configPath: string;
   guard: CrashGuard;
+  reporter: CrashReporter;
   stop: ReturnType<typeof installDrainSignal>;
   intervalMs: number;
   argv: readonly string[];
@@ -771,8 +865,10 @@ function runFleet(opts: {
       ),
     onPipelines: trackPipelines(broker),
     onChildExit: ({ pipeline, exit }) => reportPipelineExit(pipeline, exit),
-    onLaunchError: (error) =>
-      console.error(`[phoebe] boot: fleet (re)launch failed — ${describe(error)}. Retrying.`),
+    onLaunchError: (error) => {
+      console.error(`[phoebe] boot: fleet (re)launch failed — ${describe(error)}. Retrying.`);
+      reportLaunchError(opts.reporter, error);
+    },
     onDiscoverError: (error) =>
       console.warn(
         `[phoebe] boot: tenant discovery failed — ${describe(error)}. ` +
@@ -790,7 +886,7 @@ function runFleet(opts: {
         `[phoebe] boot: could not sweep stale state for ${tenantId} (${trigger}) — ` +
           `${describe(error)}. Pipelines spawn as if the sweep had not run.`,
       ),
-    onRunEnd: recordRunEnd(opts.guard),
+    onRunEnd: recordRunEnd(opts.guard, opts.reporter),
     onRunTick: ({ engine, elapsedMs }) => {
       if (engine.sha !== null) opts.guard.noteAlive(engine.sha, elapsedMs);
     },
@@ -855,13 +951,40 @@ export function pipelineArgv(
  * of the fleet is running happily. Healthy runs are never gated — any pipeline
  * proving the commit boots is worth banking as the fallback target.
  */
-function recordRunEnd(guard: CrashGuard): (run: FleetRun) => void {
+export function recordRunEnd(guard: CrashGuard, reporter: CrashReporter): (run: FleetRun) => void {
   return (run) => {
     const outcome = runOutcome(run);
     if (outcome === null) return;
-    if (!run.everyPipelineCrashLooping && judgeRun(outcome) === "crash") return;
+    const verdict = judgeRun(outcome);
+    if (verdict === "crash") {
+      // An engine child exiting non-zero inside the healthy window is one of
+      // Phoebe's own faults (#474): a commit that does not boot, or a pipeline
+      // whose startup checks refused it. Reported per pipeline, before the
+      // universality rule decides whether the guard gets to count it.
+      void reporter.report({
+        phase: "boot",
+        level: "error",
+        error: new Error(
+          `engine ${outcome.sha} exited ${outcome.exitCode} after ${Math.round(outcome.elapsedMs / 1000)}s`,
+        ),
+        ...(run.pipeline.tenant.slug !== null ? { tenant: run.pipeline.tenant.slug } : {}),
+        tags: {
+          stage: "fast-exit",
+          engineSha: outcome.sha,
+          exitCode: outcome.exitCode,
+          elapsedMs: outcome.elapsedMs,
+          pipeline: run.pipeline.pipeline.name,
+        },
+      });
+    }
+    if (!run.everyPipelineCrashLooping && verdict === "crash") return;
     guard.record(outcome);
   };
+}
+
+/** A failed (re)launch — the engine clone, fetch or materialize (#474). */
+function reportLaunchError(reporter: CrashReporter, error: unknown): void {
+  void reporter.report({ phase: "boot", level: "error", error, tags: { stage: "launch" } });
 }
 
 /**
@@ -1267,7 +1390,6 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
 
   const configDir = process.cwd();
   const configPath = resolveConfigPath(undefined, configDir);
-  const guard = createBootCrashGuard();
   const intervalMs = reconcileIntervalMs();
 
   // The container's stop request. A one-way latch, and the poll clock: a
@@ -1308,6 +1430,12 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   const rootConfig = await loadMountedConfig(configPath, rootFingerprint);
   const workspace = resolveWorkspace(rootConfig, { root: configDir });
 
+  // The crash reporter (#474) and, through it, the crash-loop guard: the guard
+  // reports its quarantine verdicts, so it is built once the root config has
+  // said where reports go. Neither depends on anything the launch loads.
+  const reporter = createBootReporter(rootConfig, workspace !== null ? "workspace" : "solo");
+  const guard = createBootCrashGuard(reporter);
+
   if (workspace !== null) {
     // GitHub App mode (#209): if the supervisor holds App credentials, fetch
     // the bot identity once at fleet startup and wire up a per-tenant mint fn.
@@ -1334,6 +1462,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       fleetExit = await runFleet({
         configPath,
         guard,
+        reporter,
         stop,
         intervalMs,
         argv,
@@ -1345,6 +1474,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     } catch (error) {
       if (error instanceof WorkspaceStructuralChangeError) {
         console.error(`[phoebe] boot: ${error.message}`);
+        await reporter.flush();
         propagateExit(1, null);
         return;
       }
@@ -1352,6 +1482,9 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     } finally {
       stop.dispose();
     }
+    // A crash-loop report raced against the process ending is a report lost;
+    // the flush waits it out, bounded by the reporter's own timeout (#474).
+    await reporter.flush();
     propagateExit(fleetExit.code, fleetExit.signal);
     return;
   }
@@ -1480,7 +1613,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
           `[phoebe] boot: could not sweep stale state for ${tenantId} (${trigger}) — ` +
             `${describe(error)}. Pipelines spawn as if the sweep had not run.`,
         ),
-      onRunEnd: recordRunEnd(guard),
+      onRunEnd: recordRunEnd(guard, reporter),
       onRunTick: ({ engine, elapsedMs }) => {
         if (engine.sha !== null) guard.noteAlive(engine.sha, elapsedMs);
       },
@@ -1494,10 +1627,12 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
             ? "[phoebe] boot: mounted config changed — draining the engine (SIGTERM) and relaunching."
             : "[phoebe] boot: tracked ref advanced — draining the engine (SIGTERM) and relaunching.",
         ),
-      onLaunchError: (error) =>
+      onLaunchError: (error) => {
         console.error(
           `[phoebe] boot: could not launch the engine — ${describe(error)}. Retrying next poll.`,
-        ),
+        );
+        reportLaunchError(reporter, error);
+      },
       onSampleError: (error) =>
         console.warn(`[phoebe] boot: reconcile poll failed — ${describe(error)}. Ignoring.`),
     });
@@ -1506,6 +1641,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     // signal must actually kill this process, and our own latch would swallow it.
     stop.dispose();
   }
+  await reporter.flush();
   propagateExit(exit.code, exit.signal);
 }
 

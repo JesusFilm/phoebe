@@ -151,6 +151,16 @@ export type PrMergeInfo = {
  */
 export type GhComment = { body: string; createdAt: string; authorLogin: string | null };
 
+/** An issue's state as GitHub reports it: open, or closed with a reason. */
+export type IssueStateInfo = {
+  state: "open" | "closed";
+  stateReason: "completed" | "not_planned" | "reopened" | "duplicate" | null;
+  closedAt: string | null;
+};
+
+/** One search hit for `listIssuesMentioning`: the body carries whatever marker the caller reads. */
+export type MentioningIssue = IssueStateInfo & { number: number; body: string };
+
 export type UnitTimeoutInputs = {
   /** Comments (body + createdAt + authorLogin), oldest-first — fed to `decideTimeoutRecord`. */
   comments: GhComment[];
@@ -294,6 +304,21 @@ export type GitHubClient = {
    * has never seen before retrying the add — see src/labels.ts.
    */
   createLabel(name: string, description: string): void;
+  /**
+   * Open a new issue and return its number. Labels are not applied here:
+   * a caller that wants them uses `addLabelCreatingIfMissing` (src/labels.ts)
+   * so a label the repository has never seen is created rather than refused.
+   */
+  createIssue(opts: { title: string; body: string }): number;
+  /** An issue's current state and close reason, fetched fresh. */
+  issueState(issueNumber: number): IssueStateInfo;
+  /**
+   * Every issue (never a PR) of this repository whose body mentions `text`,
+   * across all states, newest first — the one read a body-marker watermark
+   * needs per cycle. Full-text search, so `text` should be one distinctive
+   * token; the caller parses the marker out of each body.
+   */
+  listIssuesMentioning(text: string): MentioningIssue[];
 
   // Identity
   /**
@@ -1370,6 +1395,70 @@ export function createGitHubClient({
         "-R",
         config.repoSlug,
       ]);
+    },
+
+    createIssue: (opts) => {
+      // Captured: `gh issue create` prints the new issue's URL, and the number
+      // is its last path segment.
+      const out = exec(
+        ["issue", "create", "--title", opts.title, "--body-file", "-", "-R", config.repoSlug],
+        { input: opts.body },
+      );
+      const match = /\/issues\/(\d+)\s*$/.exec(out.trim());
+      if (match === null) {
+        throw new Error(
+          `gh issue create did not print an issue URL (got ${JSON.stringify(out.trim())}).`,
+        );
+      }
+      return Number(match[1]);
+    },
+
+    issueState: (issueNumber) => {
+      type RestIssueState = {
+        state: "open" | "closed";
+        state_reason?: IssueStateInfo["stateReason"];
+        closed_at?: string | null;
+      };
+      const raw = ghApiJson<RestIssueState>(`repos/${config.repoSlug}/issues/${issueNumber}`);
+      return {
+        state: raw.state,
+        stateReason: raw.state_reason ?? null,
+        closedAt: raw.closed_at ?? null,
+      };
+    },
+
+    listIssuesMentioning: (text) => {
+      // The REST search endpoint rather than `gh search issues`: only the REST
+      // shape carries `state_reason`, which the regression rule reads. Pages
+      // are walked by hand (`--paginate` concatenates search pages into one
+      // invalid document) until a short page.
+      type SearchHit = {
+        number: number;
+        body: string | null;
+        state: "open" | "closed";
+        state_reason?: IssueStateInfo["stateReason"];
+        closed_at?: string | null;
+        pull_request?: unknown;
+      };
+      const query = encodeURIComponent(`repo:${config.repoSlug} "${text}" in:body is:issue`);
+      const hits: MentioningIssue[] = [];
+      for (let page = 1; page <= 10; page += 1) {
+        const result = ghApiJson<{ items: SearchHit[] }>(
+          `search/issues?q=${query}&per_page=100&page=${page}&sort=created&order=desc`,
+        );
+        for (const hit of result.items) {
+          if (hit.pull_request !== undefined) continue;
+          hits.push({
+            number: hit.number,
+            body: hit.body ?? "",
+            state: hit.state,
+            stateReason: hit.state_reason ?? null,
+            closedAt: hit.closed_at ?? null,
+          });
+        }
+        if (result.items.length < 100) break;
+      }
+      return hits;
     },
 
     resolveLogin: (envLogin) => {

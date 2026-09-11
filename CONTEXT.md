@@ -222,3 +222,10 @@ _Avoid_: orphaned (fine in prose, but the reported state is `stale`), leftover, 
 **Engine source**:
 Where an engine checkout comes from — a GitHub ref, or a local directory in development.
 _Avoid_: engine version, engine origin
+
+**Crash report**:
+One of Phoebe's own install or upgrade faults, sent to a Sentry project under the
+`reporting` block: a boot that cannot materialize the engine, a fast-exiting engine child, a
+crash-loop quarantine, an operator command throwing. Never a tenant's failure and never
+anything from the work loop.
+_Avoid_: telemetry, error tracking (that is what the `sentry` kind reads), analytics

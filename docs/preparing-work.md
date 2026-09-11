@@ -47,7 +47,11 @@ a text editor on a Sunday, the output has to be an issue that clears this bar:
 
 - **It carries the `readyLabel`** (default `ready-for-agent`). Phoebe only ever
   reads this label; applying it is a deliberate human act. This is the lever, and
-  nothing else in the system substitutes for it.
+  nothing else in the system substitutes for it. The act may be a standing
+  decision made once in config rather than a click per issue: an intake kind
+  such as [`sentry`](work-kinds.md#sentry-triage-production-errors-opt-in) applies
+  the label itself only where a tenant opted in with `applyReadyLabel`, and
+  otherwise leaves a `triaged` label for a person to flip.
 - **It is sized to one unit of work.** Phoebe works one issue start to finish in
   a single cycle, on one branch, in one worktree. An issue that is really five
   issues will come back as one confused pull request.

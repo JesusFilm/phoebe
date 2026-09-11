@@ -403,7 +403,10 @@ see](work-kinds.md#units-the-engine-cannot-see).
 ## The intake example, end to end
 
 The framework was designed against one validating example and checked against a
-second. Neither ships with Phoebe. This section is what building them looks like,
+second. Neither ships with Phoebe, though an intake kind now does: the
+[`sentry` catalog kind](work-kinds.md#sentry-triage-production-errors-opt-in)
+files agent-ready issues from production errors and is declared exactly as the
+shape below describes. This section is what building the examples looks like,
 because it is the shortest way to see which pieces above carry weight.
 
 **Slack to issues.** A thread in a support channel goes quiet. An issue appears on

@@ -406,6 +406,28 @@ export function editConfigSetField(
 }
 
 /**
+ * Insert a top-level field whose value is given as *source text* — an object
+ * literal such as `{ maintainers: true }` — when, and only when, the key is
+ * absent. A present key is left exactly as it is (`inserted: false`): this
+ * is the write for a question asked once, and an answer already on disk is
+ * never overwritten.
+ */
+export function editConfigInsertFieldSource(
+  source: string,
+  key: string,
+  valueSource: string,
+): ConfigEditResult & { inserted?: boolean } {
+  const resolved = resolveConfigObject(source);
+  if (!resolved.ok) return resolved;
+  if (findProp(resolved.configObj, key)) return { ok: true, content: source, inserted: false };
+  return {
+    ok: true,
+    content: insertProperty(source, resolved.configObj, key, valueSource),
+    inserted: true,
+  };
+}
+
+/**
  * Remove a top-level field from the config object. No-ops when the key is
  * absent.
  */

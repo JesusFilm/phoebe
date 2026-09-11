@@ -39,6 +39,7 @@ import {
   type GithubSource,
 } from "../bootstrap/github-engine.ts";
 import { matchConfigFlag } from "./cli-flags.ts";
+import { editConfigGetField, editConfigInsertFieldSource } from "./config-handle.ts";
 import { isInsideContainer } from "./execution-gate.ts";
 import { defaultGit, type GitRunner } from "./git-model.ts";
 import { loadUserConfig, resolveConfigPath } from "./load-config.ts";
@@ -649,6 +650,61 @@ function lsRemoteLatestTag(
   }
 }
 
+/** The one consent question, asked by `init` and `upgrade` alike (#474). */
+export const REPORTING_CONSENT_QUESTION =
+  "Send Phoebe's own crash reports (boot and upgrade faults, nothing from your repos) " +
+  "to the maintainers?  [y/N] > ";
+
+/** Ask the question on the terminal; `null` when there is no TTY to ask on. */
+export async function promptReportingConsent(): Promise<boolean | null> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return null;
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = (await rl.question(REPORTING_CONSENT_QUESTION)).trim().toLowerCase();
+    return answer === "y" || answer === "yes";
+  } finally {
+    rl.close();
+  }
+}
+
+/**
+ * Before the engine half moves the pin (#474): a config with no `reporting`
+ * block has never been asked, so ask once and write the answer as a field —
+ * `reporting: { maintainers: <answer> }`, in place on the same inode like the
+ * ref rewrite. A present block, true or false, is an answer and is never asked
+ * again. No TTY leaves the block absent, which reports nothing. A config the
+ * handle cannot edit is left alone with a line saying so; the upgrade goes on.
+ */
+export async function ensureReportingConsent(opts: {
+  configPath: string;
+  ask: () => Promise<boolean | null>;
+  stdout: (line: string) => void;
+  stderr: (line: string) => void;
+}): Promise<void> {
+  const content = readFileSync(opts.configPath, "utf8");
+  const existing = editConfigGetField(content, "reporting");
+  if (!existing.ok) {
+    opts.stderr(`reporting: could not read ${opts.configPath} (${existing.reason}) — not asking.`);
+    return;
+  }
+  if (existing.found) return;
+  const answer = await opts.ask();
+  if (answer === null) return;
+  const result = editConfigInsertFieldSource(content, "reporting", `{ maintainers: ${answer} }`);
+  if (!result.ok) {
+    opts.stderr(
+      `reporting: could not write the answer to ${opts.configPath} (${result.reason}) — ` +
+        `add \`reporting: { maintainers: ${answer} }\` by hand.`,
+    );
+    return;
+  }
+  writeFileSync(opts.configPath, result.content);
+  opts.stdout(
+    `reporting: { maintainers: ${answer} } written to ${opts.configPath}` +
+      (answer ? " — thank you." : "."),
+  );
+}
+
 /** `phoebe upgrade` entry — parses, prompts if needed, runs the chosen halves. */
 export async function runUpgradeCli(argv: readonly string[]): Promise<void> {
   const parsed = parseUpgradeArgs(argv);
@@ -752,6 +808,12 @@ export async function runUpgradeCli(argv: readonly string[]): Promise<void> {
   let engineMoved = true;
   if (target === "engine" || target === "both") {
     const { configPath, source } = await engineConfig();
+    await ensureReportingConsent({
+      configPath,
+      ask: promptReportingConsent,
+      stdout: io.stdout,
+      stderr: io.stderr,
+    });
     engineMoved = upgradeEngineHalf({
       configPath,
       source,
