@@ -23,12 +23,14 @@ import { loadUserConfig } from "./load-config.ts";
 import { parseDsn, type FetchLike, type ParsedDsn } from "./sentry-protocol.ts";
 
 /**
- * The maintainers' project DSN. A Sentry DSN is a public client key, so
- * shipping one is the SDK-standard shape; rotating it is an engine release.
- * `null` until the `phoebe` project's DSN is pasted in: with it null,
+ * The maintainers' project DSN — the engine's own Sentry project, the one this
+ * repository's tenant triages through the `sentry` kind. A Sentry DSN is a public client key, so shipping one is the
+ * SDK-standard shape; rotating it is an engine release. The type admits `null`
+ * so a fork with no project of its own can blank it, at which point
  * `maintainers: true` builds no client and says so at debug level.
  */
-export const MAINTAINERS_DSN: string | null = null;
+export const MAINTAINERS_DSN: string | null =
+  "https://be755f854cd91a633041ed8e621e58c3@o4512031715164160.ingest.us.sentry.io/4512031884050432";
 
 /** Which of Phoebe's own phases a fault belongs to — the `phase` tag. */
 export type CrashPhase = "boot" | "upgrade" | "migrate" | "init" | "doctor";

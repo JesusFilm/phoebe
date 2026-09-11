@@ -328,9 +328,6 @@ one place Phoebe waits is the bootstrapper's own exit, so a crash-loop report is
 not lost to the process ending.
 
 To turn it off, set `maintainers: false` and remove `dsn`, or delete the block.
-Until the maintainers' project exists and its DSN ships in an engine release,
-`maintainers: true` records your answer and sends nothing; the boot log says so
-at debug level.
 This repository's own tenant consumes the maintainers' project through the
 [`sentry` kind](work-kinds.md#sentry-triage-production-errors-opt-in), which is
 how a crash report becomes a front-loaded issue here.
