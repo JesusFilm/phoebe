@@ -25,6 +25,7 @@
 // an optional field does not move it.
 
 import type { CredentialArm } from "./credential-arm.ts";
+import type { DoctorReport } from "./doctor-report.ts";
 import type { PipelineSource, PipelineState, WedgedVerdict } from "./pipeline-state.ts";
 import type { StatusSnapshot } from "./status-snapshot.ts";
 
@@ -182,12 +183,73 @@ export type FleetReport = {
   updatedAt: string;
 };
 
+/**
+ * Where this deployment believes its end of the relay connection stands (#508
+ * §6). A fact the deployment holds, not a verdict: connected/disconnected/dark
+ * as the *relay* sees them are the relay's to say (#507 §8), and whether the
+ * pairing is healthy is doctor's `relay` check (#505).
+ *
+ * Written by the relay sender (#506); absent until a deployment has one, which
+ * is why every reader treats an absent section and `configured: false` the same
+ * way — no relay line at all.
+ */
+export type RelayState = "connected" | "reconnecting" | "unpaired";
+
+/** How the last relay socket closed — the code and when. */
+export type RelayClose = { code: number; at: string };
+
+export type RelayReport = {
+  configured: boolean;
+  /** The relay this deployment pairs with; null before it is named. */
+  name: string | null;
+  /** This deployment's key, as the relay knows it; null before it is paired. */
+  keyFingerprint: string | null;
+  state: RelayState;
+  /** When it entered `state`. */
+  since: string;
+  /** Next reconnect attempt, while reconnecting. */
+  nextRetryAt?: string;
+  lastClose?: RelayClose;
+};
+
+/** What set a doctor run going (#507 §6). */
+export type DoctorTrigger = "boot" | "reconcile" | "console" | "schedule" | "secret-set";
+
+/** A run that ended without a report — the deadline, or a crash. */
+export type DoctorAttempt = { at: string; outcome: "timed-out" | "crashed" };
+
+/**
+ * The doctor run the bootstrapper last folded into the report (#507 §4/§7). The
+ * bootstrapper spawns `phoebe doctor --json` in the container and keeps the
+ * result here; a hand-run `phoebe doctor` is print-only and never touches it.
+ *
+ * Written by the scheduler (#507's own ticket); absent until a deployment has
+ * run doctor at least once, which a reader states as "never run" rather than as
+ * a verdict.
+ */
+export type DoctorSection = {
+  report: DoctorReport;
+  /** When that report was taken. */
+  at: string;
+  trigger: DoctorTrigger;
+  /** Who asked, for a console-triggered run. */
+  by?: string;
+  /** A run in flight right now — what a reader shows instead of the age. */
+  running?: { since: string; trigger: DoctorTrigger };
+  /** The last run that produced nothing. The report above is still the older one. */
+  lastAttempt?: DoctorAttempt;
+};
+
 /** The whole report. One file, one model, every reader. */
 export type DeploymentReport = {
   schema: number;
   identity: DeploymentIdentity;
   bootstrapper: BootstrapperReport;
+  /** Absent until this deployment has a relay (#506); omitted, never faked. */
+  relay?: RelayReport;
   fleet: FleetReport;
+  /** Absent until the bootstrapper has run doctor once (#507). */
+  doctor?: DoctorSection;
   /** When any section last moved. */
   updatedAt: string;
 };

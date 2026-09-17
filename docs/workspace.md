@@ -185,7 +185,7 @@ Declaring both is an error:
 
 Everything below this section describes the **walk** arm, which is the default
 and what `phoebe init --workspace` scaffolds. For the declared arm, covering
-explicit order, hold-not-fatal, out-of-tree entries, `phoebe list` accounting,
+explicit order, hold-not-fatal, out-of-tree entries, `phoebe status` accounting,
 and the add-a-child delta, see [Declaring the fleet](#declaring-the-fleet-workspacetenants).
 
 ## Declaring the fleet (workspace.tenants)
@@ -200,7 +200,7 @@ workspace: {
 }
 ```
 
-**Declared order is authoritative.** The list is spawn order, `phoebe list`
+**Declared order is authoritative.** The list is spawn order, `phoebe status`
 order, and warn order. It is not sorted by `repoSlug`.
 
 **Entries are directory paths** resolved against the workspace root. Absolute
@@ -216,13 +216,15 @@ config, an empty `repoSlug`, or an origin mismatch. A declared tenant is never
 `removed` by discovery, and deleting a checkout on disk keeps the child running until you edit
 the config.
 
-**Accounting in `phoebe list`.** On the explicit arm, `phoebe list` prints one
-row per declared entry in declared order. The header reads `N of M declared
-tenant(s)`. Rows that cannot boot show `held — <reason>`. Config-carrying
-directories on disk that are not in the list surface as `undeclared`, a drift
-check that boot never walks the tree for. See
+**Accounting in `phoebe status`.** On the explicit arm, the fleet section prints
+one row per declared entry in declared order. Rows that cannot boot show
+`held — <reason>`, and a held declared tenant is one of the things `--check`
+exits 1 for. The `N of M declared tenant(s)` header and the `undeclared:` drift
+footer the old `phoebe list` printed are gone with it: the deployment report is
+the one source every reader now shares, and it does not yet carry the declared
+count or the directories that are not in the list. See
 [`operating.md`](operating.md#running-many-repos-in-one-container) for the
-shared `held — <reason>` rendering plus `--json` and `--check`.
+shared rendering plus `--json` and `--check`.
 
 **Add a child (delta from the walk arm).** After linking a checkout and running
 `phoebe init --tenant`, paste the line the command prints into the root
