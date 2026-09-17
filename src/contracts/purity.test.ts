@@ -1,0 +1,201 @@
+// The guard on `phoebe-agent/contracts` (#528, map #497). The subpath's whole
+// promise is that a browser bundle can load it — an Electron renderer today, an
+// Expo bundle later — so the closure of everything it imports has to stay free
+// of Node built-ins and of engine code. Nothing enforces that at type-check
+// time: `import { readFileSync } from "node:fs"` type-checks perfectly and only
+// fails once someone runs the bundle. This test is the enforcement.
+//
+// Two rules, walked transitively from every file under src/contracts/:
+//
+//  1. No file in the closure imports a Node built-in, in any form — a type-only
+//     import of `node:fs` would still put @types/node in a consumer's way.
+//  2. No file under src/contracts/ reaches outside the directory for a value.
+//     Type imports may cross the line, and when they do the file they name
+//     joins the closure and answers to rule 1 in turn.
+//
+// A type that trips the guard is a type that belongs in contracts. Moving it is
+// the fix, and the point of the directory.
+
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { builtinModules } from "node:module";
+import { dirname, join, relative, resolve } from "node:path";
+import { describe, expect, test } from "vite-plus/test";
+
+const contractsDir = import.meta.dirname;
+const repoRoot = join(import.meta.dirname, "..", "..");
+
+const BUILTINS = new Set([...builtinModules, ...builtinModules.map((name) => `node:${name}`)]);
+
+type ImportSite = { specifier: string; typeOnly: boolean };
+
+/** `import ... from "x"` / `export ... from "x"`, single- or multi-line. */
+const FROM_STATEMENT = /^[ \t]*(import|export)\b([\s\S]*?)\bfrom[ \t]*["']([^"']+)["']/gm;
+/** `import "x"` — a side-effect import, always a runtime edge. */
+const SIDE_EFFECT_IMPORT = /^[ \t]*import[ \t]*["']([^"']+)["']/gm;
+/** `import("x")` — likewise. */
+const DYNAMIC_IMPORT = /\bimport[ \t]*\([ \t]*["']([^"']+)["']/g;
+
+/**
+ * Blank out comments so prose that happens to read like an import statement —
+ * this file's own header, for one — never counts as an edge. Coarse on purpose:
+ * it can chew a `//` inside a string literal, which at worst hides nothing,
+ * since imports sit on lines of their own.
+ */
+function stripComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+}
+
+export function importsIn(source: string): ImportSite[] {
+  const code = stripComments(source);
+  const sites: ImportSite[] = [];
+  for (const [, , clause, specifier] of code.matchAll(FROM_STATEMENT)) {
+    sites.push({ specifier: specifier!, typeOnly: /^\s*type\b/.test(clause!) });
+  }
+  for (const [, specifier] of code.matchAll(SIDE_EFFECT_IMPORT)) {
+    sites.push({ specifier: specifier!, typeOnly: false });
+  }
+  for (const [, specifier] of code.matchAll(DYNAMIC_IMPORT)) {
+    sites.push({ specifier: specifier!, typeOnly: false });
+  }
+  return sites;
+}
+
+function isRelative(specifier: string): boolean {
+  return specifier.startsWith("./") || specifier.startsWith("../");
+}
+
+function inContracts(file: string): boolean {
+  return !relative(contractsDir, file).startsWith("..");
+}
+
+/**
+ * The two rules, as messages. `file` decides which apply: a file under
+ * src/contracts/ answers to both, a file that a contract type-imports only to
+ * rule 1.
+ */
+export function violationsIn(file: string, source: string): string[] {
+  const here = relative(repoRoot, file);
+  const found: string[] = [];
+  for (const { specifier, typeOnly } of importsIn(source)) {
+    if (BUILTINS.has(specifier)) {
+      found.push(`${here} imports the Node built-in "${specifier}"`);
+      continue;
+    }
+    if (!inContracts(file)) continue;
+    if (!isRelative(specifier)) {
+      found.push(`${here} imports "${specifier}" — contracts depends on no package`);
+      continue;
+    }
+    const target = resolve(dirname(file), specifier);
+    if (!inContracts(target) && !typeOnly) {
+      found.push(`${here} value-imports "${specifier}" from outside contracts`);
+    }
+  }
+  return found;
+}
+
+function sourceFilesUnder(dir: string): string[] {
+  const files: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) files.push(...sourceFilesUnder(full));
+    else if (entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts")) files.push(full);
+  }
+  return files;
+}
+
+/** Resolve a relative specifier the way the bundler will, `.ts` extensions and all. */
+function resolveSpecifier(from: string, specifier: string): string | null {
+  const base = resolve(dirname(from), specifier);
+  for (const candidate of [base, `${base}.ts`, join(base, "index.ts")]) {
+    if (existsSync(candidate) && candidate.endsWith(".ts")) return candidate;
+  }
+  return null;
+}
+
+/** Every file a bundle of contracts would pull in, contracts' own files included. */
+function closure(): { files: string[]; unresolved: string[] } {
+  const seen = new Set<string>();
+  const unresolved: string[] = [];
+  const queue = sourceFilesUnder(contractsDir);
+  while (queue.length > 0) {
+    const file = queue.shift()!;
+    if (seen.has(file)) continue;
+    seen.add(file);
+    for (const { specifier } of importsIn(readFileSync(file, "utf8"))) {
+      if (!isRelative(specifier)) continue;
+      const target = resolveSpecifier(file, specifier);
+      if (target === null) unresolved.push(`${relative(repoRoot, file)} → "${specifier}"`);
+      else queue.push(target);
+    }
+  }
+  return { files: [...seen], unresolved };
+}
+
+describe("the contracts closure stays pure", () => {
+  test("every file reachable from contracts obeys both rules", () => {
+    const { files, unresolved } = closure();
+    expect(unresolved, "a relative import the guard could not follow").toEqual([]);
+    const found = files.flatMap((file) => violationsIn(file, readFileSync(file, "utf8")));
+    expect(found).toEqual([]);
+  });
+
+  test("the closure is not empty — a broken walk would pass vacuously", () => {
+    const { files } = closure();
+    expect(files).toContain(join(contractsDir, "index.ts"));
+    expect(files).toContain(join(contractsDir, "stop-outcome.ts"));
+  });
+
+  test.each([
+    { what: "a Node built-in", source: `import { readFileSync } from "node:fs";` },
+    { what: "an unprefixed Node built-in", source: `import { join } from "path";` },
+    { what: "a type-only Node built-in", source: `import type { Stats } from "node:fs";` },
+    { what: "a package dependency", source: `import { parse } from "some-package";` },
+    { what: "a value import from the engine", source: `import { runStop } from "../stop.ts";` },
+    { what: "a side-effect import", source: `import "../resolved-config.ts";` },
+    { what: "a dynamic import", source: `const m = await import("../doctor.ts");` },
+  ])("a contract that imports $what trips the guard", ({ source }) => {
+    expect(violationsIn(join(contractsDir, "fixture.ts"), source)).not.toEqual([]);
+  });
+
+  test.each([
+    { what: "a type-only import from the engine", source: `import type { A } from "../paths.ts";` },
+    { what: "a sibling contract", source: `export type { StopOutcome } from "./stop-outcome.ts";` },
+    { what: "no imports at all", source: `export type Kind = "a" | "b";` },
+  ])("a contract with $what passes", ({ source }) => {
+    expect(violationsIn(join(contractsDir, "fixture.ts"), source)).toEqual([]);
+  });
+
+  test("a file the guard only reaches by type import still answers to rule 1", () => {
+    const outside = join(repoRoot, "src", "paths.ts");
+    expect(violationsIn(outside, `import { join } from "node:path";`)).not.toEqual([]);
+    expect(violationsIn(outside, `import { x } from "./elsewhere.ts";`)).toEqual([]);
+  });
+
+  test("prose that reads like an import is not an import", () => {
+    const source = `// import { readFileSync } from "node:fs";\nexport type A = 1;`;
+    expect(importsIn(source)).toEqual([]);
+  });
+});
+
+describe("the phoebe-agent/contracts subpath resolves", () => {
+  const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as {
+    files: string[];
+    exports: Record<string, Record<string, string>>;
+  };
+  const entry = pkg.exports["./contracts"];
+
+  test("the export map declares the subpath, types first", () => {
+    expect(entry).toEqual({
+      types: "./src/contracts/index.ts",
+      import: "./src/contracts/index.mjs",
+    });
+  });
+
+  test("both conditions name files the published tarball carries", () => {
+    for (const target of Object.values(entry ?? {})) {
+      expect(existsSync(join(repoRoot, target)), `${target} is missing`).toBe(true);
+    }
+    expect(pkg.files).toContain("src");
+  });
+});
