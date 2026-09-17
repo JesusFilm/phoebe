@@ -21,9 +21,20 @@ export const SLOT_ACQUIRE = "phoebe:slot:acquire";
 export const SLOT_GRANTED = "phoebe:slot:granted";
 export const SLOT_RELEASE = "phoebe:slot:release";
 
-/** The subset of `process` the client needs — injectable so it is unit-tested. */
+/**
+ * The subset of `process` a child's IPC clients need — injectable so they are
+ * unit-tested without a real channel.
+ *
+ * `send` takes an optional error-first callback. Without one, a send over a
+ * channel the supervisor has already closed emits an `'error'` on `process` that
+ * nothing is listening for — which ends the engine. The broker's own messages
+ * stay callback-less (they are answered, so a dead channel surfaces as a
+ * disconnect instead); the report client, whose messages nobody answers, passes
+ * one. The real `process.send` takes it in fourth position, which is where
+ * runEngine's adapter puts it.
+ */
 export type ParentChannel = {
-  send?: (message: unknown) => void;
+  send?: (message: unknown, callback?: (error: Error | null) => void) => void;
   on?: (event: "message" | "disconnect", listener: (message: unknown) => void) => void;
   off?: (event: "message" | "disconnect", listener: (message: unknown) => void) => void;
   connected?: boolean;
