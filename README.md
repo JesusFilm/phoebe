@@ -30,6 +30,11 @@ pinned CLI. You never vendor the engine source into your repo, only a small
 config file, your prompt overrides, and the container files `phoebe init`
 scaffolds for you.
 
+The package carries a second entry point, **`phoebe-agent/contracts`**: the types
+shared by anything that reads a deployment from outside the engine. Nothing
+behind that subpath imports a Node built-in, so a browser bundle can load it.
+Configuring Phoebe never goes near it.
+
 ## Quickstart
 
 From the root of the repo you want Phoebe to work:

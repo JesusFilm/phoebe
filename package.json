@@ -32,6 +32,10 @@
       "types": "./bootstrap/index.ts",
       "import": "./bootstrap/index.mjs"
     },
+    "./contracts": {
+      "types": "./src/contracts/index.ts",
+      "import": "./src/contracts/index.mjs"
+    },
     "./package.json": "./package.json"
   },
   "scripts": {
