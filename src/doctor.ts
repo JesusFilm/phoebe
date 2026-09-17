@@ -52,7 +52,13 @@ import {
   LS_REMOTE_TIMEOUT_MS,
 } from "../bootstrap/github-engine.ts";
 import { TENANT_CONFIG_FILE } from "../bootstrap/tenants.ts";
-import { isInsideContainer } from "./execution-gate.ts";
+import type {
+  CheckState,
+  DoctorCheck,
+  DoctorReport,
+  TenantDoctorRow,
+} from "./contracts/doctor-report.ts";
+import { bootIsMainProcess, isInsideContainer, pidOneCmdline } from "./execution-gate.ts";
 import { featureBranch } from "./feature-branch.ts";
 import { defaultGit, type GitRunner } from "./git-model.ts";
 import { parseParentIssueUrl, pickIntegrationPr } from "./github-client.ts";
@@ -96,26 +102,16 @@ import { enumerateWorkspaceTenants } from "./tenant-commands.ts";
 /** A scheduled kind's declared key that its pipeline's env does not hold (#425). */
 export type MissingDeclaredEnvKey = { pipeline: string; kind: string; key: string };
 
-export type CheckState = "ok" | "warn" | "fail" | "unknown";
-
-export type DoctorCheck = {
-  id: string;
-  state: CheckState;
-  detail: string;
-};
-
-export type TenantDoctorRow = {
-  path: string;
-  slug: string | null;
-  checks: DoctorCheck[];
-};
-
-export type DoctorReport = {
-  checks: DoctorCheck[];
-  tenants: TenantDoctorRow[];
-  /** False when any deployment or tenant check failed. */
-  ok: boolean;
-};
+// The report vocabulary is in contracts (#528): the deployment report carries a
+// doctor section, and a console that renders it has to name a check verdict
+// without loading this file, which reaches the filesystem, the clone and
+// GitHub. The checks stay here, the one place that runs them.
+export type {
+  CheckState,
+  DoctorCheck,
+  DoctorReport,
+  TenantDoctorRow,
+} from "./contracts/doctor-report.ts";
 
 /** Fold every check into the report verdict. Pure, for tests. */
 export function buildDoctorReport(checks: DoctorCheck[], tenants: TenantDoctorRow[]): DoctorReport {
@@ -1326,14 +1322,9 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
   // is no pidfile, and guessing from status.json age would misread an idle
   // (event-driven, not heartbeat) deployment as dead.
   if (isInsideContainer()) {
-    let cmdline = "";
-    try {
-      cmdline = readFileSync("/proc/1/cmdline", "utf8").replaceAll("\0", " ");
-    } catch {
-      cmdline = "";
-    }
+    const cmdline = pidOneCmdline();
     checks.push(
-      cmdline.includes("boot")
+      bootIsMainProcess(cmdline)
         ? { id: "supervisor", state: "ok", detail: "phoebe boot is the container's main process" }
         : {
             id: "supervisor",
