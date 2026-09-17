@@ -73,6 +73,19 @@
   .notif{position:fixed;right:16px;top:60px;width:330px;background:rgba(245,245,245,.97);border:1px solid #ccc;border-radius:12px;padding:10px 12px;z-index:65;box-shadow:0 8px 30px rgba(0,0,0,.25);cursor:pointer}
   .log{background:#111;color:#d1d5db;font-family:var(--mono);font-size:12px;border-radius:6px;padding:10px;height:220px;overflow:auto;white-space:pre-wrap}
   .step{display:flex;gap:10px;align-items:baseline;padding:6px 0;border-bottom:1px dotted #ddd}
+  /* dark theme: ?theme=dark or the simulate box. Follows the OS when unset. */
+  body.dark{--bg:#15171c;--fg:#e6e6e6;--mut:#9aa0aa;--line:#2e323b;--ok:#4ade80;--warn:#fbbf24;--fail:#f87171;--dark:#8b8f98;--acc:#7aa2ff;--chip:#2a2e37}
+  .dark .top,.dark .side>nav,.dark .card,.dark pre,.dark .hdrline,.dark .modal .box{background:#1d2027}
+  .dark button{background:#2a2e37;color:var(--fg);border-color:#444a56}.dark button:hover{background:#343945}.dark button.primary{background:#3b63d9;border-color:#3b63d9;color:#fff}
+  .dark .modal input,.dark .modal textarea,.dark .filter{background:#15171c;color:var(--fg);border-color:#444a56}
+  .dark .chip.ok{background:#14532d;color:#bbf7d0}.dark .chip.warn{background:#4a3a0a;color:#fde68a}.dark .chip.fail{background:#5a1d1d;color:#fecaca}.dark .chip.dark{background:#000;color:#ddd}
+  .dark .chip.src{background:#1e2b52;color:#c7d5ff}.dark .chip.overlay,.dark .chip.toggle{background:#4a3a0a;color:#fde68a}.dark .chip.alias{background:#4a1d38;color:#fbcfe8}.dark .chip.inherited,.dark .chip.default{background:#2a2e37;color:#aaa}.dark .chip.derived{background:#2b2f5a;color:#c7d2fe}
+  .dark tr.attn td{background:#2a2118}.dark tr.darkrow td{background:#1a1a1a}
+  .dark .side>nav a.cur,.dark .list a.cur{background:#232a44}.dark .bar{background:#2a2e37}.dark .leaf{border-color:#2e323b}
+  .dark .seg{border-color:#444a56}.dark .step{border-color:#2e323b}
+  .dark .notif{background:rgba(40,43,52,.97);border-color:#444a56;color:var(--fg)}.dark .sim{background:#23262e;border-color:#555;color:var(--fg)}
+  .dark .switch{background:#e6e6e6;color:#111}.dark .switch button{background:#ccc;color:#111}.dark .toast{background:#e6e6e6;color:#111}
+  .dark .dock{background:#3a4152}
 </style>
 </head>
 <body>
@@ -356,6 +369,7 @@ const dockHtml = () => `<div class="dock" title="dock / taskbar icon. No tray, n
 const simHtml = () => `<div class="sim"><b>simulate</b> <span class="mut">(not design)</span>
   <label><input type="checkbox" ${SIM.signedIn?"checked":""} onchange="this.checked?signIn():signOut()"> signed in to relay</label>
   <label><input type="checkbox" ${SIM.keyring?"checked":""} onchange="SIM.keyring=this.checked"> OS keyring available</label>
+  <label><input type="checkbox" ${theme()==="dark"?"checked":""} onchange="setTheme(this.checked?'dark':'light')"> dark theme</label>
   <label><input type="checkbox" ${SIM.focused?"checked":""} onchange="SIM.focused=this.checked"> window focused</label>
   <button onclick="simRaise('relay')">alert: relay raise</button><button onclick="simRaise('local')">alert: local raise</button><button onclick="simClear()">clear</button></div>`;
 
@@ -423,7 +437,9 @@ const C = {
 C.deployment = C.deployment.bind(C); C.config = C.config.bind(C); C.fleet = C.fleet.bind(C);
 
 // ───────────────────────────── render ─────────────────────────────
-function render() { const r = route(); let html; document.body.className = "v-" + variant();
+function theme() { return new URLSearchParams(location.search).get("theme") || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"); }
+function setTheme(t) { const u = new URL(location.href); u.searchParams.set("theme", t); history.replaceState(null, "", u); render(); }
+function render() { const r = route(); let html; document.body.className = "v-" + variant() + (theme()==="dark" ? " dark" : "");
   if (r.page === "people") html = peoplePage();
   else if (r.page === "fleet") html = homePage();
   else if (r.page === "new") html = newInstallPage();
