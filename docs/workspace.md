@@ -30,6 +30,7 @@ config plus two placeholder child checkouts, see
 ```text
 workspace-root/                         # bind-mounted :ro → /etc/phoebe
   phoebe.config.ts                      # engine + workspace: { depth } or { tenants }
+                                        # the one path also mounted :rw, for `phoebe config set`
   .env                                  # deployment: engine-checkout GH_TOKEN, toggles
   .env.example
   .gitignore

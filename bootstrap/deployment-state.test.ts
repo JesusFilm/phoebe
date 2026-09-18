@@ -137,6 +137,28 @@ describe("the report the model publishes", () => {
     expect(h.latest()!.bootstrapper.reconcile.phase).toBe("idle");
   });
 
+  test("the reconcile section names the last config edit, and outlives it", () => {
+    let edit: string | null = null;
+    const h = harness({ lastEditId: () => edit });
+    h.state.noteEngine({ ref: "main", sha: "abc", quarantinedSha: null });
+    expect(h.latest()!.bootstrapper.reconcile.lastEditId).toBeUndefined();
+
+    edit = "edit-7";
+    h.state.noteReconcile("config");
+    expect(h.latest()!.bootstrapper.reconcile).toMatchObject({
+      phase: "reconciling",
+      reason: "config",
+      lastEditId: "edit-7",
+    });
+
+    // The edit that caused it is still the last one applied once the fleet is back.
+    h.state.noteSpawn(pipelineOf("/t/a", "work"));
+    expect(h.latest()!.bootstrapper.reconcile).toMatchObject({
+      phase: "idle",
+      lastEditId: "edit-7",
+    });
+  });
+
   test("a write failure is reported, never thrown", () => {
     const errors: unknown[] = [];
     const h = harness({

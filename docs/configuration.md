@@ -1081,6 +1081,58 @@ far larger than any Phoebe has run, the first tenants by id carry their configs
 and the rest are counted in `config.omitted`. Run `phoebe config` in the
 container to read one of those.
 
+## Changing one field: `phoebe config set`
+
+```sh
+phoebe config set pipelines.work.pollIntervalMs 30000
+phoebe config set defaultProvider claude
+```
+
+The path is the one `phoebe config` printed. The value is read as JSON when it
+parses as JSON (`42`, `true`, `null`, `"two words"`) and as a plain string
+otherwise, so `claude` and `"claude"` mean the same thing.
+
+What happens is deliberately small. The file is parsed, one literal is replaced,
+and every other byte — your comments, your key order, your formatting — is left
+exactly as you wrote it. The result is loaded through the engine's own loader
+before anything is written, so a value the config rejects costs you a message
+and nothing else. Then the file is written in place and the deployment
+reconciles onto it the way it would onto an edit you made by hand.
+
+**What it will not change**, each refused by name:
+
+| Refused                                         | Because                                                                      |
+| ----------------------------------------------- | ---------------------------------------------------------------------------- |
+| `workspace.*`                                   | Your fleet declaration is a git edit.                                        |
+| `engine.*`                                      | The engine pin moves with `phoebe upgrade`, so the new ref's migrations run. |
+| `relay.*`, `deployment.*`                       | The pairing's and the host's, not the container's.                           |
+| A work kind's declaration, `paths.*`            | Code, and a derivation — neither is a literal to set.                        |
+| A leaf a `PHOEBE_*` variable already sets       | Env beats file, so the write would be shadowed.                              |
+| A value in the file that is not a plain literal | Replacing a computed value is a guess about intent.                          |
+
+A kind's _settings_ are fine — `pipelines.work.kinds.issues.model` is a literal
+and moves like any other. It is the block itself, which may name a module or hold
+an inline definition, that a splice cannot see inside of.
+
+Every refusal prints the exact edit to make by hand, which is also what the
+console shows when it cannot apply one for you.
+
+In a workspace, this writes the **root** config only. A tenant's own
+`phoebe.config.ts` lives in that tenant's checkout, and you edit it there and
+commit it, the way you always have — pass `--config` to point the verb at one
+from a shell.
+
+Two flags matter when something else is driving:
+
+- `--fingerprint <sha256:…>` refuses the write unless the file still hashes to
+  what you were shown. The deployment report's config section carries that hash;
+  a console sends it back, and a file that moved in between is refused rather
+  than merged.
+- `--id <id>` makes the edit idempotent. Applied edits are recorded in
+  `state/config-edits.json` on the data volume, so the same id twice is one
+  write and the second call gets the first one's receipt back. The record rolls
+  off as soon as you edit or commit the file yourself.
+
 ## GitHub App arm
 
 Two variables in the **deployment** env-file select the `app` credential arm.
