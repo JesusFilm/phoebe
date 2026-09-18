@@ -361,3 +361,10 @@ _Avoid_: IPC API, RPC, electron API
 One invocation of a host verb by the companion, with its lines streamed and an exit
 carrying the verb's typed outcome. One per install at a time, parallel across installs.
 _Avoid_: job, task, command
+
+**Local read loop**:
+Main's per-install pair of clocks that produces deployment reports for a local install:
+Compose's event stream for the moment a container moves, and a `status --json` exec every
+15 s while it is up. What comes out is the relay's own `report` event, so a page renders
+either arm without knowing which it has.
+_Avoid_: watcher, sync, poller

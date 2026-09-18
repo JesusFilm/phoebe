@@ -3,7 +3,7 @@
 import path from "node:path";
 import { describe, expect, test } from "vite-plus/test";
 import type { CommandRunner } from "../../../src/deployment-compose.ts";
-import { allInstallFacts, installFacts } from "./install-facts.ts";
+import { allInstallFacts, directoryFacts, installFacts } from "./install-facts.ts";
 
 const DIR = "/repos/youtube-studio";
 const STORED = { dir: DIR, addedAt: "2026-09-18T09:00:00.000Z" };
@@ -147,5 +147,64 @@ describe("the whole list", () => {
     const facts = await allInstallFacts(stored, { exists: () => false });
 
     expect(facts.map((install) => install.name)).toEqual(["c", "a", "b"]);
+  });
+});
+
+describe("what the folder says with no container", () => {
+  const RUNNING = {
+    dir: DIR,
+    name: "youtube-studio",
+    addedAt: STORED.addedAt,
+    state: "running" as const,
+  };
+
+  test("carries the config's text and a fingerprint of it", () => {
+    const facts = directoryFacts(RUNNING, {
+      exists: folder("phoebe.config.ts", ".env"),
+      read: () => "export default defineConfig({})\n",
+    });
+
+    expect(facts.configPath).toBe(path.join(DIR, "phoebe.config.ts"));
+    expect(facts.configText).toBe("export default defineConfig({})\n");
+    expect(facts.configFingerprint).toMatch(/^[0-9a-f]{16}$/);
+    expect(facts.envPresent).toBe(true);
+  });
+
+  test("the same text fingerprints the same, and an edit moves it", () => {
+    const read = (text: string) => () => text;
+    const before = directoryFacts(RUNNING, { exists: folder("phoebe.config.ts"), read: read("a") });
+    const same = directoryFacts(RUNNING, { exists: folder("phoebe.config.ts"), read: read("a") });
+    const after = directoryFacts(RUNNING, { exists: folder("phoebe.config.ts"), read: read("b") });
+
+    expect(same.configFingerprint).toBe(before.configFingerprint);
+    expect(after.configFingerprint).not.toBe(before.configFingerprint);
+  });
+
+  test("no config is no text and no fingerprint, rather than an empty one", () => {
+    const facts = directoryFacts(RUNNING, { exists: folder() });
+
+    expect(facts.configText).toBeNull();
+    expect(facts.configFingerprint).toBeNull();
+    expect(facts.envPresent).toBe(false);
+  });
+
+  test("a config that cannot be read reads as one that is not there", () => {
+    const facts = directoryFacts(RUNNING, {
+      exists: folder("phoebe.config.ts"),
+      read: () => {
+        throw new Error("EACCES");
+      },
+    });
+
+    expect(facts.configText).toBeNull();
+  });
+
+  test("the bootstrapper is running exactly when the container is", () => {
+    const exists = folder("phoebe.config.ts");
+
+    expect(directoryFacts(RUNNING, { exists }).bootstrapperRunning).toBe(true);
+    expect(directoryFacts({ ...RUNNING, state: "stopped" }, { exists }).bootstrapperRunning).toBe(
+      false,
+    );
   });
 });

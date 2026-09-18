@@ -11,13 +11,15 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { rowFacts, sortFleet } from "./facts.ts";
 import { FleetPage } from "./fleet-page.tsx";
 import { Rail } from "./rail.tsx";
-import { InstallPage } from "./install-page.tsx";
+import { InstallPage, InstallTab } from "./install-page.tsx";
 import {
   ago,
   bridge,
   cell,
   child,
+  directory,
   install,
+  localReport,
   NOW,
   report,
   row,
@@ -310,16 +312,29 @@ describe("the local arm on the rail", () => {
 });
 
 describe("the install tab", () => {
+  /**
+   * The tab with the buttons, rendered on its own. The page lands a running
+   * install on overview (#526), and which verbs an install is offered is a
+   * question about this tab rather than about where the page opened.
+   */
   function tab(overrides: Parameters<typeof install>[0] = {}) {
     return renderToStaticMarkup(
-      <InstallPage install={install(overrides)} bridge={bridge()} onForget={() => undefined} />,
+      <InstallTab
+        install={install(overrides)}
+        environment={null}
+        run={null}
+        running={false}
+        trouble={null}
+        onStart={() => undefined}
+        onForget={() => undefined}
+        onCancel={() => undefined}
+      />,
     );
   }
 
-  test("is where a not-initialised install lands, offering init and nothing that needs one", () => {
+  test("a not-initialised install is offered init and nothing that needs one", () => {
     const markup = tab({ state: "not-initialised" });
 
-    expect(markup).toContain(">install<");
     expect(markup).toContain(">Init<");
     expect(markup).not.toContain(">Start<");
     expect(markup).not.toContain(">Stop<");
@@ -341,20 +356,105 @@ describe("the install tab", () => {
     expect(markup).toContain(">Check for upgrades<");
   });
 
-  test("carries the five deployment tabs, disabled and saying what they need", () => {
-    const markup = tab();
-
-    for (const name of ["overview", "pipelines", "doctor", "secrets", "config"]) {
-      expect(markup, name).toContain(`>${name}<`);
-    }
-    expect(markup).toContain("Needs a running container");
-  });
-
   test("says forgetting deletes nothing, because a Forget button reads like one that does", () => {
     expect(tab()).toContain("Nothing on disk is deleted");
   });
+});
+
+describe("a local install's page", () => {
+  function page(
+    overrides: Parameters<typeof install>[0] = {},
+    event: Parameters<typeof localReport>[0] | null = null,
+  ) {
+    const one = install(overrides);
+    return renderToStaticMarkup(
+      <InstallPage
+        install={one}
+        bridge={bridge()}
+        report={event === null ? null : localReport({ facts: one, ...event })}
+        now={NOW}
+        onForget={() => undefined}
+      />,
+    );
+  }
+
+  test("carries the same six tabs whatever the install is doing", () => {
+    const markup = page();
+
+    for (const name of ["install", "overview", "pipelines", "doctor", "secrets", "config"]) {
+      expect(markup, name).toContain(`>${name}<`);
+    }
+  });
 
   test("names the folder it is about, since the rail only had room for its name", () => {
-    expect(tab()).toContain("/repos/youtube-studio");
+    expect(page()).toContain("/repos/youtube-studio");
+  });
+
+  test("a not-initialised install lands on the install tab (#526)", () => {
+    const markup = page({ state: "not-initialised" });
+
+    expect(markup).toContain(">Init<");
+  });
+
+  test("a running install lands on overview, and its card says local install (#556)", () => {
+    const markup = page({ state: "running" }, {});
+
+    expect(markup).toContain("Local install");
+    expect(markup).toContain("/repos/youtube-studio");
+    expect(markup).toContain("desktop bridge");
+    expect(markup).toContain("its container is up");
+  });
+
+  test("the overview renders the report the loop read, not a relay's row", () => {
+    const markup = page({ state: "running" }, {});
+
+    expect(markup).toContain("youtube-studio");
+    expect(markup).toContain("v0.13.0");
+    expect(markup).toContain("1/2 in use");
+  });
+
+  test("a stopped install lands on config, read from the file (#526)", () => {
+    const markup = page(
+      { state: "stopped" },
+      { directory: directory({ bootstrapperRunning: false }) },
+    );
+
+    expect(markup).toContain("phoebe.config.ts");
+    expect(markup).toContain("defineConfig");
+  });
+
+  test("a stopped install does not render the report the window is still holding", () => {
+    // The event carries one — main read it while the container was up, and the
+    // window has held it since. Four tabs are shut over it and not one of the
+    // report's numbers is on the page (#526).
+    const markup = page({ state: "stopped" }, { facts: install({ state: "running" }) });
+
+    expect(markup).not.toContain("1/2 in use");
+    expect(markup).not.toContain("Slots");
+    for (const name of ["overview", "pipelines", "doctor", "secrets"]) {
+      expect(markup, name).toMatch(
+        new RegExp(`disabled="" title="Needs a running container\\.">${name}<`),
+      );
+    }
+    expect(markup).toContain("defineConfig");
+  });
+
+  test("a stopped install is pointed at the install tab, where the start button is (#526)", () => {
+    const markup = page({ state: "stopped" }, {});
+
+    expect(markup).toContain("Go to the install tab");
+  });
+
+  test("a running install mid-read says it is reading, not that nothing is running", () => {
+    const markup = page({ state: "running" }, null);
+
+    expect(markup).toContain("Reading this install");
+    expect(markup).not.toContain("Go to the install tab");
+  });
+
+  test("config stays open on a stopped install, because a file is readable either way", () => {
+    const markup = page({ state: "stopped" }, {});
+
+    expect(markup).not.toMatch(/disabled="" [^>]*>config</);
   });
 });
