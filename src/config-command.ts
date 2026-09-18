@@ -37,6 +37,7 @@ import {
 import { matchConfigFlag } from "./cli-flags.ts";
 import { applyEnvOverlay, loadUserConfig, resolveConfigPath } from "./load-config.ts";
 import { resolveDataBase } from "./paths.ts";
+import { tenantSecrets, tenantStateDir } from "./secret-store.ts";
 import { enumerateDeclaredEnv } from "./pipeline-enumerate.ts";
 import { enumerateWorkspaceTenants } from "./tenant-commands.ts";
 
@@ -108,6 +109,12 @@ function readEnvFile(path: string): NodeJS.ProcessEnv | undefined {
   }
 }
 
+/** The `repoSlug` a config declares, trimmed — or null when it declares none. */
+function readSlug(user: Record<string, unknown>): string | null {
+  const declared = user["repoSlug"];
+  return typeof declared === "string" && declared.trim().length > 0 ? declared.trim() : null;
+}
+
 /**
  * A tenant's asset directory — where its `.env` lives. `configDir` relocates it
  * (a standalone deployment reusing its dotfolder), so the field is read off the
@@ -156,10 +163,16 @@ async function effectiveConfigFor(opts: {
     const user = await loadUserConfig(configPath);
     const envPath = opts.envPath ?? join(assetDirOf(configPath, user), TENANT_ENV_FILE);
     const tenantEnv = readEnvFile(envPath);
+    // The secret store (#504), read from this tenant's own state dir. A slug the
+    // config does not declare has no store to read, and an unreadable one is no
+    // store at all — the report then says what the files say, which is what a
+    // deployment with no console-set secrets has always said.
+    const store = tenantSecrets(tenantStateDir(readSlug(user), dataBase));
     const layers: EnvLayers = {
       process: processEnv,
       ...(opts.rootEnv !== undefined ? { root: opts.rootEnv } : {}),
       ...(tenantEnv !== undefined ? { tenant: tenantEnv } : {}),
+      ...(Object.keys(store).length > 0 ? { store } : {}),
     };
     return computeEffectiveConfig({
       user,
@@ -297,8 +310,9 @@ function renderTenant(tenant: TenantEffectiveConfig, cwd: string): string[] {
   if (tenant.env !== null) {
     lines.push("  env");
     for (const [name, presence] of Object.entries(tenant.env)) {
+      const where = presence.present ? `present (${presence.from ?? "process"})` : "missing";
       lines.push(
-        `    ${name} — ${presence.present ? `present (${presence.from ?? "process"})` : "missing"}`,
+        `    ${name} — ${where}${presence.shadowed === true ? " — shadowed: the secret store outranks the .env" : ""}`,
       );
     }
   }

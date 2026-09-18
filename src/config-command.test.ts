@@ -14,6 +14,7 @@ import {
   type EffectiveConfigReport,
 } from "./config-command.ts";
 import type { TenantEffectiveConfig } from "./contracts/effective-config.ts";
+import { writeSecretStore } from "./secret-store.ts";
 
 const temps: string[] = [];
 
@@ -252,5 +253,54 @@ describe("the JSON report", () => {
     const parsed = JSON.parse(JSON.stringify(REPORT)) as EffectiveConfigReport;
     expect(parsed.version).toBe(EFFECTIVE_CONFIG_VERSION);
     expect(parsed.tenants[0]!.fields).toBeTruthy();
+  });
+});
+
+describe("the secret store in the env section (#504)", () => {
+  test("a store-set key reports its tier and the file it shadows", async () => {
+    const dir = tempDir();
+    const dataBase = join(dir, "data");
+    mkdirSync(join(dataBase, "acme", "widget", "state"), { recursive: true });
+    writeSecretStore(join(dataBase, "acme", "widget", "state"), { CURSOR_API_KEY: "sk-store" });
+    const configPath = writeConfig(dir, TENANT_CONFIG("acme/widget"));
+    writeFileSync(join(dir, ".env"), "CURSOR_API_KEY=sk-file\n");
+
+    const report = await collectEffectiveConfig({ configPath, dataBase, processEnv: {} });
+    expect(report.tenants[0]?.env?.["CURSOR_API_KEY"]).toEqual({
+      present: true,
+      from: "store",
+      shadowed: true,
+    });
+    expect(JSON.stringify(report)).not.toContain("sk-store");
+  });
+
+  test("the printed line names the collision, so an inert .env edit is explained", async () => {
+    const dir = tempDir();
+    const dataBase = join(dir, "data");
+    mkdirSync(join(dataBase, "acme", "widget", "state"), { recursive: true });
+    writeSecretStore(join(dataBase, "acme", "widget", "state"), { CURSOR_API_KEY: "sk-store" });
+    const configPath = writeConfig(dir, TENANT_CONFIG("acme/widget"));
+    writeFileSync(join(dir, ".env"), "CURSOR_API_KEY=sk-file\n");
+
+    const text = formatEffectiveConfig(
+      await collectEffectiveConfig({ configPath, dataBase, processEnv: {} }),
+    );
+    expect(text).toContain("CURSOR_API_KEY — present (store) — shadowed");
+    expect(text).not.toContain("sk-store");
+  });
+
+  test("a deployment with no store reads exactly as it did before there was one", async () => {
+    const dir = tempDir();
+    const configPath = writeConfig(dir, TENANT_CONFIG("acme/widget"));
+    writeFileSync(join(dir, ".env"), "CURSOR_API_KEY=sk-file\n");
+    const report = await collectEffectiveConfig({
+      configPath,
+      dataBase: join(dir, "data"),
+      processEnv: {},
+    });
+    expect(report.tenants[0]?.env?.["CURSOR_API_KEY"]).toEqual({
+      present: true,
+      from: "tenantEnv",
+    });
   });
 });

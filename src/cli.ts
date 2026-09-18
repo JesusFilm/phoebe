@@ -276,6 +276,9 @@ Usage:
   phoebe init --tenant [dir]       Scaffold a workspace child in-tree install
   phoebe list [--json] [--check]   List tenants + health (in-container)
   phoebe config [--json]           Every setting, its value, and where it came from
+  phoebe secret set <KEY>          Store a tenant secret; value on stdin only
+  phoebe secret clear <KEY>        Drop it again, so the .env value governs
+  phoebe secret ls [--json]        Which secrets are set, and where from
   phoebe purge <owner/repo> --yes  Wipe a removed tenant's data (in-container)
   phoebe upgrade [ref] [--engine|--cli|--both]
                                    Advance the pinned engine ref and/or the npm CLI
@@ -685,6 +688,17 @@ export async function runCli(): Promise<void> {
   if (args[0] === "config") {
     const { runConfigCli } = await import("./config-command.ts");
     return await runConfigCli(args.slice(1));
+  }
+  // The tenant secret store (#504): set, clear and list. Lazy for the same
+  // reason as its neighbours, and doubly so — a set pulls doctor in behind it.
+  if (args[0] === "secret") {
+    const { runSecretCli } = await import("./secret-command.ts");
+    const result = await runSecretCli(args.slice(1));
+    // A set whose doctor run found a failing check: the write landed and is
+    // reported as landing; the exit code is doctor's, so a script that rotates a
+    // key notices the deployment is unhappy about it.
+    if (result !== undefined && !result.doctorOk) process.exitCode = 1;
+    return;
   }
   if (args[0] === "purge") return await runPurgeCli(args.slice(1));
 

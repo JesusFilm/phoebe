@@ -89,6 +89,23 @@ name), `overlay` (a `PHOEBE_*` variable), `derived`, or `inherited` from a shall
 path. One of exactly six; values that lost ride along as **shadowed**.
 _Avoid_: origin, provenance, toggle
 
+**Secret store**:
+The bootstrapper-owned, per-tenant file of console-set secret values on the data volume,
+`state/secrets.json` at mode `0600`. The tier above the tenant's `.env`, and the only
+channel a deployment has for a secret nobody can reach a file to edit.
+_Avoid_: vault, keyring, secrets file (ambiguous with `.env`)
+
+**Tenant-scope / deployment-scope secret**:
+Whether a secret belongs to one tenant's engine child or to the deployment as a whole.
+The line the secret store never crosses: the App key and the engine-clone token stay
+deployment scope, in the env-file, reached by editing it.
+_Avoid_: local/global, child/root
+
+**Clear** (a secret):
+Removing a key from the secret store so the `.env` or ambient value governs again. Not a
+tombstone and not a revocation — revoking a secret is rotating it.
+_Avoid_: unset, delete, revoke
+
 **Arm**:
 One of a mutually exclusive pair of shapes a deployment takes, resolved rather than
 configured. The deployment arms are **solo** (one tenant) and **workspace** (a fleet); the

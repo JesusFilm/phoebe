@@ -45,9 +45,10 @@ export type SettingSource = "default" | "file" | "alias" | "overlay" | "derived"
 /**
  * Where an env-sourced value was read. `process` covers everything the engine
  * child inherited without a file to name — the compose file, a shell export, the
- * deployment's own environment.
+ * deployment's own environment. `store` is the tenant secret store (#504), the
+ * tier above all three: a console set a value there and no file holds it.
  */
-export type EnvLocation = "rootEnv" | "tenantEnv" | "process";
+export type EnvLocation = "store" | "rootEnv" | "tenantEnv" | "process";
 
 /**
  * Who reads a setting. `engine` and `bootstrapper` mirror the settings
@@ -100,8 +101,14 @@ export type EffectiveFields = { [key: string]: EffectiveNode };
  * One env variable, presence and location only. `present` is false for a name
  * that is unset *or* set to the empty string: compose's `"${VAR:-}"` passthrough
  * writes blanks, and a blank credential is not a credential.
+ *
+ * `shadowed` is the store's one loud edge (#504): the secret store outranks the
+ * `.env`, and a key set in both would otherwise leave an operator staring at a
+ * file edit that does nothing. Flagged here, warned about by doctor, and cleared
+ * by clearing the store entry — never by a silent win. Presence is still all
+ * this says; a shadowed key does not reveal either value.
  */
-export type EnvPresence = { present: boolean; from?: EnvLocation };
+export type EnvPresence = { present: boolean; from?: EnvLocation; shadowed?: boolean };
 
 /** The deprecated aliases (and future non-fatal advice) this tenant is using. */
 export type ConfigWarning = { path: string; message: string };
