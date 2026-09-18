@@ -1,6 +1,7 @@
 // Ed25519 as the relay rail spells it (#540): raw 32-byte public keys in
-// base64url, signatures over the raw bytes of a challenge nonce, and one
-// fingerprint rule.
+// base64url, signatures over the raw bytes a `hello` commits to, and one
+// fingerprint rule. The other curve on the rail — the X25519 box key a console
+// encrypts to, which this signature covers — is src/x25519.ts.
 //
 // Both ends of the rail need the same three answers and they live in different
 // halves of this package — the deployment key is the bootstrapper's
@@ -53,18 +54,42 @@ export function publicKeyFromRaw(publicKey: string): KeyObject | null {
 }
 
 /**
- * Does `signature` (base64url) sign `nonce` (base64url) under `publicKey`?
- * False for every malformed input, so one call answers "is this deployment who
- * it says it is" with no exception path to get wrong.
+ * What a `hello` signs: the challenge nonce and the box key, concatenated
+ * (#549, decided in #514 §7). Both as the bytes they decode to rather than as
+ * their characters, so neither end has to re-encode the other's string to
+ * agree, and both fixed-width — 24 bytes of nonce, 32 of key — so the join
+ * needs no separator to stay unambiguous.
  *
- * The nonce is signed as the bytes it decodes to rather than as its characters,
- * so neither end has to re-encode the other's string to agree.
+ * The box key is in here because it is the key a console encrypts a secret to,
+ * and a deployment that could present a signature covering only the nonce could
+ * have any box key at all substituted in flight. Signing both is what makes the
+ * encrypting key as attested as the signing one.
  */
-export function verifyNonceSignature(publicKey: string, nonce: string, signature: string): boolean {
+export function helloSignedBytes(nonce: string, boxKey: string): Buffer {
+  return Buffer.concat([Buffer.from(nonce, "base64url"), Buffer.from(boxKey, "base64url")]);
+}
+
+/**
+ * Does `signature` (base64url) sign `nonce ‖ boxKey` under `publicKey`? False
+ * for every malformed input, so one call answers "is this deployment who it
+ * says it is, presenting the key it says it has" with no exception path to get
+ * wrong.
+ */
+export function verifyHelloSignature(
+  publicKey: string,
+  hello: { nonce: string; boxKey: string },
+  signature: string,
+): boolean {
   const key = publicKeyFromRaw(publicKey);
-  if (key === null || typeof nonce !== "string" || typeof signature !== "string") return false;
+  if (key === null || typeof signature !== "string") return false;
+  if (typeof hello.nonce !== "string" || typeof hello.boxKey !== "string") return false;
   try {
-    return verify(null, Buffer.from(nonce, "base64url"), key, Buffer.from(signature, "base64url"));
+    return verify(
+      null,
+      helloSignedBytes(hello.nonce, hello.boxKey),
+      key,
+      Buffer.from(signature, "base64url"),
+    );
   } catch {
     return false;
   }

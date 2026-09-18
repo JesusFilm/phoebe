@@ -3,9 +3,11 @@
 //
 // What a signed-in person can ask for is who they are, a pairing token for a new
 // deployment, the fleet as the socket endpoint knows it, one deployment with the
-// last report it pushed, the stream those reports arrive on, and the forgetting of
-// one deployment. The console's pages sit on exactly these answers, and the relay
-// hands the pages out too — the bundle is in the same package (console-assets.ts).
+// last report it pushed, the stream those reports arrive on, the forgetting of
+// one deployment, and the setting of one tenant secret — which the relay carries
+// sealed and stamps with who asked, without ever being able to read it (#550).
+// The console's pages sit on exactly these answers, and the relay hands the
+// pages out too — the bundle is in the same package (console-assets.ts).
 //
 // **The API is matched first, and a path under it never falls through to a page.**
 // Every route below is tried before the console sees the request, and the console
@@ -24,7 +26,13 @@
 // a 200.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { RELAY_HEARTBEAT_MS } from "../src/contracts/relay-protocol.ts";
+import { randomUUID } from "node:crypto";
+import {
+  RELAY_HEARTBEAT_MS,
+  RELAY_MESSAGES,
+  type RelayReceipt,
+  type RelaySecretSet,
+} from "../src/contracts/relay-protocol.ts";
 import { RELAY_ROUTES } from "../src/contracts/relay-routes.ts";
 import type {
   RelayDeploymentDetail,
@@ -68,6 +76,12 @@ export type RelayHandlerOptions = {
   fleet: () => {
     rows: (now?: Date) => RelayDeploymentRow[];
     forget: (fingerprint: string) => Link | null;
+    /**
+     * Send one `id`-bearing request down to a deployment and wait for its
+     * receipt (#550). Answers `undelivered` rather than queueing when there is
+     * no live socket.
+     */
+    request: (fingerprint: string, message: RelaySecretSet) => Promise<RelayReceipt>;
   };
   /** The reports on the volume — the per-deployment read's other half (#542). */
   reports: Reports;
@@ -131,6 +145,9 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
     }
     if (method === "GET" && url.pathname === RELAY_ROUTES.events) {
       return streamEvents(request, response);
+    }
+    if (method === "POST" && url.pathname === RELAY_ROUTES.secrets) {
+      return await setSecret(request, response);
     }
     const fingerprint = deploymentIn(url.pathname);
     if (method === "GET" && fingerprint !== null) {
@@ -379,6 +396,91 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
 
     request.on("close", close);
     response.on("close", close);
+  }
+
+  /**
+   * Set or clear one tenant secret on a deployment (#550, decided in #504).
+   *
+   * **The relay's whole job here is carrying and stamping.** The envelope came
+   * out of a browser sealed to the deployment's box key; this route forwards the
+   * string without parsing it, and could not open it if it tried — the private
+   * half is on the deployment's volume and has never been anywhere else. What
+   * the relay adds is `by`, read from its own session: the person a deployment
+   * records in its secret ledger is the person Google signed in, never a field a
+   * caller supplied.
+   *
+   * **The id is the relay's too.** It is the ledger entry's id on the
+   * deployment and the `editId` the browser bound into the envelope's AAD, so
+   * the console has to have it before it seals — which is why a caller sends
+   * one and the relay uses it as given. A caller that omits it gets one, which
+   * only a `clear` can make use of: a set sealed against a different id will
+   * not open.
+   *
+   * The answer is whatever came back: `written`, `refused`, or
+   * `undelivered`. The relay adds no verdict of its own, because it has none —
+   * it never learns whether what it carried was a secret at all.
+   */
+  async function setSecret(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const session = options.sessions.get(parseCookies(request.headers.cookie).get(SESSION_COOKIE));
+    if (session === null) {
+      json(response, 401, { error: "not-signed-in" });
+      return;
+    }
+    const body = (await readJsonBody(request)) as {
+      fingerprint?: unknown;
+      tenant?: unknown;
+      key?: unknown;
+      action?: unknown;
+      envelope?: unknown;
+      id?: unknown;
+    };
+    const fingerprint = typeof body.fingerprint === "string" ? body.fingerprint : "";
+    if (!isFingerprint(fingerprint)) {
+      json(response, 400, { error: "no-fingerprint" });
+      return;
+    }
+    const tenant = typeof body.tenant === "string" ? body.tenant : "";
+    const key = typeof body.key === "string" ? body.key : "";
+    if (tenant === "" || key === "") {
+      json(response, 400, { error: "no-tenant-or-key" });
+      return;
+    }
+    const action = body.action === "clear" ? "clear" : "set";
+    const envelope = typeof body.envelope === "string" ? body.envelope : "";
+    if (action === "set" && envelope === "") {
+      json(response, 400, { error: "no-envelope" });
+      return;
+    }
+    const row = options
+      .fleet()
+      .rows(clock())
+      .find((candidate) => candidate.fingerprint === fingerprint);
+    if (row === undefined) {
+      json(response, 404, { error: "no-such-deployment" });
+      return;
+    }
+
+    const message: RelaySecretSet = {
+      type: RELAY_MESSAGES.secretSet,
+      id: typeof body.id === "string" && body.id.length > 0 ? body.id : randomUUID(),
+      tenant,
+      key,
+      action,
+      ...(action === "set" ? { envelope } : {}),
+      by: session.email,
+    };
+    // The key's name is logged and its value is not, because the relay does not
+    // have its value and this is the line that proves it.
+    warn(
+      `[phoebe:relay] ${session.email} asked ${row.name} (${fingerprint}) to ${action} ` +
+        `${key} for ${tenant} (edit ${message.id})`,
+    );
+    const receipt = await options.fleet().request(fingerprint, message);
+    json(response, 200, {
+      id: receipt.id,
+      outcome: receipt.outcome,
+      ...(receipt.detail !== undefined ? { detail: receipt.detail } : {}),
+    });
   }
 
   /**

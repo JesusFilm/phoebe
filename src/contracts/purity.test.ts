@@ -256,11 +256,13 @@ describe("the phoebe-agent/contracts subpath resolves", () => {
     expect(typeof runtime.openSecret).toBe("function");
   });
 
-  test("the package still ships with no runtime dependency", () => {
+  test("the envelope added no runtime dependency", () => {
     // The envelope is ECIES hand-assembled from WebCrypto rather than a sealed
-    // box from libsodium precisely so this stays empty on both sides (#514 §6,
-    // #506). A dependency here would land in every deployment's image.
-    expect(pkg.dependencies ?? {}).toEqual({});
+    // box from libsodium precisely so this list does not grow (#514 §6, #506):
+    // a dependency here lands in every deployment's image. What is on it is the
+    // relay's own — a host process an operator runs deliberately — and nothing
+    // under contracts may import either name, which the walk above enforces.
+    expect(Object.keys(pkg.dependencies ?? {}).sort()).toEqual(["openid-client", "ws"]);
   });
 
   test("both conditions name files the published tarball carries", () => {

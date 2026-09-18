@@ -108,7 +108,7 @@ const AAD_FIELDS = ["keyFingerprint", "tenant", "key", "editId"];
  * legitimate is being turned away.
  *
  * @param {EnvelopeAad} aad
- * @returns {Uint8Array}
+ * @returns {Uint8Array<ArrayBuffer>}
  */
 function encodeAad(aad) {
   if (aad === null || typeof aad !== "object") {
@@ -138,9 +138,13 @@ function toBase64Url(bytes) {
 }
 
 /**
+ * The buffer is named in the return type for the same reason the box key's is:
+ * a browser's `BufferSource` will not take a view that might sit over a
+ * `SharedArrayBuffer`, and every one of these goes straight into WebCrypto.
+ *
  * @param {unknown} text
  * @param {string} what The field name, so a malformed envelope says which part.
- * @returns {Uint8Array}
+ * @returns {Uint8Array<ArrayBuffer>}
  */
 function fromBase64Url(text, what) {
   if (typeof text !== "string") {
@@ -276,9 +280,16 @@ export async function openSecret({ boxPrivateKey, aad, envelope }) {
   const ciphertext = fromBase64Url(envelope.ct, "ct");
   let recipient;
   try {
-    recipient = await crypto.subtle.importKey("pkcs8", boxPrivateKey, { name: "X25519" }, false, [
-      "deriveBits",
-    ]);
+    // Copied into a buffer of its own, which is not ceremony: a caller's
+    // `Uint8Array` may sit over a `SharedArrayBuffer` as far as a browser's
+    // types are concerned, and WebCrypto will not take one. Forty-eight bytes.
+    recipient = await crypto.subtle.importKey(
+      "pkcs8",
+      new Uint8Array(boxPrivateKey),
+      { name: "X25519" },
+      false,
+      ["deriveBits"],
+    );
   } catch {
     throw new Error("secret envelope: the box private key is not an X25519 key in PKCS8");
   }

@@ -20,6 +20,8 @@ import {
 
 function draft(overrides: Partial<DeploymentDraft> = {}): DeploymentDraft {
   return {
+    // Null: no inventory has been taken. A test that wants the section passes one.
+    secrets: null,
     identity: { name: "acme/widget", arm: "solo" },
     bootstrapper: {
       engineRef: "main",

@@ -150,7 +150,7 @@ function Console({
             <p className="muted">The relay did not answer: {trouble}</p>
           </main>
         ) : loaded ? (
-          <Page route={route} facts={facts} now={now} />
+          <Page route={route} facts={facts} now={now} client={client} />
         ) : (
           <main className="main">
             <h1>Fleet</h1>
@@ -167,11 +167,22 @@ function Console({
  * "no such deployment" page rather than a redirect: a link that silently became
  * the fleet page would look like the deployment is fine.
  */
-function Page({ route, facts, now }: { route: Route; facts: RowFacts[]; now: Date }) {
+function Page({
+  route,
+  facts,
+  now,
+  client,
+}: {
+  route: Route;
+  facts: RowFacts[];
+  now: Date;
+  /** Handed on to the deployment page, whose secrets tab sends through it. */
+  client: RelayClient;
+}) {
   if (route.page === "fleet") return <FleetPage facts={facts} now={now} />;
   const found = facts.find((row) => row.row.fingerprint === route.fingerprint);
   if (found === undefined) return <NoSuchDeployment fingerprint={route.fingerprint} />;
-  return <DeploymentPage facts={found} tab={route.tab} now={now} />;
+  return <DeploymentPage facts={found} tab={route.tab} now={now} client={client} />;
 }
 
 /**

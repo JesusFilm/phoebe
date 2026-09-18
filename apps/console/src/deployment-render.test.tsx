@@ -26,6 +26,7 @@ import {
   row,
   snapshot,
   stored,
+  stubClient,
   tenant,
 } from "./test-fixture.ts";
 
@@ -105,7 +106,9 @@ const BUSY = report({
 const BUSY_FACTS = rowFacts(row({ name: "jesusfilm-workspace" }), stored(BUSY));
 
 function render(tab: DeploymentTab, facts = BUSY_FACTS): string {
-  return renderToStaticMarkup(<DeploymentPage facts={facts} tab={tab} now={NOW} />);
+  return renderToStaticMarkup(
+    <DeploymentPage facts={facts} tab={tab} now={NOW} client={stubClient()} />,
+  );
 }
 
 const overview = render("overview");
@@ -113,17 +116,16 @@ const pipelines = render("pipelines");
 const doctorTab = render("doctor");
 
 describe("the tabs", () => {
-  test("names the three the console answers, and links each one", () => {
+  test("names the tabs the console answers, and links each one", () => {
     // Overview is the bare deployment URL, so one deployment has one address.
     expect(overview).toContain(`href="#/d/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA">overview<`);
-    for (const tab of ["pipelines", "doctor"]) {
+    for (const tab of ["pipelines", "doctor", "secrets"]) {
       expect(overview, tab).toContain(`href="#/d/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/${tab}"`);
     }
   });
 
   test("does not offer a tab nothing answers yet", () => {
-    // Secrets is #550 and config is #545; a tab that opens nothing is a dead end.
-    expect(overview).not.toContain("secrets");
+    // Config is #545; a tab that opens nothing is a dead end.
     expect(overview).not.toContain(">config<");
   });
 

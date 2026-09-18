@@ -497,3 +497,43 @@ table.rows tr.attention td {
   max-width: 460px;
   margin: 40px auto;
 }
+
+/* The secrets tab's one form, and the receipt it leaves behind (#550). */
+.secret-form {
+  display: grid;
+  gap: 6px;
+  padding: 8px 0;
+  max-width: 560px;
+}
+
+.secret-form input {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  font: inherit;
+  padding: 6px 8px;
+}
+
+.secret-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.receipt {
+  border-left: 3px solid var(--line);
+  margin: 10px 0;
+}
+
+.receipt.written {
+  border-left-color: var(--ok);
+}
+
+.receipt.refused,
+.receipt.undelivered {
+  border-left-color: var(--fail);
+}
+
+.receipt code {
+  word-break: break-all;
+}

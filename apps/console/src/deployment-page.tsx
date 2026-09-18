@@ -20,9 +20,13 @@
 // be unable to show a running child whose loop has stopped, which is the case
 // the whole `wedged?` verdict exists for.
 //
-// `secrets` and `config` are the two tabs variant C also has; they are #550 and
-// #545 and are not linked here, because a tab that opens nothing is worse than
-// a tab that is not there yet.
+// **Secrets is the one tab that writes.** Everything else here renders what the
+// deployment said; the secrets tab also sends — an envelope sealed in this
+// browser, which the relay carries and cannot open (#550). It needs the relay
+// client for that, which is why this page takes one and the others do not.
+//
+// `config` is the tab variant C also has; it is #545 and is not linked here,
+// because a tab that opens nothing is worse than a tab that is not there yet.
 
 import type { DeploymentReport, DoctorCheck, TenantFacts } from "phoebe-agent/contracts";
 import {
@@ -46,17 +50,22 @@ import {
   type DoctorFacts,
   type RowFacts,
 } from "./facts.ts";
+import type { RelayClient } from "./relay-client.ts";
 import { editsOf } from "./report.ts";
 import { deploymentHref, DEPLOYMENT_TABS, type DeploymentTab } from "./route.ts";
+import { SecretsTab } from "./secrets-tab.tsx";
 
 export function DeploymentPage({
   facts,
   tab,
   now,
+  client,
 }: {
   facts: RowFacts;
   tab: DeploymentTab;
   now: Date;
+  /** The seam a set goes out through. Only the secrets tab uses it. */
+  client: RelayClient;
 }) {
   const connection = connectionReading(facts.row, now);
   return (
@@ -78,7 +87,7 @@ export function DeploymentPage({
           </a>
         ))}
       </nav>
-      <Tab facts={facts} tab={tab} now={now} />
+      <Tab facts={facts} tab={tab} now={now} client={client} />
     </main>
   );
 }
@@ -96,7 +105,17 @@ export function NoSuchDeployment({ fingerprint }: { fingerprint: string }) {
   );
 }
 
-function Tab({ facts, tab, now }: { facts: RowFacts; tab: DeploymentTab; now: Date }) {
+function Tab({
+  facts,
+  tab,
+  now,
+  client,
+}: {
+  facts: RowFacts;
+  tab: DeploymentTab;
+  now: Date;
+  client: RelayClient;
+}) {
   if (tab === "overview") return <OverviewTab facts={facts} now={now} />;
   // The other two tabs are views of the report and there may not be one. They
   // say which kind of nothing it is and point back at the overview, where the
@@ -113,6 +132,7 @@ function Tab({ facts, tab, now }: { facts: RowFacts; tab: DeploymentTab; now: Da
     );
   }
   if (tab === "pipelines") return <PipelinesTab report={facts.reading.report} now={now} />;
+  if (tab === "secrets") return <SecretsTab facts={facts} client={client} now={now} />;
   return <DoctorTab doctor={facts.doctor} now={now} />;
 }
 

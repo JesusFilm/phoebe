@@ -5,8 +5,12 @@
 // Not reachable from main.tsx, so nothing here reaches the bundle.
 
 import { DEPLOYMENT_SCHEMA } from "phoebe-agent/contracts";
+import type { RelayClient, SecretReceipt, SecretRequest } from "./relay-client.ts";
 import type {
   ChildLiveness,
+  SecretListing,
+  SecretsSection,
+  TenantSecrets,
   DeploymentReport,
   DoctorCheck,
   DoctorSection,
@@ -24,10 +28,22 @@ export function ago(seconds: number): string {
   return new Date(NOW.getTime() - seconds * 1000).toISOString();
 }
 
+/**
+ * A box key the browser can really import: 32 bytes of base64url, which is all
+ * X25519 asks of a public key. A test that wants to open what the tab sealed
+ * generates its own pair and overrides this.
+ */
+export const BOX_KEY = "cGhvZWJlIGNvbnNvbGUgYm94IGtleSBmaXh0dXJlISE";
+
 export function row(overrides: Partial<RelayDeploymentRow> = {}): RelayDeploymentRow {
   return {
     fingerprint: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
     name: "youtube-studio",
+    publicKey: "cGstZGVwbG95bWVudC1maXh0dXJlLTMyLWJ5dGVzISE",
+    // A real X25519 key, because the secrets tab seals to it for real: the tests
+    // that exercise a set open the envelope again with the matching private
+    // half (secrets-render.test.tsx).
+    boxKey: BOX_KEY,
     firstSeen: ago(86_400),
     lastSeen: ago(12),
     pairedBy: "ada@example.test",
@@ -117,6 +133,24 @@ export function snapshot(overrides: Partial<StatusSnapshot> = {}): StatusSnapsho
   };
 }
 
+export function listing(overrides: Partial<SecretListing> = {}): SecretListing {
+  return { key: "ANTHROPIC_API_KEY", present: false, source: "missing", ...overrides };
+}
+
+export function tenantSecrets(overrides: Partial<TenantSecrets> = {}): TenantSecrets {
+  return {
+    tenant: "JesusFilm/youtube-studio",
+    path: "/etc/phoebe",
+    error: null,
+    keys: [listing()],
+    ...overrides,
+  };
+}
+
+export function secrets(overrides: Partial<SecretsSection> = {}): SecretsSection {
+  return { tenants: [tenantSecrets()], updatedAt: ago(30), ...overrides };
+}
+
 export function report(overrides: Partial<DeploymentReport> = {}): DeploymentReport {
   return {
     schema: DEPLOYMENT_SCHEMA,
@@ -155,5 +189,41 @@ export function stored(
     receivedAt: ago(12),
     report: body,
     ...overrides,
+  };
+}
+
+/**
+ * A relay client for a component test: every method throws unless the test
+ * overrode it, so a page that reached the relay without being asked to fails
+ * loudly rather than silently resolving.
+ */
+export function stubClient(overrides: Partial<RelayClient> = {}): RelayClient {
+  const unasked = (what: string) => () =>
+    Promise.reject(new Error(`this test never calls ${what}`));
+  return {
+    me: unasked("me"),
+    signOut: unasked("signOut"),
+    deployments: unasked("deployments"),
+    deployment: unasked("deployment"),
+    setSecret: unasked("setSecret"),
+    events: () => () => {},
+    ...overrides,
+  };
+}
+
+/** A client whose `setSecret` answers with `outcome`, recording what it was sent. */
+export function recordingClient(receipt: Partial<SecretReceipt> & { outcome: string }): {
+  client: RelayClient;
+  sent: SecretRequest[];
+} {
+  const sent: SecretRequest[] = [];
+  return {
+    sent,
+    client: stubClient({
+      setSecret: (request) => {
+        sent.push(request);
+        return Promise.resolve({ id: request.id, ...receipt });
+      },
+    }),
   };
 }

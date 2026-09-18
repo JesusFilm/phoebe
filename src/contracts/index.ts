@@ -23,6 +23,14 @@
 // carries JSDoc, which is what makes the re-export below a typed one.
 
 export type { EnvelopeAad, SecretEnvelope } from "./secret-envelope.mjs";
+export type {
+  SecretListing,
+  SecretOutcome,
+  SecretReceiptDetail,
+  SecretSource,
+  SecretsSection,
+  TenantSecrets,
+} from "./secrets.ts";
 export { openSecret, sealSecret } from "./secret-envelope.mjs";
 export type { StopOutcome } from "./stop-outcome.ts";
 export { RELAY_ROUTES } from "./relay-routes.ts";
