@@ -6,35 +6,47 @@
 // serves in a browser — loaded from disk over the console scheme. So there is no
 // UI code in here, and a page the operator sees is never written twice.
 //
-// What main answers today is the local arm in full — the installs on this
-// machine, the Docker check, the verb runs that drive them (#555) and the local
-// read loop that feeds their tabs (#556) — beside a relay arm with no session.
-// Main becomes the relay client proper with #554, behind the contract the
-// preload already exposes.
+// What main answers is the companion's two arms. The local arm is the installs
+// on this machine, the Docker check, the verb runs that drive them (#555) and
+// the local read loop that feeds their tabs (#556). The remote arm is the relay
+// (#523 §1): main holds the device token, makes every call, and re-emits the
+// relay's event stream to the renderer over IPC. The wiring for that is here;
+// the flow itself is relay-session.ts, which needs no Electron to run.
 //
-// Main owns state the window does not: `companion.json`, the runs in flight,
-// and the watchers and timers of the read loop. All of it is here rather than in
-// the renderer for the same reason — a reload must not lose them.
+// Main owns state the window does not: `companion.json`, the device session, the
+// runs in flight, and the watchers and timers of the read loop. All of it is
+// here rather than in the renderer for the same reason — a reload must not lose
+// them.
 
+import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, protocol, shell } from "electron";
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  nativeTheme,
+  net,
+  protocol,
+  safeStorage,
+  shell,
+} from "electron";
+import { RELAY_EVENTS } from "phoebe-agent/contracts";
 import type {
   CompanionEnvironment,
   CompanionPreferences,
   LocalInstall,
   LocalReportEvent,
   RelayArmState,
+  RelayEvent,
+  RelayPassthrough,
   VerbRun,
   VerbRunRequest,
 } from "phoebe-agent/contracts";
-import {
-  answering,
-  BRIDGE_CHANNELS,
-  BridgeRefusal,
-  refusal,
-  type BridgeResult,
-} from "./channels.ts";
+import { createCompanionAlerts } from "./alerting.ts";
+import { authCodeIn, authCodeInArgv } from "./auth-link.ts";
+import { answering, BRIDGE_CHANNELS, BridgeRefusal, type BridgeResult } from "./channels.ts";
 import {
   addInstall,
   COMPANION_FILE,
@@ -50,6 +62,8 @@ import { probeDocker } from "./docker.ts";
 import { allInstallFacts, directoryFacts, installFacts } from "./install-facts.ts";
 import { createLocalReads } from "./local-read.ts";
 import { resolveDeploymentCompose } from "../../../src/deployment-compose.ts";
+import { companionName, createRelaySession, type RelaySession } from "./relay-session.ts";
+import { createTokenVault } from "./vault.ts";
 import { dispatchVerb } from "./verb-dispatch.ts";
 import { createVerbRuns } from "./verb-runs.ts";
 
@@ -64,6 +78,14 @@ protocol.registerSchemesAsPrivileged([
     privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true },
   },
 ]);
+
+// One instance, because the sign-in comes back as a URL the OS hands to *an*
+// instance. On Windows and Linux that is a fresh process with the URL on its
+// command line; the lock turns it into a `second-instance` event on the process
+// that is already holding the PKCE verifier, which is the only one that can
+// spend the code. Without the lock the second process would hold the code and
+// the first would hold the verifier, and neither could finish (#523 §2).
+if (!app.requestSingleInstanceLock()) app.exit(0);
 
 /** The directory the console bundle was built into. */
 function consoleBundleDir(): string {
@@ -92,7 +114,90 @@ function readCompanion(): CompanionFile {
   }
 }
 
-/** Every window gets every event. There is one today; a second is #524's. */
+/**
+ * Claim `phoebe://` with the OS. Packaged, the executable is the app. In a
+ * checkout it is Electron's own binary running a directory, so the registration
+ * has to name both or the OS launches a bare Electron with no app in it.
+ */
+function claimScheme(): void {
+  if (!process.defaultApp) {
+    app.setAsDefaultProtocolClient(CONSOLE_SCHEME);
+    return;
+  }
+  const entry = process.argv[1];
+  if (entry !== undefined) {
+    app.setAsDefaultProtocolClient(CONSOLE_SCHEME, process.execPath, [path.resolve(entry)]);
+  }
+}
+
+/**
+ * The relay arm, built on `ready` and not before: `safeStorage` cannot say
+ * whether Linux has a keyring until the app has one, and the keyring is what
+ * decides whether this companion persists a sign-in at all (#523 §5).
+ */
+let relay: RelaySession | null = null;
+
+function openRelayArm(): RelaySession {
+  return createRelaySession({
+    vault: createTokenVault({ safeStorage, userDataDir: app.getPath("userData") }),
+    // Electron's own stack rather than Node's global `fetch`, so the relay is
+    // reached through whatever proxy and certificate store the OS has configured.
+    fetch: (url, init) => net.fetch(url, init),
+    openExternal: (url) => shell.openExternal(url),
+    deviceName: companionName(os.hostname(), process.platform),
+    onEvent: (event: RelayEvent) => {
+      // Forwarded whichever it is; an `alert` is also counted, because the
+      // badge is main's and the window that draws the notification cannot set
+      // one (#524 §4).
+      if (event.type === RELAY_EVENTS.alert) {
+        alerts.relay(event.alert);
+        showBadge();
+      }
+      broadcast(BRIDGE_CHANNELS.relayEvent, event);
+    },
+    onState: (state: RelayArmState) => {
+      // A session that ended took its fleet with it. Leaving those conditions
+      // counted would be a badge about deployments this companion can no longer
+      // see, and no event will ever clear them.
+      if (state.person === null) {
+        alerts.forgetRelay();
+        showBadge();
+      }
+      broadcast(BRIDGE_CHANNELS.relayArm, state);
+    },
+  });
+}
+
+/**
+ * The one place a bridge call reaches the arm. Before `ready` there is no arm,
+ * and a renderer cannot be asking — it has no window yet — so this refusal is
+ * for the impossible case rather than a state anyone can get into.
+ */
+function arm(): RelaySession {
+  if (relay === null) throw new Error("the companion's relay arm is not open yet");
+  return relay;
+}
+
+/**
+ * The alerts both arms feed (#524). Built at module scope like the read loop it
+ * listens to: a window can come and go, and what has been notified must not.
+ */
+const alerts = createCompanionAlerts();
+
+/**
+ * The dock or taskbar badge: how many deployments and local installs are in a
+ * raised condition, and nothing on the icon at all when that is zero (#524 §4).
+ *
+ * Deliberately not gated on the notifications preference. The preference is
+ * about being interrupted; the badge is a number on an icon the operator went
+ * looking for, and turning notifications off is not a request to be told less
+ * when you do look.
+ */
+function showBadge(): void {
+  app.setBadgeCount(alerts.badge());
+}
+
+/** Say something to every open window. There is one today; the cost of two is nil. */
 function broadcast(channel: string, payload: unknown): void {
   for (const window of BrowserWindow.getAllWindows()) {
     window.webContents.send(channel, payload);
@@ -141,7 +246,16 @@ const reads = createLocalReads({
     if ("kind" in deployment) return () => undefined;
     return watchContainerEvents({ deployment, onChange });
   },
-  emit: (event) => broadcast(BRIDGE_CHANNELS.installsReport, event),
+  emit: (event) => {
+    broadcast(BRIDGE_CHANNELS.installsReport, event);
+    // Every read is also an edge evaluation (#524 §3). The first read of an
+    // install seeds it and raises nothing, so a relaunch onto a fleet that was
+    // already wedged does not re-fire everything.
+    for (const alert of alerts.local(event)) {
+      broadcast(BRIDGE_CHANNELS.installsAlert, alert);
+    }
+    showBadge();
+  },
 });
 
 /** Read, change, write, and tell the window. The only writer of the file. */
@@ -173,6 +287,15 @@ const runs = createVerbRuns({
   },
 });
 
+/**
+ * A URL the OS handed us. An auth link is spent against whichever sign-in this
+ * process has open; anything else is not ours, and a code with no attempt
+ * behind it is dropped — only the instance holding the verifier can spend one.
+ */
+function deliverDeepLink(url: string): void {
+  const code = authCodeIn(url);
+  if (code !== null) relay?.deliver(code);
+}
 function createWindow(): void {
   const window = new BrowserWindow({
     width: 1180,
@@ -201,8 +324,28 @@ function createWindow(): void {
   void window.loadURL(consoleSource(process.argv));
 }
 
+/** Bring the window back and put the URL that woke us in front of the arm. */
+app.on("second-instance", (_event, argv) => {
+  const window = BrowserWindow.getAllWindows()[0];
+  if (window !== undefined) {
+    if (window.isMinimized()) window.restore();
+    window.focus();
+  }
+  const code = authCodeInArgv(argv);
+  if (code !== null) relay?.deliver(code);
+});
+
+// macOS does not relaunch for a URL; it fires this on the running app.
+app.on("open-url", (event, url) => {
+  event.preventDefault();
+  deliverDeepLink(url);
+});
+
 app.whenReady().then(
   () => {
+    claimScheme();
+    relay = openRelayArm();
+
     protocol.handle(CONSOLE_SCHEME, async (request) => {
       const file = consoleFileFor(request.url, consoleBundleDir());
       if (file === null) return new Response("not found", { status: 404 });
@@ -244,7 +387,14 @@ app.whenReady().then(
     );
 
     ipcMain.handle(BRIDGE_CHANNELS.installsRemove, (_event, dir: string) =>
-      answering(() => editInstalls((contents) => removeInstall(contents, dir))),
+      answering(() => {
+        // Forgetting a folder drops what it was raising with it. A badge
+        // counting an install that is no longer on the rail is a number the
+        // operator cannot act on or clear.
+        alerts.forgetInstall(dir);
+        showBadge();
+        return editInstalls((contents) => removeInstall(contents, dir));
+      }),
     );
 
     ipcMain.handle(BRIDGE_CHANNELS.installsRefresh, (_event, dir: string) =>
@@ -276,25 +426,17 @@ app.whenReady().then(
       }),
     );
 
-    ipcMain.handle(BRIDGE_CHANNELS.relayState, () =>
-      // The url comes off `companion.json` (#527 §12); no device token is held,
-      // which is the honest answer until #554 mints one. The console draws the
-      // signed-out Relay group from exactly this.
-      answering<RelayArmState>(() => ({
-        url: readCompanion().relay?.url ?? null,
-        person: null,
-        persisted: false,
-      })),
+    ipcMain.handle(BRIDGE_CHANNELS.relayState, () => answering(() => arm().state()));
+
+    ipcMain.handle(BRIDGE_CHANNELS.relaySignIn, (_event, request: { url: string }) =>
+      answering(() => arm().signIn(request.url)),
     );
 
-    for (const channel of [BRIDGE_CHANNELS.relayRequest, BRIDGE_CHANNELS.relaySignOut]) {
-      ipcMain.handle(channel, () =>
-        refusal({
-          code: "signed-out",
-          message: "the companion is not signed in to a relay",
-        }),
-      );
-    }
+    ipcMain.handle(BRIDGE_CHANNELS.relayRequest, (_event, request: RelayPassthrough) =>
+      answering(() => arm().request(request)),
+    );
+
+    ipcMain.handle(BRIDGE_CHANNELS.relaySignOut, () => answering(() => arm().signOut()));
 
     createWindow();
 
@@ -313,6 +455,7 @@ app.whenReady().then(
 
 app.on("before-quit", () => {
   reads.stop();
+  relay?.close();
 });
 
 app.on("window-all-closed", () => {

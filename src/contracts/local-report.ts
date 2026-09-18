@@ -14,6 +14,7 @@
 // directory's own facts beside the report, because a stopped install has no
 // report at all and still has a page to draw (#526).
 
+import type { AlertMessage } from "./alerts.ts";
 import type { LocalInstall } from "./local-install.ts";
 import { RELAY_EVENTS } from "./relay-events.ts";
 import type { RelayStoredReport } from "./relay-routes.ts";
@@ -84,4 +85,27 @@ export type LocalReportEvent = {
   report: StoredReport | null;
   /** Why there is no report, when there is none. */
   reason?: string;
+};
+
+/**
+ * An alert the companion raised over a **local install** (#524 §3, #559).
+ *
+ * The same shape as the relay's `alert` event and for the same reason the
+ * report events match: the window subscribes to one arm or the other and does
+ * the same thing with what arrives. Only three conditions can appear here —
+ * `wedged`, `crash-looping` and `doctor-fail` — because `dark` and `replaced`
+ * are a relay's readings of a socket, and there is no socket between a folder on
+ * this machine and the process watching it.
+ *
+ * The body's `deployment.keyFingerprint` is the install's directory, which is
+ * the local arm's identity everywhere else, and its `name` is the install's.
+ */
+export type LocalAlertEvent = {
+  /** The relay's word for the same thing, deliberately (#527 §5). */
+  type: typeof RELAY_EVENTS.alert;
+  /** The install's directory — the local arm's identity (#527 §12). */
+  install: string;
+  /** When main decided the edge had been crossed, ISO 8601. */
+  at: string;
+  alert: AlertMessage;
 };

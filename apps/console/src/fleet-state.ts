@@ -54,6 +54,11 @@ export async function loadFleet(client: RelayClient): Promise<FleetState> {
  * row. That is a deployment paired in another browser tab and booting for the
  * first time, and dropping it would leave the fleet page quietly a row short
  * until someone reloaded.
+ *
+ * An `alert` changes nothing here. It carries no row and no report, and the
+ * conditions it names were already true of the facts the page is drawing — it
+ * is the moment worth interrupting someone about, not a new fact (#524 §1). A
+ * browser drops it on the floor; the companion notifies (notifications.ts).
  */
 export function applyEvent(state: FleetState, event: RelayEvent): FleetState {
   if (event.type === RELAY_EVENTS.report) {
@@ -65,6 +70,8 @@ export function applyEvent(state: FleetState, event: RelayEvent): FleetState {
     };
     return { rows: state.rows, reports: { ...state.reports, [event.fingerprint]: stored } };
   }
+
+  if (event.type === RELAY_EVENTS.alert) return state;
 
   const incoming = event.deployment;
   const index = state.rows.findIndex((row) => row.fingerprint === incoming.fingerprint);

@@ -12,6 +12,7 @@ import { rowFacts, sortFleet } from "./facts.ts";
 import { FleetPage } from "./fleet-page.tsx";
 import { Rail } from "./rail.tsx";
 import { InstallPage, InstallTab } from "./install-page.tsx";
+import type { RelaySignIn } from "./relay-client.ts";
 import {
   ago,
   bridge,
@@ -91,7 +92,22 @@ const FLEET = sortFleet([
   ),
 ]);
 
-const rail = renderToStaticMarkup(<Rail facts={FLEET} now={NOW} surface="browser" signedIn />);
+function noop(): void {}
+
+/** What the companion says when there is no keyring to encrypt a token to. */
+const NO_KEYRING = "This machine has no keyring the companion can encrypt to.";
+
+/** The companion's arm of the sign-in control: a form, not a link (#554). */
+const SIGN_IN_PROMPT: RelaySignIn = {
+  kind: "prompt",
+  relay: null,
+  persisted: true,
+  start: () => Promise.resolve({ sub: "1", email: "ada@example.test" }),
+};
+
+const rail = renderToStaticMarkup(
+  <Rail facts={FLEET} now={NOW} surface="browser" signedIn signIn={null} onSignedIn={noop} />,
+);
 const grid = renderToStaticMarkup(<FleetPage facts={FLEET} now={NOW} />);
 
 describe("the rail", () => {
@@ -221,13 +237,58 @@ describe("the companion's shell", () => {
   // Shell A (#526): one rail, two groups. Signed out and with nothing installed,
   // this is the whole window.
   const empty = renderToStaticMarkup(
-    <Rail facts={[]} now={NOW} surface="companion" signedIn={false} />,
+    <Rail
+      facts={[]}
+      now={NOW}
+      surface="companion"
+      signedIn={false}
+      signIn={SIGN_IN_PROMPT}
+      onSignedIn={noop}
+    />,
   );
 
   test("is one rail carrying both arms as groups, not a switch between them", () => {
     expect(empty).toContain('aria-label="This machine"');
     expect(empty).toContain('aria-label="Relay"');
     expect([...empty.matchAll(/<nav/g)]).toHaveLength(1);
+  });
+
+  test("the Relay group's signed-out entry carries a sign-in control (#554)", () => {
+    // The address is the only thing the operator supplies; everything after it
+    // is main's, which is why there is a field and a button and nothing else.
+    expect(empty).toContain('id="relay-url"');
+    expect(empty).toContain("Relay address");
+    expect(empty).toContain("Sign in");
+  });
+
+  test("with no keyring, the rail says the sign-in will not be kept", () => {
+    const markup = renderToStaticMarkup(
+      <Rail
+        facts={[]}
+        now={NOW}
+        surface="companion"
+        signedIn={false}
+        signIn={{ ...SIGN_IN_PROMPT, persisted: false, reason: NO_KEYRING }}
+        onSignedIn={noop}
+      />,
+    );
+
+    expect(markup).toContain(NO_KEYRING);
+  });
+
+  test("the relay it last held a token for fills the field, so re-signing in is one click", () => {
+    const markup = renderToStaticMarkup(
+      <Rail
+        facts={[]}
+        now={NOW}
+        surface="companion"
+        signedIn={false}
+        signIn={{ ...SIGN_IN_PROMPT, relay: "https://relay.example.test" }}
+        onSignedIn={noop}
+      />,
+    );
+
+    expect(markup).toContain('value="https://relay.example.test"');
   });
 
   test("names which kind of empty each group is", () => {
@@ -237,7 +298,7 @@ describe("the companion's shell", () => {
 
   test("keeps the relay's deployments in the relay's group once signed in", () => {
     const markup = renderToStaticMarkup(
-      <Rail facts={FLEET} now={NOW} surface="companion" signedIn />,
+      <Rail facts={FLEET} now={NOW} surface="companion" signedIn signIn={null} onSignedIn={noop} />,
     );
 
     expect(markup).toContain("jesusfilm-workspace");
@@ -271,6 +332,8 @@ describe("the local arm on the rail", () => {
       selected="/repos/two"
       onSelect={() => undefined}
       onAdd={() => undefined}
+      signIn={null}
+      onSignedIn={() => undefined}
     />,
   );
 
@@ -303,7 +366,15 @@ describe("the local arm on the rail", () => {
 
   test("a browser's rail has no local group at all, control included", () => {
     const browser = renderToStaticMarkup(
-      <Rail facts={[]} now={NOW} surface="browser" signedIn installs={installs} />,
+      <Rail
+        facts={[]}
+        now={NOW}
+        surface="browser"
+        signedIn
+        installs={installs}
+        signIn={null}
+        onSignedIn={() => undefined}
+      />,
     );
 
     expect(browser).not.toContain("This machine");

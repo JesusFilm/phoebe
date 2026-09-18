@@ -15,9 +15,10 @@
 // screen are durations and a duration that stops moving reads as a page that has
 // stopped listening.
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { RELAY_ROUTES } from "phoebe-agent/contracts";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { RELAY_EVENTS } from "phoebe-agent/contracts";
 import type {
+  AlertBody,
   DesktopBridge,
   LocalInstall,
   LocalReportEvent,
@@ -28,8 +29,9 @@ import { rowFacts, sortFleet } from "./facts.ts";
 import { applyEvent, EMPTY_FLEET, loadFleet, type FleetState } from "./fleet-state.ts";
 import { FleetPage } from "./fleet-page.tsx";
 import { InstallPage } from "./install-page.tsx";
+import { createNotifier, type AlertSubject, type Notifiable } from "./notifications.ts";
 import { Rail } from "./rail.tsx";
-import { isNotSignedIn, type RelayClient } from "./relay-client.ts";
+import { isNotSignedIn, type RelayClient, type RelaySignIn } from "./relay-client.ts";
 
 type Session =
   | { kind: "asking" }
@@ -48,6 +50,7 @@ export function App({
   bridge?: DesktopBridge | null;
 }) {
   const [session, setSession] = useState<Session>({ kind: "asking" });
+  const [signIn, setSignIn] = useState<RelaySignIn | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -65,14 +68,40 @@ export function App({
     };
   }, [client]);
 
+  // The session can end without the page asking for anything: in the companion
+  // main drops the device token when the relay answers 401 on the event stream,
+  // and the rail has to stop claiming a session that is gone (#554). In a
+  // browser this never fires, and that is the browser arm's own answer.
+  useEffect(() => client.watchSession(setIdentity), [client]);
+
+  // How this arm signs in, read only while there is nobody signed in. The
+  // companion's answer carries the relay it remembers and whether a token
+  // would survive a relaunch, so it is read again each time rather than once.
+  useEffect(() => {
+    if (session.kind !== "signed-out") return;
+    let live = true;
+    client.signIn().then((how) => {
+      if (live) setSignIn(how);
+    }, ignore);
+    return () => {
+      live = false;
+    };
+  }, [client, session.kind]);
+
+  function setIdentity(identity: RelayIdentity | null): void {
+    setSession(identity === null ? { kind: "signed-out" } : { kind: "signed-in", identity });
+  }
+
   if (session.kind === "asking") return <Notice title="Phoebe console">Signing in…</Notice>;
   if (session.kind === "signed-out" && surface === "browser") {
     return (
       <Notice title="Phoebe console">
         <p>This relay is behind Google sign-in.</p>
-        <p>
-          <a href={RELAY_ROUTES.signIn}>Sign in with Google</a>
-        </p>
+        {signIn !== null && signIn.kind === "navigate" ? (
+          <p>
+            <a href={signIn.href}>Sign in with Google</a>
+          </p>
+        ) : null}
       </Notice>
     );
   }
@@ -91,6 +120,8 @@ export function App({
       surface={surface}
       bridge={bridge}
       identity={session.kind === "signed-in" ? session.identity : null}
+      signIn={signIn}
+      onSignedIn={setIdentity}
       onSignedOut={() => setSession({ kind: "signed-out" })}
     />
   );
@@ -101,12 +132,16 @@ function Console({
   surface,
   bridge,
   identity,
+  signIn,
+  onSignedIn,
   onSignedOut,
 }: {
   client: RelayClient;
   surface: Surface;
   bridge: DesktopBridge | null;
   identity: RelayIdentity | null;
+  signIn: RelaySignIn | null;
+  onSignedIn: (identity: RelayIdentity) => void;
   onSignedOut: () => void;
 }) {
   const [fleet, setFleet] = useState<FleetState>(EMPTY_FLEET);
@@ -115,7 +150,64 @@ function Console({
   const [installs, setInstalls] = useState<LocalInstall[]>([]);
   const [reports, setReports] = useState<Record<string, LocalReportEvent>>({});
   const [openInstall, setOpenInstall] = useState<string | null>(null);
+  // Default on (#524 §8), and read back off `companion.json` the moment main
+  // answers. A browser never asks — there is nothing there to notify with.
+  const [notifications, setNotifications] = useState(true);
   const now = useNow(1000);
+
+  useEffect(() => {
+    if (bridge === null) return;
+    let live = true;
+    bridge.preferences.get().then((preferences) => {
+      if (live) setNotifications(preferences.notifications);
+    }, ignore);
+    return () => {
+      live = false;
+    };
+  }, [bridge]);
+
+  // Bring the window forward and land on the page the alert is about (#524 §6).
+  // A local install has a page here; a deployment's five tabs are #544's, so
+  // until they exist a click on a relay alert does the half it can — the window
+  // comes up on the fleet, which is where the row is.
+  const openAlert = useCallback((notifiable: Notifiable) => {
+    globalThis.focus();
+    const subject = notifiable.subject;
+    if (subject?.arm === "local") setOpenInstall(subject.install);
+  }, []);
+
+  const notifier = useMemo(
+    () =>
+      typeof Notification === "undefined"
+        ? null
+        : createNotifier({ Notification, open: openAlert }),
+    [openAlert],
+  );
+
+  // The preference through a ref, and not as a dependency. Both subscriptions
+  // below read `notify`, and one of them is the relay's event stream — if
+  // flipping a checkbox changed this function, it would tear that stream down
+  // and re-read the whole fleet behind it. What the ref buys is that the
+  // preference is read at the moment an alert lands, which is also the only
+  // moment it means anything.
+  const wanted = useRef(notifications);
+  wanted.current = notifications;
+
+  /**
+   * Show one alert, unless the operator has turned notifications off or is
+   * already looking at the window (#524 §6, §8).
+   */
+  const notify = useCallback(
+    (alert: AlertBody, arm: AlertSubject["arm"]) => {
+      notifier?.show({
+        alert,
+        arm,
+        enabled: wanted.current,
+        focused: typeof document === "undefined" ? false : document.hasFocus(),
+      });
+    },
+    [notifier],
+  );
 
   // The local arm. One read, then main's `installs:changed` does the updating —
   // the same shape as the relay's stream, for the same reason: the page holds
@@ -147,6 +239,14 @@ function Console({
       setReports((held) => ({ ...held, [event.install]: event }));
     });
   }, [bridge]);
+
+  // The local arm's alerts. Main runs the edge rule over each read and sends
+  // only what crossed, so there is nothing to compare here — an event that
+  // arrived is an edge, and an edge is worth a banner (#524 §3).
+  useEffect(() => {
+    if (bridge === null) return;
+    return bridge.installs.alerts((event) => notify(event.alert, "local"));
+  }, [bridge, notify]);
 
   // Opening an install asks for a read rather than waiting up to 15 s for the
   // next one. On a stopped install this is the refresh that answers with the
@@ -208,13 +308,19 @@ function Console({
     // then overwritten by the read — which is why a connection event inserts its
     // row rather than assuming one is there (fleet-state.ts).
     const unsubscribe = client.events((event) => {
+      // The relay's own sink for the same edge rule (#524 §1). A browser has
+      // no notifier and drops it; the companion raises it.
+      if (event.type === RELAY_EVENTS.alert) {
+        notify(event.alert, "relay");
+        return;
+      }
       setFleet((state) => applyEvent(state, event));
     });
     return () => {
       live = false;
       unsubscribe();
     };
-  }, [client, identity, onSignedOut]);
+  }, [client, identity, notify, onSignedOut]);
 
   const facts = useMemo(
     () => sortFleet(fleet.rows.map((row) => rowFacts(row, fleet.reports[row.fingerprint] ?? null))),
@@ -226,6 +332,28 @@ function Console({
       <header className="topbar">
         <span className="brand">{surface === "companion" ? "Phoebe" : "Phoebe console"}</span>
         <span className="spacer" />
+        {bridge === null ? null : (
+          <label className="notifications">
+            <input
+              type="checkbox"
+              checked={notifications}
+              onChange={(event) => {
+                const wanted = event.target.checked;
+                setNotifications(wanted);
+                // Asked on first enable and never again — the OS remembers its
+                // own answer, and a companion that asked on every launch would
+                // be the thing the preference exists to stop (#524 §8).
+                if (wanted && typeof Notification !== "undefined") {
+                  void Notification.requestPermission();
+                }
+                void bridge.preferences
+                  .set({ notifications: wanted })
+                  .then((saved) => setNotifications(saved.notifications), ignore);
+              }}
+            />
+            Desktop notifications
+          </label>
+        )}
         {identity === null ? (
           <span className="muted">Not signed in</span>
         ) : (
@@ -252,6 +380,8 @@ function Console({
           selected={openInstall}
           onSelect={setOpenInstall}
           {...(bridge === null ? {} : { onAdd: addInstall })}
+          signIn={signIn}
+          onSignedIn={onSignedIn}
         />
         {open !== null && bridge !== null ? (
           <InstallPage
@@ -285,8 +415,9 @@ function Console({
 /**
  * The companion's home: both arms, and what each one is holding. Signed out, it
  * is the whole window. Adding a local install is a control here as well as on
- * the rail, because an empty companion has a rail nobody has looked at yet;
- * signing in is #554's, so this page still names it rather than offering it.
+ * the rail, because an empty companion has a rail nobody has looked at yet.
+ * Signing in is the rail's, beside the group it fills, so this page points at
+ * it rather than putting a second copy of the same form on screen.
  */
 function CompanionHome({
   installs,
@@ -323,12 +454,15 @@ function CompanionHome({
         <h2>Relay</h2>
         <p className="muted">
           Not signed in. A relay is how the companion reaches the deployments that run somewhere
-          else.
+          else. Enter its address in the rail and sign-in opens in your own browser.
         </p>
       </section>
     </main>
   );
 }
+
+/** A read whose failure changes nothing on screen. */
+function ignore(): void {}
 
 /** A clock that ticks, so the durations on screen keep being true. */
 function useNow(everyMs: number): Date {

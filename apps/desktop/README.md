@@ -30,9 +30,17 @@ exposes, and by nothing else. No build flag, no second entry point
 
 The app is `private` and carries no version of its own. `vite.config.ts` reads the
 root package's version at build time and defines it into the bundle
-([#521 §4](https://github.com/JesusFilm/phoebe/issues/521)). It reads no `.env`
-and holds no secret. Signing in happens against the relay and the session is the
-companion's ([#521 §8](https://github.com/JesusFilm/phoebe/issues/521)).
+([#521 §4](https://github.com/JesusFilm/phoebe/issues/521)). It reads no `.env`.
+The one secret it holds is the relay's device token, and that lives in main behind
+`safeStorage` — never in the renderer, never on disk in the clear
+([#523 §5](https://github.com/JesusFilm/phoebe/issues/523)).
+
+**Electron floor: 44, and never below 35.** The secret envelope for a remote
+`secret set` is built in the renderer by the same console code a browser runs
+([#514](https://github.com/JesusFilm/phoebe/issues/514),
+[#523 §6](https://github.com/JesusFilm/phoebe/issues/523)), which needs X25519 in
+`crypto.subtle` — Chromium 134, Electron 35. `package.json` pins a current major
+well above that; the floor is what a downgrade may not cross.
 
 `vp run build` is two passes, one per entry point, and the two take different
 formats. The preload is CommonJS because a sandboxed preload has to be — Electron
@@ -75,10 +83,44 @@ and the local read loop that feeds their tabs
 - [`container-read.ts`](src/container-read.ts) — the two seams under it: the
   `phoebe status --json` exec, and the `docker compose events` subscription.
 
-Beside it, a relay arm with no session, so the console draws the Relay group
-signed out ([#526](https://github.com/JesusFilm/phoebe/issues/526)). Sign-in
-([#554](https://github.com/JesusFilm/phoebe/issues/554)) is a change in here,
-behind the contract the preload already exposes.
+**The relay arm** ([#554](https://github.com/JesusFilm/phoebe/issues/554)):
+sign-in, the JSON reads the renderer asks for, the relay's event stream re-emitted
+over IPC, and sign-out. Main is the relay client — it holds the device token and
+the renderer never sees it
+([#523 §1](https://github.com/JesusFilm/phoebe/issues/523)).
+
+Sign-in runs in the operator's own browser, because Google refuses an embedded
+webview. Main mints a PKCE verifier, opens `${relay}/auth/device/start`, and the
+relay comes back to `phoebe://auth?code=…`. The single-instance lock is what makes
+that land on the process holding the verifier: on Windows and Linux the OS
+launches a _second_ process with the URL on its command line, and without the lock
+one process would hold the code and the other the verifier.
+
+**The notifications** ([#559](https://github.com/JesusFilm/phoebe/issues/559)) sit
+across both arms, and they are split between this package and the console for one
+reason: the banner is the renderer's and the badge is main's
+([#524 §2](https://github.com/JesusFilm/phoebe/issues/524), §4).
+
+[`alerting.ts`](src/alerting.ts) is main's half. It runs the shared edge rule
+over every local read — the same `src/contracts/alerts.ts` the relay runs, never
+a second copy of it — and it keeps the raised set for both arms, which is what
+the dock badge counts. The relay's own alerts arrive already decided and are
+forwarded as they came; a local install's are computed here, because there is no
+relay between a folder on this machine and the process watching it. The first
+read of an install seeds it silently, so relaunching onto a fleet that was
+already wedged does not re-fire everything.
+
+Raising the notification is `apps/console/src/notifications.ts`, in the window:
+the tag that folds a clear onto its raise, the silence, the suppression while the
+window is focused, and the click. So the companion notifies while a window is
+open, which is the same property T3 Code's desktop app has — there is no tray
+item and no login item, by decision, and the badge is the only thing on screen
+when the window is not.
+
+`app.setBadgeCount` is the dock on macOS and the launcher on Linux. Windows has
+no count on a taskbar button — it takes an overlay icon — so the badge is a
+no-op there until packaging ([#561](https://github.com/JesusFilm/phoebe/issues/561))
+gives it one to draw.
 
 The loop reads `phoebe status --json` inside the container. That verb is
 [#533](https://github.com/JesusFilm/phoebe/issues/533)'s and the report it prints
