@@ -45,11 +45,29 @@ function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
 }
 
+/**
+ * A clause is type-only either wholesale (`import type { A } from "x"`) or by
+ * every named specifier carrying its own inline `type` modifier
+ * (`import { type A, type B } from "x"`) — a mix of `{ type A, B }` still
+ * imports a value and answers to rule 2.
+ */
+function isTypeOnlyClause(clause: string): boolean {
+  if (/^\s*type\b/.test(clause)) return true;
+  const named = clause.match(/\{([\s\S]*)\}/);
+  if (!named || named[1]!.trim() === "") return false;
+  if (/[^{]*\*\s*as\b/.test(clause.slice(0, named.index))) return false;
+  const specifiers = named[1]!
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  return specifiers.every((s) => /^type\b/.test(s));
+}
+
 export function importsIn(source: string): ImportSite[] {
   const code = stripComments(source);
   const sites: ImportSite[] = [];
   for (const [, , clause, specifier] of code.matchAll(FROM_STATEMENT)) {
-    sites.push({ specifier: specifier!, typeOnly: /^\s*type\b/.test(clause!) });
+    sites.push({ specifier: specifier!, typeOnly: isTypeOnlyClause(clause!) });
   }
   for (const [, specifier] of code.matchAll(SIDE_EFFECT_IMPORT)) {
     sites.push({ specifier: specifier!, typeOnly: false });
@@ -160,10 +178,19 @@ describe("the contracts closure stays pure", () => {
 
   test.each([
     { what: "a type-only import from the engine", source: `import type { A } from "../paths.ts";` },
+    {
+      what: "an inline type-only named import from the engine",
+      source: `import { type A } from "../paths.ts";`,
+    },
     { what: "a sibling contract", source: `export type { StopOutcome } from "./stop-outcome.ts";` },
     { what: "no imports at all", source: `export type Kind = "a" | "b";` },
   ])("a contract with $what passes", ({ source }) => {
     expect(violationsIn(join(contractsDir, "fixture.ts"), source)).toEqual([]);
+  });
+
+  test("mixed inline type and value specifiers still trip the guard", () => {
+    const source = `import { type A, runStop } from "../stop.ts";`;
+    expect(violationsIn(join(contractsDir, "fixture.ts"), source)).not.toEqual([]);
   });
 
   test("a file the guard only reaches by type import still answers to rule 1", () => {

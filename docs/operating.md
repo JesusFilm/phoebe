@@ -355,9 +355,15 @@ how a crash report becomes a front-loaded issue here.
 
 ## One-off overrides without editing config
 
-Most scalar fields have a `PHOEBE_*` env override for a single run, such as
-`PHOEBE_AGENT=claude`, `PHOEBE_PR_SCOPE=all`, or `PHOEBE_POLL_INTERVAL_MS=60000`.
-See the [environment overlay table](configuration.md#environment-overlay-phoebe_).
+Most scalar fields have a `PHOEBE_*` name that sets them for a single run, such
+as `PHOEBE_DEFAULT_PROVIDER=claude`, `PHOEBE_PR_SCOPE=all`, or
+`PHOEBE_POLL_INTERVAL_MS=60000`. One rule decides who wins: env beats the config
+file at a path, and a more specific path beats what it would inherit. See the
+[settings catalogue](configuration.md#settings-phoebe_).
+
+To see which of them is actually in force, run `phoebe config`: every setting
+with its value, the thing that supplied it, and whatever it beat. See
+[Seeing what applies](configuration.md#seeing-what-applies-phoebe-config).
 
 ## Quick reference
 
@@ -373,6 +379,7 @@ See the [environment overlay table](configuration.md#environment-overlay-phoebe_
 | Hand a PR back                                | Remove the label / mark ready-for-review.                                                                                                                                       |
 | Force a janitor to retry                      | Push, advance the base, post new review feedback, or delete the newest failure comment.                                                                                         |
 | Let Phoebe maintain all PRs, not just its own | `prScope: "all"`.                                                                                                                                                               |
+| See what a setting resolves to, and why       | `phoebe config` (add `--json` for a machine).                                                                                                                                   |
 
 ## Running many repos in one container
 
