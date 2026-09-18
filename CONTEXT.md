@@ -285,3 +285,42 @@ _Avoid_: registration (the act, not the record), enrollment
 The integer both sides exchange in the handshake. A relay speaks every protocol up to its
 own and refuses anything above it, so the rule is: upgrade the relay first.
 _Avoid_: version (that is the package)
+
+**Heartbeat**:
+The relay's twenty-second ping, and the visible message that rides with it. The relay
+counts the pong, the deployment counts the message, and neither side can do the other's
+job: a built-in WebSocket client pongs on its own and can neither send a ping nor see one.
+_Avoid_: keepalive, poll
+
+**Dark**:
+A deployment the relay has not heard from for sixty seconds, however the connection ended.
+Clocked from the later of the last heartbeat and the relay's start, so a restart does not
+paint a healthy fleet dark. Requests to a dark deployment are refused undelivered.
+_Avoid_: down, offline, unreachable (none of those is a thing the relay can know)
+
+**Disconnected**:
+The relay no longer holds this deployment's connection and the dark threshold has not
+passed yet. A fact with a duration — "disconnected 12 s" — that a console states rather
+than a fourth state it holds.
+_Avoid_: reconnecting (the relay cannot know that), offline
+
+**Unseen**:
+A link with no completed handshake behind it. Not dark: nobody has lost this deployment,
+it has never arrived.
+_Avoid_: pending, inactive
+
+**Undelivered**:
+The outcome of a request whose deployment socket closed before a receipt arrived, and of
+one aimed at a deployment the relay is not holding. In-flight requests are refused with
+it, never queued, and nothing is replayed on reconnect.
+_Avoid_: failed, timed out
+
+**Forget**:
+The relay-side verb that deletes a link. The live connection closes with `unlinked` and
+the deployment stops dialling.
+_Avoid_: revoke, delete, unpair
+
+**Leave**:
+The host-side verb, `phoebe relay leave`, that deletes the deployment key from the data
+volume. The other half of forget, and neither half needs the other to work.
+_Avoid_: unlink, disconnect

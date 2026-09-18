@@ -13,14 +13,28 @@
 // which keeps the token out of every proxy log on the way and sidesteps the
 // header support Node's client has never documented.
 //
-// **A refusal is a close code, and half of them are terminal.** `unlinked`,
-// `bad-signature` and `token-spent` all mean *a human has to do something*, so
-// the link stops dialling and says so through the report; retrying them on a
-// timer is a deployment knocking on a door that will not open until someone
-// edits a file. `protocol` retries slowly, because the fix is upgrading the
-// relay and that may be happening right now. Everything else — a dropped
-// socket, a relay restart, a network that came back — is the ordinary case and
-// backs off with jitter.
+// **A refusal is a close code, and there is one rule per code** (#506 §7):
+//
+//  - `unlinked` (4001) — the relay forgot this deployment. Stop dialling; a
+//    human has to pair it again or drop `relay` from the config.
+//  - `protocol` (4002) — retry slowly. The fix is an operator upgrading the
+//    relay, and that may be happening right now.
+//  - `bad-signature` (4003) — stop. The key on the volume and the link disagree,
+//    and no amount of retrying reconciles them.
+//  - `token-spent` (4004) — stop. Mint another token.
+//  - `replaced` (4005) — stop. Another process is dialling with this volume's
+//    key, and two of them fighting over one link is worse than one of them
+//    losing.
+//
+// Everything else — a dropped socket, a relay restart, a network that came back
+// — is the ordinary case: back off with jitter and dial again, forever.
+//
+// **Silence is the third way a connection ends.** The relay pings and sends a
+// visible `heartbeat` every twenty seconds; a minute with nothing inbound means
+// the socket died without a close frame, and the link redials rather than
+// holding a connection to a wall. That minute is the relay's dark threshold, on
+// purpose: both sides give up on a connection at the same moment, so a console
+// and a deployment never disagree about whether one exists.
 //
 // **Nothing here is load-bearing for work.** A deployment with no relay, an
 // unreachable relay, or a refused link supervises its fleet exactly as it
@@ -29,6 +43,7 @@
 
 import {
   RELAY_CLOSE,
+  RELAY_DARK_AFTER_MS,
   RELAY_MESSAGES,
   RELAY_PROTOCOL,
   relayMessageType,
@@ -36,18 +51,26 @@ import {
   type RelayChallenge,
   type RelayHello,
 } from "../src/contracts/relay-protocol.ts";
+import { jitteredBackoffMs } from "../src/backoff.ts";
 import type { RelayClose, RelayState } from "../src/contracts/deployment.ts";
 import type { RelayStatus } from "./deployment-state.ts";
 import type { DeploymentKey } from "./relay-key.ts";
 
 /**
- * The reconnect ladder, in ms. The last entry repeats forever: a relay that has
- * been down for an hour is a relay worth checking once a minute, not one worth
- * giving up on — the deployment is the side with nothing better to do.
+ * The first rung of the reconnect ladder. The retry after a close lands
+ * uniformly inside five seconds, so a relay restart or a blip is back long
+ * before the minute that would make this deployment dark (#507 §1).
  */
-export const RECONNECT_SCHEDULE_MS: readonly number[] = [
-  1_000, 2_000, 5_000, 15_000, 30_000, 60_000,
-];
+export const RECONNECT_FIRST_MS = 5_000;
+
+/**
+ * The ladder's top rung, and it repeats forever. Thirty seconds rather than a
+ * minute because the dark threshold *is* a minute: a ceiling above it would
+ * leave a deployment dark between knocks even after the relay came back. And
+ * there is no last attempt — a relay down for an hour is worth a knock every
+ * half-minute, and the deployment is the side with nothing better to do.
+ */
+export const RECONNECT_CAP_MS = 30_000;
 
 /**
  * How long a `protocol` refusal waits. Long, and fixed: the fix is an operator
@@ -57,15 +80,16 @@ export const RECONNECT_SCHEDULE_MS: readonly number[] = [
 export const PROTOCOL_RETRY_MS = 5 * 60_000;
 
 /**
- * The delay before attempt `attempt` (0-based), jittered. Full jitter over the
- * ladder's entry rather than the entry itself: a relay that restarts with fifty
- * deployments against it gets them back spread over the window instead of in
- * one thundering reconnect (RFC 6455 §7.2.3).
+ * The delay before retry `attempt` (0-based) — the engine's own backoff rule
+ * (`src/backoff.ts`), asked for the async, jittered, never-terminal reading of
+ * itself.
  */
 export function reconnectDelayMs(attempt: number, random: () => number = Math.random): number {
-  const index = Math.min(Math.max(attempt, 0), RECONNECT_SCHEDULE_MS.length - 1);
-  const ceiling = RECONNECT_SCHEDULE_MS[index]!;
-  return Math.round(ceiling / 2 + random() * (ceiling / 2));
+  return jitteredBackoffMs(attempt, {
+    firstMs: RECONNECT_FIRST_MS,
+    capMs: RECONNECT_CAP_MS,
+    random,
+  });
 }
 
 /** The close codes a deployment must not retry, and what each one means. */
@@ -103,6 +127,9 @@ export type RelaySocket = {
 /** Dial one socket. The default reaches Node's built-in `WebSocket`. */
 export type OpenRelaySocket = (url: string, handlers: RelaySocketHandlers) => RelaySocket;
 
+/** Which of the link's two timers is being set. */
+export type RelayTimer = "retry" | "silence";
+
 export type RelayLinkDeps = {
   /** `relay.url` — where to dial. */
   url: string;
@@ -139,7 +166,12 @@ export type RelayLinkDeps = {
   warn?: (message: string) => void;
   open?: OpenRelaySocket;
   now?: () => number;
-  setTimer?: (fn: () => void, ms: number) => unknown;
+  /**
+   * The two timers this module owns, named so a test can tell them apart: the
+   * `retry` that dials again, and the `silence` that gives up on a connection
+   * nothing is arriving on.
+   */
+  setTimer?: (fn: () => void, ms: number, kind: RelayTimer) => unknown;
   clearTimer?: (handle: unknown) => void;
   protocol?: number;
   random?: () => number;
@@ -160,7 +192,7 @@ export function connectRelay(deps: RelayLinkDeps): RelayLink {
   const warn = deps.warn ?? log;
   const open = deps.open ?? openNodeWebSocket;
   const now = deps.now ?? Date.now;
-  const setTimer = deps.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
+  const setTimer = deps.setTimer ?? ((fn: () => void, ms: number) => setTimeout(fn, ms));
   const clearTimer = deps.clearTimer ?? ((handle) => clearTimeout(handle as never));
   const protocol = deps.protocol ?? RELAY_PROTOCOL;
   const random = deps.random ?? Math.random;
@@ -175,6 +207,8 @@ export function connectRelay(deps: RelayLinkDeps): RelayLink {
   let attempt = 0;
   let stopped = false;
   let lastClose: RelayClose | null = null;
+  /** Drop the live connection's own timer. Set by each dial, called by `stop`. */
+  let abandon: (() => void) | null = null;
 
   if (key !== null && deps.pairingToken !== undefined) {
     log(
@@ -207,23 +241,104 @@ export function connectRelay(deps: RelayLinkDeps): RelayLink {
   const schedule = (delayMs: number): void => {
     if (stopped) return;
     report("reconnecting", new Date(now() + delayMs).toISOString());
-    timer = setTimer(() => {
-      timer = null;
-      dial();
-    }, delayMs);
+    timer = setTimer(
+      () => {
+        timer = null;
+        dial();
+      },
+      delayMs,
+      "retry",
+    );
   };
 
   function dial(): void {
     if (stopped) return;
     let answered = false;
-    const current = open(deps.url, {
+    /** One connection ends once, whichever of the two ways it ends. */
+    let ended = false;
+    let silence: unknown = null;
+    let current: RelaySocket | null = null;
+
+    /**
+     * The end of one connection, from a close frame or from the silence timer.
+     * Either way it is the same event, and the retry rulebook is applied here
+     * once: the terminal codes stop the link, `protocol` waits for an operator,
+     * and everything else is the ordinary case and backs off.
+     */
+    const end = (code: number, reason: string): void => {
+      if (ended) return;
+      ended = true;
+      if (silence !== null) clearTimer(silence);
+      silence = null;
+      if (socket === current) socket = null;
+      lastClose = { code, reason, at: new Date(now()).toISOString() };
+      const terminal = TERMINAL_CLOSES.get(code);
+      if (terminal !== undefined) {
+        if (mintedHere) {
+          // The pairing this key was minted for was refused. Leaving it on the
+          // volume would turn one mistyped token into a deployment that signs
+          // with an identity the relay has never heard of, forever.
+          deps.forgetKey();
+          key = null;
+        }
+        halt(`${terminal} (close ${code}${reason ? `: ${reason}` : ""})`);
+        return;
+      }
+      mintedHere = false;
+      if (code === RELAY_CLOSE.protocol) {
+        schedule(PROTOCOL_RETRY_MS);
+        return;
+      }
+      schedule(reconnectDelayMs(attempt++, random));
+    };
+
+    /**
+     * Something arrived, so the connection is alive for another minute. The
+     * relay heartbeats every twenty seconds; three missed beats and this
+     * deployment stops believing in a socket that has stopped saying anything.
+     *
+     * A half-open connection is the case this exists for — no close frame ever
+     * arrives, so without a timer the link would wait forever on a socket that
+     * died with the network it rode. The deployment cannot ping its way out of
+     * that: Node's built-in client pongs on its own and offers no way to send a
+     * ping or to see one arrive (#500), which is why the relay sends a visible
+     * `heartbeat` beside every ping.
+     */
+    const heard = (): void => {
+      if (silence !== null) clearTimer(silence);
+      silence = setTimer(
+        () => {
+          silence = null;
+          warn(
+            `[phoebe] relay: nothing from ${deps.url} for ` +
+              `${Math.round(RELAY_DARK_AFTER_MS / 1000)}s — redialling.`,
+          );
+          current?.close();
+          end(1006, "no heartbeat");
+        },
+        RELAY_DARK_AFTER_MS,
+        "silence",
+      );
+    };
+
+    abandon = () => {
+      ended = true;
+      if (silence !== null) clearTimer(silence);
+      silence = null;
+    };
+
+    current = open(deps.url, {
       onOpen: () => {
-        // Deliberately silent: the relay speaks first, and a deployment that
-        // announced itself before the challenge would be telling a stranger its
-        // public key for nothing.
+        // Deliberately silent about who it is: the relay speaks first, and a
+        // deployment that announced itself before the challenge would be
+        // telling a stranger its public key for nothing. The clock starts here
+        // all the same — a relay that accepts the socket and never challenges
+        // is silence like any other.
+        heard();
       },
 
       onMessage: (data) => {
+        heard();
         const frame = parseFrame(data);
         if (relayMessageType(frame) !== RELAY_MESSAGES.challenge) return;
         if (answered) return;
@@ -251,7 +366,7 @@ export function connectRelay(deps: RelayLinkDeps): RelayLink {
           name: deps.name,
           ...(paired ? { signature: key.sign(challenge.nonce) } : { pairingToken: token ?? "" }),
         };
-        current.send(JSON.stringify(hello));
+        current?.send(JSON.stringify(hello));
         if (!paired) {
           // The token is spent whatever the relay decides; a second attempt
           // with it would be refused and would keep a live credential in memory
@@ -270,26 +385,7 @@ export function connectRelay(deps: RelayLinkDeps): RelayLink {
       },
 
       onClose: (code, reason) => {
-        if (socket === current) socket = null;
-        lastClose = { code, reason, at: new Date(now()).toISOString() };
-        const terminal = TERMINAL_CLOSES.get(code);
-        if (terminal !== undefined) {
-          if (mintedHere) {
-            // The pairing this key was minted for was refused. Leaving it on the
-            // volume would turn one mistyped token into a deployment that signs
-            // with an identity the relay has never heard of, forever.
-            deps.forgetKey();
-            key = null;
-          }
-          halt(`${terminal} (close ${code}${reason ? `: ${reason}` : ""})`);
-          return;
-        }
-        mintedHere = false;
-        if (code === RELAY_CLOSE.protocol) {
-          schedule(PROTOCOL_RETRY_MS);
-          return;
-        }
-        schedule(reconnectDelayMs(attempt++, random));
+        end(code, reason);
       },
     });
     socket = current;
@@ -303,6 +399,8 @@ export function connectRelay(deps: RelayLinkDeps): RelayLink {
       stopped = true;
       if (timer !== null) clearTimer(timer);
       timer = null;
+      abandon?.();
+      abandon = null;
       socket?.close();
       socket = null;
     },

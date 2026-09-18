@@ -19,6 +19,15 @@ export const RELAY_PROTOCOL = 1;
 /** The path on the relay that deployments dial. */
 export const RELAY_DEPLOYMENTS_PATH = "/deployments";
 
+/** How often the relay pings and heartbeats — see relay-protocol.ts (#541). */
+export const RELAY_HEARTBEAT_MS = 20_000;
+
+/** How long silence lasts before it is darkness — see relay-protocol.ts. */
+export const RELAY_DARK_AFTER_MS = 60_000;
+
+/** The receipt outcome for a request whose socket closed first (#506 §8). */
+export const RELAY_UNDELIVERED = "undelivered";
+
 /** Every message type on the deployment rail (#540). Mirror of relay-protocol.ts. */
 export const RELAY_MESSAGES = {
   challenge: "phoebe:relay:challenge",
@@ -50,4 +59,6 @@ export const RELAY_ROUTES = {
   signOut: "/auth/sign-out",
   me: "/api/me",
   pairingTokens: "/api/pairing-tokens",
+  deployments: "/api/deployments",
+  forget: "/api/deployments/forget",
 };

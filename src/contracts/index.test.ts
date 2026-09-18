@@ -7,17 +7,23 @@
 import { describe, expect, test } from "vite-plus/test";
 import {
   RELAY_CLOSE as typedClose,
+  RELAY_DARK_AFTER_MS as typedDark,
   RELAY_DEPLOYMENTS_PATH as typedPath,
+  RELAY_HEARTBEAT_MS as typedHeartbeat,
   RELAY_MESSAGES as typedMessages,
   RELAY_PROTOCOL as typedProtocol,
   RELAY_ROUTES as typed,
+  RELAY_UNDELIVERED as typedUndelivered,
 } from "./index.ts";
 import {
   RELAY_CLOSE as shippedClose,
+  RELAY_DARK_AFTER_MS as shippedDark,
   RELAY_DEPLOYMENTS_PATH as shippedPath,
+  RELAY_HEARTBEAT_MS as shippedHeartbeat,
   RELAY_MESSAGES as shippedMessages,
   RELAY_PROTOCOL as shippedProtocol,
   RELAY_ROUTES as shipped,
+  RELAY_UNDELIVERED as shippedUndelivered,
 } from "./index.mjs";
 
 describe("index.mjs mirrors the typed contracts entry", () => {
@@ -43,8 +49,15 @@ describe("the deployment rail's constants are mirrored too", () => {
     ["RELAY_DEPLOYMENTS_PATH", typedPath, shippedPath],
     ["RELAY_MESSAGES", typedMessages, shippedMessages],
     ["RELAY_CLOSE", typedClose, shippedClose],
+    ["RELAY_HEARTBEAT_MS", typedHeartbeat, shippedHeartbeat],
+    ["RELAY_DARK_AFTER_MS", typedDark, shippedDark],
+    ["RELAY_UNDELIVERED", typedUndelivered, shippedUndelivered],
   ])("%s is the same on both sides", (_name, typedValue, shippedValue) => {
     expect(shippedValue).toEqual(typedValue);
+  });
+
+  test("the dark threshold is three heartbeats, which is what makes it legible", () => {
+    expect(typedDark).toBe(typedHeartbeat * 3);
   });
 
   test("every message type carries the rail's prefix", () => {
