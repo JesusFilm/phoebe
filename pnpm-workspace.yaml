@@ -2,6 +2,7 @@
 # `phoebe-agent` stays at the root and publishes exactly as it did before a
 # workspace existed — nothing here reaches the tarball.
 packages:
+  - "."
   - "apps/*"
 
 # The default linker, named out loud. Electron wants the strict tree; the one
