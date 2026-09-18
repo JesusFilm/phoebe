@@ -48,12 +48,15 @@ function boot(opts: { rootConfig: unknown; dataBase: string; env?: NodeJS.Proces
       return { send: (data) => dials[dials.length - 1]!.sent.push(data), close: () => {} };
     },
   });
-  // Only `noteRelay` is ever called on this path; the rest of the model is the
-  // supervisor's and has nothing to do with the link.
+  // Only `noteRelay` and `latest` are ever called on this path; the rest of the
+  // model is the supervisor's and has nothing to do with the link. `latest` is
+  // null throughout: these tests are about the handshake, and what a connected
+  // link pushes is relay/reports-over-the-relay.test.ts.
   relay.start({
     noteRelay: (status: RelayStatus) => {
       statuses.push(status);
     },
+    latest: () => null,
   } as unknown as DeploymentState);
   return { identity: relay.identity, statuses, dials, warnings, stop: relay.stop };
 }

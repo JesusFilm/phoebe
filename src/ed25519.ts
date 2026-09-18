@@ -81,3 +81,20 @@ export function fingerprintOf(publicKey: string): string {
     .digest("base64url")
     .slice(0, 32);
 }
+
+/**
+ * How long a fingerprint is, and the only characters one can contain. Both
+ * follow from {@link fingerprintOf}: 32 characters of base64url.
+ */
+export const FINGERPRINT_PATTERN = /^[A-Za-z0-9_-]{32}$/;
+
+/**
+ * Is this string shaped like a fingerprint? The relay names a file after one
+ * and reads the name out of a URL, so this is the guard between a path
+ * parameter and the volume: anything that is not exactly the form
+ * {@link fingerprintOf} produces — a `..`, a slash, a longer string — is not a
+ * fingerprint and never reaches the filesystem.
+ */
+export function isFingerprint(value: string): boolean {
+  return FINGERPRINT_PATTERN.test(value);
+}

@@ -15,7 +15,9 @@ import { createAllowlist } from "./allowlist.ts";
 import { readRelayEnv, redirectUri, type RelayEnv } from "./env.ts";
 import { createRelayHandler } from "./http.ts";
 import { serveDeployments, type DeploymentGate } from "./deployments.ts";
+import { createRelayEvents } from "./events.ts";
 import { createLinks, createPairingTokens } from "./links.ts";
+import { createReports } from "./reports.ts";
 import { createGoogleIdentityProvider, type IdentityProvider } from "./oidc.ts";
 import { createSessionStore } from "./sessions.ts";
 import { RELAY_DEPLOYMENTS_PATH, RELAY_PROTOCOL } from "../src/contracts/relay-protocol.ts";
@@ -77,6 +79,11 @@ export async function startRelay(options: StartRelayOptions): Promise<RunningRel
   // deployment endpoint spends out of it over the socket.
   const tokens = createPairingTokens();
   const links = createLinks(dataDir);
+  // The reports outlive the process; the stream watching them does not. One is
+  // on the volume for exactly that reason (#506 §3), and the other is a set of
+  // open responses that a restart closes and a browser redials.
+  const reports = createReports(dataDir);
+  const events = createRelayEvents({ warn });
   // The knot this unties: the socket endpoint needs the HTTP server, the server
   // needs the handler, and the handler needs the endpoint. One `let` and a
   // thunk, assigned before the port is bound and therefore before any request
@@ -89,6 +96,8 @@ export async function startRelay(options: StartRelayOptions): Promise<RunningRel
       if (deployments === null) throw new Error("the deployment endpoint is not attached yet");
       return deployments;
     },
+    reports,
+    events,
     sessions: createSessionStore(),
     identity:
       options.identity ??
@@ -119,6 +128,8 @@ export async function startRelay(options: StartRelayOptions): Promise<RunningRel
     server,
     links,
     tokens,
+    reports,
+    events,
     log,
     warn,
     ...(options.heartbeatMs !== undefined ? { heartbeatMs: options.heartbeatMs } : {}),

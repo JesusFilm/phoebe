@@ -309,6 +309,13 @@ A link with no completed handshake behind it. Not dark: nobody has lost this dep
 it has never arrived.
 _Avoid_: pending, inactive
 
+**Event stream**:
+The one server-sent-events connection a console holds open, `GET /api/events`, carrying a
+deployment's report as it arrives and the word for each connection as it changes. No
+replay and no resume: every event has a read behind it that answers the same question in
+full, so a page that missed one refetches.
+_Avoid_: websocket (that is the fleet's side), feed, subscription
+
 **Undelivered**:
 The outcome of a request whose deployment socket closed before a receipt arrived, and of
 one aimed at a deployment the relay is not holding. In-flight requests are refused with

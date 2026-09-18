@@ -16,6 +16,7 @@ import {
   RELAY_PROTOCOL,
 } from "../src/contracts/relay-protocol.ts";
 import { verifyNonceSignature } from "../src/ed25519.ts";
+import type { DeploymentReport } from "../src/contracts/deployment.ts";
 import type { RelayStatus } from "./deployment-state.ts";
 import { generateDeploymentKey, type DeploymentKey } from "./relay-key.ts";
 import {
@@ -65,6 +66,12 @@ type Harness = {
   goQuiet: () => void;
   last: () => RelayStatus;
   hello: () => Record<string, unknown>;
+  /** Every report frame the newest dial has sent, oldest first. */
+  reports: () => Array<Record<string, unknown>>;
+  /** The report the model would hand over next. */
+  setReport: (report: DeploymentReport | null) => void;
+  /** The model wrote a report: the cue boot gives the link. */
+  push: () => void;
   stop: () => void;
 };
 
@@ -73,6 +80,7 @@ function harness(
     key?: DeploymentKey | null;
     pairingToken?: string;
     protocol?: number;
+    report?: DeploymentReport | null;
   } = {},
 ): Harness {
   const dials: Dialled[] = [];
@@ -83,6 +91,7 @@ function harness(
   const logs: string[] = [];
   const warnings: string[] = [];
   let clock = 1_000_000;
+  let report: DeploymentReport | null = overrides.report ?? null;
 
   const drop = (timer: Timer): void => {
     const at = timers.indexOf(timer);
@@ -103,6 +112,7 @@ function harness(
       forgotten.push(true);
     },
     onStatus: (status) => statuses.push(status),
+    report: () => report,
     log: (message) => logs.push(message),
     warn: (message) => warnings.push(message),
     open: (url, handlers) => {
@@ -161,6 +171,14 @@ function harness(
     goQuiet: () => run("silence"),
     last: () => statuses[statuses.length - 1]!,
     hello: () => JSON.parse(newest().sent[0]!) as Record<string, unknown>,
+    reports: () =>
+      newest()
+        .sent.map((frame) => JSON.parse(frame) as Record<string, unknown>)
+        .filter((frame) => frame["type"] === RELAY_MESSAGES.report),
+    setReport: (next) => {
+      report = next;
+    },
+    push: () => link.push(),
     stop: () => link.stop(),
   };
 }
@@ -448,5 +466,81 @@ describe("noise on the wire", () => {
     relay.challenge();
     relay.challenge();
     expect(relay.dials[0]!.sent).toHaveLength(1);
+  });
+});
+
+describe("pushing the report", () => {
+  /** A report, as far as the link cares: a `schema` and a body it never reads. */
+  const reportOf = (updatedAt: string): DeploymentReport =>
+    ({ schema: 1, updatedAt }) as unknown as DeploymentReport;
+
+  test("the whole report goes up the moment the hello is away", () => {
+    const relay = harness({ pairingToken: "mint-fresh", report: reportOf("first") });
+
+    relay.challenge();
+
+    expect(relay.reports()).toEqual([
+      { type: RELAY_MESSAGES.report, schema: 1, report: { schema: 1, updatedAt: "first" } },
+    ]);
+  });
+
+  test("a deployment with no report yet sends none, and is not an error", () => {
+    const relay = harness({ pairingToken: "mint-fresh" });
+
+    relay.challenge();
+    relay.push();
+
+    expect(relay.reports()).toEqual([]);
+  });
+
+  test("a push carries the report the model holds now, not the one it held then", () => {
+    const relay = harness({ pairingToken: "mint-fresh", report: reportOf("first") });
+    relay.challenge();
+
+    relay.setReport(reportOf("second"));
+    relay.push();
+
+    expect(relay.reports()).toHaveLength(2);
+    expect(relay.reports()[1]!["report"]).toEqual({ schema: 1, updatedAt: "second" });
+  });
+
+  test("pushing the same report twice sends it once", () => {
+    const relay = harness({ pairingToken: "mint-fresh", report: reportOf("first") });
+    relay.challenge();
+
+    relay.push();
+    relay.push();
+
+    expect(relay.reports()).toHaveLength(1);
+  });
+
+  test("a push with no socket is dropped, never queued", () => {
+    const relay = harness({ pairingToken: "mint-fresh", report: reportOf("first") });
+    relay.challenge();
+    relay.close(1006);
+
+    relay.setReport(reportOf("while it was down"));
+    relay.push();
+    relay.push();
+
+    // Only the one this connection carried before it ended. Nothing was held
+    // for the reconnect: the next connection opens with the whole report
+    // anyway, and a queue would deliver an older version of the same truth.
+    expect(relay.reports()).toHaveLength(1);
+    expect(relay.reports()[0]!["report"]).toEqual({ schema: 1, updatedAt: "first" });
+  });
+
+  test("and the next connection opens with the whole report, unchanged or not", () => {
+    const relay = harness({ key: generateDeploymentKey(), report: reportOf("first") });
+    relay.challenge();
+    expect(relay.reports()).toHaveLength(1);
+
+    relay.close(1006);
+    relay.elapse();
+    relay.challenge();
+
+    expect(relay.reports()).toEqual([
+      { type: RELAY_MESSAGES.report, schema: 1, report: { schema: 1, updatedAt: "first" } },
+    ]);
   });
 });

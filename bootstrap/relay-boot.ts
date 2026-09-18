@@ -7,6 +7,10 @@
 // deployment" from the config and the volume, and `start` hands the link its
 // reporting channel and dials.
 //
+// Both directions run through that one channel. The link writes its own state
+// into the report's `relay` section, and reads the whole report back out of the
+// model when it has a socket to push it down (#542).
+//
 // **The pairing decision is made here, once, out of two facts.** A key on the
 // volume means this deployment has paired: it signs, and `PHOEBE_RELAY_TOKEN`
 // is ignored (doctor keeps saying so until the operator removes it). No key and
@@ -54,6 +58,12 @@ export type PreparedRelay = {
   identity: () => DeploymentIdentity;
   /** Dial, reporting into the live model. A no-op with no `relay.url`. */
   start: (deployment: DeploymentState) => void;
+  /**
+   * The report moved: push it up the link (#542). A no-op before {@link start},
+   * with no relay configured, or while the socket is down — the next connection
+   * opens with the whole report either way.
+   */
+  push: () => void;
   /** Stop dialling; the deployment is going down. */
   stop: () => void;
 };
@@ -116,10 +126,17 @@ export function prepareRelay(options: PrepareRelayOptions): PreparedRelay {
           key = minted;
         },
         onStatus: (status) => deployment.noteRelay(status),
+        // Pulled at the moment of every send rather than handed over, so a link
+        // that reconnects after five minutes sends what the model holds then.
+        report: () => deployment.latest(),
         log,
         warn,
         ...(options.open !== undefined ? { open: options.open } : {}),
       });
+    },
+
+    push() {
+      link?.push();
     },
 
     stop() {

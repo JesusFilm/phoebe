@@ -9,6 +9,7 @@ import {
   RELAY_CLOSE as typedClose,
   RELAY_DARK_AFTER_MS as typedDark,
   RELAY_DEPLOYMENTS_PATH as typedPath,
+  RELAY_EVENTS as typedEvents,
   RELAY_HEARTBEAT_MS as typedHeartbeat,
   RELAY_MESSAGES as typedMessages,
   RELAY_PROTOCOL as typedProtocol,
@@ -19,6 +20,7 @@ import {
   RELAY_CLOSE as shippedClose,
   RELAY_DARK_AFTER_MS as shippedDark,
   RELAY_DEPLOYMENTS_PATH as shippedPath,
+  RELAY_EVENTS as shippedEvents,
   RELAY_HEARTBEAT_MS as shippedHeartbeat,
   RELAY_MESSAGES as shippedMessages,
   RELAY_PROTOCOL as shippedProtocol,
@@ -52,6 +54,7 @@ describe("the deployment rail's constants are mirrored too", () => {
     ["RELAY_HEARTBEAT_MS", typedHeartbeat, shippedHeartbeat],
     ["RELAY_DARK_AFTER_MS", typedDark, shippedDark],
     ["RELAY_UNDELIVERED", typedUndelivered, shippedUndelivered],
+    ["RELAY_EVENTS", typedEvents, shippedEvents],
   ])("%s is the same on both sides", (_name, typedValue, shippedValue) => {
     expect(shippedValue).toEqual(typedValue);
   });
