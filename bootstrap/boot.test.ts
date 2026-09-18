@@ -9,7 +9,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
 import {
+  brokerSlots,
   checkMinBootstrap,
+  deploymentName,
+  engineRefOf,
   isMovingBranch,
   LOCAL_ENGINE_DIR,
   reportPipelineExit,
@@ -19,12 +22,17 @@ import {
   setupGitCredentials,
   pipelineArgv,
   tenantFingerprint,
+  liveLeases,
+  warnOnce,
+  trackFleetPipelines,
   trackPipelines,
+  soloPipelineFingerprint,
   workspacePipelineFingerprint,
 } from "./boot.ts";
 import { pipelineLabel, type SupervisedPipeline } from "./pipelines.ts";
 import type { DiscoveredTenant } from "./tenants.ts";
 import { createSlotBroker } from "./slot-broker.ts";
+import type { DeploymentState } from "./deployment-state.ts";
 
 describe("resolveEngineEntry", () => {
   test("a local source execs the engine CLI under the mounted dir", () => {
@@ -380,6 +388,105 @@ describe("pipelineArgv", () => {
   });
 });
 
+describe("the deployment report's wiring", () => {
+  const pipeline: SupervisedPipeline = {
+    id: "/etc/phoebe/repos/acme/widget#work",
+    tenant: {
+      id: "/etc/phoebe/repos/acme/widget",
+      slug: "acme/widget",
+      dir: "/etc/phoebe/repos/acme/widget",
+      configPath: "/etc/phoebe/repos/acme/widget/phoebe.config.ts",
+      envPath: "/etc/phoebe/repos/acme/widget/.env",
+      gitIdentity: null,
+    },
+    pipeline: {
+      name: "work",
+      disabled: false,
+      priority: 0,
+      concurrency: 1,
+      needsClone: true,
+      env: [],
+      fingerprint: "abc123",
+    },
+    enumerated: true,
+    siblingEnv: [],
+  };
+
+  test("a deployment is named after its solo tenant, or its workspace root", () => {
+    expect(deploymentName({ arm: "solo", configDir: "/etc/phoebe", soloSlug: "acme/widget" })).toBe(
+      "acme/widget",
+    );
+    // No usable `repoSlug`: the directory name is better than nothing.
+    expect(deploymentName({ arm: "solo", configDir: "/etc/phoebe", soloSlug: null })).toBe(
+      "phoebe",
+    );
+    expect(deploymentName({ arm: "workspace", configDir: "/etc/phoebe/", soloSlug: null })).toBe(
+      "phoebe",
+    );
+  });
+
+  test("the slots section is the broker's own numbers", async () => {
+    const broker = createSlotBroker({ capacity: 2, floorBudget: 1 });
+    await broker.acquire("/etc/phoebe/repos/acme/widget#work");
+    expect(brokerSlots(broker)).toEqual({
+      capacity: 2,
+      inUse: 1,
+      waiting: 0,
+      overGranted: 0,
+      floorBudget: 1,
+    });
+  });
+
+  test("a report the volume will not take is warned about once, not once a poll", () => {
+    const original = console.warn;
+    const lines: string[] = [];
+    console.warn = (...args: unknown[]) => lines.push(args.map(String).join(" "));
+    try {
+      const warn = warnOnce((error) => `could not write — ${String(error)}`);
+      warn(new Error("read-only volume"));
+      warn(new Error("read-only volume"));
+      warn(new Error("read-only volume"));
+      expect(lines).toEqual(["could not write — Error: read-only volume"]);
+    } finally {
+      console.warn = original;
+    }
+  });
+
+  test("the engine ref is what the config names, with a mount reading as local", () => {
+    expect(engineRefOf({ source: { source: "github", repo: "o/r", ref: "main" } } as never)).toBe(
+      "main",
+    );
+    expect(engineRefOf({ source: { source: "local" } } as never)).toBe("local");
+  });
+
+  test("the pipeline hook feeds the broker and the report from one poll", () => {
+    const broker = createSlotBroker({ capacity: 1 });
+    const seen: number[] = [];
+    // The cap line is operator-facing output; this test is not about it.
+    const original = console.log;
+    console.log = () => {};
+    const log = { restore: () => (console.log = original) };
+    try {
+      const track = trackFleetPipelines(
+        broker,
+        {
+          notePipelines: (pipelines: readonly SupervisedPipeline[]) => seen.push(pipelines.length),
+        } as unknown as DeploymentState,
+        {},
+      );
+      track({ pipelines: [pipeline], reshaped: true });
+      expect(broker.capacity).toBe(1);
+      expect(seen).toEqual([1]);
+      // Every poll re-derives the report, reshaped or not: nothing else fires
+      // when a pipeline goes quiet, which is what the wedged flag is about.
+      track({ pipelines: [pipeline], reshaped: false });
+      expect(seen).toEqual([1, 1]);
+    } finally {
+      log.restore();
+    }
+  });
+});
+
 describe("trackPipelines", () => {
   const pipeline = (
     slug: string,
@@ -457,6 +564,18 @@ describe("trackPipelines", () => {
       expect(broker.capacity).toBe(2);
       expect(log.lines[0]).toContain("slot cap 2 — PHOEBE_MAX_CONCURRENT_AGENTS=2");
       expect(log.lines[0]).toContain("acme/gadget:work(4)");
+    } finally {
+      log.restore();
+    }
+  });
+
+  test("deployment.slotCap sizes the broker when no env name is set (#530)", () => {
+    const broker = createSlotBroker({ capacity: 1 });
+    const log = captureLog();
+    try {
+      trackPipelines(broker, {}, { slotCap: 2 })({ pipelines: MATRIX, reshaped: true });
+      expect(broker.capacity).toBe(2);
+      expect(log.lines[0]).toContain("slot cap 2 — deployment.slotCap=2");
     } finally {
       log.restore();
     }
@@ -715,6 +834,7 @@ describe("crash reporting hooks (#474)", () => {
       fallbackFor: () => null,
       record: (run: unknown) => recorded.push(run),
       noteAlive: () => {},
+      state: () => ({ lastGoodSha: null, failingSha: null, failureCount: 0 }),
       shouldRetry: () => false,
     };
     const onRunEnd = recordRunEnd(guard, reporter);
@@ -753,5 +873,87 @@ describe("crash reporting hooks (#474)", () => {
     });
     expect(events).toHaveLength(1);
     expect(recorded).toHaveLength(1);
+  });
+});
+
+describe("the leases a doctor run is handed (#507 §5)", () => {
+  const now = Date.parse("2026-05-05T00:00:00.000Z");
+
+  test("every live mint, keyed by the slug it was minted for", () => {
+    const cache = new Map([
+      ["acme/widget", { token: "ghs_one", expiresAt: now + 60_000 }],
+      ["acme/gadget", { token: "ghs_two", expiresAt: now + 60_000 }],
+    ]);
+    expect(liveLeases(cache, now)).toEqual({
+      "acme/widget": "ghs_one",
+      "acme/gadget": "ghs_two",
+    });
+  });
+
+  test("a lapsed lease is left out rather than re-minted on doctor's account", () => {
+    const cache = new Map([
+      ["acme/widget", { token: "ghs_live", expiresAt: now + 60_000 }],
+      ["acme/stale", { token: "ghs_expired", expiresAt: now - 1 }],
+    ]);
+    expect(liveLeases(cache, now)).toEqual({ "acme/widget": "ghs_live" });
+  });
+
+  test("a PAT-only fleet leases nothing, so the doctor child's env is untouched", () => {
+    expect(liveLeases(new Map(), now)).toEqual({});
+  });
+});
+
+describe("soloPipelineFingerprint (#504)", () => {
+  const pipeline = (own: string[], siblings: string[]): SupervisedPipeline =>
+    ({
+      id: "acme/widget#work",
+      tenant: {
+        id: "/etc/phoebe",
+        slug: "acme/widget",
+        dir: "/etc/phoebe",
+        configPath: "/etc/phoebe/phoebe.config.ts",
+        envPath: "/etc/phoebe/.env",
+        gitIdentity: null,
+      },
+      pipeline: {
+        name: "work",
+        disabled: false,
+        priority: 0,
+        concurrency: 1,
+        needsClone: true,
+        env: own,
+        fingerprint: "fp",
+      },
+      enumerated: true,
+      siblingEnv: siblings,
+    }) as unknown as SupervisedPipeline;
+
+  test("an empty store leaves solo's pipelines where they were", () => {
+    expect(soloPipelineFingerprint(pipeline([], []), "fp", {})).toBe(
+      soloPipelineFingerprint(pipeline([], []), "fp", {}),
+    );
+  });
+
+  test("setting a provider key relaunches the child — solo has no other channel", () => {
+    expect(soloPipelineFingerprint(pipeline([], []), "fp", { CURSOR_API_KEY: "sk" })).not.toBe(
+      soloPipelineFingerprint(pipeline([], []), "fp", {}),
+    );
+  });
+
+  test("a GH_TOKEN rotation through the store spends no drain", () => {
+    expect(soloPipelineFingerprint(pipeline([], []), "fp", { GH_TOKEN: "ghp_one" })).toBe(
+      soloPipelineFingerprint(pipeline([], []), "fp", { GH_TOKEN: "ghp_two" }),
+    );
+  });
+
+  test("a sibling pipeline's declared key is invisible to this one", () => {
+    const work = pipeline([], ["SLACK_BOT_TOKEN"]);
+    expect(soloPipelineFingerprint(work, "fp", { SLACK_BOT_TOKEN: "xoxb-1" })).toBe(
+      soloPipelineFingerprint(work, "fp", {}),
+    );
+  });
+
+  test("an engine that cannot enumerate keeps its null", () => {
+    expect(soloPipelineFingerprint(pipeline([], []), null, { CURSOR_API_KEY: "sk" })).toBeNull();
   });
 });
