@@ -62,6 +62,7 @@ describe("pair and connect", () => {
         clientId: "client-id",
         clientSecret: "client-secret",
         allowedEmails: [],
+        alertWebhook: null,
       },
       dataDir,
       port: 0,

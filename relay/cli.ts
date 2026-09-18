@@ -34,13 +34,16 @@ Options:
                         \`leave\` reads the deployment volume from PHOEBE_DATA_DIR
   --help, -h            Show this message
 
-Environment (all four required; see docs/relay.md):
+Environment (the first four are required; see docs/relay.md):
   RELAY_HOST            Public hostname, e.g. relay.example.com
   GOOGLE_CLIENT_ID      Google "Web application" OAuth client id
   GOOGLE_CLIENT_SECRET  Its secret
   ALLOWED_EMAILS        Comma-separated addresses merged into the allowlist at
                         start. May be empty, which leaves the allowlist to the
                         first verified sign-in.
+  RELAY_ALERT_WEBHOOK   Optional. Where one message per alert edge is POSTed.
+                        Unset means nothing is posted; the relay still evaluates
+                        every edge and still keeps alerts.json.
 `;
 
 export function parseRelayArgs(argv: readonly string[]): ParsedRelayArgs {

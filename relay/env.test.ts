@@ -9,13 +9,19 @@ const complete = {
 } satisfies NodeJS.ProcessEnv;
 
 describe("readRelayEnv", () => {
-  test("reads the four variables", () => {
+  test("reads the four required variables, and the optional fifth", () => {
     expect(readRelayEnv({ ...complete })).toEqual({
       host: "relay.example.test",
       clientId: "client-id",
       clientSecret: "client-secret",
       allowedEmails: ["ada@example.test", "grace@example.test"],
+      alertWebhook: null,
     });
+    expect(
+      readRelayEnv({ ...complete, RELAY_ALERT_WEBHOOK: "  https://hooks.example.test/abc  " })
+        .alertWebhook,
+    ).toBe("https://hooks.example.test/abc");
+    expect(readRelayEnv({ ...complete, RELAY_ALERT_WEBHOOK: "   " }).alertWebhook).toBe(null);
   });
 
   test("names every missing variable at once", () => {

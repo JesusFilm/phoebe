@@ -332,6 +332,8 @@ describe("the local arm on the rail", () => {
       selected="/repos/two"
       onSelect={() => undefined}
       onAdd={() => undefined}
+      signIn={null}
+      onSignedIn={() => undefined}
     />,
   );
 
@@ -364,7 +366,15 @@ describe("the local arm on the rail", () => {
 
   test("a browser's rail has no local group at all, control included", () => {
     const browser = renderToStaticMarkup(
-      <Rail facts={[]} now={NOW} surface="browser" signedIn installs={installs} />,
+      <Rail
+        facts={[]}
+        now={NOW}
+        surface="browser"
+        signedIn
+        installs={installs}
+        signIn={null}
+        onSignedIn={() => undefined}
+      />,
     );
 
     expect(browser).not.toContain("This machine");
