@@ -11,10 +11,16 @@
 //                       `phoebe.config.ts`, overlays `PHOEBE_*` env vars,
 //                       installs the resolved config, then hands off to main.
 //
-// This is the only supported v1 programmatic surface: there is no exported
-// `run(config)` — CLI-only. That keeps every consumer on the same load/resolve/
-// install pipeline and leaves the door open to CLI-only concerns (init/pin
-// scaffolding, log formatting) without breaking a library API.
+// This stays the only *supported* programmatic surface: there is no exported
+// `run(config)`. That keeps every consumer on the same load/resolve/install
+// pipeline and leaves the door open to CLI-only concerns (init/pin scaffolding,
+// log formatting) without breaking a library API.
+//
+// Amended by #552, recorded in docs/adr/0001-host-verbs-are-an-embedding-seam.md:
+// each host verb also exists as `run<Verb>(opts)`, an in-process entry that
+// returns a typed outcome and writes through an injected io. That is an internal
+// seam for the companion, which ships the package and the app at one version
+// (#527 §3) — not a public API, and not a second way to run the engine.
 
 import { readFileSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
@@ -34,13 +40,7 @@ import {
   type CrashReporter,
 } from "./crash-reporter.ts";
 import { promptReportingConsent } from "./reporting-consent.ts";
-import {
-  copyShippedPromptsInto,
-  formatInitReport,
-  initTenant,
-  runInit,
-  type InitProfile,
-} from "./init.ts";
+import { formatInitReport, runInit, type InitProfile } from "./init.ts";
 import { formatInitTenantRegistrationAdviceForRoot } from "./init-tenant-advice.ts";
 import { applyEnvOverlay, loadUserConfig, resolveConfigPath } from "./load-config.ts";
 import { parsePipelineName, selectPipeline } from "./pipeline.ts";
@@ -286,6 +286,7 @@ Usage:
                                    Delete tenant state no pipeline owns
   phoebe stop [--now]              Drain and stop the deployment container (host-side)
   phoebe start [--build]           Bring the deployment container up detached (host-side)
+  phoebe relay serve               Serve the relay: console + deployment socket
   phoebe [--config <path>] [flags] Run the engine
 
 Options (engine mode):
@@ -633,23 +634,25 @@ export async function runCli(): Promise<void> {
       return;
     }
     if (parsed.profile === "tenant") {
-      const result = initTenant({
+      const result = runInit({
         targetDir: parsed.targetDir,
-        ...(parsed.repoSlug !== undefined ? { repoSlug: parsed.repoSlug } : {}),
-        ...(parsed.repoUrl !== undefined ? { repoUrl: parsed.repoUrl } : {}),
-        withPrompts: parsed.withPrompts,
-        ...(parsed.withPrompts ? { seedPrompt: (dir: string) => copyShippedPromptsInto(dir) } : {}),
+        profile: "tenant",
+        tenant: {
+          ...(parsed.repoSlug !== undefined ? { repoSlug: parsed.repoSlug } : {}),
+          ...(parsed.repoUrl !== undefined ? { repoUrl: parsed.repoUrl } : {}),
+          withPrompts: parsed.withPrompts,
+        },
       });
       const rootDir = parsed.rootDir ?? process.cwd();
       const registrationAdvice = await formatInitTenantRegistrationAdviceForRoot({
         rootDir,
-        tenantDir: result.tenantDir,
+        tenantDir: result.targetDir,
       });
       process.stdout.write(
         formatInitReport(result, parsed.targetDir) +
-          `  repoSlug: ${result.repoSlug}\n` +
-          `  repoUrl:  ${result.repoUrl}\n` +
-          `\nFill in ${result.tenantDir}/.env (copy .env.example).\n` +
+          `  repoSlug: ${result.tenant.repoSlug}\n` +
+          `  repoUrl:  ${result.tenant.repoUrl}\n` +
+          `\nFill in ${result.targetDir}/.env (copy .env.example).\n` +
           registrationAdvice +
           `\nCrash reporting is the root config's decision (docs/operating.md → Crash reporting). ` +
           `To opt in, add beside \`engine\` in ${rootDir}/phoebe.config.ts:\n` +
@@ -733,6 +736,13 @@ export async function runCli(): Promise<void> {
   if (args[0] === "start") {
     const { runStartCli } = await import("./start.ts");
     return await runStartCli(args.slice(1));
+  }
+  // The relay (#538): a separate process, a separate image, a separate
+  // volume — the deployment container gains no listener from it. Lazy like the
+  // rest, so an engine run never loads the HTTP server or its OIDC client.
+  if (args[0] === "relay") {
+    const { runRelayCli } = await import("../relay/cli.ts");
+    return await runRelayCli(args.slice(1));
   }
 
   const parsed = parseCliArgs(args);

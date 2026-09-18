@@ -875,6 +875,37 @@ asks it once more only for a config that has no block at all, and a present
 block, `true` or `false`, is never asked again. What each event carries and how
 it is sent is [`operating.md` → Crash reporting](operating.md#crash-reporting).
 
+## Relay (`relay`)
+
+Bootstrapper-only and **root config only**. `relay` names the console this
+deployment dials out to. The engine never reads it, `resolveConfig` drops it, no
+`PHOEBE_*` variable overlays it, and a tenant config carrying one is ignored the
+way a tenant `engine` block is. No block, or a block with no `url`, and the
+deployment never dials: it behaves exactly as it did before this field existed.
+
+| Field  | Default                                          | Meaning                                                                                                  |
+| ------ | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
+| `url`  | _required_                                       | The relay's WebSocket URL, `wss://relay.example.com/deployments`.                                        |
+| `name` | solo `repoSlug`, or the workspace root's dirname | What a console displays. The relay keys on the deployment's key, never on this, so two may share a name. |
+
+```ts
+export default defineConfig({
+  // ...
+  relay: { url: "wss://relay.example.com/deployments", name: "the-fleet" },
+});
+```
+
+Pairing is a one-time token in the root `.env` as `PHOEBE_RELAY_TOKEN`, spent on
+the first boot and removed afterwards; the identity that outlives it is an
+Ed25519 key the deployment generates at `state/relay-key` on its data volume.
+The whole flow, the handshake and the close codes are in
+[`relay.md` → Pairing a deployment](relay.md#pairing-a-deployment).
+
+Changing `url` or `name` is a local file edit. Nothing on the relay can rewrite
+it, for the same reason nothing on the relay can rewrite `engine.ref`. A console
+that could move the address it is reached at could strand a deployment where no
+operator can find it.
+
 ## Environment overlay (`PHOEBE_*`)
 
 `PHOEBE_*` env vars provide **one-off run overrides** without editing
