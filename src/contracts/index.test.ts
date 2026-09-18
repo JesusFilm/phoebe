@@ -7,6 +7,11 @@
 import { describe, expect, test } from "vite-plus/test";
 import {
   CLOSED_EDIT_BLOCKS as typedClosedBlocks,
+  CANCELLABLE_VERBS as typedCancellable,
+  COMPANION_AUTH_URL as typedAuthUrl,
+  DESKTOP_BRIDGE_GLOBAL as typedGlobal,
+  DEVICE_CODE_TTL_MS as typedCodeTtl,
+  MAX_RUN_LINES as typedMaxLines,
   RELAY_CLOSE as typedClose,
   RELAY_DARK_AFTER_MS as typedDark,
   RELAY_DEPLOYMENTS_PATH as typedPath,
@@ -19,6 +24,11 @@ import {
 } from "./index.ts";
 import {
   CLOSED_EDIT_BLOCKS as shippedClosedBlocks,
+  CANCELLABLE_VERBS as shippedCancellable,
+  COMPANION_AUTH_URL as shippedAuthUrl,
+  DESKTOP_BRIDGE_GLOBAL as shippedGlobal,
+  DEVICE_CODE_TTL_MS as shippedCodeTtl,
+  MAX_RUN_LINES as shippedMaxLines,
   RELAY_CLOSE as shippedClose,
   RELAY_DARK_AFTER_MS as shippedDark,
   RELAY_DEPLOYMENTS_PATH as shippedPath,
@@ -76,5 +86,45 @@ describe("the deployment rail's constants are mirrored too", () => {
     for (const [name, code] of Object.entries(typedClose)) {
       expect(code >= 4000 && code <= 4999, `${name} is outside 4000–4999`).toBe(true);
     }
+  });
+});
+
+describe("the companion's bridge global", () => {
+  test("is the same name on both sides", () => {
+    // The preload writes this global and the console bundle reads it; the two
+    // ship together, so the only way they can disagree is through this file.
+    expect(shippedGlobal).toBe(typedGlobal);
+  });
+});
+
+describe("the verb run's constants", () => {
+  test.each([
+    ["MAX_RUN_LINES", typedMaxLines, shippedMaxLines],
+    ["CANCELLABLE_VERBS", typedCancellable, shippedCancellable],
+  ])("%s is the same on both sides", (_name, typedValue, shippedValue) => {
+    expect(shippedValue).toEqual(typedValue);
+  });
+
+  test("only the verbs whose child the companion holds can be cancelled (#527 §2)", () => {
+    // `start` and `stop` drive Compose through an injected runner, so the
+    // companion has the child to signal. Nothing else does — see verb-run.ts.
+    expect([...typedCancellable].sort()).toEqual(["start", "stop"]);
+  });
+});
+
+describe("the companion's sign-in constants (#554)", () => {
+  test.each([
+    ["COMPANION_AUTH_URL", typedAuthUrl, shippedAuthUrl],
+    ["DEVICE_CODE_TTL_MS", typedCodeTtl, shippedCodeTtl],
+  ])("%s is the same on both sides", (_name, typedValue, shippedValue) => {
+    expect(shippedValue).toEqual(typedValue);
+  });
+
+  test("the landing is on the scheme the companion registers, under its own host", () => {
+    // The relay redirects to this and the companion registers the scheme in
+    // front of it; the host is what keeps it off the renderer's own origin.
+    const landing = new URL(typedAuthUrl);
+    expect(landing.protocol).toBe("phoebe:");
+    expect(landing.host).toBe("auth");
   });
 });

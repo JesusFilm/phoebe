@@ -17,11 +17,34 @@ ships.
 Everything the pages read goes through one seam, [`src/relay-client.ts`](src/relay-client.ts).
 The browser arm is the relay's own origin, its `__Host-` session cookie and
 `EventSource`. The companion's arm is a second implementation of the same type over
-the desktop bridge ([#553](https://github.com/JesusFilm/phoebe/issues/553)), so
-nothing else in here knows which side it is running on.
+the desktop bridge, so nothing else in here knows which side it is running on.
+[`src/main.tsx`](src/main.tsx) picks between them by reading the global the
+companion's preload exposes; that is the only thing in the bundle that can tell
+the two surfaces apart ([#526](https://github.com/JesusFilm/phoebe/issues/526)
+shell A).
 
-`vp run dev` serves the bundle on its own origin with no relay behind it, so the
-pages land on the signed-out notice. To see real data, build and let the relay
+The relay is one of the companion's two arms. The other is **local installs** —
+folders on this machine, listed under "This machine" on the rail, each with an
+**install tab** that takes one from nothing to running with buttons
+([#555](https://github.com/JesusFilm/phoebe/issues/555)). That arm goes through
+the bridge directly rather than through the relay client, because none of it is a
+relay call: [`src/local-install.ts`](src/local-install.ts) holds the readings and
+the reducers, and [`src/install-page.tsx`](src/install-page.tsx) renders them. A
+browser has no local arm at all and the group is not drawn there.
+
+A local install's other five tabs — overview, pipelines, doctor, secrets, config —
+are the ones every deployment has, and they are fed without a relay: main's local
+read loop execs `status --json` in the container and emits the same `report` event
+the relay's stream carries ([#556](https://github.com/JesusFilm/phoebe/issues/556)).
+So [`src/deployment-tabs.tsx`](src/deployment-tabs.tsx) takes a narrowed report
+and draws it, and the only place the arm shows is the overview's connection card,
+which the page builds. A stopped install shows config from the file and says what
+the rest need; the last report the window is still holding is not drawn
+([#526](https://github.com/JesusFilm/phoebe/issues/526)).
+
+`vp run dev` serves the bundle on a fixed, strict port with no relay behind it, so
+the pages land on the signed-out notice; `apps/desktop`'s `vp run dev` points the
+companion's window at that same port. To see real data, build and let the relay
 serve it.
 
 The reports arrive opaque — the relay stores and forwards `state/deployment.json`

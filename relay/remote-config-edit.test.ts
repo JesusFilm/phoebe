@@ -82,6 +82,7 @@ describe("a config edit from the console", () => {
         clientId: "client-id",
         clientSecret: "client-secret",
         allowedEmails: [],
+        alertWebhook: null,
       },
       dataDir,
       port: 0,

@@ -33,6 +33,20 @@ export const RELAY_HEARTBEAT_MS = 20_000;
 /** How long silence lasts before it is darkness — see relay-protocol.ts. */
 export const RELAY_DARK_AFTER_MS = 60_000;
 
+/** The global the companion's preload exposes its bridge on — see desktop-bridge.ts. */
+export const DESKTOP_BRIDGE_GLOBAL = "phoebe";
+
+/** How many lines of a verb run main keeps — see verb-run.ts (#527 §13). */
+export const MAX_RUN_LINES = 2000;
+
+/** The verbs a companion can cancel — see verb-run.ts (#527 §2). */
+export const CANCELLABLE_VERBS = ["start", "stop"];
+/** Where a companion's sign-in lands — see relay-routes.ts (#554). */
+export const COMPANION_AUTH_URL = "phoebe://auth";
+
+/** How long a companion has to spend its one-time code — see relay-routes.ts. */
+export const DEVICE_CODE_TTL_MS = 60_000;
+
 /** The receipt outcome for a request whose socket closed first (#506 §8). */
 export const RELAY_UNDELIVERED = "undelivered";
 
@@ -65,13 +79,19 @@ export const RELAY_ROUTES = {
   signIn: "/auth/google/start",
   callback: "/auth/google/callback",
   signOut: "/auth/sign-out",
+  deviceStart: "/auth/device/start",
+  deviceExchange: "/auth/device/exchange",
+  deviceRevoke: "/auth/device/revoke",
   me: "/api/me",
   pairingTokens: "/api/pairing-tokens",
+  devices: "/api/devices",
+  deviceRemove: "/api/devices/remove",
   deployments: "/api/deployments",
   forget: "/api/deployments/forget",
   configSet: "/api/deployments/config-set",
   events: "/api/events",
   secrets: "/api/secrets",
+  testAlert: "/api/alerts/test",
 };
 
 /**
@@ -83,6 +103,7 @@ export const RELAY_EVENTS = {
   connected: "connected",
   disconnected: "disconnected",
   dark: "dark",
+  alert: "alert",
 };
 
 /**
@@ -115,3 +136,12 @@ export const CLOSED_EDIT_BLOCKS = [
     why: "top-level `workKinds` is the permanent alias for `pipelines.work.kinds` — set it at the path the effective config prints",
   },
 ];
+
+/** The `schema` integer every alert body carries (#515 §9) — see alerts.ts. */
+export const ALERT_SCHEMA = 1;
+
+/** How long after the last heartbeat silence becomes an alert (#515 §4). */
+export const ALERT_DARK_AFTER_MS = 300_000;
+
+/** The five conditions (#515 §3). Mirror of `ALERT_CONDITIONS` in alerts.ts. */
+export const ALERT_CONDITIONS = ["dark", "wedged", "crash-looping", "doctor-fail", "replaced"];

@@ -19,6 +19,9 @@
 // since, last heard, last close code — are a separate connection panel and
 // never a `DoctorCheck`.
 
+/** A scheduled kind's declared key that its pipeline's env does not hold (#425). */
+export type MissingDeclaredEnvKey = { pipeline: string; kind: string; key: string };
+
 /** A check's verdict. `unknown` is a check that could not be answered, not a pass. */
 export type CheckState = "ok" | "warn" | "fail" | "unknown";
 

@@ -4,23 +4,33 @@
 //
 // Not reachable from main.tsx, so nothing here reaches the bundle.
 
-import { DEPLOYMENT_SCHEMA, EFFECTIVE_CONFIG_VERSION } from "phoebe-agent/contracts";
+import { DEPLOYMENT_SCHEMA, EFFECTIVE_CONFIG_VERSION, RELAY_EVENTS } from "phoebe-agent/contracts";
 import type { RelayClient, SecretReceipt, SecretRequest } from "./relay-client.ts";
 import type {
   ChildLiveness,
+  CompanionEnvironment,
   ConfigReport,
-  SecretListing,
-  SecretsSection,
-  TenantSecrets,
   DeploymentReport,
+  DesktopBridge,
   DoctorCheck,
   DoctorSection,
   FleetCell,
+  InstallDirectoryFacts,
+  LocalAlertEvent,
+  LocalInstall,
+  LocalReportEvent,
+  RelayArmState,
   RelayDeploymentRow,
+  RelayEvent,
   RelayStoredReport,
+  SecretListing,
+  SecretsSection,
   StatusSnapshot,
   TenantEffectiveConfig,
   TenantFacts,
+  TenantSecrets,
+  VerbRun,
+  VerbRunRequest,
 } from "phoebe-agent/contracts";
 
 export const NOW = new Date("2026-09-18T12:00:00.000Z");
@@ -300,12 +310,27 @@ export function stubClient(overrides: Partial<RelayClient> = {}): RelayClient {
     Promise.reject(new Error(`this test never calls ${what}`));
   return {
     me: unasked("me"),
+    signIn: unasked("signIn"),
+    watchSession: () => () => {},
     signOut: unasked("signOut"),
     deployments: unasked("deployments"),
     deployment: unasked("deployment"),
     setConfigField: unasked("setConfigField"),
     setSecret: unasked("setSecret"),
     events: () => () => {},
+    ...overrides,
+  };
+}
+
+// ── the companion's side ──────────────────────────────────────────────────
+
+/** One local install, with only the fields a test cares about spelled out. */
+export function install(overrides: Partial<LocalInstall> = {}): LocalInstall {
+  return {
+    dir: "/repos/youtube-studio",
+    name: "youtube-studio",
+    addedAt: ago(3600),
+    state: "running",
     ...overrides,
   };
 }
@@ -325,4 +350,141 @@ export function recordingClient(receipt: Partial<SecretReceipt> & { outcome: str
       },
     }),
   };
+}
+
+/** The Docker check, on a machine where everything is where it should be. */
+export function environment(overrides: Partial<CompanionEnvironment> = {}): CompanionEnvironment {
+  return {
+    companionVersion: "0.13.0",
+    platform: "linux",
+    docker: { present: true, composeVersion: "v2.29.7", daemonRunning: true },
+    ...overrides,
+  };
+}
+
+/**
+ * A desktop bridge that answers with whatever the test hands it and refuses
+ * everything else. Written once here because both the surface test and the
+ * render tests need a whole one — the contract has no optional members, which
+ * is what stops a page from feature-detecting its way around a missing arm.
+ */
+export function bridge(answers: BridgeAnswers = {}): DesktopBridge {
+  const relayState = answers.relay ?? { url: null, person: null, persisted: false };
+  return {
+    version: () => Promise.resolve("0.13.0"),
+    environment: () => Promise.resolve(answers.environment ?? environment()),
+    installs: {
+      list: () => Promise.resolve(answers.installs ?? []),
+      pick: () => Promise.resolve(answers.picked ?? null),
+      add: () => Promise.resolve(answers.installs ?? []),
+      remove: () => Promise.resolve([]),
+      changes: () => () => undefined,
+      reports: (onReport) => {
+        for (const event of answers.reports ?? []) onReport(event);
+        return () => undefined;
+      },
+      refresh: (dir) => {
+        const event = (answers.reports ?? []).find((candidate) => candidate.install === dir);
+        return event === undefined ? Promise.reject(notAnInstall(dir)) : Promise.resolve(event);
+      },
+      alerts: (onAlert) => {
+        for (const event of answers.alerts ?? []) onAlert(event);
+        return () => undefined;
+      },
+    },
+    runs: {
+      start: (request) => {
+        answers.started?.push(request);
+        return Promise.resolve(answers.runId ?? "run-1");
+      },
+      current: () => Promise.resolve(answers.run ?? null),
+      cancel: () => Promise.resolve(),
+      lines: () => () => undefined,
+      exits: () => () => undefined,
+    },
+    preferences: {
+      get: () => Promise.resolve({ notifications: true }),
+      set: (preferences) => Promise.resolve(preferences),
+    },
+    relay: {
+      state: () => Promise.resolve(relayState),
+      signIn: ({ url }) =>
+        answers.signIn === undefined
+          ? Promise.reject(new Error("this bridge does not sign in"))
+          : Promise.resolve(answers.signIn(url)),
+      watch: () => () => undefined,
+      request: ({ path }) => {
+        if (answers.request === undefined) return Promise.reject(signedOut());
+        return Promise.resolve(answers.request(path));
+      },
+      events: (onEvent) => {
+        for (const event of answers.events ?? []) onEvent(event);
+        return () => undefined;
+      },
+      signOut: () => Promise.resolve(),
+    },
+  };
+}
+
+/** What a test wants the bridge above to answer with. */
+export type BridgeAnswers = {
+  relay?: RelayArmState;
+  environment?: CompanionEnvironment;
+  installs?: LocalInstall[];
+  picked?: string | null;
+  run?: VerbRun | null;
+  runId?: string;
+  /** Collects every run the page asked for. */
+  started?: VerbRunRequest[];
+  request?: (path: string) => unknown;
+  events?: RelayEvent[];
+  /** What a sign-in through the companion resolves with (#554). */
+  signIn?: (url: string) => RelayArmState;
+  /** What the local read loop has emitted, one event per install (#556). */
+  reports?: LocalReportEvent[];
+  /** What main raised over a local install (#559). */
+  alerts?: LocalAlertEvent[];
+};
+
+/** The directory facts main derives with no container involved (#527 §6). */
+export function directory(overrides: Partial<InstallDirectoryFacts> = {}): InstallDirectoryFacts {
+  return {
+    configPath: "/repos/youtube-studio/phoebe.config.ts",
+    configText: 'export default defineConfig({ repoSlug: "JesusFilm/youtube-studio" })\n',
+    configFingerprint: "0f1e2d3c4b5a6978",
+    envPresent: true,
+    bootstrapperRunning: true,
+    ...overrides,
+  };
+}
+
+/** One read the loop finished, for whichever install the test is about. */
+export function localReport(overrides: Partial<LocalReportEvent> = {}): LocalReportEvent {
+  const facts = overrides.facts ?? install();
+  return {
+    type: RELAY_EVENTS.report,
+    install: facts.dir,
+    at: ago(2),
+    facts,
+    directory: directory({ bootstrapperRunning: facts.state === "running" }),
+    report:
+      facts.state === "running"
+        ? { schema: DEPLOYMENT_SCHEMA, receivedAt: ago(2), report: report() }
+        : null,
+    ...overrides,
+  };
+}
+
+/** What the preload throws when main refuses a call (#527 §16). */
+export function signedOut(): Error {
+  return Object.assign(new Error("the companion is not signed in to a relay"), {
+    code: "signed-out",
+  });
+}
+
+/** What main refuses a read of a folder it does not hold with (#527 §16). */
+export function notAnInstall(dir: string): Error {
+  return Object.assign(new Error(`${dir} is not a local install the companion knows`), {
+    code: "refused",
+  });
 }

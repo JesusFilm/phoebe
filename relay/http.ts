@@ -1,14 +1,15 @@
 // The relay's HTTP surface: the sign-in flow, the reads and verbs behind it, and
-// the console's own build (#538, #540, #541, #542, #543).
+// the console's own build (#538, #540, #541, #542, #543, #551).
 //
 // What a signed-in person can ask for is who they are, a pairing token for a new
-// deployment, the fleet as the socket endpoint knows it, one deployment with the
-// last report it pushed, the stream those reports arrive on, the forgetting of
-// one deployment, one field of one deployment's config set, and the setting of
-// one tenant secret — which the relay carries sealed and stamps with who asked,
-// without ever being able to read it (#550). The console's pages sit on exactly
-// these answers, and the relay hands the pages out too — the bundle is in the
-// same package (console-assets.ts).
+// deployment, the fleet as the socket endpoint knows it — with what the relay
+// last alerted about each link — one deployment with the last report it pushed,
+// the stream those reports arrive on, the forgetting of one deployment, one
+// field of one deployment's config set, the setting of one tenant secret —
+// which the relay carries sealed and stamps with who asked, without ever being
+// able to read it (#550) — and one test alert. The console's pages sit on
+// exactly these answers, and the relay hands the pages out too — the bundle is
+// in the same package (console-assets.ts).
 //
 // **A verb that travels to a deployment is a courier's job** (#503, #547, #550).
 // The relay stamps the signed-in address onto the edit — that is the one field
@@ -28,11 +29,16 @@
 // so a page that missed one refetches rather than resyncs. That is what keeps
 // the stream from becoming a second, worse copy of the state on the volume.
 //
-// The shape every route follows is set here: paths come from contracts, the
-// session is read from a `__Host-` cookie, and anything behind the door answers
-// an unknown caller with 401 rather than a redirect. A browser fetching JSON
-// wants a status code it can branch on, not an HTML login page delivered with
-// a 200.
+// **Two carriers, one door.** Who is asking is read from a `__Host-` cookie or
+// from an `Authorization: Bearer` — a browser has the first and a companion has
+// the second (#523 §1, #554). Every route behind the door goes through `caller`
+// and none of them knows which one it got, because nothing a signed-in person
+// may ask for depends on what they are holding.
+//
+// The shape every route follows is set here: paths come from contracts, and
+// anything behind the door answers an unknown caller with 401 rather than a
+// redirect. A browser fetching JSON wants a status code it can branch on, not
+// an HTML login page delivered with a 200.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
@@ -44,17 +50,20 @@ import {
   type RelayRequest,
   type RelaySecretSet,
 } from "../src/contracts/relay-protocol.ts";
-import { RELAY_ROUTES } from "../src/contracts/relay-routes.ts";
+import { COMPANION_AUTH_URL, RELAY_ROUTES } from "../src/contracts/relay-routes.ts";
 import type {
+  DeviceExchangeResult,
   RelayConfigSetAnswer,
   RelayConfigSetRequest,
   RelayDeploymentDetail,
   RelayDeploymentRow,
   RelayIdentity,
 } from "../src/contracts/relay-routes.ts";
+import type { RelayAlertFacts } from "../src/contracts/alerts.ts";
 import type { RelayEvent } from "../src/contracts/relay-events.ts";
 import { isFingerprint } from "../src/ed25519.ts";
 import type { Allowlist } from "./allowlist.ts";
+import { bearerToken, type DeviceCodes, type Devices } from "./devices.ts";
 import type { ConsoleAssets } from "./console-assets.ts";
 import type { RelayEvents } from "./events.ts";
 import type { Reports } from "./reports.ts";
@@ -67,6 +76,7 @@ import {
   PRE_AUTH_TTL_MS,
   SESSION_COOKIE,
   setCookie,
+  type DeviceIntent,
   type SessionStore,
 } from "./sessions.ts";
 
@@ -102,7 +112,20 @@ export type RelayHandlerOptions = {
   events: RelayEvents;
   /** The console's build, or an assets handler pointed at a test's directory. */
   console: ConsoleAssets;
+  /**
+   * Alerting, as the connection panel reads it and as the test button drives it
+   * (#515 §13). Always present: a relay with no webhook still evaluates edges,
+   * so "is one configured" is a fact to state and not a reason to omit a route.
+   */
+  alerts: {
+    facts: () => RelayAlertFacts;
+    test: (by: string) => Promise<{ sinks: number }>;
+  };
   sessions: SessionStore;
+  /** The companions signed in to this relay, on the volume (#554). */
+  devices: Devices;
+  /** The one-time codes in flight between the callback and an exchange. */
+  deviceCodes: DeviceCodes;
   identity: IdentityProvider;
   /** The origin requests arrive on, used only to parse a request's own URL. */
   publicOrigin: string;
@@ -144,6 +167,21 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
     if (method === "POST" && url.pathname === RELAY_ROUTES.signOut) {
       return signOut(request, response);
     }
+    if (method === "GET" && url.pathname === RELAY_ROUTES.deviceStart) {
+      return await startDeviceSignIn(response, url);
+    }
+    if (method === "POST" && url.pathname === RELAY_ROUTES.deviceExchange) {
+      return await exchangeDeviceCode(request, response);
+    }
+    if (method === "POST" && url.pathname === RELAY_ROUTES.deviceRevoke) {
+      return revokeDevice(request, response);
+    }
+    if (method === "GET" && url.pathname === RELAY_ROUTES.devices) {
+      return listDevices(request, response);
+    }
+    if (method === "POST" && url.pathname === RELAY_ROUTES.deviceRemove) {
+      return await removeDevices(request, response);
+    }
     if (method === "GET" && url.pathname === RELAY_ROUTES.me) {
       return me(request, response);
     }
@@ -152,6 +190,9 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
     }
     if (method === "GET" && url.pathname === RELAY_ROUTES.deployments) {
       return listDeployments(request, response);
+    }
+    if (method === "POST" && url.pathname === RELAY_ROUTES.testAlert) {
+      return await sendTestAlert(request, response);
     }
     if (method === "POST" && url.pathname === RELAY_ROUTES.forget) {
       return await forgetDeployment(request, response);
@@ -181,11 +222,20 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
     json(response, 404, { error: "no-such-route" });
   };
 
-  /** Mint the per-sign-in secrets, park them, and send the browser to Google. */
-  async function startSignIn(response: ServerResponse): Promise<void> {
+  /**
+   * Mint the per-sign-in secrets, park them, and send the browser to Google.
+   * `device` is the companion's ask, carried in the pre-auth entry so the one
+   * callback below knows which of the two landings this sign-in wants.
+   */
+  async function startSignIn(response: ServerResponse, device?: DeviceIntent): Promise<void> {
     const params = newAuthParams();
     const id = options.sessions.startPreAuth(
-      { state: params.state, nonce: params.nonce, codeVerifier: params.codeVerifier },
+      {
+        state: params.state,
+        nonce: params.nonce,
+        codeVerifier: params.codeVerifier,
+        ...(device === undefined ? {} : { device }),
+      },
       clock().getTime(),
     );
     let location: string;
@@ -263,12 +313,137 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
       warn(`[phoebe:relay] allowlist seeded by first sign-in: ${admission.entry.email}`);
     }
 
+    // A companion gets no cookie and no session row. It gets a one-time code on
+    // the custom scheme, and the PKCE challenge it started with is what will
+    // let exactly one process spend it (#523 §2).
+    if (preAuth.device !== undefined) {
+      const code = options.deviceCodes.mint(
+        {
+          sub: identity.sub,
+          email: admission.entry.email,
+          name: preAuth.device.name,
+          challenge: preAuth.device.challenge,
+        },
+        clock().getTime(),
+      );
+      response.setHeader("Set-Cookie", [clearCookie(PRE_AUTH_COOKIE)]);
+      redirect(response, `${COMPANION_AUTH_URL}?code=${encodeURIComponent(code)}`);
+      return;
+    }
+
     const id = options.sessions.open(
       { sub: identity.sub, email: admission.entry.email },
       clock().getTime(),
     );
     response.setHeader("Set-Cookie", [clearCookie(PRE_AUTH_COOKIE), setCookie(SESSION_COOKIE, id)]);
     redirect(response, SIGNED_IN_LANDING);
+  }
+
+  /**
+   * A companion's sign-in starts here (#523 §2). It is the same Google flow the
+   * browser's does — the only new things are the PKCE challenge it will be
+   * asked to prove later, and the name the device will be recorded under.
+   *
+   * The challenge is checked for shape up front: it is the S256 of a verifier,
+   * so it is 43 characters of base64url and anything else is a caller that has
+   * not read the contract. Refusing here is cheaper than minting a code nobody
+   * can spend.
+   */
+  async function startDeviceSignIn(response: ServerResponse, url: URL): Promise<void> {
+    const challenge = url.searchParams.get("challenge") ?? "";
+    if (!isS256Challenge(challenge)) {
+      text(response, 400, "This sign-in link is missing its PKCE challenge.");
+      return;
+    }
+    await startSignIn(response, { challenge, name: url.searchParams.get("name") ?? "" });
+  }
+
+  /**
+   * Spend the one-time code for a device token (#523 §3). No cookie is involved
+   * and none would survive the trip: this request comes from the companion's
+   * main process, which never had one.
+   *
+   * Every refusal is the same 400 with the same code. The caller cannot tell an
+   * expired code from a spent one from a verifier that does not match, and it
+   * has no use for the difference — the only recovery from any of them is to
+   * start again.
+   */
+  async function exchangeDeviceCode(
+    request: IncomingMessage,
+    response: ServerResponse,
+  ): Promise<void> {
+    const body = (await readJsonBody(request)) as { code?: unknown; verifier?: unknown };
+    const grant = options.deviceCodes.spend(
+      typeof body.code === "string" ? body.code : undefined,
+      typeof body.verifier === "string" ? body.verifier : undefined,
+      clock().getTime(),
+    );
+    if (grant === null) {
+      json(response, 400, { error: "bad-code" });
+      return;
+    }
+    const issued = options.devices.issue(
+      { sub: grant.sub, email: grant.email },
+      grant.name,
+      clock(),
+    );
+    warn(`[phoebe:relay] ${grant.email} signed in a companion: ${issued.device.name}`);
+    const result: DeviceExchangeResult = issued;
+    json(response, 201, result);
+  }
+
+  /**
+   * A companion signing out. It revokes the bearer it carries and nothing else,
+   * which is why it needs no session lookup and answers 204 either way: the
+   * caller asked for that token to stop working, and after this it has.
+   */
+  function revokeDevice(request: IncomingMessage, response: ServerResponse): void {
+    options.devices.revoke(bearerToken(request.headers.authorization));
+    response.writeHead(204).end();
+  }
+
+  /** Every companion signed in to this relay. The People page groups them (#523 §4). */
+  function listDevices(request: IncomingMessage, response: ServerResponse): void {
+    if (caller(request) === null) {
+      json(response, 401, { error: "not-signed-in" });
+      return;
+    }
+    json(response, 200, { devices: options.devices.list() });
+  }
+
+  /**
+   * Revoke devices: one by `id`, or every one of a person's by `sub` — which is
+   * what removing them from the allowlist has to do, since an allowlist they
+   * are off does not get consulted again by a bearer they already hold.
+   *
+   * No self-check. A person revoking their own companion from the console is
+   * doing a reasonable thing, and the console they are doing it from is a
+   * browser session this does not touch.
+   */
+  async function removeDevices(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const who = caller(request);
+    if (who === null) {
+      json(response, 401, { error: "not-signed-in" });
+      return;
+    }
+    const body = (await readJsonBody(request)) as { id?: unknown; sub?: unknown };
+    const selector =
+      typeof body.id === "string" && body.id !== ""
+        ? { id: body.id }
+        : typeof body.sub === "string" && body.sub !== ""
+          ? { sub: body.sub }
+          : null;
+    if (selector === null) {
+      json(response, 400, { error: "no-device" });
+      return;
+    }
+    const removed = options.devices.remove(selector);
+    if (removed === 0) {
+      json(response, 404, { error: "no-such-device" });
+      return;
+    }
+    warn(`[phoebe:relay] ${who.email} revoked ${removed} device(s)`);
+    json(response, 200, { removed });
   }
 
   /**
@@ -290,25 +465,44 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
    * their own.
    */
   function mintPairingToken(request: IncomingMessage, response: ServerResponse): void {
-    const session = options.sessions.get(parseCookies(request.headers.cookie).get(SESSION_COOKIE));
-    if (session === null) {
+    const who = caller(request);
+    if (who === null) {
       json(response, 401, { error: "not-signed-in" });
       return;
     }
-    const minted = options.tokens.mint(session.email, clock());
-    warn(`[phoebe:relay] ${session.email} minted a pairing token`);
+    const minted = options.tokens.mint(who.email, clock());
+    warn(`[phoebe:relay] ${who.email} minted a pairing token`);
     json(response, 201, minted);
   }
 
-  /** The authenticated read: who the cookie belongs to. */
+  /**
+   * The authenticated read: who is asking. The one route whose answer is the
+   * credential itself working, which is what makes it the read a companion runs
+   * straight after an exchange and a browser runs on every page load.
+   */
   function me(request: IncomingMessage, response: ServerResponse): void {
-    const session = options.sessions.get(parseCookies(request.headers.cookie).get(SESSION_COOKIE));
-    if (session === null) {
+    const who = caller(request);
+    if (who === null) {
       json(response, 401, { error: "not-signed-in" });
       return;
     }
-    const identity: RelayIdentity = { sub: session.sub, email: session.email };
-    json(response, 200, identity);
+    json(response, 200, who);
+  }
+
+  /**
+   * Who is asking, whichever carrier they used (#523 §3). The cookie is tried
+   * first because a browser is the common case and its lookup touches no disk;
+   * the bearer is a read of `devices.json` and a stamp of `lastSeenAt`, which is
+   * the only write any read on this handler does.
+   */
+  function caller(request: IncomingMessage): RelayIdentity | null {
+    const session = options.sessions.get(parseCookies(request.headers.cookie).get(SESSION_COOKIE));
+    if (session !== null) return { sub: session.sub, email: session.email };
+    const device = options.devices.authenticate(
+      bearerToken(request.headers.authorization),
+      clock(),
+    );
+    return device === null ? null : { sub: device.sub, email: device.email };
   }
 
   /**
@@ -317,12 +511,32 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
    * this route's job is to state what is true at the moment it is asked.
    */
   function listDeployments(request: IncomingMessage, response: ServerResponse): void {
+    if (caller(request) === null) {
+      json(response, 401, { error: "not-signed-in" });
+      return;
+    }
+    json(response, 200, {
+      deployments: options.fleet().rows(clock()),
+      alerts: options.alerts.facts(),
+    });
+  }
+
+  /**
+   * **Send test alert** (#515 §13): a `{ kind: "test" }` body to every sink, so
+   * an operator can tell a working webhook from a healthy fleet. Fleet-wide and
+   * bodiless — the question is about the channel, not about a deployment — and
+   * it answers with how many sinks took it, which is the only honest report
+   * available when delivery is one attempt with no retry.
+   */
+  async function sendTestAlert(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const session = options.sessions.get(parseCookies(request.headers.cookie).get(SESSION_COOKIE));
     if (session === null) {
       json(response, 401, { error: "not-signed-in" });
       return;
     }
-    json(response, 200, { deployments: options.fleet().rows(clock()) });
+    const sent = await options.alerts.test(session.email);
+    warn(`[phoebe:relay] ${session.email} sent a test alert to ${sent.sinks} sink(s)`);
+    json(response, 202, sent);
   }
 
   /**
@@ -340,8 +554,7 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
     response: ServerResponse,
     fingerprint: string,
   ): void {
-    const session = options.sessions.get(parseCookies(request.headers.cookie).get(SESSION_COOKIE));
-    if (session === null) {
+    if (caller(request) === null) {
       json(response, 401, { error: "not-signed-in" });
       return;
     }
@@ -373,8 +586,7 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
    * minutes late, which is worse than no stream.
    */
   function streamEvents(request: IncomingMessage, response: ServerResponse): void {
-    const session = options.sessions.get(parseCookies(request.headers.cookie).get(SESSION_COOKIE));
-    if (session === null) {
+    if (caller(request) === null) {
       json(response, 401, { error: "not-signed-in" });
       return;
     }
@@ -398,10 +610,10 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
       unsubscribe();
     };
     beat = setInterval(() => {
-      // A session that expired or was signed out mid-stream does not get to
-      // keep reading the fleet. The stream ends, and the browser's reconnect
-      // lands on the 401 its next request would have got anyway.
-      if (options.sessions.get(parseCookies(request.headers.cookie).get(SESSION_COOKIE)) === null) {
+      // A session that expired, or a device that was revoked mid-stream, does
+      // not get to keep reading the fleet. The stream ends, and the reader's
+      // reconnect lands on the 401 its next request would have got anyway.
+      if (caller(request) === null) {
         close();
         response.end();
         return;
@@ -512,8 +724,8 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
     request: IncomingMessage,
     response: ServerResponse,
   ): Promise<void> {
-    const session = options.sessions.get(parseCookies(request.headers.cookie).get(SESSION_COOKIE));
-    if (session === null) {
+    const who = caller(request);
+    if (who === null) {
       json(response, 401, { error: "not-signed-in" });
       return;
     }
@@ -528,7 +740,7 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
       json(response, 404, { error: "no-such-deployment" });
       return;
     }
-    warn(`[phoebe:relay] ${session.email} forgot ${link.name} (${link.fingerprint})`);
+    warn(`[phoebe:relay] ${who.email} forgot ${link.name} (${link.fingerprint})`);
     json(response, 200, { forgotten: { fingerprint: link.fingerprint, name: link.name } });
   }
 
@@ -589,6 +801,14 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
         : { outcome: receipt.outcome, receipt: receipt.detail };
     json(response, 200, answer);
   }
+}
+
+/**
+ * Whether a string is the S256 of a PKCE verifier: 43 characters of base64url,
+ * which is what a 256-bit digest encodes to with no padding (RFC 7636).
+ */
+export function isS256Challenge(challenge: string): boolean {
+  return /^[A-Za-z0-9_-]{43}$/.test(challenge);
 }
 
 /**

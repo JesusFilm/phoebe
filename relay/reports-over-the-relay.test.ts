@@ -90,6 +90,7 @@ describe("reports over the relay", () => {
         clientId: "client-id",
         clientSecret: "client-secret",
         allowedEmails: [],
+        alertWebhook: null,
       },
       dataDir,
       port: 0,

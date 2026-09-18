@@ -16,6 +16,7 @@ import { RELAY_EVENTS, RELAY_ROUTES } from "phoebe-agent/contracts";
 import type {
   RelayConfigSetAnswer,
   RelayConfigSetRequest,
+  DesktopBridge,
   RelayDeploymentDetail,
   RelayDeploymentRow,
   RelayEvent,
@@ -50,6 +51,33 @@ export type SecretReceipt = {
   detail?: SecretReceiptDetail;
 };
 
+/**
+ * How this arm signs in (#523 §2). Two shapes because the two arms sign in by
+ * genuinely different means, and flattening them into one method with half its
+ * arguments ignored would hide that from the page rather than from the reader.
+ *
+ * A browser follows a link: the relay is the origin that served the page, and
+ * the sign-in ends with the relay setting a cookie on a navigation the page
+ * does not survive. The companion has no origin and no cookie — main runs the
+ * flow in the operator's own browser and comes back with a token — so there the
+ * control is a form, and the relay's address is the one thing it has to ask for.
+ */
+export type RelaySignIn =
+  /** A browser: the relay's own sign-in path, followed as a navigation. */
+  | { kind: "navigate"; href: string }
+  /** The companion: main opens the system browser and answers when it is done. */
+  | {
+      kind: "prompt";
+      /** The relay the companion last held a token for, to fill the field with. */
+      relay: string | null;
+      /** Whether a sign-in here would survive a relaunch (#523 §5). */
+      persisted: boolean;
+      /** What to tell the operator about the two above, when there is something. */
+      reason?: string;
+      /** Run one sign-in. Resolves with whoever signed in. */
+      start: (relayUrl: string) => Promise<RelayIdentity>;
+    };
+
 /** What the console can ask the relay for, whichever side of the seam it is on. */
 export type RelayClient = {
   /**
@@ -58,8 +86,19 @@ export type RelayClient = {
    * error it reports.
    */
   me: () => Promise<RelayIdentity | null>;
+  /**
+   * How to sign in from here, read fresh: the companion's answer carries the
+   * relay it remembers and whether it can keep a token, and both move.
+   */
+  signIn: () => Promise<RelaySignIn>;
   /** Drop the session. The caller re-reads `me` afterwards. */
   signOut: () => Promise<void>;
+  /**
+   * Watch for the session ending without the page having asked for anything —
+   * the companion's arm dropping its token on a 401 from the event stream.
+   * Returns the unsubscribe.
+   */
+  watchSession: (onChange: (identity: RelayIdentity | null) => void) => () => void;
   /** Every deployment the relay knows, unsorted: the order is the console's. */
   deployments: () => Promise<RelayDeploymentRow[]>;
 
@@ -171,6 +210,18 @@ export function createBrowserRelayClient(options: BrowserRelayClientOptions = {}
       }
     },
 
+    signIn() {
+      return Promise.resolve({ kind: "navigate", href: RELAY_ROUTES.signIn });
+    },
+
+    // A cookie cannot go away under a page that has not asked for anything: the
+    // relay only ever withdraws one on a response, and a response is something
+    // the page requested. So there is nothing to watch, and the unsubscribe is
+    // the whole of this arm's answer.
+    watchSession() {
+      return () => {};
+    },
+
     async signOut() {
       const response = await call(RELAY_ROUTES.signOut, {
         method: "POST",
@@ -262,4 +313,96 @@ function parseEvent(data: string): RelayEvent | null {
   if (typeof parsed !== "object" || parsed === null) return null;
   const type = (parsed as { type?: unknown }).type;
   return typeof type === "string" && type in RELAY_EVENTS ? (parsed as RelayEvent) : null;
+}
+
+/**
+ * The companion's arm: main holds the device token and makes every call, and
+ * this side only names routes (#527 §9). No cookie, no `EventSource` and no
+ * origin to fetch from — the bundle was loaded from disk.
+ *
+ * The two arms answer the same way on purpose. A bridge call refused
+ * `signed-out` becomes the 401 the browser arm would have been given, so
+ * `isNotSignedIn` reads both and the pages above never branch on the surface.
+ */
+export function createBridgeRelayClient(bridge: DesktopBridge): RelayClient {
+  async function get<T>(path: string): Promise<T> {
+    try {
+      return (await bridge.relay.request({ method: "GET", path })) as T;
+    } catch (error) {
+      throw asRelayError(error);
+    }
+  }
+
+  async function post(path: string, body: unknown): Promise<unknown> {
+    try {
+      return await bridge.relay.request({ method: "POST", path, body });
+    } catch (error) {
+      throw asRelayError(error);
+    }
+  }
+
+  return {
+    async me() {
+      return (await bridge.relay.state()).person;
+    },
+
+    async signIn() {
+      const state = await bridge.relay.state();
+      return {
+        kind: "prompt",
+        relay: state.url,
+        persisted: state.persisted,
+        ...(state.reason === undefined ? {} : { reason: state.reason }),
+        start: async (relayUrl: string) => {
+          const signedIn = await bridge.relay.signIn({ url: relayUrl });
+          if (signedIn.person === null) throw new Error("the sign-in did not complete");
+          return signedIn.person;
+        },
+      };
+    },
+
+    watchSession(onChange) {
+      return bridge.relay.watch((state) => onChange(state.person));
+    },
+
+    signOut() {
+      return bridge.relay.signOut();
+    },
+
+    async deployments() {
+      const body = await get<{ deployments: RelayDeploymentRow[] }>(RELAY_ROUTES.deployments);
+      return body.deployments;
+    },
+
+    deployment(fingerprint) {
+      return get<RelayDeploymentDetail>(
+        `${RELAY_ROUTES.deployments}/${encodeURIComponent(fingerprint)}`,
+      );
+    },
+
+    // The two writes go over the same passthrough the reads do, so the console
+    // bundle is one bundle: what changes between the arms is how the request
+    // travels, never what a page sends (#523 §3, #547, #550).
+    async setConfigField(edit) {
+      return (await post(RELAY_ROUTES.configSet, edit)) as RelayConfigSetAnswer;
+    },
+
+    async setSecret(request) {
+      return (await post(RELAY_ROUTES.secrets, request)) as SecretReceipt;
+    },
+
+    events(onEvent) {
+      return bridge.relay.events(onEvent);
+    },
+  };
+}
+
+/**
+ * A bridge refusal in the relay's own terms where there is one. Only
+ * `signed-out` maps: the rest of the bridge's codes (#527 §16) are local-arm
+ * facts, and dressing one up as an HTTP status would lose what it said.
+ */
+function asRelayError(error: unknown): unknown {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === "signed-out" ? new RelayRequestError(401, "signed-out") : error;
 }

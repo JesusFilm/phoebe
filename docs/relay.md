@@ -10,7 +10,8 @@ report** whenever anything in it moves. The relay keeps the latest report per
 deployment, lists the fleet as connected, disconnected for so many seconds, dark
 or unseen, answers one deployment with both halves of that picture, and streams
 the changes as they happen. You can forget a deployment from the relay and a
-deployment can leave from its own side.
+deployment can leave from its own side. It also alerts: when a deployment crosses
+into or out of a named condition, the relay sends one message about it.
 
 The relay is a separate image, a separate compose file and a separate volume
 from any deployment. A deployment that names no relay never dials one and runs
@@ -19,7 +20,7 @@ listener. That is a property worth keeping, so a test guards it.
 
 Its version is the bootstrapper's version, and one changelog covers both.
 
-## Configuration is four environment variables
+## Configuration is four environment variables, and an optional fifth
 
 | Variable               | What it is                                                                                                              |
 | ---------------------- | ----------------------------------------------------------------------------------------------------------------------- |
@@ -27,20 +28,25 @@ Its version is the bootstrapper's version, and one changelog covers both.
 | `GOOGLE_CLIENT_ID`     | The Google "Web application" OAuth client id.                                                                           |
 | `GOOGLE_CLIENT_SECRET` | Its secret. Keep it out of the image and out of git.                                                                    |
 | `ALLOWED_EMAILS`       | Comma-separated addresses merged into the allowlist at every start.                                                     |
+| `RELAY_ALERT_WEBHOOK`  | Optional. Where one message per alert edge is POSTed. Unset means nothing is posted.                                    |
 
-All four must be set. `phoebe relay serve` refuses to start otherwise, and the
+The first four must be set. `phoebe relay serve` refuses to start otherwise, and the
 error names every variable it did not get rather than making you find them one
 restart at a time. The first three must also be non-blank, because a blank
 hostname or a blank secret is no better than an absent one.
 
-`ALLOWED_EMAILS` is the exception, and the difference matters. Blank is an
-answer: nobody is seeded, and the first verified Google sign-in claims the
-relay. Set it in production and that window never opens.
+`ALLOWED_EMAILS` is the exception among the four, and the difference matters.
+Blank is an answer: nobody is seeded, and the first verified Google sign-in
+claims the relay. Set it in production and that window never opens.
+
+`RELAY_ALERT_WEBHOOK` is the one variable you may leave out entirely. Leaving it
+out means no webhook — it does not mean no alerting. See below.
 
 There is no `relay.config.ts`, and there will not be one. The port (8787), the
 heartbeat interval, the dark threshold and the pairing-token lifetime are
-constants in the code. An operator who tunes them is making the fleet's timing
-disagree with the relay's.
+constants in the code, and so is the five-minute wait before silence becomes an
+alert. An operator who tunes them is making the fleet's timing disagree with the
+relay's.
 
 Two flags exist for running `phoebe relay serve` somewhere other than its
 container: `--port` and `--data-dir`. Both default to what the scaffolded
@@ -90,7 +96,50 @@ withhold the pre-auth cookie on exactly that request and fail every sign-in.
 
 Nothing of Google's is kept. No refresh token is requested, the userinfo
 endpoint is never called, and the ID token is read once and dropped. A relay
-restart signs everyone out, which costs one redirect.
+restart signs every **browser** out, which costs one redirect.
+
+## Signing the companion in
+
+The desktop companion cannot use any of that. Google refuses to sign anyone in
+inside an embedded webview, and a `__Host-` cookie cannot reach an app whose
+pages are loaded from disk. So the companion signs in through the operator's own
+browser and comes back on a second redirect.
+
+It starts at `GET /auth/device/start?challenge=…&name=…`. The challenge is the
+SHA-256 of a PKCE verifier the app's main process mints and never sends anywhere
+else; the name is what the device will be listed as. From there it is the same
+Google flow and the same allowlist check a browser gets. What differs is the
+landing: instead of a session cookie and `/`, the relay mints a **one-time code**
+and redirects to `phoebe://auth?code=…`, the custom scheme the companion
+registers with the OS.
+
+The code is single use, lives sixty seconds, and is bound to that challenge. Any
+app on the machine can register `phoebe://` and be handed the URL; only the one
+holding the verifier can spend it at `POST /auth/device/exchange`.
+
+What the exchange answers with is a **device token**: an opaque bearer, sent as
+`Authorization: Bearer` on every call the companion makes. The relay keeps its
+SHA-256 in `devices.json` on the volume, beside the person's `sub`, address,
+device name and last seen — never the token itself, so a copy of that file is not
+a set of working credentials. A relay restart keeps companions signed in, which
+is the point.
+
+It does not expire. Revocation is the only end it has, and there are three:
+
+- the companion's own sign-out, `POST /auth/device/revoke`, which revokes the
+  bearer the request carries;
+- `POST /api/devices/remove` with an `id`, from the console;
+- the same route with a `sub`, which takes every device that person signed in.
+  That is what removing them from the allowlist has to do, since an allowlist they
+  are off is not consulted again by a bearer they already hold.
+
+On a 401 the companion drops the token and asks the operator to sign in again. It
+does not retry: the relay has said this token is not one it knows, and that
+answer does not change by being asked twice.
+
+The token is encrypted at rest with Electron's `safeStorage`. On a machine with
+no keyring the companion refuses to persist it, keeps it in memory for the
+session, and says so on screen.
 
 ## The allowlist
 
@@ -124,17 +173,28 @@ them instead of copying strings.
 | `GET`  | `/auth/google/start`             | Redirects to Google.                                                               |
 | `GET`  | `/auth/google/callback`          | Google's redirect back. The only URI Google knows.                                 |
 | `POST` | `/auth/sign-out`                 | Drops the session. 204.                                                            |
+| `GET`  | `/auth/device/start`             | Starts a companion's sign-in. Lands on `phoebe://auth`.                            |
+| `POST` | `/auth/device/exchange`          | Spends a one-time code for a device token.                                         |
+| `POST` | `/auth/device/revoke`            | Revokes the bearer on the request. 204 either way.                                 |
 | `GET`  | `/api/me`                        | `{ sub, email }` for a signed-in caller, 401 otherwise.                            |
 | `POST` | `/api/pairing-tokens`            | Mints one pairing token. Shown once; 401 otherwise.                                |
-| `GET`  | `/api/deployments`               | Every link, with where the relay holds each one.                                   |
+| `GET`  | `/api/devices`                   | Every companion signed in to this relay.                                           |
+| `POST` | `/api/devices/remove`            | Revokes devices by `id`, or a person's by `sub`.                                   |
+| `GET`  | `/api/deployments`               | Every link, with where the relay holds it and its alerts.                          |
 | `GET`  | `/api/deployments/<fingerprint>` | One link's row, plus the last report it pushed.                                    |
 | `POST` | `/api/deployments/forget`        | Forgets one deployment, named by fingerprint in the body.                          |
 | `POST` | `/api/deployments/config-set`    | Sets one config field on one deployment. The receipt comes back.                   |
-| `GET`  | `/api/events`                    | The event stream: reports and connection changes.                                  |
 | `POST` | `/api/secrets`                   | Sets or clears one tenant secret. Carries a sealed envelope the relay cannot open. |
+| `POST` | `/api/alerts/test`               | Sends one `{ kind: "test" }` body to every alert sink.                             |
+| `GET`  | `/api/events`                    | The event stream: reports, connection changes and alerts.                          |
 | `GET`  | `/` and `/assets/…`              | The console's build. Public, and the only paths that are.                          |
 
-A successful sign-in lands on `/`, the console. The pages are public on purpose:
+Every route behind the door reads one of two carriers — a `__Host-` session
+cookie or an `Authorization: Bearer` — and none of them knows which one it got.
+A browser has the first, a companion has the second, and nothing a signed-in
+person may ask for depends on what they are holding.
+
+A successful browser sign-in lands on `/`, the console. The pages are public on purpose:
 the sign-in control is part of the bundle, and every read behind it answers 401
 on its own. A path with no file behind it is still a JSON `no-such-route` — the
 console routes on the URL hash, so the relay needs no catch-all and keeps being
@@ -360,7 +420,7 @@ Both are behind the session cookie and answer 401 without it.
 ### The event stream
 
 `GET /api/events` is one server-sent-events stream, so pages update without
-polling. Four event names, each with the payload a reader would otherwise have
+polling. Five event names, each with the payload a reader would otherwise have
 fetched:
 
 | Event          | Payload                                         |
@@ -369,10 +429,17 @@ fetched:
 | `connected`    | `{ at, deployment }` — the row, as it now reads |
 | `disconnected` | `{ at, deployment }`                            |
 | `dark`         | `{ at, deployment }`                            |
+| `alert`        | `{ at, alert }` — the webhook's body, verbatim  |
 
 A connection event's name is the word the row now carries, and each is said once
 per change rather than once per check. `unseen` is never an event: it is where
 every link starts, so nothing ever becomes it.
+
+`alert` is the odd one out: it carries no row and no report, and nothing on any
+page changes when it arrives. It is the moment worth interrupting someone about,
+and the desktop companion is what does the interrupting — a browser drops it. See
+[Alerting](#alerting) for what is in the body, and `apps/desktop` for what the
+companion does with it.
 
 There is no replay and no resume cursor. Every event has a read behind it that
 answers the same question in full, so a page that missed one refetches
@@ -564,6 +631,89 @@ because a deployment newer than its relay is quoted, not translated. A deploymen
 the relay has no link for is a `404`; one it knows but cannot reach is a `200`
 carrying `undelivered` — in flight is never a queue, and the operator re-issues.
 
+## Alerting
+
+The console is not the pager. An operator who is not looking at a tab cannot
+answer "is it alive", so the relay says something when a deployment crosses into
+or out of one of five conditions:
+
+| Condition       | Raised when                                         | Cleared when                       |
+| --------------- | --------------------------------------------------- | ---------------------------------- |
+| `dark`          | Five minutes with no heartbeat.                     | The next completed handshake.      |
+| `wedged`        | A pipeline's wedged verdict turns true in a report. | It turns false in a later report.  |
+| `crash-looping` | The bootstrapper's crash-looping flag turns true.   | It turns false.                    |
+| `doctor-fail`   | The report's overall doctor verdict becomes `fail`. | A later report is not `fail`.      |
+| `replaced`      | A newer link has taken a dark link's name.          | The old deployment turns up again. |
+
+**Unseen is silent.** A link nothing has ever connected on is setup in progress,
+not an incident.
+
+**Darkness waits five minutes, not sixty seconds.** The fleet page says "dark"
+from the 60 s mark, because that is when the relay stops believing the socket.
+The alert waits out the next four minutes, so the most common cause of darkness
+— someone restarting a container — is usually over before anything is sent.
+
+**A dark deployment sends no other clears.** Its reports are stale, so
+`wedged`, `crash-looping` and `doctor-fail` hold where they were until it
+reconnects and reports. Then each is re-read against the fresh report.
+
+An alert is a transition, not a record. There is no list, no acknowledge, no
+mute and no history page: the fleet row already says what is true now, and
+`alerts.json` on the volume holds only the last state actually sent per
+(deployment, condition). Forgetting a deployment deletes its entries, and sends
+no clear on the way out — forget is the mute for a dead key.
+
+That file is why a restart never wakes you twice. On boot the relay re-evaluates
+everything and compares against what it last sent, so a still-dark deployment
+stays quiet and one that recovered overnight gets its clear.
+
+### The message
+
+One condition per message, no digest:
+
+```json
+{
+  "schema": 1,
+  "kind": "alert",
+  "condition": "wedged",
+  "state": "raised",
+  "deployment": { "name": "acme-site", "keyFingerprint": "…" },
+  "pipeline": "acme-site/sentry",
+  "since": "2026-09-18T11:12:00Z",
+  "detail": "no pass for 17 min",
+  "text": "acme-site: pipeline sentry wedged (no pass for 17 min)",
+  "url": "https://relay.example/#/d/…"
+}
+```
+
+`pipeline` is present on `wedged` and `crash-looping` only. `text` is there so
+a generic incoming webhook renders something readable with no integration
+written; anything that knows what Phoebe is reads the fields beside it.
+
+Delivery is one attempt with a five-second cap and no retry queue. A failure is
+logged at warn naming the condition, and `alerts.json` is written after the
+attempt rather than after the success — otherwise a webhook outage would come
+back as a storm of everything it missed. A lost alert is visible in the relay's
+log and in the fleet page's own state.
+
+There is no signing. The URL is the secret, the way every incoming-webhook
+product treats it, which is also why the relay never logs it.
+
+### Leaving `RELAY_ALERT_WEBHOOK` out
+
+Unset means **no webhook**, not no alerting. The relay still evaluates every
+edge and still keeps `alerts.json`, because the webhook is one of two sinks: the
+other is an `alert` event on the events stream, which the desktop companion
+turns into an OS notification and the browser ignores. That sink is not
+configurable, so evaluation cannot be.
+
+`phoebe relay serve` logs one line at start saying which of the two you have.
+
+The edge rule itself is a pure function in `phoebe-agent/contracts`
+(`src/contracts/alerts.ts`), shared rather than reimplemented: the relay runs it
+over the fleet, and the companion runs it over a local install's report, where
+there is no relay and so no `dark` and no `replaced`.
+
 ## Running it by hand
 
 ```sh
@@ -586,5 +736,14 @@ The last of the three verbs: doctor runs. The rail carries them and the relay
 will deliver them and wait for a receipt exactly as it does for a config edit or
 a secret, and nothing sends one yet. On the console's side the fleet page, a
 deployment's three read-only tabs, the secrets tab and the effective-config tab
-are here; the People page joins this same process. See
+are here; the People page joins this same process — and it is where a person's
+devices are listed with a remove beside each, so the reads and the revoke are
+here and the page is not. See
 [the relay's shape](https://github.com/JesusFilm/phoebe/issues/506).
+
+Alerting is here but only partly fed. The webhook, the edge rule, `alerts.json`
+and the test button all work; `dark` and `replaced` are evaluated against the
+relay's own clocks on every sweep. `wedged`, `crash-looping` and `doctor-fail`
+are implemented in the rule and have nothing to read until the relay stores
+reports, and the `alert` event rides the same stream. Both wait on
+[reports over the relay](https://github.com/JesusFilm/phoebe/issues/542).

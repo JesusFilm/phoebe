@@ -339,6 +339,24 @@ operator puts it in the root `.env` as `PHOEBE_RELAY_TOKEN` and removes it once 
 is done.
 _Avoid_: API key, join code
 
+**Device token**:
+The opaque bearer a relay issues to a companion after Google sign-in, sent as
+`Authorization: Bearer` on every call main makes. Stored on the relay's volume as a
+SHA-256 hash in `devices.json`, so a restart keeps companions signed in. No expiry:
+revoking it from the People page is the only end it has.
+_Avoid_: API key, session token
+
+**Device**:
+One signed-in companion as the relay sees it, named by the machine's hostname and OS, and
+listed under the person who signed it in. Removing a person revokes all of theirs.
+_Avoid_: client, machine
+
+**Relay-client seam**:
+The console bundle's one interface to the relay, filled two ways: a browser's own origin,
+cookie and `EventSource`, or the desktop bridge, where main holds the device token and
+makes the calls. Nothing else in the bundle fetches.
+_Avoid_: API client, transport
+
 **Deployment key**:
 The two key pairs in one file on the data volume (`state/relay-key`) that are a
 deployment's identity to its relay: an Ed25519 key that signs and an X25519 **box key**
@@ -416,3 +434,67 @@ _Avoid_: revoke, delete, unpair
 The host-side verb, `phoebe relay leave`, that deletes the deployment key from the data
 volume. The other half of forget, and neither half needs the other to work.
 _Avoid_: unlink, disconnect
+
+**Alert**:
+A message the relay sends out when a deployment or one of its pipelines crosses into or
+out of a named condition: `dark`, `wedged`, `crash-looping`, `doctor-fail`, `replaced`.
+Every raise has a matching clear, unseen is silent, and the edge rule that decides is one
+pure function both the relay and the companion run. It is a transition, never a record —
+`alerts.json` holds the last state notified per (deployment, condition) and nothing else.
+_Avoid_: notification (the events stream already notifies the browser), incident, page
+
+**Sink**:
+Somewhere an alert goes. There are two: the generic webhook `RELAY_ALERT_WEBHOOK` names,
+and the `alert` event on the events stream. The webhook is optional and the event is not,
+so an unset variable means no webhook rather than no alerting.
+_Avoid_: channel, target, subscriber
+
+### Console
+
+**Console**:
+The web page a relay serves for reading a fleet. One React bundle, which the companion
+also loads from disk over a scheme of its own, so a page an operator sees is never written
+twice.
+_Avoid_: dashboard, UI, web app
+
+**Companion**:
+The desktop app: installer and configurator for local installs, client of the relay for
+remote deployments. Two arms, one window.
+_Avoid_: desktop console, dashboard, Phoebe app
+
+**Local install**:
+A repository folder on this machine the companion drives through Docker Compose. Its
+states are running, stopped and not initialised — the relay's dark and unseen are a remote
+reader's guesses about silence, and there is no silence here.
+_Avoid_: local deployment, local console
+
+**Desktop bridge**:
+The preload-exposed surface through which the console bundle reaches main's host verbs and
+local reads. Its presence is how the bundle knows it is in the companion, and its absence
+is how it knows it is in a browser.
+_Avoid_: IPC API, RPC, electron API
+
+**Verb run**:
+One invocation of a host verb by the companion, with its lines streamed and an exit
+carrying the verb's typed outcome. One per install at a time, parallel across installs.
+_Avoid_: job, task, command
+
+**Device notification**:
+The OS notification the companion raises from an alert. A rendering of the alert, never
+its own record: it carries no state the fleet row does not already have, there is no list
+of them and no acknowledging one. Tagged by (deployment, condition), so a clear replaces
+the raise it is about rather than piling up beside it.
+_Avoid_: push (rejected on desktop, undecided on mobile), toast, banner
+
+**Badge**:
+The count on the companion's dock or taskbar icon: how many deployments and local installs
+are in a raised condition right now. Subjects, not edges — three wedged pipelines on one
+deployment are one. Zero clears it, and there is no tray item beside it.
+_Avoid_: counter, indicator, unread count
+
+**Local read loop**:
+Main's per-install pair of clocks that produces deployment reports for a local install:
+Compose's event stream for the moment a container moves, and a `status --json` exec every
+15 s while it is up. What comes out is the relay's own `report` event, so a page renders
+either arm without knowing which it has.
+_Avoid_: watcher, sync, poller

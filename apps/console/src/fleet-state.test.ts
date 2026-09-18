@@ -17,6 +17,8 @@ function fakeClient(
 ): RelayClient {
   return {
     me: () => Promise.resolve({ sub: "s", email: "ada@example.test" } satisfies RelayIdentity),
+    signIn: () => Promise.resolve({ kind: "navigate", href: "/auth/google/start" }),
+    watchSession: () => () => {},
     signOut: () => Promise.resolve(),
     deployments: () => Promise.resolve(rows),
     deployment: (fingerprint) => {
@@ -105,6 +107,28 @@ describe("one event applied", () => {
     );
 
     expect(after.rows.map((entry) => entry.fingerprint)).toEqual(["one", "two"]);
+  });
+
+  test("an alert changes nothing: it is a moment, not a fact (#524 §1)", () => {
+    const before = { rows: [paired], reports: {} };
+
+    const after = applyEvent(before, {
+      type: RELAY_EVENTS.alert,
+      at: ago(0),
+      alert: {
+        schema: 1,
+        kind: "alert",
+        condition: "dark",
+        state: "raised",
+        deployment: { name: "alpha", keyFingerprint: "one" },
+        since: ago(5),
+        detail: "no heartbeat for 5 min",
+        text: "alpha: dark (no heartbeat for 5 min)",
+        url: "https://relay.example/#/d/one",
+      },
+    });
+
+    expect(after).toBe(before);
   });
 
   test("an event that lands before the read applies to the empty fleet", () => {
