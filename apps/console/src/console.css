@@ -321,3 +321,121 @@ a {
   max-width: 460px;
   margin: 40px auto;
 }
+
+/* ── the page tabs ─────────────────────────────────────────────────────── */
+
+.tabs {
+  display: flex;
+  gap: 14px;
+}
+
+.tabs a {
+  text-decoration: none;
+  color: var(--muted);
+  padding-bottom: 2px;
+  border-bottom: 2px solid transparent;
+}
+
+.tabs a.current {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+}
+
+/* ── the People page ───────────────────────────────────────────────────── */
+
+.add-person {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 0 6px;
+}
+
+.add-person input {
+  font: inherit;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: inherit;
+  min-width: 260px;
+}
+
+.trouble {
+  color: var(--fail);
+}
+
+.people {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  max-width: 720px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.person {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.person:last-child {
+  border-bottom: none;
+}
+
+.person .name {
+  font-weight: 600;
+}
+
+.person .facts:last-of-type {
+  margin-left: auto;
+}
+
+.person button {
+  margin-left: auto;
+}
+
+/* ── minting a pairing token ───────────────────────────────────────────── */
+
+.pairing {
+  margin-top: 26px;
+  max-width: 720px;
+}
+
+.pairing h2 {
+  font-size: 15px;
+  margin: 0 0 4px;
+}
+
+.pairing .legend {
+  margin-bottom: 8px;
+}
+
+.token {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--warn);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.token p {
+  margin: 0 0 8px;
+}
+
+.token ol {
+  margin: 0 0 8px;
+  padding-left: 20px;
+}
+
+.token-value {
+  /* The one string on the page that has to survive a double-click. */
+  user-select: all;
+  word-break: break-all;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--chip);
+}

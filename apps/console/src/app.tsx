@@ -1,5 +1,5 @@
-// The console's shell: the session gate, the fleet it holds, and the rail and
-// grid it hands them to.
+// The console's shell: the session gate, the fleet it holds, the rail and grid it
+// hands them to, and the hash the pages are chosen by.
 //
 // Everything it needs from the relay arrives through the one client seam, so this
 // component is the same component in the companion's renderer with a different
@@ -17,6 +17,7 @@ import type { RelayIdentity } from "phoebe-agent/contracts";
 import { rowFacts, sortFleet } from "./facts.ts";
 import { applyEvent, EMPTY_FLEET, loadFleet, type FleetState } from "./fleet-state.ts";
 import { FleetPage } from "./fleet-page.tsx";
+import { PeoplePage } from "./people-page.tsx";
 import { Rail } from "./rail.tsx";
 import { isNotSignedIn, type RelayClient } from "./relay-client.ts";
 
@@ -83,6 +84,7 @@ function Console({
   identity: RelayIdentity;
   onSignedOut: () => void;
 }) {
+  const route = useHashRoute();
   const [fleet, setFleet] = useState<FleetState>(EMPTY_FLEET);
   const [loaded, setLoaded] = useState(false);
   const [trouble, setTrouble] = useState<string | null>(null);
@@ -124,6 +126,14 @@ function Console({
     <>
       <header className="topbar">
         <span className="brand">Phoebe console</span>
+        <nav className="tabs" aria-label="Pages">
+          <a href={`#${FLEET_ROUTE}`} className={route === PEOPLE_ROUTE ? "" : "current"}>
+            Fleet
+          </a>
+          <a href={`#${PEOPLE_ROUTE}`} className={route === PEOPLE_ROUTE ? "current" : ""}>
+            People
+          </a>
+        </nav>
         <span className="spacer" />
         <span className="muted">{identity.email}</span>
         <button
@@ -137,7 +147,9 @@ function Console({
       </header>
       <div className="frame">
         <Rail facts={facts} now={now} />
-        {trouble !== null ? (
+        {route === PEOPLE_ROUTE ? (
+          <PeoplePage client={client} now={now} onSignedOut={onSignedOut} />
+        ) : trouble !== null ? (
           <main className="main">
             <h1>Fleet</h1>
             <p className="muted">The relay did not answer: {trouble}</p>
@@ -153,6 +165,34 @@ function Console({
       </div>
     </>
   );
+}
+
+/** The fleet, and the page every unknown hash falls back to. */
+const FLEET_ROUTE = "/fleet";
+/** The allowlist and the pairing panel (#548). */
+const PEOPLE_ROUTE = "/people";
+
+/**
+ * The path in the URL's hash, and a re-render when it changes.
+ *
+ * The hash and not the path, because the relay serves the console's build and
+ * nothing else: a real path would need a catch-all route on the relay, and a
+ * catch-all is what costs it the ability to say a route does not exist
+ * (relay/console-assets.ts). Nothing here reaches the server.
+ */
+function useHashRoute(): string {
+  const [route, setRoute] = useState(routeInHash);
+  useEffect(() => {
+    const onChange = () => setRoute(routeInHash());
+    window.addEventListener("hashchange", onChange);
+    return () => window.removeEventListener("hashchange", onChange);
+  }, []);
+  return route;
+}
+
+function routeInHash(): string {
+  const hash = window.location.hash.replace(/^#/, "");
+  return hash === "" ? FLEET_ROUTE : hash;
 }
 
 /** A clock that ticks, so the durations on screen keep being true. */

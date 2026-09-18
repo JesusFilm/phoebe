@@ -10,9 +10,11 @@ import type {
   DeploymentReport,
   FleetCell,
   RelayDeploymentRow,
+  RelayPerson,
   RelayStoredReport,
   TenantFacts,
 } from "phoebe-agent/contracts";
+import type { RelayClient } from "./relay-client.ts";
 
 export const NOW = new Date("2026-09-18T12:00:00.000Z");
 
@@ -116,6 +118,38 @@ export function stored(
     schema: DEPLOYMENT_SCHEMA,
     receivedAt: ago(12),
     report: body,
+    ...overrides,
+  };
+}
+
+export function person(overrides: Partial<RelayPerson> = {}): RelayPerson {
+  return {
+    email: "ada@example.test",
+    addedBy: "grace@example.test",
+    addedAt: ago(86_400),
+    fromEnvironment: false,
+    signedIn: true,
+    self: false,
+    ...overrides,
+  };
+}
+
+/**
+ * A relay client that answers emptily. A test overrides the one or two methods
+ * it exercises, so a method added to the seam does not break every test file
+ * that never calls it.
+ */
+export function stubClient(overrides: Partial<RelayClient> = {}): RelayClient {
+  return {
+    me: () => Promise.resolve({ sub: "sub-ada", email: "ada@example.test" }),
+    signOut: () => Promise.resolve(),
+    deployments: () => Promise.resolve([]),
+    deployment: () => Promise.reject(new Error("no such deployment")),
+    events: () => () => {},
+    people: () => Promise.resolve([]),
+    addPerson: () => Promise.reject(new Error("nothing stubbed addPerson")),
+    removePerson: () => Promise.resolve({ sessionsEnded: 0 }),
+    mintPairingToken: () => Promise.reject(new Error("nothing stubbed mintPairingToken")),
     ...overrides,
   };
 }

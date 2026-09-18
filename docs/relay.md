@@ -114,23 +114,49 @@ Entries from `ALLOWED_EMAILS` are never written to the file. They are recomputed
 at every start, which is what makes editing the variable and restarting a real
 way out of a lockout.
 
+### The People page maintains it
+
+The console's **People** page is where the list is kept: add by email, remove
+anyone else, and mint a pairing token from the same page. There are no roles.
+Everyone on the list can read every deployment, mint tokens, and edit this very
+list, so the page carries no permissions column and never will.
+
+Two rows have no Remove beside them, and neither is a privilege:
+
+- **Yourself.** Nobody can put you back — there is no role above you and no
+  console for someone who is not on the list — so removing yourself is a
+  lockout with extra steps.
+- **Anything from `ALLOWED_EMAILS`.** That entry is not in the file to delete
+  and would return at the next start. The page says "from environment" and
+  leaves it; the way out is the variable and a restart.
+
+**Removing someone ends their sessions.** The relay closes every session that
+person holds, so a console open in front of them goes dead at its next request
+rather than at their next reload — and the answer says how many sessions ended,
+because that is the half of a removal an operator cannot otherwise see. A relay
+holds nothing else of theirs: no refresh token was ever requested, so a person
+off the list has no way back in.
+
 ## Routes
 
 Paths live in `phoebe-agent/contracts` as `RELAY_ROUTES`, so the console imports
 them instead of copying strings.
 
-| Method | Path                             | What happens                                              |
-| ------ | -------------------------------- | --------------------------------------------------------- |
-| `GET`  | `/auth/google/start`             | Redirects to Google.                                      |
-| `GET`  | `/auth/google/callback`          | Google's redirect back. The only URI Google knows.        |
-| `POST` | `/auth/sign-out`                 | Drops the session. 204.                                   |
-| `GET`  | `/api/me`                        | `{ sub, email }` for a signed-in caller, 401 otherwise.   |
-| `POST` | `/api/pairing-tokens`            | Mints one pairing token. Shown once; 401 otherwise.       |
-| `GET`  | `/api/deployments`               | Every link, with where the relay holds each one.          |
-| `GET`  | `/api/deployments/<fingerprint>` | One link's row, plus the last report it pushed.           |
-| `POST` | `/api/deployments/forget`        | Forgets one deployment, named by fingerprint in the body. |
-| `GET`  | `/api/events`                    | The event stream: reports and connection changes.         |
-| `GET`  | `/` and `/assets/…`              | The console's build. Public, and the only paths that are. |
+| Method | Path                             | What happens                                                |
+| ------ | -------------------------------- | ----------------------------------------------------------- |
+| `GET`  | `/auth/google/start`             | Redirects to Google.                                        |
+| `GET`  | `/auth/google/callback`          | Google's redirect back. The only URI Google knows.          |
+| `POST` | `/auth/sign-out`                 | Drops the session. 204.                                     |
+| `GET`  | `/api/me`                        | `{ sub, email }` for a signed-in caller, 401 otherwise.     |
+| `POST` | `/api/pairing-tokens`            | Mints one pairing token. Shown once; 401 otherwise.         |
+| `GET`  | `/api/deployments`               | Every link, with where the relay holds each one.            |
+| `GET`  | `/api/deployments/<fingerprint>` | One link's row, plus the last report it pushed.             |
+| `POST` | `/api/deployments/forget`        | Forgets one deployment, named by fingerprint in the body.   |
+| `GET`  | `/api/events`                    | The event stream: reports and connection changes.           |
+| `GET`  | `/api/people`                    | Everyone who may sign in.                                   |
+| `POST` | `/api/people`                    | Adds one, by email in the body.                             |
+| `POST` | `/api/people/remove`             | Removes one, by email in the body, and ends their sessions. |
+| `GET`  | `/` and `/assets/…`              | The console's build. Public, and the only paths that are.   |
 
 A successful sign-in lands on `/`, the console. The pages are public on purpose:
 the sign-in control is part of the bundle, and every read behind it answers 401
@@ -409,6 +435,15 @@ A report whose `schema` this console does not know is not read at all. The card
 says so and still shows the relay's own connection facts, which never came from the
 report.
 
+Beside the fleet is **People**, reached from the tabs in the top bar and from
+`#/people` — the pages are hash routes, so none of them reaches the relay and the
+relay keeps being able to say a path does not exist. Minting a pairing token lives
+on that page, because adding a person and pairing a deployment are the same act.
+The token comes back once, and the panel says the two settings to make —
+`relay.url` in the root `phoebe.config.ts`, spelled out with this relay's own
+address, and `PHOEBE_RELAY_TOKEN` in the root `.env` — while the characters are
+still on screen.
+
 ## Running it by hand
 
 ```sh
@@ -429,7 +464,7 @@ run the command above.
 
 The verbs themselves — config writes, sealed secrets, doctor runs. The rail
 carries them, the relay will deliver them and wait for a receipt, and nothing
-sends one yet. On the console's side the fleet page is here and the rest is not:
-selecting a deployment, its effective config, and the People page all join this
-same process. See
+sends one yet. On the console's side the fleet and People pages are here and the
+rest is not: selecting a deployment and its effective config join this same
+process. See
 [the relay's shape](https://github.com/JesusFilm/phoebe/issues/506).

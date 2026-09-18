@@ -62,6 +62,8 @@ export const RELAY_ROUTES = {
   deployments: "/api/deployments",
   forget: "/api/deployments/forget",
   events: "/api/events",
+  people: "/api/people",
+  removePerson: "/api/people/remove",
 };
 
 /**

@@ -27,6 +27,8 @@ export type {
   RelayDeploymentDetail,
   RelayDeploymentRow,
   RelayIdentity,
+  RelayPairingToken,
+  RelayPerson,
   RelayRoute,
   RelayStoredReport,
 } from "./relay-routes.ts";
