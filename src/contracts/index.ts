@@ -23,3 +23,22 @@
 export type { StopOutcome } from "./stop-outcome.ts";
 export { RELAY_ROUTES } from "./relay-routes.ts";
 export type { RelayIdentity, RelayRoute } from "./relay-routes.ts";
+export type { CredentialArm } from "./credential-arm.ts";
+export type { PipelineSource, PipelineState, WedgedVerdict } from "./pipeline-state.ts";
+export type { CurrentUnit, StatusSnapshot, UnitRef } from "./status-snapshot.ts";
+export {
+  DEPLOYMENT_SCHEMA,
+  type BootstrapperReport,
+  type ChildExit,
+  type ChildLiveness,
+  type ChildState,
+  type CrashLoopRecord,
+  type DeploymentArm,
+  type DeploymentIdentity,
+  type DeploymentReport,
+  type FleetCell,
+  type FleetReport,
+  type ReconcileState,
+  type SlotReport,
+  type TenantFacts,
+} from "./deployment.ts";
