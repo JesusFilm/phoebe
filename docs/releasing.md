@@ -67,6 +67,19 @@ next release some engine change triggers, and says nothing in the changelog. If
 an app change deserves a release note, a new window or a changed sign-in flow,
 write the changeset by hand against the root package.
 
+## One thing is built before it is published
+
+The engine and the bootstrapper ship raw `.ts` and run under Node 24
+type-stripping, so nothing is compiled for them. The console is the exception:
+`apps/console` builds into `console/` at the root, the root package's `files`
+publishes that directory, and `phoebe relay serve` reads the pages out of it.
+
+`console/` is generated and gitignored, so a publish from a clean checkout would
+ship a relay whose pages answer 503. The root `prepublishOnly` script runs
+`vp run -r build`, which `npm publish` — the binary `changeset publish` shells out
+to — fires before it packs. It does not fire on `npm pack`, so the packaging
+checks stay as fast as they were.
+
 ## After the release: the pinned tags in the docs
 
 Three places carry a concrete engine tag that readers copy verbatim, and all

@@ -15,8 +15,8 @@ when that ref or the config moves.
 
 The repo is a pnpm workspace ([`pnpm-workspace.yaml`](pnpm-workspace.yaml)). The
 package stays at the root and is the only thing that publishes; [`apps/`](apps)
-holds the apps that ship beside it, starting with the desktop console
-([#521](https://github.com/JesusFilm/phoebe/issues/521)). Each app is private and
+holds the apps that ship beside it, starting with
+[`apps/console`](apps/console), the web console the relay serves. Each app is private and
 rides the root version, so `apps/*` never adds a package to npm — it adds
 packages the root `ready` gate lints, type-checks, tests, and builds.
 
