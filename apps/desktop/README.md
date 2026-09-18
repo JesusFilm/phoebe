@@ -30,9 +30,17 @@ exposes, and by nothing else. No build flag, no second entry point
 
 The app is `private` and carries no version of its own. `vite.config.ts` reads the
 root package's version at build time and defines it into the bundle
-([#521 §4](https://github.com/JesusFilm/phoebe/issues/521)). It reads no `.env`
-and holds no secret. Signing in happens against the relay and the session is the
-companion's ([#521 §8](https://github.com/JesusFilm/phoebe/issues/521)).
+([#521 §4](https://github.com/JesusFilm/phoebe/issues/521)). It reads no `.env`.
+The one secret it holds is the relay's device token, and that lives in main behind
+`safeStorage` — never in the renderer, never on disk in the clear
+([#523 §5](https://github.com/JesusFilm/phoebe/issues/523)).
+
+**Electron floor: 44, and never below 35.** The secret envelope for a remote
+`secret set` is built in the renderer by the same console code a browser runs
+([#514](https://github.com/JesusFilm/phoebe/issues/514),
+[#523 §6](https://github.com/JesusFilm/phoebe/issues/523)), which needs X25519 in
+`crypto.subtle` — Chromium 134, Electron 35. `package.json` pins a current major
+well above that; the floor is what a downgrade may not cross.
 
 `vp run build` is two passes, one per entry point, and the two take different
 formats. The preload is CommonJS because a sandboxed preload has to be — Electron
@@ -68,11 +76,21 @@ the verb runs that drive them ([#555](https://github.com/JesusFilm/phoebe/issues
 - [`verb-dispatch.ts`](src/verb-dispatch.ts) — the six `run<Verb>` calls, in
   this process (ADR 0001). No second Node, no `bin.mjs`, no stdout parsing.
 
-Beside it, a relay arm with no session, so the console draws the Relay group
-signed out ([#526](https://github.com/JesusFilm/phoebe/issues/526)). Sign-in
-([#554](https://github.com/JesusFilm/phoebe/issues/554)) and the local read loop
-([#556](https://github.com/JesusFilm/phoebe/issues/556)) are changes in here,
-behind the contract the preload already exposes.
+**The relay arm** ([#554](https://github.com/JesusFilm/phoebe/issues/554)):
+sign-in, the JSON reads the renderer asks for, the relay's event stream
+re-emitted over IPC, and sign-out. Main is the relay client — it holds the device
+token and the renderer never sees it
+([#523 §1](https://github.com/JesusFilm/phoebe/issues/523)).
+
+Sign-in runs in the operator's own browser, because Google refuses an embedded
+webview. Main mints a PKCE verifier, opens `${relay}/auth/device/start`, and the
+relay comes back to `phoebe://auth?code=…`. The single-instance lock is what makes
+that land on the process holding the verifier: on Windows and Linux the OS
+launches a _second_ process with the URL on its command line, and without the lock
+one process would hold the code and the other the verifier.
+
+The local read loop ([#556](https://github.com/JesusFilm/phoebe/issues/556)) is a
+change in here, behind the contract the preload already exposes.
 
 Two things a later ticket owes this package. `upgrade` and `migrate` spawn their
 children through `spawnSync`, which blocks main for as long as they run — so the

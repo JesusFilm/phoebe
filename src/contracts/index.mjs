@@ -34,6 +34,12 @@ export const MAX_RUN_LINES = 2000;
 /** The verbs a companion can cancel — see verb-run.ts (#527 §2). */
 export const CANCELLABLE_VERBS = ["start", "stop"];
 
+/** Where a companion's sign-in lands — see relay-routes.ts (#554). */
+export const COMPANION_AUTH_URL = "phoebe://auth";
+
+/** How long a companion has to spend its one-time code — see relay-routes.ts. */
+export const DEVICE_CODE_TTL_MS = 60_000;
+
 /** The receipt outcome for a request whose socket closed first (#506 §8). */
 export const RELAY_UNDELIVERED = "undelivered";
 
@@ -66,8 +72,13 @@ export const RELAY_ROUTES = {
   signIn: "/auth/google/start",
   callback: "/auth/google/callback",
   signOut: "/auth/sign-out",
+  deviceStart: "/auth/device/start",
+  deviceExchange: "/auth/device/exchange",
+  deviceRevoke: "/auth/device/revoke",
   me: "/api/me",
   pairingTokens: "/api/pairing-tokens",
+  devices: "/api/devices",
+  deviceRemove: "/api/devices/remove",
   deployments: "/api/deployments",
   forget: "/api/deployments/forget",
   events: "/api/events",

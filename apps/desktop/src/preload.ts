@@ -13,6 +13,7 @@ import { DESKTOP_BRIDGE_GLOBAL } from "phoebe-agent/contracts";
 import type {
   DesktopBridge,
   LocalInstall,
+  RelayArmState,
   RelayEvent,
   RunExit,
   RunLine,
@@ -65,6 +66,16 @@ const bridge: DesktopBridge = {
   },
   relay: {
     state: () => call(BRIDGE_CHANNELS.relayState),
+    signIn: (request) => call(BRIDGE_CHANNELS.relaySignIn, request),
+    watch: (onState) => {
+      const listener = (_event: IpcRendererEvent, state: RelayArmState) => {
+        onState(state);
+      };
+      ipcRenderer.on(BRIDGE_CHANNELS.relayArm, listener);
+      return () => {
+        ipcRenderer.off(BRIDGE_CHANNELS.relayArm, listener);
+      };
+    },
     request: (request) => call(BRIDGE_CHANNELS.relayRequest, request),
     signOut: () => call(BRIDGE_CHANNELS.relaySignOut),
     events: (onEvent) => subscribe<RelayEvent>(BRIDGE_CHANNELS.relayEvent, onEvent),

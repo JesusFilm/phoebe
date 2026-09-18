@@ -24,7 +24,7 @@ import { applyEvent, EMPTY_FLEET, loadFleet, type FleetState } from "./fleet-sta
 import { FleetPage } from "./fleet-page.tsx";
 import { InstallPage } from "./install-page.tsx";
 import { Rail } from "./rail.tsx";
-import { isNotSignedIn, type RelayClient } from "./relay-client.ts";
+import { isNotSignedIn, type RelayClient, type RelaySignIn } from "./relay-client.ts";
 
 type Session =
   | { kind: "asking" }
@@ -43,6 +43,7 @@ export function App({
   bridge?: DesktopBridge | null;
 }) {
   const [session, setSession] = useState<Session>({ kind: "asking" });
+  const [signIn, setSignIn] = useState<RelaySignIn | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -60,14 +61,40 @@ export function App({
     };
   }, [client]);
 
+  // The session can end without the page asking for anything: in the companion
+  // main drops the device token when the relay answers 401 on the event stream,
+  // and the rail has to stop claiming a session that is gone (#554). In a
+  // browser this never fires, and that is the browser arm's own answer.
+  useEffect(() => client.watchSession(setIdentity), [client]);
+
+  // How this arm signs in, read only while there is nobody signed in. The
+  // companion's answer carries the relay it remembers and whether a token
+  // would survive a relaunch, so it is read again each time rather than once.
+  useEffect(() => {
+    if (session.kind !== "signed-out") return;
+    let live = true;
+    client.signIn().then((how) => {
+      if (live) setSignIn(how);
+    }, ignore);
+    return () => {
+      live = false;
+    };
+  }, [client, session.kind]);
+
+  function setIdentity(identity: RelayIdentity | null): void {
+    setSession(identity === null ? { kind: "signed-out" } : { kind: "signed-in", identity });
+  }
+
   if (session.kind === "asking") return <Notice title="Phoebe console">Signing in…</Notice>;
   if (session.kind === "signed-out" && surface === "browser") {
     return (
       <Notice title="Phoebe console">
         <p>This relay is behind Google sign-in.</p>
-        <p>
-          <a href={RELAY_ROUTES.signIn}>Sign in with Google</a>
-        </p>
+        {signIn !== null && signIn.kind === "navigate" ? (
+          <p>
+            <a href={signIn.href}>Sign in with Google</a>
+          </p>
+        ) : null}
       </Notice>
     );
   }
@@ -86,6 +113,8 @@ export function App({
       surface={surface}
       bridge={bridge}
       identity={session.kind === "signed-in" ? session.identity : null}
+      signIn={signIn}
+      onSignedIn={setIdentity}
       onSignedOut={() => setSession({ kind: "signed-out" })}
     />
   );
@@ -96,12 +125,16 @@ function Console({
   surface,
   bridge,
   identity,
+  signIn,
+  onSignedIn,
   onSignedOut,
 }: {
   client: RelayClient;
   surface: Surface;
   bridge: DesktopBridge | null;
   identity: RelayIdentity | null;
+  signIn: RelaySignIn | null;
+  onSignedIn: (identity: RelayIdentity) => void;
   onSignedOut: () => void;
 }) {
   const [fleet, setFleet] = useState<FleetState>(EMPTY_FLEET);
@@ -222,6 +255,8 @@ function Console({
           installs={installs}
           selected={openInstall}
           onSelect={setOpenInstall}
+          signIn={signIn}
+          onSignedIn={onSignedIn}
           {...(bridge === null ? {} : { onAdd: addInstall })}
         />
         {open !== null && bridge !== null ? (
@@ -250,7 +285,8 @@ function Console({
  * The companion's home: both arms, and what each one is holding. Signed out, it
  * is the whole window. Adding a local install is a control here as well as on
  * the rail, because an empty companion has a rail nobody has looked at yet;
- * signing in is #554's, so this page still names it rather than offering it.
+ * signing in is the rail's, beside the group it fills, so this page points at
+ * it rather than putting a second copy of the same form on screen.
  */
 function CompanionHome({
   installs,
@@ -287,12 +323,15 @@ function CompanionHome({
         <h2>Relay</h2>
         <p className="muted">
           Not signed in. A relay is how the companion reaches the deployments that run somewhere
-          else.
+          else. Enter its address in the rail and sign-in opens in your own browser.
         </p>
       </section>
     </main>
   );
 }
+
+/** A read whose failure changes nothing on screen. */
+function ignore(): void {}
 
 /** A clock that ticks, so the durations on screen keep being true. */
 function useNow(everyMs: number): Date {

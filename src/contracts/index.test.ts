@@ -7,7 +7,9 @@
 import { describe, expect, test } from "vite-plus/test";
 import {
   CANCELLABLE_VERBS as typedCancellable,
+  COMPANION_AUTH_URL as typedAuthUrl,
   DESKTOP_BRIDGE_GLOBAL as typedGlobal,
+  DEVICE_CODE_TTL_MS as typedCodeTtl,
   MAX_RUN_LINES as typedMaxLines,
   RELAY_CLOSE as typedClose,
   RELAY_DARK_AFTER_MS as typedDark,
@@ -21,7 +23,9 @@ import {
 } from "./index.ts";
 import {
   CANCELLABLE_VERBS as shippedCancellable,
+  COMPANION_AUTH_URL as shippedAuthUrl,
   DESKTOP_BRIDGE_GLOBAL as shippedGlobal,
+  DEVICE_CODE_TTL_MS as shippedCodeTtl,
   MAX_RUN_LINES as shippedMaxLines,
   RELAY_CLOSE as shippedClose,
   RELAY_DARK_AFTER_MS as shippedDark,
@@ -102,5 +106,22 @@ describe("the verb run's constants", () => {
     // `start` and `stop` drive Compose through an injected runner, so the
     // companion has the child to signal. Nothing else does — see verb-run.ts.
     expect([...typedCancellable].sort()).toEqual(["start", "stop"]);
+  });
+});
+
+describe("the companion's sign-in constants (#554)", () => {
+  test.each([
+    ["COMPANION_AUTH_URL", typedAuthUrl, shippedAuthUrl],
+    ["DEVICE_CODE_TTL_MS", typedCodeTtl, shippedCodeTtl],
+  ])("%s is the same on both sides", (_name, typedValue, shippedValue) => {
+    expect(shippedValue).toEqual(typedValue);
+  });
+
+  test("the landing is on the scheme the companion registers, under its own host", () => {
+    // The relay redirects to this and the companion registers the scheme in
+    // front of it; the host is what keeps it off the renderer's own origin.
+    const landing = new URL(typedAuthUrl);
+    expect(landing.protocol).toBe("phoebe:");
+    expect(landing.host).toBe("auth");
   });
 });
