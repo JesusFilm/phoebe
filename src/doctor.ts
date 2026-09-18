@@ -92,30 +92,19 @@ import {
   type StrayMember,
 } from "./stray-members.ts";
 import { enumerateWorkspaceTenants } from "./tenant-commands.ts";
+import type {
+  CheckState,
+  DoctorCheck,
+  DoctorReport,
+  MissingDeclaredEnvKey,
+  TenantDoctorRow,
+} from "./contracts/doctor-report.ts";
 
-/** A scheduled kind's declared key that its pipeline's env does not hold (#425). */
-export type MissingDeclaredEnvKey = { pipeline: string; kind: string; key: string };
-
-export type CheckState = "ok" | "warn" | "fail" | "unknown";
-
-export type DoctorCheck = {
-  id: string;
-  state: CheckState;
-  detail: string;
-};
-
-export type TenantDoctorRow = {
-  path: string;
-  slug: string | null;
-  checks: DoctorCheck[];
-};
-
-export type DoctorReport = {
-  checks: DoctorCheck[];
-  tenants: TenantDoctorRow[];
-  /** False when any deployment or tenant check failed. */
-  ok: boolean;
-};
+// The report and its leaves now live in `phoebe-agent/contracts` (#552) so the
+// five tabs of a console can render a health panel without loading the checks
+// below, which reach GitHub, git, npm and the data volume. Re-exported here so
+// every existing reader goes on importing them off this module.
+export type { CheckState, DoctorCheck, DoctorReport, MissingDeclaredEnvKey, TenantDoctorRow };
 
 /** Fold every check into the report verdict. Pure, for tests. */
 export function buildDoctorReport(checks: DoctorCheck[], tenants: TenantDoctorRow[]): DoctorReport {
@@ -262,9 +251,10 @@ function engineBaseDir(env: NodeJS.ProcessEnv): string {
   return env["PHOEBE_ENGINE_DIR"] ?? join(tmpdir(), "phoebe-agent");
 }
 
-type DoctorDeps = {
-  configDir: string;
-  env: NodeJS.ProcessEnv;
+/** The seams every check reaches the world through — all injectable (#552). */
+export type DoctorDeps = {
+  /** Defaults to `process.env`; the CLI passes the real environment. */
+  env?: NodeJS.ProcessEnv;
   git?: GitRunner;
   npm?: NpmRunner;
   fetchFn?: typeof fetch;
@@ -1162,24 +1152,32 @@ export async function tenantRow(fields: {
   return { path: fields.path, slug: fields.slug, checks };
 }
 
-/** Run every check and assemble the report. The CLI renders it. */
-export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
+/**
+ * The doctor verb: run every check and assemble the report. Renders nothing and
+ * decides no exit code — the CLI printer and the companion's install tab format
+ * the same value (#552).
+ */
+export async function runDoctor(
+  opts: { configDir: string },
+  deps: DoctorDeps = {},
+): Promise<DoctorReport> {
   const git = deps.git ?? defaultGit;
   const npm = deps.npm ?? defaultNpm;
   const fetchFn = deps.fetchFn ?? fetch;
-  const token = deps.env["GH_TOKEN"];
+  const env = deps.env ?? process.env;
+  const token = env["GH_TOKEN"];
   const checks: DoctorCheck[] = [];
 
   // 3. Root config loads + engine field parses. Everything engine-shaped hangs
   // off this, so it runs first even though it is check three in the docs.
-  const configPath = join(deps.configDir, TENANT_CONFIG_FILE);
+  const configPath = join(opts.configDir, TENANT_CONFIG_FILE);
   let source: ResolvedEngineSource | null = null;
   let rootConfig: Record<string, unknown> | null = null;
   if (!existsSync(configPath)) {
     checks.push({
       id: "config",
       state: "fail",
-      detail: `no ${TENANT_CONFIG_FILE} at ${deps.configDir}`,
+      detail: `no ${TENANT_CONFIG_FILE} at ${opts.configDir}`,
     });
   } else {
     try {
@@ -1229,7 +1227,7 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
 
     // 2. The pin vs the latest release, plus what is actually checked out.
     let materialized = "";
-    const cloneDir = githubEngineDir(engineBaseDir(deps.env), source.repo);
+    const cloneDir = githubEngineDir(engineBaseDir(env), source.repo);
     if (existsSync(join(cloneDir, ".git"))) {
       try {
         materialized = `; materialized ${git(["-C", cloneDir, "rev-parse", "HEAD"]).trim().slice(0, 12)}`;
@@ -1319,7 +1317,7 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
   }
 
   // 5. Crash-loop / quarantine state.
-  checks.push(crashLoopCheck(readCrashLoopState(crashLoopStatePath(engineBaseDir(deps.env)))));
+  checks.push(crashLoopCheck(readCrashLoopState(crashLoopStatePath(engineBaseDir(env)))));
 
   // 6. Supervisor liveness. Only answerable from inside the container, where
   // `phoebe boot` should be PID 1. On the host this is honest "unknown" — there
@@ -1368,11 +1366,11 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
       detail: "local mount — floor check does not apply",
     });
   } else {
-    const floorEngineDir = githubEngineDir(engineBaseDir(deps.env), source.repo);
+    const floorEngineDir = githubEngineDir(engineBaseDir(env), source.repo);
     const minBootstrap = existsSync(join(floorEngineDir, ".git"))
       ? readMinBootstrap(floorEngineDir)
       : null;
-    const dockerfilePath = join(deps.configDir, "container", "Dockerfile");
+    const dockerfilePath = join(opts.configDir, "container", "Dockerfile");
     let launcherVersion: string | null = null;
     let launcherSource: "dockerfile" | "npm-global" | "unknown" = "unknown";
     if (existsSync(dockerfilePath)) {
@@ -1396,8 +1394,8 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
   // Where tenant data lives, for the stale-state check: the container constant
   // unless `PHOEBE_DATA_DIR` moves it, which is how doctor reads a mounted
   // volume from the host.
-  const dataBase = resolveDataBase(deps.env);
-  const enumeration = await enumerateWorkspaceTenants({ configDir: deps.configDir });
+  const dataBase = resolveDataBase(env);
+  const enumeration = await enumerateWorkspaceTenants({ configDir: opts.configDir });
   if (enumeration !== null) {
     // Bounded, order-preserving: each probe can wait out its 30s timeout, so a
     // serial sweep over a fleet of unreachable tenants would take
@@ -1430,7 +1428,7 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
           // Per tenant, not per deployment: a fleet mixes arms whenever one
           // tenant keeps its own PAT, and #157's per-installation approvals
           // make that the normal state during any permission change.
-          arm: resolveCredentialArm({ GH_TOKEN: tokenValue }, deps.env),
+          arm: resolveCredentialArm({ GH_TOKEN: tokenValue }, env),
           token: tokenValue,
           envLabel: tenant.envPath,
           fetchFn,
@@ -1457,20 +1455,20 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
     const slug = rootConfig["repoSlug"];
     tenants.push(
       await tenantRow({
-        path: deps.configDir,
+        path: opts.configDir,
         slug,
         // Solo: the ambient container env is this tenant's env-file, so it is
         // what the declared keys are checked against.
-        declaredEnv: await scanDeclaredEnv({ configPath, env: deps.env }),
+        declaredEnv: await scanDeclaredEnv({ configPath, env: env }),
         // Solo: the root is the tenant, so one env answers both halves.
-        arm: resolveCredentialArm(deps.env),
+        arm: resolveCredentialArm(env),
         token: token !== undefined && token.length > 0 ? token : undefined,
         envLabel: "the environment",
         fetchFn,
         inContainer,
         configPath,
         dataBase,
-        env: deps.env,
+        env: env,
         git,
       }),
     );
@@ -1539,7 +1537,7 @@ export async function runDoctorCli(argv: readonly string[]): Promise<void> {
     }
     throw new Error(`Unknown flag \`${arg}\` for \`phoebe doctor\`. See \`phoebe doctor --help\`.`);
   }
-  const report = await runDoctor({ configDir: process.cwd(), env: process.env });
+  const report = await runDoctor({ configDir: process.cwd() }, { env: process.env });
   process.stdout.write(json ? `${JSON.stringify(report)}\n` : `${formatDoctorReport(report)}\n`);
   if (!report.ok) process.exitCode = 1;
 }
