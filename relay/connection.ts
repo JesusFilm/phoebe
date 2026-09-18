@@ -113,6 +113,11 @@ export function deploymentRows(input: {
     return {
       fingerprint: link.fingerprint,
       name: link.name,
+      publicKey: link.publicKey,
+      // Empty on the link means no box key: a deployment paired before box keys
+      // existed, which is a fact the console needs rather than a blank it
+      // should try to encrypt to.
+      boxKey: link.boxKey === "" ? null : link.boxKey,
       firstSeen: link.firstSeen,
       lastSeen: link.lastSeen,
       pairedBy: link.pairedBy,

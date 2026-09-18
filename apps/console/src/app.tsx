@@ -178,6 +178,7 @@ function Page({
   route: Route;
   facts: RowFacts[];
   now: Date;
+  /** Handed on to the deployment page, whose secrets tab sends through it. */
   client: RelayClient;
 }) {
   if (route.page === "fleet") return <FleetPage facts={facts} now={now} />;
@@ -193,6 +194,7 @@ function Page({
       facts={found}
       tab={route.tab}
       now={now}
+      client={client}
       onEdit={(edit) => sendConfigEdit(client, found.row.fingerprint, loaded, edit)}
     />
   );

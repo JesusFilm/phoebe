@@ -29,6 +29,7 @@ import {
   row,
   snapshot,
   stored,
+  stubClient,
   tenant,
 } from "./test-fixture.ts";
 
@@ -108,7 +109,9 @@ const BUSY = report({
 const BUSY_FACTS = rowFacts(row({ name: "jesusfilm-workspace" }), stored(BUSY));
 
 function render(tab: DeploymentTab, facts = BUSY_FACTS): string {
-  return renderToStaticMarkup(<DeploymentPage facts={facts} tab={tab} now={NOW} />);
+  return renderToStaticMarkup(
+    <DeploymentPage facts={facts} tab={tab} now={NOW} client={stubClient()} />,
+  );
 }
 
 /**
@@ -122,6 +125,7 @@ function renderEditable(facts = BUSY_FACTS): string {
       facts={facts}
       tab="config"
       now={NOW}
+      client={stubClient()}
       onEdit={() => Promise.reject(new Error("no test presses this"))}
     />,
   );
@@ -136,14 +140,9 @@ describe("the tabs", () => {
   test("names the tabs the console answers, and links each one", () => {
     // Overview is the bare deployment URL, so one deployment has one address.
     expect(overview).toContain(`href="#/d/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA">overview<`);
-    for (const tab of ["pipelines", "doctor", "config"]) {
+    for (const tab of ["pipelines", "doctor", "secrets", "config"]) {
       expect(overview, tab).toContain(`href="#/d/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/${tab}"`);
     }
-  });
-
-  test("does not offer a tab nothing answers yet", () => {
-    // Secrets is #550; a tab that opens nothing is a dead end.
-    expect(overview).not.toContain("secrets");
   });
 
   test("marks the current tab for a screen reader, not only with a colour", () => {

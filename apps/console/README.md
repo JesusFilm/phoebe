@@ -47,3 +47,10 @@ Pages are hash routes ([`src/route.ts`](src/route.ts)), because the relay serves
 no single-page fallback and the companion loads the bundle off a custom scheme
 where there is no server to ask. Links are plain `href`s into the hash; the
 browser does the navigating and the history, and the app only listens.
+
+One page writes: the secrets tab ([`src/secrets-tab.tsx`](src/secrets-tab.tsx)).
+It seals a value in the browser to the deployment's published box key and sends
+the envelope through the same client seam, so the relay carries something it
+cannot open ([#550](https://github.com/JesusFilm/phoebe/issues/550)). Nothing on
+that page ever shows a value — not a last four, not a hash, not a length — because
+the section it renders carries none.

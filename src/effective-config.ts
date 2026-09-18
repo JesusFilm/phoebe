@@ -78,6 +78,12 @@ export type EnvLayers = {
   root?: NodeJS.ProcessEnv;
   /** This tenant's own `.env`. */
   tenant?: NodeJS.ProcessEnv;
+  /**
+   * The tenant secret store (#504) — the top tier, above all three files. A key
+   * it sets is the value the engine child holds, and the `.env` entry it beat is
+   * reported `shadowed` rather than dropped.
+   */
+  store?: NodeJS.ProcessEnv;
 };
 
 /** Everything {@link computeEffectiveConfig} needs, and nothing it can read itself. */
@@ -164,7 +170,7 @@ function isSet(value: string | undefined): value is string {
  */
 function mergeLayers(layers: EnvLayers): NodeJS.ProcessEnv {
   const merged: NodeJS.ProcessEnv = { ...layers.process };
-  for (const layer of [layers.root, layers.tenant]) {
+  for (const layer of [layers.root, layers.tenant, layers.store]) {
     if (layer === undefined) continue;
     for (const [name, value] of Object.entries(layer)) {
       if (isSet(value)) merged[name] = value;
@@ -175,6 +181,7 @@ function mergeLayers(layers: EnvLayers): NodeJS.ProcessEnv {
 
 /** Which layer set `name` — the most specific one that did. */
 function locate(layers: EnvLayers, name: string): EnvLocation {
+  if (isSet(layers.store?.[name])) return "store";
   if (isSet(layers.tenant?.[name])) return "tenantEnv";
   if (isSet(layers.root?.[name])) return "rootEnv";
   return "process";
@@ -744,12 +751,28 @@ function envSection(opts: {
     ...ENGINE_CREDENTIAL_KEYS,
     ...Object.values(opts.config.providerEnv),
     ...opts.declaredEnv,
+    // Whatever the store holds, even a key nothing declares any more: a stale
+    // entry left behind by a retired work kind is still the value a child would
+    // hold, and a section that omitted it would hide it.
+    ...Object.keys(opts.layers.store ?? {}),
   ];
   const section: Record<string, EnvPresence> = {};
   for (const name of names) {
     if (name in section) continue;
     const present = isSet(opts.env[name]);
-    section[name] = present ? { present, from: locate(opts.layers, name) } : { present };
+    if (!present) {
+      section[name] = { present };
+      continue;
+    }
+    const from = locate(opts.layers, name);
+    // The store's collision, named where an operator will look for it: a `.env`
+    // or ambient value that the store outranks (#504).
+    const shadowed =
+      from === "store" &&
+      (isSet(opts.layers.tenant?.[name]) ||
+        isSet(opts.layers.root?.[name]) ||
+        isSet(opts.layers.process?.[name]));
+    section[name] = shadowed ? { present, from, shadowed } : { present, from };
   }
   return section;
 }

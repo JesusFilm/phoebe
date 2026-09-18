@@ -11,8 +11,8 @@
 // the fleet. A console that threw on a hand-typed hash would be a blank page
 // where a wrong URL should be a wrong page.
 
-/** The tabs a deployment has today. `secrets` is #550. */
-export const DEPLOYMENT_TABS = ["overview", "pipelines", "doctor", "config"] as const;
+/** The tabs a deployment has today, in the order #509 put them. */
+export const DEPLOYMENT_TABS = ["overview", "pipelines", "doctor", "secrets", "config"] as const;
 
 export type DeploymentTab = (typeof DEPLOYMENT_TABS)[number];
 

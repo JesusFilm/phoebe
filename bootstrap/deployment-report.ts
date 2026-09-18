@@ -45,6 +45,7 @@ import {
   type RelayReport,
 } from "../src/contracts/deployment.ts";
 import type { DoctorSection } from "../src/contracts/doctor.ts";
+import type { SecretsSection } from "../src/contracts/secrets.ts";
 
 /** The report's filename inside the deployment-level `state/` directory. */
 export const DEPLOYMENT_FILE = "deployment.json";
@@ -73,6 +74,14 @@ export type DeploymentDraft = {
    * deployment that keeps no ledger.
    */
   edits?: EditLedgerEntry[];
+  /**
+   * Which secrets each tenant has and where from (#550). Null until the first
+   * inventory has been taken: building it loads every tenant's work kinds, so it
+   * happens on the moments that could have changed the answer rather than on
+   * every publish, and a report written before the first one says nothing about
+   * secrets instead of saying there are none.
+   */
+  secrets: Omit<SecretsSection, "updatedAt"> | null;
 };
 
 /**
@@ -140,6 +149,13 @@ export function stampReport(
   const configMoved =
     previous?.config === undefined ||
     contentOf(unstamped(previous.config)) !== contentOf(draft.config);
+  // A section that has not been taken yet cannot have moved: the report keeps
+  // whatever it had, which is nothing, and an inventory arriving later is what
+  // moves it.
+  const secretsMoved =
+    draft.secrets !== null &&
+    (previous?.secrets === undefined ||
+      contentOf(unstamped(previous.secrets)) !== contentOf(draft.secrets));
   if (
     !identityMoved &&
     !bootstrapperMoved &&
@@ -147,9 +163,12 @@ export function stampReport(
     !fleetMoved &&
     !doctorMoved &&
     !configMoved &&
-    !editsMoved
-  )
+    !editsMoved &&
+    !secretsMoved
+  ) {
     return null;
+  }
+  const secrets = draft.secrets === null ? previous?.secrets : draft.secrets;
   return {
     schema: DEPLOYMENT_SCHEMA,
     identity: draft.identity,
@@ -174,6 +193,14 @@ export function stampReport(
       updatedAt: configMoved ? now : (previous?.config?.updatedAt ?? now),
     },
     ...(draft.edits !== undefined ? { edits: draft.edits } : {}),
+    ...(secrets === undefined
+      ? {}
+      : {
+          secrets: {
+            ...secrets,
+            updatedAt: secretsMoved ? now : (previous?.secrets?.updatedAt ?? now),
+          },
+        }),
     updatedAt: now,
   };
 }

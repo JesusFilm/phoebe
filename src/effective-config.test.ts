@@ -345,6 +345,32 @@ describe("the env section", () => {
       present: false,
     });
   });
+
+  test("the secret store is the tier above every file (#504)", () => {
+    const report = compute({
+      env: {
+        process: { GH_TOKEN: "ambient" },
+        tenant: { CURSOR_API_KEY: "file_key" },
+        store: { CURSOR_API_KEY: "store_key" },
+      },
+    });
+    expect(report.env?.["CURSOR_API_KEY"]).toEqual({
+      present: true,
+      from: "store",
+      shadowed: true,
+    });
+    expect(JSON.stringify(report.env)).not.toContain("store_key");
+  });
+
+  test("a store key nothing else sets is not shadowing anything", () => {
+    const report = compute({ env: { store: { CURSOR_API_KEY: "store_key" } } });
+    expect(report.env?.["CURSOR_API_KEY"]).toEqual({ present: true, from: "store" });
+  });
+
+  test("a store entry no kind declares any more still gets a line", () => {
+    const report = compute({ env: { store: { RETIRED_KEY: "x" } } });
+    expect(report.env?.["RETIRED_KEY"]).toEqual({ present: true, from: "store" });
+  });
 });
 
 describe("warnings", () => {

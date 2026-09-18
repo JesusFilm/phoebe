@@ -20,10 +20,12 @@
 // be unable to show a running child whose loop has stopped, which is the case
 // the whole `wedged?` verdict exists for.
 //
-// `secrets` is the one tab variant C also has; it is #550 and is not linked
-// here, because a tab that opens nothing is worse than a tab that is not there
-// yet. The config tab is its own file (config-tab.tsx) — it is a table with a
-// filter over it rather than a view of the lines this module derives.
+// **Two tabs write; the rest render what the deployment said.** The secrets tab
+// sends an envelope sealed in this browser, which the relay carries and cannot
+// open (#550) — it needs the relay client for that, which is why this page takes
+// one. The config tab sends a field patch through the `onEdit` seam (#547), and
+// lives in its own file (config-tab.tsx): it is a table with a filter over it
+// rather than a view of the lines this module derives.
 
 import type { DeploymentReport, DoctorCheck, TenantFacts } from "phoebe-agent/contracts";
 import type { EditSeam } from "./config-edit-row.tsx";
@@ -49,20 +51,25 @@ import {
   type DoctorFacts,
   type RowFacts,
 } from "./facts.ts";
+import type { RelayClient } from "./relay-client.ts";
 import { editsOf } from "./report.ts";
 import { deploymentHref, DEPLOYMENT_TABS, type DeploymentTab } from "./route.ts";
+import { SecretsTab } from "./secrets-tab.tsx";
 
 export function DeploymentPage({
   facts,
   tab,
   now,
   onEdit,
+  client,
 }: {
   facts: RowFacts;
   tab: DeploymentTab;
   now: Date;
   /** Send one config edit to this deployment, when this console can (#547). */
   onEdit?: EditSeam["send"];
+  /** The seam a set goes out through. Only the secrets tab uses it. */
+  client: RelayClient;
 }) {
   const connection = connectionReading(facts.row, now);
   return (
@@ -84,7 +91,13 @@ export function DeploymentPage({
           </a>
         ))}
       </nav>
-      <Tab facts={facts} tab={tab} now={now} {...(onEdit !== undefined ? { onEdit } : {})} />
+      <Tab
+        facts={facts}
+        tab={tab}
+        now={now}
+        client={client}
+        {...(onEdit !== undefined ? { onEdit } : {})}
+      />
     </main>
   );
 }
@@ -107,11 +120,13 @@ function Tab({
   tab,
   now,
   onEdit,
+  client,
 }: {
   facts: RowFacts;
   tab: DeploymentTab;
   now: Date;
   onEdit?: EditSeam["send"];
+  client: RelayClient;
 }) {
   if (tab === "overview") return <OverviewTab facts={facts} now={now} />;
   // The other three tabs are views of the report and there may not be one. They
@@ -130,6 +145,7 @@ function Tab({
   }
   if (tab === "pipelines") return <PipelinesTab report={facts.reading.report} now={now} />;
   if (tab === "doctor") return <DoctorTab doctor={facts.doctor} now={now} />;
+  if (tab === "secrets") return <SecretsTab facts={facts} client={client} now={now} />;
   return (
     <ConfigTab
       report={facts.reading.report}

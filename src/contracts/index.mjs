@@ -1,14 +1,19 @@
 // Runtime surface of `phoebe-agent/contracts` — the `import` condition of the
-// subpath export. Almost everything here is types, and types leave nothing
-// behind at runtime; what is left is the handful of pure constants a reader
-// needs to *check* something, written twice by hand.
+// subpath export. Most of contracts is type declarations, which leave nothing
+// behind at runtime; what lands here is the constants a reader needs to *check*
+// something and the functions a consumer actually calls.
 //
-// Twice, because Node will not type-strip a `.ts` file out of node_modules: an
-// installed consumer's `import { DEPLOYMENT_SCHEMA } from "phoebe-agent/contracts"`
-// resolves to this file and never to index.ts. The type condition points at the
-// `.ts`, so a type-checker reads the documented declaration and a runtime reads
-// this. src/contracts/deployment.test.ts and src/contracts/index.test.ts hold
-// the copies to the same value; bootstrap/index.mjs exists for the same reason.
+// Plain JS, because Node will not type-strip a `.ts` file under a
+// `node_modules` segment and the installed package lives exactly there: a
+// consumer's `import { DEPLOYMENT_SCHEMA } from "phoebe-agent/contracts"`
+// resolves to this file and never to index.ts. The types come from index.ts (the
+// `types` condition). Anything with an implementation lives in a plain-JS
+// sibling and is re-exported here, written once; the bare constants below are
+// mirrored by hand from their `.ts` declaration, and
+// src/contracts/deployment.test.ts and src/contracts/index.test.ts hold the two
+// copies to the same value. bootstrap/index.mjs exists for the same reason.
+
+export { openSecret, sealSecret } from "./secret-envelope.mjs";
 
 /** The `schema` integer `state/deployment.json` carries — see deployment.ts. */
 export const DEPLOYMENT_SCHEMA = 1;
@@ -66,6 +71,7 @@ export const RELAY_ROUTES = {
   forget: "/api/deployments/forget",
   configSet: "/api/deployments/config-set",
   events: "/api/events",
+  secrets: "/api/secrets",
 };
 
 /**

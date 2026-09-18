@@ -111,6 +111,22 @@ The on-volume record of the edits this deployment applied and who asked for them
 `state/config-edits.json`. It answers a redelivered edit with its original receipt, and
 rolls off whole once the file moves by a hand other than the writer's.
 _Avoid_: audit log, history
+**Secret store**:
+The bootstrapper-owned, per-tenant file of console-set secret values on the data volume,
+`state/secrets.json` at mode `0600`. The tier above the tenant's `.env`, and the only
+channel a deployment has for a secret nobody can reach a file to edit.
+_Avoid_: vault, keyring, secrets file (ambiguous with `.env`)
+
+**Tenant-scope / deployment-scope secret**:
+Whether a secret belongs to one tenant's engine child or to the deployment as a whole.
+The line the secret store never crosses: the App key and the engine-clone token stay
+deployment scope, in the env-file, reached by editing it.
+_Avoid_: local/global, child/root
+
+**Clear** (a secret):
+Removing a key from the secret store so the `.env` or ambient value governs again. Not a
+tombstone and not a revocation — revoking a secret is rotating it.
+_Avoid_: unset, delete, revoke
 
 **Arm**:
 One of a mutually exclusive pair of shapes a deployment takes, resolved rather than
@@ -324,13 +340,28 @@ is done.
 _Avoid_: API key, join code
 
 **Deployment key**:
-The Ed25519 key pair on the data volume (`state/relay-key`) that is a deployment's
-identity to its relay. Generated in the container at the first pairing, presented as its
-public half, and used to sign a relay-issued challenge on every connection after.
+The two key pairs in one file on the data volume (`state/relay-key`) that are a
+deployment's identity to its relay: an Ed25519 key that signs and an X25519 **box key**
+that receives. Generated in the container at the first pairing, presented as their public
+halves, and one lifecycle — minted, saved and forgotten together.
 _Avoid_: device key, machine key
 
+**Box key**:
+The X25519 half of the deployment key, the thing a console encrypts a secret to. It
+exists because Ed25519 cannot encrypt; the handshake signature covers `nonce ‖ boxKey`,
+so the key secrets are sealed to is attested by the key that identifies the deployment.
+_Avoid_: public key (ambiguous), encryption key, recipient key
+
+**Secret envelope**:
+One secret sealed in the browser to a deployment's box key: ECIES from WebCrypto
+primitives, bound to `keyFingerprint ‖ tenant ‖ key ‖ editId` so it opens for that
+deployment, tenant, key name and edit and nothing else. The relay stores and forwards it
+and cannot open it.
+_Avoid_: payload, blob, ciphertext (that is one field of it)
+
 **Link**:
-The relay's record of a deployment — public key, name, first seen — in `links.json`. The
+The relay's record of a deployment — both public keys, name, first seen — in
+`links.json`. The
 other half of the link is the key on the deployment's own volume; neither half needs the
 other's process to be alive.
 _Avoid_: registration (the act, not the record), enrollment

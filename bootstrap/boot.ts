@@ -104,6 +104,7 @@ import {
   type SlotBroker,
 } from "./slot-broker.ts";
 import {
+  TENANT_CONFIG_FILE,
   TENANT_ENV_FILE,
   discoverTenants,
   discoverWorkspaceTenants,
@@ -118,7 +119,12 @@ import {
 } from "./tenants.ts";
 import { readConfigDir } from "./config-dir.ts";
 import { prepareRelay } from "./relay-boot.ts";
+import { RELAY_MESSAGES } from "../src/contracts/relay-protocol.ts";
+import { deliverSecret } from "./secret-delivery.ts";
 import { resolveDataBase } from "../src/paths.ts";
+import { tenantSecrets, tenantStateDir, type SecretValues } from "../src/secret-store.ts";
+import type { InventoryTenant } from "../src/secret-inventory.ts";
+import { createSecretInventory, type SecretInventoryRunner } from "./secret-inventory-runner.ts";
 import type { DeploymentArm, SlotReport } from "../src/contracts/deployment.ts";
 import { readGitIdentity, soloIdentityEnv, type GitIdentity } from "./git-identity.ts";
 import {
@@ -737,6 +743,17 @@ function readTenantEnv(envPath: string): Record<string, string> {
 }
 
 /**
+ * One tenant's secret store (#504), read fresh at every call for the same reason
+ * {@link readTenantEnv} is: the store is a file an operator edits under a
+ * running deployment, and a value cached at boot is a rotation that never
+ * arrives. A tenant with no usable slug has no store — its secrets are whatever
+ * its `.env` and the ambient env say, exactly as before the store existed.
+ */
+function tenantSecretStore(tenant: { slug: string | null }): SecretValues {
+  return tenantSecrets(tenantStateDir(tenant.slug, resolveDataBase(process.env)));
+}
+
+/**
  * The spawn-failure line, named `<slug>:<pipeline>` (#420) — both arms report
  * through it (#457). A pipeline that never got a process is the one death no exit
  * hook can name, so if the name does not come from here it comes from nowhere.
@@ -834,6 +851,56 @@ export function trackFleetPipelines(
 }
 
 /**
+ * The pipeline hook, plus the secrets inventory when the tenant set has moved
+ * (#550). One wrapper for both arms, so neither can grow a tenant a console
+ * would never hear about.
+ */
+export function withSecretInventory(
+  track: NonNullable<SuperviseFleetDeps["onPipelines"]>,
+  secrets: SecretInventoryRunner,
+  heldTenants: () => readonly HeldTenant[],
+): NonNullable<SuperviseFleetDeps["onPipelines"]> {
+  return (matrix) => {
+    track(matrix);
+    secrets.refreshIfTenantsMoved(inventoryTenants(matrix.pipelines, heldTenants()));
+  };
+}
+
+/**
+ * Which tenants an inventory covers: every tenant with a pipeline, plus every
+ * tenant discovery is holding. A hold is in the list rather than left out of it
+ * because "this tenant's keys are unknown, and here is why" is the answer an
+ * operator needs — an absent row reads as a tenant that has no secrets.
+ */
+export function inventoryTenants(
+  pipelines: readonly SupervisedPipeline[],
+  held: readonly HeldTenant[],
+): InventoryTenant[] {
+  const tenants = new Map<string, InventoryTenant>();
+  for (const pipeline of pipelines) {
+    const { tenant } = pipeline;
+    tenants.set(tenant.configPath, {
+      configPath: tenant.configPath,
+      path: tenant.dir,
+      slug: tenant.slug,
+    });
+  }
+  for (const hold of held) {
+    // Keyed on the hold's own id — the normalized config dir, the same key the
+    // matrix uses — so a tenant that is both held and still running pipelines
+    // appears once, as held. Its `configPath` is the conventional one and is
+    // never read: a held tenant reports the hold instead of its keys.
+    tenants.set(hold.id, {
+      configPath: join(hold.dir, TENANT_CONFIG_FILE),
+      path: hold.dir,
+      slug: hold.slug,
+      heldReason: hold.reason,
+    });
+  }
+  return [...tenants.values()];
+}
+
+/**
  * Wrap a warning so it is printed for the first fault only. For a fault that
  * recurs on a timer — a data volume that will not take the deployment report —
  * the second line says nothing the first did not.
@@ -916,6 +983,10 @@ function runFleet(opts: {
   doctor: DoctorRunner;
   /** The config-edit pen (#536): pointed at each new checkout, nudged on a write. */
   editor: ConfigEditor;
+  /** The secrets inventory (#550), retaken when the tenant set moves. */
+  secrets: SecretInventoryRunner;
+  /** The tenants discovery is holding, for the inventory's own list. */
+  heldTenants: () => readonly HeldTenant[];
   hostKnobs: DeploymentHostKnobs;
 }): Promise<EngineExit> {
   const { broker, deployment, doctor } = opts;
@@ -935,6 +1006,10 @@ function runFleet(opts: {
       // base and the App bot fallback, below the tenant's own `.env`.
       configIdentity: tenant.gitIdentity,
       tenantEnv: readTenantEnv(tenant.envPath),
+      // The tenant secret store over the file (#504). Read at spawn like the
+      // `.env` beneath it, and delivered the same way: the pipeline fingerprint
+      // below counts it, so a console-set provider key relaunches this child.
+      secretStore: tenantSecretStore(tenant),
       // The subtractive pipeline scrub (#425): this tenant's `.env` reaches the pipeline
       // whole except for the keys a sibling pipeline declared and this one did not.
       scrubKeys: siblingOnlyEnvKeys(pipeline),
@@ -992,7 +1067,10 @@ function runFleet(opts: {
       child,
       cache: credentialCache,
       mint: null,
-      readPatToken: () => readTenantEnv(tenant.envPath)["GH_TOKEN"] ?? null,
+      // The store first, the `.env` under it — the same two tiers the child env
+      // is built from, re-read here so a console rotation lands in place too.
+      readPatToken: () =>
+        tenantSecretStore(tenant)["GH_TOKEN"] ?? readTenantEnv(tenant.envPath)["GH_TOKEN"] ?? null,
       warnedOverBudget,
     });
     return {
@@ -1040,7 +1118,11 @@ function runFleet(opts: {
         `[phoebe] boot: pipeline reconcile — +${added.length} added, -${removed.length} removed, ` +
           `~${changed.length} relaunched (no container restart).`,
       ),
-    onPipelines: trackFleetPipelines(broker, deployment, process.env, opts.hostKnobs),
+    onPipelines: withSecretInventory(
+      trackFleetPipelines(broker, deployment, process.env, opts.hostKnobs),
+      opts.secrets,
+      opts.heldTenants,
+    ),
     onChildExit: ({ pipeline, exit }) => reportPipelineExit(pipeline, exit),
     onLaunchError: (error) => {
       console.error(`[phoebe] boot: fleet (re)launch failed — ${describe(error)}. Retrying.`);
@@ -1092,13 +1174,39 @@ export function workspacePipelineFingerprint(
 ): string | null {
   if (enumerated === null) return null;
   const hidden = siblingOnlyEnvKeys(pipeline);
+  const store = tenantSecretStore(pipeline.tenant);
   let digest: string;
   try {
-    digest = envReconcileDigest(readFileSync(pipeline.tenant.envPath, "utf8"), hidden);
+    digest = envReconcileDigest(readFileSync(pipeline.tenant.envPath, "utf8"), hidden, store);
   } catch {
-    digest = "";
+    // No readable `.env` is still a tenant with a store: digest what the store
+    // holds, so a child whose secrets live only there relaunches on an edit like
+    // every other one. An absent `.env` and an empty store stay the stable
+    // empty digest they have always been.
+    digest = Object.keys(store).length === 0 ? "" : envReconcileDigest("", hidden, store);
   }
   return `${enumerated}:${digest}`;
+}
+
+/**
+ * Solo's pipeline fingerprint: what the engine said, narrowed by the tenant's
+ * secret store (#504) and by nothing else.
+ *
+ * Solo's tenant axis is deliberately inert — the root *is* the tenant, so an
+ * edit to its config or its `.env` is already the engine axis's business (#138),
+ * and a fingerprint that tracked either would relaunch twice for one edit. The
+ * store is the one input with no other axis: it is not Compose's create-time
+ * input, it is not the mounted config, and nothing re-materializes the engine
+ * when it moves. So it joins here, under the same rule the workspace arm uses —
+ * `GH_TOKEN` by presence only, since the lease delivers its value in place.
+ */
+export function soloPipelineFingerprint(
+  pipeline: SupervisedPipeline,
+  enumerated: string | null,
+  store: SecretValues,
+): string | null {
+  if (enumerated === null) return null;
+  return `${enumerated}:${envReconcileDigest("", siblingOnlyEnvKeys(pipeline), store)}`;
 }
 
 /**
@@ -1315,7 +1423,11 @@ function workspaceDiscover(
         if (!tenantEnv["GH_TOKEN"]) {
           try {
             const { mintedEnv, expiresAt } = await appMint(tenant.slug);
-            const configFp = tenantFingerprint(tenant.configPath, tenant.envPath);
+            const configFp = tenantFingerprint(
+              tenant.configPath,
+              tenant.envPath,
+              tenantSecretStore(tenant),
+            );
             samples.push({
               tenant: { ...tenant, mintedEnv },
               // Include the token expiry in the fingerprint so that when the
@@ -1341,7 +1453,11 @@ function workspaceDiscover(
       }
       samples.push({
         tenant,
-        fingerprint: tenantFingerprint(tenant.configPath, tenant.envPath),
+        fingerprint: tenantFingerprint(
+          tenant.configPath,
+          tenant.envPath,
+          tenantSecretStore(tenant),
+        ),
       });
     }
 
@@ -1595,14 +1711,18 @@ async function loadTenantGitIdentity(configPath: string): Promise<GitIdentity | 
  * does not churn the child; a present config with an absent/unreadable `.env`
  * is a stable `"<config>:"`.
  */
-export function tenantFingerprint(configPath: string, envPath: string): string | null {
+export function tenantFingerprint(
+  configPath: string,
+  envPath: string,
+  store: SecretValues = {},
+): string | null {
   const config = configFingerprint(configPath);
   if (config === null) return null;
   let envDigest: string;
   try {
-    envDigest = envReconcileDigest(readFileSync(envPath, "utf8"));
+    envDigest = envReconcileDigest(readFileSync(envPath, "utf8"), [], store);
   } catch {
-    envDigest = "";
+    envDigest = Object.keys(store).length === 0 ? "" : envReconcileDigest("", [], store);
   }
   return `${config}:${envDigest}`;
 }
@@ -1689,6 +1809,34 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     env: process.env,
     log: (message) => console.log(message),
     warn: (message) => console.warn(message),
+    // What the relay may ask this deployment to do (#550). `relay` is referenced
+    // from inside its own initializer on purpose: the handler needs the box key
+    // `prepareRelay` just read off the volume, and nothing calls it until a
+    // socket is up — which is long after this assignment.
+    onRequest: async (request) => {
+      if (request.type !== RELAY_MESSAGES.secretSet) {
+        return { outcome: "refused", detail: `this deployment does not answer ${request.type}` };
+      }
+      return await deliverSecret(request, {
+        configPath,
+        dataBase,
+        processEnv: process.env,
+        key: () => relay.boxKey(),
+        log: (message) => console.log(message),
+        // A set is the moment an operator wants "did it work" answered (#507
+        // §6), and two things answer it: doctor, whose `declared-env` check
+        // reads the same env the child will hold, and the inventory, whose
+        // provenance is what the page they set it from is watching.
+        onWritten: ({ tenant, by }) => {
+          void secrets.refreshLast();
+          void doctor.request("request", by);
+          console.log(
+            `[phoebe] boot: a console secret landed for ${tenant} — running doctor and ` +
+              `retaking the secrets inventory.`,
+          );
+        },
+      });
+    },
   });
   // The config-edit pen (#536, decision #503). Built with the root config's path
   // and nothing else: a workspace's tenant configs sit under the same `:ro`
@@ -1725,10 +1873,10 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
         `Supervision is unaffected; the report is retried on every change.`,
     ),
   });
-  // The pen goes up the rail with the link (#503, #547): a console's edit is
-  // the same call a shell `phoebe config set` makes, arriving from a message
-  // instead of from argv, so there is one writer and one reconcile path.
-  relay.start(deployment, { verbs: { configSet: (edit) => editor.apply(edit) } });
+  // The secrets inventory (#550): which keys each tenant has and where from,
+  // retaken when the tenant set moves and when an edit lands, never on a poll —
+  // taking it loads every tenant's work kinds.
+  const secrets = createSecretInventory({ state: deployment, dataBase, processEnv: process.env });
 
   // The deployment's doctor runs (#507 §4-§7, #534). One cell for the leases
   // because only the workspace arm can hold any: solo's App-arm child mints its
@@ -1756,6 +1904,16 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   });
   doctor.start();
 
+  // Dialled last, after everything an inbound request reaches: the secrets
+  // handler the link was built with runs against `secrets` and `doctor`, and a
+  // socket that opened before those existed would be a socket that could ask for
+  // one of them (#550).
+  //
+  // The pen goes up the rail with the link (#503, #547): a console's edit is the
+  // same call a shell `phoebe config set` makes, arriving from a message instead
+  // of from argv, so there is one writer and one reconcile path.
+  relay.start(deployment, { verbs: { configSet: (edit) => editor.apply(edit) } });
+
   if (workspace !== null) {
     // GitHub App mode (#209): if the supervisor holds App credentials, fetch
     // the bot identity once at fleet startup and wire up a per-tenant mint fn.
@@ -1781,6 +1939,10 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       }
     }
 
+    // The tenants discovery is holding right now. Kept out here because two
+    // readers want it: the report's own section, and the secrets inventory,
+    // where a held tenant is a tenant whose keys just became unknown.
+    let held: readonly HeldTenant[] = [];
     let fleetExit: EngineExit;
     try {
       fleetExit = await runFleet({
@@ -1795,11 +1957,14 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
         doctor,
         editor,
         hostKnobs,
+        secrets,
+        heldTenants: () => held,
         // The root `workspace` block is re-read every poll from here on: this
         // callback owns both the hot tenant list and the shape-change abort (#139).
-        discover: workspaceDiscover(configDir, configPath, workspace, appMint, (held) =>
-          deployment.noteHolds(held),
-        ),
+        discover: workspaceDiscover(configDir, configPath, workspace, appMint, (holding) => {
+          held = holding;
+          deployment.noteHolds(holding);
+        }),
       });
     } catch (error) {
       if (error instanceof WorkspaceStructuralChangeError) {
@@ -1885,8 +2050,21 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     // nothing to scrub keeps the null: the child then inherits verbatim, as it
     // always has.
     const scrubKeys = siblingOnlyEnvKeys(pipeline);
-    const childEnv = env ?? (scrubKeys.length > 0 ? { ...process.env } : null);
+    // The secret store (#504) is the only channel solo has: the root `.env` is
+    // Compose's create-time input, masked inside the container, so a value set
+    // here is one an operator could not otherwise change without recreating the
+    // container. Like the scrub it needs a materialized copy of the env to
+    // write into; an empty store keeps the null and the child inherits verbatim.
+    const store = tenantSecretStore(soloTenant);
+    const storeKeys = Object.keys(store);
+    const childEnv =
+      env ?? (scrubKeys.length > 0 || storeKeys.length > 0 ? { ...process.env } : null);
     if (childEnv !== null) {
+      for (const key of storeKeys) {
+        if (store[key] !== "") childEnv[key] = store[key];
+      }
+      // After the store, as in `buildEngineChildEnv`: the scrub is a subtraction
+      // and has to come after everything that could add.
       for (const key of scrubKeys) delete childEnv[key];
     }
     if (soloIdentity !== null && overridden.length > 0) {
@@ -1920,17 +2098,19 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     attachEngineReports({ pipelineId: pipeline.id, child, state: deployment });
     deployment.noteSpawn(pipeline);
     doctor.noteFleetUp();
-    // Answer the child's credential lease (#211) with the null no-op: solo is
-    // one trust domain whose secrets arrive on the ambient container env, so
-    // there is no per-tenant `.env` to re-read (#205's rotation-in-place has no
-    // solo arm — #159) and nothing to mint supervisor-side (a solo App-arm
-    // child mints its own token in-loop when the lease yields nothing).
-    // Without an answerer the child would hang forever on its first request.
+    // Answer the child's credential lease (#211). Solo has no per-tenant `.env`
+    // to re-read and nothing to mint supervisor-side (a solo App-arm child mints
+    // its own token in-loop when the lease yields nothing) — but it does have a
+    // secret store, and a `GH_TOKEN` set there is exactly the rotation-in-place
+    // the lease exists to deliver (#504). No store entry is the null no-op solo
+    // has always answered with. Without an answerer the child would hang forever
+    // on its first request.
     attachCredentialHandler({
       tenantId: pipeline.id,
       child,
       cache: soloCredentialCache,
       mint: null,
+      readPatToken: () => tenantSecretStore(soloTenant)["GH_TOKEN"] ?? null,
       warnedOverBudget: soloWarnedOverBudget,
     });
     return {
@@ -1953,6 +2133,10 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       // keeps it that way — the pipelines the engine enumerates at launch are the
       // pipelines solo runs until something re-materializes the engine.
       discover: () => [{ tenant: soloTenant, fingerprint: SOLO_TENANT_FINGERPRINT }],
+      // The one thing that does move solo's pipelines: a secret set in the store
+      // has no other delivery, so it relaunches the child that would hold it.
+      pipelineFingerprint: (pipeline, enumerated) =>
+        soloPipelineFingerprint(pipeline, enumerated, tenantSecretStore(soloTenant)),
       spawn: spawnSolo,
       stop,
       intervalMs,
@@ -1964,7 +2148,13 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       onChildExit: ({ pipeline, exit }) => reportPipelineExit(pipeline, exit),
       // Solo contends on the same broker, so its pipelines size and order it too:
       // one tenant, but its own pipelines' `concurrency` and `priority`.
-      onPipelines: trackFleetPipelines(broker, deployment, process.env, hostKnobs),
+      // Solo has no tenant axis, so the inventory is taken once, when the one
+      // tenant's pipelines first appear.
+      onPipelines: withSecretInventory(
+        trackFleetPipelines(broker, deployment, process.env, hostKnobs),
+        secrets,
+        () => [],
+      ),
       // Solo backs off on the engine constant, not the fleet's per-pipeline one: the
       // relaunch line quotes it, so the two must not drift.
       crashBackoffMs: CRASH_BACKOFF_MS,

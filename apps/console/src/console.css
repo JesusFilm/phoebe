@@ -612,12 +612,25 @@ details.why > summary::marker {
 
 /* A receipt, under the row it answers. Bordered on the left like a warning,
  * because it is the same kind of thing: a sentence about this row that outlives
- * the moment it appeared in. */
+ * the moment it appeared in. The colour is the outcome's. */
 .receipt {
-  border-left: 3px solid var(--accent);
+  border-left: 3px solid var(--line);
   background: var(--panel);
-  margin: 6px 0;
+  margin: 10px 0;
   padding: 6px 10px;
+}
+
+.receipt.written {
+  border-left-color: var(--ok);
+}
+
+.receipt.refused,
+.receipt.undelivered {
+  border-left-color: var(--fail);
+}
+
+.receipt code {
+  word-break: break-all;
 }
 
 /* A command to copy. Pre-wrapped, so a long `--config` path wraps rather than
@@ -631,4 +644,26 @@ details.why > summary::marker {
   background: var(--bg);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+/* The secrets tab's one form, and the receipt it leaves behind (#550). */
+.secret-form {
+  display: grid;
+  gap: 6px;
+  padding: 8px 0;
+  max-width: 560px;
+}
+
+.secret-form input {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  font: inherit;
+  padding: 6px 8px;
+}
+
+.secret-actions {
+  display: flex;
+  gap: 8px;
 }
