@@ -10,6 +10,7 @@
 // step here is skipped. See src/deployment-command.ts.
 
 import type { DeploymentCommands } from "./config-schema.ts";
+import type { StopOutcome } from "./contracts/stop-outcome.ts";
 import { resolveDeploymentCommands, runLifecycleStep } from "./deployment-command.ts";
 import {
   assertHostLifecycle,
@@ -27,6 +28,11 @@ import {
   type CommandRunner,
   type DeploymentCompose,
 } from "./deployment-compose.ts";
+
+// The outcome union now lives in `phoebe-agent/contracts` (#528) so a console
+// can name a stop's result without loading the driver below. Re-exported here
+// so every existing reader goes on importing it off this module.
+export type { StopOutcome };
 
 /** Short grace for `phoebe stop --now` — abandon the in-flight unit promptly. */
 export const STOP_NOW_TIMEOUT_SEC = 1;
@@ -90,14 +96,6 @@ type StopDeps = {
   deploymentCommands?: DeploymentCommands;
   io?: Partial<StopIo>;
 };
-
-export type StopOutcome =
-  | { kind: "stopped" }
-  | { kind: "already-stopped" }
-  | { kind: "no-container" }
-  | { kind: "killed-mid-run" }
-  | { kind: "stopped-now" }
-  | { kind: "abandoned-now" };
 
 function formatTimeoutSec(seconds: number): string {
   if (seconds === DRAIN_TIMEOUT_SEC) return "1h";
