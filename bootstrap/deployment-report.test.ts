@@ -41,6 +41,7 @@ function draft(overrides: Partial<DeploymentDraft> = {}): DeploymentDraft {
       slots: { capacity: 1, inUse: 0, waiting: 0, overGranted: 0, floorBudget: 1 },
     },
     fleet: { tenants: [], cells: [] },
+    doctor: { report: null, at: null, trigger: null },
     ...overrides,
   };
 }
@@ -190,5 +191,52 @@ describe("writeDeploymentReport", () => {
     writeDeploymentReport(path, stampReport(second, null, "2026-05-05T00:01:00.000Z")!);
     const parsed = JSON.parse(readFileSync(path, "utf8")) as DeploymentReport;
     expect(parsed.bootstrapper.slots.inUse).toBe(1);
+  });
+});
+
+describe("stampReport and the doctor section (#507 §7)", () => {
+  const healthy = { checks: [], tenants: [], ok: true };
+
+  test("the first report carries a doctor stamp like every other section", () => {
+    const report = stampReport(draft(), null, "2026-05-05T00:00:00.000Z")!;
+    expect(report.doctor).toEqual({
+      report: null,
+      at: null,
+      trigger: null,
+      updatedAt: "2026-05-05T00:00:00.000Z",
+    });
+  });
+
+  test("a run landing moves the doctor stamp and leaves the others where they were", () => {
+    const first = stampReport(draft(), null, "2026-05-05T00:00:00.000Z")!;
+    const withReport = draft({
+      doctor: { report: healthy, at: "2026-05-05T00:10:00.000Z", trigger: "boot" },
+    });
+    const next = stampReport(withReport, first, "2026-05-05T00:10:00.000Z")!;
+    expect(next.doctor.updatedAt).toBe("2026-05-05T00:10:00.000Z");
+    expect(next.bootstrapper.updatedAt).toBe("2026-05-05T00:00:00.000Z");
+    expect(next.fleet.updatedAt).toBe("2026-05-05T00:00:00.000Z");
+  });
+
+  test("a run that found exactly what the last one found still moves the age", () => {
+    const at = (stamp: string): DeploymentDraft =>
+      draft({ doctor: { report: healthy, at: stamp, trigger: "schedule" } });
+    const first = stampReport(at("2026-05-05T00:00:00.000Z"), null, "2026-05-05T00:00:00.000Z")!;
+    const next = stampReport(at("2026-05-05T06:00:00.000Z"), first, "2026-05-05T06:00:00.000Z");
+    expect(next).not.toBeNull();
+    expect(next!.doctor.at).toBe("2026-05-05T06:00:00.000Z");
+  });
+
+  test("a fleet that moved keeps the doctor stamp it had", () => {
+    const withReport = draft({
+      doctor: { report: healthy, at: "2026-05-05T00:00:00.000Z", trigger: "boot" },
+    });
+    const first = stampReport(withReport, null, "2026-05-05T00:00:00.000Z")!;
+    const moved = draft({
+      doctor: { report: healthy, at: "2026-05-05T00:00:00.000Z", trigger: "boot" },
+    });
+    moved.bootstrapper.slots.inUse = 1;
+    const next = stampReport(moved, first, "2026-05-05T00:10:00.000Z")!;
+    expect(next.doctor.updatedAt).toBe("2026-05-05T00:00:00.000Z");
   });
 });

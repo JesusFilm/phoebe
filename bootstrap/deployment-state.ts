@@ -17,6 +17,9 @@
 //   - **Read at publish time** — the crash-loop record, the broker's numbers,
 //     and whatever is on the tenants' disks that the live matrix does not
 //     account for.
+//   - **The doctor runner** (bootstrap/doctor-runner.ts) — the last report it
+//     got back, the run it has in flight, the last attempt that produced
+//     nothing.
 //
 // Two rules keep it honest.
 //
@@ -53,6 +56,7 @@ import type {
   SlotReport,
   TenantFacts,
 } from "../src/contracts/deployment.ts";
+import type { DoctorSection } from "../src/contracts/doctor.ts";
 import type { StatusSnapshot } from "../src/contracts/status-snapshot.ts";
 import { PIPELINE_DEFAULTS } from "../src/config-schema.ts";
 import { derivePaths } from "../src/paths.ts";
@@ -130,6 +134,12 @@ export type DeploymentState = {
   noteExit: (pipelineId: string, exit: EngineExit) => void;
   /** One child's IPC report — a completed pass, or a snapshot it just wrote. */
   noteEngineReport: (pipelineId: string, report: EngineReport) => void;
+  /**
+   * The doctor section as the runner now has it (#507 §7) — a run starting, a
+   * run landing, an attempt failing. The runner owns the section's history (the
+   * last report, the last failed attempt); this holds it and publishes it.
+   */
+  noteDoctor: (section: Omit<DoctorSection, "updatedAt">) => void;
   /** The live pipeline matrix, as of this poll. */
   notePipelines: (pipelines: readonly SupervisedPipeline[]) => void;
   /**
@@ -184,6 +194,9 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
     quarantinedSha: null as string | null,
   };
   let reconcile: ReconcileState = { phase: "idle", since: iso(now()) };
+  // "Never": a deployment that has not run doctor yet says so, rather than
+  // leaving the section out and making every reader handle its absence.
+  let doctor: Omit<DoctorSection, "updatedAt"> = { report: null, at: null, trigger: null };
   let last: DeploymentReport | null = null;
 
   /** The tenant a cell belongs to, with the facts `phoebe list` shows for it. */
@@ -355,6 +368,7 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
           slots: deps.slots(),
         },
         fleet: buildFleet(at),
+        doctor,
       };
       const next = stampReport(draft, last, iso(at));
       if (next === null) return;
@@ -440,6 +454,11 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
         return;
       }
       record.snapshot = report.snapshot;
+      publish();
+    },
+
+    noteDoctor(section) {
+      doctor = section;
       publish();
     },
 

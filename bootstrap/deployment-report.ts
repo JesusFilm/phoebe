@@ -41,6 +41,7 @@ import {
   type DeploymentReport,
   type FleetReport,
 } from "../src/contracts/deployment.ts";
+import type { DoctorSection } from "../src/contracts/doctor.ts";
 
 /** The report's filename inside the deployment-level `state/` directory. */
 export const DEPLOYMENT_FILE = "deployment.json";
@@ -59,6 +60,7 @@ export type DeploymentDraft = {
   identity: DeploymentIdentity;
   bootstrapper: Omit<BootstrapperReport, "updatedAt">;
   fleet: Omit<FleetReport, "updatedAt">;
+  doctor: Omit<DoctorSection, "updatedAt">;
 };
 
 /**
@@ -107,7 +109,13 @@ export function stampReport(
     contentOf(unstamped(previous.bootstrapper)) !== contentOf(draft.bootstrapper);
   const fleetMoved =
     previous === null || contentOf(unstamped(previous.fleet)) !== contentOf(draft.fleet);
-  if (!identityMoved && !bootstrapperMoved && !fleetMoved) return null;
+  // The doctor section moves on its own clock — a run starting, a run landing,
+  // an attempt failing — and each of those is news. A run that finds exactly
+  // what the last one found still moves it, because `at` is the age a console
+  // shows, and an age that stopped advancing is the one thing worse than none.
+  const doctorMoved =
+    previous === null || contentOf(unstamped(previous.doctor)) !== contentOf(draft.doctor);
+  if (!identityMoved && !bootstrapperMoved && !fleetMoved && !doctorMoved) return null;
   return {
     schema: DEPLOYMENT_SCHEMA,
     identity: draft.identity,
@@ -118,6 +126,10 @@ export function stampReport(
     fleet: {
       ...draft.fleet,
       updatedAt: fleetMoved ? now : (previous?.fleet.updatedAt ?? now),
+    },
+    doctor: {
+      ...draft.doctor,
+      updatedAt: doctorMoved ? now : (previous?.doctor.updatedAt ?? now),
     },
     updatedAt: now,
   };

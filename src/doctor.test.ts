@@ -20,9 +20,11 @@ import {
   promptDriftCheck,
   staleStateCheck,
   strayMembersCheck,
+  tenantCredential,
   tenantRow,
   tenantTokenCheck,
 } from "./doctor.ts";
+import { createDeadline, DEADLINE_DETAIL } from "./doctor-deadline.ts";
 
 describe("describeRepoProbe", () => {
   test("200 is reachable", () => {
@@ -963,5 +965,125 @@ describe("tenantRow stray members (#487)", () => {
       state: "unknown",
       detail: "not probed (repo check did not pass)",
     });
+  });
+});
+
+describe("tenantCredential (#507 §5)", () => {
+  test("a tenant's own token wins — a PAT-arm tenant is leased nothing", () => {
+    expect(
+      tenantCredential({ own: "ghp_own", slug: "acme/widget", leases: { "acme/widget": "ghs_l" } }),
+    ).toEqual({ token: "ghp_own", leased: false });
+  });
+
+  test("an App-arm tenant runs on the lease the supervisor handed over", () => {
+    expect(
+      tenantCredential({ own: undefined, slug: "acme/widget", leases: { "acme/widget": "ghs_l" } }),
+    ).toEqual({ token: "ghs_l", leased: true });
+  });
+
+  test("a manual run leases nothing, so there is no token to probe with", () => {
+    expect(tenantCredential({ own: undefined, slug: "acme/widget", leases: {} })).toEqual({
+      token: undefined,
+      leased: false,
+    });
+  });
+
+  test("a tenant with no slug has nothing to look a lease up by", () => {
+    expect(
+      tenantCredential({ own: undefined, slug: null, leases: { "acme/widget": "ghs_l" } }),
+    ).toEqual({ token: undefined, leased: false });
+  });
+});
+
+describe("the App arm with a lease (#507 §5)", () => {
+  const leased = {
+    path: "tenant",
+    slug: "acme/widget",
+    arm: "app" as const,
+    token: "ghs_leased",
+    leased: true,
+    envLabel: "/etc/phoebe/tenant/.env",
+    inContainer: true,
+  };
+
+  const reachable = async (url: string | URL | Request) => {
+    const href = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+    const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
+    if (href.includes("/labels?")) {
+      return json(
+        ["ready-for-agent", "processing", "merged-to-feature", "ready-for-human"].map((name) => ({
+          name,
+        })),
+      );
+    }
+    if (href.includes("/issues?")) return json([]);
+    return json({ id: 1, name: "widget" });
+  };
+
+  test("repo and labels are real checks, not `not probed (App arm)`", async () => {
+    const row = await tenantRow({ ...leased, fetchFn: reachable as typeof fetch });
+    expect(row.checks.find((c) => c.id === "repo")?.state).toBe("ok");
+    expect(row.checks.find((c) => c.id === "labels")?.state).toBe("ok");
+    expect(row.checks.find((c) => c.id === "stray-members")?.state).toBe("ok");
+  });
+
+  test("the token check says the credential was leased to this run", async () => {
+    const row = await tenantRow({ ...leased, fetchFn: reachable as typeof fetch });
+    expect(row.checks.find((c) => c.id === "token")?.detail).toMatch(/leased to this run/);
+  });
+
+  test("without a lease the App arm still defers to the runtime mint", async () => {
+    const row = await tenantRow({
+      ...leased,
+      token: undefined,
+      leased: false,
+      fetchFn: reachable as typeof fetch,
+    });
+    expect(row.checks.find((c) => c.id === "repo")).toEqual({
+      id: "repo",
+      state: "unknown",
+      detail: "not probed (App arm — repo access verified at runtime when the token is minted)",
+    });
+  });
+});
+
+describe("the run's deadline (#507 §7)", () => {
+  const tenant = {
+    path: "tenant",
+    slug: "acme/widget",
+    arm: "pat" as const,
+    token: "ghp_tok",
+    envLabel: "/etc/phoebe/.env",
+    inContainer: false,
+  };
+
+  test("a tenant whose GitHub never answers goes unknown, not pending forever", async () => {
+    const hangs = () => new Promise<Response>(() => {});
+    const row = await tenantRow({
+      ...tenant,
+      fetchFn: hangs as unknown as typeof fetch,
+      deadline: createDeadline(5),
+    });
+    const repo = row.checks.find((c) => c.id === "repo");
+    expect(repo?.state).toBe("unknown");
+    expect(repo?.detail).toBe(DEADLINE_DETAIL);
+  });
+
+  test("the checks behind the one that ran out of time are still reported", async () => {
+    const hangs = () => new Promise<Response>(() => {});
+    const row = await tenantRow({
+      ...tenant,
+      fetchFn: hangs as unknown as typeof fetch,
+      deadline: createDeadline(5),
+    });
+    // Shape first: a report whose rows lose checks when a tenant is slow is a
+    // report a console cannot line up against the last one.
+    expect(row.checks.map((check) => check.id)).toEqual([
+      "token",
+      "repo",
+      "labels",
+      "stray-members",
+    ]);
+    expect(row.checks.find((c) => c.id === "token")?.state).toBe("ok");
   });
 });

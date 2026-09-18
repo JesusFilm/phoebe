@@ -76,6 +76,14 @@ import {
 import { attachBroker } from "./broker-ipc.ts";
 import { attachEngineReports } from "./engine-report-ipc.ts";
 import {
+  createDoctorRunner,
+  spawnDoctor,
+  DOCTOR_KILL_GRACE_MS,
+  type DoctorRunner,
+} from "./doctor-runner.ts";
+import { DOCTOR_DEADLINE_MS } from "../src/doctor-deadline.ts";
+import type { DoctorLeases } from "../src/doctor-lease.ts";
+import {
   createDeploymentState,
   type DeploymentState,
   type HeldTenant,
@@ -870,8 +878,10 @@ function runFleet(opts: {
   broker: SlotBroker;
   /** The live deployment report (#532) — fed from the hooks and the spawn wrapper. */
   deployment: DeploymentState;
+  /** The deployment's doctor runs (#534), triggered from the same two moments. */
+  doctor: DoctorRunner;
 }): Promise<EngineExit> {
-  const { broker, deployment } = opts;
+  const { broker, deployment, doctor } = opts;
   // Fleet-level credential-lease state (#211/#205): the cache and the warn-once
   // tracker outlive child respawns. Every child's lease must be answered — a
   // spawned engine requests one at the top of each poll and blocks until the
@@ -927,6 +937,9 @@ function runFleet(opts: {
     // same channel, opened for the same reason.
     attachEngineReports({ pipelineId: pipeline.id, child, state: deployment });
     deployment.noteSpawn(pipeline);
+    // A child spawning is the fleet being up: the deployment's boot doctor run
+    // starts here, and a run a reconcile parked is released here (#507 §7).
+    doctor.noteFleetUp();
     // The lease answerer (#211/#205). `readPatToken` re-reads this tenant's
     // `.env` per request, so a rotated PAT lands in the running child at its
     // next lease call site — no drain, no respawn (the fingerprint above
@@ -978,6 +991,7 @@ function runFleet(opts: {
           : "[phoebe] boot: tracked engine ref advanced — draining the fleet and relaunching every pipeline.",
       );
       deployment.noteReconcile(reason);
+      doctor.noteReconcile();
     },
     onPipelineChange: ({ added, removed, changed }) =>
       console.log(
@@ -1138,6 +1152,15 @@ function pipelineExitPolicy(guard: CrashGuard): PipelineExitPolicy {
  */
 type AppMintFn = (slug: string) => Promise<MintedToken & { mintedEnv: MintedCredentials }>;
 
+/**
+ * The mint function plus the leases it is currently holding (#507 §5): the
+ * live installation tokens, keyed by the slug each was minted for. It is the
+ * same cache the fleet's children are running on, read rather than re-minted —
+ * a doctor run costs a deployment no extra tokens, only the requests its checks
+ * make.
+ */
+type AppMinter = AppMintFn & { leases: () => DoctorLeases };
+
 /** How long before a minted token's expiry to proactively refresh it. */
 const MINT_REFRESH_MARGIN_MS = 10 * 60 * 1000;
 
@@ -1149,10 +1172,10 @@ const MINT_REFRESH_MARGIN_MS = 10 * 60 * 1000;
  * is not restarted. A fresh mint changes `expiresAt`, which changes the
  * fingerprint, triggering a controlled restart that delivers the new token.
  */
-function createAppMintFn(creds: AppCredentials, identity: AppBotIdentity): AppMintFn {
+function createAppMintFn(creds: AppCredentials, identity: AppBotIdentity): AppMinter {
   const cache = new Map<string, MintedToken & { mintedEnv: MintedCredentials }>();
 
-  return async (slug: string) => {
+  const mint = async (slug: string) => {
     const cached = cache.get(slug);
     if (cached !== undefined && cached.expiresAt - Date.now() > MINT_REFRESH_MARGIN_MS) {
       return cached;
@@ -1170,6 +1193,29 @@ function createAppMintFn(creds: AppCredentials, identity: AppBotIdentity): AppMi
     cache.set(slug, result);
     return result;
   };
+
+  return Object.assign(mint, { leases: () => liveLeases(cache, Date.now()) });
+}
+
+/**
+ * The leases a doctor run is handed (#507 §5): the minted tokens the fleet's
+ * own children are running on, keyed by the slug each was minted for.
+ *
+ * An expired entry is left out rather than re-minted. This is read on the way
+ * to spawning a doctor child, and a mint failure there would be a doctor
+ * problem caused by nothing doctor did; the tenant whose lease lapsed reports
+ * what an unleased App-arm tenant has always reported, and the fleet's own
+ * refresh puts the lease back within the poll.
+ */
+export function liveLeases(
+  cache: ReadonlyMap<string, { token: string; expiresAt: number }>,
+  nowMs: number,
+): DoctorLeases {
+  const live: DoctorLeases = {};
+  for (const [slug, minted] of cache) {
+    if (minted.expiresAt > nowMs) live[slug] = minted.token;
+  }
+  return live;
 }
 
 /**
@@ -1611,19 +1657,49 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     ),
   });
 
+  // The deployment's doctor runs (#507 §4-§7, #534). One cell for the leases
+  // because only the workspace arm can hold any: solo's App-arm child mints its
+  // own token in-loop, so the supervisor has nothing to hand over there, and
+  // the cell stays the empty book it starts as.
+  let doctorLeases: () => DoctorLeases = () => ({});
+  const doctor = createDoctorRunner({
+    run: () =>
+      spawnDoctor({
+        // The bootstrapper's own installed package, not the materialized engine
+        // (#507 §4): doctor's checks are the launcher's view of the deployment,
+        // including the engine checkout it would be reporting on.
+        entry: join(import.meta.dirname, "cli.ts"),
+        cwd: configDir,
+        env: process.env,
+        leases: doctorLeases(),
+        killAfterMs: DOCTOR_DEADLINE_MS + DOCTOR_KILL_GRACE_MS,
+      }),
+    onSection: (section) => deployment.noteDoctor(section),
+    onFailure: ({ outcome, detail }) =>
+      console.warn(
+        `[phoebe] boot: the doctor run ${outcome === "timed-out" ? "timed out" : "crashed"} — ` +
+          `${detail}. The last report stands in the deployment report, with its age.`,
+      ),
+  });
+  doctor.start();
+
   if (workspace !== null) {
     // GitHub App mode (#209): if the supervisor holds App credentials, fetch
     // the bot identity once at fleet startup and wire up a per-tenant mint fn.
     // Tenants with their own GH_TOKEN are untouched; tenants without one get a
     // scoped installation token each poll. A failed identity fetch disables App
     // mode gracefully — each tenant must then carry its own GH_TOKEN.
-    let appMint: AppMintFn | undefined;
+    let appMint: AppMinter | undefined;
     const appCreds = readAppCredentials(process.env);
     if (appCreds) {
       try {
         const identity = await fetchAppBotIdentity(appCreds);
         console.log(`[phoebe] boot: GitHub App mode active — minting tokens as ${identity.login}.`);
         appMint = createAppMintFn(appCreds, identity);
+        // Doctor's runs now carry what the fleet's children run on, so `repo`,
+        // `labels` and `stray-members` are answered for these tenants (#507 §5).
+        const minter = appMint;
+        doctorLeases = () => minter.leases();
       } catch (error) {
         console.warn(
           `[phoebe] boot: could not fetch App bot identity — ${describe(error)}. ` +
@@ -1643,6 +1719,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
         argv,
         broker,
         deployment,
+        doctor,
         // The root `workspace` block is re-read every poll from here on: this
         // callback owns both the hot tenant list and the shape-change abort (#139).
         discover: workspaceDiscover(configDir, configPath, workspace, appMint, (held) =>
@@ -1659,6 +1736,10 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       throw error;
     } finally {
       stop.dispose();
+      // Nothing in flight is cancelled: a doctor child outliving the drain by a
+      // few seconds is harmless, and its six-hour clock is what must not
+      // outlive it.
+      doctor.stop();
       // A crash-loop report raced against the process ending is a report lost;
       // the flush waits it out, bounded by the reporter's own timeout (#474).
       // In the `finally` so a supervisor that threw still flushes before the
@@ -1758,6 +1839,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     attachBroker({ owner: pipeline.id, broker, child });
     attachEngineReports({ pipelineId: pipeline.id, child, state: deployment });
     deployment.noteSpawn(pipeline);
+    doctor.noteFleetUp();
     // Answer the child's credential lease (#211) with the null no-op: solo is
     // one trust domain whose secrets arrive on the ambient container env, so
     // there is no per-tenant `.env` to re-read (#205's rotation-in-place has no
@@ -1826,6 +1908,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
             : "[phoebe] boot: tracked ref advanced — draining the engine (SIGTERM) and relaunching.",
         );
         deployment.noteReconcile(reason);
+        doctor.noteReconcile();
       },
       onLaunchError: (error) => {
         console.error(
@@ -1840,6 +1923,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     // Drop the listeners before propagating: re-raising the engine's killing
     // signal must actually kill this process, and our own latch would swallow it.
     stop.dispose();
+    doctor.stop();
     await reporter.flush();
   }
   propagateExit(exit.code, exit.signal);
