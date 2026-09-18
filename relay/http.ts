@@ -1,10 +1,11 @@
 // The relay's HTTP surface: the sign-in flow, and the reads and verbs behind it
-// (#538, #540, #541).
+// (#538, #540, #541, #551).
 //
 // There are no pages here yet. What a signed-in person can ask for is who they
 // are, a pairing token for a new deployment, the fleet as the socket endpoint
-// knows it, and the forgetting of one deployment. The console's pages sit on
-// exactly these answers.
+// knows it — with what the relay last alerted about each link — the forgetting
+// of one deployment, and one test alert. The console's pages sit on exactly
+// these answers.
 //
 // The shape every route follows is set here: paths come from contracts, the
 // session is read from a `__Host-` cookie, and anything behind the door answers
@@ -15,6 +16,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { RELAY_ROUTES } from "../src/contracts/relay-routes.ts";
 import type { RelayDeploymentRow, RelayIdentity } from "../src/contracts/relay-routes.ts";
+import type { RelayAlertFacts } from "../src/contracts/alerts.ts";
 import type { Allowlist } from "./allowlist.ts";
 import type { Link, PairingTokens } from "./links.ts";
 import { newAuthParams, type IdentityProvider } from "./oidc.ts";
@@ -47,6 +49,15 @@ export type RelayHandlerOptions = {
   fleet: () => {
     rows: (now?: Date) => RelayDeploymentRow[];
     forget: (fingerprint: string) => Link | null;
+  };
+  /**
+   * Alerting, as the connection panel reads it and as the test button drives it
+   * (#515 §13). Always present: a relay with no webhook still evaluates edges,
+   * so "is one configured" is a fact to state and not a reason to omit a route.
+   */
+  alerts: {
+    facts: () => RelayAlertFacts;
+    test: (by: string) => Promise<{ sinks: number }>;
   };
   sessions: SessionStore;
   identity: IdentityProvider;
@@ -93,6 +104,9 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
     }
     if (method === "GET" && url.pathname === RELAY_ROUTES.deployments) {
       return listDeployments(request, response);
+    }
+    if (method === "POST" && url.pathname === RELAY_ROUTES.testAlert) {
+      return await sendTestAlert(request, response);
     }
     if (method === "POST" && url.pathname === RELAY_ROUTES.forget) {
       return await forgetDeployment(request, response);
@@ -241,7 +255,28 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
       json(response, 401, { error: "not-signed-in" });
       return;
     }
-    json(response, 200, { deployments: options.fleet().rows(clock()) });
+    json(response, 200, {
+      deployments: options.fleet().rows(clock()),
+      alerts: options.alerts.facts(),
+    });
+  }
+
+  /**
+   * **Send test alert** (#515 §13): a `{ kind: "test" }` body to every sink, so
+   * an operator can tell a working webhook from a healthy fleet. Fleet-wide and
+   * bodiless — the question is about the channel, not about a deployment — and
+   * it answers with how many sinks took it, which is the only honest report
+   * available when delivery is one attempt with no retry.
+   */
+  async function sendTestAlert(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const session = options.sessions.get(parseCookies(request.headers.cookie).get(SESSION_COOKIE));
+    if (session === null) {
+      json(response, 401, { error: "not-signed-in" });
+      return;
+    }
+    const sent = await options.alerts.test(session.email);
+    warn(`[phoebe:relay] ${session.email} sent a test alert to ${sent.sinks} sink(s)`);
+    json(response, 202, sent);
   }
 
   /**
