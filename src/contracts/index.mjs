@@ -19,6 +19,9 @@ export const RELAY_PROTOCOL = 1;
 /** The path on the relay that deployments dial. */
 export const RELAY_DEPLOYMENTS_PATH = "/deployments";
 
+/** The variable a pairing token travels in — see relay-protocol.ts (#558). */
+export const RELAY_TOKEN_ENV = "PHOEBE_RELAY_TOKEN";
+
 /** How often the relay pings and heartbeats — see relay-protocol.ts (#541). */
 export const RELAY_HEARTBEAT_MS = 20_000;
 

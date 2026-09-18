@@ -204,7 +204,13 @@ no long-lived bearer token exists anywhere. The credential an operator handles i
 spendable once; the identity that outlives it is a key the deployment generated
 itself and has never sent.
 
-From the operator's side it is three steps.
+From the operator's side it is three steps — or one, from the companion. The
+[desktop companion](https://github.com/JesusFilm/phoebe/issues/522) does all
+three for a local install behind a **Pair with the relay** button on its install
+tab: it mints the token with its own device credential, writes the address and
+the token, and nudges Compose so the container comes back holding both. The
+token never appears in the run's output. What follows is the same thing by hand,
+and what the companion is doing under the button.
 
 1. Mint a token on the relay: `POST /api/pairing-tokens` while signed in. It is
    good for fifteen minutes and shown once, and the relay keeps it in memory, so
@@ -224,6 +230,10 @@ From the operator's side it is three steps.
    # .env. Compose carries this into the container the way GH_TOKEN travels.
    PHOEBE_RELAY_TOKEN=<the token>
    ```
+
+   The scaffolded `container/compose.yml` forwards that variable. A deployment
+   scaffolded before it did needs the line adding to its `environment:` block,
+   or the token stays on the host and the deployment never pairs.
 
 3. Boot. The deployment dials, generates an Ed25519 **deployment key**, presents
    it with the token, and the relay records the public half as a **link** in

@@ -5,17 +5,18 @@
 //
 // Adding a verb here without adding its outcome fails the type-check, which is
 // the point: the bridge's `run:exit { runId, code, outcome? }` has to stay
-// exhaustive as `config set`, `secret set` and `pair` land (#530, #531, #540).
+// exhaustive as `config set` and `secret set` land (#530, #531).
 
 import type { DoctorReport } from "./doctor-report.ts";
 import type { InitOutcome } from "./init-report.ts";
 import type { FleetMigrateReport } from "./migrate-report.ts";
+import type { PairOutcome } from "./pair-outcome.ts";
 import type { StartOutcome } from "./start-outcome.ts";
 import type { StopOutcome } from "./stop-outcome.ts";
 import type { UpgradeOutcome } from "./upgrade-outcome.ts";
 
 /** Every verb the host exposes in-process, named as the CLI names it. */
-export type HostVerb = "init" | "start" | "stop" | "upgrade" | "migrate" | "doctor";
+export type HostVerb = "init" | "start" | "stop" | "upgrade" | "migrate" | "doctor" | "pair";
 
 /** A finished verb run, tagged by the verb that produced it. */
 export type VerbOutcome =
@@ -24,7 +25,8 @@ export type VerbOutcome =
   | { verb: "stop"; outcome: StopOutcome }
   | { verb: "upgrade"; outcome: UpgradeOutcome }
   | { verb: "migrate"; outcome: FleetMigrateReport }
-  | { verb: "doctor"; outcome: DoctorReport };
+  | { verb: "doctor"; outcome: DoctorReport }
+  | { verb: "pair"; outcome: PairOutcome };
 
 /** The outcome type of one verb — `OutcomeOf<"stop">` is `StopOutcome`. */
 export type OutcomeOf<V extends HostVerb> = Extract<VerbOutcome, { verb: V }>["outcome"];

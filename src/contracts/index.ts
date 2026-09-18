@@ -25,6 +25,7 @@ export { COMPANION_AUTH_URL, DEVICE_CODE_TTL_MS, RELAY_ROUTES } from "./relay-ro
 export type {
   DeviceExchange,
   DeviceExchangeResult,
+  MintedPairingToken,
   RelayConnectionState,
   RelayDeploymentDetail,
   RelayDeploymentRow,
@@ -48,6 +49,7 @@ export {
   RELAY_CLOSE,
   RELAY_DARK_AFTER_MS,
   RELAY_DEPLOYMENTS_PATH,
+  RELAY_TOKEN_ENV,
   RELAY_HEARTBEAT_MS,
   RELAY_MESSAGES,
   RELAY_PROTOCOL,
@@ -118,6 +120,7 @@ export type {
   InitTenantOutcome,
 } from "./init-report.ts";
 export type { StartOutcome } from "./start-outcome.ts";
+export type { PairOutcome } from "./pair-outcome.ts";
 export type {
   UpgradeCheckReport,
   UpgradeHalfOutcome,

@@ -75,6 +75,11 @@ the verb runs that drive them ([#555](https://github.com/JesusFilm/phoebe/issues
   lives here so a renderer reload rejoins a run rather than losing it.
 - [`verb-dispatch.ts`](src/verb-dispatch.ts) — the six `run<Verb>` calls, in
   this process (ADR 0001). No second Node, no `bin.mjs`, no stdout parsing.
+- [`pair.ts`](src/pair.ts) — the seventh verb, and the one the engine does not
+  have: a mint on the relay, the address into the config, the token into the
+  root `.env`, and an `up -d` so Compose recreates the container holding both
+  ([#558](https://github.com/JesusFilm/phoebe/issues/558)). The token goes into
+  the file and into no line.
 
 **The relay arm** ([#554](https://github.com/JesusFilm/phoebe/issues/554)):
 sign-in, the JSON reads the renderer asks for, the relay's event stream

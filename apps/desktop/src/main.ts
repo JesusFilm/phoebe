@@ -32,10 +32,12 @@ import {
   safeStorage,
   shell,
 } from "electron";
+import { RELAY_ROUTES } from "phoebe-agent/contracts";
 import type {
   CompanionEnvironment,
   CompanionPreferences,
   LocalInstall,
+  MintedPairingToken,
   RelayArmState,
   RelayEvent,
   RelayPassthrough,
@@ -62,9 +64,10 @@ import { CONSOLE_SCHEME, consoleFileFor } from "./console-scheme.ts";
 import { consoleSource } from "./console-source.ts";
 import { probeDocker } from "./docker.ts";
 import { allInstallFacts } from "./install-facts.ts";
+import type { PairArm } from "./pair.ts";
 import { companionName, createRelaySession, type RelaySession } from "./relay-session.ts";
 import { createTokenVault } from "./vault.ts";
-import { dispatchVerb } from "./verb-dispatch.ts";
+import { createVerbDispatch } from "./verb-dispatch.ts";
 import { createVerbRuns } from "./verb-runs.ts";
 
 // Before `ready`, which is the only time Chromium will take it. `standard` is
@@ -191,7 +194,7 @@ async function editInstalls(change: (contents: CompanionFile) => CompanionFile) 
  * (#527 §13).
  */
 const runs = createVerbRuns({
-  dispatch: dispatchVerb,
+  dispatch: createVerbDispatch({ relayArm: pairArm }),
   onLine: (line) => broadcast(BRIDGE_CHANNELS.runLine, line),
   onExit: (exit) => {
     broadcast(BRIDGE_CHANNELS.runExit, exit);
@@ -203,6 +206,61 @@ const runs = createVerbRuns({
     );
   },
 });
+
+/**
+ * The relay arm a pairing mints on, or null when there is no session to mint
+ * with. Narrow by construction: the device token stays inside the session, and
+ * what pairing gets is one call it is allowed to make (#527 §14).
+ */
+function pairArm(): PairArm | null {
+  const session = relay;
+  if (session === null) return null;
+  const { person, url } = session.state();
+  if (person === null || url === null) return null;
+  return {
+    url,
+    mint: () =>
+      session.request({
+        method: "POST",
+        path: RELAY_ROUTES.pairingTokens,
+      }) as Promise<MintedPairingToken>,
+  };
+}
+
+/**
+ * What `pair` needs before it is worth starting (#558).
+ *
+ * Both refusals are states the install tab already disables the control for;
+ * this is what answers a renderer that asked anyway — an operator who signed
+ * out in another window, or a container that stopped between the render and the
+ * click. Checked here rather than inside the run because a refusal with an
+ * instruction on it is more use than a run that starts and immediately fails.
+ */
+async function assertPairable(install: string): Promise<void> {
+  if (pairArm() === null) {
+    throw new BridgeRefusal({
+      code: "signed-out",
+      message: "this companion is not signed in to a relay, so there is nothing to pair with",
+      instruction: "Sign in to a relay on the rail, then pair this install.",
+    });
+  }
+  const listed = await listInstalls();
+  const found = listed.find((candidate) => candidate.dir === install);
+  if (found === undefined) {
+    throw new BridgeRefusal({
+      code: "refused",
+      message: "this companion does not hold an install at that folder",
+    });
+  }
+  if (found.state !== "running") {
+    throw new BridgeRefusal({
+      code: "container-not-running",
+      message:
+        "pairing writes a token the container spends on its next boot, and this one is not up",
+      instruction: "Start this install, then pair it.",
+    });
+  }
+}
 
 /**
  * A URL the OS handed us. An auth link is spent against whichever sign-in this
@@ -309,7 +367,10 @@ app.whenReady().then(
     );
 
     ipcMain.handle(BRIDGE_CHANNELS.runStart, (_event, request: VerbRunRequest) =>
-      answering<string>(() => runs.start(request)),
+      answering<string>(async () => {
+        if (request.verb === "pair") await assertPairable(request.install);
+        return runs.start(request);
+      }),
     );
 
     ipcMain.handle(BRIDGE_CHANNELS.runCurrent, (_event, install: string) =>

@@ -1,10 +1,15 @@
 // Which verb a run actually runs (#527 §3, ADR 0001).
 //
-// Six arms, six `run<Verb>` calls, in this process. No second Node, no
-// `bin.mjs`, no stdout parsing: main ships the same package as the renderer, so
-// it calls the verb functions directly and reads the typed outcome each one
-// returns. That is the seam #552 reshaped the verbs to expose, and this file is
-// its only consumer.
+// Six of the seven arms are one `run<Verb>` call, in this process. No second
+// Node, no `bin.mjs`, no stdout parsing: main ships the same package as the
+// renderer, so it calls the verb functions directly and reads the typed outcome
+// each one returns. That is the seam #552 reshaped the verbs to expose, and this
+// file is its only consumer.
+//
+// `pair` is the seventh, and the one verb the engine does not have: it needs the
+// device token, which only the companion holds, so it is composed here out of a
+// mint, two file writes and a nudge (pair.ts, #527 §14). That is why this module
+// is built with the relay arm rather than being a bare function.
 //
 // Two things every arm has in common. Each verb's io is the run's line sink, so
 // its output lands in the install tab rather than in whatever stream the
@@ -16,6 +21,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { app } from "electron";
 import type { VerbIo } from "phoebe-agent/contracts";
+import { BridgeRefusal } from "./channels.ts";
 import type { CommandRunner } from "../../../src/deployment-compose.ts";
 import { runDoctor } from "../../../src/doctor.ts";
 import { runInit } from "../../../src/init.ts";
@@ -23,6 +29,7 @@ import { runMigrate } from "../../../src/migrate.ts";
 import { runStart } from "../../../src/start.ts";
 import { runStop } from "../../../src/stop.ts";
 import { runUpgrade } from "../../../src/upgrade.ts";
+import { pairInstall, type PairArm } from "./pair.ts";
 import type { Dispatch, Killable } from "./verb-runs.ts";
 
 /** The config file that sits at the root of an install. */
@@ -42,73 +49,98 @@ function packageRoot(): string {
     : path.join(import.meta.dirname, "..", "..", "..");
 }
 
-/** The real dispatch — one arm per verb. */
-export const dispatchVerb: Dispatch = async (request, { io, register }) => {
-  const install = request.install;
-  const configPath = path.join(install, CONFIG_FILE);
-  const runner = streamingRunner(io, register);
-
-  switch (request.verb) {
-    case "init": {
-      // `init` prints nothing of its own (#552) and returns the file lists
-      // instead, so the run says what it is doing and then what it did. An
-      // install tab with an empty output box and a green tick reads as a button
-      // that did nothing.
-      io.stdout(`[phoebe] init ${install}`);
-      const outcome = runInit({
-        targetDir: install,
-        ...(request.profile !== undefined ? { profile: request.profile } : {}),
-        deps: { packageRoot: packageRoot() },
-      });
-      for (const file of outcome.created) io.stdout(`  created  ${file}`);
-      for (const file of outcome.updated) io.stdout(`  updated  ${file}`);
-      for (const file of outcome.skipped) io.stdout(`  kept     ${file}`);
-      return { verb: "init", outcome };
-    }
-
-    case "start": {
-      const outcome = await runStart({
-        build: request.build ?? false,
-        deps: { cwd: install, runner, io },
-      });
-      return { verb: "start", outcome };
-    }
-
-    case "stop": {
-      const outcome = await runStop({
-        now: request.now ?? false,
-        deps: { cwd: install, runner, io },
-      });
-      return { verb: "stop", outcome };
-    }
-
-    case "upgrade": {
-      // The companion always passes a target, so upgrade's TTY picker is never
-      // reached (#527 §3). It asks no consent question either: the dep defaults
-      // to never asking, which is the right answer with no terminal.
-      const outcome = await runUpgrade({
-        check: request.check ?? true,
-        target: request.target ?? "both",
-        ...(request.ref !== undefined ? { ref: request.ref } : {}),
-        configPath,
-        deps: { cwd: install, io },
-      });
-      return { verb: "upgrade", outcome };
-    }
-
-    case "migrate": {
-      io.stdout(`[phoebe] migrate ${install}`);
-      const outcome = await runMigrate({ configPath, check: request.check ?? false });
-      return { verb: "migrate", outcome };
-    }
-
-    case "doctor": {
-      io.stdout(`[phoebe] doctor ${install}`);
-      const outcome = await runDoctor({ configDir: install });
-      return { verb: "doctor", outcome };
-    }
-  }
+/** What the dispatch needs from the rest of main. */
+export type DispatchDeps = {
+  /**
+   * The relay arm pairing mints on, or null when this companion is signed out.
+   * Read at the moment of the run rather than handed over once: a sign-out
+   * between opening the window and pressing the button is the ordinary case.
+   */
+  relayArm: () => PairArm | null;
 };
+
+/** The real dispatch — one arm per verb. */
+export function createVerbDispatch(deps: DispatchDeps): Dispatch {
+  return async (request, { io, register }) => {
+    const install = request.install;
+    const configPath = path.join(install, CONFIG_FILE);
+    const runner = streamingRunner(io, register);
+
+    switch (request.verb) {
+      case "init": {
+        // `init` prints nothing of its own (#552) and returns the file lists
+        // instead, so the run says what it is doing and then what it did. An
+        // install tab with an empty output box and a green tick reads as a button
+        // that did nothing.
+        io.stdout(`[phoebe] init ${install}`);
+        const outcome = runInit({
+          targetDir: install,
+          ...(request.profile !== undefined ? { profile: request.profile } : {}),
+          deps: { packageRoot: packageRoot() },
+        });
+        for (const file of outcome.created) io.stdout(`  created  ${file}`);
+        for (const file of outcome.updated) io.stdout(`  updated  ${file}`);
+        for (const file of outcome.skipped) io.stdout(`  kept     ${file}`);
+        return { verb: "init", outcome };
+      }
+
+      case "start": {
+        const outcome = await runStart({
+          build: request.build ?? false,
+          deps: { cwd: install, runner, io },
+        });
+        return { verb: "start", outcome };
+      }
+
+      case "stop": {
+        const outcome = await runStop({
+          now: request.now ?? false,
+          deps: { cwd: install, runner, io },
+        });
+        return { verb: "stop", outcome };
+      }
+
+      case "upgrade": {
+        // The companion always passes a target, so upgrade's TTY picker is never
+        // reached (#527 §3). It asks no consent question either: the dep defaults
+        // to never asking, which is the right answer with no terminal.
+        const outcome = await runUpgrade({
+          check: request.check ?? true,
+          target: request.target ?? "both",
+          ...(request.ref !== undefined ? { ref: request.ref } : {}),
+          configPath,
+          deps: { cwd: install, io },
+        });
+        return { verb: "upgrade", outcome };
+      }
+
+      case "migrate": {
+        io.stdout(`[phoebe] migrate ${install}`);
+        const outcome = await runMigrate({ configPath, check: request.check ?? false });
+        return { verb: "migrate", outcome };
+      }
+
+      case "doctor": {
+        io.stdout(`[phoebe] doctor ${install}`);
+        const outcome = await runDoctor({ configDir: install });
+        return { verb: "doctor", outcome };
+      }
+
+      case "pair": {
+        const arm = deps.relayArm();
+        if (arm === null) {
+          throw new BridgeRefusal({
+            code: "signed-out",
+            message: "this companion is not signed in to a relay, so there is nothing to pair with",
+            instruction: "Sign in to a relay on the rail, then pair this install.",
+          });
+        }
+        const outcome = await pairInstall(install, arm, { io, runner });
+        return { verb: "pair", outcome };
+      }
+    }
+  };
+}
 
 /**
  * The Compose runner a verb run drives its children through.

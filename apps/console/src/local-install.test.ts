@@ -11,8 +11,11 @@ import {
   installReading,
   offeredVerbs,
   outcomeReading,
+  pairedInstalls,
+  pairReading,
+  sameRelay,
 } from "./local-install.ts";
-import { environment, install } from "./test-fixture.ts";
+import { environment, install, row } from "./test-fixture.ts";
 
 function runOf(overrides: Partial<VerbRun> = {}): VerbRun {
   return {
@@ -229,5 +232,157 @@ describe("the Docker check", () => {
       kind: "ready",
       text: "Docker is running · companion 0.13.0 on linux",
     });
+  });
+});
+
+// ── pairing ───────────────────────────────────────────────────────────────
+
+const RELAY = "https://relay.example.test";
+const DIALLED = "wss://relay.example.test/deployments";
+
+/** A fleet row, in the shape the join reads. */
+function fact(name: string, fingerprint: string) {
+  return { row: row({ name, fingerprint }) };
+}
+
+describe("which installs are also rows on the relay", () => {
+  test("an install dialling this relay under a row's name is that row", () => {
+    const one = install({ dir: "/repos/one", deploymentName: "the-fleet", relayUrl: DIALLED });
+
+    const paired = pairedInstalls([one], [fact("the-fleet", "FP1")], RELAY);
+
+    expect(paired.get("/repos/one")).toBe("FP1");
+  });
+
+  test("an install that dials nothing is nobody's row", () => {
+    const one = install({ dir: "/repos/one", deploymentName: "the-fleet", relayUrl: null });
+
+    expect(pairedInstalls([one], [fact("the-fleet", "FP1")], RELAY).size).toBe(0);
+  });
+
+  test("an install dialling a different relay is not this relay's row, name or no name", () => {
+    const one = install({
+      dir: "/repos/one",
+      deploymentName: "the-fleet",
+      relayUrl: "wss://other.test/deployments",
+    });
+
+    expect(pairedInstalls([one], [fact("the-fleet", "FP1")], RELAY).size).toBe(0);
+  });
+
+  test("an install the relay has never seen is configured, not paired", () => {
+    const one = install({ dir: "/repos/one", deploymentName: "the-fleet", relayUrl: DIALLED });
+
+    expect(pairedInstalls([one], [fact("something-else", "FP1")], RELAY).size).toBe(0);
+  });
+
+  test("a console with no relay session joins nothing", () => {
+    const one = install({ dir: "/repos/one", deploymentName: "the-fleet", relayUrl: DIALLED });
+
+    expect(pairedInstalls([one], [fact("the-fleet", "FP1")], null).size).toBe(0);
+  });
+
+  test("two installs, two rows, each to its own", () => {
+    const one = install({ dir: "/repos/one", deploymentName: "one", relayUrl: DIALLED });
+    const two = install({ dir: "/repos/two", deploymentName: "two", relayUrl: DIALLED });
+
+    const paired = pairedInstalls([one, two], [fact("two", "FP2"), fact("one", "FP1")], RELAY);
+
+    expect([...paired]).toEqual([
+      ["/repos/one", "FP1"],
+      ["/repos/two", "FP2"],
+    ]);
+  });
+});
+
+describe("sameRelay", () => {
+  test("the wss address a deployment dials and the https one a person signs in at", () => {
+    expect(sameRelay(DIALLED, RELAY)).toBe(true);
+  });
+
+  test("a different host is a different relay", () => {
+    expect(sameRelay("wss://other.test/deployments", RELAY)).toBe(false);
+  });
+
+  test("a port is part of the host, because it is part of the relay", () => {
+    expect(sameRelay("wss://relay.example.test:8443/deployments", RELAY)).toBe(false);
+  });
+
+  test("something that is not a URL is not a match, and not a crash", () => {
+    expect(sameRelay("not a url", RELAY)).toBe(false);
+  });
+});
+
+describe("whether this install can be paired", () => {
+  test("a running install on a signed-in companion is ready", () => {
+    const reading = pairReading(install({ state: "running" }), { signedIn: true, paired: false });
+
+    expect(reading.kind).toBe("ready");
+  });
+
+  test("signed out, the reason names the sign-in rather than the install", () => {
+    const reading = pairReading(install({ state: "running" }), { signedIn: false, paired: false });
+
+    expect(reading).toEqual({ kind: "blocked", reason: expect.stringContaining("Sign in") });
+  });
+
+  test("a stopped install is blocked, because a stopped container spends nothing", () => {
+    const reading = pairReading(install({ state: "stopped" }), { signedIn: true, paired: false });
+
+    expect(reading).toEqual({ kind: "blocked", reason: expect.stringContaining("Start") });
+  });
+
+  test("a not-initialised folder is blocked by the same rule", () => {
+    const reading = pairReading(install({ state: "not-initialised" }), {
+      signedIn: true,
+      paired: false,
+    });
+
+    expect(reading.kind).toBe("blocked");
+  });
+
+  test("an install that is already a row is paired, and is offered nothing to press", () => {
+    const reading = pairReading(install({ state: "running" }), { signedIn: true, paired: true });
+
+    expect(reading.kind).toBe("paired");
+  });
+
+  test("signed out wins over stopped: there is nothing to pair with either way", () => {
+    const reading = pairReading(install({ state: "stopped" }), { signedIn: false, paired: false });
+
+    expect(reading).toEqual({ kind: "blocked", reason: expect.stringContaining("Sign in") });
+  });
+});
+
+describe("what a finished pairing reads as", () => {
+  test("names the deployment, the relay and when the token dies", () => {
+    const reading = outcomeReading({
+      verb: "pair",
+      outcome: {
+        relayUrl: DIALLED,
+        deploymentName: "the-fleet",
+        expiresAt: "2026-09-18T12:15:00.000Z",
+        movedRelay: false,
+      },
+    });
+
+    expect(reading).toContain("the-fleet");
+    expect(reading).toContain(DIALLED);
+    expect(reading).toContain("2026-09-18T12:15:00.000Z");
+    expect(reading).not.toContain("moved");
+  });
+
+  test("says when the pairing moved the install off another relay", () => {
+    const reading = outcomeReading({
+      verb: "pair",
+      outcome: {
+        relayUrl: DIALLED,
+        deploymentName: "the-fleet",
+        expiresAt: "2026-09-18T12:15:00.000Z",
+        movedRelay: true,
+      },
+    });
+
+    expect(reading).toContain("moved off the relay it named before");
   });
 });
