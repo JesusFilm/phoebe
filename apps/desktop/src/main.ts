@@ -6,18 +6,32 @@
 // serves in a browser — loaded from disk over the console scheme. So there is no
 // UI code in here, and a page the operator sees is never written twice.
 //
-// What main answers today is the shell's worth of the bridge: its version, and a
-// relay arm with no session. Main becomes the relay client proper with #554, and
-// grows the host verbs and the local read loop with #555 and #556; both are
-// changes in here, behind the contract the preload already exposes.
+// Main is also the relay client (#523 §1): it holds the device token, makes every
+// call to the relay, and re-emits the relay's event stream to the renderer over
+// IPC. The wiring for that is here; the flow itself is relay-session.ts, which
+// needs no Electron to run. The host verbs and the local read loop arrive with
+// #555 and #556, behind the contract the preload already exposes.
 
+import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { app, BrowserWindow, ipcMain, nativeTheme, net, protocol, shell } from "electron";
-import type { RelayArmState } from "phoebe-agent/contracts";
-import { BRIDGE_CHANNELS, refusal, type BridgeResult } from "./channels.ts";
+import {
+  app,
+  BrowserWindow,
+  ipcMain,
+  nativeTheme,
+  net,
+  protocol,
+  safeStorage,
+  shell,
+} from "electron";
+import type { RelayArmState, RelayEvent, RelayPassthrough } from "phoebe-agent/contracts";
+import { authCodeIn, authCodeInArgv } from "./auth-link.ts";
+import { answer, BRIDGE_CHANNELS, type BridgeResult } from "./channels.ts";
 import { CONSOLE_SCHEME, consoleFileFor } from "./console-scheme.ts";
 import { consoleSource } from "./console-source.ts";
+import { companionName, createRelaySession, type RelaySession } from "./relay-session.ts";
+import { createTokenVault } from "./vault.ts";
 
 // Before `ready`, which is the only time Chromium will take it. `standard` is
 // what gives the bundle a real origin — without it there is no `localStorage`,
@@ -31,6 +45,14 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 
+// One instance, because the sign-in comes back as a URL the OS hands to *an*
+// instance. On Windows and Linux that is a fresh process with the URL on its
+// command line; the lock turns it into a `second-instance` event on the process
+// that is already holding the PKCE verifier, which is the only one that can
+// spend the code. Without the lock the second process would hold the code and
+// the first would hold the verifier, and neither could finish (#523 §2).
+if (!app.requestSingleInstanceLock()) app.exit(0);
+
 /** The directory the console bundle was built into. */
 function consoleBundleDir(): string {
   // Packaged, the bundle sits beside the app's resources; in a checkout it is
@@ -38,6 +60,69 @@ function consoleBundleDir(): string {
   return app.isPackaged
     ? path.join(process.resourcesPath, "console")
     : path.join(__dirname, "..", "..", "..", "console");
+}
+
+/**
+ * Claim `phoebe://` with the OS. Packaged, the executable is the app. In a
+ * checkout it is Electron's own binary running a directory, so the registration
+ * has to name both or the OS launches a bare Electron with no app in it.
+ */
+function claimScheme(): void {
+  if (!process.defaultApp) {
+    app.setAsDefaultProtocolClient(CONSOLE_SCHEME);
+    return;
+  }
+  const entry = process.argv[1];
+  if (entry !== undefined) {
+    app.setAsDefaultProtocolClient(CONSOLE_SCHEME, process.execPath, [path.resolve(entry)]);
+  }
+}
+
+/**
+ * The relay arm, built on `ready` and not before: `safeStorage` cannot say
+ * whether Linux has a keyring until the app has one, and the keyring is what
+ * decides whether this companion persists a sign-in at all (#523 §5).
+ */
+let relay: RelaySession | null = null;
+
+function openRelayArm(): RelaySession {
+  return createRelaySession({
+    vault: createTokenVault({ safeStorage, userDataDir: app.getPath("userData") }),
+    // Electron's own stack rather than Node's global `fetch`, so the relay is
+    // reached through whatever proxy and certificate store the OS has configured.
+    fetch: (url, init) => net.fetch(url, init),
+    openExternal: (url) => shell.openExternal(url),
+    deviceName: companionName(os.hostname(), process.platform),
+    onEvent: (event: RelayEvent) => broadcast(BRIDGE_CHANNELS.relayEvent, event),
+    onState: (state: RelayArmState) => broadcast(BRIDGE_CHANNELS.relayArm, state),
+  });
+}
+
+/**
+ * The one place a bridge call reaches the arm. Before `ready` there is no arm,
+ * and a renderer cannot be asking — it has no window yet — so this refusal is
+ * for the impossible case rather than a state anyone can get into.
+ */
+function arm(): RelaySession {
+  if (relay === null) throw new Error("the companion's relay arm is not open yet");
+  return relay;
+}
+
+/** Say something to every open window. There is one today; the cost of two is nil. */
+function broadcast(channel: string, payload: unknown): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    window.webContents.send(channel, payload);
+  }
+}
+
+/**
+ * A URL the OS handed us. An auth link is spent against whichever sign-in this
+ * process has open; anything else is not ours, and a code with no attempt
+ * behind it is dropped — only the instance holding the verifier can spend one.
+ */
+function deliverDeepLink(url: string): void {
+  const code = authCodeIn(url);
+  if (code !== null) relay?.deliver(code);
 }
 
 function createWindow(): void {
@@ -68,8 +153,28 @@ function createWindow(): void {
   void window.loadURL(consoleSource(process.argv));
 }
 
+/** Bring the window back and put the URL that woke us in front of the arm. */
+app.on("second-instance", (_event, argv) => {
+  const window = BrowserWindow.getAllWindows()[0];
+  if (window !== undefined) {
+    if (window.isMinimized()) window.restore();
+    window.focus();
+  }
+  const code = authCodeInArgv(argv);
+  if (code !== null) relay?.deliver(code);
+});
+
+// macOS does not relaunch for a URL; it fires this on the running app.
+app.on("open-url", (event, url) => {
+  event.preventDefault();
+  deliverDeepLink(url);
+});
+
 app.whenReady().then(
   () => {
+    claimScheme();
+    relay = openRelayArm();
+
     protocol.handle(CONSOLE_SCHEME, async (request) => {
       const file = consoleFileFor(request.url, consoleBundleDir());
       if (file === null) return new Response("not found", { status: 404 });
@@ -80,21 +185,17 @@ app.whenReady().then(
       return { ok: true, value: __COMPANION_VERSION__ };
     });
 
-    ipcMain.handle(BRIDGE_CHANNELS.relayState, (): BridgeResult<RelayArmState> => {
-      // No relay is paired and no device token is held, which is the honest
-      // answer until #554 mints one. The console draws the signed-out Relay
-      // group from exactly this.
-      return { ok: true, value: { url: null, person: null, persisted: false } };
-    });
+    ipcMain.handle(BRIDGE_CHANNELS.relayState, () => answer(() => arm().state()));
 
-    for (const channel of [BRIDGE_CHANNELS.relayRequest, BRIDGE_CHANNELS.relaySignOut]) {
-      ipcMain.handle(channel, () =>
-        refusal({
-          code: "signed-out",
-          message: "the companion is not signed in to a relay",
-        }),
-      );
-    }
+    ipcMain.handle(BRIDGE_CHANNELS.relaySignIn, (_event, request: { url: string }) =>
+      answer(() => arm().signIn(request.url)),
+    );
+
+    ipcMain.handle(BRIDGE_CHANNELS.relayRequest, (_event, request: RelayPassthrough) =>
+      answer(() => arm().request(request)),
+    );
+
+    ipcMain.handle(BRIDGE_CHANNELS.relaySignOut, () => answer(() => arm().signOut()));
 
     createWindow();
 
@@ -110,6 +211,8 @@ app.whenReady().then(
     app.exit(1);
   },
 );
+
+app.on("before-quit", () => relay?.close());
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
