@@ -331,3 +331,33 @@ _Avoid_: revoke, delete, unpair
 The host-side verb, `phoebe relay leave`, that deletes the deployment key from the data
 volume. The other half of forget, and neither half needs the other to work.
 _Avoid_: unlink, disconnect
+
+### Console
+
+**Console**:
+The web page a relay serves for reading a fleet. One React bundle, which the companion
+also loads from disk over a scheme of its own, so a page an operator sees is never written
+twice.
+_Avoid_: dashboard, UI, web app
+
+**Companion**:
+The desktop app: installer and configurator for local installs, client of the relay for
+remote deployments. Two arms, one window.
+_Avoid_: desktop console, dashboard, Phoebe app
+
+**Local install**:
+A repository folder on this machine the companion drives through Docker Compose. Its
+states are running, stopped and not initialised — the relay's dark and unseen are a remote
+reader's guesses about silence, and there is no silence here.
+_Avoid_: local deployment, local console
+
+**Desktop bridge**:
+The preload-exposed surface through which the console bundle reaches main's host verbs and
+local reads. Its presence is how the bundle knows it is in the companion, and its absence
+is how it knows it is in a browser.
+_Avoid_: IPC API, RPC, electron API
+
+**Verb run**:
+One invocation of a host verb by the companion, with its lines streamed and an exit
+carrying the verb's typed outcome. One per install at a time, parallel across installs.
+_Avoid_: job, task, command

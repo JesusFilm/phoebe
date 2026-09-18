@@ -28,6 +28,16 @@ import { fileURLToPath } from "node:url";
 import { matchConfigFlag } from "./cli-flags.ts";
 import { validateUserConfig, type PhoebeUserConfig } from "./config-schema.ts";
 import { ConfigRefusal, isConfigRefusal } from "./config-handle.ts";
+import type {
+  FleetMigrateReport,
+  JournalEntry,
+  MigrateReport,
+  MigrationResult,
+  MigrationRole,
+  MigrationState,
+  TenantMigrateEntry,
+  TenantVerdict,
+} from "./contracts/migrate-report.ts";
 import { defaultGit, type GitRunner } from "./git-model.ts";
 import { loadUserConfig, resolveConfigPath } from "./load-config.ts";
 import { MIGRATIONS } from "./migrations/index.ts";
@@ -39,7 +49,21 @@ import {
 
 // ----------------------------------------------------------------- types
 
-export type MigrationRole = "solo-root" | "workspace-root" | "tenant";
+// The reports now live in `phoebe-agent/contracts` (#552) so a console can
+// render a migration run without loading the registry below, which reads and
+// rewrites configs on disk. Re-exported here so every existing reader goes on
+// importing them off this module. The `Migration` interface stays: it is
+// behaviour — detect, describe, apply — and it names a git runner.
+export type {
+  FleetMigrateReport,
+  JournalEntry,
+  MigrateReport,
+  MigrationResult,
+  MigrationRole,
+  MigrationState,
+  TenantMigrateEntry,
+  TenantVerdict,
+};
 
 /**
  * Per-directory migration unit. Migrations live one per file in
@@ -108,65 +132,7 @@ export type MigrationVerifyContext = {
   loadConfig: (source?: string) => Promise<PhoebeUserConfig>;
 };
 
-export type MigrationState = "applied" | "not-applicable" | "failed" | "manual" | "applicable";
-
-export type MigrationResult = {
-  id: string;
-  title?: string;
-  state: MigrationState;
-  detail: string;
-};
-
-export type JournalEntry = {
-  dir: string;
-  migrationId: string;
-  relPath: string;
-  /** Content before the migration; null when the file did not exist. */
-  before: string | null;
-};
-
-export type MigrateReport = {
-  sha: string | null;
-  dir: string;
-  results: MigrationResult[];
-  /**
-   * Files written by applied + validated migrations only. Used for the
-   * uncommitted listing; pre-existing dirt is never included.
-   */
-  journal: JournalEntry[];
-  ok: boolean;
-};
-
-export type TenantVerdict =
-  | "migrated"
-  | "up-to-date"
-  | "manual"
-  | "failed"
-  | "reverted"
-  | "skipped"
-  | "invalid"
-  | "pending";
-
-export type TenantMigrateEntry = {
-  dir: string;
-  slug: string | null;
-  verdict: TenantVerdict;
-  /** Populated when verdict is "skipped". */
-  reason?: string;
-  /** The full migration report; absent when verdict is "skipped". */
-  report?: MigrateReport;
-};
-
-export type FleetMigrateReport = {
-  rootReport: MigrateReport;
-  rootRole: "workspace-root" | "solo-root";
-  rootSlug?: string | null;
-  /** Set when nothing applied to root: false = validated OK, true = preexisting invalid. Absent when migrations applied (validation ran post-apply inside runMigrate). */
-  rootPreexistingInvalid?: boolean;
-  tenantEntries: TenantMigrateEntry[];
-};
-
-export type RunFleetMigrateOptions = {
+export type RunMigrateOptions = {
   configPath: string;
   git?: GitRunner;
   migrations?: readonly Migration[];
@@ -261,7 +227,7 @@ function makeVerifyLoader(
 
 // ----------------------------------------------------------------- runner
 
-export type RunMigrateOptions = {
+export type MigrateDirectoryOptions = {
   dir: string;
   role: MigrationRole;
   configPath: string;
@@ -274,7 +240,7 @@ export type RunMigrateOptions = {
   check?: boolean;
 };
 
-export async function runMigrate(opts: RunMigrateOptions): Promise<MigrateReport> {
+export async function migrateDirectory(opts: MigrateDirectoryOptions): Promise<MigrateReport> {
   const git = opts.git ?? defaultGit;
   const migrations = opts.migrations ?? MIGRATIONS;
   const sha = readEngineSha(git);
@@ -504,7 +470,12 @@ export function computeTenantVerdict(
   return "up-to-date";
 }
 
-export async function runFleetMigrate(opts: RunFleetMigrateOptions): Promise<FleetMigrateReport> {
+/**
+ * The migrate verb: migrate the root, then every workspace child it declares.
+ * Renders nothing and decides no exit code — the CLI printer and the
+ * companion's install tab format the same report (#552).
+ */
+export async function runMigrate(opts: RunMigrateOptions): Promise<FleetMigrateReport> {
   const git = opts.git ?? defaultGit;
   const configPath = opts.configPath;
   const dir = dirname(configPath);
@@ -518,7 +489,7 @@ export async function runFleetMigrate(opts: RunFleetMigrateOptions): Promise<Fle
   const rootSlug: string | null = userConfig.repoSlug ?? null;
 
   // Migrate root first — no dirty-tree gate for root
-  const rootReport = await runMigrate({
+  const rootReport = await migrateDirectory({
     dir,
     role: rootRole,
     configPath,
@@ -569,7 +540,7 @@ export async function runFleetMigrate(opts: RunFleetMigrateOptions): Promise<Fle
         continue;
       }
 
-      const report = await runMigrate({
+      const report = await migrateDirectory({
         dir: tenant.dir,
         role: "tenant",
         configPath: tenant.configPath,
@@ -825,7 +796,7 @@ export type MigrateJson = {
 };
 
 // Maps a verdict to the tri-state `validation` field. `up-to-date` reads as
-// `true` only because the caller confirmed the config validates — runFleetMigrate
+// `true` only because the caller confirmed the config validates — runMigrate
 // probes a tenant with nothing applicable before settling on that verdict. Callers
 // that cannot make that claim must not route through here (see the root below).
 function entryValidation(verdict: TenantVerdict): boolean | null {
@@ -1049,7 +1020,7 @@ export async function runMigrateCli(argv: readonly string[]): Promise<void> {
   }
 
   const configPath = resolveConfigPath(parsed.configPath, process.cwd());
-  const fleet = await runFleetMigrate({ configPath, check: parsed.check });
+  const fleet = await runMigrate({ configPath, check: parsed.check });
   if (!parsed.check) await reportFailedMigrations(configPath, fleet);
 
   if (parsed.json) {

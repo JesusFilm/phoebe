@@ -15,13 +15,14 @@
 // screen are durations and a duration that stops moving reads as a page that has
 // stopped listening.
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { RELAY_ROUTES } from "phoebe-agent/contracts";
-import type { RelayIdentity } from "phoebe-agent/contracts";
+import type { DesktopBridge, LocalInstall, RelayIdentity } from "phoebe-agent/contracts";
 import type { Surface } from "./companion.ts";
 import { rowFacts, sortFleet } from "./facts.ts";
 import { applyEvent, EMPTY_FLEET, loadFleet, type FleetState } from "./fleet-state.ts";
 import { FleetPage } from "./fleet-page.tsx";
+import { InstallPage } from "./install-page.tsx";
 import { Rail } from "./rail.tsx";
 import { isNotSignedIn, type RelayClient } from "./relay-client.ts";
 
@@ -31,7 +32,16 @@ type Session =
   | { kind: "signed-in"; identity: RelayIdentity }
   | { kind: "broken"; message: string };
 
-export function App({ client, surface }: { client: RelayClient; surface: Surface }) {
+export function App({
+  client,
+  surface,
+  bridge = null,
+}: {
+  client: RelayClient;
+  surface: Surface;
+  /** The companion's bridge, or null in a browser — which has no local arm. */
+  bridge?: DesktopBridge | null;
+}) {
   const [session, setSession] = useState<Session>({ kind: "asking" });
 
   useEffect(() => {
@@ -74,6 +84,7 @@ export function App({ client, surface }: { client: RelayClient; surface: Surface
     <Console
       client={client}
       surface={surface}
+      bridge={bridge}
       identity={session.kind === "signed-in" ? session.identity : null}
       onSignedOut={() => setSession({ kind: "signed-out" })}
     />
@@ -83,18 +94,67 @@ export function App({ client, surface }: { client: RelayClient; surface: Surface
 function Console({
   client,
   surface,
+  bridge,
   identity,
   onSignedOut,
 }: {
   client: RelayClient;
   surface: Surface;
+  bridge: DesktopBridge | null;
   identity: RelayIdentity | null;
   onSignedOut: () => void;
 }) {
   const [fleet, setFleet] = useState<FleetState>(EMPTY_FLEET);
   const [loaded, setLoaded] = useState(false);
   const [trouble, setTrouble] = useState<string | null>(null);
+  const [installs, setInstalls] = useState<LocalInstall[]>([]);
+  const [openInstall, setOpenInstall] = useState<string | null>(null);
   const now = useNow(1000);
+
+  // The local arm. One read, then main's `installs:changed` does the updating —
+  // the same shape as the relay's stream, for the same reason: the page holds
+  // no copy it has to reconcile, and every fact on screen was derived by the
+  // process that can actually see the folder (#527 §12).
+  useEffect(() => {
+    if (bridge === null) return;
+    let live = true;
+    bridge.installs.list().then(
+      (listed) => {
+        if (live) setInstalls(listed);
+      },
+      () => undefined,
+    );
+    const unsubscribe = bridge.installs.changes((changed) => setInstalls(changed));
+    return () => {
+      live = false;
+      unsubscribe();
+    };
+  }, [bridge]);
+
+  const addInstall = useCallback(() => {
+    if (bridge === null) return;
+    void bridge.installs.pick().then(async (dir) => {
+      if (dir === null) return;
+      setInstalls(await bridge.installs.add(dir));
+      // Straight to its page. A folder that already carries a config is adopted
+      // as it stands and needs nothing; one that does not lands on the install
+      // tab, which is where init is (#526).
+      setOpenInstall(dir);
+    });
+  }, [bridge]);
+
+  const forgetInstall = useCallback(
+    (dir: string) => {
+      if (bridge === null) return;
+      void bridge.installs.remove(dir).then((remaining) => {
+        setInstalls(remaining);
+        setOpenInstall((current) => (current === dir ? null : current));
+      });
+    },
+    [bridge],
+  );
+
+  const open = installs.find((install) => install.dir === openInstall) ?? null;
 
   useEffect(() => {
     // Signed out, there is no fleet to read and no stream to hold open. The
@@ -154,9 +214,20 @@ function Console({
         )}
       </header>
       <div className="frame">
-        <Rail facts={facts} now={now} surface={surface} signedIn={identity !== null} />
-        {identity === null ? (
-          <CompanionHome />
+        <Rail
+          facts={facts}
+          now={now}
+          surface={surface}
+          signedIn={identity !== null}
+          installs={installs}
+          selected={openInstall}
+          onSelect={setOpenInstall}
+          {...(bridge === null ? {} : { onAdd: addInstall })}
+        />
+        {open !== null && bridge !== null ? (
+          <InstallPage install={open} bridge={bridge} onForget={forgetInstall} />
+        ) : identity === null ? (
+          <CompanionHome installs={installs} onAdd={bridge === null ? undefined : addInstall} />
         ) : trouble !== null ? (
           <main className="main">
             <h1>Fleet</h1>
@@ -176,20 +247,41 @@ function Console({
 }
 
 /**
- * The companion with nothing in it yet: both arms, both empty, each saying which
- * kind of empty it is. Adding a local install is #555's control and signing in is
- * #554's, so this page names them rather than offering them.
+ * The companion's home: both arms, and what each one is holding. Signed out, it
+ * is the whole window. Adding a local install is a control here as well as on
+ * the rail, because an empty companion has a rail nobody has looked at yet;
+ * signing in is #554's, so this page still names it rather than offering it.
  */
-function CompanionHome() {
+function CompanionHome({
+  installs,
+  onAdd,
+}: {
+  installs: LocalInstall[];
+  onAdd: (() => void) | undefined;
+}) {
   return (
     <main className="main">
       <h1>Phoebe</h1>
       <section>
         <h2>This machine</h2>
-        <p className="muted">
-          No local install yet. A local install is a repository folder on this machine that the
-          companion drives through Docker Compose.
-        </p>
+        {installs.length === 0 ? (
+          <p className="muted">
+            No local install yet. A local install is a repository folder on this machine that the
+            companion drives through Docker Compose.
+          </p>
+        ) : (
+          <p className="muted">
+            {installs.length} local install{installs.length === 1 ? "" : "s"}. Pick one on the rail
+            to take it from nothing to running.
+          </p>
+        )}
+        {onAdd === undefined ? null : (
+          <p>
+            <button type="button" onClick={onAdd}>
+              Add a folder
+            </button>
+          </p>
+        )}
       </section>
       <section>
         <h2>Relay</h2>

@@ -30,11 +30,19 @@ export default defineConfig(({ mode }) => {
       emptyOutDir: entry === "main",
       lib: {
         entry: { [entry]: ENTRIES[entry] },
-        // CommonJS because a sandboxed preload has to be: Electron loads an
-        // ES-module preload only with the sandbox off, and the sandbox is worth
-        // more than the module syntax. Main matches it, so `dist` has one shape.
-        formats: ["cjs"],
-        fileName: () => `${entry}.cjs`,
+        // The two halves take different formats, and each has no choice.
+        //
+        // The preload is CommonJS because a sandboxed preload has to be:
+        // Electron loads an ES-module preload only with the sandbox off, and the
+        // sandbox is worth more than the module syntax.
+        //
+        // Main is an ES module because it bundles the engine's host verbs
+        // (#555, ADR 0001), and engine modules resolve their own shipped
+        // resources through `import.meta`. A CommonJS pass replaces that with
+        // `{}`, which turns a path walk into a throw at import time — main
+        // would not finish loading. Electron has run an ESM main since v28.
+        formats: [entry === "preload" ? "cjs" : "es"],
+        fileName: () => `${entry}.${entry === "preload" ? "cjs" : "mjs"}`,
       },
       rollupOptions: {
         // Electron supplies its own module, and the built-ins are the runtime's.
