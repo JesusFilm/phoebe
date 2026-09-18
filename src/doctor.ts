@@ -3,7 +3,7 @@
 // is actually working. (A `--fix` mode that repairs at the current pin is a
 // mapped follow-up.)
 //
-// Seven deployment checks, all reads of state that already exists (three more —
+// Eight deployment checks, all reads of state that already exists (three more —
 // `labels`, `stray-members` and `stale-state` — are per tenant and live in the
 // tenant sweep below):
 //   1. cli            — installed bootstrapper vs the npm registry's latest
@@ -17,6 +17,9 @@
 //   7. launcher-floor — is the launcher at or above the engine's declared minBootstrap
 //                       floor? A violation deadlocks the deployment outright, not
 //                       merely slows it — the two checks are not the same thing.
+//   8. config-pen     — is the root config mounted read-write, so `phoebe config set`
+//                       can apply an edit at all (#503)? A deployment that came up
+//                       before that mount existed looks identical until the first edit.
 //
 // A tenant's scheduled work kinds may declare env keys of their own (#425);
 // doctor reports a missing one as a tenant finding, ahead of the engine child
@@ -34,7 +37,7 @@
 // with the repo, not the package); doctor's per-tenant probe is the
 // reachability slice of it.
 
-import { existsSync, readFileSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import {
@@ -250,6 +253,53 @@ export function launcherFloorCheck(fields: {
     id: "launcher-floor",
     state: "ok",
     detail: `launcher ${fields.launcherVersion} meets the engine floor ${fields.minBootstrap}`,
+  };
+}
+
+/**
+ * Is the pen there? (#503, #536.)
+ *
+ * `phoebe config set` writes the root `phoebe.config.ts` and nothing else, which
+ * works only because the scaffolded compose mounts that one file read-write over
+ * the read-only deployment directory. A deployment that came up before that
+ * mount existed reads exactly like one that has it — until the first edit, which
+ * fails on a `:ro` filesystem for no reason an operator can see from the
+ * refusal. So the check is a `W_OK` probe, and the fix is to recreate the
+ * container, because a Compose mount cannot be added to a running one.
+ *
+ * Only answerable inside the container. On the host the file is an ordinary
+ * writable file in the operator's own checkout, which says nothing about how the
+ * container sees it — so the answer there is "unknown", never a pass.
+ */
+export function configPenCheck(fields: {
+  configPath: string;
+  inContainer: boolean;
+  writable: (path: string) => boolean;
+}): DoctorCheck {
+  if (!fields.inContainer) {
+    return {
+      id: "config-pen",
+      state: "unknown",
+      detail:
+        "not in the container — run `docker compose exec phoebe phoebe doctor` to check the mount",
+    };
+  }
+  if (fields.writable(fields.configPath)) {
+    return {
+      id: "config-pen",
+      state: "ok",
+      detail: `${fields.configPath} is mounted read-write — \`phoebe config set\` can apply an edit`,
+    };
+  }
+  return {
+    id: "config-pen",
+    state: "warn",
+    detail:
+      `${fields.configPath} is read-only, so \`phoebe config set\` will refuse every edit. ` +
+      `Fix: add the root config as a read-write file mount to the volumes in ` +
+      `container/compose.yml (docs/upgrading.md gives the line), then ` +
+      `\`phoebe stop && phoebe start\` — a mount cannot be added to a running container. ` +
+      `Editing the file by hand works either way.`,
   };
 }
 
@@ -1379,6 +1429,22 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
     }
     checks.push(launcherFloorCheck({ minBootstrap, launcherVersion, launcherSource }));
   }
+
+  // 8. The config pen — can this deployment apply a `phoebe config set` at all?
+  checks.push(
+    configPenCheck({
+      configPath: join(deps.configDir, TENANT_CONFIG_FILE),
+      inContainer: isInsideContainer(),
+      writable: (path) => {
+        try {
+          accessSync(path, constants.W_OK);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+    }),
+  );
 
   // Tenant sweep: workspace mode enumerates the same fleet boot supervises;
   // solo probes the root itself (the deployment root IS the tenant there).

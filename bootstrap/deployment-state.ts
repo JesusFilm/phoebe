@@ -110,6 +110,15 @@ export type DeploymentStateDeps = {
    * moves (bootstrap/config-report.ts).
    */
   rootConfig: () => ConfigSource;
+  /**
+   * The last config edit this deployment applied to its own root config (#536),
+   * read at publish time from the edit ledger. Read rather than notified,
+   * because the edit and the reconcile it causes can happen in different
+   * processes: a shell `phoebe config set` writes the file and the supervisor
+   * finds it on the next poll, exactly as it finds a hand edit. Absent for a
+   * deployment that has never been edited through the verb.
+   */
+  lastEditId?: () => string | null;
   /** One tenant's credential arm, resolved the one shared way (#162). */
   armOf: (tenant: { envPath: string }) => CredentialArm;
   now?: () => number;
@@ -178,6 +187,16 @@ type ChildRecord = {
 };
 
 const iso = (ms: number): string => new Date(ms).toISOString();
+
+/**
+ * The reconcile section with the last applied edit's id on it. Stamped at
+ * publish rather than carried in the live state: the id outlives the reconcile
+ * it set going, and a console reading an idle deployment still wants to know
+ * which edit it settled on.
+ */
+function withLastEdit(state: ReconcileState, lastEditId: string | null): ReconcileState {
+  return lastEditId === null ? state : { ...state, lastEditId };
+}
 
 /**
  * How a tenant names itself in the config section when the engine never got to
@@ -430,7 +449,7 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
           engineSha: engine.sha,
           quarantinedSha: engine.quarantinedSha,
           crashLoop: deps.crashLoop(),
-          reconcile,
+          reconcile: withLastEdit(reconcile, deps.lastEditId?.() ?? null),
           children: livenessOf(at),
           slots: deps.slots(),
         },

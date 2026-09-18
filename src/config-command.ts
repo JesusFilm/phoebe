@@ -83,6 +83,7 @@ const CONFIG_HELP_TEXT = `phoebe config — print the effective config (read-onl
 Usage:
   phoebe config [--config <path>]   Every setting, its value, and where it came from
   phoebe config --json              The same object the deployment report embeds
+  phoebe config set <path> <value>  Change one field in place (\`set --help\`)
 
 Run against a workspace root it reports every tenant; anywhere else it reports
 the config it found. A tenant whose config will not load is one errored row —
@@ -327,6 +328,14 @@ export function everyTenantErrored(report: EffectiveConfigReport): boolean {
 
 /** `phoebe config` entry. */
 export async function runConfigCli(argv: readonly string[]): Promise<void> {
+  // The write half is its own module (#536): this one opens files to print
+  // them, that one opens one file to change it, and keeping the read verb free
+  // of the writer is what makes "`phoebe config` never touches the disk" a
+  // property of the import graph rather than a promise in a comment.
+  if (argv[0] === "set") {
+    const { runConfigSetCli } = await import("./config-set.ts");
+    return await runConfigSetCli(argv.slice(1));
+  }
   const parsed = parseConfigArgs(argv);
   if (parsed.help) {
     process.stdout.write(CONFIG_HELP_TEXT);

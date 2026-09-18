@@ -21,6 +21,13 @@
 // installed consumer's value import lands on the `.mjs`, never on this file.
 
 export type { StopOutcome } from "./stop-outcome.ts";
+export type {
+  ConfigEdit,
+  EditReceipt,
+  EditRefusalReason,
+  EditRefused,
+  EditWritten,
+} from "./config-edit.ts";
 export type { CredentialArm } from "./credential-arm.ts";
 export type { CheckState, DoctorCheck, DoctorReport, TenantDoctorRow } from "./doctor-report.ts";
 export type { PipelineSource, PipelineState, WedgedVerdict } from "./pipeline-state.ts";

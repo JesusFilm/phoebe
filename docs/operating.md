@@ -184,7 +184,7 @@ per-pipeline stop verb, because hot `disabled: true` is the stop.
 
 ## Checking the deployment's health: `phoebe doctor`
 
-`phoebe doctor` (report-only) runs ten checks and exits 1 when any fails:
+`phoebe doctor` (report-only) runs eleven checks and exits 1 when any fails:
 
 - **cli.** Installed `phoebe-agent` against the npm registry's latest.
 - **engine.** The configured pin against the latest release tag, plus the commit
@@ -201,6 +201,11 @@ per-pipeline stop verb, because hot `disabled: true` is the stop.
   `ARG PHOEBE_AGENT_VERSION` pin in `container/Dockerfile` for a container
   deployment and the npm-global install for a host one. An engine that declares
   no floor, or a local-mount engine, reports "does not apply".
+- **config-pen.** Whether the root `phoebe.config.ts` is mounted read-write, which
+  is what `phoebe config set` needs to apply an edit. A deployment that came up
+  before that mount existed looks identical until the first edit fails, so the
+  check names the volume line to add and the restart that picks it up. In-container
+  only, like **supervisor**.
 
 In workspace mode it also sweeps every tenant, using the same enumeration boot
 supervises with, checking each tenant's `GH_TOKEN` is present the way its
@@ -359,6 +364,7 @@ with its value, the thing that supplied it, and whatever it beat. See
 | Force a janitor to retry                      | Push, advance the base, post new review feedback, or delete the newest failure comment.                                                                                         |
 | Let Phoebe maintain all PRs, not just its own | `prScope: "all"`.                                                                                                                                                               |
 | See what a setting resolves to, and why       | `phoebe config` (add `--json` for a machine).                                                                                                                                   |
+| Change one setting without an editor          | `phoebe config set <path> <value>` — one literal, in place, validated first.                                                                                                    |
 
 ## Running many repos in one container
 
