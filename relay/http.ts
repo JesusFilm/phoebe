@@ -1,11 +1,16 @@
-// The relay's HTTP surface: the sign-in flow, and the reads and verbs behind it
-// (#538, #540, #541, #542).
+// The relay's HTTP surface: the sign-in flow, the reads and verbs behind it, and
+// the console's own build (#538, #540, #541, #542, #543).
 //
-// There are no pages here yet. What a signed-in person can ask for is who they
-// are, a pairing token for a new deployment, the fleet as the socket endpoint
-// knows it, one deployment with the last report it pushed, the stream those
-// reports arrive on, and the forgetting of one deployment. The console's pages
-// sit on exactly these answers.
+// What a signed-in person can ask for is who they are, a pairing token for a new
+// deployment, the fleet as the socket endpoint knows it, one deployment with the
+// last report it pushed, the stream those reports arrive on, and the forgetting of
+// one deployment. The console's pages sit on exactly these answers, and the relay
+// hands the pages out too — the bundle is in the same package (console-assets.ts).
+//
+// **The API is matched first, and a path under it never falls through to a page.**
+// Every route below is tried before the console sees the request, and the console
+// only ever answers with a file it has. So `/api/anything-else` is still the JSON
+// 404 it always was, which is what a browser fetching JSON can branch on.
 //
 // **Two reads and one stream, and the stream is not a third read.** Every event
 // on `/api/events` has a `GET` behind it that answers the same question in full,
@@ -29,6 +34,7 @@ import type {
 import type { RelayEvent } from "../src/contracts/relay-events.ts";
 import { isFingerprint } from "../src/ed25519.ts";
 import type { Allowlist } from "./allowlist.ts";
+import type { ConsoleAssets } from "./console-assets.ts";
 import type { RelayEvents } from "./events.ts";
 import type { Reports } from "./reports.ts";
 import type { Link, PairingTokens } from "./links.ts";
@@ -44,11 +50,11 @@ import {
 } from "./sessions.ts";
 
 /**
- * Where a completed sign-in lands. The console's own page takes this over when
- * there is one; today the honest destination is the proof that the session
- * works.
+ * Where a completed sign-in lands: the console, which reads `/api/me` itself and
+ * draws the fleet (#543). A relay whose package carries no console build answers
+ * this path with a sentence saying so rather than a blank page.
  */
-export const SIGNED_IN_LANDING: string = RELAY_ROUTES.me;
+export const SIGNED_IN_LANDING: string = "/";
 
 export type RelayHandlerOptions = {
   allowlist: Allowlist;
@@ -67,6 +73,8 @@ export type RelayHandlerOptions = {
   reports: Reports;
   /** The stream every page watches. */
   events: RelayEvents;
+  /** The console's build, or an assets handler pointed at a test's directory. */
+  console: ConsoleAssets;
   sessions: SessionStore;
   identity: IdentityProvider;
   /** The origin requests arrive on, used only to parse a request's own URL. */
@@ -127,6 +135,15 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
     const fingerprint = deploymentIn(url.pathname);
     if (method === "GET" && fingerprint !== null) {
       return showDeployment(request, response, fingerprint);
+    }
+    // The console's build, last: every route above has already refused this path,
+    // and the console answers only for a file it holds. `HEAD` comes along because
+    // a browser and a proxy both send them for an asset.
+    if (
+      (method === "GET" || method === "HEAD") &&
+      (await options.console.serve(url.pathname, response))
+    ) {
+      return;
     }
     json(response, 404, { error: "no-such-route" });
   };
