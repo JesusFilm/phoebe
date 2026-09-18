@@ -122,7 +122,23 @@ describe("planInitOutputs", () => {
 
   test("tenant profile uses initTenant (dynamic origin prefill), not the static plan", () => {
     expect(() => planInitOutputs("tenant")).toThrow(/initTenant/);
-    expect(() => runInit({ targetDir: makeTempDir(), profile: "tenant" })).toThrow(/initTenant/);
+  });
+
+  // One verb covers all three profiles (#552): a second caller asks for
+  // `init --tenant` without knowing that arm is a different scaffolder.
+  test("runInit delegates the tenant profile to initTenant", () => {
+    const outcome = runInit({
+      targetDir: makeTempDir(),
+      profile: "tenant",
+      tenant: { repoSlug: "acme/widget" },
+      deps: { git: () => "" },
+    });
+    expect(outcome.profile).toBe("tenant");
+    expect(outcome.tenant).toEqual({
+      repoSlug: "acme/widget",
+      repoUrl: "https://github.com/acme/widget.git",
+    });
+    expect(outcome.created).toContain("phoebe.config.ts");
   });
 
   test("the retired supervisor + daemon-overlay scaffolding is gone", () => {

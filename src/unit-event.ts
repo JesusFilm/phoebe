@@ -22,6 +22,13 @@
 
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import type { CurrentUnit, StatusSnapshot, UnitRef } from "./contracts/status-snapshot.ts";
+
+// The snapshot shape and the unit vocabulary inside it live in contracts (#528):
+// every reader of a deployment report handles a raw `status.json`, and a
+// renderer cannot load this file — it writes one. Re-exported so the ~20 callers
+// that import these types from the module that writes them stay unchanged.
+export type { CurrentUnit, StatusSnapshot, UnitRef } from "./contracts/status-snapshot.ts";
 
 /** Snapshot filename inside a pipeline's own dir under `state/` (#62/#63/#418). */
 export const STATUS_FILE = "status.json";
@@ -38,8 +45,6 @@ export const STATUS_FILE = "status.json";
 export function statusPathFor(stateDir: string, pipeline: string): string {
   return join(stateDir, pipeline, STATUS_FILE);
 }
-
-export type UnitRef = { kind: string; id: string };
 
 /**
  * What happened to a work unit — the event vocabulary on the rail. `skipped`
@@ -114,36 +119,6 @@ export function formatUnitEventLine(event: UnitEvent): string {
     `${event.unit.kind} ${event.unit.id}`;
   return event.detail ? `${head} — ${event.detail}` : head;
 }
-
-/** One unit this pipeline is running right now. */
-export type CurrentUnit = {
-  unit: UnitRef;
-  /** When the loop admitted it — the `started` event's timestamp. */
-  startedAt: string;
-  /** Its whole-run budget, resolved per kind at boot; `null` if unstated. */
-  runBudgetMs: number | null;
-};
-
-/**
- * The fixed-size current-state snapshot `phoebe list` reads. Deliberately a
- * bounded set of last-event fields — never a rolling log (#73 Decision 4), which
- * would reintroduce the on-disk growth Decision 1 avoids. `currentUnits` is
- * bounded by the pipeline's `concurrency` (#422), so it stays fixed-size in the sense
- * that matters: an operator's screen, not an ever-growing file.
- */
-export type StatusSnapshot = {
-  tenant: string;
-  /** Which pipeline wrote this file. Its directory already says so; the field is what
-   *  makes a snapshot read on its own — `cat`'d, or shipped somewhere else. */
-  pipeline: string;
-  /** What this pipeline is running, oldest admission first (#422). */
-  currentUnits: CurrentUnit[];
-  /** A pass selected a unit and is parked on the broker's slot grant (#422). */
-  waitingForSlot: boolean;
-  lastError: string | null;
-  lastTimeoutAt: string | null;
-  updatedAt: string;
-};
 
 export function emptyStatus(tenant: string, pipeline: string): StatusSnapshot {
   return {
@@ -283,6 +258,14 @@ export function createEmitUnitEvent(deps: {
   log?: (line: string) => void;
   read?: (path: string) => StatusSnapshot | null;
   write?: (path: string, snapshot: StatusSnapshot) => void;
+  /**
+   * The snapshot this event folded to, once it is safely on disk. How a
+   * supervised engine tells its bootstrapper that the file moved (#532): the
+   * deployment report carries the raw snapshot, and the bootstrapper learns of
+   * a change over the IPC channel it already has rather than by watching the
+   * filesystem. Unset for a standalone engine, which has nobody to tell.
+   */
+  onSnapshot?: (snapshot: StatusSnapshot) => void;
 }): EmitUnitEvent {
   const now = deps.now ?? (() => new Date().toISOString());
   const log = deps.log ?? ((line) => console.log(line));
@@ -299,7 +282,9 @@ export function createEmitUnitEvent(deps: {
     log(formatUnitEventLine(event));
     try {
       const prev = read(deps.statusPath) ?? emptyStatus(deps.tenant, deps.pipeline);
-      write(deps.statusPath, applyUnitEvent(prev, event));
+      const next = applyUnitEvent(prev, event);
+      write(deps.statusPath, next);
+      deps.onSnapshot?.(next);
     } catch (error) {
       log(
         `${unitTag(deps.tenant, deps.pipeline)} could not refresh status.json — ${String(error)}`,

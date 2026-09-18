@@ -6,15 +6,24 @@
 // shipped default — create-if-absent, so operator overrides are never touched.
 
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import type { Migration } from "../migrate.ts";
-
-const SHIPPED_CONTENT = readFileSync(
-  fileURLToPath(new URL("../../prompts/research-prompt.md", import.meta.url)),
-  "utf8",
-);
+import { moduleDirOf, resolvePackageResource } from "../package-resource.ts";
 
 const PROMPT_REL_PATH = "prompts/research-prompt.md";
+
+/**
+ * The shipped default, read when the migration applies rather than when this
+ * module loads. Lazy because the registry is imported by anything that imports
+ * `migrate`, including the companion's main process (ADR 0001) — and a read at
+ * import time turns a resource this migration may never need into something
+ * that can stop a process from starting.
+ */
+function shippedContent(): string {
+  return readFileSync(
+    resolvePackageResource(PROMPT_REL_PATH, moduleDirOf(import.meta.url)),
+    "utf8",
+  );
+}
 
 export const researchPromptMigration: Migration = {
   id: "add-research-prompt",
@@ -30,7 +39,7 @@ export const researchPromptMigration: Migration = {
   },
 
   apply() {
-    return { [PROMPT_REL_PATH]: SHIPPED_CONTENT };
+    return { [PROMPT_REL_PATH]: shippedContent() };
   },
 };
 
