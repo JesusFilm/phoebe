@@ -15,6 +15,7 @@ import {
   offeredVerbs,
   outcomeReading,
   renderableReport,
+  versionReading,
 } from "./local-install.ts";
 import { directory, environment, install, localReport } from "./test-fixture.ts";
 
@@ -310,5 +311,60 @@ describe("the local read, as the page reads it", () => {
 
   test("before the first read there is no config to show, which is not the same as none", () => {
     expect(localConfig(null)).toBeNull();
+  });
+});
+
+describe("the two versions the install tab states", () => {
+  test("names the container's pin and the companion's own, side by side", () => {
+    const reading = versionReading(
+      install({ containerVersion: "0.12.1" }),
+      environment({ companionVersion: "0.13.0" }),
+    );
+
+    expect(reading.text).toBe("container 0.12.1 · companion 0.13.0");
+  });
+
+  test("a difference is a sentence, never a refusal (#525 §6)", () => {
+    const reading = versionReading(
+      install({ containerVersion: "0.12.1" }),
+      environment({ companionVersion: "0.13.0" }),
+    );
+
+    expect(reading.note).toContain("Nothing here refuses");
+    expect(reading.note).toContain("Check for upgrades");
+    // The remedy is a button in this same section, and it stays offered.
+    expect(offeredVerbs(install({ containerVersion: "0.12.1" })).upgrade).toBe(true);
+  });
+
+  test("two halves that agree have nothing more to say", () => {
+    const reading = versionReading(
+      install({ containerVersion: "0.13.0" }),
+      environment({ companionVersion: "0.13.0" }),
+    );
+
+    expect(reading.note).toBeNull();
+  });
+
+  test("an unpinned Dockerfile says which build it will get rather than a version", () => {
+    const reading = versionReading(install({ containerVersion: null }), environment());
+
+    expect(reading.text).toBe("container — · companion 0.13.0");
+    expect(reading.note).toContain("pins no phoebe-agent version");
+  });
+
+  test("a folder with no container says that, not that its version is missing", () => {
+    const reading = versionReading(
+      install({ state: "not-initialised", containerVersion: null }),
+      environment(),
+    );
+
+    expect(reading.note).toContain("no container yet");
+  });
+
+  test("a machine still being probed shows the half it has", () => {
+    const reading = versionReading(install({ containerVersion: "0.13.0" }), null);
+
+    expect(reading.text).toBe("container 0.13.0 · companion —");
+    expect(reading.note).toBeNull();
   });
 });

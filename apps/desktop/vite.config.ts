@@ -46,7 +46,14 @@ export default defineConfig(({ mode }) => {
       },
       rollupOptions: {
         // Electron supplies its own module, and the built-ins are the runtime's.
-        external: ["electron", /^node:/],
+        //
+        // `electron-updater` is external for a different reason: it is CommonJS
+        // with lazy `require`s for each platform's updater, and it reads
+        // `app-update.yml` out of the packaged resources. Bundled into an ES
+        // module those requires stop resolving, so it is left in
+        // `node_modules` where electron-builder packs it as the production
+        // dependency it is (#561).
+        external: ["electron", "electron-updater", /^node:/],
       },
     },
 

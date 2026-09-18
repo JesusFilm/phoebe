@@ -9,6 +9,12 @@
 // the rule `companion.json` is built around, and it is why a folder the operator
 // initialised in a terminal shows up as initialised in the window without the
 // companion being told.
+//
+// The version is derived the same way and from the same place `upgrade` moves:
+// the `ARG PHOEBE_AGENT_VERSION` pin in `container/Dockerfile` (#525 §6). That
+// is the `phoebe-agent` the image is built from, so it is what runs in there —
+// and reading the file rather than the container means a stopped install still
+// says which version it is stopped on, which is exactly when an operator asks.
 
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -23,6 +29,7 @@ import {
   runCompose,
   type CommandRunner,
 } from "../../../src/deployment-compose.ts";
+import { readDockerfilePin, type DockerfilePin } from "../../../src/upgrade.ts";
 import type { StoredInstall } from "./companion-file.ts";
 
 /** The seams the derivation reaches the machine through. All injectable. */
@@ -31,6 +38,8 @@ export type FactsDeps = {
   exists?: (file: string) => boolean;
   /** Is `docker` on PATH? False short-circuits the Compose probe. */
   dockerPresent?: boolean;
+  /** How `container/Dockerfile` is read — `readFileSync` on a real machine. */
+  readFile?: (file: string) => string;
 };
 
 /**
@@ -51,7 +60,12 @@ export async function installFacts(
   deps: FactsDeps = {},
 ): Promise<LocalInstall> {
   const exists = deps.exists ?? existsSync;
-  const base = { dir: stored.dir, name: path.basename(stored.dir), addedAt: stored.addedAt };
+  const base = {
+    dir: stored.dir,
+    name: path.basename(stored.dir),
+    addedAt: stored.addedAt,
+    containerVersion: null,
+  };
 
   if (!exists(stored.dir)) {
     return { ...base, state: "not-initialised", detail: "this folder is not on disk any more" };
@@ -69,9 +83,11 @@ export async function installFacts(
     };
   }
 
+  const versioned = { ...base, containerVersion: containerVersion(deployment.containerDir, deps) };
+
   if (deps.dockerPresent === false) {
     return {
-      ...base,
+      ...versioned,
       state: "stopped",
       detail: "`docker` is not on PATH, so nothing can be running",
     };
@@ -84,17 +100,33 @@ export async function installFacts(
       ...(deps.runner !== undefined ? { runner: deps.runner } : {}),
     });
     if (result.code !== 0) {
-      return { ...base, state: "stopped", detail: firstLine(result.stderr || result.stdout) };
+      return { ...versioned, state: "stopped", detail: firstLine(result.stderr || result.stdout) };
     }
     const row = findPhoebeService(parseComposePsJson(result.stdout));
-    if (row !== undefined && isContainerRunning(row)) return { ...base, state: "running" };
-    return { ...base, state: "stopped" };
+    if (row !== undefined && isContainerRunning(row)) return { ...versioned, state: "running" };
+    return { ...versioned, state: "stopped" };
   } catch (error) {
     // A daemon that is not up, a compose file that does not parse, a JSON line
     // that is not JSON. All of them mean the same thing for the rail — nothing
     // is running — and differ only in what to tell the operator.
-    return { ...base, state: "stopped", detail: firstLine(messageOf(error)) };
+    return { ...versioned, state: "stopped", detail: firstLine(messageOf(error)) };
   }
+}
+
+/**
+ * The version pinned in this install's Dockerfile, or null when there is none to
+ * read. Never throws: an unreadable Dockerfile is a version the tab does not
+ * state, and the local arm refuses nothing on a version either way (#525 §6).
+ */
+function containerVersion(containerDir: string, deps: FactsDeps): string | null {
+  const read = deps.readFile ?? ((file: string) => readFileSync(file, "utf8"));
+  let pin: DockerfilePin;
+  try {
+    pin = readDockerfilePin(read(path.join(containerDir, "Dockerfile")));
+  } catch {
+    return null;
+  }
+  return pin.kind === "pinned" ? pin.version : null;
 }
 
 /** Every install's facts, gathered together. One probe per install, in parallel. */

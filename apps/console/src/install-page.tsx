@@ -18,6 +18,13 @@
 // with an age on it beside a container that is down is two contradicting facts on
 // one page.
 //
+// The versions sit in the same section as the buttons, because they are a reason
+// to press one. The local arm **reports and never refuses** (#525 §6): the
+// container's pinned phoebe-agent beside the companion's own version, a sentence
+// when they differ, and every verb still offered either way. The relay arm has a
+// refusal in it (relay-version.ts) and this one deliberately does not — the
+// companion drives this install, it does not have to agree with it.
+//
 // Every button is a verb run. The page starts one, then only applies the events
 // main sends it; the lines on screen are main's buffer, which is why reopening
 // the window mid-upgrade rejoins the same run rather than showing nothing.
@@ -43,6 +50,7 @@ import {
   offeredVerbs,
   outcomeReading,
   renderableReport,
+  versionReading,
 } from "./local-install.ts";
 import { readReport } from "./report.ts";
 import { DEPLOYMENT_TABS, tabHasContent, type DeploymentTab } from "./tabs.ts";
@@ -338,6 +346,7 @@ export function InstallTab({
             Forget
           </button>
         </div>
+        <Versions install={install} environment={environment} />
         <p className="muted">
           Forgetting removes this install from the companion. Nothing on disk is deleted.
         </p>
@@ -349,6 +358,23 @@ export function InstallTab({
         <RunOutput run={run} onCancel={onCancel} />
       </section>
     </>
+  );
+}
+
+/** The two versions, stated. Nothing on this page turns on their difference. */
+function Versions({
+  install,
+  environment,
+}: {
+  install: LocalInstall;
+  environment: CompanionEnvironment | null;
+}) {
+  const reading = versionReading(install, environment);
+  return (
+    <p className="muted">
+      {reading.text}
+      {reading.note === null ? null : ` — ${reading.note}`}
+    </p>
   );
 }
 

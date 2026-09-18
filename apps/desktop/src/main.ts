@@ -14,9 +14,9 @@
 // the flow itself is relay-session.ts, which needs no Electron to run.
 //
 // Main owns state the window does not: `companion.json`, the device session, the
-// runs in flight, and the watchers and timers of the read loop. All of it is
-// here rather than in the renderer for the same reason — a reload must not lose
-// them.
+// runs in flight, the watchers and timers of the read loop, and where the
+// companion's own update stands. All of it is here rather than in the renderer
+// for the same reason — a reload must not lose them.
 
 import os from "node:os";
 import path from "node:path";
@@ -32,10 +32,12 @@ import {
   safeStorage,
   shell,
 } from "electron";
+import electronUpdater from "electron-updater";
 import { RELAY_EVENTS } from "phoebe-agent/contracts";
 import type {
   CompanionEnvironment,
   CompanionPreferences,
+  CompanionUpdate,
   LocalInstall,
   LocalReportEvent,
   RelayArmState,
@@ -63,6 +65,8 @@ import { allInstallFacts, directoryFacts, installFacts } from "./install-facts.t
 import { createLocalReads } from "./local-read.ts";
 import { resolveDeploymentCompose } from "../../../src/deployment-compose.ts";
 import { companionName, createRelaySession, type RelaySession } from "./relay-session.ts";
+import { chooseFeed } from "./update-feed.ts";
+import { createCompanionUpdates } from "./updates.ts";
 import { createTokenVault } from "./vault.ts";
 import { dispatchVerb } from "./verb-dispatch.ts";
 import { createVerbRuns } from "./verb-runs.ts";
@@ -364,6 +368,34 @@ app.whenReady().then(
       })),
     );
 
+    // The companion's own updates (#525 §3). Built here rather than at import
+    // time because the feed it chooses is read from `companion.json`, and the
+    // directory that file lives in is Electron's to name once the app is ready.
+    const { autoUpdater } = electronUpdater;
+    const updates = createCompanionUpdates({
+      updater: autoUpdater,
+      platform: process.platform,
+      packaged: app.isPackaged,
+      // Electron's own stack rather than Node's global fetch, so the relay is
+      // reached through whatever proxy and certificate store the OS has.
+      feed: () => chooseFeed(arm().state(), (url) => net.fetch(url)),
+      onChange: (update) => broadcast(BRIDGE_CHANNELS.updateChanged, update),
+    });
+
+    // Main is the only listener the updater has; the window hears about all of
+    // this through the state the arm keeps.
+    autoUpdater.on("update-available", (info) => updates.available(info.version));
+    autoUpdater.on("update-not-available", () => updates.notAvailable());
+    autoUpdater.on("download-progress", (progress) => updates.progress(progress.percent));
+    autoUpdater.on("update-downloaded", (info) => updates.downloaded(info.version));
+    autoUpdater.on("error", (error) => updates.failed(error));
+
+    ipcMain.handle(BRIDGE_CHANNELS.updateState, () =>
+      answering<CompanionUpdate>(() => updates.state()),
+    );
+    ipcMain.handle(BRIDGE_CHANNELS.updateDownload, () => answering<void>(updates.download));
+    ipcMain.handle(BRIDGE_CHANNELS.updateRestart, () => answering<void>(() => updates.restart()));
+
     ipcMain.handle(BRIDGE_CHANNELS.installsList, () => answering(listInstalls));
 
     ipcMain.handle(BRIDGE_CHANNELS.installsPick, () =>
@@ -439,6 +471,11 @@ app.whenReady().then(
     ipcMain.handle(BRIDGE_CHANNELS.relaySignOut, () => answering(() => arm().signOut()));
 
     createWindow();
+
+    // One check, and no poll (#525 §3). It is fired after the window exists so
+    // the first thing the operator sees is the window rather than a wait on
+    // github.com, and nothing it finds moves anything on its own.
+    void updates.check();
 
     // macOS keeps the process alive with no windows; clicking the dock icon is
     // the ask for one back.

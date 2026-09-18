@@ -2,7 +2,7 @@
 // it without a reload (#542).
 
 import { describe, expect, test } from "vite-plus/test";
-import { RELAY_EVENTS } from "phoebe-agent/contracts";
+import { CONSOLE_PROTOCOL, RELAY_EVENTS } from "phoebe-agent/contracts";
 import type { RelayDeploymentDetail, RelayEvent, RelayIdentity } from "phoebe-agent/contracts";
 import { applyEvent, EMPTY_FLEET, loadFleet } from "./fleet-state.ts";
 import type { RelayClient } from "./relay-client.ts";
@@ -16,6 +16,7 @@ function fakeClient(
     .map((detail) => detail.deployment),
 ): RelayClient {
   return {
+    version: () => Promise.resolve({ version: "0.13.0", console: CONSOLE_PROTOCOL }),
     me: () => Promise.resolve({ sub: "s", email: "ada@example.test" } satisfies RelayIdentity),
     signIn: () => Promise.resolve({ kind: "navigate", href: "/auth/google/start" }),
     watchSession: () => () => {},

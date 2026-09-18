@@ -8,11 +8,13 @@
 
 import { describe, expect, test } from "vite-plus/test";
 import { renderToStaticMarkup } from "react-dom/server";
+import type { CompanionUpdate } from "phoebe-agent/contracts";
 import { rowFacts, sortFleet } from "./facts.ts";
 import { FleetPage } from "./fleet-page.tsx";
 import { Rail } from "./rail.tsx";
 import { InstallPage, InstallTab } from "./install-page.tsx";
 import type { RelaySignIn } from "./relay-client.ts";
+import { RELAY_UPGRADE_DOC, tooOldText } from "./relay-version.ts";
 import {
   ago,
   bridge,
@@ -466,6 +468,71 @@ describe("the local arm on the rail", () => {
   });
 });
 
+describe("the companion's own update on the rail", () => {
+  function railWith(update: CompanionUpdate) {
+    return renderToStaticMarkup(
+      <Rail
+        facts={[]}
+        now={NOW}
+        surface="companion"
+        signedIn={false}
+        signIn={null}
+        onSignedIn={noop}
+        update={update}
+        onDownload={() => undefined}
+        onRestart={() => undefined}
+      />,
+    );
+  }
+
+  test("offers the download only once there is a build to download", () => {
+    const markup = railWith({ kind: "available", version: "0.14.0" });
+
+    expect(markup).toContain("Phoebe 0.14.0 is available");
+    expect(markup).toContain("Download");
+  });
+
+  test("says what a download is doing while it does it", () => {
+    expect(railWith({ kind: "downloading", version: "0.14.0", percent: 42 })).toContain("42%");
+  });
+
+  test("a staged build names the quit as the moment it installs", () => {
+    const markup = railWith({ kind: "ready", version: "0.14.0" });
+
+    expect(markup).toContain("installs when you quit");
+    expect(markup).toContain("Restart now");
+  });
+
+  test("says nothing when there is nothing to say", () => {
+    // Checking, nothing newer, a feed nobody could read, and the platforms that
+    // do not update at all: four states, no line on the rail (#525 §3).
+    for (const update of [
+      { kind: "checking" },
+      { kind: "current" },
+      { kind: "unread", message: "fetch failed" },
+      { kind: "unsupported", reason: "the macOS build is unsigned", releases: "https://x.test" },
+    ] satisfies CompanionUpdate[]) {
+      expect(railWith(update), update.kind).not.toContain("rail-update");
+    }
+  });
+
+  test("a browser is never told about a companion build", () => {
+    const browser = renderToStaticMarkup(
+      <Rail
+        facts={[]}
+        now={NOW}
+        surface="browser"
+        signedIn
+        signIn={null}
+        onSignedIn={noop}
+        update={{ kind: "available", version: "0.14.0" }}
+      />,
+    );
+
+    expect(browser).not.toContain("0.14.0");
+  });
+});
+
 describe("the install tab", () => {
   /**
    * The tab with the buttons, rendered on its own. The page lands a running
@@ -513,6 +580,19 @@ describe("the install tab", () => {
 
   test("says forgetting deletes nothing, because a Forget button reads like one that does", () => {
     expect(tab()).toContain("Nothing on disk is deleted");
+  });
+
+  test("states the container's version beside the companion's, and refuses nothing on it", () => {
+    const markup = tab({ state: "stopped", containerVersion: "0.12.1" });
+
+    expect(markup).toContain("container 0.12.1");
+    // Every verb an install in this state is offered is still offered, and none
+    // of them is disabled by the skew. The five greyed tabs above are #556's and
+    // have nothing to do with a version.
+    const verbs = /<div class="verbs">(.*?)<\/div>/.exec(markup)?.[1] ?? "";
+    expect(verbs).toContain(">Start<");
+    expect(verbs).toContain(">Check for upgrades<");
+    expect(verbs).not.toContain("disabled");
   });
 });
 
@@ -611,5 +691,35 @@ describe("a local install's page", () => {
     const markup = page({ state: "stopped" }, {});
 
     expect(markup).not.toMatch(/disabled="" [^>]*>config</);
+  });
+});
+
+describe("a relay the console is too new for", () => {
+  const refusal = tooOldText({ version: "0.9.0", console: 0 });
+  const markup = renderToStaticMarkup(
+    <Rail
+      facts={[]}
+      now={NOW}
+      surface="companion"
+      signedIn={false}
+      signIn={null}
+      onSignedIn={noop}
+      refusal={refusal}
+      installs={[install({ dir: "/repos/one", name: "one" })]}
+    />,
+  );
+
+  test("the Relay group says which end to move, and links how", () => {
+    expect(markup).toContain("upgrade the relay first");
+    expect(markup).toContain(RELAY_UPGRADE_DOC);
+  });
+
+  test("it does not also say 'not signed in' — one sentence, the true one", () => {
+    expect(markup).not.toContain("Not signed in to a relay");
+  });
+
+  test("This machine is untouched: one arm refusing is not the window refusing", () => {
+    expect(markup).toContain("This machine");
+    expect(markup).toContain("one");
   });
 });

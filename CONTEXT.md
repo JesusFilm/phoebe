@@ -498,3 +498,14 @@ Compose's event stream for the moment a container moves, and a `status --json` e
 15 s while it is up. What comes out is the relay's own `report` event, so a page renders
 either arm without knowing which it has.
 _Avoid_: watcher, sync, poller
+**Console protocol**:
+The integer the relay's JSON and SSE API carries at `/api/version`. The relay serves every
+console protocol up to its own, so a companion above it says upgrade the relay first and
+asks for nothing else. Separate from the handshake's protocol: a console-only change must
+not move the deployment wire.
+_Avoid_: API version
+
+**Follows the relay**:
+The companion's update rule. Signed in, the only update it is ever offered is the relay's
+own version, so there is one source of truth about what this relay can serve.
+_Avoid_: pinned, tracking

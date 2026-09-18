@@ -23,6 +23,9 @@
 // carries JSDoc, which is what makes the re-export below a typed one.
 
 export type { EnvelopeAad, SecretEnvelope } from "./secret-envelope.mjs";
+
+export { CONSOLE_PROTOCOL } from "./console-protocol.ts";
+export type { RelayVersion } from "./console-protocol.ts";
 export type {
   SecretListing,
   SecretOutcome,
@@ -99,6 +102,7 @@ export type {
   RelayPassthrough,
   RelaySignInRequest,
 } from "./desktop-bridge.ts";
+export type { CompanionUpdate } from "./companion-update.ts";
 export type {
   CompanionEnvironment,
   CompanionPreferences,

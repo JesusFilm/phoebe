@@ -29,13 +29,25 @@
 // the flow that is the operator's to supply: the PKCE verifier, the system
 // browser, the hop back over `phoebe://auth` and the exchange all happen in main,
 // and the renderer never sees the token that comes out.
+//
+// The Relay group has one state that is not about deployments at all: a relay
+// serving a console protocol below this bundle's (#525 §4). The group says so
+// and links the upgrade doc, and This machine goes on working beside it — which
+// is the point of two arms rather than one.
+//
+// Under both groups sits the one line that is about the window itself: a newer
+// companion, when there is one (#525 §3). It is at the foot of the rail rather
+// than in either group because an update belongs to neither arm, and it says
+// nothing at all until there is something to click — a check that found nothing
+// is not news.
 
 import { useState } from "react";
-import type { LocalInstall, RelayIdentity } from "phoebe-agent/contracts";
+import type { CompanionUpdate, LocalInstall, RelayIdentity } from "phoebe-agent/contracts";
 import type { Surface } from "./companion.ts";
 import { connectionReading, type RowFacts } from "./facts.ts";
 import { installReading } from "./local-install.ts";
 import type { RelaySignIn } from "./relay-client.ts";
+import { RELAY_UPGRADE_DOC } from "./relay-version.ts";
 import { deploymentHref, FLEET_HREF } from "./route.ts";
 
 export function Rail({
@@ -43,11 +55,15 @@ export function Rail({
   now,
   surface,
   signedIn,
+  refusal,
   installs = [],
   selected = null,
   selectedDeployment = null,
+  update = null,
   onSelect,
   onAdd,
+  onDownload,
+  onRestart,
   signIn,
   onSignedIn,
 }: {
@@ -55,14 +71,20 @@ export function Rail({
   now: Date;
   surface: Surface;
   signedIn: boolean;
+  /** The relay-too-old sentence, when that is where this relay stands (#525 §4). */
+  refusal?: string;
   /** The local arm. Empty in a browser, which has no local arm at all. */
   installs?: LocalInstall[];
   /** The install whose page is open, by directory. */
   selected?: string | null;
   /** The fingerprint of the deployment being shown, or null on the fleet page. */
   selectedDeployment?: string | null;
+  /** The companion's own update. Null in a browser, which updates with a reload. */
+  update?: CompanionUpdate | null;
   onSelect?: (dir: string) => void;
   onAdd?: () => void;
+  onDownload?: () => void;
+  onRestart?: () => void;
   /** How this arm signs in, or null while the answer is still being read. */
   signIn: RelaySignIn | null;
   onSignedIn: (identity: RelayIdentity) => void;
@@ -78,7 +100,11 @@ export function Rail({
           </a>
         )}
       </h2>
-      {!signedIn ? (
+      {refusal !== undefined ? (
+        <p className="rail-empty refusal">
+          {refusal} <a href={RELAY_UPGRADE_DOC}>How to upgrade the relay</a>
+        </p>
+      ) : !signedIn ? (
         <SignInControl signIn={signIn} onSignedIn={onSignedIn} />
       ) : facts.length === 0 ? (
         <p className="rail-empty">No deployment is paired with this relay yet.</p>
@@ -128,8 +154,66 @@ export function Rail({
         )}
       </section>
       {relay}
+      <UpdateNotice
+        update={update}
+        {...(onDownload !== undefined ? { onDownload } : {})}
+        {...(onRestart !== undefined ? { onRestart } : {})}
+      />
     </nav>
   );
+}
+
+/**
+ * The companion's own update, in one line at the foot of the rail.
+ *
+ * Three states have something to say and the rest do not. Checking, nothing
+ * newer, and a feed nobody could read are all "carry on"; an unsupported
+ * companion — macOS until signing lands, or one run from a checkout — is told
+ * about a new build by the release page rather than by this line (#525 §3).
+ */
+function UpdateNotice({
+  update,
+  onDownload,
+  onRestart,
+}: {
+  update: CompanionUpdate | null;
+  onDownload?: () => void;
+  onRestart?: () => void;
+}) {
+  if (update === null) return null;
+
+  switch (update.kind) {
+    case "available":
+      return (
+        <footer className="rail-update">
+          Phoebe {update.version} is available.{" "}
+          {onDownload === undefined ? null : (
+            <button type="button" className="rail-add" onClick={onDownload}>
+              Download
+            </button>
+          )}
+        </footer>
+      );
+    case "downloading":
+      return (
+        <footer className="rail-update">
+          Downloading Phoebe {update.version}… {update.percent}%
+        </footer>
+      );
+    case "ready":
+      return (
+        <footer className="rail-update">
+          Phoebe {update.version} installs when you quit.{" "}
+          {onRestart === undefined ? null : (
+            <button type="button" className="rail-add" onClick={onRestart}>
+              Restart now
+            </button>
+          )}
+        </footer>
+      );
+    default:
+      return null;
+  }
 }
 
 /**

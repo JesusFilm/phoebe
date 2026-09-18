@@ -18,3 +18,8 @@ nodeLinker: isolated
 # (.phoebe/container/compose.yml).
 allowBuilds:
   electron: true
+  # A transitive dependency of electron-builder, and its postinstall fetches
+  # Squirrel's Windows binaries. electron-builder brings its own for the NSIS
+  # target the packaging job builds (#561), and nothing on Linux or macOS runs
+  # Squirrel at all, so this one stays off.
+  electron-winstaller: false
