@@ -35,7 +35,12 @@ import { basename, dirname, join, relative } from "node:path";
 import { installDrainSignal } from "../src/drain.ts";
 import { defaultGit, type GitRunner } from "../src/git-model.ts";
 import { loadUserConfig, resolveConfigPath } from "../src/load-config.ts";
-import { readReportingField } from "../src/config-schema.ts";
+import {
+  readDeploymentHostKnobs,
+  readReportingField,
+  type DeploymentHostKnobs,
+} from "../src/config-schema.ts";
+import { envNames, readNumber, settingAt } from "../src/settings-catalogue.ts";
 import {
   createCrashReporter,
   NO_CRASH_REPORTER,
@@ -111,6 +116,7 @@ import {
 } from "./tenants.ts";
 import { readConfigDir } from "./config-dir.ts";
 import { resolveDataBase } from "../src/paths.ts";
+import { tenantSecrets, tenantStateDir, type SecretValues } from "../src/secret-store.ts";
 import type { DeploymentArm, SlotReport } from "../src/contracts/deployment.ts";
 import { readGitIdentity, soloIdentityEnv, type GitIdentity } from "./git-identity.ts";
 import {
@@ -342,12 +348,34 @@ function engineBaseDir(): string {
 
 /**
  * How often the reconcile watch samples the config and the tracked ref.
- * `PHOEBE_RECONCILE_INTERVAL_MS` tightens it for dogfooding (the default is a
- * minute, which is a long time to wait when demonstrating a relaunch).
+ * `PHOEBE_DEPLOYMENT_RECONCILE_INTERVAL_MS` (permanent alias
+ * `PHOEBE_RECONCILE_INTERVAL_MS`) tightens it for dogfooding, else
+ * `deployment.reconcileIntervalMs`, else a minute — which is a long time to
+ * wait when demonstrating a relaunch, hence the knob.
  */
-function reconcileIntervalMs(): number {
-  const raw = Number(process.env["PHOEBE_RECONCILE_INTERVAL_MS"]);
-  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_RECONCILE_INTERVAL_MS;
+function reconcileIntervalMs(knobs: DeploymentHostKnobs): number {
+  return (
+    readNumber(process.env, envNames(settingAt("deployment.reconcileIntervalMs"))) ??
+    knobs.reconcileIntervalMs ??
+    DEFAULT_RECONCILE_INTERVAL_MS
+  );
+}
+
+/**
+ * The three host knobs off the root config, or none of them. Lenient by
+ * construction (see `readDeploymentHostKnobs`): boot reads this before it has
+ * anywhere to report a config error, and the watch loop below reports a broken
+ * config properly a moment later. A config that will not load at all leaves
+ * every knob to its env name or its default, which is where they started.
+ */
+async function loadHostKnobs(configPath: string): Promise<DeploymentHostKnobs> {
+  try {
+    return readDeploymentHostKnobs(
+      await loadMountedConfig(configPath, configFingerprint(configPath)),
+    );
+  } catch {
+    return {};
+  }
 }
 
 /**
@@ -705,6 +733,17 @@ function readTenantEnv(envPath: string): Record<string, string> {
 }
 
 /**
+ * One tenant's secret store (#504), read fresh at every call for the same reason
+ * {@link readTenantEnv} is: the store is a file an operator edits under a
+ * running deployment, and a value cached at boot is a rotation that never
+ * arrives. A tenant with no usable slug has no store — its secrets are whatever
+ * its `.env` and the ambient env say, exactly as before the store existed.
+ */
+function tenantSecretStore(tenant: { slug: string | null }): SecretValues {
+  return tenantSecrets(tenantStateDir(tenant.slug, resolveDataBase(process.env)));
+}
+
+/**
  * The spawn-failure line, named `<slug>:<pipeline>` (#420) — both arms report
  * through it (#457). A pipeline that never got a process is the one death no exit
  * hook can name, so if the name does not come from here it comes from nowhere.
@@ -762,13 +801,14 @@ function brokerPipeline(pipeline: SupervisedPipeline): BrokerPipeline {
 export function trackPipelines(
   broker: SlotBroker,
   env: NodeJS.ProcessEnv = process.env,
+  knobs: DeploymentHostKnobs = {},
 ): NonNullable<SuperviseFleetDeps["onPipelines"]> {
   let reported: string | null = null;
   return ({ pipelines, reshaped }) => {
     const live = pipelines.map(brokerPipeline);
     broker.setPipelines(live);
     if (!reshaped) return;
-    const cap = resolveEffectiveCap(live, env);
+    const cap = resolveEffectiveCap(live, env, knobs);
     broker.setCapacity(cap.capacity);
     const line = describeCap(cap, broker.floorBudget);
     if (line === reported) return;
@@ -791,8 +831,9 @@ export function trackFleetPipelines(
   broker: SlotBroker,
   deployment: DeploymentState,
   env: NodeJS.ProcessEnv = process.env,
+  knobs: DeploymentHostKnobs = {},
 ): NonNullable<SuperviseFleetDeps["onPipelines"]> {
-  const track = trackPipelines(broker, env);
+  const track = trackPipelines(broker, env, knobs);
   return (matrix) => {
     track(matrix);
     deployment.notePipelines(matrix.pipelines);
@@ -880,6 +921,7 @@ function runFleet(opts: {
   deployment: DeploymentState;
   /** The deployment's doctor runs (#534), triggered from the same two moments. */
   doctor: DoctorRunner;
+  hostKnobs: DeploymentHostKnobs;
 }): Promise<EngineExit> {
   const { broker, deployment, doctor } = opts;
   // Fleet-level credential-lease state (#211/#205): the cache and the warn-once
@@ -898,6 +940,10 @@ function runFleet(opts: {
       // base and the App bot fallback, below the tenant's own `.env`.
       configIdentity: tenant.gitIdentity,
       tenantEnv: readTenantEnv(tenant.envPath),
+      // The tenant secret store over the file (#504). Read at spawn like the
+      // `.env` beneath it, and delivered the same way: the pipeline fingerprint
+      // below counts it, so a console-set provider key relaunches this child.
+      secretStore: tenantSecretStore(tenant),
       // The subtractive pipeline scrub (#425): this tenant's `.env` reaches the pipeline
       // whole except for the keys a sibling pipeline declared and this one did not.
       scrubKeys: siblingOnlyEnvKeys(pipeline),
@@ -955,7 +1001,10 @@ function runFleet(opts: {
       child,
       cache: credentialCache,
       mint: null,
-      readPatToken: () => readTenantEnv(tenant.envPath)["GH_TOKEN"] ?? null,
+      // The store first, the `.env` under it — the same two tiers the child env
+      // is built from, re-read here so a console rotation lands in place too.
+      readPatToken: () =>
+        tenantSecretStore(tenant)["GH_TOKEN"] ?? readTenantEnv(tenant.envPath)["GH_TOKEN"] ?? null,
       warnedOverBudget,
     });
     return {
@@ -998,7 +1047,7 @@ function runFleet(opts: {
         `[phoebe] boot: pipeline reconcile — +${added.length} added, -${removed.length} removed, ` +
           `~${changed.length} relaunched (no container restart).`,
       ),
-    onPipelines: trackFleetPipelines(broker, deployment),
+    onPipelines: trackFleetPipelines(broker, deployment, process.env, opts.hostKnobs),
     onChildExit: ({ pipeline, exit }) => reportPipelineExit(pipeline, exit),
     onLaunchError: (error) => {
       console.error(`[phoebe] boot: fleet (re)launch failed — ${describe(error)}. Retrying.`);
@@ -1050,13 +1099,39 @@ export function workspacePipelineFingerprint(
 ): string | null {
   if (enumerated === null) return null;
   const hidden = siblingOnlyEnvKeys(pipeline);
+  const store = tenantSecretStore(pipeline.tenant);
   let digest: string;
   try {
-    digest = envReconcileDigest(readFileSync(pipeline.tenant.envPath, "utf8"), hidden);
+    digest = envReconcileDigest(readFileSync(pipeline.tenant.envPath, "utf8"), hidden, store);
   } catch {
-    digest = "";
+    // No readable `.env` is still a tenant with a store: digest what the store
+    // holds, so a child whose secrets live only there relaunches on an edit like
+    // every other one. An absent `.env` and an empty store stay the stable
+    // empty digest they have always been.
+    digest = Object.keys(store).length === 0 ? "" : envReconcileDigest("", hidden, store);
   }
   return `${enumerated}:${digest}`;
+}
+
+/**
+ * Solo's pipeline fingerprint: what the engine said, narrowed by the tenant's
+ * secret store (#504) and by nothing else.
+ *
+ * Solo's tenant axis is deliberately inert — the root *is* the tenant, so an
+ * edit to its config or its `.env` is already the engine axis's business (#138),
+ * and a fingerprint that tracked either would relaunch twice for one edit. The
+ * store is the one input with no other axis: it is not Compose's create-time
+ * input, it is not the mounted config, and nothing re-materializes the engine
+ * when it moves. So it joins here, under the same rule the workspace arm uses —
+ * `GH_TOKEN` by presence only, since the lease delivers its value in place.
+ */
+export function soloPipelineFingerprint(
+  pipeline: SupervisedPipeline,
+  enumerated: string | null,
+  store: SecretValues,
+): string | null {
+  if (enumerated === null) return null;
+  return `${enumerated}:${envReconcileDigest("", siblingOnlyEnvKeys(pipeline), store)}`;
 }
 
 /**
@@ -1273,7 +1348,11 @@ function workspaceDiscover(
         if (!tenantEnv["GH_TOKEN"]) {
           try {
             const { mintedEnv, expiresAt } = await appMint(tenant.slug);
-            const configFp = tenantFingerprint(tenant.configPath, tenant.envPath);
+            const configFp = tenantFingerprint(
+              tenant.configPath,
+              tenant.envPath,
+              tenantSecretStore(tenant),
+            );
             samples.push({
               tenant: { ...tenant, mintedEnv },
               // Include the token expiry in the fingerprint so that when the
@@ -1299,7 +1378,11 @@ function workspaceDiscover(
       }
       samples.push({
         tenant,
-        fingerprint: tenantFingerprint(tenant.configPath, tenant.envPath),
+        fingerprint: tenantFingerprint(
+          tenant.configPath,
+          tenant.envPath,
+          tenantSecretStore(tenant),
+        ),
       });
     }
 
@@ -1553,14 +1636,18 @@ async function loadTenantGitIdentity(configPath: string): Promise<GitIdentity | 
  * does not churn the child; a present config with an absent/unreadable `.env`
  * is a stable `"<config>:"`.
  */
-export function tenantFingerprint(configPath: string, envPath: string): string | null {
+export function tenantFingerprint(
+  configPath: string,
+  envPath: string,
+  store: SecretValues = {},
+): string | null {
   const config = configFingerprint(configPath);
   if (config === null) return null;
   let envDigest: string;
   try {
-    envDigest = envReconcileDigest(readFileSync(envPath, "utf8"));
+    envDigest = envReconcileDigest(readFileSync(envPath, "utf8"), [], store);
   } catch {
-    envDigest = "";
+    envDigest = Object.keys(store).length === 0 ? "" : envReconcileDigest("", [], store);
   }
   return `${config}:${envDigest}`;
 }
@@ -1582,7 +1669,8 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
 
   const configDir = process.cwd();
   const configPath = resolveConfigPath(undefined, configDir);
-  const intervalMs = reconcileIntervalMs();
+  const hostKnobs = await loadHostKnobs(configPath);
+  const intervalMs = reconcileIntervalMs(hostKnobs);
 
   // The container's stop request. A one-way latch, and the poll clock: a
   // SIGTERM mid-poll wakes the watch immediately instead of sleeping out the
@@ -1600,8 +1688,8 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   // Until the first pipeline matrix arrives there is nothing to derive from and no
   // child to ask, so it starts at the operator's override or 1.
   const broker = createSlotBroker({
-    capacity: resolveEffectiveCap([], process.env).capacity,
-    floorBudget: resolveFloorBudget(process.env),
+    capacity: resolveEffectiveCap([], process.env, hostKnobs).capacity,
+    floorBudget: resolveFloorBudget(process.env, hostKnobs),
     onOverGrant: ({ label, inUse, capacity, outstanding, floorBudget }) =>
       console.log(
         `[phoebe] boot: slot floor — ${label} held no slot with work waiting; granting one ` +
@@ -1720,6 +1808,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
         broker,
         deployment,
         doctor,
+        hostKnobs,
         // The root `workspace` block is re-read every poll from here on: this
         // callback owns both the hot tenant list and the shape-change abort (#139).
         discover: workspaceDiscover(configDir, configPath, workspace, appMint, (held) =>
@@ -1805,8 +1894,21 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     // nothing to scrub keeps the null: the child then inherits verbatim, as it
     // always has.
     const scrubKeys = siblingOnlyEnvKeys(pipeline);
-    const childEnv = env ?? (scrubKeys.length > 0 ? { ...process.env } : null);
+    // The secret store (#504) is the only channel solo has: the root `.env` is
+    // Compose's create-time input, masked inside the container, so a value set
+    // here is one an operator could not otherwise change without recreating the
+    // container. Like the scrub it needs a materialized copy of the env to
+    // write into; an empty store keeps the null and the child inherits verbatim.
+    const store = tenantSecretStore(soloTenant);
+    const storeKeys = Object.keys(store);
+    const childEnv =
+      env ?? (scrubKeys.length > 0 || storeKeys.length > 0 ? { ...process.env } : null);
     if (childEnv !== null) {
+      for (const key of storeKeys) {
+        if (store[key] !== "") childEnv[key] = store[key];
+      }
+      // After the store, as in `buildEngineChildEnv`: the scrub is a subtraction
+      // and has to come after everything that could add.
       for (const key of scrubKeys) delete childEnv[key];
     }
     if (soloIdentity !== null && overridden.length > 0) {
@@ -1840,17 +1942,19 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     attachEngineReports({ pipelineId: pipeline.id, child, state: deployment });
     deployment.noteSpawn(pipeline);
     doctor.noteFleetUp();
-    // Answer the child's credential lease (#211) with the null no-op: solo is
-    // one trust domain whose secrets arrive on the ambient container env, so
-    // there is no per-tenant `.env` to re-read (#205's rotation-in-place has no
-    // solo arm — #159) and nothing to mint supervisor-side (a solo App-arm
-    // child mints its own token in-loop when the lease yields nothing).
-    // Without an answerer the child would hang forever on its first request.
+    // Answer the child's credential lease (#211). Solo has no per-tenant `.env`
+    // to re-read and nothing to mint supervisor-side (a solo App-arm child mints
+    // its own token in-loop when the lease yields nothing) — but it does have a
+    // secret store, and a `GH_TOKEN` set there is exactly the rotation-in-place
+    // the lease exists to deliver (#504). No store entry is the null no-op solo
+    // has always answered with. Without an answerer the child would hang forever
+    // on its first request.
     attachCredentialHandler({
       tenantId: pipeline.id,
       child,
       cache: soloCredentialCache,
       mint: null,
+      readPatToken: () => tenantSecretStore(soloTenant)["GH_TOKEN"] ?? null,
       warnedOverBudget: soloWarnedOverBudget,
     });
     return {
@@ -1872,6 +1976,10 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       // keeps it that way — the pipelines the engine enumerates at launch are the
       // pipelines solo runs until something re-materializes the engine.
       discover: () => [{ tenant: soloTenant, fingerprint: SOLO_TENANT_FINGERPRINT }],
+      // The one thing that does move solo's pipelines: a secret set in the store
+      // has no other delivery, so it relaunches the child that would hold it.
+      pipelineFingerprint: (pipeline, enumerated) =>
+        soloPipelineFingerprint(pipeline, enumerated, tenantSecretStore(soloTenant)),
       spawn: spawnSolo,
       stop,
       intervalMs,
@@ -1883,7 +1991,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       onChildExit: ({ pipeline, exit }) => reportPipelineExit(pipeline, exit),
       // Solo contends on the same broker, so its pipelines size and order it too:
       // one tenant, but its own pipelines' `concurrency` and `priority`.
-      onPipelines: trackFleetPipelines(broker, deployment),
+      onPipelines: trackFleetPipelines(broker, deployment, process.env, hostKnobs),
       // Solo backs off on the engine constant, not the fleet's per-pipeline one: the
       // relaunch line quotes it, so the two must not drift.
       crashBackoffMs: CRASH_BACKOFF_MS,

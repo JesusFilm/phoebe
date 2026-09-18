@@ -65,6 +65,47 @@ after a reconcile, on request or on the six-hour schedule. Its report is a secti
 deployment report; a manual `phoebe doctor` prints one and stores nothing.
 _Avoid_: health check (that is one check inside a run), scan, audit
 
+**Settings catalogue**:
+The single registry of every setting Phoebe reads from the environment: config path, env
+name, reader, permanent aliases. Both the readers and the configuration reference are
+generated from it, so neither can drift from the other.
+_Avoid_: overlay table, toggle list
+
+**Precedence rule**:
+Env beats file at a path; a more specific path beats what it would inherit. The only rule
+settings resolve by — the per-kind ladders are that sentence read at one kind depth.
+_Avoid_: overlay, toggle, override order
+
+**Effective config**:
+Every setting that changes a deployment's behaviour, each with its value and the source
+that supplied it — the annotated object `phoebe config` prints and the deployment report
+embeds. `resolveConfig` is the narrower engine-facing step beneath it: defaults filled,
+bootstrapper fields dropped, nothing annotated.
+_Avoid_: resolved config, explained config
+
+**Source** (of a setting):
+Where a setting's winning value came from: `default`, `file`, `alias` (a permanent older
+name), `overlay` (a `PHOEBE_*` variable), `derived`, or `inherited` from a shallower
+path. One of exactly six; values that lost ride along as **shadowed**.
+_Avoid_: origin, provenance, toggle
+
+**Secret store**:
+The bootstrapper-owned, per-tenant file of console-set secret values on the data volume,
+`state/secrets.json` at mode `0600`. The tier above the tenant's `.env`, and the only
+channel a deployment has for a secret nobody can reach a file to edit.
+_Avoid_: vault, keyring, secrets file (ambiguous with `.env`)
+
+**Tenant-scope / deployment-scope secret**:
+Whether a secret belongs to one tenant's engine child or to the deployment as a whole.
+The line the secret store never crosses: the App key and the engine-clone token stay
+deployment scope, in the env-file, reached by editing it.
+_Avoid_: local/global, child/root
+
+**Clear** (a secret):
+Removing a key from the secret store so the `.env` or ambient value governs again. Not a
+tombstone and not a revocation — revoking a secret is rotating it.
+_Avoid_: unset, delete, revoke
+
 **Arm**:
 One of a mutually exclusive pair of shapes a deployment takes, resolved rather than
 configured. The deployment arms are **solo** (one tenant) and **workspace** (a fleet); the
