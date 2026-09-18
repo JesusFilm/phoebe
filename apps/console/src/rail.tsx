@@ -12,27 +12,43 @@
 // hidden. A browser has no local arm, so there the rail is the relay's group on
 // its own and reads exactly as it did before the companion existed.
 //
-// The installs under "This machine" arrive with #555, which is also what makes
-// `+ add` a control worth drawing; until then the group states that it is empty,
-// which is a fact rather than a placeholder.
+// The installs under "This machine" are local installs (#555): a folder on this
+// machine, its state read from Compose, and `+ add` beside the heading because
+// adopting a folder is the one thing this group can do that the other cannot.
+// Three words and no fourth — running, stopped, not initialised. The relay's
+// dark and unseen are a remote reader's guesses about silence, and Compose
+// answers directly.
 //
-// Entries are not links yet. Selecting a deployment opens the tabs that #544
-// builds; a link to a route nothing answers would be a dead end on screen, and
-// the rail's job here is to state facts, which it does either way.
+// A local entry is selectable; a relay entry is not yet. Selecting an install
+// opens its install tab, which exists; selecting a deployment would open the
+// five tabs that #544 builds, and a link to a page nothing answers is a dead end
+// on screen.
 
+import type { LocalInstall } from "phoebe-agent/contracts";
 import type { Surface } from "./companion.ts";
 import { connectionReading, type RowFacts } from "./facts.ts";
+import { installReading } from "./local-install.ts";
 
 export function Rail({
   facts,
   now,
   surface,
   signedIn,
+  installs = [],
+  selected = null,
+  onSelect,
+  onAdd,
 }: {
   facts: RowFacts[];
   now: Date;
   surface: Surface;
   signedIn: boolean;
+  /** The local arm. Empty in a browser, which has no local arm at all. */
+  installs?: LocalInstall[];
+  /** The install whose page is open, by directory. */
+  selected?: string | null;
+  onSelect?: (dir: string) => void;
+  onAdd?: () => void;
 }) {
   const relay = (
     <section className="rail-group" aria-label="Relay">
@@ -62,11 +78,60 @@ export function Rail({
   return (
     <nav className="rail" aria-label="This machine and the relay">
       <section className="rail-group" aria-label="This machine">
-        <h2 className="rail-heading">This machine</h2>
-        <p className="rail-empty">No local install yet.</p>
+        <h2 className="rail-heading">
+          This machine
+          {onAdd === undefined ? null : (
+            <button type="button" className="rail-add" onClick={onAdd}>
+              + add
+            </button>
+          )}
+        </h2>
+        {installs.length === 0 ? (
+          <p className="rail-empty">No local install yet.</p>
+        ) : (
+          installs.map((install) => (
+            <InstallEntry
+              key={install.dir}
+              install={install}
+              current={install.dir === selected}
+              {...(onSelect !== undefined ? { onSelect } : {})}
+            />
+          ))
+        )}
       </section>
       {relay}
     </nav>
+  );
+}
+
+/**
+ * One local install. A button rather than a div, because it is the one rail
+ * entry that goes somewhere — and a thing you click should be a thing a keyboard
+ * can reach.
+ */
+function InstallEntry({
+  install,
+  current,
+  onSelect,
+}: {
+  install: LocalInstall;
+  current: boolean;
+  onSelect?: (dir: string) => void;
+}) {
+  const reading = installReading(install);
+  return (
+    <button
+      type="button"
+      className={`rail-entry local state-${reading.tone}${current ? " current" : ""}`}
+      aria-current={current ? "page" : undefined}
+      onClick={() => onSelect?.(install.dir)}
+    >
+      <div className="name">
+        <span className={`mark ${reading.tone}`} aria-hidden="true" />
+        {install.name}
+      </div>
+      <div className="sub">{reading.text}</div>
+    </button>
   );
 }
 

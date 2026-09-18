@@ -71,6 +71,14 @@ export type {
   RelayArmState,
   RelayPassthrough,
 } from "./desktop-bridge.ts";
+export type {
+  CompanionEnvironment,
+  CompanionPreferences,
+  InstallState,
+  LocalInstall,
+} from "./local-install.ts";
+export { CANCELLABLE_VERBS, MAX_RUN_LINES } from "./verb-run.ts";
+export type { RunExit, RunLine, VerbRun, VerbRunRequest } from "./verb-run.ts";
 export type { CredentialArm } from "./credential-arm.ts";
 export type { PipelineSource, PipelineState, WedgedVerdict } from "./pipeline-state.ts";
 export type { CurrentUnit, StatusSnapshot, UnitRef } from "./status-snapshot.ts";
@@ -93,3 +101,39 @@ export {
   type SlotReport,
   type TenantFacts,
 } from "./deployment.ts";
+
+// The host verbs and their outcomes (#552). One entry per verb, plus the closed
+// union a second caller switches on.
+export type { HostVerb, OutcomeOf, VerbOutcome } from "./host-verb.ts";
+export type { VerbIo } from "./verb-io.ts";
+export type {
+  InitOutcome,
+  InitProfile,
+  InitReport,
+  InitScaffoldOutcome,
+  InitTenantOutcome,
+} from "./init-report.ts";
+export type { StartOutcome } from "./start-outcome.ts";
+export type {
+  UpgradeCheckReport,
+  UpgradeHalfOutcome,
+  UpgradeOutcome,
+  UpgradeTarget,
+} from "./upgrade-outcome.ts";
+export type {
+  FleetMigrateReport,
+  JournalEntry,
+  MigrateReport,
+  MigrationResult,
+  MigrationRole,
+  MigrationState,
+  TenantMigrateEntry,
+  TenantVerdict,
+} from "./migrate-report.ts";
+export type {
+  CheckState,
+  DoctorCheck,
+  DoctorReport,
+  MissingDeclaredEnvKey,
+  TenantDoctorRow,
+} from "./doctor-report.ts";

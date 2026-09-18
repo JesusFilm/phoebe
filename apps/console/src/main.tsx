@@ -23,7 +23,7 @@ createRoot(root).render(
     {bridge === null ? (
       <App client={createBrowserRelayClient()} surface="browser" />
     ) : (
-      <App client={createBridgeRelayClient(bridge)} surface="companion" />
+      <App client={createBridgeRelayClient(bridge)} surface="companion" bridge={bridge} />
     )}
   </StrictMode>,
 );
