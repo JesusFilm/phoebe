@@ -14,11 +14,13 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { RELAY_ROUTES } from "phoebe-agent/contracts";
 import type { RelayIdentity } from "phoebe-agent/contracts";
-import { rowFacts, sortFleet } from "./facts.ts";
+import { DeploymentPage, NoSuchDeployment } from "./deployment-page.tsx";
+import { rowFacts, sortFleet, type RowFacts } from "./facts.ts";
 import { applyEvent, EMPTY_FLEET, loadFleet, type FleetState } from "./fleet-state.ts";
 import { FleetPage } from "./fleet-page.tsx";
 import { Rail } from "./rail.tsx";
 import { isNotSignedIn, type RelayClient } from "./relay-client.ts";
+import { FLEET_ROUTE, parseRoute, type Route } from "./route.ts";
 
 type Session =
   | { kind: "asking" }
@@ -87,6 +89,7 @@ function Console({
   const [loaded, setLoaded] = useState(false);
   const [trouble, setTrouble] = useState<string | null>(null);
   const now = useNow(1000);
+  const route = useRoute();
 
   useEffect(() => {
     let live = true;
@@ -136,14 +139,18 @@ function Console({
         </button>
       </header>
       <div className="frame">
-        <Rail facts={facts} now={now} />
+        <Rail
+          facts={facts}
+          selected={route.page === "deployment" ? route.fingerprint : null}
+          now={now}
+        />
         {trouble !== null ? (
           <main className="main">
             <h1>Fleet</h1>
             <p className="muted">The relay did not answer: {trouble}</p>
           </main>
         ) : loaded ? (
-          <FleetPage facts={facts} now={now} />
+          <Page route={route} facts={facts} now={now} />
         ) : (
           <main className="main">
             <h1>Fleet</h1>
@@ -153,6 +160,36 @@ function Console({
       </div>
     </>
   );
+}
+
+/**
+ * Which page the hash names. A fingerprint the fleet does not hold gets the
+ * "no such deployment" page rather than a redirect: a link that silently became
+ * the fleet page would look like the deployment is fine.
+ */
+function Page({ route, facts, now }: { route: Route; facts: RowFacts[]; now: Date }) {
+  if (route.page === "fleet") return <FleetPage facts={facts} now={now} />;
+  const found = facts.find((row) => row.row.fingerprint === route.fingerprint);
+  if (found === undefined) return <NoSuchDeployment fingerprint={route.fingerprint} />;
+  return <DeploymentPage facts={found} tab={route.tab} now={now} />;
+}
+
+/**
+ * The route, kept in step with the address bar. Links are plain `href`s into the
+ * hash, so the browser does the navigating and the history; this only listens.
+ */
+function useRoute(): Route {
+  const [route, setRoute] = useState<Route>(() =>
+    typeof window === "undefined" ? FLEET_ROUTE : parseRoute(window.location.hash),
+  );
+  useEffect(() => {
+    const onHashChange = (): void => setRoute(parseRoute(window.location.hash));
+    window.addEventListener("hashchange", onHashChange);
+    // The hash may have moved between the first render and this effect.
+    onHashChange();
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+  return route;
 }
 
 /** A clock that ticks, so the durations on screen keep being true. */

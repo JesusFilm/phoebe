@@ -21,6 +21,8 @@ import { DEPLOYMENT_SCHEMA } from "phoebe-agent/contracts";
 import type {
   ChildLiveness,
   DeploymentReport,
+  DoctorSection,
+  EditLedgerEntry,
   FleetCell,
   RelayStoredReport,
   TenantFacts,
@@ -86,4 +88,23 @@ export function childrenOf(report: DeploymentReport): Map<string, ChildLiveness>
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The doctor section, or null when the report carries none. Null is the answer
+ * for two different deployments — one running an engine older than #534, and one
+ * whose section did not survive the trip — and neither is "doctor passed".
+ */
+export function doctorOf(report: DeploymentReport): DoctorSection | null {
+  return isRecord(report.doctor) ? report.doctor : null;
+}
+
+/**
+ * Config edits applied on the deployment and not yet in a commit (#503). An
+ * absent section is an empty list here, because the only thing a reader can do
+ * with "this engine does not keep a ledger" is say nothing — and saying nothing
+ * is what an empty list renders as.
+ */
+export function editsOf(report: DeploymentReport): EditLedgerEntry[] {
+  return Array.isArray(report.edits) ? (report.edits.filter(isRecord) as EditLedgerEntry[]) : [];
 }
