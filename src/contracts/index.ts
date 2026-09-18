@@ -22,6 +22,7 @@
 
 export type { StopOutcome } from "./stop-outcome.ts";
 export type { CredentialArm } from "./credential-arm.ts";
+export type { CheckState, DoctorCheck, DoctorReport, TenantDoctorRow } from "./doctor-report.ts";
 export type { PipelineSource, PipelineState, WedgedVerdict } from "./pipeline-state.ts";
 export type { CurrentUnit, StatusSnapshot, UnitRef } from "./status-snapshot.ts";
 export {
@@ -34,9 +35,15 @@ export {
   type DeploymentArm,
   type DeploymentIdentity,
   type DeploymentReport,
+  type DoctorAttempt,
+  type DoctorSection,
+  type DoctorTrigger,
   type FleetCell,
   type FleetReport,
   type ReconcileState,
+  type RelayClose,
+  type RelayReport,
+  type RelayState,
   type SlotReport,
   type TenantFacts,
 } from "./deployment.ts";
