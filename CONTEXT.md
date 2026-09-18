@@ -229,3 +229,18 @@ One of Phoebe's own install or upgrade faults, sent to a Sentry project under th
 crash-loop quarantine, an operator command throwing. Never a tenant's failure and never
 anything from the work loop.
 _Avoid_: telemetry, error tracking (that is what the `sentry` kind reads), analytics
+
+### Relay
+
+**Relay**:
+The self-hosted process deployments dial into and the console reads from; one per
+operator. Ships in `phoebe-agent` and runs as `phoebe relay serve`, in its own image
+beside the deployment, never inside it.
+_Avoid_: server, hub, gateway, backend
+
+**Allowlist**:
+Who may sign into a relay: a file of `{ sub, email }` on the relay's volume, seeded by
+the first verified Google login when it is empty, merged at every start with the
+addresses in `ALLOWED_EMAILS`. A person is keyed on Google's `sub`; the address is what
+an operator types.
+_Avoid_: whitelist, access list, users

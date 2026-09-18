@@ -30,6 +30,11 @@ pinned CLI. You never vendor the engine source into your repo, only a small
 config file, your prompt overrides, and the container files `phoebe init`
 scaffolds for you.
 
+The package carries a second entry point, **`phoebe-agent/contracts`**: the types
+shared by anything that reads a deployment from outside the engine. Nothing
+behind that subpath imports a Node built-in, so a browser bundle can load it.
+Configuring Phoebe never goes near it.
+
 ## Quickstart
 
 From the root of the repo you want Phoebe to work:
@@ -128,6 +133,7 @@ Docs live under [`docs/`](docs/), in two groups.
 - [`docs/workspace.md`](docs/workspace.md), workspace mode topology, two-tier `.env`, operator runbook (plain-clone or submodule children).
 - [`docs/github-app-mode.md`](docs/github-app-mode.md), the GitHub App credential arm, for deployments spanning several repos under one org owner.
 - [`docs/claude-subscription-auth.md`](docs/claude-subscription-auth.md), driving the `claude` provider from a subscription rather than an API key.
+- [`docs/relay.md`](docs/relay.md), the self-hosted relay: `phoebe relay serve`, its four environment variables, the Google client, and the allowlist.
 - [`docs/phoebe-core-onboarding.md`](docs/phoebe-core-onboarding.md), worked onboarding for `JesusFilm/core` (Nx + pnpm, no vp).
 
 **Working on Phoebe**, changing the engine itself:
