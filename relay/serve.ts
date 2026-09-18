@@ -13,6 +13,7 @@ import { createServer, type Server } from "node:http";
 import { mkdirSync } from "node:fs";
 import { createAllowlist } from "./allowlist.ts";
 import { createConsoleAssets } from "./console-assets.ts";
+import { createDeviceCodes, createDevices } from "./devices.ts";
 import { readRelayEnv, redirectUri, type RelayEnv } from "./env.ts";
 import { createRelayHandler } from "./http.ts";
 import { serveDeployments, type DeploymentGate } from "./deployments.ts";
@@ -107,6 +108,11 @@ export async function startRelay(options: StartRelayOptions): Promise<RunningRel
     events,
     console: consoleAssets,
     sessions: createSessionStore(),
+    // The companions, on the volume, and the codes that mint one, in memory.
+    // The split is the lifetime: a device token outlives the process by design
+    // (#523 §3) and a one-time code cannot outlive one OS handover.
+    devices: createDevices(dataDir),
+    deviceCodes: createDeviceCodes(),
     identity:
       options.identity ??
       createGoogleIdentityProvider({

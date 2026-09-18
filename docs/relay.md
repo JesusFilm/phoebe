@@ -90,7 +90,50 @@ withhold the pre-auth cookie on exactly that request and fail every sign-in.
 
 Nothing of Google's is kept. No refresh token is requested, the userinfo
 endpoint is never called, and the ID token is read once and dropped. A relay
-restart signs everyone out, which costs one redirect.
+restart signs every **browser** out, which costs one redirect.
+
+## Signing the companion in
+
+The desktop companion cannot use any of that. Google refuses to sign anyone in
+inside an embedded webview, and a `__Host-` cookie cannot reach an app whose
+pages are loaded from disk. So the companion signs in through the operator's own
+browser and comes back on a second redirect.
+
+It starts at `GET /auth/device/start?challenge=…&name=…`. The challenge is the
+SHA-256 of a PKCE verifier the app's main process mints and never sends anywhere
+else; the name is what the device will be listed as. From there it is the same
+Google flow and the same allowlist check a browser gets. What differs is the
+landing: instead of a session cookie and `/`, the relay mints a **one-time code**
+and redirects to `phoebe://auth?code=…`, the custom scheme the companion
+registers with the OS.
+
+The code is single use, lives sixty seconds, and is bound to that challenge. Any
+app on the machine can register `phoebe://` and be handed the URL; only the one
+holding the verifier can spend it at `POST /auth/device/exchange`.
+
+What the exchange answers with is a **device token**: an opaque bearer, sent as
+`Authorization: Bearer` on every call the companion makes. The relay keeps its
+SHA-256 in `devices.json` on the volume, beside the person's `sub`, address,
+device name and last seen — never the token itself, so a copy of that file is not
+a set of working credentials. A relay restart keeps companions signed in, which
+is the point.
+
+It does not expire. Revocation is the only end it has, and there are three:
+
+- the companion's own sign-out, `POST /auth/device/revoke`, which revokes the
+  bearer the request carries;
+- `POST /api/devices/remove` with an `id`, from the console;
+- the same route with a `sub`, which takes every device that person signed in.
+  That is what removing them from the allowlist has to do, since an allowlist they
+  are off is not consulted again by a bearer they already hold.
+
+On a 401 the companion drops the token and asks the operator to sign in again. It
+does not retry: the relay has said this token is not one it knows, and that
+answer does not change by being asked twice.
+
+The token is encrypted at rest with Electron's `safeStorage`. On a machine with
+no keyring the companion refuses to persist it, keeps it in memory for the
+session, and says so on screen.
 
 ## The allowlist
 
@@ -124,15 +167,25 @@ them instead of copying strings.
 | `GET`  | `/auth/google/start`             | Redirects to Google.                                      |
 | `GET`  | `/auth/google/callback`          | Google's redirect back. The only URI Google knows.        |
 | `POST` | `/auth/sign-out`                 | Drops the session. 204.                                   |
+| `GET`  | `/auth/device/start`             | Starts a companion's sign-in. Lands on `phoebe://auth`.   |
+| `POST` | `/auth/device/exchange`          | Spends a one-time code for a device token.                |
+| `POST` | `/auth/device/revoke`            | Revokes the bearer on the request. 204 either way.        |
 | `GET`  | `/api/me`                        | `{ sub, email }` for a signed-in caller, 401 otherwise.   |
 | `POST` | `/api/pairing-tokens`            | Mints one pairing token. Shown once; 401 otherwise.       |
+| `GET`  | `/api/devices`                   | Every companion signed in to this relay.                  |
+| `POST` | `/api/devices/remove`            | Revokes devices by `id`, or a person's by `sub`.          |
 | `GET`  | `/api/deployments`               | Every link, with where the relay holds each one.          |
 | `GET`  | `/api/deployments/<fingerprint>` | One link's row, plus the last report it pushed.           |
 | `POST` | `/api/deployments/forget`        | Forgets one deployment, named by fingerprint in the body. |
 | `GET`  | `/api/events`                    | The event stream: reports and connection changes.         |
 | `GET`  | `/` and `/assets/…`              | The console's build. Public, and the only paths that are. |
 
-A successful sign-in lands on `/`, the console. The pages are public on purpose:
+Every route behind the door reads one of two carriers — a `__Host-` session
+cookie or an `Authorization: Bearer` — and none of them knows which one it got.
+A browser has the first, a companion has the second, and nothing a signed-in
+person may ask for depends on what they are holding.
+
+A successful browser sign-in lands on `/`, the console. The pages are public on purpose:
 the sign-in control is part of the bundle, and every read behind it answers 401
 on its own. A path with no file behind it is still a JSON `no-such-route` — the
 console routes on the URL hash, so the relay needs no catch-all and keeps being
@@ -431,5 +484,6 @@ The verbs themselves — config writes, sealed secrets, doctor runs. The rail
 carries them, the relay will deliver them and wait for a receipt, and nothing
 sends one yet. On the console's side the fleet page is here and the rest is not:
 selecting a deployment, its effective config, and the People page all join this
-same process. See
+same process — and the People page is where a person's devices are listed with a
+remove beside each; the reads and the revoke are here, the page is not. See
 [the relay's shape](https://github.com/JesusFilm/phoebe/issues/506).

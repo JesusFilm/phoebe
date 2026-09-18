@@ -11,12 +11,21 @@ const ADA = { sub: "1", email: "ada@example.test" };
 /** A bridge that answers `state` with whatever it is given and refuses the rest. */
 function bridgeOf(
   state: RelayArmState,
-  answers: { request?: (path: string) => unknown; events?: RelayEvent[] } = {},
+  answers: {
+    request?: (path: string) => unknown;
+    events?: RelayEvent[];
+    signIn?: (url: string) => RelayArmState;
+  } = {},
 ): DesktopBridge {
   return {
     version: () => Promise.resolve("0.13.0"),
     relay: {
       state: () => Promise.resolve(state),
+      signIn: ({ url }) =>
+        answers.signIn === undefined
+          ? Promise.reject(new Error("this bridge does not sign in"))
+          : Promise.resolve(answers.signIn(url)),
+      watch: () => () => undefined,
       request: ({ path }) => {
         if (answers.request === undefined) return Promise.reject(signedOut());
         return Promise.resolve(answers.request(path));
@@ -89,5 +98,44 @@ describe("the companion's relay client", () => {
 
     // Same predicate, same page, whichever arm raised it.
     await expect(client.deployments()).rejects.toSatisfy(isNotSignedIn);
+  });
+
+  test("signs in by prompt, carrying what the arm can promise about keeping it (#554)", async () => {
+    const client = createBridgeRelayClient(
+      bridgeOf(
+        {
+          url: "https://relay.example.test",
+          person: null,
+          persisted: false,
+          reason: "no keyring here",
+        },
+        { signIn: (url) => ({ url, person: ADA, persisted: false }) },
+      ),
+    );
+
+    const how = await client.signIn();
+
+    expect(how).toMatchObject({
+      kind: "prompt",
+      relay: "https://relay.example.test",
+      persisted: false,
+      reason: "no keyring here",
+    });
+    if (how.kind !== "prompt") throw new Error("the companion's arm signs in by prompt");
+    await expect(how.start("https://relay.example.test")).resolves.toEqual(ADA);
+  });
+
+  test("a sign-in that comes back with nobody is not a session", async () => {
+    const client = createBridgeRelayClient(
+      bridgeOf(
+        { url: null, person: null, persisted: true },
+        { signIn: (url) => ({ url, person: null, persisted: true }) },
+      ),
+    );
+
+    const how = await client.signIn();
+    if (how.kind !== "prompt") throw new Error("the companion's arm signs in by prompt");
+
+    await expect(how.start("https://relay.example.test")).rejects.toThrow("did not complete");
   });
 });
