@@ -1671,8 +1671,6 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
         `Supervision is unaffected; the report is retried on every change.`,
     ),
   });
-  relay.start(deployment);
-
   // The deployment's doctor runs (#507 §4-§7, #534). One cell for the leases
   // because only the workspace arm can hold any: solo's App-arm child mints its
   // own token in-loop, so the supervisor has nothing to hand over there, and
@@ -1698,6 +1696,20 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       ),
   });
   doctor.start();
+  // Dialled here rather than beside the model it reports into: the link carries
+  // the console's asks as well as the report, and "Run doctor" has to reach the
+  // runner built above (#546). Nothing is lost by the wait — a push before the
+  // first connection is a no-op, and every connection opens with the whole
+  // report anyway.
+  relay.start(deployment, {
+    runDoctor: (by) => {
+      const ask = doctor.request("request", by);
+      // The report is where what doctor found goes (#507 §7). Nothing here waits
+      // for it: the receipt has already said which run the asker is watching.
+      void ask.result.catch(() => {});
+      return { outcome: ask.outcome, ...(ask.detail !== undefined ? { detail: ask.detail } : {}) };
+    },
+  });
 
   if (workspace !== null) {
     // GitHub App mode (#209): if the supervisor holds App credentials, fetch

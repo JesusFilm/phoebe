@@ -24,6 +24,7 @@ function fakeClient(
       if (detail === undefined) return Promise.reject(new Error("no such deployment"));
       return detail instanceof Error ? Promise.reject(detail) : Promise.resolve(detail);
     },
+    runDoctor: () => Promise.resolve([]),
     events: () => () => {},
   };
 }

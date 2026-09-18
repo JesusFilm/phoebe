@@ -28,6 +28,13 @@ export const RELAY_DARK_AFTER_MS = 60_000;
 /** The receipt outcome for a request whose socket closed first (#506 §8). */
 export const RELAY_UNDELIVERED = "undelivered";
 
+/** What a deployment answers a doctor run with (#546). Mirror of relay-protocol.ts. */
+export const RELAY_DOCTOR_RUN = {
+  started: "started",
+  joined: "joined",
+  refused: "refused",
+};
+
 /** Every message type on the deployment rail (#540). Mirror of relay-protocol.ts. */
 export const RELAY_MESSAGES = {
   challenge: "phoebe:relay:challenge",
@@ -61,6 +68,7 @@ export const RELAY_ROUTES = {
   pairingTokens: "/api/pairing-tokens",
   deployments: "/api/deployments",
   forget: "/api/deployments/forget",
+  doctorRun: "/api/deployments/doctor-run",
   events: "/api/events",
 };
 
