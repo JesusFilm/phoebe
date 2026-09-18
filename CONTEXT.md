@@ -56,6 +56,19 @@ Env beats file at a path; a more specific path beats what it would inherit. The 
 settings resolve by — the per-kind ladders are that sentence read at one kind depth.
 _Avoid_: overlay, toggle, override order
 
+**Effective config**:
+Every setting that changes a deployment's behaviour, each with its value and the source
+that supplied it — the annotated object `phoebe config` prints and the deployment report
+embeds. `resolveConfig` is the narrower engine-facing step beneath it: defaults filled,
+bootstrapper fields dropped, nothing annotated.
+_Avoid_: resolved config, explained config
+
+**Source** (of a setting):
+Where a setting's winning value came from: `default`, `file`, `alias` (a permanent older
+name), `overlay` (a `PHOEBE_*` variable), `derived`, or `inherited` from a shallower
+path. One of exactly six; values that lost ride along as **shadowed**.
+_Avoid_: origin, provenance, toggle
+
 **Arm**:
 One of a mutually exclusive pair of shapes a deployment takes, resolved rather than
 configured. The deployment arms are **solo** (one tenant) and **workspace** (a fleet); the

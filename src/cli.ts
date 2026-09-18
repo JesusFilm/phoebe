@@ -141,7 +141,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedArgs {
       const version = installedVersion();
       throw new Error(
         `Unknown command \`${arg}\` for \`phoebe\`${version === null ? "" : ` (phoebe-agent v${version})`}. ` +
-          `Known commands: boot, init, list, purge, upgrade, doctor, migrate, stop, start, pipelines, sweep-state. If \`${arg}\` was added in a newer ` +
+          `Known commands: boot, init, list, config, purge, upgrade, doctor, migrate, stop, start, pipelines, sweep-state. If \`${arg}\` was added in a newer ` +
           `release, upgrade first: \`pnpm dlx phoebe-agent@latest upgrade\`. See \`phoebe --help\`.`,
       );
     }
@@ -275,6 +275,7 @@ Usage:
   phoebe init --workspace [dir]    Scaffold a workspace root (multi-child)
   phoebe init --tenant [dir]       Scaffold a workspace child in-tree install
   phoebe list [--json] [--check]   List tenants + health (in-container)
+  phoebe config [--json]           Every setting, its value, and where it came from
   phoebe purge <owner/repo> --yes  Wipe a removed tenant's data (in-container)
   phoebe upgrade [ref] [--engine|--cli|--both]
                                    Advance the pinned engine ref and/or the npm CLI
@@ -679,6 +680,12 @@ export async function runCli(): Promise<void> {
   // In-container fleet commands (#95): list / purge act on the data volume.
   // Neither loads the engine config.
   if (args[0] === "list") return await runListCli(args.slice(1));
+  // The effective config (#531): every setting with its value and its source.
+  // Lazy like its neighbours — a plain engine run never loads it.
+  if (args[0] === "config") {
+    const { runConfigCli } = await import("./config-command.ts");
+    return await runConfigCli(args.slice(1));
+  }
   if (args[0] === "purge") return await runPurgeCli(args.slice(1));
 
   // Operator commands: upgrade moves the deployment between versions; doctor

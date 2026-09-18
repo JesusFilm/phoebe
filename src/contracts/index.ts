@@ -21,3 +21,15 @@
 // installed consumer's value import lands on the `.mjs`, never on this file.
 
 export type { StopOutcome } from "./stop-outcome.ts";
+export type {
+  ConfigWarning,
+  EffectiveFields,
+  EffectiveLeaf,
+  EffectiveNode,
+  EnvLocation,
+  EnvPresence,
+  SettingReader,
+  SettingSource,
+  ShadowedValue,
+  TenantEffectiveConfig,
+} from "./effective-config.ts";
