@@ -20,4 +20,39 @@
 // refuses to type-strip a `.ts` file under a `node_modules` segment, so an
 // installed consumer's value import lands on the `.mjs`, never on this file.
 
+// The host verbs and their outcomes (#552). One entry per verb, plus the closed
+// union a second caller switches on.
+export type { HostVerb, OutcomeOf, VerbOutcome } from "./host-verb.ts";
+export type { VerbIo } from "./verb-io.ts";
+export type {
+  InitOutcome,
+  InitProfile,
+  InitReport,
+  InitScaffoldOutcome,
+  InitTenantOutcome,
+} from "./init-report.ts";
+export type { StartOutcome } from "./start-outcome.ts";
 export type { StopOutcome } from "./stop-outcome.ts";
+export type {
+  UpgradeCheckReport,
+  UpgradeHalfOutcome,
+  UpgradeOutcome,
+  UpgradeTarget,
+} from "./upgrade-outcome.ts";
+export type {
+  FleetMigrateReport,
+  JournalEntry,
+  MigrateReport,
+  MigrationResult,
+  MigrationRole,
+  MigrationState,
+  TenantMigrateEntry,
+  TenantVerdict,
+} from "./migrate-report.ts";
+export type {
+  CheckState,
+  DoctorCheck,
+  DoctorReport,
+  MissingDeclaredEnvKey,
+  TenantDoctorRow,
+} from "./doctor-report.ts";
