@@ -15,7 +15,7 @@
 // `events` answer, and which refuses with `signed-out` until there is one.
 
 import type { CompanionEnvironment, CompanionPreferences, LocalInstall } from "./local-install.ts";
-import type { LocalReportEvent } from "./local-report.ts";
+import type { LocalAlertEvent, LocalReportEvent } from "./local-report.ts";
 import type { RelayEvent } from "./relay-events.ts";
 import type { RelayIdentity } from "./relay-routes.ts";
 import type { RunExit, RunLine, VerbRun, VerbRunRequest } from "./verb-run.ts";
@@ -123,6 +123,17 @@ export type DesktopBridge = {
      * `report: null` (#527 §6).
      */
     refresh: (dir: string) => Promise<LocalReportEvent>;
+    /**
+     * Every alert main raised over a local install (#524 §3). The relay arm's
+     * alerts arrive on `relay.events` instead, because there they are the
+     * relay's to decide and main only forwards them — here main is the one
+     * running the rule, over reports no relay ever sees.
+     *
+     * Nothing is replayed on subscribe (#524 §7). A window that opened late
+     * has the fleet and the install list to read; an alert it missed was a
+     * moment, and the moment is over.
+     */
+    alerts: (onAlert: (event: LocalAlertEvent) => void) => () => void;
   };
   /** The verb runs — see verb-run.ts for the three rules they hold to. */
   runs: {

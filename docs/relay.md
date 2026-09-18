@@ -418,7 +418,7 @@ Both are behind the session cookie and answer 401 without it.
 ### The event stream
 
 `GET /api/events` is one server-sent-events stream, so pages update without
-polling. Four event names, each with the payload a reader would otherwise have
+polling. Five event names, each with the payload a reader would otherwise have
 fetched:
 
 | Event          | Payload                                         |
@@ -427,10 +427,17 @@ fetched:
 | `connected`    | `{ at, deployment }` — the row, as it now reads |
 | `disconnected` | `{ at, deployment }`                            |
 | `dark`         | `{ at, deployment }`                            |
+| `alert`        | `{ at, alert }` — the webhook's body, verbatim  |
 
 A connection event's name is the word the row now carries, and each is said once
 per change rather than once per check. `unseen` is never an event: it is where
 every link starts, so nothing ever becomes it.
+
+`alert` is the odd one out: it carries no row and no report, and nothing on any
+page changes when it arrives. It is the moment worth interrupting someone about,
+and the desktop companion is what does the interrupting — a browser drops it. See
+[Alerting](#alerting) for what is in the body, and `apps/desktop` for what the
+companion does with it.
 
 There is no replay and no resume cursor. Every event has a read behind it that
 answers the same question in full, so a page that missed one refetches
@@ -468,6 +475,7 @@ bridge with main holding the device token.
 A report whose `schema` this console does not know is not read at all. The card
 says so and still shows the relay's own connection facts, which never came from the
 report.
+
 ## Alerting
 
 The console is not the pager. An operator who is not looking at a tab cannot

@@ -14,6 +14,7 @@ export const BRIDGE_CHANNELS = {
   installsChanged: "phoebe:installs/changed",
   installsReport: "phoebe:installs/report",
   installsRefresh: "phoebe:installs/refresh",
+  installsAlert: "phoebe:installs/alert",
   runStart: "phoebe:runs/start",
   runCurrent: "phoebe:runs/current",
   runCancel: "phoebe:runs/cancel",

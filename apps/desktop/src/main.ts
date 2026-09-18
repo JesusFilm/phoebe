@@ -32,6 +32,7 @@ import {
   safeStorage,
   shell,
 } from "electron";
+import { RELAY_EVENTS } from "phoebe-agent/contracts";
 import type {
   CompanionEnvironment,
   CompanionPreferences,
@@ -43,6 +44,7 @@ import type {
   VerbRun,
   VerbRunRequest,
 } from "phoebe-agent/contracts";
+import { createCompanionAlerts } from "./alerting.ts";
 import { authCodeIn, authCodeInArgv } from "./auth-link.ts";
 import { answering, BRIDGE_CHANNELS, BridgeRefusal, type BridgeResult } from "./channels.ts";
 import {
@@ -112,7 +114,6 @@ function readCompanion(): CompanionFile {
   }
 }
 
-
 /**
  * Claim `phoebe://` with the OS. Packaged, the executable is the app. In a
  * checkout it is Electron's own binary running a directory, so the registration
@@ -144,8 +145,26 @@ function openRelayArm(): RelaySession {
     fetch: (url, init) => net.fetch(url, init),
     openExternal: (url) => shell.openExternal(url),
     deviceName: companionName(os.hostname(), process.platform),
-    onEvent: (event: RelayEvent) => broadcast(BRIDGE_CHANNELS.relayEvent, event),
-    onState: (state: RelayArmState) => broadcast(BRIDGE_CHANNELS.relayArm, state),
+    onEvent: (event: RelayEvent) => {
+      // Forwarded whichever it is; an `alert` is also counted, because the
+      // badge is main's and the window that draws the notification cannot set
+      // one (#524 §4).
+      if (event.type === RELAY_EVENTS.alert) {
+        alerts.relay(event.alert);
+        showBadge();
+      }
+      broadcast(BRIDGE_CHANNELS.relayEvent, event);
+    },
+    onState: (state: RelayArmState) => {
+      // A session that ended took its fleet with it. Leaving those conditions
+      // counted would be a badge about deployments this companion can no longer
+      // see, and no event will ever clear them.
+      if (state.person === null) {
+        alerts.forgetRelay();
+        showBadge();
+      }
+      broadcast(BRIDGE_CHANNELS.relayArm, state);
+    },
   });
 }
 
@@ -157,6 +176,25 @@ function openRelayArm(): RelaySession {
 function arm(): RelaySession {
   if (relay === null) throw new Error("the companion's relay arm is not open yet");
   return relay;
+}
+
+/**
+ * The alerts both arms feed (#524). Built at module scope like the read loop it
+ * listens to: a window can come and go, and what has been notified must not.
+ */
+const alerts = createCompanionAlerts();
+
+/**
+ * The dock or taskbar badge: how many deployments and local installs are in a
+ * raised condition, and nothing on the icon at all when that is zero (#524 §4).
+ *
+ * Deliberately not gated on the notifications preference. The preference is
+ * about being interrupted; the badge is a number on an icon the operator went
+ * looking for, and turning notifications off is not a request to be told less
+ * when you do look.
+ */
+function showBadge(): void {
+  app.setBadgeCount(alerts.badge());
 }
 
 /** Say something to every open window. There is one today; the cost of two is nil. */
@@ -208,7 +246,16 @@ const reads = createLocalReads({
     if ("kind" in deployment) return () => undefined;
     return watchContainerEvents({ deployment, onChange });
   },
-  emit: (event) => broadcast(BRIDGE_CHANNELS.installsReport, event),
+  emit: (event) => {
+    broadcast(BRIDGE_CHANNELS.installsReport, event);
+    // Every read is also an edge evaluation (#524 §3). The first read of an
+    // install seeds it and raises nothing, so a relaunch onto a fleet that was
+    // already wedged does not re-fire everything.
+    for (const alert of alerts.local(event)) {
+      broadcast(BRIDGE_CHANNELS.installsAlert, alert);
+    }
+    showBadge();
+  },
 });
 
 /** Read, change, write, and tell the window. The only writer of the file. */
@@ -340,7 +387,14 @@ app.whenReady().then(
     );
 
     ipcMain.handle(BRIDGE_CHANNELS.installsRemove, (_event, dir: string) =>
-      answering(() => editInstalls((contents) => removeInstall(contents, dir))),
+      answering(() => {
+        // Forgetting a folder drops what it was raising with it. A badge
+        // counting an install that is no longer on the rail is a number the
+        // operator cannot act on or clear.
+        alerts.forgetInstall(dir);
+        showBadge();
+        return editInstalls((contents) => removeInstall(contents, dir));
+      }),
     );
 
     ipcMain.handle(BRIDGE_CHANNELS.installsRefresh, (_event, dir: string) =>

@@ -38,6 +38,7 @@ function env(overrides: Partial<RelayEnv> = {}): RelayEnv {
     clientId: "client-id",
     clientSecret: "client-secret",
     allowedEmails: [],
+    alertWebhook: null,
     ...overrides,
   };
 }

@@ -35,6 +35,7 @@ export type {
 } from "./relay-routes.ts";
 export { RELAY_EVENTS } from "./relay-events.ts";
 export type {
+  RelayAlertEvent,
   RelayConnectionEvent,
   RelayEvent,
   RelayEventName,
@@ -81,7 +82,12 @@ export type {
   InstallState,
   LocalInstall,
 } from "./local-install.ts";
-export type { InstallDirectoryFacts, LocalReportEvent, StoredReport } from "./local-report.ts";
+export type {
+  InstallDirectoryFacts,
+  LocalAlertEvent,
+  LocalReportEvent,
+  StoredReport,
+} from "./local-report.ts";
 export { CANCELLABLE_VERBS, MAX_RUN_LINES } from "./verb-run.ts";
 export type { RunExit, RunLine, VerbRun, VerbRunRequest } from "./verb-run.ts";
 // The edge rule itself (`alertEdges` and the body builders in alerts.ts) is not

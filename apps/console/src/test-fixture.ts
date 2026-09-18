@@ -13,6 +13,7 @@ import type {
   FleetCell,
   InstallDirectoryFacts,
   LocalInstall,
+  LocalAlertEvent,
   LocalReportEvent,
   RelayArmState,
   RelayDeploymentRow,
@@ -177,6 +178,10 @@ export function bridge(answers: BridgeAnswers = {}): DesktopBridge {
         const event = (answers.reports ?? []).find((candidate) => candidate.install === dir);
         return event === undefined ? Promise.reject(notAnInstall(dir)) : Promise.resolve(event);
       },
+      alerts: (onAlert) => {
+        for (const event of answers.alerts ?? []) onAlert(event);
+        return () => undefined;
+      },
     },
     runs: {
       start: (request) => {
@@ -228,6 +233,8 @@ export type BridgeAnswers = {
   signIn?: (url: string) => RelayArmState;
   /** What the local read loop has emitted, one event per install (#556). */
   reports?: LocalReportEvent[];
+  /** What main raised over a local install (#559). */
+  alerts?: LocalAlertEvent[];
 };
 
 /** The directory facts main derives with no container involved (#527 §6). */

@@ -17,6 +17,7 @@ import { createDeviceCodes, createDevices } from "./devices.ts";
 import {
   createAlertNotifier,
   createAlertStore,
+  streamSink,
   webhookSink,
   type AlertNotifier,
   type AlertSink,
@@ -130,6 +131,7 @@ export async function startRelay(options: StartRelayOptions): Promise<RunningRel
   // keeps `alerts.json`, because the SSE event is not configurable (#524 §1).
   const consoleOrigin = new URL(callback).origin;
   const sinks: AlertSink[] = [
+    streamSink(events),
     ...(options.env.alertWebhook !== null ? [webhookSink(options.env.alertWebhook)] : []),
     ...(options.alertSinks ?? []),
   ];
@@ -236,10 +238,10 @@ export async function startRelay(options: StartRelayOptions): Promise<RunningRel
   // them up is on (#515 §13). The URL is the credential, so it is not in it.
   log(
     options.env.alertWebhook !== null
-      ? `[phoebe:relay] alerts: RELAY_ALERT_WEBHOOK is set — one message per edge, ` +
-          `darkness after ${ALERT_DARK_AFTER_MS / 60_000} min`
-      : `[phoebe:relay] alerts: RELAY_ALERT_WEBHOOK is unset — edges are still evaluated ` +
-          `and recorded, nothing is posted`,
+      ? `[phoebe:relay] alerts: RELAY_ALERT_WEBHOOK is set — one message per edge to it ` +
+          `and to the event stream, darkness after ${ALERT_DARK_AFTER_MS / 60_000} min`
+      : `[phoebe:relay] alerts: RELAY_ALERT_WEBHOOK is unset — every edge still goes to ` +
+          `the event stream, and nothing is posted`,
   );
 
   return {

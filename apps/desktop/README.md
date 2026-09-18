@@ -97,9 +97,30 @@ launches a _second_ process with the URL on its command line, and without the lo
 one process would hold the code and the other the verifier.
 
 **The notifications** ([#559](https://github.com/JesusFilm/phoebe/issues/559)) sit
-across both arms: [`alerting.ts`](src/alerting.ts) keeps the raised set and
-decides what to show, and [`notify.ts`](src/notify.ts) is the Electron half —
-`new Notification`, the dock badge, and the click that opens a page.
+across both arms, and they are split between this package and the console for one
+reason: the banner is the renderer's and the badge is main's
+([#524 §2](https://github.com/JesusFilm/phoebe/issues/524), §4).
+
+[`alerting.ts`](src/alerting.ts) is main's half. It runs the shared edge rule
+over every local read — the same `src/contracts/alerts.ts` the relay runs, never
+a second copy of it — and it keeps the raised set for both arms, which is what
+the dock badge counts. The relay's own alerts arrive already decided and are
+forwarded as they came; a local install's are computed here, because there is no
+relay between a folder on this machine and the process watching it. The first
+read of an install seeds it silently, so relaunching onto a fleet that was
+already wedged does not re-fire everything.
+
+Raising the notification is `apps/console/src/notifications.ts`, in the window:
+the tag that folds a clear onto its raise, the silence, the suppression while the
+window is focused, and the click. So the companion notifies while a window is
+open, which is the same property T3 Code's desktop app has — there is no tray
+item and no login item, by decision, and the badge is the only thing on screen
+when the window is not.
+
+`app.setBadgeCount` is the dock on macOS and the launcher on Linux. Windows has
+no count on a taskbar button — it takes an overlay icon — so the badge is a
+no-op there until packaging ([#561](https://github.com/JesusFilm/phoebe/issues/561))
+gives it one to draw.
 
 The loop reads `phoebe status --json` inside the container. That verb is
 [#533](https://github.com/JesusFilm/phoebe/issues/533)'s and the report it prints

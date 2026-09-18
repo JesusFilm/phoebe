@@ -394,6 +394,19 @@ One invocation of a host verb by the companion, with its lines streamed and an e
 carrying the verb's typed outcome. One per install at a time, parallel across installs.
 _Avoid_: job, task, command
 
+**Device notification**:
+The OS notification the companion raises from an alert. A rendering of the alert, never
+its own record: it carries no state the fleet row does not already have, there is no list
+of them and no acknowledging one. Tagged by (deployment, condition), so a clear replaces
+the raise it is about rather than piling up beside it.
+_Avoid_: push (rejected on desktop, undecided on mobile), toast, banner
+
+**Badge**:
+The count on the companion's dock or taskbar icon: how many deployments and local installs
+are in a raised condition right now. Subjects, not edges — three wedged pipelines on one
+deployment are one. Zero clears it, and there is no tray item beside it.
+_Avoid_: counter, indicator, unread count
+
 **Local read loop**:
 Main's per-install pair of clocks that produces deployment reports for a local install:
 Compose's event stream for the moment a container moves, and a `status --json` exec every
