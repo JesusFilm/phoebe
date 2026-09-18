@@ -71,6 +71,14 @@ export type {
   RelayArmState,
   RelayPassthrough,
 } from "./desktop-bridge.ts";
+export type {
+  CompanionEnvironment,
+  CompanionPreferences,
+  InstallState,
+  LocalInstall,
+} from "./local-install.ts";
+export { CANCELLABLE_VERBS, MAX_RUN_LINES } from "./verb-run.ts";
+export type { RunExit, RunLine, VerbRun, VerbRunRequest } from "./verb-run.ts";
 export type { CredentialArm } from "./credential-arm.ts";
 export type { PipelineSource, PipelineState, WedgedVerdict } from "./pipeline-state.ts";
 export type { CurrentUnit, StatusSnapshot, UnitRef } from "./status-snapshot.ts";

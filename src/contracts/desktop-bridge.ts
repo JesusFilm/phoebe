@@ -8,14 +8,16 @@
 // there is no RPC library and no runtime schema layer between the two sides —
 // this file is the whole agreement.
 //
-// What is declared here is what the companion's window needs to open: its
-// version, and the relay arm it is (or is not) signed in to. The host verbs,
-// the install list and the local read loop join it with #555; #554 gives the
-// relay arm a device token, at which point `request` and `events` start
-// answering instead of refusing.
+// What is declared here is the companion's two arms. The local arm is the
+// installs on this machine, the environment they need and the verb runs that
+// drive them (#555); the remote arm is the relay passthrough. The local read
+// loop joins them with #556; #554 gives the relay arm a device token, at which
+// point `request` and `events` start answering instead of refusing.
 
+import type { CompanionEnvironment, CompanionPreferences, LocalInstall } from "./local-install.ts";
 import type { RelayEvent } from "./relay-events.ts";
 import type { RelayIdentity } from "./relay-routes.ts";
+import type { RunExit, RunLine, VerbRun, VerbRunRequest } from "./verb-run.ts";
 
 /**
  * The global the preload writes the bridge onto, and the only thing the console
@@ -81,6 +83,42 @@ export type RelayPassthrough = {
 export type DesktopBridge = {
   /** The companion's version — the root package's, read at build time (#521 §4). */
   version: () => Promise<string>;
+  /** Docker, the platform and the version, computed on demand (#527 §15). */
+  environment: () => Promise<CompanionEnvironment>;
+  /**
+   * The local arm's list. Main owns `companion.json` and derives every fact on
+   * it at read time, so the renderer holds no copy that can go stale (#527 §12).
+   */
+  installs: {
+    list: () => Promise<LocalInstall[]>;
+    /** The folder picker. Null when the operator dismissed it. */
+    pick: () => Promise<string | null>;
+    /**
+     * Adopt a folder. A folder that already carries a config is adopted as it
+     * stands — the companion never re-inits over one (#555).
+     */
+    add: (dir: string) => Promise<LocalInstall[]>;
+    /** Forget an install. Deletes nothing on disk (#527 §12). */
+    remove: (dir: string) => Promise<LocalInstall[]>;
+    /** The list again whenever it changed. Returns the unsubscribe. */
+    changes: (onChange: (installs: LocalInstall[]) => void) => () => void;
+  };
+  /** The verb runs — see verb-run.ts for the three rules they hold to. */
+  runs: {
+    /** Start one. Resolves with the run's id, or rejects `busy` (#527 §2). */
+    start: (request: VerbRunRequest) => Promise<string>;
+    /** The install's current or last run, or null when it has never had one. */
+    current: (install: string) => Promise<VerbRun | null>;
+    /** SIGTERM the run's child. Refused for a verb that spawns none. */
+    cancel: (runId: string) => Promise<void>;
+    lines: (onLine: (line: RunLine) => void) => () => void;
+    exits: (onExit: (exit: RunExit) => void) => () => void;
+  };
+  /** The operator's preferences, as `companion.json` holds them (#527 §12). */
+  preferences: {
+    get: () => Promise<CompanionPreferences>;
+    set: (preferences: CompanionPreferences) => Promise<CompanionPreferences>;
+  };
   /**
    * The remote arm. Main holds the device token and makes the calls, so the
    * renderer never learns the token and route knowledge stays in the console's

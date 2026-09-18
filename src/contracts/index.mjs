@@ -28,6 +28,12 @@ export const RELAY_DARK_AFTER_MS = 60_000;
 /** The global the companion's preload exposes its bridge on — see desktop-bridge.ts. */
 export const DESKTOP_BRIDGE_GLOBAL = "phoebe";
 
+/** How many lines of a verb run main keeps — see verb-run.ts (#527 §13). */
+export const MAX_RUN_LINES = 2000;
+
+/** The verbs a companion can cancel — see verb-run.ts (#527 §2). */
+export const CANCELLABLE_VERBS = ["start", "stop"];
+
 /** The receipt outcome for a request whose socket closed first (#506 §8). */
 export const RELAY_UNDELIVERED = "undelivered";
 

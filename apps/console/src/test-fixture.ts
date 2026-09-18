@@ -7,11 +7,18 @@
 import { DEPLOYMENT_SCHEMA } from "phoebe-agent/contracts";
 import type {
   ChildLiveness,
+  CompanionEnvironment,
   DeploymentReport,
+  DesktopBridge,
   FleetCell,
+  LocalInstall,
+  RelayArmState,
   RelayDeploymentRow,
+  RelayEvent,
   RelayStoredReport,
   TenantFacts,
+  VerbRun,
+  VerbRunRequest,
 } from "phoebe-agent/contracts";
 
 export const NOW = new Date("2026-09-18T12:00:00.000Z");
@@ -118,4 +125,95 @@ export function stored(
     report: body,
     ...overrides,
   };
+}
+
+// ── the companion's side ──────────────────────────────────────────────────
+
+/** One local install, with only the fields a test cares about spelled out. */
+export function install(overrides: Partial<LocalInstall> = {}): LocalInstall {
+  return {
+    dir: "/repos/youtube-studio",
+    name: "youtube-studio",
+    addedAt: ago(3600),
+    state: "running",
+    ...overrides,
+  };
+}
+
+/** The Docker check, on a machine where everything is where it should be. */
+export function environment(overrides: Partial<CompanionEnvironment> = {}): CompanionEnvironment {
+  return {
+    companionVersion: "0.13.0",
+    platform: "linux",
+    docker: { present: true, composeVersion: "v2.29.7", daemonRunning: true },
+    ...overrides,
+  };
+}
+
+/**
+ * A desktop bridge that answers with whatever the test hands it and refuses
+ * everything else. Written once here because both the surface test and the
+ * render tests need a whole one — the contract has no optional members, which
+ * is what stops a page from feature-detecting its way around a missing arm.
+ */
+export function bridge(answers: BridgeAnswers = {}): DesktopBridge {
+  const relayState = answers.relay ?? { url: null, person: null, persisted: false };
+  return {
+    version: () => Promise.resolve("0.13.0"),
+    environment: () => Promise.resolve(answers.environment ?? environment()),
+    installs: {
+      list: () => Promise.resolve(answers.installs ?? []),
+      pick: () => Promise.resolve(answers.picked ?? null),
+      add: () => Promise.resolve(answers.installs ?? []),
+      remove: () => Promise.resolve([]),
+      changes: () => () => undefined,
+    },
+    runs: {
+      start: (request) => {
+        answers.started?.push(request);
+        return Promise.resolve(answers.runId ?? "run-1");
+      },
+      current: () => Promise.resolve(answers.run ?? null),
+      cancel: () => Promise.resolve(),
+      lines: () => () => undefined,
+      exits: () => () => undefined,
+    },
+    preferences: {
+      get: () => Promise.resolve({ notifications: true }),
+      set: (preferences) => Promise.resolve(preferences),
+    },
+    relay: {
+      state: () => Promise.resolve(relayState),
+      request: ({ path }) => {
+        if (answers.request === undefined) return Promise.reject(signedOut());
+        return Promise.resolve(answers.request(path));
+      },
+      events: (onEvent) => {
+        for (const event of answers.events ?? []) onEvent(event);
+        return () => undefined;
+      },
+      signOut: () => Promise.resolve(),
+    },
+  };
+}
+
+/** What a test wants the bridge above to answer with. */
+export type BridgeAnswers = {
+  relay?: RelayArmState;
+  environment?: CompanionEnvironment;
+  installs?: LocalInstall[];
+  picked?: string | null;
+  run?: VerbRun | null;
+  runId?: string;
+  /** Collects every run the page asked for. */
+  started?: VerbRunRequest[];
+  request?: (path: string) => unknown;
+  events?: RelayEvent[];
+};
+
+/** What the preload throws when main refuses a call (#527 §16). */
+export function signedOut(): Error {
+  return Object.assign(new Error("the companion is not signed in to a relay"), {
+    code: "signed-out",
+  });
 }

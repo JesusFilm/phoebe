@@ -28,6 +28,7 @@ import type {
   InitTenantOutcome,
 } from "./contracts/init-report.ts";
 import { defaultGit, type GitRunner } from "./git-model.ts";
+import { resolvePackageResource } from "./package-resource.ts";
 import {
   defaultRepoUrl,
   parseSlug,
@@ -228,31 +229,6 @@ export function mergeGitignore(existing: string, entries: readonly string[]): st
   }
   const separator = existing.endsWith("\n") ? "" : "\n";
   return `${existing}${separator}\n# Phoebe\n${missing.join("\n")}\n`;
-}
-
-/**
- * Walk up from this module's directory to find the shipped resource root. This
- * runs from `src/init.ts` (no build step) and reads `templates/…` + `prompts/…`
- * from the package root. Stops at a `node_modules` boundary so an installed dep
- * never resolves scaffold sources from the consuming repo. (Runtime `promptFiles`
- * loading is separate — see `resolvePromptFile` in `prompt.ts`, which reads
- * from the consumer runtime root.)
- */
-function resolvePackageResource(relativePath: string, moduleDir: string): string {
-  let dir = moduleDir;
-  while (true) {
-    const candidate = join(dir, relativePath);
-    if (existsSync(candidate)) {
-      return candidate;
-    }
-    const parent = dirname(dir);
-    if (parent === dir || basename(parent) === "node_modules") {
-      throw new Error(
-        `Could not find ${relativePath} within the Phoebe package (searched from ${moduleDir})`,
-      );
-    }
-    dir = parent;
-  }
 }
 
 /** The seams `runInit` reaches the world through — all injectable (#552). */

@@ -3,7 +3,7 @@
   "private": true,
   "description": "The Phoebe companion — the Electron window whose renderer is the console bundle, loaded from disk over a privileged scheme.",
   "type": "module",
-  "main": "dist/main.cjs",
+  "main": "dist/main.mjs",
   "scripts": {
     "build": "vp build --mode main && vp build --mode preload",
     "dev": "vp exec electron . --dev",

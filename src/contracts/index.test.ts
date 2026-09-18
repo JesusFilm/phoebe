@@ -6,7 +6,9 @@
 
 import { describe, expect, test } from "vite-plus/test";
 import {
+  CANCELLABLE_VERBS as typedCancellable,
   DESKTOP_BRIDGE_GLOBAL as typedGlobal,
+  MAX_RUN_LINES as typedMaxLines,
   RELAY_CLOSE as typedClose,
   RELAY_DARK_AFTER_MS as typedDark,
   RELAY_DEPLOYMENTS_PATH as typedPath,
@@ -18,7 +20,9 @@ import {
   RELAY_UNDELIVERED as typedUndelivered,
 } from "./index.ts";
 import {
+  CANCELLABLE_VERBS as shippedCancellable,
   DESKTOP_BRIDGE_GLOBAL as shippedGlobal,
+  MAX_RUN_LINES as shippedMaxLines,
   RELAY_CLOSE as shippedClose,
   RELAY_DARK_AFTER_MS as shippedDark,
   RELAY_DEPLOYMENTS_PATH as shippedPath,
@@ -83,5 +87,20 @@ describe("the companion's bridge global", () => {
     // The preload writes this global and the console bundle reads it; the two
     // ship together, so the only way they can disagree is through this file.
     expect(shippedGlobal).toBe(typedGlobal);
+  });
+});
+
+describe("the verb run's constants", () => {
+  test.each([
+    ["MAX_RUN_LINES", typedMaxLines, shippedMaxLines],
+    ["CANCELLABLE_VERBS", typedCancellable, shippedCancellable],
+  ])("%s is the same on both sides", (_name, typedValue, shippedValue) => {
+    expect(shippedValue).toEqual(typedValue);
+  });
+
+  test("only the verbs whose child the companion holds can be cancelled (#527 §2)", () => {
+    // `start` and `stop` drive Compose through an injected runner, so the
+    // companion has the child to signal. Nothing else does — see verb-run.ts.
+    expect([...typedCancellable].sort()).toEqual(["start", "stop"]);
   });
 });
