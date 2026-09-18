@@ -12,13 +12,25 @@
 import { createServer, type Server } from "node:http";
 import { mkdirSync } from "node:fs";
 import { createAllowlist } from "./allowlist.ts";
+import {
+  createAlertNotifier,
+  createAlertStore,
+  webhookSink,
+  type AlertNotifier,
+  type AlertSink,
+} from "./alerts.ts";
 import { readRelayEnv, redirectUri, type RelayEnv } from "./env.ts";
 import { createRelayHandler } from "./http.ts";
 import { serveDeployments, type DeploymentGate } from "./deployments.ts";
 import { createLinks, createPairingTokens } from "./links.ts";
 import { createGoogleIdentityProvider, type IdentityProvider } from "./oidc.ts";
 import { createSessionStore } from "./sessions.ts";
-import { RELAY_DEPLOYMENTS_PATH, RELAY_PROTOCOL } from "../src/contracts/relay-protocol.ts";
+import { ALERT_DARK_AFTER_MS } from "../src/contracts/alerts.ts";
+import {
+  RELAY_DEPLOYMENTS_PATH,
+  RELAY_HEARTBEAT_MS,
+  RELAY_PROTOCOL,
+} from "../src/contracts/relay-protocol.ts";
 import { RELAY_ROUTES } from "../src/contracts/relay-routes.ts";
 
 /**
@@ -47,6 +59,19 @@ export type StartRelayOptions = {
    */
   heartbeatMs?: number;
   darkAfterMs?: number;
+  /**
+   * How often alert edges are swept, and how long silence waits before it is
+   * one — for a test that would otherwise sit through five real minutes.
+   * Production sweeps on the heartbeat interval and debounces darkness by
+   * `ALERT_DARK_AFTER_MS`, neither of which is settable from outside.
+   */
+  alertSweepMs?: number;
+  alertDarkAfterMs?: number;
+  /**
+   * Sinks beyond the webhook. The SSE stream registers itself here when it
+   * lands (#524 §1), and a test passes one to watch what would have been sent.
+   */
+  alertSinks?: readonly AlertSink[];
   /** Start-up lines. Defaults to stdout. */
   log?: (message: string) => void;
   /** Refusals and unreachable-Google complaints. Defaults to stderr. */
@@ -59,6 +84,8 @@ export type RunningRelay = {
   server: Server;
   /** The deployment endpoint, for a test that wants to see who is connected. */
   deployments: DeploymentGate;
+  /** Alerting, for a test that wants to sweep on demand rather than on a timer. */
+  alerts: AlertNotifier;
   close: () => Promise<void>;
 };
 
@@ -82,6 +109,32 @@ export async function startRelay(options: StartRelayOptions): Promise<RunningRel
   // thunk, assigned before the port is bound and therefore before any request
   // can reach the thunk.
   let deployments: DeploymentGate | null = null;
+
+  // Alerting hangs off the same thunk. The webhook is a sink and so is anything
+  // else handed in; a relay with neither still evaluates every edge and still
+  // keeps `alerts.json`, because the SSE event is not configurable (#524 §1).
+  const consoleOrigin = new URL(callback).origin;
+  const sinks: AlertSink[] = [
+    ...(options.env.alertWebhook !== null ? [webhookSink(options.env.alertWebhook)] : []),
+    ...(options.alertSinks ?? []),
+  ];
+  const notifier = createAlertNotifier({
+    store: createAlertStore(dataDir),
+    connections: (now) => deployments?.alertConnections(now) ?? [],
+    sinks,
+    webhook: options.env.alertWebhook !== null,
+    consoleOrigin,
+    ...(options.alertDarkAfterMs !== undefined ? { darkAfterMs: options.alertDarkAfterMs } : {}),
+    warn,
+  });
+  // A sweep must never reach a socket event or a timer as a rejection.
+  const sweep = (): void => {
+    void notifier.sweep().catch((error: unknown) => {
+      const why = error instanceof Error ? error.message : String(error);
+      warn(`[phoebe:relay] the alert sweep failed: ${why}`);
+    });
+  };
+
   const handler = createRelayHandler({
     allowlist: createAllowlist(dataDir, options.env.allowedEmails),
     tokens,
@@ -89,6 +142,7 @@ export async function startRelay(options: StartRelayOptions): Promise<RunningRel
       if (deployments === null) throw new Error("the deployment endpoint is not attached yet");
       return deployments;
     },
+    alerts: { facts: notifier.facts, test: notifier.test },
     sessions: createSessionStore(),
     identity:
       options.identity ??
@@ -121,10 +175,18 @@ export async function startRelay(options: StartRelayOptions): Promise<RunningRel
     tokens,
     log,
     warn,
+    alerts: { changed: sweep, forgotten: notifier.forget },
     ...(options.heartbeatMs !== undefined ? { heartbeatMs: options.heartbeatMs } : {}),
     ...(options.darkAfterMs !== undefined ? { darkAfterMs: options.darkAfterMs } : {}),
   });
   deployments = gate;
+
+  // Darkness is the one condition nothing fires an event for — the deployment
+  // does nothing, which is the point — so it takes a timer to notice. On the
+  // heartbeat interval, which puts a crossed edge on its way inside twenty
+  // seconds without the relay keeping a second clock of its own.
+  const sweepTimer = setInterval(sweep, options.alertSweepMs ?? RELAY_HEARTBEAT_MS);
+  sweepTimer.unref?.();
 
   const port = await listen(server, options.port ?? RELAY_PORT);
   log(`[phoebe:relay] listening on port ${port}`);
@@ -140,11 +202,23 @@ export async function startRelay(options: StartRelayOptions): Promise<RunningRel
       `${links.all().length} link(s) recorded, protocol ${RELAY_PROTOCOL}`,
   );
 
+  // One line, so an operator never has to guess whether the thing meant to wake
+  // them up is on (#515 §13). The URL is the credential, so it is not in it.
+  log(
+    options.env.alertWebhook !== null
+      ? `[phoebe:relay] alerts: RELAY_ALERT_WEBHOOK is set — one message per edge, ` +
+          `darkness after ${ALERT_DARK_AFTER_MS / 60_000} min`
+      : `[phoebe:relay] alerts: RELAY_ALERT_WEBHOOK is unset — edges are still evaluated ` +
+          `and recorded, nothing is posted`,
+  );
+
   return {
     port,
     server,
     deployments: gate,
+    alerts: notifier,
     close: async () => {
+      clearInterval(sweepTimer);
       // The sockets first: a deployment closed cleanly reconnects to the relay
       // that comes back, where one dropped by the listener going out from under
       // it waits out a backoff for no reason.

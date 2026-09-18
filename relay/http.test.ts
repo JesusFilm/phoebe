@@ -58,6 +58,7 @@ function env(overrides: Partial<RelayEnv> = {}): RelayEnv {
     clientId: "client-id",
     clientSecret: "client-secret",
     allowedEmails: [],
+    alertWebhook: null,
     ...overrides,
   };
 }
@@ -298,7 +299,10 @@ describe("the relay's door", () => {
     });
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ deployments: [] });
+    expect(await response.json()).toEqual({
+      deployments: [],
+      alerts: { webhook: false, last: {} },
+    });
   });
 
   test("forgetting is behind the session too", async () => {

@@ -6,7 +6,9 @@ WebSocket. A web console reads from it; that part is still being built. What
 works today is the door and the fleet's side of it — you sign in, you mint a
 pairing token, a deployment spends it, and the relay lists that deployment as
 connected, disconnected for so many seconds, dark, or unseen. You can forget a
-deployment from the relay and a deployment can leave from its own side.
+deployment from the relay and a deployment can leave from its own side. It also
+alerts: when a deployment crosses into or out of a named condition, the relay
+sends one message about it.
 
 The relay is a separate image, a separate compose file and a separate volume
 from any deployment. A deployment that names no relay never dials one and runs
@@ -15,7 +17,7 @@ listener. That is a property worth keeping, so a test guards it.
 
 Its version is the bootstrapper's version, and one changelog covers both.
 
-## Configuration is four environment variables
+## Configuration is four environment variables, and an optional fifth
 
 | Variable               | What it is                                                                                                              |
 | ---------------------- | ----------------------------------------------------------------------------------------------------------------------- |
@@ -23,20 +25,25 @@ Its version is the bootstrapper's version, and one changelog covers both.
 | `GOOGLE_CLIENT_ID`     | The Google "Web application" OAuth client id.                                                                           |
 | `GOOGLE_CLIENT_SECRET` | Its secret. Keep it out of the image and out of git.                                                                    |
 | `ALLOWED_EMAILS`       | Comma-separated addresses merged into the allowlist at every start.                                                     |
+| `RELAY_ALERT_WEBHOOK`  | Optional. Where one message per alert edge is POSTed. Unset means nothing is posted.                                    |
 
-All four must be set. `phoebe relay serve` refuses to start otherwise, and the
+The first four must be set. `phoebe relay serve` refuses to start otherwise, and the
 error names every variable it did not get rather than making you find them one
 restart at a time. The first three must also be non-blank, because a blank
 hostname or a blank secret is no better than an absent one.
 
-`ALLOWED_EMAILS` is the exception, and the difference matters. Blank is an
-answer: nobody is seeded, and the first verified Google sign-in claims the
-relay. Set it in production and that window never opens.
+`ALLOWED_EMAILS` is the exception among the four, and the difference matters.
+Blank is an answer: nobody is seeded, and the first verified Google sign-in
+claims the relay. Set it in production and that window never opens.
+
+`RELAY_ALERT_WEBHOOK` is the one variable you may leave out entirely. Leaving it
+out means no webhook — it does not mean no alerting. See below.
 
 There is no `relay.config.ts`, and there will not be one. The port (8787), the
 heartbeat interval, the dark threshold and the pairing-token lifetime are
-constants in the code. An operator who tunes them is making the fleet's timing
-disagree with the relay's.
+constants in the code, and so is the five-minute wait before silence becomes an
+alert. An operator who tunes them is making the fleet's timing disagree with the
+relay's.
 
 Two flags exist for running `phoebe relay serve` somewhere other than its
 container: `--port` and `--data-dir`. Both default to what the scaffolded
@@ -122,8 +129,9 @@ them instead of copying strings.
 | `POST` | `/auth/sign-out`          | Drops the session. 204.                                   |
 | `GET`  | `/api/me`                 | `{ sub, email }` for a signed-in caller, 401 otherwise.   |
 | `POST` | `/api/pairing-tokens`     | Mints one pairing token. Shown once; 401 otherwise.       |
-| `GET`  | `/api/deployments`        | Every link, with where the relay holds each one.          |
+| `GET`  | `/api/deployments`        | Every link, plus what the relay last alerted about each.  |
 | `POST` | `/api/deployments/forget` | Forgets one deployment, named by fingerprint in the body. |
+| `POST` | `/api/alerts/test`        | Sends one `{ kind: "test" }` body to every alert sink.    |
 
 A successful sign-in lands on `/api/me` today, because who you are is the only
 thing the relay can show you yet. The console's own page takes that over.
@@ -299,6 +307,89 @@ deployment with no relay still carries the section, saying `configured: false`.
 `paired`, `token-stale`, or `refused`. Only `refused` fails, because only a
 refusal is a state that will not change on its own.
 
+## Alerting
+
+The console is not the pager. An operator who is not looking at a tab cannot
+answer "is it alive", so the relay says something when a deployment crosses into
+or out of one of five conditions:
+
+| Condition       | Raised when                                         | Cleared when                       |
+| --------------- | --------------------------------------------------- | ---------------------------------- |
+| `dark`          | Five minutes with no heartbeat.                     | The next completed handshake.      |
+| `wedged`        | A pipeline's wedged verdict turns true in a report. | It turns false in a later report.  |
+| `crash-looping` | The bootstrapper's crash-looping flag turns true.   | It turns false.                    |
+| `doctor-fail`   | The report's overall doctor verdict becomes `fail`. | A later report is not `fail`.      |
+| `replaced`      | A newer link has taken a dark link's name.          | The old deployment turns up again. |
+
+**Unseen is silent.** A link nothing has ever connected on is setup in progress,
+not an incident.
+
+**Darkness waits five minutes, not sixty seconds.** The fleet page says "dark"
+from the 60 s mark, because that is when the relay stops believing the socket.
+The alert waits out the next four minutes, so the most common cause of darkness
+— someone restarting a container — is usually over before anything is sent.
+
+**A dark deployment sends no other clears.** Its reports are stale, so
+`wedged`, `crash-looping` and `doctor-fail` hold where they were until it
+reconnects and reports. Then each is re-read against the fresh report.
+
+An alert is a transition, not a record. There is no list, no acknowledge, no
+mute and no history page: the fleet row already says what is true now, and
+`alerts.json` on the volume holds only the last state actually sent per
+(deployment, condition). Forgetting a deployment deletes its entries, and sends
+no clear on the way out — forget is the mute for a dead key.
+
+That file is why a restart never wakes you twice. On boot the relay re-evaluates
+everything and compares against what it last sent, so a still-dark deployment
+stays quiet and one that recovered overnight gets its clear.
+
+### The message
+
+One condition per message, no digest:
+
+```json
+{
+  "schema": 1,
+  "kind": "alert",
+  "condition": "wedged",
+  "state": "raised",
+  "deployment": { "name": "acme-site", "keyFingerprint": "…" },
+  "pipeline": "acme-site/sentry",
+  "since": "2026-09-18T11:12:00Z",
+  "detail": "no pass for 17 min",
+  "text": "acme-site: pipeline sentry wedged (no pass for 17 min)",
+  "url": "https://relay.example/#/d/…"
+}
+```
+
+`pipeline` is present on `wedged` and `crash-looping` only. `text` is there so
+a generic incoming webhook renders something readable with no integration
+written; anything that knows what Phoebe is reads the fields beside it.
+
+Delivery is one attempt with a five-second cap and no retry queue. A failure is
+logged at warn naming the condition, and `alerts.json` is written after the
+attempt rather than after the success — otherwise a webhook outage would come
+back as a storm of everything it missed. A lost alert is visible in the relay's
+log and in the fleet page's own state.
+
+There is no signing. The URL is the secret, the way every incoming-webhook
+product treats it, which is also why the relay never logs it.
+
+### Leaving `RELAY_ALERT_WEBHOOK` out
+
+Unset means **no webhook**, not no alerting. The relay still evaluates every
+edge and still keeps `alerts.json`, because the webhook is one of two sinks: the
+other is an `alert` event on the events stream, which the desktop companion
+turns into an OS notification and the browser ignores. That sink is not
+configurable, so evaluation cannot be.
+
+`phoebe relay serve` logs one line at start saying which of the two you have.
+
+The edge rule itself is a pure function in `phoebe-agent/contracts`
+(`src/contracts/alerts.ts`), shared rather than reimplemented: the relay runs it
+over the fleet, and the companion runs it over a local install's report, where
+there is no relay and so no `dark` and no `replaced`.
+
 ## Running it by hand
 
 ```sh
@@ -322,3 +413,10 @@ verbs themselves (config writes, sealed secrets, doctor runs — the rail carrie
 them and nothing sends them yet), and the console's pages. All of it joins this
 same process. See
 [the relay's shape](https://github.com/JesusFilm/phoebe/issues/506).
+
+Alerting is here but only partly fed. The webhook, the edge rule, `alerts.json`
+and the test button all work; `dark` and `replaced` are evaluated against the
+relay's own clocks on every sweep. `wedged`, `crash-looping` and `doctor-fail`
+are implemented in the rule and have nothing to read until the relay stores
+reports, and the `alert` event rides the same stream. Both wait on
+[reports over the relay](https://github.com/JesusFilm/phoebe/issues/542).
