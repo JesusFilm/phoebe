@@ -63,6 +63,14 @@ export {
   type RelaySecretSet,
   type RelayToDeployment,
 } from "./relay-protocol.ts";
+export { DESKTOP_BRIDGE_GLOBAL } from "./desktop-bridge.ts";
+export type {
+  DesktopBridge,
+  DesktopBridgeError,
+  DesktopBridgeErrorCode,
+  RelayArmState,
+  RelayPassthrough,
+} from "./desktop-bridge.ts";
 export type { CredentialArm } from "./credential-arm.ts";
 export type { PipelineSource, PipelineState, WedgedVerdict } from "./pipeline-state.ts";
 export type { CurrentUnit, StatusSnapshot, UnitRef } from "./status-snapshot.ts";

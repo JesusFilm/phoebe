@@ -17,11 +17,15 @@ ships.
 Everything the pages read goes through one seam, [`src/relay-client.ts`](src/relay-client.ts).
 The browser arm is the relay's own origin, its `__Host-` session cookie and
 `EventSource`. The companion's arm is a second implementation of the same type over
-the desktop bridge ([#553](https://github.com/JesusFilm/phoebe/issues/553)), so
-nothing else in here knows which side it is running on.
+the desktop bridge, so nothing else in here knows which side it is running on.
+[`src/main.tsx`](src/main.tsx) picks between them by reading the global the
+companion's preload exposes; that is the only thing in the bundle that can tell
+the two surfaces apart, and the rail's "This machine" group is what it buys
+([#526](https://github.com/JesusFilm/phoebe/issues/526) shell A).
 
-`vp run dev` serves the bundle on its own origin with no relay behind it, so the
-pages land on the signed-out notice. To see real data, build and let the relay
+`vp run dev` serves the bundle on a fixed, strict port with no relay behind it, so
+the pages land on the signed-out notice; `apps/desktop`'s `vp run dev` points the
+companion's window at that same port. To see real data, build and let the relay
 serve it.
 
 The reports arrive opaque — the relay stores and forwards `state/deployment.json`

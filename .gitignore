@@ -19,3 +19,8 @@ node_modules/
 # inside the one installed package — but it is generated, so it is not committed.
 # `vp run -r build` writes it; release.yml runs that before `changeset publish`.
 /console/
+
+# The companion's main and preload (apps/desktop -> apps/desktop/dist). Generated
+# by `vp run -r build`, never published — the root package's `files` does not
+# list `apps/` at all — and never committed.
+apps/desktop/dist/
