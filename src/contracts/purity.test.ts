@@ -15,6 +15,12 @@
 //
 // A type that trips the guard is a type that belongs in contracts. Moving it is
 // the fix, and the point of the directory.
+//
+// The walk covers the `.mjs` files too, not just the `.ts` ones. Those are the
+// subpath's runtime surface — where a pure value has to live, since Node will not
+// type-strip a `.ts` under node_modules — so they are exactly the files whose
+// imports a browser bundle executes. Leaving them out would have let the one file
+// a consumer really loads import `node:crypto` unchallenged.
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { builtinModules } from "node:module";
@@ -117,16 +123,26 @@ function sourceFilesUnder(dir: string): string[] {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) files.push(...sourceFilesUnder(full));
+    else if (entry.name.endsWith(".mjs")) files.push(full);
     else if (entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts")) files.push(full);
   }
   return files;
 }
 
-/** Resolve a relative specifier the way the bundler will, `.ts` extensions and all. */
+const SOURCE_EXTENSIONS = [".ts", ".mjs"];
+
+/** Resolve a relative specifier the way the bundler will, explicit extensions and all. */
 function resolveSpecifier(from: string, specifier: string): string | null {
   const base = resolve(dirname(from), specifier);
-  for (const candidate of [base, `${base}.ts`, join(base, "index.ts")]) {
-    if (existsSync(candidate) && candidate.endsWith(".ts")) return candidate;
+  const candidates = [
+    base,
+    ...SOURCE_EXTENSIONS.map((ext) => `${base}${ext}`),
+    ...SOURCE_EXTENSIONS.map((ext) => join(base, `index${ext}`)),
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate) && SOURCE_EXTENSIONS.some((ext) => candidate.endsWith(ext))) {
+      return candidate;
+    }
   }
   return null;
 }
@@ -162,6 +178,8 @@ describe("the contracts closure stays pure", () => {
     const { files } = closure();
     expect(files).toContain(join(contractsDir, "index.ts"));
     expect(files).toContain(join(contractsDir, "stop-outcome.ts"));
+    expect(files).toContain(join(contractsDir, "index.mjs"));
+    expect(files).toContain(join(contractsDir, "secret-envelope.mjs"));
   });
 
   test.each([
@@ -193,6 +211,15 @@ describe("the contracts closure stays pure", () => {
     expect(violationsIn(join(contractsDir, "fixture.ts"), source)).not.toEqual([]);
   });
 
+  test("a runtime .mjs in contracts answers to both rules", () => {
+    const runtime = join(contractsDir, "fixture.mjs");
+    expect(violationsIn(runtime, `import { randomUUID } from "node:crypto";`)).not.toEqual([]);
+    expect(violationsIn(runtime, `import { sealSecret } from "../stop.ts";`)).not.toEqual([]);
+    expect(violationsIn(runtime, `export { sealSecret } from "./secret-envelope.mjs";`)).toEqual(
+      [],
+    );
+  });
+
   test("a file the guard only reaches by type import still answers to rule 1", () => {
     const outside = join(repoRoot, "src", "paths.ts");
     expect(violationsIn(outside, `import { join } from "node:path";`)).not.toEqual([]);
@@ -209,6 +236,7 @@ describe("the phoebe-agent/contracts subpath resolves", () => {
   const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as {
     files: string[];
     exports: Record<string, Record<string, string>>;
+    dependencies?: Record<string, string>;
   };
   const entry = pkg.exports["./contracts"];
 
@@ -217,6 +245,22 @@ describe("the phoebe-agent/contracts subpath resolves", () => {
       types: "./src/contracts/index.ts",
       import: "./src/contracts/index.mjs",
     });
+  });
+
+  test("the import condition carries the envelope, not just types", async () => {
+    // What an installed consumer actually loads. Types are the other condition's
+    // job; this one has to hand back callable functions, and a subpath whose
+    // runtime entry re-exported nothing would satisfy every other test here.
+    const runtime = (await import("./index.mjs")) as Record<string, unknown>;
+    expect(typeof runtime.sealSecret).toBe("function");
+    expect(typeof runtime.openSecret).toBe("function");
+  });
+
+  test("the package still ships with no runtime dependency", () => {
+    // The envelope is ECIES hand-assembled from WebCrypto rather than a sealed
+    // box from libsodium precisely so this stays empty on both sides (#514 §6,
+    // #506). A dependency here would land in every deployment's image.
+    expect(pkg.dependencies ?? {}).toEqual({});
   });
 
   test("both conditions name files the published tarball carries", () => {
