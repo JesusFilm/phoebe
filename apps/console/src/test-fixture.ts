@@ -136,6 +136,7 @@ export function install(overrides: Partial<LocalInstall> = {}): LocalInstall {
     name: "youtube-studio",
     addedAt: ago(3600),
     state: "running",
+    containerVersion: "0.13.0",
     ...overrides,
   };
 }

@@ -74,6 +74,30 @@ signed out ([#526](https://github.com/JesusFilm/phoebe/issues/526)). Sign-in
 ([#556](https://github.com/JesusFilm/phoebe/issues/556)) are changes in here,
 behind the contract the preload already exposes.
 
+## The two version rules
+
+The companion is distributed on its own, so it can be older or newer than either
+thing it talks to. Neither case is an odd failure
+([#525](https://github.com/JesusFilm/phoebe/issues/525)).
+
+**The relay arm refuses, and the rule is relay at or above companion.** The console
+bundle reads `GET /api/version` before anything else and compares the `console`
+integer there against its own `CONSOLE_PROTOCOL`. A relay below it gets the Relay
+group rendered as too old with a link to
+[the relay upgrade doc](../../docs/relay.md#upgrading), and no second call. The
+comparison lives in
+[`apps/console/src/relay-version.ts`](../console/src/relay-version.ts) and nowhere
+else, because the relay publishes its integer and performs no comparison of its
+own.
+
+**The local arm reports and never refuses.** The install tab states the container's
+`phoebe-agent` version beside the companion's own. That version is the
+`ARG PHOEBE_AGENT_VERSION` pin in the install's `container/Dockerfile`, read by
+[`install-facts.ts`](src/install-facts.ts), which is also what `upgrade` moves. A
+difference is a sentence, and `Check for upgrades` sits a few lines above it. The
+companion drives that install; it does not have to agree with it, and locking the
+buttons on a skew would lock away the verb that fixes it.
+
 Two things a later ticket owes this package. `upgrade` and `migrate` spawn their
 children through `spawnSync`, which blocks main for as long as they run — so the
 window freezes, and neither can be cancelled (`CANCELLABLE_VERBS` is `start` and

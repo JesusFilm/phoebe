@@ -13,6 +13,9 @@
 /** The `schema` integer `state/deployment.json` carries — see deployment.ts. */
 export const DEPLOYMENT_SCHEMA = 1;
 
+/** The console API version the relay publishes — see console-protocol.ts (#525 §4). */
+export const CONSOLE_PROTOCOL = 1;
+
 /** The wire version both ends exchange in the handshake — see relay-protocol.ts. */
 export const RELAY_PROTOCOL = 1;
 
@@ -63,6 +66,7 @@ export const RELAY_CLOSE = {
  * the doc comments live there.
  */
 export const RELAY_ROUTES = {
+  version: "/api/version",
   signIn: "/auth/google/start",
   callback: "/auth/google/callback",
   signOut: "/auth/sign-out",

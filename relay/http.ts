@@ -22,8 +22,14 @@
 // an unknown caller with 401 rather than a redirect. A browser fetching JSON
 // wants a status code it can branch on, not an HTML login page delivered with
 // a 200.
+//
+// **One route under `/api` has no door on it**, and it is the first one tried:
+// `/api/version`. A companion too new for this relay has to be able to find that
+// out before it has a session to find it out with (#525 §4, console-protocol.ts).
 
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { CONSOLE_PROTOCOL } from "../src/contracts/console-protocol.ts";
+import type { RelayVersion } from "../src/contracts/console-protocol.ts";
 import { RELAY_HEARTBEAT_MS } from "../src/contracts/relay-protocol.ts";
 import { RELAY_ROUTES } from "../src/contracts/relay-routes.ts";
 import type {
@@ -77,6 +83,12 @@ export type RelayHandlerOptions = {
   console: ConsoleAssets;
   sessions: SessionStore;
   identity: IdentityProvider;
+  /**
+   * The relay's own package version, for `/api/version` (#525 §4). Passed in
+   * rather than read here, so that answering a request never touches a disk for
+   * a value that was settled when the process started (version.ts).
+   */
+  version: string;
   /** The origin requests arrive on, used only to parse a request's own URL. */
   publicOrigin: string;
   /** Injected so tests do not race a clock. */
@@ -108,6 +120,11 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
     const url = new URL(request.url ?? "/", options.publicOrigin);
     const method = request.method ?? "GET";
 
+    // First, and with no session read in front of it. See the header.
+    if (method === "GET" && url.pathname === RELAY_ROUTES.version) {
+      const body: RelayVersion = { version: options.version, console: CONSOLE_PROTOCOL };
+      return json(response, 200, body);
+    }
     if (method === "GET" && url.pathname === RELAY_ROUTES.signIn) {
       return await startSignIn(response);
     }

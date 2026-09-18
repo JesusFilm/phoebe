@@ -7,6 +7,7 @@
 import { describe, expect, test } from "vite-plus/test";
 import {
   CANCELLABLE_VERBS as typedCancellable,
+  CONSOLE_PROTOCOL as typedConsole,
   DESKTOP_BRIDGE_GLOBAL as typedGlobal,
   MAX_RUN_LINES as typedMaxLines,
   RELAY_CLOSE as typedClose,
@@ -21,6 +22,7 @@ import {
 } from "./index.ts";
 import {
   CANCELLABLE_VERBS as shippedCancellable,
+  CONSOLE_PROTOCOL as shippedConsole,
   DESKTOP_BRIDGE_GLOBAL as shippedGlobal,
   MAX_RUN_LINES as shippedMaxLines,
   RELAY_CLOSE as shippedClose,
@@ -79,6 +81,18 @@ describe("the deployment rail's constants are mirrored too", () => {
     for (const [name, code] of Object.entries(typedClose)) {
       expect(code >= 4000 && code <= 4999, `${name} is outside 4000–4999`).toBe(true);
     }
+  });
+});
+
+describe("the console protocol", () => {
+  test("is the same integer on both sides", () => {
+    // The relay publishes this at /api/version and the console compares its own
+    // against it. They ship together; this file is the only way they can drift.
+    expect(shippedConsole).toBe(typedConsole);
+  });
+
+  test("is an integer, because the rule it feeds is an inequality", () => {
+    expect(Number.isInteger(typedConsole)).toBe(true);
   });
 });
 

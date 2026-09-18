@@ -16,6 +16,12 @@ function folder(...files: string[]): (file: string) => boolean {
 
 const INITIALISED = folder("phoebe.config.ts", path.join("container", "compose.yml"));
 
+/** A Dockerfile carrying the pin `upgrade` writes and reads (src/upgrade.ts). */
+function dockerfile(version: string | null): (file: string) => string {
+  const pin = version === null ? "" : `ARG PHOEBE_AGENT_VERSION=${version}\n`;
+  return () => `FROM node:24-bookworm-slim\n${pin}RUN npm i -g phoebe-agent\n`;
+}
+
 /** A Compose that answers `ps` with the rows given. */
 function compose(rows: unknown[], code = 0): CommandRunner {
   return () => Promise.resolve({ code, stdout: JSON.stringify(rows), stderr: "" });
@@ -59,7 +65,12 @@ describe("what Compose says", () => {
       runner: compose([{ Service: "phoebe", State: "running" }]),
     });
 
-    expect(facts).toEqual({ ...STORED, name: "youtube-studio", state: "running" });
+    expect(facts).toEqual({
+      ...STORED,
+      name: "youtube-studio",
+      state: "running",
+      containerVersion: null,
+    });
   });
 
   test("an exited container is stopped, with nothing to explain", async () => {
@@ -147,5 +158,64 @@ describe("the whole list", () => {
     const facts = await allInstallFacts(stored, { exists: () => false });
 
     expect(facts.map((install) => install.name)).toEqual(["c", "a", "b"]);
+  });
+});
+
+describe("which phoebe-agent the container is on", () => {
+  test("is the Dockerfile's pin — what the image is built from, and what upgrade moves", async () => {
+    const facts = await installFacts(STORED, {
+      exists: INITIALISED,
+      dockerPresent: false,
+      readFile: dockerfile("0.12.1"),
+    });
+
+    expect(facts.containerVersion).toBe("0.12.1");
+  });
+
+  test("is read for a stopped install too — that is exactly when it is asked for", async () => {
+    const facts = await installFacts(STORED, {
+      exists: INITIALISED,
+      runner: compose([{ Service: "phoebe", State: "exited", ExitCode: 0 }]),
+      readFile: dockerfile("0.12.1"),
+    });
+
+    expect(facts.state).toBe("stopped");
+    expect(facts.containerVersion).toBe("0.12.1");
+  });
+
+  test("an unpinned Dockerfile has no version to state", async () => {
+    // The build takes whatever npm published last; there is no number here.
+    const facts = await installFacts(STORED, {
+      exists: INITIALISED,
+      dockerPresent: false,
+      readFile: dockerfile(null),
+    });
+
+    expect(facts.containerVersion).toBeNull();
+  });
+
+  test("a Dockerfile that cannot be read is null, and the install is still listed", async () => {
+    const facts = await installFacts(STORED, {
+      exists: INITIALISED,
+      dockerPresent: false,
+      readFile: () => {
+        throw new Error("EACCES");
+      },
+    });
+
+    expect(facts.containerVersion).toBeNull();
+    expect(facts.state).toBe("stopped");
+  });
+
+  test("a folder with no container has none either, and nothing threw looking", async () => {
+    const facts = await installFacts(STORED, {
+      exists: folder("phoebe.config.ts"),
+      readFile: () => {
+        throw new Error("nothing should have been read");
+      },
+    });
+
+    expect(facts.containerVersion).toBeNull();
+    expect(facts.state).toBe("not-initialised");
   });
 });

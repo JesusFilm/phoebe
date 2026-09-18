@@ -21,6 +21,8 @@
 // installed consumer's value import lands on the `.mjs`, never on this file.
 
 export type { StopOutcome } from "./stop-outcome.ts";
+export { CONSOLE_PROTOCOL } from "./console-protocol.ts";
+export type { RelayVersion } from "./console-protocol.ts";
 export { RELAY_ROUTES } from "./relay-routes.ts";
 export type {
   RelayConnectionState,

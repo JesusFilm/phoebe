@@ -11,6 +11,13 @@
 // loop (#556). A not-initialised install lands here regardless — there is
 // nothing else it could usefully show (#526).
 //
+// The versions sit in the same section as the buttons, because they are a reason
+// to press one. The local arm **reports and never refuses** (#525 §6): the
+// container's pinned phoebe-agent beside the companion's own version, a sentence
+// when they differ, and every verb still offered either way. The relay arm has a
+// refusal in it (relay-version.ts) and this one deliberately does not — the
+// companion drives this install, it does not have to agree with it.
+//
 // Every button is a verb run. The page starts one, then only applies the events
 // main sends it; the lines on screen are main's buffer, which is why reopening
 // the window mid-upgrade rejoins the same run rather than showing nothing.
@@ -30,6 +37,7 @@ import {
   dockerReading,
   offeredVerbs,
   outcomeReading,
+  versionReading,
 } from "./local-install.ts";
 
 /** The five tabs a local install shares with a remote deployment (#509). */
@@ -199,6 +207,7 @@ export function InstallPage({
             Forget
           </button>
         </div>
+        <Versions install={install} environment={environment} />
         <p className="muted">
           Forgetting removes this install from the companion. Nothing on disk is deleted.
         </p>
@@ -210,6 +219,23 @@ export function InstallPage({
         <RunOutput run={run} onCancel={(runId) => void bridge.runs.cancel(runId).catch(() => {})} />
       </section>
     </main>
+  );
+}
+
+/** The two versions, stated. Nothing on this page turns on their difference. */
+function Versions({
+  install,
+  environment,
+}: {
+  install: LocalInstall;
+  environment: CompanionEnvironment | null;
+}) {
+  const reading = versionReading(install, environment);
+  return (
+    <p className="muted">
+      {reading.text}
+      {reading.note === null ? null : ` — ${reading.note}`}
+    </p>
   );
 }
 

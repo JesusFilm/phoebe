@@ -19,6 +19,11 @@
 // dark and unseen are a remote reader's guesses about silence, and Compose
 // answers directly.
 //
+// The Relay group has one state that is not about deployments at all: a relay
+// serving a console protocol below this bundle's (#525 §4). The group says so
+// and links the upgrade doc, and This machine goes on working beside it — which
+// is the point of two arms rather than one.
+//
 // A local entry is selectable; a relay entry is not yet. Selecting an install
 // opens its install tab, which exists; selecting a deployment would open the
 // five tabs that #544 builds, and a link to a page nothing answers is a dead end
@@ -28,12 +33,14 @@ import type { LocalInstall } from "phoebe-agent/contracts";
 import type { Surface } from "./companion.ts";
 import { connectionReading, type RowFacts } from "./facts.ts";
 import { installReading } from "./local-install.ts";
+import { RELAY_UPGRADE_DOC } from "./relay-version.ts";
 
 export function Rail({
   facts,
   now,
   surface,
   signedIn,
+  refusal,
   installs = [],
   selected = null,
   onSelect,
@@ -43,6 +50,8 @@ export function Rail({
   now: Date;
   surface: Surface;
   signedIn: boolean;
+  /** The relay-too-old sentence, when that is where this relay stands (#525 §4). */
+  refusal?: string;
   /** The local arm. Empty in a browser, which has no local arm at all. */
   installs?: LocalInstall[];
   /** The install whose page is open, by directory. */
@@ -57,7 +66,11 @@ export function Rail({
           ? "Relay"
           : `Fleet — ${facts.length} ${facts.length === 1 ? "deployment" : "deployments"}`}
       </h2>
-      {!signedIn ? (
+      {refusal !== undefined ? (
+        <p className="rail-empty refusal">
+          {refusal} <a href={RELAY_UPGRADE_DOC}>How to upgrade the relay</a>
+        </p>
+      ) : !signedIn ? (
         <p className="rail-empty">Not signed in to a relay.</p>
       ) : facts.length === 0 ? (
         <p className="rail-empty">No deployment is paired with this relay yet.</p>

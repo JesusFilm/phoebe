@@ -121,6 +121,7 @@ them instead of copying strings.
 
 | Method | Path                             | What happens                                              |
 | ------ | -------------------------------- | --------------------------------------------------------- |
+| `GET`  | `/api/version`                   | `{ version, console }`. No session in front of it.        |
 | `GET`  | `/auth/google/start`             | Redirects to Google.                                      |
 | `GET`  | `/auth/google/callback`          | Google's redirect back. The only URI Google knows.        |
 | `POST` | `/auth/sign-out`                 | Drops the session. 204.                                   |
@@ -132,7 +133,8 @@ them instead of copying strings.
 | `GET`  | `/api/events`                    | The event stream: reports and connection changes.         |
 | `GET`  | `/` and `/assets/…`              | The console's build. Public, and the only paths that are. |
 
-A successful sign-in lands on `/`, the console. The pages are public on purpose:
+`/api/version` is the one path under `/api` with no door on it. The Upgrading
+section below says why. A successful sign-in lands on `/`, the console. The pages are public on purpose:
 the sign-in control is part of the bundle, and every read behind it answers 401
 on its own. A path with no file behind it is still a JSON `no-such-route` — the
 console routes on the URL hash, so the relay needs no catch-all and keeps being
@@ -143,6 +145,31 @@ stays one constant a console imports. No fingerprint spells `forget`, and the
 per-deployment read that shares the prefix is a `GET`. That read only matches a
 real fingerprint — 32 characters of base64url — so a path segment that is not one
 is a `no-such-route` and never reaches the volume the reports are named on.
+
+## Upgrading
+
+The relay versions with the bootstrapper, so upgrading it means upgrading
+`phoebe-agent` in its image and restarting the process. One changelog covers both.
+
+Two things follow the relay rather than the other way round, and both hold to the
+same sentence: upgrade the relay first.
+
+Deployments hold to it over the handshake. A relay speaks every `protocol` up to
+its own and refuses anything above, so a deployment upgraded ahead of its relay is
+refused with close code 4002 until the relay catches up.
+
+Consoles hold to it over `GET /api/version`, which answers `{ version, console }`
+to anyone who asks. `console` is a second integer beside `protocol`. It numbers
+this JSON API and the event stream, and it moves only when one of those changes,
+so a release that touches neither leaves every companion alone. A companion whose
+console protocol is above the relay's shows its Relay group as too old, links this
+section, and makes no other call. The local arm on that machine is untouched. A
+relay ahead of a companion is fine, which is what lets you move the relay without
+collecting every companion on the same afternoon.
+
+The version read is unauthenticated on purpose. A companion too new for this relay
+has to find that out before it has anywhere to put a session, and a version behind
+a cookie would be unreachable in exactly the case it exists for.
 
 ## Pairing a deployment
 

@@ -361,3 +361,15 @@ _Avoid_: IPC API, RPC, electron API
 One invocation of a host verb by the companion, with its lines streamed and an exit
 carrying the verb's typed outcome. One per install at a time, parallel across installs.
 _Avoid_: job, task, command
+
+**Console protocol**:
+The integer the relay's JSON and SSE API carries at `/api/version`. The relay serves every
+console protocol up to its own, so a companion above it says upgrade the relay first and
+asks for nothing else. Separate from the handshake's protocol: a console-only change must
+not move the deployment wire.
+_Avoid_: API version
+
+**Follows the relay**:
+The companion's update rule. Signed in, the only update it is ever offered is the relay's
+own version, so there is one source of truth about what this relay can serve.
+_Avoid_: pinned, tracking

@@ -61,6 +61,23 @@ describe("the companion's relay client", () => {
     });
   });
 
+  test("asks main for the version too — the open route still goes through main", async () => {
+    // There is no origin to fetch from in the companion: the bundle came off
+    // disk. Unauthenticated on the relay does not mean direct from the renderer.
+    const client = createBridgeRelayClient(
+      bridgeOf(
+        { url: "https://relay.example.test", person: null, persisted: false },
+        { request: (path) => ({ path, version: "0.13.0", console: 1 }) },
+      ),
+    );
+
+    await expect(client.version()).resolves.toEqual({
+      path: "/api/version",
+      version: "0.13.0",
+      console: 1,
+    });
+  });
+
   test("turns a signed-out refusal into the 401 the browser arm would have got", async () => {
     const client = createBridgeRelayClient(bridgeOf({ url: null, person: null, persisted: false }));
 

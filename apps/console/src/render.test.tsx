@@ -12,6 +12,7 @@ import { rowFacts, sortFleet } from "./facts.ts";
 import { FleetPage } from "./fleet-page.tsx";
 import { Rail } from "./rail.tsx";
 import { InstallPage } from "./install-page.tsx";
+import { RELAY_UPGRADE_DOC, tooOldText } from "./relay-version.ts";
 import {
   ago,
   bridge,
@@ -356,5 +357,46 @@ describe("the install tab", () => {
 
   test("names the folder it is about, since the rail only had room for its name", () => {
     expect(tab()).toContain("/repos/youtube-studio");
+  });
+
+  test("states the container's version beside the companion's, and refuses nothing on it", () => {
+    const markup = tab({ state: "stopped", containerVersion: "0.12.1" });
+
+    expect(markup).toContain("container 0.12.1");
+    // Every verb an install in this state is offered is still offered, and none
+    // of them is disabled by the skew. The five greyed tabs above are #556's and
+    // have nothing to do with a version.
+    const verbs = /<div class="verbs">(.*?)<\/div>/.exec(markup)?.[1] ?? "";
+    expect(verbs).toContain(">Start<");
+    expect(verbs).toContain(">Check for upgrades<");
+    expect(verbs).not.toContain("disabled");
+  });
+});
+
+describe("a relay the console is too new for", () => {
+  const refusal = tooOldText({ version: "0.9.0", console: 0 });
+  const markup = renderToStaticMarkup(
+    <Rail
+      facts={[]}
+      now={NOW}
+      surface="companion"
+      signedIn={false}
+      refusal={refusal}
+      installs={[install({ dir: "/repos/one", name: "one" })]}
+    />,
+  );
+
+  test("the Relay group says which end to move, and links how", () => {
+    expect(markup).toContain("upgrade the relay first");
+    expect(markup).toContain(RELAY_UPGRADE_DOC);
+  });
+
+  test("it does not also say 'not signed in' — one sentence, the true one", () => {
+    expect(markup).not.toContain("Not signed in to a relay");
+  });
+
+  test("This machine is untouched: one arm refusing is not the window refusing", () => {
+    expect(markup).toContain("This machine");
+    expect(markup).toContain("one");
   });
 });

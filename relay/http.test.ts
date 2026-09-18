@@ -10,6 +10,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
+import { CONSOLE_PROTOCOL } from "../src/contracts/console-protocol.ts";
 import { RELAY_ROUTES } from "../src/contracts/relay-routes.ts";
 import type { RelayEnv } from "./env.ts";
 import { SIGNED_IN_LANDING } from "./http.ts";
@@ -402,6 +403,75 @@ describe("the console the relay serves", () => {
     const origin = await serveWithConsole();
 
     const response = await fetch(`${origin}${RELAY_ROUTES.deployments}/not-a-fingerprint`);
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "no-such-route" });
+  });
+});
+
+describe("the version handshake", () => {
+  let dataDir: string;
+  let relay: RunningRelay | null = null;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), "phoebe-relay-"));
+  });
+
+  afterEach(async () => {
+    await relay?.close();
+    relay = null;
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  async function serveVersion(version?: string): Promise<string> {
+    relay = await startRelay({
+      env: env(),
+      dataDir,
+      port: 0,
+      identity: fakeGoogle(ADA).provider,
+      ...(version !== undefined ? { version } : {}),
+      log: () => {},
+      warn: () => {},
+    });
+    return `http://127.0.0.1:${relay.port}`;
+  }
+
+  test("answers the package version and the console protocol, with no session", async () => {
+    const response = await fetch(`${await serveVersion("9.9.9")}${RELAY_ROUTES.version}`);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ version: "9.9.9", console: CONSOLE_PROTOCOL });
+  });
+
+  test("a cookie is neither sent nor asked for — this is the read that precedes one", async () => {
+    // The whole point of the route (#525 §4): a companion too new for this relay
+    // learns so before it has anywhere to put a session. A 401 here would make
+    // the refusal unreachable in exactly the case it exists for.
+    const response = await fetch(`${await serveVersion()}${RELAY_ROUTES.version}`, {
+      headers: { cookie: "" },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.getSetCookie()).toEqual([]);
+  });
+
+  test("reports the relay's real version when nobody passed one", async () => {
+    const response = await fetch(`${await serveVersion()}${RELAY_ROUTES.version}`);
+
+    // The relay versions with the bootstrapper, so this is the root package's.
+    expect(((await response.json()) as { version: string }).version).toMatch(/^\d+\.\d+\.\d+/);
+  });
+
+  test("the answer is not cached — a relay is upgraded under an open window", async () => {
+    const response = await fetch(`${await serveVersion()}${RELAY_ROUTES.version}`);
+
+    expect(response.headers.get("cache-control")).toBe("no-store");
+  });
+
+  test("only GET; a POST to it falls through to the JSON 404", async () => {
+    const response = await fetch(`${await serveVersion()}${RELAY_ROUTES.version}`, {
+      method: "POST",
+    });
 
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({ error: "no-such-route" });
