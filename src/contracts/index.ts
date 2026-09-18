@@ -63,6 +63,13 @@ export {
   type RelaySecretSet,
   type RelayToDeployment,
 } from "./relay-protocol.ts";
+export type {
+  ConfigEdit,
+  EditReceipt,
+  EditRefusalReason,
+  EditRefused,
+  EditWritten,
+} from "./config-edit.ts";
 export type { CredentialArm } from "./credential-arm.ts";
 export type {
   CheckState,
