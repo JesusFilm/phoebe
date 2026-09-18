@@ -92,6 +92,7 @@ import {
   resolveConfig,
 } from "./config-schema.ts";
 import { resolveDataBase } from "./paths.ts";
+import { readSecretStore, secretStorePath, tenantStateDir } from "./secret-store.ts";
 import { enumerateDeclaredEnv } from "./pipeline-enumerate.ts";
 import {
   createWorktreeInspector,
@@ -803,6 +804,96 @@ export function declaredEnvCheck(
   };
 }
 
+/**
+ * The `secret-store` check (#504) — the loud half of "the store wins over the
+ * `.env`".
+ *
+ * The store is the tier above the tenant's file, so a key set in both means a
+ * file edit that does nothing, which is exactly the silent failure #503 traded
+ * away. Warn, never fail: shadowing is a state an operator chose and may have
+ * meant, and the same relationship `prompt-drift` has with its files. The
+ * remedy is named in the line — clear the store entry and the file governs
+ * again.
+ *
+ * A store that will not parse is its own warn. Every delivery path reads it
+ * fail-closed (values simply do not arrive), so nothing else in the deployment
+ * would ever mention the file is broken.
+ */
+export function secretStoreCheck(fields: {
+  /** The store's keys and values, or null when the file will not parse. */
+  store: Record<string, string> | null;
+  /** The keys it sets that the `.env` or the ambient env also set. */
+  shadowed: readonly string[];
+  envLabel: string;
+  path: string;
+}): DoctorCheck {
+  if (fields.store === null) {
+    return {
+      id: "secret-store",
+      state: "warn",
+      detail: `${fields.path} will not parse — no console-set secret is reaching this tenant`,
+    };
+  }
+  const keys = Object.keys(fields.store);
+  if (keys.length === 0) {
+    return { id: "secret-store", state: "ok", detail: "no console-set secrets" };
+  }
+  const shadowed = [...fields.shadowed].sort();
+  if (shadowed.length === 0) {
+    return {
+      id: "secret-store",
+      state: "ok",
+      detail: `${keys.length} key(s) set in the store; nothing shadowed`,
+    };
+  }
+  return {
+    id: "secret-store",
+    state: "warn",
+    detail:
+      `${shadowed.join(", ")} set in the secret store and in ${fields.envLabel} — the store wins. ` +
+      `\`phoebe secret clear <KEY>\` hands the key back to the file.`,
+  };
+}
+
+/** What doctor knows about one tenant's secret store. */
+export type TenantSecretStore = {
+  /** The store's contents, or null when the file exists and will not parse. */
+  values: Record<string, string> | null;
+  /** Where it is — null when the tenant has no slug, so no store is possible. */
+  path: string | null;
+  /** Keys it sets that `lower` also sets. */
+  shadowed: string[];
+};
+
+/**
+ * Read one tenant's store the way doctor needs it: the values, the path to name
+ * in a line, and the collisions against the tier below. A slug-less tenant has
+ * no store to read and no check to run.
+ */
+export function readTenantSecretStore(
+  slug: string | null,
+  dataBase: string,
+  lower: Record<string, string | undefined>,
+): TenantSecretStore {
+  const stateDir = tenantStateDir(slug, dataBase);
+  if (stateDir === null) return { values: {}, path: null, shadowed: [] };
+  const path = secretStorePath(stateDir);
+  let values: Record<string, string> | null;
+  try {
+    values = readSecretStore(stateDir);
+  } catch {
+    values = null;
+  }
+  const shadowed =
+    values === null
+      ? []
+      : Object.keys(values).filter((key) => {
+          const beneath = lower[key];
+          return typeof beneath === "string" && beneath.length > 0;
+        });
+  return { values, path, shadowed };
+}
+
 /** A tenant's `.env` as its engine child would parse it; empty when unreadable. */
 function readTenantDotenv(envPath: string): Record<string, string> {
   try {
@@ -1106,6 +1197,12 @@ export async function tenantRow(fields: {
    * only what the `token` check says the credential is.
    */
   leased?: boolean;
+  /**
+   * This tenant's secret store (#504), when the caller read one. Undefined skips
+   * the check entirely — a caller that never looked must not report "no
+   * console-set secrets" as though it had.
+   */
+  secrets?: TenantSecretStore;
   /** The run's clock (#507 §7). Checks it cannot beat report `unknown`. */
   deadline?: Deadline;
 }): Promise<TenantDoctorRow> {
@@ -1181,6 +1278,20 @@ export async function tenantRow(fields: {
 
   if (fields.declaredEnv !== undefined) {
     checks.push(declaredEnvCheck(fields.declaredEnv, fields.envLabel));
+  }
+
+  // The store, and what it shadows. Before the token check, because when the
+  // store holds `GH_TOKEN` this is the line that says where the credential the
+  // next check reports on actually came from.
+  if (fields.secrets !== undefined && fields.secrets.path !== null) {
+    checks.push(
+      secretStoreCheck({
+        store: fields.secrets.values,
+        shadowed: fields.secrets.shadowed,
+        envLabel: fields.envLabel,
+        path: fields.secrets.path,
+      }),
+    );
   }
 
   const tokenCheck = tenantTokenCheck(fields);
@@ -1611,9 +1722,16 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
     // that one snapshot feeds the declared-key scan, the token, and the
     // PHOEBE_* overlay — so an edit mid-sweep cannot split one report.
     const dotenvByTenant = new Map<string, Record<string, string>>();
+    const storeByTenant = new Map<string, TenantSecretStore>();
     const declaredEnvByTenant = new Map<string, MissingDeclaredEnvKey[] | null>();
     for (const tenant of enumeration.tenants) {
-      const tenantEnv = readTenantDotenv(tenant.envPath);
+      // The store over the file, exactly as the supervisor builds the child's
+      // env (#504): every check below asks what the child would hold, and after
+      // the store that is no longer what the `.env` alone says.
+      const dotenv = readTenantDotenv(tenant.envPath);
+      const store = readTenantSecretStore(tenant.slug, dataBase, dotenv);
+      storeByTenant.set(tenant.id, store);
+      const tenantEnv = { ...dotenv, ...store.values };
       dotenvByTenant.set(tenant.id, tenantEnv);
       // A kind module that hangs on import would hold the whole sweep here, and
       // this loop is serial by necessity — so it is the one place the deadline
@@ -1650,6 +1768,7 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
           // The tenant's own `.env`, so a per-tenant PHOEBE_MERGED_LABEL (or
           // any other overlay key) is checked as its engine child reads it.
           env: tenantEnv,
+          secrets: storeByTenant.get(tenant.id) ?? { values: {}, path: null, shadowed: [] },
           git,
         });
       })),
@@ -1665,7 +1784,12 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
     // Solo: the child inherits the supervisor's env, so the ambient token is
     // the truth here (and only here) — same reasoning as verify-tenant-token.
     const slug = rootConfig["repoSlug"];
-    const credential = tenantCredential({ own: token, slug, leases });
+    // Solo's store sits on the same data volume under the same slug. It is the
+    // only channel solo has — there is no tenant `.env` inside the container —
+    // so it is layered over the ambient env before anything is checked.
+    const soloStore = readTenantSecretStore(slug, dataBase, deps.env);
+    const soloEnv: NodeJS.ProcessEnv = { ...deps.env, ...soloStore.values };
+    const credential = tenantCredential({ own: nonEmpty(soloEnv["GH_TOKEN"]), slug, leases });
     tenants.push(
       await tenantRow({
         path: deps.configDir,
@@ -1674,9 +1798,9 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
         // what the declared keys are checked against.
         declaredEnv: deadline.expired()
           ? null
-          : await scanDeclaredEnv({ configPath, env: deps.env }),
+          : await scanDeclaredEnv({ configPath, env: soloEnv }),
         // Solo: the root is the tenant, so one env answers both halves.
-        arm: resolveCredentialArm(deps.env),
+        arm: resolveCredentialArm(soloEnv),
         token: credential.token,
         leased: credential.leased,
         deadline,
@@ -1685,7 +1809,8 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
         inContainer,
         configPath,
         dataBase,
-        env: deps.env,
+        env: soloEnv,
+        secrets: soloStore,
         git,
       }),
     );

@@ -24,6 +24,9 @@ function fakeClient(
       if (detail === undefined) return Promise.reject(new Error("no such deployment"));
       return detail instanceof Error ? Promise.reject(detail) : Promise.resolve(detail);
     },
+    // Not what this file is about: the fleet's state is a read model, and a
+    // test that reached a write would be testing the secrets tab (#550).
+    setSecret: () => Promise.reject(new Error("this test never sets a secret")),
     events: () => () => {},
   };
 }

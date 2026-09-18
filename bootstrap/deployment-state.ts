@@ -58,6 +58,7 @@ import type {
   TenantFacts,
 } from "../src/contracts/deployment.ts";
 import type { DoctorSection } from "../src/contracts/doctor.ts";
+import type { SecretsSection } from "../src/contracts/secrets.ts";
 import type { StatusSnapshot } from "../src/contracts/status-snapshot.ts";
 import { PIPELINE_DEFAULTS } from "../src/config-schema.ts";
 import { derivePaths } from "../src/paths.ts";
@@ -170,6 +171,13 @@ export type DeploymentState = {
    * last report, the last failed attempt); this holds it and publishes it.
    */
   noteDoctor: (section: Omit<DoctorSection, "updatedAt">) => void;
+  /**
+   * The secrets inventory as it now stands (#550). Called on the moments that
+   * could have changed it — boot, a reconcile that may have moved the tenant
+   * set, and a set or clear landing — rather than on every publish: taking it
+   * loads every tenant's work kinds, which is far too much work for a poll.
+   */
+  noteSecrets: (section: Omit<SecretsSection, "updatedAt">) => void;
   /** The live pipeline matrix, as of this poll. */
   notePipelines: (pipelines: readonly SupervisedPipeline[]) => void;
   /**
@@ -239,6 +247,9 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
   // "Never": a deployment that has not run doctor yet says so, rather than
   // leaving the section out and making every reader handle its absence.
   let doctor: Omit<DoctorSection, "updatedAt"> = { report: null, at: null, trigger: null };
+  // Null, not empty: "nobody has looked yet" and "this deployment has no
+  // secrets" are different answers, and only one of them is true at boot.
+  let secrets: Omit<SecretsSection, "updatedAt"> | null = null;
   let last: DeploymentReport | null = null;
 
   /** The tenant a cell belongs to, with the facts `phoebe list` shows for it. */
@@ -412,6 +423,7 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
         relay,
         fleet: buildFleet(at),
         doctor,
+        secrets,
       };
       const next = stampReport(draft, last, iso(at));
       if (next === null) return;
@@ -501,6 +513,11 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
         return;
       }
       record.snapshot = report.snapshot;
+      publish();
+    },
+
+    noteSecrets(section) {
+      secrets = section;
       publish();
     },
 

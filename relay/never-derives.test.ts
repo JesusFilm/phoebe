@@ -157,6 +157,7 @@ describe("the relay never derives pipeline state", () => {
               type: RELAY_MESSAGES.hello,
               protocol: RELAY_PROTOCOL,
               publicKey: key.publicKey,
+              boxKey: key.boxKey,
               name: "the-fleet",
               pairingToken: token,
             }),

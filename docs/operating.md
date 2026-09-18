@@ -207,7 +207,7 @@ supervises with, checking each tenant's `GH_TOKEN` is present the way its
 engine child reads it, and that its repo answers to that token. Held tenants
 surface as failures with their hold reason. `--json` for scripts.
 
-The other three run per tenant:
+The other four run per tenant:
 
 - **labels.** The four workflow labels — `readyLabel`, `processingLabel`,
   `mergedLabel` and `prOptOutLabel` — exist in the tenant's repo. Any that does
@@ -233,6 +233,15 @@ The other three run per tenant:
   by path is the tier that sweep refuses to touch — a worktree that is dirty or
   holds commits `origin` has not seen — with a one-line hint for reclaiming it
   by hand. **Warn, never fail**: accumulated dirt is a chore, not a fault.
+- **secret-store.** Which keys the tenant's [secret
+  store](configuration.md#tenant-secrets-the-store-and-phoebe-secret) holds, and
+  which of them the tenant's `.env` also sets. The store outranks the file, so a
+  key in both means a `.env` edit that does nothing, which is the one silent
+  failure this design would otherwise introduce. Each such key is named, with
+  `phoebe secret clear <KEY>` as the repair. A store file that will not parse is
+  its own warn, because every delivery path reads it fail-closed and nothing else
+  would ever mention it. **Warn, never fail**: shadowing is a state you may have
+  meant. Never a value, in any state.
 
 **You are not the only one who runs it.** The bootstrapper runs doctor itself:
 once the fleet comes up, again after a reconcile lands, on request, and every six
@@ -250,6 +259,9 @@ still lands. One unreachable tenant costs you that tenant's answers, not the
 whole report. The bootstrapper kills its own doctor child thirty seconds past
 that as a backstop. When it does, the last report stays where it is with its age,
 and the failed attempt is recorded beside it.
+
+`phoebe secret set` runs one too, on the run that succeeds: setting a key is the
+moment you want "did it work" answered, and this is the check that answers it.
 
 Typing `phoebe doctor` yourself prints and changes nothing. The report on the
 volume is the bootstrapper's, and a manual run carries no leases, so an App-arm
@@ -355,9 +367,15 @@ how a crash report becomes a front-loaded issue here.
 
 ## One-off overrides without editing config
 
-Most scalar fields have a `PHOEBE_*` env override for a single run, such as
-`PHOEBE_AGENT=claude`, `PHOEBE_PR_SCOPE=all`, or `PHOEBE_POLL_INTERVAL_MS=60000`.
-See the [environment overlay table](configuration.md#environment-overlay-phoebe_).
+Most scalar fields have a `PHOEBE_*` name that sets them for a single run, such
+as `PHOEBE_DEFAULT_PROVIDER=claude`, `PHOEBE_PR_SCOPE=all`, or
+`PHOEBE_POLL_INTERVAL_MS=60000`. One rule decides who wins: env beats the config
+file at a path, and a more specific path beats what it would inherit. See the
+[settings catalogue](configuration.md#settings-phoebe_).
+
+To see which of them is actually in force, run `phoebe config`: every setting
+with its value, the thing that supplied it, and whatever it beat. See
+[Seeing what applies](configuration.md#seeing-what-applies-phoebe-config).
 
 ## Quick reference
 
@@ -373,6 +391,7 @@ See the [environment overlay table](configuration.md#environment-overlay-phoebe_
 | Hand a PR back                                | Remove the label / mark ready-for-review.                                                                                                                                       |
 | Force a janitor to retry                      | Push, advance the base, post new review feedback, or delete the newest failure comment.                                                                                         |
 | Let Phoebe maintain all PRs, not just its own | `prScope: "all"`.                                                                                                                                                               |
+| See what a setting resolves to, and why       | `phoebe config` (add `--json` for a machine).                                                                                                                                   |
 
 ## Running many repos in one container
 

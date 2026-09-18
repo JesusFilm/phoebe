@@ -26,6 +26,7 @@ import {
   warnOnce,
   trackFleetPipelines,
   trackPipelines,
+  soloPipelineFingerprint,
   workspacePipelineFingerprint,
 } from "./boot.ts";
 import { pipelineLabel, type SupervisedPipeline } from "./pipelines.ts";
@@ -568,6 +569,18 @@ describe("trackPipelines", () => {
     }
   });
 
+  test("deployment.slotCap sizes the broker when no env name is set (#530)", () => {
+    const broker = createSlotBroker({ capacity: 1 });
+    const log = captureLog();
+    try {
+      trackPipelines(broker, {}, { slotCap: 2 })({ pipelines: MATRIX, reshaped: true });
+      expect(broker.capacity).toBe(2);
+      expect(log.lines[0]).toContain("slot cap 2 — deployment.slotCap=2");
+    } finally {
+      log.restore();
+    }
+  });
+
   test("a poll that reshaped nothing refreshes the ordering but not the cap", async () => {
     const broker = createSlotBroker({ capacity: 1, floorBudget: 0 });
     const log = captureLog();
@@ -887,5 +900,60 @@ describe("the leases a doctor run is handed (#507 §5)", () => {
 
   test("a PAT-only fleet leases nothing, so the doctor child's env is untouched", () => {
     expect(liveLeases(new Map(), now)).toEqual({});
+  });
+});
+
+describe("soloPipelineFingerprint (#504)", () => {
+  const pipeline = (own: string[], siblings: string[]): SupervisedPipeline =>
+    ({
+      id: "acme/widget#work",
+      tenant: {
+        id: "/etc/phoebe",
+        slug: "acme/widget",
+        dir: "/etc/phoebe",
+        configPath: "/etc/phoebe/phoebe.config.ts",
+        envPath: "/etc/phoebe/.env",
+        gitIdentity: null,
+      },
+      pipeline: {
+        name: "work",
+        disabled: false,
+        priority: 0,
+        concurrency: 1,
+        needsClone: true,
+        env: own,
+        fingerprint: "fp",
+      },
+      enumerated: true,
+      siblingEnv: siblings,
+    }) as unknown as SupervisedPipeline;
+
+  test("an empty store leaves solo's pipelines where they were", () => {
+    expect(soloPipelineFingerprint(pipeline([], []), "fp", {})).toBe(
+      soloPipelineFingerprint(pipeline([], []), "fp", {}),
+    );
+  });
+
+  test("setting a provider key relaunches the child — solo has no other channel", () => {
+    expect(soloPipelineFingerprint(pipeline([], []), "fp", { CURSOR_API_KEY: "sk" })).not.toBe(
+      soloPipelineFingerprint(pipeline([], []), "fp", {}),
+    );
+  });
+
+  test("a GH_TOKEN rotation through the store spends no drain", () => {
+    expect(soloPipelineFingerprint(pipeline([], []), "fp", { GH_TOKEN: "ghp_one" })).toBe(
+      soloPipelineFingerprint(pipeline([], []), "fp", { GH_TOKEN: "ghp_two" }),
+    );
+  });
+
+  test("a sibling pipeline's declared key is invisible to this one", () => {
+    const work = pipeline([], ["SLACK_BOT_TOKEN"]);
+    expect(soloPipelineFingerprint(work, "fp", { SLACK_BOT_TOKEN: "xoxb-1" })).toBe(
+      soloPipelineFingerprint(work, "fp", {}),
+    );
+  });
+
+  test("an engine that cannot enumerate keeps its null", () => {
+    expect(soloPipelineFingerprint(pipeline([], []), null, { CURSOR_API_KEY: "sk" })).toBeNull();
   });
 });

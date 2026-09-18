@@ -4,12 +4,15 @@
 // Also covers arm-aware token checks: the App arm and the PAT arm behave
 // differently, and the unverifiable state must never fail --check.
 
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
+import { writeSecretStore } from "./secret-store.ts";
 import {
   buildDoctorReport,
+  readTenantSecretStore,
+  secretStoreCheck,
   crashLoopCheck,
   declaredEnvCheck,
   describeRepoProbe,
@@ -1174,5 +1177,153 @@ describe("the run's deadline (#507 §7)", () => {
       "stray-members",
     ]);
     expect(row.checks.find((c) => c.id === "token")?.state).toBe("ok");
+  });
+});
+
+describe("the secret-store check (#504)", () => {
+  const path = "/data/repos/acme/widget/state/secrets.json";
+
+  test("no console-set secrets is an ok nobody has to read twice", () => {
+    expect(secretStoreCheck({ store: {}, shadowed: [], envLabel: ".env", path })).toEqual({
+      id: "secret-store",
+      state: "ok",
+      detail: "no console-set secrets",
+    });
+  });
+
+  test("a store that shadows nothing is ok, and says how much it holds", () => {
+    const check = secretStoreCheck({
+      store: { GH_TOKEN: "x", CURSOR_API_KEY: "y" },
+      shadowed: [],
+      envLabel: "/etc/phoebe/widget/.env",
+      path,
+    });
+    expect(check.state).toBe("ok");
+    expect(check.detail).toContain("2 key(s)");
+  });
+
+  test("a collision warns, names the keys, and names the remedy", () => {
+    const check = secretStoreCheck({
+      store: { GH_TOKEN: "x", CURSOR_API_KEY: "y" },
+      shadowed: ["CURSOR_API_KEY", "GH_TOKEN"],
+      envLabel: "/etc/phoebe/widget/.env",
+      path,
+    });
+    expect(check.state).toBe("warn");
+    expect(check.detail).toContain("CURSOR_API_KEY, GH_TOKEN");
+    expect(check.detail).toContain("/etc/phoebe/widget/.env");
+    expect(check.detail).toContain("phoebe secret clear");
+  });
+
+  test("shadowing warns; it never fails the report", () => {
+    const report = buildDoctorReport(
+      [],
+      [
+        {
+          path: "/etc/phoebe/widget",
+          slug: "acme/widget",
+          checks: [
+            secretStoreCheck({
+              store: { GH_TOKEN: "x" },
+              shadowed: ["GH_TOKEN"],
+              envLabel: ".env",
+              path,
+            }),
+          ],
+        },
+      ],
+    );
+    expect(report.ok).toBe(true);
+  });
+
+  test("a store that will not parse is its own warn — nothing else would say so", () => {
+    const check = secretStoreCheck({ store: null, shadowed: [], envLabel: ".env", path });
+    expect(check.state).toBe("warn");
+    expect(check.detail).toContain("will not parse");
+  });
+
+  test("the check never carries a value", () => {
+    const check = secretStoreCheck({
+      store: { GH_TOKEN: "ghp_secret_value" },
+      shadowed: ["GH_TOKEN"],
+      envLabel: ".env",
+      path,
+    });
+    expect(JSON.stringify(check)).not.toContain("ghp_secret_value");
+  });
+});
+
+describe("a tenant row over a secret store (#504)", () => {
+  const base = {
+    path: "tenant",
+    slug: "acme/widget",
+    arm: "pat" as const,
+    token: "ghp_x",
+    envLabel: "/etc/phoebe/tenant/.env",
+    inContainer: true,
+    fetchFn: (async () => new Response("{}", { status: 200 })) as unknown as typeof fetch,
+  };
+
+  test("a caller that never looked gets no check at all", async () => {
+    const row = await tenantRow(base);
+    expect(row.checks.find((check) => check.id === "secret-store")).toBeUndefined();
+  });
+
+  test("a tenant with no slug has no store, so still no check", async () => {
+    const row = await tenantRow({
+      ...base,
+      secrets: { values: {}, path: null, shadowed: [] },
+    });
+    expect(row.checks.find((check) => check.id === "secret-store")).toBeUndefined();
+  });
+
+  test("the store's collisions ride in the row, beside the token they may explain", async () => {
+    const row = await tenantRow({
+      ...base,
+      secrets: {
+        values: { GH_TOKEN: "ghp_x" },
+        path: "/data/repos/acme/widget/state/secrets.json",
+        shadowed: ["GH_TOKEN"],
+      },
+    });
+    const ids = row.checks.map((check) => check.id);
+    expect(ids.indexOf("secret-store")).toBeLessThan(ids.indexOf("token"));
+    expect(row.checks.find((check) => check.id === "secret-store")?.state).toBe("warn");
+  });
+});
+
+describe("reading one tenant's store (#504)", () => {
+  test("a slug-less tenant has nowhere to keep one", () => {
+    expect(readTenantSecretStore(null, "/data/repos", {})).toEqual({
+      values: {},
+      path: null,
+      shadowed: [],
+    });
+  });
+
+  test("an absent store is an empty one, with a path to name", () => {
+    const read = readTenantSecretStore("acme/widget", join(tmpdir(), "phoebe-no-such-data"), {});
+    expect(read.values).toEqual({});
+    expect(read.path).toContain(join("acme", "widget", "state", "secrets.json"));
+  });
+
+  test("a store is read against the tier below it, blanks excluded", () => {
+    const dataBase = mkdtempSync(join(tmpdir(), "phoebe-doctor-store-"));
+    const stateDir = join(dataBase, "acme", "widget", "state");
+    mkdirSync(stateDir, { recursive: true });
+    writeSecretStore(stateDir, { GH_TOKEN: "ghp_store", CURSOR_API_KEY: "sk" });
+    const read = readTenantSecretStore("acme/widget", dataBase, {
+      GH_TOKEN: "ghp_file",
+      CURSOR_API_KEY: "",
+    });
+    expect(read.shadowed).toEqual(["GH_TOKEN"]);
+  });
+
+  test("a store that will not parse reads as null, never as empty", () => {
+    const dataBase = mkdtempSync(join(tmpdir(), "phoebe-doctor-store-"));
+    const stateDir = join(dataBase, "acme", "widget", "state");
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(join(stateDir, "secrets.json"), "not json");
+    expect(readTenantSecretStore("acme/widget", dataBase, {}).values).toBeNull();
   });
 });

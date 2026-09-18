@@ -18,7 +18,35 @@ import type {
   RelayDeploymentRow,
   RelayEvent,
   RelayIdentity,
+  SecretReceiptDetail,
 } from "phoebe-agent/contracts";
+
+/**
+ * One secret set or clear, as the console asks for it (#550). The envelope is
+ * sealed in the page before this is built, and `by` is deliberately not here:
+ * the relay stamps that from its own session, so a caller cannot choose whose
+ * name lands in the deployment's ledger.
+ */
+export type SecretRequest = {
+  fingerprint: string;
+  tenant: string;
+  key: string;
+  action: "set" | "clear";
+  /** The edit id, bound into the envelope's AAD before it was sealed. */
+  id: string;
+  /** The JSON of a sealed envelope. Absent on a clear — there is no value. */
+  envelope?: string;
+};
+
+/**
+ * What came back: the deployment's own word (`written` / `refused`), or the
+ * relay's `undelivered` when the socket closed with the request in flight.
+ */
+export type SecretReceipt = {
+  id: string;
+  outcome: string;
+  detail?: SecretReceiptDetail;
+};
 
 /** What the console can ask the relay for, whichever side of the seam it is on. */
 export type RelayClient = {
@@ -38,6 +66,15 @@ export type RelayClient = {
    * is a fact from the report.
    */
   deployment: (fingerprint: string) => Promise<RelayDeploymentDetail>;
+  /**
+   * Set or clear one tenant secret on a deployment (#550). The relay forwards
+   * the envelope unopened and answers with whatever the deployment said.
+   *
+   * A relay refusal — no session, no such deployment, a malformed request — is a
+   * {@link RelayRequestError}; a deployment refusal is a receipt with
+   * `outcome: "refused"`, because that is an answer and not a failure.
+   */
+  setSecret: (request: SecretRequest) => Promise<SecretReceipt>;
   /**
    * Watch the relay's event stream. Returns the unsubscribe; calling it closes
    * the stream. Errors on the stream are not surfaced — the transport redials on
@@ -134,6 +171,17 @@ export function createBrowserRelayClient(options: BrowserRelayClientOptions = {}
       return get<RelayDeploymentDetail>(
         `${RELAY_ROUTES.deployments}/${encodeURIComponent(fingerprint)}`,
       );
+    },
+
+    async setSecret(request) {
+      const response = await call(RELAY_ROUTES.secrets, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify(request),
+      });
+      if (!response.ok) throw new RelayRequestError(response.status, await errorCode(response));
+      return (await response.json()) as SecretReceipt;
     },
 
     events(onEvent) {
