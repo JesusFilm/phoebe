@@ -30,6 +30,14 @@
 // rather than left in the live map — a half-open socket reported as connected
 // is the one lie this file must not tell.
 //
+// **What arrives on the socket is the report, and the relay does not read it**
+// (#542). A deployment pushes its whole report on connect and again whenever
+// any section of it moves; the relay lifts the `schema` integer out of the
+// envelope, writes the body to `reports/<fingerprint>.json` exactly as it came,
+// and announces it on the event stream. It derives nothing from it — not a
+// pipeline's state, not a wedged verdict, not a count. That derivation is the
+// deployment's, once, so a CLI and a console cannot disagree (#501).
+//
 // **In flight is not in a queue.** A request to a deployment lives in memory for
 // as long as its socket does. The socket closes and every pending request comes
 // back `undelivered`; a deployment that is not connected is refused the same
@@ -58,11 +66,15 @@ import {
   type RelayHeartbeat,
   type RelayHello,
   type RelayReceipt,
+  type RelayReportMessage,
   type RelayRequest,
 } from "../src/contracts/relay-protocol.ts";
-import type { RelayDeploymentRow } from "../src/contracts/relay-routes.ts";
+import { RELAY_EVENTS } from "../src/contracts/relay-events.ts";
+import type { RelayDeploymentRow, RelayStoredReport } from "../src/contracts/relay-routes.ts";
 import { verifyNonceSignature } from "../src/ed25519.ts";
 import { deploymentRows, NOTHING_HEARD, type ConnectionFacts } from "./connection.ts";
+import type { RelayEventSink } from "./events.ts";
+import type { IncomingReport, Reports } from "./reports.ts";
 import type { Link, Links, PairingTokens } from "./links.ts";
 
 /**
@@ -83,6 +95,10 @@ export type DeploymentGateOptions = {
   server: Server;
   links: Links;
   tokens: PairingTokens;
+  /** Where a pushed report is written, and read back from after a restart. */
+  reports: Reports;
+  /** Where a report's arrival and a connection's change are announced. */
+  events: RelayEventSink;
   /** Injected so tests do not race a clock. */
   clock?: () => Date;
   /** Injected so a test can assert on the exact nonce it challenged with. */
@@ -158,6 +174,12 @@ export function serveDeployments(options: DeploymentGateOptions): DeploymentGate
   /** The dark clock's other input: what this process heard, after it heard it. */
   const heard = new Map<string, Date>();
   const closes = new Map<string, { code: number; reason: string; at: string }>();
+  /**
+   * The last word the event stream said about each link. An event is emitted
+   * when this and the row disagree, and never otherwise — which is what keeps
+   * `dark` to one announcement rather than one per sweep (#542).
+   */
+  const announced = new Map<string, RelayDeploymentRow["state"]>();
   /**
    * When this process started serving. The dark clock counts from the later of
    * this and the last heartbeat, so a restart does not paint the fleet dark
@@ -289,6 +311,7 @@ export function serveDeployments(options: DeploymentGateOptions): DeploymentGate
     live.set(link.fingerprint, entry);
     heard.set(link.fingerprint, now);
     log(`[phoebe:relay] ${link.name} (${link.fingerprint}) connected`);
+    announce(now);
     return entry;
   }
 
@@ -321,14 +344,76 @@ export function serveDeployments(options: DeploymentGateOptions): DeploymentGate
     return beat;
   }
 
-  /** Read one frame from an admitted deployment. Today that means receipts. */
+  /** Read one frame from an admitted deployment: a report, or a receipt. */
   function readFrame(entry: LiveConnection, data: string): void {
+    const incoming = parseReport(data);
+    if (incoming !== null) {
+      takeReport(entry, incoming);
+      return;
+    }
     const receipt = parseReceipt(data);
     if (receipt === null) return;
     const waiting = entry.pending.get(receipt.id);
     if (waiting === undefined) return;
     entry.pending.delete(receipt.id);
     waiting(receipt);
+  }
+
+  /**
+   * Take delivery of one report: write it over the last one, announce it, and
+   * read none of it. A volume that will not take the write is a relay that has
+   * lost its reports, not a relay that should drop the connection carrying
+   * them — the deployment is supervising a fleet and this is a console.
+   */
+  function takeReport(entry: LiveConnection, incoming: IncomingReport): void {
+    const fingerprint = entry.link.fingerprint;
+    let stored: RelayStoredReport | null;
+    try {
+      stored = options.reports.save(fingerprint, incoming, clock());
+    } catch (error) {
+      warn(
+        `[phoebe:relay] could not store the report from ${entry.link.name} (${fingerprint}): ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+      return;
+    }
+    if (stored === null) return;
+    options.events.emit({
+      type: RELAY_EVENTS.report,
+      at: stored.receivedAt,
+      fingerprint,
+      schema: stored.schema,
+      report: stored.report,
+    });
+  }
+
+  /**
+   * Say on the event stream what has changed about who is connected, and
+   * nothing that has not. Called at both ends of a connection and on a timer,
+   * because two of the three changes are things that happen — a handshake, a
+   * close — and the third, **dark**, is a threshold nothing crosses out loud.
+   *
+   * `unseen` is never announced. It is where every link starts, so there is no
+   * moment at which a deployment *became* unseen for a console to act on.
+   */
+  function announce(now: Date = clock()): void {
+    for (const row of rowsAt(now)) {
+      if (announced.get(row.fingerprint) === row.state) continue;
+      announced.set(row.fingerprint, row.state);
+      if (row.state === "unseen") continue;
+      options.events.emit({ type: row.state, at: now.toISOString(), deployment: row });
+    }
+  }
+
+  /** Every link as a console reads it, at one moment. */
+  function rowsAt(now: Date): RelayDeploymentRow[] {
+    return deploymentRows({
+      links: options.links.all(),
+      facts: factsOf,
+      relayStartedAt: startedAt,
+      now,
+      darkAfterMs,
+    });
   }
 
   /**
@@ -351,6 +436,7 @@ export function serveDeployments(options: DeploymentGateOptions): DeploymentGate
           `${orphaned.length} request(s) in flight — undelivered`,
       );
     }
+    announce();
   }
 
   /** The connection facts one link's row is built from. */
@@ -364,17 +450,20 @@ export function serveDeployments(options: DeploymentGateOptions): DeploymentGate
     };
   }
 
+  /**
+   * The sweep that notices darkness. Nothing happens when a deployment goes
+   * dark — that is what darkness is — so the one way the stream can carry it is
+   * to look on a timer. One timer for the whole relay, on the heartbeat's
+   * cadence, which bounds how late the word can be by one beat.
+   */
+  const watch = setInterval(() => announce(), heartbeatMs);
+  // A sweep must never be the reason this process outlives its work.
+  watch.unref?.();
+
   return {
     connected: () => [...live.values()].map(({ link, socket, since }) => ({ link, socket, since })),
 
-    rows: (now = clock()) =>
-      deploymentRows({
-        links: options.links.all(),
-        facts: factsOf,
-        relayStartedAt: startedAt,
-        now,
-        darkAfterMs,
-      }),
+    rows: (now = clock()) => rowsAt(now),
 
     request(fingerprint, message) {
       const entry = live.get(fingerprint);
@@ -400,12 +489,18 @@ export function serveDeployments(options: DeploymentGateOptions): DeploymentGate
       const link = options.links.forget(fingerprint);
       if (link === null) return null;
       live.get(fingerprint)?.socket.close(RELAY_CLOSE.unlinked, "unlinked");
+      // The report goes with the link. A file left behind would be a report
+      // from a deployment the relay no longer knows, ready to reappear under a
+      // deployment that pairs the same key again.
+      options.reports.forget(fingerprint);
+      announced.delete(fingerprint);
       log(`[phoebe:relay] forgot ${link.name} (${fingerprint})`);
       return link;
     },
 
     close: () =>
       new Promise<void>((resolve) => {
+        clearInterval(watch);
         for (const entry of live.values()) {
           clearInterval(entry.beat);
           entry.socket.close(1001, "relay closing");
@@ -484,4 +579,29 @@ export function parseReceipt(data: string): RelayReceipt | null {
     outcome: receipt.outcome,
     ...(receipt.detail !== undefined ? { detail: receipt.detail } : {}),
   };
+}
+
+/**
+ * A `report` message, read exactly as far as the relay needs it and no further
+ * (#542). Two checks and both are about the envelope: the `schema` integer the
+ * relay hoists so a reader can branch on it, and that the body is an object at
+ * all rather than a string or a number somebody sent.
+ *
+ * What is inside the body is not this function's business and not the relay's.
+ * A relay that validated the report's sections would be a relay that refuses
+ * the day a deployment adds one — the opposite of the rule that a relay stores
+ * and forwards the body opaque.
+ */
+export function parseReport(data: string): IncomingReport | null {
+  let frame: unknown;
+  try {
+    frame = JSON.parse(data) as unknown;
+  } catch {
+    return null;
+  }
+  if (relayMessageType(frame) !== RELAY_MESSAGES.report) return null;
+  const message = frame as Partial<RelayReportMessage>;
+  if (!Number.isInteger(message.schema)) return null;
+  if (typeof message.report !== "object" || message.report === null) return null;
+  return { schema: message.schema as number, report: message.report };
 }

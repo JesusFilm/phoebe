@@ -26,7 +26,12 @@ export const RELAY_ROUTES = {
   me: "/api/me",
   /** POST — mint a pairing token for one new deployment. Shown once (#540). */
   pairingTokens: "/api/pairing-tokens",
-  /** GET — every deployment this relay knows, with where each one stands. */
+  /**
+   * GET — every deployment this relay knows, with where each one stands. One
+   * deployment on its own is this path plus its fingerprint,
+   * `/api/deployments/<fingerprint>`: that read answers the same row and the
+   * last report the relay took delivery of (#542).
+   */
   deployments: "/api/deployments",
   /**
    * POST — **forget** one deployment, named by fingerprint in the body (#505
@@ -35,6 +40,12 @@ export const RELAY_ROUTES = {
    * per-deployment read this shares a prefix with is a GET.
    */
   forget: "/api/deployments/forget",
+  /**
+   * GET — the server-sent-events stream: reports and connection changes as they
+   * happen, so a page updates without polling (#506 §10, #542). The event names
+   * and their payloads are in relay-events.ts.
+   */
+  events: "/api/events",
 } as const;
 
 /** One of the relay's paths. */
@@ -101,4 +112,41 @@ export type RelayDeploymentRow = {
    * and leaves the forgetting to a person.
    */
   maybeReplaced: boolean;
+};
+
+/**
+ * One deployment report as the relay holds it (#506 §3, #542). The relay keeps
+ * the latest per deployment and nothing else: no history, no deltas, one file
+ * per fingerprint that the next report replaces.
+ *
+ * `report` is `unknown` here and everywhere in the relay. The deployment owns
+ * the report's shape (`DeploymentReport` in deployment.ts) and the relay stores
+ * and forwards it without reading a field of it, so a console newer than its
+ * relay renders sections this relay has never heard of.
+ */
+export type RelayStoredReport = {
+  /** The deployment this report came from. */
+  fingerprint: string;
+  /** The report's own `schema` integer, hoisted out of the opaque body. */
+  schema: number;
+  /** When the relay took delivery, ISO 8601. Not when the deployment built it. */
+  receivedAt: string;
+  /** The report, exactly as it arrived. */
+  report: unknown;
+};
+
+/**
+ * The body of `GET /api/deployments/<fingerprint>`: what the deployment last
+ * said about itself, and what the relay knows about the connection it said it
+ * over. Two sources, side by side and never merged — the relay's connection
+ * facts are not in the report, and nothing in the report is the relay's to
+ * derive (#507 §8).
+ *
+ * `report` is null for a deployment that has never pushed one: a link paired
+ * against a deployment that has not booted since, or one whose report was lost
+ * with the relay's volume.
+ */
+export type RelayDeploymentDetail = {
+  deployment: RelayDeploymentRow;
+  report: RelayStoredReport | null;
 };

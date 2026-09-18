@@ -61,4 +61,16 @@ export const RELAY_ROUTES = {
   pairingTokens: "/api/pairing-tokens",
   deployments: "/api/deployments",
   forget: "/api/deployments/forget",
+  events: "/api/events",
+};
+
+/**
+ * The event-stream names (#542). Mirror of `RELAY_EVENTS` in relay-events.ts;
+ * the doc comments live there.
+ */
+export const RELAY_EVENTS = {
+  report: "report",
+  connected: "connected",
+  disconnected: "disconnected",
+  dark: "dark",
 };

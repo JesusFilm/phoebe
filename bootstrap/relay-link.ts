@@ -36,6 +36,17 @@
 // purpose: both sides give up on a connection at the same moment, so a console
 // and a deployment never disagree about whether one exists.
 //
+// **The report goes up whole, on connect and on change** (#542, decided in
+// #501). The link does not keep a copy: it reads `state/deployment.json`'s live
+// model at the moment it sends, so what the relay receives is what the file
+// says and never a stale duplicate of it. A push while the socket is down is
+// dropped rather than queued — the next connection opens with the whole report
+// anyway, and a queue would only deliver an older version of the same truth.
+//
+// Between reports the relay counts pongs, not messages: a deployment whose
+// fleet is quiet sends nothing for hours, and that is not silence — it is a
+// deployment with nothing to say (#541).
+//
 // **Nothing here is load-bearing for work.** A deployment with no relay, an
 // unreachable relay, or a refused link supervises its fleet exactly as it
 // always did. The link reports where it stands and never throws into the
@@ -50,9 +61,10 @@ import {
   relaySpeaks,
   type RelayChallenge,
   type RelayHello,
+  type RelayReportMessage,
 } from "../src/contracts/relay-protocol.ts";
 import { jitteredBackoffMs } from "../src/backoff.ts";
-import type { RelayClose, RelayState } from "../src/contracts/deployment.ts";
+import type { DeploymentReport, RelayClose, RelayState } from "../src/contracts/deployment.ts";
 import type { RelayStatus } from "./deployment-state.ts";
 import type { DeploymentKey } from "./relay-key.ts";
 
@@ -159,6 +171,13 @@ export type RelayLinkDeps = {
   forgetKey: () => void;
   /** Where the link's state goes: straight into the report's relay section. */
   onStatus: (status: RelayStatus) => void;
+  /**
+   * The report as it stands right now, or null before there is one (#542). Read
+   * at the moment of every send rather than handed over, so a link that has been
+   * reconnecting for a minute comes back with today's report and not the one it
+   * was holding when the socket died.
+   */
+  report?: () => DeploymentReport | null;
   /** The deployment key's fingerprint, once there is one to report. */
   onPaired?: (key: DeploymentKey) => void;
   /** Operator-facing lines. Defaults to stdout through the caller. */
@@ -178,6 +197,13 @@ export type RelayLinkDeps = {
 };
 
 export type RelayLink = {
+  /**
+   * The report moved: push it, if there is a connection to push it down. A
+   * no-op otherwise, and a no-op when the report has not changed since the last
+   * push — the model hands over a new object each time it writes one, and that
+   * is what "changed" means here.
+   */
+  push: () => void;
   /** Stop dialling and close any open socket. The deployment is going down. */
   stop: () => void;
 };
@@ -209,6 +235,16 @@ export function connectRelay(deps: RelayLinkDeps): RelayLink {
   let lastClose: RelayClose | null = null;
   /** Drop the live connection's own timer. Set by each dial, called by `stop`. */
   let abandon: (() => void) | null = null;
+  /** Has this connection finished its hello? Nothing is pushed before it has. */
+  let ready = false;
+  /**
+   * The report this connection has already been given. Identity, not equality:
+   * the live model builds a new object for every write and keeps the old one
+   * otherwise, so `===` is exactly the question "is this the same report".
+   * Cleared with each dial, which is what makes every connection open with the
+   * whole report whether or not it has changed since the last one.
+   */
+  let pushed: DeploymentReport | null = null;
 
   if (key !== null && deps.pairingToken !== undefined) {
     log(
@@ -235,7 +271,7 @@ export function connectRelay(deps: RelayLinkDeps): RelayLink {
       "`relay.url` is set but this deployment has no key on its volume and no PHOEBE_RELAY_TOKEN " +
         "in its environment. Mint a pairing token on the relay and set it in the root `.env`.",
     );
-    return { stop: () => {} };
+    return { push: () => {}, stop: () => {} };
   }
 
   const schedule = (delayMs: number): void => {
@@ -251,9 +287,37 @@ export function connectRelay(deps: RelayLinkDeps): RelayLink {
     );
   };
 
+  /**
+   * Send the report the model holds, unless this connection already has it.
+   * Failure is silence on purpose: a send onto a socket that died between the
+   * check and the write is the close that is already on its way, and the whole
+   * report goes up again on the connection after it.
+   */
+  const pushReport = (): void => {
+    if (!ready || socket === null) return;
+    const current = deps.report?.() ?? null;
+    if (current === null || current === pushed) return;
+    const message: RelayReportMessage = {
+      type: RELAY_MESSAGES.report,
+      schema: current.schema,
+      report: current,
+    };
+    try {
+      socket.send(JSON.stringify(message));
+      pushed = current;
+    } catch (error) {
+      warn(
+        `[phoebe] relay: could not push the report — ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  };
+
   function dial(): void {
     if (stopped) return;
     let answered = false;
+    ready = false;
+    pushed = null;
     /** One connection ends once, whichever of the two ways it ends. */
     let ended = false;
     let silence: unknown = null;
@@ -268,6 +332,7 @@ export function connectRelay(deps: RelayLinkDeps): RelayLink {
     const end = (code: number, reason: string): void => {
       if (ended) return;
       ended = true;
+      ready = false;
       if (silence !== null) clearTimer(silence);
       silence = null;
       if (socket === current) socket = null;
@@ -381,7 +446,12 @@ export function connectRelay(deps: RelayLinkDeps): RelayLink {
         // Acceptance is silence: a refusal arrives as a close code within the
         // moment, and the report follows it down.
         attempt = 0;
+        ready = true;
         report("connected", null);
+        // The whole report, on every connection, before anything asks for it
+        // (#501). The status above will usually have moved the model and pushed
+        // it already; this is what makes "on connect" true rather than lucky.
+        pushReport();
       },
 
       onClose: (code, reason) => {
@@ -395,8 +465,11 @@ export function connectRelay(deps: RelayLinkDeps): RelayLink {
   dial();
 
   return {
+    push: pushReport,
+
     stop: () => {
       stopped = true;
+      ready = false;
       if (timer !== null) clearTimer(timer);
       timer = null;
       abandon?.();

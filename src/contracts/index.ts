@@ -24,10 +24,19 @@ export type { StopOutcome } from "./stop-outcome.ts";
 export { RELAY_ROUTES } from "./relay-routes.ts";
 export type {
   RelayConnectionState,
+  RelayDeploymentDetail,
   RelayDeploymentRow,
   RelayIdentity,
   RelayRoute,
+  RelayStoredReport,
 } from "./relay-routes.ts";
+export { RELAY_EVENTS } from "./relay-events.ts";
+export type {
+  RelayConnectionEvent,
+  RelayEvent,
+  RelayEventName,
+  RelayReportEvent,
+} from "./relay-events.ts";
 // The two helpers in relay-protocol.ts (`relaySpeaks`, `relayMessageType`) are
 // deliberately not re-exported: a function mirrored by hand into index.mjs is a
 // second implementation, and no `toEqual` catches the day the two disagree.

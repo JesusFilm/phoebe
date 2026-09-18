@@ -1613,6 +1613,10 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       workspace !== null
         ? (tenant) => tenantArm(tenant.envPath)
         : () => resolveCredentialArm(process.env as Record<string, string | undefined>),
+    // The report just moved, so the relay's copy is out of date (#542). The
+    // link reads the report back out of the model and sends it whole; with no
+    // relay configured, or none connected, this is a call that does nothing.
+    onReport: () => relay.push(),
     // Once. A volume that refuses the first write will refuse every later one,
     // and a line per publish would bury the fleet's own output in the repetition.
     onWriteError: warnOnce(

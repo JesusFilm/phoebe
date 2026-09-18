@@ -480,3 +480,61 @@ describe("the relay section (#540)", () => {
     });
   });
 });
+
+describe("the report the relay link reads", () => {
+  test("`latest` is the report as last written, and null before the first", () => {
+    const h = harness();
+    expect(h.state.latest()).toBeNull();
+
+    h.state.noteEngine({ ref: "main", sha: "abc", quarantinedSha: null });
+
+    expect(h.state.latest()).toEqual(h.latest());
+  });
+
+  test("a written report signals once; a publish that wrote nothing signals not at all", () => {
+    let signals = 0;
+    const h = harness({
+      onReport: () => {
+        signals += 1;
+      },
+    });
+
+    h.state.noteEngine({ ref: "main", sha: "abc", quarantinedSha: null });
+    expect(signals).toBe(1);
+
+    // Nothing moved between these: the model writes nothing, so there is
+    // nothing for the link to push.
+    h.state.publish();
+    h.state.publish();
+
+    expect(signals).toBe(1);
+    expect(h.written).toHaveLength(1);
+  });
+
+  test("a report that could not be written is not a report to push", () => {
+    let signals = 0;
+    const h = harness({
+      write: () => {
+        throw new Error("read-only volume");
+      },
+      onReport: () => {
+        signals += 1;
+      },
+      onWriteError: () => {},
+    });
+
+    h.state.noteEngine({ ref: "main", sha: "abc", quarantinedSha: null });
+
+    expect(signals).toBe(0);
+  });
+
+  test("each written report is its own object, which is what `changed` means to the link", () => {
+    const h = harness();
+    h.state.noteEngine({ ref: "main", sha: "abc", quarantinedSha: null });
+    const first = h.state.latest();
+
+    h.state.noteReconcile("ref");
+
+    expect(h.state.latest()).not.toBe(first);
+  });
+});
