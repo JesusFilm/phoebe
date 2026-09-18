@@ -17,6 +17,8 @@ function fakeClient(
 ): RelayClient {
   return {
     me: () => Promise.resolve({ sub: "s", email: "ada@example.test" } satisfies RelayIdentity),
+    signIn: () => Promise.resolve({ kind: "navigate", href: "/auth/google/start" }),
+    watchSession: () => () => {},
     signOut: () => Promise.resolve(),
     deployments: () => Promise.resolve(rows),
     deployment: (fingerprint) => {

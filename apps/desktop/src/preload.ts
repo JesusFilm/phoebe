@@ -14,6 +14,7 @@ import type {
   DesktopBridge,
   LocalInstall,
   LocalReportEvent,
+  RelayArmState,
   RelayEvent,
   RunExit,
   RunLine,
@@ -68,6 +69,8 @@ const bridge: DesktopBridge = {
   },
   relay: {
     state: () => call(BRIDGE_CHANNELS.relayState),
+    signIn: (request) => call(BRIDGE_CHANNELS.relaySignIn, request),
+    watch: (onState) => subscribe<RelayArmState>(BRIDGE_CHANNELS.relayArm, onState),
     request: (request) => call(BRIDGE_CHANNELS.relayRequest, request),
     signOut: () => call(BRIDGE_CHANNELS.relaySignOut),
     events: (onEvent) => subscribe<RelayEvent>(BRIDGE_CHANNELS.relayEvent, onEvent),

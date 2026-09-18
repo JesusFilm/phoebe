@@ -513,4 +513,37 @@ button.quiet {
   overflow: auto;
   font-size: 12px;
   line-height: 1.5;
+/* ── the rail's sign-in control (#554) ─────────────────────────────────── */
+
+.rail-signin form {
+  display: grid;
+  gap: 4px;
+  padding: 2px 14px 6px;
+}
+
+.rail-signin label {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.rail-signin input {
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: inherit;
+  min-width: 0;
+}
+
+.rail-note {
+  margin: 0;
+  padding: 0 14px 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.rail-note.trouble {
+  color: var(--fail);
 }

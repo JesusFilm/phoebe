@@ -21,11 +21,14 @@
 // installed consumer's value import lands on the `.mjs`, never on this file.
 
 export type { StopOutcome } from "./stop-outcome.ts";
-export { RELAY_ROUTES } from "./relay-routes.ts";
+export { COMPANION_AUTH_URL, DEVICE_CODE_TTL_MS, RELAY_ROUTES } from "./relay-routes.ts";
 export type {
+  DeviceExchange,
+  DeviceExchangeResult,
   RelayConnectionState,
   RelayDeploymentDetail,
   RelayDeploymentRow,
+  RelayDevice,
   RelayIdentity,
   RelayRoute,
   RelayStoredReport,
@@ -70,6 +73,7 @@ export type {
   DesktopBridgeErrorCode,
   RelayArmState,
   RelayPassthrough,
+  RelaySignInRequest,
 } from "./desktop-bridge.ts";
 export type {
   CompanionEnvironment,

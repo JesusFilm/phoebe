@@ -194,6 +194,11 @@ export function bridge(answers: BridgeAnswers = {}): DesktopBridge {
     },
     relay: {
       state: () => Promise.resolve(relayState),
+      signIn: ({ url }) =>
+        answers.signIn === undefined
+          ? Promise.reject(new Error("this bridge does not sign in"))
+          : Promise.resolve(answers.signIn(url)),
+      watch: () => () => undefined,
       request: ({ path }) => {
         if (answers.request === undefined) return Promise.reject(signedOut());
         return Promise.resolve(answers.request(path));
@@ -219,6 +224,8 @@ export type BridgeAnswers = {
   started?: VerbRunRequest[];
   request?: (path: string) => unknown;
   events?: RelayEvent[];
+  /** What a sign-in through the companion resolves with (#554). */
+  signIn?: (url: string) => RelayArmState;
   /** What the local read loop has emitted, one event per install (#556). */
   reports?: LocalReportEvent[];
 };
