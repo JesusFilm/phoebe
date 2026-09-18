@@ -1,0 +1,339 @@
+/* The console's one stylesheet.
+ *
+ * Light and dark both follow the OS (#526): every colour is a custom property
+ * declared once for light and re-declared under `prefers-color-scheme: dark`, so
+ * no component branches on the theme and there is no theme switch to keep in
+ * step with one. `color-scheme` on :root is what makes the browser's own
+ * scrollbars and form controls come along.
+ *
+ * The four connection words get four different marks rather than four shades of
+ * one: a filled dot, a ring, a square, and a hollow dot. Colour alone would make
+ * dark and disconnected the same row to anyone reading it in greyscale.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  --bg: #fafafa;
+  --panel: #ffffff;
+  --fg: #111418;
+  --muted: #5d6673;
+  --line: #dcdfe4;
+  --accent: #1f4fd8;
+  --ok: #1a7f37;
+  --warn: #9a6700;
+  --fail: #b91c1c;
+  --waiting: #2563eb;
+  --idle: #c3c8d0;
+  --dark: #3f4652;
+  --attention-bg: #fff8f0;
+  --dark-bg: #f1f2f4;
+  --chip: #eceef1;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171c;
+    --panel: #1b1f26;
+    --fg: #e7eaee;
+    --muted: #98a1ae;
+    --line: #2c323b;
+    --accent: #7ba2ff;
+    --ok: #4ac26b;
+    --warn: #e3b341;
+    --fail: #f8776a;
+    --waiting: #6ea8ff;
+    --idle: #4a515c;
+    --dark: #8b939f;
+    --attention-bg: #2a1f16;
+    --dark-bg: #20242b;
+    --chip: #272c34;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font:
+    14px/1.45 system-ui,
+    sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+}
+
+code,
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+/* ── the frame ─────────────────────────────────────────────────────────── */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.topbar .brand {
+  font-weight: 700;
+}
+
+.topbar .spacer {
+  flex: 1;
+}
+
+.frame {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  min-height: calc(100vh - 45px);
+}
+
+.main {
+  padding: 16px 20px;
+  max-width: 1300px;
+}
+
+h1 {
+  font-size: 18px;
+  margin: 0 0 4px;
+}
+
+.main h2 {
+  font-size: 14px;
+  margin: 18px 0 4px;
+}
+
+button {
+  font: inherit;
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: inherit;
+  cursor: pointer;
+}
+
+a {
+  color: var(--accent);
+}
+
+/* ── the rail ──────────────────────────────────────────────────────────── */
+
+.rail {
+  border-right: 1px solid var(--line);
+  background: var(--panel);
+  padding: 10px 0;
+}
+
+/* Two groups in the companion, one in a browser (#526 shell A). The rule is on
+   the pair rather than on either group, so a browser's single group never draws
+   a divider for a group that is not there. */
+.rail-group + .rail-group {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.rail-heading {
+  margin: 0;
+  padding: 4px 14px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.rail-entry {
+  display: block;
+  padding: 6px 14px;
+  border-left: 3px solid transparent;
+}
+
+.rail-entry.attention {
+  background: var(--attention-bg);
+}
+
+.rail-entry.state-dark {
+  background: var(--dark-bg);
+}
+
+.rail-entry .name {
+  font-weight: 600;
+}
+
+.rail-entry .sub {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.rail-empty {
+  padding: 6px 14px;
+  color: var(--muted);
+}
+
+/* ── the four connection marks ─────────────────────────────────────────── */
+
+.mark {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-right: 6px;
+  vertical-align: baseline;
+}
+
+.mark.connected {
+  border-radius: 50%;
+  background: var(--ok);
+}
+
+.mark.disconnected {
+  border-radius: 50%;
+  border: 2px solid var(--warn);
+}
+
+.mark.dark {
+  /* A square, not a dot: dark is the one word that means the relay lost it. */
+  background: var(--dark);
+}
+
+.mark.unseen {
+  border-radius: 50%;
+  border: 1px dashed var(--muted);
+}
+
+.chip {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: var(--chip);
+  color: var(--fg);
+  font-size: 12px;
+  margin-left: 4px;
+  white-space: nowrap;
+}
+
+.chip.replaced {
+  background: var(--warn);
+  color: #1a1206;
+}
+
+.chip.fail {
+  background: var(--fail);
+  color: #fff;
+}
+
+.chip.warn {
+  background: var(--warn);
+  color: #1a1206;
+}
+
+/* ── the grid ──────────────────────────────────────────────────────────── */
+
+.grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  margin-top: 14px;
+}
+
+.cell {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+
+.cell.attention {
+  border-color: var(--fail);
+}
+
+.cell.state-dark {
+  background: var(--dark-bg);
+}
+
+.cell-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.cell-head .name {
+  font-weight: 600;
+}
+
+.bar {
+  display: flex;
+  gap: 2px;
+  height: 8px;
+  margin: 10px 0 8px;
+}
+
+.bar-empty {
+  height: 8px;
+  margin: 10px 0 8px;
+  border: 1px dashed var(--line);
+  border-radius: 4px;
+}
+
+.segment {
+  flex: 1;
+  border-radius: 2px;
+  background: var(--idle);
+}
+
+.segment.working {
+  background: var(--ok);
+}
+
+.segment.waiting {
+  background: var(--waiting);
+}
+
+.segment.wedged {
+  background: var(--fail);
+}
+
+.segment.crash-looping {
+  background: var(--warn);
+}
+
+.segment.no-status {
+  background: transparent;
+  border: 1px solid var(--idle);
+}
+
+.segment.disabled {
+  opacity: 0.45;
+}
+
+.facts {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.legend {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 0;
+}
+
+.notice {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px 16px;
+  max-width: 460px;
+  margin: 40px auto;
+}
