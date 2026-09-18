@@ -7,9 +7,10 @@ more. You sign in, you land on the allowlist, and you read one authenticated
 endpoint that tells you who you are.
 
 The relay is a separate image, a separate compose file and a separate volume
-from any deployment. A deployment that names no relay never dials one and runs
-exactly as it does now, and the deployment container still has no inbound
-listener. That is a property worth keeping, so a test guards it.
+from any deployment, all three written by `phoebe relay init`. A deployment
+that names no relay never dials one and runs exactly as it does now, and the
+deployment container still has no inbound listener. That is a property worth
+keeping, so a test guards it.
 
 Its version is the bootstrapper's version, and one changelog covers both.
 
@@ -59,6 +60,68 @@ verification machinery applies.
 Copy the client id and secret into the relay's environment. Press **Publish app**
 later if the allowlist outgrows 100 people; these scopes still need no
 verification.
+
+## Standing it up
+
+`phoebe relay init` writes the relay's container files into `relay/`, beside
+wherever you run it. Three files, all yours to commit and edit:
+
+| File           | What it is                                                                                                                                            |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Dockerfile`   | The relay image: the deployment image minus git, `gh` and every agent CLI. `ARG PHOEBE_AGENT_VERSION` pins the version of the CLI that scaffolded it. |
+| `compose.yml`  | Two services, `relay` and a Caddy sidecar, and one named volume.                                                                                      |
+| `.env.example` | The four variables. Copy it to `.env`, which the scaffold gitignores.                                                                                 |
+
+Then, in this order:
+
+1. `cp .env.example .env` and fill in all four variables. `ALLOWED_EMAILS` may
+   be empty, but read what that means above before you leave it that way.
+2. Create the Google client as the section above describes. Its one authorized
+   redirect URI is `https://<RELAY_HOST>/auth/google/callback`.
+3. Point `RELAY_HOST` at this host in DNS and let ports 80 and 443 reach it.
+   Caddy answers the certificate challenge on 80, so a name that does not
+   resolve yet means no certificate.
+4. `docker compose up -d --build`, then `docker compose logs -f` until Caddy
+   says it has a certificate and the relay says which port it is on.
+5. Open `https://<RELAY_HOST>/auth/google/start` and sign in.
+
+### The sidecar
+
+The relay listens on plain HTTP on 8787 and nothing publishes that port. Caddy
+is the only front door: `caddy reverse-proxy --from $RELAY_HOST --to relay:8787`
+is its whole configuration, and it gets the certificate for that name itself.
+There is no Caddyfile to keep in step with `.env`.
+
+Already running a proxy? Delete the `caddy` service, publish the relay's 8787
+however you normally do, and point yours at it. The relay never terminates TLS,
+so nothing else changes.
+
+### One volume
+
+`relay-data`, mounted at `/data` in both containers. The relay writes
+`/data/relay`; Caddy writes `/data/caddy`, which is where the official image
+keeps certificates. One volume is one thing to back up, and persisting Caddy's
+half is what makes a restart reuse the certificate it has rather than ask Let's
+Encrypt for another one and walk into the weekly duplicate limit.
+
+Caddy starts after the relay, and that ordering is load-bearing. Docker seeds a
+fresh named volume from the image of whichever container mounts it first,
+ownership included. The relay image carries a `phoebe`-owned `/data` and the
+Caddy image carries no `/data` at all, so the relay has to be the one to seed
+it — the other way round leaves `/data` root-owned and the unprivileged relay
+unable to write.
+
+### Re-running init, and upgrading
+
+`phoebe relay init` never overwrites a file that is already there. It reports
+what it created and what it skipped, and says in as many words that the skipped
+ones were left alone. Run it again whenever you like; to regenerate a file you
+have edited, delete that file first.
+
+Upgrading is an edit to `ARG PHOEBE_AGENT_VERSION` and a
+`docker compose up -d --build`. Upgrade the relay before the deployments that
+dial it: a relay speaks every protocol version up to its own, and one older than
+a deployment refuses the connection.
 
 ## What the relay does with a sign-in
 
@@ -132,16 +195,13 @@ ALLOWED_EMAILS= \
   npx phoebe-agent relay serve --data-dir ./relay-data
 ```
 
-In a container the relay will listen on plain HTTP on port 8787 with a Caddy
-sidecar in front of it terminating TLS, keyed on `RELAY_HOST`. Operators who
-run their own proxy delete the sidecar and point theirs at the relay; the relay
-never terminates TLS itself. That scaffold is not written yet, so for now you
-run the command above.
+That is the local-development shape: no container, no proxy, no certificate.
+`localhost` is the one host Google exempts from its HTTPS rule for redirect
+URIs, which is what makes it work at all. Anywhere else, run the scaffold.
 
 ## Not here yet
 
-`phoebe relay init`, which scaffolds the relay's Dockerfile, compose file and
-`.env.example`. The WebSocket endpoint deployments dial, pairing tokens, the
-links file, stored deployment reports, the events stream, and the console's
-pages. All of it joins this same process. See
+The WebSocket endpoint deployments dial, pairing tokens, the links file, stored
+deployment reports, the events stream, and the console's pages. All of it joins
+this same process. See
 [the relay's shape](https://github.com/JesusFilm/phoebe/issues/506).
