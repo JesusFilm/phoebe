@@ -41,6 +41,12 @@ function draft(overrides: Partial<DeploymentDraft> = {}): DeploymentDraft {
       slots: { capacity: 1, inUse: 0, waiting: 0, overGranted: 0, floorBudget: 1 },
     },
     fleet: { tenants: [], cells: [] },
+    config: {
+      version: 1,
+      root: { path: "/deployment/phoebe.config.ts", fingerprint: "sha256:root" },
+      tenants: [],
+      omitted: 0,
+    },
     ...overrides,
   };
 }

@@ -334,9 +334,15 @@ how a crash report becomes a front-loaded issue here.
 
 ## One-off overrides without editing config
 
-Most scalar fields have a `PHOEBE_*` env override for a single run, such as
-`PHOEBE_AGENT=claude`, `PHOEBE_PR_SCOPE=all`, or `PHOEBE_POLL_INTERVAL_MS=60000`.
-See the [environment overlay table](configuration.md#environment-overlay-phoebe_).
+Most scalar fields have a `PHOEBE_*` name that sets them for a single run, such
+as `PHOEBE_DEFAULT_PROVIDER=claude`, `PHOEBE_PR_SCOPE=all`, or
+`PHOEBE_POLL_INTERVAL_MS=60000`. One rule decides who wins: env beats the config
+file at a path, and a more specific path beats what it would inherit. See the
+[settings catalogue](configuration.md#settings-phoebe_).
+
+To see which of them is actually in force, run `phoebe config`: every setting
+with its value, the thing that supplied it, and whatever it beat. See
+[Seeing what applies](configuration.md#seeing-what-applies-phoebe-config).
 
 ## Quick reference
 
@@ -352,6 +358,7 @@ See the [environment overlay table](configuration.md#environment-overlay-phoebe_
 | Hand a PR back                                | Remove the label / mark ready-for-review.                                                                                                                                       |
 | Force a janitor to retry                      | Push, advance the base, post new review feedback, or delete the newest failure comment.                                                                                         |
 | Let Phoebe maintain all PRs, not just its own | `prScope: "all"`.                                                                                                                                                               |
+| See what a setting resolves to, and why       | `phoebe config` (add `--json` for a machine).                                                                                                                                   |
 
 ## Running many repos in one container
 
@@ -479,6 +486,20 @@ an age to display. It advances every pass and the file is not rewritten for it, 
 between writes it is deliberately stale on a perfectly healthy idle pipeline. The
 published form of that clock is the `noPassForMs` inside a wedged verdict, stamped
 at the moment the verdict was taken.
+
+**Settings ride in the report too.** Its `config` section is every tenant's
+effective config, each setting with its value and where that value came from, in
+the shape [`phoebe config`](configuration.md#seeing-what-applies-phoebe-config)
+prints. The running engine computes it, per tenant, so the report says what the
+engine actually believes rather than what the bootstrapper would guess. A tenant
+that is held, or whose file will not load, carries its error instead of the
+resolution it had before. The section also carries a content hash of the root
+`phoebe.config.ts` it was derived from, which is what a remote config edit checks
+itself against. Only `--json` shows it. The text view is the fleet.
+
+The section is written to a byte budget, so a workspace with an unusual number of
+tenants writes a report that stops growing rather than one that does not. The
+tenants left out are counted in `config.omitted` and read with `phoebe config`.
 
 **Stopping one pipeline.** There is no per-pipeline stop verb yet. Setting
 `disabled: true` on that pipeline in the tenant's `phoebe.config.ts` is hot at the

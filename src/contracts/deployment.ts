@@ -26,6 +26,7 @@
 
 import type { CredentialArm } from "./credential-arm.ts";
 import type { DoctorReport } from "./doctor-report.ts";
+import type { TenantEffectiveConfig } from "./effective-config.ts";
 import type { PipelineSource, PipelineState, WedgedVerdict } from "./pipeline-state.ts";
 import type { StatusSnapshot } from "./status-snapshot.ts";
 
@@ -240,6 +241,54 @@ export type DoctorSection = {
   lastAttempt?: DoctorAttempt;
 };
 
+/**
+ * The config source a later edit checks itself against (#503). Only the root
+ * `phoebe.config.ts` is mounted read-write, so it is the one file a console can
+ * ask this deployment to change, and the one file worth fingerprinting here.
+ *
+ * The fingerprint hashes the file's bytes rather than its stat, because the
+ * question it answers is "is this still the text I was shown" — an edit that
+ * landed inside one mtime tick would slip past a stat. Null when the file could
+ * not be read, which refuses every edit rather than admitting one blind.
+ */
+export type ConfigSource = {
+  path: string;
+  /** `sha256:<hex>` over the file's bytes, or null when it could not be read. */
+  fingerprint: string | null;
+};
+
+/**
+ * Section 5 of the report: the effective config, one row per tenant (#501 §5,
+ * #502). It rides in every report because it is kilobytes and it moves only when
+ * a config does — so any reader of a report can show settings without a second
+ * read, and a console and a terminal cannot disagree about what a tenant is
+ * configured to do.
+ *
+ * Each row is what the running engine's own `phoebe config --json` answered for
+ * that tenant, verbatim. A tenant whose settings are unknown — held, a file that
+ * will not load, an engine that could not be asked — is the error arm of
+ * {@link TenantEffectiveConfig}, never a stale resolution kept because it was
+ * the last good one.
+ *
+ * **Bounded, unlike the fleet matrix.** A tenant's tree is a few kilobytes and a
+ * workspace declares no ceiling on tenants, so the section is written to a byte
+ * budget (bootstrap/config-report.ts): rows are filled in tenant-id order until
+ * the budget is spent, and the rest are counted in {@link ConfigReport.omitted}.
+ * The tenants left out are read by asking that tenant directly, which is a
+ * second read for the rare deployment rather than a megabyte per write for
+ * every one.
+ */
+export type ConfigReport = {
+  /** The shape version the engine reported — `EFFECTIVE_CONFIG_VERSION`. */
+  version: number;
+  root: ConfigSource;
+  /** One row per tenant, in tenant-id order, up to the section's byte budget. */
+  tenants: TenantEffectiveConfig[];
+  /** How many tenants the budget left out. Zero for every ordinary deployment. */
+  omitted: number;
+  updatedAt: string;
+};
+
 /** The whole report. One file, one model, every reader. */
 export type DeploymentReport = {
   schema: number;
@@ -248,6 +297,8 @@ export type DeploymentReport = {
   /** Absent until this deployment has a relay (#506); omitted, never faked. */
   relay?: RelayReport;
   fleet: FleetReport;
+  /** Every tenant's effective config, as the running engine computed it (#535). */
+  config: ConfigReport;
   /** Absent until the bootstrapper has run doctor once (#507). */
   doctor?: DoctorSection;
   /** When any section last moved. */

@@ -45,6 +45,7 @@ import type {
   ChildExit,
   ChildLiveness,
   ChildState,
+  ConfigSource,
   CrashLoopRecord,
   DeploymentIdentity,
   DeploymentReport,
@@ -53,7 +54,12 @@ import type {
   SlotReport,
   TenantFacts,
 } from "../src/contracts/deployment.ts";
+import {
+  EFFECTIVE_CONFIG_VERSION,
+  type TenantEffectiveConfig,
+} from "../src/contracts/effective-config.ts";
 import type { StatusSnapshot } from "../src/contracts/status-snapshot.ts";
+import { boundConfigRows, unknownConfig, type ConfigCollector } from "./config-report.ts";
 import { PIPELINE_DEFAULTS } from "../src/config-schema.ts";
 import { derivePaths } from "../src/paths.ts";
 import {
@@ -98,6 +104,12 @@ export type DeploymentStateDeps = {
   crashLoop: () => CrashLoopRecord;
   /** The slot broker's numbers, read at publish time. */
   slots: () => SlotReport;
+  /**
+   * The root config an edit checks itself against (#503), read at publish time.
+   * Cheap on a steady deployment: the hash is re-taken only when the file's stat
+   * moves (bootstrap/config-report.ts).
+   */
+  rootConfig: () => ConfigSource;
   /** One tenant's credential arm, resolved the one shared way (#162). */
   armOf: (tenant: { envPath: string }) => CredentialArm;
   now?: () => number;
@@ -119,6 +131,13 @@ export type DeploymentState = {
     ref: string | null;
     sha: string | null;
     quarantinedSha: string | null;
+    /**
+     * How to ask *this* checkout for a tenant's effective config (#535). It
+     * arrives with the engine because the answer is the engine's: a relaunch
+     * onto a different commit is a different answer, and a new collector is how
+     * the cached rows are dropped without a second trigger.
+     */
+    config?: ConfigCollector;
   }) => void;
   /** The engine axis moved; the fleet is draining onto a new engine. */
   noteReconcile: (reason: "config" | "ref") => void;
@@ -161,6 +180,15 @@ type ChildRecord = {
 const iso = (ms: number): string => new Date(ms).toISOString();
 
 /**
+ * How a tenant names itself in the config section when the engine never got to
+ * answer for it: its slug if discovery recovered one, else its directory. The
+ * engine's own rows name themselves — `repoSlug`, or the config's path.
+ */
+function nameOf(tenant: { slug: string | null; dir: string }): string {
+  return tenant.slug ?? tenant.dir;
+}
+
+/**
  * Build the live model. Nothing is written until something is noted: a
  * deployment that has not come up yet has no report to make.
  */
@@ -185,6 +213,58 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
   };
   let reconcile: ReconcileState = { phase: "idle", since: iso(now()) };
   let last: DeploymentReport | null = null;
+  /** The running engine's collector — set by `noteEngine`, dropped with the launch. */
+  let collector: ConfigCollector | null = null;
+  /** The config section as it stands: already ordered, already inside its budget. */
+  let config: { tenants: TenantEffectiveConfig[]; omitted: number } = { tenants: [], omitted: 0 };
+
+  /**
+   * Re-read every tenant's effective config and re-fit the section.
+   *
+   * Called from the two hooks that can move it — the poll's pipeline matrix and
+   * the hold list — never from `publish`, because a cache miss here spawns an
+   * engine process per tenant and `publish` runs on every child's every status
+   * write. The collector answers from its cache unless a tenant's config or
+   * `.env` actually moved, so a steady fleet pays a stat per tenant per poll.
+   *
+   * A held tenant carries its discovery error rather than the resolution it had
+   * before it was held (#501 §5): the settings of a tenant nobody can read are
+   * unknown, and the last good ones are the most convincing way to be wrong.
+   * A tenant nothing has asked yet — the window before the first engine is
+   * materialized — has no row at all rather than a manufactured one.
+   */
+  const refreshConfig = (): void => {
+    const heldById = new Map(holds.map((hold) => [hold.id, hold] as const));
+    const rows: { id: string; row: TenantEffectiveConfig }[] = [];
+    const asked = new Set<string>();
+    for (const pipeline of live) {
+      const tenant = pipeline.tenant;
+      if (asked.has(tenant.id)) continue;
+      asked.add(tenant.id);
+      const held = heldById.get(tenant.id);
+      if (held !== undefined) {
+        rows.push({ id: tenant.id, row: unknownConfig(nameOf(tenant), `held — ${held.reason}`) });
+        continue;
+      }
+      if (collector === null) continue;
+      rows.push({
+        id: tenant.id,
+        row: collector.read({
+          id: tenant.id,
+          configPath: tenant.configPath,
+          envPath: tenant.envPath,
+          cwd: tenant.dir,
+        }),
+      });
+    }
+    for (const held of holds) {
+      if (asked.has(held.id)) continue;
+      asked.add(held.id);
+      rows.push({ id: held.id, row: unknownConfig(nameOf(held), `held — ${held.reason}`) });
+    }
+    rows.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    config = boundConfigRows(rows.map((entry) => entry.row));
+  };
 
   /** The tenant a cell belongs to, with the facts `phoebe list` shows for it. */
   const factsFor = (
@@ -355,6 +435,12 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
           slots: deps.slots(),
         },
         fleet: buildFleet(at),
+        config: {
+          version: collector?.version() ?? EFFECTIVE_CONFIG_VERSION,
+          root: deps.rootConfig(),
+          tenants: config.tenants,
+          omitted: config.omitted,
+        },
       };
       const next = stampReport(draft, last, iso(at));
       if (next === null) return;
@@ -367,7 +453,14 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
 
   return {
     noteEngine(next) {
-      engine = { ...next };
+      engine = { ref: next.ref, sha: next.sha, quarantinedSha: next.quarantinedSha };
+      if (next.config !== undefined) {
+        collector = next.config;
+        // A new checkout is a new answer, so the section is re-read here rather
+        // than left until the next poll: a reconcile onto a different engine is
+        // exactly when an operator is watching the report.
+        refreshConfig();
+      }
       publish();
     },
 
@@ -452,11 +545,13 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
       const orphaned: string[] = [];
       for (const id of children.keys()) if (!named.has(id)) orphaned.push(id);
       for (const id of orphaned) children.delete(id);
+      refreshConfig();
       publish();
     },
 
     noteHolds(held) {
       holds = [...held];
+      refreshConfig();
       publish();
     },
 
