@@ -5,8 +5,20 @@
 // crashes in production on `undefined`.
 
 import { describe, expect, test } from "vite-plus/test";
-import { RELAY_ROUTES as typed } from "./index.ts";
-import { RELAY_ROUTES as shipped } from "./index.mjs";
+import {
+  RELAY_CLOSE as typedClose,
+  RELAY_DEPLOYMENTS_PATH as typedPath,
+  RELAY_MESSAGES as typedMessages,
+  RELAY_PROTOCOL as typedProtocol,
+  RELAY_ROUTES as typed,
+} from "./index.ts";
+import {
+  RELAY_CLOSE as shippedClose,
+  RELAY_DEPLOYMENTS_PATH as shippedPath,
+  RELAY_MESSAGES as shippedMessages,
+  RELAY_PROTOCOL as shippedProtocol,
+  RELAY_ROUTES as shipped,
+} from "./index.mjs";
 
 describe("index.mjs mirrors the typed contracts entry", () => {
   test("the relay's routes are the same object on both sides", () => {
@@ -22,5 +34,28 @@ describe("index.mjs mirrors the typed contracts entry", () => {
   test("no two routes share a path", () => {
     const paths = Object.values(typed);
     expect(new Set(paths).size).toBe(paths.length);
+  });
+});
+
+describe("the deployment rail's constants are mirrored too", () => {
+  test.each([
+    ["RELAY_PROTOCOL", typedProtocol, shippedProtocol],
+    ["RELAY_DEPLOYMENTS_PATH", typedPath, shippedPath],
+    ["RELAY_MESSAGES", typedMessages, shippedMessages],
+    ["RELAY_CLOSE", typedClose, shippedClose],
+  ])("%s is the same on both sides", (_name, typedValue, shippedValue) => {
+    expect(shippedValue).toEqual(typedValue);
+  });
+
+  test("every message type carries the rail's prefix", () => {
+    for (const [name, type] of Object.entries(typedMessages)) {
+      expect(type.startsWith("phoebe:relay:"), `${name} is unprefixed`).toBe(true);
+    }
+  });
+
+  test("every close code is in WebSocket's private range", () => {
+    for (const [name, code] of Object.entries(typedClose)) {
+      expect(code >= 4000 && code <= 4999, `${name} is outside 4000–4999`).toBe(true);
+    }
   });
 });

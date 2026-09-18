@@ -11,6 +11,7 @@ import {
   PROVIDER_NAMES,
   builtInKindPath,
   deprecatedPipelineAliases,
+  readRelayField,
   readReportingField,
   resolveConfig,
   validateUserConfig,
@@ -928,5 +929,52 @@ describe("reporting field (#474)", () => {
     ["on", "`reporting` must be an object"],
   ])("rejects %j at resolve time", (reporting, message) => {
     expect(() => resolve({ ...base, reporting } as never)).toThrow(message);
+  });
+});
+
+describe("relay field (#540)", () => {
+  const base = {
+    repoSlug: "acme/widget",
+    repoUrl: "https://github.com/acme/widget.git",
+    installCommand: "npm ci",
+    checkCommand: "npm run check",
+    testCommand: "npm test",
+  };
+
+  test("a well-formed block validates, is read back, and never reaches the resolved config", () => {
+    const user = {
+      ...base,
+      relay: { url: "wss://relay.example.com/deployments", name: "fleet-a" },
+    };
+    expect(readRelayField(user)).toEqual(user.relay);
+    expect("relay" in resolveConfig(user)).toBe(false);
+    expect(Object.keys(resolveConfig(user))).not.toContain("relay");
+  });
+
+  test("no block is the deployment that dials nothing", () => {
+    expect(readRelayField({ ...base, relay: undefined })).toBeUndefined();
+  });
+
+  test("the name is optional — boot defaults it", () => {
+    const url = "wss://relay.example.com/deployments";
+    expect(readRelayField({ ...base, relay: { url } })?.name).toBeUndefined();
+  });
+
+  test.each([
+    [{ name: "fleet-a" }, "`relay.url` must be a non-empty"],
+    [{ url: "" }, "`relay.url` must be a non-empty"],
+    [{ url: "relay.example.com" }, "is not a URL"],
+    [{ url: "https://relay.example.com" }, "must be a WebSocket URL"],
+    [{ url: "wss://relay.example.com", name: "" }, "`relay.name` must be a non-empty string"],
+    [{ url: "wss://relay.example.com", token: "secret" }, 'names unknown field "token"'],
+    ["wss://relay.example.com", "`relay` must be an object"],
+  ])("rejects %j at resolve time", (relay, message) => {
+    expect(() => resolveConfig({ ...base, relay } as never)).toThrow(message);
+  });
+
+  test("a plain ws:// URL is allowed — a relay behind a trusted local proxy", () => {
+    expect(
+      readRelayField({ ...base, relay: { url: "ws://relay.internal:8787/deployments" } }),
+    ).toEqual({ url: "ws://relay.internal:8787/deployments" });
   });
 });

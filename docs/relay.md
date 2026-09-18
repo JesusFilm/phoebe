@@ -1,10 +1,11 @@
 # The relay
 
-`phoebe relay serve` runs the relay: one process, shipped in `phoebe-agent`, that
-an operator signs into with Google. Eventually deployments dial it over a
-WebSocket and a web console reads from it. Today it is the door and nothing
-more. You sign in, you land on the allowlist, and you read one authenticated
-endpoint that tells you who you are.
+`phoebe relay serve` runs the relay: one process, shipped in `phoebe-agent`,
+that an operator signs into with Google and that deployments dial over a
+WebSocket. A web console reads from it; that part is still being built. What
+works today is the door and the fleet's side of it — you sign in, you mint a
+pairing token, a deployment spends it, and the relay lists that deployment as
+connected.
 
 The relay is a separate image, a separate compose file and a separate volume
 from any deployment. A deployment that names no relay never dials one and runs
@@ -118,9 +119,110 @@ them instead of copying strings.
 | `GET`  | `/auth/google/callback` | Google's redirect back. The only URI Google knows.      |
 | `POST` | `/auth/sign-out`        | Drops the session. 204.                                 |
 | `GET`  | `/api/me`               | `{ sub, email }` for a signed-in caller, 401 otherwise. |
+| `POST` | `/api/pairing-tokens`   | Mints one pairing token. Shown once; 401 otherwise.     |
 
 A successful sign-in lands on `/api/me` today, because who you are is the only
 thing the relay can show you yet. The console's own page takes that over.
+
+## Pairing a deployment
+
+A deployment joins by dialling out and proving who it is. Nothing dials in, and
+no long-lived bearer token exists anywhere. The credential an operator handles is
+spendable once; the identity that outlives it is a key the deployment generated
+itself and has never sent.
+
+From the operator's side it is three steps.
+
+1. Mint a token on the relay: `POST /api/pairing-tokens` while signed in. It is
+   good for fifteen minutes and shown once, and the relay keeps it in memory, so
+   a restart voids it.
+2. Put the relay's address in the root `phoebe.config.ts` and the token in the
+   root `.env`:
+
+   ```ts
+   // phoebe.config.ts
+   export default defineConfig({
+     // ...
+     relay: { url: "wss://relay.example.com/deployments", name: "the-fleet" },
+   });
+   ```
+
+   ```sh
+   # .env. Compose carries this into the container the way GH_TOKEN travels.
+   PHOEBE_RELAY_TOKEN=<the token>
+   ```
+
+3. Boot. The deployment dials, generates an Ed25519 **deployment key**, presents
+   it with the token, and the relay records the public half as a **link** in
+   `links.json`. Then remove `PHOEBE_RELAY_TOKEN` from `.env`: it is spent, and
+   `phoebe doctor` reports `relay: token-stale` until it is gone.
+
+The key lands at `state/relay-key` on the data volume, mode `0600`. It is
+written as it is presented, so a container killed a second later comes back with
+the key the relay just recorded. If the relay refuses the pairing, the key comes
+straight back off the volume. A mistyped token therefore leaves nothing behind:
+fix the `.env` and boot again. Every later connection signs a challenge with that
+key and carries no token at all.
+
+`relay.name` is what a console displays. Omit it and the deployment answers to
+its solo `repoSlug`, or to the workspace root's directory name. The relay keys
+on the public key and never on the name, so two deployments may share one.
+
+The `relay` block is bootstrapper-only and root-only: the engine never sees it,
+`resolveConfig` drops it, no `PHOEBE_*` variable overlays it, and a deployment
+with no block never dials and behaves exactly as it did before the block
+existed.
+
+### The handshake
+
+The relay speaks first. On every connection it sends a challenge; the deployment
+answers once, and a refusal comes back as a close code rather than a message.
+Nothing rides on the upgrade request itself, which keeps the token out of every
+proxy log between the two.
+
+| Direction          | Type                     | Payload                                                   |
+| ------------------ | ------------------------ | --------------------------------------------------------- |
+| relay → deployment | `phoebe:relay:challenge` | `{ nonce, protocol }`                                     |
+| deployment → relay | `phoebe:relay:hello`     | `{ protocol, publicKey, name, signature ⎮ pairingToken }` |
+
+Every type on the rail is `phoebe:relay:`-prefixed and declared in
+`phoebe-agent/contracts`, so neither end can invent a field the other does not
+read. Anything that wants an answer carries an `id` and is answered by a
+`receipt` bearing the same one.
+
+`protocol` is one integer and it is not the package version. A relay speaks
+every protocol up to its own and refuses anything above it, so the rule is
+**upgrade the relay first**.
+
+### Refusals
+
+The relay's close codes live in WebSocket's private range. What a deployment
+does with each one is the point of having them:
+
+| Code | Name            | What the deployment does                                     |
+| ---- | --------------- | ------------------------------------------------------------ |
+| 4001 | `unlinked`      | Stops. The relay forgot this deployment; a human has to act. |
+| 4002 | `protocol`      | Retries slowly. Someone is about to upgrade the relay.       |
+| 4003 | `bad-signature` | Stops. The key on the volume and the link disagree.          |
+| 4004 | `token-spent`   | Stops. Unknown, expired, or already used. Mint another.      |
+| 4005 | `replaced`      | Stops. A newer connection from the same key superseded it.   |
+
+Anything else is the ordinary case: a dropped socket, a relay restart, a network
+that came back. The link backs off with jitter and dials again. A relay that is
+down for an hour is worth a knock once a minute, so the last rung of the ladder
+repeats.
+
+### What a deployment reports about its relay
+
+`state/deployment.json` gains a `relay` section the bootstrapper owns:
+`configured`, `state` (`connected`, `reconnecting`, `unpaired`), `nextRetryAt`
+and `lastClose`. Its identity section gains `keyFingerprint` and `relayUrl`. A
+deployment with no relay still carries the section, saying `configured: false`.
+"This deployment dials nothing" is a fact a console states rather than infers.
+
+`phoebe doctor` folds the same evidence into one `relay` check: `unpaired`,
+`paired`, `token-stale`, or `refused`. Only `refused` fails, because only a
+refusal is a state that will not change on its own.
 
 ## Running it by hand
 
@@ -140,8 +242,8 @@ run the command above.
 
 ## Not here yet
 
-`phoebe relay init`, which scaffolds the relay's Dockerfile, compose file and
-`.env.example`. The WebSocket endpoint deployments dial, pairing tokens, the
-links file, stored deployment reports, the events stream, and the console's
-pages. All of it joins this same process. See
+The heartbeat and the dark threshold, `forget` on the relay and
+`phoebe relay leave` on the host, reports pushed over the socket and stored on
+the volume, the events stream, and the console's pages. All of it joins this
+same process. See
 [the relay's shape](https://github.com/JesusFilm/phoebe/issues/506).

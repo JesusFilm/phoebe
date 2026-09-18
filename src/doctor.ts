@@ -3,7 +3,7 @@
 // is actually working. (A `--fix` mode that repairs at the current pin is a
 // mapped follow-up.)
 //
-// Seven deployment checks, all reads of state that already exists (three more —
+// Eight deployment checks, all reads of state that already exists (three more —
 // `labels`, `stray-members` and `stale-state` — are per tenant and live in the
 // tenant sweep below):
 //   1. cli            — installed bootstrapper vs the npm registry's latest
@@ -17,6 +17,9 @@
 //   7. launcher-floor — is the launcher at or above the engine's declared minBootstrap
 //                       floor? A violation deadlocks the deployment outright, not
 //                       merely slows it — the two checks are not the same thing.
+//   8. relay          — where this deployment stands with its console: unpaired,
+//                       paired, paired with a stale token still in `.env`, or
+//                       refused (#540)
 //
 // A tenant's scheduled work kinds may declare env keys of their own (#425);
 // doctor reports a missing one as a tenant finding, ahead of the engine child
@@ -44,6 +47,9 @@ import {
   type CrashLoopState,
 } from "../bootstrap/crash-loop.ts";
 import { type CredentialArm, resolveCredentialArm } from "../bootstrap/credential-arm.ts";
+import { deploymentReportPath, readDeploymentReport } from "../bootstrap/deployment-report.ts";
+import { RELAY_TOKEN_ENV } from "../bootstrap/relay-boot.ts";
+import { relayKeyPath } from "../bootstrap/relay-key.ts";
 import { parseDotenv } from "../bootstrap/engine-child-env.ts";
 import { readEngineSource, type ResolvedEngineSource } from "../bootstrap/engine-source.ts";
 import {
@@ -51,7 +57,8 @@ import {
   githubEngineDir,
   LS_REMOTE_TIMEOUT_MS,
 } from "../bootstrap/github-engine.ts";
-import { TENANT_CONFIG_FILE } from "../bootstrap/tenants.ts";
+import { TENANT_CONFIG_FILE, TENANT_ENV_FILE } from "../bootstrap/tenants.ts";
+import type { RelayReport } from "./contracts/deployment.ts";
 import { isInsideContainer } from "./execution-gate.ts";
 import { featureBranch } from "./feature-branch.ts";
 import { defaultGit, type GitRunner } from "./git-model.ts";
@@ -72,6 +79,7 @@ import {
   CONFIG_DEFAULTS,
   DEFAULT_PIPELINE_NAME,
   DEFAULT_PROMPT_FILE_BY_KIND,
+  readRelayField,
   resolveConfig,
 } from "./config-schema.ts";
 import { resolveDataBase } from "./paths.ts";
@@ -845,6 +853,114 @@ export function tenantTokenCheck(fields: {
 }
 
 /**
+ * The `relay` check (#505 §4, #540) — one line for the whole console side of a
+ * deployment, in the four words the pairing decision has.
+ *
+ * `unpaired`     `relay.url` is set and there is no key on the volume yet.
+ * `paired`       a key is there and the link is live, or between retries.
+ * `token-stale`  paired, but `PHOEBE_RELAY_TOKEN` is still set. The token is
+ *                spent and useless; leaving it in `.env` leaves a dead
+ *                credential lying where the next person will assume it works.
+ * `refused`      the relay turned this deployment away in a way no retry fixes.
+ *
+ * Only `refused` fails. A deployment that has not paired yet is mid-setup and a
+ * lingering token is a chore, but a refusal means a console cannot see this
+ * deployment at all and nothing about it will change on its own.
+ */
+export function relayCheck(fields: {
+  /** `relay.url`, or null when the config names no relay. */
+  url: string | null;
+  /** Why the block could not be read, when that is why `url` is null. */
+  configError?: string;
+  /** Is there a deployment key on the volume? */
+  keyPresent: boolean;
+  /** Is `PHOEBE_RELAY_TOKEN` still set anywhere doctor can see? */
+  tokenPresent: boolean;
+  /** The report's relay section, when there is a report to read. */
+  reported: RelayReport | null;
+}): DoctorCheck {
+  if (fields.configError !== undefined) {
+    return {
+      id: "relay",
+      state: "warn",
+      detail: `the \`relay\` block does not parse, so boot ignores it: ${fields.configError}`,
+    };
+  }
+  if (fields.url === null) {
+    return {
+      id: "relay",
+      state: "ok",
+      detail: "no `relay` block — this deployment dials nothing and is read locally",
+    };
+  }
+  const close = fields.reported?.lastClose ?? null;
+  if (fields.reported?.state === "unpaired" && fields.keyPresent && close !== null) {
+    return {
+      id: "relay",
+      state: "fail",
+      detail:
+        `refused by ${fields.url} — close ${close.code}${close.reason ? ` (${close.reason})` : ""} ` +
+        `at ${close.at}; the link stopped dialling and waits for a config change`,
+    };
+  }
+  if (!fields.keyPresent) {
+    return fields.tokenPresent
+      ? {
+          id: "relay",
+          state: "ok",
+          detail: `unpaired — ${RELAY_TOKEN_ENV} is set; the next boot pairs with ${fields.url}`,
+        }
+      : {
+          id: "relay",
+          state: "warn",
+          detail:
+            `unpaired — ${fields.url} is configured but there is no key on the volume and no ` +
+            `${RELAY_TOKEN_ENV}. Mint a pairing token on the relay and set it in the root \`.env\``,
+        };
+  }
+  if (fields.tokenPresent) {
+    return {
+      id: "relay",
+      state: "warn",
+      detail:
+        `token-stale — paired with ${fields.url}, but ${RELAY_TOKEN_ENV} is still set. ` +
+        `The token was spent at pairing; remove it from the root \`.env\``,
+    };
+  }
+  const where = fields.reported === null ? "" : ` (${fields.reported.state})`;
+  return { id: "relay", state: "ok", detail: `paired with ${fields.url}${where}` };
+}
+
+/**
+ * The `relay` block as doctor reads it: the URL, or the complaint that stopped
+ * it being read. A malformed block is reported rather than skipped — boot
+ * ignores one with a warning, and a doctor that answered "no relay configured"
+ * would agree with boot about the behaviour while hiding the typo behind it.
+ */
+function readRelayBlock(rootConfig: Record<string, unknown> | null): {
+  url: string | null;
+  error: string | null;
+} {
+  if (rootConfig === null) return { url: null, error: null };
+  try {
+    return { url: readRelayField(rootConfig)?.url ?? null, error: null };
+  } catch (error) {
+    return { url: null, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * Is a pairing token still lying around? Both places it could be: the process
+ * env (doctor run inside the container) and the root `.env` (doctor run on the
+ * host against the file the operator actually edits).
+ */
+function relayTokenPresent(env: NodeJS.ProcessEnv, configDir: string): boolean {
+  if ((env[RELAY_TOKEN_ENV] ?? "").length > 0) return true;
+  const dotenv = readTenantDotenv(join(configDir, TENANT_ENV_FILE));
+  return (dotenv[RELAY_TOKEN_ENV] ?? "").length > 0;
+}
+
+/**
  * The `stale-state` check (#411/#426) — doctor's first look at the repos data
  * directory, and its only one.
  *
@@ -1389,14 +1505,29 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
     checks.push(launcherFloorCheck({ minBootstrap, launcherVersion, launcherSource }));
   }
 
+  // Where tenant data lives, and where the deployment keeps its own state: the
+  // container constant unless `PHOEBE_DATA_DIR` moves it, which is how doctor
+  // reads a mounted volume from the host.
+  const dataBase = resolveDataBase(deps.env);
+
+  // 8. The relay. Read from three places at once — the config's `relay` block,
+  // the key on the volume, and the report the bootstrapper writes — because no
+  // one of them alone distinguishes "not set up yet" from "turned away".
+  const relay = readRelayBlock(rootConfig);
+  checks.push(
+    relayCheck({
+      url: relay.url,
+      ...(relay.error !== null ? { configError: relay.error } : {}),
+      keyPresent: existsSync(relayKeyPath(dataBase)),
+      tokenPresent: relayTokenPresent(deps.env, deps.configDir),
+      reported: readDeploymentReport(deploymentReportPath(dataBase))?.relay ?? null,
+    }),
+  );
+
   // Tenant sweep: workspace mode enumerates the same fleet boot supervises;
   // solo probes the root itself (the deployment root IS the tenant there).
   const tenants: TenantDoctorRow[] = [];
   const inContainer = isInsideContainer();
-  // Where tenant data lives, for the stale-state check: the container constant
-  // unless `PHOEBE_DATA_DIR` moves it, which is how doctor reads a mounted
-  // volume from the host.
-  const dataBase = resolveDataBase(deps.env);
   const enumeration = await enumerateWorkspaceTenants({ configDir: deps.configDir });
   if (enumeration !== null) {
     // Bounded, order-preserving: each probe can wait out its 30s timeout, so a

@@ -24,6 +24,8 @@ export const RELAY_ROUTES = {
   signOut: "/auth/sign-out",
   /** GET — who the session belongs to. The read that proves a session works. */
   me: "/api/me",
+  /** POST — mint a pairing token for one new deployment. Shown once (#540). */
+  pairingTokens: "/api/pairing-tokens",
 } as const;
 
 /** One of the relay's paths. */

@@ -45,6 +45,20 @@ The container's main process. It materializes the engine at the named ref, paren
 hands it credentials and slots, and relaunches it when the config or the ref moves.
 _Avoid_: supervisor, launcher, wrapper
 
+**Deployment report**:
+The whole object one deployment hands a console: identity, what the bootstrapper is doing,
+and the fleet matrix with each pipeline's state derived. One fixed-size file,
+`state/deployment.json`, rewritten when something moves: read locally, and shipped as-is to
+a relay. A consumer renders it and derives nothing of its own.
+_Avoid_: snapshot (that is `status.json`), state (that is the directory), status (that is
+the CLI verb), manifest
+
+**Pass**:
+One turn of an engine's loop: poll, select, admit what it can, then wait. A supervised
+engine reports each completed pass to its bootstrapper, which is the only evidence that a
+loop with nothing to do is still turning.
+_Avoid_: tick, cycle (that is the whole life of a work unit), iteration
+
 **Arm**:
 One of a mutually exclusive pair of shapes a deployment takes, resolved rather than
 configured. The deployment arms are **solo** (one tenant) and **workspace** (a fleet); the
@@ -211,7 +225,10 @@ _Avoid_: kind secret, scoped credential
 
 **Wedged**:
 A pipeline whose oldest in-flight unit has outlived its own run budget plus one poll
-interval. A question `phoebe list` raises, never a state the engine records.
+interval, or which has completed no loop pass in three poll intervals while not waiting for
+a slot. A question the reader derives — `phoebe list` from the snapshot alone, the
+deployment report from that plus the pass clock the bootstrapper holds — never a state the
+engine records.
 _Avoid_: hung, stuck, frozen
 
 **Stale**:
@@ -244,3 +261,27 @@ the first verified Google login when it is empty, merged at every start with the
 addresses in `ALLOWED_EMAILS`. A person is keyed on Google's `sub`; the address is what
 an operator types.
 _Avoid_: whitelist, access list, users
+
+**Pairing token**:
+The single-use credential the console mints so one deployment can register its key.
+Fifteen minutes, shown once, held in the relay's memory and never on its volume; the
+operator puts it in the root `.env` as `PHOEBE_RELAY_TOKEN` and removes it once pairing
+is done.
+_Avoid_: API key, join code
+
+**Deployment key**:
+The Ed25519 key pair on the data volume (`state/relay-key`) that is a deployment's
+identity to its relay. Generated in the container at the first pairing, presented as its
+public half, and used to sign a relay-issued challenge on every connection after.
+_Avoid_: device key, machine key
+
+**Link**:
+The relay's record of a deployment — public key, name, first seen — in `links.json`. The
+other half of the link is the key on the deployment's own volume; neither half needs the
+other's process to be alive.
+_Avoid_: registration (the act, not the record), enrollment
+
+**Protocol**:
+The integer both sides exchange in the handshake. A relay speaks every protocol up to its
+own and refuses anything above it, so the rule is: upgrade the relay first.
+_Avoid_: version (that is the package)
