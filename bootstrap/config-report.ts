@@ -137,7 +137,11 @@ export function createConfigCollector(opts: {
     try {
       const parsed = parseConfigPayload(lastJsonLine(result.stdout));
       version = parsed.version;
-      return parsed.row;
+      // The file the row is about, stamped here rather than asked of the
+      // engine: the bootstrapper is the process that both asks and holds the
+      // pen (#503), so the reader that can write a file is the one that names
+      // it — and the affordance works against an engine older than the field.
+      return { ...parsed.row, configPath: target.configPath };
     } catch (error) {
       const why =
         result.status === 0
@@ -145,7 +149,10 @@ export function createConfigCollector(opts: {
             ? error.message
             : String(error)
           : diagnosis(result);
-      return unknownConfig(target.configPath, `could not read the effective config — ${why}`);
+      return {
+        ...unknownConfig(target.configPath, `could not read the effective config — ${why}`),
+        configPath: target.configPath,
+      };
     }
   };
 

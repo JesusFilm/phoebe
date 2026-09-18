@@ -25,11 +25,22 @@
 // the tenant rather than about any one of its rows, and an operator who never
 // scrolls should still see it.
 //
-// Editing is #503. Nothing here writes, so no row carries an affordance that
-// would do nothing.
+// **Editing is one column, and it is per leaf** (#503, #547). A leaf `config
+// set` accepts carries an Edit button; every other leaf carries the sentence
+// saying why, with the manual edit and the `phoebe config set` line under it.
+// The table is otherwise unchanged: what a row says about a value does not
+// depend on whether it can be changed from here. The column's own conversation —
+// the form, the receipt, the reconcile behind it — is config-edit-row.tsx.
 
 import { useState } from "react";
-import type { ConfigWarning, DeploymentReport, SettingSource } from "phoebe-agent/contracts";
+import type {
+  ConfigReport,
+  ConfigWarning,
+  DeploymentReport,
+  SettingSource,
+} from "phoebe-agent/contracts";
+import { leafEditability } from "./config-edit.ts";
+import { EditCell, type EditSeam } from "./config-edit-row.tsx";
 import {
   filterRows,
   sourceCounts,
@@ -43,7 +54,21 @@ import {
 import { age } from "./facts.ts";
 import { configOf } from "./report.ts";
 
-export function ConfigTab({ report, now }: { report: DeploymentReport; now: Date }) {
+export function ConfigTab({
+  report,
+  now,
+  onEdit,
+}: {
+  report: DeploymentReport;
+  now: Date;
+  /**
+   * Send one patch, or absent when this console has no way to (#547). Absent
+   * drops the column outright rather than filling it with disabled buttons —
+   * there is nothing to say about editing on a page that cannot. That is what
+   * the companion's renderer gets until its own seam lands (#553).
+   */
+  onEdit?: EditSeam["send"];
+}) {
   const [query, setQuery] = useState("");
   const [source, setSource] = useState<SettingSource | null>(null);
   const config = configOf(report);
@@ -106,7 +131,14 @@ export function ConfigTab({ report, now }: { report: DeploymentReport; now: Date
       {tenants.length === 0 ? (
         <p className="muted">This report names no tenant, so there is no config to show.</p>
       ) : (
-        shown.map((tenant) => <TenantSection key={tenant.tenant} tenant={tenant} />)
+        shown.map((tenant) => (
+          <TenantSection
+            key={tenant.tenant}
+            tenant={tenant}
+            root={config.root}
+            {...(onEdit !== undefined ? { seam: { send: onEdit, report, root: config.root } } : {})}
+          />
+        ))
       )}
       {hidden ? (
         <p className="muted">No leaf matches. Every setting is still there; the filter is not.</p>
@@ -115,7 +147,15 @@ export function ConfigTab({ report, now }: { report: DeploymentReport; now: Date
   );
 }
 
-function TenantSection({ tenant }: { tenant: TenantLeaves }) {
+function TenantSection({
+  tenant,
+  root,
+  seam,
+}: {
+  tenant: TenantLeaves;
+  root: ConfigReport["root"];
+  seam?: EditSeam;
+}) {
   return (
     <>
       <h2>{tenant.tenant}</h2>
@@ -133,11 +173,18 @@ function TenantSection({ tenant }: { tenant: TenantLeaves }) {
               <th>path</th>
               <th>value</th>
               <th>source</th>
+              {seam === undefined ? null : <th>edit</th>}
             </tr>
           </thead>
           <tbody>
             {tenant.rows.map((row) => (
-              <LeafRow key={row.path} row={row} />
+              <LeafRow
+                key={row.path}
+                row={row}
+                configPath={tenant.configPath}
+                root={root}
+                {...(seam !== undefined ? { seam } : {})}
+              />
             ))}
           </tbody>
         </table>
@@ -160,7 +207,17 @@ function Warnings({ warnings }: { warnings: readonly ConfigWarning[] }) {
   );
 }
 
-function LeafRow({ row }: { row: ConfigLeafRow }) {
+function LeafRow({
+  row,
+  configPath,
+  root,
+  seam,
+}: {
+  row: ConfigLeafRow;
+  configPath: string | undefined;
+  root: ConfigReport["root"];
+  seam?: EditSeam;
+}) {
   const { leaf } = row;
   const provenance = provenanceLine(leaf);
   return (
@@ -191,6 +248,15 @@ function LeafRow({ row }: { row: ConfigLeafRow }) {
           <div className="facts">read by {leaf.reader}</div>
         </details>
       </td>
+      {seam === undefined ? null : (
+        <td>
+          <EditCell
+            row={row}
+            editability={leafEditability({ path: row.path, leaf, configPath, root })}
+            seam={seam}
+          />
+        </td>
+      )}
     </tr>
   );
 }

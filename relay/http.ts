@@ -3,9 +3,17 @@
 //
 // What a signed-in person can ask for is who they are, a pairing token for a new
 // deployment, the fleet as the socket endpoint knows it, one deployment with the
-// last report it pushed, the stream those reports arrive on, and the forgetting of
-// one deployment. The console's pages sit on exactly these answers, and the relay
-// hands the pages out too — the bundle is in the same package (console-assets.ts).
+// last report it pushed, the stream those reports arrive on, the forgetting of
+// one deployment, and one field of one deployment's config set. The console's
+// pages sit on exactly these answers, and the relay hands the pages out too —
+// the bundle is in the same package (console-assets.ts).
+//
+// **A verb that travels to a deployment is a courier's job** (#503, #547). The
+// relay stamps the signed-in address onto the edit — that is the one field it
+// authors, and it authors it because a browser must not be able to name someone
+// else as the editor — sends the patch down the rail, and hands the receipt back
+// exactly as it came. It does not read the receipt, judge it, or translate its
+// word, so a deployment newer than its relay is quoted rather than summarized.
 //
 // **The API is matched first, and a path under it never falls through to a page.**
 // Every route below is tried before the console sees the request, and the console
@@ -24,9 +32,17 @@
 // a 200.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { RELAY_HEARTBEAT_MS } from "../src/contracts/relay-protocol.ts";
+import {
+  RELAY_MESSAGES,
+  RELAY_HEARTBEAT_MS,
+  RELAY_UNDELIVERED,
+  type RelayReceipt,
+  type RelayRequest,
+} from "../src/contracts/relay-protocol.ts";
 import { RELAY_ROUTES } from "../src/contracts/relay-routes.ts";
 import type {
+  RelayConfigSetAnswer,
+  RelayConfigSetRequest,
   RelayDeploymentDetail,
   RelayDeploymentRow,
   RelayIdentity,
@@ -68,6 +84,8 @@ export type RelayHandlerOptions = {
   fleet: () => {
     rows: (now?: Date) => RelayDeploymentRow[];
     forget: (fingerprint: string) => Link | null;
+    /** Carry one `id`-bearing request to a deployment and wait for its receipt. */
+    request: (fingerprint: string, message: RelayRequest) => Promise<RelayReceipt>;
   };
   /** The reports on the volume — the per-deployment read's other half (#542). */
   reports: Reports;
@@ -128,6 +146,9 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
     }
     if (method === "POST" && url.pathname === RELAY_ROUTES.forget) {
       return await forgetDeployment(request, response);
+    }
+    if (method === "POST" && url.pathname === RELAY_ROUTES.configSet) {
+      return await setConfigField(request, response);
     }
     if (method === "GET" && url.pathname === RELAY_ROUTES.events) {
       return streamEvents(request, response);
@@ -413,6 +434,64 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
     warn(`[phoebe:relay] ${session.email} forgot ${link.name} (${link.fingerprint})`);
     json(response, 200, { forgotten: { fingerprint: link.fingerprint, name: link.name } });
   }
+
+  /**
+   * One field of one deployment's root config, as a person asked for it (#503,
+   * #547).
+   *
+   * The body is checked to the letter before anything leaves this process. A
+   * value that is not a literal, a missing config fingerprint, a path that is not
+   * a string: each is a 400 rather than a patch sent on to be refused at the far
+   * end, because the deployment's refusals are about its file and these are about
+   * this request.
+   *
+   * The one field the relay writes is `by`. It is the session's address and never
+   * the body's — a console that could name the editor would be able to sign
+   * somebody else's name to an edit in the ledger.
+   *
+   * A deployment the relay has no link for is a 404, the same as the read on
+   * `/api/deployments/<fingerprint>`. One the relay knows but cannot reach is a
+   * 200 carrying `undelivered`: the ask was well formed and the answer is that it
+   * did not arrive, which is a fact about the deployment rather than about the
+   * request.
+   */
+  async function setConfigField(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const session = options.sessions.get(parseCookies(request.headers.cookie).get(SESSION_COOKIE));
+    if (session === null) {
+      json(response, 401, { error: "not-signed-in" });
+      return;
+    }
+    const edit = readConfigSet(await readJsonBody(request));
+    if (edit === null) {
+      json(response, 400, { error: "malformed-edit" });
+      return;
+    }
+    const known = options
+      .fleet()
+      .rows(clock())
+      .some((row) => row.fingerprint === edit.fingerprint);
+    if (!known) {
+      json(response, 404, { error: "no-such-deployment" });
+      return;
+    }
+    const receipt = await options.fleet().request(edit.fingerprint, {
+      type: RELAY_MESSAGES.configSet,
+      id: edit.id,
+      path: edit.path,
+      value: edit.value,
+      fingerprint: edit.configFingerprint,
+      by: session.email,
+    });
+    warn(
+      `[phoebe:relay] ${session.email} set ${edit.path} on ${edit.fingerprint} — ` +
+        `${receipt.outcome}`,
+    );
+    const answer: RelayConfigSetAnswer =
+      receipt.outcome === RELAY_UNDELIVERED
+        ? { outcome: RELAY_UNDELIVERED }
+        : { outcome: receipt.outcome, receipt: receipt.detail };
+    json(response, 200, answer);
+  }
 }
 
 /**
@@ -494,4 +573,39 @@ function redirect(response: ServerResponse, location: string): void {
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * One config-set body, or null when it is not one (#547).
+ *
+ * Strict about every field, and about the value most of all: a leaf is a
+ * literal, so an object or an array arriving under `value` is a malformed
+ * request rather than something to splice into a file. `undefined` is not a
+ * literal either — JSON cannot carry it, and a body that omitted the field
+ * would otherwise read as "set this to nothing".
+ *
+ * `by` is deliberately not read. The relay stamps the session's address, so a
+ * body that carried one is ignored rather than refused: the field a caller
+ * cannot influence is better than a field a caller learns to leave out.
+ */
+export function readConfigSet(body: unknown): RelayConfigSetRequest | null {
+  if (typeof body !== "object" || body === null) return null;
+  const candidate = body as Partial<RelayConfigSetRequest>;
+  const strings = [
+    candidate.fingerprint,
+    candidate.id,
+    candidate.path,
+    candidate.configFingerprint,
+  ];
+  if (strings.some((field) => typeof field !== "string" || field.length === 0)) return null;
+  if (!isFingerprint(candidate.fingerprint as string)) return null;
+  const value = candidate.value;
+  if (value !== null && !["string", "number", "boolean"].includes(typeof value)) return null;
+  return {
+    fingerprint: candidate.fingerprint as string,
+    id: candidate.id as string,
+    path: candidate.path as string,
+    value: value as RelayConfigSetRequest["value"],
+    configFingerprint: candidate.configFingerprint as string,
+  };
 }

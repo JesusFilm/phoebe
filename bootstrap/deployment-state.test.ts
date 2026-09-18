@@ -784,6 +784,67 @@ describe("the config section", () => {
   });
 });
 
+describe("the edit ledger the report ships (#503, #547)", () => {
+  const entry = {
+    id: "edit-1",
+    file: "/etc/phoebe/phoebe.config.ts",
+    path: "pipelines.work.concurrency",
+    value: 4,
+    at: "2026-05-05T00:00:00.000Z",
+    by: "ada@example.test",
+  };
+
+  test("a deployment with no pen has no section — absent, never an empty list", () => {
+    const h = harness();
+    h.state.noteEngine({ ref: "main", sha: "abc", quarantinedSha: null });
+    expect(h.latest()!.edits).toBeUndefined();
+  });
+
+  test("a pen's live entries ride in every report, read at publish time", () => {
+    let live = [entry];
+    const h = harness({ edits: () => live });
+    h.state.noteEngine({ ref: "main", sha: "abc", quarantinedSha: null });
+    expect(h.latest()!.edits).toEqual([entry]);
+
+    // The operator committed: the pen's list empties, and the report says so.
+    live = [];
+    h.state.publish();
+    expect(h.latest()!.edits).toEqual([]);
+  });
+
+  test("the ledger moving is news on its own, even when nothing else moved", () => {
+    let live: (typeof entry)[] = [];
+    const h = harness({ edits: () => live });
+    h.state.noteEngine({ ref: "main", sha: "abc", quarantinedSha: null });
+    const writes = h.written.length;
+
+    live = [entry];
+    h.state.publish();
+
+    expect(h.written.length).toBe(writes + 1);
+  });
+
+  test("an unmoved ledger writes nothing, like every other section", () => {
+    const h = harness({ edits: () => [entry] });
+    h.state.noteEngine({ ref: "main", sha: "abc", quarantinedSha: null });
+    const writes = h.written.length;
+
+    h.advance(60_000);
+    h.state.publish();
+
+    expect(h.written.length).toBe(writes);
+  });
+
+  test("the last applied edit's id rides on the reconcile section, for a console to follow", () => {
+    const h = harness({ lastEditId: () => "edit-1" });
+    h.state.noteEngine({ ref: "main", sha: "abc", quarantinedSha: null });
+    expect(h.latest()!.bootstrapper.reconcile).toMatchObject({
+      phase: "idle",
+      lastEditId: "edit-1",
+    });
+  });
+});
+
 describe("the file a workspace with many tenants writes", () => {
   /** A tenant tree about the size a real one costs — ~200 annotated leaves. */
   function fatRow(id: string): TenantEffectiveConfig {

@@ -23,6 +23,8 @@
 export type { StopOutcome } from "./stop-outcome.ts";
 export { RELAY_ROUTES } from "./relay-routes.ts";
 export type {
+  RelayConfigSetAnswer,
+  RelayConfigSetRequest,
   RelayConnectionState,
   RelayDeploymentDetail,
   RelayDeploymentRow,
@@ -63,6 +65,7 @@ export {
   type RelaySecretSet,
   type RelayToDeployment,
 } from "./relay-protocol.ts";
+export { CLOSED_EDIT_BLOCKS } from "./config-edit.ts";
 export type {
   ConfigEdit,
   EditReceipt,

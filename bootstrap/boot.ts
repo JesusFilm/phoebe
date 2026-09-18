@@ -1704,6 +1704,9 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     // one an edit's fingerprint must be taken over.
     rootConfig: createRootConfigSource(configPath),
     lastEditId: () => editor.lastEditId(),
+    // The ledger's live entries, so a console can say "edits not yet in a
+    // commit" without reading this deployment's git (#503).
+    edits: () => editor.liveEdits(),
     // Workspace: the tenant's own `.env` weighed against the deployment env.
     // Solo: the root *is* the tenant, so those are the same env (#162).
     armOf:
@@ -1722,7 +1725,10 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
         `Supervision is unaffected; the report is retried on every change.`,
     ),
   });
-  relay.start(deployment);
+  // The pen goes up the rail with the link (#503, #547): a console's edit is
+  // the same call a shell `phoebe config set` makes, arriving from a message
+  // instead of from argv, so there is one writer and one reconcile path.
+  relay.start(deployment, { verbs: { configSet: (edit) => editor.apply(edit) } });
 
   // The deployment's doctor runs (#507 §4-§7, #534). One cell for the leases
   // because only the workspace arm can hold any: solo's App-arm child mints its

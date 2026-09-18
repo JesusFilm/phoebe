@@ -119,18 +119,19 @@ way out of a lockout.
 Paths live in `phoebe-agent/contracts` as `RELAY_ROUTES`, so the console imports
 them instead of copying strings.
 
-| Method | Path                             | What happens                                              |
-| ------ | -------------------------------- | --------------------------------------------------------- |
-| `GET`  | `/auth/google/start`             | Redirects to Google.                                      |
-| `GET`  | `/auth/google/callback`          | Google's redirect back. The only URI Google knows.        |
-| `POST` | `/auth/sign-out`                 | Drops the session. 204.                                   |
-| `GET`  | `/api/me`                        | `{ sub, email }` for a signed-in caller, 401 otherwise.   |
-| `POST` | `/api/pairing-tokens`            | Mints one pairing token. Shown once; 401 otherwise.       |
-| `GET`  | `/api/deployments`               | Every link, with where the relay holds each one.          |
-| `GET`  | `/api/deployments/<fingerprint>` | One link's row, plus the last report it pushed.           |
-| `POST` | `/api/deployments/forget`        | Forgets one deployment, named by fingerprint in the body. |
-| `GET`  | `/api/events`                    | The event stream: reports and connection changes.         |
-| `GET`  | `/` and `/assets/…`              | The console's build. Public, and the only paths that are. |
+| Method | Path                             | What happens                                                     |
+| ------ | -------------------------------- | ---------------------------------------------------------------- |
+| `GET`  | `/auth/google/start`             | Redirects to Google.                                             |
+| `GET`  | `/auth/google/callback`          | Google's redirect back. The only URI Google knows.               |
+| `POST` | `/auth/sign-out`                 | Drops the session. 204.                                          |
+| `GET`  | `/api/me`                        | `{ sub, email }` for a signed-in caller, 401 otherwise.          |
+| `POST` | `/api/pairing-tokens`            | Mints one pairing token. Shown once; 401 otherwise.              |
+| `GET`  | `/api/deployments`               | Every link, with where the relay holds each one.                 |
+| `GET`  | `/api/deployments/<fingerprint>` | One link's row, plus the last report it pushed.                  |
+| `POST` | `/api/deployments/forget`        | Forgets one deployment, named by fingerprint in the body.        |
+| `POST` | `/api/deployments/config-set`    | Sets one config field on one deployment. The receipt comes back. |
+| `GET`  | `/api/events`                    | The event stream: reports and connection changes.                |
+| `GET`  | `/` and `/assets/…`              | The console's build. Public, and the only paths that are.        |
 
 A successful sign-in lands on `/`, the console. The pages are public on purpose:
 the sign-in control is part of the bundle, and every read behind it answers 401
@@ -138,8 +139,8 @@ on its own. A path with no file behind it is still a JSON `no-such-route` — th
 console routes on the URL hash, so the relay needs no catch-all and keeps being
 able to say a route does not exist.
 
-The fingerprint rides in the forget body rather than in the path so the route
-stays one constant a console imports. No fingerprint spells `forget`, and the
+The fingerprint rides in the forget and config-set bodies rather than in the path
+so each route stays one constant a console imports. No fingerprint spells `forget`, and the
 per-deployment read that shares the prefix is a `GET`. That read only matches a
 real fingerprint — 32 characters of base64url — so a path segment that is not one
 is a `no-such-route` and never reaches the volume the reports are named on.
@@ -449,8 +450,25 @@ what they read once they have found the row. A value that lost sits under the
 value that beat it, so "why isn't my file value taking effect" is answered where
 the question is asked. Deprecated aliases are listed above the table rather than
 row by row, and the fingerprint of the config file heads the tab — that is the
-text a later edit checks itself against. Nothing here writes; editing is its own
-piece of work.
+text a later edit checks itself against.
+
+The last column is the edit. A leaf `phoebe config set` accepts carries an
+**Edit** button; every other leaf carries a sentence saying why not, with the
+exact change to make by hand and the `phoebe config set` line to make it with.
+The closed set is the deployment's own — the fleet declaration, the engine pin,
+the relay block, the host's `deployment` block, `paths`, a work kind's
+declaration, an opaque value, and any leaf a `PHOEBE_*` variable already sets —
+read from the same table the deployment refuses from, so the console cannot start
+offering an edit the deployment would turn away. In a workspace only the **root**
+config is editable: a tenant's row says which checkout its config lives in and
+gives the command for that file.
+
+Saving sends `{ path, value }` with the fingerprint the page was drawn from, and
+the answer is the deployment's receipt — `written` or `refused`, the refusal
+always carrying the manual edit. After `written`, the panel follows the report:
+the fleet drains onto the new config and comes back idle with `lastEditId` naming
+the edit, and the leaf above turns `file` with the new value. Nothing is applied
+except through the file.
 
 The table is section 5 of the report, which the running engine computed. A
 deployment whose engine is older than that section says so; its settings are
@@ -460,6 +478,30 @@ the host still answers.
 A deployment that has never connected says that instead of showing four empty
 tabs — the pairing token was spent, nothing has booted since, and there is nothing
 to show until it does.
+
+### Setting one config field
+
+`POST /api/deployments/config-set` with
+`{ fingerprint, id, path, value, configFingerprint }`:
+
+- `fingerprint` is the deployment; `id` is the edit's idempotency key, so the
+  same id twice is one write and the second call gets the first receipt back.
+- `path` is a dotted path into the config, the one the config tab printed.
+- `value` is a literal. An object or a list is a `400`: a leaf holds one value,
+  and rewriting a block is a file edit.
+- `configFingerprint` is the `sha256:` the report's config section carried. A
+  file that moved since is refused `stale` rather than merged.
+
+The relay stamps the signed-in address as the edit's `by` — that is the one field
+it authors, and a `by` in the body is ignored, so a browser cannot sign somebody
+else's name to an edit. Then it carries the patch down the rail and hands the
+receipt back without reading it.
+
+The answer is `{ outcome, receipt? }`. `outcome` is the deployment's own word or
+the relay's `undelivered`, and it is a `string` rather than a closed union
+because a deployment newer than its relay is quoted, not translated. A deployment
+the relay has no link for is a `404`; one it knows but cannot reach is a `200`
+carrying `undelivered` — in flight is never a queue, and the operator re-issues.
 
 ## Running it by hand
 

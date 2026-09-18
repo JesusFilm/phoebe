@@ -28,11 +28,20 @@ The reports arrive opaque — the relay stores and forwards `state/deployment.js
 without reading a field of it — so [`src/report.ts`](src/report.ts) is the first
 thing in the chain to look inside, and it checks the `schema` integer before it
 trusts a field. [`src/facts.ts`](src/facts.ts) holds the fleet's rollup and sort,
-[`src/deployment-facts.ts`](src/deployment-facts.ts) holds one deployment's lines
-and [`src/config-facts.ts`](src/config-facts.ts) flattens the effective-config
-tree into the rows its table draws — all pure and tested apart from the
-components: two readers of one report must not be able to disagree about what it
-says.
+[`src/deployment-facts.ts`](src/deployment-facts.ts) holds one deployment's lines,
+[`src/config-facts.ts`](src/config-facts.ts) flattens the effective-config
+tree into the rows its table draws, and [`src/config-edit.ts`](src/config-edit.ts)
+decides which of those rows may be edited and what the rest say instead — all pure
+and tested apart from the components: two readers of one report must not be able to
+disagree about what it says.
+
+Editing is the one thing the console asks a deployment to _do_
+([#547](https://github.com/JesusFilm/phoebe/issues/547)). The deployment is the
+authority on every edit: it holds the pen, it validates the patch against the
+loader it is running, and its refusal — with the exact manual edit attached — is
+the answer. The console's own decision is narrower and comes first, which leaves
+it reading `CLOSED_EDIT_BLOCKS` out of `phoebe-agent/contracts` rather than
+keeping a table of its own.
 
 Pages are hash routes ([`src/route.ts`](src/route.ts)), because the relay serves
 no single-page fallback and the companion loads the bundle off a custom scheme

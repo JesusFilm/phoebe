@@ -35,13 +35,23 @@ import { startRelay, type RunningRelay } from "./serve.ts";
 const OFF_LIMITS = [
   "src/pipeline-listing.ts",
   "src/contracts/deployment.ts",
+  // The edit receipt is the deployment's answer about the deployment's own file
+  // (#503). The relay carries one verbatim and reads no field of it, so naming
+  // the shape would be the first step towards policing the word (#547).
+  "src/contracts/config-edit.ts",
   "src/contracts/pipeline-state.ts",
   "src/contracts/status-snapshot.ts",
   "src/unit-event.ts",
 ];
 
 /** Derivation by name: if one of these appears in the relay, something is deriving. */
-const DERIVERS = ["pipelineState", "wedgedVerdict", "DeploymentReport", "StatusSnapshot"];
+const DERIVERS = [
+  "pipelineState",
+  "wedgedVerdict",
+  "DeploymentReport",
+  "StatusSnapshot",
+  "EditReceipt",
+];
 
 const ADA: GoogleIdentity = { sub: "sub-ada", email: "ada@example.test", emailVerified: true };
 const google: IdentityProvider = {

@@ -1164,6 +1164,24 @@ Two flags matter when something else is driving:
   write and the second call gets the first one's receipt back. The record rolls
   off as soon as you edit or commit the file yourself.
 
+### The same verb, from the console
+
+A deployment paired with a relay can be edited from the config tab of the web
+console, and it is this code that runs: the console sends `{ path, value }` with
+the fingerprint its page was drawn from, the relay stamps the signed-in address
+as the edit's author, and the bootstrapper applies it to the file exactly as a
+shell run would. The receipt an operator sees is the one printed above, including
+the manual edit when it is a refusal.
+
+Two things the console adds. It offers the affordance only on leaves this verb
+accepts, from the same table of refusals — so a closed leaf shows the sentence
+and the command instead of a button that would be turned away. And after
+`written` it follows the deployment's report: the reconcile it set going appears
+there as `reconciling (config)` and then as idle with `lastEditId` naming the
+edit, with the leaf reading `file` at its new value. The report also ships the
+live ledger, so a console can say "edits not yet in a commit" without reading
+your git. [`relay.md`](relay.md#setting-one-config-field) has the route and the answers.
+
 ## GitHub App arm
 
 Two variables in the **deployment** env-file select the `app` credential arm.

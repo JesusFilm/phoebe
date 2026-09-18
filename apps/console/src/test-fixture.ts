@@ -131,6 +131,9 @@ export function effectiveConfig(
 ): TenantEffectiveConfig {
   return {
     tenant: "JesusFilm/youtube-studio",
+    // The solo arm: the deployment root *is* the tenant, so this row is about
+    // the one file a console may edit (#503, #547).
+    configPath: "/etc/phoebe/phoebe.config.ts",
     error: null,
     fields: {
       repoSlug: {
