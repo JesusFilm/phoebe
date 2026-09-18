@@ -33,8 +33,7 @@ import { createHash } from "node:crypto";
 import { isSet } from "./credential-arm.ts";
 import { gitIdentityEnv, type GitIdentity } from "./git-identity.ts";
 import { type MintedCredentials } from "./tenants.ts";
-import { WORK_KIND_NAMES } from "../src/config-schema.ts";
-import { workKindEnvVar } from "../src/provider-selection.ts";
+import { deploymentGlobalEnvNames } from "../src/settings-catalogue.ts";
 
 /**
  * Hardcoded base allowlist: process essentials plus the deployment-global git
@@ -54,24 +53,18 @@ export const ENGINE_CHILD_BASE_KEYS = [
 
 /**
  * Deployment-global `PHOEBE_*` knobs the engine reads that are safe to share
- * across every tenant. Deliberately excludes the per-tenant config-overlay keys
- * (`PHOEBE_REPO_SLUG`, `PHOEBE_INSTALL_COMMAND`, …): each tenant loads its own
- * `phoebe.config.ts`, so a global overlay would corrupt every tenant identically.
+ * across every tenant — the settings catalogue's own answer (#530), so the list
+ * tracks the catalogue instead of drifting behind it. Deliberately excludes the
+ * tenant-identity settings (`PHOEBE_REPO_SLUG`, `PHOEBE_INSTALL_COMMAND`, the
+ * label names): each tenant loads its own `phoebe.config.ts`, so one global
+ * value would corrupt every tenant identically. See `deploymentGlobalEnvNames`.
  */
 export const ENGINE_CHILD_DEPLOYMENT_KNOBS = [
-  "PHOEBE_POLL_INTERVAL_MS",
-  "PHOEBE_RUN_TIMEOUT_MS",
-  "PHOEBE_MAX_UNIT_TIMEOUTS",
+  ...deploymentGlobalEnvNames(),
+  // Not a setting but a fact about where this deployment keeps its data, and
+  // every derived tenant path hangs off it, so a child that cannot see it looks
+  // in the wrong place.
   "PHOEBE_DATA_DIR",
-  "PHOEBE_BASE",
-  "PHOEBE_AGENT",
-  "PHOEBE_MODEL",
-  "PHOEBE_EFFORT",
-  // The per-work-kind variants of the trio above (#300), e.g.
-  // PHOEBE_REVIEWS_MODEL — generated so the list tracks the closed kind set.
-  ...WORK_KIND_NAMES.flatMap((kind) =>
-    (["AGENT", "MODEL", "EFFORT"] as const).map((knob) => workKindEnvVar(kind, knob)),
-  ),
 ] as const;
 
 /**

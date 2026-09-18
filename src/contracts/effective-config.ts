@@ -115,6 +115,15 @@ export type ConfigWarning = { path: string; message: string };
 export type TenantEffectiveConfig = {
   /** The tenant's `repoSlug` when it could be read, else the config's path. */
   tenant: string;
+  /**
+   * The file this row's settings were read from, when the reader knows it
+   * (#503, #547). Stamped by the bootstrapper, which asked one checkout about
+   * one config path — so a console can tell the one editable file (the root
+   * config, the only read-write mount) from a tenant config that is the
+   * operator's to edit in its own checkout. Absent on a row nobody could ask
+   * for, and on any answer an older bootstrapper embedded.
+   */
+  configPath?: string;
   /** Why the settings are unknown, or null when they are known. */
   error: string | null;
   fields: EffectiveFields | null;

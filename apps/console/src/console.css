@@ -582,3 +582,53 @@ details.why > summary::marker {
   margin: 4px 0;
   padding: 6px 10px;
 }
+
+/* The colour of a verdict the deployment itself called a success — the other
+ * half of `.bad`, and used for exactly the same reason: nothing on screen
+ * decides to be green, it is quoting a receipt that said `written`. */
+.good {
+  color: var(--ok);
+}
+
+/* The edit form on one leaf (#547). Inline in the row rather than in a dialog:
+ * the value being changed is the one on the line above it, and a modal would
+ * hide the source chip that says whether the change will take effect. */
+.editform {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.editform label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.editform .filter {
+  min-width: 140px;
+}
+
+/* A receipt, under the row it answers. Bordered on the left like a warning,
+ * because it is the same kind of thing: a sentence about this row that outlives
+ * the moment it appeared in. */
+.receipt {
+  border-left: 3px solid var(--accent);
+  background: var(--panel);
+  margin: 6px 0;
+  padding: 6px 10px;
+}
+
+/* A command to copy. Pre-wrapped, so a long `--config` path wraps rather than
+ * scrolling a table sideways. */
+.cmd {
+  font-size: 12px;
+  margin: 4px 0;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

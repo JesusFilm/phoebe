@@ -25,6 +25,7 @@ import type {
   DoctorSection,
   EditLedgerEntry,
   FleetCell,
+  ReconcileState,
   RelayStoredReport,
   TenantFacts,
 } from "phoebe-agent/contracts";
@@ -121,4 +122,18 @@ export function configOf(report: DeploymentReport): ConfigReport | null {
  */
 export function editsOf(report: DeploymentReport): EditLedgerEntry[] {
   return Array.isArray(report.edits) ? (report.edits.filter(isRecord) as EditLedgerEntry[]) : [];
+}
+
+/**
+ * The reconcile section — what the bootstrapper is doing about a config or an
+ * engine that moved, and which edit it last applied (#503, #536). Null when the
+ * report carries no bootstrapper section, which is the same "cannot say" every
+ * other reader of a malformed report gets.
+ */
+export function reconcileOf(report: DeploymentReport): ReconcileState | null {
+  const bootstrapper = bootstrapperOf(report);
+  const reconcile = bootstrapper?.reconcile;
+  return isRecord(reconcile) && typeof reconcile.phase === "string"
+    ? (reconcile as unknown as ReconcileState)
+    : null;
 }

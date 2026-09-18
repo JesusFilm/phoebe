@@ -14,12 +14,14 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { RELAY_ROUTES } from "phoebe-agent/contracts";
 import type { RelayIdentity } from "phoebe-agent/contracts";
+import { readEditAnswer, type EditAnswer } from "./config-edit.ts";
 import { DeploymentPage, NoSuchDeployment } from "./deployment-page.tsx";
 import { rowFacts, sortFleet, type RowFacts } from "./facts.ts";
 import { applyEvent, EMPTY_FLEET, loadFleet, type FleetState } from "./fleet-state.ts";
 import { FleetPage } from "./fleet-page.tsx";
 import { Rail } from "./rail.tsx";
 import { isNotSignedIn, type RelayClient } from "./relay-client.ts";
+import { configOf } from "./report.ts";
 import { FLEET_ROUTE, parseRoute, type Route } from "./route.ts";
 
 type Session =
@@ -150,7 +152,7 @@ function Console({
             <p className="muted">The relay did not answer: {trouble}</p>
           </main>
         ) : loaded ? (
-          <Page route={route} facts={facts} now={now} />
+          <Page route={route} facts={facts} now={now} client={client} />
         ) : (
           <main className="main">
             <h1>Fleet</h1>
@@ -167,11 +169,58 @@ function Console({
  * "no such deployment" page rather than a redirect: a link that silently became
  * the fleet page would look like the deployment is fine.
  */
-function Page({ route, facts, now }: { route: Route; facts: RowFacts[]; now: Date }) {
+function Page({
+  route,
+  facts,
+  now,
+  client,
+}: {
+  route: Route;
+  facts: RowFacts[];
+  now: Date;
+  client: RelayClient;
+}) {
   if (route.page === "fleet") return <FleetPage facts={facts} now={now} />;
   const found = facts.find((row) => row.row.fingerprint === route.fingerprint);
   if (found === undefined) return <NoSuchDeployment fingerprint={route.fingerprint} />;
-  return <DeploymentPage facts={found} tab={route.tab} now={now} />;
+  // The fingerprint the page was drawn with, not a fresh read of it: that is
+  // what makes the edit optimistic-concurrency-checked rather than applied to
+  // text nobody looked at (#503).
+  const loaded =
+    found.reading.kind === "read" ? (configOf(found.reading.report)?.root.fingerprint ?? "") : "";
+  return (
+    <DeploymentPage
+      facts={found}
+      tab={route.tab}
+      now={now}
+      onEdit={(edit) => sendConfigEdit(client, found.row.fingerprint, loaded, edit)}
+    />
+  );
+}
+
+/**
+ * One config edit, from a row's Save to the answer it renders (#503, #547).
+ *
+ * The id is minted here, and it is the edit's idempotency key: the same id twice
+ * is the same edit, and the deployment answers the second with the first one's
+ * receipt. That is what makes a retry — a double-press, a reconnect — free of a
+ * second write.
+ */
+async function sendConfigEdit(
+  client: RelayClient,
+  fingerprint: string,
+  configFingerprint: string,
+  edit: { path: string; value: string | number | boolean | null },
+): Promise<{ id: string; answer: EditAnswer }> {
+  const id = crypto.randomUUID();
+  const answer = await client.setConfigField({
+    fingerprint,
+    id,
+    path: edit.path,
+    value: edit.value,
+    configFingerprint,
+  });
+  return { id, answer: readEditAnswer(answer) };
 }
 
 /**

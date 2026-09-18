@@ -111,6 +111,22 @@ function render(tab: DeploymentTab, facts = BUSY_FACTS): string {
   return renderToStaticMarkup(<DeploymentPage facts={facts} tab={tab} now={NOW} />);
 }
 
+/**
+ * The same page with a way to edit (#547). Separate from `render` so every
+ * assertion above still reads the tab a console with no seam draws — which is
+ * what the companion's renderer gets until its own seam lands (#553).
+ */
+function renderEditable(facts = BUSY_FACTS): string {
+  return renderToStaticMarkup(
+    <DeploymentPage
+      facts={facts}
+      tab="config"
+      now={NOW}
+      onEdit={() => Promise.reject(new Error("no test presses this"))}
+    />,
+  );
+}
+
 const overview = render("overview");
 const pipelines = render("pipelines");
 const doctorTab = render("doctor");
@@ -331,10 +347,88 @@ describe("the config tab", () => {
     expect(unread).toContain("could not be read");
   });
 
+  test("offers no edit column at all when this console has no way to write", () => {
+    expect(config).not.toContain("<th>edit</th>");
+    expect(config).not.toContain(">Edit<");
+  });
+
   test("a report with no config section says which kind of nothing that is", () => {
     const older = render("config", rowFacts(row(), stored(report({ config: undefined }))));
     expect(older).toContain("no config section");
     expect(older).not.toContain("<table");
+  });
+});
+
+describe("the edit affordance on the config tab (#503, #547)", () => {
+  const editable = renderEditable();
+
+  test("a leaf `config set` accepts carries an Edit, and the column says so", () => {
+    expect(editable).toContain("<th>edit</th>");
+    expect(editable).toContain(">Edit<");
+  });
+
+  test("a leaf env decides says why instead, and names the variable", () => {
+    expect(editable).toContain("not editable");
+    expect(editable).toContain(
+      "PHOEBE_WORK_CONCURRENCY` sets this in the deployment&#x27;s environment",
+    );
+  });
+
+  test("every closed leaf carries the manual edit and the verb to run", () => {
+    expect(editable).toContain("by hand.");
+    expect(editable).toContain("phoebe config set");
+    // The engine pin is closed for a reason of its own, and it says which.
+    expect(editable).toContain("phoebe upgrade");
+  });
+
+  test("a work kind's own setting is editable even though its declaration is not", () => {
+    // Both are in the fixture's tree: `kinds.research` is a block, and
+    // `kinds.research.model` is a literal inside it.
+    const rows = editable.split("<tr>");
+    const model = rows.find((cell) => cell.includes("kinds.research.model"));
+    expect(model).toBeDefined();
+    expect(model).toContain(">Edit<");
+  });
+
+  test("a tenant's own config is edited in its checkout, with that file in the command", () => {
+    const workspace = renderEditable(
+      rowFacts(
+        row(),
+        stored(
+          report({
+            config: configReport({
+              root: { path: "/etc/phoebe/phoebe.config.ts", fingerprint: "sha256:root" },
+              tenants: [
+                effectiveConfig({
+                  tenant: "JesusFilm/web",
+                  configPath: "/etc/phoebe/children/web/phoebe.config.ts",
+                }),
+              ],
+            }),
+          }),
+        ),
+      ),
+    );
+    expect(workspace).not.toContain(">Edit<");
+    expect(workspace).toContain("tenant&#x27;s own config");
+    expect(workspace).toContain("--config /etc/phoebe/children/web/phoebe.config.ts");
+  });
+
+  test("a root config that could not be read closes every leaf, with the reason", () => {
+    const unread = renderEditable(
+      rowFacts(
+        row(),
+        stored(
+          report({
+            config: configReport({
+              root: { path: "/etc/phoebe/phoebe.config.ts", fingerprint: null },
+            }),
+          }),
+        ),
+      ),
+    );
+    expect(unread).not.toContain(">Edit<");
+    expect(unread).toContain("could not read its root config");
   });
 });
 

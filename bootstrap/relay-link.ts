@@ -47,6 +47,19 @@
 // fleet is quiet sends nothing for hours, and that is not silence — it is a
 // deployment with nothing to say (#541).
 //
+// **What comes the other way is a request, and it is answered at once**
+// (#503, #547). `config-set` is the first of them: the link hands the patch to
+// the bootstrapper's config-edit pen and sends that pen's receipt straight back,
+// `written` or `refused`. It authors nothing — not the refusal, not the
+// instruction beside it — because the console is entitled to the deployment's
+// own words about its own file, and a link that summarized them would be a
+// second opinion about a write it did not make.
+//
+// A receipt goes out for every ask, including the ones that went wrong here: the
+// relay's only other way to settle the request a console is holding open is the
+// socket closing, and `undelivered` for an edit that was refused for a reason
+// would send an operator looking for a network fault.
+//
 // **Nothing here is load-bearing for work.** A deployment with no relay, an
 // unreachable relay, or a refused link supervises its fleet exactly as it
 // always did. The link reports where it stands and never throws into the
@@ -60,10 +73,15 @@ import {
   relayMessageType,
   relaySpeaks,
   type RelayChallenge,
+  type RelayConfigSet,
   type RelayHello,
+  type RelayReceipt,
   type RelayReportMessage,
 } from "../src/contracts/relay-protocol.ts";
 import { jitteredBackoffMs } from "../src/backoff.ts";
+import { instructionFor } from "../src/config-edit.ts";
+import { TENANT_CONFIG_FILE as ROOT_CONFIG_FILE } from "./tenants.ts";
+import type { ConfigEdit, EditReceipt } from "../src/contracts/config-edit.ts";
 import type { DeploymentReport, RelayClose, RelayState } from "../src/contracts/deployment.ts";
 import type { RelayStatus } from "./deployment-state.ts";
 import type { DeploymentKey } from "./relay-key.ts";
@@ -178,6 +196,17 @@ export type RelayLinkDeps = {
    * was holding when the socket died.
    */
   report?: () => DeploymentReport | null;
+  /**
+   * A person changed one config field in a console (#503, #547). Answers the
+   * receipt the pen produced — written, or refused with the manual edit — and
+   * the link sends it back verbatim.
+   *
+   * Absent means this link was built without a pen behind it, which is a test
+   * or a deployment whose root config is not mounted read-write at all. The ask
+   * is refused in those words rather than dropped, so nobody is left watching a
+   * receipt that never comes.
+   */
+  onConfigSet?: (edit: ConfigEdit) => Promise<EditReceipt>;
   /** The deployment key's fingerprint, once there is one to report. */
   onPaired?: (key: DeploymentKey) => void;
   /** Operator-facing lines. Defaults to stdout through the caller. */
@@ -313,6 +342,62 @@ export function connectRelay(deps: RelayLinkDeps): RelayLink {
     }
   };
 
+  /**
+   * Answer one `config-set` (#547). The receipt is the pen's own; the only two
+   * this function writes itself are for a deployment with no pen and for a pen
+   * that threw, and both carry the manual edit for the same reason every other
+   * refusal does — the operator is left able to make the change by hand.
+   */
+  const setConfig = async (
+    on: RelaySocket | null,
+    message: RelayConfigSet | null,
+  ): Promise<void> => {
+    if (on === null || message === null) return;
+    const edit: ConfigEdit = {
+      id: message.id,
+      path: message.path,
+      value: message.value as ConfigEdit["value"],
+      fingerprint: message.fingerprint,
+      by: message.by,
+    };
+    let answer: EditReceipt;
+    if (deps.onConfigSet === undefined) {
+      answer = refusal(
+        edit,
+        "this deployment holds no pen — its root config is not mounted read-write",
+        new Date(now()).toISOString(),
+      );
+    } else {
+      try {
+        answer = await deps.onConfigSet(edit);
+      } catch (error) {
+        answer = refusal(
+          edit,
+          error instanceof Error ? error.message : String(error),
+          new Date(now()).toISOString(),
+        );
+      }
+    }
+    log(`[phoebe] relay: ${message.by} set ${message.path} — ${answer.state}.`);
+    const receipt: RelayReceipt = {
+      type: RELAY_MESSAGES.receipt,
+      id: message.id,
+      outcome: answer.state,
+      detail: answer,
+    };
+    try {
+      on.send(JSON.stringify(receipt));
+    } catch (error) {
+      // The socket died between the ask and the answer. The relay settles its
+      // own request `undelivered` on the close, so there is nothing to retry —
+      // and the edit either landed on disk or did not, whatever this send did.
+      warn(
+        `[phoebe] relay: could not answer the config edit — ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  };
+
   function dial(): void {
     if (stopped) return;
     let answered = false;
@@ -405,6 +490,12 @@ export function connectRelay(deps: RelayLinkDeps): RelayLink {
       onMessage: (data) => {
         heard();
         const frame = parseFrame(data);
+        if (relayMessageType(frame) === RELAY_MESSAGES.configSet) {
+          // Only after the hello: a `config-set` before the handshake is an
+          // unidentified socket asking for a write to this deployment's config.
+          if (ready) void setConfig(current, parseConfigSet(frame));
+          return;
+        }
         if (relayMessageType(frame) !== RELAY_MESSAGES.challenge) return;
         if (answered) return;
         answered = true;
@@ -477,6 +568,64 @@ export function connectRelay(deps: RelayLinkDeps): RelayLink {
       socket?.close();
       socket = null;
     },
+  };
+}
+
+/**
+ * The two refusals this link writes itself: an edit with no pen behind it, and a
+ * pen that threw where it was supposed to answer. Both carry the manual edit,
+ * because every refusal does (#503) — a console that got a reason code and no
+ * instruction would have to work out for itself what the operator should type.
+ *
+ * `unwritable` for both: from the operator's side the file was not written and
+ * the mount is the first thing to look at, which is what that reason's
+ * instruction says.
+ */
+function refusal(edit: ConfigEdit, why: string, at: string): EditReceipt {
+  // Naming the file by its name and not its path: the pen is the thing that
+  // knows where the root config is mounted, and these are the two refusals
+  // written without one.
+  const file = ROOT_CONFIG_FILE;
+  return {
+    id: edit.id,
+    state: "refused",
+    file,
+    path: edit.path,
+    reason: "unwritable",
+    why,
+    instruction: instructionFor({ file, path: edit.path, value: edit.value, reason: "unwritable" }),
+    at,
+    ...(edit.by !== undefined ? { by: edit.by } : {}),
+  };
+}
+
+/**
+ * A `config-set` with the fields the deployment reads, or null. Every one of
+ * them is required: without an `id` the relay is asking for a receipt it cannot
+ * match, without a `fingerprint` the edit was composed blind and there is no
+ * merge here to recover from one, and without a `by` it is an ask on nobody's
+ * behalf — the ledger records who asked, so there is no anonymous edit.
+ *
+ * A value that is not a literal is refused here rather than carried: a leaf is a
+ * literal, and an object arriving under one would be spliced into a file as
+ * `[object Object]`.
+ */
+export function parseConfigSet(frame: unknown): RelayConfigSet | null {
+  if (relayMessageType(frame) !== RELAY_MESSAGES.configSet) return null;
+  const message = frame as Partial<RelayConfigSet>;
+  if (typeof message.id !== "string" || message.id.length === 0) return null;
+  if (typeof message.path !== "string" || message.path.length === 0) return null;
+  if (typeof message.fingerprint !== "string" || message.fingerprint.length === 0) return null;
+  if (typeof message.by !== "string" || message.by.length === 0) return null;
+  const value = message.value;
+  if (value !== null && !["string", "number", "boolean"].includes(typeof value)) return null;
+  return {
+    type: RELAY_MESSAGES.configSet,
+    id: message.id,
+    path: message.path,
+    value,
+    fingerprint: message.fingerprint,
+    by: message.by,
   };
 }
 

@@ -26,6 +26,7 @@
 // filter over it rather than a view of the lines this module derives.
 
 import type { DeploymentReport, DoctorCheck, TenantFacts } from "phoebe-agent/contracts";
+import type { EditSeam } from "./config-edit-row.tsx";
 import { ConfigTab } from "./config-tab.tsx";
 import {
   crashLoopLine,
@@ -55,10 +56,13 @@ export function DeploymentPage({
   facts,
   tab,
   now,
+  onEdit,
 }: {
   facts: RowFacts;
   tab: DeploymentTab;
   now: Date;
+  /** Send one config edit to this deployment, when this console can (#547). */
+  onEdit?: EditSeam["send"];
 }) {
   const connection = connectionReading(facts.row, now);
   return (
@@ -80,7 +84,7 @@ export function DeploymentPage({
           </a>
         ))}
       </nav>
-      <Tab facts={facts} tab={tab} now={now} />
+      <Tab facts={facts} tab={tab} now={now} {...(onEdit !== undefined ? { onEdit } : {})} />
     </main>
   );
 }
@@ -98,7 +102,17 @@ export function NoSuchDeployment({ fingerprint }: { fingerprint: string }) {
   );
 }
 
-function Tab({ facts, tab, now }: { facts: RowFacts; tab: DeploymentTab; now: Date }) {
+function Tab({
+  facts,
+  tab,
+  now,
+  onEdit,
+}: {
+  facts: RowFacts;
+  tab: DeploymentTab;
+  now: Date;
+  onEdit?: EditSeam["send"];
+}) {
   if (tab === "overview") return <OverviewTab facts={facts} now={now} />;
   // The other three tabs are views of the report and there may not be one. They
   // say which kind of nothing it is and point back at the overview, where the
@@ -116,7 +130,13 @@ function Tab({ facts, tab, now }: { facts: RowFacts; tab: DeploymentTab; now: Da
   }
   if (tab === "pipelines") return <PipelinesTab report={facts.reading.report} now={now} />;
   if (tab === "doctor") return <DoctorTab doctor={facts.doctor} now={now} />;
-  return <ConfigTab report={facts.reading.report} now={now} />;
+  return (
+    <ConfigTab
+      report={facts.reading.report}
+      now={now}
+      {...(onEdit !== undefined ? { onEdit } : {})}
+    />
+  );
 }
 
 /* ── overview ──────────────────────────────────────────────────────────── */
