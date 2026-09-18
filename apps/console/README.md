@@ -32,6 +32,16 @@ relay call: [`src/local-install.ts`](src/local-install.ts) holds the readings an
 the reducers, and [`src/install-page.tsx`](src/install-page.tsx) renders them. A
 browser has no local arm at all and the group is not drawn there.
 
+A local install's other five tabs — overview, pipelines, doctor, secrets, config —
+are the ones every deployment has, and they are fed without a relay: main's local
+read loop execs `status --json` in the container and emits the same `report` event
+the relay's stream carries ([#556](https://github.com/JesusFilm/phoebe/issues/556)).
+So [`src/deployment-tabs.tsx`](src/deployment-tabs.tsx) takes a narrowed report
+and draws it, and the only place the arm shows is the overview's connection card,
+which the page builds. A stopped install shows config from the file and says what
+the rest need; the last report the window is still holding is not drawn
+([#526](https://github.com/JesusFilm/phoebe/issues/526)).
+
 `vp run dev` serves the bundle on a fixed, strict port with no relay behind it, so
 the pages land on the signed-out notice; `apps/desktop`'s `vp run dev` points the
 companion's window at that same port. To see real data, build and let the relay

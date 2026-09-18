@@ -17,7 +17,12 @@
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { RELAY_ROUTES } from "phoebe-agent/contracts";
-import type { DesktopBridge, LocalInstall, RelayIdentity } from "phoebe-agent/contracts";
+import type {
+  DesktopBridge,
+  LocalInstall,
+  LocalReportEvent,
+  RelayIdentity,
+} from "phoebe-agent/contracts";
 import type { Surface } from "./companion.ts";
 import { rowFacts, sortFleet } from "./facts.ts";
 import { applyEvent, EMPTY_FLEET, loadFleet, type FleetState } from "./fleet-state.ts";
@@ -108,6 +113,7 @@ function Console({
   const [loaded, setLoaded] = useState(false);
   const [trouble, setTrouble] = useState<string | null>(null);
   const [installs, setInstalls] = useState<LocalInstall[]>([]);
+  const [reports, setReports] = useState<Record<string, LocalReportEvent>>({});
   const [openInstall, setOpenInstall] = useState<string | null>(null);
   const now = useNow(1000);
 
@@ -130,6 +136,29 @@ function Console({
       unsubscribe();
     };
   }, [bridge]);
+
+  // The local read loop's stream, which is the local arm's answer to the relay's
+  // SSE (#556). One subscription for every install rather than one per open
+  // page: the loop reads them all, and a later badge rule runs over the same
+  // events with no page open at all (#524).
+  useEffect(() => {
+    if (bridge === null) return;
+    return bridge.installs.reports((event) => {
+      setReports((held) => ({ ...held, [event.install]: event }));
+    });
+  }, [bridge]);
+
+  // Opening an install asks for a read rather than waiting up to 15 s for the
+  // next one. On a stopped install this is the refresh that answers with the
+  // directory's facts and no report (#527 §6).
+  useEffect(() => {
+    if (bridge === null || openInstall === null) return;
+    bridge.installs.refresh(openInstall).then(
+      (event) => setReports((held) => ({ ...held, [event.install]: event })),
+      () => undefined,
+    );
+    return undefined;
+  }, [bridge, openInstall]);
 
   const addInstall = useCallback(() => {
     if (bridge === null) return;
@@ -225,7 +254,14 @@ function Console({
           {...(bridge === null ? {} : { onAdd: addInstall })}
         />
         {open !== null && bridge !== null ? (
-          <InstallPage install={open} bridge={bridge} onForget={forgetInstall} />
+          <InstallPage
+            key={open.dir}
+            install={open}
+            bridge={bridge}
+            report={reports[open.dir] ?? null}
+            now={now}
+            onForget={forgetInstall}
+          />
         ) : identity === null ? (
           <CompanionHome installs={installs} onAdd={bridge === null ? undefined : addInstall} />
         ) : trouble !== null ? (

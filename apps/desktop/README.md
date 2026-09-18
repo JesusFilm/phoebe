@@ -52,8 +52,10 @@ Building needs no Electron binary, which is why the gate can run with
 
 ## What main answers today
 
-**The local arm, in full.** The installs on this machine, the Docker check, and
-the verb runs that drive them ([#555](https://github.com/JesusFilm/phoebe/issues/555)):
+**The local arm, in full.** The installs on this machine, the Docker check, the
+verb runs that drive them ([#555](https://github.com/JesusFilm/phoebe/issues/555))
+and the local read loop that feeds their tabs
+([#556](https://github.com/JesusFilm/phoebe/issues/556)):
 
 - [`companion-file.ts`](src/companion-file.ts) — `companion.json` in `userData`:
   the install directories, the relay URL, the preferences. Nothing else. Every
@@ -67,12 +69,25 @@ the verb runs that drive them ([#555](https://github.com/JesusFilm/phoebe/issues
   lives here so a renderer reload rejoins a run rather than losing it.
 - [`verb-dispatch.ts`](src/verb-dispatch.ts) — the six `run<Verb>` calls, in
   this process (ADR 0001). No second Node, no `bin.mjs`, no stdout parsing.
+- [`local-read.ts`](src/local-read.ts) — the read loop: Compose's event stream
+  for the moment a container moves, a 15 s poll for how it is doing, and one
+  `report` event out — the relay's own, so the tabs do not branch on arm.
+- [`container-read.ts`](src/container-read.ts) — the two seams under it: the
+  `phoebe status --json` exec, and the `docker compose events` subscription.
 
 Beside it, a relay arm with no session, so the console draws the Relay group
 signed out ([#526](https://github.com/JesusFilm/phoebe/issues/526)). Sign-in
-([#554](https://github.com/JesusFilm/phoebe/issues/554)) and the local read loop
-([#556](https://github.com/JesusFilm/phoebe/issues/556)) are changes in here,
+([#554](https://github.com/JesusFilm/phoebe/issues/554)) is a change in here,
 behind the contract the preload already exposes.
+
+The loop reads `phoebe status --json` inside the container. That verb is
+[#533](https://github.com/JesusFilm/phoebe/issues/533)'s and the report it prints
+is [#532](https://github.com/JesusFilm/phoebe/issues/532)'s, so against a
+container built from this branch the exec fails and every read comes back
+`report: null` with the container's own sentence on it — which is the path the
+tabs draw anyway when nothing is running. `STATUS_ARGV` in
+[`src/container-read.ts`](src/container-read.ts) is the one line that moves when
+those land.
 
 Two things a later ticket owes this package. `upgrade` and `migrate` spawn their
 children through `spawnSync`, which blocks main for as long as they run — so the

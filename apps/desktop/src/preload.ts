@@ -13,6 +13,7 @@ import { DESKTOP_BRIDGE_GLOBAL } from "phoebe-agent/contracts";
 import type {
   DesktopBridge,
   LocalInstall,
+  LocalReportEvent,
   RelayEvent,
   RunExit,
   RunLine,
@@ -51,6 +52,8 @@ const bridge: DesktopBridge = {
     add: (dir) => call(BRIDGE_CHANNELS.installsAdd, dir),
     remove: (dir) => call(BRIDGE_CHANNELS.installsRemove, dir),
     changes: (onChange) => subscribe<LocalInstall[]>(BRIDGE_CHANNELS.installsChanged, onChange),
+    reports: (onReport) => subscribe<LocalReportEvent>(BRIDGE_CHANNELS.installsReport, onReport),
+    refresh: (dir) => call(BRIDGE_CHANNELS.installsRefresh, dir),
   },
   runs: {
     start: (request) => call(BRIDGE_CHANNELS.runStart, request),
