@@ -36,6 +36,15 @@
 // five-permission grant probe stays in scripts/verify-tenant-token.mjs (it ships
 // with the repo, not the package); doctor's per-tenant probe is the
 // reachability slice of it.
+//
+// Two things the run gains once the bootstrapper is the one starting it (#507,
+// #534). It answers within a **five-minute deadline** — whatever has not
+// finished by then reports `unknown`, so one unreachable tenant cannot erase
+// the rest of the report (src/doctor-deadline.ts). And it accepts **credential
+// leases** on its env (src/doctor-lease.ts): the installation tokens the
+// supervisor already holds for its App-arm tenants, which is what turns `repo`,
+// `labels` and `stray-members` from "not probed (App arm)" into real checks. A
+// manual `phoebe doctor` sets neither variable and behaves as it always has.
 
 import { existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -100,30 +109,28 @@ import {
   type StrayMember,
 } from "./stray-members.ts";
 import { enumerateWorkspaceTenants } from "./tenant-commands.ts";
+import type { CheckState, DoctorCheck, DoctorReport, TenantDoctorRow } from "./contracts/doctor.ts";
+import {
+  createDeadline,
+  DEADLINE_DETAIL,
+  DOCTOR_DEADLINE_MS,
+  noDeadline,
+  type Deadline,
+} from "./doctor-deadline.ts";
+import { DOCTOR_LEASE_ENV, parseDoctorLeases, type DoctorLeases } from "./doctor-lease.ts";
 
 /** A scheduled kind's declared key that its pipeline's env does not hold (#425). */
 export type MissingDeclaredEnvKey = { pipeline: string; kind: string; key: string };
 
-export type CheckState = "ok" | "warn" | "fail" | "unknown";
+// The report's own shape lives in contracts (#507 §7): a console renders it
+// from the far side of a relay and cannot import an engine that reads files.
+// Re-exported from here so every existing caller keeps its import.
+export type { CheckState, DoctorCheck, DoctorReport, TenantDoctorRow } from "./contracts/doctor.ts";
 
-export type DoctorCheck = {
-  id: string;
-  state: CheckState;
-  detail: string;
-};
-
-export type TenantDoctorRow = {
-  path: string;
-  slug: string | null;
-  checks: DoctorCheck[];
-};
-
-export type DoctorReport = {
-  checks: DoctorCheck[];
-  tenants: TenantDoctorRow[];
-  /** False when any deployment or tenant check failed. */
-  ok: boolean;
-};
+/** One check a run did not get to before {@link DOCTOR_DEADLINE_MS} (#507 §7). */
+function deadlineCheck(id: string): DoctorCheck {
+  return { id, state: "unknown", detail: DEADLINE_DETAIL };
+}
 
 /** Fold every check into the report verdict. Pure, for tests. */
 export function buildDoctorReport(checks: DoctorCheck[], tenants: TenantDoctorRow[]): DoctorReport {
@@ -276,6 +283,11 @@ type DoctorDeps = {
   git?: GitRunner;
   npm?: NpmRunner;
   fetchFn?: typeof fetch;
+  /**
+   * The run's clock (#507 §7). Defaults to a fresh {@link DOCTOR_DEADLINE_MS}
+   * one; a test passes {@link noDeadline} or a short one of its own.
+   */
+  deadline?: Deadline;
 };
 
 const PROBE_TIMEOUT_MS = 30_000;
@@ -805,6 +817,26 @@ function nonEmpty(value: string | undefined): string | undefined {
 }
 
 /**
+ * Which credential one tenant's checks run on (#507 §5). Its own `GH_TOKEN`
+ * first — a tenant carrying one is on the PAT arm and the supervisor leases it
+ * nothing — then whatever was leased for its slug. Pure, for tests.
+ *
+ * The arm is decided elsewhere and deliberately: a lease does not move a tenant
+ * onto the PAT arm, it only means the App arm's checks can be answered for
+ * once.
+ */
+export function tenantCredential(fields: {
+  own: string | undefined;
+  slug: string | null;
+  leases: DoctorLeases;
+}): { token: string | undefined; leased: boolean } {
+  const own = nonEmpty(fields.own);
+  if (own !== undefined) return { token: own, leased: false };
+  const leased = fields.slug === null ? undefined : nonEmpty(fields.leases[fields.slug]);
+  return { token: leased, leased: leased !== undefined };
+}
+
+/**
  * The credential-aware token check for one tenant. Pure, for tests.
  *
  * Three cases:
@@ -820,12 +852,17 @@ export function tenantTokenCheck(fields: {
   token: string | undefined;
   envLabel: string;
   inContainer: boolean;
+  /** This run holds a supervisor-leased installation token for the tenant (#507 §5). */
+  leased?: boolean;
 }): DoctorCheck {
   if (fields.arm === "app") {
     return {
       id: "token",
       state: "ok",
-      detail: "App arm: installation token minted by the GitHub App at runtime",
+      detail:
+        fields.leased === true
+          ? "App arm: installation token minted by the GitHub App, leased to this run"
+          : "App arm: installation token minted by the GitHub App at runtime",
     };
   }
   if (fields.token !== undefined) {
@@ -1062,8 +1099,18 @@ export async function tenantRow(fields: {
    */
   env?: NodeJS.ProcessEnv;
   git?: GitRunner;
+  /**
+   * True when {@link tenantRow.token} is an installation token the supervisor
+   * leased for this run (#507 §5) rather than a `GH_TOKEN` out of the tenant's
+   * own `.env`. It changes nothing about what is probed — a token is a token —
+   * only what the `token` check says the credential is.
+   */
+  leased?: boolean;
+  /** The run's clock (#507 §7). Checks it cannot beat report `unknown`. */
+  deadline?: Deadline;
 }): Promise<TenantDoctorRow> {
   const checks: DoctorCheck[] = [];
+  const deadline = fields.deadline ?? noDeadline();
 
   // Load the user config once: captures `disabled`, the four label names,
   // and the issues prompt path override — all from a single file read.
@@ -1140,21 +1187,30 @@ export async function tenantRow(fields: {
   checks.push(tokenCheck);
 
   let repoPassed = false;
-  if (fields.arm === "app") {
-    // Probing the repo requires minting a token, which doctor does not do.
-    // Repo access is verified at runtime when the token is minted.
+  if (fields.arm === "app" && fields.token === undefined) {
+    // Probing the repo requires an installation token. The supervisor's own run
+    // leases one (#507 §5) and lands in the branch below; a manual run mints
+    // nothing, so repo access is verified at runtime instead.
     checks.push({
       id: "repo",
       state: "unknown",
       detail: "not probed (App arm — repo access verified at runtime when the token is minted)",
     });
   } else if (fields.token !== undefined) {
-    if (fields.slug !== null) {
-      const probe = await probeRepo(fields.slug, fields.token, fields.fetchFn);
-      repoPassed = probe.ok;
-      checks.push({ id: "repo", state: probe.ok ? "ok" : "fail", detail: probe.detail });
-    } else {
+    if (fields.slug === null) {
       checks.push({ id: "repo", state: "unknown", detail: "not probed (no repoSlug)" });
+    } else {
+      const probe = await deadline.race(probeRepo(fields.slug, fields.token, fields.fetchFn));
+      if (!probe.done) {
+        checks.push(deadlineCheck("repo"));
+      } else {
+        repoPassed = probe.value.ok;
+        checks.push({
+          id: "repo",
+          state: probe.value.ok ? "ok" : "fail",
+          detail: probe.value.detail,
+        });
+      }
     }
   } else {
     checks.push({
@@ -1173,8 +1229,11 @@ export async function tenantRow(fields: {
   if (fields.configPath !== undefined && !configLoaded) {
     checks.push({ id: "labels", state: "unknown", detail: "not evaluated (config load failed)" });
   } else if (fields.slug !== null && repoPassed && fields.token !== undefined) {
-    const allLabels = await fetchRepoLabels(fields.slug, fields.token, fields.fetchFn);
-    if (allLabels === null) {
+    const listed = await deadline.race(fetchRepoLabels(fields.slug, fields.token, fields.fetchFn));
+    const allLabels = listed.done ? listed.value : null;
+    if (!listed.done) {
+      checks.push(deadlineCheck("labels"));
+    } else if (allLabels === null) {
       // Non-200 from the label list endpoint means access denied, not labels
       // missing — avoid emitting a spurious `gh label create` remediation.
       checks.push({
@@ -1211,8 +1270,8 @@ export async function tenantRow(fields: {
       detail: "not evaluated (config load failed)",
     });
   } else if (fields.slug !== null && repoPassed && fields.token !== undefined) {
-    checks.push(
-      await tenantStrayMembers({
+    const strays = await deadline.race(
+      tenantStrayMembers({
         slug: fields.slug,
         token: fields.token,
         fetchFn: fields.fetchFn,
@@ -1220,6 +1279,9 @@ export async function tenantRow(fields: {
         walk: { featureLabel, branchPrefix, partOfPattern },
       }),
     );
+    // The graph walk is the run's longest single call — pages of issues, then a
+    // query per feature — so it is the check the deadline most often takes.
+    checks.push(strays.done ? strays.value : deadlineCheck("stray-members"));
   } else {
     const reason =
       fields.slug === null
@@ -1266,13 +1328,14 @@ export async function tenantRow(fields: {
   // Stale-state check: the only one that looks at the data volume, so it runs
   // last and asks nothing of the tracker.
   if (fields.configPath !== undefined && fields.dataBase !== undefined) {
-    checks.push(
-      await tenantStaleState({
+    const stale = await deadline.race(
+      tenantStaleState({
         configPath: fields.configPath,
         dataBase: fields.dataBase,
         ...(fields.git !== undefined ? { git: fields.git } : {}),
       }),
     );
+    checks.push(stale.done ? stale.value : deadlineCheck("stale-state"));
   }
 
   return { path: fields.path, slug: fields.slug, checks };
@@ -1285,6 +1348,13 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
   const fetchFn = deps.fetchFn ?? fetch;
   const token = deps.env["GH_TOKEN"];
   const checks: DoctorCheck[] = [];
+  // The run's own clock. Started here rather than by the caller so a manual
+  // `phoebe doctor` is bounded too — one hung tenant used to hold the terminal
+  // open forever.
+  const deadline = deps.deadline ?? createDeadline(DOCTOR_DEADLINE_MS);
+  // What the supervisor leased for this run, keyed by tenant slug (#507 §5).
+  // Empty for a manual run, which is what keeps that one credential-free.
+  const leases: DoctorLeases = parseDoctorLeases(deps.env[DOCTOR_LEASE_ENV]);
 
   // 3. Root config loads + engine field parses. Everything engine-shaped hangs
   // off this, so it runs first even though it is check three in the docs.
@@ -1545,15 +1615,22 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
     for (const tenant of enumeration.tenants) {
       const tenantEnv = readTenantDotenv(tenant.envPath);
       dotenvByTenant.set(tenant.id, tenantEnv);
+      // A kind module that hangs on import would hold the whole sweep here, and
+      // this loop is serial by necessity — so it is the one place the deadline
+      // has to gate rather than race. A tenant past it reports `unknown` for
+      // the scan and still gets every other check.
       declaredEnvByTenant.set(
         tenant.id,
-        await scanDeclaredEnv({ configPath: tenant.configPath, env: tenantEnv }),
+        deadline.expired()
+          ? null
+          : await scanDeclaredEnv({ configPath: tenant.configPath, env: tenantEnv }),
       );
     }
     tenants.push(
       ...(await mapBounded(enumeration.tenants, TENANT_PROBE_CONCURRENCY, (tenant) => {
         const tenantEnv = dotenvByTenant.get(tenant.id) ?? {};
-        const tokenValue = nonEmpty(tenantEnv["GH_TOKEN"]);
+        const own = nonEmpty(tenantEnv["GH_TOKEN"]);
+        const credential = tenantCredential({ own, slug: tenant.slug, leases });
         return tenantRow({
           declaredEnv: declaredEnvByTenant.get(tenant.id) ?? null,
           path: tenant.dir,
@@ -1561,8 +1638,10 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
           // Per tenant, not per deployment: a fleet mixes arms whenever one
           // tenant keeps its own PAT, and #157's per-installation approvals
           // make that the normal state during any permission change.
-          arm: resolveCredentialArm({ GH_TOKEN: tokenValue }, deps.env),
-          token: tokenValue,
+          arm: resolveCredentialArm({ GH_TOKEN: own }, deps.env),
+          token: credential.token,
+          leased: credential.leased,
+          deadline,
           envLabel: tenant.envPath,
           fetchFn,
           inContainer,
@@ -1586,16 +1665,21 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
     // Solo: the child inherits the supervisor's env, so the ambient token is
     // the truth here (and only here) — same reasoning as verify-tenant-token.
     const slug = rootConfig["repoSlug"];
+    const credential = tenantCredential({ own: token, slug, leases });
     tenants.push(
       await tenantRow({
         path: deps.configDir,
         slug,
         // Solo: the ambient container env is this tenant's env-file, so it is
         // what the declared keys are checked against.
-        declaredEnv: await scanDeclaredEnv({ configPath, env: deps.env }),
+        declaredEnv: deadline.expired()
+          ? null
+          : await scanDeclaredEnv({ configPath, env: deps.env }),
         // Solo: the root is the tenant, so one env answers both halves.
         arm: resolveCredentialArm(deps.env),
-        token: token !== undefined && token.length > 0 ? token : undefined,
+        token: credential.token,
+        leased: credential.leased,
+        deadline,
         envLabel: "the environment",
         fetchFn,
         inContainer,
@@ -1607,6 +1691,9 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
     );
   }
 
+  // The timer is unrefed, so a forgotten one cannot hold a process open — but
+  // a CLI run that ends by printing should not sit on one either.
+  deadline.cancel();
   return buildDoctorReport(checks, tenants);
 }
 
@@ -1650,6 +1737,14 @@ it, repo reachable with that token, the four workflow labels present in the
 repo, no open member of a retired feature left wearing one, every env key a
 scheduled work kind declares set in that tenant's .env, and (when the issues
 prompt is overridden) that it includes the blocker-recording rule.
+
+A run answers within five minutes; a check that does not finish by then reports
+\`?\` (deadline passed) rather than holding the whole report open. The
+bootstrapper runs doctor itself — at boot, after a reconcile, on request and
+every six hours — and its runs carry each tenant's installation token, so the
+repo, labels and stray-member checks are real on App-arm deployments. That
+report, with its age, is in \`<data>/state/deployment.json\`; this command prints
+and changes nothing.
 
 The full five-permission token probe is scripts/verify-tenant-token.mjs.
 Exit code is 1 when any check fails. \`phoebe upgrade\` moves versions;

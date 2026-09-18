@@ -25,6 +25,7 @@
 // an optional field does not move it.
 
 import type { CredentialArm } from "./credential-arm.ts";
+import type { DoctorSection } from "./doctor.ts";
 import type { PipelineSource, PipelineState, WedgedVerdict } from "./pipeline-state.ts";
 import type { StatusSnapshot } from "./status-snapshot.ts";
 
@@ -228,6 +229,12 @@ export type DeploymentReport = {
   bootstrapper: BootstrapperReport;
   relay: RelayReport;
   fleet: FleetReport;
+  /**
+   * What the last `phoebe doctor` run found, with its age (#507 §4). The
+   * bootstrapper spawns those runs; a manual `phoebe doctor` prints and touches
+   * nothing here.
+   */
+  doctor: DoctorSection;
   /** When any section last moved. */
   updatedAt: string;
 };

@@ -22,6 +22,7 @@ import {
   setupGitCredentials,
   pipelineArgv,
   tenantFingerprint,
+  liveLeases,
   warnOnce,
   trackFleetPipelines,
   trackPipelines,
@@ -859,5 +860,32 @@ describe("crash reporting hooks (#474)", () => {
     });
     expect(events).toHaveLength(1);
     expect(recorded).toHaveLength(1);
+  });
+});
+
+describe("the leases a doctor run is handed (#507 §5)", () => {
+  const now = Date.parse("2026-05-05T00:00:00.000Z");
+
+  test("every live mint, keyed by the slug it was minted for", () => {
+    const cache = new Map([
+      ["acme/widget", { token: "ghs_one", expiresAt: now + 60_000 }],
+      ["acme/gadget", { token: "ghs_two", expiresAt: now + 60_000 }],
+    ]);
+    expect(liveLeases(cache, now)).toEqual({
+      "acme/widget": "ghs_one",
+      "acme/gadget": "ghs_two",
+    });
+  });
+
+  test("a lapsed lease is left out rather than re-minted on doctor's account", () => {
+    const cache = new Map([
+      ["acme/widget", { token: "ghs_live", expiresAt: now + 60_000 }],
+      ["acme/stale", { token: "ghs_expired", expiresAt: now - 1 }],
+    ]);
+    expect(liveLeases(cache, now)).toEqual({ "acme/widget": "ghs_live" });
+  });
+
+  test("a PAT-only fleet leases nothing, so the doctor child's env is untouched", () => {
+    expect(liveLeases(new Map(), now)).toEqual({});
   });
 });
