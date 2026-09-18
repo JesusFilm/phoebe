@@ -218,6 +218,14 @@ export type SuperviseFleetDeps = {
    */
   healthyRunMs?: number;
   onEngineChange?: (reason: "config" | "ref") => void;
+  /**
+   * Handed the loop's wake function once, before the first poll. Calling it
+   * breaks the current wait so the next poll runs now — which is all a config
+   * edit's write needs (#536): the loop then re-reads the fingerprint and
+   * reconciles exactly as it would for a hand edit. Nothing is passed with it,
+   * because a nudge is never a reason to skip a check.
+   */
+  onNudge?: (nudge: () => void) => void;
   /** Pipeline ids added / drained / relaunched by one poll of the pipeline axis. */
   onPipelineChange?: (change: { added: string[]; removed: string[]; changed: string[] }) => void;
   /**
@@ -449,6 +457,9 @@ export async function superviseFleet(deps: SuperviseFleetDeps): Promise<EngineEx
       wake = resolve;
     });
   let waking = rearm();
+  // The same signal, handed outward once. The indirection is the re-arming: the
+  // caller keeps one stable function while `wake` is replaced every poll.
+  deps.onNudge?.(() => wake());
 
   /**
    * Reclaim the disk of pipelines this tenant no longer has (#426), for every tenant

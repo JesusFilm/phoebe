@@ -111,6 +111,14 @@ export function report(overrides: Partial<DeploymentReport> = {}): DeploymentRep
       updatedAt: ago(12),
     },
     fleet: { tenants: [tenant()], cells: [cell()], updatedAt: ago(12) },
+    doctor: { report: null, at: null, trigger: null, updatedAt: ago(12) },
+    config: {
+      version: 1,
+      root: { path: "/deployment/phoebe.config.ts", fingerprint: "sha256:root" },
+      tenants: [],
+      omitted: 0,
+      updatedAt: ago(12),
+    },
     updatedAt: ago(12),
     ...overrides,
   };
@@ -228,7 +236,7 @@ export function directory(overrides: Partial<InstallDirectoryFacts> = {}): Insta
   return {
     configPath: "/repos/youtube-studio/phoebe.config.ts",
     configText: 'export default defineConfig({ repoSlug: "JesusFilm/youtube-studio" })\n',
-    configFingerprint: "0f1e2d3c4b5a6978",
+    configFingerprint: "sha256:0f1e2d3c4b5a6978",
     envPresent: true,
     bootstrapperRunning: true,
     ...overrides,

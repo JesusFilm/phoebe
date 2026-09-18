@@ -166,7 +166,9 @@ describe("what the folder says with no container", () => {
 
     expect(facts.configPath).toBe(path.join(DIR, "phoebe.config.ts"));
     expect(facts.configText).toBe("export default defineConfig({})\n");
-    expect(facts.configFingerprint).toMatch(/^[0-9a-f]{16}$/);
+    // The writer's own format, so the fingerprint a window was shown is the
+    // one `config set` checks itself against (#503, #527 §11).
+    expect(facts.configFingerprint).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(facts.envPresent).toBe(true);
   });
 

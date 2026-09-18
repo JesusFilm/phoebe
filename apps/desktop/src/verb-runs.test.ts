@@ -223,3 +223,41 @@ describe("cancelling", () => {
     expect(() => runs.cancel(runId)).toThrow(/already finished/);
   });
 });
+
+describe("a secret value is a run argument and nothing else (#527 §7)", () => {
+  const SECRET = "ghp_a_value_nobody_should_see";
+
+  test("the run record the window reads back holds no value", () => {
+    const { runs } = harness(forever);
+
+    runs.start({ install: "/repos/one", verb: "secret set", key: "GH_TOKEN", value: SECRET });
+
+    // The record is what `runs.current` hands a renderer on reload, and what the
+    // buffer keeps for the life of the process. The value belongs to neither.
+    expect(JSON.stringify(runs.current("/repos/one"))).not.toContain(SECRET);
+  });
+
+  test("the busy refusal names the verb, not what it was asked to write", () => {
+    const { runs } = harness(forever);
+    runs.start({ install: "/repos/one", verb: "secret set", key: "GH_TOKEN", value: SECRET });
+
+    try {
+      runs.start({ install: "/repos/one", verb: "secret set", key: "GH_TOKEN", value: SECRET });
+      expect.unreachable("a second run on a busy install is refused");
+    } catch (error) {
+      expect((error as Error).message).toContain("phoebe secret set");
+      expect(JSON.stringify(error)).not.toContain(SECRET);
+    }
+  });
+
+  test("a dispatch that throws puts its message in the buffer, and it is not the value", async () => {
+    // The writers' own failures name the key; this pins the registry's half —
+    // whatever a write throws is what lands, so a writer must never throw a value.
+    const { runs, lines } = harness(() => Promise.reject(new Error("GH_TOKEN was not written")));
+
+    runs.start({ install: "/repos/one", verb: "secret set", key: "GH_TOKEN", value: SECRET });
+    await settle();
+
+    expect(lines.map((line) => line.line)).toEqual(["GH_TOKEN was not written"]);
+  });
+});

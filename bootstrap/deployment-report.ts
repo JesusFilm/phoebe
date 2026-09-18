@@ -37,11 +37,13 @@ import { dirname, join } from "node:path";
 import {
   DEPLOYMENT_SCHEMA,
   type BootstrapperReport,
+  type ConfigReport,
   type DeploymentIdentity,
   type DeploymentReport,
   type FleetReport,
   type RelayReport,
 } from "../src/contracts/deployment.ts";
+import type { DoctorSection } from "../src/contracts/doctor.ts";
 
 /** The report's filename inside the deployment-level `state/` directory. */
 export const DEPLOYMENT_FILE = "deployment.json";
@@ -61,6 +63,8 @@ export type DeploymentDraft = {
   bootstrapper: Omit<BootstrapperReport, "updatedAt">;
   relay: Omit<RelayReport, "updatedAt">;
   fleet: Omit<FleetReport, "updatedAt">;
+  config: Omit<ConfigReport, "updatedAt">;
+  doctor: Omit<DoctorSection, "updatedAt">;
 };
 
 /**
@@ -111,7 +115,24 @@ export function stampReport(
     previous === null || contentOf(unstamped(previous.relay)) !== contentOf(draft.relay);
   const fleetMoved =
     previous === null || contentOf(unstamped(previous.fleet)) !== contentOf(draft.fleet);
-  if (!identityMoved && !bootstrapperMoved && !relayMoved && !fleetMoved) return null;
+  const configMoved =
+    previous === null || contentOf(unstamped(previous.config)) !== contentOf(draft.config);
+  // The doctor section moves on its own clock — a run starting, a run landing,
+  // an attempt failing — and each of those is news. A run that finds exactly
+  // what the last one found still moves it, because `at` is the age a console
+  // shows, and an age that stopped advancing is the one thing worse than none.
+  const doctorMoved =
+    previous === null || contentOf(unstamped(previous.doctor)) !== contentOf(draft.doctor);
+  if (
+    !identityMoved &&
+    !bootstrapperMoved &&
+    !relayMoved &&
+    !fleetMoved &&
+    !configMoved &&
+    !doctorMoved
+  ) {
+    return null;
+  }
   return {
     schema: DEPLOYMENT_SCHEMA,
     identity: draft.identity,
@@ -126,6 +147,14 @@ export function stampReport(
     fleet: {
       ...draft.fleet,
       updatedAt: fleetMoved ? now : (previous?.fleet.updatedAt ?? now),
+    },
+    config: {
+      ...draft.config,
+      updatedAt: configMoved ? now : (previous?.config.updatedAt ?? now),
+    },
+    doctor: {
+      ...draft.doctor,
+      updatedAt: doctorMoved ? now : (previous?.doctor.updatedAt ?? now),
     },
     updatedAt: now,
   };

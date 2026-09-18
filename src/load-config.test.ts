@@ -13,13 +13,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "vite-plus/test";
-import {
-  ENV_OVERLAY_KEYS,
-  applyEnvOverlay,
-  loadUserConfig,
-  resolveConfigPath,
-} from "./load-config.ts";
+import { applyEnvOverlay, loadUserConfig, resolveConfigPath } from "./load-config.ts";
 import type { PhoebeUserConfig } from "./config-schema.ts";
+import { SETTINGS } from "./settings-catalogue.ts";
 
 function baseUser(overrides: Partial<PhoebeUserConfig> = {}): PhoebeUserConfig {
   return {
@@ -52,12 +48,15 @@ describe("applyEnvOverlay", () => {
     expect(result.repoSlug).toBe("acme/widget");
   });
 
-  test("every scalar overlay key maps to the documented user-config field", () => {
+  test("every catalogued string setting maps to the field at its path", () => {
+    // Read from the catalogue, not from a second list here: a new entry is
+    // covered the moment it lands (#530).
+    const scalars = SETTINGS.filter((entry) => entry.overlay !== "none" && entry.type === "string");
     const env: NodeJS.ProcessEnv = {};
-    for (const { env: k } of ENV_OVERLAY_KEYS) env[k] = `sentinel-${k}`;
-    const result = applyEnvOverlay(baseUser(), env);
-    for (const { env: k, key } of ENV_OVERLAY_KEYS) {
-      expect(result[key]).toBe(`sentinel-${k}`);
+    for (const entry of scalars) env[entry.env] = `sentinel-${entry.env}`;
+    const result = applyEnvOverlay(baseUser(), env) as Record<string, unknown>;
+    for (const entry of scalars) {
+      expect(result[entry.path]).toBe(`sentinel-${entry.env}`);
     }
   });
 
@@ -69,7 +68,7 @@ describe("applyEnvOverlay", () => {
       { PHOEBE_RELAY_URL: "wss://elsewhere.example.com/deployments", PHOEBE_RELAY: "on" },
     );
     expect(overlaid.relay).toEqual({ url: "wss://relay.example.com/deployments" });
-    expect(ENV_OVERLAY_KEYS.some(({ key }) => String(key).startsWith("relay"))).toBe(false);
+    expect(SETTINGS.some((entry) => entry.path.startsWith("relay"))).toBe(false);
   });
 
   test("PHOEBE_MERGED_LABEL overlays the landed-member label (#449)", () => {

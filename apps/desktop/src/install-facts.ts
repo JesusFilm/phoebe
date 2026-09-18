@@ -11,10 +11,10 @@
 // companion being told.
 
 import path from "node:path";
-import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import type { InstallDirectoryFacts, LocalInstall } from "phoebe-agent/contracts";
 import { TENANT_CONFIG_FILE } from "../../../bootstrap/tenants.ts";
+import { fingerprintOf } from "../../../src/config-edit.ts";
 import {
   findPhoebeService,
   isContainerRunning,
@@ -144,15 +144,10 @@ export function directoryFacts(
   return {
     configPath,
     configText,
-    configFingerprint: configText === null ? null : fingerprint(configText),
+    configFingerprint: configText === null ? null : fingerprintOf(configText),
     envPresent: exists(path.join(install.dir, ".env")),
     bootstrapperRunning: install.state === "running",
   };
-}
-
-/** The config's handle: short, stable, and enough to notice an edit (#503). */
-function fingerprint(text: string): string {
-  return createHash("sha256").update(text).digest("hex").slice(0, 16);
 }
 
 /**

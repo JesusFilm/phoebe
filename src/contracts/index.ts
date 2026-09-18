@@ -80,12 +80,22 @@ export type {
 export type { InstallDirectoryFacts, LocalReportEvent, StoredReport } from "./local-report.ts";
 export { CANCELLABLE_VERBS, MAX_RUN_LINES } from "./verb-run.ts";
 export type { RunExit, RunLine, VerbRun, VerbRunRequest } from "./verb-run.ts";
+export type {
+  ConfigEdit,
+  EditReceipt,
+  EditRefusalReason,
+  EditRefused,
+  EditWritten,
+} from "./config-edit.ts";
 export type { CredentialArm } from "./credential-arm.ts";
+export type { DoctorAttempt, DoctorFailure, DoctorSection, DoctorTrigger } from "./doctor.ts";
 export type { PipelineSource, PipelineState, WedgedVerdict } from "./pipeline-state.ts";
 export type { CurrentUnit, StatusSnapshot, UnitRef } from "./status-snapshot.ts";
 export {
   DEPLOYMENT_SCHEMA,
   type BootstrapperReport,
+  type ConfigReport,
+  type ConfigSource,
   type ChildExit,
   type ChildLiveness,
   type ChildState,
@@ -114,6 +124,7 @@ export type {
   InitScaffoldOutcome,
   InitTenantOutcome,
 } from "./init-report.ts";
+export type { SecretSetOutcome, SecretWriter } from "./secret-set.ts";
 export type { StartOutcome } from "./start-outcome.ts";
 export type {
   UpgradeCheckReport,
@@ -138,3 +149,16 @@ export type {
   MissingDeclaredEnvKey,
   TenantDoctorRow,
 } from "./doctor-report.ts";
+export { EFFECTIVE_CONFIG_VERSION } from "./effective-config.ts";
+export type {
+  ConfigWarning,
+  EffectiveFields,
+  EffectiveLeaf,
+  EffectiveNode,
+  EnvLocation,
+  EnvPresence,
+  SettingReader,
+  SettingSource,
+  ShadowedValue,
+  TenantEffectiveConfig,
+} from "./effective-config.ts";
