@@ -55,6 +55,12 @@
 // semaphore + owner bookkeeping; the IPC adapter that maps child messages onto
 // it lives in bootstrap/broker-ipc.ts.
 
+import type { DeploymentHostKnobs } from "../src/config-schema.ts";
+import { envNames, readNumber, readNumberFrom, settingAt } from "../src/settings-catalogue.ts";
+
+const SLOT_CAP_SETTING = settingAt("deployment.slotCap");
+const FLOOR_BUDGET_SETTING = settingAt("deployment.slotFloorBudget");
+
 /** Default over-cap grants allowed fleet-wide at once (#407). */
 export const DEFAULT_SLOT_FLOOR_BUDGET = 1;
 
@@ -83,8 +89,10 @@ export type EffectiveCap = {
   capacity: number;
   /** `max(declared concurrency)` across the live pipelines — the derived number. */
   declared: number;
-  /** Whether the operator's env replaced the derivation. */
-  source: "env" | "derived";
+  /** Whether an operator's env name or `deployment.slotCap` replaced the derivation. */
+  source: "env" | "file" | "derived";
+  /** The env name that replaced it, when `source` is `"env"`. */
+  via?: string;
   /** Labels of the pipelines the derivation took its max from. */
   from: readonly string[];
   /** Pipelines declaring more than the cap. They queue; nothing is clamped locally. */
@@ -97,10 +105,13 @@ function labelOf(pipeline: BrokerPipeline): string {
 }
 
 /**
- * The effective cap for a live pipeline matrix: `max(declared concurrency)`, or
- * `PHOEBE_MAX_CONCURRENT_AGENTS` when it is set to a valid value. The env
- * *replaces* the derivation, winning even when lower — that is what the variable
- * has always meant. A missing, non-numeric or < 1 value is no override at all.
+ * The effective cap for a live pipeline matrix: `max(declared concurrency)`,
+ * replaced by `deployment.slotCap` if the root config names one and by
+ * `PHOEBE_DEPLOYMENT_SLOT_CAP` (permanent alias `PHOEBE_MAX_CONCURRENT_AGENTS`)
+ * above that — env beats file at the path, as everywhere. The override
+ * *replaces* the derivation, winning even when lower: that is what the knob has
+ * always meant, and the operator knows the machine where the tenant does not.
+ * A missing, non-numeric or < 1 value is no override at all.
  *
  * An empty matrix derives 1: a container with no pipelines has nothing to size for,
  * and the first pipeline reshape recomputes.
@@ -108,18 +119,21 @@ function labelOf(pipeline: BrokerPipeline): string {
 export function resolveEffectiveCap(
   pipelines: readonly BrokerPipeline[],
   env: NodeJS.ProcessEnv = process.env,
+  knobs: DeploymentHostKnobs = {},
 ): EffectiveCap {
   const declaredBy = pipelines
     .map((pipeline) => Math.floor(pipeline.concurrency))
     .filter((n) => Number.isInteger(n) && n >= 1);
   const declared = Math.max(1, ...declaredBy);
-  const raw = Number(env["PHOEBE_MAX_CONCURRENT_AGENTS"]);
-  const override = Number.isInteger(raw) && raw >= 1 ? raw : null;
+  const fromEnv = readNumberFrom(env, envNames(SLOT_CAP_SETTING), { integer: true, min: 1 });
+  const override = fromEnv?.value ?? knobs.slotCap ?? null;
   const capacity = override ?? declared;
+  const source = override === null ? "derived" : fromEnv !== undefined ? "env" : "file";
   return {
     capacity,
     declared,
-    source: override === null ? "derived" : "env",
+    source,
+    ...(fromEnv !== undefined ? { via: fromEnv.via } : {}),
     from: pipelines
       .filter((pipeline) => Math.floor(pipeline.concurrency) === declared)
       .map(labelOf),
@@ -130,16 +144,23 @@ export function resolveEffectiveCap(
 }
 
 /**
- * Read the floor budget from `PHOEBE_SLOT_FLOOR_BUDGET`. It lives in env beside
- * the cap rather than in root config: same kind of knob (host protection,
- * operator-side, deliberately not tenant-authored), read together to state the
- * worst case, which is `capacity + floorBudget`. **0 is a valid value** — an
- * operator who needs a hard ceiling sets it and accepts what it costs a starved
- * pipeline. A negative or non-integer value is no answer, so the default stands.
+ * Read the floor budget: `PHOEBE_DEPLOYMENT_SLOT_FLOOR_BUDGET` (permanent alias
+ * `PHOEBE_SLOT_FLOOR_BUDGET`), else `deployment.slotFloorBudget`, else the
+ * default. It sits beside the cap in both channels — same kind of knob (host
+ * protection, operator-side), read together to state the worst case, which is
+ * `capacity + floorBudget`. **0 is a valid value**: an operator who needs a hard
+ * ceiling sets it and accepts what it costs a starved pipeline. A negative or
+ * non-integer value is no answer, so the next channel wins.
  */
-export function resolveFloorBudget(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = Number(env["PHOEBE_SLOT_FLOOR_BUDGET"]);
-  return Number.isInteger(raw) && raw >= 0 ? raw : DEFAULT_SLOT_FLOOR_BUDGET;
+export function resolveFloorBudget(
+  env: NodeJS.ProcessEnv = process.env,
+  knobs: DeploymentHostKnobs = {},
+): number {
+  return (
+    readNumber(env, envNames(FLOOR_BUDGET_SETTING), { integer: true, min: 0 }) ??
+    knobs.slotFloorBudget ??
+    DEFAULT_SLOT_FLOOR_BUDGET
+  );
 }
 
 /** How many pipelines a boot line names before it summarizes the rest. */
@@ -159,10 +180,12 @@ function namePipelines(labels: readonly string[]): string {
 export function describeCap(cap: EffectiveCap, floorBudget: number): string {
   const derivation =
     cap.source === "env"
-      ? `PHOEBE_MAX_CONCURRENT_AGENTS=${cap.capacity} replaces max(concurrency)=${cap.declared}`
-      : cap.from.length > 0
-        ? `max(concurrency)=${cap.declared} from ${namePipelines(cap.from)}`
-        : `max(concurrency)=${cap.declared}, no live pipelines yet`;
+      ? `${cap.via ?? SLOT_CAP_SETTING.env}=${cap.capacity} replaces max(concurrency)=${cap.declared}`
+      : cap.source === "file"
+        ? `deployment.slotCap=${cap.capacity} replaces max(concurrency)=${cap.declared}`
+        : cap.from.length > 0
+          ? `max(concurrency)=${cap.declared} from ${namePipelines(cap.from)}`
+          : `max(concurrency)=${cap.declared}, no live pipelines yet`;
   const clamp =
     cap.clamped.length > 0
       ? `; declaring more than the cap and queuing for it (not clamped): ` +

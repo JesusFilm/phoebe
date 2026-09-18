@@ -16,13 +16,17 @@ import {
   fetchRepoLabels,
   formatDoctorReport,
   labelsCheck,
+  configPenCheck,
   launcherFloorCheck,
   promptDriftCheck,
+  relayCheck,
   staleStateCheck,
   strayMembersCheck,
+  tenantCredential,
   tenantRow,
   tenantTokenCheck,
 } from "./doctor.ts";
+import { createDeadline, DEADLINE_DETAIL } from "./doctor-deadline.ts";
 
 describe("describeRepoProbe", () => {
   test("200 is reachable", () => {
@@ -161,6 +165,28 @@ describe("tenantTokenCheck", () => {
       ],
     );
     expect(report.ok).toBe(true);
+  });
+});
+
+describe("configPenCheck", () => {
+  const configPath = "/etc/phoebe/phoebe.config.ts";
+
+  test("a read-write mount is the pen, and the check says so", () => {
+    const check = configPenCheck({ configPath, inContainer: true, writable: () => true });
+    expect(check.state).toBe("ok");
+    expect(check.detail).toContain("read-write");
+  });
+
+  test("a read-only root config warns, with the mount line and the restart", () => {
+    const check = configPenCheck({ configPath, inContainer: true, writable: () => false });
+    expect(check.state).toBe("warn");
+    expect(check.detail).toContain("read-write file mount");
+    expect(check.detail).toContain("phoebe stop && phoebe start");
+  });
+
+  test("from the host the answer is unknown, never a pass", () => {
+    const check = configPenCheck({ configPath, inContainer: false, writable: () => true });
+    expect(check.state).toBe("unknown");
   });
 });
 
@@ -963,5 +989,213 @@ describe("tenantRow stray members (#487)", () => {
       state: "unknown",
       detail: "not probed (repo check did not pass)",
     });
+  });
+});
+
+describe("relayCheck (#540)", () => {
+  const url = "wss://relay.example.com/deployments";
+  const paired = {
+    configured: true,
+    state: "connected" as const,
+    nextRetryAt: null,
+    lastClose: null,
+    updatedAt: "2026-09-18T10:00:00.000Z",
+  };
+
+  test("a deployment with no relay block is not a deployment with a problem", () => {
+    const check = relayCheck({ url: null, keyPresent: false, tokenPresent: false, reported: null });
+    expect(check).toMatchObject({ id: "relay", state: "ok" });
+    expect(check.detail).toContain("dials nothing");
+  });
+
+  test("a url and a token and no key yet is a pairing about to happen", () => {
+    const check = relayCheck({ url, keyPresent: false, tokenPresent: true, reported: null });
+    expect(check.state).toBe("ok");
+    expect(check.detail).toContain("unpaired");
+    expect(check.detail).toContain("the next boot pairs");
+  });
+
+  test("a url with neither a key nor a token is an operator who stopped halfway", () => {
+    const check = relayCheck({ url, keyPresent: false, tokenPresent: false, reported: null });
+    expect(check.state).toBe("warn");
+    expect(check.detail).toContain("Mint a pairing token");
+  });
+
+  test("a paired deployment says so, and says where it stands", () => {
+    const check = relayCheck({ url, keyPresent: true, tokenPresent: false, reported: paired });
+    expect(check).toMatchObject({ state: "ok" });
+    expect(check.detail).toContain("paired with " + url);
+    expect(check.detail).toContain("connected");
+  });
+
+  test("a token left in the env after pairing is a dead credential worth naming", () => {
+    const check = relayCheck({ url, keyPresent: true, tokenPresent: true, reported: paired });
+    expect(check.state).toBe("warn");
+    expect(check.detail).toContain("token-stale");
+    expect(check.detail).toContain("PHOEBE_RELAY_TOKEN");
+  });
+
+  test("a refusal fails the check — nothing about it changes on its own", () => {
+    const check = relayCheck({
+      url,
+      keyPresent: true,
+      tokenPresent: false,
+      reported: {
+        ...paired,
+        state: "unpaired",
+        lastClose: { code: 4001, reason: "unlinked", at: "2026-09-18T11:00:00.000Z" },
+      },
+    });
+    expect(check.state).toBe("fail");
+    expect(check.detail).toContain("refused");
+    expect(check.detail).toContain("4001");
+  });
+
+  test("a link between retries is still paired, not refused", () => {
+    const check = relayCheck({
+      url,
+      keyPresent: true,
+      tokenPresent: false,
+      reported: {
+        ...paired,
+        state: "reconnecting",
+        nextRetryAt: "2026-09-18T11:00:05.000Z",
+        lastClose: { code: 1006, reason: "", at: "2026-09-18T11:00:00.000Z" },
+      },
+    });
+    expect(check.state).toBe("ok");
+    expect(check.detail).toContain("reconnecting");
+  });
+
+  test("a block that does not parse is reported, not read as no relay at all", () => {
+    const check = relayCheck({
+      url: null,
+      configError: "`relay.url` must be a WebSocket URL",
+      keyPresent: false,
+      tokenPresent: false,
+      reported: null,
+    });
+    expect(check.state).toBe("warn");
+    expect(check.detail).toContain("does not parse");
+  });
+});
+
+describe("tenantCredential (#507 §5)", () => {
+  test("a tenant's own token wins — a PAT-arm tenant is leased nothing", () => {
+    expect(
+      tenantCredential({ own: "ghp_own", slug: "acme/widget", leases: { "acme/widget": "ghs_l" } }),
+    ).toEqual({ token: "ghp_own", leased: false });
+  });
+
+  test("an App-arm tenant runs on the lease the supervisor handed over", () => {
+    expect(
+      tenantCredential({ own: undefined, slug: "acme/widget", leases: { "acme/widget": "ghs_l" } }),
+    ).toEqual({ token: "ghs_l", leased: true });
+  });
+
+  test("a manual run leases nothing, so there is no token to probe with", () => {
+    expect(tenantCredential({ own: undefined, slug: "acme/widget", leases: {} })).toEqual({
+      token: undefined,
+      leased: false,
+    });
+  });
+
+  test("a tenant with no slug has nothing to look a lease up by", () => {
+    expect(
+      tenantCredential({ own: undefined, slug: null, leases: { "acme/widget": "ghs_l" } }),
+    ).toEqual({ token: undefined, leased: false });
+  });
+});
+
+describe("the App arm with a lease (#507 §5)", () => {
+  const leased = {
+    path: "tenant",
+    slug: "acme/widget",
+    arm: "app" as const,
+    token: "ghs_leased",
+    leased: true,
+    envLabel: "/etc/phoebe/tenant/.env",
+    inContainer: true,
+  };
+
+  const reachable = async (url: string | URL | Request) => {
+    const href = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+    const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
+    if (href.includes("/labels?")) {
+      return json(
+        ["ready-for-agent", "processing", "merged-to-feature", "ready-for-human"].map((name) => ({
+          name,
+        })),
+      );
+    }
+    if (href.includes("/issues?")) return json([]);
+    return json({ id: 1, name: "widget" });
+  };
+
+  test("repo and labels are real checks, not `not probed (App arm)`", async () => {
+    const row = await tenantRow({ ...leased, fetchFn: reachable as typeof fetch });
+    expect(row.checks.find((c) => c.id === "repo")?.state).toBe("ok");
+    expect(row.checks.find((c) => c.id === "labels")?.state).toBe("ok");
+    expect(row.checks.find((c) => c.id === "stray-members")?.state).toBe("ok");
+  });
+
+  test("the token check says the credential was leased to this run", async () => {
+    const row = await tenantRow({ ...leased, fetchFn: reachable as typeof fetch });
+    expect(row.checks.find((c) => c.id === "token")?.detail).toMatch(/leased to this run/);
+  });
+
+  test("without a lease the App arm still defers to the runtime mint", async () => {
+    const row = await tenantRow({
+      ...leased,
+      token: undefined,
+      leased: false,
+      fetchFn: reachable as typeof fetch,
+    });
+    expect(row.checks.find((c) => c.id === "repo")).toEqual({
+      id: "repo",
+      state: "unknown",
+      detail: "not probed (App arm — repo access verified at runtime when the token is minted)",
+    });
+  });
+});
+
+describe("the run's deadline (#507 §7)", () => {
+  const tenant = {
+    path: "tenant",
+    slug: "acme/widget",
+    arm: "pat" as const,
+    token: "ghp_tok",
+    envLabel: "/etc/phoebe/.env",
+    inContainer: false,
+  };
+
+  test("a tenant whose GitHub never answers goes unknown, not pending forever", async () => {
+    const hangs = () => new Promise<Response>(() => {});
+    const row = await tenantRow({
+      ...tenant,
+      fetchFn: hangs as unknown as typeof fetch,
+      deadline: createDeadline(5),
+    });
+    const repo = row.checks.find((c) => c.id === "repo");
+    expect(repo?.state).toBe("unknown");
+    expect(repo?.detail).toBe(DEADLINE_DETAIL);
+  });
+
+  test("the checks behind the one that ran out of time are still reported", async () => {
+    const hangs = () => new Promise<Response>(() => {});
+    const row = await tenantRow({
+      ...tenant,
+      fetchFn: hangs as unknown as typeof fetch,
+      deadline: createDeadline(5),
+    });
+    // Shape first: a report whose rows lose checks when a tenant is slow is a
+    // report a console cannot line up against the last one.
+    expect(row.checks.map((check) => check.id)).toEqual([
+      "token",
+      "repo",
+      "labels",
+      "stray-members",
+    ]);
+    expect(row.checks.find((c) => c.id === "token")?.state).toBe("ok");
   });
 });

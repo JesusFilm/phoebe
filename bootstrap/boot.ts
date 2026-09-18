@@ -31,11 +31,16 @@
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { installDrainSignal } from "../src/drain.ts";
 import { defaultGit, type GitRunner } from "../src/git-model.ts";
 import { loadUserConfig, resolveConfigPath } from "../src/load-config.ts";
-import { readReportingField } from "../src/config-schema.ts";
+import {
+  readDeploymentHostKnobs,
+  readReportingField,
+  type DeploymentHostKnobs,
+} from "../src/config-schema.ts";
+import { envNames, readNumber, settingAt } from "../src/settings-catalogue.ts";
 import {
   createCrashReporter,
   NO_CRASH_REPORTER,
@@ -74,6 +79,22 @@ import {
   type MintedToken,
 } from "./github-app.ts";
 import { attachBroker } from "./broker-ipc.ts";
+import { attachEngineReports } from "./engine-report-ipc.ts";
+import { createConfigCollector, createRootConfigSource } from "./config-report.ts";
+import { createConfigEditor, type ConfigEditor } from "./config-editor.ts";
+import {
+  createDoctorRunner,
+  spawnDoctor,
+  DOCTOR_KILL_GRACE_MS,
+  type DoctorRunner,
+} from "./doctor-runner.ts";
+import { DOCTOR_DEADLINE_MS } from "../src/doctor-deadline.ts";
+import type { DoctorLeases } from "../src/doctor-lease.ts";
+import {
+  createDeploymentState,
+  type DeploymentState,
+  type HeldTenant,
+} from "./deployment-state.ts";
 import {
   createSlotBroker,
   describeCap,
@@ -83,6 +104,7 @@ import {
   type SlotBroker,
 } from "./slot-broker.ts";
 import {
+  TENANT_ENV_FILE,
   discoverTenants,
   discoverWorkspaceTenants,
   WorkspaceStructuralChangeError,
@@ -95,6 +117,9 @@ import {
   type TenantSample,
 } from "./tenants.ts";
 import { readConfigDir } from "./config-dir.ts";
+import { prepareRelay } from "./relay-boot.ts";
+import { resolveDataBase } from "../src/paths.ts";
+import type { DeploymentArm, SlotReport } from "../src/contracts/deployment.ts";
 import { readGitIdentity, soloIdentityEnv, type GitIdentity } from "./git-identity.ts";
 import {
   superviseFleet,
@@ -152,9 +177,19 @@ export function resolveSoloTenant(
   configDir: string,
   config: Record<string, unknown>,
 ): DiscoveredTenant {
+  return { ...discoverTenants(configDir).tenants[0], slug: soloSlug(config) };
+}
+
+/**
+ * The `repoSlug` a root config declares, trimmed — or null when it declares
+ * none worth using. Split out of {@link resolveSoloTenant} because the
+ * deployment report wants the slug as a *name* before there is a tenant to
+ * discover, and walking the deployment directory twice to get it would be two
+ * chances to fail where one will do.
+ */
+export function soloSlug(config: Record<string, unknown>): string | null {
   const declared = config["repoSlug"];
-  const slug = typeof declared === "string" && declared.trim().length > 0 ? declared.trim() : null;
-  return { ...discoverTenants(configDir).tenants[0], slug };
+  return typeof declared === "string" && declared.trim().length > 0 ? declared.trim() : null;
 }
 
 /**
@@ -315,12 +350,34 @@ function engineBaseDir(): string {
 
 /**
  * How often the reconcile watch samples the config and the tracked ref.
- * `PHOEBE_RECONCILE_INTERVAL_MS` tightens it for dogfooding (the default is a
- * minute, which is a long time to wait when demonstrating a relaunch).
+ * `PHOEBE_DEPLOYMENT_RECONCILE_INTERVAL_MS` (permanent alias
+ * `PHOEBE_RECONCILE_INTERVAL_MS`) tightens it for dogfooding, else
+ * `deployment.reconcileIntervalMs`, else a minute — which is a long time to
+ * wait when demonstrating a relaunch, hence the knob.
  */
-function reconcileIntervalMs(): number {
-  const raw = Number(process.env["PHOEBE_RECONCILE_INTERVAL_MS"]);
-  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_RECONCILE_INTERVAL_MS;
+function reconcileIntervalMs(knobs: DeploymentHostKnobs): number {
+  return (
+    readNumber(process.env, envNames(settingAt("deployment.reconcileIntervalMs"))) ??
+    knobs.reconcileIntervalMs ??
+    DEFAULT_RECONCILE_INTERVAL_MS
+  );
+}
+
+/**
+ * The three host knobs off the root config, or none of them. Lenient by
+ * construction (see `readDeploymentHostKnobs`): boot reads this before it has
+ * anywhere to report a config error, and the watch loop below reports a broken
+ * config properly a moment later. A config that will not load at all leaves
+ * every knob to its env name or its default, which is where they started.
+ */
+async function loadHostKnobs(configPath: string): Promise<DeploymentHostKnobs> {
+  try {
+    return readDeploymentHostKnobs(
+      await loadMountedConfig(configPath, configFingerprint(configPath)),
+    );
+  } catch {
+    return {};
+  }
 }
 
 /**
@@ -420,6 +477,7 @@ async function launchTarget(configPath: string, guard: CrashGuard): Promise<Laun
       sample,
       pipelines: probePipelineEnumeration(entry),
       stateSweep: createStateSweeper({ entry }),
+      configs: createConfigCollector({ entry, fingerprint: tenantFingerprint }),
     };
   }
 
@@ -456,6 +514,7 @@ async function launchTarget(configPath: string, guard: CrashGuard): Promise<Laun
     sample,
     pipelines: probePipelineEnumeration(entry),
     stateSweep: createStateSweeper({ entry }),
+    configs: createConfigCollector({ entry, fingerprint: tenantFingerprint }),
   };
 }
 
@@ -735,19 +794,93 @@ function brokerPipeline(pipeline: SupervisedPipeline): BrokerPipeline {
 export function trackPipelines(
   broker: SlotBroker,
   env: NodeJS.ProcessEnv = process.env,
+  knobs: DeploymentHostKnobs = {},
 ): NonNullable<SuperviseFleetDeps["onPipelines"]> {
   let reported: string | null = null;
   return ({ pipelines, reshaped }) => {
     const live = pipelines.map(brokerPipeline);
     broker.setPipelines(live);
     if (!reshaped) return;
-    const cap = resolveEffectiveCap(live, env);
+    const cap = resolveEffectiveCap(live, env, knobs);
     broker.setCapacity(cap.capacity);
     const line = describeCap(cap, broker.floorBudget);
     if (line === reported) return;
     console.log(`[phoebe] boot: ${line}`);
     reported = line;
   };
+}
+
+/**
+ * The pipeline hook both arms wire: the broker's bookkeeping, then the
+ * deployment report's.
+ *
+ * It is also the report's only timer. Nothing else fires when a pipeline goes
+ * quiet — that is what "wedged" means — so re-deriving the fleet on every poll
+ * is what makes the flag flip at all. The write still only happens when
+ * something moved (bootstrap/deployment-report.ts), so a fleet sitting still
+ * rewrites nothing however often this runs.
+ */
+export function trackFleetPipelines(
+  broker: SlotBroker,
+  deployment: DeploymentState,
+  env: NodeJS.ProcessEnv = process.env,
+  knobs: DeploymentHostKnobs = {},
+): NonNullable<SuperviseFleetDeps["onPipelines"]> {
+  const track = trackPipelines(broker, env, knobs);
+  return (matrix) => {
+    track(matrix);
+    deployment.notePipelines(matrix.pipelines);
+  };
+}
+
+/**
+ * Wrap a warning so it is printed for the first fault only. For a fault that
+ * recurs on a timer — a data volume that will not take the deployment report —
+ * the second line says nothing the first did not.
+ */
+export function warnOnce(describeFault: (error: unknown) => string): (error: unknown) => void {
+  let warned = false;
+  return (error) => {
+    if (warned) return;
+    warned = true;
+    console.warn(describeFault(error));
+  };
+}
+
+/** The engine ref as the mounted config names it; `local` for a host mount. */
+export function engineRefOf(engine: LaunchedEngine): string | null {
+  return engine.source.source === "github" ? engine.source.ref : "local";
+}
+
+/** The broker's numbers as the deployment report publishes them (#532). */
+export function brokerSlots(broker: SlotBroker): SlotReport {
+  return {
+    capacity: broker.capacity,
+    inUse: broker.inUse,
+    waiting: broker.waiting,
+    overGranted: broker.overGranted,
+    floorBudget: broker.floorBudget,
+  };
+}
+
+/**
+ * What this deployment is called in a console (#505 §3). `relay.name` will win
+ * here once the relay block exists; until then it is the default that block
+ * defaults to — the solo tenant's `repoSlug`, or the workspace root's directory
+ * name. A solo tenant whose config declares no usable `repoSlug` falls back to
+ * the same directory name rather than to nothing.
+ */
+export function deploymentName(opts: {
+  arm: DeploymentArm;
+  configDir: string;
+  soloSlug?: string | null;
+}): string {
+  if (opts.arm === "solo" && typeof opts.soloSlug === "string" && opts.soloSlug.length > 0) {
+    return opts.soloSlug;
+  }
+  // The trailing separator is trimmed first so `/etc/phoebe/` still names itself.
+  const trimmed = opts.configDir.replace(/[/\\]+$/, "");
+  return basename(trimmed) || trimmed;
 }
 
 /**
@@ -777,8 +910,15 @@ function runFleet(opts: {
   argv: readonly string[];
   discover: () => FleetDiscoverInput;
   broker: SlotBroker;
+  /** The live deployment report (#532) — fed from the hooks and the spawn wrapper. */
+  deployment: DeploymentState;
+  /** The deployment's doctor runs (#534), triggered from the same two moments. */
+  doctor: DoctorRunner;
+  /** The config-edit pen (#536): pointed at each new checkout, nudged on a write. */
+  editor: ConfigEditor;
+  hostKnobs: DeploymentHostKnobs;
 }): Promise<EngineExit> {
-  const { broker } = opts;
+  const { broker, deployment, doctor } = opts;
   // Fleet-level credential-lease state (#211/#205): the cache and the warn-once
   // tracker outlive child respawns. Every child's lease must be answered — a
   // spawned engine requests one at the top of each poll and blocks until the
@@ -817,14 +957,26 @@ function runFleet(opts: {
       {
         env,
         cwd: assetsDir,
-        onExit: (code: number | null, signal: NodeJS.Signals | null) => settle({ code, signal }),
+        onExit: (code: number | null, signal: NodeJS.Signals | null) => {
+          deployment.noteExit(pipeline.id, { code, signal });
+          settle({ code, signal });
+        },
         onSpawnError: (error: Error) => {
           reportSpawnFailure(pipeline, error);
+          deployment.noteExit(pipeline.id, { code: 1, signal: null });
           settle({ code: 1, signal: null });
         },
       },
     );
     attachBroker({ owner: pipeline.id, broker, child });
+    // The report rail (#532): this child's completed passes and its `status.json`
+    // writes, into the one read model. Wired beside the broker because it is the
+    // same channel, opened for the same reason.
+    attachEngineReports({ pipelineId: pipeline.id, child, state: deployment });
+    deployment.noteSpawn(pipeline);
+    // A child spawning is the fleet being up: the deployment's boot doctor run
+    // starts here, and a run a reconcile parked is released here (#507 §7).
+    doctor.noteFleetUp();
     // The lease answerer (#211/#205). `readPatToken` re-reads this tenant's
     // `.env` per request, so a rotated PAT lands in the running child at its
     // next lease call site — no drain, no respawn (the fingerprint above
@@ -843,27 +995,52 @@ function runFleet(opts: {
       readPatToken: () => readTenantEnv(tenant.envPath)["GH_TOKEN"] ?? null,
       warnedOverBudget,
     });
-    return { kill: (signal) => child.kill(signal), exited };
+    return {
+      // A kill from the supervisor is a drain request — the one signal that
+      // separates a child we stopped from a child that died (#501). Boot owns
+      // this wrapper in both arms, so the supervisor needs no hook for it.
+      kill: (signal) => {
+        deployment.noteDraining(pipeline.id);
+        child.kill(signal);
+      },
+      exited,
+    };
   };
 
   return superviseFleet({
-    launch: () => launchTarget(opts.configPath, opts.guard),
+    onNudge: opts.editor.useNudge,
+    launch: async () => {
+      const engine = await launchTarget(opts.configPath, opts.guard);
+      // Validation is the *running* engine's answer (#503), so the validator
+      // moves with every materialization, exactly as the config collector does.
+      opts.editor.useEngine(engine.entry);
+      deployment.noteEngine({
+        ref: engineRefOf(engine),
+        sha: engine.sha,
+        quarantinedSha: engine.quarantinedSha,
+        ...(engine.configs !== undefined ? { config: engine.configs } : {}),
+      });
+      return engine;
+    },
     discover: opts.discover,
     spawn: spawnFleetChild,
     stop: opts.stop,
     intervalMs: opts.intervalMs,
-    onEngineChange: (reason) =>
+    onEngineChange: (reason) => {
       console.log(
         reason === "config"
           ? "[phoebe] boot: shared config changed — draining the fleet and relaunching every pipeline."
           : "[phoebe] boot: tracked engine ref advanced — draining the fleet and relaunching every pipeline.",
-      ),
+      );
+      deployment.noteReconcile(reason);
+      doctor.noteReconcile();
+    },
     onPipelineChange: ({ added, removed, changed }) =>
       console.log(
         `[phoebe] boot: pipeline reconcile — +${added.length} added, -${removed.length} removed, ` +
           `~${changed.length} relaunched (no container restart).`,
       ),
-    onPipelines: trackPipelines(broker),
+    onPipelines: trackFleetPipelines(broker, deployment, process.env, opts.hostKnobs),
     onChildExit: ({ pipeline, exit }) => reportPipelineExit(pipeline, exit),
     onLaunchError: (error) => {
       console.error(`[phoebe] boot: fleet (re)launch failed — ${describe(error)}. Retrying.`);
@@ -1017,6 +1194,15 @@ function pipelineExitPolicy(guard: CrashGuard): PipelineExitPolicy {
  */
 type AppMintFn = (slug: string) => Promise<MintedToken & { mintedEnv: MintedCredentials }>;
 
+/**
+ * The mint function plus the leases it is currently holding (#507 §5): the
+ * live installation tokens, keyed by the slug each was minted for. It is the
+ * same cache the fleet's children are running on, read rather than re-minted —
+ * a doctor run costs a deployment no extra tokens, only the requests its checks
+ * make.
+ */
+type AppMinter = AppMintFn & { leases: () => DoctorLeases };
+
 /** How long before a minted token's expiry to proactively refresh it. */
 const MINT_REFRESH_MARGIN_MS = 10 * 60 * 1000;
 
@@ -1028,10 +1214,10 @@ const MINT_REFRESH_MARGIN_MS = 10 * 60 * 1000;
  * is not restarted. A fresh mint changes `expiresAt`, which changes the
  * fingerprint, triggering a controlled restart that delivers the new token.
  */
-function createAppMintFn(creds: AppCredentials, identity: AppBotIdentity): AppMintFn {
+function createAppMintFn(creds: AppCredentials, identity: AppBotIdentity): AppMinter {
   const cache = new Map<string, MintedToken & { mintedEnv: MintedCredentials }>();
 
-  return async (slug: string) => {
+  const mint = async (slug: string) => {
     const cached = cache.get(slug);
     if (cached !== undefined && cached.expiresAt - Date.now() > MINT_REFRESH_MARGIN_MS) {
       return cached;
@@ -1049,6 +1235,29 @@ function createAppMintFn(creds: AppCredentials, identity: AppBotIdentity): AppMi
     cache.set(slug, result);
     return result;
   };
+
+  return Object.assign(mint, { leases: () => liveLeases(cache, Date.now()) });
+}
+
+/**
+ * The leases a doctor run is handed (#507 §5): the minted tokens the fleet's
+ * own children are running on, keyed by the slug each was minted for.
+ *
+ * An expired entry is left out rather than re-minted. This is read on the way
+ * to spawning a doctor child, and a mint failure there would be a doctor
+ * problem caused by nothing doctor did; the tenant whose lease lapsed reports
+ * what an unleased App-arm tenant has always reported, and the fleet's own
+ * refresh puts the lease back within the poll.
+ */
+export function liveLeases(
+  cache: ReadonlyMap<string, { token: string; expiresAt: number }>,
+  nowMs: number,
+): DoctorLeases {
+  const live: DoctorLeases = {};
+  for (const [slug, minted] of cache) {
+    if (minted.expiresAt > nowMs) live[slug] = minted.token;
+  }
+  return live;
 }
 
 /**
@@ -1071,6 +1280,13 @@ function workspaceDiscover(
   configPath: string,
   initialWorkspace: ResolvedWorkspace,
   appMint?: AppMintFn,
+  /**
+   * The tenants this poll is holding, with their reasons — the deployment
+   * report's `held` facts (#532). Reported from here because this is the only
+   * place that has the reason: the supervisor's discovery contract carries hold
+   * *ids*, and an id alone cannot say what went wrong.
+   */
+  onHolds: (held: readonly HeldTenant[]) => void = () => {},
 ): () => FleetDiscoverInput {
   let lastArm = workspaceArm(initialWorkspace);
   let previousHoldKey: string | null = null;
@@ -1091,6 +1307,7 @@ function workspaceDiscover(
   ): Promise<FleetDiscoverResult> => {
     const samples: TenantSample[] = [];
     const mintFailedIds: string[] = [];
+    const mintFailed: HeldTenant[] = [];
 
     for (const tenant of discovery.tenants) {
       if (appMint && tenant.slug !== null) {
@@ -1111,6 +1328,13 @@ function workspaceDiscover(
             const diagnosis = error instanceof Error ? error.message : String(error);
             console.warn(`[phoebe] boot: tenant ${tenant.slug} held — mint failed: ${diagnosis}.`);
             mintFailedIds.push(tenant.id);
+            mintFailed.push({
+              id: tenant.id,
+              dir: tenant.dir,
+              envPath: tenant.envPath,
+              slug: tenant.slug,
+              reason: `App token mint failed: ${diagnosis}`,
+            });
           }
           continue;
         }
@@ -1121,6 +1345,16 @@ function workspaceDiscover(
       });
     }
 
+    onHolds([
+      ...discovery.holds.map((hold) => ({
+        id: hold.dir,
+        dir: hold.dir,
+        envPath: join(hold.dir, TENANT_ENV_FILE),
+        slug: hold.slug,
+        reason: hold.reason,
+      })),
+      ...mintFailed,
+    ]);
     const allHoldIds = [...reconcileHoldIds(discovery), ...mintFailedIds];
     const holdKey = [workspaceHoldKey(discovery.holds), mintFailedIds.join("\n")].join("|");
     if (!summaryLogged) {
@@ -1390,7 +1624,8 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
 
   const configDir = process.cwd();
   const configPath = resolveConfigPath(undefined, configDir);
-  const intervalMs = reconcileIntervalMs();
+  const hostKnobs = await loadHostKnobs(configPath);
+  const intervalMs = reconcileIntervalMs(hostKnobs);
 
   // The container's stop request. A one-way latch, and the poll clock: a
   // SIGTERM mid-poll wakes the watch immediately instead of sleeping out the
@@ -1408,8 +1643,8 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   // Until the first pipeline matrix arrives there is nothing to derive from and no
   // child to ask, so it starts at the operator's override or 1.
   const broker = createSlotBroker({
-    capacity: resolveEffectiveCap([], process.env).capacity,
-    floorBudget: resolveFloorBudget(process.env),
+    capacity: resolveEffectiveCap([], process.env, hostKnobs).capacity,
+    floorBudget: resolveFloorBudget(process.env, hostKnobs),
     onOverGrant: ({ label, inUse, capacity, outstanding, floorBudget }) =>
       console.log(
         `[phoebe] boot: slot floor — ${label} held no slot with work waiting; granting one ` +
@@ -1436,19 +1671,108 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   const reporter = createBootReporter(rootConfig, workspace !== null ? "workspace" : "solo");
   const guard = createBootCrashGuard(reporter);
 
+  // The deployment report (#532): one live model for the whole container,
+  // written to `state/deployment.json` whenever anything in it moves. Built
+  // before either arm runs, because both feed it — the arm only decides where
+  // the name and the credential arm come from.
+  const deploymentArm: DeploymentArm = workspace !== null ? "workspace" : "solo";
+  const dataBase = resolveDataBase(process.env);
+  // The relay (#540), if the root config names one: who this deployment is to a
+  // console, and the link that tells one so. Prepared before the model is built
+  // because it owns the identity section; dialled after, because it reports
+  // into the model.
+  const relay = prepareRelay({
+    rootConfig,
+    defaultName: deploymentName({ arm: deploymentArm, configDir, soloSlug: soloSlug(rootConfig) }),
+    arm: deploymentArm,
+    dataBase,
+    env: process.env,
+    log: (message) => console.log(message),
+    warn: (message) => console.warn(message),
+  });
+  // The config-edit pen (#536, decision #503). Built with the root config's path
+  // and nothing else: a workspace's tenant configs sit under the same `:ro`
+  // mount and stay the operator's to edit in their own checkouts, and this
+  // editor cannot reach them because it was never given them.
+  const editor = createConfigEditor({ rootConfigPath: configPath, dataBase });
+  const deployment = createDeploymentState({
+    identity: relay.identity,
+    dataBase,
+    crashLoop: () => guard.state(),
+    slots: () => brokerSlots(broker),
+    // The root config is the one file a console may edit (#503), so it is the
+    // one an edit's fingerprint must be taken over.
+    rootConfig: createRootConfigSource(configPath),
+    lastEditId: () => editor.lastEditId(),
+    // The ledger's live entries, so a console can say "edits not yet in a
+    // commit" without reading this deployment's git (#503).
+    edits: () => editor.liveEdits(),
+    // Workspace: the tenant's own `.env` weighed against the deployment env.
+    // Solo: the root *is* the tenant, so those are the same env (#162).
+    armOf:
+      workspace !== null
+        ? (tenant) => tenantArm(tenant.envPath)
+        : () => resolveCredentialArm(process.env as Record<string, string | undefined>),
+    // The report just moved, so the relay's copy is out of date (#542). The
+    // link reads the report back out of the model and sends it whole; with no
+    // relay configured, or none connected, this is a call that does nothing.
+    onReport: () => relay.push(),
+    // Once. A volume that refuses the first write will refuse every later one,
+    // and a line per publish would bury the fleet's own output in the repetition.
+    onWriteError: warnOnce(
+      (error) =>
+        `[phoebe] boot: could not write the deployment report — ${describe(error)}. ` +
+        `Supervision is unaffected; the report is retried on every change.`,
+    ),
+  });
+  // The pen goes up the rail with the link (#503, #547): a console's edit is
+  // the same call a shell `phoebe config set` makes, arriving from a message
+  // instead of from argv, so there is one writer and one reconcile path.
+  relay.start(deployment, { verbs: { configSet: (edit) => editor.apply(edit) } });
+
+  // The deployment's doctor runs (#507 §4-§7, #534). One cell for the leases
+  // because only the workspace arm can hold any: solo's App-arm child mints its
+  // own token in-loop, so the supervisor has nothing to hand over there, and
+  // the cell stays the empty book it starts as.
+  let doctorLeases: () => DoctorLeases = () => ({});
+  const doctor = createDoctorRunner({
+    run: () =>
+      spawnDoctor({
+        // The bootstrapper's own installed package, not the materialized engine
+        // (#507 §4): doctor's checks are the launcher's view of the deployment,
+        // including the engine checkout it would be reporting on.
+        entry: join(import.meta.dirname, "cli.ts"),
+        cwd: configDir,
+        env: process.env,
+        leases: doctorLeases(),
+        killAfterMs: DOCTOR_DEADLINE_MS + DOCTOR_KILL_GRACE_MS,
+      }),
+    onSection: (section) => deployment.noteDoctor(section),
+    onFailure: ({ outcome, detail }) =>
+      console.warn(
+        `[phoebe] boot: the doctor run ${outcome === "timed-out" ? "timed out" : "crashed"} — ` +
+          `${detail}. The last report stands in the deployment report, with its age.`,
+      ),
+  });
+  doctor.start();
+
   if (workspace !== null) {
     // GitHub App mode (#209): if the supervisor holds App credentials, fetch
     // the bot identity once at fleet startup and wire up a per-tenant mint fn.
     // Tenants with their own GH_TOKEN are untouched; tenants without one get a
     // scoped installation token each poll. A failed identity fetch disables App
     // mode gracefully — each tenant must then carry its own GH_TOKEN.
-    let appMint: AppMintFn | undefined;
+    let appMint: AppMinter | undefined;
     const appCreds = readAppCredentials(process.env);
     if (appCreds) {
       try {
         const identity = await fetchAppBotIdentity(appCreds);
         console.log(`[phoebe] boot: GitHub App mode active — minting tokens as ${identity.login}.`);
         appMint = createAppMintFn(appCreds, identity);
+        // Doctor's runs now carry what the fleet's children run on, so `repo`,
+        // `labels` and `stray-members` are answered for these tenants (#507 §5).
+        const minter = appMint;
+        doctorLeases = () => minter.leases();
       } catch (error) {
         console.warn(
           `[phoebe] boot: could not fetch App bot identity — ${describe(error)}. ` +
@@ -1467,9 +1791,15 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
         intervalMs,
         argv,
         broker,
+        deployment,
+        doctor,
+        editor,
+        hostKnobs,
         // The root `workspace` block is re-read every poll from here on: this
         // callback owns both the hot tenant list and the shape-change abort (#139).
-        discover: workspaceDiscover(configDir, configPath, workspace, appMint),
+        discover: workspaceDiscover(configDir, configPath, workspace, appMint, (held) =>
+          deployment.noteHolds(held),
+        ),
       });
     } catch (error) {
       if (error instanceof WorkspaceStructuralChangeError) {
@@ -1481,6 +1811,11 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       throw error;
     } finally {
       stop.dispose();
+      relay.stop();
+      // Nothing in flight is cancelled: a doctor child outliving the drain by a
+      // few seconds is harmless, and its six-hour clock is what must not
+      // outlive it.
+      doctor.stop();
       // A crash-loop report raced against the process ending is a report lost;
       // the flush waits it out, bounded by the reporter's own timeout (#474).
       // In the `finally` so a supervisor that threw still flushes before the
@@ -1524,7 +1859,17 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     soloIdentity = readGitIdentity(
       await loadMountedConfig(configPath, configFingerprint(configPath)),
     );
-    return launchTarget(configPath, guard);
+    const engine = await launchTarget(configPath, guard);
+    // Validation is the *running* engine's answer (#503), so the validator moves
+    // with every materialization, exactly as the config collector does.
+    editor.useEngine(engine.entry);
+    deployment.noteEngine({
+      ref: engineRefOf(engine),
+      sha: engine.sha,
+      quarantinedSha: engine.quarantinedSha,
+      ...(engine.configs !== undefined ? { config: engine.configs } : {}),
+    });
+    return engine;
   };
 
   const spawnSolo = (pipeline: SupervisedPipeline, engine: LaunchedEngine): FleetChild => {
@@ -1561,13 +1906,20 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       // change: the child then inherits the supervisor's env exactly as it
       // always has.
       ...(childEnv === null ? {} : { env: childEnv }),
-      onExit: (code: number | null, signal: NodeJS.Signals | null) => settle({ code, signal }),
+      onExit: (code: number | null, signal: NodeJS.Signals | null) => {
+        deployment.noteExit(pipeline.id, { code, signal });
+        settle({ code, signal });
+      },
       onSpawnError: (error: Error) => {
         reportSpawnFailure(pipeline, error);
+        deployment.noteExit(pipeline.id, { code: 1, signal: null });
         settle({ code: 1, signal: null });
       },
     });
     attachBroker({ owner: pipeline.id, broker, child });
+    attachEngineReports({ pipelineId: pipeline.id, child, state: deployment });
+    deployment.noteSpawn(pipeline);
+    doctor.noteFleetUp();
     // Answer the child's credential lease (#211) with the null no-op: solo is
     // one trust domain whose secrets arrive on the ambient container env, so
     // there is no per-tenant `.env` to re-read (#205's rotation-in-place has no
@@ -1581,12 +1933,19 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       mint: null,
       warnedOverBudget: soloWarnedOverBudget,
     });
-    return { kill: (signal) => child.kill(signal), exited };
+    return {
+      kill: (signal) => {
+        deployment.noteDraining(pipeline.id);
+        child.kill(signal);
+      },
+      exited,
+    };
   };
 
   let exit: EngineExit;
   try {
     exit = await superviseFleet({
+      onNudge: editor.useNudge,
       launch: launchSolo,
       // Solo's tenant axis stays inert: the root *is* the tenant, so every edit
       // to its config is already the engine axis's business (relaunch on a moved
@@ -1605,7 +1964,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       onChildExit: ({ pipeline, exit }) => reportPipelineExit(pipeline, exit),
       // Solo contends on the same broker, so its pipelines size and order it too:
       // one tenant, but its own pipelines' `concurrency` and `priority`.
-      onPipelines: trackPipelines(broker),
+      onPipelines: trackFleetPipelines(broker, deployment, process.env, hostKnobs),
       // Solo backs off on the engine constant, not the fleet's per-pipeline one: the
       // relaunch line quotes it, so the two must not drift.
       crashBackoffMs: CRASH_BACKOFF_MS,
@@ -1623,12 +1982,15 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       // every death of it is universal and reaches the policy — which is how
       // "the engine exited, so the container exits" is still what solo does.
       pipelineExit: { ...pipelineExitPolicy(guard), propagateOnStop: true },
-      onEngineChange: (reason) =>
+      onEngineChange: (reason) => {
         console.log(
           reason === "config"
             ? "[phoebe] boot: mounted config changed — draining the engine (SIGTERM) and relaunching."
             : "[phoebe] boot: tracked ref advanced — draining the engine (SIGTERM) and relaunching.",
-        ),
+        );
+        deployment.noteReconcile(reason);
+        doctor.noteReconcile();
+      },
       onLaunchError: (error) => {
         console.error(
           `[phoebe] boot: could not launch the engine — ${describe(error)}. Retrying next poll.`,
@@ -1642,6 +2004,8 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     // Drop the listeners before propagating: re-raising the engine's killing
     // signal must actually kill this process, and our own latch would swallow it.
     stop.dispose();
+    relay.stop();
+    doctor.stop();
     await reporter.flush();
   }
   propagateExit(exit.code, exit.signal);

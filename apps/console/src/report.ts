@@ -1,0 +1,139 @@
+// Reading the report the relay carried but never opened.
+//
+// The relay stores and forwards `state/deployment.json` as an opaque body and
+// hoists only its `schema` integer (relay-routes.ts, #542). So the console is the
+// first thing in the chain to look inside, and it is looking at bytes written by
+// a deployment that may be running a different engine than the relay or the
+// console expects. Two consequences shape this module.
+//
+// **The schema decides, not the fields.** `schema` moves when a field's meaning
+// changes in a way an older reader would misread (deployment.ts). A report
+// stamped with a schema this console does not know is not read at all: the fleet
+// page says so and shows the relay's own connection facts, which are never in the
+// report. Guessing would be worse than a blank cell.
+//
+// **A known schema is still checked.** The body arrived over HTTP from a process
+// this one does not control, so every section is narrowed before it is indexed.
+// Anything missing reads as absent rather than throwing — one malformed report
+// must not take the fleet page down with it.
+
+import { DEPLOYMENT_SCHEMA } from "phoebe-agent/contracts";
+import type {
+  ChildLiveness,
+  ConfigReport,
+  DeploymentReport,
+  DoctorSection,
+  EditLedgerEntry,
+  FleetCell,
+  ReconcileState,
+  RelayStoredReport,
+  TenantFacts,
+} from "phoebe-agent/contracts";
+
+/**
+ * What the console managed to make of one stored report. `kind` is the whole
+ * story a cell needs: there is no report yet, there is one this console cannot
+ * read, or there is one it can.
+ */
+export type ReportReading =
+  | { kind: "none" }
+  | { kind: "unreadable"; schema: number }
+  | { kind: "read"; receivedAt: string; report: DeploymentReport };
+
+/** Narrow one stored report, or say why not. */
+export function readReport(stored: RelayStoredReport | null): ReportReading {
+  if (stored === null) return { kind: "none" };
+  if (stored.schema !== DEPLOYMENT_SCHEMA) return { kind: "unreadable", schema: stored.schema };
+  const body = stored.report;
+  if (!isRecord(body)) return { kind: "unreadable", schema: stored.schema };
+  return {
+    kind: "read",
+    receivedAt: stored.receivedAt,
+    report: body as unknown as DeploymentReport,
+  };
+}
+
+/** The engine ref, running SHA and quarantine, or null when there is no section. */
+export function bootstrapperOf(report: DeploymentReport): DeploymentReport["bootstrapper"] | null {
+  return isRecord(report.bootstrapper) ? report.bootstrapper : null;
+}
+
+/** Every enumerated tenant the report lists. */
+export function tenantsOf(report: DeploymentReport): TenantFacts[] {
+  const fleet = report.fleet;
+  if (!isRecord(fleet) || !Array.isArray(fleet.tenants)) return [];
+  return fleet.tenants.filter(isRecord) as TenantFacts[];
+}
+
+/**
+ * The (tenant × pipeline) cells, which is what a bar segment is one of. Cells
+ * whose pipeline was not enumerated are dropped: a stale `state/` directory with
+ * no pipeline behind it is a doctor warning, not a segment of the fleet bar.
+ */
+export function cellsOf(report: DeploymentReport): FleetCell[] {
+  const fleet = report.fleet;
+  if (!isRecord(fleet) || !Array.isArray(fleet.cells)) return [];
+  return (fleet.cells.filter(isRecord) as FleetCell[]).filter(
+    (cell) => cell.source === "enumerated",
+  );
+}
+
+/** Child liveness by cell id, so a cell's process line is one lookup away. */
+export function childrenOf(report: DeploymentReport): Map<string, ChildLiveness> {
+  const bootstrapper = bootstrapperOf(report);
+  const children =
+    bootstrapper !== null && Array.isArray(bootstrapper.children)
+      ? (bootstrapper.children.filter(isRecord) as ChildLiveness[])
+      : [];
+  return new Map(children.map((child) => [child.id, child]));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The doctor section, or null when the report carries none. Null is the answer
+ * for two different deployments — one running an engine older than #534, and one
+ * whose section did not survive the trip — and neither is "doctor passed".
+ */
+export function doctorOf(report: DeploymentReport): DoctorSection | null {
+  return isRecord(report.doctor) ? report.doctor : null;
+}
+
+/**
+ * Every tenant's effective config, as the engine computed it (#502, #535), or
+ * null when the report carries no such section. Null covers a deployment
+ * running an engine older than the section and a section that did not survive
+ * the trip, and neither of them is "this deployment configures nothing" — the
+ * tab says which, rather than drawing an empty table.
+ */
+export function configOf(report: DeploymentReport): ConfigReport | null {
+  return isRecord(report.config) && Array.isArray(report.config.tenants)
+    ? (report.config as unknown as ConfigReport)
+    : null;
+}
+
+/**
+ * Config edits applied on the deployment and not yet in a commit (#503). An
+ * absent section is an empty list here, because the only thing a reader can do
+ * with "this engine does not keep a ledger" is say nothing — and saying nothing
+ * is what an empty list renders as.
+ */
+export function editsOf(report: DeploymentReport): EditLedgerEntry[] {
+  return Array.isArray(report.edits) ? (report.edits.filter(isRecord) as EditLedgerEntry[]) : [];
+}
+
+/**
+ * The reconcile section — what the bootstrapper is doing about a config or an
+ * engine that moved, and which edit it last applied (#503, #536). Null when the
+ * report carries no bootstrapper section, which is the same "cannot say" every
+ * other reader of a malformed report gets.
+ */
+export function reconcileOf(report: DeploymentReport): ReconcileState | null {
+  const bootstrapper = bootstrapperOf(report);
+  const reconcile = bootstrapper?.reconcile;
+  return isRecord(reconcile) && typeof reconcile.phase === "string"
+    ? (reconcile as unknown as ReconcileState)
+    : null;
+}

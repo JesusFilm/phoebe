@@ -11,6 +11,9 @@ import {
   PROVIDER_NAMES,
   builtInKindPath,
   deprecatedPipelineAliases,
+  readDeploymentField,
+  readDeploymentHostKnobs,
+  readRelayField,
   readReportingField,
   resolveConfig,
   validateUserConfig,
@@ -488,6 +491,43 @@ describe("validateUserConfig", () => {
     ).toThrow(/deployment.*startCommand.*stopCommand/i);
   });
 
+  // The three host knobs (#530): fields on the same block, so an operator can
+  // set the slot cap by editing one config instead of the compose file they may
+  // not own. A block that carries only knobs declares no lifecycle at all, which
+  // is a whole answer — compose keeps driving start and stop.
+  test("accepts a deployment block carrying only host knobs (#530)", () => {
+    expect(() =>
+      validateUserConfig(minimalUserConfig({ deployment: { slotCap: 2, slotFloorBudget: 0 } })),
+    ).not.toThrow();
+    expect(readDeploymentField({ deployment: { slotCap: 2 } })).toBeUndefined();
+  });
+
+  test("rejects a host knob outside its shape (#530)", () => {
+    expect(() => validateUserConfig(minimalUserConfig({ deployment: { slotCap: 0 } }))).toThrow(
+      /deployment\.slotCap.*must be an integer ≥ 1/,
+    );
+    expect(() =>
+      validateUserConfig(minimalUserConfig({ deployment: { slotFloorBudget: -1 } })),
+    ).toThrow(/deployment\.slotFloorBudget.*must be an integer ≥ 0/);
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({ deployment: { reconcileIntervalMs: "fast" as unknown as number } }),
+      ),
+    ).toThrow(/deployment\.reconcileIntervalMs.*must be a number ≥ 1/);
+  });
+
+  test("readDeploymentHostKnobs ignores a value it cannot use (#530)", () => {
+    expect(readDeploymentHostKnobs({ deployment: { slotCap: 3, slotFloorBudget: 0 } })).toEqual({
+      slotCap: 3,
+      slotFloorBudget: 0,
+    });
+    expect(readDeploymentHostKnobs({ deployment: { slotCap: 0, reconcileIntervalMs: 5 } })).toEqual(
+      { reconcileIntervalMs: 5 },
+    );
+    expect(readDeploymentHostKnobs({})).toEqual({});
+    expect(readDeploymentHostKnobs(null)).toEqual({});
+  });
+
   test("rejects a deployment block whose stopNowCommand is present but blank (#260)", () => {
     expect(() =>
       validateUserConfig(
@@ -928,5 +968,52 @@ describe("reporting field (#474)", () => {
     ["on", "`reporting` must be an object"],
   ])("rejects %j at resolve time", (reporting, message) => {
     expect(() => resolve({ ...base, reporting } as never)).toThrow(message);
+  });
+});
+
+describe("relay field (#540)", () => {
+  const base = {
+    repoSlug: "acme/widget",
+    repoUrl: "https://github.com/acme/widget.git",
+    installCommand: "npm ci",
+    checkCommand: "npm run check",
+    testCommand: "npm test",
+  };
+
+  test("a well-formed block validates, is read back, and never reaches the resolved config", () => {
+    const user = {
+      ...base,
+      relay: { url: "wss://relay.example.com/deployments", name: "fleet-a" },
+    };
+    expect(readRelayField(user)).toEqual(user.relay);
+    expect("relay" in resolveConfig(user)).toBe(false);
+    expect(Object.keys(resolveConfig(user))).not.toContain("relay");
+  });
+
+  test("no block is the deployment that dials nothing", () => {
+    expect(readRelayField({ ...base, relay: undefined })).toBeUndefined();
+  });
+
+  test("the name is optional — boot defaults it", () => {
+    const url = "wss://relay.example.com/deployments";
+    expect(readRelayField({ ...base, relay: { url } })?.name).toBeUndefined();
+  });
+
+  test.each([
+    [{ name: "fleet-a" }, "`relay.url` must be a non-empty"],
+    [{ url: "" }, "`relay.url` must be a non-empty"],
+    [{ url: "relay.example.com" }, "is not a URL"],
+    [{ url: "https://relay.example.com" }, "must be a WebSocket URL"],
+    [{ url: "wss://relay.example.com", name: "" }, "`relay.name` must be a non-empty string"],
+    [{ url: "wss://relay.example.com", token: "secret" }, 'names unknown field "token"'],
+    ["wss://relay.example.com", "`relay` must be an object"],
+  ])("rejects %j at resolve time", (relay, message) => {
+    expect(() => resolveConfig({ ...base, relay } as never)).toThrow(message);
+  });
+
+  test("a plain ws:// URL is allowed — a relay behind a trusted local proxy", () => {
+    expect(
+      readRelayField({ ...base, relay: { url: "ws://relay.internal:8787/deployments" } }),
+    ).toEqual({ url: "ws://relay.internal:8787/deployments" });
   });
 });
