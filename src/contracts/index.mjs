@@ -25,6 +25,9 @@ export const RELAY_HEARTBEAT_MS = 20_000;
 /** How long silence lasts before it is darkness — see relay-protocol.ts. */
 export const RELAY_DARK_AFTER_MS = 60_000;
 
+/** The global the companion's preload exposes its bridge on — see desktop-bridge.ts. */
+export const DESKTOP_BRIDGE_GLOBAL = "phoebe";
+
 /** The receipt outcome for a request whose socket closed first (#506 §8). */
 export const RELAY_UNDELIVERED = "undelivered";
 

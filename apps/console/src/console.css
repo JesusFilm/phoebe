@@ -109,6 +109,11 @@ h1 {
   margin: 0 0 4px;
 }
 
+.main h2 {
+  font-size: 14px;
+  margin: 18px 0 4px;
+}
+
 button {
   font: inherit;
   padding: 3px 10px;
@@ -131,9 +136,20 @@ a {
   padding: 10px 0;
 }
 
+/* Two groups in the companion, one in a browser (#526 shell A). The rule is on
+   the pair rather than on either group, so a browser's single group never draws
+   a divider for a group that is not there. */
+.rail-group + .rail-group {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
 .rail-heading {
+  margin: 0;
   padding: 4px 14px 8px;
   font-size: 11px;
+  font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--muted);

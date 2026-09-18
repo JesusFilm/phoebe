@@ -14,6 +14,7 @@
 
 import { RELAY_EVENTS, RELAY_ROUTES } from "phoebe-agent/contracts";
 import type {
+  DesktopBridge,
   RelayDeploymentDetail,
   RelayDeploymentRow,
   RelayEvent,
@@ -182,4 +183,58 @@ function parseEvent(data: string): RelayEvent | null {
   if (typeof parsed !== "object" || parsed === null) return null;
   const type = (parsed as { type?: unknown }).type;
   return typeof type === "string" && type in RELAY_EVENTS ? (parsed as RelayEvent) : null;
+}
+
+/**
+ * The companion's arm: main holds the device token and makes every call, and
+ * this side only names routes (#527 §9). No cookie, no `EventSource` and no
+ * origin to fetch from — the bundle was loaded from disk.
+ *
+ * The two arms answer the same way on purpose. A bridge call refused
+ * `signed-out` becomes the 401 the browser arm would have been given, so
+ * `isNotSignedIn` reads both and the pages above never branch on the surface.
+ */
+export function createBridgeRelayClient(bridge: DesktopBridge): RelayClient {
+  async function get<T>(path: string): Promise<T> {
+    try {
+      return (await bridge.relay.request({ method: "GET", path })) as T;
+    } catch (error) {
+      throw asRelayError(error);
+    }
+  }
+
+  return {
+    async me() {
+      return (await bridge.relay.state()).person;
+    },
+
+    signOut() {
+      return bridge.relay.signOut();
+    },
+
+    async deployments() {
+      const body = await get<{ deployments: RelayDeploymentRow[] }>(RELAY_ROUTES.deployments);
+      return body.deployments;
+    },
+
+    deployment(fingerprint) {
+      return get<RelayDeploymentDetail>(
+        `${RELAY_ROUTES.deployments}/${encodeURIComponent(fingerprint)}`,
+      );
+    },
+
+    events(onEvent) {
+      return bridge.relay.events(onEvent);
+    },
+  };
+}
+
+/**
+ * A bridge refusal in the relay's own terms where there is one. Only
+ * `signed-out` maps: the rest of the bridge's codes (#527 §16) are local-arm
+ * facts, and dressing one up as an HTTP status would lose what it said.
+ */
+function asRelayError(error: unknown): unknown {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === "signed-out" ? new RelayRequestError(401, "signed-out") : error;
 }
