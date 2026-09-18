@@ -1111,6 +1111,16 @@ and leaves the clone on the old one until the next recreate. A stale-but-valid
 clone token keeps working; a revoked one surfaces as the reconcile failure the
 deployment report already carries.
 
+**From the companion, on an install of your own**, the same store is one form on
+the install tab — and which file takes the value depends on whether the container
+is up. Running, the companion execs this verb inside it, with the value on the
+child's stdin for the reason above. Stopped or not yet started, there is no
+container to reach, so it writes the deployment `.env` instead: the file you would
+have opened in an editor, and the only place a first `GH_TOKEN` can go. The form
+says which before you paste anything, and the run says which afterwards. Nothing
+is sealed and nothing crosses a relay — that envelope is for a deployment a
+console can only reach through a server.
+
 ## Seeing what applies: `phoebe config`
 
 Reading the ladder above and reading your own deployment are different jobs.
@@ -1218,6 +1228,13 @@ Two flags matter when something else is driving:
   `state/config-edits.json` on the data volume, so the same id twice is one
   write and the second call gets the first one's receipt back. The record rolls
   off as soon as you edit or commit the file yourself.
+
+The companion drives the same verb for an install on your own machine, from the
+config tab. It sends the fingerprint the tab is showing without asking you for
+one, and it keeps no ledger — the ledger answers a message delivered twice, and
+there is no message. So an edit made in the window while a terminal is editing the
+same file is refused `stale`, with the same line telling you what to type, and
+nothing crosses a relay on the way.
 
 ## GitHub App arm
 

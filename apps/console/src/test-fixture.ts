@@ -236,7 +236,7 @@ export function directory(overrides: Partial<InstallDirectoryFacts> = {}): Insta
   return {
     configPath: "/repos/youtube-studio/phoebe.config.ts",
     configText: 'export default defineConfig({ repoSlug: "JesusFilm/youtube-studio" })\n',
-    configFingerprint: "0f1e2d3c4b5a6978",
+    configFingerprint: "sha256:0f1e2d3c4b5a6978",
     envPresent: true,
     bootstrapperRunning: true,
     ...overrides,

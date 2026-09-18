@@ -53,9 +53,10 @@ Building needs no Electron binary, which is why the gate can run with
 ## What main answers today
 
 **The local arm, in full.** The installs on this machine, the Docker check, the
-verb runs that drive them ([#555](https://github.com/JesusFilm/phoebe/issues/555))
-and the local read loop that feeds their tabs
-([#556](https://github.com/JesusFilm/phoebe/issues/556)):
+verb runs that drive them ([#555](https://github.com/JesusFilm/phoebe/issues/555)),
+the local read loop that feeds their tabs
+([#556](https://github.com/JesusFilm/phoebe/issues/556)) and the two writes that
+change them ([#557](https://github.com/JesusFilm/phoebe/issues/557)):
 
 - [`companion-file.ts`](src/companion-file.ts) — `companion.json` in `userData`:
   the install directories, the relay URL, the preferences. Nothing else. Every
@@ -67,8 +68,13 @@ and the local read loop that feeds their tabs
 - [`verb-runs.ts`](src/verb-runs.ts) — ids, line buffers, busy-ness and cancel.
   One run per install, parallel across installs, 2000 lines kept, and the buffer
   lives here so a renderer reload rejoins a run rather than losing it.
-- [`verb-dispatch.ts`](src/verb-dispatch.ts) — the six `run<Verb>` calls, in
-  this process (ADR 0001). No second Node, no `bin.mjs`, no stdout parsing.
+- [`verb-dispatch.ts`](src/verb-dispatch.ts) — the `run<Verb>` calls, in this
+  process (ADR 0001). No second Node, no `bin.mjs`, no stdout parsing.
+- [`secret-write.ts`](src/secret-write.ts) — the two secret writers and the rule
+  that picks between them. A running install's value goes through the container
+  into the tenant secret store; a stopped or freshly initialised one's goes into
+  the deployment `.env` on this machine, which is where the first `GH_TOKEN` is
+  typed. The value is piped on the child's stdin and never put in an argument.
 - [`local-read.ts`](src/local-read.ts) — the read loop: Compose's event stream
   for the moment a container moves, a 15 s poll for how it is doing, and one
   `report` event out — the relay's own, so the tabs do not branch on arm.
@@ -79,6 +85,15 @@ Beside it, a relay arm with no session, so the console draws the Relay group
 signed out ([#526](https://github.com/JesusFilm/phoebe/issues/526)). Sign-in
 ([#554](https://github.com/JesusFilm/phoebe/issues/554)) is a change in here,
 behind the contract the preload already exposes.
+
+**The writes never reach that arm**, and they will not once it has a session. A
+local install's config edit and secrets run against this machine even when the
+same install is paired with a relay — so nothing in main builds an envelope, and
+both forms in the console say so. The envelope exists for a deployment a console
+can only reach through a server; this one is a folder. `config set` carries the
+fingerprint the window was shown, so an edit composed against a config a terminal
+has since changed is refused `stale` with the manual edit to make instead —
+identically on both arms, which is what the fingerprint is for.
 
 The loop reads `phoebe status --json` inside the container. That verb is
 [#533](https://github.com/JesusFilm/phoebe/issues/533)'s and the report it prints

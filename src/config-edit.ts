@@ -296,8 +296,17 @@ export type PatchValidator = (candidate: {
 export type ConfigEditDeps = {
   /** The one file this writer may touch — the root config's read-write mount. */
   file: string;
-  /** `<dataBase>/state/config-edits.json`. */
-  ledgerPath: string;
+  /**
+   * `<dataBase>/state/config-edits.json`, or null to keep no ledger.
+   *
+   * Null is the local arm's answer (#557). The ledger exists to answer a
+   * *redelivered* edit with its original receipt, and redelivery is a property
+   * of the relay: a message the deployment acknowledged after the socket closed
+   * arrives again. The companion writing an install's config on this machine has
+   * no socket to lose and no second delivery to answer, and the volume the
+   * ledger would live on is inside the container it is not going through.
+   */
+  ledgerPath: string | null;
   validate: PatchValidator;
   /** The environment the deployment resolves settings against. */
   env?: NodeJS.ProcessEnv;
@@ -367,7 +376,10 @@ export async function applyConfigEdit(
   if (source === null) return refuse("unreadable", `${deps.file} could not be read`);
   const fingerprint = fingerprintOf(source);
 
-  const ledger = liveLedger(readOrNull(deps.ledgerPath, read), fingerprint);
+  const ledger =
+    deps.ledgerPath === null
+      ? EMPTY_LEDGER
+      : liveLedger(readOrNull(deps.ledgerPath, read), fingerprint);
   const applied = ledger.applied.find((entry) => entry.id === edit.id);
   if (applied !== undefined) return receiptOf(applied);
 
@@ -414,21 +426,24 @@ export async function applyConfigEdit(
   // that did not land would answer a redelivery with a receipt for a value the
   // file does not hold. A ledger write that fails costs idempotency for one
   // edit, which is the cheaper of the two failures.
-  try {
-    if (deps.writeFile === undefined) mkdirSync(dirname(deps.ledgerPath), { recursive: true });
-    write(
-      deps.ledgerPath,
-      `${JSON.stringify(
-        {
-          version: EDIT_LEDGER_VERSION,
-          applied: [...ledger.applied, entry].slice(-MAX_LEDGER_ENTRIES),
-        },
-        null,
-        2,
-      )}\n`,
-    );
-  } catch {
-    /* c8 ignore next -- the write above is the edit; the ledger is bookkeeping */
+  const ledgerPath = deps.ledgerPath;
+  if (ledgerPath !== null) {
+    try {
+      if (deps.writeFile === undefined) mkdirSync(dirname(ledgerPath), { recursive: true });
+      write(
+        ledgerPath,
+        `${JSON.stringify(
+          {
+            version: EDIT_LEDGER_VERSION,
+            applied: [...ledger.applied, entry].slice(-MAX_LEDGER_ENTRIES),
+          },
+          null,
+          2,
+        )}\n`,
+      );
+    } catch {
+      /* c8 ignore next -- the write above is the edit; the ledger is bookkeeping */
+    }
   }
   deps.nudge?.();
   return receiptOf(entry);

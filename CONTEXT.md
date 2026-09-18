@@ -438,3 +438,16 @@ Compose's event stream for the moment a container moves, and a `status --json` e
 15 s while it is up. What comes out is the relay's own `report` event, so a page renders
 either arm without knowing which it has.
 _Avoid_: watcher, sync, poller
+
+**Secret writer**:
+Which of the two places a local `secret set` puts a value: through the running container
+into the tenant secret store, or into the deployment `.env` on this machine when there is
+no container to reach. Read off the install's state rather than chosen, and named in the
+outcome, because the two are not interchangeable.
+_Avoid_: backend, target, sink
+
+**Run argument**:
+A value the companion hands a verb run over the bridge and holds for that run only — the
+secret value, and nothing else today. Never persisted, never logged, and never echoed in a
+`run:line`.
+_Avoid_: parameter, payload, input

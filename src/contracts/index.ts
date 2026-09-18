@@ -124,6 +124,7 @@ export type {
   InitScaffoldOutcome,
   InitTenantOutcome,
 } from "./init-report.ts";
+export type { SecretSetOutcome, SecretWriter } from "./secret-set.ts";
 export type { StartOutcome } from "./start-outcome.ts";
 export type {
   UpgradeCheckReport,

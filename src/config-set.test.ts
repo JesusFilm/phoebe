@@ -8,15 +8,16 @@
 //     and writes nothing either way.
 //   * A written receipt prints what landed; a refusal prints the manual edit.
 
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterAll, describe, expect, test } from "vite-plus/test";
 import {
   formatReceipt,
   localEditId,
   parseConfigSetArgs,
   parseSetValue,
+  runConfigSet,
   validateConfigPatch,
 } from "./config-set.ts";
 
@@ -206,5 +207,70 @@ describe("formatReceipt", () => {
     expect(text).toContain("refused (not-editable)");
     expect(text).toContain("phoebe upgrade");
     expect(text).toContain("by hand");
+  });
+});
+
+describe("runConfigSet — the verb, with no argv and no stdout", () => {
+  test("writes the field and answers with the receipt the CLI would have printed", async () => {
+    const configPath = tempConfig(TENANT);
+
+    const receipt = await runConfigSet({
+      configPath,
+      path: "checkCommand",
+      value: "pnpm run check",
+    });
+
+    expect(receipt.state).toBe("written");
+    expect(readFileSync(configPath, "utf8")).toContain(`checkCommand: "pnpm run check"`);
+  });
+
+  test("a fingerprint that is not the file's is refused stale, and the file is untouched", async () => {
+    const configPath = tempConfig(TENANT);
+
+    const receipt = await runConfigSet({
+      configPath,
+      path: "checkCommand",
+      value: "pnpm run check",
+      fingerprint: "sha256:something-else",
+    });
+
+    expect(receipt).toMatchObject({ state: "refused", reason: "stale" });
+    expect(readFileSync(configPath, "utf8")).toBe(TENANT);
+  });
+
+  test("`ledgerPath: null` keeps no ledger — the local arm has no redelivery to answer", async () => {
+    const configPath = tempConfig(TENANT);
+    const dir = dirname(configPath);
+
+    const receipt = await runConfigSet(
+      { configPath, path: "checkCommand", value: "pnpm run check" },
+      { ledgerPath: null },
+    );
+
+    expect(receipt.state).toBe("written");
+    expect(readdirSync(dir)).toEqual(["phoebe.config.ts"]);
+  });
+
+  test("a ledger path that was given is written, so a redelivery gets the same receipt", async () => {
+    const configPath = tempConfig(TENANT);
+    const ledgerPath = join(dirname(configPath), "config-edits.json");
+
+    const first = await runConfigSet(
+      { configPath, id: "e1", path: "checkCommand", value: "pnpm run check" },
+      { ledgerPath },
+    );
+    // The same id again, against the file as the first edit left it.
+    const second = await runConfigSet(
+      {
+        configPath,
+        id: "e1",
+        path: "checkCommand",
+        value: "pnpm run check",
+        fingerprint: (first as { fingerprint: string }).fingerprint,
+      },
+      { ledgerPath },
+    );
+
+    expect(second).toEqual(first);
   });
 });

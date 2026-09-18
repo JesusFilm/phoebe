@@ -1,10 +1,21 @@
 // Which verb a run actually runs (#527 §3, ADR 0001).
 //
-// Six arms, six `run<Verb>` calls, in this process. No second Node, no
-// `bin.mjs`, no stdout parsing: main ships the same package as the renderer, so
-// it calls the verb functions directly and reads the typed outcome each one
-// returns. That is the seam #552 reshaped the verbs to expose, and this file is
-// its only consumer.
+// Eight arms, in this process. No second Node, no `bin.mjs`, no stdout parsing:
+// main ships the same package as the renderer, so it calls the verb functions
+// directly and reads the typed outcome each one returns. That is the seam #552
+// reshaped the verbs to expose, and this file is its only consumer.
+//
+// Seven of the eight are a `run<Verb>` call. The eighth is `secret set`, and
+// it is the one verb with no engine function behind it on this arm: its two
+// writers are the companion's own (secret-write.ts), because where a local
+// secret goes depends on whether there is a container to put it in (#527 §8).
+//
+// **The local arm builds no envelope, and dials no relay.** Both write verbs
+// here run against this machine — the config file under the operator's own
+// hand, the secret through the container beside it — even when the same install
+// is paired with a relay (#526). Sealing a value to a deployment the companion
+// can reach across a filesystem, so that it could travel through a server, would
+// be work done to reach somewhere it is already standing.
 //
 // Two things every arm has in common. Each verb's io is the run's line sink, so
 // its output lands in the install tab rather than in whatever stream the
@@ -15,14 +26,26 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { app } from "electron";
-import type { VerbIo } from "phoebe-agent/contracts";
-import type { CommandRunner } from "../../../src/deployment-compose.ts";
+import type { InstallState, VerbIo } from "phoebe-agent/contracts";
+import { runConfigSet } from "../../../src/config-set.ts";
+import {
+  formatResolveFailure,
+  resolveDeploymentCompose,
+  type CommandRunner,
+} from "../../../src/deployment-compose.ts";
 import { runDoctor } from "../../../src/doctor.ts";
 import { runInit } from "../../../src/init.ts";
 import { runMigrate } from "../../../src/migrate.ts";
 import { runStart } from "../../../src/start.ts";
 import { runStop } from "../../../src/stop.ts";
 import { runUpgrade } from "../../../src/upgrade.ts";
+import {
+  secretSetOutcome,
+  secretTargetOf,
+  secretWriterFor,
+  setSecretInContainer,
+  setSecretInHostEnv,
+} from "./secret-write.ts";
 import type { Dispatch, Killable } from "./verb-runs.ts";
 
 /** The config file that sits at the root of an install. */
@@ -42,73 +65,155 @@ function packageRoot(): string {
     : path.join(import.meta.dirname, "..", "..", "..");
 }
 
-/** The real dispatch — one arm per verb. */
-export const dispatchVerb: Dispatch = async (request, { io, register }) => {
-  const install = request.install;
-  const configPath = path.join(install, CONFIG_FILE);
-  const runner = streamingRunner(io, register);
-
-  switch (request.verb) {
-    case "init": {
-      // `init` prints nothing of its own (#552) and returns the file lists
-      // instead, so the run says what it is doing and then what it did. An
-      // install tab with an empty output box and a green tick reads as a button
-      // that did nothing.
-      io.stdout(`[phoebe] init ${install}`);
-      const outcome = runInit({
-        targetDir: install,
-        ...(request.profile !== undefined ? { profile: request.profile } : {}),
-        deps: { packageRoot: packageRoot() },
-      });
-      for (const file of outcome.created) io.stdout(`  created  ${file}`);
-      for (const file of outcome.updated) io.stdout(`  updated  ${file}`);
-      for (const file of outcome.skipped) io.stdout(`  kept     ${file}`);
-      return { verb: "init", outcome };
-    }
-
-    case "start": {
-      const outcome = await runStart({
-        build: request.build ?? false,
-        deps: { cwd: install, runner, io },
-      });
-      return { verb: "start", outcome };
-    }
-
-    case "stop": {
-      const outcome = await runStop({
-        now: request.now ?? false,
-        deps: { cwd: install, runner, io },
-      });
-      return { verb: "stop", outcome };
-    }
-
-    case "upgrade": {
-      // The companion always passes a target, so upgrade's TTY picker is never
-      // reached (#527 §3). It asks no consent question either: the dep defaults
-      // to never asking, which is the right answer with no terminal.
-      const outcome = await runUpgrade({
-        check: request.check ?? true,
-        target: request.target ?? "both",
-        ...(request.ref !== undefined ? { ref: request.ref } : {}),
-        configPath,
-        deps: { cwd: install, io },
-      });
-      return { verb: "upgrade", outcome };
-    }
-
-    case "migrate": {
-      io.stdout(`[phoebe] migrate ${install}`);
-      const outcome = await runMigrate({ configPath, check: request.check ?? false });
-      return { verb: "migrate", outcome };
-    }
-
-    case "doctor": {
-      io.stdout(`[phoebe] doctor ${install}`);
-      const outcome = await runDoctor({ configDir: install });
-      return { verb: "doctor", outcome };
-    }
-  }
+/**
+ * What the dispatch needs from outside itself. One entry, and it is `secret
+ * set`'s: which of the two writers takes a value is a reading of the install's
+ * state at the moment of the write (#527 §8), and main is the process that
+ * derives that state for everything else on screen.
+ */
+export type DispatchDeps = {
+  installState: (dir: string) => Promise<InstallState>;
 };
+
+/** The dispatch — one arm per verb. */
+export function createDispatchVerb(deps: DispatchDeps): Dispatch {
+  return async (request, { io, register }) => {
+    const install = request.install;
+    const configPath = path.join(install, CONFIG_FILE);
+    const runner = streamingRunner(io, register);
+
+    switch (request.verb) {
+      case "init": {
+        // `init` prints nothing of its own (#552) and returns the file lists
+        // instead, so the run says what it is doing and then what it did. An
+        // install tab with an empty output box and a green tick reads as a button
+        // that did nothing.
+        io.stdout(`[phoebe] init ${install}`);
+        const outcome = runInit({
+          targetDir: install,
+          ...(request.profile !== undefined ? { profile: request.profile } : {}),
+          deps: { packageRoot: packageRoot() },
+        });
+        for (const file of outcome.created) io.stdout(`  created  ${file}`);
+        for (const file of outcome.updated) io.stdout(`  updated  ${file}`);
+        for (const file of outcome.skipped) io.stdout(`  kept     ${file}`);
+        return { verb: "init", outcome };
+      }
+
+      case "start": {
+        const outcome = await runStart({
+          build: request.build ?? false,
+          deps: { cwd: install, runner, io },
+        });
+        return { verb: "start", outcome };
+      }
+
+      case "stop": {
+        const outcome = await runStop({
+          now: request.now ?? false,
+          deps: { cwd: install, runner, io },
+        });
+        return { verb: "stop", outcome };
+      }
+
+      case "upgrade": {
+        // The companion always passes a target, so upgrade's TTY picker is never
+        // reached (#527 §3). It asks no consent question either: the dep defaults
+        // to never asking, which is the right answer with no terminal.
+        const outcome = await runUpgrade({
+          check: request.check ?? true,
+          target: request.target ?? "both",
+          ...(request.ref !== undefined ? { ref: request.ref } : {}),
+          configPath,
+          deps: { cwd: install, io },
+        });
+        return { verb: "upgrade", outcome };
+      }
+
+      case "migrate": {
+        io.stdout(`[phoebe] migrate ${install}`);
+        const outcome = await runMigrate({ configPath, check: request.check ?? false });
+        return { verb: "migrate", outcome };
+      }
+
+      case "doctor": {
+        io.stdout(`[phoebe] doctor ${install}`);
+        const outcome = await runDoctor({ configDir: install });
+        return { verb: "doctor", outcome };
+      }
+
+      case "config set": {
+        // The fingerprint the window was shown rides in the request (#527 §11), so
+        // an edit composed against a config a terminal has since changed is
+        // refused `stale` here exactly as it would be over a relay.
+        io.stdout(`[phoebe] config set ${request.path} in ${configPath}`);
+        const outcome = await runConfigSet(
+          {
+            configPath,
+            path: request.path,
+            value: request.value,
+            fingerprint: request.fingerprint,
+          },
+          // No ledger: the ledger answers a redelivered edit, and there is no
+          // delivery here to repeat. The volume one would live on is inside the
+          // container this edit deliberately does not go through.
+          { ledgerPath: null },
+        );
+        io.stdout(
+          outcome.state === "written"
+            ? `  written — the deployment reconciles onto it the way it would a hand edit`
+            : `  refused (${outcome.reason}): ${outcome.why}`,
+        );
+        if (outcome.state === "refused") io.stdout(`  ${outcome.instruction}`);
+        return { verb: "config set", outcome };
+      }
+
+      case "secret set": {
+        // Nothing about the value is printed, here or below. What the operator
+        // watches is which writer took it and where it landed.
+        const writer = secretWriterFor(await deps.installState(install));
+        io.stdout(
+          writer === "container"
+            ? `[phoebe] secret set ${request.key} — through the container on ${install}`
+            : `[phoebe] secret set ${request.key} — into this install's .env on ${install}`,
+        );
+        let target: string;
+        if (writer === "container") {
+          const deployment = resolveDeploymentCompose(install);
+          if ("kind" in deployment) throw new Error(formatResolveFailure(deployment));
+          await setSecretInContainer({
+            deployment,
+            key: request.key,
+            value: request.value,
+            ...(request.tenant !== undefined ? { tenant: request.tenant } : {}),
+            io,
+          });
+          target = secretTargetOf(writer, null);
+        } else {
+          target = secretTargetOf(
+            writer,
+            setSecretInHostEnv({ dir: install, key: request.key, value: request.value, io }),
+          );
+        }
+        io.stdout(
+          writer === "container"
+            ? "  the running engine picks it up on its next relaunch"
+            : "  it reaches the engine the next time this install starts",
+        );
+        return {
+          verb: "secret set",
+          outcome: secretSetOutcome({
+            key: request.key,
+            tenant: request.tenant ?? null,
+            writer,
+            target,
+            at: new Date().toISOString(),
+          }),
+        };
+      }
+    }
+  };
+}
 
 /**
  * The Compose runner a verb run drives its children through.

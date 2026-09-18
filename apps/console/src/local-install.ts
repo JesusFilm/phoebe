@@ -21,8 +21,94 @@ import type {
   StoredReport,
   VerbOutcome,
   VerbRun,
+  VerbRunRequest,
 } from "phoebe-agent/contracts";
 import type { ConfigReading, ConnectionCard, DeploymentTab } from "./tabs.ts";
+
+// ── the two write verbs, as requests (#557) ───────────────────────────────
+
+/**
+ * A JSON literal, or a refusal naming what a config leaf may be.
+ *
+ * Typed as JSON rather than guessed at, because `300000` and `"300000"` are
+ * different values and a form that decided for the operator would be the one
+ * place a number quietly became a string. Objects and arrays are refused here
+ * rather than by the writer: the writer's own refusal for one is about splicing,
+ * and this one is about what somebody meant by putting a brace in a text field.
+ */
+export function readLiteral(raw: string): string | number | boolean | null {
+  const text = raw.trim();
+  if (text.length === 0) throw new Error("A value is a JSON literal; this box is empty.");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text) as unknown;
+  } catch {
+    throw new Error(`${text} is not a JSON literal. A string needs its quotes: "main", not main.`);
+  }
+  if (parsed === null) return null;
+  if (typeof parsed === "string" || typeof parsed === "number" || typeof parsed === "boolean") {
+    return parsed;
+  }
+  throw new Error("Only one leaf moves at a time, so the value has to be a scalar or null.");
+}
+
+/**
+ * The `config set` run one form submission is (#527 §11).
+ *
+ * The fingerprint is not an input and never was: it is whatever config this arm
+ * read, carried with the edit so the writer can refuse `stale` when the file has
+ * moved since. That is the whole of the concurrency story, and it is the same on
+ * both arms — which is why it is built here, beside the reading, rather than
+ * inside a component.
+ */
+export function configSetRequest(opts: {
+  install: LocalInstall;
+  config: ConfigReading;
+  path: string;
+  literal: string;
+}): VerbRunRequest {
+  if (opts.config.kind === "absent") {
+    throw new Error(`There is no ${opts.config.path} to change.`);
+  }
+  const path = opts.path.trim();
+  if (path.length === 0) throw new Error("Name the field to change, as a dotted path.");
+  return {
+    install: opts.install.dir,
+    verb: "config set",
+    path,
+    value: readLiteral(opts.literal),
+    fingerprint: opts.config.fingerprint,
+  };
+}
+
+/**
+ * The `secret set` run one form submission is (#527 §7).
+ *
+ * The value rides in the request and nowhere else — no envelope, no relay, and
+ * no copy kept anywhere this function can see. An empty tenant box is omitted
+ * rather than sent blank, because the install decides for itself when nobody
+ * names one.
+ */
+export function secretSetRequest(opts: {
+  install: LocalInstall;
+  key: string;
+  value: string;
+  tenant?: string;
+}): VerbRunRequest {
+  const key = opts.key.trim();
+  if (key.length === 0) throw new Error("Name the key to set.");
+  if (opts.value.length === 0) {
+    throw new Error("A blank is not a secret. Clear it in a terminal to hand the key back.");
+  }
+  const tenant = (opts.tenant ?? "").trim();
+  return {
+    install: opts.install.dir,
+    verb: "secret set",
+    key,
+    value: opts.value,
+    ...(tenant.length === 0 ? {} : { tenant }),
+  };
+}
 
 /** How the rail reads one install: a mark, and the sentence beside it. */
 export function installReading(install: LocalInstall): { tone: string; text: string } {
@@ -77,6 +163,10 @@ export function outcomeReading(outcome: VerbOutcome): string {
       return migrateReading(outcome.outcome);
     case "doctor":
       return doctorReading(outcome.outcome);
+    case "config set":
+      return receiptReading(outcome.outcome);
+    case "secret set":
+      return secretSetReading(outcome.outcome);
   }
 }
 
@@ -129,6 +219,48 @@ function migrateReading({ rootReport, tenantEntries }: OutcomeOf<"migrate">): st
   if (applied === 0 && children === 0) return "nothing to migrate";
   const childClause = children > 0 ? `, ${children} child(ren) migrated` : "";
   return `${applied} migration(s) applied${childClause}`;
+}
+
+/**
+ * The receipt, in one line — the same words on both arms (#527 §11, §16).
+ *
+ * A refusal reads as its reason and its `why`, because those are the two halves
+ * an operator acts on: which kind of no it was, and what about this config made
+ * it one. The instruction is longer than a line and is rendered beside the
+ * receipt rather than inside it.
+ */
+export function receiptReading(receipt: OutcomeOf<"config set">): string {
+  return receipt.state === "written"
+    ? `wrote ${receipt.path} = ${JSON.stringify(receipt.value)}`
+    : `refused (${receipt.reason}): ${receipt.why}`;
+}
+
+/**
+ * Which writer took the secret (#527 §8). The one thing this outcome is for:
+ * a value in the `.env` and a value in the tenant store are in different
+ * places with different reach, and an operator who meant one and got the other
+ * has a secret somewhere they did not choose.
+ */
+export function secretSetReading(outcome: OutcomeOf<"secret set">): string {
+  const where =
+    outcome.writer === "container"
+      ? `through the container, into ${outcome.target}`
+      : `into ${outcome.target} on this machine`;
+  const tenant = outcome.tenant === null ? "" : ` for ${outcome.tenant}`;
+  return `set ${outcome.key}${tenant} ${where}`;
+}
+
+/**
+ * Which writer a secret is about to reach, said before it is pasted (#527 §8).
+ *
+ * The same rule the companion applies, in the operator's words rather than in
+ * its own: a running container has a tenant store to put the value in, and
+ * anything else has the deployment `.env` on this machine.
+ */
+export function secretWriterReading(install: LocalInstall): string {
+  return install.state === "running"
+    ? "This container is up, so the value goes through it into the tenant secret store on the data volume. The running engine picks it up on its next relaunch."
+    : "Nothing is running, so the value goes into this install's deployment `.env` on this machine — the file you would have opened in an editor. It reaches the engine the next time this install starts.";
 }
 
 function doctorReading({ checks }: OutcomeOf<"doctor">): string {
