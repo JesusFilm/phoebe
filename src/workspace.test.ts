@@ -11,6 +11,7 @@
 // test files never ship (package.json `files` excludes `**/*.test.ts`) and
 // `vp test` already covers this tree.
 
+import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
@@ -42,8 +43,11 @@ function appManifests(): Array<{ dir: string; manifest: Record<string, unknown> 
   let entries: string[];
   try {
     entries = readdirSync(join(repoRoot, "apps"));
-  } catch {
-    return [];
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return [];
+    }
+    throw error;
   }
   return entries
     .filter((dir) => statSync(join(repoRoot, "apps", dir)).isDirectory())
@@ -90,8 +94,17 @@ describe("the root ready gate", () => {
 
 describe("the published package is unaffected by the workspace", () => {
   test("`files` reaches nothing under apps/", () => {
-    for (const entry of rootManifest.files) {
-      expect(entry.replace(/^!/, "").startsWith("apps")).toBe(false);
+    // `files` entries are packlist rules, not paths — a broad `**/*` or a
+    // negated `!apps/**` would pass a check against the raw entries while
+    // still changing what ships. Assert against the tarball npm actually
+    // resolves instead.
+    const dryRun = execFileSync("npm", ["pack", "--dry-run", "--json"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    });
+    const [{ files }] = JSON.parse(dryRun) as Array<{ files: Array<{ path: string }> }>;
+    for (const { path } of files) {
+      expect(path.startsWith("apps/")).toBe(false);
     }
   });
 
