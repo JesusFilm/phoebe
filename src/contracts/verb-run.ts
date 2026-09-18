@@ -41,6 +41,11 @@ export const MAX_RUN_LINES = 2000;
  * process that called them; a cancel could not be delivered while one is in
  * flight, so offering the control would be a lie about what it does. Making
  * those two spawn asynchronously is what would add them here.
+ *
+ * `pair` is absent for a different reason. Most of it is a mint over the network
+ * and two file writes, with nothing to signal; the one child it spawns is the
+ * nudge that finishes the pairing, and killing that would leave a config and an
+ * `.env` written with nothing acting on them (#558).
  * Mirrored by hand in index.mjs.
  */
 export const CANCELLABLE_VERBS: readonly HostVerb[] = ["start", "stop"];
@@ -57,7 +62,13 @@ export type VerbRunRequest =
   | { install: string; verb: "stop"; now?: boolean }
   | { install: string; verb: "upgrade"; check?: boolean; target?: UpgradeTarget; ref?: string }
   | { install: string; verb: "migrate"; check?: boolean }
-  | { install: string; verb: "doctor" };
+  | { install: string; verb: "doctor" }
+  /**
+   * Pair this install with the relay the companion is signed in to (#527 §14).
+   * It takes no arguments: the relay is the one main holds a device token for,
+   * and the token it mints never crosses the bridge in either direction.
+   */
+  | { install: string; verb: "pair" };
 
 /** One line a running verb wrote. Carries no newline — the tab decides that. */
 export type RunLine = {

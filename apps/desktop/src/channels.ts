@@ -20,6 +20,8 @@ export const BRIDGE_CHANNELS = {
   preferencesGet: "phoebe:preferences/get",
   preferencesSet: "phoebe:preferences/set",
   relayState: "phoebe:relay/state",
+  relaySignIn: "phoebe:relay/sign-in",
+  relayArm: "phoebe:relay/arm",
   relayRequest: "phoebe:relay/request",
   relaySignOut: "phoebe:relay/sign-out",
   relayEvent: "phoebe:relay/event",

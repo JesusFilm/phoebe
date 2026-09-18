@@ -21,6 +21,33 @@ import type {
   RelayIdentity,
 } from "phoebe-agent/contracts";
 
+/**
+ * How this arm signs in (#523 §2). Two shapes because the two arms sign in by
+ * genuinely different means, and flattening them into one method with half its
+ * arguments ignored would hide that from the page rather than from the reader.
+ *
+ * A browser follows a link: the relay is the origin that served the page, and
+ * the sign-in ends with the relay setting a cookie on a navigation the page
+ * does not survive. The companion has no origin and no cookie — main runs the
+ * flow in the operator's own browser and comes back with a token — so there the
+ * control is a form, and the relay's address is the one thing it has to ask for.
+ */
+export type RelaySignIn =
+  /** A browser: the relay's own sign-in path, followed as a navigation. */
+  | { kind: "navigate"; href: string }
+  /** The companion: main opens the system browser and answers when it is done. */
+  | {
+      kind: "prompt";
+      /** The relay the companion last held a token for, to fill the field with. */
+      relay: string | null;
+      /** Whether a sign-in here would survive a relaunch (#523 §5). */
+      persisted: boolean;
+      /** What to tell the operator about the two above, when there is something. */
+      reason?: string;
+      /** Run one sign-in. Resolves with whoever signed in. */
+      start: (relayUrl: string) => Promise<RelayIdentity>;
+    };
+
 /** What the console can ask the relay for, whichever side of the seam it is on. */
 export type RelayClient = {
   /**
@@ -29,8 +56,19 @@ export type RelayClient = {
    * error it reports.
    */
   me: () => Promise<RelayIdentity | null>;
+  /**
+   * How to sign in from here, read fresh: the companion's answer carries the
+   * relay it remembers and whether it can keep a token, and both move.
+   */
+  signIn: () => Promise<RelaySignIn>;
   /** Drop the session. The caller re-reads `me` afterwards. */
   signOut: () => Promise<void>;
+  /**
+   * Watch for the session ending without the page having asked for anything —
+   * the companion's arm dropping its token on a 401 from the event stream.
+   * Returns the unsubscribe.
+   */
+  watchSession: (onChange: (identity: RelayIdentity | null) => void) => () => void;
   /** Every deployment the relay knows, unsorted: the order is the console's. */
   deployments: () => Promise<RelayDeploymentRow[]>;
   /**
@@ -112,6 +150,18 @@ export function createBrowserRelayClient(options: BrowserRelayClientOptions = {}
         if (isNotSignedIn(error)) return null;
         throw error;
       }
+    },
+
+    signIn() {
+      return Promise.resolve({ kind: "navigate", href: RELAY_ROUTES.signIn });
+    },
+
+    // A cookie cannot go away under a page that has not asked for anything: the
+    // relay only ever withdraws one on a response, and a response is something
+    // the page requested. So there is nothing to watch, and the unsubscribe is
+    // the whole of this arm's answer.
+    watchSession() {
+      return () => {};
     },
 
     async signOut() {
@@ -206,6 +256,25 @@ export function createBridgeRelayClient(bridge: DesktopBridge): RelayClient {
   return {
     async me() {
       return (await bridge.relay.state()).person;
+    },
+
+    async signIn() {
+      const state = await bridge.relay.state();
+      return {
+        kind: "prompt",
+        relay: state.url,
+        persisted: state.persisted,
+        ...(state.reason === undefined ? {} : { reason: state.reason }),
+        start: async (relayUrl: string) => {
+          const signedIn = await bridge.relay.signIn({ url: relayUrl });
+          if (signedIn.person === null) throw new Error("the sign-in did not complete");
+          return signedIn.person;
+        },
+      };
+    },
+
+    watchSession(onChange) {
+      return bridge.relay.watch((state) => onChange(state.person));
     },
 
     signOut() {

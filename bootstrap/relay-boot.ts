@@ -23,6 +23,7 @@
 // it was before this file existed.
 
 import { readRelayField, type RelayField } from "../src/config-schema.ts";
+import { RELAY_TOKEN_ENV } from "../src/contracts/relay-protocol.ts";
 import type { DeploymentArm, DeploymentIdentity } from "../src/contracts/deployment.ts";
 import type { DeploymentState } from "./deployment-state.ts";
 import { connectRelay, type RelayLink, type OpenRelaySocket } from "./relay-link.ts";
@@ -35,8 +36,14 @@ import {
   type DeploymentKey,
 } from "./relay-key.ts";
 
-/** The env var the operator pastes a freshly minted pairing token into. */
-export const RELAY_TOKEN_ENV = "PHOEBE_RELAY_TOKEN";
+/**
+ * The env var a freshly minted pairing token travels in — pasted by an operator,
+ * or written by the companion when it pairs an install. Defined in contracts,
+ * because the writer is a different codebase from this reader (#558), and
+ * re-exported here so everything that reads it goes on importing it from the
+ * module that spends it.
+ */
+export { RELAY_TOKEN_ENV } from "../src/contracts/relay-protocol.ts";
 
 export type PrepareRelayOptions = {
   /** The root config, as loaded — the only place a `relay` block is read from. */

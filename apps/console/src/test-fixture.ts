@@ -134,6 +134,8 @@ export function install(overrides: Partial<LocalInstall> = {}): LocalInstall {
   return {
     dir: "/repos/youtube-studio",
     name: "youtube-studio",
+    deploymentName: "youtube-studio",
+    relayUrl: null,
     addedAt: ago(3600),
     state: "running",
     ...overrides,
@@ -184,6 +186,11 @@ export function bridge(answers: BridgeAnswers = {}): DesktopBridge {
     },
     relay: {
       state: () => Promise.resolve(relayState),
+      signIn: ({ url }) =>
+        answers.signIn === undefined
+          ? Promise.reject(new Error("this bridge does not sign in"))
+          : Promise.resolve(answers.signIn(url)),
+      watch: () => () => undefined,
       request: ({ path }) => {
         if (answers.request === undefined) return Promise.reject(signedOut());
         return Promise.resolve(answers.request(path));
@@ -209,6 +216,8 @@ export type BridgeAnswers = {
   started?: VerbRunRequest[];
   request?: (path: string) => unknown;
   events?: RelayEvent[];
+  /** What a sign-in resolves with. Absent means this bridge refuses to sign in. */
+  signIn?: (url: string) => RelayArmState;
 };
 
 /** What the preload throws when main refuses a call (#527 §16). */

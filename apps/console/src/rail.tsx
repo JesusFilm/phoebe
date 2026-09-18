@@ -23,11 +23,23 @@
 // opens its install tab, which exists; selecting a deployment would open the
 // five tabs that #544 builds, and a link to a page nothing answers is a dead end
 // on screen.
+//
+// A paired install appears once, here, with a `paired` chip — and the row it is
+// on the relay is dropped from the group below rather than drawn twice (#526,
+// #558). Local is the richer arm: the verbs and the direct writes are there.
+//
+// The Relay group's signed-out entry is the companion's sign-in control (#554).
+// It asks for one thing — the relay's address — because that is the only part of
+// the flow that is the operator's to supply: the PKCE verifier, the system
+// browser, the hop back over `phoebe://auth` and the exchange all happen in main,
+// and the renderer never sees the token that comes out.
 
-import type { LocalInstall } from "phoebe-agent/contracts";
+import { useState } from "react";
+import type { LocalInstall, RelayIdentity } from "phoebe-agent/contracts";
 import type { Surface } from "./companion.ts";
 import { connectionReading, type RowFacts } from "./facts.ts";
 import { installReading } from "./local-install.ts";
+import type { RelaySignIn } from "./relay-client.ts";
 
 export function Rail({
   facts,
@@ -35,9 +47,12 @@ export function Rail({
   surface,
   signedIn,
   installs = [],
+  paired,
   selected = null,
   onSelect,
   onAdd,
+  signIn,
+  onSignedIn,
 }: {
   facts: RowFacts[];
   now: Date;
@@ -45,10 +60,19 @@ export function Rail({
   signedIn: boolean;
   /** The local arm. Empty in a browser, which has no local arm at all. */
   installs?: LocalInstall[];
+  /**
+   * The installs that are also a deployment on this relay, by directory. Passed
+   * in rather than worked out here: the same join decides which rows the Relay
+   * group below is not drawing (local-install.ts).
+   */
+  paired?: ReadonlySet<string>;
   /** The install whose page is open, by directory. */
   selected?: string | null;
   onSelect?: (dir: string) => void;
   onAdd?: () => void;
+  /** How this arm signs in, or null while the answer is still being read. */
+  signIn: RelaySignIn | null;
+  onSignedIn: (identity: RelayIdentity) => void;
 }) {
   const relay = (
     <section className="rail-group" aria-label="Relay">
@@ -58,7 +82,7 @@ export function Rail({
           : `Fleet — ${facts.length} ${facts.length === 1 ? "deployment" : "deployments"}`}
       </h2>
       {!signedIn ? (
-        <p className="rail-empty">Not signed in to a relay.</p>
+        <SignInControl signIn={signIn} onSignedIn={onSignedIn} />
       ) : facts.length === 0 ? (
         <p className="rail-empty">No deployment is paired with this relay yet.</p>
       ) : (
@@ -94,6 +118,7 @@ export function Rail({
               key={install.dir}
               install={install}
               current={install.dir === selected}
+              paired={paired?.has(install.dir) ?? false}
               {...(onSelect !== undefined ? { onSelect } : {})}
             />
           ))
@@ -112,10 +137,13 @@ export function Rail({
 function InstallEntry({
   install,
   current,
+  paired,
   onSelect,
 }: {
   install: LocalInstall;
   current: boolean;
+  /** Also a deployment on this relay — so the Relay group is not drawing it. */
+  paired: boolean;
   onSelect?: (dir: string) => void;
 }) {
   const reading = installReading(install);
@@ -129,9 +157,90 @@ function InstallEntry({
       <div className="name">
         <span className={`mark ${reading.tone}`} aria-hidden="true" />
         {install.name}
+        {paired ? <span className="chip paired">paired</span> : null}
       </div>
       <div className="sub">{reading.text}</div>
     </button>
+  );
+}
+
+/**
+ * The signed-out Relay entry. Which control it is comes from the arm, not from
+ * the surface: a browser follows a link the relay serves, and the companion
+ * hands an address to main. The rail does not know which it is until the client
+ * has answered, and says the honest thing in the meantime.
+ */
+function SignInControl({
+  signIn,
+  onSignedIn,
+}: {
+  signIn: RelaySignIn | null;
+  onSignedIn: (identity: RelayIdentity) => void;
+}) {
+  if (signIn === null) return <p className="rail-empty">Not signed in to a relay.</p>;
+  if (signIn.kind === "navigate") {
+    return (
+      <p className="rail-empty">
+        Not signed in to a relay. <a href={signIn.href}>Sign in with Google</a>
+      </p>
+    );
+  }
+  return <SignInForm prompt={signIn} onSignedIn={onSignedIn} />;
+}
+
+/**
+ * The companion's control. The button stays busy for as long as the operator is
+ * in their browser, because that is exactly how long main's promise is open —
+ * there is no polling here and no second state to keep in step with main's.
+ */
+function SignInForm({
+  prompt,
+  onSignedIn,
+}: {
+  prompt: Extract<RelaySignIn, { kind: "prompt" }>;
+  onSignedIn: (identity: RelayIdentity) => void;
+}) {
+  const [url, setUrl] = useState(prompt.relay ?? "");
+  const [waiting, setWaiting] = useState(false);
+  const [trouble, setTrouble] = useState<string | null>(null);
+
+  return (
+    <div className="rail-signin">
+      <p className="rail-empty">Not signed in to a relay.</p>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          setWaiting(true);
+          setTrouble(null);
+          prompt.start(url).then(
+            (identity) => {
+              setWaiting(false);
+              onSignedIn(identity);
+            },
+            (error: unknown) => {
+              setWaiting(false);
+              setTrouble(error instanceof Error ? error.message : String(error));
+            },
+          );
+        }}
+      >
+        <label htmlFor="relay-url">Relay address</label>
+        <input
+          id="relay-url"
+          name="url"
+          type="url"
+          placeholder="https://relay.example.com"
+          value={url}
+          disabled={waiting}
+          onChange={(event) => setUrl(event.target.value)}
+        />
+        <button type="submit" disabled={waiting || url.trim() === ""}>
+          {waiting ? "Finish in your browser…" : "Sign in"}
+        </button>
+      </form>
+      {prompt.reason !== undefined ? <p className="rail-note">{prompt.reason}</p> : null}
+      {trouble !== null ? <p className="rail-note trouble">{trouble}</p> : null}
+    </div>
   );
 }
 

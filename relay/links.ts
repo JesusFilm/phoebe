@@ -20,6 +20,7 @@
 import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import type { MintedPairingToken } from "../src/contracts/relay-routes.ts";
 import { fingerprintOf } from "../src/ed25519.ts";
 
 /** The file's name on the relay volume. */
@@ -140,11 +141,12 @@ export function createLinks(dataDir: string): Links {
   };
 }
 
-/** A minted token, as the console shows it exactly once. */
-export type PairingToken = {
-  token: string;
-  expiresAt: string;
-};
+/**
+ * A minted token, as the console — or the companion — reads it exactly once.
+ * The shape is in `phoebe-agent/contracts`, because the relay mints it and a
+ * second codebase spends it; this alias is what the relay's own code calls it.
+ */
+export type PairingToken = MintedPairingToken;
 
 export type PairingTokens = {
   /** Mint one. The string is shown once and the relay keeps only its expiry. */

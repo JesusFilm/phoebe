@@ -32,13 +32,22 @@ import { runUpgrade } from "./upgrade.ts";
 
 const srcDir = import.meta.dirname;
 
-/** The six verbs, as module basenames. */
+/** The six verbs the engine ships as modules, as module basenames. */
 const VERBS = ["init", "start", "stop", "upgrade", "migrate", "doctor"] as const;
 
-// A compile-time tie between the list this file scans and the contract union.
+/**
+ * The host verbs with no module here to scan. `pair` is composed in the
+ * companion's main process out of a relay mint, two file writes and a nudge
+ * (#527 §14, #558) — it needs the device token, which the engine never holds —
+ * so there is no `src/pair.ts`. Naming it keeps the tie below honest: a seventh
+ * *engine* verb would have to join VERBS instead of this list.
+ */
+const COMPANION_VERBS = ["pair"] as const;
+
+// A compile-time tie between the lists this file names and the contract union.
 // Adding a verb to one without the other stops type-checking, which is the
 // only way the guard can stay honest about "every host verb".
-type Listed = (typeof VERBS)[number];
+type Listed = (typeof VERBS)[number] | (typeof COMPANION_VERBS)[number];
 type MutuallyExhaustive = Listed extends HostVerb
   ? HostVerb extends Listed
     ? true

@@ -30,6 +30,7 @@ import {
   dockerReading,
   offeredVerbs,
   outcomeReading,
+  pairReading,
 } from "./local-install.ts";
 
 /** The five tabs a local install shares with a remote deployment (#509). */
@@ -38,10 +39,16 @@ const DEPLOYMENT_TABS = ["overview", "pipelines", "doctor", "secrets", "config"]
 export function InstallPage({
   install,
   bridge,
+  signedIn,
+  paired,
   onForget,
 }: {
   install: LocalInstall;
   bridge: DesktopBridge;
+  /** Whether the companion holds a relay session — what pairing mints on (#558). */
+  signedIn: boolean;
+  /** Whether this install is already a deployment on that relay. */
+  paired: boolean;
   onForget: (dir: string) => void;
 }) {
   const [environment, setEnvironment] = useState<CompanionEnvironment | null>(null);
@@ -110,6 +117,7 @@ export function InstallPage({
   }
 
   const offered = offeredVerbs(install);
+  const pairing = pairReading(install, { signedIn, paired });
 
   return (
     <main className="main install-tab">
@@ -195,10 +203,27 @@ export function InstallPage({
               Doctor
             </button>
           ) : null}
+          {pairing.kind === "paired" ? null : (
+            <button
+              type="button"
+              disabled={running || pairing.kind === "blocked"}
+              {...(pairing.kind === "blocked" ? { title: pairing.reason } : {})}
+              onClick={() => start({ install: install.dir, verb: "pair" })}
+            >
+              Pair with the relay
+            </button>
+          )}
           <button type="button" className="quiet" onClick={() => onForget(install.dir)}>
             Forget
           </button>
         </div>
+        <p className="muted">
+          {pairing.kind === "paired"
+            ? "Paired — this install is the deployment the relay knows, so the rail draws it here and not under Relay."
+            : pairing.kind === "blocked"
+              ? pairing.reason
+              : "Pairing mints a token on the relay, points this install's config at it and nudges the container. The token never leaves this machine in a line you can read."}
+        </p>
         <p className="muted">
           Forgetting removes this install from the companion. Nothing on disk is deleted.
         </p>

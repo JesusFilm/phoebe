@@ -6,27 +6,45 @@
 // serves in a browser — loaded from disk over the console scheme. So there is no
 // UI code in here, and a page the operator sees is never written twice.
 //
-// What main answers today is the local arm in full — the installs on this
-// machine, the Docker check, and the verb runs that drive them (#555) — beside a
-// relay arm with no session. Main becomes the relay client proper with #554 and
-// grows the local read loop with #556; both are changes in here, behind the
-// contract the preload already exposes.
+// What main answers is the local arm in full — the installs on this machine,
+// the Docker check, and the verb runs that drive them (#555) — beside the relay
+// arm, where main is the relay client proper (#523 §1, #554): it holds the
+// device token, makes every call, and re-emits the relay's event stream to the
+// renderer over IPC. The wiring for that is here; the flow itself is
+// relay-session.ts, which needs no Electron to run. The local read loop joins
+// with #556, behind the contract the preload already exposes.
 //
-// Main owns state the window does not: `companion.json`, and the runs in
-// flight. Both are here rather than in the renderer for the same reason — a
-// reload must not lose them.
+// Main owns state the window does not: `companion.json`, the device token, and
+// the runs in flight. All three are here rather than in the renderer for the
+// same reason — a reload must not lose them.
 
+import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, protocol, shell } from "electron";
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  nativeTheme,
+  net,
+  protocol,
+  safeStorage,
+  shell,
+} from "electron";
+import { RELAY_ROUTES } from "phoebe-agent/contracts";
 import type {
   CompanionEnvironment,
   CompanionPreferences,
   LocalInstall,
+  MintedPairingToken,
   RelayArmState,
+  RelayEvent,
+  RelayPassthrough,
   VerbRun,
   VerbRunRequest,
 } from "phoebe-agent/contracts";
+import { authCodeIn, authCodeInArgv } from "./auth-link.ts";
 import {
   answering,
   BRIDGE_CHANNELS,
@@ -46,7 +64,10 @@ import { CONSOLE_SCHEME, consoleFileFor } from "./console-scheme.ts";
 import { consoleSource } from "./console-source.ts";
 import { probeDocker } from "./docker.ts";
 import { allInstallFacts } from "./install-facts.ts";
-import { dispatchVerb } from "./verb-dispatch.ts";
+import type { PairArm } from "./pair.ts";
+import { companionName, createRelaySession, type RelaySession } from "./relay-session.ts";
+import { createTokenVault } from "./vault.ts";
+import { createVerbDispatch } from "./verb-dispatch.ts";
 import { createVerbRuns } from "./verb-runs.ts";
 
 // Before `ready`, which is the only time Chromium will take it. `standard` is
@@ -60,6 +81,14 @@ protocol.registerSchemesAsPrivileged([
     privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true },
   },
 ]);
+
+// One instance, because the sign-in comes back as a URL the OS hands to *an*
+// instance. On Windows and Linux that is a fresh process with the URL on its
+// command line; the lock turns it into a `second-instance` event on the process
+// that is already holding the PKCE verifier, which is the only one that can
+// spend the code. Without the lock the second process would hold the code and
+// the first would hold the verifier, and neither could finish (#523 §2).
+if (!app.requestSingleInstanceLock()) app.exit(0);
 
 /** The directory the console bundle was built into. */
 function consoleBundleDir(): string {
@@ -88,7 +117,53 @@ function readCompanion(): CompanionFile {
   }
 }
 
-/** Every window gets every event. There is one today; a second is #524's. */
+/**
+ * Claim `phoebe://` with the OS. Packaged, the executable is the app. In a
+ * checkout it is Electron's own binary running a directory, so the registration
+ * has to name both or the OS launches a bare Electron with no app in it.
+ */
+function claimScheme(): void {
+  if (!process.defaultApp) {
+    app.setAsDefaultProtocolClient(CONSOLE_SCHEME);
+    return;
+  }
+  const entry = process.argv[1];
+  if (entry !== undefined) {
+    app.setAsDefaultProtocolClient(CONSOLE_SCHEME, process.execPath, [path.resolve(entry)]);
+  }
+}
+
+/**
+ * The relay arm, built on `ready` and not before: `safeStorage` cannot say
+ * whether Linux has a keyring until the app has one, and the keyring is what
+ * decides whether this companion persists a sign-in at all (#523 §5).
+ */
+let relay: RelaySession | null = null;
+
+function openRelayArm(): RelaySession {
+  return createRelaySession({
+    vault: createTokenVault({ safeStorage, userDataDir: app.getPath("userData") }),
+    // Electron's own stack rather than Node's global `fetch`, so the relay is
+    // reached through whatever proxy and certificate store the OS has configured.
+    fetch: (url, init) => net.fetch(url, init),
+    openExternal: (url) => shell.openExternal(url),
+    deviceName: companionName(os.hostname(), process.platform),
+    onEvent: (event: RelayEvent) => broadcast(BRIDGE_CHANNELS.relayEvent, event),
+    onState: (state: RelayArmState) => broadcast(BRIDGE_CHANNELS.relayArm, state),
+  });
+}
+
+/**
+ * The one place a bridge call reaches the arm. Before `ready` there is no arm,
+ * and a renderer cannot be asking — it has no window yet — so this refusal is
+ * for the impossible case rather than a state anyone can get into.
+ */
+function arm(): RelaySession {
+  if (relay === null) throw new Error("the companion's relay arm is not open yet");
+  return relay;
+}
+
+/** Say something to every open window. There is one today; the cost of two is nil. */
 function broadcast(channel: string, payload: unknown): void {
   for (const window of BrowserWindow.getAllWindows()) {
     window.webContents.send(channel, payload);
@@ -119,7 +194,7 @@ async function editInstalls(change: (contents: CompanionFile) => CompanionFile) 
  * (#527 §13).
  */
 const runs = createVerbRuns({
-  dispatch: dispatchVerb,
+  dispatch: createVerbDispatch({ relayArm: pairArm }),
   onLine: (line) => broadcast(BRIDGE_CHANNELS.runLine, line),
   onExit: (exit) => {
     broadcast(BRIDGE_CHANNELS.runExit, exit);
@@ -131,6 +206,71 @@ const runs = createVerbRuns({
     );
   },
 });
+
+/**
+ * The relay arm a pairing mints on, or null when there is no session to mint
+ * with. Narrow by construction: the device token stays inside the session, and
+ * what pairing gets is one call it is allowed to make (#527 §14).
+ */
+function pairArm(): PairArm | null {
+  const session = relay;
+  if (session === null) return null;
+  const { person, url } = session.state();
+  if (person === null || url === null) return null;
+  return {
+    url,
+    mint: () =>
+      session.request({
+        method: "POST",
+        path: RELAY_ROUTES.pairingTokens,
+      }) as Promise<MintedPairingToken>,
+  };
+}
+
+/**
+ * What `pair` needs before it is worth starting (#558).
+ *
+ * Both refusals are states the install tab already disables the control for;
+ * this is what answers a renderer that asked anyway — an operator who signed
+ * out in another window, or a container that stopped between the render and the
+ * click. Checked here rather than inside the run because a refusal with an
+ * instruction on it is more use than a run that starts and immediately fails.
+ */
+async function assertPairable(install: string): Promise<void> {
+  if (pairArm() === null) {
+    throw new BridgeRefusal({
+      code: "signed-out",
+      message: "this companion is not signed in to a relay, so there is nothing to pair with",
+      instruction: "Sign in to a relay on the rail, then pair this install.",
+    });
+  }
+  const listed = await listInstalls();
+  const found = listed.find((candidate) => candidate.dir === install);
+  if (found === undefined) {
+    throw new BridgeRefusal({
+      code: "refused",
+      message: "this companion does not hold an install at that folder",
+    });
+  }
+  if (found.state !== "running") {
+    throw new BridgeRefusal({
+      code: "container-not-running",
+      message:
+        "pairing writes a token the container spends on its next boot, and this one is not up",
+      instruction: "Start this install, then pair it.",
+    });
+  }
+}
+
+/**
+ * A URL the OS handed us. An auth link is spent against whichever sign-in this
+ * process has open; anything else is not ours, and a code with no attempt
+ * behind it is dropped — only the instance holding the verifier can spend one.
+ */
+function deliverDeepLink(url: string): void {
+  const code = authCodeIn(url);
+  if (code !== null) relay?.deliver(code);
+}
 
 function createWindow(): void {
   const window = new BrowserWindow({
@@ -160,8 +300,28 @@ function createWindow(): void {
   void window.loadURL(consoleSource(process.argv));
 }
 
+/** Bring the window back and put the URL that woke us in front of the arm. */
+app.on("second-instance", (_event, argv) => {
+  const window = BrowserWindow.getAllWindows()[0];
+  if (window !== undefined) {
+    if (window.isMinimized()) window.restore();
+    window.focus();
+  }
+  const code = authCodeInArgv(argv);
+  if (code !== null) relay?.deliver(code);
+});
+
+// macOS does not relaunch for a URL; it fires this on the running app.
+app.on("open-url", (event, url) => {
+  event.preventDefault();
+  deliverDeepLink(url);
+});
+
 app.whenReady().then(
   () => {
+    claimScheme();
+    relay = openRelayArm();
+
     protocol.handle(CONSOLE_SCHEME, async (request) => {
       const file = consoleFileFor(request.url, consoleBundleDir());
       if (file === null) return new Response("not found", { status: 404 });
@@ -207,7 +367,10 @@ app.whenReady().then(
     );
 
     ipcMain.handle(BRIDGE_CHANNELS.runStart, (_event, request: VerbRunRequest) =>
-      answering<string>(() => runs.start(request)),
+      answering<string>(async () => {
+        if (request.verb === "pair") await assertPairable(request.install);
+        return runs.start(request);
+      }),
     );
 
     ipcMain.handle(BRIDGE_CHANNELS.runCurrent, (_event, install: string) =>
@@ -231,25 +394,17 @@ app.whenReady().then(
       }),
     );
 
-    ipcMain.handle(BRIDGE_CHANNELS.relayState, () =>
-      // The url comes off `companion.json` (#527 §12); no device token is held,
-      // which is the honest answer until #554 mints one. The console draws the
-      // signed-out Relay group from exactly this.
-      answering<RelayArmState>(() => ({
-        url: readCompanion().relay?.url ?? null,
-        person: null,
-        persisted: false,
-      })),
+    ipcMain.handle(BRIDGE_CHANNELS.relayState, () => answering(() => arm().state()));
+
+    ipcMain.handle(BRIDGE_CHANNELS.relaySignIn, (_event, request: { url: string }) =>
+      answering(() => arm().signIn(request.url)),
     );
 
-    for (const channel of [BRIDGE_CHANNELS.relayRequest, BRIDGE_CHANNELS.relaySignOut]) {
-      ipcMain.handle(channel, () =>
-        refusal({
-          code: "signed-out",
-          message: "the companion is not signed in to a relay",
-        }),
-      );
-    }
+    ipcMain.handle(BRIDGE_CHANNELS.relayRequest, (_event, request: RelayPassthrough) =>
+      answering(() => arm().request(request)),
+    );
+
+    ipcMain.handle(BRIDGE_CHANNELS.relaySignOut, () => answering(() => arm().signOut()));
 
     createWindow();
 
@@ -265,6 +420,8 @@ app.whenReady().then(
     app.exit(1);
   },
 );
+
+app.on("before-quit", () => relay?.close());
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
