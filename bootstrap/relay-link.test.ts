@@ -1,6 +1,7 @@
 // The deployment's side of the handshake, driven through a fake socket: what it
 // sends when, what it does with each refusal, how long it waits before dialling
-// again, and what the report says while it is doing it.
+// again, what the report says while it is doing it, and what it answers when a
+// console asks it to run doctor.
 //
 // Nothing here opens a real connection. The socket seam is one function, so the
 // test is the far side of it — which is also how the close codes get exercised,
@@ -12,6 +13,7 @@ import { describe, expect, test } from "vite-plus/test";
 import {
   RELAY_CLOSE,
   RELAY_DARK_AFTER_MS,
+  RELAY_DOCTOR_RUN,
   RELAY_MESSAGES,
   RELAY_PROTOCOL,
 } from "../src/contracts/relay-protocol.ts";
@@ -25,6 +27,7 @@ import {
   RECONNECT_CAP_MS,
   RECONNECT_FIRST_MS,
   reconnectDelayMs,
+  type DoctorRunAnswer,
   type RelaySocketHandlers,
   type RelayTimer,
 } from "./relay-link.ts";
@@ -68,6 +71,10 @@ type Harness = {
   hello: () => Record<string, unknown>;
   /** Every report frame the newest dial has sent, oldest first. */
   reports: () => Array<Record<string, unknown>>;
+  /** Every receipt the newest dial has written, oldest first (#546). */
+  receipts: () => Array<Record<string, unknown>>;
+  /** Who this link was asked to run doctor for, in order. */
+  asked: string[];
   /** The report the model would hand over next. */
   setReport: (report: DeploymentReport | null) => void;
   /** The model wrote a report: the cue boot gives the link. */
@@ -81,6 +88,8 @@ function harness(
     pairingToken?: string;
     protocol?: number;
     report?: DeploymentReport | null;
+    /** Omitted on purpose by the test for a link with no doctor behind it. */
+    doctorRun?: (by: string) => DoctorRunAnswer;
   } = {},
 ): Harness {
   const dials: Dialled[] = [];
@@ -92,6 +101,7 @@ function harness(
   const warnings: string[] = [];
   let clock = 1_000_000;
   let report: DeploymentReport | null = overrides.report ?? null;
+  const asked: string[] = [];
 
   const drop = (timer: Timer): void => {
     const at = timers.indexOf(timer);
@@ -113,6 +123,14 @@ function harness(
     },
     onStatus: (status) => statuses.push(status),
     report: () => report,
+    ...(overrides.doctorRun !== undefined
+      ? {
+          onDoctorRun: (by: string) => {
+            asked.push(by);
+            return overrides.doctorRun!(by);
+          },
+        }
+      : {}),
     log: (message) => logs.push(message),
     warn: (message) => warnings.push(message),
     open: (url, handlers) => {
@@ -175,6 +193,11 @@ function harness(
       newest()
         .sent.map((frame) => JSON.parse(frame) as Record<string, unknown>)
         .filter((frame) => frame["type"] === RELAY_MESSAGES.report),
+    receipts: () =>
+      newest()
+        .sent.map((frame) => JSON.parse(frame) as Record<string, unknown>)
+        .filter((frame) => frame["type"] === RELAY_MESSAGES.receipt),
+    asked,
     setReport: (next) => {
       report = next;
     },
@@ -542,5 +565,113 @@ describe("pushing the report", () => {
     expect(relay.reports()).toEqual([
       { type: RELAY_MESSAGES.report, schema: 1, report: { schema: 1, updatedAt: "first" } },
     ]);
+  });
+});
+
+describe("answering a doctor run", () => {
+  const doctorRun = (id: string, by = "ada@example.test") => ({
+    type: RELAY_MESSAGES.doctorRun,
+    id,
+    by,
+  });
+
+  test("asks the deployment's doctor and receipts the word it gets back", () => {
+    const relay = harness({
+      pairingToken: "mint-fresh",
+      doctorRun: () => ({ outcome: RELAY_DOCTOR_RUN.started }),
+    });
+    relay.challenge();
+
+    relay.deliver(doctorRun("req-1"));
+
+    expect(relay.asked).toEqual(["ada@example.test"]);
+    expect(relay.receipts()).toEqual([
+      { type: RELAY_MESSAGES.receipt, id: "req-1", outcome: "started" },
+    ]);
+  });
+
+  test("a second ask during that run is receipted `joined`, and nothing is doubled", () => {
+    let running = false;
+    const relay = harness({
+      pairingToken: "mint-fresh",
+      doctorRun: () => {
+        const outcome = running ? RELAY_DOCTOR_RUN.joined : RELAY_DOCTOR_RUN.started;
+        running = true;
+        return { outcome };
+      },
+    });
+    relay.challenge();
+
+    relay.deliver(doctorRun("req-1"));
+    relay.deliver(doctorRun("req-2"));
+
+    expect(relay.receipts().map((receipt) => receipt["outcome"])).toEqual(["started", "joined"]);
+  });
+
+  test("the receipt carries the detail a refusal explains itself with", () => {
+    const relay = harness({
+      pairingToken: "mint-fresh",
+      doctorRun: () => ({ outcome: RELAY_DOCTOR_RUN.refused, detail: "shutting down" }),
+    });
+    relay.challenge();
+
+    relay.deliver(doctorRun("req-1"));
+
+    expect(relay.receipts()[0]).toMatchObject({ outcome: "refused", detail: "shutting down" });
+  });
+
+  test("a link with no doctor behind it refuses in those words rather than going quiet", () => {
+    // Silence would leave the console holding a request until the socket closed.
+    const relay = harness({ pairingToken: "mint-fresh" });
+    relay.challenge();
+
+    relay.deliver(doctorRun("req-1"));
+
+    expect(relay.receipts()[0]).toMatchObject({ outcome: "refused" });
+    expect(relay.receipts()[0]!["detail"]).toContain("no doctor");
+  });
+
+  test("an ask that throws is a refusal, not an exception on the socket", () => {
+    const relay = harness({
+      pairingToken: "mint-fresh",
+      doctorRun: () => {
+        throw new Error("the runner is gone");
+      },
+    });
+    relay.challenge();
+
+    relay.deliver(doctorRun("req-1"));
+
+    expect(relay.receipts()[0]).toMatchObject({
+      outcome: "refused",
+      detail: "the runner is gone",
+    });
+  });
+
+  test("an ask before the hello is ignored: the relay has not been answered yet", () => {
+    const relay = harness({
+      pairingToken: "mint-fresh",
+      doctorRun: () => ({ outcome: RELAY_DOCTOR_RUN.started }),
+    });
+    relay.dials[0]!.handlers.onOpen();
+
+    relay.deliver(doctorRun("req-1"));
+
+    expect(relay.asked).toEqual([]);
+    expect(relay.receipts()).toEqual([]);
+  });
+
+  test("a malformed ask is dropped rather than receipted under an id it invented", () => {
+    const relay = harness({
+      pairingToken: "mint-fresh",
+      doctorRun: () => ({ outcome: RELAY_DOCTOR_RUN.started }),
+    });
+    relay.challenge();
+
+    relay.deliver({ type: RELAY_MESSAGES.doctorRun, by: "ada@example.test" });
+    relay.deliver({ type: RELAY_MESSAGES.doctorRun, id: "req-1" });
+
+    expect(relay.asked).toEqual([]);
+    expect(relay.receipts()).toEqual([]);
   });
 });

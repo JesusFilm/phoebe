@@ -19,6 +19,7 @@ import {
   ago,
   cell,
   check,
+  client,
   child,
   doctor,
   NOW,
@@ -105,7 +106,9 @@ const BUSY = report({
 const BUSY_FACTS = rowFacts(row({ name: "jesusfilm-workspace" }), stored(BUSY));
 
 function render(tab: DeploymentTab, facts = BUSY_FACTS): string {
-  return renderToStaticMarkup(<DeploymentPage facts={facts} tab={tab} now={NOW} />);
+  return renderToStaticMarkup(
+    <DeploymentPage facts={facts} tab={tab} client={client()} now={NOW} />,
+  );
 }
 
 const overview = render("overview");
@@ -236,6 +239,24 @@ describe("the doctor tab", () => {
     expect(markup).toContain("never produced a doctor report");
     expect(markup).not.toContain("chip check");
   });
+
+  test("offers the run, because a connected deployment can be asked (#546)", () => {
+    expect(doctorTab).toContain('aria-label="Run doctor"');
+    expect(doctorTab).toContain(">Run doctor<");
+    expect(doctorTab).not.toContain("disabled");
+  });
+
+  test("is disabled with the reason when the relay is not holding the connection", () => {
+    const gone = rowFacts(
+      row({ state: "dark", connectedSince: null, lastSeen: ago(2 * 86_400) }),
+      stored(report()),
+    );
+    const markup = render("doctor", gone);
+
+    expect(markup).toContain("disabled");
+    expect(markup).toContain("has been dark");
+    expect(markup).toContain("would come back undelivered");
+  });
 });
 
 describe("a deployment that has never connected", () => {
@@ -270,6 +291,13 @@ describe("a deployment that has never connected", () => {
       expect(markup, tab).toContain("has never connected");
       expect(markup, tab).toContain("#/d/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
     }
+  });
+
+  test("doctor keeps its button, disabled: there is nothing to ask until it boots", () => {
+    const markup = render("doctor", unseen);
+    expect(markup).toContain(">Run doctor<");
+    expect(markup).toContain("disabled");
+    expect(markup).toContain("nothing to ask until it boots");
   });
 
   test("a report this console cannot read is its own kind of nothing", () => {

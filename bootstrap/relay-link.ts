@@ -47,6 +47,13 @@
 // fleet is quiet sends nothing for hours, and that is not silence — it is a
 // deployment with nothing to say (#541).
 //
+// **What comes the other way is a request, and it is answered at once** (#546).
+// `doctor-run` is the first of them: the link asks the supervisor's doctor
+// runner for a run and answers the receipt with which run the ask belongs to —
+// started, joined, or refused. Not with what doctor found. A run takes up to
+// five minutes and the answer to "did my press do anything" cannot, so the
+// finding arrives the way every finding does, as the next report.
+//
 // **Nothing here is load-bearing for work.** A deployment with no relay, an
 // unreachable relay, or a refused link supervises its fleet exactly as it
 // always did. The link reports where it stands and never throws into the
@@ -55,12 +62,15 @@
 import {
   RELAY_CLOSE,
   RELAY_DARK_AFTER_MS,
+  RELAY_DOCTOR_RUN,
   RELAY_MESSAGES,
   RELAY_PROTOCOL,
   relayMessageType,
   relaySpeaks,
   type RelayChallenge,
+  type RelayDoctorRun,
   type RelayHello,
+  type RelayReceipt,
   type RelayReportMessage,
 } from "../src/contracts/relay-protocol.ts";
 import { jitteredBackoffMs } from "../src/backoff.ts";
@@ -142,6 +152,16 @@ export type OpenRelaySocket = (url: string, handlers: RelaySocketHandlers) => Re
 /** Which of the link's two timers is being set. */
 export type RelayTimer = "retry" | "silence";
 
+/**
+ * What the deployment answers a `doctor-run` with (#546): which run the ask
+ * belongs to, and a sentence when that is `refused`. The words are the rail's
+ * own (`RELAY_DOCTOR_RUN`); this link does not invent one.
+ */
+export type DoctorRunAnswer = {
+  outcome: (typeof RELAY_DOCTOR_RUN)[keyof typeof RELAY_DOCTOR_RUN];
+  detail?: string;
+};
+
 export type RelayLinkDeps = {
   /** `relay.url` — where to dial. */
   url: string;
@@ -178,6 +198,17 @@ export type RelayLinkDeps = {
    * was holding when the socket died.
    */
   report?: () => DeploymentReport | null;
+  /**
+   * A person pressed **Run doctor** in a console (#546). The answer is the
+   * receipt, and it is written now rather than when the run ends: doctor holds
+   * itself to five minutes, and a console waiting that long for one button is a
+   * console an operator reloads. What the run found goes up as the next report.
+   *
+   * Absent means this link was built without a doctor behind it — a test, or a
+   * deployment whose supervisor has none — and the ask is refused in those words
+   * rather than dropped, so nobody is left watching a receipt that never comes.
+   */
+  onDoctorRun?: (by: string) => DoctorRunAnswer;
   /** The deployment key's fingerprint, once there is one to report. */
   onPaired?: (key: DeploymentKey) => void;
   /** Operator-facing lines. Defaults to stdout through the caller. */
@@ -313,6 +344,46 @@ export function connectRelay(deps: RelayLinkDeps): RelayLink {
     }
   };
 
+  /**
+   * Answer one `doctor-run` (#546). The receipt goes out whatever happened —
+   * including when there is no doctor to run and when asking for one threw —
+   * because the console is holding a request open on it and the relay's only
+   * other way to settle that request is the socket closing.
+   */
+  const runDoctor = (on: RelaySocket | null, message: RelayDoctorRun | null): void => {
+    if (on === null || message === null) return;
+    let answer: DoctorRunAnswer;
+    if (deps.onDoctorRun === undefined) {
+      answer = { outcome: RELAY_DOCTOR_RUN.refused, detail: "this deployment runs no doctor" };
+    } else {
+      try {
+        answer = deps.onDoctorRun(message.by);
+      } catch (error) {
+        answer = {
+          outcome: RELAY_DOCTOR_RUN.refused,
+          detail: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }
+    log(`[phoebe] relay: ${message.by} asked for a doctor run — ${answer.outcome}.`);
+    const receipt: RelayReceipt = {
+      type: RELAY_MESSAGES.receipt,
+      id: message.id,
+      outcome: answer.outcome,
+      ...(answer.detail !== undefined ? { detail: answer.detail } : {}),
+    };
+    try {
+      on.send(JSON.stringify(receipt));
+    } catch (error) {
+      // The socket died between the ask and the answer. The relay settles its
+      // own request `undelivered` on the close, so there is nothing to retry.
+      warn(
+        `[phoebe] relay: could not answer the doctor run — ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  };
+
   function dial(): void {
     if (stopped) return;
     let answered = false;
@@ -405,6 +476,12 @@ export function connectRelay(deps: RelayLinkDeps): RelayLink {
       onMessage: (data) => {
         heard();
         const frame = parseFrame(data);
+        if (relayMessageType(frame) === RELAY_MESSAGES.doctorRun) {
+          // Only after the hello: a `doctor-run` before the handshake is a relay
+          // asking an unidentified socket to spend a tenant's API budget.
+          if (ready) runDoctor(current, parseDoctorRun(frame));
+          return;
+        }
         if (relayMessageType(frame) !== RELAY_MESSAGES.challenge) return;
         if (answered) return;
         answered = true;
@@ -478,6 +555,20 @@ export function connectRelay(deps: RelayLinkDeps): RelayLink {
       socket = null;
     },
   };
+}
+
+/**
+ * A `doctor-run` with the two fields the deployment reads, or null. A relay
+ * that sent one without an `id` would be asking for a receipt it could not
+ * match, and one without a `by` would be asking on nobody's behalf — the report
+ * records who asked, so there is no such thing as an anonymous ask.
+ */
+export function parseDoctorRun(frame: unknown): RelayDoctorRun | null {
+  if (relayMessageType(frame) !== RELAY_MESSAGES.doctorRun) return null;
+  const message = frame as Partial<RelayDoctorRun>;
+  if (typeof message.id !== "string" || message.id.length === 0) return null;
+  if (typeof message.by !== "string" || message.by.length === 0) return null;
+  return { type: RELAY_MESSAGES.doctorRun, id: message.id, by: message.by };
 }
 
 /** A frame, or null for anything that is not JSON. Never throws at the caller. */
