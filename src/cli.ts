@@ -286,6 +286,7 @@ Usage:
                                    Delete tenant state no pipeline owns
   phoebe stop [--now]              Drain and stop the deployment container (host-side)
   phoebe start [--build]           Bring the deployment container up detached (host-side)
+  phoebe relay serve               Serve the relay: console + deployment socket
   phoebe [--config <path>] [flags] Run the engine
 
 Options (engine mode):
@@ -733,6 +734,13 @@ export async function runCli(): Promise<void> {
   if (args[0] === "start") {
     const { runStartCli } = await import("./start.ts");
     return await runStartCli(args.slice(1));
+  }
+  // The relay (#538): a separate process, a separate image, a separate
+  // volume — the deployment container gains no listener from it. Lazy like the
+  // rest, so an engine run never loads the HTTP server or its OIDC client.
+  if (args[0] === "relay") {
+    const { runRelayCli } = await import("../relay/cli.ts");
+    return await runRelayCli(args.slice(1));
   }
 
   const parsed = parseCliArgs(args);
