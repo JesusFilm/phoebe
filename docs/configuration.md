@@ -1067,6 +1067,20 @@ Run it against a workspace root and every tenant reports. A tenant whose config
 will not load is one row carrying its error; the exit code turns non-zero only
 when no tenant loaded at all.
 
+**You rarely need to run it to read it.** The same object rides in the
+deployment report as its `config` section, so `phoebe status --json`, the relay
+and the console all show a tenant's settings without asking the deployment a
+second question. The text `phoebe status` leaves it out, because settings are
+what this verb is for and a status screen reciting every leaf would bury the
+question it exists to answer. The section also carries a content hash of the root
+`phoebe.config.ts` it was read from, which is what a later remote edit checks
+itself against before writing.
+
+One deployment writes one file, so the section has a byte budget. On a workspace
+far larger than any Phoebe has run, the first tenants by id carry their configs
+and the rest are counted in `config.omitted`. Run `phoebe config` in the
+container to read one of those.
+
 ## GitHub App arm
 
 Two variables in the **deployment** env-file select the `app` credential arm.

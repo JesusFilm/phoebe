@@ -7,11 +7,27 @@
 // disk: the two fs readers the fleet needs (snapshots and state directories) are
 // injected too.
 
-import { describe, expect, test } from "vite-plus/test";
+import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, describe, expect, test } from "vite-plus/test";
 import type { DeploymentReport } from "../src/contracts/deployment.ts";
+import type { TenantEffectiveConfig } from "../src/contracts/effective-config.ts";
 import type { StatusSnapshot } from "../src/contracts/status-snapshot.ts";
 import type { SupervisedPipeline } from "./pipelines.ts";
+import {
+  CONFIG_SECTION_BUDGET_BYTES,
+  unknownConfig,
+  type ConfigCollector,
+} from "./config-report.ts";
+import { deploymentReportPath } from "./deployment-report.ts";
 import { createDeploymentState, type DeploymentStateDeps } from "./deployment-state.ts";
+
+const temps: string[] = [];
+
+afterAll(() => {
+  for (const dir of temps) rmSync(dir, { recursive: true, force: true });
+});
 
 const POLL_MS = 300_000;
 
@@ -67,6 +83,7 @@ function harness(overrides: Partial<DeploymentStateDeps> = {}) {
     dataBase: "/data/repos",
     crashLoop: () => ({ lastGoodSha: "good", failingSha: null, failureCount: 0 }),
     slots: () => ({ capacity: 2, inUse: 1, waiting: 0, overGranted: 0, floorBudget: 1 }),
+    rootConfig: () => ({ path: "/deployment/phoebe.config.ts", fingerprint: "sha256:root" }),
     armOf: () => "pat",
     now: () => clock,
     write: (report) => written.push(report),
@@ -414,5 +431,218 @@ describe("the fleet matrix", () => {
         arm: "pat",
       },
     ]);
+  });
+});
+
+describe("the config section", () => {
+  /** A collector that answers every tenant with a row naming it. */
+  function collectorOf(rows: (id: string) => TenantEffectiveConfig, version = 1): ConfigCollector {
+    return { version: () => version, read: (target) => rows(target.id) };
+  }
+
+  function rowFor(id: string): TenantEffectiveConfig {
+    return {
+      tenant: `acme${id}`,
+      error: null,
+      fields: { repoSlug: { value: `acme${id}`, source: "file", reader: "engine" } },
+      env: { GH_TOKEN: { present: true, from: "tenantEnv" } },
+      warnings: [],
+    };
+  }
+
+  test("every tenant's effective config rides in the report, with the engine's version", () => {
+    const h = harness();
+    h.state.noteEngine({
+      ref: "main",
+      sha: "abc",
+      quarantinedSha: null,
+      config: collectorOf(rowFor, 3),
+    });
+    h.state.notePipelines([pipelineOf("/t/b", "work"), pipelineOf("/t/a", "work")]);
+
+    const config = h.latest()!.config;
+    expect(config.version).toBe(3);
+    expect(config.omitted).toBe(0);
+    expect(config.tenants.map((tenant) => tenant.tenant)).toEqual(["acme/t/a", "acme/t/b"]);
+    expect(config.tenants[0]!.fields).not.toBeNull();
+  });
+
+  test("the root config's source fingerprint is what a later edit checks against", () => {
+    const h = harness();
+    h.state.noteEngine({ ref: "main", sha: "abc", quarantinedSha: null });
+    expect(h.latest()!.config.root).toEqual({
+      path: "/deployment/phoebe.config.ts",
+      fingerprint: "sha256:root",
+    });
+  });
+
+  test("one tenant per row however many pipelines it runs", () => {
+    const h = harness();
+    h.state.noteEngine({
+      ref: "main",
+      sha: "abc",
+      quarantinedSha: null,
+      config: collectorOf(rowFor),
+    });
+    h.state.notePipelines([pipelineOf("/t/a", "work"), pipelineOf("/t/a", "intake")]);
+    expect(h.latest()!.config.tenants).toHaveLength(1);
+  });
+
+  test("a held tenant carries its discovery error, never the resolution it had before", () => {
+    const h = harness();
+    h.state.noteEngine({
+      ref: "main",
+      sha: "abc",
+      quarantinedSha: null,
+      config: collectorOf(rowFor),
+    });
+    h.state.notePipelines([pipelineOf("/t/a", "work")]);
+    expect(h.latest()!.config.tenants[0]!.fields).not.toBeNull();
+
+    h.state.noteHolds([
+      { id: "/t/a", dir: "/t/a", envPath: "/t/a/.env", slug: "acme/widget", reason: "mint failed" },
+    ]);
+    expect(h.latest()!.config.tenants).toEqual([
+      {
+        tenant: "acme/widget",
+        error: "held — mint failed",
+        fields: null,
+        env: null,
+        warnings: [],
+      },
+    ]);
+  });
+
+  test("a tenant held before it ever ran is a row of its own", () => {
+    const h = harness();
+    h.state.noteEngine({
+      ref: "main",
+      sha: "abc",
+      quarantinedSha: null,
+      config: collectorOf(rowFor),
+    });
+    h.state.noteHolds([
+      { id: "/t/held", dir: "/t/held", envPath: "/t/held/.env", slug: null, reason: "no config" },
+    ]);
+    expect(h.latest()!.config.tenants).toEqual([
+      { tenant: "/t/held", error: "held — no config", fields: null, env: null, warnings: [] },
+    ]);
+  });
+
+  test("a relaunch re-asks the new checkout — the answer belongs to the engine running", () => {
+    const h = harness();
+    h.state.noteEngine({
+      ref: "main",
+      sha: "old",
+      quarantinedSha: null,
+      config: collectorOf(() => rowFor("/t/a")),
+    });
+    h.state.notePipelines([pipelineOf("/t/a", "work")]);
+    expect(h.latest()!.config.tenants[0]!.tenant).toBe("acme/t/a");
+
+    h.state.noteEngine({
+      ref: "main",
+      sha: "new",
+      quarantinedSha: null,
+      config: collectorOf(() => ({ ...rowFor("/t/a"), tenant: "renamed" })),
+    });
+    expect(h.latest()!.config.tenants[0]!.tenant).toBe("renamed");
+  });
+
+  test("a section that did not move keeps its stamp, and writes nothing on its own", () => {
+    const h = harness();
+    h.state.noteEngine({
+      ref: "main",
+      sha: "abc",
+      quarantinedSha: null,
+      config: collectorOf(rowFor),
+    });
+    h.state.notePipelines([pipelineOf("/t/a", "work")]);
+    const stamp = h.latest()!.config.updatedAt;
+
+    h.advance(60_000);
+    h.state.notePipelines([pipelineOf("/t/a", "work")]);
+    expect(h.written).toHaveLength(2);
+    expect(h.latest()!.config.updatedAt).toBe(stamp);
+  });
+
+  test("a config the engine could not compute is the error arm, and supervision goes on", () => {
+    const h = harness();
+    h.state.noteEngine({
+      ref: "main",
+      sha: "abc",
+      quarantinedSha: null,
+      config: collectorOf((id) => unknownConfig(id, "could not read the effective config — boom")),
+    });
+    h.state.notePipelines([pipelineOf("/t/a", "work")]);
+    expect(h.latest()!.config.tenants[0]!.error).toContain("could not read");
+    expect(h.latest()!.fleet.cells).toHaveLength(1);
+  });
+
+  test("before the first engine is materialized the section is empty, not invented", () => {
+    const h = harness();
+    h.state.notePipelines([pipelineOf("/t/a", "work")]);
+    expect(h.latest()!.config.tenants).toEqual([]);
+  });
+});
+
+describe("the file a workspace with many tenants writes", () => {
+  /** A tenant tree about the size a real one costs — ~200 annotated leaves. */
+  function fatRow(id: string): TenantEffectiveConfig {
+    const fields: Record<string, unknown> = {};
+    for (let i = 0; i < 200; i++) {
+      fields[`setting${i}`] = {
+        value: `value-${i}-${"x".repeat(20)}`,
+        source: "file",
+        via: `${id}/phoebe.config.ts`,
+        reader: "engine",
+      };
+    }
+    return {
+      tenant: id,
+      error: null,
+      fields: fields as TenantEffectiveConfig["fields"],
+      env: { GH_TOKEN: { present: true, from: "tenantEnv" } },
+      warnings: [],
+    };
+  }
+
+  function fleetOf(tenants: number) {
+    const dir = mkdtempSync(join(tmpdir(), "phoebe-report-"));
+    temps.push(dir);
+    const state = createDeploymentState({
+      identity: { name: "acme", arm: "workspace" },
+      dataBase: dir,
+      crashLoop: () => ({ lastGoodSha: null, failingSha: null, failureCount: 0 }),
+      slots: () => ({ capacity: 4, inUse: 0, waiting: 0, overGranted: 0, floorBudget: 1 }),
+      rootConfig: () => ({ path: join(dir, "phoebe.config.ts"), fingerprint: "sha256:root" }),
+      armOf: () => "pat",
+      exists: () => false,
+      listStateDirs: () => [],
+      readSnapshot: () => null,
+    });
+    state.noteEngine({
+      ref: "main",
+      sha: "abc",
+      quarantinedSha: null,
+      config: { version: () => 1, read: (target) => fatRow(target.id) },
+    });
+    state.notePipelines(
+      Array.from({ length: tenants }, (_, i) =>
+        pipelineOf(`/tenants/t${String(i).padStart(4, "0")}`, "work"),
+      ),
+    );
+    return statSync(deploymentReportPath(dir)).size;
+  }
+
+  test("the config section stops growing at its budget, so the file stays bounded", () => {
+    const fifty = fleetOf(50);
+    const fiveHundred = fleetOf(500);
+
+    // Ten times the tenants is not ten times the file: the fleet matrix grows
+    // with the fleet (a cell is tens of bytes), the config section does not.
+    expect(fifty).toBeLessThan(CONFIG_SECTION_BUDGET_BYTES + 256 * 1024);
+    expect(fiveHundred).toBeLessThan(CONFIG_SECTION_BUDGET_BYTES + 512 * 1024);
+    expect(fiveHundred).toBeLessThan(fifty * 2);
   });
 });

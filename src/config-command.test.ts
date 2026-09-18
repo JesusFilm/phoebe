@@ -7,13 +7,15 @@ import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vite-plus/test";
 import {
   collectEffectiveConfig,
-  EFFECTIVE_CONFIG_VERSION,
   everyTenantErrored,
   formatEffectiveConfig,
   parseConfigArgs,
   type EffectiveConfigReport,
 } from "./config-command.ts";
-import type { TenantEffectiveConfig } from "./contracts/effective-config.ts";
+import {
+  EFFECTIVE_CONFIG_VERSION,
+  type TenantEffectiveConfig,
+} from "./contracts/effective-config.ts";
 
 const temps: string[] = [];
 

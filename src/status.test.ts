@@ -6,6 +6,7 @@
 import { describe, expect, test } from "vite-plus/test";
 import type {
   ChildLiveness,
+  ConfigReport,
   DeploymentReport,
   DoctorSection,
   FleetCell,
@@ -77,6 +78,7 @@ function child(fields: Partial<ChildLiveness> & { id: string }): ChildLiveness {
 }
 
 function report(fields: {
+  config?: ConfigReport;
   cells?: FleetCell[];
   tenants?: TenantFacts[];
   children?: ChildLiveness[];
@@ -102,6 +104,13 @@ function report(fields: {
     fleet: {
       tenants: fields.tenants ?? (cells.length > 0 ? [cells[0]!.tenant] : []),
       cells,
+      updatedAt: MINUTES_AGO(2),
+    },
+    config: fields.config ?? {
+      version: 1,
+      root: { path: "/deployment/phoebe.config.ts", fingerprint: "sha256:root" },
+      tenants: [],
+      omitted: 0,
       updatedAt: MINUTES_AGO(2),
     },
     updatedAt: MINUTES_AGO(2),
@@ -542,6 +551,58 @@ describe("the in-container arm", () => {
     });
     expect(lines.out.join("")).toBe(raw);
     expect(process.exitCode ?? 0).toBe(0);
+  });
+
+  test("the config section rides in --json and stays out of the text view (#535)", async () => {
+    const configured = report({
+      cells: [cell({ pipeline: "work" })],
+      config: {
+        version: 1,
+        root: { path: "/deployment/phoebe.config.ts", fingerprint: "sha256:abc123" },
+        tenants: [
+          {
+            tenant: "acme/widget",
+            error: null,
+            fields: { repoSlug: { value: "acme/widget", source: "file", reader: "engine" } },
+            env: { GH_TOKEN: { present: true, from: "tenantEnv" } },
+            warnings: [],
+          },
+        ],
+        omitted: 0,
+        updatedAt: MINUTES_AGO(5),
+      },
+    });
+    const file = `${JSON.stringify(configured, null, 2)}\n`;
+
+    const json = io();
+    await runStatusCli(["--json"], "status", {
+      inContainer: true,
+      bootAlive: true,
+      readReport: () => file,
+      now: NOW,
+      io: json.io,
+    });
+    const printed = JSON.parse(json.out.join("")) as DeploymentReport;
+    expect(printed.config.root.fingerprint).toBe("sha256:abc123");
+    expect(printed.config.tenants[0]!.fields).toEqual({
+      repoSlug: { value: "acme/widget", source: "file", reader: "engine" },
+    });
+
+    // The text view is the fleet, not the settings: `phoebe config` is the verb
+    // for those, and a status screen that recited every leaf would bury the
+    // question it exists to answer.
+    const text = io();
+    await runStatusCli([], "status", {
+      inContainer: true,
+      bootAlive: true,
+      readReport: () => file,
+      now: NOW,
+      io: text.io,
+    });
+    const view = text.out.join("");
+    expect(view).not.toContain("sha256:abc123");
+    expect(view).not.toContain("repoSlug");
+    expect(view).not.toContain("GH_TOKEN");
   });
 
   test("no report is stated as a fact, and --check exits 1 on it", async () => {

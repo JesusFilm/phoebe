@@ -80,6 +80,7 @@ import {
 } from "./github-app.ts";
 import { attachBroker } from "./broker-ipc.ts";
 import { attachEngineReports } from "./engine-report-ipc.ts";
+import { createConfigCollector, createRootConfigSource } from "./config-report.ts";
 import {
   createDeploymentState,
   type DeploymentState,
@@ -466,6 +467,7 @@ async function launchTarget(configPath: string, guard: CrashGuard): Promise<Laun
       sample,
       pipelines: probePipelineEnumeration(entry),
       stateSweep: createStateSweeper({ entry }),
+      configs: createConfigCollector({ entry, fingerprint: tenantFingerprint }),
     };
   }
 
@@ -502,6 +504,7 @@ async function launchTarget(configPath: string, guard: CrashGuard): Promise<Laun
     sample,
     pipelines: probePipelineEnumeration(entry),
     stateSweep: createStateSweeper({ entry }),
+    configs: createConfigCollector({ entry, fingerprint: tenantFingerprint }),
   };
 }
 
@@ -994,6 +997,7 @@ function runFleet(opts: {
         ref: engineRefOf(engine),
         sha: engine.sha,
         quarantinedSha: engine.quarantinedSha,
+        ...(engine.configs !== undefined ? { config: engine.configs } : {}),
       });
       return engine;
     },
@@ -1627,6 +1631,9 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     dataBase,
     crashLoop: () => guard.state(),
     slots: () => brokerSlots(broker),
+    // The root config is the one file a console may edit (#503), so it is the
+    // one an edit's fingerprint must be taken over.
+    rootConfig: createRootConfigSource(configPath),
     // Workspace: the tenant's own `.env` weighed against the deployment env.
     // Solo: the root *is* the tenant, so those are the same env (#162).
     armOf:
@@ -1739,6 +1746,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       ref: engineRefOf(engine),
       sha: engine.sha,
       quarantinedSha: engine.quarantinedSha,
+      ...(engine.configs !== undefined ? { config: engine.configs } : {}),
     });
     return engine;
   };

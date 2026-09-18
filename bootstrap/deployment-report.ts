@@ -37,6 +37,7 @@ import { dirname, join } from "node:path";
 import {
   DEPLOYMENT_SCHEMA,
   type BootstrapperReport,
+  type ConfigReport,
   type DeploymentIdentity,
   type DeploymentReport,
   type FleetReport,
@@ -59,6 +60,7 @@ export type DeploymentDraft = {
   identity: DeploymentIdentity;
   bootstrapper: Omit<BootstrapperReport, "updatedAt">;
   fleet: Omit<FleetReport, "updatedAt">;
+  config: Omit<ConfigReport, "updatedAt">;
 };
 
 /**
@@ -107,7 +109,9 @@ export function stampReport(
     contentOf(unstamped(previous.bootstrapper)) !== contentOf(draft.bootstrapper);
   const fleetMoved =
     previous === null || contentOf(unstamped(previous.fleet)) !== contentOf(draft.fleet);
-  if (!identityMoved && !bootstrapperMoved && !fleetMoved) return null;
+  const configMoved =
+    previous === null || contentOf(unstamped(previous.config)) !== contentOf(draft.config);
+  if (!identityMoved && !bootstrapperMoved && !fleetMoved && !configMoved) return null;
   return {
     schema: DEPLOYMENT_SCHEMA,
     identity: draft.identity,
@@ -118,6 +122,10 @@ export function stampReport(
     fleet: {
       ...draft.fleet,
       updatedAt: fleetMoved ? now : (previous?.fleet.updatedAt ?? now),
+    },
+    config: {
+      ...draft.config,
+      updatedAt: configMoved ? now : (previous?.config.updatedAt ?? now),
     },
     updatedAt: now,
   };
