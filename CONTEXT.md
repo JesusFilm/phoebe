@@ -6,7 +6,8 @@ repository, does it in a container, and pushes the result as a pull request.
 This file is the glossary. For how the pieces fit together see
 [`docs/architecture.md`](docs/architecture.md); for the mechanics of each kind of work see
 [`docs/work-kinds.md`](docs/work-kinds.md); for running more than one stream of work in a
-tenant see [`docs/pipelines.md`](docs/pipelines.md).
+tenant see [`docs/pipelines.md`](docs/pipelines.md); for the console, the relay and the
+companion see [`docs/console.md`](docs/console.md).
 
 ## Language
 
@@ -52,11 +53,6 @@ One fixed-size file, `state/deployment.json`, rewritten when something moves: re
 and shipped as-is to a relay. A consumer renders it and derives nothing of its own.
 _Avoid_: snapshot (that is `status.json`), state (that is the directory), status (that is
 the CLI verb), manifest
-
-**Console**:
-The operator's web view of every deployment's report, served by the relay. `phoebe status`
-is the same report read locally, not a second console.
-_Avoid_: dashboard, local console
 
 **Pass**:
 One turn of an engine's loop: poll, select, admit what it can, then wait. A supervised
@@ -452,10 +448,18 @@ _Avoid_: channel, target, subscriber
 ### Console
 
 **Console**:
-The web page a relay serves for reading a fleet. One React bundle, which the companion
-also loads from disk over a scheme of its own, so a page an operator sees is never written
-twice.
-_Avoid_: dashboard, UI, web app
+The operator's view of every deployment's report: the web page a relay serves, and the
+same React bundle the companion loads from disk over a scheme of its own, so a page an
+operator sees is never written twice. `phoebe status` is that report read on the host, not
+a second console. See [`docs/console.md`](docs/console.md).
+_Avoid_: dashboard, UI, web app, local console
+
+**Remote deployment**:
+A deployment an operator reaches only through a relay, because they have no shell on the
+machine it runs on. Not a kind of deployment — the same deployment, described by how it is
+being reached. "Remote workspace" in conversation means one of these running the workspace
+arm.
+_Avoid_: remote workspace, remote instance, hosted deployment
 
 **Companion**:
 The desktop app: installer and configurator for local installs, client of the relay for
@@ -498,6 +502,7 @@ Compose's event stream for the moment a container moves, and a `status --json` e
 15 s while it is up. What comes out is the relay's own `report` event, so a page renders
 either arm without knowing which it has.
 _Avoid_: watcher, sync, poller
+
 **Console protocol**:
 The integer the relay's JSON and SSE API carries at `/api/version`. The relay serves every
 console protocol up to its own, so a companion above it says upgrade the relay first and

@@ -20,6 +20,10 @@ listener. That is a property worth keeping, so a test guards it.
 
 Its version is the bootstrapper's version, and one changelog covers both.
 
+This page is the relay's mechanism. If you are standing one up for the first
+time, or working out what the console and the desktop companion are for, start
+at [`console.md`](console.md) and come back here for the details.
+
 ## Configuration is four environment variables, and an optional fifth
 
 | Variable               | What it is                                                                                                              |
@@ -774,18 +778,18 @@ run the command above.
 
 ## Not here yet
 
-The last of the three verbs: doctor runs. The rail carries them and the relay
-will deliver them and wait for a receipt exactly as it does for a config edit or
-a secret, and nothing sends one yet. On the console's side the fleet page, a
-deployment's three read-only tabs, the secrets tab and the effective-config tab
-are here; the People page joins this same process — and it is where a person's
-devices are listed with a remove beside each, so the reads and the revoke are
-here and the page is not. See
+The last of the three verbs: doctor runs. The rail carries the message and the
+relay will deliver it and wait for a receipt exactly as it does for a config edit
+or a secret, and nothing sends one yet. Config edits and secrets both work end to
+end, and all five of a deployment's tabs are here.
+
+The People page. The allowlist is seeded, merged and enforced, and the device
+reads and the revoke are implemented, so what is missing is the page that puts
+them on screen. See
 [the relay's shape](https://github.com/JesusFilm/phoebe/issues/506).
 
-Alerting is here but only partly fed. The webhook, the edge rule, `alerts.json`
-and the test button all work; `dark` and `replaced` are evaluated against the
-relay's own clocks on every sweep. `wedged`, `crash-looping` and `doctor-fail`
-are implemented in the rule and have nothing to read until the relay stores
-reports, and the `alert` event rides the same stream. Both wait on
-[reports over the relay](https://github.com/JesusFilm/phoebe/issues/542).
+Alerting is fully fed. The webhook, the edge rule, `alerts.json` and the `alert`
+event all work, and every sweep evaluates all five conditions: `dark` and
+`replaced` against the relay's own clocks, `wedged`, `crash-looping` and
+`doctor-fail` against the report the deployment last pushed. The fleet-wide test
+button is the one part still to land.

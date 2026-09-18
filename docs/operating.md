@@ -29,6 +29,11 @@ sets, or of telling Phoebe "a human has this now." Research tickets are selected
 the same way as ready issues (priority, age, `Blocked by #N`); see
 [`work-kinds.md`](work-kinds.md#research-resolve-wayfinder-research-tickets).
 
+Every lever here is a label on GitHub or a command at a shell. If you have
+neither, [`console.md`](console.md) is the other way in: a self-hosted relay
+serves a web console that reads the same deployment report this page renders, and
+a desktop companion drives local installs through the same host verbs.
+
 ## Starting a unit of work: `readyLabel`
 
 Add `readyLabel` (default `ready-for-agent`) to an issue and Phoebe will pick it
@@ -484,7 +489,9 @@ shows the snapshots that are on disk instead, and marks each one `(from disk)`.
 **Nothing in the view is computed twice.** Every state and every `wedged?`
 verdict comes straight out of the report, where the bootstrapper derived it once.
 That is what stops this command and the web console disagreeing about a pipeline.
-`--json` prints `state/deployment.json` byte for byte, for the same reason.
+`--json` prints `state/deployment.json` byte for byte, for the same reason. The
+console is the same file rendered in a browser, and what it does with it is
+[`console.md`](console.md).
 
 **A missing or old report is stated as a fact, never as a state.** Inside the
 container the one live question `status` asks is whether `phoebe boot` is still
