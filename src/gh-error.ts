@@ -126,8 +126,9 @@ export function isTransientGhError(error: unknown): boolean {
 
 /**
  * Whether a failed `gh issue edit --add-label` call was rejected because the
- * label does not exist in the repository. GitHub's GraphQL mutation surfaces
- * this as "Label not found: …" in the error text.
+ * label does not exist in the repository. Older `gh` relays GitHub's GraphQL
+ * "Label not found: …"; current `gh` resolves label names itself first and
+ * fails with "failed to update <url>: '<name>' not found".
  *
  * Only detectable on captured calls (not inherited-stdio writes): a call with
  * `inherit: true` yields no stderr to inspect and always returns false here.
@@ -135,7 +136,7 @@ export function isTransientGhError(error: unknown): boolean {
 export function isLabelNotFoundError(error: unknown): boolean {
   const stderr = stderrText(error);
   if (stderr === null) return false;
-  return /Label not found/i.test(stderr);
+  return /Label not found|'[^'\n]+' not found/i.test(stderr);
 }
 
 /**
