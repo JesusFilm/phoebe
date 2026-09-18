@@ -8,6 +8,7 @@ import { DEPLOYMENT_SCHEMA } from "phoebe-agent/contracts";
 import type {
   ChildLiveness,
   CompanionEnvironment,
+  CompanionUpdate,
   DeploymentReport,
   DesktopBridge,
   FleetCell,
@@ -179,6 +180,18 @@ export function bridge(answers: BridgeAnswers = {}): DesktopBridge {
       lines: () => () => undefined,
       exits: () => () => undefined,
     },
+    updates: {
+      state: () => Promise.resolve(answers.update ?? { kind: "checking" }),
+      download: () => {
+        answers.updateCalls?.push("download");
+        return Promise.resolve();
+      },
+      restart: () => {
+        answers.updateCalls?.push("restart");
+        return Promise.resolve();
+      },
+      changes: () => () => undefined,
+    },
     preferences: {
       get: () => Promise.resolve({ notifications: true }),
       set: (preferences) => Promise.resolve(preferences),
@@ -210,6 +223,10 @@ export type BridgeAnswers = {
   started?: VerbRunRequest[];
   request?: (path: string) => unknown;
   events?: RelayEvent[];
+  /** Where the companion's own update stands (#525 §3). */
+  update?: CompanionUpdate;
+  /** Collects the update buttons the page pressed. */
+  updateCalls?: string[];
 };
 
 /** What the preload throws when main refuses a call (#527 §16). */

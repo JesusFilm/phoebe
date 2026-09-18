@@ -73,6 +73,7 @@ export type {
   RelayArmState,
   RelayPassthrough,
 } from "./desktop-bridge.ts";
+export type { CompanionUpdate } from "./companion-update.ts";
 export type {
   CompanionEnvironment,
   CompanionPreferences,

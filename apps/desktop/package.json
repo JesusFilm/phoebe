@@ -10,14 +10,17 @@
     "start": "vp exec electron .",
     "lint": "vp lint",
     "typecheck": "vp exec tsc --noEmit",
-    "test": "vp test"
+    "test": "vp test",
+    "package": "vp exec electron-builder --config electron-builder.config.cjs --publish never"
   },
   "dependencies": {
+    "electron-updater": "^6.8.9",
     "phoebe-agent": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "electron": "44.3.0",
+    "electron-builder": "^26.15.3",
     "typescript": "^7.0.0",
     "vite-plus": "^0.3.0"
   }

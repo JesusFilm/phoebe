@@ -12,16 +12,18 @@
 // grows the local read loop with #556; both are changes in here, behind the
 // contract the preload already exposes.
 //
-// Main owns state the window does not: `companion.json`, and the runs in
-// flight. Both are here rather than in the renderer for the same reason — a
-// reload must not lose them.
+// Main owns state the window does not: `companion.json`, the runs in flight, and
+// where the companion's own update stands. All three are here rather than in the
+// renderer for the same reason — a reload must not lose them.
 
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, protocol, shell } from "electron";
+import electronUpdater from "electron-updater";
 import type {
   CompanionEnvironment,
   CompanionPreferences,
+  CompanionUpdate,
   LocalInstall,
   RelayArmState,
   VerbRun,
@@ -46,6 +48,8 @@ import { CONSOLE_SCHEME, consoleFileFor } from "./console-scheme.ts";
 import { consoleSource } from "./console-source.ts";
 import { probeDocker } from "./docker.ts";
 import { allInstallFacts } from "./install-facts.ts";
+import { chooseFeed } from "./update-feed.ts";
+import { createCompanionUpdates } from "./updates.ts";
 import { dispatchVerb } from "./verb-dispatch.ts";
 import { createVerbRuns } from "./verb-runs.ts";
 
@@ -86,6 +90,16 @@ function readCompanion(): CompanionFile {
       instruction: `Fix or delete ${companionFile()} and reopen the companion.`,
     });
   }
+}
+
+/**
+ * The relay arm as main knows it: the URL `companion.json` carries and no device
+ * token, which is the honest answer until #554 mints one. Both the bridge's
+ * `relay.state` and the updater's feed read it — the feed because the rule is
+ * "signed in, follow the relay", and this is where signed-in will become true.
+ */
+function relayArm(): RelayArmState {
+  return { url: readCompanion().relay?.url ?? null, person: null, persisted: false };
 }
 
 /** Every window gets every event. There is one today; a second is #524's. */
@@ -180,6 +194,34 @@ app.whenReady().then(
       })),
     );
 
+    // The companion's own updates (#525 §3). Built here rather than at import
+    // time because the feed it chooses is read from `companion.json`, and the
+    // directory that file lives in is Electron's to name once the app is ready.
+    const { autoUpdater } = electronUpdater;
+    const updates = createCompanionUpdates({
+      updater: autoUpdater,
+      platform: process.platform,
+      packaged: app.isPackaged,
+      // Electron's own stack rather than Node's global fetch, so the relay is
+      // reached through whatever proxy and certificate store the OS has.
+      feed: () => chooseFeed(relayArm(), (url) => net.fetch(url)),
+      onChange: (update) => broadcast(BRIDGE_CHANNELS.updateChanged, update),
+    });
+
+    // Main is the only listener the updater has; the window hears about all of
+    // this through the state the arm keeps.
+    autoUpdater.on("update-available", (info) => updates.available(info.version));
+    autoUpdater.on("update-not-available", () => updates.notAvailable());
+    autoUpdater.on("download-progress", (progress) => updates.progress(progress.percent));
+    autoUpdater.on("update-downloaded", (info) => updates.downloaded(info.version));
+    autoUpdater.on("error", (error) => updates.failed(error));
+
+    ipcMain.handle(BRIDGE_CHANNELS.updateState, () =>
+      answering<CompanionUpdate>(() => updates.state()),
+    );
+    ipcMain.handle(BRIDGE_CHANNELS.updateDownload, () => answering<void>(updates.download));
+    ipcMain.handle(BRIDGE_CHANNELS.updateRestart, () => answering<void>(() => updates.restart()));
+
     ipcMain.handle(BRIDGE_CHANNELS.installsList, () => answering(listInstalls));
 
     ipcMain.handle(BRIDGE_CHANNELS.installsPick, () =>
@@ -231,16 +273,8 @@ app.whenReady().then(
       }),
     );
 
-    ipcMain.handle(BRIDGE_CHANNELS.relayState, () =>
-      // The url comes off `companion.json` (#527 §12); no device token is held,
-      // which is the honest answer until #554 mints one. The console draws the
-      // signed-out Relay group from exactly this.
-      answering<RelayArmState>(() => ({
-        url: readCompanion().relay?.url ?? null,
-        person: null,
-        persisted: false,
-      })),
-    );
+    // The console draws the signed-out Relay group from exactly this.
+    ipcMain.handle(BRIDGE_CHANNELS.relayState, () => answering<RelayArmState>(relayArm));
 
     for (const channel of [BRIDGE_CHANNELS.relayRequest, BRIDGE_CHANNELS.relaySignOut]) {
       ipcMain.handle(channel, () =>
@@ -252,6 +286,11 @@ app.whenReady().then(
     }
 
     createWindow();
+
+    // One check, and no poll (#525 §3). It is fired after the window exists so
+    // the first thing the operator sees is the window rather than a wait on
+    // github.com, and nothing it finds moves anything on its own.
+    void updates.check();
 
     // macOS keeps the process alive with no windows; clicking the dock icon is
     // the ask for one back.

@@ -24,3 +24,8 @@ node_modules/
 # by `vp run -r build`, never published — the root package's `files` does not
 # list `apps/` at all — and never committed.
 apps/desktop/dist/
+
+# The companion's packaged builds (apps/desktop -> apps/desktop/release). Written
+# by `vp run package`, attached to a GitHub Release by CI, and never committed —
+# a dmg is not a source file. See docs/releasing.md.
+apps/desktop/release/

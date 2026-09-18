@@ -24,12 +24,18 @@
 // and links the upgrade doc, and This machine goes on working beside it — which
 // is the point of two arms rather than one.
 //
+// Under both groups sits the one line that is about the window itself: a newer
+// companion, when there is one (#525 §3). It is at the foot of the rail rather
+// than in either group because an update belongs to neither arm, and it says
+// nothing at all until there is something to click — a check that found nothing
+// is not news.
+//
 // A local entry is selectable; a relay entry is not yet. Selecting an install
 // opens its install tab, which exists; selecting a deployment would open the
 // five tabs that #544 builds, and a link to a page nothing answers is a dead end
 // on screen.
 
-import type { LocalInstall } from "phoebe-agent/contracts";
+import type { CompanionUpdate, LocalInstall } from "phoebe-agent/contracts";
 import type { Surface } from "./companion.ts";
 import { connectionReading, type RowFacts } from "./facts.ts";
 import { installReading } from "./local-install.ts";
@@ -43,8 +49,11 @@ export function Rail({
   refusal,
   installs = [],
   selected = null,
+  update = null,
   onSelect,
   onAdd,
+  onDownload,
+  onRestart,
 }: {
   facts: RowFacts[];
   now: Date;
@@ -56,8 +65,12 @@ export function Rail({
   installs?: LocalInstall[];
   /** The install whose page is open, by directory. */
   selected?: string | null;
+  /** The companion's own update. Null in a browser, which updates with a reload. */
+  update?: CompanionUpdate | null;
   onSelect?: (dir: string) => void;
   onAdd?: () => void;
+  onDownload?: () => void;
+  onRestart?: () => void;
 }) {
   const relay = (
     <section className="rail-group" aria-label="Relay">
@@ -113,8 +126,66 @@ export function Rail({
         )}
       </section>
       {relay}
+      <UpdateNotice
+        update={update}
+        {...(onDownload !== undefined ? { onDownload } : {})}
+        {...(onRestart !== undefined ? { onRestart } : {})}
+      />
     </nav>
   );
+}
+
+/**
+ * The companion's own update, in one line at the foot of the rail.
+ *
+ * Three states have something to say and the rest do not. Checking, nothing
+ * newer, and a feed nobody could read are all "carry on"; an unsupported
+ * companion — macOS until signing lands, or one run from a checkout — is told
+ * about a new build by the release page rather than by this line (#525 §3).
+ */
+function UpdateNotice({
+  update,
+  onDownload,
+  onRestart,
+}: {
+  update: CompanionUpdate | null;
+  onDownload?: () => void;
+  onRestart?: () => void;
+}) {
+  if (update === null) return null;
+
+  switch (update.kind) {
+    case "available":
+      return (
+        <footer className="rail-update">
+          Phoebe {update.version} is available.{" "}
+          {onDownload === undefined ? null : (
+            <button type="button" className="rail-add" onClick={onDownload}>
+              Download
+            </button>
+          )}
+        </footer>
+      );
+    case "downloading":
+      return (
+        <footer className="rail-update">
+          Downloading Phoebe {update.version}… {update.percent}%
+        </footer>
+      );
+    case "ready":
+      return (
+        <footer className="rail-update">
+          Phoebe {update.version} installs when you quit.{" "}
+          {onRestart === undefined ? null : (
+            <button type="button" className="rail-add" onClick={onRestart}>
+              Restart now
+            </button>
+          )}
+        </footer>
+      );
+    default:
+      return null;
+  }
 }
 
 /**
