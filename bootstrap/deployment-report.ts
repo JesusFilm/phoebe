@@ -32,7 +32,7 @@
 // not "when we last looked" — which is the only reading that survives a console
 // showing ages.
 
-import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   DEPLOYMENT_SCHEMA,
@@ -40,6 +40,7 @@ import {
   type DeploymentIdentity,
   type DeploymentReport,
   type FleetReport,
+  type RelayReport,
 } from "../src/contracts/deployment.ts";
 
 /** The report's filename inside the deployment-level `state/` directory. */
@@ -58,6 +59,7 @@ export function deploymentReportPath(dataBase: string): string {
 export type DeploymentDraft = {
   identity: DeploymentIdentity;
   bootstrapper: Omit<BootstrapperReport, "updatedAt">;
+  relay: Omit<RelayReport, "updatedAt">;
   fleet: Omit<FleetReport, "updatedAt">;
 };
 
@@ -105,15 +107,21 @@ export function stampReport(
   const bootstrapperMoved =
     previous === null ||
     contentOf(unstamped(previous.bootstrapper)) !== contentOf(draft.bootstrapper);
+  const relayMoved =
+    previous === null || contentOf(unstamped(previous.relay)) !== contentOf(draft.relay);
   const fleetMoved =
     previous === null || contentOf(unstamped(previous.fleet)) !== contentOf(draft.fleet);
-  if (!identityMoved && !bootstrapperMoved && !fleetMoved) return null;
+  if (!identityMoved && !bootstrapperMoved && !relayMoved && !fleetMoved) return null;
   return {
     schema: DEPLOYMENT_SCHEMA,
     identity: draft.identity,
     bootstrapper: {
       ...draft.bootstrapper,
       updatedAt: bootstrapperMoved ? now : (previous?.bootstrapper.updatedAt ?? now),
+    },
+    relay: {
+      ...draft.relay,
+      updatedAt: relayMoved ? now : (previous?.relay.updatedAt ?? now),
     },
     fleet: {
       ...draft.fleet,
@@ -134,4 +142,18 @@ export function writeDeploymentReport(path: string, report: DeploymentReport): v
   const tmp = join(dir, `.${process.pid}.${DEPLOYMENT_FILE}.tmp`);
   writeFileSync(tmp, `${JSON.stringify(report, null, 2)}\n`);
   renameSync(tmp, path);
+}
+
+/**
+ * The report as it stands on disk, or null when there is none to read. Null for
+ * a missing, unreadable or half-parsed file alike: a reader that cannot get the
+ * whole report has nothing to say about the deployment, and the atomic write
+ * above means a partial file is never what it is looking at.
+ */
+export function readDeploymentReport(path: string): DeploymentReport | null {
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as DeploymentReport;
+  } catch {
+    return null;
+  }
 }

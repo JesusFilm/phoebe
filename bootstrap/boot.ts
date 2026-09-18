@@ -102,6 +102,7 @@ import {
   type TenantSample,
 } from "./tenants.ts";
 import { readConfigDir } from "./config-dir.ts";
+import { prepareRelay } from "./relay-boot.ts";
 import { resolveDataBase } from "../src/paths.ts";
 import type { DeploymentArm, SlotReport } from "../src/contracts/deployment.ts";
 import { readGitIdentity, soloIdentityEnv, type GitIdentity } from "./git-identity.ts";
@@ -1588,11 +1589,21 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   // the name and the credential arm come from.
   const deploymentArm: DeploymentArm = workspace !== null ? "workspace" : "solo";
   const dataBase = resolveDataBase(process.env);
+  // The relay (#540), if the root config names one: who this deployment is to a
+  // console, and the link that tells one so. Prepared before the model is built
+  // because it owns the identity section; dialled after, because it reports
+  // into the model.
+  const relay = prepareRelay({
+    rootConfig,
+    defaultName: deploymentName({ arm: deploymentArm, configDir, soloSlug: soloSlug(rootConfig) }),
+    arm: deploymentArm,
+    dataBase,
+    env: process.env,
+    log: (message) => console.log(message),
+    warn: (message) => console.warn(message),
+  });
   const deployment = createDeploymentState({
-    identity: {
-      name: deploymentName({ arm: deploymentArm, configDir, soloSlug: soloSlug(rootConfig) }),
-      arm: deploymentArm,
-    },
+    identity: relay.identity,
     dataBase,
     crashLoop: () => guard.state(),
     slots: () => brokerSlots(broker),
@@ -1610,6 +1621,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
         `Supervision is unaffected; the report is retried on every change.`,
     ),
   });
+  relay.start(deployment);
 
   if (workspace !== null) {
     // GitHub App mode (#209): if the supervisor holds App credentials, fetch
@@ -1659,6 +1671,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       throw error;
     } finally {
       stop.dispose();
+      relay.stop();
       // A crash-loop report raced against the process ending is a report lost;
       // the flush waits it out, bounded by the reporter's own timeout (#474).
       // In the `finally` so a supervisor that threw still flushes before the
@@ -1840,6 +1853,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     // Drop the listeners before propagating: re-raising the engine's killing
     // signal must actually kill this process, and our own latch would swallow it.
     stop.dispose();
+    relay.stop();
     await reporter.flush();
   }
   propagateExit(exit.code, exit.signal);

@@ -35,15 +35,18 @@ export const DEPLOYMENT_SCHEMA = 1;
 export type DeploymentArm = "solo" | "workspace";
 
 /**
- * Who this deployment is (#505). `name` defaults to the solo tenant's
- * `repoSlug` or the workspace root's directory name; `keyFingerprint` is absent
- * until the deployment has a relay key on its volume, which is what makes it
- * identifiable to anything outside the container.
+ * Who this deployment is (#505 §3). `name` is `relay.name`, or the solo
+ * tenant's `repoSlug`, or the workspace root's directory name;
+ * `keyFingerprint` is absent until the deployment has a relay key on its
+ * volume, which is what makes it identifiable to anything outside the
+ * container, and `relayUrl` is absent until the config names one.
  */
 export type DeploymentIdentity = {
   name: string;
   keyFingerprint?: string;
   arm: DeploymentArm;
+  /** The relay this deployment dials, as `relay.url` names it. */
+  relayUrl?: string;
 };
 
 /** Where a supervised child is in its lifecycle, transients included. */
@@ -182,11 +185,48 @@ export type FleetReport = {
   updatedAt: string;
 };
 
+/**
+ * Where this deployment stands with its relay (#540). Three words, and each one
+ * answers a different question an operator actually asks.
+ *
+ * `unpaired` is the honest answer both before a first pairing and after a
+ * refusal that no retry will fix: there is no live link and none is coming
+ * without a human. `reconnecting` is a link that exists and a socket that does
+ * not — the retry is scheduled and `nextRetryAt` says when. `connected` means
+ * the handshake completed and the socket is open right now.
+ */
+export type RelayState = "connected" | "reconnecting" | "unpaired";
+
+/** How the last connection ended, in the relay's own close code. */
+export type RelayClose = {
+  /** 4001–4005 are the relay's (see contracts/relay-protocol.ts); 1006 is a drop. */
+  code: number;
+  /** Whatever the far side said, or "" when it said nothing. */
+  reason: string;
+  at: string;
+};
+
+/**
+ * The relay section — the bootstrapper's, not the engine's. Present whether or
+ * not a relay is configured, because "this deployment dials nothing" is a fact
+ * a console has to be able to state rather than infer from a missing key.
+ */
+export type RelayReport = {
+  /** Is there a `relay.url` in the root config at all? */
+  configured: boolean;
+  state: RelayState;
+  /** When the next dial is due, while reconnecting. Null otherwise. */
+  nextRetryAt: string | null;
+  lastClose: RelayClose | null;
+  updatedAt: string;
+};
+
 /** The whole report. One file, one model, every reader. */
 export type DeploymentReport = {
   schema: number;
   identity: DeploymentIdentity;
   bootstrapper: BootstrapperReport;
+  relay: RelayReport;
   fleet: FleetReport;
   /** When any section last moved. */
   updatedAt: string;

@@ -61,6 +61,17 @@ describe("applyEnvOverlay", () => {
     }
   });
 
+  test("no env var overlays the `relay` block (#540)", () => {
+    // The relay is bootstrapper-only and root-only: an overlay would let a
+    // tenant's environment point the deployment at someone else's console.
+    const overlaid = applyEnvOverlay(
+      { ...baseUser(), relay: { url: "wss://relay.example.com/deployments" } },
+      { PHOEBE_RELAY_URL: "wss://elsewhere.example.com/deployments", PHOEBE_RELAY: "on" },
+    );
+    expect(overlaid.relay).toEqual({ url: "wss://relay.example.com/deployments" });
+    expect(ENV_OVERLAY_KEYS.some(({ key }) => String(key).startsWith("relay"))).toBe(false);
+  });
+
   test("PHOEBE_MERGED_LABEL overlays the landed-member label (#449)", () => {
     expect(applyEnvOverlay(baseUser(), { PHOEBE_MERGED_LABEL: "landed" }).mergedLabel).toBe(
       "landed",

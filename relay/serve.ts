@@ -1,10 +1,9 @@
 // `phoebe relay serve` — the process (#506 §1).
 //
-// One Node HTTP server on a plain internal port. TLS is the scaffolded Caddy
-// sidecar's job, keyed on `RELAY_HOST`; the relay never terminates it, and an
-// operator with their own proxy deletes the sidecar and points it here. The
-// WebSocket endpoint deployments dial (`/deployments`) joins this same process
-// later — one process serves the console and the fleet.
+// One Node HTTP server on a plain internal port, serving the console over HTTP
+// and the fleet over one WebSocket path. TLS is the scaffolded Caddy sidecar's
+// job, keyed on `RELAY_HOST`; the relay never terminates it, and an operator
+// with their own proxy deletes the sidecar and points it here.
 //
 // Nothing here is the deployment container. That container still has no
 // inbound listener and gains none: this is a separate image, a separate
@@ -15,8 +14,11 @@ import { mkdirSync } from "node:fs";
 import { createAllowlist } from "./allowlist.ts";
 import { readRelayEnv, redirectUri, type RelayEnv } from "./env.ts";
 import { createRelayHandler } from "./http.ts";
+import { serveDeployments, type DeploymentGate } from "./deployments.ts";
+import { createLinks, createPairingTokens } from "./links.ts";
 import { createGoogleIdentityProvider, type IdentityProvider } from "./oidc.ts";
 import { createSessionStore } from "./sessions.ts";
+import { RELAY_DEPLOYMENTS_PATH, RELAY_PROTOCOL } from "../src/contracts/relay-protocol.ts";
 import { RELAY_ROUTES } from "../src/contracts/relay-routes.ts";
 
 /**
@@ -48,6 +50,8 @@ export type RunningRelay = {
   /** The port actually bound — the one that matters when `port` was 0. */
   port: number;
   server: Server;
+  /** The deployment endpoint, for a test that wants to see who is connected. */
+  deployments: DeploymentGate;
   close: () => Promise<void>;
 };
 
@@ -61,8 +65,14 @@ export async function startRelay(options: StartRelayOptions): Promise<RunningRel
   mkdirSync(dataDir, { recursive: true });
 
   const callback = redirectUri(options.env.host, RELAY_ROUTES.callback);
+  const warn = options.warn ?? ((message: string) => process.stderr.write(`${message}\n`));
+  // One registry, shared: the console mints into it over HTTP and the
+  // deployment endpoint spends out of it over the socket.
+  const tokens = createPairingTokens();
+  const links = createLinks(dataDir);
   const handler = createRelayHandler({
     allowlist: createAllowlist(dataDir, options.env.allowedEmails),
+    tokens,
     sessions: createSessionStore(),
     identity:
       options.identity ??
@@ -72,7 +82,7 @@ export async function startRelay(options: StartRelayOptions): Promise<RunningRel
         redirectUri: callback,
       }),
     publicOrigin: new URL(callback).origin,
-    warn: options.warn ?? ((message) => process.stderr.write(`${message}\n`)),
+    warn,
   });
 
   const server = createServer((request, response) => {
@@ -89,6 +99,8 @@ export async function startRelay(options: StartRelayOptions): Promise<RunningRel
     });
   });
 
+  const deployments = serveDeployments({ server, links, tokens, log, warn });
+
   const port = await listen(server, options.port ?? RELAY_PORT);
   log(`[phoebe:relay] listening on port ${port}`);
   log(`[phoebe:relay] sign in at ${new URL(RELAY_ROUTES.signIn, new URL(callback).origin).href}`);
@@ -98,14 +110,25 @@ export async function startRelay(options: StartRelayOptions): Promise<RunningRel
       : `[phoebe:relay] ALLOWED_EMAILS is empty — the first verified sign-in claims this relay`,
   );
 
+  log(
+    `[phoebe:relay] deployments dial ${RELAY_DEPLOYMENTS_PATH} — ` +
+      `${links.all().length} link(s) recorded, protocol ${RELAY_PROTOCOL}`,
+  );
+
   return {
     port,
     server,
-    close: () =>
-      new Promise<void>((resolve, reject) => {
+    deployments,
+    close: async () => {
+      // The sockets first: a deployment closed cleanly reconnects to the relay
+      // that comes back, where one dropped by the listener going out from under
+      // it waits out a backoff for no reason.
+      await deployments.close();
+      await new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
         server.closeAllConnections();
-      }),
+      });
+    },
   };
 }
 
