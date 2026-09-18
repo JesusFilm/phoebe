@@ -5,7 +5,8 @@ that an operator signs into with Google and that deployments dial over a
 WebSocket. A web console reads from it; that part is still being built. What
 works today is the door and the fleet's side of it — you sign in, you mint a
 pairing token, a deployment spends it, and the relay lists that deployment as
-connected.
+connected, disconnected for so many seconds, dark, or unseen. You can forget a
+deployment from the relay and a deployment can leave from its own side.
 
 The relay is a separate image, a separate compose file and a separate volume
 from any deployment. A deployment that names no relay never dials one and runs
@@ -37,9 +38,10 @@ heartbeat interval, the dark threshold and the pairing-token lifetime are
 constants in the code. An operator who tunes them is making the fleet's timing
 disagree with the relay's.
 
-Two flags exist for running the relay somewhere other than its container:
-`--port` and `--data-dir`. Both default to what the scaffolded compose file
-gives it.
+Two flags exist for running `phoebe relay serve` somewhere other than its
+container: `--port` and `--data-dir`. Both default to what the scaffolded
+compose file gives it. `phoebe relay leave`, which runs on a deployment host
+rather than here, takes neither.
 
 ## Setting up the Google client
 
@@ -113,16 +115,22 @@ way out of a lockout.
 Paths live in `phoebe-agent/contracts` as `RELAY_ROUTES`, so the console imports
 them instead of copying strings.
 
-| Method | Path                    | What happens                                            |
-| ------ | ----------------------- | ------------------------------------------------------- |
-| `GET`  | `/auth/google/start`    | Redirects to Google.                                    |
-| `GET`  | `/auth/google/callback` | Google's redirect back. The only URI Google knows.      |
-| `POST` | `/auth/sign-out`        | Drops the session. 204.                                 |
-| `GET`  | `/api/me`               | `{ sub, email }` for a signed-in caller, 401 otherwise. |
-| `POST` | `/api/pairing-tokens`   | Mints one pairing token. Shown once; 401 otherwise.     |
+| Method | Path                      | What happens                                              |
+| ------ | ------------------------- | --------------------------------------------------------- |
+| `GET`  | `/auth/google/start`      | Redirects to Google.                                      |
+| `GET`  | `/auth/google/callback`   | Google's redirect back. The only URI Google knows.        |
+| `POST` | `/auth/sign-out`          | Drops the session. 204.                                   |
+| `GET`  | `/api/me`                 | `{ sub, email }` for a signed-in caller, 401 otherwise.   |
+| `POST` | `/api/pairing-tokens`     | Mints one pairing token. Shown once; 401 otherwise.       |
+| `GET`  | `/api/deployments`        | Every link, with where the relay holds each one.          |
+| `POST` | `/api/deployments/forget` | Forgets one deployment, named by fingerprint in the body. |
 
 A successful sign-in lands on `/api/me` today, because who you are is the only
 thing the relay can show you yet. The console's own page takes that over.
+
+The fingerprint rides in the forget body rather than in the path so the route
+stays one constant a console imports. No fingerprint spells `forget`, and the
+per-deployment read that will share the prefix is a `GET`.
 
 ## Pairing a deployment
 
@@ -208,13 +216,80 @@ does with each one is the point of having them:
 | 4005 | `replaced`      | Stops. A newer connection from the same key superseded it.   |
 
 Anything else is the ordinary case: a dropped socket, a relay restart, a network
-that came back. The link backs off with jitter and dials again. A relay that is
-down for an hour is worth a knock once a minute, so the last rung of the ladder
-repeats.
+that came back. The link backs off and dials again, and there is no last
+attempt.
+
+### Staying connected
+
+Every twenty seconds the relay pings each connection and sends a visible
+`heartbeat` beside the ping. Two mechanisms, because neither side can do the
+other's job: the relay counts the pong Node's built-in client sends without
+being asked, and the deployment counts the message, because that same client
+cannot see a ping arrive.
+
+A minute of silence — three missed beats — means something to both sides.
+
+- The deployment redials. Nothing inbound for a minute is a socket that died
+  with the network it rode, and no close frame is coming.
+- The relay terminates that socket rather than reporting a half-open connection
+  as connected, and calls the deployment **dark**.
+
+The dark clock counts from the later of the last heartbeat and the relay's own
+start, so restarting the relay does not paint a healthy fleet dark. Before the
+minute is up the relay's word is **disconnected for N seconds**: a fact with a
+duration, not a fourth state and not a prediction. The relay cannot know
+whether a deployment is reconnecting; it knows how long it has been quiet. A
+link the relay has never completed a handshake with is **unseen**, and a console
+that showed that as dark would accuse an operator of losing a deployment they
+have never booted.
+
+The deployment's ladder is built to fit inside that minute. The first retry
+lands uniformly in the first five seconds, and the ceiling doubles from there to
+thirty seconds and stays. Every delay is jittered, so fifty deployments whose
+relay restarted come back spread over the window instead of in one wave, and
+the thirty-second ceiling sits under the dark threshold so a knock always beats
+it. The delay comes from `src/backoff.ts` — the same retry rulebook the engine's
+child-process calls use, in its async, never-terminal form.
+
+### Requests in flight are refused, not queued
+
+A request to a deployment — a config write, a secret, a doctor run — lives in
+memory for as long as its socket does. When that socket closes, everything
+still waiting comes back **undelivered**, and a deployment the relay is not
+holding is refused the same word up front. Nothing is replayed on reconnect:
+the operator re-issues, and the deployment-side ledgers make a re-issue
+idempotent.
+
+### Forget, and leave
+
+Two verbs end a pairing, one on each side, and neither needs the other.
+
+**Forget** is the relay's. It deletes the link, then closes any live connection
+with `unlinked`, in that order, so a redial racing the close finds no link to be
+admitted by. The deployment stops dialling and says so through its report;
+`phoebe doctor` reports `relay: refused`.
+
+**Leave** is the deployment host's: `phoebe relay leave` deletes
+`state/relay-key` from the data volume, which is the only thing that could prove
+who this deployment is. It reads the volume from `PHOEBE_DATA_DIR` the way
+`phoebe doctor` does, and it takes no flags. Two things it does not do, and it
+says both: removing `relay.url` from the root config is what stops boot dialling
+at all, and the relay still holds the link until someone forgets it there.
+
+An operator locked out of their relay can still stop a deployment dialling it.
+An operator whose deployment is gone can still clear it off the console. There
+is no key rotation anywhere: re-keying is leave, forget, pair again.
+
+A data-volume wipe is the same story with nobody deciding it. `docker compose
+down -v` takes the key, the operator mints a new token, and the relay records a
+**new link** because the key is the identity. The old record stays dark, marked
+"replaced?" beside a newer one of the same name, and a person forgets it. A
+dark record is evidence, not garbage, and the relay guesses rather than merging:
+two deployments are allowed to share a name.
 
 ### What a deployment reports about its relay
 
-`state/deployment.json` gains a `relay` section the bootstrapper owns:
+`state/deployment.json` carries a `relay` section the bootstrapper owns:
 `configured`, `state` (`connected`, `reconnecting`, `unpaired`), `nextRetryAt`
 and `lastClose`. Its identity section gains `keyFingerprint` and `relayUrl`. A
 deployment with no relay still carries the section, saying `configured: false`.
@@ -242,8 +317,8 @@ run the command above.
 
 ## Not here yet
 
-The heartbeat and the dark threshold, `forget` on the relay and
-`phoebe relay leave` on the host, reports pushed over the socket and stored on
-the volume, the events stream, and the console's pages. All of it joins this
+Reports pushed over the socket and stored on the volume, the events stream, the
+verbs themselves (config writes, sealed secrets, doctor runs — the rail carries
+them and nothing sends them yet), and the console's pages. All of it joins this
 same process. See
 [the relay's shape](https://github.com/JesusFilm/phoebe/issues/506).

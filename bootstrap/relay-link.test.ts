@@ -1,22 +1,31 @@
 // The deployment's side of the handshake, driven through a fake socket: what it
-// sends when, what it does with each refusal, and what the report says while it
-// is doing it.
+// sends when, what it does with each refusal, how long it waits before dialling
+// again, and what the report says while it is doing it.
 //
 // Nothing here opens a real connection. The socket seam is one function, so the
 // test is the far side of it — which is also how the close codes get exercised,
-// since half of them are refusals a healthy relay never sends.
+// since half of them are refusals a healthy relay never sends. The two timers
+// are a seam too, and they are named, so a test can fire the silence watchdog
+// without guessing which pending timer it is.
 
 import { describe, expect, test } from "vite-plus/test";
-import { RELAY_CLOSE, RELAY_MESSAGES, RELAY_PROTOCOL } from "../src/contracts/relay-protocol.ts";
+import {
+  RELAY_CLOSE,
+  RELAY_DARK_AFTER_MS,
+  RELAY_MESSAGES,
+  RELAY_PROTOCOL,
+} from "../src/contracts/relay-protocol.ts";
 import { verifyNonceSignature } from "../src/ed25519.ts";
 import type { RelayStatus } from "./deployment-state.ts";
 import { generateDeploymentKey, type DeploymentKey } from "./relay-key.ts";
 import {
   connectRelay,
   PROTOCOL_RETRY_MS,
-  RECONNECT_SCHEDULE_MS,
+  RECONNECT_CAP_MS,
+  RECONNECT_FIRST_MS,
   reconnectDelayMs,
   type RelaySocketHandlers,
+  type RelayTimer,
 } from "./relay-link.ts";
 
 const NONCE = Buffer.from("nonce-from-the-relay").toString("base64url");
@@ -29,19 +38,31 @@ type Dialled = {
   closed: boolean;
 };
 
+/** One timer the link is waiting on. Removed from the list when it is cleared. */
+type Timer = { ms: number; kind: RelayTimer; fire: () => void };
+
 type Harness = {
   dials: Dialled[];
   statuses: RelayStatus[];
   saved: DeploymentKey[];
   forgotten: true[];
-  timers: Array<{ ms: number; fire: () => void }>;
+  /** Every timer still pending, in the order they were set. */
+  timers: Timer[];
   logs: string[];
+  warnings: string[];
   /** Answer the newest dial with a challenge, as a relay does on open. */
   challenge: (protocol?: number) => void;
+  /** Send one frame from the relay to the newest dial. */
+  deliver: (frame: unknown) => void;
   /** Close the newest dial. */
   close: (code: number, reason?: string) => void;
-  /** Run the one scheduled retry. */
+  /** The pending retry, and the pending silence watchdog. */
+  retry: () => Timer | undefined;
+  watchdog: () => Timer | undefined;
+  /** Run the pending retry. */
   elapse: () => void;
+  /** Let the silence watchdog fire: a minute with nothing inbound. */
+  goQuiet: () => void;
   last: () => RelayStatus;
   hello: () => Record<string, unknown>;
   stop: () => void;
@@ -58,9 +79,15 @@ function harness(
   const statuses: RelayStatus[] = [];
   const saved: DeploymentKey[] = [];
   const forgotten: true[] = [];
-  const timers: Array<{ ms: number; fire: () => void }> = [];
+  const timers: Timer[] = [];
   const logs: string[] = [];
+  const warnings: string[] = [];
   let clock = 1_000_000;
+
+  const drop = (timer: Timer): void => {
+    const at = timers.indexOf(timer);
+    if (at >= 0) timers.splice(at, 1);
+  };
 
   const link = connectRelay({
     url: "wss://relay.example.com/deployments",
@@ -77,6 +104,7 @@ function harness(
     },
     onStatus: (status) => statuses.push(status),
     log: (message) => logs.push(message),
+    warn: (message) => warnings.push(message),
     open: (url, handlers) => {
       const dial: Dialled = { url, handlers, sent: [], closed: false };
       dials.push(dial);
@@ -88,15 +116,24 @@ function harness(
       };
     },
     now: () => clock,
-    setTimer: (fire, ms) => {
-      timers.push({ ms, fire });
-      return timers.length;
+    setTimer: (fire, ms, kind) => {
+      const timer: Timer = { ms, kind, fire };
+      timers.push(timer);
+      return timer;
     },
-    clearTimer: () => {},
-    random: () => 0,
+    clearTimer: (handle) => drop(handle as Timer),
+    random: () => 0.5,
   });
 
   const newest = (): Dialled => dials[dials.length - 1]!;
+  const pending = (kind: RelayTimer): Timer | undefined => timers.find((t) => t.kind === kind);
+  const run = (kind: RelayTimer): void => {
+    const timer = pending(kind)!;
+    drop(timer);
+    clock += timer.ms;
+    timer.fire();
+  };
+
   return {
     dials,
     statuses,
@@ -104,21 +141,24 @@ function harness(
     forgotten,
     timers,
     logs,
+    warnings,
     challenge: (protocol = RELAY_PROTOCOL) => {
       newest().handlers.onOpen();
       newest().handlers.onMessage(
         JSON.stringify({ type: RELAY_MESSAGES.challenge, nonce: NONCE, protocol }),
       );
     },
+    deliver: (frame) => {
+      newest().handlers.onMessage(typeof frame === "string" ? frame : JSON.stringify(frame));
+    },
     close: (code, reason = "") => {
       clock += 1_000;
       newest().handlers.onClose(code, reason);
     },
-    elapse: () => {
-      const timer = timers.pop()!;
-      clock += timer.ms;
-      timer.fire();
-    },
+    retry: () => pending("retry"),
+    watchdog: () => pending("silence"),
+    elapse: () => run("retry"),
+    goQuiet: () => run("silence"),
     last: () => statuses[statuses.length - 1]!,
     hello: () => JSON.parse(newest().sent[0]!) as Record<string, unknown>,
     stop: () => link.stop(),
@@ -234,7 +274,7 @@ describe("a deployment with neither a key nor a token", () => {
   });
 });
 
-describe("refusals", () => {
+describe("the close codes, one rule each", () => {
   test.each([
     ["unlinked", RELAY_CLOSE.unlinked],
     ["bad-signature", RELAY_CLOSE.badSignature],
@@ -249,25 +289,34 @@ describe("refusals", () => {
     expect(relay.last().lastClose).toMatchObject({ code, reason });
   });
 
+  test("`unlinked` stops dialling for good — a later timer cannot resurrect it", () => {
+    const relay = harness({ key: generateDeploymentKey() });
+    relay.challenge();
+    relay.close(RELAY_CLOSE.unlinked, "unlinked");
+    expect(relay.dials).toHaveLength(1);
+    expect(relay.timers).toEqual([]);
+    expect(relay.warnings.join("\n")).toContain("the relay has forgotten this deployment");
+  });
+
   test("a protocol close retries slowly — the fix is an operator upgrading the relay", () => {
     const relay = harness({ key: generateDeploymentKey() });
     relay.challenge();
     relay.close(RELAY_CLOSE.protocol, "relay speaks 1");
-    expect(relay.timers[0]!.ms).toBe(PROTOCOL_RETRY_MS);
+    expect(relay.retry()!.ms).toBe(PROTOCOL_RETRY_MS);
     expect(relay.last().state).toBe("reconnecting");
   });
 
   test("an older relay is named before its refusal arrives", () => {
     const relay = harness({ key: generateDeploymentKey(), protocol: 3 });
     relay.challenge(2);
-    expect(relay.logs.join("\n")).toContain("Upgrade the relay first");
+    expect(relay.warnings.join("\n")).toContain("Upgrade the relay first");
   });
 
   test("an ordinary drop backs off and says when it will try again", () => {
     const relay = harness({ key: generateDeploymentKey() });
     relay.challenge();
     relay.close(1006);
-    expect(relay.timers[0]!.ms).toBe(reconnectDelayMs(0, () => 0));
+    expect(relay.retry()!.ms).toBe(reconnectDelayMs(0, () => 0.5));
     expect(relay.last().state).toBe("reconnecting");
     expect(relay.last().nextRetryAt).not.toBeNull();
   });
@@ -276,29 +325,93 @@ describe("refusals", () => {
     const relay = harness({ key: generateDeploymentKey() });
     relay.challenge();
     relay.close(1006);
-    expect(relay.timers[0]!.ms).toBe(reconnectDelayMs(0, () => 0));
+    expect(relay.retry()!.ms).toBe(reconnectDelayMs(0, () => 0.5));
     relay.elapse();
     relay.close(1006);
-    expect(relay.timers[0]!.ms).toBe(reconnectDelayMs(1, () => 0));
+    expect(relay.retry()!.ms).toBe(reconnectDelayMs(1, () => 0.5));
     relay.elapse();
     relay.challenge();
     relay.close(1006);
-    expect(relay.timers[0]!.ms).toBe(reconnectDelayMs(0, () => 0));
+    expect(relay.retry()!.ms).toBe(reconnectDelayMs(0, () => 0.5));
   });
 });
 
 describe("reconnectDelayMs", () => {
-  test("it never exceeds the ladder's entry, and never collapses to zero", () => {
-    for (let attempt = 0; attempt < RECONNECT_SCHEDULE_MS.length + 3; attempt += 1) {
-      const ceiling = RECONNECT_SCHEDULE_MS[Math.min(attempt, RECONNECT_SCHEDULE_MS.length - 1)]!;
-      expect(reconnectDelayMs(attempt, () => 1)).toBeLessThanOrEqual(ceiling);
-      expect(reconnectDelayMs(attempt, () => 0)).toBe(ceiling / 2);
-    }
+  test("the first retry lands inside five seconds — a restart is back before that", () => {
+    expect(reconnectDelayMs(0, () => 0)).toBe(0);
+    expect(reconnectDelayMs(0, () => 1)).toBe(RECONNECT_FIRST_MS);
   });
 
-  test("the last rung repeats — a relay down for an hour is still worth a knock", () => {
-    const last = RECONNECT_SCHEDULE_MS.length - 1;
-    expect(reconnectDelayMs(last + 50, () => 0)).toBe(reconnectDelayMs(last, () => 0));
+  test("it doubles from there and stops at the cap", () => {
+    expect(reconnectDelayMs(1, () => 1)).toBe(2 * RECONNECT_FIRST_MS);
+    expect(reconnectDelayMs(2, () => 1)).toBe(4 * RECONNECT_FIRST_MS);
+    expect(reconnectDelayMs(3, () => 1)).toBe(RECONNECT_CAP_MS);
+    expect(reconnectDelayMs(9, () => 1)).toBe(RECONNECT_CAP_MS);
+  });
+
+  test("the cap stays under the dark threshold, so a knock always beats it", () => {
+    expect(RECONNECT_CAP_MS).toBeLessThan(RELAY_DARK_AFTER_MS);
+  });
+
+  test("there is no last attempt — the top rung repeats", () => {
+    expect(reconnectDelayMs(500, () => 1)).toBe(reconnectDelayMs(50, () => 1));
+  });
+
+  test("and every delay is jittered, so a fleet does not come back in one wave", () => {
+    expect(reconnectDelayMs(9, () => 0.25)).toBe(Math.round(0.25 * RECONNECT_CAP_MS));
+  });
+});
+
+describe("silence", () => {
+  test("a connection with nothing inbound for a minute is redialled", () => {
+    const relay = harness({ key: generateDeploymentKey() });
+    relay.challenge();
+    expect(relay.watchdog()!.ms).toBe(RELAY_DARK_AFTER_MS);
+
+    relay.goQuiet();
+
+    expect(relay.dials[0]!.closed).toBe(true);
+    expect(relay.retry()).toBeDefined();
+    expect(relay.warnings.join("\n")).toContain("redialling");
+  });
+
+  test("the dial that follows is an ordinary reconnect, not a refusal", () => {
+    const relay = harness({ key: generateDeploymentKey() });
+    relay.challenge();
+    relay.goQuiet();
+    relay.elapse();
+    expect(relay.dials).toHaveLength(2);
+    expect(relay.last().lastClose).toMatchObject({ code: 1006, reason: "no heartbeat" });
+  });
+
+  test("a heartbeat pushes the deadline out rather than letting it lapse", () => {
+    const relay = harness({ key: generateDeploymentKey() });
+    relay.challenge();
+    const first = relay.watchdog();
+
+    relay.deliver({ type: RELAY_MESSAGES.heartbeat });
+
+    expect(relay.watchdog()).toBeDefined();
+    expect(relay.watchdog()).not.toBe(first);
+    expect(relay.timers.filter((timer) => timer.kind === "silence")).toHaveLength(1);
+  });
+
+  test("the clock starts on open, so a relay that never challenges is not waited on", () => {
+    const relay = harness({ key: generateDeploymentKey() });
+    relay.dials[0]!.handlers.onOpen();
+    expect(relay.watchdog()!.ms).toBe(RELAY_DARK_AFTER_MS);
+  });
+
+  test("and the close that does arrive afterwards is not a second reconnect", () => {
+    const relay = harness({ key: generateDeploymentKey() });
+    relay.challenge();
+    relay.goQuiet();
+    const scheduled = relay.retry();
+
+    relay.close(1006);
+
+    expect(relay.retry()).toBe(scheduled);
+    expect(relay.timers.filter((timer) => timer.kind === "retry")).toHaveLength(1);
   });
 });
 
@@ -311,14 +424,22 @@ describe("stopping", () => {
     relay.close(1006);
     expect(relay.timers).toEqual([]);
   });
+
+  test("and cancels the silence watchdog with it", () => {
+    const relay = harness({ key: generateDeploymentKey() });
+    relay.challenge();
+    expect(relay.watchdog()).toBeDefined();
+    relay.stop();
+    expect(relay.watchdog()).toBeUndefined();
+  });
 });
 
 describe("noise on the wire", () => {
   test("a frame that is not JSON, or not a challenge, is ignored", () => {
     const relay = harness({ key: generateDeploymentKey() });
     relay.dials[0]!.handlers.onOpen();
-    relay.dials[0]!.handlers.onMessage("{not json");
-    relay.dials[0]!.handlers.onMessage(JSON.stringify({ type: RELAY_MESSAGES.heartbeat }));
+    relay.deliver("{not json");
+    relay.deliver({ type: RELAY_MESSAGES.heartbeat });
     expect(relay.dials[0]!.sent).toEqual([]);
   });
 

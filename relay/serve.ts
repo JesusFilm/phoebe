@@ -40,6 +40,13 @@ export type StartRelayOptions = {
   port?: number;
   /** Overridden in tests; production talks to Google. */
   identity?: IdentityProvider;
+  /**
+   * The heartbeat interval and the dark threshold, for a test that would
+   * otherwise wait twenty seconds to see one ping. Production uses the
+   * constants in contracts and there is no way to set these from the outside.
+   */
+  heartbeatMs?: number;
+  darkAfterMs?: number;
   /** Start-up lines. Defaults to stdout. */
   log?: (message: string) => void;
   /** Refusals and unreachable-Google complaints. Defaults to stderr. */
@@ -70,9 +77,18 @@ export async function startRelay(options: StartRelayOptions): Promise<RunningRel
   // deployment endpoint spends out of it over the socket.
   const tokens = createPairingTokens();
   const links = createLinks(dataDir);
+  // The knot this unties: the socket endpoint needs the HTTP server, the server
+  // needs the handler, and the handler needs the endpoint. One `let` and a
+  // thunk, assigned before the port is bound and therefore before any request
+  // can reach the thunk.
+  let deployments: DeploymentGate | null = null;
   const handler = createRelayHandler({
     allowlist: createAllowlist(dataDir, options.env.allowedEmails),
     tokens,
+    fleet: () => {
+      if (deployments === null) throw new Error("the deployment endpoint is not attached yet");
+      return deployments;
+    },
     sessions: createSessionStore(),
     identity:
       options.identity ??
@@ -99,7 +115,16 @@ export async function startRelay(options: StartRelayOptions): Promise<RunningRel
     });
   });
 
-  const deployments = serveDeployments({ server, links, tokens, log, warn });
+  const gate = serveDeployments({
+    server,
+    links,
+    tokens,
+    log,
+    warn,
+    ...(options.heartbeatMs !== undefined ? { heartbeatMs: options.heartbeatMs } : {}),
+    ...(options.darkAfterMs !== undefined ? { darkAfterMs: options.darkAfterMs } : {}),
+  });
+  deployments = gate;
 
   const port = await listen(server, options.port ?? RELAY_PORT);
   log(`[phoebe:relay] listening on port ${port}`);
@@ -118,12 +143,12 @@ export async function startRelay(options: StartRelayOptions): Promise<RunningRel
   return {
     port,
     server,
-    deployments,
+    deployments: gate,
     close: async () => {
       // The sockets first: a deployment closed cleanly reconnects to the relay
       // that comes back, where one dropped by the listener going out from under
       // it waits out a backoff for no reason.
-      await deployments.close();
+      await gate.close();
       await new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
         server.closeAllConnections();

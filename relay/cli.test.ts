@@ -19,6 +19,17 @@ describe("parseRelayArgs", () => {
     expect(parseRelayArgs([]).subcommand).toBeNull();
   });
 
+  test("`leave` is its own subcommand and takes nothing", () => {
+    expect(parseRelayArgs(["leave"])).toEqual({ help: false, subcommand: "leave" });
+  });
+
+  test.each([
+    { argv: ["leave", "--data-dir", "/tmp/whatever"], why: "the relay volume" },
+    { argv: ["leave", "--port", "9000"], why: "a port" },
+  ])("`leave` refuses $why, which belongs to `serve`", ({ argv }) => {
+    expect(() => parseRelayArgs(argv)).toThrow(/takes no options/);
+  });
+
   test("--help wins over everything", () => {
     expect(parseRelayArgs(["serve", "--help"]).help).toBe(true);
     expect(parseRelayArgs(["-h"]).help).toBe(true);
@@ -37,6 +48,11 @@ describe("parseRelayArgs", () => {
 });
 
 describe("the help text", () => {
+  test("names both subcommands", () => {
+    expect(RELAY_HELP_TEXT).toContain("phoebe relay serve");
+    expect(RELAY_HELP_TEXT).toContain("phoebe relay leave");
+  });
+
   test("names all four environment variables", () => {
     for (const name of [
       "RELAY_HOST",

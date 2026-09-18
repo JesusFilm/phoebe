@@ -285,4 +285,61 @@ describe("the relay's door", () => {
 
     expect(response.headers.get("cache-control")).toBe("no-store");
   });
+
+  test("the fleet read is behind the session, and empty on a relay with no links", async () => {
+    const { provider } = fakeGoogle(ADA);
+    const origin = await serve(provider);
+
+    expect((await fetch(`${origin}${RELAY_ROUTES.deployments}`)).status).toBe(401);
+
+    const session = cookie(await signIn(origin), SESSION_COOKIE);
+    const response = await fetch(`${origin}${RELAY_ROUTES.deployments}`, {
+      headers: { cookie: `${SESSION_COOKIE}=${encodeURIComponent(session ?? "")}` },
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ deployments: [] });
+  });
+
+  test("forgetting is behind the session too", async () => {
+    const { provider } = fakeGoogle(ADA);
+    const origin = await serve(provider);
+
+    const response = await fetch(`${origin}${RELAY_ROUTES.forget}`, {
+      method: "POST",
+      body: JSON.stringify({ fingerprint: "fp-anything" }),
+    });
+
+    expect(response.status).toBe(401);
+  });
+
+  test("forgetting a deployment this relay never knew is 404", async () => {
+    const { provider } = fakeGoogle(ADA);
+    const origin = await serve(provider);
+    const session = cookie(await signIn(origin), SESSION_COOKIE);
+
+    const response = await fetch(`${origin}${RELAY_ROUTES.forget}`, {
+      method: "POST",
+      headers: { cookie: `${SESSION_COOKIE}=${encodeURIComponent(session ?? "")}` },
+      body: JSON.stringify({ fingerprint: "fp-nobody" }),
+    });
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "no-such-deployment" });
+  });
+
+  test("and a forget with no fingerprint is a 400 rather than a guess", async () => {
+    const { provider } = fakeGoogle(ADA);
+    const origin = await serve(provider);
+    const session = cookie(await signIn(origin), SESSION_COOKIE);
+
+    const response = await fetch(`${origin}${RELAY_ROUTES.forget}`, {
+      method: "POST",
+      headers: { cookie: `${SESSION_COOKIE}=${encodeURIComponent(session ?? "")}` },
+      body: "{}",
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "no-fingerprint" });
+  });
 });

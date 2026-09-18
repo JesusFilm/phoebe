@@ -1,21 +1,22 @@
-// The relay's HTTP surface: four routes, one of them authenticated (#538).
+// The relay's HTTP surface: the sign-in flow, and the reads and verbs behind it
+// (#538, #540, #541).
 //
-// This is the door and nothing more. No deployment connects yet, there are no
-// pages to serve, and the only thing the relay can tell a signed-in person is
-// who they are — which is exactly what `GET /api/me` answers, and what makes it
-// the landing page a successful sign-in redirects to until the console exists.
+// There are no pages here yet. What a signed-in person can ask for is who they
+// are, a pairing token for a new deployment, the fleet as the socket endpoint
+// knows it, and the forgetting of one deployment. The console's pages sit on
+// exactly these answers.
 //
-// The shape every later route follows is set here: paths come from contracts,
-// the session is read from a `__Host-` cookie, and anything behind the door
-// answers an unknown caller with 401 rather than a redirect. A browser fetching
-// JSON wants a status code it can branch on, not an HTML login page delivered
-// with a 200.
+// The shape every route follows is set here: paths come from contracts, the
+// session is read from a `__Host-` cookie, and anything behind the door answers
+// an unknown caller with 401 rather than a redirect. A browser fetching JSON
+// wants a status code it can branch on, not an HTML login page delivered with
+// a 200.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { RELAY_ROUTES } from "../src/contracts/relay-routes.ts";
-import type { RelayIdentity } from "../src/contracts/relay-routes.ts";
+import type { RelayDeploymentRow, RelayIdentity } from "../src/contracts/relay-routes.ts";
 import type { Allowlist } from "./allowlist.ts";
-import type { PairingTokens } from "./links.ts";
+import type { Link, PairingTokens } from "./links.ts";
 import { newAuthParams, type IdentityProvider } from "./oidc.ts";
 import {
   clearCookie,
@@ -38,6 +39,15 @@ export type RelayHandlerOptions = {
   allowlist: Allowlist;
   /** The in-memory token registry a mint draws from (#540). */
   tokens: PairingTokens;
+  /**
+   * The fleet, as the socket endpoint knows it (#541). A thunk because the
+   * endpoint needs the HTTP server this handler is being built for, so the two
+   * cannot both be constructed first.
+   */
+  fleet: () => {
+    rows: (now?: Date) => RelayDeploymentRow[];
+    forget: (fingerprint: string) => Link | null;
+  };
   sessions: SessionStore;
   identity: IdentityProvider;
   /** The origin requests arrive on, used only to parse a request's own URL. */
@@ -80,6 +90,12 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
     }
     if (method === "POST" && url.pathname === RELAY_ROUTES.pairingTokens) {
       return mintPairingToken(request, response);
+    }
+    if (method === "GET" && url.pathname === RELAY_ROUTES.deployments) {
+      return listDeployments(request, response);
+    }
+    if (method === "POST" && url.pathname === RELAY_ROUTES.forget) {
+      return await forgetDeployment(request, response);
     }
     json(response, 404, { error: "no-such-route" });
   };
@@ -212,6 +228,75 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
     }
     const identity: RelayIdentity = { sub: session.sub, email: session.email };
     json(response, 200, identity);
+  }
+
+  /**
+   * The fleet, as facts rather than a score (#507 §9): one row per link, each
+   * carrying where the relay holds it. Sorting and wording are the console's;
+   * this route's job is to state what is true at the moment it is asked.
+   */
+  function listDeployments(request: IncomingMessage, response: ServerResponse): void {
+    const session = options.sessions.get(parseCookies(request.headers.cookie).get(SESSION_COOKIE));
+    if (session === null) {
+      json(response, 401, { error: "not-signed-in" });
+      return;
+    }
+    json(response, 200, { deployments: options.fleet().rows(clock()) });
+  }
+
+  /**
+   * **Forget** one deployment (#505 §4). The link goes, the live connection is
+   * closed with `unlinked`, and the deployment stops dialling — three effects
+   * of one deletion, because the link is the only thing that admitted it.
+   *
+   * A fingerprint the relay does not know is a 404 rather than a silent 200: an
+   * operator forgetting the wrong deployment wants to hear about it, and the
+   * answer "there was nothing there" is the useful one either way.
+   */
+  async function forgetDeployment(
+    request: IncomingMessage,
+    response: ServerResponse,
+  ): Promise<void> {
+    const session = options.sessions.get(parseCookies(request.headers.cookie).get(SESSION_COOKIE));
+    if (session === null) {
+      json(response, 401, { error: "not-signed-in" });
+      return;
+    }
+    const body = await readJsonBody(request);
+    const fingerprint = (body as { fingerprint?: unknown }).fingerprint;
+    if (typeof fingerprint !== "string" || fingerprint.length === 0) {
+      json(response, 400, { error: "no-fingerprint" });
+      return;
+    }
+    const link = options.fleet().forget(fingerprint);
+    if (link === null) {
+      json(response, 404, { error: "no-such-deployment" });
+      return;
+    }
+    warn(`[phoebe:relay] ${session.email} forgot ${link.name} (${link.fingerprint})`);
+    json(response, 200, { forgotten: { fingerprint: link.fingerprint, name: link.name } });
+  }
+}
+
+/**
+ * One request body as JSON, or `{}` for anything that is not. Capped, because
+ * this endpoint is behind a session but the body arrives before the relay has
+ * decided anything and an unbounded read is an unbounded allocation.
+ */
+async function readJsonBody(request: IncomingMessage): Promise<unknown> {
+  const limit = 64 * 1024;
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request) {
+    const buffer = chunk as Buffer;
+    size += buffer.length;
+    if (size > limit) return {};
+    chunks.push(buffer);
+  }
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+  } catch {
+    return {};
   }
 }
 

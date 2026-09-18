@@ -90,6 +90,56 @@ describe("links.json", () => {
     expect(links.all()).toEqual([]);
   });
 
+  test("forgetting deletes the link and hands back what went", () => {
+    const dataDir = volume();
+    const key = generateDeploymentKey();
+    const links = createLinks(dataDir);
+    const paired = links.pair({ publicKey: key.publicKey, name: "widget", by: "ops" }, NOW);
+
+    const forgotten = links.forget(paired.fingerprint);
+
+    expect(forgotten).toEqual(paired);
+    expect(links.all()).toEqual([]);
+    expect(links.find(key.publicKey)).toBeNull();
+  });
+
+  test("it takes the one it was asked for and leaves the rest", () => {
+    const dataDir = volume();
+    const links = createLinks(dataDir);
+    const one = links.pair(
+      { publicKey: generateDeploymentKey().publicKey, name: "widget", by: "ops" },
+      NOW,
+    );
+    links.pair({ publicKey: generateDeploymentKey().publicKey, name: "gadget", by: "ops" }, NOW);
+
+    links.forget(one.fingerprint);
+
+    expect(links.all().map((link) => link.name)).toEqual(["gadget"]);
+  });
+
+  test("forgetting what was never there is null, not an error", () => {
+    expect(createLinks(volume()).forget("fp-nobody")).toBeNull();
+  });
+
+  test("a forgotten deployment that pairs again is a new record", () => {
+    const dataDir = volume();
+    const links = createLinks(dataDir);
+    const first = links.pair(
+      { publicKey: generateDeploymentKey().publicKey, name: "widget", by: "ops" },
+      NOW,
+    );
+    links.forget(first.fingerprint);
+
+    // A wiped volume means a new key, and the key is the identity.
+    const second = links.pair(
+      { publicKey: generateDeploymentKey().publicKey, name: "widget", by: "ops" },
+      at("2026-09-19T10:00:00.000Z"),
+    );
+
+    expect(second.fingerprint).not.toBe(first.fingerprint);
+    expect(second.firstSeen).toBe("2026-09-19T10:00:00.000Z");
+  });
+
   test("a corrupt file reads as an empty relay rather than taking the process down", () => {
     const dataDir = volume();
     writeFileSync(join(dataDir, LINKS_FILENAME), "{ not json");
