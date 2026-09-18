@@ -63,6 +63,18 @@ export {
   type RelaySecretSet,
   type RelayToDeployment,
 } from "./relay-protocol.ts";
+export type {
+  ConfigWarning,
+  EffectiveFields,
+  EffectiveLeaf,
+  EffectiveNode,
+  EnvLocation,
+  EnvPresence,
+  SettingReader,
+  SettingSource,
+  ShadowedValue,
+  TenantEffectiveConfig,
+} from "./effective-config.ts";
 export type { CredentialArm } from "./credential-arm.ts";
 export type {
   CheckState,
