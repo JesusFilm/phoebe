@@ -27,6 +27,12 @@ serve it.
 The reports arrive opaque — the relay stores and forwards `state/deployment.json`
 without reading a field of it — so [`src/report.ts`](src/report.ts) is the first
 thing in the chain to look inside, and it checks the `schema` integer before it
-trusts a field. [`src/facts.ts`](src/facts.ts) holds the rollup and the sort, pure
-and tested apart from the components: two readers of one report must not be able
-to disagree about what it says.
+trusts a field. [`src/facts.ts`](src/facts.ts) holds the fleet's rollup and sort
+and [`src/deployment-facts.ts`](src/deployment-facts.ts) holds one deployment's
+lines, both pure and tested apart from the components: two readers of one report
+must not be able to disagree about what it says.
+
+Pages are hash routes ([`src/route.ts`](src/route.ts)), because the relay serves
+no single-page fallback and the companion loads the bundle off a custom scheme
+where there is no server to ask. Links are plain `href`s into the hash; the
+browser does the navigating and the history, and the app only listens.

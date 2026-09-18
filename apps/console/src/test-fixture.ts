@@ -8,9 +8,12 @@ import { DEPLOYMENT_SCHEMA } from "phoebe-agent/contracts";
 import type {
   ChildLiveness,
   DeploymentReport,
+  DoctorCheck,
+  DoctorSection,
   FleetCell,
   RelayDeploymentRow,
   RelayStoredReport,
+  StatusSnapshot,
   TenantFacts,
 } from "phoebe-agent/contracts";
 
@@ -80,6 +83,40 @@ export function child(overrides: Partial<ChildLiveness> = {}): ChildLiveness {
   };
 }
 
+export function check(overrides: Partial<DoctorCheck> = {}): DoctorCheck {
+  return { id: "cli", state: "ok", detail: "phoebe-agent 0.13.0", ...overrides };
+}
+
+export function doctor(overrides: Partial<DoctorSection> = {}): DoctorSection {
+  return {
+    report: {
+      checks: [check(), check({ id: "engine" })],
+      tenants: [{ path: "/etc/phoebe", slug: "JesusFilm/youtube-studio", checks: [check()] }],
+      ok: true,
+    },
+    at: ago(3 * 3600),
+    trigger: "schedule",
+    updatedAt: ago(3 * 3600),
+    ...overrides,
+  };
+}
+
+/** A pipeline's `status.json`, with whatever it has in flight. */
+export function snapshot(overrides: Partial<StatusSnapshot> = {}): StatusSnapshot {
+  return {
+    tenant: "JesusFilm/youtube-studio",
+    pipeline: "work",
+    currentUnits: [
+      { unit: { kind: "issues", id: "544" }, startedAt: ago(600), runBudgetMs: 5_400_000 },
+    ],
+    waitingForSlot: false,
+    lastError: null,
+    lastTimeoutAt: null,
+    updatedAt: ago(12),
+    ...overrides,
+  };
+}
+
 export function report(overrides: Partial<DeploymentReport> = {}): DeploymentReport {
   return {
     schema: DEPLOYMENT_SCHEMA,
@@ -102,6 +139,7 @@ export function report(overrides: Partial<DeploymentReport> = {}): DeploymentRep
       updatedAt: ago(12),
     },
     fleet: { tenants: [tenant()], cells: [cell()], updatedAt: ago(12) },
+    doctor: doctor(),
     updatedAt: ago(12),
     ...overrides,
   };
