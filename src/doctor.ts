@@ -39,6 +39,15 @@
 // five-permission grant probe stays in scripts/verify-tenant-token.mjs (it ships
 // with the repo, not the package); doctor's per-tenant probe is the
 // reachability slice of it.
+//
+// Two things the run gains once the bootstrapper is the one starting it (#507,
+// #534). It answers within a **five-minute deadline** — whatever has not
+// finished by then reports `unknown`, so one unreachable tenant cannot erase
+// the rest of the report (src/doctor-deadline.ts). And it accepts **credential
+// leases** on its env (src/doctor-lease.ts): the installation tokens the
+// supervisor already holds for its App-arm tenants, which is what turns `repo`,
+// `labels` and `stray-members` from "not probed (App arm)" into real checks. A
+// manual `phoebe doctor` sets neither variable and behaves as it always has.
 
 import { accessSync, constants, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -86,6 +95,7 @@ import {
   resolveConfig,
 } from "./config-schema.ts";
 import { resolveDataBase } from "./paths.ts";
+import { readSecretStore, secretStorePath, tenantStateDir } from "./secret-store.ts";
 import { enumerateDeclaredEnv } from "./pipeline-enumerate.ts";
 import {
   createWorktreeInspector,
@@ -110,12 +120,25 @@ import type {
   MissingDeclaredEnvKey,
   TenantDoctorRow,
 } from "./contracts/doctor-report.ts";
+import {
+  createDeadline,
+  DEADLINE_DETAIL,
+  DOCTOR_DEADLINE_MS,
+  noDeadline,
+  type Deadline,
+} from "./doctor-deadline.ts";
+import { DOCTOR_LEASE_ENV, parseDoctorLeases, type DoctorLeases } from "./doctor-lease.ts";
 
 // The report and its leaves now live in `phoebe-agent/contracts` (#552) so the
 // five tabs of a console can render a health panel without loading the checks
 // below, which reach GitHub, git, npm and the data volume. Re-exported here so
 // every existing reader goes on importing them off this module.
 export type { CheckState, DoctorCheck, DoctorReport, MissingDeclaredEnvKey, TenantDoctorRow };
+
+/** One check a run did not get to before {@link DOCTOR_DEADLINE_MS} (#507 §7). */
+function deadlineCheck(id: string): DoctorCheck {
+  return { id, state: "unknown", detail: DEADLINE_DETAIL };
+}
 
 /** Fold every check into the report verdict. Pure, for tests. */
 export function buildDoctorReport(checks: DoctorCheck[], tenants: TenantDoctorRow[]): DoctorReport {
@@ -316,6 +339,11 @@ export type DoctorDeps = {
   git?: GitRunner;
   npm?: NpmRunner;
   fetchFn?: typeof fetch;
+  /**
+   * The run's clock (#507 §7). Defaults to a fresh {@link DOCTOR_DEADLINE_MS}
+   * one; a test passes {@link noDeadline} or a short one of its own.
+   */
+  deadline?: Deadline;
 };
 
 const PROBE_TIMEOUT_MS = 30_000;
@@ -831,6 +859,96 @@ export function declaredEnvCheck(
   };
 }
 
+/**
+ * The `secret-store` check (#504) — the loud half of "the store wins over the
+ * `.env`".
+ *
+ * The store is the tier above the tenant's file, so a key set in both means a
+ * file edit that does nothing, which is exactly the silent failure #503 traded
+ * away. Warn, never fail: shadowing is a state an operator chose and may have
+ * meant, and the same relationship `prompt-drift` has with its files. The
+ * remedy is named in the line — clear the store entry and the file governs
+ * again.
+ *
+ * A store that will not parse is its own warn. Every delivery path reads it
+ * fail-closed (values simply do not arrive), so nothing else in the deployment
+ * would ever mention the file is broken.
+ */
+export function secretStoreCheck(fields: {
+  /** The store's keys and values, or null when the file will not parse. */
+  store: Record<string, string> | null;
+  /** The keys it sets that the `.env` or the ambient env also set. */
+  shadowed: readonly string[];
+  envLabel: string;
+  path: string;
+}): DoctorCheck {
+  if (fields.store === null) {
+    return {
+      id: "secret-store",
+      state: "warn",
+      detail: `${fields.path} will not parse — no console-set secret is reaching this tenant`,
+    };
+  }
+  const keys = Object.keys(fields.store);
+  if (keys.length === 0) {
+    return { id: "secret-store", state: "ok", detail: "no console-set secrets" };
+  }
+  const shadowed = [...fields.shadowed].sort();
+  if (shadowed.length === 0) {
+    return {
+      id: "secret-store",
+      state: "ok",
+      detail: `${keys.length} key(s) set in the store; nothing shadowed`,
+    };
+  }
+  return {
+    id: "secret-store",
+    state: "warn",
+    detail:
+      `${shadowed.join(", ")} set in the secret store and in ${fields.envLabel} — the store wins. ` +
+      `\`phoebe secret clear <KEY>\` hands the key back to the file.`,
+  };
+}
+
+/** What doctor knows about one tenant's secret store. */
+export type TenantSecretStore = {
+  /** The store's contents, or null when the file exists and will not parse. */
+  values: Record<string, string> | null;
+  /** Where it is — null when the tenant has no slug, so no store is possible. */
+  path: string | null;
+  /** Keys it sets that `lower` also sets. */
+  shadowed: string[];
+};
+
+/**
+ * Read one tenant's store the way doctor needs it: the values, the path to name
+ * in a line, and the collisions against the tier below. A slug-less tenant has
+ * no store to read and no check to run.
+ */
+export function readTenantSecretStore(
+  slug: string | null,
+  dataBase: string,
+  lower: Record<string, string | undefined>,
+): TenantSecretStore {
+  const stateDir = tenantStateDir(slug, dataBase);
+  if (stateDir === null) return { values: {}, path: null, shadowed: [] };
+  const path = secretStorePath(stateDir);
+  let values: Record<string, string> | null;
+  try {
+    values = readSecretStore(stateDir);
+  } catch {
+    values = null;
+  }
+  const shadowed =
+    values === null
+      ? []
+      : Object.keys(values).filter((key) => {
+          const beneath = lower[key];
+          return typeof beneath === "string" && beneath.length > 0;
+        });
+  return { values, path, shadowed };
+}
+
 /** A tenant's `.env` as its engine child would parse it; empty when unreadable. */
 function readTenantDotenv(envPath: string): Record<string, string> {
   try {
@@ -842,6 +960,26 @@ function readTenantDotenv(envPath: string): Record<string, string> {
 
 function nonEmpty(value: string | undefined): string | undefined {
   return value !== undefined && value.length > 0 ? value : undefined;
+}
+
+/**
+ * Which credential one tenant's checks run on (#507 §5). Its own `GH_TOKEN`
+ * first — a tenant carrying one is on the PAT arm and the supervisor leases it
+ * nothing — then whatever was leased for its slug. Pure, for tests.
+ *
+ * The arm is decided elsewhere and deliberately: a lease does not move a tenant
+ * onto the PAT arm, it only means the App arm's checks can be answered for
+ * once.
+ */
+export function tenantCredential(fields: {
+  own: string | undefined;
+  slug: string | null;
+  leases: DoctorLeases;
+}): { token: string | undefined; leased: boolean } {
+  const own = nonEmpty(fields.own);
+  if (own !== undefined) return { token: own, leased: false };
+  const leased = fields.slug === null ? undefined : nonEmpty(fields.leases[fields.slug]);
+  return { token: leased, leased: leased !== undefined };
 }
 
 /**
@@ -860,12 +998,17 @@ export function tenantTokenCheck(fields: {
   token: string | undefined;
   envLabel: string;
   inContainer: boolean;
+  /** This run holds a supervisor-leased installation token for the tenant (#507 §5). */
+  leased?: boolean;
 }): DoctorCheck {
   if (fields.arm === "app") {
     return {
       id: "token",
       state: "ok",
-      detail: "App arm: installation token minted by the GitHub App at runtime",
+      detail:
+        fields.leased === true
+          ? "App arm: installation token minted by the GitHub App, leased to this run"
+          : "App arm: installation token minted by the GitHub App at runtime",
     };
   }
   if (fields.token !== undefined) {
@@ -1102,8 +1245,24 @@ export async function tenantRow(fields: {
    */
   env?: NodeJS.ProcessEnv;
   git?: GitRunner;
+  /**
+   * True when {@link tenantRow.token} is an installation token the supervisor
+   * leased for this run (#507 §5) rather than a `GH_TOKEN` out of the tenant's
+   * own `.env`. It changes nothing about what is probed — a token is a token —
+   * only what the `token` check says the credential is.
+   */
+  leased?: boolean;
+  /**
+   * This tenant's secret store (#504), when the caller read one. Undefined skips
+   * the check entirely — a caller that never looked must not report "no
+   * console-set secrets" as though it had.
+   */
+  secrets?: TenantSecretStore;
+  /** The run's clock (#507 §7). Checks it cannot beat report `unknown`. */
+  deadline?: Deadline;
 }): Promise<TenantDoctorRow> {
   const checks: DoctorCheck[] = [];
+  const deadline = fields.deadline ?? noDeadline();
 
   // Load the user config once: captures `disabled`, the four label names,
   // and the issues prompt path override — all from a single file read.
@@ -1176,25 +1335,48 @@ export async function tenantRow(fields: {
     checks.push(declaredEnvCheck(fields.declaredEnv, fields.envLabel));
   }
 
+  // The store, and what it shadows. Before the token check, because when the
+  // store holds `GH_TOKEN` this is the line that says where the credential the
+  // next check reports on actually came from.
+  if (fields.secrets !== undefined && fields.secrets.path !== null) {
+    checks.push(
+      secretStoreCheck({
+        store: fields.secrets.values,
+        shadowed: fields.secrets.shadowed,
+        envLabel: fields.envLabel,
+        path: fields.secrets.path,
+      }),
+    );
+  }
+
   const tokenCheck = tenantTokenCheck(fields);
   checks.push(tokenCheck);
 
   let repoPassed = false;
-  if (fields.arm === "app") {
-    // Probing the repo requires minting a token, which doctor does not do.
-    // Repo access is verified at runtime when the token is minted.
+  if (fields.arm === "app" && fields.token === undefined) {
+    // Probing the repo requires an installation token. The supervisor's own run
+    // leases one (#507 §5) and lands in the branch below; a manual run mints
+    // nothing, so repo access is verified at runtime instead.
     checks.push({
       id: "repo",
       state: "unknown",
       detail: "not probed (App arm — repo access verified at runtime when the token is minted)",
     });
   } else if (fields.token !== undefined) {
-    if (fields.slug !== null) {
-      const probe = await probeRepo(fields.slug, fields.token, fields.fetchFn);
-      repoPassed = probe.ok;
-      checks.push({ id: "repo", state: probe.ok ? "ok" : "fail", detail: probe.detail });
-    } else {
+    if (fields.slug === null) {
       checks.push({ id: "repo", state: "unknown", detail: "not probed (no repoSlug)" });
+    } else {
+      const probe = await deadline.race(probeRepo(fields.slug, fields.token, fields.fetchFn));
+      if (!probe.done) {
+        checks.push(deadlineCheck("repo"));
+      } else {
+        repoPassed = probe.value.ok;
+        checks.push({
+          id: "repo",
+          state: probe.value.ok ? "ok" : "fail",
+          detail: probe.value.detail,
+        });
+      }
     }
   } else {
     checks.push({
@@ -1213,8 +1395,11 @@ export async function tenantRow(fields: {
   if (fields.configPath !== undefined && !configLoaded) {
     checks.push({ id: "labels", state: "unknown", detail: "not evaluated (config load failed)" });
   } else if (fields.slug !== null && repoPassed && fields.token !== undefined) {
-    const allLabels = await fetchRepoLabels(fields.slug, fields.token, fields.fetchFn);
-    if (allLabels === null) {
+    const listed = await deadline.race(fetchRepoLabels(fields.slug, fields.token, fields.fetchFn));
+    const allLabels = listed.done ? listed.value : null;
+    if (!listed.done) {
+      checks.push(deadlineCheck("labels"));
+    } else if (allLabels === null) {
       // Non-200 from the label list endpoint means access denied, not labels
       // missing — avoid emitting a spurious `gh label create` remediation.
       checks.push({
@@ -1251,8 +1436,8 @@ export async function tenantRow(fields: {
       detail: "not evaluated (config load failed)",
     });
   } else if (fields.slug !== null && repoPassed && fields.token !== undefined) {
-    checks.push(
-      await tenantStrayMembers({
+    const strays = await deadline.race(
+      tenantStrayMembers({
         slug: fields.slug,
         token: fields.token,
         fetchFn: fields.fetchFn,
@@ -1260,6 +1445,9 @@ export async function tenantRow(fields: {
         walk: { featureLabel, branchPrefix, partOfPattern },
       }),
     );
+    // The graph walk is the run's longest single call — pages of issues, then a
+    // query per feature — so it is the check the deadline most often takes.
+    checks.push(strays.done ? strays.value : deadlineCheck("stray-members"));
   } else {
     const reason =
       fields.slug === null
@@ -1306,13 +1494,14 @@ export async function tenantRow(fields: {
   // Stale-state check: the only one that looks at the data volume, so it runs
   // last and asks nothing of the tracker.
   if (fields.configPath !== undefined && fields.dataBase !== undefined) {
-    checks.push(
-      await tenantStaleState({
+    const stale = await deadline.race(
+      tenantStaleState({
         configPath: fields.configPath,
         dataBase: fields.dataBase,
         ...(fields.git !== undefined ? { git: fields.git } : {}),
       }),
     );
+    checks.push(stale.done ? stale.value : deadlineCheck("stale-state"));
   }
 
   return { path: fields.path, slug: fields.slug, checks };
@@ -1333,6 +1522,13 @@ export async function runDoctor(
   const env = deps.env ?? process.env;
   const token = env["GH_TOKEN"];
   const checks: DoctorCheck[] = [];
+  // The run's own clock. Started here rather than by the caller so a manual
+  // `phoebe doctor` is bounded too — one hung tenant used to hold the terminal
+  // open forever.
+  const deadline = deps.deadline ?? createDeadline(DOCTOR_DEADLINE_MS);
+  // What the supervisor leased for this run, keyed by tenant slug (#507 §5).
+  // Empty for a manual run, which is what keeps that one credential-free.
+  const leases: DoctorLeases = parseDoctorLeases(env[DOCTOR_LEASE_ENV]);
 
   // 3. Root config loads + engine field parses. Everything engine-shaped hangs
   // off this, so it runs first even though it is check three in the docs.
@@ -1600,19 +1796,33 @@ export async function runDoctor(
     // that one snapshot feeds the declared-key scan, the token, and the
     // PHOEBE_* overlay — so an edit mid-sweep cannot split one report.
     const dotenvByTenant = new Map<string, Record<string, string>>();
+    const storeByTenant = new Map<string, TenantSecretStore>();
     const declaredEnvByTenant = new Map<string, MissingDeclaredEnvKey[] | null>();
     for (const tenant of enumeration.tenants) {
-      const tenantEnv = readTenantDotenv(tenant.envPath);
+      // The store over the file, exactly as the supervisor builds the child's
+      // env (#504): every check below asks what the child would hold, and after
+      // the store that is no longer what the `.env` alone says.
+      const dotenv = readTenantDotenv(tenant.envPath);
+      const store = readTenantSecretStore(tenant.slug, dataBase, dotenv);
+      storeByTenant.set(tenant.id, store);
+      const tenantEnv = { ...dotenv, ...store.values };
       dotenvByTenant.set(tenant.id, tenantEnv);
+      // A kind module that hangs on import would hold the whole sweep here, and
+      // this loop is serial by necessity — so it is the one place the deadline
+      // has to gate rather than race. A tenant past it reports `unknown` for
+      // the scan and still gets every other check.
       declaredEnvByTenant.set(
         tenant.id,
-        await scanDeclaredEnv({ configPath: tenant.configPath, env: tenantEnv }),
+        deadline.expired()
+          ? null
+          : await scanDeclaredEnv({ configPath: tenant.configPath, env: tenantEnv }),
       );
     }
     tenants.push(
       ...(await mapBounded(enumeration.tenants, TENANT_PROBE_CONCURRENCY, (tenant) => {
         const tenantEnv = dotenvByTenant.get(tenant.id) ?? {};
-        const tokenValue = nonEmpty(tenantEnv["GH_TOKEN"]);
+        const own = nonEmpty(tenantEnv["GH_TOKEN"]);
+        const credential = tenantCredential({ own, slug: tenant.slug, leases });
         return tenantRow({
           declaredEnv: declaredEnvByTenant.get(tenant.id) ?? null,
           path: tenant.dir,
@@ -1620,8 +1830,10 @@ export async function runDoctor(
           // Per tenant, not per deployment: a fleet mixes arms whenever one
           // tenant keeps its own PAT, and #157's per-installation approvals
           // make that the normal state during any permission change.
-          arm: resolveCredentialArm({ GH_TOKEN: tokenValue }, env),
-          token: tokenValue,
+          arm: resolveCredentialArm({ GH_TOKEN: own }, env),
+          token: credential.token,
+          leased: credential.leased,
+          deadline,
           envLabel: tenant.envPath,
           fetchFn,
           inContainer,
@@ -1630,6 +1842,7 @@ export async function runDoctor(
           // The tenant's own `.env`, so a per-tenant PHOEBE_MERGED_LABEL (or
           // any other overlay key) is checked as its engine child reads it.
           env: tenantEnv,
+          secrets: storeByTenant.get(tenant.id) ?? { values: {}, path: null, shadowed: [] },
           git,
         });
       })),
@@ -1645,27 +1858,41 @@ export async function runDoctor(
     // Solo: the child inherits the supervisor's env, so the ambient token is
     // the truth here (and only here) — same reasoning as verify-tenant-token.
     const slug = rootConfig["repoSlug"];
+    // Solo's store sits on the same data volume under the same slug. It is the
+    // only channel solo has — there is no tenant `.env` inside the container —
+    // so it is layered over the ambient env before anything is checked.
+    const soloStore = readTenantSecretStore(slug, dataBase, env);
+    const soloEnv: NodeJS.ProcessEnv = { ...env, ...soloStore.values };
+    const credential = tenantCredential({ own: nonEmpty(soloEnv["GH_TOKEN"]), slug, leases });
     tenants.push(
       await tenantRow({
         path: opts.configDir,
         slug,
         // Solo: the ambient container env is this tenant's env-file, so it is
         // what the declared keys are checked against.
-        declaredEnv: await scanDeclaredEnv({ configPath, env: env }),
+        declaredEnv: deadline.expired()
+          ? null
+          : await scanDeclaredEnv({ configPath, env: soloEnv }),
         // Solo: the root is the tenant, so one env answers both halves.
-        arm: resolveCredentialArm(env),
-        token: token !== undefined && token.length > 0 ? token : undefined,
+        arm: resolveCredentialArm(soloEnv),
+        token: credential.token,
+        leased: credential.leased,
+        deadline,
         envLabel: "the environment",
         fetchFn,
         inContainer,
         configPath,
         dataBase,
-        env: env,
+        env: soloEnv,
+        secrets: soloStore,
         git,
       }),
     );
   }
 
+  // The timer is unrefed, so a forgotten one cannot hold a process open — but
+  // a CLI run that ends by printing should not sit on one either.
+  deadline.cancel();
   return buildDoctorReport(checks, tenants);
 }
 
@@ -1709,6 +1936,14 @@ it, repo reachable with that token, the four workflow labels present in the
 repo, no open member of a retired feature left wearing one, every env key a
 scheduled work kind declares set in that tenant's .env, and (when the issues
 prompt is overridden) that it includes the blocker-recording rule.
+
+A run answers within five minutes; a check that does not finish by then reports
+\`?\` (deadline passed) rather than holding the whole report open. The
+bootstrapper runs doctor itself — at boot, after a reconcile, on request and
+every six hours — and its runs carry each tenant's installation token, so the
+repo, labels and stray-member checks are real on App-arm deployments. That
+report, with its age, is in \`<data>/state/deployment.json\`; this command prints
+and changes nothing.
 
 The full five-permission token probe is scripts/verify-tenant-token.mjs.
 Exit code is 1 when any check fails. \`phoebe upgrade\` moves versions;

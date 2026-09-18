@@ -111,6 +111,7 @@ export function report(overrides: Partial<DeploymentReport> = {}): DeploymentRep
       updatedAt: ago(12),
     },
     fleet: { tenants: [tenant()], cells: [cell()], updatedAt: ago(12) },
+    doctor: { report: null, at: null, trigger: null, updatedAt: ago(12) },
     config: {
       version: 1,
       root: { path: "/deployment/phoebe.config.ts", fingerprint: "sha256:root" },

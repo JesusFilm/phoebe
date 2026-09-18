@@ -1058,6 +1058,59 @@ workspace deployment each tenant's secrets live in its own co-located
 `.env`, read by the bootstrapper and scrubbed so a tenant's engine child sees only
 its own (workspace two-tier model: [`workspace.md`](workspace.md)).
 
+## Tenant secrets: the store and `phoebe secret`
+
+A `.env` is a file, and editing a file means reaching the machine it is on. The
+**secret store** is the other way in: one file per tenant on the data volume,
+`<data>/<owner>/<repo>/state/secrets.json` at mode `0600`, holding values an
+operator set without touching `.env`.
+
+```sh
+printf %s "$ANTHROPIC_API_KEY" | phoebe secret set ANTHROPIC_API_KEY
+phoebe secret ls              # which keys are set, and from where
+phoebe secret clear ANTHROPIC_API_KEY
+```
+
+The value is read from **stdin only**, to the end of the stream with one trailing
+newline stripped. Never as an argument: an argument lands in shell history and in
+`/proc/<pid>/cmdline`, which a co-tenant sharing the container's uid can read.
+Nothing prints a value back. Not `ls`, not `phoebe config`, not the deployment
+report. Write-only is the point.
+
+**The store is the tier above the `.env`.** A key set in both is the store's, and
+both `phoebe config` and `phoebe doctor` say so. The `env` section flags the key
+`shadowed`, and doctor raises a warn naming it. Clearing removes the entry so the
+`.env` (or the ambient env) governs again. There is no tombstone, because
+revoking a secret means rotating it, not deleting it.
+
+**What may be set is derived from your own config**, never a fixed list: every env
+key a scheduled work kind declares in `requiredEnv`, plus `GH_TOKEN`, plus the
+variable names in `providerEnv`. Write a custom kind and its key is settable the
+same day. Three families are refused. The GitHub App credentials are deployment
+scope, with a blast radius spanning every repo the App is installed on, so they
+stay in the deployment's env-file. The `PHOEBE_*` settings are knobs, not
+secrets. The git identity variables belong to `gitIdentity`.
+
+Delivery reuses what already exists. The supervisor's credential lease re-reads
+the store on every request, so a `GH_TOKEN` rotation reaches a running child in
+place. Every other key rides the reconcile digest, so setting one relaunches the
+children that would hold it. A successful `set` then runs `phoebe doctor`, which
+is what tells you the key is where the child will look for it. `--no-doctor`
+skips that for a scripted rotation.
+
+Two costs, both deliberate. The store does not survive `docker compose down -v`:
+it lives on the data volume, and wiping the volume wipes it. And it holds
+plaintext at rest, in exactly the place a tenant `.env` already sits. See
+[`trust.md`](trust.md#one-container--one-trust-domain).
+
+In solo the store is the only channel. The deployment's `.env` is Compose's
+create-time input and is masked inside the container, so changing a value there
+means recreating the container. Solo's `GH_TOKEN` is two secrets wearing one
+name, the agent's and the engine clone's, so a store rotation moves the agent's
+and leaves the clone on the old one until the next recreate. A stale-but-valid
+clone token keeps working; a revoked one surfaces as the reconcile failure the
+deployment report already carries.
+
 ## Seeing what applies: `phoebe config`
 
 Reading the ladder above and reading your own deployment are different jobs.
@@ -1091,8 +1144,10 @@ values they will actually use, inherited ones included.
 
 Below the tree is an `env` section. It says that a variable is set and which
 file set it, never what it holds, so you can check a key reached the container
-on a screen somebody else can see. Then `warnings`, which lists the deprecated
-aliases this tenant is using so you do not have to hunt for them in the tree.
+on a screen somebody else can see. A key the secret store supplied reads
+`present (store)`, and `shadowed` beside it means the `.env` sets that key too
+and is being outranked. Then `warnings`, which lists the deprecated aliases this
+tenant is using so you do not have to hunt for them in the tree.
 
 Run it against a workspace root and every tenant reports. A tenant whose config
 will not load is one row carrying its error; the exit code turns non-zero only

@@ -88,6 +88,7 @@ export type {
   EditWritten,
 } from "./config-edit.ts";
 export type { CredentialArm } from "./credential-arm.ts";
+export type { DoctorAttempt, DoctorFailure, DoctorSection, DoctorTrigger } from "./doctor.ts";
 export type { PipelineSource, PipelineState, WedgedVerdict } from "./pipeline-state.ts";
 export type { CurrentUnit, StatusSnapshot, UnitRef } from "./status-snapshot.ts";
 export {
@@ -102,9 +103,6 @@ export {
   type DeploymentArm,
   type DeploymentIdentity,
   type DeploymentReport,
-  type DoctorAttempt,
-  type DoctorSection,
-  type DoctorTrigger,
   type FleetCell,
   type FleetReport,
   type ReconcileState,

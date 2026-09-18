@@ -790,3 +790,57 @@ describe("the file a workspace with many tenants writes", () => {
     expect(fiveHundred).toBeLessThan(fifty * 2);
   });
 });
+
+describe("the doctor section (#507 §7, #534)", () => {
+  const healthy = { checks: [], tenants: [], ok: true };
+
+  test("a deployment that has never run doctor says so", () => {
+    const h = harness();
+    h.state.noteEngine({ ref: "main", sha: "abc", quarantinedSha: null });
+    expect(h.latest()!.doctor).toEqual({
+      report: null,
+      at: null,
+      trigger: null,
+      updatedAt: "2026-05-05T00:00:00.000Z",
+    });
+  });
+
+  test("a run starting is published before it finishes", () => {
+    const h = harness();
+    h.state.noteEngine({ ref: "main", sha: "abc", quarantinedSha: null });
+    h.state.noteDoctor({
+      report: null,
+      at: null,
+      trigger: null,
+      running: { since: "2026-05-05T00:00:00.000Z", trigger: "boot" },
+    });
+    expect(h.latest()!.doctor.running).toEqual({
+      since: "2026-05-05T00:00:00.000Z",
+      trigger: "boot",
+    });
+  });
+
+  test("the section moves on its own stamp, and the fleet's does not move with it", () => {
+    const h = harness();
+    h.state.notePipelines([pipelineOf("/t/a", "work")]);
+    const fleetStamp = h.latest()!.fleet.updatedAt;
+
+    h.advance(60_000);
+    h.state.noteDoctor({ report: healthy, at: "2026-05-05T00:01:00.000Z", trigger: "boot" });
+    const report = h.latest()!;
+    expect(report.doctor.report).toEqual(healthy);
+    expect(report.doctor.updatedAt).toBe("2026-05-05T00:01:00.000Z");
+    expect(report.fleet.updatedAt).toBe(fleetStamp);
+    expect(report.updatedAt).toBe("2026-05-05T00:01:00.000Z");
+  });
+
+  test("the same section twice writes nothing — an unmoved doctor is not news", () => {
+    const h = harness();
+    h.state.noteDoctor({ report: healthy, at: "2026-05-05T00:00:00.000Z", trigger: "boot" });
+    const writes = h.written.length;
+
+    h.advance(60_000);
+    h.state.noteDoctor({ report: healthy, at: "2026-05-05T00:00:00.000Z", trigger: "boot" });
+    expect(h.written.length).toBe(writes);
+  });
+});

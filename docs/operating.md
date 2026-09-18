@@ -212,7 +212,7 @@ supervises with, checking each tenant's `GH_TOKEN` is present the way its
 engine child reads it, and that its repo answers to that token. Held tenants
 surface as failures with their hold reason. `--json` for scripts.
 
-The other three run per tenant:
+The other four run per tenant:
 
 - **labels.** The four workflow labels — `readyLabel`, `processingLabel`,
   `mergedLabel` and `prOptOutLabel` — exist in the tenant's repo. Any that does
@@ -238,6 +238,39 @@ The other three run per tenant:
   by path is the tier that sweep refuses to touch — a worktree that is dirty or
   holds commits `origin` has not seen — with a one-line hint for reclaiming it
   by hand. **Warn, never fail**: accumulated dirt is a chore, not a fault.
+- **secret-store.** Which keys the tenant's [secret
+  store](configuration.md#tenant-secrets-the-store-and-phoebe-secret) holds, and
+  which of them the tenant's `.env` also sets. The store outranks the file, so a
+  key in both means a `.env` edit that does nothing, which is the one silent
+  failure this design would otherwise introduce. Each such key is named, with
+  `phoebe secret clear <KEY>` as the repair. A store file that will not parse is
+  its own warn, because every delivery path reads it fail-closed and nothing else
+  would ever mention it. **Warn, never fail**: shadowing is a state you may have
+  meant. Never a value, in any state.
+
+**You are not the only one who runs it.** The bootstrapper runs doctor itself:
+once the fleet comes up, again after a reconcile lands, on request, and every six
+hours. What it finds goes into the deployment report, so the last report and its
+age are there to read without anyone having remembered to ask. Those runs are
+spawned as a child process and carry each tenant's installation token, which is
+why `repo`, `labels` and `stray-members` are answered on an App-arm deployment
+instead of skipped. One run happens at a time. Asking while one is in flight
+joins it; asking mid-reconcile waits for the relaunch, then runs once against the
+engine that is actually running.
+
+Every run, yours included, holds itself to five minutes. A check that has not
+finished by then reports `?` with "deadline passed", and the rest of the report
+still lands. One unreachable tenant costs you that tenant's answers, not the
+whole report. The bootstrapper kills its own doctor child thirty seconds past
+that as a backstop. When it does, the last report stays where it is with its age,
+and the failed attempt is recorded beside it.
+
+`phoebe secret set` runs one too, on the run that succeeds: setting a key is the
+moment you want "did it work" answered, and this is the check that answers it.
+
+Typing `phoebe doctor` yourself prints and changes nothing. The report on the
+volume is the bootstrapper's, and a manual run carries no leases, so an App-arm
+tenant's tracker checks read `unknown` as they always have.
 
 Division of labor: `phoebe upgrade` moves you between versions; `phoebe migrate`
 reshapes your files for the version you are moving to; `phoebe doctor` tells you
@@ -481,8 +514,11 @@ reader shares. `phoebe pipelines` (the supervisor's machine interface) and
 `<data>/state/deployment.json`, that says what the whole deployment is doing right
 now: who it is, which engine commit it is running, what its crash-loop record and
 its reconcile state are, how each supervised child is faring, where the slot cap
-stands, and one entry per (tenant × pipeline) cell with that pipeline's raw
-`status.json` and its derived state. It carries a `schema` integer, it is
+stands, one entry per (tenant × pipeline) cell with that pipeline's raw
+`status.json` and its derived state, and what the last
+[doctor run](#checking-the-deployments-health-phoebe-doctor) found, with the
+trigger that started it, when it was taken, whether one is running now, and the
+last attempt that produced nothing. It carries a `schema` integer, it is
 replaced atomically, and it is rewritten only when something in it moves — a fixed
 set of current facts, never a log. Nothing on disk grows with uptime.
 

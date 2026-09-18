@@ -47,9 +47,9 @@ _Avoid_: supervisor, launcher, wrapper
 
 **Deployment report**:
 The whole object one deployment hands a console: identity, what the bootstrapper is doing,
-and the fleet matrix with each pipeline's state derived. One fixed-size file,
-`state/deployment.json`, rewritten when something moves: read locally, and shipped as-is to
-a relay. A consumer renders it and derives nothing of its own.
+the fleet matrix with each pipeline's state derived, and the last doctor run with its age.
+One fixed-size file, `state/deployment.json`, rewritten when something moves: read locally,
+and shipped as-is to a relay. A consumer renders it and derives nothing of its own.
 _Avoid_: snapshot (that is `status.json`), state (that is the directory), status (that is
 the CLI verb), manifest
 
@@ -63,6 +63,12 @@ One turn of an engine's loop: poll, select, admit what it can, then wait. A supe
 engine reports each completed pass to its bootstrapper, which is the only evidence that a
 loop with nothing to do is still turning.
 _Avoid_: tick, cycle (that is the whole life of a work unit), iteration
+
+**Doctor run**:
+One pass of the health checks over a deployment, spawned by the bootstrapper at boot,
+after a reconcile, on request or on the six-hour schedule. Its report is a section of the
+deployment report; a manual `phoebe doctor` prints one and stores nothing.
+_Avoid_: health check (that is one check inside a run), scan, audit
 
 **Settings catalogue**:
 The single registry of every setting Phoebe reads from the environment: config path, env
@@ -105,6 +111,22 @@ The on-volume record of the edits this deployment applied and who asked for them
 `state/config-edits.json`. It answers a redelivered edit with its original receipt, and
 rolls off whole once the file moves by a hand other than the writer's.
 _Avoid_: audit log, history
+**Secret store**:
+The bootstrapper-owned, per-tenant file of console-set secret values on the data volume,
+`state/secrets.json` at mode `0600`. The tier above the tenant's `.env`, and the only
+channel a deployment has for a secret nobody can reach a file to edit.
+_Avoid_: vault, keyring, secrets file (ambiguous with `.env`)
+
+**Tenant-scope / deployment-scope secret**:
+Whether a secret belongs to one tenant's engine child or to the deployment as a whole.
+The line the secret store never crosses: the App key and the engine-clone token stay
+deployment scope, in the env-file, reached by editing it.
+_Avoid_: local/global, child/root
+
+**Clear** (a secret):
+Removing a key from the secret store so the `.env` or ambient value governs again. Not a
+tombstone and not a revocation — revoking a secret is rotating it.
+_Avoid_: unset, delete, revoke
 
 **Arm**:
 One of a mutually exclusive pair of shapes a deployment takes, resolved rather than
@@ -233,8 +255,9 @@ drain-and-relaunch that follows one.
 _Avoid_: refresh, sync, poll
 
 **Credential lease**:
-A GitHub token the bootstrapper hands the engine for a bounded period, re-read or re-minted
-rather than baked into the process.
+A GitHub token the bootstrapper hands a process it spawned for a bounded period, re-read or
+re-minted rather than baked into the process. An engine child holds one per tenant; a
+doctor run is handed the ones the fleet is already using.
 _Avoid_: credential handoff, token grant
 
 **Engine log tag**:

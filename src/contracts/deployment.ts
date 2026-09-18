@@ -25,7 +25,7 @@
 // an optional field does not move it.
 
 import type { CredentialArm } from "./credential-arm.ts";
-import type { DoctorReport } from "./doctor-report.ts";
+import type { DoctorSection } from "./doctor.ts";
 import type { TenantEffectiveConfig } from "./effective-config.ts";
 import type { PipelineSource, PipelineState, WedgedVerdict } from "./pipeline-state.ts";
 import type { StatusSnapshot } from "./status-snapshot.ts";
@@ -232,34 +232,6 @@ export type RelayReport = {
   updatedAt: string;
 };
 
-/** What set a doctor run going (#507 §6). */
-export type DoctorTrigger = "boot" | "reconcile" | "console" | "schedule" | "secret-set";
-
-/** A run that ended without a report — the deadline, or a crash. */
-export type DoctorAttempt = { at: string; outcome: "timed-out" | "crashed" };
-
-/**
- * The doctor run the bootstrapper last folded into the report (#507 §4/§7). The
- * bootstrapper spawns `phoebe doctor --json` in the container and keeps the
- * result here; a hand-run `phoebe doctor` is print-only and never touches it.
- *
- * Written by the scheduler (#507's own ticket); absent until a deployment has
- * run doctor at least once, which a reader states as "never run" rather than as
- * a verdict.
- */
-export type DoctorSection = {
-  report: DoctorReport;
-  /** When that report was taken. */
-  at: string;
-  trigger: DoctorTrigger;
-  /** Who asked, for a console-triggered run. */
-  by?: string;
-  /** A run in flight right now — what a reader shows instead of the age. */
-  running?: { since: string; trigger: DoctorTrigger };
-  /** The last run that produced nothing. The report above is still the older one. */
-  lastAttempt?: DoctorAttempt;
-};
-
 /**
  * The config source a later edit checks itself against (#503). Only the root
  * `phoebe.config.ts` is mounted read-write, so it is the one file a console can
@@ -317,8 +289,12 @@ export type DeploymentReport = {
   fleet: FleetReport;
   /** Every tenant's effective config, as the running engine computed it (#535). */
   config: ConfigReport;
-  /** Absent until the bootstrapper has run doctor once (#507). */
-  doctor?: DoctorSection;
+  /**
+   * What the last `phoebe doctor` run found, with its age (#507 §4). The
+   * bootstrapper spawns those runs; a manual `phoebe doctor` prints and touches
+   * nothing here.
+   */
+  doctor: DoctorSection;
   /** When any section last moved. */
   updatedAt: string;
 };

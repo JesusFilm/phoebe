@@ -8,11 +8,11 @@ import type {
   ChildLiveness,
   ConfigReport,
   DeploymentReport,
-  DoctorSection,
   FleetCell,
   RelayReport,
   TenantFacts,
 } from "./contracts/deployment.ts";
+import type { DoctorSection } from "./contracts/doctor.ts";
 import type { CommandResult, CommandRunner } from "./deployment-compose.ts";
 import { COMPOSE_REL_PATH } from "./deployment-compose.ts";
 import {
@@ -113,6 +113,12 @@ function report(fields: {
       omitted: 0,
       updatedAt: MINUTES_AGO(2),
     },
+    doctor: fields.doctor ?? {
+      report: null,
+      at: null,
+      trigger: null,
+      updatedAt: MINUTES_AGO(2),
+    },
     relay: fields.relay ?? {
       configured: false,
       state: "unpaired",
@@ -121,7 +127,6 @@ function report(fields: {
       updatedAt: MINUTES_AGO(2),
     },
     updatedAt: MINUTES_AGO(2),
-    ...(fields.doctor !== undefined ? { doctor: fields.doctor } : {}),
   };
 }
 
@@ -137,6 +142,7 @@ function doctorSection(fields: Partial<DoctorSection> = {}): DoctorSection {
     },
     at: MINUTES_AGO(240),
     trigger: "schedule",
+    updatedAt: MINUTES_AGO(240),
     ...fields,
   };
 }
@@ -399,14 +405,16 @@ describe("the text view", () => {
   });
 
   test("doctor is one line: counts and age, a run in flight, or never run", () => {
-    expect(formatDoctorLine(undefined, NOW)).toContain("never run");
+    expect(
+      formatDoctorLine({ report: null, at: null, trigger: null, updatedAt: MINUTES_AGO(240) }, NOW),
+    ).toContain("never run");
     expect(formatDoctorLine(doctorSection(), NOW)).toContain("0 fail, 1 warn — 4h ago (schedule)");
     expect(
       formatDoctorLine(
-        doctorSection({ running: { since: MINUTES_AGO(2), trigger: "console" } }),
+        doctorSection({ running: { since: MINUTES_AGO(2), trigger: "request" } }),
         NOW,
       ),
-    ).toContain("running 2m (console)");
+    ).toContain("running 2m (request)");
     expect(
       formatDoctorLine(
         doctorSection({ lastAttempt: { at: MINUTES_AGO(60), outcome: "timed-out" } }),
@@ -419,7 +427,7 @@ describe("the text view", () => {
     const text = view({
       report: report({ doctor: doctorSection() }),
       verbose: true,
-      doctorTable: (section) => `doctor table for ${section.report.checks.length} checks`,
+      doctorTable: (section) => `doctor table for ${section.report?.checks.length ?? 0} checks`,
     });
     expect(text).toContain("  doctor table for 2 checks");
   });

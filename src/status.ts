@@ -30,11 +30,11 @@ import { readFileSync } from "node:fs";
 import type {
   ChildLiveness,
   DeploymentReport,
-  DoctorSection,
   FleetCell,
   RelayReport,
   TenantFacts,
 } from "./contracts/deployment.ts";
+import type { DoctorSection } from "./contracts/doctor.ts";
 import { deploymentReportPath } from "../bootstrap/deployment-report.ts";
 import type { DeploymentField } from "./config-schema.ts";
 import { readDeploymentCommands } from "./deployment-command.ts";
@@ -355,13 +355,16 @@ export function formatFleetSection(report: DeploymentReport, now: number): strin
  * that the bootstrapper has never run one. "Never run" is a fact about this
  * deployment, not a verdict about its health.
  */
-export function formatDoctorLine(section: DoctorSection | undefined, now: number): string {
+export function formatDoctorLine(section: DoctorSection, now: number): string {
   const prefix = "[phoebe] doctor        ";
-  if (section === undefined) return `${prefix}never run`;
   if (section.running !== undefined) {
     return `${prefix}running ${sinceOf(section.running.since, now)} (${section.running.trigger})`;
   }
-  const checks = [...section.report.checks, ...section.report.tenants.flatMap((t) => t.checks)];
+  // The section is always there; what is absent until the first run lands is
+  // the report inside it, which is the honest "never".
+  if (section.report === null || section.at === null) return `${prefix}never run`;
+  const report = section.report;
+  const checks = [...report.checks, ...report.tenants.flatMap((row) => row.checks)];
   const count = (state: string): number => checks.filter((check) => check.state === state).length;
   const fails = count("fail");
   const warns = count("warn");
@@ -450,7 +453,7 @@ export function statusFindings(opts: {
     if (child.crashLooping) findings.push(`crash-looping: ${child.id}`);
   }
   const doctor = opts.report.doctor;
-  if (doctor !== undefined && !doctor.report.ok) findings.push("doctor: failing check(s)");
+  if (doctor.report !== null && !doctor.report.ok) findings.push("doctor: failing check(s)");
   for (const tenant of opts.report.fleet.tenants) {
     if (tenant.held) findings.push(`held tenant: ${tenant.path}`);
   }
@@ -489,7 +492,7 @@ function statusIo(deps: StatusDeps | undefined): StatusIo {
 /** Doctor's own table, imported only when `--verbose` asks for it. */
 async function loadDoctorTable(): Promise<(section: DoctorSection) => string> {
   const { formatDoctorReport } = await import("./doctor.ts");
-  return (section) => formatDoctorReport(section.report);
+  return (section) => (section.report === null ? "" : formatDoctorReport(section.report));
 }
 
 /**

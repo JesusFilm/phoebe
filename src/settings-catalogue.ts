@@ -284,6 +284,10 @@ export const DEPLOYMENT_FACTS: readonly { name: string; why: string }[] = [
     name: "PHOEBE_RELAY_TOKEN",
     why: "The one-time pairing token, spent on the first boot and removed after.",
   },
+  {
+    name: "PHOEBE_DOCTOR_LEASES",
+    why: "The credential leases the bootstrapper hands a doctor child it spawned.",
+  },
 ];
 
 const BY_PATH = new Map(SETTINGS.map((entry) => [entry.path, entry]));
