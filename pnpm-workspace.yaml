@@ -1,0 +1,20 @@
+# The repo is a workspace so apps can live beside the published package (#521).
+# `phoebe-agent` stays at the root and publishes exactly as it did before a
+# workspace existed — nothing here reaches the tarball.
+packages:
+  - "."
+  - "apps/*"
+
+# The default linker, named out loud. Electron wants the strict tree; the one
+# thing that would need `hoisted` is the Expo island a mobile arm might add
+# later, so having this written down makes that a visible edit rather than a
+# silent flip of a default.
+nodeLinker: isolated
+
+# pnpm runs no dependency's install script unless it is named here. Electron's
+# postinstall fetches the platform binary the desktop app runs on, which is the
+# one build this repo allows. The agent container sets
+# ELECTRON_SKIP_BINARY_DOWNLOAD=1 so that fetch stays out of its worktrees
+# (.phoebe/container/compose.yml).
+allowBuilds:
+  electron: true
