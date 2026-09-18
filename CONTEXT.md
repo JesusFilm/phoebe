@@ -45,6 +45,17 @@ The container's main process. It materializes the engine at the named ref, paren
 hands it credentials and slots, and relaunches it when the config or the ref moves.
 _Avoid_: supervisor, launcher, wrapper
 
+**Settings catalogue**:
+The single registry of every setting Phoebe reads from the environment: config path, env
+name, reader, permanent aliases. Both the readers and the configuration reference are
+generated from it, so neither can drift from the other.
+_Avoid_: overlay table, toggle list
+
+**Precedence rule**:
+Env beats file at a path; a more specific path beats what it would inherit. The only rule
+settings resolve by — the per-kind ladders are that sentence read at one kind depth.
+_Avoid_: overlay, toggle, override order
+
 **Arm**:
 One of a mutually exclusive pair of shapes a deployment takes, resolved rather than
 configured. The deployment arms are **solo** (one tenant) and **workspace** (a fleet); the

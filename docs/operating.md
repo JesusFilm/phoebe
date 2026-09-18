@@ -334,9 +334,11 @@ how a crash report becomes a front-loaded issue here.
 
 ## One-off overrides without editing config
 
-Most scalar fields have a `PHOEBE_*` env override for a single run, such as
-`PHOEBE_AGENT=claude`, `PHOEBE_PR_SCOPE=all`, or `PHOEBE_POLL_INTERVAL_MS=60000`.
-See the [environment overlay table](configuration.md#environment-overlay-phoebe_).
+Most scalar fields have a `PHOEBE_*` name that sets them for a single run, such
+as `PHOEBE_DEFAULT_PROVIDER=claude`, `PHOEBE_PR_SCOPE=all`, or
+`PHOEBE_POLL_INTERVAL_MS=60000`. One rule decides who wins: env beats the config
+file at a path, and a more specific path beats what it would inherit. See the
+[settings catalogue](configuration.md#settings-phoebe_).
 
 ## Quick reference
 
