@@ -45,10 +45,73 @@ CommonJS pass replaces that with `{}` and main stops loading at import time.
 
 Building needs no Electron binary, which is why the gate can run with
 `--ignore-scripts` and the agent container sets `ELECTRON_SKIP_BINARY_DOWNLOAD=1`
-(`.phoebe/container/compose.yml`). Running the app needs the binary; packaging is
-[#561](https://github.com/JesusFilm/phoebe/issues/561)'s — including putting
-`templates/` and `prompts/` where `init` can find them, which is what
-`packageRoot()` in [`src/verb-dispatch.ts`](src/verb-dispatch.ts) hooks.
+(`.phoebe/container/compose.yml`). Running the app needs the binary, and so does
+packaging it.
+
+## Packaging
+
+```sh
+vp run package   # electron-builder, this platform, into release/
+```
+
+The config is [`electron-builder.config.cjs`](electron-builder.config.cjs) and the
+decisions behind it are [#525 §1–§2](https://github.com/JesusFilm/phoebe/issues/525):
+mac arm64 dmg and zip, win x64 NSIS, linux x64 AppImage, all **unsigned** this
+effort. On a release CI runs this same script on three runners and attaches the
+artifacts to the `phoebe-agent@x.y.z` GitHub Release; a self-build gets the same
+app, which is why the script is one command and not a document. What CI does with
+it, and the one wiring step still outstanding, are in
+[`docs/releasing.md`](../../docs/releasing.md).
+
+`vp run -r build` first, from the root: packaging copies the console bundle and
+this package's `dist/` rather than building either. Two directories ride along
+beside the executable rather than inside the asar — the console bundle main loads
+over the `phoebe://` scheme, and the `templates/` and `prompts/` `init` writes into
+a folder, which is what `packageRoot()` in
+[`src/verb-dispatch.ts`](src/verb-dispatch.ts) points at. A packaged main is a
+bundle with no package around it to walk up through, so nothing here can be found
+by the walk-up that works in a checkout.
+
+Because the app carries no version of its own, the config reads the root
+package's and injects it. It is the only reason the config is JavaScript rather
+than YAML.
+
+## Updating
+
+One check shortly after launch, and nothing else moves on its own
+([#525 §3](https://github.com/JesusFilm/phoebe/issues/525)). No poll. The download
+waits for a click on the rail's notice, and the install waits for the app to quit
+unless the operator asks for a restart. A tool that is driving Docker on someone's
+machine does not swap itself out while they are watching.
+
+- [`src/updates.ts`](src/updates.ts) — the rules, and every state the window can be
+  shown. Three flags carry three of them: `autoDownload` false, `allowDowngrade`
+  false, `autoInstallOnAppQuit` true.
+- [`src/update-feed.ts`](src/update-feed.ts) — **follows the relay**
+  ([#525 §5](https://github.com/JesusFilm/phoebe/issues/525)). Signed in, the feed
+  is pinned to the relay's own version, so the only build ever offered is one that
+  relay serves. Signed out, it is the newest stable release. Signed in to a relay
+  that cannot be reached, there is no check at all — falling back to the newest
+  build there is would offer one this relay may not serve.
+
+**Two companions do not update.** macOS, until the signing task lands, because
+Squirrel.Mac refuses an unsigned bundle: a macOS operator gets the new build from
+[the releases page](https://github.com/JesusFilm/phoebe/releases), after the
+Gatekeeper workaround below. And one run from a checkout, which is a `git pull`
+away from newer. Both say which they are rather than sitting on a state that never
+moves.
+
+### Opening an unsigned build
+
+macOS refuses a downloaded app that nobody signed. Right-click the app and choose
+**Open**, or clear the quarantine flag by hand:
+
+```sh
+xattr -d com.apple.quarantine /Applications/Phoebe.app
+```
+
+Windows SmartScreen shows **More info → Run anyway** for the same reason. Both
+stop once the signing task lands.
 
 ## What main answers today
 

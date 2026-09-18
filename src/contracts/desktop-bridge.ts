@@ -13,7 +13,13 @@
 // drive them (#555); the remote arm is the relay passthrough. The local read
 // loop joins them with #556; #554 gives the relay arm a device token, at which
 // point `request` and `events` start answering instead of refusing.
+//
+// Beside the two arms is the one thing the companion does about itself: its
+// updates (#525 §3). It is on this surface rather than inside main alone because
+// the window is where an operator learns a newer build exists and where the
+// click that fetches it happens.
 
+import type { CompanionUpdate } from "./companion-update.ts";
 import type { CompanionEnvironment, CompanionPreferences, LocalInstall } from "./local-install.ts";
 import type { RelayEvent } from "./relay-events.ts";
 import type { RelayIdentity } from "./relay-routes.ts";
@@ -113,6 +119,21 @@ export type DesktopBridge = {
     cancel: (runId: string) => Promise<void>;
     lines: (onLine: (line: RunLine) => void) => () => void;
     exits: (onExit: (exit: RunExit) => void) => () => void;
+  };
+  /**
+   * The companion's own updates (#525 §3). One check at launch, and then
+   * nothing moves without a call from here: `download` is the click, and the
+   * install waits for the quit either way.
+   */
+  updates: {
+    /** Where the update stands now. Answers on macOS too, with `unsupported`. */
+    state: () => Promise<CompanionUpdate>;
+    /** Fetch the available build. Refused unless one is waiting to be fetched. */
+    download: () => Promise<void>;
+    /** Install the downloaded build now instead of on the next quit. */
+    restart: () => Promise<void>;
+    /** Every change of state, pushed. Returns the unsubscribe. */
+    changes: (onUpdate: (update: CompanionUpdate) => void) => () => void;
   };
   /** The operator's preferences, as `companion.json` holds them (#527 §12). */
   preferences: {

@@ -42,8 +42,16 @@ automatically.
    publishes the new version to npm, and pushes the matching `phoebe-agent@x.y.z`
    git tag.
 
+4. **The companion is packaged from the same run.** If step 3 published, the
+   `package` job builds the desktop app on three runners and attaches the
+   artifacts to the GitHub Release at the `phoebe-agent@x.y.z` tag that was just
+   pushed. Nobody triggers it separately. See
+   [the companion's artifacts](#the-companions-artifacts) — that job is written
+   and waiting on a maintainer to paste it in.
+
 So publishing always waits on a human merging the version PR. Nothing reaches npm
-straight from a feature branch.
+straight from a feature branch, and no build of the app exists that a release did
+not produce.
 
 ## The workspace apps ride the root version
 
@@ -66,6 +74,57 @@ files to a package it has been told to skip. Such a change rides out with the
 next release some engine change triggers, and says nothing in the changelog. If
 an app change deserves a release note, a new window or a changed sign-in flow,
 write the changeset by hand against the root package.
+
+## The companion's artifacts
+
+Three platforms, one config
+([`apps/desktop/electron-builder.config.cjs`](../apps/desktop/electron-builder.config.cjs)),
+decided in [#525 §1](https://github.com/JesusFilm/phoebe/issues/525):
+
+| Runner           | Artifacts                                 |
+| ---------------- | ----------------------------------------- |
+| `macos-latest`   | arm64 `.dmg` and `.zip`, `latest-mac.yml` |
+| `windows-latest` | x64 NSIS `.exe`, `latest.yml`             |
+| `ubuntu-latest`  | x64 `.AppImage`, `latest-linux.yml`       |
+
+Intel Macs and arm64 Windows and Linux are added when somebody asks for one. The
+`latest*.yml` files are what `electron-updater` reads; they are artifacts like the
+installers are, and a release missing one is a release the companion cannot
+update to.
+
+**Everything is unsigned this effort** ([#525 §2](https://github.com/JesusFilm/phoebe/issues/525)).
+No certificate lives in a secret, macOS builds are not notarised, and the app's
+updater is off on macOS because Squirrel.Mac refuses to install an unsigned
+bundle. Getting an Apple Developer ID and a Windows certificate for JesusFilm is
+a task of its own; when it lands it adds credentials to the `package` job and
+flips one clause in [`apps/desktop/src/updates.ts`](../apps/desktop/src/updates.ts).
+
+**The `package` job is not in `release.yml` yet.** Everything it needs is in the
+repo — the config, the script, the ignore rule — but the agent that wrote them
+holds a token that GitHub will not let write a workflow file, so the job itself
+travels in the body of the pull request for
+[#561](https://github.com/JesusFilm/phoebe/issues/561) rather than in the tree.
+Pasting it into `release.yml` is the one step left, and this paragraph goes with
+it.
+
+Nothing about packaging is in the `ready` gate
+([#521 §6](https://github.com/JesusFilm/phoebe/issues/521)): it needs an Electron
+binary per platform and takes minutes. What the gate does run is `vp run -r build`,
+so a main process that no longer builds fails a PR rather than a release.
+
+### Building it yourself
+
+The self-build path is what CI runs, and it stays a supported way to get the app —
+the release artifacts exist so that nobody _has_ to:
+
+```sh
+vp install            # with scripts, so Electron's binary lands
+vp run -r build       # the console bundle and the companion's main and preload
+cd apps/desktop && vp run package
+```
+
+The artifacts land in `apps/desktop/release/`, which is gitignored. `vp run package`
+builds for the platform you are on and publishes nothing.
 
 ## One thing is built before it is published
 
