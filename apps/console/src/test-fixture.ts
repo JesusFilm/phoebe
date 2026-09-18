@@ -111,6 +111,13 @@ export function report(overrides: Partial<DeploymentReport> = {}): DeploymentRep
       updatedAt: ago(12),
     },
     fleet: { tenants: [tenant()], cells: [cell()], updatedAt: ago(12) },
+    config: {
+      version: 1,
+      root: { path: "/deployment/phoebe.config.ts", fingerprint: "sha256:root" },
+      tenants: [],
+      omitted: 0,
+      updatedAt: ago(12),
+    },
     updatedAt: ago(12),
     ...overrides,
   };

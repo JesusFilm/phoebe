@@ -10,7 +10,7 @@
 // `deployment.startCommand` runs literally via /bin/sh and every compose-specific
 // step here is skipped. See src/deployment-command.ts.
 
-import type { DeploymentField } from "./config-schema.ts";
+import type { DeploymentCommands } from "./config-schema.ts";
 import type { StartOutcome } from "./contracts/start-outcome.ts";
 import type { VerbIo } from "./contracts/verb-io.ts";
 import { resolveDeploymentCommands, runLifecycleStep } from "./deployment-command.ts";
@@ -98,7 +98,7 @@ type StartDeps = {
    * the config; `runStart` only ever consults the dep, which is what keeps it
    * filesystem-free.
    */
-  deploymentCommands?: DeploymentField;
+  deploymentCommands?: DeploymentCommands;
   io?: Partial<VerbIo>;
 };
 

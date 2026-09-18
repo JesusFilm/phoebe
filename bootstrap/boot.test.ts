@@ -567,6 +567,18 @@ describe("trackPipelines", () => {
     }
   });
 
+  test("deployment.slotCap sizes the broker when no env name is set (#530)", () => {
+    const broker = createSlotBroker({ capacity: 1 });
+    const log = captureLog();
+    try {
+      trackPipelines(broker, {}, { slotCap: 2 })({ pipelines: MATRIX, reshaped: true });
+      expect(broker.capacity).toBe(2);
+      expect(log.lines[0]).toContain("slot cap 2 — deployment.slotCap=2");
+    } finally {
+      log.restore();
+    }
+  });
+
   test("a poll that reshaped nothing refreshes the ordering but not the cap", async () => {
     const broker = createSlotBroker({ capacity: 1, floorBudget: 0 });
     const log = captureLog();

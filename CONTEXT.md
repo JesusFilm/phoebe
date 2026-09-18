@@ -53,11 +53,58 @@ a relay. A consumer renders it and derives nothing of its own.
 _Avoid_: snapshot (that is `status.json`), state (that is the directory), status (that is
 the CLI verb), manifest
 
+**Console**:
+The operator's web view of every deployment's report, served by the relay. `phoebe status`
+is the same report read locally, not a second console.
+_Avoid_: dashboard, local console
+
 **Pass**:
 One turn of an engine's loop: poll, select, admit what it can, then wait. A supervised
 engine reports each completed pass to its bootstrapper, which is the only evidence that a
 loop with nothing to do is still turning.
 _Avoid_: tick, cycle (that is the whole life of a work unit), iteration
+
+**Settings catalogue**:
+The single registry of every setting Phoebe reads from the environment: config path, env
+name, reader, permanent aliases. Both the readers and the configuration reference are
+generated from it, so neither can drift from the other.
+_Avoid_: overlay table, toggle list
+
+**Precedence rule**:
+Env beats file at a path; a more specific path beats what it would inherit. The only rule
+settings resolve by — the per-kind ladders are that sentence read at one kind depth.
+_Avoid_: overlay, toggle, override order
+
+**Effective config**:
+Every setting that changes a deployment's behaviour, each with its value and the source
+that supplied it — the annotated object `phoebe config` prints and the deployment report
+embeds. `resolveConfig` is the narrower engine-facing step beneath it: defaults filled,
+bootstrapper fields dropped, nothing annotated.
+_Avoid_: resolved config, explained config
+
+**Source** (of a setting):
+Where a setting's winning value came from: `default`, `file`, `alias` (a permanent older
+name), `overlay` (a `PHOEBE_*` variable), `derived`, or `inherited` from a shallower
+path. One of exactly six; values that lost ride along as **shadowed**.
+_Avoid_: origin, provenance, toggle
+
+**Config edit**:
+One field patch to a config file — `{ path, value }` against a fingerprint — applied in
+place by the splice substrate, at a shell or through the relay. Never a whole file, and
+never more than one leaf.
+_Avoid_: change, update, patch (that is the wire shape, not the act)
+
+**Edit receipt**:
+The deployment's answer to a config edit: `written`, or `refused` with the reason and the
+exact manual edit. It ends there — what the reconcile it set going did is the deployment
+report's news.
+_Avoid_: ack, response
+
+**Edit ledger**:
+The on-volume record of the edits this deployment applied and who asked for them,
+`state/config-edits.json`. It answers a redelivered edit with its original receipt, and
+rolls off whole once the file moves by a hand other than the writer's.
+_Avoid_: audit log, history
 
 **Arm**:
 One of a mutually exclusive pair of shapes a deployment takes, resolved rather than

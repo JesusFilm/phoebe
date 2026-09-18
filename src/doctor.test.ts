@@ -16,6 +16,7 @@ import {
   fetchRepoLabels,
   formatDoctorReport,
   labelsCheck,
+  configPenCheck,
   launcherFloorCheck,
   promptDriftCheck,
   relayCheck,
@@ -162,6 +163,28 @@ describe("tenantTokenCheck", () => {
       ],
     );
     expect(report.ok).toBe(true);
+  });
+});
+
+describe("configPenCheck", () => {
+  const configPath = "/etc/phoebe/phoebe.config.ts";
+
+  test("a read-write mount is the pen, and the check says so", () => {
+    const check = configPenCheck({ configPath, inContainer: true, writable: () => true });
+    expect(check.state).toBe("ok");
+    expect(check.detail).toContain("read-write");
+  });
+
+  test("a read-only root config warns, with the mount line and the restart", () => {
+    const check = configPenCheck({ configPath, inContainer: true, writable: () => false });
+    expect(check.state).toBe("warn");
+    expect(check.detail).toContain("read-write file mount");
+    expect(check.detail).toContain("phoebe stop && phoebe start");
+  });
+
+  test("from the host the answer is unknown, never a pass", () => {
+    const check = configPenCheck({ configPath, inContainer: false, writable: () => true });
+    expect(check.state).toBe("unknown");
   });
 });
 

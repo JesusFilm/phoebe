@@ -20,6 +20,14 @@ import {
   type WorkKindRunCtx,
   type WorkUnitGitHubTarget,
 } from "./definition.ts";
+import { readSetting, settingAt } from "../settings-catalogue.ts";
+
+/**
+ * The forced worktree base (#530): env-only under this kind, because pinning
+ * every issue to one ref is a thing an operator does for one run and never a
+ * thing a config file should say twice.
+ */
+const BASE_SETTING = settingAt("kinds.issues.base");
 
 export type IssueProducerGathered = { issues: readonly Issue[] };
 
@@ -68,7 +76,7 @@ function idleBlockerReason(issues: readonly Issue[], ctx: WorkKindCtx): string {
   const waiting = unresolvedBlockerNumbers(
     issues,
     ctx.cycle.blockerStates(),
-    ctx.env["PHOEBE_BASE"],
+    readSetting(ctx.env, BASE_SETTING)?.value,
     ctx.config.processingLabel,
     (issueNumber) => ctx.cycle.feature(issueNumber),
   );
@@ -145,7 +153,7 @@ export function issueProducerKind(opts: {
       const pick = selectIssue(
         gathered.issues,
         ctx.cycle.blockerStates(),
-        ctx.env["PHOEBE_BASE"],
+        readSetting(ctx.env, BASE_SETTING)?.value,
         ctx.config.processingLabel,
         (issueNumber) => ctx.cycle.feature(issueNumber),
       );

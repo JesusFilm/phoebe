@@ -74,6 +74,52 @@ describe("resolveEffectiveCap", () => {
     }
   });
 
+  // The catalogue's names and the block behind them (#530). The knob is the same
+  // knob; what changed is that it now has one canonical name, a permanent alias,
+  // and a config field an operator can reach without editing a compose file.
+  test("PHOEBE_DEPLOYMENT_SLOT_CAP is the canonical name", () => {
+    const cap = resolveEffectiveCap([pipeline("a#work", 3)], {
+      PHOEBE_DEPLOYMENT_SLOT_CAP: "2",
+    });
+    expect(cap.capacity).toBe(2);
+    expect(cap.source).toBe("env");
+    expect(describeCap(cap, 1)).toContain("PHOEBE_DEPLOYMENT_SLOT_CAP=2");
+  });
+
+  test("the canonical name wins over its permanent alias", () => {
+    const cap = resolveEffectiveCap([pipeline("a#work", 3)], {
+      PHOEBE_DEPLOYMENT_SLOT_CAP: "2",
+      PHOEBE_MAX_CONCURRENT_AGENTS: "5",
+    });
+    expect(cap.capacity).toBe(2);
+  });
+
+  test("deployment.slotCap replaces the derivation, and env beats it", () => {
+    const fromFile = resolveEffectiveCap([pipeline("a#work", 3)], {}, { slotCap: 2 });
+    expect(fromFile.capacity).toBe(2);
+    expect(fromFile.source).toBe("file");
+    expect(describeCap(fromFile, 1)).toContain("deployment.slotCap=2");
+    const fromEnv = resolveEffectiveCap(
+      [pipeline("a#work", 3)],
+      { PHOEBE_DEPLOYMENT_SLOT_CAP: "4" },
+      { slotCap: 2 },
+    );
+    expect(fromEnv.capacity).toBe(4);
+    expect(fromEnv.source).toBe("env");
+  });
+
+  test("a garbage env value leaves the block's value standing", () => {
+    const cap = resolveEffectiveCap(
+      [pipeline("a#work", 3)],
+      { PHOEBE_DEPLOYMENT_SLOT_CAP: "x" },
+      {
+        slotCap: 2,
+      },
+    );
+    expect(cap.capacity).toBe(2);
+    expect(cap.source).toBe("file");
+  });
+
   test("the derivation line names the pipelines it took the max from", () => {
     const cap = resolveEffectiveCap([pipeline("a#work", 2), pipeline("b#work", 2)], {});
     expect(describeCap(cap, 1)).toBe(
@@ -95,6 +141,17 @@ describe("resolveFloorBudget", () => {
     expect(resolveFloorBudget({ PHOEBE_SLOT_FLOOR_BUDGET: "-1" })).toBe(1);
     expect(resolveFloorBudget({ PHOEBE_SLOT_FLOOR_BUDGET: "1.5" })).toBe(1);
     expect(resolveFloorBudget({ PHOEBE_SLOT_FLOOR_BUDGET: "some" })).toBe(1);
+  });
+  test("the canonical name, then the alias, then the block (#530)", () => {
+    expect(resolveFloorBudget({ PHOEBE_DEPLOYMENT_SLOT_FLOOR_BUDGET: "2" })).toBe(2);
+    expect(
+      resolveFloorBudget({
+        PHOEBE_DEPLOYMENT_SLOT_FLOOR_BUDGET: "2",
+        PHOEBE_SLOT_FLOOR_BUDGET: "5",
+      }),
+    ).toBe(2);
+    expect(resolveFloorBudget({}, { slotFloorBudget: 0 })).toBe(0);
+    expect(resolveFloorBudget({ PHOEBE_SLOT_FLOOR_BUDGET: "3" }, { slotFloorBudget: 0 })).toBe(3);
   });
 });
 

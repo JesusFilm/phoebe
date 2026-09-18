@@ -83,3 +83,5 @@ export const RELAY_EVENTS = {
   disconnected: "disconnected",
   dark: "dark",
 };
+/** The effective config's own shape version — see effective-config.ts. */
+export const EFFECTIVE_CONFIG_VERSION = 1;
