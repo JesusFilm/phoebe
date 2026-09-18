@@ -17,6 +17,7 @@
   "files": [
     "bootstrap",
     "src",
+    "relay",
     "kinds",
     "prompts",
     "templates",
@@ -48,6 +49,9 @@
     "changeset": "changeset",
     "version-packages": "changeset version",
     "release": "changeset publish"
+  },
+  "dependencies": {
+    "openid-client": "^6.8.8"
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.1",
