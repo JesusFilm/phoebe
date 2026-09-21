@@ -340,6 +340,24 @@ operator puts it in the root `.env` as `PHOEBE_RELAY_TOKEN` and removes it once 
 is done.
 _Avoid_: API key, join code
 
+**Device token**:
+The opaque bearer a relay issues to a companion after Google sign-in, sent as
+`Authorization: Bearer` on every call main makes. Stored on the relay's volume as a
+SHA-256 hash in `devices.json`, so a restart keeps companions signed in. No expiry:
+revoking it from the People page is the only end it has.
+_Avoid_: API key, session token
+
+**Device**:
+One signed-in companion as the relay sees it, named by the machine's hostname and OS, and
+listed under the person who signed it in. Removing a person revokes all of theirs.
+_Avoid_: client, machine
+
+**Relay-client seam**:
+The console bundle's one interface to the relay, filled two ways: a browser's own origin,
+cookie and `EventSource`, or the desktop bridge, where main holds the device token and
+makes the calls. Nothing else in the bundle fetches.
+_Avoid_: API client, transport
+
 **Deployment key**:
 The two key pairs in one file on the data volume (`state/relay-key`) that are a
 deployment's identity to its relay: an Ed25519 key that signs and an X25519 **box key**

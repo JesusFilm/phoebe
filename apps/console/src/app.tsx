@@ -16,7 +16,6 @@
 // stopped listening.
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { RELAY_ROUTES } from "phoebe-agent/contracts";
 import type { RelayIdentity } from "phoebe-agent/contracts";
 import type { Surface } from "./companion.ts";
 import { readEditAnswer, type EditAnswer } from "./config-edit.ts";
@@ -26,7 +25,7 @@ import { applyEvent, EMPTY_FLEET, loadFleet, type FleetState } from "./fleet-sta
 import { FleetPage } from "./fleet-page.tsx";
 import { PeoplePage } from "./people-page.tsx";
 import { Rail } from "./rail.tsx";
-import { isNotSignedIn, type RelayClient } from "./relay-client.ts";
+import { isNotSignedIn, type RelayClient, type RelaySignIn } from "./relay-client.ts";
 import { configOf } from "./report.ts";
 import { FLEET_HREF, FLEET_ROUTE, PEOPLE_HREF, parseRoute, type Route } from "./route.ts";
 
@@ -38,6 +37,7 @@ type Session =
 
 export function App({ client, surface }: { client: RelayClient; surface: Surface }) {
   const [session, setSession] = useState<Session>({ kind: "asking" });
+  const [signIn, setSignIn] = useState<RelaySignIn | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -55,14 +55,40 @@ export function App({ client, surface }: { client: RelayClient; surface: Surface
     };
   }, [client]);
 
+  // The session can end without the page asking for anything: in the companion
+  // main drops the device token when the relay answers 401 on the event stream,
+  // and the rail has to stop claiming a session that is gone (#554). In a
+  // browser this never fires, and that is the browser arm's own answer.
+  useEffect(() => client.watchSession(setIdentity), [client]);
+
+  // How this arm signs in, read only while there is nobody signed in. The
+  // companion's answer carries the relay it remembers and whether a token
+  // would survive a relaunch, so it is read again each time rather than once.
+  useEffect(() => {
+    if (session.kind !== "signed-out") return;
+    let live = true;
+    client.signIn().then((how) => {
+      if (live) setSignIn(how);
+    }, ignore);
+    return () => {
+      live = false;
+    };
+  }, [client, session.kind]);
+
+  function setIdentity(identity: RelayIdentity | null): void {
+    setSession(identity === null ? { kind: "signed-out" } : { kind: "signed-in", identity });
+  }
+
   if (session.kind === "asking") return <Notice title="Phoebe console">Signing in…</Notice>;
   if (session.kind === "signed-out" && surface === "browser") {
     return (
       <Notice title="Phoebe console">
         <p>This relay is behind Google sign-in.</p>
-        <p>
-          <a href={RELAY_ROUTES.signIn}>Sign in with Google</a>
-        </p>
+        {signIn !== null && signIn.kind === "navigate" ? (
+          <p>
+            <a href={signIn.href}>Sign in with Google</a>
+          </p>
+        ) : null}
       </Notice>
     );
   }
@@ -80,6 +106,8 @@ export function App({ client, surface }: { client: RelayClient; surface: Surface
       client={client}
       surface={surface}
       identity={session.kind === "signed-in" ? session.identity : null}
+      signIn={signIn}
+      onSignedIn={setIdentity}
       onSignedOut={() => setSession({ kind: "signed-out" })}
     />
   );
@@ -89,11 +117,15 @@ function Console({
   client,
   surface,
   identity,
+  signIn,
+  onSignedIn,
   onSignedOut,
 }: {
   client: RelayClient;
   surface: Surface;
   identity: RelayIdentity | null;
+  signIn: RelaySignIn | null;
+  onSignedIn: (identity: RelayIdentity) => void;
   onSignedOut: () => void;
 }) {
   const route = useRoute();
@@ -174,6 +206,8 @@ function Console({
           now={now}
           surface={surface}
           signedIn={identity !== null}
+          signIn={signIn}
+          onSignedIn={onSignedIn}
         />
         {identity === null ? (
           <CompanionHome />
@@ -199,8 +233,9 @@ function Console({
 
 /**
  * The companion with nothing in it yet: both arms, both empty, each saying which
- * kind of empty it is. Adding a local install is #555's control and signing in is
- * #554's, so this page names them rather than offering them.
+ * kind of empty it is. Adding a local install is #555's control. Signing in is
+ * the rail's, beside the group it fills, so this page points at it rather than
+ * putting a second copy of the same form on screen.
  */
 function CompanionHome() {
   return (
@@ -217,12 +252,15 @@ function CompanionHome() {
         <h2>Relay</h2>
         <p className="muted">
           Not signed in. A relay is how the companion reaches the deployments that run somewhere
-          else.
+          else. Enter its address in the rail and sign-in opens in your own browser.
         </p>
       </section>
     </main>
   );
 }
+
+/** A read whose failure changes nothing on screen. */
+function ignore(): void {}
 
 /**
  * Which page the hash names. A fingerprint the fleet does not hold gets the

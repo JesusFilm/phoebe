@@ -16,12 +16,21 @@
 // `+ add` a control worth drawing; until then the group states that it is empty,
 // which is a fact rather than a placeholder.
 //
+// The Relay group's signed-out entry is the companion's sign-in control (#554).
+// It asks for one thing — the relay's address — because that is the only part of
+// the flow that is the operator's to supply: the PKCE verifier, the system
+// browser, the hop back over `phoebe://auth` and the exchange all happen in main,
+// and the renderer never sees the token that comes out.
+//
 // Each entry links to that deployment's tabs (#544). The relay group's heading
 // links back to the fleet, so the grid is one click from anywhere rather than a
 // page an operator has to find their way back to.
 
+import { useState } from "react";
+import type { RelayIdentity } from "phoebe-agent/contracts";
 import type { Surface } from "./companion.ts";
 import { connectionReading, type RowFacts } from "./facts.ts";
+import type { RelaySignIn } from "./relay-client.ts";
 import { deploymentHref, FLEET_HREF } from "./route.ts";
 
 export function Rail({
@@ -30,6 +39,8 @@ export function Rail({
   now,
   surface,
   signedIn,
+  signIn,
+  onSignedIn,
 }: {
   facts: RowFacts[];
   /** The fingerprint of the deployment being shown, or null on the fleet page. */
@@ -37,6 +48,9 @@ export function Rail({
   now: Date;
   surface: Surface;
   signedIn: boolean;
+  /** How this arm signs in, or null while the answer is still being read. */
+  signIn: RelaySignIn | null;
+  onSignedIn: (identity: RelayIdentity) => void;
 }) {
   const relay = (
     <section className="rail-group" aria-label="Relay">
@@ -46,7 +60,7 @@ export function Rail({
           : `Fleet — ${facts.length} ${facts.length === 1 ? "deployment" : "deployments"}`}
       </a>
       {!signedIn ? (
-        <p className="rail-empty">Not signed in to a relay.</p>
+        <SignInControl signIn={signIn} onSignedIn={onSignedIn} />
       ) : facts.length === 0 ? (
         <p className="rail-empty">No deployment is paired with this relay yet.</p>
       ) : (
@@ -78,6 +92,86 @@ export function Rail({
       </section>
       {relay}
     </nav>
+  );
+}
+
+/**
+ * The signed-out Relay entry. Which control it is comes from the arm, not from
+ * the surface: a browser follows a link the relay serves, and the companion
+ * hands an address to main. The rail does not know which it is until the client
+ * has answered, and says the honest thing in the meantime.
+ */
+function SignInControl({
+  signIn,
+  onSignedIn,
+}: {
+  signIn: RelaySignIn | null;
+  onSignedIn: (identity: RelayIdentity) => void;
+}) {
+  if (signIn === null) return <p className="rail-empty">Not signed in to a relay.</p>;
+  if (signIn.kind === "navigate") {
+    return (
+      <p className="rail-empty">
+        Not signed in to a relay. <a href={signIn.href}>Sign in with Google</a>
+      </p>
+    );
+  }
+  return <SignInForm prompt={signIn} onSignedIn={onSignedIn} />;
+}
+
+/**
+ * The companion's control. The button stays busy for as long as the operator is
+ * in their browser, because that is exactly how long main's promise is open —
+ * there is no polling here and no second state to keep in step with main's.
+ */
+function SignInForm({
+  prompt,
+  onSignedIn,
+}: {
+  prompt: Extract<RelaySignIn, { kind: "prompt" }>;
+  onSignedIn: (identity: RelayIdentity) => void;
+}) {
+  const [url, setUrl] = useState(prompt.relay ?? "");
+  const [waiting, setWaiting] = useState(false);
+  const [trouble, setTrouble] = useState<string | null>(null);
+
+  return (
+    <div className="rail-signin">
+      <p className="rail-empty">Not signed in to a relay.</p>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          setWaiting(true);
+          setTrouble(null);
+          prompt.start(url).then(
+            (identity) => {
+              setWaiting(false);
+              onSignedIn(identity);
+            },
+            (error: unknown) => {
+              setWaiting(false);
+              setTrouble(error instanceof Error ? error.message : String(error));
+            },
+          );
+        }}
+      >
+        <label htmlFor="relay-url">Relay address</label>
+        <input
+          id="relay-url"
+          name="url"
+          type="url"
+          placeholder="https://relay.example.com"
+          value={url}
+          disabled={waiting}
+          onChange={(event) => setUrl(event.target.value)}
+        />
+        <button type="submit" disabled={waiting || url.trim() === ""}>
+          {waiting ? "Finish in your browser…" : "Sign in"}
+        </button>
+      </form>
+      {prompt.reason !== undefined ? <p className="rail-note">{prompt.reason}</p> : null}
+      {trouble !== null ? <p className="rail-note trouble">{trouble}</p> : null}
+    </div>
   );
 }
 

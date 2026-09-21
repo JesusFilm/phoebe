@@ -200,3 +200,6 @@ export type {
   RelayArmState,
   RelayPassthrough,
 } from "./desktop-bridge.ts";
+export { COMPANION_AUTH_URL, DEVICE_CODE_TTL_MS } from "./relay-routes.ts";
+export type { DeviceExchange, DeviceExchangeResult, RelayDevice } from "./relay-routes.ts";
+export type { RelaySignInRequest } from "./desktop-bridge.ts";

@@ -80,6 +80,11 @@ export const RELAY_ROUTES = {
   people: "/api/people",
   removePerson: "/api/people/remove",
   secrets: "/api/secrets",
+  deviceStart: "/auth/device/start",
+  deviceExchange: "/auth/device/exchange",
+  deviceRevoke: "/auth/device/revoke",
+  devices: "/api/devices",
+  deviceRemove: "/api/devices/remove",
 };
 
 /**
@@ -134,3 +139,9 @@ export const CLOSED_EDIT_BLOCKS = [
 
 /** The global the companion's preload exposes its bridge on — see desktop-bridge.ts. */
 export const DESKTOP_BRIDGE_GLOBAL = "phoebe";
+
+/** Where a companion's sign-in lands — see relay-routes.ts (#554). */
+export const COMPANION_AUTH_URL = "phoebe://auth";
+
+/** How long a companion has to spend its one-time code — see relay-routes.ts. */
+export const DEVICE_CODE_TTL_MS = 60_000;

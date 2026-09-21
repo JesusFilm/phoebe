@@ -311,6 +311,8 @@ export function person(overrides: Partial<RelayPerson> = {}): RelayPerson {
 export function client(overrides: Partial<RelayClient> = {}): RelayClient {
   return {
     me: () => Promise.resolve({ sub: "s", email: "ada@example.test" }),
+    signIn: () => Promise.resolve({ kind: "navigate", href: "/auth/google/start" }),
+    watchSession: () => () => {},
     signOut: () => Promise.resolve(),
     deployments: () => Promise.resolve([]),
     deployment: () => Promise.reject(new Error("no such deployment")),

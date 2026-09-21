@@ -10,7 +10,7 @@
 
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 import { DESKTOP_BRIDGE_GLOBAL } from "phoebe-agent/contracts";
-import type { DesktopBridge, RelayEvent } from "phoebe-agent/contracts";
+import type { DesktopBridge, RelayArmState, RelayEvent } from "phoebe-agent/contracts";
 import { BRIDGE_CHANNELS, type BridgeResult } from "./channels.ts";
 
 /** One invoke, with main's refusal turned back into a rejection. */
@@ -29,6 +29,16 @@ const bridge: DesktopBridge = {
   version: () => call<string>(BRIDGE_CHANNELS.version),
   relay: {
     state: () => call(BRIDGE_CHANNELS.relayState),
+    signIn: (request) => call(BRIDGE_CHANNELS.relaySignIn, request),
+    watch: (onState) => {
+      const listener = (_event: IpcRendererEvent, state: RelayArmState) => {
+        onState(state);
+      };
+      ipcRenderer.on(BRIDGE_CHANNELS.relayArm, listener);
+      return () => {
+        ipcRenderer.off(BRIDGE_CHANNELS.relayArm, listener);
+      };
+    },
     request: (request) => call(BRIDGE_CHANNELS.relayRequest, request),
     signOut: () => call(BRIDGE_CHANNELS.relaySignOut),
     events: (onEvent) => {

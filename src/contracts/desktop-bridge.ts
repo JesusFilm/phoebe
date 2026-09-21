@@ -10,9 +10,7 @@
 //
 // What is declared here is what the companion's window needs to open: its
 // version, and the relay arm it is (or is not) signed in to. The host verbs,
-// the install list and the local read loop join it with #555; #554 gives the
-// relay arm a device token, at which point `request` and `events` start
-// answering instead of refusing.
+// the install list and the local read loop join it with #555.
 
 import type { RelayEvent } from "./relay-events.ts";
 import type { RelayIdentity } from "./relay-routes.ts";
@@ -67,6 +65,14 @@ export type RelayArmState = {
   reason?: string;
 };
 
+/**
+ * How a renderer asks main to sign in (#554). The relay's URL is the only thing
+ * the renderer supplies, because it is the only part of the flow that is the
+ * operator's to type — everything after it is main's: the PKCE verifier, the
+ * system browser, the scheme hop back, and the exchange.
+ */
+export type RelaySignInRequest = { url: string };
+
 /** One call the companion makes on the relay's JSON API on the renderer's behalf. */
 export type RelayPassthrough = {
   method: "GET" | "POST" | "DELETE";
@@ -88,9 +94,23 @@ export type DesktopBridge = {
    */
   relay: {
     state: () => Promise<RelayArmState>;
+    /**
+     * Run a sign-in: the system browser opens, and this resolves once the code
+     * has come back over the custom scheme and been exchanged. It rejects when
+     * the operator abandons the attempt, which is a thing the rail can say.
+     */
+    signIn: (request: RelaySignInRequest) => Promise<RelayArmState>;
+    /**
+     * The arm's state, pushed whenever it changes without the renderer having
+     * asked — a 401 on the event stream is the case this exists for, since
+     * nothing the page did would otherwise tell it the session ended. Returns
+     * the unsubscribe.
+     */
+    watch: (onState: (state: RelayArmState) => void) => () => void;
     request: (request: RelayPassthrough) => Promise<unknown>;
     /** The relay's event stream, re-emitted. Returns the unsubscribe. */
     events: (onEvent: (event: RelayEvent) => void) => () => void;
+    /** Revoke the device token on the relay, then forget it here. */
     signOut: () => Promise<void>;
   };
 };
