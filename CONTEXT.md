@@ -45,6 +45,90 @@ The container's main process. It materializes the engine at the named ref, paren
 hands it credentials and slots, and relaunches it when the config or the ref moves.
 _Avoid_: supervisor, launcher, wrapper
 
+**Deployment report**:
+The whole object one deployment hands a console: identity, what the bootstrapper is doing,
+the fleet matrix with each pipeline's state derived, and the last doctor run with its age.
+One fixed-size file, `state/deployment.json`, rewritten when something moves: read locally,
+and shipped as-is to a relay. A consumer renders it and derives nothing of its own.
+_Avoid_: snapshot (that is `status.json`), state (that is the directory), status (that is
+the CLI verb), manifest
+
+**Console**:
+The operator's web view of every deployment's report, served by the relay. `phoebe status`
+is the same report read locally, not a second console.
+_Avoid_: dashboard, local console
+
+**Pass**:
+One turn of an engine's loop: poll, select, admit what it can, then wait. A supervised
+engine reports each completed pass to its bootstrapper, which is the only evidence that a
+loop with nothing to do is still turning.
+_Avoid_: tick, cycle (that is the whole life of a work unit), iteration
+
+**Doctor run**:
+One pass of the health checks over a deployment, spawned by the bootstrapper at boot,
+after a reconcile, on request or on the six-hour schedule. Its report is a section of the
+deployment report; a manual `phoebe doctor` prints one and stores nothing.
+_Avoid_: health check (that is one check inside a run), scan, audit
+
+**Settings catalogue**:
+The single registry of every setting Phoebe reads from the environment: config path, env
+name, reader, permanent aliases. Both the readers and the configuration reference are
+generated from it, so neither can drift from the other.
+_Avoid_: overlay table, toggle list
+
+**Precedence rule**:
+Env beats file at a path; a more specific path beats what it would inherit. The only rule
+settings resolve by — the per-kind ladders are that sentence read at one kind depth.
+_Avoid_: overlay, toggle, override order
+
+**Effective config**:
+Every setting that changes a deployment's behaviour, each with its value and the source
+that supplied it — the annotated object `phoebe config` prints and the deployment report
+embeds. `resolveConfig` is the narrower engine-facing step beneath it: defaults filled,
+bootstrapper fields dropped, nothing annotated.
+_Avoid_: resolved config, explained config
+
+**Source** (of a setting):
+Where a setting's winning value came from: `default`, `file`, `alias` (a permanent older
+name), `overlay` (a `PHOEBE_*` variable), `derived`, or `inherited` from a shallower
+path. One of exactly six; values that lost ride along as **shadowed**.
+_Avoid_: origin, provenance, toggle
+
+**Secret store**:
+The bootstrapper-owned, per-tenant file of console-set secret values on the data volume,
+`state/secrets.json` at mode `0600`. The tier above the tenant's `.env`, and the only
+channel a deployment has for a secret nobody can reach a file to edit.
+_Avoid_: vault, keyring, secrets file (ambiguous with `.env`)
+
+**Tenant-scope / deployment-scope secret**:
+Whether a secret belongs to one tenant's engine child or to the deployment as a whole.
+The line the secret store never crosses: the App key and the engine-clone token stay
+deployment scope, in the env-file, reached by editing it.
+_Avoid_: local/global, child/root
+
+**Clear** (a secret):
+Removing a key from the secret store so the `.env` or ambient value governs again. Not a
+tombstone and not a revocation — revoking a secret is rotating it.
+_Avoid_: unset, delete, revoke
+
+**Config edit**:
+One field patch to a config file — `{ path, value }` against a fingerprint — applied in
+place by the splice substrate, at a shell or through the relay. Never a whole file, and
+never more than one leaf.
+_Avoid_: change, update, patch (that is the wire shape, not the act)
+
+**Edit receipt**:
+The deployment's answer to a config edit: `written`, or `refused` with the reason and the
+exact manual edit. It ends there — what the reconcile it set going did is the deployment
+report's news.
+_Avoid_: ack, response
+
+**Edit ledger**:
+The on-volume record of the edits this deployment applied and who asked for them,
+`state/config-edits.json`. It answers a redelivered edit with its original receipt, and
+rolls off whole once the file moves by a hand other than the writer's.
+_Avoid_: audit log, history
+
 **Arm**:
 One of a mutually exclusive pair of shapes a deployment takes, resolved rather than
 configured. The deployment arms are **solo** (one tenant) and **workspace** (a fleet); the
@@ -172,8 +256,9 @@ drain-and-relaunch that follows one.
 _Avoid_: refresh, sync, poll
 
 **Credential lease**:
-A GitHub token the bootstrapper hands the engine for a bounded period, re-read or re-minted
-rather than baked into the process.
+A GitHub token the bootstrapper hands a process it spawned for a bounded period, re-read or
+re-minted rather than baked into the process. An engine child holds one per tenant; a
+doctor run is handed the ones the fleet is already using.
 _Avoid_: credential handoff, token grant
 
 **Engine log tag**:
@@ -211,7 +296,10 @@ _Avoid_: kind secret, scoped credential
 
 **Wedged**:
 A pipeline whose oldest in-flight unit has outlived its own run budget plus one poll
-interval. A question `phoebe list` raises, never a state the engine records.
+interval, or which has completed no loop pass in three poll intervals while not waiting for
+a slot. A question the reader derives — `phoebe list` from the snapshot alone, the
+deployment report from that plus the pass clock the bootstrapper holds — never a state the
+engine records.
 _Avoid_: hung, stuck, frozen
 
 **Stale**:
@@ -229,3 +317,117 @@ One of Phoebe's own install or upgrade faults, sent to a Sentry project under th
 crash-loop quarantine, an operator command throwing. Never a tenant's failure and never
 anything from the work loop.
 _Avoid_: telemetry, error tracking (that is what the `sentry` kind reads), analytics
+
+### Relay
+
+**Relay**:
+The self-hosted process deployments dial into and the console reads from; one per
+operator. Ships in `phoebe-agent` and runs as `phoebe relay serve`, in its own image
+beside the deployment, never inside it.
+_Avoid_: server, hub, gateway, backend
+
+**Allowlist**:
+Who may sign into a relay: a file of `{ sub, email }` on the relay's volume, seeded by
+the first verified Google login when it is empty, merged at every start with the
+addresses in `ALLOWED_EMAILS`. A person is keyed on Google's `sub`; the address is what
+an operator types.
+_Avoid_: whitelist, access list, users
+
+**Pairing token**:
+The single-use credential the console mints so one deployment can register its key.
+Fifteen minutes, shown once, held in the relay's memory and never on its volume; the
+operator puts it in the root `.env` as `PHOEBE_RELAY_TOKEN` and removes it once pairing
+is done.
+_Avoid_: API key, join code
+
+**Deployment key**:
+The two key pairs in one file on the data volume (`state/relay-key`) that are a
+deployment's identity to its relay: an Ed25519 key that signs and an X25519 **box key**
+that receives. Generated in the container at the first pairing, presented as their public
+halves, and one lifecycle — minted, saved and forgotten together.
+_Avoid_: device key, machine key
+
+**Box key**:
+The X25519 half of the deployment key, the thing a console encrypts a secret to. It
+exists because Ed25519 cannot encrypt; the handshake signature covers `nonce ‖ boxKey`,
+so the key secrets are sealed to is attested by the key that identifies the deployment.
+_Avoid_: public key (ambiguous), encryption key, recipient key
+
+**Secret envelope**:
+One secret sealed in the browser to a deployment's box key: ECIES from WebCrypto
+primitives, bound to `keyFingerprint ‖ tenant ‖ key ‖ editId` so it opens for that
+deployment, tenant, key name and edit and nothing else. The relay stores and forwards it
+and cannot open it.
+_Avoid_: payload, blob, ciphertext (that is one field of it)
+
+**Link**:
+The relay's record of a deployment — both public keys, name, first seen — in
+`links.json`. The
+other half of the link is the key on the deployment's own volume; neither half needs the
+other's process to be alive.
+_Avoid_: registration (the act, not the record), enrollment
+
+**Protocol**:
+The integer both sides exchange in the handshake. A relay speaks every protocol up to its
+own and refuses anything above it, so the rule is: upgrade the relay first.
+_Avoid_: version (that is the package)
+
+**Heartbeat**:
+The relay's twenty-second ping, and the visible message that rides with it. The relay
+counts the pong, the deployment counts the message, and neither side can do the other's
+job: a built-in WebSocket client pongs on its own and can neither send a ping nor see one.
+_Avoid_: keepalive, poll
+
+**Dark**:
+A deployment the relay has not heard from for sixty seconds, however the connection ended.
+Clocked from the later of the last heartbeat and the relay's start, so a restart does not
+paint a healthy fleet dark. Requests to a dark deployment are refused undelivered.
+_Avoid_: down, offline, unreachable (none of those is a thing the relay can know)
+
+**Disconnected**:
+The relay no longer holds this deployment's connection and the dark threshold has not
+passed yet. A fact with a duration — "disconnected 12 s" — that a console states rather
+than a fourth state it holds.
+_Avoid_: reconnecting (the relay cannot know that), offline
+
+**Unseen**:
+A link with no completed handshake behind it. Not dark: nobody has lost this deployment,
+it has never arrived.
+_Avoid_: pending, inactive
+
+**Event stream**:
+The one server-sent-events connection a console holds open, `GET /api/events`, carrying a
+deployment's report as it arrives and the word for each connection as it changes. No
+replay and no resume: every event has a read behind it that answers the same question in
+full, so a page that missed one refetches.
+_Avoid_: websocket (that is the fleet's side), feed, subscription
+
+**Undelivered**:
+The outcome of a request whose deployment socket closed before a receipt arrived, and of
+one aimed at a deployment the relay is not holding. In-flight requests are refused with
+it, never queued, and nothing is replayed on reconnect.
+_Avoid_: failed, timed out
+
+**Forget**:
+The relay-side verb that deletes a link. The live connection closes with `unlinked` and
+the deployment stops dialling.
+_Avoid_: revoke, delete, unpair
+
+**Leave**:
+The host-side verb, `phoebe relay leave`, that deletes the deployment key from the data
+volume. The other half of forget, and neither half needs the other to work.
+_Avoid_: unlink, disconnect
+
+**Alert**:
+A message the relay sends out when a deployment or one of its pipelines crosses into or
+out of a named condition: `dark`, `wedged`, `crash-looping`, `doctor-fail`, `replaced`.
+Every raise has a matching clear, unseen is silent, and the edge rule that decides is one
+pure function both the relay and the companion run. It is a transition, never a record —
+`alerts.json` holds the last state notified per (deployment, condition) and nothing else.
+_Avoid_: notification (the events stream already notifies the browser), incident, page
+
+**Sink**:
+Somewhere an alert goes. There are two: the generic webhook `RELAY_ALERT_WEBHOOK` names,
+and the `alert` event on the events stream. The webhook is optional and the event is not,
+so an unset variable means no webhook rather than no alerting.
+_Avoid_: channel, target, subscriber

@@ -59,6 +59,12 @@ services:
       CLAUDE_CODE_OAUTH_TOKEN: "${CLAUDE_CODE_OAUTH_TOKEN:?CLAUDE_CODE_OAUTH_TOKEN is required}"
       OPENAI_KEY: "${OPENAI_KEY:-}"
       PHOEBE_ENGINE_DIR: /data/engine
+      # The workspace allows electron's postinstall (pnpm-workspace.yaml
+      # allowBuilds), which downloads a ~100MB platform binary. This container
+      # installs into a fresh worktree per work unit and only ever builds and
+      # tests the app, so skip the download: the agent's gate needs electron's
+      # JavaScript, not its runtime, and nothing here launches the app.
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
       PHOEBE_AGENT: "${PHOEBE_AGENT:-}"
       PHOEBE_MODEL: "${PHOEBE_MODEL:-}"
       PHOEBE_EFFORT: "${PHOEBE_EFFORT:-}"

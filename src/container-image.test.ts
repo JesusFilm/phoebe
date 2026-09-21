@@ -7,6 +7,13 @@
 // not among the permitted deviations. A fix that lands in only one of them is
 // not a fix, which is exactly the failure mode this file exists to catch.
 //
+// A third image joins them at the end: the relay's, which `phoebe relay init`
+// writes rather than ships. It is the deployment image minus every agent CLI,
+// so it gets its own assertions — but the privilege drop is compared against
+// the shipped scaffold rather than restated, for the same reason as above. The
+// relay's compose file is checked alongside it, because the sidecar that
+// terminates TLS and the volume they share are what make the image runnable.
+//
 // Every assertion runs against `instructionsOnly()`, never the raw file. These
 // Dockerfiles document at length what they deliberately *stopped* doing, so the
 // prose quotes the very things being asserted against — the note explaining why
@@ -18,9 +25,11 @@
 // behaviour. It lives under `src/` because test files never ship (package.json
 // `files` excludes `**/*.test.ts`) and `vp test` already covers this tree.
 
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
+import { runRelayInit } from "../relay/init.ts";
 
 const repoRoot = join(import.meta.dirname, "..");
 
@@ -207,5 +216,168 @@ describe("the two Dockerfiles stay in step", () => {
     expect(dropInstructions(read(DOGFOOD_DOCKERFILE))).toEqual(
       dropInstructions(read(SCAFFOLD_DOCKERFILE)),
     );
+  });
+});
+
+// ------------------------------------------------------------- the relay image
+
+/**
+ * The relay scaffold as an operator actually gets it: rendered into a temp dir
+ * by `phoebe relay init`, not read out of `templates/`. The template carries
+ * `{{CLI_VERSION}}` where the version pin goes, so only the built file can be
+ * checked for a pin at all — and a scaffolder that stopped writing one of these
+ * files would fail here rather than in someone's deployment.
+ */
+function relayScaffold(): { dockerfile: string; compose: string } {
+  const dir = mkdtempSync(join(tmpdir(), "phoebe-relay-scaffold-"));
+  runRelayInit({ targetDir: dir });
+  return {
+    dockerfile: readFileSync(join(dir, "relay", "Dockerfile"), "utf8"),
+    compose: readFileSync(join(dir, "relay", "compose.yml"), "utf8"),
+  };
+}
+
+/** One `  <name>:` service block out of a compose file, comments stripped. */
+function serviceBlock(compose: string, name: string): string {
+  const lines = instructionsOnly(compose).split("\n");
+  const start = lines.findIndex((line) => line === `  ${name}:`);
+  if (start === -1) return "";
+  const block: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    if (line.trim() !== "" && !/^ {4}/.test(line)) break;
+    block.push(line);
+  }
+  return block.join("\n");
+}
+
+/** The names under the top-level `volumes:` key. */
+function namedVolumes(compose: string): string[] {
+  const lines = instructionsOnly(compose).split("\n");
+  const start = lines.findIndex((line) => line === "volumes:");
+  if (start === -1) return [];
+  const names: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    if (line.trim() !== "" && !/^\s/.test(line)) break;
+    const match = /^ {2}([\w-]+):\s*$/.exec(line);
+    if (match) names.push(match[1]!);
+  }
+  return names;
+}
+
+describe("the relay image `phoebe relay init` scaffolds", () => {
+  test("drops into the same unprivileged user, the same way", () => {
+    // The relay holds GOOGLE_CLIENT_SECRET in its environment for the life of
+    // the process. Everything the deployment image does to keep a secret out of
+    // a sibling's reach applies here unchanged, so the lines are compared
+    // against that image rather than restated.
+    const dropInstructions = (source: string) =>
+      instructionsOnly(source)
+        .split("\n")
+        .filter((line) => /^(USER |ENV HOME=|RUN useradd)/.test(line));
+
+    expect(dropInstructions(relayScaffold().dockerfile)).toEqual(
+      dropInstructions(read(SCAFFOLD_DOCKERFILE)),
+    );
+  });
+
+  test("creates and chowns /data before dropping privileges", () => {
+    // One volume, mounted at /data and shared with the TLS sidecar. The relay
+    // is the service that seeds it (compose has Caddy depend on the relay), so
+    // the ownership the volume inherits is the one set here.
+    const dockerfile = relayScaffold().dockerfile;
+    const mkdirLine = instructionsOnly(dockerfile)
+      .split("\n")
+      .find((line) => line.includes("mkdir -p /data"));
+    expect(mkdirLine).toContain("/data/relay");
+    const chownIndex = instructionIndex(dockerfile, /chown -R phoebe:phoebe \/data/);
+    expect(chownIndex).toBeGreaterThan(-1);
+    expect(instructionIndex(dockerfile, /^USER phoebe$/)).toBeGreaterThan(chownIndex);
+  });
+
+  test("makes the system node non-dumpable (#196)", () => {
+    expect(instructionsOnly(relayScaffold().dockerfile)).toMatch(
+      /RUN chmod 0711 "\$\(command -v node\)"/,
+    );
+  });
+
+  test("installs the relay from a pinned version and nothing else", () => {
+    // "The image is the container Dockerfile minus agent CLIs" (#506 §1). A
+    // provider CLI here would be a second thing to pin and a much larger blast
+    // radius on a host that answers the public internet.
+    const instructions = instructionsOnly(relayScaffold().dockerfile);
+    const globalInstalls = instructions
+      .split("\n")
+      .filter((line) => line.includes("npm install -g"));
+
+    expect(globalInstalls).toHaveLength(1);
+    expect(globalInstalls[0]).toContain("phoebe-agent@${PHOEBE_AGENT_VERSION}");
+    expect(instructions).toMatch(/^ARG PHOEBE_AGENT_VERSION=\d+\.\d+\.\d+$/m);
+    expect(instructions).not.toMatch(/cursor|claude-code|@openai\/codex/);
+    expect(instructions).not.toMatch(/curl[^\n]*\|\s*(bash|sh)\b/);
+  });
+
+  test("its main process is `phoebe relay serve`, behind tini", () => {
+    const instructions = instructionsOnly(relayScaffold().dockerfile);
+
+    expect(instructions).toMatch(
+      /^ENTRYPOINT \["\/usr\/bin\/tini", "--", "phoebe", "relay", "serve"\]$/m,
+    );
+    // No EXPOSE: only the sidecar on the compose network reaches 8787.
+    expect(instructions).not.toMatch(/^\s*EXPOSE\b/m);
+  });
+});
+
+describe("the relay compose file `phoebe relay init` scaffolds", () => {
+  test("runs the relay from the Dockerfile beside it", () => {
+    const relay = serviceBlock(relayScaffold().compose, "relay");
+
+    expect(relay).toMatch(/^\s+build:$/m);
+    expect(relay).toMatch(/^\s+context: \.$/m);
+  });
+
+  test("passes the relay its four environment variables, ALLOWED_EMAILS blankable", () => {
+    // `:?` refuses a blank value; `?` refuses only an unset one. ALLOWED_EMAILS
+    // gets the second because blank is an answer there (#506 §9): it means the
+    // first verified sign-in claims the relay.
+    const relay = serviceBlock(relayScaffold().compose, "relay");
+
+    for (const name of ["RELAY_HOST", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"]) {
+      expect(relay).toContain(`${name}: "\${${name}:?`);
+    }
+    expect(relay).toContain('ALLOWED_EMAILS: "${ALLOWED_EMAILS?');
+  });
+
+  test("puts a Caddy sidecar keyed on RELAY_HOST in front of it (#506 §2)", () => {
+    const caddy = serviceBlock(relayScaffold().compose, "caddy");
+
+    expect(caddy).toMatch(/image: caddy:\d+\.\d+\.\d+-alpine$/m);
+    expect(caddy).toContain('"--from"');
+    expect(caddy).toContain("${RELAY_HOST:?");
+    expect(caddy).toContain('"relay:8787"');
+    // The relay never terminates TLS, so the sidecar is the only front door.
+    expect(caddy).toContain('"80:80"');
+    expect(caddy).toContain('"443:443"');
+    expect(serviceBlock(relayScaffold().compose, "relay")).not.toMatch(/^\s+ports:$/m);
+  });
+
+  test("one named volume, mounted by both services (#506 §3)", () => {
+    // The relay writes /data/relay, Caddy writes /data/caddy under the
+    // XDG_DATA_HOME its image sets. Two mounts, one thing to back up — and
+    // certificates that survive a restart instead of being re-issued.
+    const compose = relayScaffold().compose;
+
+    expect(namedVolumes(compose)).toEqual(["relay-data"]);
+    expect(serviceBlock(compose, "relay")).toContain("- relay-data:/data");
+    expect(serviceBlock(compose, "caddy")).toContain("- relay-data:/data");
+  });
+
+  test("Caddy starts after the relay, so the relay seeds the shared volume", () => {
+    // Docker seeds a fresh named volume from the image of whichever container
+    // mounts it first, ownership included. The Caddy image carries no /data at
+    // all; started first, it would leave /data root-owned and the unprivileged
+    // relay unable to write its own directory.
+    const caddy = serviceBlock(relayScaffold().compose, "caddy");
+
+    expect(caddy).toMatch(/depends_on:\n\s+- relay$/m);
   });
 });

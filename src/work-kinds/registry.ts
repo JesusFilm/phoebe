@@ -11,6 +11,7 @@ import {
   type PhoebeConfig,
   type WorkKindName,
 } from "../config-schema.ts";
+import { assertNoEnvNameCollisions } from "../settings-catalogue.ts";
 import type { AnyWorkKindDefinition } from "./definition.ts";
 import { validateWorkKindDefinition } from "./validate.ts";
 import { conflictsKind } from "./conflicts.ts";
@@ -121,6 +122,12 @@ export function buildRegistry(
       options: custom.options,
     });
   }
+
+  // Every kind in this registry derives `PHOEBE_<KIND>_<FIELD>` names (#530).
+  // A custom kind named `default` would derive `PHOEBE_DEFAULT_PROVIDER`, which
+  // already addresses the tenant leaf — one name meaning two things depending on
+  // which reader asked. A boot error, because the ambiguity has no safe arm.
+  assertNoEnvNameCollisions([...registry.keys()]);
 
   return registry;
 }
