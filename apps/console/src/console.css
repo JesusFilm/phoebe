@@ -29,6 +29,7 @@
   --attention-bg: #fff8f0;
   --dark-bg: #f1f2f4;
   --chip: #eceef1;
+  --chip-set: #dfe6fa;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -48,6 +49,7 @@
     --attention-bg: #2a1f16;
     --dark-bg: #20242b;
     --chip: #272c34;
+    --chip-set: #26314a;
   }
 }
 
@@ -511,4 +513,87 @@ table.rows tr.attention td {
 
 .run-doctor p {
   margin: 6px 0 0;
+}
+
+/* ── the config tab ────────────────────────────────────────────────────── */
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0;
+}
+
+.filter {
+  font: inherit;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: inherit;
+  min-width: 240px;
+}
+
+/* The six sources, in three tiers rather than six colours: a value somebody set
+ * is tinted, a deprecated alias is the warn colour, and the three that mean
+ * "nobody said otherwise" are muted. Greyscale keeps all three apart, and the
+ * word in the chip is the precise answer either way. */
+button.chip {
+  border: 1px solid transparent;
+  padding: 0 6px;
+  margin: 0;
+  border-radius: 9px;
+}
+
+.chip.src.file,
+.chip.src.overlay {
+  background: var(--chip-set);
+}
+
+.chip.src.alias {
+  background: var(--warn);
+  color: #1a1206;
+}
+
+.chip.src.default,
+.chip.src.derived,
+.chip.src.inherited {
+  color: var(--muted);
+}
+
+.chip.picked {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+table.rows.config th[scope="row"] {
+  width: 34%;
+}
+
+.shadowed {
+  font-size: 12px;
+}
+
+/* The disclosure that holds `via` and `from` (#509): the chip is the summary,
+ * so the row reads as one chip until it is opened. */
+details.why > summary {
+  cursor: pointer;
+  list-style-position: inside;
+}
+
+details.why > summary::marker {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.warnings {
+  margin: 10px 0;
+}
+
+.warning {
+  border-left: 3px solid var(--warn);
+  background: var(--panel);
+  margin: 4px 0;
+  padding: 6px 10px;
 }

@@ -1,5 +1,5 @@
 // One deployment, in tabs — variant C's answer to "what is this thing doing"
-// (#509). Overview, pipelines, doctor.
+// (#509). Overview, pipelines, doctor, config.
 //
 // Three rules shape what goes where.
 //
@@ -20,11 +20,13 @@
 // be unable to show a running child whose loop has stopped, which is the case
 // the whole `wedged?` verdict exists for.
 //
-// `secrets` and `config` are the two tabs variant C also has; they are #550 and
-// #545 and are not linked here, because a tab that opens nothing is worse than
-// a tab that is not there yet.
+// `secrets` is the one tab variant C also has; it is #550 and is not linked
+// here, because a tab that opens nothing is worse than a tab that is not there
+// yet. The config tab is its own file (config-tab.tsx) — it is a table with a
+// filter over it rather than a view of the lines this module derives.
 
 import type { DeploymentReport, DoctorCheck, TenantFacts } from "phoebe-agent/contracts";
+import { ConfigTab } from "./config-tab.tsx";
 import {
   crashLoopLine,
   enumeratedRows,
@@ -112,7 +114,7 @@ function Tab({
   now: Date;
 }) {
   if (tab === "overview") return <OverviewTab facts={facts} now={now} />;
-  // The other two tabs are views of the report and there may not be one. They
+  // The other three tabs are views of the report and there may not be one. They
   // say which kind of nothing it is and point back at the overview, where the
   // relay's own facts about this link are still true. The doctor tab keeps its
   // button even then: a deployment that has never reported is exactly one worth
@@ -132,7 +134,8 @@ function Tab({
     );
   }
   if (tab === "pipelines") return <PipelinesTab report={facts.reading.report} now={now} />;
-  return <DoctorTab facts={facts} client={client} now={now} />;
+  if (tab === "doctor") return <DoctorTab facts={facts} client={client} now={now} />;
+  return <ConfigTab report={facts.reading.report} now={now} />;
 }
 
 /* ── overview ──────────────────────────────────────────────────────────── */

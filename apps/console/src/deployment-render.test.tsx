@@ -6,9 +6,10 @@
 //
 // The assertions are the ones the page would be wrong without — the connection
 // panel staying out of doctor's way, two lines per pipeline, a unit counted
-// against the budget it was given, doctor's four verdicts each legible, and a
-// deployment that has never connected saying so instead of drawing three empty
-// tabs.
+// against the budget it was given, doctor's four verdicts each legible, the
+// config table keeping `via` out of the row and the shadowed value under its
+// winner, and a deployment that has never connected saying so instead of
+// drawing four empty tabs.
 
 import { describe, expect, test } from "vite-plus/test";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -21,7 +22,9 @@ import {
   check,
   client,
   child,
+  configReport,
   doctor,
+  effectiveConfig,
   NOW,
   report,
   row,
@@ -114,20 +117,20 @@ function render(tab: DeploymentTab, facts = BUSY_FACTS): string {
 const overview = render("overview");
 const pipelines = render("pipelines");
 const doctorTab = render("doctor");
+const config = render("config");
 
 describe("the tabs", () => {
-  test("names the three the console answers, and links each one", () => {
+  test("names the tabs the console answers, and links each one", () => {
     // Overview is the bare deployment URL, so one deployment has one address.
     expect(overview).toContain(`href="#/d/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA">overview<`);
-    for (const tab of ["pipelines", "doctor"]) {
+    for (const tab of ["pipelines", "doctor", "config"]) {
       expect(overview, tab).toContain(`href="#/d/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/${tab}"`);
     }
   });
 
   test("does not offer a tab nothing answers yet", () => {
-    // Secrets is #550 and config is #545; a tab that opens nothing is a dead end.
+    // Secrets is #550; a tab that opens nothing is a dead end.
     expect(overview).not.toContain("secrets");
-    expect(overview).not.toContain(">config<");
   });
 
   test("marks the current tab for a screen reader, not only with a colour", () => {
@@ -259,6 +262,103 @@ describe("the doctor tab", () => {
   });
 });
 
+describe("the config tab", () => {
+  test("gives every leaf a row, with the path spelled the way the file has it", () => {
+    expect(config).toContain("pipelines.work.kinds.research.model");
+    expect(config).toContain("repoSlug");
+  });
+
+  test("shows the source chip on every row", () => {
+    for (const source of ["file", "overlay", "alias", "inherited", "derived", "default"]) {
+      expect(config, source).toContain(`chip src ${source}`);
+    }
+  });
+
+  test("keeps via and from out of the row, and inside the disclosure", () => {
+    // The resolution (#509): the chip is enough inline; `via` and `from` are on
+    // hover or expand. Both here — the summary's title and the open body.
+    expect(config).toContain('title="via PHOEBE_WORK_CONCURRENCY · read from tenantEnv"');
+    expect(config).toContain("<details");
+    expect(config).toContain("read by bootstrapper");
+  });
+
+  test("puts a shadowed value under the winner, with what shadowed it", () => {
+    expect(config).toContain("shadowed:");
+    expect(config).toContain("(file via phoebe.config.ts)");
+  });
+
+  test("counts each source in a chip that filters by it", () => {
+    expect(config).toContain("file 3");
+    expect(config).toContain("overlay 1");
+    expect(config).toContain('aria-pressed="false"');
+  });
+
+  test("puts the warnings above the table, not in a row of it", () => {
+    const warning = config.indexOf("workOrder is the old name");
+    expect(warning).toBeGreaterThan(-1);
+    expect(warning).toBeLessThan(config.indexOf("<table"));
+  });
+
+  test("shows the fingerprint of the file an edit would check itself against", () => {
+    expect(config).toContain("/etc/phoebe/phoebe.config.ts");
+    expect(config).toContain("sha256:9f2c1b7e");
+  });
+
+  test("prints an opaque value as the summary it is, not as JSON", () => {
+    expect(config).toContain("a compose file and two mounts");
+    expect(config).toContain(">opaque<");
+  });
+
+  test("a tenant whose settings are unknown says so instead of drawing a table", () => {
+    const held = render(
+      "config",
+      rowFacts(
+        row(),
+        stored(
+          report({
+            config: configReport({
+              tenants: [
+                effectiveConfig({
+                  tenant: "JesusFilm/legacy",
+                  error: 'unknown provider "claude-code-v1"',
+                  fields: null,
+                  env: null,
+                  warnings: [],
+                }),
+              ],
+            }),
+          }),
+        ),
+      ),
+    );
+    expect(held).toContain("unknown provider &quot;claude-code-v1&quot;");
+    expect(held).not.toContain("<table");
+    // The filter found nothing, but nothing is not what the filter did.
+    expect(held).not.toContain("No leaf matches");
+  });
+
+  test("a config file that could not be read refuses the edit rather than hiding", () => {
+    const unread = render(
+      "config",
+      rowFacts(
+        row(),
+        stored(
+          report({
+            config: configReport({ root: { path: "phoebe.config.ts", fingerprint: null } }),
+          }),
+        ),
+      ),
+    );
+    expect(unread).toContain("could not be read");
+  });
+
+  test("a report with no config section says which kind of nothing that is", () => {
+    const older = render("config", rowFacts(row(), stored(report({ config: undefined }))));
+    expect(older).toContain("no config section");
+    expect(older).not.toContain("<table");
+  });
+});
+
 describe("a deployment that has never connected", () => {
   const unseen = rowFacts(
     row({
@@ -285,7 +385,7 @@ describe("a deployment that has never connected", () => {
     expect(markup).toContain("last heard");
   });
 
-  test("pipelines and doctor say why they are empty and point back at the overview", () => {
+  test("the other tabs say why they are empty and point back at the overview", () => {
     for (const tab of ["pipelines", "doctor"] as const) {
       const markup = render(tab, unseen);
       expect(markup, tab).toContain("has never connected");

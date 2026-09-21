@@ -4,9 +4,10 @@
 //
 // Not reachable from main.tsx, so nothing here reaches the bundle.
 
-import { DEPLOYMENT_SCHEMA } from "phoebe-agent/contracts";
+import { DEPLOYMENT_SCHEMA, EFFECTIVE_CONFIG_VERSION } from "phoebe-agent/contracts";
 import type {
   ChildLiveness,
+  ConfigReport,
   DeploymentReport,
   DoctorCheck,
   DoctorSection,
@@ -14,6 +15,7 @@ import type {
   RelayDeploymentRow,
   RelayStoredReport,
   StatusSnapshot,
+  TenantEffectiveConfig,
   TenantFacts,
 } from "phoebe-agent/contracts";
 import type { RelayClient } from "./relay-client.ts";
@@ -118,6 +120,98 @@ export function snapshot(overrides: Partial<StatusSnapshot> = {}): StatusSnapsho
   };
 }
 
+/**
+ * One tenant's effective config, with every source on the tree at once: a value
+ * the file set, one a `PHOEBE_*` variable took off it, a deprecated alias, a
+ * kind inheriting its pipeline's provider, a model derived from that provider,
+ * a default nobody touched, and the `deployment` block that does not survive
+ * JSON.
+ */
+export function effectiveConfig(
+  overrides: Partial<TenantEffectiveConfig> = {},
+): TenantEffectiveConfig {
+  return {
+    tenant: "JesusFilm/youtube-studio",
+    error: null,
+    fields: {
+      repoSlug: {
+        value: "JesusFilm/youtube-studio",
+        source: "file",
+        via: "phoebe.config.ts",
+        reader: "both",
+      },
+      engine: {
+        value: "v0.13.0",
+        source: "file",
+        via: "phoebe.config.ts",
+        reader: "bootstrapper",
+      },
+      deployment: {
+        value: "a compose file and two mounts",
+        source: "file",
+        via: "phoebe.config.ts",
+        reader: "bootstrapper",
+        opaque: true,
+      },
+      pipelines: {
+        work: {
+          concurrency: {
+            value: 2,
+            source: "overlay",
+            via: "PHOEBE_WORK_CONCURRENCY",
+            from: "tenantEnv",
+            reader: "engine",
+            shadowed: [{ source: "file", via: "phoebe.config.ts", value: 1 }],
+          },
+          workOrder: {
+            value: "oldest-first",
+            source: "alias",
+            via: "workOrder",
+            reader: "engine",
+          },
+          kinds: {
+            research: {
+              provider: {
+                value: "claude-code",
+                source: "inherited",
+                via: "pipelines.work.provider",
+                reader: "engine",
+              },
+              model: {
+                value: "opus",
+                source: "derived",
+                via: "defaultModels.claude-code",
+                reader: "engine",
+              },
+              runBudgetMs: { value: null, source: "default", reader: "engine" },
+            },
+          },
+        },
+      },
+    },
+    env: { GH_TOKEN: { present: true, from: "tenantEnv" } },
+    warnings: [
+      {
+        path: "pipelines.work.workOrder",
+        message: "workOrder is the old name for order; both are read and the old one warns",
+      },
+    ],
+    ...overrides,
+  };
+}
+
+/** Section 5 of the report: the config file it came from, and a row per tenant. */
+export function configReport(overrides: Partial<ConfigReport> = {}): ConfigReport {
+  return {
+    version: EFFECTIVE_CONFIG_VERSION,
+    root: { path: "/etc/phoebe/phoebe.config.ts", fingerprint: "sha256:9f2c1b7e" },
+    tenants: [effectiveConfig()],
+    omitted: 0,
+    updatedAt: ago(12),
+    ...overrides,
+  };
+}
+
 export function report(overrides: Partial<DeploymentReport> = {}): DeploymentReport {
   return {
     schema: DEPLOYMENT_SCHEMA,
@@ -140,6 +234,7 @@ export function report(overrides: Partial<DeploymentReport> = {}): DeploymentRep
       updatedAt: ago(12),
     },
     fleet: { tenants: [tenant()], cells: [cell()], updatedAt: ago(12) },
+    config: configReport(),
     doctor: doctor(),
     updatedAt: ago(12),
     ...overrides,

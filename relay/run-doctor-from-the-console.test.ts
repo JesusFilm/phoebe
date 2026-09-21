@@ -89,6 +89,7 @@ describe("run doctor from the console", () => {
         clientId: "client-id",
         clientSecret: "client-secret",
         allowedEmails: [],
+        alertWebhook: null,
       },
       dataDir,
       port: 0,

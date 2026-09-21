@@ -117,6 +117,7 @@ describe("the relay never derives pipeline state", () => {
           clientId: "client-id",
           clientSecret: "client-secret",
           allowedEmails: [],
+          alertWebhook: null,
         },
         dataDir,
         port: 0,

@@ -11,6 +11,8 @@ import {
   PROVIDER_NAMES,
   builtInKindPath,
   deprecatedPipelineAliases,
+  readDeploymentField,
+  readDeploymentHostKnobs,
   readRelayField,
   readReportingField,
   resolveConfig,
@@ -487,6 +489,43 @@ describe("validateUserConfig", () => {
     expect(() =>
       validateUserConfig(minimalUserConfig({ deployment: {} as unknown as never })),
     ).toThrow(/deployment.*startCommand.*stopCommand/i);
+  });
+
+  // The three host knobs (#530): fields on the same block, so an operator can
+  // set the slot cap by editing one config instead of the compose file they may
+  // not own. A block that carries only knobs declares no lifecycle at all, which
+  // is a whole answer — compose keeps driving start and stop.
+  test("accepts a deployment block carrying only host knobs (#530)", () => {
+    expect(() =>
+      validateUserConfig(minimalUserConfig({ deployment: { slotCap: 2, slotFloorBudget: 0 } })),
+    ).not.toThrow();
+    expect(readDeploymentField({ deployment: { slotCap: 2 } })).toBeUndefined();
+  });
+
+  test("rejects a host knob outside its shape (#530)", () => {
+    expect(() => validateUserConfig(minimalUserConfig({ deployment: { slotCap: 0 } }))).toThrow(
+      /deployment\.slotCap.*must be an integer ≥ 1/,
+    );
+    expect(() =>
+      validateUserConfig(minimalUserConfig({ deployment: { slotFloorBudget: -1 } })),
+    ).toThrow(/deployment\.slotFloorBudget.*must be an integer ≥ 0/);
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({ deployment: { reconcileIntervalMs: "fast" as unknown as number } }),
+      ),
+    ).toThrow(/deployment\.reconcileIntervalMs.*must be a number ≥ 1/);
+  });
+
+  test("readDeploymentHostKnobs ignores a value it cannot use (#530)", () => {
+    expect(readDeploymentHostKnobs({ deployment: { slotCap: 3, slotFloorBudget: 0 } })).toEqual({
+      slotCap: 3,
+      slotFloorBudget: 0,
+    });
+    expect(readDeploymentHostKnobs({ deployment: { slotCap: 0, reconcileIntervalMs: 5 } })).toEqual(
+      { reconcileIntervalMs: 5 },
+    );
+    expect(readDeploymentHostKnobs({})).toEqual({});
+    expect(readDeploymentHostKnobs(null)).toEqual({});
   });
 
   test("rejects a deployment block whose stopNowCommand is present but blank (#260)", () => {
