@@ -2,16 +2,21 @@
 // `selectProvider` (src/main.ts) wraps this with the actual Provider lookup —
 // so the ladder is unit-testable without building an engine.
 //
-// Each knob resolves independently, most specific wins:
+// Each knob resolves independently, most specific wins — the settings
+// catalogue's one rule (env beats file at a path; a more specific path beats
+// what it would inherit) read at one kind's depth:
 //
 //   1. per-kind env      (PHOEBE_REVIEWS_MODEL)
 //   2. per-kind config   (workKinds.reviews.model)
 //   3. global env        (PHOEBE_MODEL)
-//   4. repo defaults     (defaultProvider / defaultModels / defaultEfforts)
+//   4. the global leaf   (model / effort / defaultProvider)
+//   5. repo defaults     (the kind definition's, then defaultModels / defaultEfforts)
 //
 // Per-kind *config* deliberately outranks global *env*: a kind's block is
 // durable policy that survives a blanket `PHOEBE_MODEL`/`PHOEBE_AGENT`
-// override; only the kind-specific env var pushes it aside.
+// override; only the kind-specific env var pushes it aside. Every name here
+// comes from the catalogue, which is what makes `PHOEBE_<KIND>_PROVIDER` and
+// its permanent alias `PHOEBE_<KIND>_AGENT` one rung rather than two.
 
 import {
   PROVIDER_NAMES,
@@ -19,6 +24,12 @@ import {
   type PhoebeConfig,
   type ProviderName,
 } from "./config-schema.ts";
+import {
+  readKindSetting,
+  readSetting,
+  settingAt,
+  workKindEnvVar as catalogueWorkKindEnvVar,
+} from "./settings-catalogue.ts";
 
 export type ProviderSelection = {
   provider: ProviderName;
@@ -27,17 +38,21 @@ export type ProviderSelection = {
   effort: string | undefined;
 };
 
-/** The per-kind runtime toggles: one env var per knob a kind block holds. */
-export type WorkKindEnvKnob = "AGENT" | "MODEL" | "EFFORT" | "RUN_TIMEOUT_MS";
+/** The per-kind settings: one env name per knob a kind block holds. */
+export type WorkKindEnvKnob = "PROVIDER" | "AGENT" | "MODEL" | "EFFORT" | "RUN_TIMEOUT_MS";
 
 /**
- * The name of one per-kind runtime toggle, e.g. `PHOEBE_REVIEWS_MODEL`.
- * Hyphens in a (custom) kind name map to underscores — collision-free, since
- * `_` is outside the kind-name charset (#350).
+ * The name of one per-kind setting, e.g. `PHOEBE_REVIEWS_MODEL`. The
+ * catalogue owns the derivation (src/settings-catalogue.ts); this keeps the
+ * knob-shaped spelling its callers already use.
  */
 export function workKindEnvVar(kind: string, knob: WorkKindEnvKnob): string {
-  return `PHOEBE_${kind.toUpperCase().replaceAll("-", "_")}_${knob}`;
+  return catalogueWorkKindEnvVar(kind, knob.toLowerCase());
 }
+
+const PROVIDER_SETTING = settingAt("defaultProvider");
+const MODEL_SETTING = settingAt("model");
+const EFFORT_SETTING = settingAt("effort");
 
 /**
  * Resolve which provider, model, and effort one work unit of `kind` runs with.
@@ -49,7 +64,10 @@ export function workKindEnvVar(kind: string, knob: WorkKindEnvKnob): string {
 export function selectProviderForKind(opts: {
   kind: string;
   env: NodeJS.ProcessEnv;
-  config: Pick<PhoebeConfig, "defaultProvider" | "defaultModels" | "defaultEfforts" | "workKinds">;
+  config: Pick<
+    PhoebeConfig,
+    "defaultProvider" | "defaultModels" | "defaultEfforts" | "workKinds" | "model" | "effort"
+  >;
   /**
    * The kind definition's own `model`/`effort` defaults (#303): they sit at
    * the repo-defaults rung — above `defaultModels`/`defaultEfforts`, below
@@ -58,7 +76,6 @@ export function selectProviderForKind(opts: {
   definitionDefaults?: { model?: string; effort?: string };
 }): ProviderSelection {
   const { kind, env, config } = opts;
-  const readEnv = (key: string): string | undefined => env[key] || undefined;
   const block = workKindOverride(config.workKinds, kind);
 
   const assertProvider = (name: string, source: string): ProviderName => {
@@ -68,15 +85,16 @@ export function selectProviderForKind(opts: {
     return name as ProviderName;
   };
 
-  const kindAgentVar = workKindEnvVar(kind, "AGENT");
-  const perKindAgent = readEnv(kindAgentVar);
-  const globalAgent = readEnv("PHOEBE_AGENT");
+  // `via` names whichever name the operator actually set, so an unknown value
+  // is reported against the variable they typed rather than its canonical twin.
+  const perKindProvider = readKindSetting(env, PROVIDER_SETTING, kind);
+  const globalProvider = readSetting(env, PROVIDER_SETTING);
   const provider =
-    perKindAgent !== undefined
-      ? assertProvider(perKindAgent, kindAgentVar)
+    perKindProvider !== undefined
+      ? assertProvider(perKindProvider.value, perKindProvider.via)
       : (block?.provider ??
-        (globalAgent !== undefined
-          ? assertProvider(globalAgent, "PHOEBE_AGENT")
+        (globalProvider !== undefined
+          ? assertProvider(globalProvider.value, globalProvider.via)
           : config.defaultProvider));
 
   // The mismatch guard: a kind block speaks for one provider — its explicit
@@ -94,16 +112,17 @@ export function selectProviderForKind(opts: {
     opts.definitionDefaults !== undefined && provider === config.defaultProvider;
 
   const model =
-    readEnv(workKindEnvVar(kind, "MODEL")) ??
+    readKindSetting(env, MODEL_SETTING, kind)?.value ??
     (blockSpeaks ? block.model : undefined) ??
-    readEnv("PHOEBE_MODEL") ??
+    readSetting(env, MODEL_SETTING)?.value ??
+    config.model ??
     (definitionSpeaks ? opts.definitionDefaults?.model : undefined) ??
     config.defaultModels[provider];
 
   // `null` is an explicit clear — stop the ladder and pass no effort flag.
   // `undefined` (absent) falls through to global env / definition defaults /
   // repo defaults.
-  const effortFromKindEnv = readEnv(workKindEnvVar(kind, "EFFORT"));
+  const effortFromKindEnv = readKindSetting(env, EFFORT_SETTING, kind)?.value;
   const blockEffort = blockSpeaks ? block?.effort : undefined;
   const effort: string | undefined =
     effortFromKindEnv !== undefined
@@ -112,7 +131,8 @@ export function selectProviderForKind(opts: {
         ? blockEffort === null
           ? undefined
           : blockEffort
-        : (readEnv("PHOEBE_EFFORT") ??
+        : (readSetting(env, EFFORT_SETTING)?.value ??
+          config.effort ??
           (definitionSpeaks ? opts.definitionDefaults?.effort : undefined) ??
           config.defaultEfforts[provider]);
 

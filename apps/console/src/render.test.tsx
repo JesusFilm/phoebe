@@ -12,11 +12,13 @@ import { rowFacts, sortFleet } from "./facts.ts";
 import { FleetPage } from "./fleet-page.tsx";
 import { Rail } from "./rail.tsx";
 import { InstallPage, InstallTab } from "./install-page.tsx";
+import type { RelaySignIn } from "./relay-client.ts";
 import {
   ago,
   bridge,
   cell,
   child,
+  client,
   directory,
   install,
   localReport,
@@ -91,8 +93,31 @@ const FLEET = sortFleet([
   ),
 ]);
 
-const rail = renderToStaticMarkup(<Rail facts={FLEET} now={NOW} surface="browser" signedIn />);
-const grid = renderToStaticMarkup(<FleetPage facts={FLEET} now={NOW} />);
+function noop(): void {}
+
+/** What the companion says when there is no keyring to encrypt a token to. */
+const NO_KEYRING = "This machine has no keyring the companion can encrypt to.";
+
+/** The companion's arm of the sign-in control: a form, not a link (#554). */
+const SIGN_IN_PROMPT: RelaySignIn = {
+  kind: "prompt",
+  relay: null,
+  persisted: true,
+  start: () => Promise.resolve({ sub: "1", email: "ada@example.test" }),
+};
+
+const rail = renderToStaticMarkup(
+  <Rail
+    facts={FLEET}
+    selectedDeployment={null}
+    now={NOW}
+    surface="browser"
+    signedIn
+    signIn={null}
+    onSignedIn={noop}
+  />,
+);
+const grid = renderToStaticMarkup(<FleetPage facts={FLEET} client={client()} now={NOW} />);
 
 describe("the rail", () => {
   test("lists every deployment in the sort order, dark first", () => {
@@ -138,9 +163,39 @@ describe("the rail", () => {
       expect(rail.toLowerCase(), word).not.toContain(word);
     }
   });
+
+  test("every entry opens that deployment's tabs (#544)", () => {
+    for (const fingerprint of ["one", "two", "three", "four"]) {
+      expect(rail, fingerprint).toContain(`href="#/d/${fingerprint}"`);
+    }
+  });
+
+  test("the entry being shown is marked for a screen reader too", () => {
+    const selected = renderToStaticMarkup(
+      <Rail
+        facts={FLEET}
+        selectedDeployment="two"
+        now={NOW}
+        surface="browser"
+        signedIn
+        signIn={null}
+        onSignedIn={noop}
+      />,
+    );
+    expect(selected).toContain('aria-current="page"');
+    expect(selected).toContain("rail-entry state-disconnected attention current");
+  });
 });
 
 describe("the grid", () => {
+  test("carries one Run doctor for the whole fleet, never disabled (#546)", () => {
+    // The deployments the relay cannot reach are part of the answer — each one
+    // refused undelivered by name — so there is nothing here to grey out.
+    expect(grid).toContain('aria-label="Run doctor"');
+    expect(grid).toContain(">Run doctor on every deployment<");
+    expect(grid).not.toContain("disabled=");
+  });
+
   test("draws one segment per enumerated pipeline", () => {
     const segments = [...grid.matchAll(/class="segment /g)];
 
@@ -176,6 +231,7 @@ describe("the grid", () => {
             ),
           ),
         ]}
+        client={client()}
         now={NOW}
       />,
     );
@@ -200,6 +256,70 @@ describe("the grid", () => {
   test("explains the bar rather than leaving the colours to be guessed", () => {
     expect(grid).toContain("green working");
   });
+
+  test("gives doctor its counts and its age now that the report carries a section", () => {
+    expect(grid).toContain("doctor healthy — 3 h ago (schedule)");
+  });
+
+  test("a card's name opens that deployment", () => {
+    expect(grid).toContain('class="name" href="#/d/one"');
+  });
+});
+
+describe("doctor at fleet level (#507 §9)", () => {
+  const failing = report({
+    doctor: {
+      ...report().doctor,
+      report: {
+        checks: [{ id: "engine", state: "fail", detail: "c0ffee1 quarantined" }],
+        tenants: [],
+        ok: false,
+      },
+    },
+  });
+
+  test("a failing check joins the attention clause the sort reads", () => {
+    const [first] = sortFleet([
+      rowFacts(row({ fingerprint: "quiet", name: "zeta" }), stored(report())),
+      rowFacts(row({ fingerprint: "sick", name: "alpha" }), stored(failing)),
+    ]);
+
+    // Name order would put alpha first anyway, so the fingerprint is the tell:
+    // attention outranks name, and the failing row is the one with attention.
+    expect(first?.row.fingerprint).toBe("sick");
+    expect(first?.attention).toBe(true);
+  });
+
+  test("the rail names the fail count without naming a warn count beside it", () => {
+    const markup = renderToStaticMarkup(
+      <Rail
+        facts={[rowFacts(row(), stored(failing))]}
+        selectedDeployment={null}
+        now={NOW}
+        surface="browser"
+        signedIn
+        signIn={null}
+        onSignedIn={noop}
+      />,
+    );
+    expect(markup).toContain("doctor 1 fail");
+  });
+
+  test("a deployment that has never run doctor says never, not healthy", () => {
+    const markup = renderToStaticMarkup(
+      <FleetPage
+        facts={[
+          rowFacts(
+            row(),
+            stored(report({ doctor: { ...report().doctor, report: null, at: null } })),
+          ),
+        ]}
+        client={client()}
+        now={NOW}
+      />,
+    );
+    expect(markup).toContain("doctor never run");
+  });
 });
 
 describe("a report this console cannot read", () => {
@@ -207,6 +327,7 @@ describe("a report this console cannot read", () => {
     const markup = renderToStaticMarkup(
       <FleetPage
         facts={[rowFacts(row({ name: "ahead-of-us" }), stored(report(), { schema: 99 }))]}
+        client={client()}
         now={NOW}
       />,
     );
@@ -221,13 +342,61 @@ describe("the companion's shell", () => {
   // Shell A (#526): one rail, two groups. Signed out and with nothing installed,
   // this is the whole window.
   const empty = renderToStaticMarkup(
-    <Rail facts={[]} now={NOW} surface="companion" signedIn={false} />,
+    <Rail
+      facts={[]}
+      selectedDeployment={null}
+      now={NOW}
+      surface="companion"
+      signedIn={false}
+      signIn={SIGN_IN_PROMPT}
+      onSignedIn={noop}
+    />,
   );
 
   test("is one rail carrying both arms as groups, not a switch between them", () => {
     expect(empty).toContain('aria-label="This machine"');
     expect(empty).toContain('aria-label="Relay"');
     expect([...empty.matchAll(/<nav/g)]).toHaveLength(1);
+  });
+
+  test("the Relay group's signed-out entry carries a sign-in control (#554)", () => {
+    // The address is the only thing the operator supplies; everything after it
+    // is main's, which is why there is a field and a button and nothing else.
+    expect(empty).toContain('id="relay-url"');
+    expect(empty).toContain("Relay address");
+    expect(empty).toContain("Sign in");
+  });
+
+  test("with no keyring, the rail says the sign-in will not be kept", () => {
+    const markup = renderToStaticMarkup(
+      <Rail
+        facts={[]}
+        selectedDeployment={null}
+        now={NOW}
+        surface="companion"
+        signedIn={false}
+        signIn={{ ...SIGN_IN_PROMPT, persisted: false, reason: NO_KEYRING }}
+        onSignedIn={noop}
+      />,
+    );
+
+    expect(markup).toContain(NO_KEYRING);
+  });
+
+  test("the relay it last held a token for fills the field, so re-signing in is one click", () => {
+    const markup = renderToStaticMarkup(
+      <Rail
+        facts={[]}
+        selectedDeployment={null}
+        now={NOW}
+        surface="companion"
+        signedIn={false}
+        signIn={{ ...SIGN_IN_PROMPT, relay: "https://relay.example.test" }}
+        onSignedIn={noop}
+      />,
+    );
+
+    expect(markup).toContain('value="https://relay.example.test"');
   });
 
   test("names which kind of empty each group is", () => {
@@ -237,7 +406,15 @@ describe("the companion's shell", () => {
 
   test("keeps the relay's deployments in the relay's group once signed in", () => {
     const markup = renderToStaticMarkup(
-      <Rail facts={FLEET} now={NOW} surface="companion" signedIn />,
+      <Rail
+        facts={FLEET}
+        selectedDeployment={null}
+        now={NOW}
+        surface="companion"
+        signedIn
+        signIn={null}
+        onSignedIn={noop}
+      />,
     );
 
     expect(markup).toContain("jesusfilm-workspace");
@@ -271,6 +448,8 @@ describe("the local arm on the rail", () => {
       selected="/repos/two"
       onSelect={() => undefined}
       onAdd={() => undefined}
+      signIn={null}
+      onSignedIn={noop}
     />,
   );
 
@@ -303,7 +482,15 @@ describe("the local arm on the rail", () => {
 
   test("a browser's rail has no local group at all, control included", () => {
     const browser = renderToStaticMarkup(
-      <Rail facts={[]} now={NOW} surface="browser" signedIn installs={installs} />,
+      <Rail
+        facts={[]}
+        now={NOW}
+        surface="browser"
+        signedIn
+        installs={installs}
+        signIn={null}
+        onSignedIn={noop}
+      />,
     );
 
     expect(browser).not.toContain("This machine");

@@ -201,7 +201,7 @@ since that one is yours.
 Three places show you one: the label on the issue, the cycle's idle line while
 the queue is quiet — `(2 in progress, 3 landed on feature #400)`, one phrase per
 feature, ascending by feature number — and `phoebe doctor`, once the feature has
-ended and the label has nothing left to wait for. Not `phoebe list`, which counts
+ended and the label has nothing left to wait for. Not `phoebe status`, which counts
 tenants and pipelines and never looks at an issue.
 
 Nothing takes the label off. Merging the integration PR closes the members

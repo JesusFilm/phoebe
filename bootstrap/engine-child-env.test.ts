@@ -266,6 +266,75 @@ describe("envReconcileDigest", () => {
   });
 });
 
+describe("the secret store tier (#504)", () => {
+  test("the store wins over the tenant's own .env", () => {
+    const env = buildEngineChildEnv({
+      base: {},
+      tenantEnv: { CURSOR_API_KEY: "from_file", OTHER: "kept" },
+      secretStore: { CURSOR_API_KEY: "from_store" },
+    });
+    expect(env["CURSOR_API_KEY"]).toBe("from_store");
+    expect(env["OTHER"]).toBe("kept");
+  });
+
+  test("a blank store value never overwrites the file under it", () => {
+    const env = buildEngineChildEnv({
+      base: {},
+      tenantEnv: { CURSOR_API_KEY: "from_file" },
+      secretStore: { CURSOR_API_KEY: "" },
+    });
+    expect(env["CURSOR_API_KEY"]).toBe("from_file");
+  });
+
+  test("the pipeline scrub still runs after it — a sibling's key is not this one's", () => {
+    const env = buildEngineChildEnv({
+      base: {},
+      tenantEnv: {},
+      secretStore: { SIBLING_KEY: "from_store" },
+      scrubKeys: ["SIBLING_KEY"],
+    });
+    expect("SIBLING_KEY" in env).toBe(false);
+  });
+
+  test("no store leaves the child env byte-for-byte what it was", () => {
+    const withStore = buildEngineChildEnv({ base: {}, tenantEnv: { A: "1" }, secretStore: {} });
+    expect(withStore).toEqual(buildEngineChildEnv({ base: {}, tenantEnv: { A: "1" } }));
+  });
+});
+
+describe("envReconcileDigest over the secret store (#504)", () => {
+  test("a store-set provider key moves the digest, so the child relaunches", () => {
+    const before = envReconcileDigest("A=1\n");
+    expect(envReconcileDigest("A=1\n", [], { CURSOR_API_KEY: "sk" })).not.toBe(before);
+  });
+
+  test("a store value shadowing the file is what the digest tracks", () => {
+    // The child will hold the store's value, so two different files under one
+    // store entry are one deployment as far as a relaunch is concerned.
+    expect(envReconcileDigest("K=file_one\n", [], { K: "store" })).toBe(
+      envReconcileDigest("K=file_two\n", [], { K: "store" }),
+    );
+  });
+
+  test("a GH_TOKEN rotation through the store still costs no drain", () => {
+    expect(envReconcileDigest("A=1\n", [], { GH_TOKEN: "ghp_one" })).toBe(
+      envReconcileDigest("A=1\n", [], { GH_TOKEN: "ghp_two" }),
+    );
+  });
+
+  test("setting or clearing a store GH_TOKEN relaunches, since a lease cannot deliver an absence", () => {
+    expect(envReconcileDigest("A=1\n", [], { GH_TOKEN: "ghp_one" })).not.toBe(
+      envReconcileDigest("A=1\n", [], {}),
+    );
+  });
+
+  test("a scrubbed key is invisible here too", () => {
+    expect(envReconcileDigest("A=1\n", ["SIBLING"], { SIBLING: "sk" })).toBe(
+      envReconcileDigest("A=1\n", ["SIBLING"], {}),
+    );
+  });
+});
+
 describe("the subtractive pipeline scrub (#425)", () => {
   const tenantEnv = { SLACK_BOT_TOKEN: "xoxb-1", FOO: "public" };
 

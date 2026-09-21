@@ -28,12 +28,26 @@ export const SESSION_COOKIE = "__Host-phoebe-relay-session";
 /** How long a person has to finish signing in before the attempt is stale. */
 export const PRE_AUTH_TTL_MS = 10 * 60 * 1000;
 
+/**
+ * What a companion asked for when it started the flow (#523 §2). Present only
+ * on a sign-in that began at `/auth/device/start`, and it is the one thing that
+ * tells the shared callback which of the two landings this sign-in wants.
+ */
+export type DeviceIntent = {
+  /** `BASE64URL(SHA256(verifier))`, carried through to the one-time code. */
+  challenge: string;
+  /** What the companion calls itself, recorded on the device it is about to get. */
+  name: string;
+};
+
 /** What the callback needs back from the request that started the flow. */
 export type PreAuth = {
   state: string;
   nonce: string;
   codeVerifier: string;
   createdAt: number;
+  /** Set when a companion started this, absent when a browser did. */
+  device?: DeviceIntent;
 };
 
 /** A signed-in person, keyed on Google's `sub`. */
@@ -54,6 +68,16 @@ export type SessionStore = {
   get: (id: string | undefined) => Session | null;
   /** Forget one session. Idempotent. */
   close: (id: string | undefined) => void;
+  /**
+   * Forget every session one person holds, and say how many there were (#505
+   * §6: a removed user's sessions end).
+   *
+   * Matched on `sub` when the entry has one and on the address otherwise, which
+   * is how the allowlist itself matches. Sessions are the only place a removal
+   * has to reach: nothing of Google's outlives the callback, so a person with
+   * no session and no allowlist entry is a person with no way back in.
+   */
+  closeEveryone: (person: { sub?: string; email: string }) => number;
   /** How many sessions are open — the one number worth reporting. */
   size: () => number;
 };
@@ -103,6 +127,18 @@ export function createSessionStore(): SessionStore {
 
     close(id) {
       if (id !== undefined) sessions.delete(id);
+    },
+
+    closeEveryone(person) {
+      let closed = 0;
+      for (const [id, session] of sessions) {
+        const same =
+          person.sub !== undefined ? session.sub === person.sub : session.email === person.email;
+        if (!same) continue;
+        sessions.delete(id);
+        closed += 1;
+      }
+      return closed;
     },
 
     size() {
