@@ -567,8 +567,8 @@ report.
 
 Selecting a deployment from the rail or the grid opens its tabs. The console
 routes on the hash, so a deployment is a URL an operator can send someone:
-`#/d/<fingerprint>` is the overview and `#/d/<fingerprint>/pipelines` and
-`/doctor` are the other two.
+`#/d/<fingerprint>` is the overview, and `/pipelines`, `/doctor` and `/config`
+hang off it.
 
 **Overview** leads with three panels. The **connection** panel is the relay's own
 facts and nothing else — connected since, last heard, who paired it, how the last
@@ -592,7 +592,26 @@ whether a run is in flight right now, and the last attempt that produced nothing
 A deployment that has never run doctor says so; that is a fact about the
 deployment, not a verdict about it.
 
-A deployment that has never connected says that instead of showing three empty
+**Config** is every effective-config leaf in one filterable table: the value, and
+which of the six sources supplied it. Filter by a path or a value — "what is
+`model` set to" and "who set it to `opus`" are the two questions that bring an
+operator here — and the chip beside the filter counts the leaves each source won,
+so clicking `overlay` narrows the table to what env decides. The source chip is
+on every row; the env name or file path behind it is in the row's disclosure,
+because which source won is what an operator scans for and the name behind it is
+what they read once they have found the row. A value that lost sits under the
+value that beat it, so "why isn't my file value taking effect" is answered where
+the question is asked. Deprecated aliases are listed above the table rather than
+row by row, and the fingerprint of the config file heads the tab — that is the
+text a later edit checks itself against. Nothing here writes; editing is its own
+piece of work.
+
+The table is section 5 of the report, which the running engine computed. A
+deployment whose engine is older than that section says so; its settings are
+unknown from here, which is not the same as having none, and `phoebe config` on
+the host still answers.
+
+A deployment that has never connected says that instead of showing four empty
 tabs — the pairing token was spent, nothing has booted since, and there is nothing
 to show until it does.
 
@@ -614,9 +633,9 @@ URIs, which is what makes it work at all. Anywhere else, run the scaffold.
 
 The verbs themselves — config writes, sealed secrets, doctor runs. The rail
 carries them, the relay will deliver them and wait for a receipt, and nothing
-sends one yet. On the console's side the fleet page and a deployment's three
-read-only tabs are here; the secrets tab, the effective-config tab and the People
-page all join this same process. See
+sends one yet. On the console's side the fleet page and a deployment's four
+read-only tabs are here; the secrets tab and the People page join this same
+process. See
 [the relay's shape](https://github.com/JesusFilm/phoebe/issues/506).
 
 Alerting is here but only partly fed. The webhook, the edge rule, `alerts.json`

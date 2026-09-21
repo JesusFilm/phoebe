@@ -312,8 +312,6 @@ export type DeploymentReport = {
   bootstrapper: BootstrapperReport;
   relay: RelayReport;
   fleet: FleetReport;
-  /** Every tenant's effective config, as the running engine computed it (#535). */
-  config: ConfigReport;
   /**
    * What the last `phoebe doctor` run found, with its age (#507 §4). The
    * bootstrapper spawns those runs; a manual `phoebe doctor` prints and touches
@@ -327,6 +325,8 @@ export type DeploymentReport = {
    * rather than as "none".
    */
   edits?: EditLedgerEntry[];
+  /** Every tenant's effective config, as the running engine computed it (#502, #535). */
+  config: ConfigReport;
   /** When any section last moved. */
   updatedAt: string;
 };

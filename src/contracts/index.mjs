@@ -17,6 +17,7 @@ export const DEPLOYMENT_SCHEMA = 1;
 
 /** The effective config's own shape version — see effective-config.ts. */
 export const EFFECTIVE_CONFIG_VERSION = 1;
+
 /** The wire version both ends exchange in the handshake — see relay-protocol.ts. */
 export const RELAY_PROTOCOL = 1;
 

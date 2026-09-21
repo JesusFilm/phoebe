@@ -20,6 +20,7 @@
 import { DEPLOYMENT_SCHEMA } from "phoebe-agent/contracts";
 import type {
   ChildLiveness,
+  ConfigReport,
   DeploymentReport,
   DoctorSection,
   EditLedgerEntry,
@@ -97,6 +98,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  */
 export function doctorOf(report: DeploymentReport): DoctorSection | null {
   return isRecord(report.doctor) ? report.doctor : null;
+}
+
+/**
+ * Every tenant's effective config, as the engine computed it (#502, #535), or
+ * null when the report carries no such section. Null covers a deployment
+ * running an engine older than the section and a section that did not survive
+ * the trip, and neither of them is "this deployment configures nothing" — the
+ * tab says which, rather than drawing an empty table.
+ */
+export function configOf(report: DeploymentReport): ConfigReport | null {
+  return isRecord(report.config) && Array.isArray(report.config.tenants)
+    ? (report.config as unknown as ConfigReport)
+    : null;
 }
 
 /**
