@@ -20,6 +20,13 @@ import { basename, dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { TENANT_CONFIG_FILE, TENANT_ENV_FILE } from "../bootstrap/tenants.ts";
 import { DEFAULT_PROMPT_FILE_BY_KIND } from "./config-schema.ts";
+import type {
+  InitOutcome,
+  InitProfile,
+  InitReport,
+  InitScaffoldOutcome,
+  InitTenantOutcome,
+} from "./contracts/init-report.ts";
 import { defaultGit, type GitRunner } from "./git-model.ts";
 import {
   defaultRepoUrl,
@@ -32,8 +39,11 @@ import {
   TENANT_PLACEHOLDER_URL,
 } from "./tenant-commands.ts";
 
-/** Init scaffold profile — which file set lands under the target dir. */
-export type InitProfile = "solo" | "workspace" | "tenant";
+// The report and the profile now live in `phoebe-agent/contracts` (#552) so an
+// install tab can render a scaffold without loading the filesystem code below.
+// Re-exported here so every existing reader goes on importing them off this
+// module.
+export type { InitOutcome, InitProfile, InitReport, InitScaffoldOutcome, InitTenantOutcome };
 
 /** Placeholder tokens rendered into every scaffolded file. */
 export type TemplateParams = {
@@ -242,15 +252,6 @@ export function mergeGitignore(existing: string, entries: readonly string[]): st
   return `${existing}${separator}\n# Phoebe\n${missing.join("\n")}\n`;
 }
 
-export type InitReport = {
-  /** New files written (destination paths, relative to the target dir). */
-  created: string[];
-  /** `.gitignore` entries appended in-place (destination paths). */
-  updated: string[];
-  /** Existing files left alone (destination paths). */
-  skipped: string[];
-};
-
 /**
  * Walk up from this module's directory to find the shipped resource root. This
  * runs from `src/init.ts` (no build step) and reads `templates/…` + `prompts/…`
@@ -276,6 +277,16 @@ function resolvePackageResource(relativePath: string, moduleDir: string): string
   }
 }
 
+/** The seams `runInit` reaches the world through — all injectable (#552). */
+export type InitDeps = {
+  /** Root for shipped `templates/` and `prompts/`. Defaults to the walk-up from this module. */
+  packageRoot?: string;
+  /** Git runner for the tenant profile's origin prefill. */
+  git?: GitRunner;
+  /** Override the prompt seeder. Defaults to {@link copyShippedPromptsInto}. */
+  seedPrompt?: (promptsDir: string) => string[];
+};
+
 export type RunInitOptions = {
   /** Directory the scaffolded files land under. Created if missing. */
   targetDir: string;
@@ -290,9 +301,9 @@ export type RunInitOptions = {
    * `maintainers: false`.
    */
   reportingMaintainers?: boolean;
-  /** Root for shipped `templates/` and `prompts/` (test seam). Defaults to
-   *  the walk-up from this module. */
-  packageRoot?: string;
+  /** Tenant profile only: the origin-prefill overrides and the prompt opt-in. */
+  tenant?: Pick<InitTenantOptions, "repoSlug" | "repoUrl" | "withPrompts">;
+  deps?: InitDeps;
 };
 
 /**
@@ -312,20 +323,37 @@ export function readShippedFile(
 }
 
 /**
- * Execute the plan: create missing files, additively update `.gitignore`, and
- * leave every existing file alone. Returns a report so the CLI (and tests)
- * can render a summary without re-walking the filesystem.
+ * The init verb: execute the plan for the chosen profile, create missing files,
+ * additively update `.gitignore`, and leave every existing file alone. Returns
+ * the outcome so a caller — the CLI printer, a companion's install tab — can
+ * render a summary without re-walking the filesystem. Prints nothing itself
+ * (#552).
  *
  * Not idempotent in the "produces the same output twice" sense — running init
  * twice on a directory the consumer has edited must not change their files.
  * That's the entire guarded-re-run contract. A second run into an empty
  * directory *does* reproduce the first-run output.
+ *
+ * The tenant profile is a different scaffold, not a different set of files, so
+ * it is delegated to {@link initTenant} rather than planned: origin prefill
+ * makes the config dynamic. One verb still covers all three profiles, because a
+ * second caller should not have to know which arm it is asking for.
  */
-export function runInit(opts: RunInitOptions): InitReport {
+export function runInit(opts: RunInitOptions & { profile: "tenant" }): InitTenantOutcome;
+export function runInit(opts: RunInitOptions): InitScaffoldOutcome;
+export function runInit(opts: RunInitOptions): InitOutcome {
   const targetDir = resolvePath(opts.targetDir);
   const profile = opts.profile ?? "solo";
   if (profile === "tenant") {
-    throw new Error("`phoebe init --tenant` uses initTenant(), not runInit().");
+    const { tenantDir, repoSlug, repoUrl, ...report } = initTenant({
+      targetDir: opts.targetDir,
+      ...(opts.tenant?.repoSlug !== undefined ? { repoSlug: opts.tenant.repoSlug } : {}),
+      ...(opts.tenant?.repoUrl !== undefined ? { repoUrl: opts.tenant.repoUrl } : {}),
+      withPrompts: opts.tenant?.withPrompts ?? false,
+      ...(opts.deps?.seedPrompt !== undefined ? { seedPrompt: opts.deps.seedPrompt } : {}),
+      ...(opts.deps?.git !== undefined ? { git: opts.deps.git } : {}),
+    });
+    return { ...report, profile: "tenant", targetDir: tenantDir, tenant: { repoSlug, repoUrl } };
   }
   const params: TemplateParams = { ...DEFAULT_TEMPLATE_PARAMS, ...opts.params };
   const moduleDir = dirname(fileURLToPath(import.meta.url));
@@ -361,7 +389,7 @@ export function runInit(opts: RunInitOptions): InitReport {
     if (output.source.kind === "template") {
       const rawTemplate = readShippedFile(
         join("templates", output.source.templateRelPath),
-        opts.packageRoot,
+        opts.deps?.packageRoot,
         moduleDir,
       );
       const rendered = renderTemplate(rawTemplate, params);
@@ -369,13 +397,17 @@ export function runInit(opts: RunInitOptions): InitReport {
     } else {
       // Shipped prompts ship verbatim — the engine's own render step handles
       // their `{{PLACEHOLDER}}` tokens at run time.
-      const prompt = readShippedFile(output.source.promptRelPath, opts.packageRoot, moduleDir);
+      const prompt = readShippedFile(
+        output.source.promptRelPath,
+        opts.deps?.packageRoot,
+        moduleDir,
+      );
       writeFileSync(destAbs, prompt);
     }
     report.created.push(output.destRelPath);
   }
 
-  return report;
+  return { ...report, profile, targetDir };
 }
 
 /**

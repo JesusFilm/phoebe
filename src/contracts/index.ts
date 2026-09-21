@@ -118,6 +118,7 @@ export type {
   DoctorReport,
   DoctorSection,
   DoctorTrigger,
+  MissingDeclaredEnvKey,
   TenantDoctorRow,
 } from "./doctor.ts";
 export type { PipelineSource, PipelineState, WedgedVerdict } from "./pipeline-state.ts";
@@ -165,3 +166,29 @@ export type {
   SecretsSection,
   TenantSecrets,
 } from "./secrets.ts";
+export type { HostVerb, OutcomeOf, VerbOutcome } from "./host-verb.ts";
+export type { VerbIo } from "./verb-io.ts";
+export type {
+  InitOutcome,
+  InitProfile,
+  InitReport,
+  InitScaffoldOutcome,
+  InitTenantOutcome,
+} from "./init-report.ts";
+export type { StartOutcome } from "./start-outcome.ts";
+export type {
+  UpgradeCheckReport,
+  UpgradeHalfOutcome,
+  UpgradeOutcome,
+  UpgradeTarget,
+} from "./upgrade-outcome.ts";
+export type {
+  FleetMigrateReport,
+  JournalEntry,
+  MigrateReport,
+  MigrationResult,
+  MigrationRole,
+  MigrationState,
+  TenantMigrateEntry,
+  TenantVerdict,
+} from "./migrate-report.ts";

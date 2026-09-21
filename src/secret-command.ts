@@ -474,6 +474,6 @@ async function defaultRunDoctor(
   env: NodeJS.ProcessEnv,
 ): Promise<{ ok: boolean; text: string }> {
   const { formatDoctorReport, runDoctor } = await import("./doctor.ts");
-  const report = await runDoctor({ configDir, env });
+  const report = await runDoctor({ configDir }, { env });
   return { ok: report.ok, text: `${formatDoctorReport(report)}\n` };
 }

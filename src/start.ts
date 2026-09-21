@@ -11,6 +11,8 @@
 // step here is skipped. See src/deployment-command.ts.
 
 import type { DeploymentCommands } from "./config-schema.ts";
+import type { StartOutcome } from "./contracts/start-outcome.ts";
+import type { VerbIo } from "./contracts/verb-io.ts";
 import { resolveDeploymentCommands, runLifecycleStep } from "./deployment-command.ts";
 import {
   assertHostLifecycle,
@@ -26,6 +28,12 @@ import {
   type CommandRunner,
   type DeploymentCompose,
 } from "./deployment-compose.ts";
+import { PROCESS_IO, SILENT_IO } from "./verb-io.ts";
+
+// The outcome union now lives in `phoebe-agent/contracts` (#552) so a console
+// can name a start's result without loading the driver below. Re-exported here
+// so every existing reader goes on importing it off this module.
+export type { StartOutcome };
 
 /**
  * How long to wait after `up -d` before checking the container is still up.
@@ -75,11 +83,6 @@ runs instead and none of the Compose plumbing above applies (--build is then a
 no-op). See docs/configuration.md.
 `;
 
-type StartIo = {
-  stdout: (line: string) => void;
-  stderr: (line: string) => void;
-};
-
 type StartDeps = {
   cwd?: string;
   runner?: CommandRunner;
@@ -96,13 +99,8 @@ type StartDeps = {
    * filesystem-free.
    */
   deploymentCommands?: DeploymentCommands;
-  io?: Partial<StartIo>;
+  io?: Partial<VerbIo>;
 };
-
-export type StartOutcome =
-  | { kind: "started" }
-  | { kind: "already-running" }
-  | { kind: "exited-immediately"; exitCode: number | null };
 
 function defaultWaitMs(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -137,10 +135,7 @@ function logsHint(deployment: DeploymentCompose): string {
  */
 export async function runStart(opts: { build: boolean; deps?: StartDeps }): Promise<StartOutcome> {
   const cwd = opts.deps?.cwd ?? process.cwd();
-  const io: StartIo = {
-    stdout: opts.deps?.io?.stdout ?? ((line) => process.stdout.write(`${line}\n`)),
-    stderr: opts.deps?.io?.stderr ?? ((line) => process.stderr.write(`${line}\n`)),
-  };
+  const io: VerbIo = { ...SILENT_IO, ...opts.deps?.io };
   const waitMs = opts.deps?.waitMs ?? defaultWaitMs;
 
   // The guard is runtime-general: start is a host action in every topology, so
@@ -245,9 +240,15 @@ export async function runStartCli(argv: readonly string[], deps?: StartDeps): Pr
     inContainer: deps?.inContainer,
     provided: deps?.deploymentCommands,
   });
+  // The CLI layer is where a line becomes terminal output: `runStart` is handed
+  // the sinks, never `process.stdout` (#552).
   const outcome = await runStart({
     build: parsed.build,
-    deps: { ...deps, ...(deploymentCommands !== undefined ? { deploymentCommands } : {}) },
+    deps: {
+      ...deps,
+      io: { ...PROCESS_IO, ...deps?.io },
+      ...(deploymentCommands !== undefined ? { deploymentCommands } : {}),
+    },
   });
   if (outcome.kind === "exited-immediately") {
     process.exitCode = 1;
