@@ -31,6 +31,7 @@
 
 import { statSync } from "node:fs";
 import { type ResolvedEngineSource } from "./engine-source.ts";
+import type { ConfigCollector } from "./config-report.ts";
 import type { PipelineEnumerator } from "./pipelines.ts";
 import type { StateSweeper } from "./state-sweep.ts";
 
@@ -102,6 +103,12 @@ export type LaunchedEngine = {
    * commit's answer, and an upgrade may change it.
    */
   stateSweep?: StateSweeper;
+  /**
+   * This checkout's effective-config collector (#535). Its home is the launch for
+   * the same reason the two above: what a setting resolves to is the engine
+   * commit's answer, and the report must say what the *running* engine thinks.
+   */
+  configs?: ConfigCollector;
 };
 
 export type EngineExit = { code: number | null; signal: NodeJS.Signals | null };
