@@ -221,7 +221,7 @@ are exactly what its per-pipeline fingerprint leaves out
 It spawns one child per pipeline and relaunches a pipeline when its own cold config moves
 ([Supervising pipelines](architecture.md#supervising-pipelines)). `priority` and
 `concurrency` are live in the broker (below). A pipeline's `disabled` is validated and
-listed — `phoebe list` shows the pipeline as `(disabled)` — but not yet acted on; the
+listed — `phoebe status` shows the pipeline as `(disabled)` — but not yet acted on; the
 ticket that switches a pipeline off comes later. A kind's
 `disabled` is live now, since it is what took over from omission.
 
@@ -299,7 +299,7 @@ each owns a slice of both rather than the whole thing.
 
 | Thing                          | Owned by                                                                                                                                                                                    |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `state/<pipeline>/status.json` | The pipeline alone. `phoebe list` reads every pipeline's, one line each.                                                                                                                    |
+| `state/<pipeline>/status.json` | The pipeline alone. The deployment report carries every pipeline's, one cell each.                                                                                                          |
 | Stdout lines                   | Tagged `[phoebe:<owner>/<repo>:<pipeline>]`, including `work`'s. Match it as a prefix, not a fixed string.                                                                                  |
 | The four tracker sweeps        | Scoped to the kinds the pipeline schedules, so two pipelines cover every object exactly once. A pipeline scheduling none of a sweep's kinds skips it.                                       |
 | The origin clone               | Shared. Cloned once, the first clone serialized by a lock under `state/`; a pipeline whose kinds all declare `scratch` never clones at all.                                                 |

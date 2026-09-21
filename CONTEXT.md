@@ -53,6 +53,11 @@ a relay. A consumer renders it and derives nothing of its own.
 _Avoid_: snapshot (that is `status.json`), state (that is the directory), status (that is
 the CLI verb), manifest
 
+**Console**:
+The operator's web view of every deployment's report, served by the relay. `phoebe status`
+is the same report read locally, not a second console.
+_Avoid_: dashboard, local console
+
 **Pass**:
 One turn of an engine's loop: poll, select, admit what it can, then wait. A supervised
 engine reports each completed pass to its bootstrapper, which is the only evidence that a
