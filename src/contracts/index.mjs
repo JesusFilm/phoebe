@@ -1,10 +1,19 @@
 // Runtime surface of `phoebe-agent/contracts` — the `import` condition of the
-// subpath export. Most of contracts is type declarations, which leave nothing
-// behind at runtime; what lands here is the part a consumer actually calls.
+// subpath export. Almost everything here is types, and types leave nothing
+// behind at runtime; what is left is the handful of pure constants a reader
+// needs to *check* something, written twice by hand.
 //
-// Plain JS, and every runtime value it re-exports lives in a plain-JS sibling,
-// because Node 24 will not type-strip a `.ts` file under a `node_modules`
-// segment and the installed package lives exactly there. The types come from the
-// JSDoc in those siblings, read through index.ts (the `types` condition), so the
-// implementation is written once rather than mirrored per condition.
+// Twice, because Node will not type-strip a `.ts` file out of node_modules: an
+// installed consumer's `import { DEPLOYMENT_SCHEMA } from "phoebe-agent/contracts"`
+// resolves to this file and never to index.ts. The type condition points at the
+// `.ts`, so a type-checker reads the documented declaration and a runtime reads
+// this. src/contracts/deployment.test.ts holds the two copies to the same value;
+// bootstrap/index.mjs exists for the same reason.
+
 export { openSecret, sealSecret } from "./secret-envelope.mjs";
+
+/** The `schema` integer `state/deployment.json` carries — see deployment.ts. */
+export const DEPLOYMENT_SCHEMA = 1;
+
+/** The effective config's own shape version — see effective-config.ts. */
+export const EFFECTIVE_CONFIG_VERSION = 1;

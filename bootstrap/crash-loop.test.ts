@@ -291,6 +291,14 @@ describe("createCrashGuard", () => {
   const guard = () => createCrashGuard({ statePath: path, onEvent: (e) => events.push(e) });
   const kinds = () => events.map((event) => event.kind);
 
+  test("the record is readable, which is what the deployment report publishes", () => {
+    const g = guard();
+    expect(g.state()).toEqual({ lastGoodSha: null, failingSha: null, failureCount: 0 });
+    g.record(healthy(GOOD));
+    g.record(crash(BAD));
+    expect(g.state()).toMatchObject({ lastGoodSha: GOOD, failingSha: BAD, failureCount: 1 });
+  });
+
   test("a healthy engine leaves the guard with nothing to do", () => {
     const g = guard();
     g.record(healthy(GOOD));
