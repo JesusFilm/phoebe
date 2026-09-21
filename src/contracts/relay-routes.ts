@@ -41,6 +41,17 @@ export const RELAY_ROUTES = {
    */
   forget: "/api/deployments/forget",
   /**
+   * POST — **run doctor** (#546, decided in #507 §10). One deployment when the
+   * body names a fingerprint, every deployment the relay knows when it does
+   * not: one button for the fleet, one message per deployment, and one receipt
+   * each. The answer is {@link RelayDoctorRunAnswer}.
+   *
+   * The relay answers no check itself. It carries the ask and reports what came
+   * back — the checks all read the deployment's own files, env, clone and
+   * credentials (#507 §8).
+   */
+  doctorRun: "/api/deployments/doctor-run",
+  /**
    * GET — the server-sent-events stream: reports and connection changes as they
    * happen, so a page updates without polling (#506 §10, #542). The event names
    * and their payloads are in relay-events.ts.
@@ -157,3 +168,33 @@ export type RelayDeploymentDetail = {
   deployment: RelayDeploymentRow;
   report: RelayStoredReport | null;
 };
+
+/**
+ * What one deployment said when a person pressed **Run doctor** (#546). One of
+ * these per deployment asked, whether the ask was for one or for the fleet, so
+ * a console renders the two the same way.
+ *
+ * `outcome` is a string rather than a closed union on purpose. The words this
+ * engine's deployments use are in `RELAY_DOCTOR_RUN`, plus the relay's own
+ * `RELAY_UNDELIVERED`; the relay carries whatever the receipt said without
+ * policing it, the way it carries every other receipt, so a deployment newer
+ * than its relay can answer with a word this relay has never heard of.
+ */
+export type RelayDoctorRunResult = {
+  fingerprint: string;
+  /** The deployment's name, so the console names it without a second lookup. */
+  name: string;
+  /** Where the relay held it when the ask went out — `undelivered`'s reason. */
+  state: RelayConnectionState;
+  outcome: string;
+  /** Whatever the deployment had to say beyond the word. Carried unread. */
+  detail?: unknown;
+};
+
+/**
+ * The body of `POST /api/deployments/doctor-run`: one result per deployment
+ * asked, in the order the relay holds them. A fleet-wide ask with no deployment
+ * paired is an empty list and a 200 — nothing went wrong, there was nobody to
+ * ask.
+ */
+export type RelayDoctorRunAnswer = { results: RelayDoctorRunResult[] };

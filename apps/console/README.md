@@ -38,3 +38,12 @@ Pages are hash routes ([`src/route.ts`](src/route.ts)), because the relay serves
 no single-page fallback and the companion loads the bundle off a custom scheme
 where there is no server to ask. Links are plain `href`s into the hash; the
 browser does the navigating and the history, and the app only listens.
+
+The one thing the pages ask the relay to _do_ is a doctor run
+([#546](https://github.com/JesusFilm/phoebe/issues/546)). The words around it —
+why a deployment cannot be asked, what each receipt reads as — are pure and live
+in [`src/doctor-run.ts`](src/doctor-run.ts); [`src/run-doctor.tsx`](src/run-doctor.tsx)
+is the button itself, the same one on a deployment's doctor tab and on the fleet
+page. A press is answered within the moment with which run it belongs to, and
+what that run found arrives afterwards as the next report on the stream — so
+nothing here waits five minutes for a button.

@@ -1,4 +1,5 @@
-// The relay never derives pipeline state (#542, decided in #501).
+// The relay never derives pipeline state (#542, decided in #501), and never
+// answers a doctor check (#546, decided in #507 §8).
 //
 // Derivation lives in the deployment: `src/pipeline-listing.ts` is the one owner
 // of what a pipeline is doing and whether it is wedged, the bootstrapper writes
@@ -37,11 +38,23 @@ const OFF_LIMITS = [
   "src/contracts/deployment.ts",
   "src/contracts/pipeline-state.ts",
   "src/contracts/status-snapshot.ts",
+  // The relay answers none of doctor's checks (#507 §8, #546). It carries a
+  // `doctor-run` down a socket and repeats the receipt; a relay that knew what a
+  // check looked like would be a relay one refactor away from answering one.
+  "src/contracts/doctor.ts",
+  "src/doctor.ts",
   "src/unit-event.ts",
 ];
 
 /** Derivation by name: if one of these appears in the relay, something is deriving. */
-const DERIVERS = ["pipelineState", "wedgedVerdict", "DeploymentReport", "StatusSnapshot"];
+const DERIVERS = [
+  "pipelineState",
+  "wedgedVerdict",
+  "DeploymentReport",
+  "StatusSnapshot",
+  "DoctorReport",
+  "DoctorCheck",
+];
 
 const ADA: GoogleIdentity = { sub: "sub-ada", email: "ada@example.test", emailVerified: true };
 const google: IdentityProvider = {

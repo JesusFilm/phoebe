@@ -500,6 +500,21 @@ table.rows tr.attention td {
   margin: 40px auto;
 }
 
+/* ── run doctor ────────────────────────────────────────────────────────── */
+
+.run-doctor {
+  margin: 0 0 14px;
+}
+
+.run-doctor button:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.run-doctor p {
+  margin: 6px 0 0;
+}
+
 /* ── the config tab ────────────────────────────────────────────────────── */
 
 .filters {

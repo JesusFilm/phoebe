@@ -150,7 +150,7 @@ function Console({
             <p className="muted">The relay did not answer: {trouble}</p>
           </main>
         ) : loaded ? (
-          <Page route={route} facts={facts} now={now} />
+          <Page route={route} facts={facts} client={client} now={now} />
         ) : (
           <main className="main">
             <h1>Fleet</h1>
@@ -167,11 +167,22 @@ function Console({
  * "no such deployment" page rather than a redirect: a link that silently became
  * the fleet page would look like the deployment is fine.
  */
-function Page({ route, facts, now }: { route: Route; facts: RowFacts[]; now: Date }) {
-  if (route.page === "fleet") return <FleetPage facts={facts} now={now} />;
+function Page({
+  route,
+  facts,
+  client,
+  now,
+}: {
+  route: Route;
+  facts: RowFacts[];
+  /** The pages that ask for something need the seam too, not only the shell. */
+  client: RelayClient;
+  now: Date;
+}) {
+  if (route.page === "fleet") return <FleetPage facts={facts} client={client} now={now} />;
   const found = facts.find((row) => row.row.fingerprint === route.fingerprint);
   if (found === undefined) return <NoSuchDeployment fingerprint={route.fingerprint} />;
-  return <DeploymentPage facts={found} tab={route.tab} now={now} />;
+  return <DeploymentPage facts={found} tab={route.tab} client={client} now={now} />;
 }
 
 /**

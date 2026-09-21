@@ -48,16 +48,20 @@ import {
   type DoctorFacts,
   type RowFacts,
 } from "./facts.ts";
+import type { RelayClient } from "./relay-client.ts";
 import { editsOf } from "./report.ts";
 import { deploymentHref, DEPLOYMENT_TABS, type DeploymentTab } from "./route.ts";
+import { RunDoctor } from "./run-doctor.tsx";
 
 export function DeploymentPage({
   facts,
   tab,
+  client,
   now,
 }: {
   facts: RowFacts;
   tab: DeploymentTab;
+  client: RelayClient;
   now: Date;
 }) {
   const connection = connectionReading(facts.row, now);
@@ -80,7 +84,7 @@ export function DeploymentPage({
           </a>
         ))}
       </nav>
-      <Tab facts={facts} tab={tab} now={now} />
+      <Tab facts={facts} tab={tab} client={client} now={now} />
     </main>
   );
 }
@@ -98,14 +102,29 @@ export function NoSuchDeployment({ fingerprint }: { fingerprint: string }) {
   );
 }
 
-function Tab({ facts, tab, now }: { facts: RowFacts; tab: DeploymentTab; now: Date }) {
+function Tab({
+  facts,
+  tab,
+  client,
+  now,
+}: {
+  facts: RowFacts;
+  tab: DeploymentTab;
+  client: RelayClient;
+  now: Date;
+}) {
   if (tab === "overview") return <OverviewTab facts={facts} now={now} />;
   // The other three tabs are views of the report and there may not be one. They
   // say which kind of nothing it is and point back at the overview, where the
-  // relay's own facts about this link are still true.
+  // relay's own facts about this link are still true. The doctor tab keeps its
+  // button even then: a deployment that has never reported is exactly one worth
+  // asking, as long as the relay is holding its socket (#546).
   if (facts.reading.kind !== "read") {
     return (
       <>
+        {tab === "doctor" ? (
+          <RunDoctor client={client} target={{ kind: "deployment", row: facts.row }} now={now} />
+        ) : null}
         <p className="muted">{noReportLine(facts, now)}</p>
         <p className="muted">
           <a href={deploymentHref(facts.row.fingerprint)}>Overview</a> still has the relay&apos;s
@@ -115,7 +134,7 @@ function Tab({ facts, tab, now }: { facts: RowFacts; tab: DeploymentTab; now: Da
     );
   }
   if (tab === "pipelines") return <PipelinesTab report={facts.reading.report} now={now} />;
-  if (tab === "doctor") return <DoctorTab doctor={facts.doctor} now={now} />;
+  if (tab === "doctor") return <DoctorTab facts={facts} client={client} now={now} />;
   return <ConfigTab report={facts.reading.report} now={now} />;
 }
 
@@ -415,9 +434,16 @@ function TenantName({ tenant }: { tenant: TenantFacts }) {
 
 /* ── doctor ────────────────────────────────────────────────────────────── */
 
-function DoctorTab({ doctor, now }: { doctor: DoctorFacts; now: Date }) {
+function DoctorTab({ facts, client, now }: { facts: RowFacts; client: RelayClient; now: Date }) {
+  const doctor: DoctorFacts = facts.doctor;
   return (
     <>
+      {/*
+        The ask, above what the last one found. The receipt says which run the
+        press belongs to; the checks below move when the report carrying that
+        run arrives (#546).
+      */}
+      <RunDoctor client={client} target={{ kind: "deployment", row: facts.row }} now={now} />
       <p className="lead">{doctorLine(doctor, now)}</p>
       <p className="facts">
         {doctor.by === null ? null : <>Asked for by {doctor.by}. </>}

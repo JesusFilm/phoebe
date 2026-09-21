@@ -3,9 +3,15 @@
 //
 // What a signed-in person can ask for is who they are, a pairing token for a new
 // deployment, the fleet as the socket endpoint knows it, one deployment with the
-// last report it pushed, the stream those reports arrive on, and the forgetting of
-// one deployment. The console's pages sit on exactly these answers, and the relay
-// hands the pages out too — the bundle is in the same package (console-assets.ts).
+// last report it pushed, the stream those reports arrive on, the forgetting of
+// one deployment, and a doctor run on one of them or on all of them. The
+// console's pages sit on exactly these answers, and the relay hands the pages out
+// too — the bundle is in the same package (console-assets.ts).
+//
+// **One verb so far, and it is a courier's verb** (#546). The relay sends
+// `doctor-run` down a socket and repeats the receipt that comes back; it answers
+// no check itself, because every check reads files, env, a clone or credentials
+// that only the deployment has (#507 §8).
 //
 // **The API is matched first, and a path under it never falls through to a page.**
 // Every route below is tried before the console sees the request, and the console
@@ -27,11 +33,15 @@
 // a 200.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { RELAY_HEARTBEAT_MS } from "../src/contracts/relay-protocol.ts";
+import { randomUUID } from "node:crypto";
+import { RELAY_HEARTBEAT_MS, RELAY_MESSAGES } from "../src/contracts/relay-protocol.ts";
+import type { RelayReceipt, RelayRequest } from "../src/contracts/relay-protocol.ts";
 import { RELAY_ROUTES } from "../src/contracts/relay-routes.ts";
 import type {
   RelayDeploymentDetail,
   RelayDeploymentRow,
+  RelayDoctorRunAnswer,
+  RelayDoctorRunResult,
   RelayIdentity,
 } from "../src/contracts/relay-routes.ts";
 import type { RelayEvent } from "../src/contracts/relay-events.ts";
@@ -72,6 +82,12 @@ export type RelayHandlerOptions = {
   fleet: () => {
     rows: (now?: Date) => RelayDeploymentRow[];
     forget: (fingerprint: string) => Link | null;
+    /**
+     * Send one `id`-bearing request down a deployment's socket and wait for its
+     * receipt. Answers `undelivered` for a deployment the relay is not holding,
+     * which is how a dark one is refused without a timer (#506 §8).
+     */
+    request: (fingerprint: string, message: RelayRequest) => Promise<RelayReceipt>;
   };
   /** The reports on the volume — the per-deployment read's other half (#542). */
   reports: Reports;
@@ -144,6 +160,9 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
     }
     if (method === "POST" && url.pathname === RELAY_ROUTES.forget) {
       return await forgetDeployment(request, response);
+    }
+    if (method === "POST" && url.pathname === RELAY_ROUTES.doctorRun) {
+      return await askForDoctor(request, response);
     }
     if (method === "GET" && url.pathname === RELAY_ROUTES.events) {
       return streamEvents(request, response);
@@ -449,6 +468,73 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
     }
     warn(`[phoebe:relay] ${session.email} forgot ${link.name} (${link.fingerprint})`);
     json(response, 200, { forgotten: { fingerprint: link.fingerprint, name: link.name } });
+  }
+
+  /**
+   * **Run doctor** (#546, decided in #507 §10). A body naming a fingerprint asks
+   * that deployment; a body naming none asks every deployment this relay knows.
+   * One button either way, one `doctor-run` per deployment, and one result per
+   * deployment in the answer — so the fleet-wide press reports itself per
+   * deployment rather than as a single word for the whole fleet.
+   *
+   * **The relay runs no check.** It carries the ask and repeats what came back.
+   * Every check reads the deployment's own files, env, clone or credentials, so
+   * there is nothing here the relay could answer even if it wanted to (#507 §8).
+   *
+   * The asks go out together rather than one after another: fifty deployments
+   * answering in series would make the last operator's wait the sum of forty-nine
+   * round trips. Nothing is refused for being slow — a deployment writes its
+   * receipt the moment the ask lands, and one that has stopped answering
+   * altogether is terminated by its own heartbeat inside the dark window, which
+   * settles the request `undelivered`.
+   */
+  async function askForDoctor(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const session = options.sessions.get(parseCookies(request.headers.cookie).get(SESSION_COOKIE));
+    if (session === null) {
+      json(response, 401, { error: "not-signed-in" });
+      return;
+    }
+    const asked = (await readJsonBody(request)) as { fingerprint?: unknown };
+    if (asked.fingerprint !== undefined && typeof asked.fingerprint !== "string") {
+      json(response, 400, { error: "no-fingerprint" });
+      return;
+    }
+    const fleet = options.fleet();
+    const rows = fleet.rows(clock());
+    const targets =
+      asked.fingerprint === undefined
+        ? rows
+        : rows.filter((row) => row.fingerprint === asked.fingerprint);
+    // A fleet-wide ask with nothing paired is an empty list; one deployment that
+    // is not there is a 404, the same as every other read of a named deployment.
+    if (asked.fingerprint !== undefined && targets.length === 0) {
+      json(response, 404, { error: "no-such-deployment" });
+      return;
+    }
+    warn(
+      `[phoebe:relay] ${session.email} asked ${
+        asked.fingerprint === undefined ? `the fleet (${targets.length})` : asked.fingerprint
+      } to run doctor`,
+    );
+    const results = await Promise.all(
+      targets.map(async (row): Promise<RelayDoctorRunResult> => {
+        const message: RelayRequest = {
+          type: RELAY_MESSAGES.doctorRun,
+          id: randomUUID(),
+          by: session.email,
+        };
+        const receipt = await fleet.request(row.fingerprint, message);
+        return {
+          fingerprint: row.fingerprint,
+          name: row.name,
+          state: row.state,
+          outcome: receipt.outcome,
+          ...(receipt.detail !== undefined ? { detail: receipt.detail } : {}),
+        };
+      }),
+    );
+    const answer: RelayDoctorRunAnswer = { results };
+    json(response, 200, answer);
   }
 }
 

@@ -199,6 +199,7 @@ them instead of copying strings.
 | `GET`  | `/api/deployments`               | Every link, where the relay holds it, and its last alert. |
 | `GET`  | `/api/deployments/<fingerprint>` | One link's row, plus the last report it pushed.           |
 | `POST` | `/api/deployments/forget`        | Forgets one deployment, named by fingerprint in the body. |
+| `POST` | `/api/deployments/doctor-run`    | Runs doctor on one deployment, or on every one.           |
 | `GET`  | `/api/events`                    | The event stream: reports and connection changes.         |
 | `POST` | `/api/alerts/test`               | Sends one `{ kind: "test" }` body to every alert sink.    |
 | `GET`  | `/` and `/assets/…`              | The console's build. Public, and the only paths that are. |
@@ -342,6 +343,35 @@ still waiting comes back **undelivered**, and a deployment the relay is not
 holding is refused the same word up front. Nothing is replayed on reconnect:
 the operator re-issues, and the deployment-side ledgers make a re-issue
 idempotent.
+
+### Run doctor
+
+A person presses **Run doctor** on a deployment, or once for the whole fleet. The
+relay sends one `doctor-run` per deployment and collects the receipts; there is no
+second message type and no fleet-wide verb on the wire.
+
+A receipt comes back within the moment and says which run the press belongs to,
+not what the run found:
+
+- **started** — nothing was in flight, so this press is the run.
+- **joined** — a run was already under way, or a reconcile had already parked one.
+  Doctor is a read of the same world, so two presses spend one tenant's API
+  budget, not two.
+- **refused** — the deployment will not run one now, and says why. A container on
+  its way down is the case this exists for.
+- **undelivered** — the relay is not holding that deployment's connection. It is
+  refused up front rather than queued, the same as every other request.
+
+What doctor found arrives afterwards, as the next report: the deployment's own
+model moves its doctor section and pushes it, and the console's open stream
+carries it. That is why the console's button never sits spinning for five
+minutes, and why a deployment that is dark shows its last-known report with an
+age beside a disabled button.
+
+The relay answers **none** of doctor's checks. Every one of them reads the
+deployment's files, env, clone or credentials, or calls GitHub with them. What
+the relay knows — connected since, last heard, the last close code — is the
+connection panel beside doctor and is never a check.
 
 ### Forget, and leave
 
@@ -592,6 +622,14 @@ whether a run is in flight right now, and the last attempt that produced nothing
 A deployment that has never run doctor says so; that is a fact about the
 deployment, not a verdict about it.
 
+The tab also carries **Run doctor**, and the fleet page carries one for every
+deployment at once. A deployment the relay is not holding a connection for has
+the button disabled with the reason on screen rather than a press that comes back
+refused — the relay already said it is disconnected, dark or never booted, and
+saying it twice in two vocabularies helps nobody. The fleet press is never
+disabled: the deployments it cannot reach are part of the answer, each named with
+the word that came back.
+
 **Config** is every effective-config leaf in one filterable table: the value, and
 which of the six sources supplied it. Filter by a path or a value — "what is
 `model` set to" and "who set it to `opus`" are the two questions that bring an
@@ -631,10 +669,10 @@ URIs, which is what makes it work at all. Anywhere else, run the scaffold.
 
 ## Not here yet
 
-The verbs themselves — config writes, sealed secrets, doctor runs. The rail
-carries them, the relay will deliver them and wait for a receipt, and nothing
-sends one yet. On the console's side the fleet page and a deployment's four
-read-only tabs are here; the secrets tab and the People page join this same
+The other two verbs — config writes and sealed secrets. The rail carries them and
+the relay will deliver them the way it delivers a doctor run; nothing sends one
+yet. On the console's side the fleet page, a deployment's four tabs and the
+doctor run are here; the secrets tab and the People page join this same
 process. See
 [the relay's shape](https://github.com/JesusFilm/phoebe/issues/506).
 

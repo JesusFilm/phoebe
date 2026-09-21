@@ -25,7 +25,12 @@
 import { readRelayField, type RelayField } from "../src/config-schema.ts";
 import type { DeploymentArm, DeploymentIdentity } from "../src/contracts/deployment.ts";
 import type { DeploymentState } from "./deployment-state.ts";
-import { connectRelay, type RelayLink, type OpenRelaySocket } from "./relay-link.ts";
+import {
+  connectRelay,
+  type DoctorRunAnswer,
+  type RelayLink,
+  type OpenRelaySocket,
+} from "./relay-link.ts";
 import {
   forgetDeploymentKey,
   generateDeploymentKey,
@@ -53,11 +58,27 @@ export type PrepareRelayOptions = {
   open?: OpenRelaySocket;
 };
 
+/**
+ * What a console can ask this deployment to do, handed to the link when it
+ * dials (#546). One verb so far; `config-set` and `secret-set` join it here.
+ */
+export type RelayVerbs = {
+  /** Run doctor because `by` pressed the button. Answered with the receipt's word. */
+  runDoctor: (by: string) => DoctorRunAnswer;
+};
+
 export type PreparedRelay = {
   /** The report's identity section, read afresh at every publish. */
   identity: () => DeploymentIdentity;
-  /** Dial, reporting into the live model. A no-op with no `relay.url`. */
-  start: (deployment: DeploymentState) => void;
+  /**
+   * Dial, reporting into the live model. A no-op with no `relay.url`.
+   *
+   * `verbs` is what a console may ask this deployment to do (#546). It is a
+   * second argument rather than a `prepareRelay` option because the doctor
+   * runner is built after the model the link reports into, and the link is what
+   * connects the two.
+   */
+  start: (deployment: DeploymentState, verbs?: RelayVerbs) => void;
   /**
    * The report moved: push it up the link (#542). A no-op before {@link start},
    * with no relay configured, or while the socket is down — the next connection
@@ -105,7 +126,7 @@ export function prepareRelay(options: PrepareRelayOptions): PreparedRelay {
       ...(relay !== undefined ? { relayUrl: relay.url } : {}),
     }),
 
-    start(deployment) {
+    start(deployment, verbs) {
       if (relay === undefined) return;
       const token = options.env[RELAY_TOKEN_ENV];
       log(`[phoebe] boot: relay ${relay.url} as ${name}.`);
@@ -126,6 +147,7 @@ export function prepareRelay(options: PrepareRelayOptions): PreparedRelay {
           key = minted;
         },
         onStatus: (status) => deployment.noteRelay(status),
+        ...(verbs !== undefined ? { onDoctorRun: verbs.runDoctor } : {}),
         // Pulled at the moment of every send rather than handed over, so a link
         // that reconnects after five minutes sends what the model holds then.
         report: () => deployment.latest(),
