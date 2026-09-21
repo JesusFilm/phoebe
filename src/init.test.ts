@@ -137,12 +137,13 @@ describe("planInitOutputs", () => {
 });
 
 describe("renderTemplate", () => {
-  test("substitutes {{INSTALL_COMMAND}} and {{CLI_BIN}}", () => {
-    const out = renderTemplate("run {{INSTALL_COMMAND}} then {{CLI_BIN}}", {
+  test("substitutes {{INSTALL_COMMAND}}, {{CLI_BIN}} and {{CLI_VERSION}}", () => {
+    const out = renderTemplate("run {{INSTALL_COMMAND}} then {{CLI_BIN}}@{{CLI_VERSION}}", {
       installCommand: "pnpm i",
       cliBin: "phoebe-agent",
+      cliVersion: "1.2.3",
     });
-    expect(out).toBe("run pnpm i then phoebe-agent");
+    expect(out).toBe("run pnpm i then phoebe-agent@1.2.3");
   });
 
   test("throws on an unknown {{TOKEN}}", () => {

@@ -131,7 +131,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedArgs {
       const version = installedVersion();
       throw new Error(
         `Unknown command \`${arg}\` for \`phoebe\`${version === null ? "" : ` (phoebe-agent v${version})`}. ` +
-          `Known commands: boot, init, status, list, config, purge, upgrade, doctor, migrate, stop, start, pipelines, sweep-state. If \`${arg}\` was added in a newer ` +
+          `Known commands: boot, init, status, list, config, purge, upgrade, doctor, migrate, stop, start, relay, pipelines, sweep-state. If \`${arg}\` was added in a newer ` +
           `release, upgrade first: \`pnpm dlx phoebe-agent@latest upgrade\`. See \`phoebe --help\`.`,
       );
     }
@@ -284,6 +284,7 @@ Usage:
   phoebe stop [--now]              Drain and stop the deployment container (host-side)
   phoebe start [--build]           Bring the deployment container up detached (host-side)
   phoebe relay serve               Serve the relay: console + deployment socket
+  phoebe relay init [dir]          Scaffold the relay's container files (Caddy + TLS)
   phoebe [--config <path>] [flags] Run the engine
 
 Options (engine mode):

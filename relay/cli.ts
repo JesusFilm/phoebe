@@ -1,24 +1,34 @@
 // `phoebe relay <subcommand>` — the relay's command surface (#506 §1).
 //
-// One subcommand today, `serve`. `phoebe relay init` (the scaffolded
-// Dockerfile, compose file and `.env.example`) and `phoebe relay leave` are
-// their own tickets; the parser refuses an unknown subcommand by name rather
-// than falling through to anything, so adding them is additive.
+// Two subcommands: `serve` is the process, `init` writes the container files an
+// operator stands it up from. `phoebe relay leave` is its own ticket; the
+// parser refuses an unknown subcommand by name rather than falling through to
+// anything, so adding it is additive.
 
+import { resolve as resolvePath } from "node:path";
+import { relayInitNextSteps, runRelayInit } from "./init.ts";
 import { runRelayServe } from "./serve.ts";
+import { formatInitReport } from "../src/init.ts";
 
 export type ParsedRelayArgs = {
   help: boolean;
-  subcommand: "serve" | null;
+  subcommand: "serve" | "init" | null;
   dataDir?: string;
   port?: number;
+  targetDir?: string;
 };
+
+/** Flags `serve` owns; naming them with `init` is a typo worth a sentence. */
+const SERVE_ONLY_FLAGS = ["--port", "--data-dir"] as const;
 
 export const RELAY_HELP_TEXT = `phoebe relay — the self-hosted service deployments dial into
 
 Usage:
   phoebe relay serve [--port <n>] [--data-dir <path>]
                         Serve the console and (later) the deployment socket
+  phoebe relay init [dir]
+                        Scaffold relay/{Dockerfile,compose.yml,.env.example}
+                        (default dir: the current one)
 
 Options:
   --port <n>            Port to bind (default: 8787; TLS is Caddy's job)
@@ -42,8 +52,17 @@ export function parseRelayArgs(argv: readonly string[]): ParsedRelayArgs {
       parsed.help = true;
       continue;
     }
-    if (arg === "serve") {
-      parsed.subcommand = "serve";
+    if ((arg === "serve" || arg === "init") && parsed.subcommand === null) {
+      parsed.subcommand = arg;
+      continue;
+    }
+    if (parsed.subcommand === "init" && !arg.startsWith("-")) {
+      if (parsed.targetDir !== undefined) {
+        throw new Error(
+          `\`phoebe relay init\` takes at most one directory (got \`${parsed.targetDir}\` and \`${arg}\`).`,
+        );
+      }
+      parsed.targetDir = arg;
       continue;
     }
     if (arg === "--port" || arg === "--data-dir") {
@@ -67,6 +86,12 @@ export function parseRelayArgs(argv: readonly string[]): ParsedRelayArgs {
       `Unknown argument \`${arg}\` for \`phoebe relay\`. See \`phoebe relay --help\`.`,
     );
   }
+  if (parsed.subcommand === "init" && (parsed.port !== undefined || parsed.dataDir !== undefined)) {
+    throw new Error(
+      `${SERVE_ONLY_FLAGS.join(" and ")} configure \`phoebe relay serve\`, not \`phoebe relay init\` — ` +
+        `the scaffolded compose file gives the relay both.`,
+    );
+  }
   return parsed;
 }
 
@@ -79,8 +104,16 @@ export async function runRelayCli(argv: readonly string[]): Promise<void> {
   }
   if (parsed.subcommand === null) {
     throw new Error(
-      "`phoebe relay` needs a subcommand. The one that exists is `serve`. See `phoebe relay --help`.",
+      "`phoebe relay` needs a subcommand — `serve` or `init`. See `phoebe relay --help`.",
     );
+  }
+  if (parsed.subcommand === "init") {
+    const targetDir = resolvePath(parsed.targetDir ?? process.cwd());
+    const report = runRelayInit({ targetDir });
+    process.stdout.write(
+      formatInitReport(report, targetDir, "relay init") + relayInitNextSteps(targetDir),
+    );
+    return;
   }
   await runRelayServe({
     env: process.env,
