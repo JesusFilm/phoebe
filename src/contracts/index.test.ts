@@ -16,6 +16,7 @@ import {
   RELAY_DARK_AFTER_MS as typedDark,
   RELAY_DEPLOYMENTS_PATH as typedPath,
   RELAY_DOCTOR_RUN as typedDoctorRun,
+  RELAY_TOKEN_ENV as typedTokenEnv,
   RELAY_EVENTS as typedEvents,
   RELAY_HEARTBEAT_MS as typedHeartbeat,
   RELAY_MESSAGES as typedMessages,
@@ -34,6 +35,7 @@ import {
   RELAY_DARK_AFTER_MS as shippedDark,
   RELAY_DEPLOYMENTS_PATH as shippedPath,
   RELAY_DOCTOR_RUN as shippedDoctorRun,
+  RELAY_TOKEN_ENV as shippedTokenEnv,
   RELAY_EVENTS as shippedEvents,
   RELAY_HEARTBEAT_MS as shippedHeartbeat,
   RELAY_MESSAGES as shippedMessages,
@@ -63,6 +65,7 @@ describe("the deployment rail's constants are mirrored too", () => {
   test.each([
     ["RELAY_PROTOCOL", typedProtocol, shippedProtocol],
     ["RELAY_DEPLOYMENTS_PATH", typedPath, shippedPath],
+    ["RELAY_TOKEN_ENV", typedTokenEnv, shippedTokenEnv],
     ["RELAY_MESSAGES", typedMessages, shippedMessages],
     ["RELAY_CLOSE", typedClose, shippedClose],
     ["RELAY_HEARTBEAT_MS", typedHeartbeat, shippedHeartbeat],

@@ -30,6 +30,7 @@ import { rowFacts, sortFleet, type RowFacts } from "./facts.ts";
 import { applyEvent, EMPTY_FLEET, loadFleet, type FleetState } from "./fleet-state.ts";
 import { FleetPage } from "./fleet-page.tsx";
 import { InstallPage } from "./install-page.tsx";
+import { pairedInstalls } from "./local-install.ts";
 import { PeoplePage } from "./people-page.tsx";
 import { Rail } from "./rail.tsx";
 import { isNotSignedIn, type RelayClient, type RelaySignIn } from "./relay-client.ts";
@@ -154,6 +155,7 @@ function Console({
   const [installs, setInstalls] = useState<LocalInstall[]>([]);
   const [reports, setReports] = useState<Record<string, LocalReportEvent>>({});
   const [openInstall, setOpenInstall] = useState<string | null>(null);
+  const [relayUrl, setRelayUrl] = useState<string | null>(null);
   const now = useNow(1000);
 
   // The two arms share one page area, and an open install wins it. A rail link
@@ -205,6 +207,26 @@ function Console({
     );
     return undefined;
   }, [bridge, openInstall]);
+
+  // Which relay this companion is signed in to — the other half of the join
+  // that decides whether a local install is also a row on the fleet (#558).
+  // Watched rather than read once: signing in to a different relay changes
+  // which rows these installs are, without anything else on the page moving.
+  useEffect(() => {
+    if (bridge === null) return;
+    let live = true;
+    bridge.relay.state().then(
+      (state) => {
+        if (live) setRelayUrl(state.url);
+      },
+      () => undefined,
+    );
+    const unsubscribe = bridge.relay.watch((state) => setRelayUrl(state.url));
+    return () => {
+      live = false;
+      unsubscribe();
+    };
+  }, [bridge]);
 
   const addInstall = useCallback(() => {
     if (bridge === null) return;
@@ -267,6 +289,17 @@ function Console({
     [fleet],
   );
 
+  // A paired install is one thing on two arms, and the rail draws it once.
+  const paired = useMemo(
+    () => pairedInstalls(installs, facts, relayUrl),
+    [installs, facts, relayUrl],
+  );
+  const pairedDirs = useMemo(() => new Set(paired.keys()), [paired]);
+  const relayFacts = useMemo(() => {
+    const claimed = new Set(paired.values());
+    return facts.filter((row) => !claimed.has(row.row.fingerprint));
+  }, [facts, paired]);
+
   return (
     <>
       <header className="topbar">
@@ -298,11 +331,12 @@ function Console({
       </header>
       <div className="frame">
         <Rail
-          facts={facts}
+          facts={relayFacts}
           now={now}
           surface={surface}
           signedIn={identity !== null}
           installs={installs}
+          paired={pairedDirs}
           selected={openInstall}
           selectedDeployment={
             openInstall === null && route.page === "deployment" ? route.fingerprint : null
@@ -319,6 +353,8 @@ function Console({
             bridge={bridge}
             report={reports[open.dir] ?? null}
             now={now}
+            signedIn={identity !== null}
+            paired={paired.has(open.dir)}
             onForget={forgetInstall}
           />
         ) : identity === null ? (

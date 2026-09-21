@@ -9,7 +9,7 @@
 // What main answers is the companion's two arms. The local arm is the installs
 // on this machine, the Docker check, the verb runs that drive them (#555), the
 // local read loop that feeds their tabs (#556) and the two write verbs that
-// change them (#557). The remote arm is the relay (#523 §1): main holds the
+// change them (#557), one of which pairs the install with the relay (#558). The remote arm is the relay (#523 §1): main holds the
 // device token, makes every call, and re-emits the relay's event stream to the
 // renderer over IPC. The wiring for that is here; the flow itself is
 // relay-session.ts, which needs no Electron to run.
@@ -39,11 +39,13 @@ import {
   safeStorage,
   shell,
 } from "electron";
+import { RELAY_ROUTES } from "phoebe-agent/contracts";
 import type {
   CompanionEnvironment,
   CompanionPreferences,
   LocalInstall,
   LocalReportEvent,
+  MintedPairingToken,
   RelayArmState,
   RelayEvent,
   RelayPassthrough,
@@ -51,7 +53,13 @@ import type {
   VerbRunRequest,
 } from "phoebe-agent/contracts";
 import { authCodeIn, authCodeInArgv } from "./auth-link.ts";
-import { answering, BRIDGE_CHANNELS, BridgeRefusal, type BridgeResult } from "./channels.ts";
+import {
+  answering,
+  BRIDGE_CHANNELS,
+  BridgeRefusal,
+  refusal,
+  type BridgeResult,
+} from "./channels.ts";
 import {
   addInstall,
   COMPANION_FILE,
@@ -66,6 +74,7 @@ import { readContainerReport, watchContainerEvents } from "./container-read.ts";
 import { probeDocker } from "./docker.ts";
 import { allInstallFacts, directoryFacts, installFacts } from "./install-facts.ts";
 import { createLocalReads } from "./local-read.ts";
+import type { PairArm } from "./pair.ts";
 import { resolveDeploymentCompose } from "../../../src/deployment-compose.ts";
 import { companionName, createRelaySession, type RelaySession } from "./relay-session.ts";
 import { createTokenVault } from "./vault.ts";
@@ -235,6 +244,7 @@ const runs = createVerbRuns({
   // `secret set` picks its writer off the same fact the rail is drawing (#527 §8)
   // — including the Docker probe, which a second reading could disagree about.
   dispatch: createDispatchVerb({
+    relayArm: pairArm,
     installState: async (dir) => (await factsFor(dir))?.state ?? "not-initialised",
   }),
   onLine: (line) => broadcast(BRIDGE_CHANNELS.runLine, line),
@@ -252,6 +262,61 @@ const runs = createVerbRuns({
 });
 
 /**
+ * The relay arm a pairing mints on, or null when there is no session to mint
+ * with. Narrow by construction: the device token stays inside the session, and
+ * what pairing gets is one call it is allowed to make (#527 §14).
+ */
+function pairArm(): PairArm | null {
+  const session = relay;
+  if (session === null) return null;
+  const { person, url } = session.state();
+  if (person === null || url === null) return null;
+  return {
+    url,
+    mint: () =>
+      session.request({
+        method: "POST",
+        path: RELAY_ROUTES.pairingTokens,
+      }) as Promise<MintedPairingToken>,
+  };
+}
+
+/**
+ * What `pair` needs before it is worth starting (#558).
+ *
+ * Both refusals are states the install tab already disables the control for;
+ * this is what answers a renderer that asked anyway — an operator who signed
+ * out in another window, or a container that stopped between the render and the
+ * click. Checked here rather than inside the run because a refusal with an
+ * instruction on it is more use than a run that starts and immediately fails.
+ */
+async function assertPairable(install: string): Promise<void> {
+  if (pairArm() === null) {
+    throw new BridgeRefusal({
+      code: "signed-out",
+      message: "this companion is not signed in to a relay, so there is nothing to pair with",
+      instruction: "Sign in to a relay on the rail, then pair this install.",
+    });
+  }
+  const listed = await listInstalls();
+  const found = listed.find((candidate) => candidate.dir === install);
+  if (found === undefined) {
+    throw new BridgeRefusal({
+      code: "refused",
+      message: "this companion does not hold an install at that folder",
+    });
+  }
+  if (found.state !== "running") {
+    throw new BridgeRefusal({
+      code: "container-not-running",
+      message:
+        "pairing writes a token the container spends on its next boot, and this one is not up",
+      instruction: "Start this install, then pair it.",
+    });
+  }
+}
+
+/**
  * A URL the OS handed us. An auth link is spent against whichever sign-in this
  * process has open; anything else is not ours, and a code with no attempt
  * behind it is dropped — only the instance holding the verifier can spend one.
@@ -260,6 +325,7 @@ function deliverDeepLink(url: string): void {
   const code = authCodeIn(url);
   if (code !== null) relay?.deliver(code);
 }
+
 function createWindow(): void {
   const window = new BrowserWindow({
     width: 1180,
@@ -359,7 +425,10 @@ app.whenReady().then(
     );
 
     ipcMain.handle(BRIDGE_CHANNELS.runStart, (_event, request: VerbRunRequest) =>
-      answering<string>(() => runs.start(request)),
+      answering<string>(async () => {
+        if (request.verb === "pair") await assertPairable(request.install);
+        return runs.start(request);
+      }),
     );
 
     ipcMain.handle(BRIDGE_CHANNELS.runCurrent, (_event, install: string) =>

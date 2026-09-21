@@ -31,6 +31,15 @@ export const RELAY_PROTOCOL = 1;
 export const RELAY_DEPLOYMENTS_PATH = "/deployments";
 
 /**
+ * The variable a pairing token travels in. The bootstrapper reads it out of the
+ * container's environment at boot; the companion writes it into the install's
+ * root `.env` when it pairs one (#558). Two codebases, one name — which is what
+ * puts it here rather than in either of them.
+ * Mirrored by hand in index.mjs.
+ */
+export const RELAY_TOKEN_ENV = "PHOEBE_RELAY_TOKEN";
+
+/**
  * How often the relay pings (#506 §7, #541). Twenty seconds, a constant on both
  * sides rather than configuration: an operator who tuned it would be making one
  * deployment's idea of "recently" disagree with its relay's.

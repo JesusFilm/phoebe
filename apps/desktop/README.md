@@ -63,8 +63,9 @@ Building needs no Electron binary, which is why the gate can run with
 **The local arm, in full.** The installs on this machine, the Docker check, the
 verb runs that drive them ([#555](https://github.com/JesusFilm/phoebe/issues/555)),
 the local read loop that feeds their tabs
-([#556](https://github.com/JesusFilm/phoebe/issues/556)) and the two writes that
-change them ([#557](https://github.com/JesusFilm/phoebe/issues/557)):
+([#556](https://github.com/JesusFilm/phoebe/issues/556)) the two writes that
+change them ([#557](https://github.com/JesusFilm/phoebe/issues/557)) and pairing
+([#558](https://github.com/JesusFilm/phoebe/issues/558)):
 
 - [`companion-file.ts`](src/companion-file.ts) — `companion.json` in `userData`:
   the install directories, the relay URL, the preferences. Nothing else. Every
@@ -88,6 +89,11 @@ change them ([#557](https://github.com/JesusFilm/phoebe/issues/557)):
   `report` event out — the relay's own, so the tabs do not branch on arm.
 - [`container-read.ts`](src/container-read.ts) — the two seams under it: the
   `phoebe status --json` exec, and the `docker compose events` subscription.
+- [`pair.ts`](src/pair.ts) — the seventh verb, and the one the engine does not
+  have: a mint on the relay, the address into the config, the token into the
+  root `.env`, and an `up -d` so Compose recreates the container holding both
+  ([#558](https://github.com/JesusFilm/phoebe/issues/558)). The token goes into
+  the file and into no line.
 
 **The relay arm**
 ([#554](https://github.com/JesusFilm/phoebe/issues/554)) is sign-in, the JSON reads

@@ -13,6 +13,7 @@ import { FleetPage } from "./fleet-page.tsx";
 import { Rail } from "./rail.tsx";
 import { ConfigEditForm, InstallPage, InstallTab } from "./install-page.tsx";
 import { ReceiptPanel } from "./deployment-tabs.tsx";
+import { pairReading } from "./local-install.ts";
 import type { RelaySignIn } from "./relay-client.ts";
 import {
   ago,
@@ -505,14 +506,22 @@ describe("the install tab", () => {
    * install on overview (#526), and which verbs an install is offered is a
    * question about this tab rather than about where the page opened.
    */
-  function tab(overrides: Parameters<typeof install>[0] = {}) {
+  function tab(
+    overrides: Parameters<typeof install>[0] = {},
+    arm: { signedIn?: boolean; paired?: boolean } = {},
+  ) {
+    const subject = install(overrides);
     return renderToStaticMarkup(
       <InstallTab
-        install={install(overrides)}
+        install={subject}
         environment={null}
         run={null}
         running={false}
         trouble={null}
+        pairing={pairReading(subject, {
+          signedIn: arm.signedIn ?? true,
+          paired: arm.paired ?? false,
+        })}
         onStart={() => undefined}
         onForget={() => undefined}
         onCancel={() => undefined}
@@ -544,6 +553,34 @@ describe("the install tab", () => {
     expect(markup).toContain(">Check for upgrades<");
   });
 
+  test("a running install on a signed-in companion is offered the pairing", () => {
+    const markup = tab({ state: "running" }, { signedIn: true });
+
+    expect(markup).toContain(">Pair with the relay<");
+    expect(markup).not.toContain('disabled="">Pair');
+  });
+
+  test("signed out, it is disabled and says to sign in", () => {
+    const markup = tab({ state: "running" }, { signedIn: false });
+
+    expect(markup).toContain("Sign in to a relay on the rail first");
+    expect(markup).toMatch(/disabled=""[^>]*>Pair with the relay/);
+  });
+
+  test("stopped, it is disabled and says to start the install", () => {
+    const markup = tab({ state: "stopped" }, { signedIn: true });
+
+    expect(markup).toContain("Start this install first");
+    expect(markup).toMatch(/disabled=""[^>]*>Pair with the relay/);
+  });
+
+  test("already paired, there is no button at all — only what it means", () => {
+    const markup = tab({ state: "running" }, { signedIn: true, paired: true });
+
+    expect(markup).not.toContain(">Pair with the relay<");
+    expect(markup).toContain("Paired");
+  });
+
   test("says forgetting deletes nothing, because a Forget button reads like one that does", () => {
     expect(tab()).toContain("Nothing on disk is deleted");
   });
@@ -559,6 +596,8 @@ describe("a local install's page", () => {
       <InstallPage
         install={one}
         bridge={bridge()}
+        signedIn
+        paired={false}
         report={event === null ? null : localReport({ facts: one, ...event })}
         now={NOW}
         onForget={() => undefined}
@@ -657,6 +696,8 @@ describe("the two local writes on screen (#557)", () => {
       <InstallPage
         install={one}
         bridge={bridge()}
+        signedIn
+        paired={false}
         report={event === null ? null : localReport({ facts: one, ...event })}
         now={NOW}
         onForget={() => undefined}
@@ -697,6 +738,7 @@ describe("the two local writes on screen (#557)", () => {
         run={null}
         running={false}
         trouble={null}
+        pairing={{ kind: "ready" }}
         onStart={() => undefined}
         onForget={() => undefined}
         onCancel={() => undefined}
@@ -776,5 +818,50 @@ describe("the two local writes on screen (#557)", () => {
     expect(markup).toContain("checkCommand");
     expect(markup).toContain("pnpm run check");
     expect(markup).toContain("reconciles onto it");
+  });
+});
+
+describe("a paired install on the rail (#558)", () => {
+  const PAIRED = install({ dir: "/repos/one", name: "one", deploymentName: "the-fleet" });
+  const FLEET = sortFleet([rowFacts(row({ fingerprint: "FP1", name: "the-fleet" }), null)]);
+
+  function rail(paired: Set<string>, facts = FLEET) {
+    return renderToStaticMarkup(
+      <Rail
+        facts={facts}
+        now={NOW}
+        surface="companion"
+        signedIn
+        installs={[PAIRED]}
+        paired={paired}
+        signIn={null}
+        onSignedIn={() => undefined}
+      />,
+    );
+  }
+
+  test("wears a paired chip under This machine", () => {
+    const markup = rail(new Set(["/repos/one"]), []);
+
+    expect(markup).toContain("This machine");
+    expect(markup).toContain('class="chip paired"');
+    expect(markup).toContain(">paired<");
+  });
+
+  test("shows once: the row it is on the relay is not drawn beside it", () => {
+    // The Relay group is handed the rows that are *not* local installs, so with
+    // its one row claimed the group says what an empty relay says.
+    const markup = rail(new Set(["/repos/one"]), []);
+
+    expect(markup).toContain("No deployment is paired with this relay yet.");
+    expect(markup.match(/the-fleet/g)).toBeNull();
+    expect(markup.match(/class="name">/g)).toHaveLength(1);
+  });
+
+  test("an unpaired install wears no chip, and its relay group still draws its rows", () => {
+    const markup = rail(new Set());
+
+    expect(markup).not.toContain("chip paired");
+    expect(markup).toContain("the-fleet");
   });
 });

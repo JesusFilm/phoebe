@@ -16,6 +16,15 @@
 // `+ add` a control worth drawing; until then the group states that it is empty,
 // which is a fact rather than a placeholder.
 //
+// A local entry is selectable; a relay entry is not yet. Selecting an install
+// opens its install tab, which exists; selecting a deployment would open the
+// five tabs that #544 builds, and a link to a page nothing answers is a dead end
+// on screen.
+//
+// A paired install appears once, here, with a `paired` chip — and the row it is
+// on the relay is dropped from the group below rather than drawn twice (#526,
+// #558). Local is the richer arm: the verbs and the direct writes are there.
+//
 // The Relay group's signed-out entry is the companion's sign-in control (#554).
 // It asks for one thing — the relay's address — because that is the only part of
 // the flow that is the operator's to supply: the PKCE verifier, the system
@@ -41,6 +50,7 @@ export function Rail({
   surface,
   signedIn,
   installs = [],
+  paired,
   selected = null,
   selectedDeployment = null,
   onSelect,
@@ -54,6 +64,12 @@ export function Rail({
   signedIn: boolean;
   /** The local arm. Empty in a browser, which has no local arm at all. */
   installs?: LocalInstall[];
+  /**
+   * The installs that are also a deployment on this relay, by directory. Passed
+   * in rather than worked out here: the same join decides which rows the Relay
+   * group below is not drawing (local-install.ts).
+   */
+  paired?: ReadonlySet<string>;
   /** The install whose page is open, by directory. */
   selected?: string | null;
   /** The fingerprint of the deployment being shown, or null on the fleet page. */
@@ -115,6 +131,7 @@ export function Rail({
               key={install.dir}
               install={install}
               current={install.dir === selected}
+              paired={paired?.has(install.dir) ?? false}
               {...(onSelect !== undefined ? { onSelect } : {})}
             />
           ))
@@ -133,10 +150,13 @@ export function Rail({
 function InstallEntry({
   install,
   current,
+  paired,
   onSelect,
 }: {
   install: LocalInstall;
   current: boolean;
+  /** Also a deployment on this relay — so the Relay group is not drawing it. */
+  paired: boolean;
   onSelect?: (dir: string) => void;
 }) {
   const reading = installReading(install);
@@ -150,6 +170,7 @@ function InstallEntry({
       <div className="name">
         <span className={`mark ${reading.tone}`} aria-hidden="true" />
         {install.name}
+        {paired ? <span className="chip paired">paired</span> : null}
       </div>
       <div className="sub">{reading.text}</div>
     </button>

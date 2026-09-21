@@ -213,3 +213,6 @@ export { CANCELLABLE_VERBS, MAX_RUN_LINES } from "./verb-run.ts";
 export type { RunExit, RunLine, VerbRun, VerbRunRequest } from "./verb-run.ts";
 export type { InstallDirectoryFacts, LocalReportEvent, StoredReport } from "./local-report.ts";
 export type { SecretSetOutcome, SecretWriter } from "./secret-set.ts";
+export type { MintedPairingToken } from "./relay-routes.ts";
+export { RELAY_TOKEN_ENV } from "./relay-protocol.ts";
+export type { PairOutcome } from "./pair-outcome.ts";

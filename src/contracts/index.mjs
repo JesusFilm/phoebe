@@ -151,3 +151,6 @@ export const MAX_RUN_LINES = 2000;
 
 /** The verbs a companion can cancel — see verb-run.ts (#527 §2). */
 export const CANCELLABLE_VERBS = ["start", "stop"];
+
+/** The variable a pairing token travels in — see relay-protocol.ts (#558). */
+export const RELAY_TOKEN_ENV = "PHOEBE_RELAY_TOKEN";

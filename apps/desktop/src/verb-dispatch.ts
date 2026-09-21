@@ -1,6 +1,6 @@
 // Which verb a run actually runs (#527 §3, ADR 0001).
 //
-// Eight arms, in this process. No second Node, no `bin.mjs`, no stdout parsing:
+// Nine arms, in this process. No second Node, no `bin.mjs`, no stdout parsing:
 // main ships the same package as the renderer, so it calls the verb functions
 // directly and reads the typed outcome each one returns. That is the seam #552
 // reshaped the verbs to expose, and this file is its only consumer.
@@ -17,6 +17,11 @@
 // can reach across a filesystem, so that it could travel through a server, would
 // be work done to reach somewhere it is already standing.
 //
+// `pair` is the arm that is not a bare engine verb. Pairing needs the relay's
+// device token, which only the companion holds, so it is composed here out of a
+// mint, two file writes and a nudge (pair.ts, #527 §14). That is one reason this
+// module is a factory over what main holds rather than a bare function.
+//
 // Two things every arm has in common. Each verb's io is the run's line sink, so
 // its output lands in the install tab rather than in whatever stream the
 // companion's own process happens to own. And each verb's cwd is the install's
@@ -27,6 +32,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { app } from "electron";
 import type { InstallState, VerbIo } from "phoebe-agent/contracts";
+import { BridgeRefusal } from "./channels.ts";
 import { runConfigSet } from "../../../src/config-set.ts";
 import {
   formatResolveFailure,
@@ -39,6 +45,7 @@ import { runMigrate } from "../../../src/migrate.ts";
 import { runStart } from "../../../src/start.ts";
 import { runStop } from "../../../src/stop.ts";
 import { runUpgrade } from "../../../src/upgrade.ts";
+import { pairInstall, type PairArm } from "./pair.ts";
 import {
   secretSetOutcome,
   secretTargetOf,
@@ -66,13 +73,20 @@ function packageRoot(): string {
 }
 
 /**
- * What the dispatch needs from outside itself. One entry, and it is `secret
- * set`'s: which of the two writers takes a value is a reading of the install's
- * state at the moment of the write (#527 §8), and main is the process that
- * derives that state for everything else on screen.
+ * What the dispatch needs from outside itself, and both entries are main's.
+ *
+ * `installState` is `secret set`'s: which of the two writers takes a value is a
+ * reading of the install's state at the moment of the write (#527 §8), and main
+ * is the process that derives that state for everything else on screen.
+ *
+ * `relayArm` is `pair`'s: the relay arm pairing mints on, or null when this
+ * companion is signed out. Read at the moment of the run rather than handed over
+ * once: a sign-out between opening the window and pressing the button is the
+ * ordinary case.
  */
 export type DispatchDeps = {
   installState: (dir: string) => Promise<InstallState>;
+  relayArm: () => PairArm | null;
 };
 
 /** The dispatch — one arm per verb. */
@@ -210,6 +224,18 @@ export function createDispatchVerb(deps: DispatchDeps): Dispatch {
             at: new Date().toISOString(),
           }),
         };
+      }
+      case "pair": {
+        const arm = deps.relayArm();
+        if (arm === null) {
+          throw new BridgeRefusal({
+            code: "signed-out",
+            message: "this companion is not signed in to a relay, so there is nothing to pair with",
+            instruction: "Sign in to a relay on the rail, then pair this install.",
+          });
+        }
+        const outcome = await pairInstall(install, arm, { io, runner });
+        return { verb: "pair", outcome };
       }
     }
   };

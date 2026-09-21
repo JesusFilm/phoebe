@@ -164,6 +164,21 @@ export type DeviceExchange = { code: string; verifier: string };
 export type DeviceExchangeResult = { token: string; device: RelayDevice };
 
 /**
+ * What `POST /api/pairing-tokens` answers with — the token's characters, once
+ * (#540). The relay keeps the string only until it is spent, so a caller that
+ * loses this has nothing to re-read and mints another.
+ *
+ * In contracts because two codebases hold it: the relay mints it, and the
+ * companion writes it into an install's root `.env` without ever showing it
+ * (#527 §14).
+ */
+export type MintedPairingToken = {
+  token: string;
+  /** ISO 8601. Fifteen minutes out, and enforced when the token is spent. */
+  expiresAt: string;
+};
+
+/**
  * One signed-in companion, as the relay can describe it (#523 §3). The token is
  * not in here and cannot be derived from anything that is — `id` is the relay's
  * own name for the device, minted beside the token rather than out of it.

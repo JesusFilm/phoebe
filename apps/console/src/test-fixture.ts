@@ -361,6 +361,8 @@ export function install(overrides: Partial<LocalInstall> = {}): LocalInstall {
   return {
     dir: "/repos/youtube-studio",
     name: "youtube-studio",
+    deploymentName: "youtube-studio",
+    relayUrl: null,
     addedAt: ago(3600),
     state: "running",
     ...overrides,

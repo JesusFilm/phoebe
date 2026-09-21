@@ -54,6 +54,12 @@ export const MAX_RUN_LINES = 2000;
  * in under a second. It is left off because a cancel landing inside it would
  * leave the operator not knowing whether the value reached the store, and "run it
  * again" is a better answer to a slow one than "it may or may not be set".
+ *
+ * `pair` is absent for a different reason. Most of it is a mint over the network
+ * and two file writes, with nothing to signal; the one child it spawns is the
+ * nudge that finishes the pairing, and killing that would leave a config and an
+ * `.env` written with nothing acting on them (#558).
+ *
  * Mirrored by hand in index.mjs.
  */
 export const CANCELLABLE_VERBS: readonly HostVerb[] = ["start", "stop"];
@@ -92,7 +98,13 @@ export type VerbRunRequest =
       tenant?: string;
       key: string;
       value: string;
-    };
+    }
+  /**
+   * Pair this install with the relay the companion is signed in to (#527 §14).
+   * It takes no arguments: the relay is the one main holds a device token for,
+   * and the token it mints never crosses the bridge in either direction.
+   */
+  | { install: string; verb: "pair" };
 
 /** One line a running verb wrote. Carries no newline — the tab decides that. */
 export type RunLine = {

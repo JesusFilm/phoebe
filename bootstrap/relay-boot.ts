@@ -30,6 +30,7 @@
 
 import { readRelayField, type RelayField } from "../src/config-schema.ts";
 import type { ConfigEdit, EditReceipt } from "../src/contracts/config-edit.ts";
+import { RELAY_TOKEN_ENV } from "../src/contracts/relay-protocol.ts";
 import type { DeploymentArm, DeploymentIdentity } from "../src/contracts/deployment.ts";
 import type { DeploymentState } from "./deployment-state.ts";
 import {
@@ -49,8 +50,14 @@ import {
   type DeploymentKey,
 } from "./relay-key.ts";
 
-/** The env var the operator pastes a freshly minted pairing token into. */
-export const RELAY_TOKEN_ENV = "PHOEBE_RELAY_TOKEN";
+/**
+ * The env var a freshly minted pairing token travels in — pasted by an operator,
+ * or written by the companion when it pairs an install. Defined in contracts,
+ * because the writer is a different codebase from this reader (#558), and
+ * re-exported here so everything that reads it goes on importing it from the
+ * module that spends it.
+ */
+export { RELAY_TOKEN_ENV } from "../src/contracts/relay-protocol.ts";
 
 /**
  * What a console may ask this deployment to *do*, as opposed to read (#503,
