@@ -395,3 +395,17 @@ _Avoid_: revoke, delete, unpair
 The host-side verb, `phoebe relay leave`, that deletes the deployment key from the data
 volume. The other half of forget, and neither half needs the other to work.
 _Avoid_: unlink, disconnect
+
+**Alert**:
+A message the relay sends out when a deployment or one of its pipelines crosses into or
+out of a named condition: `dark`, `wedged`, `crash-looping`, `doctor-fail`, `replaced`.
+Every raise has a matching clear, unseen is silent, and the edge rule that decides is one
+pure function both the relay and the companion run. It is a transition, never a record —
+`alerts.json` holds the last state notified per (deployment, condition) and nothing else.
+_Avoid_: notification (the events stream already notifies the browser), incident, page
+
+**Sink**:
+Somewhere an alert goes. There are two: the generic webhook `RELAY_ALERT_WEBHOOK` names,
+and the `alert` event on the events stream. The webhook is optional and the event is not,
+so an unset variable means no webhook rather than no alerting.
+_Avoid_: channel, target, subscriber

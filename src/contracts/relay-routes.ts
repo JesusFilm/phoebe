@@ -35,6 +35,13 @@ export const RELAY_ROUTES = {
    * per-deployment read this shares a prefix with is a GET.
    */
   forget: "/api/deployments/forget",
+  /**
+   * POST — send a `{ kind: "test" }` body to every configured alert sink (#515
+   * §13). Fleet-wide and carries no body, because the question it answers is
+   * whether the webhook works and not anything about a deployment. A relay-local
+   * verb, so the effort stays read-only from a deployment's point of view.
+   */
+  testAlert: "/api/alerts/test",
 } as const;
 
 /** One of the relay's paths. */

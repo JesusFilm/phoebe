@@ -65,4 +65,14 @@ export const RELAY_ROUTES = {
   pairingTokens: "/api/pairing-tokens",
   deployments: "/api/deployments",
   forget: "/api/deployments/forget",
+  testAlert: "/api/alerts/test",
 };
+
+/** The `schema` integer every alert body carries (#515 §9) — see alerts.ts. */
+export const ALERT_SCHEMA = 1;
+
+/** How long after the last heartbeat silence becomes an alert (#515 §4). */
+export const ALERT_DARK_AFTER_MS = 300_000;
+
+/** The five conditions (#515 §3). Mirror of `ALERT_CONDITIONS` in alerts.ts. */
+export const ALERT_CONDITIONS = ["dark", "wedged", "crash-looping", "doctor-fail", "replaced"];
