@@ -40,6 +40,7 @@ function draft(overrides: Partial<DeploymentDraft> = {}): DeploymentDraft {
       ],
       slots: { capacity: 1, inUse: 0, waiting: 0, overGranted: 0, floorBudget: 1 },
     },
+    relay: { configured: false, state: "unpaired", nextRetryAt: null, lastClose: null },
     fleet: { tenants: [], cells: [] },
     doctor: { report: null, at: null, trigger: null },
     config: {
@@ -59,6 +60,24 @@ describe("deploymentReportPath", () => {
 });
 
 describe("stampReport", () => {
+  test("the relay section keeps its own stamp, like every other section", () => {
+    const first = stampReport(draft(), null, "2026-05-05T00:00:00.000Z")!;
+    const connected = stampReport(
+      draft({
+        relay: {
+          configured: true,
+          state: "connected",
+          nextRetryAt: null,
+          lastClose: null,
+        },
+      }),
+      first,
+      "2026-05-05T00:10:00.000Z",
+    )!;
+    expect(connected.relay.updatedAt).toBe("2026-05-05T00:10:00.000Z");
+    expect(connected.bootstrapper.updatedAt).toBe("2026-05-05T00:00:00.000Z");
+  });
+
   test("the first report is always written, and carries the schema", () => {
     const report = stampReport(draft(), null, "2026-05-05T00:00:00.000Z");
     expect(report).not.toBeNull();

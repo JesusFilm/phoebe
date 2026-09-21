@@ -7,6 +7,7 @@ import { describe, expect, test } from "vite-plus/test";
 import type {
   ChildLiveness,
   ConfigReport,
+  DeploymentIdentity,
   DeploymentReport,
   FleetCell,
   RelayReport,
@@ -34,6 +35,8 @@ import {
 
 const NOW = Date.parse("2026-09-17T12:00:00.000Z");
 const MINUTES_AGO = (n: number): string => new Date(NOW - n * 60_000).toISOString();
+/** Who the deployment is — the relay line reads its name and key from here (#540). */
+const IDENTITY: DeploymentIdentity = { name: "acme", arm: "workspace" };
 
 function tenant(fields: Partial<TenantFacts> = {}): TenantFacts {
   return {
@@ -113,9 +116,15 @@ function report(fields: {
       omitted: 0,
       updatedAt: MINUTES_AGO(2),
     },
-    updatedAt: MINUTES_AGO(2),
-    ...(fields.relay !== undefined ? { relay: fields.relay } : {}),
+    relay: fields.relay ?? {
+      configured: false,
+      state: "unpaired",
+      nextRetryAt: null,
+      lastClose: null,
+      updatedAt: MINUTES_AGO(2),
+    },
     doctor: fields.doctor ?? { report: null, at: null, trigger: null, updatedAt: MINUTES_AGO(2) },
+    updatedAt: MINUTES_AGO(2),
   };
 }
 
@@ -223,16 +232,17 @@ describe("the bootstrapper line", () => {
 
 describe("the relay line", () => {
   test("no section and an unconfigured one both print nothing", () => {
-    expect(formatRelayLine(undefined, NOW)).toBeNull();
+    expect(formatRelayLine(undefined, IDENTITY, NOW)).toBeNull();
     expect(
       formatRelayLine(
         {
           configured: false,
-          name: null,
-          keyFingerprint: null,
           state: "unpaired",
-          since: MINUTES_AGO(5),
+          nextRetryAt: null,
+          lastClose: null,
+          updatedAt: MINUTES_AGO(5),
         },
+        IDENTITY,
         NOW,
       ),
     ).toBeNull();
@@ -242,13 +252,12 @@ describe("the relay line", () => {
     const line = formatRelayLine(
       {
         configured: true,
-        name: "relay.example",
-        keyFingerprint: "SHA256:abc",
         state: "reconnecting",
-        since: MINUTES_AGO(3),
         nextRetryAt: new Date(NOW + 30_000).toISOString(),
-        lastClose: { code: 1006, at: MINUTES_AGO(3) },
+        lastClose: { code: 1006, reason: "", at: MINUTES_AGO(3) },
+        updatedAt: MINUTES_AGO(3),
       },
+      { ...IDENTITY, name: "relay.example", keyFingerprint: "SHA256:abc" },
       NOW,
     );
     expect(line).toContain("relay.example");
@@ -342,10 +351,10 @@ describe("the text view", () => {
         children: [child({ id: "/etc/phoebe/children/widget#work" })],
         relay: {
           configured: true,
-          name: "relay.example",
-          keyFingerprint: null,
           state: "connected",
-          since: MINUTES_AGO(120),
+          nextRetryAt: null,
+          lastClose: null,
+          updatedAt: MINUTES_AGO(120),
         },
         doctor: doctorSection(),
       }),
@@ -584,8 +593,8 @@ describe("the in-container arm", () => {
       io: json.io,
     });
     const printed = JSON.parse(json.out.join("")) as DeploymentReport;
-    expect(printed.config.root.fingerprint).toBe("sha256:abc123");
-    expect(printed.config.tenants[0]!.fields).toEqual({
+    expect(printed.config!.root.fingerprint).toBe("sha256:abc123");
+    expect(printed.config!.tenants[0]!.fields).toEqual({
       repoSlug: { value: "acme/widget", source: "file", reader: "engine" },
     });
 

@@ -22,6 +22,7 @@ import {
   configPenCheck,
   launcherFloorCheck,
   promptDriftCheck,
+  relayCheck,
   staleStateCheck,
   strayMembersCheck,
   tenantCredential,
@@ -991,6 +992,94 @@ describe("tenantRow stray members (#487)", () => {
       state: "unknown",
       detail: "not probed (repo check did not pass)",
     });
+  });
+});
+
+describe("relayCheck (#540)", () => {
+  const url = "wss://relay.example.com/deployments";
+  const paired = {
+    configured: true,
+    state: "connected" as const,
+    nextRetryAt: null,
+    lastClose: null,
+    updatedAt: "2026-09-18T10:00:00.000Z",
+  };
+
+  test("a deployment with no relay block is not a deployment with a problem", () => {
+    const check = relayCheck({ url: null, keyPresent: false, tokenPresent: false, reported: null });
+    expect(check).toMatchObject({ id: "relay", state: "ok" });
+    expect(check.detail).toContain("dials nothing");
+  });
+
+  test("a url and a token and no key yet is a pairing about to happen", () => {
+    const check = relayCheck({ url, keyPresent: false, tokenPresent: true, reported: null });
+    expect(check.state).toBe("ok");
+    expect(check.detail).toContain("unpaired");
+    expect(check.detail).toContain("the next boot pairs");
+  });
+
+  test("a url with neither a key nor a token is an operator who stopped halfway", () => {
+    const check = relayCheck({ url, keyPresent: false, tokenPresent: false, reported: null });
+    expect(check.state).toBe("warn");
+    expect(check.detail).toContain("Mint a pairing token");
+  });
+
+  test("a paired deployment says so, and says where it stands", () => {
+    const check = relayCheck({ url, keyPresent: true, tokenPresent: false, reported: paired });
+    expect(check).toMatchObject({ state: "ok" });
+    expect(check.detail).toContain("paired with " + url);
+    expect(check.detail).toContain("connected");
+  });
+
+  test("a token left in the env after pairing is a dead credential worth naming", () => {
+    const check = relayCheck({ url, keyPresent: true, tokenPresent: true, reported: paired });
+    expect(check.state).toBe("warn");
+    expect(check.detail).toContain("token-stale");
+    expect(check.detail).toContain("PHOEBE_RELAY_TOKEN");
+  });
+
+  test("a refusal fails the check — nothing about it changes on its own", () => {
+    const check = relayCheck({
+      url,
+      keyPresent: true,
+      tokenPresent: false,
+      reported: {
+        ...paired,
+        state: "unpaired",
+        lastClose: { code: 4001, reason: "unlinked", at: "2026-09-18T11:00:00.000Z" },
+      },
+    });
+    expect(check.state).toBe("fail");
+    expect(check.detail).toContain("refused");
+    expect(check.detail).toContain("4001");
+  });
+
+  test("a link between retries is still paired, not refused", () => {
+    const check = relayCheck({
+      url,
+      keyPresent: true,
+      tokenPresent: false,
+      reported: {
+        ...paired,
+        state: "reconnecting",
+        nextRetryAt: "2026-09-18T11:00:05.000Z",
+        lastClose: { code: 1006, reason: "", at: "2026-09-18T11:00:00.000Z" },
+      },
+    });
+    expect(check.state).toBe("ok");
+    expect(check.detail).toContain("reconnecting");
+  });
+
+  test("a block that does not parse is reported, not read as no relay at all", () => {
+    const check = relayCheck({
+      url: null,
+      configError: "`relay.url` must be a WebSocket URL",
+      keyPresent: false,
+      tokenPresent: false,
+      reported: null,
+    });
+    expect(check.state).toBe("warn");
+    expect(check.detail).toContain("does not parse");
   });
 });
 

@@ -15,6 +15,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { RELAY_ROUTES } from "../src/contracts/relay-routes.ts";
 import type { RelayIdentity } from "../src/contracts/relay-routes.ts";
 import type { Allowlist } from "./allowlist.ts";
+import type { PairingTokens } from "./links.ts";
 import { newAuthParams, type IdentityProvider } from "./oidc.ts";
 import {
   clearCookie,
@@ -35,6 +36,8 @@ export const SIGNED_IN_LANDING: string = RELAY_ROUTES.me;
 
 export type RelayHandlerOptions = {
   allowlist: Allowlist;
+  /** The in-memory token registry a mint draws from (#540). */
+  tokens: PairingTokens;
   sessions: SessionStore;
   identity: IdentityProvider;
   /** The origin requests arrive on, used only to parse a request's own URL. */
@@ -74,6 +77,9 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
     }
     if (method === "GET" && url.pathname === RELAY_ROUTES.me) {
       return me(request, response);
+    }
+    if (method === "POST" && url.pathname === RELAY_ROUTES.pairingTokens) {
+      return mintPairingToken(request, response);
     }
     json(response, 404, { error: "no-such-route" });
   };
@@ -177,6 +183,24 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
     options.sessions.close(parseCookies(request.headers.cookie).get(SESSION_COOKIE));
     response.setHeader("Set-Cookie", [clearCookie(SESSION_COOKIE)]);
     response.writeHead(204).end();
+  }
+
+  /**
+   * Mint one pairing token (#540). POST, behind the session, and the only time
+   * the token's characters exist outside the operator's clipboard: the relay
+   * keeps the string only until it is spent, and answers this request with it
+   * once. A caller who loses it mints another — they cost nothing and expire on
+   * their own.
+   */
+  function mintPairingToken(request: IncomingMessage, response: ServerResponse): void {
+    const session = options.sessions.get(parseCookies(request.headers.cookie).get(SESSION_COOKIE));
+    if (session === null) {
+      json(response, 401, { error: "not-signed-in" });
+      return;
+    }
+    const minted = options.tokens.mint(session.email, clock());
+    warn(`[phoebe:relay] ${session.email} minted a pairing token`);
+    json(response, 201, minted);
   }
 
   /** The authenticated read: who the cookie belongs to. */

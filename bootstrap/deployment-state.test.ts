@@ -79,7 +79,7 @@ function harness(overrides: Partial<DeploymentStateDeps> = {}) {
   const snapshots = new Map<string, StatusSnapshot>();
   const dirs = new Map<string, string[]>();
   const state = createDeploymentState({
-    identity: { name: "acme/widget", arm: "solo" },
+    identity: () => ({ name: "acme/widget", arm: "solo" }),
     dataBase: "/data/repos",
     crashLoop: () => ({ lastGoodSha: "good", failingSha: null, failureCount: 0 }),
     slots: () => ({ capacity: 2, inUse: 1, waiting: 0, overGranted: 0, floorBudget: 1 }),
@@ -456,6 +456,70 @@ describe("the fleet matrix", () => {
   });
 });
 
+describe("the relay section (#540)", () => {
+  test("a deployment that dials nothing says so rather than staying silent", () => {
+    const h = harness();
+    h.state.noteEngine({ ref: "main", sha: "abc", quarantinedSha: null });
+    expect(h.latest()!.relay).toMatchObject({
+      configured: false,
+      state: "unpaired",
+      nextRetryAt: null,
+      lastClose: null,
+    });
+  });
+
+  test("the link's word goes straight into the report", () => {
+    const h = harness();
+    h.state.noteRelay({
+      configured: true,
+      state: "connected",
+      nextRetryAt: null,
+      lastClose: null,
+    });
+    expect(h.latest()!.relay).toMatchObject({ configured: true, state: "connected" });
+  });
+
+  test("a link that went down and is retrying is one publish, not a stream of them", () => {
+    const h = harness();
+    const reconnecting = {
+      configured: true,
+      state: "reconnecting" as const,
+      nextRetryAt: "2026-05-05T00:00:05.000Z",
+      lastClose: { code: 1006, reason: "", at: "2026-05-05T00:00:00.000Z" },
+    };
+    h.state.noteRelay(reconnecting);
+    const after = h.written.length;
+    h.state.noteRelay({ ...reconnecting });
+    expect(h.written.length).toBe(after);
+  });
+
+  test("the identity the model publishes is re-read, so a pairing mid-run shows up", () => {
+    let fingerprint: string | undefined;
+    const h = harness({
+      identity: () => ({
+        name: "acme/widget",
+        arm: "solo",
+        ...(fingerprint !== undefined ? { keyFingerprint: fingerprint } : {}),
+        relayUrl: "wss://relay.example.com/deployments",
+      }),
+    });
+    h.state.noteEngine({ ref: "main", sha: "abc", quarantinedSha: null });
+    expect(h.latest()!.identity.keyFingerprint).toBeUndefined();
+
+    fingerprint = "a-fresh-fingerprint";
+    h.state.noteRelay({
+      configured: true,
+      state: "connected",
+      nextRetryAt: null,
+      lastClose: null,
+    });
+    expect(h.latest()!.identity).toMatchObject({
+      keyFingerprint: "a-fresh-fingerprint",
+      relayUrl: "wss://relay.example.com/deployments",
+    });
+  });
+});
+
 describe("the doctor section (#507 §7, #534)", () => {
   const healthy = { checks: [], tenants: [], ok: true };
 
@@ -687,7 +751,7 @@ describe("the file a workspace with many tenants writes", () => {
     const dir = mkdtempSync(join(tmpdir(), "phoebe-report-"));
     temps.push(dir);
     const state = createDeploymentState({
-      identity: { name: "acme", arm: "workspace" },
+      identity: () => ({ name: "acme", arm: "workspace" }),
       dataBase: dir,
       crashLoop: () => ({ lastGoodSha: null, failingSha: null, failureCount: 0 }),
       slots: () => ({ capacity: 4, inUse: 0, waiting: 0, overGranted: 0, floorBudget: 1 }),

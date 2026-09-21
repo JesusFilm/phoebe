@@ -117,6 +117,7 @@ import {
   type TenantSample,
 } from "./tenants.ts";
 import { readConfigDir } from "./config-dir.ts";
+import { prepareRelay } from "./relay-boot.ts";
 import { resolveDataBase } from "../src/paths.ts";
 import { tenantSecrets, tenantStateDir, type SecretValues } from "../src/secret-store.ts";
 import type { DeploymentArm, SlotReport } from "../src/contracts/deployment.ts";
@@ -1733,16 +1734,26 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   // the name and the credential arm come from.
   const deploymentArm: DeploymentArm = workspace !== null ? "workspace" : "solo";
   const dataBase = resolveDataBase(process.env);
+  // The relay (#540), if the root config names one: who this deployment is to a
+  // console, and the link that tells one so. Prepared before the model is built
+  // because it owns the identity section; dialled after, because it reports
+  // into the model.
+  const relay = prepareRelay({
+    rootConfig,
+    defaultName: deploymentName({ arm: deploymentArm, configDir, soloSlug: soloSlug(rootConfig) }),
+    arm: deploymentArm,
+    dataBase,
+    env: process.env,
+    log: (message) => console.log(message),
+    warn: (message) => console.warn(message),
+  });
   // The config-edit pen (#536, decision #503). Built with the root config's path
   // and nothing else: a workspace's tenant configs sit under the same `:ro`
   // mount and stay the operator's to edit in their own checkouts, and this
   // editor cannot reach them because it was never given them.
   const editor = createConfigEditor({ rootConfigPath: configPath, dataBase });
   const deployment = createDeploymentState({
-    identity: {
-      name: deploymentName({ arm: deploymentArm, configDir, soloSlug: soloSlug(rootConfig) }),
-      arm: deploymentArm,
-    },
+    identity: relay.identity,
     dataBase,
     crashLoop: () => guard.state(),
     slots: () => brokerSlots(broker),
@@ -1764,6 +1775,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
         `Supervision is unaffected; the report is retried on every change.`,
     ),
   });
+  relay.start(deployment);
 
   // The deployment's doctor runs (#507 §4-§7, #534). One cell for the leases
   // because only the workspace arm can hold any: solo's App-arm child mints its
@@ -1846,6 +1858,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       throw error;
     } finally {
       stop.dispose();
+      relay.stop();
       // Nothing in flight is cancelled: a doctor child outliving the drain by a
       // few seconds is harmless, and its six-hour clock is what must not
       // outlive it.
@@ -2057,6 +2070,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     // Drop the listeners before propagating: re-raising the engine's killing
     // signal must actually kill this process, and our own latch would swallow it.
     stop.dispose();
+    relay.stop();
     doctor.stop();
     await reporter.flush();
   }

@@ -29,6 +29,7 @@
 import { readFileSync } from "node:fs";
 import type {
   ChildLiveness,
+  DeploymentIdentity,
   DeploymentReport,
   FleetCell,
   RelayReport,
@@ -206,18 +207,25 @@ export function formatBootstrapperLine(
  * the relay itself makes of the connection is the relay's to say (#507 §8), and
  * whether the pairing is healthy is doctor's.
  */
-export function formatRelayLine(relay: RelayReport | undefined, now: number): string | null {
+export function formatRelayLine(
+  relay: RelayReport | undefined,
+  identity: DeploymentIdentity,
+  now: number,
+): string | null {
   if (relay === undefined || !relay.configured) return null;
-  const parts = [`${relay.state} ${sinceOf(relay.since, now)}`];
-  if (relay.state === "reconnecting" && relay.nextRetryAt !== undefined) {
+  const parts = [`${relay.state} ${sinceOf(relay.updatedAt, now)}`];
+  if (relay.state === "reconnecting" && relay.nextRetryAt !== null) {
     const at = Date.parse(relay.nextRetryAt);
     parts.push(Number.isFinite(at) ? `next retry in ${formatAge(at - now)}` : "next retry unknown");
   }
-  if (relay.lastClose !== undefined) {
+  if (relay.lastClose !== null) {
     parts.push(`last close ${relay.lastClose.code} ${ageOf(relay.lastClose.at, now)}`);
   }
-  if (relay.keyFingerprint !== null) parts.push(relay.keyFingerprint);
-  return `[phoebe] relay         ${relay.name ?? "unnamed"}  ${parts.join("  ")}`;
+  // The name and the key are the deployment identity the report already
+  // carries (#540), not the relay section: the section says where the link
+  // stands, identity says who is standing there.
+  if (identity.keyFingerprint !== undefined) parts.push(identity.keyFingerprint);
+  return `[phoebe] relay         ${identity.name}  ${parts.join("  ")}`;
 }
 
 /** The tenant's own columns, as `phoebe list` has always shown them. */
@@ -409,7 +417,7 @@ export function formatStatusReport(view: StatusView): string {
     return lines.join("\n");
   }
   lines.push(formatBootstrapperLine(report, { now, withReportAge: view.bootAlive }));
-  const relay = formatRelayLine(report.relay, now);
+  const relay = formatRelayLine(report.relay, report.identity, now);
   if (relay !== null) lines.push(relay);
   lines.push(formatFleetSection(report, now));
   lines.push(formatDoctorLine(report.doctor, now));

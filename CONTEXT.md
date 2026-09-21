@@ -332,3 +332,27 @@ the first verified Google login when it is empty, merged at every start with the
 addresses in `ALLOWED_EMAILS`. A person is keyed on Google's `sub`; the address is what
 an operator types.
 _Avoid_: whitelist, access list, users
+
+**Pairing token**:
+The single-use credential the console mints so one deployment can register its key.
+Fifteen minutes, shown once, held in the relay's memory and never on its volume; the
+operator puts it in the root `.env` as `PHOEBE_RELAY_TOKEN` and removes it once pairing
+is done.
+_Avoid_: API key, join code
+
+**Deployment key**:
+The Ed25519 key pair on the data volume (`state/relay-key`) that is a deployment's
+identity to its relay. Generated in the container at the first pairing, presented as its
+public half, and used to sign a relay-issued challenge on every connection after.
+_Avoid_: device key, machine key
+
+**Link**:
+The relay's record of a deployment — public key, name, first seen — in `links.json`. The
+other half of the link is the key on the deployment's own volume; neither half needs the
+other's process to be alive.
+_Avoid_: registration (the act, not the record), enrollment
+
+**Protocol**:
+The integer both sides exchange in the handshake. A relay speaks every protocol up to its
+own and refuses anything above it, so the rule is: upgrade the relay first.
+_Avoid_: version (that is the package)

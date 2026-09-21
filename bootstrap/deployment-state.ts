@@ -54,6 +54,7 @@ import type {
   DeploymentReport,
   FleetCell,
   ReconcileState,
+  RelayReport,
   SlotReport,
   TenantFacts,
 } from "../src/contracts/deployment.ts";
@@ -99,9 +100,31 @@ export type EngineReport =
   | { kind: "pass"; pollIntervalMs: number | null }
   | { kind: "status"; snapshot: StatusSnapshot };
 
+/**
+ * The relay section as the link reports it (#540) — everything but the stamp,
+ * which the report owns.
+ */
+export type RelayStatus = Omit<RelayReport, "updatedAt">;
+
+/**
+ * A deployment that dials nothing. Not an absent section: "this deployment has
+ * no relay" is a fact a console states, and it states it from here.
+ */
+export const UNCONFIGURED_RELAY: RelayStatus = {
+  configured: false,
+  state: "unpaired",
+  nextRetryAt: null,
+  lastClose: null,
+};
+
 export type DeploymentStateDeps = {
-  /** Who this deployment is (#505); `keyFingerprint` lands with the relay key. */
-  identity: DeploymentIdentity;
+  /**
+   * Who this deployment is (#505). Read at publish time rather than handed over
+   * once: `keyFingerprint` appears the moment a first pairing completes, and a
+   * deployment that paired mid-run should not have to wait for a restart to say
+   * so.
+   */
+  identity: () => DeploymentIdentity;
   /** The data volume's mount point — the report's home and the tenants' state dirs. */
   dataBase: string;
   /** The crash-loop guard's record, read at publish time. */
@@ -170,6 +193,11 @@ export type DeploymentState = {
   noteDoctor: (section: Omit<DoctorSection, "updatedAt">) => void;
   /** The live pipeline matrix, as of this poll. */
   notePipelines: (pipelines: readonly SupervisedPipeline[]) => void;
+  /**
+   * Where the relay link stands (#540). Never called on a deployment with no
+   * `relay` block — that is what leaves the section at {@link UNCONFIGURED_RELAY}.
+   */
+  noteRelay: (status: RelayStatus) => void;
   /**
    * The tenants discovery is holding right now, with their reasons. Nothing is
    * held until something says so, which is also solo's whole answer: the root is
@@ -241,6 +269,7 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
     quarantinedSha: null as string | null,
   };
   let reconcile: ReconcileState = { phase: "idle", since: iso(now()) };
+  let relay: RelayStatus = UNCONFIGURED_RELAY;
   // "Never": a deployment that has not run doctor yet says so, rather than
   // leaving the section out and making every reader handle its absence.
   let doctor: Omit<DoctorSection, "updatedAt"> = { report: null, at: null, trigger: null };
@@ -456,7 +485,7 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
     try {
       const at = now();
       const draft: DeploymentDraft = {
-        identity: deps.identity,
+        identity: deps.identity(),
         bootstrapper: {
           engineRef: engine.ref,
           engineSha: engine.sha,
@@ -466,6 +495,7 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
           children: livenessOf(at),
           slots: deps.slots(),
         },
+        relay,
         fleet: buildFleet(at),
         doctor,
         config: {
@@ -584,6 +614,11 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
       for (const id of children.keys()) if (!named.has(id)) orphaned.push(id);
       for (const id of orphaned) children.delete(id);
       refreshConfig();
+      publish();
+    },
+
+    noteRelay(status) {
+      relay = status;
       publish();
     },
 

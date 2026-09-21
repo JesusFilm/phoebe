@@ -262,7 +262,7 @@ describe("the phoebe-agent/contracts subpath resolves", () => {
     // a dependency here lands in every deployment's image. What is on it is the
     // relay's own — a host process an operator runs deliberately — and nothing
     // under contracts may import either name, which the walk above enforces.
-    expect(Object.keys(pkg.dependencies ?? {}).sort()).toEqual(["openid-client"]);
+    expect(Object.keys(pkg.dependencies ?? {}).sort()).toEqual(["openid-client", "ws"]);
   });
 
   test("both conditions name files the published tarball carries", () => {
