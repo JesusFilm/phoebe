@@ -8,11 +8,11 @@ import type {
   ChildLiveness,
   ConfigReport,
   DeploymentReport,
-  DoctorSection,
   FleetCell,
   RelayReport,
   TenantFacts,
 } from "./contracts/deployment.ts";
+import type { DoctorSection } from "./contracts/doctor.ts";
 import type { CommandResult, CommandRunner } from "./deployment-compose.ts";
 import { COMPOSE_REL_PATH } from "./deployment-compose.ts";
 import {
@@ -115,7 +115,7 @@ function report(fields: {
     },
     updatedAt: MINUTES_AGO(2),
     ...(fields.relay !== undefined ? { relay: fields.relay } : {}),
-    ...(fields.doctor !== undefined ? { doctor: fields.doctor } : {}),
+    doctor: fields.doctor ?? { report: null, at: null, trigger: null, updatedAt: MINUTES_AGO(2) },
   };
 }
 
@@ -131,6 +131,7 @@ function doctorSection(fields: Partial<DoctorSection> = {}): DoctorSection {
     },
     at: MINUTES_AGO(240),
     trigger: "schedule",
+    updatedAt: MINUTES_AGO(240),
     ...fields,
   };
 }
@@ -398,10 +399,10 @@ describe("the text view", () => {
     expect(formatDoctorLine(doctorSection(), NOW)).toContain("0 fail, 1 warn — 4h ago (schedule)");
     expect(
       formatDoctorLine(
-        doctorSection({ running: { since: MINUTES_AGO(2), trigger: "console" } }),
+        doctorSection({ running: { since: MINUTES_AGO(2), trigger: "request" } }),
         NOW,
       ),
-    ).toContain("running 2m (console)");
+    ).toContain("running 2m (request)");
     expect(
       formatDoctorLine(
         doctorSection({ lastAttempt: { at: MINUTES_AGO(60), outcome: "timed-out" } }),
@@ -414,7 +415,7 @@ describe("the text view", () => {
     const text = view({
       report: report({ doctor: doctorSection() }),
       verbose: true,
-      doctorTable: (section) => `doctor table for ${section.report.checks.length} checks`,
+      doctorTable: (doctor) => `doctor table for ${doctor.checks.length} checks`,
     });
     expect(text).toContain("  doctor table for 2 checks");
   });

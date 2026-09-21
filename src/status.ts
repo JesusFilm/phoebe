@@ -30,11 +30,11 @@ import { readFileSync } from "node:fs";
 import type {
   ChildLiveness,
   DeploymentReport,
-  DoctorSection,
   FleetCell,
   RelayReport,
   TenantFacts,
 } from "./contracts/deployment.ts";
+import type { DoctorReport, DoctorSection } from "./contracts/doctor.ts";
 import { deploymentReportPath } from "../bootstrap/deployment-report.ts";
 import type { DeploymentField } from "./config-schema.ts";
 import { readDeploymentCommands } from "./deployment-command.ts";
@@ -354,7 +354,11 @@ export function formatDoctorLine(section: DoctorSection | undefined, now: number
   if (section.running !== undefined) {
     return `${prefix}running ${sinceOf(section.running.since, now)} (${section.running.trigger})`;
   }
-  const checks = [...section.report.checks, ...section.report.tenants.flatMap((t) => t.checks)];
+  // A section with no report is a deployment that has never finished a run —
+  // the same "never" an absent section means, said by a section that exists.
+  if (section.report === null || section.at === null) return `${prefix}never run`;
+  const report = section.report;
+  const checks = [...report.checks, ...report.tenants.flatMap((tenant) => tenant.checks)];
   const count = (state: string): number => checks.filter((check) => check.state === state).length;
   const fails = count("fail");
   const warns = count("warn");
@@ -384,7 +388,7 @@ export type StatusView = {
   section: "all" | "fleet";
   verbose: boolean;
   /** Doctor's own table, for `--verbose`. Injected so this stays a pure render. */
-  doctorTable?: (section: DoctorSection) => string;
+  doctorTable?: (report: DoctorReport) => string;
 };
 
 /**
@@ -409,10 +413,10 @@ export function formatStatusReport(view: StatusView): string {
   if (relay !== null) lines.push(relay);
   lines.push(formatFleetSection(report, now));
   lines.push(formatDoctorLine(report.doctor, now));
-  if (view.verbose && report.doctor !== undefined && view.doctorTable !== undefined) {
+  if (view.verbose && report.doctor?.report != null && view.doctorTable !== undefined) {
     lines.push(
       view
-        .doctorTable(report.doctor)
+        .doctorTable(report.doctor.report)
         .split("\n")
         .map((line) => `  ${line}`)
         .join("\n"),
@@ -443,7 +447,7 @@ export function statusFindings(opts: {
     if (child.crashLooping) findings.push(`crash-looping: ${child.id}`);
   }
   const doctor = opts.report.doctor;
-  if (doctor !== undefined && !doctor.report.ok) findings.push("doctor: failing check(s)");
+  if (doctor?.report != null && !doctor.report.ok) findings.push("doctor: failing check(s)");
   for (const tenant of opts.report.fleet.tenants) {
     if (tenant.held) findings.push(`held tenant: ${tenant.path}`);
   }
@@ -480,9 +484,9 @@ function statusIo(deps: StatusDeps | undefined): StatusIo {
 }
 
 /** Doctor's own table, imported only when `--verbose` asks for it. */
-async function loadDoctorTable(): Promise<(section: DoctorSection) => string> {
+async function loadDoctorTable(): Promise<(report: DoctorReport) => string> {
   const { formatDoctorReport } = await import("./doctor.ts");
-  return (section) => formatDoctorReport(section.report);
+  return (report) => formatDoctorReport(report);
 }
 
 /**
