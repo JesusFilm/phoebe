@@ -131,3 +131,6 @@ export const CLOSED_EDIT_BLOCKS = [
     why: "top-level `workKinds` is the permanent alias for `pipelines.work.kinds` — set it at the path the effective config prints",
   },
 ];
+
+/** The global the companion's preload exposes its bridge on — see desktop-bridge.ts. */
+export const DESKTOP_BRIDGE_GLOBAL = "phoebe";

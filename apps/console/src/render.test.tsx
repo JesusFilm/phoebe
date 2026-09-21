@@ -77,7 +77,9 @@ const FLEET = sortFleet([
   ),
 ]);
 
-const rail = renderToStaticMarkup(<Rail facts={FLEET} selected={null} now={NOW} />);
+const rail = renderToStaticMarkup(
+  <Rail facts={FLEET} selected={null} now={NOW} surface="browser" signedIn />,
+);
 const grid = renderToStaticMarkup(<FleetPage facts={FLEET} client={client()} now={NOW} />);
 
 describe("the rail", () => {
@@ -132,7 +134,9 @@ describe("the rail", () => {
   });
 
   test("the entry being shown is marked for a screen reader too", () => {
-    const selected = renderToStaticMarkup(<Rail facts={FLEET} selected="two" now={NOW} />);
+    const selected = renderToStaticMarkup(
+      <Rail facts={FLEET} selected="two" now={NOW} surface="browser" signedIn />,
+    );
     expect(selected).toContain('aria-current="page"');
     expect(selected).toContain("rail-entry state-disconnected attention current");
   });
@@ -243,7 +247,13 @@ describe("doctor at fleet level (#507 §9)", () => {
 
   test("the rail names the fail count without naming a warn count beside it", () => {
     const markup = renderToStaticMarkup(
-      <Rail facts={[rowFacts(row(), stored(failing))]} selected={null} now={NOW} />,
+      <Rail
+        facts={[rowFacts(row(), stored(failing))]}
+        selected={null}
+        now={NOW}
+        surface="browser"
+        signedIn
+      />,
     );
     expect(markup).toContain("doctor 1 fail");
   });
@@ -278,5 +288,38 @@ describe("a report this console cannot read", () => {
     expect(markup).toContain("report schema 99");
     expect(markup).toContain("newer than this console reads");
     expect(markup).toContain("connected");
+  });
+});
+
+describe("the companion's shell", () => {
+  // Shell A (#526): one rail, two groups. Signed out and with nothing installed,
+  // this is the whole window.
+  const empty = renderToStaticMarkup(
+    <Rail facts={[]} selected={null} now={NOW} surface="companion" signedIn={false} />,
+  );
+
+  test("is one rail carrying both arms as groups, not a switch between them", () => {
+    expect(empty).toContain('aria-label="This machine"');
+    expect(empty).toContain('aria-label="Relay"');
+    expect([...empty.matchAll(/<nav/g)]).toHaveLength(1);
+  });
+
+  test("names which kind of empty each group is", () => {
+    expect(empty).toContain("No local install yet");
+    expect(empty).toContain("Not signed in to a relay");
+  });
+
+  test("keeps the relay's deployments in the relay's group once signed in", () => {
+    const markup = renderToStaticMarkup(
+      <Rail facts={FLEET} selected={null} now={NOW} surface="companion" signedIn />,
+    );
+
+    expect(markup).toContain("jesusfilm-workspace");
+    expect(markup).toContain("This machine");
+  });
+
+  test("a browser has no local arm, so its rail is the fleet and nothing else", () => {
+    expect(rail).not.toContain("This machine");
+    expect(rail).toContain("Fleet — 4 deployments");
   });
 });

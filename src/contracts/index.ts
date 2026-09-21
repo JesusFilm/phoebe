@@ -192,3 +192,11 @@ export type {
   TenantMigrateEntry,
   TenantVerdict,
 } from "./migrate-report.ts";
+export { DESKTOP_BRIDGE_GLOBAL } from "./desktop-bridge.ts";
+export type {
+  DesktopBridge,
+  DesktopBridgeError,
+  DesktopBridgeErrorCode,
+  RelayArmState,
+  RelayPassthrough,
+} from "./desktop-bridge.ts";

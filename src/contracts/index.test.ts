@@ -7,6 +7,7 @@
 import { describe, expect, test } from "vite-plus/test";
 import {
   CLOSED_EDIT_BLOCKS as typedClosedBlocks,
+  DESKTOP_BRIDGE_GLOBAL as typedGlobal,
   RELAY_CLOSE as typedClose,
   RELAY_DARK_AFTER_MS as typedDark,
   RELAY_DEPLOYMENTS_PATH as typedPath,
@@ -20,6 +21,7 @@ import {
 } from "./index.ts";
 import {
   CLOSED_EDIT_BLOCKS as shippedClosedBlocks,
+  DESKTOP_BRIDGE_GLOBAL as shippedGlobal,
   RELAY_CLOSE as shippedClose,
   RELAY_DARK_AFTER_MS as shippedDark,
   RELAY_DEPLOYMENTS_PATH as shippedPath,
@@ -79,5 +81,13 @@ describe("the deployment rail's constants are mirrored too", () => {
     for (const [name, code] of Object.entries(typedClose)) {
       expect(code >= 4000 && code <= 4999, `${name} is outside 4000–4999`).toBe(true);
     }
+  });
+});
+
+describe("the companion's bridge global", () => {
+  test("is the same name on both sides", () => {
+    // The preload writes this global and the console bundle reads it; the two
+    // ship together, so the only way they can disagree is through this file.
+    expect(shippedGlobal).toBe(typedGlobal);
   });
 });

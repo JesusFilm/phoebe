@@ -14,6 +14,7 @@
 
 import { RELAY_EVENTS, RELAY_ROUTES } from "phoebe-agent/contracts";
 import type {
+  DesktopBridge,
   RelayConfigSetAnswer,
   RelayConfigSetRequest,
   RelayDeploymentDetail,
@@ -343,4 +344,104 @@ function parseEvent(data: string): RelayEvent | null {
   if (typeof parsed !== "object" || parsed === null) return null;
   const type = (parsed as { type?: unknown }).type;
   return typeof type === "string" && type in RELAY_EVENTS ? (parsed as RelayEvent) : null;
+}
+
+/**
+ * The companion's arm: main holds the device token and makes every call, and
+ * this side only names routes (#527 §9). No cookie, no `EventSource` and no
+ * origin to fetch from — the bundle was loaded from disk.
+ *
+ * The two arms answer the same way on purpose. A bridge call refused
+ * `signed-out` becomes the 401 the browser arm would have been given, so
+ * `isNotSignedIn` reads both and the pages above never branch on the surface.
+ */
+export function createBridgeRelayClient(bridge: DesktopBridge): RelayClient {
+  async function get<T>(path: string): Promise<T> {
+    try {
+      return (await bridge.relay.request({ method: "GET", path })) as T;
+    } catch (error) {
+      throw asRelayError(error);
+    }
+  }
+
+  async function post<T>(path: string, body?: unknown): Promise<T> {
+    try {
+      return (await bridge.relay.request({
+        method: "POST",
+        path,
+        ...(body === undefined ? {} : { body }),
+      })) as T;
+    } catch (error) {
+      throw asRelayError(error);
+    }
+  }
+
+  return {
+    async me() {
+      return (await bridge.relay.state()).person;
+    },
+
+    signOut() {
+      return bridge.relay.signOut();
+    },
+
+    async deployments() {
+      const body = await get<{ deployments: RelayDeploymentRow[] }>(RELAY_ROUTES.deployments);
+      return body.deployments;
+    },
+
+    deployment(fingerprint) {
+      return get<RelayDeploymentDetail>(
+        `${RELAY_ROUTES.deployments}/${encodeURIComponent(fingerprint)}`,
+      );
+    },
+
+    // The writes go over the same passthrough the reads do, so the console
+    // bundle is one bundle: what changes between the arms is how the request
+    // travels, never what a page sends (#523 §3).
+    async people() {
+      return (await get<{ people: RelayPerson[] }>(RELAY_ROUTES.people)).people;
+    },
+
+    async addPerson(email) {
+      return (await post<{ person: RelayPerson }>(RELAY_ROUTES.people, { email })).person;
+    },
+
+    async removePerson(email) {
+      const body = await post<{ sessionsEnded: number }>(RELAY_ROUTES.removePerson, { email });
+      return { sessionsEnded: body.sessionsEnded };
+    },
+
+    mintPairingToken() {
+      return post<RelayPairingToken>(RELAY_ROUTES.pairingTokens);
+    },
+
+    setConfigField(edit) {
+      return post<RelayConfigSetAnswer>(RELAY_ROUTES.configSet, edit);
+    },
+
+    async runDoctor(fingerprint) {
+      // An empty object, not an empty body: no fingerprint asks the whole fleet.
+      const asked = fingerprint === undefined ? {} : { fingerprint };
+      return (await post<RelayDoctorRunAnswer>(RELAY_ROUTES.doctorRun, asked)).results;
+    },
+
+    setSecret(request) {
+      return post<SecretReceipt>(RELAY_ROUTES.secrets, request);
+    },
+
+    events(onEvent) {
+      return bridge.relay.events(onEvent);
+    },
+  };
+}
+
+/**
+ * A bridge refusal in the relay's own terms where there is one. Only
+ * `signed-out` maps: the rest of the bridge's codes (#527 §16) are local-arm
+ * facts, and dressing one up as an HTTP status would lose what it said.
+ */
+function asRelayError(error: unknown): unknown {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === "signed-out" ? new RelayRequestError(401, "signed-out") : error;
 }

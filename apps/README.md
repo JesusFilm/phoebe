@@ -6,7 +6,11 @@ Workspace home for the apps that ship beside the engine
 - [`console`](console) — the web console: the rail and the fleet grid an operator
   reads a relay's deployments on. Builds into `console/` at the repo root, which
   the published package carries, so `phoebe relay serve` hands the pages out of
-  the one install. The desktop companion will load the same bundle from disk.
+  the one install. The companion beside it loads the same bundle from disk.
+
+- [`desktop`](desktop) — the companion: an Electron main and preload whose
+  window loads the `console` bundle from disk over a privileged custom scheme. It
+  has no UI of its own.
 
 Each app is private and carries no version of its own. It reads the root
 package's version at build time, so one changeset and one changelog cover the
