@@ -22,10 +22,11 @@ import { dirname, join, relative } from "node:path";
 import { parseDotenv } from "../bootstrap/engine-child-env.ts";
 import { readConfigDir } from "../bootstrap/config-dir.ts";
 import { TENANT_ENV_FILE } from "../bootstrap/tenants.ts";
-import type {
-  EffectiveFields,
-  EffectiveLeaf,
-  TenantEffectiveConfig,
+import {
+  EFFECTIVE_CONFIG_VERSION,
+  type EffectiveFields,
+  type EffectiveLeaf,
+  type TenantEffectiveConfig,
 } from "./contracts/effective-config.ts";
 import { resolveConfig } from "./config-schema.ts";
 import {
@@ -40,13 +41,7 @@ import { resolveDataBase } from "./paths.ts";
 import { enumerateDeclaredEnv } from "./pipeline-enumerate.ts";
 import { enumerateWorkspaceTenants } from "./tenant-commands.ts";
 
-/**
- * The report's schema. Bump when a field's meaning changes in a way an older
- * reader would misread; adding an optional field does not move it.
- */
-export const EFFECTIVE_CONFIG_VERSION = 1;
-
-/** What `--json` emits, and what the deployment report embeds. */
+/** What `--json` emits, and what the deployment report embeds one row of. */
 export type EffectiveConfigReport = {
   version: number;
   tenants: TenantEffectiveConfig[];

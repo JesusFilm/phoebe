@@ -487,23 +487,19 @@ between writes it is deliberately stale on a perfectly healthy idle pipeline. Th
 published form of that clock is the `noPassForMs` inside a wedged verdict, stamped
 at the moment the verdict was taken.
 
-**The deployment report.** The bootstrapper keeps one file on the data volume,
-`<data>/state/deployment.json`, that says what the whole deployment is doing right
-now: who it is, which engine commit it is running, what its crash-loop record and
-its reconcile state are, how each supervised child is faring, where the slot cap
-stands, and one entry per (tenant × pipeline) cell with that pipeline's raw
-`status.json` and its derived state. It carries a `schema` integer, it is
-replaced atomically, and it is rewritten only when something in it moves — a fixed
-set of current facts, never a log. Nothing on disk grows with uptime.
+**Settings ride in the report too.** Its `config` section is every tenant's
+effective config, each setting with its value and where that value came from, in
+the shape [`phoebe config`](configuration.md#seeing-what-applies-phoebe-config)
+prints. The running engine computes it, per tenant, so the report says what the
+engine actually believes rather than what the bootstrapper would guess. A tenant
+that is held, or whose file will not load, carries its error instead of the
+resolution it had before. The section also carries a content hash of the root
+`phoebe.config.ts` it was derived from, which is what a remote config edit checks
+itself against. Only `--json` shows it. The text view is the fleet.
 
-Two things in it are worth knowing before you read the file. The `wedged` verdict
-is wider than `phoebe list`'s: as well as a unit past its budget, it fires when a
-pipeline has completed no loop pass in three poll intervals while not waiting for a
-slot — which is how an engine whose process is alive but whose loop has stopped
-becomes visible, since an idle engine writes no snapshot. And each child's
-`lastPassAt` is **not** an age to display: it advances every pass and the file is
-not rewritten for it, so between writes it is deliberately stale. The published
-form of that clock is the `noPassForMs` inside a wedged verdict.
+The section is written to a byte budget, so a workspace with an unusual number of
+tenants writes a report that stops growing rather than one that does not. The
+tenants left out are counted in `config.omitted` and read with `phoebe config`.
 
 **Stopping one pipeline.** There is no per-pipeline stop verb yet. Setting
 `disabled: true` on that pipeline in the tenant's `phoebe.config.ts` is hot at the
