@@ -33,16 +33,24 @@ export type {
   EditWritten,
 } from "./config-edit.ts";
 export { RELAY_ROUTES } from "./relay-routes.ts";
-export type { RelayIdentity, RelayRoute } from "./relay-routes.ts";
+export type {
+  RelayConnectionState,
+  RelayDeploymentRow,
+  RelayIdentity,
+  RelayRoute,
+} from "./relay-routes.ts";
 // The two helpers in relay-protocol.ts (`relaySpeaks`, `relayMessageType`) are
 // deliberately not re-exported: a function mirrored by hand into index.mjs is a
 // second implementation, and no `toEqual` catches the day the two disagree.
 // This repo's own relay and bootstrapper import them from the module directly.
 export {
   RELAY_CLOSE,
+  RELAY_DARK_AFTER_MS,
   RELAY_DEPLOYMENTS_PATH,
+  RELAY_HEARTBEAT_MS,
   RELAY_MESSAGES,
   RELAY_PROTOCOL,
+  RELAY_UNDELIVERED,
   type DeploymentToRelay,
   type RelayChallenge,
   type RelayCloseCode,
@@ -53,6 +61,7 @@ export {
   type RelayMessageType,
   type RelayReceipt,
   type RelayReportMessage,
+  type RelayRequest,
   type RelaySecretSet,
   type RelayToDeployment,
 } from "./relay-protocol.ts";

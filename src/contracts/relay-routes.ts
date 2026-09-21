@@ -26,6 +26,15 @@ export const RELAY_ROUTES = {
   me: "/api/me",
   /** POST — mint a pairing token for one new deployment. Shown once (#540). */
   pairingTokens: "/api/pairing-tokens",
+  /** GET — every deployment this relay knows, with where each one stands. */
+  deployments: "/api/deployments",
+  /**
+   * POST — **forget** one deployment, named by fingerprint in the body (#505
+   * §4). The fingerprint rides in the body rather than the path so this stays
+   * one importable constant; no fingerprint spells `forget`, and the
+   * per-deployment read this shares a prefix with is a GET.
+   */
+  forget: "/api/deployments/forget",
 } as const;
 
 /** One of the relay's paths. */
@@ -37,4 +46,59 @@ export type RelayIdentity = {
   sub: string;
   /** The verified address that person signed in with. */
   email: string;
+};
+
+/**
+ * Where the relay holds one deployment, in four words (#501, #507 §1). The
+ * relay derives this and never stores it: it is a reading of one clock against
+ * one `lastSeen`, and a stored copy would be wrong the second after it was
+ * written.
+ *
+ *  - `connected` — a live socket, right now.
+ *  - `disconnected` — heard from inside the dark window. A fact with a
+ *    duration, not a verdict: the relay cannot know whether the deployment is
+ *    reconnecting, so it says how long it has been quiet and no more.
+ *  - `dark` — `RELAY_DARK_AFTER_MS` unheard, however the connection
+ *    ended. Requests to it are refused up front.
+ *  - `unseen` — a link with no completed handshake behind it. Not the same as
+ *    dark, and a console that conflated them would accuse an operator of losing
+ *    a deployment they have never booted.
+ */
+export type RelayConnectionState = "connected" | "disconnected" | "dark" | "unseen";
+
+/**
+ * One deployment as the relay can describe it: the link from `links.json`, plus
+ * the connection facts only the live process knows. The doctor report is not
+ * here and never will be — the relay answers none of doctor's checks, and its
+ * own facts are a separate panel beside it (#507 §8).
+ */
+export type RelayDeploymentRow = {
+  /** The link's fingerprint: the name files, URLs and requests use. */
+  fingerprint: string;
+  /** What the deployment calls itself. Two rows may share one. */
+  name: string;
+  /** ISO 8601, when the pairing token was spent. */
+  firstSeen: string;
+  /** ISO 8601 of the last completed handshake, or null for an unseen link. */
+  lastSeen: string | null;
+  /** The address that minted the token this link was paired with. */
+  pairedBy: string;
+  state: RelayConnectionState;
+  /** ISO 8601 of the live connection's start, when there is one. */
+  connectedSince: string | null;
+  /**
+   * How long it has been quiet, in whole seconds, while `disconnected`. Null in
+   * every other state: a dark deployment's age is read off `lastSeen`, and
+   * counting seconds past the threshold would dress one fact as two.
+   */
+  disconnectedForSeconds: number | null;
+  /** How the last connection ended, in this process. Null before the first. */
+  lastClose: { code: number; reason: string; at: string } | null;
+  /**
+   * A newer link shares this dark link's name (#505 §5). A data-volume wipe
+   * loses the deployment key, so re-pairing is a new record and the old one
+   * stays behind — evidence, not garbage. The relay says "probably replaced"
+   * and leaves the forgetting to a person.
+   */
+  maybeReplaced: boolean;
 };

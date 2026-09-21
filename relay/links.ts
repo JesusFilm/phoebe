@@ -60,6 +60,17 @@ export type Links = {
   pair: (deployment: { publicKey: string; name: string; by: string }, now: Date) => Link;
   /** Stamp a completed handshake. Silent when the key is unknown. */
   seen: (publicKey: string, now: Date) => void;
+  /**
+   * **Forget** one deployment, by fingerprint (#505 §4). Returns the link that
+   * went, or null when this relay never knew it.
+   *
+   * Deleting the record is the whole of forgetting: there is no tombstone and
+   * no revocation list, because the key is the identity and a relay that holds
+   * no link for a key has nothing to admit. The deployment hears about it as
+   * the `unlinked` close code — on its live connection if it has one, on its
+   * next dial otherwise — and stops dialling.
+   */
+  forget: (fingerprint: string) => Link | null;
 };
 
 /** Open `links.json` on `dataDir`. Reads are lazy; writes are atomic. */
@@ -117,6 +128,14 @@ export function createLinks(dataDir: string): Links {
       if (link === undefined) return;
       link.lastSeen = now.toISOString();
       write(file);
+    },
+
+    forget(fingerprint) {
+      const file = read();
+      const link = file.links.find((entry) => entry.fingerprint === fingerprint);
+      if (link === undefined) return null;
+      write({ links: file.links.filter((entry) => entry !== link) });
+      return link;
     },
   };
 }

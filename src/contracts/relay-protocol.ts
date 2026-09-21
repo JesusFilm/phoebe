@@ -31,6 +31,41 @@ export const RELAY_PROTOCOL = 1;
 export const RELAY_DEPLOYMENTS_PATH = "/deployments";
 
 /**
+ * How often the relay pings (#506 §7, #541). Twenty seconds, a constant on both
+ * sides rather than configuration: an operator who tuned it would be making one
+ * deployment's idea of "recently" disagree with its relay's.
+ *
+ * Each tick is a WebSocket ping *and* a visible `heartbeat` message. The ping is
+ * what the relay counts — Node's built-in client auto-pongs and cannot be asked
+ * to ping — and the message is what the deployment counts, because that same
+ * client cannot see a ping arrive.
+ */
+export const RELAY_HEARTBEAT_MS = 20_000;
+
+/**
+ * How long silence lasts before it means something. Three missed heartbeats,
+ * and one number for both sides of the rail:
+ *
+ *  - The relay calls a deployment **dark** after this long unheard, however the
+ *    connection ended, and terminates a socket that has gone quiet for it
+ *    rather than reporting a half-open connection as connected.
+ *  - The deployment redials after this long with nothing inbound, which is the
+ *    only way it notices a connection that died without a close frame.
+ *
+ * Before it passes, the relay's word is **disconnected for N seconds** — a fact
+ * a console states, not a fourth state (#507 §1).
+ */
+export const RELAY_DARK_AFTER_MS = 60_000;
+
+/**
+ * The receipt outcome the relay writes itself when a request's deployment went
+ * away before answering (#506 §8). In-flight requests are refused, never
+ * queued: nothing is replayed on reconnect, the operator re-issues, and the
+ * deployment-side ledgers make a re-issue idempotent.
+ */
+export const RELAY_UNDELIVERED = "undelivered";
+
+/**
  * Every message type on the rail, as one closed record. `as const` so a typo in
  * a sender is a type error rather than a message the far side silently drops.
  */
@@ -180,6 +215,14 @@ export type RelayToDeployment =
   | RelayConfigSet
   | RelaySecretSet
   | RelayDoctorRun;
+
+/**
+ * The relay's messages that want an answer — the ones carrying an `id` and
+ * waiting for a `receipt` under it. Anything in this union can come back
+ * {@link RELAY_UNDELIVERED} instead, because the socket is allowed to close
+ * mid-flight and the console is not left waiting when it does.
+ */
+export type RelayRequest = RelayConfigSet | RelaySecretSet | RelayDoctorRun;
 
 /** Everything a deployment may send. */
 export type DeploymentToRelay = RelayHello | RelayReportMessage | RelayReceipt;

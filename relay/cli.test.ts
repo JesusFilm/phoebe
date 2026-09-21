@@ -31,6 +31,17 @@ describe("parseRelayArgs", () => {
     expect(parseRelayArgs([]).subcommand).toBeNull();
   });
 
+  test("`leave` is its own subcommand and takes nothing", () => {
+    expect(parseRelayArgs(["leave"])).toEqual({ help: false, subcommand: "leave" });
+  });
+
+  test.each([
+    { argv: ["leave", "--data-dir", "/tmp/whatever"], why: "the relay volume" },
+    { argv: ["leave", "--port", "9000"], why: "a port" },
+  ])("`leave` refuses $why, which belongs to `serve`", ({ argv }) => {
+    expect(() => parseRelayArgs(argv)).toThrow(/takes no options/);
+  });
+
   test("--help wins over everything", () => {
     expect(parseRelayArgs(["serve", "--help"]).help).toBe(true);
     expect(parseRelayArgs(["-h"]).help).toBe(true);
@@ -45,7 +56,7 @@ describe("parseRelayArgs", () => {
     { argv: ["init", "--port", "9000"], why: "a serve flag on init" },
     { argv: ["init", "--data-dir", "/tmp/relay"], why: "the other serve flag on init" },
     { argv: ["init", "here", "there"], why: "two directories for init" },
-    { argv: ["leave"], why: "a subcommand that does not exist yet" },
+    { argv: ["purge"], why: "a subcommand that does not exist" },
   ])("refuses $why", ({ argv }) => {
     expect(() => parseRelayArgs(argv)).toThrow();
   });
@@ -54,6 +65,7 @@ describe("parseRelayArgs", () => {
 describe("the help text", () => {
   test("names both subcommands", () => {
     expect(RELAY_HELP_TEXT).toContain("phoebe relay serve");
+    expect(RELAY_HELP_TEXT).toContain("phoebe relay leave");
     expect(RELAY_HELP_TEXT).toContain("phoebe relay init");
   });
 
