@@ -216,3 +216,5 @@ export type { SecretSetOutcome, SecretWriter } from "./secret-set.ts";
 export type { MintedPairingToken } from "./relay-routes.ts";
 export { RELAY_TOKEN_ENV } from "./relay-protocol.ts";
 export type { PairOutcome } from "./pair-outcome.ts";
+export type { RelayAlertEvent } from "./relay-events.ts";
+export type { LocalAlertEvent } from "./local-report.ts";

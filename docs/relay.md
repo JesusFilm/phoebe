@@ -267,7 +267,7 @@ them instead of copying strings.
 | `POST` | `/api/deployments/forget`        | Forgets one deployment, named by fingerprint in the body.   |
 | `POST` | `/api/deployments/config-set`    | Sets one config field on one deployment.                    |
 | `POST` | `/api/deployments/doctor-run`    | Runs doctor on one deployment, or on every one.             |
-| `GET`  | `/api/events`                    | The event stream: reports and connection changes.           |
+| `GET`  | `/api/events`                    | The event stream: reports, connection changes and alerts.   |
 | `POST` | `/api/alerts/test`               | Sends one `{ kind: "test" }` body to every alert sink.      |
 | `GET`  | `/api/people`                    | Everyone who may sign in.                                   |
 | `POST` | `/api/people`                    | Adds one, by email in the body.                             |
@@ -550,7 +550,7 @@ Both are behind the session cookie and answer 401 without it.
 ### The event stream
 
 `GET /api/events` is one server-sent-events stream, so pages update without
-polling. Four event names, each with the payload a reader would otherwise have
+polling. Five event names, each with the payload a reader would otherwise have
 fetched:
 
 | Event          | Payload                                         |
@@ -559,16 +559,54 @@ fetched:
 | `connected`    | `{ at, deployment }` — the row, as it now reads |
 | `disconnected` | `{ at, deployment }`                            |
 | `dark`         | `{ at, deployment }`                            |
+| `alert`        | `{ at, alert }` — the webhook's body, verbatim  |
 
 A connection event's name is the word the row now carries, and each is said once
 per change rather than once per check. `unseen` is never an event: it is where
 every link starts, so nothing ever becomes it.
+
+`alert` is the odd one out: it carries no row and no report, and nothing on any
+page changes when it arrives. It is the moment worth interrupting someone about,
+and the desktop companion is what does the interrupting — a browser drops it. See
+[Alerting](#alerting) for what is in the body, and `apps/desktop` for what the
+companion does with it.
 
 There is no replay and no resume cursor. Every event has a read behind it that
 answers the same question in full, so a page that missed one refetches
 `/api/deployments` and is whole again. An idle stream writes a comment on the
 heartbeat's cadence, which is what keeps a proxy from reaping it, and a session
 that ends mid-stream ends the stream with it.
+
+## The console
+
+The console is the operator's view of the fleet: a **rail** down the left listing
+every deployment, and a **grid** beside it with one card per deployment and one
+bar segment per pipeline. It is one React bundle in `apps/console`, built into
+`console/` at the root of this package, which is how `phoebe relay serve` hands it
+out of the single install. The same bundle is what the desktop companion will load
+from disk.
+
+The rail is always on screen, because "is everything alive" is the question the
+console exists to answer. Rows are sorted dark first, then anything with a wedged
+pipeline or a crash-looping child, then by name. There is no health score and no
+"needs attention" word: every line is a count of something an operator can go and
+look at.
+
+The four connection words each get their own mark, not four shades of one — a
+filled dot for connected, a ring for disconnected with the seconds the relay
+counted, a square for dark with its age, a dashed outline for unseen with when it
+was paired. `replaced?` rides beside the word rather than instead of it. Light and
+dark themes follow the OS.
+
+Updates arrive over `GET /api/events`. The page reads the fleet once, subscribes,
+and then only applies events; there is no polling loop and no reload. Everything
+it asks the relay for goes through one **relay client** seam — in a browser that is
+the session cookie plus `EventSource`, and in the companion it will be the desktop
+bridge with main holding the device token.
+
+A report whose `schema` this console does not know is not read at all. The card
+says so and still shows the relay's own connection facts, which never came from the
+report.
 
 ## Alerting
 

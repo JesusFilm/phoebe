@@ -12,12 +12,20 @@
 // saw, because the relay does not know what that was — a page that missed an
 // event catches up by re-reading `/api/deployments`.
 //
+// **An `alert` rides the same stream** (#524 §1). The relay evaluates the edge
+// rule over every link it holds and sends what crossed; the webhook is one sink
+// and this event is the other, carrying the identical body. A browser ignores
+// it — the fleet row already says what is true — and the companion turns it into
+// an OS notification, which is the whole reason a device is worth more than a
+// tab.
+//
 // **The connection event's `type` is the word the row now carries.** The relay
 // says `connected`, `disconnected` or `dark` — the same three words
 // `RelayConnectionState` spells, minus the one that never arrives: nothing
 // happens when a link goes `unseen`, because `unseen` is where every link
 // starts.
 
+import type { AlertBody } from "./alerts.ts";
 import type { RelayConnectionState, RelayDeploymentRow } from "./relay-routes.ts";
 
 /**
@@ -34,6 +42,8 @@ export const RELAY_EVENTS = {
   disconnected: "disconnected",
   /** `RELAY_DARK_AFTER_MS` unheard. The relay lost it; that is all it means. */
   dark: "dark",
+  /** An alert edge was crossed, or the test button was pressed (#524 §1). */
+  alert: "alert",
 } as const;
 
 /** One event name. */
@@ -66,5 +76,21 @@ export type RelayConnectionEvent = {
   deployment: RelayDeploymentRow;
 };
 
+/**
+ * One alert, exactly as the webhook would have received it (#515 §9, #524 §1).
+ * The body rides whole under `alert` rather than spread across this event, so
+ * the two sinks cannot drift: what a chat channel renders and what a companion
+ * notifies about are the same object, field for field.
+ *
+ * The body's own `kind` separates a crossed edge from the test button's probe.
+ * A reader that only cares about incidents branches on it; nothing else has to.
+ */
+export type RelayAlertEvent = {
+  type: typeof RELAY_EVENTS.alert;
+  /** When the relay sent it, ISO 8601. */
+  at: string;
+  alert: AlertBody;
+};
+
 /** Everything the stream carries today. */
-export type RelayEvent = RelayReportEvent | RelayConnectionEvent;
+export type RelayEvent = RelayReportEvent | RelayConnectionEvent | RelayAlertEvent;

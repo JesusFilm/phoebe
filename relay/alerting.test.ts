@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
 import { WebSocket as WsClient } from "ws";
 import { RELAY_MESSAGES, RELAY_PROTOCOL } from "../src/contracts/relay-protocol.ts";
+import { RELAY_EVENTS } from "../src/contracts/relay-events.ts";
 import { RELAY_ROUTES } from "../src/contracts/relay-routes.ts";
 import type { AlertBody, AlertMessage, RelayAlertFacts } from "../src/contracts/alerts.ts";
 import { generateDeploymentKey, type DeploymentKey } from "../bootstrap/relay-key.ts";
@@ -195,6 +196,60 @@ describe("alerting", () => {
         body.kind === "alert" && body.condition === condition && body.state === "cleared",
     );
 
+  /**
+   * Read the event stream until `enough` frames have arrived, then let go. The
+   * relay writes SSE by hand, so this reads it by hand too — the event name is
+   * the `event:` field, which is the whole reason a browser can attach one
+   * listener per name.
+   */
+  async function watch(
+    cookie: string,
+    enough: (seen: { name: string; data: Record<string, unknown> }[]) => boolean,
+  ): Promise<{ name: string; data: Record<string, unknown> }[]> {
+    const response = await fetch(`${origin}${RELAY_ROUTES.events}`, { headers: { cookie } });
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    const seen: { name: string; data: Record<string, unknown> }[] = [];
+    let buffer = "";
+    const deadline = Date.now() + 5_000;
+    while (!enough(seen)) {
+      if (Date.now() > deadline) throw new Error(`timed out; saw ${JSON.stringify(seen)}`);
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const frames = buffer.split("\n\n");
+      buffer = frames.pop() ?? "";
+      for (const frame of frames) {
+        const name = /^event: (.+)$/m.exec(frame)?.[1];
+        const data = /^data: (.+)$/m.exec(frame)?.[1];
+        if (name === undefined || data === undefined) continue;
+        seen.push({ name, data: JSON.parse(data) as Record<string, unknown> });
+      }
+    }
+    await reader.cancel();
+    return seen;
+  }
+
+  test("every edge is also an `alert` on the event stream (#524 §1)", async () => {
+    const cookie = await session();
+    const { fingerprint } = await pair();
+
+    const seen = await watch(cookie, (events) =>
+      events.some((event) => event.name === RELAY_EVENTS.alert),
+    );
+
+    const event = seen.find((candidate) => candidate.name === RELAY_EVENTS.alert)!;
+    expect(event.data["type"]).toBe(RELAY_EVENTS.alert);
+    // The identical body, not a second rendering of it: one edge rule, two
+    // sinks, and a chat channel and a companion saying the same sentence.
+    expect(event.data["alert"]).toMatchObject({
+      kind: "alert",
+      condition: "dark",
+      state: "raised",
+      deployment: { name: "acme-site", keyFingerprint: fingerprint },
+    });
+  });
+
   test("a deployment that stops answering raises dark on the webhook", async () => {
     const { fingerprint } = await pair();
 
@@ -313,7 +368,8 @@ describe("alerting", () => {
     });
 
     expect(response.status).toBe(202);
-    expect(await response.json()).toEqual({ sinks: 1 });
+    // Two: the stream, which is always there, and the webhook this relay has.
+    expect(await response.json()).toEqual({ sinks: 2 });
     expect(posted[0]).toMatchObject({ kind: "test", by: OPERATOR });
   });
 
@@ -345,13 +401,26 @@ describe("alerting", () => {
       expect(((await response.json()) as { alerts: RelayAlertFacts }).alerts.webhook).toBe(false);
     });
 
-    test("the test alert answers honestly that nothing took it", async () => {
+    test("the test alert still has the one sink that is never configurable", async () => {
       const response = await fetch(`${origin}${RELAY_ROUTES.testAlert}`, {
         method: "POST",
         headers: { cookie: await session() },
       });
 
-      expect(await response.json()).toEqual({ sinks: 0 });
+      expect(await response.json()).toEqual({ sinks: 1 });
+      expect(posted).toEqual([]);
+    });
+
+    test("and the edge still reaches the stream, which is the amendment (#524 §1)", async () => {
+      const cookie = await session();
+      await pair();
+
+      const seen = await watch(cookie, (events) =>
+        events.some((event) => event.name === RELAY_EVENTS.alert),
+      );
+
+      expect(seen.some((event) => event.name === RELAY_EVENTS.alert)).toBe(true);
+      expect(posted).toEqual([]);
     });
   });
 });

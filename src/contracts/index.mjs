@@ -96,6 +96,7 @@ export const RELAY_EVENTS = {
   connected: "connected",
   disconnected: "disconnected",
   dark: "dark",
+  alert: "alert",
 };
 
 /** The `schema` integer every alert body carries (#515 §9) — see alerts.ts. */

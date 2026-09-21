@@ -452,6 +452,20 @@ The host-side verb, `phoebe relay leave`, that deletes the deployment key from t
 volume. The other half of forget, and neither half needs the other to work.
 _Avoid_: unlink, disconnect
 
+**Alert**:
+A message the relay sends out when a deployment or one of its pipelines crosses into or
+out of a named condition: `dark`, `wedged`, `crash-looping`, `doctor-fail`, `replaced`.
+Every raise has a matching clear, unseen is silent, and the edge rule that decides is one
+pure function both the relay and the companion run. It is a transition, never a record —
+`alerts.json` holds the last state notified per (deployment, condition) and nothing else.
+_Avoid_: notification (the events stream already notifies the browser), incident, page
+
+**Sink**:
+Somewhere an alert goes. There are two: the generic webhook `RELAY_ALERT_WEBHOOK` names,
+and the `alert` event on the events stream. The webhook is optional and the event is not,
+so an unset variable means no webhook rather than no alerting.
+_Avoid_: channel, target, subscriber
+
 ### Console
 
 **Console**:
@@ -481,6 +495,19 @@ _Avoid_: IPC API, RPC, electron API
 One invocation of a host verb by the companion, with its lines streamed and an exit
 carrying the verb's typed outcome. One per install at a time, parallel across installs.
 _Avoid_: job, task, command
+
+**Device notification**:
+The OS notification the companion raises from an alert. A rendering of the alert, never
+its own record: it carries no state the fleet row does not already have, there is no list
+of them and no acknowledging one. Tagged by (deployment, condition), so a clear replaces
+the raise it is about rather than piling up beside it.
+_Avoid_: push (rejected on desktop, undecided on mobile), toast, banner
+
+**Badge**:
+The count on the companion's dock or taskbar icon: how many deployments and local installs
+are in a raised condition right now. Subjects, not edges — three wedged pipelines on one
+deployment are one. Zero clears it, and there is no tray item beside it.
+_Avoid_: counter, indicator, unread count
 
 **Local read loop**:
 Main's per-install pair of clocks that produces deployment reports for a local install:

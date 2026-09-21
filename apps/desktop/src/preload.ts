@@ -12,6 +12,7 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 import { DESKTOP_BRIDGE_GLOBAL } from "phoebe-agent/contracts";
 import type {
   DesktopBridge,
+  LocalAlertEvent,
   LocalInstall,
   LocalReportEvent,
   RelayArmState,
@@ -55,6 +56,7 @@ const bridge: DesktopBridge = {
     changes: (onChange) => subscribe<LocalInstall[]>(BRIDGE_CHANNELS.installsChanged, onChange),
     reports: (onReport) => subscribe<LocalReportEvent>(BRIDGE_CHANNELS.installsReport, onReport),
     refresh: (dir) => call(BRIDGE_CHANNELS.installsRefresh, dir),
+    alerts: (onAlert) => subscribe<LocalAlertEvent>(BRIDGE_CHANNELS.installsAlert, onAlert),
   },
   runs: {
     start: (request) => call(BRIDGE_CHANNELS.runStart, request),

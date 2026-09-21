@@ -15,9 +15,10 @@
 // screen are durations and a duration that stops moving reads as a page that has
 // stopped listening.
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { RELAY_ROUTES } from "phoebe-agent/contracts";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { RELAY_EVENTS, RELAY_ROUTES } from "phoebe-agent/contracts";
 import type {
+  AlertBody,
   DesktopBridge,
   LocalInstall,
   LocalReportEvent,
@@ -32,6 +33,7 @@ import { FleetPage } from "./fleet-page.tsx";
 import { InstallPage } from "./install-page.tsx";
 import { pairedInstalls } from "./local-install.ts";
 import { PeoplePage } from "./people-page.tsx";
+import { createNotifier, type AlertSubject, type Notifiable } from "./notifications.ts";
 import { Rail } from "./rail.tsx";
 import { isNotSignedIn, type RelayClient, type RelaySignIn } from "./relay-client.ts";
 import { configOf } from "./report.ts";
@@ -156,6 +158,9 @@ function Console({
   const [reports, setReports] = useState<Record<string, LocalReportEvent>>({});
   const [openInstall, setOpenInstall] = useState<string | null>(null);
   const [relayUrl, setRelayUrl] = useState<string | null>(null);
+  // Default on (#524 §8), and read back off `companion.json` the moment main
+  // answers. A browser never asks — there is nothing there to notify with.
+  const [notifications, setNotifications] = useState(true);
   const now = useNow(1000);
 
   // The two arms share one page area, and an open install wins it. A rail link
@@ -164,6 +169,60 @@ function Console({
   useEffect(() => {
     setOpenInstall(null);
   }, [route]);
+
+  useEffect(() => {
+    if (bridge === null) return;
+    let live = true;
+    bridge.preferences.get().then((preferences) => {
+      if (live) setNotifications(preferences.notifications);
+    }, ignore);
+    return () => {
+      live = false;
+    };
+  }, [bridge]);
+
+  // Bring the window forward and land on the page the alert is about (#524 §6).
+  // A local install has a page here; a deployment's five tabs are #544's, so
+  // until they exist a click on a relay alert does the half it can — the window
+  // comes up on the fleet, which is where the row is.
+  const openAlert = useCallback((notifiable: Notifiable) => {
+    globalThis.focus();
+    const subject = notifiable.subject;
+    if (subject?.arm === "local") setOpenInstall(subject.install);
+  }, []);
+
+  const notifier = useMemo(
+    () =>
+      typeof Notification === "undefined"
+        ? null
+        : createNotifier({ Notification, open: openAlert }),
+    [openAlert],
+  );
+
+  // The preference through a ref, and not as a dependency. Both subscriptions
+  // below read `notify`, and one of them is the relay's event stream — if
+  // flipping a checkbox changed this function, it would tear that stream down
+  // and re-read the whole fleet behind it. What the ref buys is that the
+  // preference is read at the moment an alert lands, which is also the only
+  // moment it means anything.
+  const wanted = useRef(notifications);
+  wanted.current = notifications;
+
+  /**
+   * Show one alert, unless the operator has turned notifications off or is
+   * already looking at the window (#524 §6, §8).
+   */
+  const notify = useCallback(
+    (alert: AlertBody, arm: AlertSubject["arm"]) => {
+      notifier?.show({
+        alert,
+        arm,
+        enabled: wanted.current,
+        focused: typeof document === "undefined" ? false : document.hasFocus(),
+      });
+    },
+    [notifier],
+  );
 
   // The local arm. One read, then main's `installs:changed` does the updating —
   // the same shape as the relay's stream, for the same reason: the page holds
@@ -195,6 +254,14 @@ function Console({
       setReports((held) => ({ ...held, [event.install]: event }));
     });
   }, [bridge]);
+
+  // The local arm's alerts. Main runs the edge rule over each read and sends
+  // only what crossed, so there is nothing to compare here — an event that
+  // arrived is an edge, and an edge is worth a banner (#524 §3).
+  useEffect(() => {
+    if (bridge === null) return;
+    return bridge.installs.alerts((event) => notify(event.alert, "local"));
+  }, [bridge, notify]);
 
   // Opening an install asks for a read rather than waiting up to 15 s for the
   // next one. On a stopped install this is the refresh that answers with the
@@ -276,13 +343,19 @@ function Console({
     // then overwritten by the read — which is why a connection event inserts its
     // row rather than assuming one is there (fleet-state.ts).
     const unsubscribe = client.events((event) => {
+      // The relay's own sink for the same edge rule (#524 §1). A browser has
+      // no notifier and drops it; the companion raises it.
+      if (event.type === RELAY_EVENTS.alert) {
+        notify(event.alert, "relay");
+        return;
+      }
       setFleet((state) => applyEvent(state, event));
     });
     return () => {
       live = false;
       unsubscribe();
     };
-  }, [client, identity, onSignedOut]);
+  }, [client, identity, notify, onSignedOut]);
 
   const facts = useMemo(
     () => sortFleet(fleet.rows.map((row) => rowFacts(row, fleet.reports[row.fingerprint] ?? null))),
@@ -313,6 +386,28 @@ function Console({
           </a>
         </nav>
         <span className="spacer" />
+        {bridge === null ? null : (
+          <label className="notifications">
+            <input
+              type="checkbox"
+              checked={notifications}
+              onChange={(event) => {
+                const wanted = event.target.checked;
+                setNotifications(wanted);
+                // Asked on first enable and never again — the OS remembers its
+                // own answer, and a companion that asked on every launch would
+                // be the thing the preference exists to stop (#524 §8).
+                if (wanted && typeof Notification !== "undefined") {
+                  void Notification.requestPermission();
+                }
+                void bridge.preferences
+                  .set({ notifications: wanted })
+                  .then((saved) => setNotifications(saved.notifications), ignore);
+              }}
+            />
+            Desktop notifications
+          </label>
+        )}
         {identity === null ? (
           <span className="muted">Not signed in</span>
         ) : (

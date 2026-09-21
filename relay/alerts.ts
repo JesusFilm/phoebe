@@ -27,6 +27,8 @@
 
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { RELAY_EVENTS } from "../src/contracts/relay-events.ts";
+import type { RelayEvent } from "../src/contracts/relay-events.ts";
 import {
   alertEdges,
   alertMessage,
@@ -308,6 +310,29 @@ export function webhookSink(
         signal: AbortSignal.timeout(timeoutMs),
       });
       if (!response.ok) throw new Error(`answered ${response.status}`);
+    },
+  };
+}
+
+/**
+ * The events stream as a sink (#524 §1). The one sink that is always present:
+ * a relay with no webhook still emits this, which is why an unset
+ * `RELAY_ALERT_WEBHOOK` means no webhook rather than no alerting.
+ *
+ * It goes first in the list. `fanOut` awaits each sink in turn, and an in-memory
+ * emit to open responses finishes in microseconds while a webhook POST has five
+ * seconds of rope — so ordering it ahead is the difference between a companion
+ * notifying now and a companion notifying after somebody else's timeout.
+ */
+export function streamSink(
+  events: { emit: (event: RelayEvent) => void },
+  deps: { clock?: () => Date } = {},
+): AlertSink {
+  const clock = deps.clock ?? (() => new Date());
+  return {
+    name: "the event stream",
+    send(body) {
+      events.emit({ type: RELAY_EVENTS.alert, at: clock().toISOString(), alert: body });
     },
   };
 }
