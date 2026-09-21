@@ -18,3 +18,8 @@ nodeLinker: isolated
 # (.phoebe/container/compose.yml).
 allowBuilds:
   electron: true
+  # electron-builder pulls this in for Squirrel installers. Its install script
+  # only picks a 7-Zip binary for that target, and the companion ships NSIS on
+  # Windows (#525 §1), so it is named here as reviewed and not run. Left
+  # unnamed, pnpm fails the install on it rather than skipping it.
+  electron-winstaller: false

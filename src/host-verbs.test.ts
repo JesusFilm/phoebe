@@ -23,6 +23,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
 import type { HostVerb, OutcomeOf } from "./contracts/host-verb.ts";
+import { runConfigSet } from "./config-set.ts";
 import { runDoctor } from "./doctor.ts";
 import { runInit } from "./init.ts";
 import { runMigrate } from "./migrate.ts";
@@ -32,13 +33,39 @@ import { runUpgrade } from "./upgrade.ts";
 
 const srcDir = import.meta.dirname;
 
-/** The six verbs, as module basenames. */
-const VERBS = ["init", "start", "stop", "upgrade", "migrate", "doctor"] as const;
+/** Each verb this package implements, and the module basename it lives in. */
+const VERB_MODULES = {
+  init: "init",
+  start: "start",
+  stop: "stop",
+  upgrade: "upgrade",
+  migrate: "migrate",
+  doctor: "doctor",
+  "config set": "config-set",
+} as const;
 
-// A compile-time tie between the list this file scans and the contract union.
+/**
+ * The verbs with no module in `src/` to scan, and why.
+ *
+ * `secret set` is the companion's own on the local arm (#527 §8, #557): which of
+ * its two writers takes a value depends on whether there is a container to put
+ * it in, so one writer execs `phoebe secret set` *inside* one and the other
+ * writes the host `.env`. Neither is a `run<Verb>` in this package, and the CLI
+ * verb the first of them calls is `secret-command.ts` — held to this rule by its
+ * own `runSecretCli` wrapper, one process removed from the companion.
+ *
+ * `pair` is composed in the companion's main process out of a relay mint, two
+ * file writes and a nudge (#527 §14, #558). It needs the device token, which the
+ * engine never holds, so there is no `src/pair.ts`.
+ */
+const NOT_A_MODULE_HERE = ["secret set", "pair"] as const;
+
+const VERBS = Object.keys(VERB_MODULES) as Array<keyof typeof VERB_MODULES>;
+
+// A compile-time tie between the lists this file holds and the contract union.
 // Adding a verb to one without the other stops type-checking, which is the
 // only way the guard can stay honest about "every host verb".
-type Listed = (typeof VERBS)[number];
+type Listed = keyof typeof VERB_MODULES | (typeof NOT_A_MODULE_HERE)[number];
 type MutuallyExhaustive = Listed extends HostVerb
   ? HostVerb extends Listed
     ? true
@@ -57,7 +84,8 @@ const _outcomes: [
   Yields<ReturnType<typeof runUpgrade>, "upgrade">,
   Yields<ReturnType<typeof runMigrate>, "migrate">,
   Yields<ReturnType<typeof runDoctor>, "doctor">,
-] = [true, true, true, true, true, true];
+  Yields<ReturnType<typeof runConfigSet>, "config set">,
+] = [true, true, true, true, true, true, true];
 void _outcomes;
 
 const FORBIDDEN = /\bprocess\.(argv|stdout|stderr|exit|exitCode)\b/;
@@ -111,20 +139,20 @@ function isCliLayer(owner: string): boolean {
 }
 
 describe("host verbs stay above the process's streams", () => {
-  test.each(VERBS)("%s.ts touches the streams only inside its Cli wrapper", (verb) => {
-    const source = readFileSync(join(srcDir, `${verb}.ts`), "utf8");
+  test.each(VERBS)("%s touches the streams only inside its Cli wrapper", (verb) => {
+    const source = readFileSync(join(srcDir, `${VERB_MODULES[verb]}.ts`), "utf8");
     const offenders = streamReferencesIn(source)
       .filter(({ owner }) => !isCliLayer(owner))
-      .map(({ owner, line }) => `${verb}.ts — ${owner}: ${line}`);
+      .map(({ owner, line }) => `${VERB_MODULES[verb]}.ts — ${owner}: ${line}`);
     expect(offenders).toEqual([]);
   });
 
   // The rule above passes vacuously for a module that prints nowhere at all, so
   // each verb is pinned to which of the two shapes it has.
   test.each(VERBS.filter((verb) => verb !== "init"))(
-    "%s.ts still has a Cli wrapper doing the printing",
+    "%s still has a Cli wrapper doing the printing",
     (verb) => {
-      const source = readFileSync(join(srcDir, `${verb}.ts`), "utf8");
+      const source = readFileSync(join(srcDir, `${VERB_MODULES[verb]}.ts`), "utf8");
       const inWrapper = streamReferencesIn(source).filter(({ owner }) => isCliLayer(owner));
       expect(inWrapper.length).toBeGreaterThan(0);
     },

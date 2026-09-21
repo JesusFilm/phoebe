@@ -6,17 +6,20 @@ import { CONSOLE_PROTOCOL } from "phoebe-agent/contracts";
 import type { RelayVersion } from "phoebe-agent/contracts";
 import { RelayRequestError, type RelayClient } from "./relay-client.ts";
 import { readRelayVersion, relayServesConsole, tooOldText } from "./relay-version.ts";
+import { client as stubClient } from "./test-fixture.ts";
 
 /** A client whose only answered read is the version one. */
 function clientAnswering(answer: RelayVersion | Error): RelayClient {
-  return {
+  const more = () => Promise.reject(new Error("the console asked for more than the version"));
+  // The shared stub carries every method the seam has grown. The reads this file
+  // is about refuse, so a console that asked past the version one fails loudly.
+  return stubClient({
     version: () => (answer instanceof Error ? Promise.reject(answer) : Promise.resolve(answer)),
-    me: () => Promise.reject(new Error("the console asked for more than the version")),
-    signOut: () => Promise.reject(new Error("the console asked for more than the version")),
-    deployments: () => Promise.reject(new Error("the console asked for more than the version")),
-    deployment: () => Promise.reject(new Error("the console asked for more than the version")),
-    events: () => () => {},
-  };
+    me: more,
+    signOut: more,
+    deployments: more,
+    deployment: more,
+  });
 }
 
 describe("the rule", () => {

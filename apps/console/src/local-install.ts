@@ -14,12 +14,101 @@ import { MAX_RUN_LINES } from "phoebe-agent/contracts";
 import type {
   CompanionEnvironment,
   LocalInstall,
+  LocalReportEvent,
   OutcomeOf,
   RunExit,
   RunLine,
+  StoredReport,
   VerbOutcome,
   VerbRun,
+  VerbRunRequest,
 } from "phoebe-agent/contracts";
+import type { ConfigReading, ConnectionCard, DeploymentTab } from "./tabs.ts";
+
+// ── the two write verbs, as requests (#557) ───────────────────────────────
+
+/**
+ * A JSON literal, or a refusal naming what a config leaf may be.
+ *
+ * Typed as JSON rather than guessed at, because `300000` and `"300000"` are
+ * different values and a form that decided for the operator would be the one
+ * place a number quietly became a string. Objects and arrays are refused here
+ * rather than by the writer: the writer's own refusal for one is about splicing,
+ * and this one is about what somebody meant by putting a brace in a text field.
+ */
+export function readLiteral(raw: string): string | number | boolean | null {
+  const text = raw.trim();
+  if (text.length === 0) throw new Error("A value is a JSON literal; this box is empty.");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text) as unknown;
+  } catch {
+    throw new Error(`${text} is not a JSON literal. A string needs its quotes: "main", not main.`);
+  }
+  if (parsed === null) return null;
+  if (typeof parsed === "string" || typeof parsed === "number" || typeof parsed === "boolean") {
+    return parsed;
+  }
+  throw new Error("Only one leaf moves at a time, so the value has to be a scalar or null.");
+}
+
+/**
+ * The `config set` run one form submission is (#527 §11).
+ *
+ * The fingerprint is not an input and never was: it is whatever config this arm
+ * read, carried with the edit so the writer can refuse `stale` when the file has
+ * moved since. That is the whole of the concurrency story, and it is the same on
+ * both arms — which is why it is built here, beside the reading, rather than
+ * inside a component.
+ */
+export function configSetRequest(opts: {
+  install: LocalInstall;
+  config: ConfigReading;
+  path: string;
+  literal: string;
+}): VerbRunRequest {
+  if (opts.config.kind === "absent") {
+    throw new Error(`There is no ${opts.config.path} to change.`);
+  }
+  const path = opts.path.trim();
+  if (path.length === 0) throw new Error("Name the field to change, as a dotted path.");
+  return {
+    install: opts.install.dir,
+    verb: "config set",
+    path,
+    value: readLiteral(opts.literal),
+    fingerprint: opts.config.fingerprint,
+  };
+}
+
+/**
+ * The `secret set` run one form submission is (#527 §7).
+ *
+ * The value rides in the request and nowhere else — no envelope, no relay, and
+ * no copy kept anywhere this function can see. An empty tenant box is omitted
+ * rather than sent blank, because the install decides for itself when nobody
+ * names one.
+ */
+export function secretSetRequest(opts: {
+  install: LocalInstall;
+  key: string;
+  value: string;
+  tenant?: string;
+}): VerbRunRequest {
+  const key = opts.key.trim();
+  if (key.length === 0) throw new Error("Name the key to set.");
+  if (opts.value.length === 0) {
+    throw new Error("A blank is not a secret. Clear it in a terminal to hand the key back.");
+  }
+  const tenant = (opts.tenant ?? "").trim();
+  return {
+    install: opts.install.dir,
+    verb: "secret set",
+    key,
+    value: opts.value,
+    ...(tenant.length === 0 ? {} : { tenant }),
+  };
+}
 
 /** How the rail reads one install: a mark, and the sentence beside it. */
 export function installReading(install: LocalInstall): { tone: string; text: string } {
@@ -74,6 +163,12 @@ export function outcomeReading(outcome: VerbOutcome): string {
       return migrateReading(outcome.outcome);
     case "doctor":
       return doctorReading(outcome.outcome);
+    case "config set":
+      return receiptReading(outcome.outcome);
+    case "secret set":
+      return secretSetReading(outcome.outcome);
+    case "pair":
+      return pairOutcomeReading(outcome.outcome);
   }
 }
 
@@ -128,11 +223,61 @@ function migrateReading({ rootReport, tenantEntries }: OutcomeOf<"migrate">): st
   return `${applied} migration(s) applied${childClause}`;
 }
 
+/**
+ * The receipt, in one line — the same words on both arms (#527 §11, §16).
+ *
+ * A refusal reads as its reason and its `why`, because those are the two halves
+ * an operator acts on: which kind of no it was, and what about this config made
+ * it one. The instruction is longer than a line and is rendered beside the
+ * receipt rather than inside it.
+ */
+export function receiptReading(receipt: OutcomeOf<"config set">): string {
+  return receipt.state === "written"
+    ? `wrote ${receipt.path} = ${JSON.stringify(receipt.value)}`
+    : `refused (${receipt.reason}): ${receipt.why}`;
+}
+
+/**
+ * Which writer took the secret (#527 §8). The one thing this outcome is for:
+ * a value in the `.env` and a value in the tenant store are in different
+ * places with different reach, and an operator who meant one and got the other
+ * has a secret somewhere they did not choose.
+ */
+export function secretSetReading(outcome: OutcomeOf<"secret set">): string {
+  const where =
+    outcome.writer === "container"
+      ? `through the container, into ${outcome.target}`
+      : `into ${outcome.target} on this machine`;
+  const tenant = outcome.tenant === null ? "" : ` for ${outcome.tenant}`;
+  return `set ${outcome.key}${tenant} ${where}`;
+}
+
+/**
+ * Which writer a secret is about to reach, said before it is pasted (#527 §8).
+ *
+ * The same rule the companion applies, in the operator's words rather than in
+ * its own: a running container has a tenant store to put the value in, and
+ * anything else has the deployment `.env` on this machine.
+ */
+export function secretWriterReading(install: LocalInstall): string {
+  return install.state === "running"
+    ? "This container is up, so the value goes through it into the tenant secret store on the data volume. The running engine picks it up on its next relaunch."
+    : "Nothing is running, so the value goes into this install's deployment `.env` on this machine — the file you would have opened in an editor. It reaches the engine the next time this install starts.";
+}
+
 function doctorReading({ checks }: OutcomeOf<"doctor">): string {
   const failed = checks.filter((check) => check.state === "fail").length;
   const warned = checks.filter((check) => check.state === "warn").length;
   if (failed > 0) return `${failed} check(s) failed, ${warned} warned`;
   return warned > 0 ? `${warned} check(s) warned` : "every check passed";
+}
+
+function pairOutcomeReading(outcome: OutcomeOf<"pair">): string {
+  const moved = outcome.movedRelay ? ", moved off the relay it named before" : "";
+  return (
+    `paired as ${outcome.deploymentName} with ${outcome.relayUrl}${moved} — the token is ` +
+    `spendable until ${outcome.expiresAt}`
+  );
 }
 
 /**
@@ -160,6 +305,92 @@ export function dockerReading(environment: CompanionEnvironment | null): DockerR
     kind: "ready",
     text: `Docker is running${compose} · companion ${environment.companionVersion} on ${environment.platform}`,
   };
+}
+
+/**
+ * Which local installs are the relay rows the console is already drawing, and
+ * which rows those are (#526, #558).
+ *
+ * A paired install is **one** thing on two arms: a folder this machine drives
+ * through Compose, and a deployment that dials a relay. The rail shows it once,
+ * under This machine, because local is the richer arm — the verbs and the
+ * direct writes are there — and the Relay group drops the row it would
+ * otherwise draw beside it.
+ *
+ * The join is the deployment's name on the relay it dials. `deploymentName` is
+ * what the deployment tells the relay it is called (#505 §3), read off the same
+ * config the deployment reads; the host of `relayUrl` is what says the two are
+ * talking about the same relay at all. Hosts rather than whole URLs, because a
+ * deployment dials `wss://host/deployments` and an operator signs in at
+ * `https://host` — the same relay, spelled for two different protocols.
+ *
+ * Names are not unique on a relay (#505 §5), so two installs dialling one relay
+ * under one name would both claim its row. That is a fleet with two deployments
+ * answering to one name, which the relay itself cannot tell apart either; the
+ * fix is a `relay.name` on one of them, and the rail saying so is better than
+ * the rail hiding it.
+ */
+export function pairedInstalls(
+  installs: readonly LocalInstall[],
+  facts: readonly { row: { fingerprint: string; name: string } }[],
+  relayUrl: string | null,
+): Map<string, string> {
+  const paired = new Map<string, string>();
+  for (const install of installs) {
+    if (!sameRelay(install.relayUrl, relayUrl)) continue;
+    const row = facts.find((candidate) => candidate.row.name === install.deploymentName);
+    if (row !== undefined) paired.set(install.dir, row.row.fingerprint);
+  }
+  return paired;
+}
+
+/**
+ * Do these two addresses name one relay? Compared by host: the deployment's is
+ * a `wss://` URL with the deployments path on it and the console's is the
+ * `https://` address a person signed in at, and demanding they match as strings
+ * would mean no install ever looked paired.
+ */
+export function sameRelay(dialled: string | null, relay: string | null): boolean {
+  if (dialled === null || relay === null) return false;
+  try {
+    return new URL(dialled).host === new URL(relay).host;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether this install can be paired, and what to say when it cannot (#558).
+ *
+ * Two refusals, both of them states rather than failures: a companion with no
+ * relay session has nothing to mint a token on, and a container that is not up
+ * is not going to spend one. Each is a sentence on a disabled button, because
+ * an operator who presses Pair and gets an error has learnt the same thing one
+ * step later.
+ */
+export type PairReading =
+  | { kind: "paired" }
+  | { kind: "ready" }
+  | { kind: "blocked"; reason: string };
+
+export function pairReading(
+  install: LocalInstall,
+  arm: { signedIn: boolean; paired: boolean },
+): PairReading {
+  if (arm.paired) return { kind: "paired" };
+  if (!arm.signedIn) {
+    return {
+      kind: "blocked",
+      reason: "Sign in to a relay on the rail first — pairing mints a token on it.",
+    };
+  }
+  if (install.state !== "running") {
+    return {
+      kind: "blocked",
+      reason: "Start this install first — pairing writes a token its next boot spends.",
+    };
+  }
+  return { kind: "ready" };
 }
 
 /**
@@ -226,4 +457,67 @@ export function offeredVerbs(install: LocalInstall): {
     upgrade: initialised,
     doctor: initialised && install.state === "running",
   };
+}
+
+// ── the local read loop, as the page reads it (#556) ──────────────────────
+
+/**
+ * What the overview's connection card says about a local install.
+ *
+ * The card is the one place on the five tabs where the arm shows, and it has to:
+ * "connected for 3 h" under a fingerprint means something different from a
+ * container on this machine that the window can start and stop. Everything below
+ * the card renders the report and never asks where it came from.
+ */
+export function localConnection(install: LocalInstall): ConnectionCard {
+  const state =
+    install.state === "running"
+      ? "its container is up"
+      : install.state === "stopped"
+        ? "its container is not up"
+        : "it has no Phoebe install in it yet";
+  return {
+    arm: "Local install",
+    detail: install.dir,
+    note: `Read over the desktop bridge: the companion asks this machine's Docker directly, so ${state}. No relay is involved and nothing listens on a port.`,
+  };
+}
+
+/**
+ * The report this page may render, which is not the same as the last one it was
+ * handed.
+ *
+ * A stopped install shows config and the stopped fact, never a report with an
+ * age on it (#526). The loop keeps reading and the window keeps the last event
+ * it received, so without this rule a container stopped ten minutes ago would
+ * still be drawing pipelines that are not running.
+ */
+export function renderableReport(
+  install: LocalInstall,
+  event: LocalReportEvent | null,
+): StoredReport | null {
+  if (event === null || event.install !== install.dir) return null;
+  return install.state === "running" ? event.report : null;
+}
+
+/**
+ * Which tab an install opens on.
+ *
+ * A not-initialised folder lands on install, because that is where the button
+ * that initialises it is and the rest of the page is empty (#526). A stopped one
+ * lands on config, the only tab it can fill. A running one lands on overview,
+ * like a remote deployment.
+ */
+export function landingTab(install: LocalInstall): DeploymentTab | "install" {
+  if (install.state === "not-initialised") return "install";
+  return install.state === "running" ? "overview" : "config";
+}
+
+/** The config as the directory facts hand it over (#527 §6). */
+export function localConfig(event: LocalReportEvent | null): ConfigReading | null {
+  if (event === null) return null;
+  const { configPath, configText, configFingerprint } = event.directory;
+  if (configText === null || configFingerprint === null)
+    return { kind: "absent", path: configPath };
+  return { kind: "file", path: configPath, text: configText, fingerprint: configFingerprint };
 }

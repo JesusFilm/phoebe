@@ -30,9 +30,17 @@ exposes, and by nothing else. No build flag, no second entry point
 
 The app is `private` and carries no version of its own. `vite.config.ts` reads the
 root package's version at build time and defines it into the bundle
-([#521 §4](https://github.com/JesusFilm/phoebe/issues/521)). It reads no `.env`
-and holds no secret. Signing in happens against the relay and the session is the
-companion's ([#521 §8](https://github.com/JesusFilm/phoebe/issues/521)).
+([#521 §4](https://github.com/JesusFilm/phoebe/issues/521)). It reads no `.env`.
+The one secret it holds is the relay's device token, and that lives in main behind
+`safeStorage` — never in the renderer, never on disk in the clear
+([#523 §5](https://github.com/JesusFilm/phoebe/issues/523)).
+
+**Electron floor: 44, and never below 35.** The secret envelope for a remote
+`secret set` is built in the renderer by the same console code a browser runs
+([#514](https://github.com/JesusFilm/phoebe/issues/514),
+[#523 §6](https://github.com/JesusFilm/phoebe/issues/523)), which needs X25519 in
+`crypto.subtle` — Chromium 134, Electron 35. `package.json` pins a current major
+well above that; the floor is what a downgrade may not cross.
 
 `vp run build` is two passes, one per entry point, and the two take different
 formats. The preload is CommonJS because a sandboxed preload has to be — Electron
@@ -115,8 +123,12 @@ stop once the signing task lands.
 
 ## What main answers today
 
-**The local arm, in full.** The installs on this machine, the Docker check, and
-the verb runs that drive them ([#555](https://github.com/JesusFilm/phoebe/issues/555)):
+**The local arm, in full.** The installs on this machine, the Docker check, the
+verb runs that drive them ([#555](https://github.com/JesusFilm/phoebe/issues/555)),
+the local read loop that feeds their tabs
+([#556](https://github.com/JesusFilm/phoebe/issues/556)) the two writes that
+change them ([#557](https://github.com/JesusFilm/phoebe/issues/557)) and pairing
+([#558](https://github.com/JesusFilm/phoebe/issues/558)):
 
 - [`companion-file.ts`](src/companion-file.ts) — `companion.json` in `userData`:
   the install directories, the relay URL, the preferences. Nothing else. Every
@@ -128,14 +140,80 @@ the verb runs that drive them ([#555](https://github.com/JesusFilm/phoebe/issues
 - [`verb-runs.ts`](src/verb-runs.ts) — ids, line buffers, busy-ness and cancel.
   One run per install, parallel across installs, 2000 lines kept, and the buffer
   lives here so a renderer reload rejoins a run rather than losing it.
-- [`verb-dispatch.ts`](src/verb-dispatch.ts) — the six `run<Verb>` calls, in
-  this process (ADR 0001). No second Node, no `bin.mjs`, no stdout parsing.
+- [`verb-dispatch.ts`](src/verb-dispatch.ts) — the `run<Verb>` calls, in this
+  process (ADR 0001). No second Node, no `bin.mjs`, no stdout parsing.
+- [`secret-write.ts`](src/secret-write.ts) — the two secret writers and the rule
+  that picks between them. A running install's value goes through the container
+  into the tenant secret store; a stopped or freshly initialised one's goes into
+  the deployment `.env` on this machine, which is where the first `GH_TOKEN` is
+  typed. The value is piped on the child's stdin and never put in an argument.
+- [`local-read.ts`](src/local-read.ts) — the read loop: Compose's event stream
+  for the moment a container moves, a 15 s poll for how it is doing, and one
+  `report` event out — the relay's own, so the tabs do not branch on arm.
+- [`container-read.ts`](src/container-read.ts) — the two seams under it: the
+  `phoebe status --json` exec, and the `docker compose events` subscription.
+- [`pair.ts`](src/pair.ts) — the seventh verb, and the one the engine does not
+  have: a mint on the relay, the address into the config, the token into the
+  root `.env`, and an `up -d` so Compose recreates the container holding both
+  ([#558](https://github.com/JesusFilm/phoebe/issues/558)). The token goes into
+  the file and into no line.
 
-Beside it, a relay arm with no session, so the console draws the Relay group
-signed out ([#526](https://github.com/JesusFilm/phoebe/issues/526)). Sign-in
-([#554](https://github.com/JesusFilm/phoebe/issues/554)) and the local read loop
-([#556](https://github.com/JesusFilm/phoebe/issues/556)) are changes in here,
-behind the contract the preload already exposes.
+**The relay arm**
+([#554](https://github.com/JesusFilm/phoebe/issues/554)) is sign-in, the JSON reads
+the renderer asks for, the relay's event stream re-emitted over IPC, and sign-out.
+Main is the relay client — it holds the device token and the renderer never sees
+it ([#523 §1](https://github.com/JesusFilm/phoebe/issues/523)).
+
+Sign-in runs in the operator's own browser, because Google refuses an embedded
+webview. Main mints a PKCE verifier, opens `${relay}/auth/device/start`, and the
+relay comes back to `phoebe://auth?code=…`. The single-instance lock is what makes
+that land on the process holding the verifier: on Windows and Linux the OS
+launches a _second_ process with the URL on its command line, and without the lock
+one process would hold the code and the other the verifier.
+
+**The notifications** ([#559](https://github.com/JesusFilm/phoebe/issues/559)) sit
+across both arms, and they are split between this package and the console for one
+reason: the banner is the renderer's and the badge is main's
+([#524 §2](https://github.com/JesusFilm/phoebe/issues/524), §4).
+
+[`alerting.ts`](src/alerting.ts) is main's half. It runs the shared edge rule
+over every local read — the same `src/contracts/alerts.ts` the relay runs, never
+a second copy of it — and it keeps the raised set for both arms, which is what
+the dock badge counts. The relay's own alerts arrive already decided and are
+forwarded as they came; a local install's are computed here, because there is no
+relay between a folder on this machine and the process watching it. The first
+read of an install seeds it silently, so relaunching onto a fleet that was
+already wedged does not re-fire everything.
+
+Raising the notification is `apps/console/src/notifications.ts`, in the window:
+the tag that folds a clear onto its raise, the silence, the suppression while the
+window is focused, and the click. So the companion notifies while a window is
+open, which is the same property T3 Code's desktop app has — there is no tray
+item and no login item, by decision, and the badge is the only thing on screen
+when the window is not.
+
+`app.setBadgeCount` is the dock on macOS and the launcher on Linux. Windows has
+no count on a taskbar button — it takes an overlay icon — so the badge is a
+no-op there until packaging ([#561](https://github.com/JesusFilm/phoebe/issues/561))
+gives it one to draw.
+
+**The writes never reach that arm.** A
+local install's config edit and secrets run against this machine even when the
+same install is paired with a relay — so nothing in main builds an envelope, and
+both forms in the console say so. The envelope exists for a deployment a console
+can only reach through a server; this one is a folder. `config set` carries the
+fingerprint the window was shown, so an edit composed against a config a terminal
+has since changed is refused `stale` with the manual edit to make instead —
+identically on both arms, which is what the fingerprint is for.
+
+The loop reads `phoebe status --json` inside the container: the verb is
+[#533](https://github.com/JesusFilm/phoebe/issues/533)'s and the report it prints
+is [#532](https://github.com/JesusFilm/phoebe/issues/532)'s. A container running an
+engine older than those answers the exec with its own sentence, and the read
+comes back `report: null` with that sentence on it — the path the tabs draw
+anyway when nothing is running. `STATUS_ARGV` in
+[`src/container-read.ts`](src/container-read.ts) is the one line that moves if the
+verb's flags do.
 
 ## The two version rules
 

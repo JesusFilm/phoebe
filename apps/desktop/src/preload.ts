@@ -13,7 +13,10 @@ import { DESKTOP_BRIDGE_GLOBAL } from "phoebe-agent/contracts";
 import type {
   CompanionUpdate,
   DesktopBridge,
+  LocalAlertEvent,
   LocalInstall,
+  LocalReportEvent,
+  RelayArmState,
   RelayEvent,
   RunExit,
   RunLine,
@@ -52,6 +55,9 @@ const bridge: DesktopBridge = {
     add: (dir) => call(BRIDGE_CHANNELS.installsAdd, dir),
     remove: (dir) => call(BRIDGE_CHANNELS.installsRemove, dir),
     changes: (onChange) => subscribe<LocalInstall[]>(BRIDGE_CHANNELS.installsChanged, onChange),
+    reports: (onReport) => subscribe<LocalReportEvent>(BRIDGE_CHANNELS.installsReport, onReport),
+    refresh: (dir) => call(BRIDGE_CHANNELS.installsRefresh, dir),
+    alerts: (onAlert) => subscribe<LocalAlertEvent>(BRIDGE_CHANNELS.installsAlert, onAlert),
   },
   runs: {
     start: (request) => call(BRIDGE_CHANNELS.runStart, request),
@@ -72,6 +78,8 @@ const bridge: DesktopBridge = {
   },
   relay: {
     state: () => call(BRIDGE_CHANNELS.relayState),
+    signIn: (request) => call(BRIDGE_CHANNELS.relaySignIn, request),
+    watch: (onState) => subscribe<RelayArmState>(BRIDGE_CHANNELS.relayArm, onState),
     request: (request) => call(BRIDGE_CHANNELS.relayRequest, request),
     signOut: () => call(BRIDGE_CHANNELS.relaySignOut),
     events: (onEvent) => subscribe<RelayEvent>(BRIDGE_CHANNELS.relayEvent, onEvent),

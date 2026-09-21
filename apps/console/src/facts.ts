@@ -13,6 +13,10 @@
 
 import type {
   ChildLiveness,
+  DoctorAttempt,
+  DoctorCheck,
+  DoctorSection,
+  DoctorTrigger,
   FleetCell,
   PipelineState,
   RelayDeploymentRow,
@@ -22,10 +26,89 @@ import {
   bootstrapperOf,
   cellsOf,
   childrenOf,
+  doctorOf,
   readReport,
   tenantsOf,
   type ReportReading,
 } from "./report.ts";
+
+/**
+ * Doctor, as the fleet row and the doctor tab both read it (#507 §7, §9).
+ *
+ * Counting is the only arithmetic. Every check already carries its own verdict,
+ * and `ok` is the report's one derived answer; this tallies the four states so a
+ * row can say "2 fail, 1 warn" without a second opinion about any of them.
+ *
+ * `report: null` is the console's **never**, and it covers two deployments that
+ * look the same from here: one that has not run doctor yet, and one running an
+ * engine older than the section itself. Neither of them is a pass.
+ */
+export type DoctorFacts = {
+  /** The last report doctor produced, or null for never. */
+  report: DoctorSection["report"];
+  /** When that report was taken. Null alongside a null report. */
+  at: string | null;
+  /** Why that run happened. */
+  trigger: DoctorTrigger | null;
+  /** Who asked, when a person did. */
+  by: string | null;
+  fail: number;
+  warn: number;
+  unknown: number;
+  /** A run in flight right now — shown instead of the age, not beside it. */
+  running: { since: string; trigger: DoctorTrigger } | null;
+  /** The last run that produced nothing. The report above is still the older one. */
+  lastAttempt: DoctorAttempt | null;
+};
+
+/** Every check in a report, deployment-level and per-tenant, in one list. */
+export function allChecks(section: DoctorFacts): DoctorCheck[] {
+  if (section.report === null) return [];
+  return [...section.report.checks, ...section.report.tenants.flatMap((row) => row.checks)];
+}
+
+/** Read the report's doctor section, or the "never" that stands in for it. */
+export function doctorFacts(section: DoctorSection | null): DoctorFacts {
+  const facts: DoctorFacts = {
+    report: section?.report ?? null,
+    at: section?.at ?? null,
+    trigger: section?.trigger ?? null,
+    by: section?.by ?? null,
+    fail: 0,
+    warn: 0,
+    unknown: 0,
+    running: section?.running ?? null,
+    lastAttempt: section?.lastAttempt ?? null,
+  };
+  for (const check of allChecks(facts)) {
+    if (check.state === "fail") facts.fail += 1;
+    else if (check.state === "warn") facts.warn += 1;
+    else if (check.state === "unknown") facts.unknown += 1;
+  }
+  return facts;
+}
+
+const NO_DOCTOR: DoctorFacts = doctorFacts(null);
+
+/**
+ * Doctor in one clause: what the last run found and how long ago, or that a run
+ * is in flight, or that there has never been one (#507 §9). A run in flight
+ * replaces the age rather than sitting beside it — an operator watching a run
+ * wants to know it is moving, and the age it is about to replace is noise.
+ *
+ * "healthy" is the report's own `ok` restated: the absence of a fail and a warn,
+ * not a verdict this file reached on its own.
+ */
+export function doctorLine(facts: DoctorFacts, now: Date): string {
+  if (facts.running !== null) {
+    return `doctor running ${age(facts.running.since, now)} (${facts.running.trigger})`;
+  }
+  if (facts.report === null || facts.at === null) return "doctor never run";
+  const counted =
+    facts.fail === 0 && facts.warn === 0 ? "healthy" : `${facts.fail} fail, ${facts.warn} warn`;
+  const trigger = facts.trigger === null ? "" : ` (${facts.trigger})`;
+  return `doctor ${counted} — ${age(facts.at, now)} ago${trigger}`;
+}
 
 /** One pipeline, flattened to what a bar segment and a tooltip need. */
 export type PipelineFacts = {
@@ -57,11 +140,13 @@ export type RowFacts = {
   quarantinedSha: string | null;
   /** The reason the bootstrapper is relaunching the fleet, or null when it is not. */
   reconciling: "config" | "ref" | null;
+  /** The last doctor run, counted. "Never" for a row with no readable report. */
+  doctor: DoctorFacts;
   /**
-   * Something on this row is worth walking over to: a wedged pipeline or a
-   * crash-looping child. Doctor's fail count belongs in this clause too (#507
-   * §9) and joins it when the report gains its doctor section (#534) — the
-   * report has no such section today, and the console does not invent one.
+   * Something on this row is worth walking over to: a wedged pipeline, a
+   * crash-looping child, or a failing doctor check (#507 §9). Three counts of
+   * three different things — still not a score, and still no word for it on
+   * screen.
    */
   attention: boolean;
 };
@@ -82,6 +167,7 @@ export function rowFacts(row: RelayDeploymentRow, stored: RelayStoredReport | nu
       engineSha: null,
       quarantinedSha: null,
       reconciling: null,
+      doctor: NO_DOCTOR,
       attention: false,
     };
   }
@@ -97,6 +183,7 @@ export function rowFacts(row: RelayDeploymentRow, stored: RelayStoredReport | nu
   const reconcile = bootstrapper?.reconcile;
   const wedged = pipelines.filter((pipeline) => pipeline.wedged).length;
   const crashLooping = pipelines.filter((pipeline) => pipeline.crashLooping).length;
+  const doctor = doctorFacts(doctorOf(reading.report));
 
   return {
     row,
@@ -110,14 +197,15 @@ export function rowFacts(row: RelayDeploymentRow, stored: RelayStoredReport | nu
     engineSha: bootstrapper?.engineSha ?? null,
     quarantinedSha: bootstrapper?.quarantinedSha ?? null,
     reconciling: reconcile?.phase === "reconciling" ? reconcile.reason : null,
-    attention: wedged > 0 || crashLooping > 0,
+    doctor,
+    attention: wedged > 0 || crashLooping > 0 || doctor.fail > 0,
   };
 }
 
 /**
- * Reading order for the fleet: dark first, then anything wedged or
- * crash-looping, then by name (#507 §9). Fingerprint breaks a name tie, because
- * two links may carry one name — that is the whole point of the "replaced?"
+ * Reading order for the fleet: dark first, then anything wedged, crash-looping
+ * or failing a doctor check, then by name (#507 §9). Fingerprint breaks a name
+ * tie, because two links may carry one name — that is the whole point of the "replaced?"
  * flag (#505 §5) — and a list that reordered itself between two renders would
  * move the row under the pointer.
  */
@@ -210,7 +298,11 @@ export function age(iso: string, now: Date): string {
   return duration(Math.max(0, now.getTime() - then));
 }
 
-function duration(ms: number): string {
+/**
+ * A span in the same coarse words {@link age} prints, for the spans a report
+ * hands over already measured — a wedged verdict's silence, a unit's budget.
+ */
+export function duration(ms: number): string {
   const seconds = Math.floor(ms / 1000);
   if (seconds < 60) return `${seconds} s`;
   const minutes = Math.floor(seconds / 60);

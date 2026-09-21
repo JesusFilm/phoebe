@@ -12,6 +12,9 @@ export const BRIDGE_CHANNELS = {
   installsAdd: "phoebe:installs/add",
   installsRemove: "phoebe:installs/remove",
   installsChanged: "phoebe:installs/changed",
+  installsReport: "phoebe:installs/report",
+  installsRefresh: "phoebe:installs/refresh",
+  installsAlert: "phoebe:installs/alert",
   runStart: "phoebe:runs/start",
   runCurrent: "phoebe:runs/current",
   runCancel: "phoebe:runs/cancel",
@@ -24,6 +27,8 @@ export const BRIDGE_CHANNELS = {
   preferencesGet: "phoebe:preferences/get",
   preferencesSet: "phoebe:preferences/set",
   relayState: "phoebe:relay/state",
+  relaySignIn: "phoebe:relay/sign-in",
+  relayArm: "phoebe:relay/arm",
   relayRequest: "phoebe:relay/request",
   relaySignOut: "phoebe:relay/sign-out",
   relayEvent: "phoebe:relay/event",
@@ -65,6 +70,25 @@ export class BridgeRefusal extends Error {
 }
 
 /**
+ * The refusal an arm attached to a thrown error, if it attached one.
+ *
+ * Two arms raise refusals and only one of them can import this file: the relay
+ * arm is written to run without Electron and carries its own `RelayRefusal`
+ * with the same payload under `detail`. Reading the field rather than the class
+ * is what lets both arrive at the same {@link refusal} without either arm
+ * depending on the other.
+ */
+export function detailOf(error: unknown): DesktopBridgeError | null {
+  if (error instanceof BridgeRefusal) return error.error;
+  const detail = (error as { detail?: unknown } | null)?.detail;
+  if (typeof detail !== "object" || detail === null) return null;
+  const { code, message } = detail as Partial<DesktopBridgeError>;
+  return typeof code === "string" && typeof message === "string"
+    ? (detail as DesktopBridgeError)
+    : null;
+}
+
+/**
  * Run one handler's body, answering with its value or with the refusal it
  * raised. Every channel goes through here, so no handler has to remember to
  * catch — and an unexpected throw arrives at the window as `unknown` with a
@@ -74,7 +98,8 @@ export async function answering<T>(body: () => T | Promise<T>): Promise<BridgeRe
   try {
     return { ok: true, value: await body() };
   } catch (error) {
-    if (error instanceof BridgeRefusal) return refusal(error.error);
+    const detail = detailOf(error);
+    if (detail !== null) return refusal(detail);
     return refusal({
       code: "unknown",
       message: error instanceof Error ? error.message : String(error),

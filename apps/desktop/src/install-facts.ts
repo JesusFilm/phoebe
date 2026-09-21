@@ -18,7 +18,10 @@
 
 import path from "node:path";
 import { existsSync, readFileSync } from "node:fs";
-import type { LocalInstall } from "phoebe-agent/contracts";
+import type { InstallDirectoryFacts, LocalInstall } from "phoebe-agent/contracts";
+import { TENANT_CONFIG_FILE } from "../../../bootstrap/tenants.ts";
+import { fingerprintOf } from "../../../src/config-edit.ts";
+import { editConfigGetField, editConfigGetRelay } from "../../../src/config-handle.ts";
 import {
   findPhoebeService,
   isContainerRunning,
@@ -30,10 +33,14 @@ import {
 import { readDockerfilePin, type DockerfilePin } from "../../../src/upgrade.ts";
 import type { StoredInstall } from "./companion-file.ts";
 
+/** The config file at the root of an install. */
+const CONFIG_FILE = "phoebe.config.ts";
+
 /** The seams the derivation reaches the machine through. All injectable. */
 export type FactsDeps = {
   runner?: CommandRunner;
   exists?: (file: string) => boolean;
+  read?: (file: string) => string;
   /** Is `docker` on PATH? False short-circuits the Compose probe. */
   dockerPresent?: boolean;
   /** How `container/Dockerfile` is read — `readFileSync` on a real machine. */
@@ -63,6 +70,7 @@ export async function installFacts(
     name: path.basename(stored.dir),
     addedAt: stored.addedAt,
     containerVersion: null,
+    ...configFacts(stored.dir, exists, deps.read ?? ((file) => readFileSync(file, "utf8"))),
   };
 
   if (!exists(stored.dir)) {
@@ -127,12 +135,121 @@ function containerVersion(containerDir: string, deps: FactsDeps): string | null 
   return pin.kind === "pinned" ? pin.version : null;
 }
 
+/**
+ * The config file at the root of an install, and the two facts a rail reads off
+ * it: what a relay would call this deployment, and which relay it dials.
+ *
+ * Read as *source*, never loaded. Loading it would execute the operator's
+ * TypeScript in the companion's own process, on every list, for two strings.
+ * A config that will not parse, or one that is not there yet, answers the same
+ * way an absent block does — the folder's name, and no relay.
+ */
+function configFacts(
+  dir: string,
+  exists: (file: string) => boolean,
+  read: (file: string) => string,
+): { deploymentName: string; relayUrl: string | null } {
+  const source = configSource(dir, exists, read);
+  return source === null
+    ? { deploymentName: path.basename(dir), relayUrl: null }
+    : installConfigFacts(dir, source);
+}
+
+/**
+ * The same two facts, from a config an caller already has in hand — which is
+ * what pairing has, because it is about to rewrite it.
+ *
+ * The name is `relay.name`, or the solo `repoSlug`, or the folder's name: the
+ * same order `deploymentName` in bootstrap/boot.ts resolves. A name the rail
+ * matched on that the deployment does not answer to would join a local install
+ * to somebody else's row.
+ */
+export function installConfigFacts(
+  dir: string,
+  configSourceText: string,
+): { deploymentName: string; relayUrl: string | null } {
+  const relay = editConfigGetRelay(configSourceText);
+  const named = relay.ok ? relay.relay?.name : null;
+  return {
+    deploymentName: named ?? soloSlug(configSourceText) ?? path.basename(dir),
+    relayUrl: (relay.ok ? relay.relay?.url : null) ?? null,
+  };
+}
+
+/** The config's own `repoSlug`, when it declares a usable one. */
+function soloSlug(configSourceText: string): string | null {
+  const slug = editConfigGetField(configSourceText, "repoSlug");
+  if (!slug.ok || !slug.found || typeof slug.literal !== "string") return null;
+  const trimmed = slug.literal.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/** The root config's text, or null when there is none to read. */
+function configSource(
+  dir: string,
+  exists: (file: string) => boolean,
+  read: (file: string) => string,
+): string | null {
+  const file = path.join(dir, CONFIG_FILE);
+  if (!exists(file)) return null;
+  try {
+    return read(file);
+  } catch {
+    return null;
+  }
+}
+
 /** Every install's facts, gathered together. One probe per install, in parallel. */
 export function allInstallFacts(
   installs: readonly StoredInstall[],
   deps: FactsDeps = {},
 ): Promise<LocalInstall[]> {
   return Promise.all(installs.map((install) => installFacts(install, deps)));
+}
+
+/** The seams the directory read reaches the disk through. */
+export type DirectoryDeps = {
+  read?: (file: string) => string;
+  exists?: (file: string) => boolean;
+};
+
+/**
+ * What the folder says with no container to ask (#527 §6, #508 §4).
+ *
+ * This is the whole of a stopped install's page: the config as the file holds
+ * it, whether a `.env` is beside it, and the bootstrapper not running. Read
+ * every time rather than held, like everything else here — an operator who edits
+ * the config in a terminal and clicks refresh is asking exactly this question.
+ *
+ * The `.env` is checked for existence and never opened. Its contents are
+ * secrets, and a fact that travels to a renderer is a fact that can end up in a
+ * dev-tools console.
+ */
+export function directoryFacts(
+  install: LocalInstall,
+  deps: DirectoryDeps = {},
+): InstallDirectoryFacts {
+  const exists = deps.exists ?? existsSync;
+  const read = deps.read ?? ((file: string) => readFileSync(file, "utf8"));
+  const configPath = path.join(install.dir, TENANT_CONFIG_FILE);
+
+  let configText: string | null = null;
+  try {
+    if (exists(configPath)) configText = read(configPath);
+  } catch {
+    // A config that cannot be read reads as one that is not there. The state on
+    // the install already says the folder is not initialised, and a second
+    // rendering of the same fault helps nobody.
+    configText = null;
+  }
+
+  return {
+    configPath,
+    configText,
+    configFingerprint: configText === null ? null : fingerprintOf(configText),
+    envPresent: exists(path.join(install.dir, ".env")),
+    bootstrapperRunning: install.state === "running",
+  };
 }
 
 /**
