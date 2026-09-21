@@ -40,10 +40,12 @@ import {
   type ConfigReport,
   type DeploymentIdentity,
   type DeploymentReport,
+  type EditLedgerEntry,
   type FleetReport,
   type RelayReport,
 } from "../src/contracts/deployment.ts";
 import type { DoctorSection } from "../src/contracts/doctor.ts";
+import type { SecretsSection } from "../src/contracts/secrets.ts";
 
 /** The report's filename inside the deployment-level `state/` directory. */
 export const DEPLOYMENT_FILE = "deployment.json";
@@ -63,8 +65,23 @@ export type DeploymentDraft = {
   bootstrapper: Omit<BootstrapperReport, "updatedAt">;
   relay: Omit<RelayReport, "updatedAt">;
   fleet: Omit<FleetReport, "updatedAt">;
-  config: Omit<ConfigReport, "updatedAt">;
   doctor: Omit<DoctorSection, "updatedAt">;
+  config: Omit<ConfigReport, "updatedAt">;
+  /**
+   * The edit ledger's live entries (#503, #547). No stamp of its own: every
+   * entry carries the moment it was applied, and a section-level clock beside
+   * per-entry ones would be a second answer to the same question. Absent for a
+   * deployment that keeps no ledger.
+   */
+  edits?: EditLedgerEntry[];
+  /**
+   * Which secrets each tenant has and where from (#550). Null until the first
+   * inventory has been taken: building it loads every tenant's work kinds, so it
+   * happens on the moments that could have changed the answer rather than on
+   * every publish, and a report written before the first one says nothing about
+   * secrets instead of saying there are none.
+   */
+  secrets: Omit<SecretsSection, "updatedAt"> | null;
 };
 
 /**
@@ -115,24 +132,43 @@ export function stampReport(
     previous === null || contentOf(unstamped(previous.relay)) !== contentOf(draft.relay);
   const fleetMoved =
     previous === null || contentOf(unstamped(previous.fleet)) !== contentOf(draft.fleet);
-  const configMoved =
-    previous === null || contentOf(unstamped(previous.config)) !== contentOf(draft.config);
   // The doctor section moves on its own clock — a run starting, a run landing,
   // an attempt failing — and each of those is news. A run that finds exactly
   // what the last one found still moves it, because `at` is the age a console
   // shows, and an age that stopped advancing is the one thing worse than none.
   const doctorMoved =
     previous === null || contentOf(unstamped(previous.doctor)) !== contentOf(draft.doctor);
+  // The config section is optional on the wire — a report written by an engine
+  // older than #535 has none — so an absent previous section is a move, not a
+  // match against undefined.
+  // The ledger moves when an edit lands and when the file is committed out from
+  // under one, and neither is visible in any other section — an edit that only
+  // changed a value the report already carried would otherwise be written and
+  // never pushed.
+  const editsMoved = previous === null || contentOf(previous.edits) !== contentOf(draft.edits);
+  const configMoved =
+    previous?.config === undefined ||
+    contentOf(unstamped(previous.config)) !== contentOf(draft.config);
+  // A section that has not been taken yet cannot have moved: the report keeps
+  // whatever it had, which is nothing, and an inventory arriving later is what
+  // moves it.
+  const secretsMoved =
+    draft.secrets !== null &&
+    (previous?.secrets === undefined ||
+      contentOf(unstamped(previous.secrets)) !== contentOf(draft.secrets));
   if (
     !identityMoved &&
     !bootstrapperMoved &&
     !relayMoved &&
     !fleetMoved &&
+    !doctorMoved &&
     !configMoved &&
-    !doctorMoved
+    !editsMoved &&
+    !secretsMoved
   ) {
     return null;
   }
+  const secrets = draft.secrets === null ? previous?.secrets : draft.secrets;
   return {
     schema: DEPLOYMENT_SCHEMA,
     identity: draft.identity,
@@ -148,14 +184,23 @@ export function stampReport(
       ...draft.fleet,
       updatedAt: fleetMoved ? now : (previous?.fleet.updatedAt ?? now),
     },
-    config: {
-      ...draft.config,
-      updatedAt: configMoved ? now : (previous?.config.updatedAt ?? now),
-    },
     doctor: {
       ...draft.doctor,
       updatedAt: doctorMoved ? now : (previous?.doctor.updatedAt ?? now),
     },
+    config: {
+      ...draft.config,
+      updatedAt: configMoved ? now : (previous?.config?.updatedAt ?? now),
+    },
+    ...(draft.edits !== undefined ? { edits: draft.edits } : {}),
+    ...(secrets === undefined
+      ? {}
+      : {
+          secrets: {
+            ...secrets,
+            updatedAt: secretsMoved ? now : (previous?.secrets?.updatedAt ?? now),
+          },
+        }),
     updatedAt: now,
   };
 }

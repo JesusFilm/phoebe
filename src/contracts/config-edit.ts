@@ -95,3 +95,48 @@ export type EditRefused = {
  * object's — `reconcile.lastEditId` ties the two together.
  */
 export type EditReceipt = EditWritten | EditRefused;
+
+/**
+ * The blocks no config edit may reach, and the sentence each refusal says.
+ * Matched on a path's first segment, so a block and everything under it go
+ * together.
+ *
+ * It is here rather than beside the writer because two processes read it and
+ * only one of them refuses: the deployment decides (src/config-edit.ts), and a
+ * console reads the same table to know which leaves to offer an edit on at all.
+ * A console that guessed would either offer a write the deployment refuses or
+ * hide one it would have taken.
+ *
+ * Most entries are things that are *somebody else's* to change rather than
+ * things that are dangerous to write: a fleet declaration (git), an engine pin
+ * (`phoebe upgrade`, so its migrations run), the host's own lifecycle, a
+ * pairing the relay owns. The last two are different — `paths` and top-level
+ * `workKinds` are places where a write would land and then be ignored, which is
+ * the one outcome a refusal is plainly better than.
+ */
+export const CLOSED_EDIT_BLOCKS: readonly { prefix: string; why: string }[] = [
+  {
+    prefix: "workspace",
+    why: "the fleet declaration is yours — adding, removing or reordering tenants is a git edit, never a console one",
+  },
+  {
+    prefix: "engine",
+    why: "`engine.ref` picks which engine runs and moves with `phoebe upgrade`, so the migrations for the new ref run with it",
+  },
+  {
+    prefix: "relay",
+    why: "the relay block is the pairing's own, written when a deployment is paired rather than edited field by field",
+  },
+  {
+    prefix: "deployment",
+    why: "the `deployment` block holds the host's lifecycle commands, which run outside the container and are not the container's to rewrite",
+  },
+  {
+    prefix: "paths",
+    why: "`paths` is derived from `repoSlug` and the data volume; nothing at that path is read from the file",
+  },
+  {
+    prefix: "workKinds",
+    why: "top-level `workKinds` is the permanent alias for `pipelines.work.kinds` — set it at the path the effective config prints",
+  },
+] as const;

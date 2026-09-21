@@ -7,6 +7,7 @@ import { describe, expect, test } from "vite-plus/test";
 import type {
   ChildLiveness,
   ConfigReport,
+  DeploymentIdentity,
   DeploymentReport,
   FleetCell,
   RelayReport,
@@ -34,6 +35,8 @@ import {
 
 const NOW = Date.parse("2026-09-17T12:00:00.000Z");
 const MINUTES_AGO = (n: number): string => new Date(NOW - n * 60_000).toISOString();
+/** Who the deployment is — the relay line reads its name and key from here (#540). */
+const IDENTITY: DeploymentIdentity = { name: "acme", arm: "workspace" };
 
 function tenant(fields: Partial<TenantFacts> = {}): TenantFacts {
   return {
@@ -113,12 +116,6 @@ function report(fields: {
       omitted: 0,
       updatedAt: MINUTES_AGO(2),
     },
-    doctor: fields.doctor ?? {
-      report: null,
-      at: null,
-      trigger: null,
-      updatedAt: MINUTES_AGO(2),
-    },
     relay: fields.relay ?? {
       configured: false,
       state: "unpaired",
@@ -126,6 +123,7 @@ function report(fields: {
       lastClose: null,
       updatedAt: MINUTES_AGO(2),
     },
+    doctor: fields.doctor ?? { report: null, at: null, trigger: null, updatedAt: MINUTES_AGO(2) },
     updatedAt: MINUTES_AGO(2),
   };
 }
@@ -234,7 +232,7 @@ describe("the bootstrapper line", () => {
 
 describe("the relay line", () => {
   test("no section and an unconfigured one both print nothing", () => {
-    expect(formatRelayLine(undefined, "acme", NOW)).toBeNull();
+    expect(formatRelayLine(undefined, IDENTITY, NOW)).toBeNull();
     expect(
       formatRelayLine(
         {
@@ -244,7 +242,7 @@ describe("the relay line", () => {
           lastClose: null,
           updatedAt: MINUTES_AGO(5),
         },
-        "acme",
+        IDENTITY,
         NOW,
       ),
     ).toBeNull();
@@ -259,13 +257,14 @@ describe("the relay line", () => {
         lastClose: { code: 1006, reason: "", at: MINUTES_AGO(3) },
         updatedAt: MINUTES_AGO(3),
       },
-      "acme",
+      { ...IDENTITY, name: "relay.example", keyFingerprint: "SHA256:abc" },
       NOW,
     );
-    expect(line).toContain("acme");
+    expect(line).toContain("relay.example");
     expect(line).toContain("reconnecting 3m");
     expect(line).toContain("next retry in 30s");
     expect(line).toContain("last close 1006");
+    expect(line).toContain("SHA256:abc");
   });
 });
 
@@ -405,9 +404,7 @@ describe("the text view", () => {
   });
 
   test("doctor is one line: counts and age, a run in flight, or never run", () => {
-    expect(
-      formatDoctorLine({ report: null, at: null, trigger: null, updatedAt: MINUTES_AGO(240) }, NOW),
-    ).toContain("never run");
+    expect(formatDoctorLine(undefined, NOW)).toContain("never run");
     expect(formatDoctorLine(doctorSection(), NOW)).toContain("0 fail, 1 warn — 4h ago (schedule)");
     expect(
       formatDoctorLine(
@@ -427,7 +424,7 @@ describe("the text view", () => {
     const text = view({
       report: report({ doctor: doctorSection() }),
       verbose: true,
-      doctorTable: (section) => `doctor table for ${section.report?.checks.length ?? 0} checks`,
+      doctorTable: (doctor) => `doctor table for ${doctor.checks.length} checks`,
     });
     expect(text).toContain("  doctor table for 2 checks");
   });
@@ -596,8 +593,8 @@ describe("the in-container arm", () => {
       io: json.io,
     });
     const printed = JSON.parse(json.out.join("")) as DeploymentReport;
-    expect(printed.config.root.fingerprint).toBe("sha256:abc123");
-    expect(printed.config.tenants[0]!.fields).toEqual({
+    expect(printed.config!.root.fingerprint).toBe("sha256:abc123");
+    expect(printed.config!.tenants[0]!.fields).toEqual({
       repoSlug: { value: "acme/widget", source: "file", reader: "engine" },
     });
 

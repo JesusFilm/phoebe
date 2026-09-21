@@ -19,17 +19,32 @@
 // since, last heard, last close code — are a separate connection panel and
 // never a `DoctorCheck`.
 
-// The leaf vocabulary — a verdict, a check, a tenant row, a report — lives in
-// doctor-report.ts and is re-exported here, so the section below and the checks
-// that fill it name the same four states.
-export type {
-  CheckState,
-  DoctorCheck,
-  DoctorReport,
-  MissingDeclaredEnvKey,
-  TenantDoctorRow,
-} from "./doctor-report.ts";
-import type { DoctorReport } from "./doctor-report.ts";
+/** A scheduled kind's declared key that its pipeline's env does not hold (#425). */
+export type MissingDeclaredEnvKey = { pipeline: string; kind: string; key: string };
+
+/** A check's verdict. `unknown` is a check that could not be answered, not a pass. */
+export type CheckState = "ok" | "warn" | "fail" | "unknown";
+
+/** One check: what was asked, what came back, and one line saying why. */
+export type DoctorCheck = {
+  id: string;
+  state: CheckState;
+  detail: string;
+};
+
+/** One tenant's checks, as the workspace sweep found them. */
+export type TenantDoctorRow = {
+  path: string;
+  slug: string | null;
+  checks: DoctorCheck[];
+};
+
+export type DoctorReport = {
+  checks: DoctorCheck[];
+  tenants: TenantDoctorRow[];
+  /** False when any deployment or tenant check failed. */
+  ok: boolean;
+};
 
 /**
  * Why a run happened (#507 §6). Boot and reconcile are the deployment's own

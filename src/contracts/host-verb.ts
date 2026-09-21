@@ -14,7 +14,7 @@
 // `configSet` would have said something nobody types.
 
 import type { EditReceipt } from "./config-edit.ts";
-import type { DoctorReport } from "./doctor-report.ts";
+import type { DoctorReport } from "./doctor.ts";
 import type { InitOutcome } from "./init-report.ts";
 import type { FleetMigrateReport } from "./migrate-report.ts";
 import type { SecretSetOutcome } from "./secret-set.ts";

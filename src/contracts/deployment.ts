@@ -28,6 +28,7 @@ import type { CredentialArm } from "./credential-arm.ts";
 import type { DoctorSection } from "./doctor.ts";
 import type { TenantEffectiveConfig } from "./effective-config.ts";
 import type { PipelineSource, PipelineState, WedgedVerdict } from "./pipeline-state.ts";
+import type { SecretsSection } from "./secrets.ts";
 import type { StatusSnapshot } from "./status-snapshot.ts";
 
 /** The report shape this engine writes. Bump on a breaking change, never on an addition. */
@@ -233,6 +234,31 @@ export type RelayReport = {
 };
 
 /**
+ * One config edit this deployment applied to its own files and has not seen
+ * committed (#503). The ledger itself lives on the data volume
+ * (`state/config-edits.json`); the report ships the **live** entries, which is
+ * what lets a console say "edits not yet in a commit" without reading the
+ * deployment's git.
+ *
+ * An entry leaves the live set when the file's fingerprint moves by a hand other
+ * than the writer's — the operator edited it, or committed it. There is no
+ * "mark committed" action and no verb for one.
+ */
+export type EditLedgerEntry = {
+  /** The edit's id, as its receipt carried it. */
+  id: string;
+  /** The file the value went into, as the deployment names it. */
+  file: string;
+  /** The dotted path of the leaf that was written. */
+  path: string;
+  /** What was written. A leaf is a literal; nothing here carries an object. */
+  value: string | number | boolean | null;
+  at: string;
+  /** The allowlisted email the relay stamped on the edit; absent for a shell run. */
+  by?: string;
+};
+
+/**
  * The config source a later edit checks itself against (#503). Only the root
  * `phoebe.config.ts` is mounted read-write, so it is the one file a console can
  * ask this deployment to change, and the one file worth fingerprinting here.
@@ -287,14 +313,35 @@ export type DeploymentReport = {
   bootstrapper: BootstrapperReport;
   relay: RelayReport;
   fleet: FleetReport;
-  /** Every tenant's effective config, as the running engine computed it (#535). */
-  config: ConfigReport;
   /**
    * What the last `phoebe doctor` run found, with its age (#507 §4). The
    * bootstrapper spawns those runs; a manual `phoebe doctor` prints and touches
    * nothing here.
    */
   doctor: DoctorSection;
+  /**
+   * Config edits applied here and not yet in a commit (#503). Absent until the
+   * writer that keeps the ledger lands (#547); an addition, so it does not move
+   * {@link DEPLOYMENT_SCHEMA}, and a reader treats absence as "none known"
+   * rather than as "none".
+   */
+  edits?: EditLedgerEntry[];
+  /**
+   * Every tenant's effective config, as the running engine computed it (#502,
+   * #535). Absent until the bootstrapper that embeds the engine's answer lands
+   * (#535), and absent from a deployment running an engine older than that; an
+   * addition, so it does not move {@link DEPLOYMENT_SCHEMA}, and a reader treats
+   * absence as "this deployment did not report its settings", never as "this
+   * deployment has none".
+   */
+  config?: ConfigReport;
+  /**
+   * Which secrets each tenant has and where they come from (#504, #550) —
+   * presence and provenance, never a value. Absent on a report from a
+   * deployment that predates the section, which a reader treats as "not
+   * known" rather than as "this tenant has no secrets".
+   */
+  secrets?: SecretsSection;
   /** When any section last moved. */
   updatedAt: string;
 };

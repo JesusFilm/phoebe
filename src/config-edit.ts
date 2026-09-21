@@ -34,7 +34,12 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { ConfigEdit, EditReceipt, EditRefusalReason } from "./contracts/config-edit.ts";
+import {
+  CLOSED_EDIT_BLOCKS,
+  type ConfigEdit,
+  type EditReceipt,
+  type EditRefusalReason,
+} from "./contracts/config-edit.ts";
 import { editConfigSetFieldAt } from "./config-handle.ts";
 import { SETTINGS, envNames, kindEnvNames, type Setting } from "./settings-catalogue.ts";
 
@@ -80,44 +85,6 @@ export function fingerprintOf(source: string): string {
 // --- what may be edited -----------------------------------------------------
 
 /**
- * The blocks no edit may reach, and the sentence each refusal says. Matched on
- * the first segment, so a block and everything under it go together.
- *
- * Most entries are things that are *somebody else's* to change rather than
- * things that are dangerous to write: a fleet declaration (git), an engine pin
- * (`phoebe upgrade`, so its migrations run), the host's own lifecycle, a pairing
- * the relay owns. The last two are different — `paths` and top-level
- * `workKinds` are places where a write would land and then be ignored, which is
- * the one outcome a refusal is plainly better than.
- */
-const CLOSED_BLOCKS: readonly { prefix: string; why: string }[] = [
-  {
-    prefix: "workspace",
-    why: "the fleet declaration is yours — adding, removing or reordering tenants is a git edit, never a console one",
-  },
-  {
-    prefix: "engine",
-    why: "`engine.ref` picks which engine runs and moves with `phoebe upgrade`, so the migrations for the new ref run with it",
-  },
-  {
-    prefix: "relay",
-    why: "the relay block is the pairing's own, written when a deployment is paired rather than edited field by field",
-  },
-  {
-    prefix: "deployment",
-    why: "the `deployment` block holds the host's lifecycle commands, which run outside the container and are not the container's to rewrite",
-  },
-  {
-    prefix: "paths",
-    why: "`paths` is derived from `repoSlug` and the data volume; nothing at that path is read from the file",
-  },
-  {
-    prefix: "workKinds",
-    why: "top-level `workKinds` is the permanent alias for `pipelines.work.kinds` — set it at the path the effective config prints",
-  },
-];
-
-/**
  * The catalogue entry addressed by a config path, tenant-level or per-kind.
  *
  * The per-kind arm asks two questions, because the catalogue answers per-kind
@@ -160,7 +127,7 @@ export function editabilityOf(path: string, env: NodeJS.ProcessEnv): Editability
     return refuse(`"${path}" is not a config path`);
   }
   const segments = path.split(".");
-  for (const block of CLOSED_BLOCKS) {
+  for (const block of CLOSED_EDIT_BLOCKS) {
     if (segments[0] === block.prefix) return refuse(block.why);
   }
   // A work kind's declaration is a module reference or an inline definition —

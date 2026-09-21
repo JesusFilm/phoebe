@@ -47,6 +47,24 @@ export type Admission =
   | { kind: "matched"; entry: AllowlistEntry }
   | { kind: "refused" };
 
+/** What `add` did. Adding someone already listed is not an edit, and says so. */
+export type Addition =
+  | { kind: "added"; entry: AllowlistEntry }
+  | { kind: "already-listed"; entry: AllowlistEntry }
+  | { kind: "bad-email" };
+
+/**
+ * What `remove` did. The refusals are the two the People page has to word
+ * differently: an address nobody holds, and one the environment holds.
+ *
+ * Removing yourself is not among them. The list does not know who is asking —
+ * that is the session's fact, and the route that holds one enforces it.
+ */
+export type Removal =
+  | { kind: "removed"; entry: AllowlistEntry }
+  | { kind: "from-environment" }
+  | { kind: "no-such-person" };
+
 export type Allowlist = {
   /** Every entry the relay knows, the file's first and the environment's after. */
   entries: () => AllowlistEntry[];
@@ -58,6 +76,18 @@ export type Allowlist = {
    * research asks for and two simultaneous first logins cannot both seed.
    */
   admit: (identity: VerifiedIdentity, now: Date) => Admission;
+  /**
+   * Add one person by address, stamped with the address of whoever added them
+   * (#505 §6). No `sub`: the operator typed the only thing a human knows, and
+   * the first login that matches fills the rest in.
+   */
+  add: (email: string, by: string, now: Date) => Addition;
+  /**
+   * Remove one person by address. An environment entry is refused rather than
+   * deleted — it is not in the file to delete, and it would come back at the
+   * next start, which would make the UI a liar.
+   */
+  remove: (email: string) => Removal;
 };
 
 /** The name the file has on the relay volume. */
@@ -103,12 +133,15 @@ export function createAllowlist(dataDir: string, allowedEmails: readonly string[
     renameSync(tmp, path);
   }
 
+  /** The file's entries, then every environment entry the file does not name. */
+  function all(): AllowlistEntry[] {
+    const fromFile = read().entries;
+    const known = new Set(fromFile.map((entry) => entry.email));
+    return [...fromFile, ...fromEnvironment.filter((entry) => !known.has(entry.email))];
+  }
+
   return {
-    entries() {
-      const fromFile = read().entries;
-      const known = new Set(fromFile.map((entry) => entry.email));
-      return [...fromFile, ...fromEnvironment.filter((entry) => !known.has(entry.email))];
-    },
+    entries: all,
 
     admit(identity, now) {
       const email = identity.email.toLowerCase();
@@ -152,5 +185,65 @@ export function createAllowlist(dataDir: string, allowedEmails: readonly string[
 
       return { kind: "refused" };
     },
+
+    add(rawEmail, by, now) {
+      const email = normalizeEmail(rawEmail);
+      if (email === null) return { kind: "bad-email" };
+
+      const listed = all().find((entry) => entry.email === email);
+      if (listed !== undefined) return { kind: "already-listed", entry: listed };
+
+      const entry: AllowlistEntry = { email, addedBy: by, addedAt: now.toISOString() };
+      const file = read();
+      file.entries.push(entry);
+      write(file);
+      return { kind: "added", entry };
+    },
+
+    remove(rawEmail) {
+      const email = normalizeEmail(rawEmail);
+      if (email === null) return { kind: "no-such-person" };
+
+      const file = read();
+      const entry = file.entries.find((candidate) => candidate.email === email);
+      if (entry === undefined) {
+        return fromEnvironment.some((candidate) => candidate.email === email)
+          ? { kind: "from-environment" }
+          : { kind: "no-such-person" };
+      }
+      write({ entries: file.entries.filter((candidate) => candidate !== entry) });
+      return { kind: "removed", entry };
+    },
   };
+}
+
+/**
+ * One typed address as the list stores them, or null when it is not an address
+ * at all. Trimmed and lowercased, because Google's `email` claim is not
+ * case-normalised and a person who types `Ada@` must match the login that
+ * arrives as `ada@`.
+ *
+ * The shape check is deliberately the weakest one that still means something:
+ * one `@`, something either side, no whitespace. Whether an address exists is
+ * Google's answer, not a regular expression's, and a stricter pattern here only
+ * ever refuses a real person their real address.
+ */
+export function normalizeEmail(raw: string): string | null {
+  const email = raw.trim().toLowerCase();
+  const at = email.indexOf("@");
+  if (at < 1 || at !== email.lastIndexOf("@")) return null;
+  if (at === email.length - 1) return null;
+  if (/\s/.test(email)) return null;
+  return email;
+}
+
+/**
+ * Is this entry the person holding the session asking? On `sub` where there is
+ * one, on the address otherwise — the same order `admit` matches in, so an
+ * entry that has seen a login is judged by the identity Google keys, and one
+ * that has not is judged by the only thing it carries.
+ */
+export function isSelf(entry: AllowlistEntry, identity: VerifiedIdentity): boolean {
+  if (entry.sub !== undefined) return entry.sub === identity.sub;
+  return entry.email === identity.email.toLowerCase();
 }

@@ -30,9 +30,17 @@ exposes, and by nothing else. No build flag, no second entry point
 
 The app is `private` and carries no version of its own. `vite.config.ts` reads the
 root package's version at build time and defines it into the bundle
-([#521 §4](https://github.com/JesusFilm/phoebe/issues/521)). It reads no `.env`
-and holds no secret. Signing in happens against the relay and the session is the
-companion's ([#521 §8](https://github.com/JesusFilm/phoebe/issues/521)).
+([#521 §4](https://github.com/JesusFilm/phoebe/issues/521)). It reads no `.env`.
+The one secret it holds is the relay's device token, and that lives in main behind
+`safeStorage` — never in the renderer, never on disk in the clear
+([#523 §5](https://github.com/JesusFilm/phoebe/issues/523)).
+
+**Electron floor: 44, and never below 35.** The secret envelope for a remote
+`secret set` is built in the renderer by the same console code a browser runs
+([#514](https://github.com/JesusFilm/phoebe/issues/514),
+[#523 §6](https://github.com/JesusFilm/phoebe/issues/523)), which needs X25519 in
+`crypto.subtle` — Chromium 134, Electron 35. `package.json` pins a current major
+well above that; the floor is what a downgrade may not cross.
 
 `vp run build` is two passes, one per entry point, and the two take different
 formats. The preload is CommonJS because a sandboxed preload has to be — Electron
@@ -81,12 +89,20 @@ change them ([#557](https://github.com/JesusFilm/phoebe/issues/557)):
 - [`container-read.ts`](src/container-read.ts) — the two seams under it: the
   `phoebe status --json` exec, and the `docker compose events` subscription.
 
-Beside it, a relay arm with no session, so the console draws the Relay group
-signed out ([#526](https://github.com/JesusFilm/phoebe/issues/526)). Sign-in
-([#554](https://github.com/JesusFilm/phoebe/issues/554)) is a change in here,
-behind the contract the preload already exposes.
+**The relay arm**
+([#554](https://github.com/JesusFilm/phoebe/issues/554)) is sign-in, the JSON reads
+the renderer asks for, the relay's event stream re-emitted over IPC, and sign-out.
+Main is the relay client — it holds the device token and the renderer never sees
+it ([#523 §1](https://github.com/JesusFilm/phoebe/issues/523)).
 
-**The writes never reach that arm**, and they will not once it has a session. A
+Sign-in runs in the operator's own browser, because Google refuses an embedded
+webview. Main mints a PKCE verifier, opens `${relay}/auth/device/start`, and the
+relay comes back to `phoebe://auth?code=…`. The single-instance lock is what makes
+that land on the process holding the verifier: on Windows and Linux the OS
+launches a _second_ process with the URL on its command line, and without the lock
+one process would hold the code and the other the verifier.
+
+**The writes never reach that arm.** A
 local install's config edit and secrets run against this machine even when the
 same install is paired with a relay — so nothing in main builds an envelope, and
 both forms in the console say so. The envelope exists for a deployment a console
@@ -95,14 +111,14 @@ fingerprint the window was shown, so an edit composed against a config a termina
 has since changed is refused `stale` with the manual edit to make instead —
 identically on both arms, which is what the fingerprint is for.
 
-The loop reads `phoebe status --json` inside the container. That verb is
+The loop reads `phoebe status --json` inside the container: the verb is
 [#533](https://github.com/JesusFilm/phoebe/issues/533)'s and the report it prints
-is [#532](https://github.com/JesusFilm/phoebe/issues/532)'s, so against a
-container built from this branch the exec fails and every read comes back
-`report: null` with the container's own sentence on it — which is the path the
-tabs draw anyway when nothing is running. `STATUS_ARGV` in
-[`src/container-read.ts`](src/container-read.ts) is the one line that moves when
-those land.
+is [#532](https://github.com/JesusFilm/phoebe/issues/532)'s. A container running an
+engine older than those answers the exec with its own sentence, and the read
+comes back `report: null` with that sentence on it — the path the tabs draw
+anyway when nothing is running. `STATUS_ARGV` in
+[`src/container-read.ts`](src/container-read.ts) is the one line that moves if the
+verb's flags do.
 
 Two things a later ticket owes this package. `upgrade` and `migrate` spawn their
 children through `spawnSync`, which blocks main for as long as they run — so the

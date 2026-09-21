@@ -29,12 +29,13 @@
 import { readFileSync } from "node:fs";
 import type {
   ChildLiveness,
+  DeploymentIdentity,
   DeploymentReport,
   FleetCell,
   RelayReport,
   TenantFacts,
 } from "./contracts/deployment.ts";
-import type { DoctorSection } from "./contracts/doctor.ts";
+import type { DoctorReport, DoctorSection } from "./contracts/doctor.ts";
 import { deploymentReportPath } from "../bootstrap/deployment-report.ts";
 import type { DeploymentField } from "./config-schema.ts";
 import { readDeploymentCommands } from "./deployment-command.ts";
@@ -208,12 +209,10 @@ export function formatBootstrapperLine(
  */
 export function formatRelayLine(
   relay: RelayReport | undefined,
-  name: string,
+  identity: DeploymentIdentity,
   now: number,
 ): string | null {
   if (relay === undefined || !relay.configured) return null;
-  // The section is stamped when it moves, so its `updatedAt` is the age of the
-  // word beside it — there is no second clock to read.
   const parts = [`${relay.state} ${sinceOf(relay.updatedAt, now)}`];
   if (relay.state === "reconnecting" && relay.nextRetryAt !== null) {
     const at = Date.parse(relay.nextRetryAt);
@@ -222,9 +221,11 @@ export function formatRelayLine(
   if (relay.lastClose !== null) {
     parts.push(`last close ${relay.lastClose.code} ${ageOf(relay.lastClose.at, now)}`);
   }
-  // The deployment's own name, not a second one: the relay keys on the
-  // deployment's key and never on a name, so there is only ever one.
-  return `[phoebe] relay         ${name}  ${parts.join("  ")}`;
+  // The name and the key are the deployment identity the report already
+  // carries (#540), not the relay section: the section says where the link
+  // stands, identity says who is standing there.
+  if (identity.keyFingerprint !== undefined) parts.push(identity.keyFingerprint);
+  return `[phoebe] relay         ${identity.name}  ${parts.join("  ")}`;
 }
 
 /** The tenant's own columns, as `phoebe list` has always shown them. */
@@ -355,16 +356,17 @@ export function formatFleetSection(report: DeploymentReport, now: number): strin
  * that the bootstrapper has never run one. "Never run" is a fact about this
  * deployment, not a verdict about its health.
  */
-export function formatDoctorLine(section: DoctorSection, now: number): string {
+export function formatDoctorLine(section: DoctorSection | undefined, now: number): string {
   const prefix = "[phoebe] doctor        ";
+  if (section === undefined) return `${prefix}never run`;
   if (section.running !== undefined) {
     return `${prefix}running ${sinceOf(section.running.since, now)} (${section.running.trigger})`;
   }
-  // The section is always there; what is absent until the first run lands is
-  // the report inside it, which is the honest "never".
+  // A section with no report is a deployment that has never finished a run —
+  // the same "never" an absent section means, said by a section that exists.
   if (section.report === null || section.at === null) return `${prefix}never run`;
   const report = section.report;
-  const checks = [...report.checks, ...report.tenants.flatMap((row) => row.checks)];
+  const checks = [...report.checks, ...report.tenants.flatMap((tenant) => tenant.checks)];
   const count = (state: string): number => checks.filter((check) => check.state === state).length;
   const fails = count("fail");
   const warns = count("warn");
@@ -394,7 +396,7 @@ export type StatusView = {
   section: "all" | "fleet";
   verbose: boolean;
   /** Doctor's own table, for `--verbose`. Injected so this stays a pure render. */
-  doctorTable?: (section: DoctorSection) => string;
+  doctorTable?: (report: DoctorReport) => string;
 };
 
 /**
@@ -415,14 +417,14 @@ export function formatStatusReport(view: StatusView): string {
     return lines.join("\n");
   }
   lines.push(formatBootstrapperLine(report, { now, withReportAge: view.bootAlive }));
-  const relay = formatRelayLine(report.relay, report.identity.name, now);
+  const relay = formatRelayLine(report.relay, report.identity, now);
   if (relay !== null) lines.push(relay);
   lines.push(formatFleetSection(report, now));
   lines.push(formatDoctorLine(report.doctor, now));
-  if (view.verbose && report.doctor !== undefined && view.doctorTable !== undefined) {
+  if (view.verbose && report.doctor?.report != null && view.doctorTable !== undefined) {
     lines.push(
       view
-        .doctorTable(report.doctor)
+        .doctorTable(report.doctor.report)
         .split("\n")
         .map((line) => `  ${line}`)
         .join("\n"),
@@ -453,7 +455,7 @@ export function statusFindings(opts: {
     if (child.crashLooping) findings.push(`crash-looping: ${child.id}`);
   }
   const doctor = opts.report.doctor;
-  if (doctor.report !== null && !doctor.report.ok) findings.push("doctor: failing check(s)");
+  if (doctor?.report != null && !doctor.report.ok) findings.push("doctor: failing check(s)");
   for (const tenant of opts.report.fleet.tenants) {
     if (tenant.held) findings.push(`held tenant: ${tenant.path}`);
   }
@@ -490,9 +492,9 @@ function statusIo(deps: StatusDeps | undefined): StatusIo {
 }
 
 /** Doctor's own table, imported only when `--verbose` asks for it. */
-async function loadDoctorTable(): Promise<(section: DoctorSection) => string> {
+async function loadDoctorTable(): Promise<(report: DoctorReport) => string> {
   const { formatDoctorReport } = await import("./doctor.ts");
-  return (section) => (section.report === null ? "" : formatDoctorReport(section.report));
+  return (report) => formatDoctorReport(report);
 }
 
 /**

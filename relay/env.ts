@@ -1,22 +1,33 @@
-// The relay's whole configuration: four environment variables, read once at
-// start (#506 §9). There is no `relay.config.ts` and there will not be one —
-// the heartbeat interval, the dark threshold and the pairing-token TTL are
-// constants in the code, not knobs, because an operator who tunes them is
-// making the fleet's timing disagree with the relay's.
+// The relay's whole configuration: four required environment variables and one
+// optional fifth, read once at start (#506 §9, #515 §2). There is no
+// `relay.config.ts` and there will not be one — the heartbeat interval, the
+// dark threshold, the alert debounce and the pairing-token TTL are constants in
+// the code, not knobs, because an operator who tunes them is making the fleet's
+// timing disagree with the relay's.
 //
 // Two of the four are Google's client credentials and one is the public
 // hostname, all three useless when blank. The fourth, ALLOWED_EMAILS, is
 // meaningfully empty: blank means "nobody is seeded, the first verified login
 // claims this relay" (#505 §6). So the rule is *present*, not *non-blank* — a
 // scaffolded `.env` carrying `ALLOWED_EMAILS=` has answered the question.
+//
+// RELAY_ALERT_WEBHOOK is the fifth and the only optional one, because absence
+// is how alerting's one channel is declined — the crash reporter's shape,
+// where not configuring a target is the opt-out (#515 §2). Absent means **no
+// webhook**, not no alerting: the relay evaluates every edge and keeps
+// `alerts.json` regardless, and the SSE `alert` event is not configurable
+// (#524 §1).
 
-/** The four variables, in the order the scaffolded `.env` lists them. */
+/** The four required variables, in the order the scaffolded `.env` lists them. */
 export const RELAY_ENV_VARS = [
   "RELAY_HOST",
   "GOOGLE_CLIENT_ID",
   "GOOGLE_CLIENT_SECRET",
   "ALLOWED_EMAILS",
 ] as const;
+
+/** The fifth, optional one: where an alert is posted (#515 §2). */
+export const RELAY_ALERT_WEBHOOK_VAR = "RELAY_ALERT_WEBHOOK";
 
 /** The variables whose value carries information, so blank is as bad as absent. */
 const MUST_NOT_BE_BLANK = new Set(["RELAY_HOST", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"]);
@@ -30,6 +41,11 @@ export type RelayEnv = {
   clientSecret: string;
   /** Addresses merged into the allowlist at every start, lowercased and deduped. */
   allowedEmails: string[];
+  /**
+   * Where an alert is POSTed, or null for a relay that posts none. The URL is
+   * the secret — there is no signing — so it is never logged (#515 §2).
+   */
+  alertWebhook: string | null;
 };
 
 /**
@@ -52,10 +68,13 @@ export class RelayEnvError extends Error {
 }
 
 /**
- * Read the four variables out of `env`, or throw `RelayEnvError` naming every
- * one that is missing. `ALLOWED_EMAILS` is split on commas; blank entries are
- * dropped, addresses are lowercased (Google's `email` claim is not
+ * Read the environment out of `env`, or throw `RelayEnvError` naming every
+ * required variable that is missing. `ALLOWED_EMAILS` is split on commas; blank
+ * entries are dropped, addresses are lowercased (Google's `email` claim is not
  * case-normalised for us) and deduped, so `a@x.test, ,A@X.test` is one person.
+ *
+ * `RELAY_ALERT_WEBHOOK` can never be missing, only unset: it is the one
+ * optional variable, and blank is the same as absent.
  */
 export function readRelayEnv(env: NodeJS.ProcessEnv): RelayEnv {
   const missing = RELAY_ENV_VARS.filter((name) => {
@@ -70,7 +89,14 @@ export function readRelayEnv(env: NodeJS.ProcessEnv): RelayEnv {
     clientId: env.GOOGLE_CLIENT_ID!.trim(),
     clientSecret: env.GOOGLE_CLIENT_SECRET!.trim(),
     allowedEmails: parseAllowedEmails(env.ALLOWED_EMAILS!),
+    alertWebhook: trimmedOrNull(env[RELAY_ALERT_WEBHOOK_VAR]),
   };
+}
+
+/** A variable an operator may leave blank to mean "no". */
+function trimmedOrNull(value: string | undefined): string | null {
+  const trimmed = value?.trim() ?? "";
+  return trimmed === "" ? null : trimmed;
 }
 
 /** `a@x.test, b@y.test` → `["a@x.test", "b@y.test"]`; blank → `[]`. */

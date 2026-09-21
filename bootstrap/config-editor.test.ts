@@ -6,6 +6,8 @@
 //   * An edit before any engine has been materialized is refused, not written.
 //   * A checkout that cannot answer is a refusal carrying its diagnosis.
 //   * `lastEditId` reads the ledger against the file as it stands now.
+//   * `liveEdits` is the same read, whole, for the report's own section — minus
+//     the fingerprint the ledger keeps for itself.
 
 import { describe, expect, test } from "vite-plus/test";
 import { createConfigEditor } from "./config-editor.ts";
@@ -141,6 +143,35 @@ describe("createConfigEditor", () => {
     expect(disk.has(LEDGER)).toBe(true);
   });
 
+  test("liveEdits is what the report ships: the applied edits, without the bookkeeping", async () => {
+    const { editor } = harness();
+    expect(editor.liveEdits()).toEqual([]);
+
+    await editor.apply(edit({ by: "ada@example.test" }));
+
+    expect(editor.liveEdits()).toEqual([
+      {
+        id: "e1",
+        file: ROOT,
+        path: "checkCommand",
+        value: "pnpm run check",
+        at: "2026-09-18T10:00:00.000Z",
+        by: "ada@example.test",
+      },
+    ]);
+  });
+
+  test("and it empties the moment the file moves by another hand", async () => {
+    const { editor, disk } = harness();
+    await editor.apply(edit());
+    expect(editor.liveEdits()).toHaveLength(1);
+
+    // The operator edited or committed: from here the writer's list is history
+    // rather than "edits not yet in a commit".
+    disk.set(ROOT, `${disk.get(ROOT)!}\n// mine\n`);
+    expect(editor.liveEdits()).toEqual([]);
+  });
+
   test("an unreadable root config is null, not a throw", () => {
     const editor = createConfigEditor({
       rootConfigPath: ROOT,
@@ -150,5 +181,6 @@ describe("createConfigEditor", () => {
       },
     });
     expect(editor.lastEditId()).toBeNull();
+    expect(editor.liveEdits()).toEqual([]);
   });
 });

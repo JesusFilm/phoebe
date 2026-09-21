@@ -47,6 +47,7 @@ import {
   tenantStateDir,
   type SecretValues,
 } from "./secret-store.ts";
+import type { SecretListing } from "./contracts/secrets.ts";
 import { enumerateWorkspaceTenants } from "./tenant-commands.ts";
 
 /** The three things `phoebe secret` does. */
@@ -294,21 +295,12 @@ export async function readSecretValue(stdin: NodeJS.ReadStream = process.stdin):
 
 // --- listing ----------------------------------------------------------------
 
-/** Where the value a child would hold came from. `missing` is nowhere at all. */
-export type SecretSource = "store" | "tenantEnv" | "process" | "missing";
-
-/** One key as `phoebe secret ls` reports it: presence and provenance, never a value. */
-export type SecretListing = {
-  key: string;
-  present: boolean;
-  source: SecretSource;
-  /** The store set this key and a lower tier also has it (#504). */
-  shadowed?: boolean;
-  /** When the store entry was written, from the ledger. */
-  setAt?: string;
-  /** Who wrote it, from the ledger. */
-  by?: string;
-};
+/**
+ * What `phoebe secret ls` prints, and what section 6 of the deployment report
+ * carries: one vocabulary in contracts, so a terminal and a browser cannot say
+ * different things about the same key (src/contracts/secrets.ts).
+ */
+export type { SecretListing, SecretSource } from "./contracts/secrets.ts";
 
 function isSet(value: string | undefined): value is string {
   return typeof value === "string" && value.length > 0;

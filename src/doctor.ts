@@ -3,7 +3,7 @@
 // is actually working. (A `--fix` mode that repairs at the current pin is a
 // mapped follow-up.)
 //
-// Eight deployment checks, all reads of state that already exists (three more —
+// Nine deployment checks, all reads of state that already exists (three more —
 // `labels`, `stray-members` and `stale-state` — are per tenant and live in the
 // tenant sweep below):
 //   1. cli            — installed bootstrapper vs the npm registry's latest
@@ -119,7 +119,7 @@ import type {
   DoctorReport,
   MissingDeclaredEnvKey,
   TenantDoctorRow,
-} from "./contracts/doctor-report.ts";
+} from "./contracts/doctor.ts";
 import {
   createDeadline,
   DEADLINE_DETAIL,
@@ -129,10 +129,10 @@ import {
 } from "./doctor-deadline.ts";
 import { DOCTOR_LEASE_ENV, parseDoctorLeases, type DoctorLeases } from "./doctor-lease.ts";
 
-// The report and its leaves now live in `phoebe-agent/contracts` (#552) so the
-// five tabs of a console can render a health panel without loading the checks
-// below, which reach GitHub, git, npm and the data volume. Re-exported here so
-// every existing reader goes on importing them off this module.
+// The report and its leaves live in `phoebe-agent/contracts` (#507 §7, #552) so
+// the five tabs of a console can render a health panel without loading the
+// checks below, which reach GitHub, git, npm and the data volume. Re-exported
+// here so every existing reader goes on importing them off this module.
 export type { CheckState, DoctorCheck, DoctorReport, MissingDeclaredEnvKey, TenantDoctorRow };
 
 /** One check a run did not get to before {@link DOCTOR_DEADLINE_MS} (#507 §7). */
@@ -1830,7 +1830,7 @@ export async function runDoctor(
           // Per tenant, not per deployment: a fleet mixes arms whenever one
           // tenant keeps its own PAT, and #157's per-installation approvals
           // make that the normal state during any permission change.
-          arm: resolveCredentialArm({ GH_TOKEN: own }, env),
+          arm: resolveCredentialArm({ GH_TOKEN: own }, deps.env),
           token: credential.token,
           leased: credential.leased,
           deadline,
@@ -1862,7 +1862,7 @@ export async function runDoctor(
     // only channel solo has — there is no tenant `.env` inside the container —
     // so it is layered over the ambient env before anything is checked.
     const soloStore = readTenantSecretStore(slug, dataBase, env);
-    const soloEnv: NodeJS.ProcessEnv = { ...env, ...soloStore.values };
+    const soloEnv: NodeJS.ProcessEnv = { ...deps.env, ...soloStore.values };
     const credential = tenantCredential({ own: nonEmpty(soloEnv["GH_TOKEN"]), slug, leases });
     tenants.push(
       await tenantRow({
