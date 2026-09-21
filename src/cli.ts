@@ -43,6 +43,7 @@ import {
 } from "./init.ts";
 import { formatInitTenantRegistrationAdviceForRoot } from "./init-tenant-advice.ts";
 import { applyEnvOverlay, loadUserConfig, resolveConfigPath } from "./load-config.ts";
+import { settingsHelp } from "./settings-catalogue.ts";
 import { parsePipelineName, selectPipeline } from "./pipeline.ts";
 import { runEngine } from "./main.ts";
 import { resolveDataBase } from "./paths.ts";
@@ -140,7 +141,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedArgs {
       const version = installedVersion();
       throw new Error(
         `Unknown command \`${arg}\` for \`phoebe\`${version === null ? "" : ` (phoebe-agent v${version})`}. ` +
-          `Known commands: boot, init, list, purge, upgrade, doctor, migrate, stop, start, pipelines, sweep-state. If \`${arg}\` was added in a newer ` +
+          `Known commands: boot, init, list, config, purge, upgrade, doctor, migrate, stop, start, pipelines, sweep-state. If \`${arg}\` was added in a newer ` +
           `release, upgrade first: \`pnpm dlx phoebe-agent@latest upgrade\`. See \`phoebe --help\`.`,
       );
     }
@@ -274,6 +275,7 @@ Usage:
   phoebe init --workspace [dir]    Scaffold a workspace root (multi-child)
   phoebe init --tenant [dir]       Scaffold a workspace child in-tree install
   phoebe list [--json] [--check]   List tenants + health (in-container)
+  phoebe config [--json]           Every setting, its value, and where it came from
   phoebe purge <owner/repo> --yes  Wipe a removed tenant's data (in-container)
   phoebe upgrade [ref] [--engine|--cli|--both]
                                    Advance the pinned engine ref and/or the npm CLI
@@ -295,21 +297,7 @@ Options (engine mode):
   --pipeline <name>     Which pipeline to run (default: work)
   --help, -h            Show this message
 
-Environment overlays (each replaces the corresponding config field):
-  PHOEBE_REPO_SLUG, PHOEBE_REPO_URL, PHOEBE_DEFAULT_BRANCH, PHOEBE_BRANCH_PREFIX,
-  PHOEBE_READY_LABEL, PHOEBE_PROCESSING_LABEL, PHOEBE_PR_OPT_OUT_LABEL,
-  PHOEBE_INSTALL_COMMAND, PHOEBE_CHECK_COMMAND, PHOEBE_TEST_COMMAND,
-  PHOEBE_READY_COMMAND, PHOEBE_BLOCKED_BY_PATTERN, PHOEBE_REVIEWS_SUCCESS_HEADING,
-  PHOEBE_PR_SCOPE, PHOEBE_DRAFT_PRS, PHOEBE_DEFAULT_PROVIDER
-
-Runtime toggles (read directly by the engine, not overlaid onto the config):
-  PHOEBE_AGENT           Provider name to use for this run (cursor|claude|codex)
-  PHOEBE_MODEL           Model to use for this run
-  PHOEBE_EFFORT          Reasoning effort for this run (claude: low|medium|high|xhigh|max)
-  PHOEBE_<KIND>_AGENT    Per-work-kind variants of the trio above, where <KIND> is
-  PHOEBE_<KIND>_MODEL    one of CONFLICTS|CHECKS|REVIEWS|ISSUES|RESEARCH
-  PHOEBE_<KIND>_EFFORT   (e.g. PHOEBE_REVIEWS_MODEL); outrank the workKinds config block
-  PHOEBE_POLL_INTERVAL_MS Persistent-mode poll interval (default 300000)
+${settingsHelp()}
 `;
 
 const INIT_HELP_TEXT = `phoebe init — scaffold a consumer-owned runtime
@@ -692,6 +680,12 @@ export async function runCli(): Promise<void> {
   // In-container fleet commands (#95): list / purge act on the data volume.
   // Neither loads the engine config.
   if (args[0] === "list") return await runListCli(args.slice(1));
+  // The effective config (#531): every setting with its value and its source.
+  // Lazy like its neighbours — a plain engine run never loads it.
+  if (args[0] === "config") {
+    const { runConfigCli } = await import("./config-command.ts");
+    return await runConfigCli(args.slice(1));
+  }
   if (args[0] === "purge") return await runPurgeCli(args.slice(1));
 
   // Operator commands: upgrade moves the deployment between versions; doctor
