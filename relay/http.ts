@@ -1,11 +1,19 @@
 // The relay's HTTP surface: the sign-in flow, and the reads and verbs behind it
-// (#538, #540, #541, #551).
+// (#538, #540, #541, #542, #551).
 //
 // There are no pages here yet. What a signed-in person can ask for is who they
 // are, a pairing token for a new deployment, the fleet as the socket endpoint
-// knows it — with what the relay last alerted about each link — the forgetting
-// of one deployment, and one test alert. The console's pages sit on exactly
-// these answers.
+// knows it, one deployment with the last report it pushed, the stream those
+// reports arrive on, and the forgetting of one deployment. The console's pages
+// sit on exactly these answers.
+//
+// The fleet read also carries what the relay last alerted about each link, and
+// one verb sends a test alert (#551).
+//
+// **Two reads and one stream, and the stream is not a third read.** Every event
+// on `/api/events` has a `GET` behind it that answers the same question in full,
+// so a page that missed one refetches rather than resyncs. That is what keeps
+// the stream from becoming a second, worse copy of the state on the volume.
 //
 // The shape every route follows is set here: paths come from contracts, the
 // session is read from a `__Host-` cookie, and anything behind the door answers
@@ -14,10 +22,19 @@
 // a 200.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { RELAY_HEARTBEAT_MS } from "../src/contracts/relay-protocol.ts";
 import { RELAY_ROUTES } from "../src/contracts/relay-routes.ts";
-import type { RelayDeploymentRow, RelayIdentity } from "../src/contracts/relay-routes.ts";
+import type {
+  RelayDeploymentDetail,
+  RelayDeploymentRow,
+  RelayIdentity,
+} from "../src/contracts/relay-routes.ts";
+import type { RelayEvent } from "../src/contracts/relay-events.ts";
+import { isFingerprint } from "../src/ed25519.ts";
 import type { RelayAlertFacts } from "../src/contracts/alerts.ts";
 import type { Allowlist } from "./allowlist.ts";
+import type { RelayEvents } from "./events.ts";
+import type { Reports } from "./reports.ts";
 import type { Link, PairingTokens } from "./links.ts";
 import { newAuthParams, type IdentityProvider } from "./oidc.ts";
 import {
@@ -50,6 +67,10 @@ export type RelayHandlerOptions = {
     rows: (now?: Date) => RelayDeploymentRow[];
     forget: (fingerprint: string) => Link | null;
   };
+  /** The reports on the volume — the per-deployment read's other half (#542). */
+  reports: Reports;
+  /** The stream every page watches. */
+  events: RelayEvents;
   /**
    * Alerting, as the connection panel reads it and as the test button drives it
    * (#515 §13). Always present: a relay with no webhook still evaluates edges,
@@ -65,6 +86,11 @@ export type RelayHandlerOptions = {
   publicOrigin: string;
   /** Injected so tests do not race a clock. */
   clock?: () => Date;
+  /**
+   * How often an idle event stream writes a comment to prove it is alive.
+   * A parameter only so a test need not wait twenty seconds for one.
+   */
+  keepAliveMs?: number;
   /** Where the relay's own complaints go. Defaults to stderr. */
   warn?: (message: string) => void;
 };
@@ -110,6 +136,13 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
     }
     if (method === "POST" && url.pathname === RELAY_ROUTES.forget) {
       return await forgetDeployment(request, response);
+    }
+    if (method === "GET" && url.pathname === RELAY_ROUTES.events) {
+      return streamEvents(request, response);
+    }
+    const fingerprint = deploymentIn(url.pathname);
+    if (method === "GET" && fingerprint !== null) {
+      return showDeployment(request, response, fingerprint);
     }
     json(response, 404, { error: "no-such-route" });
   };
@@ -280,6 +313,95 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
   }
 
   /**
+   * One deployment: the row the fleet read would have shown, and the last
+   * report it pushed (#542). Two sources side by side, never merged — the
+   * relay's connection facts are the relay's, and the report is the
+   * deployment's own derivation, carried through unread.
+   *
+   * A deployment with no report yet is a 200 with `report: null`, not a 404.
+   * The link exists, the console has a row to draw, and "paired but has not
+   * reported" is a state an operator needs to see rather than a missing page.
+   */
+  function showDeployment(
+    request: IncomingMessage,
+    response: ServerResponse,
+    fingerprint: string,
+  ): void {
+    const session = options.sessions.get(parseCookies(request.headers.cookie).get(SESSION_COOKIE));
+    if (session === null) {
+      json(response, 401, { error: "not-signed-in" });
+      return;
+    }
+    const row = options
+      .fleet()
+      .rows(clock())
+      .find((candidate) => candidate.fingerprint === fingerprint);
+    if (row === undefined) {
+      json(response, 404, { error: "no-such-deployment" });
+      return;
+    }
+    const detail: RelayDeploymentDetail = {
+      deployment: row,
+      report: options.reports.find(fingerprint),
+    };
+    json(response, 200, detail);
+  }
+
+  /**
+   * The event stream (#506 §10). One connection per open console, held until the
+   * browser goes away, carrying reports and connection changes as they happen.
+   *
+   * Three things make it survive the trip. The stream starts with a comment, so
+   * a proxy sees bytes immediately rather than buffering a response it thinks
+   * has not started. A comment goes out on the heartbeat's cadence for the same
+   * reason, and it is what keeps an idle stream from being reaped as dead. And
+   * `X-Accel-Buffering: no` tells the buffering proxies that read it not to,
+   * because a buffered event stream is a stream that arrives all at once,
+   * minutes late, which is worse than no stream.
+   */
+  function streamEvents(request: IncomingMessage, response: ServerResponse): void {
+    const session = options.sessions.get(parseCookies(request.headers.cookie).get(SESSION_COOKIE));
+    if (session === null) {
+      json(response, 401, { error: "not-signed-in" });
+      return;
+    }
+    response.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-store",
+      connection: "keep-alive",
+      "x-accel-buffering": "no",
+    });
+    response.write(": watching\n\n");
+
+    const unsubscribe = options.events.subscribe((event: RelayEvent) => {
+      // A throw here is how the hub learns this browser is gone: it drops the
+      // listener rather than carrying a dead response into the next event.
+      response.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+    });
+    let beat: ReturnType<typeof setInterval> | null = null;
+    const close = (): void => {
+      if (beat !== null) clearInterval(beat);
+      beat = null;
+      unsubscribe();
+    };
+    beat = setInterval(() => {
+      // A session that expired or was signed out mid-stream does not get to
+      // keep reading the fleet. The stream ends, and the browser's reconnect
+      // lands on the 401 its next request would have got anyway.
+      if (options.sessions.get(parseCookies(request.headers.cookie).get(SESSION_COOKIE)) === null) {
+        close();
+        response.end();
+        return;
+      }
+      response.write(": beat\n\n");
+    }, options.keepAliveMs ?? RELAY_HEARTBEAT_MS);
+    beat.unref?.();
+
+    request.on("close", close);
+    response.on("close", close);
+  }
+
+  /**
    * **Forget** one deployment (#505 §4). The link goes, the live connection is
    * closed with `unlinked`, and the deployment stops dialling — three effects
    * of one deletion, because the link is the only thing that admitted it.
@@ -311,6 +433,29 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
     warn(`[phoebe:relay] ${session.email} forgot ${link.name} (${link.fingerprint})`);
     json(response, 200, { forgotten: { fingerprint: link.fingerprint, name: link.name } });
   }
+}
+
+/**
+ * The fingerprint in `/api/deployments/<fingerprint>`, or null when the path is
+ * not that (#542).
+ *
+ * The check is the fingerprint's own shape — 32 characters of base64url, what
+ * `fingerprintOf` produces — and it is a security boundary, not a nicety: the
+ * relay names a file after this string, so a path segment that is not exactly a
+ * fingerprint must never reach the volume. It also keeps `/api/deployments/forget`
+ * from ever reading as a deployment named "forget".
+ */
+export function deploymentIn(pathname: string): string | null {
+  const prefix = `${RELAY_ROUTES.deployments}/`;
+  if (!pathname.startsWith(prefix)) return null;
+  let fingerprint: string;
+  try {
+    fingerprint = decodeURIComponent(pathname.slice(prefix.length));
+  } catch {
+    // A percent sign followed by nothing is not a fingerprint either.
+    return null;
+  }
+  return isFingerprint(fingerprint) ? fingerprint : null;
 }
 
 /**

@@ -66,6 +66,18 @@ export const RELAY_ROUTES = {
   deployments: "/api/deployments",
   forget: "/api/deployments/forget",
   testAlert: "/api/alerts/test",
+  events: "/api/events",
+};
+
+/**
+ * The event-stream names (#542). Mirror of `RELAY_EVENTS` in relay-events.ts;
+ * the doc comments live there.
+ */
+export const RELAY_EVENTS = {
+  report: "report",
+  connected: "connected",
+  disconnected: "disconnected",
+  dark: "dark",
 };
 
 /** The `schema` integer every alert body carries (#515 §9) — see alerts.ts. */

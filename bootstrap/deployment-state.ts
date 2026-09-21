@@ -158,6 +158,13 @@ export type DeploymentStateDeps = {
   healthyRunMs?: number;
   /** The report could not be written. One log line; never a throw. */
   onWriteError?: (error: unknown) => void;
+  /**
+   * The report moved and was written (#542). The relay link's cue to push it;
+   * the link reads the report itself through {@link DeploymentState.latest}, so
+   * this is a signal rather than a delivery. Never called when nothing changed,
+   * which is what makes the push "on change" rather than "on a timer".
+   */
+  onReport?: () => void;
 };
 
 /** What the bootstrapper tells the model. Every method is safe to call at any time. */
@@ -206,6 +213,12 @@ export type DeploymentState = {
   noteHolds: (held: readonly HeldTenant[]) => void;
   /** Rebuild the report and write it if anything moved. */
   publish: () => void;
+  /**
+   * The report as it was last written, or null before the first one. What the
+   * relay link sends, and the only copy: a reader that held its own would be
+   * holding a second answer to a question with one (#542).
+   */
+  latest: () => DeploymentReport | null;
 };
 
 type ChildRecord = {
@@ -511,7 +524,11 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
       last = next;
     } catch (error) {
       deps.onWriteError?.(error);
+      return;
     }
+    // Outside the try: a relay that throws on the way to a socket is not a
+    // failure to write the report, and must not be reported as one.
+    deps.onReport?.();
   };
 
   return {
@@ -629,5 +646,7 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
     },
 
     publish,
+
+    latest: () => last,
   };
 }

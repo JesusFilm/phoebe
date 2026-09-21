@@ -2,11 +2,14 @@
 
 `phoebe relay serve` runs the relay: one process, shipped in `phoebe-agent`,
 that an operator signs into with Google and that deployments dial over a
-WebSocket. A web console reads from it; that part is still being built. What
-works today is the door and the fleet's side of it — you sign in, you mint a
-pairing token, a deployment spends it, and the relay lists that deployment as
-connected, disconnected for so many seconds, dark, or unseen. You can forget a
-deployment from the relay and a deployment can leave from its own side. It also
+WebSocket. A web console reads from it; the pages are still being built, but
+everything they read exists. You sign in, you mint a pairing token, a deployment
+spends it and then holds its connection open, pushing its whole **deployment
+report** whenever anything in it moves. The relay keeps the latest report per
+deployment, lists the fleet as connected, disconnected for so many seconds, dark
+or unseen, answers one deployment with both halves of that picture, and streams
+the changes as they happen. You can forget a deployment from the relay and a
+deployment can leave from its own side. It also
 alerts: when a deployment crosses into or out of a named condition, the relay
 sends one message about it.
 
@@ -185,23 +188,27 @@ way out of a lockout.
 Paths live in `phoebe-agent/contracts` as `RELAY_ROUTES`, so the console imports
 them instead of copying strings.
 
-| Method | Path                      | What happens                                              |
-| ------ | ------------------------- | --------------------------------------------------------- |
-| `GET`  | `/auth/google/start`      | Redirects to Google.                                      |
-| `GET`  | `/auth/google/callback`   | Google's redirect back. The only URI Google knows.        |
-| `POST` | `/auth/sign-out`          | Drops the session. 204.                                   |
-| `GET`  | `/api/me`                 | `{ sub, email }` for a signed-in caller, 401 otherwise.   |
-| `POST` | `/api/pairing-tokens`     | Mints one pairing token. Shown once; 401 otherwise.       |
-| `GET`  | `/api/deployments`        | Every link, plus what the relay last alerted about each.  |
-| `POST` | `/api/deployments/forget` | Forgets one deployment, named by fingerprint in the body. |
-| `POST` | `/api/alerts/test`        | Sends one `{ kind: "test" }` body to every alert sink.    |
+| Method | Path                             | What happens                                              |
+| ------ | -------------------------------- | --------------------------------------------------------- |
+| `GET`  | `/auth/google/start`             | Redirects to Google.                                      |
+| `GET`  | `/auth/google/callback`          | Google's redirect back. The only URI Google knows.        |
+| `POST` | `/auth/sign-out`                 | Drops the session. 204.                                   |
+| `GET`  | `/api/me`                        | `{ sub, email }` for a signed-in caller, 401 otherwise.   |
+| `POST` | `/api/pairing-tokens`            | Mints one pairing token. Shown once; 401 otherwise.       |
+| `GET`  | `/api/deployments`               | Every link, where the relay holds it, and its last alert. |
+| `GET`  | `/api/deployments/<fingerprint>` | One link's row, plus the last report it pushed.           |
+| `POST` | `/api/deployments/forget`        | Forgets one deployment, named by fingerprint in the body. |
+| `GET`  | `/api/events`                    | The event stream: reports and connection changes.         |
+| `POST` | `/api/alerts/test`               | Sends one `{ kind: "test" }` body to every alert sink.    |
 
 A successful sign-in lands on `/api/me` today, because who you are is the only
 thing the relay can show you yet. The console's own page takes that over.
 
 The fingerprint rides in the forget body rather than in the path so the route
 stays one constant a console imports. No fingerprint spells `forget`, and the
-per-deployment read that will share the prefix is a `GET`.
+per-deployment read that shares the prefix is a `GET`. That read only matches a
+real fingerprint — 32 characters of base64url — so a path segment that is not one
+is a `no-such-route` and never reaches the volume the reports are named on.
 
 ## Pairing a deployment
 
@@ -370,6 +377,73 @@ deployment with no relay still carries the section, saying `configured: false`.
 `paired`, `token-stale`, or `refused`. Only `refused` fails, because only a
 refusal is a state that will not change on its own.
 
+## Reports
+
+A connected deployment pushes its whole **deployment report** — the same
+`state/deployment.json` `phoebe status` reads — and pushes it again whenever any
+section of it moves. On connect it goes up entire, before anything asks for it.
+There are no deltas: the report is a few kilobytes of current facts and a diff
+would be a second model to keep in step with the first.
+
+Nothing is pushed on a timer. A fleet sitting still writes no report, so it sends
+none, and the liveness between reports is the pong to the relay's twenty-second
+ping. Silence from a working deployment is a deployment with nothing to say.
+
+The relay writes each report to `reports/<fingerprint>.json` on its volume,
+through a temp file and a rename, and keeps the latest only. That file is why a
+restarted relay shows last-known and **dark** rather than **unseen**: the link
+and the report both survive the process that took them, and only the live
+connection facts start again.
+
+**The relay does not read the report.** It lifts the `schema` integer out of the
+envelope so a console can branch on it, stores the body as it arrived, and hands
+it back the same way. Deriving a pipeline's state is the deployment's job, done
+once, in `src/pipeline-listing.ts` — so a console and a `phoebe status` cannot
+disagree about what a pipeline is doing. A test reads the relay's own source and
+fails if anything in it so much as names the deployment's model.
+
+A push while the socket is down is dropped, not queued. The next connection opens
+with the whole report anyway, and a queue would only deliver an older version of
+the same truth.
+
+## What a console reads
+
+`GET /api/deployments` is the fleet: one row per link, each with where the relay
+holds it. `GET /api/deployments/<fingerprint>` is one deployment, and it answers
+two things side by side that are never merged:
+
+- `deployment` — the relay's own facts. Connected since, disconnected for so many
+  seconds, dark, unseen; how the last connection ended; whether a newer link has
+  taken this one's name.
+- `report` — what the deployment last said about itself, with the `schema` it
+  carried and when the relay took delivery. Null for a link that has never
+  reported.
+
+Both are behind the session cookie and answer 401 without it.
+
+### The event stream
+
+`GET /api/events` is one server-sent-events stream, so pages update without
+polling. Four event names, each with the payload a reader would otherwise have
+fetched:
+
+| Event          | Payload                                         |
+| -------------- | ----------------------------------------------- |
+| `report`       | `{ at, fingerprint, schema, report }`           |
+| `connected`    | `{ at, deployment }` — the row, as it now reads |
+| `disconnected` | `{ at, deployment }`                            |
+| `dark`         | `{ at, deployment }`                            |
+
+A connection event's name is the word the row now carries, and each is said once
+per change rather than once per check. `unseen` is never an event: it is where
+every link starts, so nothing ever becomes it.
+
+There is no replay and no resume cursor. Every event has a read behind it that
+answers the same question in full, so a page that missed one refetches
+`/api/deployments` and is whole again. An idle stream writes a comment on the
+heartbeat's cadence, which is what keeps a proxy from reaping it, and a session
+that ends mid-stream ends the stream with it.
+
 ## Alerting
 
 The console is not the pager. An operator who is not looking at a tab cannot
@@ -469,10 +543,10 @@ URIs, which is what makes it work at all. Anywhere else, run the scaffold.
 
 ## Not here yet
 
-Reports pushed over the socket and stored on the volume, the events stream, the
-verbs themselves (config writes, sealed secrets, doctor runs — the rail carries
-them and nothing sends them yet), and the console's pages. All of it joins this
-same process. See
+The verbs themselves — config writes, sealed secrets, doctor runs. The rail
+carries them, the relay will deliver them and wait for a receipt, and nothing
+sends one yet. The console's pages are the other half. Both join this same
+process. See
 [the relay's shape](https://github.com/JesusFilm/phoebe/issues/506).
 
 Alerting is here but only partly fed. The webhook, the edge rule, `alerts.json`
