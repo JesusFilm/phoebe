@@ -1,24 +1,29 @@
 // The relay's HTTP surface: the sign-in flow, the reads and verbs behind it, and
-// the console's own build (#538, #540, #541, #542, #543).
+// the console's own build (#538, #540, #541, #542, #543, #551).
 //
 // What a signed-in person can ask for is who they are, a pairing token for a new
 // deployment, the fleet as the socket endpoint knows it, one deployment with the
 // last report it pushed, the stream those reports arrive on, the forgetting of
-// one deployment, and one field of one deployment's config set. The console's
-// pages sit on exactly these answers, and the relay hands the pages out too —
-// the bundle is in the same package (console-assets.ts).
+// one deployment, one field of one deployment's config set, and a doctor run on
+// one of them or on all of them. The
+// console's pages sit on exactly these answers, and the relay hands the pages out
+// too — the bundle is in the same package (console-assets.ts).
 //
-// **A verb that travels to a deployment is a courier's job** (#503, #547). The
-// relay stamps the signed-in address onto the edit — that is the one field it
-// authors, and it authors it because a browser must not be able to name someone
-// else as the editor — sends the patch down the rail, and hands the receipt back
-// exactly as it came. It does not read the receipt, judge it, or translate its
-// word, so a deployment newer than its relay is quoted rather than summarized.
+// **Two verbs so far, and both are a courier's** (#546, #547). The relay sends
+// `doctor-run` down a socket and repeats the receipt that comes back; it answers
+// no check itself, because every check reads files, env, a clone or credentials
+// that only the deployment has (#507 §8).
+// `config-set` is carried the same way: the relay checks the body's shape, stamps
+// the signed-in address on it — a browser must not be able to name someone else
+// as the editor — and hands the receipt back exactly as it came.
 //
 // **The API is matched first, and a path under it never falls through to a page.**
 // Every route below is tried before the console sees the request, and the console
 // only ever answers with a file it has. So `/api/anything-else` is still the JSON
 // 404 it always was, which is what a browser fetching JSON can branch on.
+//
+// The fleet read also carries what the relay last alerted about each link, and
+// one verb sends a test alert (#551).
 //
 // **Two reads and one stream, and the stream is not a third read.** Every event
 // on `/api/events` has a `GET` behind it that answers the same question in full,
@@ -32,23 +37,26 @@
 // a 200.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { randomUUID } from "node:crypto";
 import {
-  RELAY_MESSAGES,
   RELAY_HEARTBEAT_MS,
+  RELAY_MESSAGES,
   RELAY_UNDELIVERED,
-  type RelayReceipt,
-  type RelayRequest,
 } from "../src/contracts/relay-protocol.ts";
+import type { RelayReceipt, RelayRequest } from "../src/contracts/relay-protocol.ts";
 import { RELAY_ROUTES } from "../src/contracts/relay-routes.ts";
 import type {
   RelayConfigSetAnswer,
   RelayConfigSetRequest,
   RelayDeploymentDetail,
   RelayDeploymentRow,
+  RelayDoctorRunAnswer,
+  RelayDoctorRunResult,
   RelayIdentity,
 } from "../src/contracts/relay-routes.ts";
 import type { RelayEvent } from "../src/contracts/relay-events.ts";
 import { isFingerprint } from "../src/ed25519.ts";
+import type { RelayAlertFacts } from "../src/contracts/alerts.ts";
 import type { Allowlist } from "./allowlist.ts";
 import type { ConsoleAssets } from "./console-assets.ts";
 import type { RelayEvents } from "./events.ts";
@@ -84,7 +92,11 @@ export type RelayHandlerOptions = {
   fleet: () => {
     rows: (now?: Date) => RelayDeploymentRow[];
     forget: (fingerprint: string) => Link | null;
-    /** Carry one `id`-bearing request to a deployment and wait for its receipt. */
+    /**
+     * Send one `id`-bearing request down a deployment's socket and wait for its
+     * receipt. Answers `undelivered` for a deployment the relay is not holding,
+     * which is how a dark one is refused without a timer (#506 §8).
+     */
     request: (fingerprint: string, message: RelayRequest) => Promise<RelayReceipt>;
   };
   /** The reports on the volume — the per-deployment read's other half (#542). */
@@ -93,6 +105,15 @@ export type RelayHandlerOptions = {
   events: RelayEvents;
   /** The console's build, or an assets handler pointed at a test's directory. */
   console: ConsoleAssets;
+  /**
+   * Alerting, as the connection panel reads it and as the test button drives it
+   * (#515 §13). Always present: a relay with no webhook still evaluates edges,
+   * so "is one configured" is a fact to state and not a reason to omit a route.
+   */
+  alerts: {
+    facts: () => RelayAlertFacts;
+    test: (by: string) => Promise<{ sinks: number }>;
+  };
   sessions: SessionStore;
   identity: IdentityProvider;
   /** The origin requests arrive on, used only to parse a request's own URL. */
@@ -144,11 +165,17 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
     if (method === "GET" && url.pathname === RELAY_ROUTES.deployments) {
       return listDeployments(request, response);
     }
+    if (method === "POST" && url.pathname === RELAY_ROUTES.testAlert) {
+      return await sendTestAlert(request, response);
+    }
     if (method === "POST" && url.pathname === RELAY_ROUTES.forget) {
       return await forgetDeployment(request, response);
     }
     if (method === "POST" && url.pathname === RELAY_ROUTES.configSet) {
       return await setConfigField(request, response);
+    }
+    if (method === "POST" && url.pathname === RELAY_ROUTES.doctorRun) {
+      return await askForDoctor(request, response);
     }
     if (method === "GET" && url.pathname === RELAY_ROUTES.events) {
       return streamEvents(request, response);
@@ -310,7 +337,28 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
       json(response, 401, { error: "not-signed-in" });
       return;
     }
-    json(response, 200, { deployments: options.fleet().rows(clock()) });
+    json(response, 200, {
+      deployments: options.fleet().rows(clock()),
+      alerts: options.alerts.facts(),
+    });
+  }
+
+  /**
+   * **Send test alert** (#515 §13): a `{ kind: "test" }` body to every sink, so
+   * an operator can tell a working webhook from a healthy fleet. Fleet-wide and
+   * bodiless — the question is about the channel, not about a deployment — and
+   * it answers with how many sinks took it, which is the only honest report
+   * available when delivery is one attempt with no retry.
+   */
+  async function sendTestAlert(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const session = options.sessions.get(parseCookies(request.headers.cookie).get(SESSION_COOKIE));
+    if (session === null) {
+      json(response, 401, { error: "not-signed-in" });
+      return;
+    }
+    const sent = await options.alerts.test(session.email);
+    warn(`[phoebe:relay] ${session.email} sent a test alert to ${sent.sinks} sink(s)`);
+    json(response, 202, sent);
   }
 
   /**
@@ -490,6 +538,73 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
       receipt.outcome === RELAY_UNDELIVERED
         ? { outcome: RELAY_UNDELIVERED }
         : { outcome: receipt.outcome, receipt: receipt.detail };
+    json(response, 200, answer);
+  }
+
+  /**
+   * **Run doctor** (#546, decided in #507 §10). A body naming a fingerprint asks
+   * that deployment; a body naming none asks every deployment this relay knows.
+   * One button either way, one `doctor-run` per deployment, and one result per
+   * deployment in the answer — so the fleet-wide press reports itself per
+   * deployment rather than as a single word for the whole fleet.
+   *
+   * **The relay runs no check.** It carries the ask and repeats what came back.
+   * Every check reads the deployment's own files, env, clone or credentials, so
+   * there is nothing here the relay could answer even if it wanted to (#507 §8).
+   *
+   * The asks go out together rather than one after another: fifty deployments
+   * answering in series would make the last operator's wait the sum of forty-nine
+   * round trips. Nothing is refused for being slow — a deployment writes its
+   * receipt the moment the ask lands, and one that has stopped answering
+   * altogether is terminated by its own heartbeat inside the dark window, which
+   * settles the request `undelivered`.
+   */
+  async function askForDoctor(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const session = options.sessions.get(parseCookies(request.headers.cookie).get(SESSION_COOKIE));
+    if (session === null) {
+      json(response, 401, { error: "not-signed-in" });
+      return;
+    }
+    const asked = (await readJsonBody(request)) as { fingerprint?: unknown };
+    if (asked.fingerprint !== undefined && typeof asked.fingerprint !== "string") {
+      json(response, 400, { error: "no-fingerprint" });
+      return;
+    }
+    const fleet = options.fleet();
+    const rows = fleet.rows(clock());
+    const targets =
+      asked.fingerprint === undefined
+        ? rows
+        : rows.filter((row) => row.fingerprint === asked.fingerprint);
+    // A fleet-wide ask with nothing paired is an empty list; one deployment that
+    // is not there is a 404, the same as every other read of a named deployment.
+    if (asked.fingerprint !== undefined && targets.length === 0) {
+      json(response, 404, { error: "no-such-deployment" });
+      return;
+    }
+    warn(
+      `[phoebe:relay] ${session.email} asked ${
+        asked.fingerprint === undefined ? `the fleet (${targets.length})` : asked.fingerprint
+      } to run doctor`,
+    );
+    const results = await Promise.all(
+      targets.map(async (row): Promise<RelayDoctorRunResult> => {
+        const message: RelayRequest = {
+          type: RELAY_MESSAGES.doctorRun,
+          id: randomUUID(),
+          by: session.email,
+        };
+        const receipt = await fleet.request(row.fingerprint, message);
+        return {
+          fingerprint: row.fingerprint,
+          name: row.name,
+          state: row.state,
+          outcome: receipt.outcome,
+          ...(receipt.detail !== undefined ? { detail: receipt.detail } : {}),
+        };
+      }),
+    );
+    const answer: RelayDoctorRunAnswer = { results };
     json(response, 200, answer);
   }
 }

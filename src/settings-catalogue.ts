@@ -281,12 +281,15 @@ export const DEPLOYMENT_FACTS: readonly { name: string; why: string }[] = [
   { name: "PHOEBE_GH_LOGIN", why: "The minted GitHub login of the running credential." },
   { name: "PHOEBE_AGENT_VERSION", why: "The container build arg pinning the bootstrapper." },
   {
-    name: "PHOEBE_RELAY_TOKEN",
-    why: "The one-time pairing token, spent on the first dial and removed; a credential, not a knob.",
+    name: "PHOEBE_DOCTOR_LEASES",
+    why: "The credential leases the bootstrapper hands a doctor child it spawned.",
   },
   {
-    name: "PHOEBE_DOCTOR_LEASES",
-    why: "Installation tokens the bootstrapper leases to one doctor run; minted per run, never configured.",
+    name: "PHOEBE_RELAY_TOKEN",
+    why:
+      "The one-time pairing token for a relay (#540). A credential, not a knob: it is " +
+      "spent on the first handshake and the identity that outlives it is the key on the " +
+      "data volume, so there is nothing here for `phoebe config` to set.",
   },
 ];
 

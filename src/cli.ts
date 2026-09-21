@@ -131,7 +131,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedArgs {
       const version = installedVersion();
       throw new Error(
         `Unknown command \`${arg}\` for \`phoebe\`${version === null ? "" : ` (phoebe-agent v${version})`}. ` +
-          `Known commands: boot, init, status, list, config, purge, upgrade, doctor, migrate, stop, start, pipelines, sweep-state. If \`${arg}\` was added in a newer ` +
+          `Known commands: boot, init, status, list, config, purge, upgrade, doctor, migrate, stop, start, relay, pipelines, sweep-state. If \`${arg}\` was added in a newer ` +
           `release, upgrade first: \`pnpm dlx phoebe-agent@latest upgrade\`. See \`phoebe --help\`.`,
       );
     }
@@ -268,6 +268,9 @@ Usage:
                                    What the deployment is doing, from its report
   phoebe list [--json] [--check]   Deprecated alias for status's fleet section
   phoebe config [--json]           Every setting, its value, and where it came from
+  phoebe secret set <KEY>          Store a tenant secret; value on stdin only
+  phoebe secret clear <KEY>        Drop it again, so the .env value governs
+  phoebe secret ls [--json]        Which secrets are set, and where from
   phoebe purge <owner/repo> --yes  Wipe a removed tenant's data (in-container)
   phoebe upgrade [ref] [--engine|--cli|--both]
                                    Advance the pinned engine ref and/or the npm CLI
@@ -281,6 +284,7 @@ Usage:
   phoebe stop [--now]              Drain and stop the deployment container (host-side)
   phoebe start [--build]           Bring the deployment container up detached (host-side)
   phoebe relay serve               Serve the relay: console + deployment socket
+  phoebe relay init [dir]          Scaffold the relay's container files (Caddy + TLS)
   phoebe [--config <path>] [flags] Run the engine
 
 Options (engine mode):
@@ -536,6 +540,17 @@ export async function runCli(): Promise<void> {
   if (args[0] === "config") {
     const { runConfigCli } = await import("./config-command.ts");
     return await runConfigCli(args.slice(1));
+  }
+  // The tenant secret store (#504): set, clear and list. Lazy for the same
+  // reason as its neighbours, and doubly so — a set pulls doctor in behind it.
+  if (args[0] === "secret") {
+    const { runSecretCli } = await import("./secret-command.ts");
+    const result = await runSecretCli(args.slice(1));
+    // A set whose doctor run found a failing check: the write landed and is
+    // reported as landing; the exit code is doctor's, so a script that rotates a
+    // key notices the deployment is unhappy about it.
+    if (result !== undefined && !result.doctorOk) process.exitCode = 1;
+    return;
   }
   // `purge` acts on the data volume in-container and loads no engine config (#95).
   if (args[0] === "purge") return await runPurgeCli(args.slice(1));

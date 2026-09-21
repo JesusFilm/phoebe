@@ -25,6 +25,7 @@ function fakeClient(
       return detail instanceof Error ? Promise.reject(detail) : Promise.resolve(detail);
     },
     setConfigField: () => Promise.resolve({ outcome: "written" }),
+    runDoctor: () => Promise.resolve([]),
     events: () => () => {},
   };
 }

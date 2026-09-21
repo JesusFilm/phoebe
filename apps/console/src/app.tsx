@@ -152,7 +152,7 @@ function Console({
             <p className="muted">The relay did not answer: {trouble}</p>
           </main>
         ) : loaded ? (
-          <Page route={route} facts={facts} now={now} client={client} />
+          <Page route={route} facts={facts} client={client} now={now} />
         ) : (
           <main className="main">
             <h1>Fleet</h1>
@@ -172,15 +172,16 @@ function Console({
 function Page({
   route,
   facts,
-  now,
   client,
+  now,
 }: {
   route: Route;
   facts: RowFacts[];
-  now: Date;
+  /** The pages that ask for something need the seam too, not only the shell. */
   client: RelayClient;
+  now: Date;
 }) {
-  if (route.page === "fleet") return <FleetPage facts={facts} now={now} />;
+  if (route.page === "fleet") return <FleetPage facts={facts} client={client} now={now} />;
   const found = facts.find((row) => row.row.fingerprint === route.fingerprint);
   if (found === undefined) return <NoSuchDeployment fingerprint={route.fingerprint} />;
   // The fingerprint the page was drawn with, not a fresh read of it: that is
@@ -192,6 +193,7 @@ function Page({
     <DeploymentPage
       facts={found}
       tab={route.tab}
+      client={client}
       now={now}
       onEdit={(edit) => sendConfigEdit(client, found.row.fingerprint, loaded, edit)}
     />

@@ -68,7 +68,7 @@ describe("applyEnvOverlay", () => {
       { PHOEBE_RELAY_URL: "wss://elsewhere.example.com/deployments", PHOEBE_RELAY: "on" },
     );
     expect(overlaid.relay).toEqual({ url: "wss://relay.example.com/deployments" });
-    expect(SETTINGS.some((entry) => entry.path.startsWith("relay"))).toBe(false);
+    expect(SETTINGS.some((setting) => setting.path.startsWith("relay"))).toBe(false);
   });
 
   test("PHOEBE_MERGED_LABEL overlays the landed-member label (#449)", () => {

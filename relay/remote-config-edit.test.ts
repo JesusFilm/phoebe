@@ -82,6 +82,7 @@ describe("a config edit from the console", () => {
         clientId: "client-id",
         clientSecret: "client-secret",
         allowedEmails: [],
+        alertWebhook: null,
       },
       dataDir,
       port: 0,
@@ -163,7 +164,7 @@ describe("a config edit from the console", () => {
       armOf: () => "pat",
       onReport: () => prepared.push(),
     });
-    prepared.start(state, { verbs: { configSet: (edit) => editor.apply(edit) } });
+    prepared.start(state, { configSet: (edit) => editor.apply(edit) });
     return state;
   }
 

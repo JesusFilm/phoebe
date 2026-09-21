@@ -11,7 +11,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { rowFacts, sortFleet } from "./facts.ts";
 import { FleetPage } from "./fleet-page.tsx";
 import { Rail } from "./rail.tsx";
-import { ago, cell, child, NOW, report, row, stored, tenant } from "./test-fixture.ts";
+import { ago, cell, child, client, NOW, report, row, stored, tenant } from "./test-fixture.ts";
 
 /** The four states, one deployment each, plus one that is wedged. */
 const FLEET = sortFleet([
@@ -78,7 +78,7 @@ const FLEET = sortFleet([
 ]);
 
 const rail = renderToStaticMarkup(<Rail facts={FLEET} selected={null} now={NOW} />);
-const grid = renderToStaticMarkup(<FleetPage facts={FLEET} now={NOW} />);
+const grid = renderToStaticMarkup(<FleetPage facts={FLEET} client={client()} now={NOW} />);
 
 describe("the rail", () => {
   test("lists every deployment in the sort order, dark first", () => {
@@ -139,6 +139,14 @@ describe("the rail", () => {
 });
 
 describe("the grid", () => {
+  test("carries one Run doctor for the whole fleet, never disabled (#546)", () => {
+    // The deployments the relay cannot reach are part of the answer — each one
+    // refused undelivered by name — so there is nothing here to grey out.
+    expect(grid).toContain('aria-label="Run doctor"');
+    expect(grid).toContain(">Run doctor on every deployment<");
+    expect(grid).not.toContain("disabled=");
+  });
+
   test("draws one segment per enumerated pipeline", () => {
     const segments = [...grid.matchAll(/class="segment /g)];
 
@@ -174,6 +182,7 @@ describe("the grid", () => {
             ),
           ),
         ]}
+        client={client()}
         now={NOW}
       />,
     );
@@ -248,6 +257,7 @@ describe("doctor at fleet level (#507 §9)", () => {
             stored(report({ doctor: { ...report().doctor, report: null, at: null } })),
           ),
         ]}
+        client={client()}
         now={NOW}
       />,
     );
@@ -260,6 +270,7 @@ describe("a report this console cannot read", () => {
     const markup = renderToStaticMarkup(
       <FleetPage
         facts={[rowFacts(row({ name: "ahead-of-us" }), stored(report(), { schema: 99 }))]}
+        client={client()}
         now={NOW}
       />,
     );

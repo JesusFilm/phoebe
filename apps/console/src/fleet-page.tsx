@@ -10,12 +10,28 @@
 // down (#501) — the console recomputes none of them.
 
 import { age, connectionReading, doctorLine, type PipelineFacts, type RowFacts } from "./facts.ts";
+import type { RelayClient } from "./relay-client.ts";
 import { deploymentHref } from "./route.ts";
+import { RunDoctor } from "./run-doctor.tsx";
 
-export function FleetPage({ facts, now }: { facts: RowFacts[]; now: Date }) {
+export function FleetPage({
+  facts,
+  client,
+  now,
+}: {
+  facts: RowFacts[];
+  client: RelayClient;
+  now: Date;
+}) {
   return (
     <main className="main">
       <h1>Fleet</h1>
+      {/*
+        One press, one `doctor-run` per deployment, one receipt each (#507 §10).
+        Never disabled: the deployments the relay cannot reach are part of the
+        answer, each refused undelivered by name.
+      */}
+      <RunDoctor client={client} target={{ kind: "fleet", deployments: facts.length }} now={now} />
       <p className="legend">
         One segment per pipeline: green working, blue waiting for slot, grey idle, outlined no
         status, red wedged, amber crash-looping. A faded segment is a disabled pipeline.

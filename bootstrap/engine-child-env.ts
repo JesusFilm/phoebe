@@ -120,9 +120,25 @@ export function parseDotenv(contents: string): Record<string, string> {
  * subtractive scrub removes for that pipeline and the digest stops moving for
  * rotations that pipeline cannot see. Empty — the tenant-wide reading — is every
  * key, which is what the tenant fingerprint wants.
+ *
+ * `store` is the tenant secret store (#504), folded in over the file exactly as
+ * {@link buildEngineChildEnv} overlays it. That is what gives a console-set
+ * provider key the relaunch it needs: the store has no live channel either, so
+ * setting one has to move this digest. `GH_TOKEN` keeps its one exemption on
+ * both tiers, so a rotation through the store is delivered by the lease and
+ * costs no drain, while setting or clearing it still relaunches.
  */
-export function envReconcileDigest(contents: string, hidden: readonly string[] = []): string {
+export function envReconcileDigest(
+  contents: string,
+  hidden: readonly string[] = [],
+  store: Readonly<Record<string, string>> = {},
+): string {
   const parsed = parseDotenv(contents);
+  // The secret store is the top tier: a key it sets is the value the child will
+  // hold whatever the file says, so it is that value the digest has to track.
+  for (const [key, value] of Object.entries(store)) {
+    if (value !== "") parsed[key] = value;
+  }
   const hasToken = isSet(parsed["GH_TOKEN"]);
   delete parsed["GH_TOKEN"];
   // The per-pipeline reading (#425): a pipeline's child env never holds a key a sibling
@@ -170,8 +186,9 @@ export const MINTED_ENV_ALLOWED_KEYS: ReadonlySet<keyof MintedCredentials> = new
  *   1. allowlisted base + deployment knobs  (PATH, HOME, PHOEBE_*, …)
  *   2. mintedEnv  (GH_TOKEN, PHOEBE_GH_LOGIN, git identity from App minting)
  *   3. configIdentity  (the tenant config's `gitIdentity`, #199)
- *   4. tenantEnv  (tenant's parsed .env — always wins every collision)
- *   5. scrubKeys  (subtracted: keys a sibling pipeline declared and this one did not)
+ *   4. tenantEnv  (tenant's parsed .env)
+ *   5. secretStore  (the tenant secret store — the top tier, #504)
+ *   6. scrubKeys  (subtracted: keys a sibling pipeline declared and this one did not)
  */
 export function buildEngineChildEnv(opts: {
   base: Record<string, string | undefined>;
@@ -198,8 +215,18 @@ export function buildEngineChildEnv(opts: {
    * pipelines could declare anything.
    */
   scrubKeys?: readonly string[];
+  /**
+   * The tenant secret store (#504) — console-set values from
+   * `<data>/<slug>/state/secrets.json`, overlaid last because the store is the
+   * tier above the `.env`. It is the only way to set a tenant secret in solo,
+   * where there is no tenant `.env` inside the container at all, and the only
+   * one in workspace mode that does not need a container recreate. The scrub
+   * still runs after it: a key a sibling pipeline declared is not this
+   * pipeline's however it arrived.
+   */
+  secretStore?: Readonly<Record<string, string>>;
 }): Record<string, string> {
-  const { base, tenantEnv, mintedEnv, configIdentity, scrubKeys = [] } = opts;
+  const { base, tenantEnv, mintedEnv, configIdentity, scrubKeys = [], secretStore = {} } = opts;
   const env: Record<string, string> = {};
   for (const key of [...ENGINE_CHILD_BASE_KEYS, ...ENGINE_CHILD_DEPLOYMENT_KNOBS]) {
     const value = base[key];
@@ -222,8 +249,15 @@ export function buildEngineChildEnv(opts: {
   for (const [key, value] of Object.entries(gitIdentityEnv(configIdentity))) {
     if (value !== "") env[key] = value;
   }
-  // Tenant secrets last: they are the tenant's own, and win over any collision.
+  // Tenant secrets: the tenant's own, over everything the deployment said.
   for (const [key, value] of Object.entries(tenantEnv)) {
+    if (value !== "") env[key] = value;
+  }
+  // The secret store over the file — the top tier, and never silently: every
+  // collision here is what the effective config flags `shadowed` and doctor
+  // warns about, so an operator whose `.env` edit stopped taking effect is told
+  // where the winning value came from.
+  for (const [key, value] of Object.entries(secretStore)) {
     if (value !== "") env[key] = value;
   }
   // Then the pipeline scrub, which is a subtraction and therefore has to come after

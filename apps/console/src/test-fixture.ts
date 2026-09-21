@@ -18,6 +18,7 @@ import type {
   TenantEffectiveConfig,
   TenantFacts,
 } from "phoebe-agent/contracts";
+import type { RelayClient } from "./relay-client.ts";
 
 export const NOW = new Date("2026-09-18T12:00:00.000Z");
 
@@ -252,6 +253,24 @@ export function stored(
     schema: DEPLOYMENT_SCHEMA,
     receivedAt: ago(12),
     report: body,
+    ...overrides,
+  };
+}
+
+/**
+ * A relay client that answers nothing. Every page now takes the seam, and a
+ * render test that only wants markup should not have to invent five methods to
+ * get it — `overrides` is where a test that does care puts the one it reads.
+ */
+export function client(overrides: Partial<RelayClient> = {}): RelayClient {
+  return {
+    me: () => Promise.resolve({ sub: "s", email: "ada@example.test" }),
+    signOut: () => Promise.resolve(),
+    deployments: () => Promise.resolve([]),
+    deployment: () => Promise.reject(new Error("no such deployment")),
+    runDoctor: () => Promise.resolve([]),
+    setConfigField: () => Promise.resolve({ outcome: "written" }),
+    events: () => () => {},
     ...overrides,
   };
 }
