@@ -19,7 +19,14 @@
 // are neither, and until now every `.env` value reached both — which is the
 // pre-existing leak into the target repo's install hooks this closes.
 
-const ENGINE_CREDENTIAL_KEYS = ["GH_TOKEN", "GH_APP_ID", "GH_APP_PRIVATE_KEY"] as const;
+/**
+ * The credentials the engine holds for itself: the token it works GitHub with
+ * and the App key it mints that token from. Stripped from the toolchain env
+ * below, and — the other reader — reported for presence by the effective config
+ * (#531), which is the same list seen from the other side: what a working
+ * deployment must have, rather than what a consumer's install script must not.
+ */
+export const ENGINE_CREDENTIAL_KEYS = ["GH_TOKEN", "GH_APP_ID", "GH_APP_PRIVATE_KEY"] as const;
 
 /**
  * The parent env plus a default answer for Corepack's download confirmation.

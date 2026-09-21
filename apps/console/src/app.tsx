@@ -1,5 +1,5 @@
-// The console's shell: the session gate, the fleet it holds, and the rail and
-// grid it hands them to.
+// The console's shell: the session gate, the fleet it holds, the rail and grid it
+// hands them to, and the hash the pages are chosen by.
 //
 // Everything it needs from the relay arrives through the one client seam, so this
 // component is the same component in the companion's renderer with a different
@@ -19,12 +19,17 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import { RELAY_ROUTES } from "phoebe-agent/contracts";
 import type { DesktopBridge, LocalInstall, RelayIdentity } from "phoebe-agent/contracts";
 import type { Surface } from "./companion.ts";
-import { rowFacts, sortFleet } from "./facts.ts";
+import { readEditAnswer, type EditAnswer } from "./config-edit.ts";
+import { DeploymentPage, NoSuchDeployment } from "./deployment-page.tsx";
+import { rowFacts, sortFleet, type RowFacts } from "./facts.ts";
 import { applyEvent, EMPTY_FLEET, loadFleet, type FleetState } from "./fleet-state.ts";
 import { FleetPage } from "./fleet-page.tsx";
 import { InstallPage } from "./install-page.tsx";
+import { PeoplePage } from "./people-page.tsx";
 import { Rail } from "./rail.tsx";
-import { isNotSignedIn, type RelayClient } from "./relay-client.ts";
+import { isNotSignedIn, type RelayClient, type RelaySignIn } from "./relay-client.ts";
+import { configOf } from "./report.ts";
+import { FLEET_HREF, FLEET_ROUTE, PEOPLE_HREF, parseRoute, type Route } from "./route.ts";
 
 type Session =
   | { kind: "asking" }
@@ -43,6 +48,7 @@ export function App({
   bridge?: DesktopBridge | null;
 }) {
   const [session, setSession] = useState<Session>({ kind: "asking" });
+  const [signIn, setSignIn] = useState<RelaySignIn | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -60,14 +66,40 @@ export function App({
     };
   }, [client]);
 
+  // The session can end without the page asking for anything: in the companion
+  // main drops the device token when the relay answers 401 on the event stream,
+  // and the rail has to stop claiming a session that is gone (#554). In a
+  // browser this never fires, and that is the browser arm's own answer.
+  useEffect(() => client.watchSession(setIdentity), [client]);
+
+  // How this arm signs in, read only while there is nobody signed in. The
+  // companion's answer carries the relay it remembers and whether a token
+  // would survive a relaunch, so it is read again each time rather than once.
+  useEffect(() => {
+    if (session.kind !== "signed-out") return;
+    let live = true;
+    client.signIn().then((how) => {
+      if (live) setSignIn(how);
+    }, ignore);
+    return () => {
+      live = false;
+    };
+  }, [client, session.kind]);
+
+  function setIdentity(identity: RelayIdentity | null): void {
+    setSession(identity === null ? { kind: "signed-out" } : { kind: "signed-in", identity });
+  }
+
   if (session.kind === "asking") return <Notice title="Phoebe console">Signing in…</Notice>;
   if (session.kind === "signed-out" && surface === "browser") {
     return (
       <Notice title="Phoebe console">
         <p>This relay is behind Google sign-in.</p>
-        <p>
-          <a href={RELAY_ROUTES.signIn}>Sign in with Google</a>
-        </p>
+        {signIn !== null && signIn.kind === "navigate" ? (
+          <p>
+            <a href={signIn.href}>Sign in with Google</a>
+          </p>
+        ) : null}
       </Notice>
     );
   }
@@ -86,6 +118,8 @@ export function App({
       surface={surface}
       bridge={bridge}
       identity={session.kind === "signed-in" ? session.identity : null}
+      signIn={signIn}
+      onSignedIn={setIdentity}
       onSignedOut={() => setSession({ kind: "signed-out" })}
     />
   );
@@ -96,20 +130,32 @@ function Console({
   surface,
   bridge,
   identity,
+  signIn,
+  onSignedIn,
   onSignedOut,
 }: {
   client: RelayClient;
   surface: Surface;
   bridge: DesktopBridge | null;
   identity: RelayIdentity | null;
+  signIn: RelaySignIn | null;
+  onSignedIn: (identity: RelayIdentity) => void;
   onSignedOut: () => void;
 }) {
+  const route = useRoute();
   const [fleet, setFleet] = useState<FleetState>(EMPTY_FLEET);
   const [loaded, setLoaded] = useState(false);
   const [trouble, setTrouble] = useState<string | null>(null);
   const [installs, setInstalls] = useState<LocalInstall[]>([]);
   const [openInstall, setOpenInstall] = useState<string | null>(null);
   const now = useNow(1000);
+
+  // The two arms share one page area, and an open install wins it. A rail link
+  // into the relay arm moves the hash, so following one closes the install —
+  // otherwise the address would change and the page would not.
+  useEffect(() => {
+    setOpenInstall(null);
+  }, [route]);
 
   // The local arm. One read, then main's `installs:changed` does the updating —
   // the same shape as the relay's stream, for the same reason: the page holds
@@ -196,6 +242,14 @@ function Console({
     <>
       <header className="topbar">
         <span className="brand">{surface === "companion" ? "Phoebe" : "Phoebe console"}</span>
+        <nav className="pages" aria-label="Pages">
+          <a href={FLEET_HREF} className={route.page === "people" ? "" : "current"}>
+            Fleet
+          </a>
+          <a href={PEOPLE_HREF} className={route.page === "people" ? "current" : ""}>
+            People
+          </a>
+        </nav>
         <span className="spacer" />
         {identity === null ? (
           <span className="muted">Not signed in</span>
@@ -221,20 +275,27 @@ function Console({
           signedIn={identity !== null}
           installs={installs}
           selected={openInstall}
+          selectedDeployment={
+            openInstall === null && route.page === "deployment" ? route.fingerprint : null
+          }
           onSelect={setOpenInstall}
           {...(bridge === null ? {} : { onAdd: addInstall })}
+          signIn={signIn}
+          onSignedIn={onSignedIn}
         />
         {open !== null && bridge !== null ? (
           <InstallPage install={open} bridge={bridge} onForget={forgetInstall} />
         ) : identity === null ? (
           <CompanionHome installs={installs} onAdd={bridge === null ? undefined : addInstall} />
+        ) : route.page === "people" ? (
+          <PeoplePage client={client} now={now} onSignedOut={onSignedOut} />
         ) : trouble !== null ? (
           <main className="main">
             <h1>Fleet</h1>
             <p className="muted">The relay did not answer: {trouble}</p>
           </main>
         ) : loaded ? (
-          <FleetPage facts={facts} now={now} />
+          <Page route={route} facts={facts} client={client} now={now} />
         ) : (
           <main className="main">
             <h1>Fleet</h1>
@@ -249,8 +310,9 @@ function Console({
 /**
  * The companion's home: both arms, and what each one is holding. Signed out, it
  * is the whole window. Adding a local install is a control here as well as on
- * the rail, because an empty companion has a rail nobody has looked at yet;
- * signing in is #554's, so this page still names it rather than offering it.
+ * the rail, because an empty companion has a rail nobody has looked at yet.
+ * Signing in is the rail's, beside the group it fills, so this page points at it
+ * rather than putting a second copy of the same form on screen.
  */
 function CompanionHome({
   installs,
@@ -287,11 +349,93 @@ function CompanionHome({
         <h2>Relay</h2>
         <p className="muted">
           Not signed in. A relay is how the companion reaches the deployments that run somewhere
-          else.
+          else. Enter its address in the rail and sign-in opens in your own browser.
         </p>
       </section>
     </main>
   );
+}
+
+/** A read whose failure changes nothing on screen. */
+function ignore(): void {}
+
+/**
+ * Which page the hash names. A fingerprint the fleet does not hold gets the
+ * "no such deployment" page rather than a redirect: a link that silently became
+ * the fleet page would look like the deployment is fine.
+ */
+function Page({
+  route,
+  facts,
+  client,
+  now,
+}: {
+  route: Route;
+  facts: RowFacts[];
+  /** The pages that ask for something need the seam too, not only the shell. */
+  client: RelayClient;
+  now: Date;
+}) {
+  if (route.page !== "deployment") return <FleetPage facts={facts} client={client} now={now} />;
+  const found = facts.find((row) => row.row.fingerprint === route.fingerprint);
+  if (found === undefined) return <NoSuchDeployment fingerprint={route.fingerprint} />;
+  // The fingerprint the page was drawn with, not a fresh read of it: that is
+  // what makes the edit optimistic-concurrency-checked rather than applied to
+  // text nobody looked at (#503).
+  const loaded =
+    found.reading.kind === "read" ? (configOf(found.reading.report)?.root.fingerprint ?? "") : "";
+  return (
+    <DeploymentPage
+      facts={found}
+      tab={route.tab}
+      client={client}
+      now={now}
+      onEdit={(edit) => sendConfigEdit(client, found.row.fingerprint, loaded, edit)}
+    />
+  );
+}
+
+/**
+ * One config edit, from a row's Save to the answer it renders (#503, #547).
+ *
+ * The id is minted here, and it is the edit's idempotency key: the same id twice
+ * is the same edit, and the deployment answers the second with the first one's
+ * receipt. That is what makes a retry — a double-press, a reconnect — free of a
+ * second write.
+ */
+async function sendConfigEdit(
+  client: RelayClient,
+  fingerprint: string,
+  configFingerprint: string,
+  edit: { path: string; value: string | number | boolean | null },
+): Promise<{ id: string; answer: EditAnswer }> {
+  const id = crypto.randomUUID();
+  const answer = await client.setConfigField({
+    fingerprint,
+    id,
+    path: edit.path,
+    value: edit.value,
+    configFingerprint,
+  });
+  return { id, answer: readEditAnswer(answer) };
+}
+
+/**
+ * The route, kept in step with the address bar. Links are plain `href`s into the
+ * hash, so the browser does the navigating and the history; this only listens.
+ */
+function useRoute(): Route {
+  const [route, setRoute] = useState<Route>(() =>
+    typeof window === "undefined" ? FLEET_ROUTE : parseRoute(window.location.hash),
+  );
+  useEffect(() => {
+    const onHashChange = (): void => setRoute(parseRoute(window.location.hash));
+    window.addEventListener("hashchange", onHashChange);
+    // The hash may have moved between the first render and this effect.
+    onHashChange();
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+  return route;
 }
 
 /** A clock that ticks, so the durations on screen keep being true. */

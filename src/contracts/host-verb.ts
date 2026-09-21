@@ -7,7 +7,7 @@
 // the point: the bridge's `run:exit { runId, code, outcome? }` has to stay
 // exhaustive as `config set`, `secret set` and `pair` land (#530, #531, #540).
 
-import type { DoctorReport } from "./doctor-report.ts";
+import type { DoctorReport } from "./doctor.ts";
 import type { InitOutcome } from "./init-report.ts";
 import type { FleetMigrateReport } from "./migrate-report.ts";
 import type { StartOutcome } from "./start-outcome.ts";

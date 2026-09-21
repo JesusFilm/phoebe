@@ -10,8 +10,13 @@
 // this. src/contracts/deployment.test.ts and src/contracts/index.test.ts hold
 // the copies to the same value; bootstrap/index.mjs exists for the same reason.
 
+export { openSecret, sealSecret } from "./secret-envelope.mjs";
+
 /** The `schema` integer `state/deployment.json` carries — see deployment.ts. */
 export const DEPLOYMENT_SCHEMA = 1;
+
+/** The effective config's own shape version — see effective-config.ts. */
+export const EFFECTIVE_CONFIG_VERSION = 1;
 
 /** The wire version both ends exchange in the handshake — see relay-protocol.ts. */
 export const RELAY_PROTOCOL = 1;
@@ -25,17 +30,15 @@ export const RELAY_HEARTBEAT_MS = 20_000;
 /** How long silence lasts before it is darkness — see relay-protocol.ts. */
 export const RELAY_DARK_AFTER_MS = 60_000;
 
-/** The global the companion's preload exposes its bridge on — see desktop-bridge.ts. */
-export const DESKTOP_BRIDGE_GLOBAL = "phoebe";
-
-/** How many lines of a verb run main keeps — see verb-run.ts (#527 §13). */
-export const MAX_RUN_LINES = 2000;
-
-/** The verbs a companion can cancel — see verb-run.ts (#527 §2). */
-export const CANCELLABLE_VERBS = ["start", "stop"];
-
 /** The receipt outcome for a request whose socket closed first (#506 §8). */
 export const RELAY_UNDELIVERED = "undelivered";
+
+/** What a deployment answers a doctor run with (#546). Mirror of relay-protocol.ts. */
+export const RELAY_DOCTOR_RUN = {
+  started: "started",
+  joined: "joined",
+  refused: "refused",
+};
 
 /** Every message type on the deployment rail (#540). Mirror of relay-protocol.ts. */
 export const RELAY_MESSAGES = {
@@ -70,7 +73,18 @@ export const RELAY_ROUTES = {
   pairingTokens: "/api/pairing-tokens",
   deployments: "/api/deployments",
   forget: "/api/deployments/forget",
+  testAlert: "/api/alerts/test",
+  doctorRun: "/api/deployments/doctor-run",
+  configSet: "/api/deployments/config-set",
   events: "/api/events",
+  people: "/api/people",
+  removePerson: "/api/people/remove",
+  secrets: "/api/secrets",
+  deviceStart: "/auth/device/start",
+  deviceExchange: "/auth/device/exchange",
+  deviceRevoke: "/auth/device/revoke",
+  devices: "/api/devices",
+  deviceRemove: "/api/devices/remove",
 };
 
 /**
@@ -83,3 +97,57 @@ export const RELAY_EVENTS = {
   disconnected: "disconnected",
   dark: "dark",
 };
+
+/** The `schema` integer every alert body carries (#515 §9) — see alerts.ts. */
+export const ALERT_SCHEMA = 1;
+
+/** How long after the last heartbeat silence becomes an alert (#515 §4). */
+export const ALERT_DARK_AFTER_MS = 300_000;
+
+/** The five conditions (#515 §3). Mirror of `ALERT_CONDITIONS` in alerts.ts. */
+export const ALERT_CONDITIONS = ["dark", "wedged", "crash-looping", "doctor-fail", "replaced"];
+/**
+ * The config-edit closed set (#503). Mirror of `CLOSED_EDIT_BLOCKS` in
+ * config-edit.ts; the doc comments live there.
+ */
+export const CLOSED_EDIT_BLOCKS = [
+  {
+    prefix: "workspace",
+    why: "the fleet declaration is yours — adding, removing or reordering tenants is a git edit, never a console one",
+  },
+  {
+    prefix: "engine",
+    why: "`engine.ref` picks which engine runs and moves with `phoebe upgrade`, so the migrations for the new ref run with it",
+  },
+  {
+    prefix: "relay",
+    why: "the relay block is the pairing's own, written when a deployment is paired rather than edited field by field",
+  },
+  {
+    prefix: "deployment",
+    why: "the `deployment` block holds the host's lifecycle commands, which run outside the container and are not the container's to rewrite",
+  },
+  {
+    prefix: "paths",
+    why: "`paths` is derived from `repoSlug` and the data volume; nothing at that path is read from the file",
+  },
+  {
+    prefix: "workKinds",
+    why: "top-level `workKinds` is the permanent alias for `pipelines.work.kinds` — set it at the path the effective config prints",
+  },
+];
+
+/** The global the companion's preload exposes its bridge on — see desktop-bridge.ts. */
+export const DESKTOP_BRIDGE_GLOBAL = "phoebe";
+
+/** Where a companion's sign-in lands — see relay-routes.ts (#554). */
+export const COMPANION_AUTH_URL = "phoebe://auth";
+
+/** How long a companion has to spend its one-time code — see relay-routes.ts. */
+export const DEVICE_CODE_TTL_MS = 60_000;
+
+/** How many lines of a verb run main keeps — see verb-run.ts (#527 §13). */
+export const MAX_RUN_LINES = 2000;
+
+/** The verbs a companion can cancel — see verb-run.ts (#527 §2). */
+export const CANCELLABLE_VERBS = ["start", "stop"];
