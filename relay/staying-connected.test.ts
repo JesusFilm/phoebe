@@ -86,6 +86,7 @@ describe("staying connected honestly", () => {
         clientId: "client-id",
         clientSecret: "client-secret",
         allowedEmails: [],
+        alertWebhook: null,
       },
       dataDir,
       port: 0,
@@ -181,6 +182,7 @@ describe("staying connected honestly", () => {
           type: RELAY_MESSAGES.hello,
           protocol: RELAY_PROTOCOL,
           publicKey: opts.key.publicKey,
+          boxKey: opts.key.boxKey,
           name: "acme/widget",
           ...(opts.token !== undefined
             ? { pairingToken: opts.token }

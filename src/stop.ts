@@ -9,8 +9,9 @@
 // `deployment.stopCommand` runs literally via /bin/sh and every compose-specific
 // step here is skipped. See src/deployment-command.ts.
 
-import type { DeploymentField } from "./config-schema.ts";
+import type { DeploymentCommands } from "./config-schema.ts";
 import type { StopOutcome } from "./contracts/stop-outcome.ts";
+import type { VerbIo } from "./contracts/verb-io.ts";
 import { resolveDeploymentCommands, runLifecycleStep } from "./deployment-command.ts";
 import {
   assertHostLifecycle,
@@ -28,8 +29,9 @@ import {
   type CommandRunner,
   type DeploymentCompose,
 } from "./deployment-compose.ts";
+import { PROCESS_IO, SILENT_IO } from "./verb-io.ts";
 
-// The outcome union now lives in `phoebe-agent/contracts` (#528) so a console
+// The outcome union lives in `phoebe-agent/contracts` (#528) so a console
 // can name a stop's result without loading the driver below. Re-exported here
 // so every existing reader goes on importing it off this module.
 export type { StopOutcome };
@@ -75,11 +77,6 @@ When phoebe.config.ts carries a "deployment" block, deployment.stopCommand
 above applies — you own the drain grace. See docs/configuration.md.
 `;
 
-type StopIo = {
-  stdout: (line: string) => void;
-  stderr: (line: string) => void;
-};
-
 type StopDeps = {
   cwd?: string;
   runner?: CommandRunner;
@@ -93,8 +90,8 @@ type StopDeps = {
    * the config; `runStop` only ever consults the dep, which is what keeps it
    * filesystem-free.
    */
-  deploymentCommands?: DeploymentField;
-  io?: Partial<StopIo>;
+  deploymentCommands?: DeploymentCommands;
+  io?: Partial<VerbIo>;
 };
 
 function formatTimeoutSec(seconds: number): string {
@@ -122,10 +119,7 @@ async function composePs(
  */
 export async function runStop(opts: { now: boolean; deps?: StopDeps }): Promise<StopOutcome> {
   const cwd = opts.deps?.cwd ?? process.cwd();
-  const io: StopIo = {
-    stdout: opts.deps?.io?.stdout ?? ((line) => process.stdout.write(`${line}\n`)),
-    stderr: opts.deps?.io?.stderr ?? ((line) => process.stderr.write(`${line}\n`)),
-  };
+  const io: VerbIo = { ...SILENT_IO, ...opts.deps?.io };
 
   // The guard is runtime-general: stop is a host action in every topology, so
   // it fires before the branch below (#189).
@@ -244,9 +238,15 @@ export async function runStopCli(argv: readonly string[], deps?: StopDeps): Prom
     inContainer: deps?.inContainer,
     provided: deps?.deploymentCommands,
   });
+  // The CLI layer is where a line becomes terminal output: `runStop` is handed
+  // the sinks, never `process.stdout` (#552).
   const outcome = await runStop({
     now: parsed.now,
-    deps: { ...deps, ...(deploymentCommands !== undefined ? { deploymentCommands } : {}) },
+    deps: {
+      ...deps,
+      io: { ...PROCESS_IO, ...deps?.io },
+      ...(deploymentCommands !== undefined ? { deploymentCommands } : {}),
+    },
   });
   if (outcome.kind === "killed-mid-run") {
     process.exitCode = 1;
