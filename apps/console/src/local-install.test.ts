@@ -9,10 +9,14 @@ import {
   applyRunLine,
   dockerReading,
   installReading,
+  landingTab,
+  localConfig,
+  localConnection,
   offeredVerbs,
   outcomeReading,
+  renderableReport,
 } from "./local-install.ts";
-import { environment, install } from "./test-fixture.ts";
+import { directory, environment, install, localReport } from "./test-fixture.ts";
 
 function runOf(overrides: Partial<VerbRun> = {}): VerbRun {
   return {
@@ -229,5 +233,82 @@ describe("the Docker check", () => {
       kind: "ready",
       text: "Docker is running · companion 0.13.0 on linux",
     });
+  });
+});
+
+describe("the local read, as the page reads it", () => {
+  test("the connection card names the arm, the path and the bridge (#556)", () => {
+    const card = localConnection(install());
+
+    expect(card.arm).toBe("Local install");
+    expect(card.detail).toBe("/repos/youtube-studio");
+    expect(card.note).toContain("desktop bridge");
+    expect(card.note).toContain("No relay");
+  });
+
+  test("the card says what the container is doing, in the install's own three words", () => {
+    expect(localConnection(install({ state: "running" })).note).toContain("its container is up");
+    expect(localConnection(install({ state: "stopped" })).note).toContain(
+      "its container is not up",
+    );
+    expect(localConnection(install({ state: "not-initialised" })).note).toContain(
+      "no Phoebe install",
+    );
+  });
+
+  test("a running install renders the report the loop read", () => {
+    const event = localReport();
+
+    expect(renderableReport(install(), event)?.report).toEqual(event.report?.report);
+  });
+
+  test("a stopped install renders no report, however fresh the last one was (#526)", () => {
+    // The event still carries one: main read it while the container was up and
+    // the window has held it since. Rendering it would put a description of a
+    // running deployment beside a container that is down.
+    const held = localReport({ facts: install({ state: "running" }) });
+
+    expect(renderableReport(install({ state: "stopped" }), held)).toBeNull();
+  });
+
+  test("an event for another install is not this install's report", () => {
+    const other = localReport({ facts: install({ dir: "/repos/elsewhere" }) });
+
+    expect(renderableReport(install(), other)).toBeNull();
+  });
+
+  test("lands on install when there is nothing installed, on config when nothing runs", () => {
+    expect(landingTab(install({ state: "not-initialised" }))).toBe("install");
+    expect(landingTab(install({ state: "stopped" }))).toBe("config");
+    expect(landingTab(install({ state: "running" }))).toBe("overview");
+  });
+
+  test("the config comes off the directory facts, which a stopped install still has", () => {
+    const event = localReport({
+      facts: install({ state: "stopped" }),
+      directory: directory({ bootstrapperRunning: false }),
+    });
+
+    expect(localConfig(event)).toEqual({
+      kind: "file",
+      path: "/repos/youtube-studio/phoebe.config.ts",
+      text: directory().configText,
+      fingerprint: "0f1e2d3c4b5a6978",
+    });
+  });
+
+  test("a folder with no config says which file is missing", () => {
+    const event = localReport({
+      directory: directory({ configText: null, configFingerprint: null }),
+    });
+
+    expect(localConfig(event)).toEqual({
+      kind: "absent",
+      path: "/repos/youtube-studio/phoebe.config.ts",
+    });
+  });
+
+  test("before the first read there is no config to show, which is not the same as none", () => {
+    expect(localConfig(null)).toBeNull();
   });
 });

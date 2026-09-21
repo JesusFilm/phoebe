@@ -984,3 +984,52 @@ details.why > summary::marker {
 .rail-note.trouble {
   color: var(--fail);
 }
+
+/* ── the deployment tabs ───────────────────────────────────────────────── */
+
+.pairs {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.pairs dt {
+  color: var(--muted);
+}
+
+.pairs dd {
+  margin: 0;
+}
+
+.rows {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.rows th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+  padding: 4px 8px 4px 0;
+}
+
+.rows td {
+  border-bottom: 1px solid var(--line);
+  padding: 6px 8px 6px 0;
+  vertical-align: top;
+}
+
+.config {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px 12px;
+  max-height: 460px;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.5;
+}

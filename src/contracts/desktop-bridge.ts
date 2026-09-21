@@ -9,11 +9,12 @@
 // this file is the whole agreement.
 //
 // What is declared here is the companion's two arms. The local arm is the
-// installs on this machine, the environment they need and the verb runs that
-// drive them (#555); the remote arm is the relay, signed in to with a device
-// token (#554). The local read loop joins them with #556.
+// installs on this machine, the environment they need, the verb runs that drive
+// them (#555) and the reads the local read loop feeds the tabs (#556); the
+// remote arm is the relay, signed in to with a device token (#554).
 
 import type { CompanionEnvironment, CompanionPreferences, LocalInstall } from "./local-install.ts";
+import type { LocalReportEvent } from "./local-report.ts";
 import type { RelayEvent } from "./relay-events.ts";
 import type { RelayIdentity } from "./relay-routes.ts";
 import type { RunExit, RunLine, VerbRun, VerbRunRequest } from "./verb-run.ts";
@@ -109,6 +110,18 @@ export type DesktopBridge = {
     remove: (dir: string) => Promise<LocalInstall[]>;
     /** The list again whenever it changed. Returns the unsubscribe. */
     changes: (onChange: (installs: LocalInstall[]) => void) => () => void;
+    /**
+     * Every read the local read loop finishes, for every install (#527 §5). The
+     * same `report` event the relay's stream carries, so a page subscribes to
+     * one or the other and renders the result the same way.
+     */
+    reports: (onReport: (event: LocalReportEvent) => void) => () => void;
+    /**
+     * Read one install now rather than waiting for the loop. Resolves with the
+     * event it emitted — which on a stopped install is the directory's facts and
+     * `report: null` (#527 §6).
+     */
+    refresh: (dir: string) => Promise<LocalReportEvent>;
   };
   /** The verb runs — see verb-run.ts for the three rules they hold to. */
   runs: {

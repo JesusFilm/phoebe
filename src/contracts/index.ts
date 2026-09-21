@@ -211,3 +211,4 @@ export type {
 } from "./local-install.ts";
 export { CANCELLABLE_VERBS, MAX_RUN_LINES } from "./verb-run.ts";
 export type { RunExit, RunLine, VerbRun, VerbRunRequest } from "./verb-run.ts";
+export type { InstallDirectoryFacts, LocalReportEvent, StoredReport } from "./local-report.ts";

@@ -4,7 +4,7 @@
 //
 // Not reachable from main.tsx, so nothing here reaches the bundle.
 
-import { DEPLOYMENT_SCHEMA, EFFECTIVE_CONFIG_VERSION } from "phoebe-agent/contracts";
+import { DEPLOYMENT_SCHEMA, EFFECTIVE_CONFIG_VERSION, RELAY_EVENTS } from "phoebe-agent/contracts";
 import type {
   ChildLiveness,
   CompanionEnvironment,
@@ -14,7 +14,9 @@ import type {
   DoctorCheck,
   DoctorSection,
   FleetCell,
+  InstallDirectoryFacts,
   LocalInstall,
+  LocalReportEvent,
   RelayArmState,
   RelayDeploymentRow,
   RelayEvent,
@@ -392,6 +394,14 @@ export function bridge(answers: BridgeAnswers = {}): DesktopBridge {
       add: () => Promise.resolve(answers.installs ?? []),
       remove: () => Promise.resolve([]),
       changes: () => () => undefined,
+      reports: (onReport) => {
+        for (const event of answers.reports ?? []) onReport(event);
+        return () => undefined;
+      },
+      refresh: (dir) => {
+        const event = (answers.reports ?? []).find((candidate) => candidate.install === dir);
+        return event === undefined ? Promise.reject(notAnInstall(dir)) : Promise.resolve(event);
+      },
     },
     runs: {
       start: (request) => {
@@ -441,11 +451,49 @@ export type BridgeAnswers = {
   events?: RelayEvent[];
   /** What a sign-in through the companion resolves with (#554). */
   signIn?: (url: string) => RelayArmState;
+  /** What the local read loop has emitted, one event per install (#556). */
+  reports?: LocalReportEvent[];
 };
+
+/** The directory facts main derives with no container involved (#527 §6). */
+export function directory(overrides: Partial<InstallDirectoryFacts> = {}): InstallDirectoryFacts {
+  return {
+    configPath: "/repos/youtube-studio/phoebe.config.ts",
+    configText: 'export default defineConfig({ repoSlug: "JesusFilm/youtube-studio" })\n',
+    configFingerprint: "0f1e2d3c4b5a6978",
+    envPresent: true,
+    bootstrapperRunning: true,
+    ...overrides,
+  };
+}
+
+/** One read the loop finished, for whichever install the test is about. */
+export function localReport(overrides: Partial<LocalReportEvent> = {}): LocalReportEvent {
+  const facts = overrides.facts ?? install();
+  return {
+    type: RELAY_EVENTS.report,
+    install: facts.dir,
+    at: ago(2),
+    facts,
+    directory: directory({ bootstrapperRunning: facts.state === "running" }),
+    report:
+      facts.state === "running"
+        ? { schema: DEPLOYMENT_SCHEMA, receivedAt: ago(2), report: report() }
+        : null,
+    ...overrides,
+  };
+}
 
 /** What the preload throws when main refuses a call (#527 §16). */
 export function signedOut(): Error {
   return Object.assign(new Error("the companion is not signed in to a relay"), {
     code: "signed-out",
+  });
+}
+
+/** What main refuses a read of a folder it does not hold with (#527 §16). */
+export function notAnInstall(dir: string): Error {
+  return Object.assign(new Error(`${dir} is not a local install the companion knows`), {
+    code: "refused",
   });
 }

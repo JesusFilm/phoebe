@@ -14,12 +14,15 @@ import { MAX_RUN_LINES } from "phoebe-agent/contracts";
 import type {
   CompanionEnvironment,
   LocalInstall,
+  LocalReportEvent,
   OutcomeOf,
   RunExit,
   RunLine,
+  StoredReport,
   VerbOutcome,
   VerbRun,
 } from "phoebe-agent/contracts";
+import type { ConfigReading, ConnectionCard, DeploymentTab } from "./tabs.ts";
 
 /** How the rail reads one install: a mark, and the sentence beside it. */
 export function installReading(install: LocalInstall): { tone: string; text: string } {
@@ -181,4 +184,67 @@ export function offeredVerbs(install: LocalInstall): {
     upgrade: initialised,
     doctor: initialised && install.state === "running",
   };
+}
+
+// ── the local read loop, as the page reads it (#556) ──────────────────────
+
+/**
+ * What the overview's connection card says about a local install.
+ *
+ * The card is the one place on the five tabs where the arm shows, and it has to:
+ * "connected for 3 h" under a fingerprint means something different from a
+ * container on this machine that the window can start and stop. Everything below
+ * the card renders the report and never asks where it came from.
+ */
+export function localConnection(install: LocalInstall): ConnectionCard {
+  const state =
+    install.state === "running"
+      ? "its container is up"
+      : install.state === "stopped"
+        ? "its container is not up"
+        : "it has no Phoebe install in it yet";
+  return {
+    arm: "Local install",
+    detail: install.dir,
+    note: `Read over the desktop bridge: the companion asks this machine's Docker directly, so ${state}. No relay is involved and nothing listens on a port.`,
+  };
+}
+
+/**
+ * The report this page may render, which is not the same as the last one it was
+ * handed.
+ *
+ * A stopped install shows config and the stopped fact, never a report with an
+ * age on it (#526). The loop keeps reading and the window keeps the last event
+ * it received, so without this rule a container stopped ten minutes ago would
+ * still be drawing pipelines that are not running.
+ */
+export function renderableReport(
+  install: LocalInstall,
+  event: LocalReportEvent | null,
+): StoredReport | null {
+  if (event === null || event.install !== install.dir) return null;
+  return install.state === "running" ? event.report : null;
+}
+
+/**
+ * Which tab an install opens on.
+ *
+ * A not-initialised folder lands on install, because that is where the button
+ * that initialises it is and the rest of the page is empty (#526). A stopped one
+ * lands on config, the only tab it can fill. A running one lands on overview,
+ * like a remote deployment.
+ */
+export function landingTab(install: LocalInstall): DeploymentTab | "install" {
+  if (install.state === "not-initialised") return "install";
+  return install.state === "running" ? "overview" : "config";
+}
+
+/** The config as the directory facts hand it over (#527 §6). */
+export function localConfig(event: LocalReportEvent | null): ConfigReading | null {
+  if (event === null) return null;
+  const { configPath, configText, configFingerprint } = event.directory;
+  if (configText === null || configFingerprint === null)
+    return { kind: "absent", path: configPath };
+  return { kind: "file", path: configPath, text: configText, fingerprint: configFingerprint };
 }

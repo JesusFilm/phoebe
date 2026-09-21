@@ -12,10 +12,15 @@
 // page says so and shows the relay's own connection facts, which are never in the
 // report. Guessing would be worse than a blank cell.
 //
-// **A known schema is still checked.** The body arrived over HTTP from a process
-// this one does not control, so every section is narrowed before it is indexed.
-// Anything missing reads as absent rather than throwing — one malformed report
-// must not take the fleet page down with it.
+// **A known schema is still checked.** The body arrived from a process this one
+// does not control, so every section is narrowed before it is indexed. Anything
+// missing reads as absent rather than throwing — one malformed report must not
+// take the fleet page down with it.
+//
+// One narrowing for both arms. The local read loop emits the same triple over
+// the desktop bridge that the relay stores (`StoredReport`, #556), so a page
+// reading a local install and a page reading a remote deployment reach the same
+// verdicts about the same bytes.
 
 import { DEPLOYMENT_SCHEMA } from "phoebe-agent/contracts";
 import type {
@@ -27,6 +32,7 @@ import type {
   FleetCell,
   ReconcileState,
   RelayStoredReport,
+  StoredReport,
   TenantFacts,
 } from "phoebe-agent/contracts";
 
@@ -41,7 +47,7 @@ export type ReportReading =
   | { kind: "read"; receivedAt: string; report: DeploymentReport };
 
 /** Narrow one stored report, or say why not. */
-export function readReport(stored: RelayStoredReport | null): ReportReading {
+export function readReport(stored: StoredReport | null): ReportReading {
   if (stored === null) return { kind: "none" };
   if (stored.schema !== DEPLOYMENT_SCHEMA) return { kind: "unreadable", schema: stored.schema };
   const body = stored.report;

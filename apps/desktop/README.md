@@ -60,8 +60,10 @@ Building needs no Electron binary, which is why the gate can run with
 
 ## What main answers today
 
-**The local arm, in full.** The installs on this machine, the Docker check, and
-the verb runs that drive them ([#555](https://github.com/JesusFilm/phoebe/issues/555)):
+**The local arm, in full.** The installs on this machine, the Docker check, the
+verb runs that drive them ([#555](https://github.com/JesusFilm/phoebe/issues/555))
+and the local read loop that feeds their tabs
+([#556](https://github.com/JesusFilm/phoebe/issues/556)):
 
 - [`companion-file.ts`](src/companion-file.ts) — `companion.json` in `userData`:
   the install directories, the relay URL, the preferences. Nothing else. Every
@@ -75,6 +77,11 @@ the verb runs that drive them ([#555](https://github.com/JesusFilm/phoebe/issues
   lives here so a renderer reload rejoins a run rather than losing it.
 - [`verb-dispatch.ts`](src/verb-dispatch.ts) — the six `run<Verb>` calls, in
   this process (ADR 0001). No second Node, no `bin.mjs`, no stdout parsing.
+- [`local-read.ts`](src/local-read.ts) — the read loop: Compose's event stream
+  for the moment a container moves, a 15 s poll for how it is doing, and one
+  `report` event out — the relay's own, so the tabs do not branch on arm.
+- [`container-read.ts`](src/container-read.ts) — the two seams under it: the
+  `phoebe status --json` exec, and the `docker compose events` subscription.
 
 **The relay arm.**
 ([#554](https://github.com/JesusFilm/phoebe/issues/554)): sign-in, the JSON reads
@@ -89,9 +96,14 @@ that land on the process holding the verifier: on Windows and Linux the OS
 launches a _second_ process with the URL on its command line, and without the lock
 one process would hold the code and the other the verifier.
 
-The local read loop
-([#556](https://github.com/JesusFilm/phoebe/issues/556)) is a change in here, behind
-the contract the preload already exposes.
+The loop reads `phoebe status --json` inside the container: the verb is
+[#533](https://github.com/JesusFilm/phoebe/issues/533)'s and the report it prints
+is [#532](https://github.com/JesusFilm/phoebe/issues/532)'s. A container running an
+engine older than those answers the exec with its own sentence, and the read
+comes back `report: null` with that sentence on it — the path the tabs draw
+anyway when nothing is running. `STATUS_ARGV` in
+[`src/container-read.ts`](src/container-read.ts) is the one line that moves if the
+verb's flags do.
 
 Two things a later ticket owes this package. `upgrade` and `migrate` spawn their
 children through `spawnSync`, which blocks main for as long as they run — so the
