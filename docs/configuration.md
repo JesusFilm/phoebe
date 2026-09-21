@@ -221,7 +221,7 @@ are exactly what its per-pipeline fingerprint leaves out
 It spawns one child per pipeline and relaunches a pipeline when its own cold config moves
 ([Supervising pipelines](architecture.md#supervising-pipelines)). `priority` and
 `concurrency` are live in the broker (below). A pipeline's `disabled` is validated and
-listed — `phoebe list` shows the pipeline as `(disabled)` — but not yet acted on; the
+listed — `phoebe status` shows the pipeline as `(disabled)` — but not yet acted on; the
 ticket that switches a pipeline off comes later. A kind's
 `disabled` is live now, since it is what took over from omission.
 
@@ -299,7 +299,7 @@ each owns a slice of both rather than the whole thing.
 
 | Thing                          | Owned by                                                                                                                                                                                    |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `state/<pipeline>/status.json` | The pipeline alone. `phoebe list` reads every pipeline's, one line each.                                                                                                                    |
+| `state/<pipeline>/status.json` | The pipeline alone. The deployment report carries every pipeline's, one cell each.                                                                                                          |
 | Stdout lines                   | Tagged `[phoebe:<owner>/<repo>:<pipeline>]`, including `work`'s. Match it as a prefix, not a fixed string.                                                                                  |
 | The four tracker sweeps        | Scoped to the kinds the pipeline schedules, so two pipelines cover every object exactly once. A pipeline scheduling none of a sweep's kinds skips it.                                       |
 | The origin clone               | Shared. Cloned once, the first clone serialized by a lock under `state/`; a pipeline whose kinds all declare `scratch` never clones at all.                                                 |
@@ -1121,6 +1121,72 @@ tenant is using so you do not have to hunt for them in the tree.
 Run it against a workspace root and every tenant reports. A tenant whose config
 will not load is one row carrying its error; the exit code turns non-zero only
 when no tenant loaded at all.
+
+**You rarely need to run it to read it.** The same object rides in the
+deployment report as its `config` section, so `phoebe status --json`, the relay
+and the console all show a tenant's settings without asking the deployment a
+second question. The text `phoebe status` leaves it out, because settings are
+what this verb is for and a status screen reciting every leaf would bury the
+question it exists to answer. The section also carries a content hash of the root
+`phoebe.config.ts` it was read from, which is what a later remote edit checks
+itself against before writing.
+
+One deployment writes one file, so the section has a byte budget. On a workspace
+far larger than any Phoebe has run, the first tenants by id carry their configs
+and the rest are counted in `config.omitted`. Run `phoebe config` in the
+container to read one of those.
+
+## Changing one field: `phoebe config set`
+
+```sh
+phoebe config set pipelines.work.pollIntervalMs 30000
+phoebe config set defaultProvider claude
+```
+
+The path is the one `phoebe config` printed. The value is read as JSON when it
+parses as JSON (`42`, `true`, `null`, `"two words"`) and as a plain string
+otherwise, so `claude` and `"claude"` mean the same thing.
+
+What happens is deliberately small. The file is parsed, one literal is replaced,
+and every other byte — your comments, your key order, your formatting — is left
+exactly as you wrote it. The result is loaded through the engine's own loader
+before anything is written, so a value the config rejects costs you a message
+and nothing else. Then the file is written in place and the deployment
+reconciles onto it the way it would onto an edit you made by hand.
+
+**What it will not change**, each refused by name:
+
+| Refused                                         | Because                                                                      |
+| ----------------------------------------------- | ---------------------------------------------------------------------------- |
+| `workspace.*`                                   | Your fleet declaration is a git edit.                                        |
+| `engine.*`                                      | The engine pin moves with `phoebe upgrade`, so the new ref's migrations run. |
+| `relay.*`, `deployment.*`                       | The pairing's and the host's, not the container's.                           |
+| A work kind's declaration, `paths.*`            | Code, and a derivation — neither is a literal to set.                        |
+| A leaf a `PHOEBE_*` variable already sets       | Env beats file, so the write would be shadowed.                              |
+| A value in the file that is not a plain literal | Replacing a computed value is a guess about intent.                          |
+
+A kind's _settings_ are fine — `pipelines.work.kinds.issues.model` is a literal
+and moves like any other. It is the block itself, which may name a module or hold
+an inline definition, that a splice cannot see inside of.
+
+Every refusal prints the exact edit to make by hand, which is also what the
+console shows when it cannot apply one for you.
+
+In a workspace, this writes the **root** config only. A tenant's own
+`phoebe.config.ts` lives in that tenant's checkout, and you edit it there and
+commit it, the way you always have — pass `--config` to point the verb at one
+from a shell.
+
+Two flags matter when something else is driving:
+
+- `--fingerprint <sha256:…>` refuses the write unless the file still hashes to
+  what you were shown. The deployment report's config section carries that hash;
+  a console sends it back, and a file that moved in between is refused rather
+  than merged.
+- `--id <id>` makes the edit idempotent. Applied edits are recorded in
+  `state/config-edits.json` on the data volume, so the same id twice is one
+  write and the second call gets the first one's receipt back. The record rolls
+  off as soon as you edit or commit the file yourself.
 
 ## GitHub App arm
 

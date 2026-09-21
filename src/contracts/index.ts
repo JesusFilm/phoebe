@@ -22,17 +22,12 @@
 
 export type { StopOutcome } from "./stop-outcome.ts";
 export type {
-  ConfigWarning,
-  EffectiveFields,
-  EffectiveLeaf,
-  EffectiveNode,
-  EnvLocation,
-  EnvPresence,
-  SettingReader,
-  SettingSource,
-  ShadowedValue,
-  TenantEffectiveConfig,
-} from "./effective-config.ts";
+  ConfigEdit,
+  EditReceipt,
+  EditRefusalReason,
+  EditRefused,
+  EditWritten,
+} from "./config-edit.ts";
 export type { CredentialArm } from "./credential-arm.ts";
 export type {
   CheckState,
@@ -49,6 +44,8 @@ export type { CurrentUnit, StatusSnapshot, UnitRef } from "./status-snapshot.ts"
 export {
   DEPLOYMENT_SCHEMA,
   type BootstrapperReport,
+  type ConfigReport,
+  type ConfigSource,
   type ChildExit,
   type ChildLiveness,
   type ChildState,
@@ -59,6 +56,22 @@ export {
   type FleetCell,
   type FleetReport,
   type ReconcileState,
+  type RelayClose,
+  type RelayReport,
+  type RelayState,
   type SlotReport,
   type TenantFacts,
 } from "./deployment.ts";
+export { EFFECTIVE_CONFIG_VERSION } from "./effective-config.ts";
+export type {
+  ConfigWarning,
+  EffectiveFields,
+  EffectiveLeaf,
+  EffectiveNode,
+  EnvLocation,
+  EnvPresence,
+  SettingReader,
+  SettingSource,
+  ShadowedValue,
+  TenantEffectiveConfig,
+} from "./effective-config.ts";

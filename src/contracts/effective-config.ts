@@ -128,3 +128,16 @@ export type TenantEffectiveConfig = {
   env: Record<string, EnvPresence> | null;
   warnings: readonly ConfigWarning[];
 };
+
+/**
+ * The shape version of everything above — what `phoebe config --json` prints as
+ * its `version` and what the deployment report's config section carries. Bump it
+ * when a field's meaning changes in a way an older reader would misread; adding
+ * an optional field does not move it.
+ *
+ * It is here rather than beside the command because two processes name it: the
+ * engine that computes a tenant's tree, and the bootstrapper that embeds what
+ * the engine answered. A runtime value in contracts is written twice — see
+ * index.mjs.
+ */
+export const EFFECTIVE_CONFIG_VERSION = 1;

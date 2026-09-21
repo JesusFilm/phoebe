@@ -48,17 +48,7 @@ import { parsePipelineName, selectPipeline } from "./pipeline.ts";
 import { runEngine } from "./main.ts";
 import { resolveDataBase } from "./paths.ts";
 import { setResolvedConfig } from "./resolved-config.ts";
-import { formatAge, oldestUnitAgeMs, type PipelineListing } from "./pipeline-listing.ts";
-import {
-  LIST_HELD_LEGEND,
-  LIST_STALE_LEGEND,
-  LIST_UNDECLARED_LEGEND,
-  listTenants,
-  purgeTenant,
-  TRUST_DOMAIN_NOTE,
-  type ListTenantsResult,
-  type TenantListing,
-} from "./tenant-commands.ts";
+import { purgeTenant, TRUST_DOMAIN_NOTE } from "./tenant-commands.ts";
 
 type ParsedArgs = { configPath: string | undefined; help: boolean; forward: string[] };
 
@@ -141,7 +131,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedArgs {
       const version = installedVersion();
       throw new Error(
         `Unknown command \`${arg}\` for \`phoebe\`${version === null ? "" : ` (phoebe-agent v${version})`}. ` +
-          `Known commands: boot, init, list, config, purge, upgrade, doctor, migrate, stop, start, pipelines, sweep-state. If \`${arg}\` was added in a newer ` +
+          `Known commands: boot, init, status, list, config, purge, upgrade, doctor, migrate, stop, start, pipelines, sweep-state. If \`${arg}\` was added in a newer ` +
           `release, upgrade first: \`pnpm dlx phoebe-agent@latest upgrade\`. See \`phoebe --help\`.`,
       );
     }
@@ -274,7 +264,9 @@ Usage:
   phoebe init [--solo] [dir]       Scaffold a solo single-tenant deployment
   phoebe init --workspace [dir]    Scaffold a workspace root (multi-child)
   phoebe init --tenant [dir]       Scaffold a workspace child in-tree install
-  phoebe list [--json] [--check]   List tenants + health (in-container)
+  phoebe status [--json] [--check] [--verbose]
+                                   What the deployment is doing, from its report
+  phoebe list [--json] [--check]   Deprecated alias for status's fleet section
   phoebe config [--json]           Every setting, its value, and where it came from
   phoebe secret set <KEY>          Store a tenant secret; value on stdin only
   phoebe secret clear <KEY>        Drop it again, so the .env value governs
@@ -372,155 +364,6 @@ function parseCommandArgs(argv: readonly string[]): {
     }
   }
   return { positionals, flags };
-}
-
-/**
- * The tenant's own columns. The engine-state column that used to sit here moved
- * to the pipeline lines below (#427): a tenant is several pipelines now, and one
- * state word for all of them could only ever be one pipeline's.
- */
-function formatHealthColumns(listing: TenantListing): string {
-  const flag = (label: string, on: boolean): string => `${on ? "✓" : "✗"} ${label}`;
-  return (
-    `${flag("config", listing.configValid)}  ${flag("env", listing.envPresent)}  ` +
-    `${flag("data", listing.retainedData)}  arm: ${listing.arm}`
-  );
-}
-
-/** Where the line came from, or that the pipeline is switched off. */
-function formatPipelineMark(pipeline: PipelineListing): string {
-  if (pipeline.source === "stale") return "  (stale)";
-  if (pipeline.source === "disk") return "  (from disk)";
-  return pipeline.disabled ? "  (disabled)" : "";
-}
-
-/**
- * One pipeline's state column. `working` carries `k/N` — what is in flight
- * against what the pipeline declared — and the refs themselves, so an operator can
- * go find the unit. `wedged?` rides along rather than replacing it: the pipeline is
- * still working as far as anything on disk knows, and the age is the reason to
- * doubt it.
- */
-function formatPipelineState(pipeline: PipelineListing, now: number): string {
-  if (pipeline.state !== "working") return pipeline.state;
-  const refs = pipeline.units.map((current) => `${current.unit.kind} ${current.unit.id}`);
-  const capacity =
-    pipeline.concurrency !== null
-      ? `${pipeline.units.length}/${pipeline.concurrency}`
-      : String(pipeline.units.length);
-  const age = oldestUnitAgeMs(pipeline.units, now);
-  const wedged = pipeline.wedged && age !== null ? `  wedged? ${formatAge(age)}` : "";
-  return `working ${capacity} ${refs.join(", ")}${wedged}`;
-}
-
-/** One indented line per pipeline, names padded into a column. */
-function formatPipelineLines(listing: TenantListing, now: number): string[] {
-  const width = Math.max(0, ...listing.pipelines.map((pipeline) => pipeline.name.length));
-  return listing.pipelines.map(
-    (pipeline) =>
-      `        ${pipeline.name.padEnd(width)}  ${formatPipelineState(pipeline, now)}` +
-      formatPipelineMark(pipeline),
-  );
-}
-
-function formatTenantListing(listing: TenantListing, now: number): string {
-  const slugSuffix = listing.slug !== null ? `  (${listing.slug})` : "";
-  const disabledSuffix = listing.disabled ? "  (disabled)" : "";
-  const header = `  ${listing.path}${slugSuffix}${disabledSuffix}`;
-  const held = `held — ${listing.reason ?? "held"}`;
-  const detail = !listing.held
-    ? formatHealthColumns(listing)
-    : listing.slug !== null
-      ? `${held}  ${formatHealthColumns(listing)}`
-      : held;
-  return [`${header}\n      ${detail}`, ...formatPipelineLines(listing, now)].join("\n");
-}
-
-/**
- * The machine-readable report. Each tenant carries its pipeline lines; the
- * tenant-level `status` field is gone with the column it fed (#427) — a reader
- * that wants one pipeline's snapshot names the pipeline.
- */
-export function formatListJson(result: ListTenantsResult): string {
-  return JSON.stringify({
-    declared: result.declared,
-    live: result.live,
-    solo: result.solo,
-    tenants: result.listings.map((listing) => ({
-      path: listing.path,
-      slug: listing.slug,
-      held: listing.held,
-      reason: listing.reason,
-      arm: listing.arm,
-      configValid: listing.configValid,
-      envPresent: listing.envPresent,
-      retainedData: listing.retainedData,
-      disabled: listing.disabled,
-      pipelines: listing.pipelines.map((pipeline) => ({
-        name: pipeline.name,
-        disabled: pipeline.disabled,
-        source: pipeline.source,
-        state: pipeline.state,
-        units: pipeline.units,
-        updatedAt: pipeline.updatedAt,
-        wedged: pipeline.wedged,
-      })),
-    })),
-    undeclared: result.undeclared,
-  });
-}
-
-/** The human report: tenant pipelines, their pipeline lines, and the legends. */
-export function formatListReport(result: ListTenantsResult, now: number): string {
-  if (result.listings.length === 0 && result.undeclared.length === 0) {
-    return "[phoebe] No tenants (nothing declared here — no workspace children, no root config).";
-  }
-  const header = result.solo
-    ? "[phoebe] 1 tenant (solo):"
-    : result.explicit && result.declared > 0
-      ? `[phoebe] ${result.live} of ${result.declared} declared tenant(s):`
-      : result.listings.length > 0
-        ? `[phoebe] ${result.listings.length} tenant(s):`
-        : "[phoebe] 0 declared tenant(s):";
-  const body = result.listings.map((listing) => formatTenantListing(listing, now)).join("\n");
-  const undeclaredSection =
-    result.undeclared.length > 0
-      ? `\n\nundeclared:\n${result.undeclared.map((path) => `  ${path}`).join("\n")}`
-      : "";
-  const legendParts: string[] = [];
-  if (result.listings.some((listing) => listing.held)) legendParts.push(LIST_HELD_LEGEND);
-  if (result.listings.some((listing) => listing.pipelines.some((p) => p.source === "stale"))) {
-    legendParts.push(LIST_STALE_LEGEND);
-  }
-  if (result.undeclared.length > 0) legendParts.push(LIST_UNDECLARED_LEGEND);
-  const legend = legendParts.length > 0 ? `\n${legendParts.join("\n")}` : "";
-  const main = body.length > 0 ? `${header}\n${body}` : header;
-  return `${main}${undeclaredSection}${legend}`;
-}
-
-/**
- * `phoebe list` — every tenant, its health columns, and one line per pipeline.
- *
- * `--check` stays structural: it exits 1 when the fleet declaration is not
- * honoured, and nothing a pipeline line says moves it. A wedged pipeline is a
- * question for an operator, not a failed assertion about the declaration.
- */
-async function runListCli(argv: readonly string[]): Promise<void> {
-  const { flags } = parseCommandArgs(argv);
-  const result = await listTenants({
-    configDir: process.cwd(),
-    dataBase: resolveDataBase(process.env),
-  });
-
-  process.stdout.write(
-    flags["json"] === true
-      ? `${formatListJson(result)}\n`
-      : `${formatListReport(result, Date.now())}\n`,
-  );
-
-  if (flags["check"] === true && result.explicit && result.listings.some((l) => l.held)) {
-    process.exitCode = 1;
-  }
 }
 
 /** `phoebe purge <owner/repo> --yes` — wipe a removed tenant's retained data. */
@@ -680,9 +523,16 @@ export async function runCli(): Promise<void> {
     return;
   }
 
-  // In-container fleet commands (#95): list / purge act on the data volume.
-  // Neither loads the engine config.
-  if (args[0] === "list") return await runListCli(args.slice(1));
+  // `status` is the one verb for "is it alive and what is it doing" (#533): it
+  // reads the deployment report in the container and, on the host, execs itself
+  // through Compose the way `start` and `stop` do. `list` is the deprecated
+  // alias that prints its fleet section (#508 §3) — two verbs reading the same
+  // matrix from different sources is the disagreement #501 rejected. Lazy like
+  // its host-side neighbours, so the engine-run path loads no Compose plumbing.
+  if (args[0] === "status" || args[0] === "list") {
+    const { runStatusCli } = await import("./status.ts");
+    return await runStatusCli(args.slice(1), args[0] === "list" ? "list" : "status");
+  }
   // The effective config (#531): every setting with its value and its source.
   // Lazy like its neighbours — a plain engine run never loads it.
   if (args[0] === "config") {
@@ -700,6 +550,7 @@ export async function runCli(): Promise<void> {
     if (result !== undefined && !result.doctorOk) process.exitCode = 1;
     return;
   }
+  // `purge` acts on the data volume in-container and loads no engine config (#95).
   if (args[0] === "purge") return await runPurgeCli(args.slice(1));
 
   // Operator commands: upgrade moves the deployment between versions; doctor

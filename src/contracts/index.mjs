@@ -12,3 +12,6 @@
 
 /** The `schema` integer `state/deployment.json` carries — see deployment.ts. */
 export const DEPLOYMENT_SCHEMA = 1;
+
+/** The effective config's own shape version — see effective-config.ts. */
+export const EFFECTIVE_CONFIG_VERSION = 1;
