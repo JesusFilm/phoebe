@@ -23,22 +23,28 @@
 // carries JSDoc, which is what makes the re-export below a typed one.
 
 export type { EnvelopeAad, SecretEnvelope } from "./secret-envelope.mjs";
-export type {
-  SecretListing,
-  SecretOutcome,
-  SecretReceiptDetail,
-  SecretSource,
-  SecretsSection,
-  TenantSecrets,
-} from "./secrets.ts";
 export { openSecret, sealSecret } from "./secret-envelope.mjs";
 export type { StopOutcome } from "./stop-outcome.ts";
+export type {
+  ConfigEdit,
+  EditReceipt,
+  EditRefusalReason,
+  EditRefused,
+  EditWritten,
+} from "./config-edit.ts";
+export { CLOSED_EDIT_BLOCKS } from "./config-edit.ts";
 export { RELAY_ROUTES } from "./relay-routes.ts";
 export type {
   RelayConnectionState,
   RelayDeploymentDetail,
   RelayDeploymentRow,
+  RelayConfigSetAnswer,
+  RelayConfigSetRequest,
+  RelayDoctorRunAnswer,
+  RelayDoctorRunResult,
   RelayIdentity,
+  RelayPairingToken,
+  RelayPerson,
   RelayRoute,
   RelayStoredReport,
 } from "./relay-routes.ts";
@@ -57,11 +63,13 @@ export {
   RELAY_CLOSE,
   RELAY_DARK_AFTER_MS,
   RELAY_DEPLOYMENTS_PATH,
+  RELAY_DOCTOR_RUN,
   RELAY_HEARTBEAT_MS,
   RELAY_MESSAGES,
   RELAY_PROTOCOL,
   RELAY_UNDELIVERED,
   type DeploymentToRelay,
+  type DoctorRunOutcome,
   type RelayChallenge,
   type RelayCloseCode,
   type RelayConfigSet,
@@ -75,18 +83,32 @@ export {
   type RelaySecretSet,
   type RelayToDeployment,
 } from "./relay-protocol.ts";
-export type {
-  ConfigWarning,
-  EffectiveFields,
-  EffectiveLeaf,
-  EffectiveNode,
-  EnvLocation,
-  EnvPresence,
-  SettingReader,
-  SettingSource,
-  ShadowedValue,
-  TenantEffectiveConfig,
-} from "./effective-config.ts";
+// The edge rule itself (`alertEdges` and the body builders in alerts.ts) is not
+// re-exported, for the reason above: it is the one piece of real logic in this
+// directory, and a hand-written copy of it in index.mjs would be a second
+// implementation of the thing whose whole point is that there is only one. Both
+// readers live in this repo — the relay and the companion's main process — and
+// both import alerts.ts directly (#524 §3).
+export {
+  ALERT_CONDITIONS,
+  ALERT_DARK_AFTER_MS,
+  ALERT_SCHEMA,
+  type AlertBody,
+  type AlertCondition,
+  type AlertEdge,
+  type AlertMessage,
+  type AlertState,
+  type AlertTestMessage,
+  type ConnectionAlertFacts,
+  type DeploymentAlertFacts,
+  type DoctorVerdict,
+  type LastAlert,
+  type NotifiedAlert,
+  type NotifiedAlerts,
+  type PipelineAlertFacts,
+  type RelayAlertFacts,
+  type ReportAlertFacts,
+} from "./alerts.ts";
 export type { CredentialArm } from "./credential-arm.ts";
 export type {
   CheckState,
@@ -103,6 +125,8 @@ export type { CurrentUnit, StatusSnapshot, UnitRef } from "./status-snapshot.ts"
 export {
   DEPLOYMENT_SCHEMA,
   type BootstrapperReport,
+  type ConfigReport,
+  type ConfigSource,
   type ChildExit,
   type ChildLiveness,
   type ChildState,
@@ -120,3 +144,24 @@ export {
   type SlotReport,
   type TenantFacts,
 } from "./deployment.ts";
+export { EFFECTIVE_CONFIG_VERSION } from "./effective-config.ts";
+export type {
+  ConfigWarning,
+  EffectiveFields,
+  EffectiveLeaf,
+  EffectiveNode,
+  EnvLocation,
+  EnvPresence,
+  SettingReader,
+  SettingSource,
+  ShadowedValue,
+  TenantEffectiveConfig,
+} from "./effective-config.ts";
+export type {
+  SecretListing,
+  SecretOutcome,
+  SecretReceiptDetail,
+  SecretSource,
+  SecretsSection,
+  TenantSecrets,
+} from "./secrets.ts";

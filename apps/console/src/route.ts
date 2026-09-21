@@ -11,20 +11,26 @@
 // the fleet. A console that threw on a hand-typed hash would be a blank page
 // where a wrong URL should be a wrong page.
 
-/** The tabs a deployment has today. `config` is #545. */
-export const DEPLOYMENT_TABS = ["overview", "pipelines", "doctor", "secrets"] as const;
+/** The tabs a deployment has today. */
+export const DEPLOYMENT_TABS = ["overview", "pipelines", "doctor", "config", "secrets"] as const;
 
 export type DeploymentTab = (typeof DEPLOYMENT_TABS)[number];
 
 /** Which page the console is showing. */
 export type Route =
   | { page: "fleet" }
+  | { page: "people" }
   | { page: "deployment"; fingerprint: string; tab: DeploymentTab };
 
 export const FLEET_ROUTE: Route = { page: "fleet" };
 
 /** The hash for the fleet page. */
 export const FLEET_HREF = "#/fleet";
+
+/** The allowlist and the pairing panel (#548). */
+export const PEOPLE_ROUTE: Route = { page: "people" };
+
+export const PEOPLE_HREF = "#/people";
 
 /**
  * The hash for one deployment's tab. Overview is the bare deployment URL rather
@@ -50,6 +56,7 @@ export function parseRoute(hash: string): Route {
     .replace(/^#/, "")
     .split("/")
     .filter((segment) => segment !== "");
+  if (segments[0] === "people" && segments[1] === undefined) return PEOPLE_ROUTE;
   if (segments[0] !== "d" || segments[1] === undefined) return FLEET_ROUTE;
   const fingerprint = decodeURIComponent(segments[1]);
   if (fingerprint === "") return FLEET_ROUTE;

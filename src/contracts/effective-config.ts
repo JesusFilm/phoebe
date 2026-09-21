@@ -122,9 +122,31 @@ export type ConfigWarning = { path: string; message: string };
 export type TenantEffectiveConfig = {
   /** The tenant's `repoSlug` when it could be read, else the config's path. */
   tenant: string;
+  /**
+   * The file this row's settings were read from, when the reader knows it
+   * (#503, #547). Stamped by the bootstrapper, which asked one checkout about
+   * one config path — so a console can tell the one editable file (the root
+   * config, the only read-write mount) from a tenant config that is the
+   * operator's to edit in its own checkout. Absent on a row nobody could ask
+   * for, and on any answer an older bootstrapper embedded.
+   */
+  configPath?: string;
   /** Why the settings are unknown, or null when they are known. */
   error: string | null;
   fields: EffectiveFields | null;
   env: Record<string, EnvPresence> | null;
   warnings: readonly ConfigWarning[];
 };
+
+/**
+ * The shape version of everything above — what `phoebe config --json` prints as
+ * its `version` and what the deployment report's config section carries. Bump it
+ * when a field's meaning changes in a way an older reader would misread; adding
+ * an optional field does not move it.
+ *
+ * It is here rather than beside the command because two processes name it: the
+ * engine that computes a tenant's tree, and the bootstrapper that embeds what
+ * the engine answered. A runtime value in contracts is written twice — see
+ * index.mjs.
+ */
+export const EFFECTIVE_CONFIG_VERSION = 1;

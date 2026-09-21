@@ -22,10 +22,11 @@ import { dirname, join, relative } from "node:path";
 import { parseDotenv } from "../bootstrap/engine-child-env.ts";
 import { readConfigDir } from "../bootstrap/config-dir.ts";
 import { TENANT_ENV_FILE } from "../bootstrap/tenants.ts";
-import type {
-  EffectiveFields,
-  EffectiveLeaf,
-  TenantEffectiveConfig,
+import {
+  EFFECTIVE_CONFIG_VERSION,
+  type EffectiveFields,
+  type EffectiveLeaf,
+  type TenantEffectiveConfig,
 } from "./contracts/effective-config.ts";
 import { resolveConfig } from "./config-schema.ts";
 import {
@@ -41,13 +42,7 @@ import { tenantSecrets, tenantStateDir } from "./secret-store.ts";
 import { enumerateDeclaredEnv } from "./pipeline-enumerate.ts";
 import { enumerateWorkspaceTenants } from "./tenant-commands.ts";
 
-/**
- * The report's schema. Bump when a field's meaning changes in a way an older
- * reader would misread; adding an optional field does not move it.
- */
-export const EFFECTIVE_CONFIG_VERSION = 1;
-
-/** What `--json` emits, and what the deployment report embeds. */
+/** What `--json` emits, and what the deployment report embeds one row of. */
 export type EffectiveConfigReport = {
   version: number;
   tenants: TenantEffectiveConfig[];
@@ -89,6 +84,7 @@ const CONFIG_HELP_TEXT = `phoebe config — print the effective config (read-onl
 Usage:
   phoebe config [--config <path>]   Every setting, its value, and where it came from
   phoebe config --json              The same object the deployment report embeds
+  phoebe config set <path> <value>  Change one field in place (\`set --help\`)
 
 Run against a workspace root it reports every tenant; anywhere else it reports
 the config it found. A tenant whose config will not load is one errored row —
@@ -346,6 +342,14 @@ export function everyTenantErrored(report: EffectiveConfigReport): boolean {
 
 /** `phoebe config` entry. */
 export async function runConfigCli(argv: readonly string[]): Promise<void> {
+  // The write half is its own module (#536): this one opens files to print
+  // them, that one opens one file to change it, and keeping the read verb free
+  // of the writer is what makes "`phoebe config` never touches the disk" a
+  // property of the import graph rather than a promise in a comment.
+  if (argv[0] === "set") {
+    const { runConfigSetCli } = await import("./config-set.ts");
+    return await runConfigSetCli(argv.slice(1));
+  }
   const parsed = parseConfigArgs(argv);
   if (parsed.help) {
     process.stdout.write(CONFIG_HELP_TEXT);

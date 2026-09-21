@@ -20,10 +20,12 @@
 import { DEPLOYMENT_SCHEMA } from "phoebe-agent/contracts";
 import type {
   ChildLiveness,
+  ConfigReport,
   DeploymentReport,
   DoctorSection,
   EditLedgerEntry,
   FleetCell,
+  ReconcileState,
   RelayStoredReport,
   TenantFacts,
 } from "phoebe-agent/contracts";
@@ -100,6 +102,19 @@ export function doctorOf(report: DeploymentReport): DoctorSection | null {
 }
 
 /**
+ * Every tenant's effective config, as the engine computed it (#502, #535), or
+ * null when the report carries no such section. Null covers a deployment
+ * running an engine older than the section and a section that did not survive
+ * the trip, and neither of them is "this deployment configures nothing" — the
+ * tab says which, rather than drawing an empty table.
+ */
+export function configOf(report: DeploymentReport): ConfigReport | null {
+  return isRecord(report.config) && Array.isArray(report.config.tenants)
+    ? (report.config as unknown as ConfigReport)
+    : null;
+}
+
+/**
  * Config edits applied on the deployment and not yet in a commit (#503). An
  * absent section is an empty list here, because the only thing a reader can do
  * with "this engine does not keep a ledger" is say nothing — and saying nothing
@@ -107,4 +122,18 @@ export function doctorOf(report: DeploymentReport): DoctorSection | null {
  */
 export function editsOf(report: DeploymentReport): EditLedgerEntry[] {
   return Array.isArray(report.edits) ? (report.edits.filter(isRecord) as EditLedgerEntry[]) : [];
+}
+
+/**
+ * The reconcile section — what the bootstrapper is doing about a config or an
+ * engine that moved, and which edit it last applied (#503, #536). Null when the
+ * report carries no bootstrapper section, which is the same "cannot say" every
+ * other reader of a malformed report gets.
+ */
+export function reconcileOf(report: DeploymentReport): ReconcileState | null {
+  const bootstrapper = bootstrapperOf(report);
+  const reconcile = bootstrapper?.reconcile;
+  return isRecord(reconcile) && typeof reconcile.phase === "string"
+    ? (reconcile as unknown as ReconcileState)
+    : null;
 }

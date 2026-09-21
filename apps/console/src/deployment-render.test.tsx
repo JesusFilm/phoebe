@@ -6,9 +6,10 @@
 //
 // The assertions are the ones the page would be wrong without — the connection
 // panel staying out of doctor's way, two lines per pipeline, a unit counted
-// against the budget it was given, doctor's four verdicts each legible, and a
-// deployment that has never connected saying so instead of drawing three empty
-// tabs.
+// against the budget it was given, doctor's four verdicts each legible, the
+// config table keeping `via` out of the row and the shadowed value under its
+// winner, and a deployment that has never connected saying so instead of
+// drawing four empty tabs.
 
 import { describe, expect, test } from "vite-plus/test";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -19,14 +20,16 @@ import {
   ago,
   cell,
   check,
+  client,
   child,
+  configReport,
   doctor,
+  effectiveConfig,
   NOW,
   report,
   row,
   snapshot,
   stored,
-  stubClient,
   tenant,
 } from "./test-fixture.ts";
 
@@ -107,27 +110,42 @@ const BUSY_FACTS = rowFacts(row({ name: "jesusfilm-workspace" }), stored(BUSY));
 
 function render(tab: DeploymentTab, facts = BUSY_FACTS): string {
   return renderToStaticMarkup(
-    <DeploymentPage facts={facts} tab={tab} now={NOW} client={stubClient()} />,
+    <DeploymentPage facts={facts} tab={tab} client={client()} now={NOW} />,
+  );
+}
+
+/**
+ * The same page with a way to edit (#547). Separate from `render` so every
+ * assertion above still reads the tab a console with no seam draws — which is
+ * what the companion's renderer gets until its own seam lands (#553).
+ */
+function renderEditable(facts = BUSY_FACTS): string {
+  return renderToStaticMarkup(
+    <DeploymentPage
+      facts={facts}
+      tab="config"
+      client={client()}
+      now={NOW}
+      onEdit={() => Promise.reject(new Error("no test presses this"))}
+    />,
   );
 }
 
 const overview = render("overview");
 const pipelines = render("pipelines");
 const doctorTab = render("doctor");
+const config = render("config");
 
 describe("the tabs", () => {
   test("names the tabs the console answers, and links each one", () => {
     // Overview is the bare deployment URL, so one deployment has one address.
     expect(overview).toContain(`href="#/d/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA">overview<`);
-    for (const tab of ["pipelines", "doctor", "secrets"]) {
+    for (const tab of ["pipelines", "doctor", "config", "secrets"]) {
       expect(overview, tab).toContain(`href="#/d/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/${tab}"`);
     }
   });
 
-  test("does not offer a tab nothing answers yet", () => {
-    // Config is #545; a tab that opens nothing is a dead end.
-    expect(overview).not.toContain(">config<");
-  });
+  test("does not offer a tab nothing answers yet", () => {});
 
   test("marks the current tab for a screen reader, not only with a colour", () => {
     expect(doctorTab).toContain('aria-current="page"');
@@ -238,6 +256,199 @@ describe("the doctor tab", () => {
     expect(markup).toContain("never produced a doctor report");
     expect(markup).not.toContain("chip check");
   });
+
+  test("offers the run, because a connected deployment can be asked (#546)", () => {
+    expect(doctorTab).toContain('aria-label="Run doctor"');
+    expect(doctorTab).toContain(">Run doctor<");
+    expect(doctorTab).not.toContain("disabled");
+  });
+
+  test("is disabled with the reason when the relay is not holding the connection", () => {
+    const gone = rowFacts(
+      row({ state: "dark", connectedSince: null, lastSeen: ago(2 * 86_400) }),
+      stored(report()),
+    );
+    const markup = render("doctor", gone);
+
+    expect(markup).toContain("disabled");
+    expect(markup).toContain("has been dark");
+    expect(markup).toContain("would come back undelivered");
+  });
+});
+
+describe("the config tab", () => {
+  test("gives every leaf a row, with the path spelled the way the file has it", () => {
+    expect(config).toContain("pipelines.work.kinds.research.model");
+    expect(config).toContain("repoSlug");
+  });
+
+  test("shows the source chip on every row", () => {
+    for (const source of ["file", "overlay", "alias", "inherited", "derived", "default"]) {
+      expect(config, source).toContain(`chip src ${source}`);
+    }
+  });
+
+  test("keeps via and from out of the row, and inside the disclosure", () => {
+    // The resolution (#509): the chip is enough inline; `via` and `from` are on
+    // hover or expand. Both here — the summary's title and the open body.
+    expect(config).toContain('title="via PHOEBE_WORK_CONCURRENCY · read from tenantEnv"');
+    expect(config).toContain("<details");
+    expect(config).toContain("read by bootstrapper");
+  });
+
+  test("puts a shadowed value under the winner, with what shadowed it", () => {
+    expect(config).toContain("shadowed:");
+    expect(config).toContain("(file via phoebe.config.ts)");
+  });
+
+  test("counts each source in a chip that filters by it", () => {
+    expect(config).toContain("file 3");
+    expect(config).toContain("overlay 1");
+    expect(config).toContain('aria-pressed="false"');
+  });
+
+  test("puts the warnings above the table, not in a row of it", () => {
+    const warning = config.indexOf("workOrder is the old name");
+    expect(warning).toBeGreaterThan(-1);
+    expect(warning).toBeLessThan(config.indexOf("<table"));
+  });
+
+  test("shows the fingerprint of the file an edit would check itself against", () => {
+    expect(config).toContain("/etc/phoebe/phoebe.config.ts");
+    expect(config).toContain("sha256:9f2c1b7e");
+  });
+
+  test("prints an opaque value as the summary it is, not as JSON", () => {
+    expect(config).toContain("a compose file and two mounts");
+    expect(config).toContain(">opaque<");
+  });
+
+  test("a tenant whose settings are unknown says so instead of drawing a table", () => {
+    const held = render(
+      "config",
+      rowFacts(
+        row(),
+        stored(
+          report({
+            config: configReport({
+              tenants: [
+                effectiveConfig({
+                  tenant: "JesusFilm/legacy",
+                  error: 'unknown provider "claude-code-v1"',
+                  fields: null,
+                  env: null,
+                  warnings: [],
+                }),
+              ],
+            }),
+          }),
+        ),
+      ),
+    );
+    expect(held).toContain("unknown provider &quot;claude-code-v1&quot;");
+    expect(held).not.toContain("<table");
+    // The filter found nothing, but nothing is not what the filter did.
+    expect(held).not.toContain("No leaf matches");
+  });
+
+  test("a config file that could not be read refuses the edit rather than hiding", () => {
+    const unread = render(
+      "config",
+      rowFacts(
+        row(),
+        stored(
+          report({
+            config: configReport({ root: { path: "phoebe.config.ts", fingerprint: null } }),
+          }),
+        ),
+      ),
+    );
+    expect(unread).toContain("could not be read");
+  });
+
+  test("offers no edit column at all when this console has no way to write", () => {
+    expect(config).not.toContain("<th>edit</th>");
+    expect(config).not.toContain(">Edit<");
+  });
+
+  test("a report with no config section says which kind of nothing that is", () => {
+    const older = render("config", rowFacts(row(), stored(report({ config: undefined }))));
+    expect(older).toContain("no config section");
+    expect(older).not.toContain("<table");
+  });
+});
+
+describe("the edit affordance on the config tab (#503, #547)", () => {
+  const editable = renderEditable();
+
+  test("a leaf `config set` accepts carries an Edit, and the column says so", () => {
+    expect(editable).toContain("<th>edit</th>");
+    expect(editable).toContain(">Edit<");
+  });
+
+  test("a leaf env decides says why instead, and names the variable", () => {
+    expect(editable).toContain("not editable");
+    expect(editable).toContain(
+      "PHOEBE_WORK_CONCURRENCY` sets this in the deployment&#x27;s environment",
+    );
+  });
+
+  test("every closed leaf carries the manual edit and the verb to run", () => {
+    expect(editable).toContain("by hand.");
+    expect(editable).toContain("phoebe config set");
+    // The engine pin is closed for a reason of its own, and it says which.
+    expect(editable).toContain("phoebe upgrade");
+  });
+
+  test("a work kind's own setting is editable even though its declaration is not", () => {
+    // Both are in the fixture's tree: `kinds.research` is a block, and
+    // `kinds.research.model` is a literal inside it.
+    const rows = editable.split("<tr>");
+    const model = rows.find((cell) => cell.includes("kinds.research.model"));
+    expect(model).toBeDefined();
+    expect(model).toContain(">Edit<");
+  });
+
+  test("a tenant's own config is edited in its checkout, with that file in the command", () => {
+    const workspace = renderEditable(
+      rowFacts(
+        row(),
+        stored(
+          report({
+            config: configReport({
+              root: { path: "/etc/phoebe/phoebe.config.ts", fingerprint: "sha256:root" },
+              tenants: [
+                effectiveConfig({
+                  tenant: "JesusFilm/web",
+                  configPath: "/etc/phoebe/children/web/phoebe.config.ts",
+                }),
+              ],
+            }),
+          }),
+        ),
+      ),
+    );
+    expect(workspace).not.toContain(">Edit<");
+    expect(workspace).toContain("tenant&#x27;s own config");
+    expect(workspace).toContain("--config /etc/phoebe/children/web/phoebe.config.ts");
+  });
+
+  test("a root config that could not be read closes every leaf, with the reason", () => {
+    const unread = renderEditable(
+      rowFacts(
+        row(),
+        stored(
+          report({
+            config: configReport({
+              root: { path: "/etc/phoebe/phoebe.config.ts", fingerprint: null },
+            }),
+          }),
+        ),
+      ),
+    );
+    expect(unread).not.toContain(">Edit<");
+    expect(unread).toContain("could not read its root config");
+  });
 });
 
 describe("a deployment that has never connected", () => {
@@ -266,12 +477,19 @@ describe("a deployment that has never connected", () => {
     expect(markup).toContain("last heard");
   });
 
-  test("pipelines and doctor say why they are empty and point back at the overview", () => {
+  test("the other tabs say why they are empty and point back at the overview", () => {
     for (const tab of ["pipelines", "doctor"] as const) {
       const markup = render(tab, unseen);
       expect(markup, tab).toContain("has never connected");
       expect(markup, tab).toContain("#/d/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
     }
+  });
+
+  test("doctor keeps its button, disabled: there is nothing to ask until it boots", () => {
+    const markup = render("doctor", unseen);
+    expect(markup).toContain(">Run doctor<");
+    expect(markup).toContain("disabled");
+    expect(markup).toContain("nothing to ask until it boots");
   });
 
   test("a report this console cannot read is its own kind of nothing", () => {

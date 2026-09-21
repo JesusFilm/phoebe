@@ -29,6 +29,7 @@
   --attention-bg: #fff8f0;
   --dark-bg: #f1f2f4;
   --chip: #eceef1;
+  --chip-set: #dfe6fa;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -48,6 +49,7 @@
     --attention-bg: #2a1f16;
     --dark-bg: #20242b;
     --chip: #272c34;
+    --chip-set: #26314a;
   }
 }
 
@@ -496,6 +498,272 @@ table.rows tr.attention td {
   padding: 14px 16px;
   max-width: 460px;
   margin: 40px auto;
+}
+
+/* ── run doctor ────────────────────────────────────────────────────────── */
+
+.run-doctor {
+  margin: 0 0 14px;
+}
+
+.run-doctor button:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.run-doctor p {
+  margin: 6px 0 0;
+}
+
+/* ── the config tab ────────────────────────────────────────────────────── */
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0;
+}
+
+.filter {
+  font: inherit;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: inherit;
+  min-width: 240px;
+}
+
+/* The six sources, in three tiers rather than six colours: a value somebody set
+ * is tinted, a deprecated alias is the warn colour, and the three that mean
+ * "nobody said otherwise" are muted. Greyscale keeps all three apart, and the
+ * word in the chip is the precise answer either way. */
+button.chip {
+  border: 1px solid transparent;
+  padding: 0 6px;
+  margin: 0;
+  border-radius: 9px;
+}
+
+.chip.src.file,
+.chip.src.overlay {
+  background: var(--chip-set);
+}
+
+.chip.src.alias {
+  background: var(--warn);
+  color: #1a1206;
+}
+
+.chip.src.default,
+.chip.src.derived,
+.chip.src.inherited {
+  color: var(--muted);
+}
+
+.chip.picked {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+table.rows.config th[scope="row"] {
+  width: 34%;
+}
+
+.shadowed {
+  font-size: 12px;
+}
+
+/* The disclosure that holds `via` and `from` (#509): the chip is the summary,
+ * so the row reads as one chip until it is opened. */
+details.why > summary {
+  cursor: pointer;
+  list-style-position: inside;
+}
+
+details.why > summary::marker {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.warnings {
+  margin: 10px 0;
+}
+
+.warning {
+  border-left: 3px solid var(--warn);
+  background: var(--panel);
+  margin: 4px 0;
+  padding: 6px 10px;
+}
+
+/* The colour of a verdict the deployment itself called a success — the other
+ * half of `.bad`, and used for exactly the same reason: nothing on screen
+ * decides to be green, it is quoting a receipt that said `written`. */
+.good {
+  color: var(--ok);
+}
+
+/* The edit form on one leaf (#547). Inline in the row rather than in a dialog:
+ * the value being changed is the one on the line above it, and a modal would
+ * hide the source chip that says whether the change will take effect. */
+.editform {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.editform label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.editform .filter {
+  min-width: 140px;
+}
+
+/* A receipt, under the row it answers. Bordered on the left like a warning,
+ * because it is the same kind of thing: a sentence about this row that outlives
+ * the moment it appeared in. */
+.receipt {
+  border-left: 3px solid var(--accent);
+  background: var(--panel);
+  margin: 6px 0;
+  padding: 6px 10px;
+}
+
+/* A command to copy. Pre-wrapped, so a long `--config` path wraps rather than
+ * scrolling a table sideways. */
+.cmd {
+  font-size: 12px;
+  margin: 4px 0;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ── the page tabs ─────────────────────────────────────────────────────── */
+
+.pages {
+  display: flex;
+  gap: 14px;
+}
+
+.pages a {
+  text-decoration: none;
+  color: var(--muted);
+  padding-bottom: 2px;
+  border-bottom: 2px solid transparent;
+}
+
+.pages a.current {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+}
+
+/* ── the People page ───────────────────────────────────────────────────── */
+
+.add-person {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 0 6px;
+}
+
+.add-person input {
+  font: inherit;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: inherit;
+  min-width: 260px;
+}
+
+.trouble {
+  color: var(--fail);
+}
+
+.people {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  max-width: 720px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.person {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.person:last-child {
+  border-bottom: none;
+}
+
+.person .name {
+  font-weight: 600;
+}
+
+.person .facts:last-of-type {
+  margin-left: auto;
+}
+
+.person button {
+  margin-left: auto;
+}
+
+/* ── minting a pairing token ───────────────────────────────────────────── */
+
+.pairing {
+  margin-top: 26px;
+  max-width: 720px;
+}
+
+.pairing h2 {
+  font-size: 15px;
+  margin: 0 0 4px;
+}
+
+.pairing .legend {
+  margin-bottom: 8px;
+}
+
+.token {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--warn);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.token p {
+  margin: 0 0 8px;
+}
+
+.token ol {
+  margin: 0 0 8px;
+  padding-left: 20px;
+}
+
+.token-value {
+  /* The one string on the page that has to survive a double-click. */
+  user-select: all;
+  word-break: break-all;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--chip);
 }
 
 /* The secrets tab's one form, and the receipt it leaves behind (#550). */

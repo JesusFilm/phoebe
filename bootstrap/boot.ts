@@ -80,6 +80,8 @@ import {
 } from "./github-app.ts";
 import { attachBroker } from "./broker-ipc.ts";
 import { attachEngineReports } from "./engine-report-ipc.ts";
+import { createConfigCollector, createRootConfigSource } from "./config-report.ts";
+import { createConfigEditor, type ConfigEditor } from "./config-editor.ts";
 import {
   createDoctorRunner,
   spawnDoctor,
@@ -481,6 +483,7 @@ async function launchTarget(configPath: string, guard: CrashGuard): Promise<Laun
       sample,
       pipelines: probePipelineEnumeration(entry),
       stateSweep: createStateSweeper({ entry }),
+      configs: createConfigCollector({ entry, fingerprint: tenantFingerprint }),
     };
   }
 
@@ -517,6 +520,7 @@ async function launchTarget(configPath: string, guard: CrashGuard): Promise<Laun
     sample,
     pipelines: probePipelineEnumeration(entry),
     stateSweep: createStateSweeper({ entry }),
+    configs: createConfigCollector({ entry, fingerprint: tenantFingerprint }),
   };
 }
 
@@ -981,6 +985,8 @@ function runFleet(opts: {
   secrets: SecretInventoryRunner;
   /** The tenants discovery is holding, for the inventory's own list. */
   heldTenants: () => readonly HeldTenant[];
+  /** The config-edit pen (#536): pointed at each new checkout, nudged on a write. */
+  editor: ConfigEditor;
   hostKnobs: DeploymentHostKnobs;
 }): Promise<EngineExit> {
   const { broker, deployment, doctor } = opts;
@@ -1080,12 +1086,17 @@ function runFleet(opts: {
   };
 
   return superviseFleet({
+    onNudge: opts.editor.useNudge,
     launch: async () => {
       const engine = await launchTarget(opts.configPath, opts.guard);
+      // Validation is the *running* engine's answer (#503), so the validator
+      // moves with every materialization, exactly as the config collector does.
+      opts.editor.useEngine(engine.entry);
       deployment.noteEngine({
         ref: engineRefOf(engine),
         sha: engine.sha,
         quarantinedSha: engine.quarantinedSha,
+        ...(engine.configs !== undefined ? { config: engine.configs } : {}),
       });
       return engine;
     },
@@ -1827,11 +1838,23 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       });
     },
   });
+  // The config-edit pen (#536, decision #503). Built with the root config's path
+  // and nothing else: a workspace's tenant configs sit under the same `:ro`
+  // mount and stay the operator's to edit in their own checkouts, and this
+  // editor cannot reach them because it was never given them.
+  const editor = createConfigEditor({ rootConfigPath: configPath, dataBase });
   const deployment = createDeploymentState({
     identity: relay.identity,
     dataBase,
     crashLoop: () => guard.state(),
     slots: () => brokerSlots(broker),
+    // The root config is the one file a console may edit (#503), so it is the
+    // one an edit's fingerprint must be taken over.
+    rootConfig: createRootConfigSource(configPath),
+    lastEditId: () => editor.lastEditId(),
+    // The ledger's live entries, so a console can say "edits not yet in a
+    // commit" without reading this deployment's git (#503).
+    edits: () => editor.liveEdits(),
     // Workspace: the tenant's own `.env` weighed against the deployment env.
     // Solo: the root *is* the tenant, so those are the same env (#162).
     armOf:
@@ -1880,6 +1903,24 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       ),
   });
   doctor.start();
+  // Dialled here rather than beside the model it reports into: the link carries
+  // the console's asks as well as the report, and "Run doctor" has to reach the
+  // runner built above (#546). Nothing is lost by the wait — a push before the
+  // first connection is a no-op, and every connection opens with the whole
+  // report anyway.
+  relay.start(deployment, {
+    // The pen goes up the rail with the link (#503, #547): a console's edit is
+    // the same call a shell `phoebe config set` makes, arriving from a message
+    // instead of from argv, so there is one writer and one reconcile path.
+    configSet: (edit) => editor.apply(edit),
+    runDoctor: (by) => {
+      const ask = doctor.request("request", by);
+      // The report is where what doctor found goes (#507 §7). Nothing here waits
+      // for it: the receipt has already said which run the asker is watching.
+      void ask.result.catch(() => {});
+      return { outcome: ask.outcome, ...(ask.detail !== undefined ? { detail: ask.detail } : {}) };
+    },
+  });
 
   // Dialled last, after everything an inbound request reaches: the secrets
   // handler the link was built with runs against `secrets` and `doctor`, and a
@@ -1928,6 +1969,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
         broker,
         deployment,
         doctor,
+        editor,
         hostKnobs,
         secrets,
         heldTenants: () => held,
@@ -1997,10 +2039,14 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       await loadMountedConfig(configPath, configFingerprint(configPath)),
     );
     const engine = await launchTarget(configPath, guard);
+    // Validation is the *running* engine's answer (#503), so the validator moves
+    // with every materialization, exactly as the config collector does.
+    editor.useEngine(engine.entry);
     deployment.noteEngine({
       ref: engineRefOf(engine),
       sha: engine.sha,
       quarantinedSha: engine.quarantinedSha,
+      ...(engine.configs !== undefined ? { config: engine.configs } : {}),
     });
     return engine;
   };
@@ -2093,6 +2139,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   let exit: EngineExit;
   try {
     exit = await superviseFleet({
+      onNudge: editor.useNudge,
       launch: launchSolo,
       // Solo's tenant axis stays inert: the root *is* the tenant, so every edit
       // to its config is already the engine axis's business (relaunch on a moved

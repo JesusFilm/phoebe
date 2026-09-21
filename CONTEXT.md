@@ -53,6 +53,11 @@ and shipped as-is to a relay. A consumer renders it and derives nothing of its o
 _Avoid_: snapshot (that is `status.json`), state (that is the directory), status (that is
 the CLI verb), manifest
 
+**Console**:
+The operator's web view of every deployment's report, served by the relay. `phoebe status`
+is the same report read locally, not a second console.
+_Avoid_: dashboard, local console
+
 **Pass**:
 One turn of an engine's loop: poll, select, admit what it can, then wait. A supervised
 engine reports each completed pass to its bootstrapper, which is the only evidence that a
@@ -105,6 +110,24 @@ _Avoid_: local/global, child/root
 Removing a key from the secret store so the `.env` or ambient value governs again. Not a
 tombstone and not a revocation — revoking a secret is rotating it.
 _Avoid_: unset, delete, revoke
+
+**Config edit**:
+One field patch to a config file — `{ path, value }` against a fingerprint — applied in
+place by the splice substrate, at a shell or through the relay. Never a whole file, and
+never more than one leaf.
+_Avoid_: change, update, patch (that is the wire shape, not the act)
+
+**Edit receipt**:
+The deployment's answer to a config edit: `written`, or `refused` with the reason and the
+exact manual edit. It ends there — what the reconcile it set going did is the deployment
+report's news.
+_Avoid_: ack, response
+
+**Edit ledger**:
+The on-volume record of the edits this deployment applied and who asked for them,
+`state/config-edits.json`. It answers a redelivered edit with its original receipt, and
+rolls off whole once the file moves by a hand other than the writer's.
+_Avoid_: audit log, history
 
 **Arm**:
 One of a mutually exclusive pair of shapes a deployment takes, resolved rather than
@@ -394,3 +417,17 @@ _Avoid_: revoke, delete, unpair
 The host-side verb, `phoebe relay leave`, that deletes the deployment key from the data
 volume. The other half of forget, and neither half needs the other to work.
 _Avoid_: unlink, disconnect
+
+**Alert**:
+A message the relay sends out when a deployment or one of its pipelines crosses into or
+out of a named condition: `dark`, `wedged`, `crash-looping`, `doctor-fail`, `replaced`.
+Every raise has a matching clear, unseen is silent, and the edge rule that decides is one
+pure function both the relay and the companion run. It is a transition, never a record —
+`alerts.json` holds the last state notified per (deployment, condition) and nothing else.
+_Avoid_: notification (the events stream already notifies the browser), incident, page
+
+**Sink**:
+Somewhere an alert goes. There are two: the generic webhook `RELAY_ALERT_WEBHOOK` names,
+and the `alert` event on the events stream. The webhook is optional and the event is not,
+so an unset variable means no webhook rather than no alerting.
+_Avoid_: channel, target, subscriber

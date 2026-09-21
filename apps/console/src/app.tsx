@@ -1,5 +1,5 @@
-// The console's shell: the session gate, the fleet it holds, and the rail and
-// grid it hands them to.
+// The console's shell: the session gate, the fleet it holds, the rail and grid it
+// hands them to, and the hash the pages are chosen by.
 //
 // Everything it needs from the relay arrives through the one client seam, so this
 // component is the same component in the companion's renderer with a different
@@ -14,13 +14,16 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { RELAY_ROUTES } from "phoebe-agent/contracts";
 import type { RelayIdentity } from "phoebe-agent/contracts";
+import { readEditAnswer, type EditAnswer } from "./config-edit.ts";
 import { DeploymentPage, NoSuchDeployment } from "./deployment-page.tsx";
 import { rowFacts, sortFleet, type RowFacts } from "./facts.ts";
 import { applyEvent, EMPTY_FLEET, loadFleet, type FleetState } from "./fleet-state.ts";
 import { FleetPage } from "./fleet-page.tsx";
+import { PeoplePage } from "./people-page.tsx";
 import { Rail } from "./rail.tsx";
 import { isNotSignedIn, type RelayClient } from "./relay-client.ts";
-import { FLEET_ROUTE, parseRoute, type Route } from "./route.ts";
+import { configOf } from "./report.ts";
+import { FLEET_HREF, FLEET_ROUTE, PEOPLE_HREF, parseRoute, type Route } from "./route.ts";
 
 type Session =
   | { kind: "asking" }
@@ -85,11 +88,11 @@ function Console({
   identity: RelayIdentity;
   onSignedOut: () => void;
 }) {
+  const route = useRoute();
   const [fleet, setFleet] = useState<FleetState>(EMPTY_FLEET);
   const [loaded, setLoaded] = useState(false);
   const [trouble, setTrouble] = useState<string | null>(null);
   const now = useNow(1000);
-  const route = useRoute();
 
   useEffect(() => {
     let live = true;
@@ -127,6 +130,14 @@ function Console({
     <>
       <header className="topbar">
         <span className="brand">Phoebe console</span>
+        <nav className="pages" aria-label="Pages">
+          <a href={FLEET_HREF} className={route.page === "people" ? "" : "current"}>
+            Fleet
+          </a>
+          <a href={PEOPLE_HREF} className={route.page === "people" ? "current" : ""}>
+            People
+          </a>
+        </nav>
         <span className="spacer" />
         <span className="muted">{identity.email}</span>
         <button
@@ -144,13 +155,15 @@ function Console({
           selected={route.page === "deployment" ? route.fingerprint : null}
           now={now}
         />
-        {trouble !== null ? (
+        {route.page === "people" ? (
+          <PeoplePage client={client} now={now} onSignedOut={onSignedOut} />
+        ) : trouble !== null ? (
           <main className="main">
             <h1>Fleet</h1>
             <p className="muted">The relay did not answer: {trouble}</p>
           </main>
         ) : loaded ? (
-          <Page route={route} facts={facts} now={now} client={client} />
+          <Page route={route} facts={facts} client={client} now={now} />
         ) : (
           <main className="main">
             <h1>Fleet</h1>
@@ -170,19 +183,57 @@ function Console({
 function Page({
   route,
   facts,
-  now,
   client,
+  now,
 }: {
   route: Route;
   facts: RowFacts[];
-  now: Date;
-  /** Handed on to the deployment page, whose secrets tab sends through it. */
+  /** The pages that ask for something need the seam too, not only the shell. */
   client: RelayClient;
+  now: Date;
 }) {
-  if (route.page === "fleet") return <FleetPage facts={facts} now={now} />;
+  if (route.page !== "deployment") return <FleetPage facts={facts} client={client} now={now} />;
   const found = facts.find((row) => row.row.fingerprint === route.fingerprint);
   if (found === undefined) return <NoSuchDeployment fingerprint={route.fingerprint} />;
-  return <DeploymentPage facts={found} tab={route.tab} now={now} client={client} />;
+  // The fingerprint the page was drawn with, not a fresh read of it: that is
+  // what makes the edit optimistic-concurrency-checked rather than applied to
+  // text nobody looked at (#503).
+  const loaded =
+    found.reading.kind === "read" ? (configOf(found.reading.report)?.root.fingerprint ?? "") : "";
+  return (
+    <DeploymentPage
+      facts={found}
+      tab={route.tab}
+      client={client}
+      now={now}
+      onEdit={(edit) => sendConfigEdit(client, found.row.fingerprint, loaded, edit)}
+    />
+  );
+}
+
+/**
+ * One config edit, from a row's Save to the answer it renders (#503, #547).
+ *
+ * The id is minted here, and it is the edit's idempotency key: the same id twice
+ * is the same edit, and the deployment answers the second with the first one's
+ * receipt. That is what makes a retry — a double-press, a reconnect — free of a
+ * second write.
+ */
+async function sendConfigEdit(
+  client: RelayClient,
+  fingerprint: string,
+  configFingerprint: string,
+  edit: { path: string; value: string | number | boolean | null },
+): Promise<{ id: string; answer: EditAnswer }> {
+  const id = crypto.randomUUID();
+  const answer = await client.setConfigField({
+    fingerprint,
+    id,
+    path: edit.path,
+    value: edit.value,
+    configFingerprint,
+  });
+  return { id, answer: readEditAnswer(answer) };
 }
 
 /**

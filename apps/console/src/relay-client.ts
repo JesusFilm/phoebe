@@ -14,10 +14,16 @@
 
 import { RELAY_EVENTS, RELAY_ROUTES } from "phoebe-agent/contracts";
 import type {
+  RelayConfigSetAnswer,
+  RelayConfigSetRequest,
   RelayDeploymentDetail,
   RelayDeploymentRow,
+  RelayDoctorRunAnswer,
+  RelayDoctorRunResult,
   RelayEvent,
   RelayIdentity,
+  RelayPairingToken,
+  RelayPerson,
   SecretReceiptDetail,
 } from "phoebe-agent/contracts";
 
@@ -67,6 +73,32 @@ export type RelayClient = {
    */
   deployment: (fingerprint: string) => Promise<RelayDeploymentDetail>;
   /**
+   * Set one field of one deployment's root config (#503, #547). Answers the
+   * deployment's own receipt — `written` or `refused` — or the relay's
+   * `undelivered` when it never got there. All three are outcomes a page
+   * renders, so none of them throws.
+   *
+   * What does throw is the relay refusing the request itself: a session that is
+   * gone, a patch it will not carry, a deployment it has no link for. Those are
+   * about this call rather than about the config, and the caller says so in
+   * different words.
+   *
+   * The author is not a parameter. The relay stamps the signed-in address on
+   * the way past, which is what makes the ledger's `by` the session's word.
+   */
+  setConfigField: (edit: RelayConfigSetRequest) => Promise<RelayConfigSetAnswer>;
+
+  /**
+   * Ask one deployment to run doctor, or every deployment when no fingerprint is
+   * given (#546). Answers one result per deployment asked, whichever it was, so
+   * a page renders the two the same way.
+   *
+   * What the run finds is not here. It arrives as the next report on the event
+   * stream, which is the same path every other fact about a deployment takes.
+   */
+  runDoctor: (fingerprint?: string) => Promise<RelayDoctorRunResult[]>;
+
+  /**
    * Set or clear one tenant secret on a deployment (#550). The relay forwards
    * the envelope unopened and answers with whatever the deployment said.
    *
@@ -81,6 +113,25 @@ export type RelayClient = {
    * its own, and a page that missed an event catches up by re-reading.
    */
   events: (onEvent: (event: RelayEvent) => void) => () => void;
+  /** Everyone who may sign in, as the People page lists them (#505 §6). */
+  people: () => Promise<RelayPerson[]>;
+  /**
+   * Add one person by address. The refusals — a malformed address, an address
+   * already on the list — arrive as a `RelayRequestError` whose `code` the page
+   * turns into a sentence.
+   */
+  addPerson: (email: string) => Promise<RelayPerson>;
+  /**
+   * Remove one person, and with them their sessions. Answers how many sessions
+   * ended, because "they are signed out now" is the half of a removal an
+   * operator cannot otherwise see.
+   */
+  removePerson: (email: string) => Promise<{ sessionsEnded: number }>;
+  /**
+   * Mint one pairing token. The string comes back once and the relay keeps only
+   * its expiry, so a caller that loses it mints another.
+   */
+  mintPairingToken: () => Promise<RelayPairingToken>;
 };
 
 /** A relay answer the console did not ask for. `code` is the body's `error`. */
@@ -140,6 +191,25 @@ export function createBrowserRelayClient(options: BrowserRelayClientOptions = {}
     return (await response.json()) as T;
   }
 
+  /**
+   * A verb. `body` is omitted rather than sent as `{}` when there is nothing to
+   * say, which is what the mint is: a POST whose whole content is that it
+   * happened.
+   */
+  async function post<T>(path: string, body?: unknown): Promise<T> {
+    const response = await call(path, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        accept: "application/json",
+        ...(body === undefined ? {} : { "content-type": "application/json" }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    if (!response.ok) throw new RelayRequestError(response.status, await errorCode(response));
+    return (await response.json()) as T;
+  }
+
   return {
     async me() {
       try {
@@ -171,6 +241,49 @@ export function createBrowserRelayClient(options: BrowserRelayClientOptions = {}
       return get<RelayDeploymentDetail>(
         `${RELAY_ROUTES.deployments}/${encodeURIComponent(fingerprint)}`,
       );
+    },
+
+    async people() {
+      const body = await get<{ people: RelayPerson[] }>(RELAY_ROUTES.people);
+      return body.people;
+    },
+
+    async addPerson(email) {
+      const body = await post<{ person: RelayPerson }>(RELAY_ROUTES.people, { email });
+      return body.person;
+    },
+
+    async removePerson(email) {
+      const body = await post<{ sessionsEnded: number }>(RELAY_ROUTES.removePerson, { email });
+      return { sessionsEnded: body.sessionsEnded };
+    },
+
+    mintPairingToken() {
+      return post<RelayPairingToken>(RELAY_ROUTES.pairingTokens);
+    },
+
+    async setConfigField(edit) {
+      const response = await call(RELAY_ROUTES.configSet, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify(edit),
+      });
+      if (!response.ok) throw new RelayRequestError(response.status, await errorCode(response));
+      return (await response.json()) as RelayConfigSetAnswer;
+    },
+
+    async runDoctor(fingerprint) {
+      const response = await call(RELAY_ROUTES.doctorRun, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        // An empty object, not an empty body: no fingerprint is what asks the
+        // whole fleet, and the relay reads that from the JSON it parses.
+        body: JSON.stringify(fingerprint === undefined ? {} : { fingerprint }),
+      });
+      if (!response.ok) throw new RelayRequestError(response.status, await errorCode(response));
+      return ((await response.json()) as RelayDoctorRunAnswer).results;
     },
 
     async setSecret(request) {

@@ -41,11 +41,48 @@ export const RELAY_ROUTES = {
    */
   forget: "/api/deployments/forget",
   /**
+   * POST — **set one config field** on one deployment (#503, #547). The
+   * deployment's fingerprint rides in the body beside the patch, for the reason
+   * `forget` does: one importable constant, and the per-deployment read this
+   * shares a prefix with is a GET.
+   */
+  configSet: "/api/deployments/config-set",
+  /**
+   * POST — **run doctor** (#546, decided in #507 §10). One deployment when the
+   * body names a fingerprint, every deployment the relay knows when it does
+   * not: one button for the fleet, one message per deployment, and one receipt
+   * each. The answer is {@link RelayDoctorRunAnswer}.
+   *
+   * The relay answers no check itself. It carries the ask and reports what came
+   * back — the checks all read the deployment's own files, env, clone and
+   * credentials (#507 §8).
+   */
+  doctorRun: "/api/deployments/doctor-run",
+  /**
    * GET — the server-sent-events stream: reports and connection changes as they
    * happen, so a page updates without polling (#506 §10, #542). The event names
    * and their payloads are in relay-events.ts.
    */
   events: "/api/events",
+  /**
+   * GET — everyone who may sign into this relay. POST — add one, by email, in
+   * the body (#505 §6). There are no roles: everyone on the list can do
+   * everything, so this read carries no permissions and never will.
+   */
+  people: "/api/people",
+  /**
+   * POST — remove one person, by email in the body. A separate path for the
+   * same reason `forget` has one: the address rides in the body, so this stays
+   * a constant a console imports rather than a string it builds.
+   */
+  removePerson: "/api/people/remove",
+  /**
+   * POST — send a `{ kind: "test" }` body to every configured alert sink (#515
+   * §13). Fleet-wide and carries no body, because the question it answers is
+   * whether the webhook works and not anything about a deployment. A relay-local
+   * verb, so the effort stays read-only from a deployment's point of view.
+   */
+  testAlert: "/api/alerts/test",
   /**
    * POST — set or clear one tenant secret on a deployment (#550). The body
    * carries the fingerprint, the tenant, the key and — on a set — the envelope
@@ -70,6 +107,57 @@ export type RelayIdentity = {
   sub: string;
   /** The verified address that person signed in with. */
   email: string;
+};
+
+/**
+ * One person on the allowlist, as the People page reads them (#505 §6).
+ *
+ * Facts, not permissions: there are no roles, so nothing here says what this
+ * person may do — everyone on the list can do everything. What it does say is
+ * where the entry came from and whether it is the reader's own, because those
+ * are the two things that decide whether the page offers to remove it.
+ */
+export type RelayPerson = {
+  /** Lowercased: what an operator typed, or what Google last reported. */
+  email: string;
+  /**
+   * `bootstrap` for the login that seeded an unclaimed relay, `environment` for
+   * an `ALLOWED_EMAILS` entry, otherwise the address that added them.
+   */
+  addedBy: string;
+  /** ISO 8601. An environment entry is stamped with the epoch: it has no moment. */
+  addedAt: string;
+  /**
+   * From `ALLOWED_EMAILS`. Recomputed at every start and never written to the
+   * volume, so the UI cannot remove it: the way out of a lockout is editing
+   * that variable and restarting, which only works if nothing holds a copy.
+   */
+  fromEnvironment: boolean;
+  /**
+   * The relay has seen this person sign in and back-filled their Google `sub`.
+   * False is an invitation nobody has accepted yet, not a problem.
+   */
+  signedIn: boolean;
+  /** The person reading the page. They may not remove themselves. */
+  self: boolean;
+};
+
+/**
+ * A minted pairing token, as `POST /api/pairing-tokens` answers it (#505 §1).
+ *
+ * The token's characters exist here and in the operator's clipboard and nowhere
+ * else — the relay keeps only its expiry, and this response is the one time it
+ * says them. `relayUrl` rides along because the operator has two settings to
+ * make and the relay knows the harder one: its own public address, which the
+ * console's own origin would only happen to match in a browser.
+ */
+export type RelayPairingToken = {
+  /** Shown once. A caller who loses it mints another; they cost nothing. */
+  token: string;
+  /** ISO 8601, fifteen minutes out. */
+  expiresAt: string;
+  /** What `relay.url` should carry: this relay's deployment endpoint. */
+  relayUrl: string;
 };
 
 /**
@@ -177,3 +265,83 @@ export type RelayDeploymentDetail = {
   deployment: RelayDeploymentRow;
   report: RelayStoredReport | null;
 };
+
+/**
+ * The body of `POST /api/deployments/config-set` — one field patch, addressed
+ * to one deployment (#503, #547).
+ *
+ * What is deliberately not here is the author. The relay stamps the signed-in
+ * address onto the edit before it goes on the rail, so a console cannot name
+ * someone else as the editor and the ledger entry carries the session's word
+ * rather than the browser's (#506).
+ */
+export type RelayConfigSetRequest = {
+  /** Which deployment. A console reads it off the row it is looking at. */
+  fingerprint: string;
+  /** Idempotency key. The same id twice is the same edit, answered identically. */
+  id: string;
+  /** The dotted path of the leaf, as the effective-config tree spells it. */
+  path: string;
+  /** The new value. A leaf is a literal; nothing here carries an object. */
+  value: string | number | boolean | null;
+  /** The `sha256:` the page was shown, out of the report's config section. */
+  configFingerprint: string;
+};
+
+/**
+ * What the relay answers a config-set with: the deployment's own receipt, or
+ * the relay's own word that it never got there.
+ *
+ * Two arms rather than one, because the relay is a courier and not a judge. A
+ * receipt is quoted verbatim — a deployment newer than its relay passes through
+ * rather than being mistranslated — and `undelivered` is the one outcome the
+ * relay is entitled to author, because it is a fact about the socket and not
+ * about the edit. A console renders that arm with the manual edit it composed
+ * itself, since there is no receipt to carry one.
+ *
+ * `receipt` is `unknown` for the reason {@link RelayStoredReport.report} is:
+ * the deployment owns the shape (`EditReceipt` in config-edit.ts) and the relay
+ * hands the bytes on without reading a field of them. A console narrows it.
+ */
+export type RelayConfigSetAnswer = {
+  /**
+   * The deployment's own word — `written` or `refused` — or the relay's
+   * `undelivered`. A `string` and not a union of the three, because the relay
+   * quotes what it was told: a deployment newer than its relay may answer a
+   * word this relay has never heard of, and passing it through is how a console
+   * one version ahead reads it.
+   */
+  outcome: string;
+  /** The receipt, absent only when the deployment never got the ask. */
+  receipt?: unknown;
+};
+
+/**
+ * What one deployment said when a person pressed **Run doctor** (#546). One of
+ * these per deployment asked, whether the ask was for one or for the fleet, so
+ * a console renders the two the same way.
+ *
+ * `outcome` is a string rather than a closed union on purpose. The words this
+ * engine's deployments use are in `RELAY_DOCTOR_RUN`, plus the relay's own
+ * `RELAY_UNDELIVERED`; the relay carries whatever the receipt said without
+ * policing it, the way it carries every other receipt, so a deployment newer
+ * than its relay can answer with a word this relay has never heard of.
+ */
+export type RelayDoctorRunResult = {
+  fingerprint: string;
+  /** The deployment's name, so the console names it without a second lookup. */
+  name: string;
+  /** Where the relay held it when the ask went out — `undelivered`'s reason. */
+  state: RelayConnectionState;
+  outcome: string;
+  /** Whatever the deployment had to say beyond the word. Carried unread. */
+  detail?: unknown;
+};
+
+/**
+ * The body of `POST /api/deployments/doctor-run`: one result per deployment
+ * asked, in the order the relay holds them. A fleet-wide ask with no deployment
+ * paired is an empty list and a 200 — nothing went wrong, there was nobody to
+ * ask.
+ */
+export type RelayDoctorRunAnswer = { results: RelayDoctorRunResult[] };

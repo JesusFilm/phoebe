@@ -1,5 +1,5 @@
 // One deployment, in tabs — variant C's answer to "what is this thing doing"
-// (#509). Overview, pipelines, doctor.
+// (#509). Overview, pipelines, doctor, config.
 //
 // Three rules shape what goes where.
 //
@@ -20,15 +20,15 @@
 // be unable to show a running child whose loop has stopped, which is the case
 // the whole `wedged?` verdict exists for.
 //
-// **Secrets is the one tab that writes.** Everything else here renders what the
-// deployment said; the secrets tab also sends — an envelope sealed in this
-// browser, which the relay carries and cannot open (#550). It needs the relay
-// client for that, which is why this page takes one and the others do not.
-//
-// `config` is the tab variant C also has; it is #545 and is not linked here,
-// because a tab that opens nothing is worse than a tab that is not there yet.
+// **Secrets is the one tab that sends a value.** The others render what the
+// deployment said, and the config tab asks for an edit; the secrets tab seals an
+// envelope in this browser and sends it (secrets-tab.tsx, #550). The config tab
+// is its own file too (config-tab.tsx) — it is a table with a filter over it
+// rather than a view of the lines this module derives.
 
 import type { DeploymentReport, DoctorCheck, TenantFacts } from "phoebe-agent/contracts";
+import type { EditSeam } from "./config-edit-row.tsx";
+import { ConfigTab } from "./config-tab.tsx";
 import {
   crashLoopLine,
   enumeratedRows,
@@ -53,19 +53,22 @@ import {
 import type { RelayClient } from "./relay-client.ts";
 import { editsOf } from "./report.ts";
 import { deploymentHref, DEPLOYMENT_TABS, type DeploymentTab } from "./route.ts";
+import { RunDoctor } from "./run-doctor.tsx";
 import { SecretsTab } from "./secrets-tab.tsx";
 
 export function DeploymentPage({
   facts,
   tab,
-  now,
   client,
+  now,
+  onEdit,
 }: {
   facts: RowFacts;
   tab: DeploymentTab;
-  now: Date;
-  /** The seam a set goes out through. Only the secrets tab uses it. */
   client: RelayClient;
+  now: Date;
+  /** Send one config edit to this deployment, when this console can (#547). */
+  onEdit?: EditSeam["send"];
 }) {
   const connection = connectionReading(facts.row, now);
   return (
@@ -87,7 +90,13 @@ export function DeploymentPage({
           </a>
         ))}
       </nav>
-      <Tab facts={facts} tab={tab} now={now} client={client} />
+      <Tab
+        facts={facts}
+        tab={tab}
+        client={client}
+        now={now}
+        {...(onEdit !== undefined ? { onEdit } : {})}
+      />
     </main>
   );
 }
@@ -108,21 +117,28 @@ export function NoSuchDeployment({ fingerprint }: { fingerprint: string }) {
 function Tab({
   facts,
   tab,
-  now,
   client,
+  now,
+  onEdit,
 }: {
   facts: RowFacts;
   tab: DeploymentTab;
-  now: Date;
   client: RelayClient;
+  now: Date;
+  onEdit?: EditSeam["send"];
 }) {
   if (tab === "overview") return <OverviewTab facts={facts} now={now} />;
-  // The other two tabs are views of the report and there may not be one. They
+  // The other three tabs are views of the report and there may not be one. They
   // say which kind of nothing it is and point back at the overview, where the
-  // relay's own facts about this link are still true.
+  // relay's own facts about this link are still true. The doctor tab keeps its
+  // button even then: a deployment that has never reported is exactly one worth
+  // asking, as long as the relay is holding its socket (#546).
   if (facts.reading.kind !== "read") {
     return (
       <>
+        {tab === "doctor" ? (
+          <RunDoctor client={client} target={{ kind: "deployment", row: facts.row }} now={now} />
+        ) : null}
         <p className="muted">{noReportLine(facts, now)}</p>
         <p className="muted">
           <a href={deploymentHref(facts.row.fingerprint)}>Overview</a> still has the relay&apos;s
@@ -132,8 +148,15 @@ function Tab({
     );
   }
   if (tab === "pipelines") return <PipelinesTab report={facts.reading.report} now={now} />;
+  if (tab === "doctor") return <DoctorTab facts={facts} client={client} now={now} />;
   if (tab === "secrets") return <SecretsTab facts={facts} client={client} now={now} />;
-  return <DoctorTab doctor={facts.doctor} now={now} />;
+  return (
+    <ConfigTab
+      report={facts.reading.report}
+      now={now}
+      {...(onEdit !== undefined ? { onEdit } : {})}
+    />
+  );
 }
 
 /* ── overview ──────────────────────────────────────────────────────────── */
@@ -432,9 +455,16 @@ function TenantName({ tenant }: { tenant: TenantFacts }) {
 
 /* ── doctor ────────────────────────────────────────────────────────────── */
 
-function DoctorTab({ doctor, now }: { doctor: DoctorFacts; now: Date }) {
+function DoctorTab({ facts, client, now }: { facts: RowFacts; client: RelayClient; now: Date }) {
+  const doctor: DoctorFacts = facts.doctor;
   return (
     <>
+      {/*
+        The ask, above what the last one found. The receipt says which run the
+        press belongs to; the checks below move when the report carrying that
+        run arrives (#546).
+      */}
+      <RunDoctor client={client} target={{ kind: "deployment", row: facts.row }} now={now} />
       <p className="lead">{doctorLine(doctor, now)}</p>
       <p className="facts">
         {doctor.by === null ? null : <>Asked for by {doctor.by}. </>}

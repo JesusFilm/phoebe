@@ -27,7 +27,7 @@ import {
   row,
   secrets,
   stored,
-  stubClient,
+  client as stubClient,
   tenantSecrets,
 } from "./test-fixture.ts";
 

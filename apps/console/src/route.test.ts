@@ -2,13 +2,19 @@
 // fleet page, never a throw and never a blank screen.
 
 import { describe, expect, test } from "vite-plus/test";
-import { deploymentHref, parseRoute } from "./route.ts";
+import { deploymentHref, parseRoute, PEOPLE_HREF } from "./route.ts";
 
 describe("parseRoute", () => {
   test("an empty hash, a bare hash and the fleet hash are all the fleet", () => {
     for (const hash of ["", "#", "#/", "#/fleet"]) {
       expect(parseRoute(hash), hash).toEqual({ page: "fleet" });
     }
+  });
+
+  test("the People page has an address of its own, and nothing hangs off it", () => {
+    expect(parseRoute(PEOPLE_HREF)).toEqual({ page: "people" });
+    // A longer path is not a page this console has, so it is the fleet.
+    expect(parseRoute("#/people/ada")).toEqual({ page: "fleet" });
   });
 
   test("a deployment with no tab is its overview", () => {
@@ -38,9 +44,9 @@ describe("parseRoute", () => {
   });
 
   test("a tab this console does not have lands on the overview, not on nothing", () => {
-    // `config` is variant C's remaining tab (#545). An operator following a link
-    // from a newer console gets the deployment rather than a blank page.
-    expect(parseRoute("#/d/AAAA/config")).toMatchObject({
+    // An operator following a link from a newer console gets the deployment
+    // rather than a blank page.
+    expect(parseRoute("#/d/AAAA/history")).toMatchObject({
       page: "deployment",
       fingerprint: "AAAA",
       tab: "overview",
@@ -53,7 +59,7 @@ describe("parseRoute", () => {
   });
 
   test("a hash that names no route at all is the fleet", () => {
-    for (const hash of ["#/people", "#/d", "#/d/", "#nonsense"]) {
+    for (const hash of ["#/settings", "#/d", "#/d/", "#nonsense"]) {
       expect(parseRoute(hash), hash).toEqual({ page: "fleet" });
     }
   });

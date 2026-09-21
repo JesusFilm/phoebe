@@ -37,8 +37,10 @@ import { dirname, join } from "node:path";
 import {
   DEPLOYMENT_SCHEMA,
   type BootstrapperReport,
+  type ConfigReport,
   type DeploymentIdentity,
   type DeploymentReport,
+  type EditLedgerEntry,
   type FleetReport,
   type RelayReport,
 } from "../src/contracts/deployment.ts";
@@ -64,6 +66,14 @@ export type DeploymentDraft = {
   relay: Omit<RelayReport, "updatedAt">;
   fleet: Omit<FleetReport, "updatedAt">;
   doctor: Omit<DoctorSection, "updatedAt">;
+  config: Omit<ConfigReport, "updatedAt">;
+  /**
+   * The edit ledger's live entries (#503, #547). No stamp of its own: every
+   * entry carries the moment it was applied, and a section-level clock beside
+   * per-entry ones would be a second answer to the same question. Absent for a
+   * deployment that keeps no ledger.
+   */
+  edits?: EditLedgerEntry[];
   /**
    * Which secrets each tenant has and where from (#550). Null until the first
    * inventory has been taken: building it loads every tenant's work kinds, so it
@@ -128,6 +138,17 @@ export function stampReport(
   // shows, and an age that stopped advancing is the one thing worse than none.
   const doctorMoved =
     previous === null || contentOf(unstamped(previous.doctor)) !== contentOf(draft.doctor);
+  // The config section is optional on the wire — a report written by an engine
+  // older than #535 has none — so an absent previous section is a move, not a
+  // match against undefined.
+  // The ledger moves when an edit lands and when the file is committed out from
+  // under one, and neither is visible in any other section — an edit that only
+  // changed a value the report already carried would otherwise be written and
+  // never pushed.
+  const editsMoved = previous === null || contentOf(previous.edits) !== contentOf(draft.edits);
+  const configMoved =
+    previous?.config === undefined ||
+    contentOf(unstamped(previous.config)) !== contentOf(draft.config);
   // A section that has not been taken yet cannot have moved: the report keeps
   // whatever it had, which is nothing, and an inventory arriving later is what
   // moves it.
@@ -141,6 +162,8 @@ export function stampReport(
     !relayMoved &&
     !fleetMoved &&
     !doctorMoved &&
+    !configMoved &&
+    !editsMoved &&
     !secretsMoved
   ) {
     return null;
@@ -165,6 +188,11 @@ export function stampReport(
       ...draft.doctor,
       updatedAt: doctorMoved ? now : (previous?.doctor.updatedAt ?? now),
     },
+    config: {
+      ...draft.config,
+      updatedAt: configMoved ? now : (previous?.config?.updatedAt ?? now),
+    },
+    ...(draft.edits !== undefined ? { edits: draft.edits } : {}),
     ...(secrets === undefined
       ? {}
       : {

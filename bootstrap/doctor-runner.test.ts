@@ -151,7 +151,9 @@ describe("the triggers", () => {
     await flush();
 
     h.runner.noteReconcile();
-    const receipt = h.runner.request("request", "ops@example.com");
+    const ask = h.runner.request("request", "ops@example.com");
+    // The reconcile parked a trigger before this one, so the asker joined it.
+    expect(ask.outcome).toBe("joined");
     await flush();
     expect(h.runs).toEqual(["boot"]);
 
@@ -160,7 +162,7 @@ describe("the triggers", () => {
     expect(h.runs).toEqual(["boot", "reconcile"]);
     h.settle({ outcome: "ok", report: healthy });
     // The asker's receipt carries the result of the run their trigger joined.
-    await expect(receipt).resolves.toEqual({ outcome: "ok", report: healthy });
+    await expect(ask.result).resolves.toEqual({ outcome: "ok", report: healthy });
   });
 
   test("the schedule is the six-hour clock, rearmed from the end of each run", async () => {
@@ -182,7 +184,10 @@ describe("the triggers", () => {
     h.runner.stop();
     expect(h.armedFor()).toBeNull();
 
-    await expect(h.runner.request("request")).resolves.toEqual({
+    const ask = h.runner.request("request");
+    expect(ask.outcome).toBe("refused");
+    expect(ask.detail).toBe("the deployment is shutting down");
+    await expect(ask.result).resolves.toEqual({
       outcome: "crashed",
       detail: "the deployment is shutting down",
     });
@@ -199,17 +204,21 @@ describe("one run at a time", () => {
     await flush();
 
     expect(h.runs).toEqual(["schedule"]);
+    // The words a console receipt carries: the first ask is the run, the second
+    // is watching it.
+    expect(first.outcome).toBe("started");
+    expect(joined.outcome).toBe("joined");
     h.settle({ outcome: "ok", report: healthy });
     const result = { outcome: "ok", report: healthy };
-    await expect(first).resolves.toEqual(result);
-    await expect(joined).resolves.toEqual(result);
+    await expect(first.result).resolves.toEqual(result);
+    await expect(joined.result).resolves.toEqual(result);
   });
 
   test("the joined run keeps the trigger that started it", async () => {
     const h = harness();
     h.runner.start();
-    void h.runner.request("schedule");
-    void h.runner.request("request", "ops@example.com");
+    void h.runner.request("schedule").result;
+    void h.runner.request("request", "ops@example.com").result;
     await flush();
     h.settle({ outcome: "ok", report: healthy });
     await flush();
@@ -223,7 +232,7 @@ describe("the doctor section", () => {
   test("a finished run carries its report, its trigger and who asked", async () => {
     const h = harness();
     h.runner.start();
-    void h.runner.request("request", "ops@example.com");
+    void h.runner.request("request", "ops@example.com").result;
     await flush();
     h.advance(90_000);
     h.settle({ outcome: "ok", report: healthy });
@@ -242,13 +251,13 @@ describe("the doctor section", () => {
   test("a killed run records the attempt and leaves the last report standing", async () => {
     const h = harness();
     h.runner.start();
-    void h.runner.request("boot");
+    void h.runner.request("boot").result;
     await flush();
     h.settle({ outcome: "ok", report: healthy });
     await flush();
 
     h.advance(6 * 60 * 60 * 1000);
-    void h.runner.request("schedule");
+    void h.runner.request("schedule").result;
     await flush();
     h.settle({ outcome: "timed-out", detail: "killed after 330s without a report" });
     await flush();
@@ -273,7 +282,7 @@ describe("the doctor section", () => {
       onFailure: ({ outcome, detail }) => failures.push(`${outcome}: ${detail}`),
       setTimer: () => ({ clear: () => {} }),
     });
-    await expect(runner.request("request")).resolves.toEqual({
+    await expect(runner.request("request").result).resolves.toEqual({
       outcome: "crashed",
       detail: "spawn ENOENT",
     });
@@ -283,13 +292,13 @@ describe("the doctor section", () => {
   test("a later success clears the attempt it replaces", async () => {
     const h = harness();
     h.runner.start();
-    void h.runner.request("boot");
+    void h.runner.request("boot").result;
     await flush();
     h.settle({ outcome: "crashed", detail: "no report on stdout" });
     await flush();
     expect(last(h.sections).lastAttempt?.outcome).toBe("crashed");
 
-    void h.runner.request("schedule");
+    void h.runner.request("schedule").result;
     await flush();
     h.settle({ outcome: "ok", report: healthy });
     await flush();

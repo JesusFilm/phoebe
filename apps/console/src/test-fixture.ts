@@ -4,22 +4,25 @@
 //
 // Not reachable from main.tsx, so nothing here reaches the bundle.
 
-import { DEPLOYMENT_SCHEMA } from "phoebe-agent/contracts";
-import type { RelayClient, SecretReceipt, SecretRequest } from "./relay-client.ts";
+import { DEPLOYMENT_SCHEMA, EFFECTIVE_CONFIG_VERSION } from "phoebe-agent/contracts";
 import type {
   ChildLiveness,
-  SecretListing,
-  SecretsSection,
-  TenantSecrets,
+  ConfigReport,
   DeploymentReport,
   DoctorCheck,
   DoctorSection,
   FleetCell,
   RelayDeploymentRow,
+  RelayPerson,
   RelayStoredReport,
+  SecretListing,
+  SecretsSection,
   StatusSnapshot,
+  TenantEffectiveConfig,
   TenantFacts,
+  TenantSecrets,
 } from "phoebe-agent/contracts";
+import type { RelayClient, SecretReceipt, SecretRequest } from "./relay-client.ts";
 
 export const NOW = new Date("2026-09-18T12:00:00.000Z");
 
@@ -133,6 +136,101 @@ export function snapshot(overrides: Partial<StatusSnapshot> = {}): StatusSnapsho
   };
 }
 
+/**
+ * One tenant's effective config, with every source on the tree at once: a value
+ * the file set, one a `PHOEBE_*` variable took off it, a deprecated alias, a
+ * kind inheriting its pipeline's provider, a model derived from that provider,
+ * a default nobody touched, and the `deployment` block that does not survive
+ * JSON.
+ */
+export function effectiveConfig(
+  overrides: Partial<TenantEffectiveConfig> = {},
+): TenantEffectiveConfig {
+  return {
+    tenant: "JesusFilm/youtube-studio",
+    // The solo arm: the deployment root *is* the tenant, so this row is about
+    // the one file a console may edit (#503, #547).
+    configPath: "/etc/phoebe/phoebe.config.ts",
+    error: null,
+    fields: {
+      repoSlug: {
+        value: "JesusFilm/youtube-studio",
+        source: "file",
+        via: "phoebe.config.ts",
+        reader: "both",
+      },
+      engine: {
+        value: "v0.13.0",
+        source: "file",
+        via: "phoebe.config.ts",
+        reader: "bootstrapper",
+      },
+      deployment: {
+        value: "a compose file and two mounts",
+        source: "file",
+        via: "phoebe.config.ts",
+        reader: "bootstrapper",
+        opaque: true,
+      },
+      pipelines: {
+        work: {
+          concurrency: {
+            value: 2,
+            source: "overlay",
+            via: "PHOEBE_WORK_CONCURRENCY",
+            from: "tenantEnv",
+            reader: "engine",
+            shadowed: [{ source: "file", via: "phoebe.config.ts", value: 1 }],
+          },
+          workOrder: {
+            value: "oldest-first",
+            source: "alias",
+            via: "workOrder",
+            reader: "engine",
+          },
+          kinds: {
+            research: {
+              provider: {
+                value: "claude-code",
+                source: "inherited",
+                via: "pipelines.work.provider",
+                reader: "engine",
+              },
+              model: {
+                value: "opus",
+                source: "derived",
+                via: "defaultModels.claude-code",
+                reader: "engine",
+              },
+              runBudgetMs: { value: null, source: "default", reader: "engine" },
+            },
+          },
+        },
+      },
+    },
+    env: { GH_TOKEN: { present: true, from: "tenantEnv" } },
+    warnings: [
+      {
+        path: "pipelines.work.workOrder",
+        message: "workOrder is the old name for order; both are read and the old one warns",
+      },
+    ],
+    ...overrides,
+  };
+}
+
+/** Section 5 of the report: the config file it came from, and a row per tenant. */
+export function configReport(overrides: Partial<ConfigReport> = {}): ConfigReport {
+  return {
+    version: EFFECTIVE_CONFIG_VERSION,
+    root: { path: "/etc/phoebe/phoebe.config.ts", fingerprint: "sha256:9f2c1b7e" },
+    tenants: [effectiveConfig()],
+    omitted: 0,
+    updatedAt: ago(12),
+    ...overrides,
+  };
+}
+
 export function listing(overrides: Partial<SecretListing> = {}): SecretListing {
   return { key: "ANTHROPIC_API_KEY", present: false, source: "missing", ...overrides };
 }
@@ -173,6 +271,7 @@ export function report(overrides: Partial<DeploymentReport> = {}): DeploymentRep
       updatedAt: ago(12),
     },
     fleet: { tenants: [tenant()], cells: [cell()], updatedAt: ago(12) },
+    config: configReport(),
     doctor: doctor(),
     updatedAt: ago(12),
     ...overrides,
@@ -192,21 +291,37 @@ export function stored(
   };
 }
 
-/**
- * A relay client for a component test: every method throws unless the test
- * overrode it, so a page that reached the relay without being asked to fails
- * loudly rather than silently resolving.
- */
-export function stubClient(overrides: Partial<RelayClient> = {}): RelayClient {
-  const unasked = (what: string) => () =>
-    Promise.reject(new Error(`this test never calls ${what}`));
+export function person(overrides: Partial<RelayPerson> = {}): RelayPerson {
   return {
-    me: unasked("me"),
-    signOut: unasked("signOut"),
-    deployments: unasked("deployments"),
-    deployment: unasked("deployment"),
-    setSecret: unasked("setSecret"),
+    email: "ada@example.test",
+    addedBy: "grace@example.test",
+    addedAt: ago(86_400),
+    fromEnvironment: false,
+    signedIn: true,
+    self: false,
+    ...overrides,
+  };
+}
+
+/**
+ * A relay client that answers nothing. Every page now takes the seam, and a
+ * render test that only wants markup should not have to invent five methods to
+ * get it — `overrides` is where a test that does care puts the one it reads.
+ */
+export function client(overrides: Partial<RelayClient> = {}): RelayClient {
+  return {
+    me: () => Promise.resolve({ sub: "s", email: "ada@example.test" }),
+    signOut: () => Promise.resolve(),
+    deployments: () => Promise.resolve([]),
+    deployment: () => Promise.reject(new Error("no such deployment")),
+    runDoctor: () => Promise.resolve([]),
+    setConfigField: () => Promise.resolve({ outcome: "written" }),
+    setSecret: () => Promise.reject(new Error("nothing stubbed setSecret")),
     events: () => () => {},
+    people: () => Promise.resolve([]),
+    addPerson: () => Promise.reject(new Error("nothing stubbed addPerson")),
+    removePerson: () => Promise.resolve({ sessionsEnded: 0 }),
+    mintPairingToken: () => Promise.reject(new Error("nothing stubbed mintPairingToken")),
     ...overrides,
   };
 }
@@ -219,7 +334,7 @@ export function recordingClient(receipt: Partial<SecretReceipt> & { outcome: str
   const sent: SecretRequest[] = [];
   return {
     sent,
-    client: stubClient({
+    client: client({
       setSecret: (request) => {
         sent.push(request);
         return Promise.resolve({ id: request.id, ...receipt });
