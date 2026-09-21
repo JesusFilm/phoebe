@@ -1,4 +1,5 @@
-// The relay never derives pipeline state (#542, decided in #501).
+// The relay never derives pipeline state (#542, decided in #501), and never
+// answers a doctor check (#546, decided in #507 §8).
 //
 // Derivation lives in the deployment: `src/pipeline-listing.ts` is the one owner
 // of what a pipeline is doing and whether it is wedged, the bootstrapper writes
@@ -35,13 +36,30 @@ import { startRelay, type RunningRelay } from "./serve.ts";
 const OFF_LIMITS = [
   "src/pipeline-listing.ts",
   "src/contracts/deployment.ts",
+  // The edit receipt is the deployment's answer about the deployment's own file
+  // (#503). The relay carries one verbatim and reads no field of it, so naming
+  // the shape would be the first step towards policing the word (#547).
+  "src/contracts/config-edit.ts",
   "src/contracts/pipeline-state.ts",
   "src/contracts/status-snapshot.ts",
+  // The relay answers none of doctor's checks (#507 §8, #546). It carries a
+  // `doctor-run` down a socket and repeats the receipt; a relay that knew what a
+  // check looked like would be a relay one refactor away from answering one.
+  "src/contracts/doctor.ts",
+  "src/doctor.ts",
   "src/unit-event.ts",
 ];
 
 /** Derivation by name: if one of these appears in the relay, something is deriving. */
-const DERIVERS = ["pipelineState", "wedgedVerdict", "DeploymentReport", "StatusSnapshot"];
+const DERIVERS = [
+  "pipelineState",
+  "wedgedVerdict",
+  "DeploymentReport",
+  "StatusSnapshot",
+  "EditReceipt",
+  "DoctorReport",
+  "DoctorCheck",
+];
 
 const ADA: GoogleIdentity = { sub: "sub-ada", email: "ada@example.test", emailVerified: true };
 const google: IdentityProvider = {
@@ -158,6 +176,7 @@ describe("the relay never derives pipeline state", () => {
               type: RELAY_MESSAGES.hello,
               protocol: RELAY_PROTOCOL,
               publicKey: key.publicKey,
+              boxKey: key.boxKey,
               name: "the-fleet",
               pairingToken: token,
             }),

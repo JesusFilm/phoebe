@@ -15,8 +15,16 @@
 // deployment with no readable report has four tabs that say what they need and
 // one — config — that still works, because config is a file and a file is
 // readable with nothing running (#526).
+//
+// The write affordances come in the same way the connection card does: as
+// something the page that knows its arm hands down (`writes`). What a local
+// install offers is a form that writes this machine; what a remote one offers is
+// the same edit sealed and sent. The **receipt** those two produce is one shape
+// and renders through one component here (#527 §11, §16), so a refusal reads the
+// same either way — which is the point of the fingerprint being on both arms.
 
 import type { ReactNode } from "react";
+import type { EditReceipt } from "phoebe-agent/contracts";
 import { age } from "./facts.ts";
 import { bootstrapperOf, cellsOf, childrenOf, tenantsOf, type ReportReading } from "./report.ts";
 import type { ConfigReading, ConnectionCard, DeploymentTab } from "./tabs.ts";
@@ -28,6 +36,7 @@ export function DeploymentTabPanel({
   config,
   now,
   empty,
+  writes = {},
 }: {
   tab: DeploymentTab;
   reading: ReportReading;
@@ -37,8 +46,10 @@ export function DeploymentTabPanel({
   now: Date;
   /** What to say on a tab with no report — the arm's own words. */
   empty: ReactNode;
+  /** What this arm lets an operator change, drawn under the tab it belongs to. */
+  writes?: { config?: ReactNode; secrets?: ReactNode };
 }) {
-  if (tab === "config") return <ConfigTab config={config} />;
+  if (tab === "config") return <ConfigTab config={config} writes={writes.config} />;
   if (reading.kind !== "read") {
     return (
       <section>
@@ -62,7 +73,7 @@ export function DeploymentTabPanel({
     case "doctor":
       return <DoctorTab />;
     case "secrets":
-      return <SecretsTab />;
+      return <SecretsTab writes={writes.secrets} />;
   }
 }
 
@@ -239,14 +250,15 @@ function DoctorTab() {
 }
 
 /** Secrets are write-only by decision (#504): there is nothing to read back. */
-function SecretsTab() {
+function SecretsTab({ writes }: { writes?: ReactNode }) {
   return (
     <section>
       <h2>Secrets</h2>
       <p className="muted">
         A secret is write-only. Nothing reads one back here, and nothing in this report carries a
-        value. Setting one from this window is not wired in yet.
+        value.
       </p>
+      {writes}
     </section>
   );
 }
@@ -255,7 +267,7 @@ function SecretsTab() {
  * The config, as the file holds it. Readable with nothing running, which is why
  * it is the one tab a stopped install keeps (#526).
  */
-function ConfigTab({ config }: { config: ConfigReading | null }) {
+function ConfigTab({ config, writes }: { config: ConfigReading | null; writes?: ReactNode }) {
   if (config === null) {
     return (
       <section>
@@ -281,7 +293,36 @@ function ConfigTab({ config }: { config: ConfigReading | null }) {
         <span className="mono">{config.path}</span> · {config.fingerprint}
       </p>
       <pre className="config mono">{config.text}</pre>
+      {writes}
     </section>
+  );
+}
+
+/**
+ * One edit receipt, rendered — the same component on both arms (#527 §16).
+ *
+ * A refusal always carries the exact manual edit (#503), and it is rendered
+ * verbatim rather than summarised. "Console proposes, operator applies" only
+ * works if what the operator is meant to apply is on the screen.
+ */
+export function ReceiptPanel({ receipt }: { receipt: EditReceipt }) {
+  if (receipt.state === "written") {
+    return (
+      <p className="outcome">
+        Wrote <span className="mono">{receipt.path}</span> ={" "}
+        <span className="mono">{JSON.stringify(receipt.value)}</span> in{" "}
+        <span className="mono">{receipt.file}</span>. The deployment reconciles onto it the way it
+        would a hand edit.
+      </p>
+    );
+  }
+  return (
+    <>
+      <p className="refusal">
+        Refused ({receipt.reason}): {receipt.why}
+      </p>
+      <pre className="config mono">{receipt.instruction}</pre>
+    </>
   );
 }
 

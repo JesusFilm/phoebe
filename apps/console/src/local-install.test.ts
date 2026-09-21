@@ -7,6 +7,7 @@ import type { OutcomeOf, VerbRun } from "phoebe-agent/contracts";
 import {
   applyRunExit,
   applyRunLine,
+  configSetRequest,
   dockerReading,
   installReading,
   landingTab,
@@ -14,9 +15,17 @@ import {
   localConnection,
   offeredVerbs,
   outcomeReading,
+  readLiteral,
+  receiptReading,
   renderableReport,
+  secretSetReading,
+  secretSetRequest,
+  secretWriterReading,
+  pairedInstalls,
+  pairReading,
+  sameRelay,
 } from "./local-install.ts";
-import { directory, environment, install, localReport } from "./test-fixture.ts";
+import { ago, directory, environment, install, localReport, row } from "./test-fixture.ts";
 
 function runOf(overrides: Partial<VerbRun> = {}): VerbRun {
   return {
@@ -293,7 +302,7 @@ describe("the local read, as the page reads it", () => {
       kind: "file",
       path: "/repos/youtube-studio/phoebe.config.ts",
       text: directory().configText,
-      fingerprint: "0f1e2d3c4b5a6978",
+      fingerprint: "sha256:0f1e2d3c4b5a6978",
     });
   });
 
@@ -310,5 +319,312 @@ describe("the local read, as the page reads it", () => {
 
   test("before the first read there is no config to show, which is not the same as none", () => {
     expect(localConfig(null)).toBeNull();
+  });
+});
+
+describe("what the two write verbs read as (#557)", () => {
+  test("a written receipt names the field and the literal that landed", () => {
+    expect(
+      receiptReading({
+        id: "e1",
+        state: "written",
+        file: "/repos/widget/phoebe.config.ts",
+        path: "checkCommand",
+        value: "pnpm run check",
+        fingerprint: "sha256:after",
+        at: ago(1),
+      }),
+    ).toBe(`wrote checkCommand = "pnpm run check"`);
+  });
+
+  test("a refusal names the reason and the why — the two halves an operator acts on", () => {
+    expect(
+      receiptReading({
+        id: "e1",
+        state: "refused",
+        file: "/repos/widget/phoebe.config.ts",
+        path: "engine.ref",
+        reason: "not-editable",
+        why: "the engine pin moves with `phoebe upgrade`",
+        instruction: "write it by hand",
+        at: ago(1),
+      }),
+    ).toBe("refused (not-editable): the engine pin moves with `phoebe upgrade`");
+  });
+
+  test("the same outcome shape reads through one reader, whatever the verb", () => {
+    expect(
+      outcomeReading({
+        verb: "secret set",
+        outcome: {
+          key: "GH_TOKEN",
+          tenant: "acme/widget",
+          writer: "container",
+          target: "the tenant secret store on this install's data volume",
+          at: ago(1),
+        },
+      }),
+    ).toContain("through the container");
+  });
+
+  test("a host-env write says which file on this machine took it", () => {
+    expect(
+      secretSetReading({
+        key: "GH_TOKEN",
+        tenant: null,
+        writer: "host-env",
+        target: "/repos/widget/.env",
+        at: ago(1),
+      }),
+    ).toBe("set GH_TOKEN into /repos/widget/.env on this machine");
+  });
+
+  test("which writer is said before the value is pasted, and it follows the state", () => {
+    expect(secretWriterReading(install({ state: "running" }))).toContain("secret store");
+    expect(secretWriterReading(install({ state: "stopped" }))).toContain(".env");
+    expect(secretWriterReading(install({ state: "not-initialised" }))).toContain(".env");
+  });
+});
+
+describe("the requests a write form submits (#557)", () => {
+  const config = {
+    kind: "file" as const,
+    path: "/repos/youtube-studio/phoebe.config.ts",
+    text: "x",
+    fingerprint: "sha256:abc",
+  };
+
+  test("`config set` carries the fingerprint the tab was showing, not one that was typed", () => {
+    expect(
+      configSetRequest({
+        install: install(),
+        config,
+        path: "checkCommand",
+        literal: '"pnpm check"',
+      }),
+    ).toEqual({
+      install: "/repos/youtube-studio",
+      verb: "config set",
+      path: "checkCommand",
+      value: "pnpm check",
+      fingerprint: "sha256:abc",
+    });
+  });
+
+  test('a JSON literal keeps its type — 300000 is a number, "300000" a string', () => {
+    expect(readLiteral("300000")).toBe(300000);
+    expect(readLiteral('"300000"')).toBe("300000");
+    expect(readLiteral("true")).toBe(true);
+    expect(readLiteral("null")).toBeNull();
+  });
+
+  test("a bare word is refused with the quotes it needed", () => {
+    expect(() => readLiteral("main")).toThrow(/needs its quotes/);
+  });
+
+  test("a block is refused — one leaf moves at a time", () => {
+    expect(() => readLiteral('{ "a": 1 }')).toThrow(/scalar or null/);
+    expect(() => readLiteral("[1]")).toThrow(/scalar or null/);
+  });
+
+  test("no field named is no edit, rather than an edit at the root", () => {
+    expect(() =>
+      configSetRequest({ install: install(), config, path: "  ", literal: "1" }),
+    ).toThrow(/dotted path/);
+  });
+
+  test("a folder with no config has nothing to change", () => {
+    expect(() =>
+      configSetRequest({
+        install: install(),
+        config: { kind: "absent", path: "/repos/youtube-studio/phoebe.config.ts" },
+        path: "checkCommand",
+        literal: '"x"',
+      }),
+    ).toThrow(/no \/repos\/youtube-studio\/phoebe.config.ts/);
+  });
+
+  test("`secret set` carries the value as a run argument and no envelope of any kind", () => {
+    const request = secretSetRequest({ install: install(), key: "GH_TOKEN", value: "ghp_x" });
+
+    expect(request).toEqual({
+      install: "/repos/youtube-studio",
+      verb: "secret set",
+      key: "GH_TOKEN",
+      value: "ghp_x",
+    });
+    expect(Object.keys(request)).not.toContain("envelope");
+  });
+
+  test("an empty tenant box is left off, so the install decides for itself", () => {
+    expect(
+      secretSetRequest({ install: install(), key: "GH_TOKEN", value: "ghp_x", tenant: "   " }),
+    ).not.toHaveProperty("tenant");
+    expect(
+      secretSetRequest({
+        install: install(),
+        key: "GH_TOKEN",
+        value: "ghp_x",
+        tenant: "acme/widget",
+      }),
+    ).toMatchObject({ tenant: "acme/widget" });
+  });
+
+  test("a blank is not a secret — clearing one is a different verb", () => {
+    expect(() => secretSetRequest({ install: install(), key: "GH_TOKEN", value: "" })).toThrow(
+      /blank is not a secret/,
+    );
+  });
+});
+
+// ── pairing ───────────────────────────────────────────────────────────────
+
+const RELAY = "https://relay.example.test";
+const DIALLED = "wss://relay.example.test/deployments";
+
+/** A fleet row, in the shape the join reads. */
+function fact(name: string, fingerprint: string) {
+  return { row: row({ name, fingerprint }) };
+}
+
+describe("which installs are also rows on the relay", () => {
+  test("an install dialling this relay under a row's name is that row", () => {
+    const one = install({ dir: "/repos/one", deploymentName: "the-fleet", relayUrl: DIALLED });
+
+    const paired = pairedInstalls([one], [fact("the-fleet", "FP1")], RELAY);
+
+    expect(paired.get("/repos/one")).toBe("FP1");
+  });
+
+  test("an install that dials nothing is nobody's row", () => {
+    const one = install({ dir: "/repos/one", deploymentName: "the-fleet", relayUrl: null });
+
+    expect(pairedInstalls([one], [fact("the-fleet", "FP1")], RELAY).size).toBe(0);
+  });
+
+  test("an install dialling a different relay is not this relay's row, name or no name", () => {
+    const one = install({
+      dir: "/repos/one",
+      deploymentName: "the-fleet",
+      relayUrl: "wss://other.test/deployments",
+    });
+
+    expect(pairedInstalls([one], [fact("the-fleet", "FP1")], RELAY).size).toBe(0);
+  });
+
+  test("an install the relay has never seen is configured, not paired", () => {
+    const one = install({ dir: "/repos/one", deploymentName: "the-fleet", relayUrl: DIALLED });
+
+    expect(pairedInstalls([one], [fact("something-else", "FP1")], RELAY).size).toBe(0);
+  });
+
+  test("a console with no relay session joins nothing", () => {
+    const one = install({ dir: "/repos/one", deploymentName: "the-fleet", relayUrl: DIALLED });
+
+    expect(pairedInstalls([one], [fact("the-fleet", "FP1")], null).size).toBe(0);
+  });
+
+  test("two installs, two rows, each to its own", () => {
+    const one = install({ dir: "/repos/one", deploymentName: "one", relayUrl: DIALLED });
+    const two = install({ dir: "/repos/two", deploymentName: "two", relayUrl: DIALLED });
+
+    const paired = pairedInstalls([one, two], [fact("two", "FP2"), fact("one", "FP1")], RELAY);
+
+    expect([...paired]).toEqual([
+      ["/repos/one", "FP1"],
+      ["/repos/two", "FP2"],
+    ]);
+  });
+});
+
+describe("sameRelay", () => {
+  test("the wss address a deployment dials and the https one a person signs in at", () => {
+    expect(sameRelay(DIALLED, RELAY)).toBe(true);
+  });
+
+  test("a different host is a different relay", () => {
+    expect(sameRelay("wss://other.test/deployments", RELAY)).toBe(false);
+  });
+
+  test("a port is part of the host, because it is part of the relay", () => {
+    expect(sameRelay("wss://relay.example.test:8443/deployments", RELAY)).toBe(false);
+  });
+
+  test("something that is not a URL is not a match, and not a crash", () => {
+    expect(sameRelay("not a url", RELAY)).toBe(false);
+  });
+});
+
+describe("whether this install can be paired", () => {
+  test("a running install on a signed-in companion is ready", () => {
+    const reading = pairReading(install({ state: "running" }), { signedIn: true, paired: false });
+
+    expect(reading.kind).toBe("ready");
+  });
+
+  test("signed out, the reason names the sign-in rather than the install", () => {
+    const reading = pairReading(install({ state: "running" }), { signedIn: false, paired: false });
+
+    expect(reading).toEqual({ kind: "blocked", reason: expect.stringContaining("Sign in") });
+  });
+
+  test("a stopped install is blocked, because a stopped container spends nothing", () => {
+    const reading = pairReading(install({ state: "stopped" }), { signedIn: true, paired: false });
+
+    expect(reading).toEqual({ kind: "blocked", reason: expect.stringContaining("Start") });
+  });
+
+  test("a not-initialised folder is blocked by the same rule", () => {
+    const reading = pairReading(install({ state: "not-initialised" }), {
+      signedIn: true,
+      paired: false,
+    });
+
+    expect(reading.kind).toBe("blocked");
+  });
+
+  test("an install that is already a row is paired, and is offered nothing to press", () => {
+    const reading = pairReading(install({ state: "running" }), { signedIn: true, paired: true });
+
+    expect(reading.kind).toBe("paired");
+  });
+
+  test("signed out wins over stopped: there is nothing to pair with either way", () => {
+    const reading = pairReading(install({ state: "stopped" }), { signedIn: false, paired: false });
+
+    expect(reading).toEqual({ kind: "blocked", reason: expect.stringContaining("Sign in") });
+  });
+});
+
+describe("what a finished pairing reads as", () => {
+  test("names the deployment, the relay and when the token dies", () => {
+    const reading = outcomeReading({
+      verb: "pair",
+      outcome: {
+        relayUrl: DIALLED,
+        deploymentName: "the-fleet",
+        expiresAt: "2026-09-18T12:15:00.000Z",
+        movedRelay: false,
+      },
+    });
+
+    expect(reading).toContain("the-fleet");
+    expect(reading).toContain(DIALLED);
+    expect(reading).toContain("2026-09-18T12:15:00.000Z");
+    expect(reading).not.toContain("moved");
+  });
+
+  test("says when the pairing moved the install off another relay", () => {
+    const reading = outcomeReading({
+      verb: "pair",
+      outcome: {
+        relayUrl: DIALLED,
+        deploymentName: "the-fleet",
+        expiresAt: "2026-09-18T12:15:00.000Z",
+        movedRelay: true,
+      },
+    });
+
+    expect(reading).toContain("moved off the relay it named before");
   });
 });

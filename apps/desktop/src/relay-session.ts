@@ -32,12 +32,12 @@
 import { createHash, randomBytes } from "node:crypto";
 import { RELAY_ROUTES } from "phoebe-agent/contracts";
 import type {
-  DesktopBridgeError,
   RelayArmState,
   RelayDevice,
   RelayEvent,
   RelayPassthrough,
 } from "phoebe-agent/contracts";
+import { BridgeRefusal } from "./channels.ts";
 import { createSseReader } from "./sse.ts";
 import { NO_KEYRING_REASON, type StoredSession, type TokenVault } from "./vault.ts";
 
@@ -102,17 +102,6 @@ export type RelaySession = {
   close: () => void;
 };
 
-/** A refusal in the bridge's own terms. Main turns it into a `BridgeResult`. */
-export class RelayRefusal extends Error {
-  readonly detail: DesktopBridgeError;
-
-  constructor(detail: DesktopBridgeError) {
-    super(detail.message);
-    this.name = "RelayRefusal";
-    this.detail = detail;
-  }
-}
-
 export function createRelaySession(options: RelaySessionOptions): RelaySession {
   const warn = options.warn ?? ((message: string) => console.warn(message));
   const sleep = options.delay ?? ((ms: number) => new Promise((done) => setTimeout(done, ms)));
@@ -176,13 +165,13 @@ export function createRelaySession(options: RelaySessionOptions): RelaySession {
     });
     if (response.status === 401) {
       release("This relay no longer accepts this companion's sign-in. Sign in again.");
-      throw new RelayRefusal({
+      throw new BridgeRefusal({
         code: "signed-out",
         message: "the relay no longer accepts this companion's sign-in",
       });
     }
     if (!response.ok) {
-      throw new RelayRefusal({
+      throw new BridgeRefusal({
         code: "refused",
         message: `the relay answered ${response.status} ${await errorCode(response)}`,
       });
@@ -238,7 +227,7 @@ export function createRelaySession(options: RelaySessionOptions): RelaySession {
     async signIn(relayUrl) {
       const origin = relayOrigin(relayUrl);
       if (origin === null) {
-        throw new RelayRefusal({
+        throw new BridgeRefusal({
           code: "refused",
           message: `${relayUrl} is not a relay address`,
           instruction: "A relay address looks like https://relay.example.com",
@@ -267,7 +256,7 @@ export function createRelaySession(options: RelaySessionOptions): RelaySession {
         // unhandled rejection in main.
         void attempt.settled.catch(() => {});
         attempt.abandon(`The companion could not open a browser: ${messageOf(error)}`);
-        throw new RelayRefusal({
+        throw new BridgeRefusal({
           code: "refused",
           message: `could not open a browser for sign-in: ${messageOf(error)}`,
           instruction: `Open ${start.href} by hand to sign in.`,
@@ -306,7 +295,7 @@ export function createRelaySession(options: RelaySessionOptions): RelaySession {
     async request(passthrough) {
       const live = session;
       if (live === null) {
-        throw new RelayRefusal({
+        throw new BridgeRefusal({
           code: "signed-out",
           message: "the companion is not signed in to a relay",
         });
@@ -315,7 +304,7 @@ export function createRelaySession(options: RelaySessionOptions): RelaySession {
       // origin: a renderer that could send an absolute URL could aim the device
       // token at any host it liked.
       if (!passthrough.path.startsWith("/")) {
-        throw new RelayRefusal({
+        throw new BridgeRefusal({
           code: "refused",
           message: `${passthrough.path} is not a path on the relay`,
         });
@@ -383,7 +372,7 @@ export function createRelaySession(options: RelaySessionOptions): RelaySession {
       verifier,
       settled,
       finish: (state) => settle(() => finish(state)),
-      abandon: (message) => settle(() => fail(new RelayRefusal({ code: "refused", message }))),
+      abandon: (message) => settle(() => fail(new BridgeRefusal({ code: "refused", message }))),
     };
     return attempt;
   }

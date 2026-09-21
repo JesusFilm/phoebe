@@ -224,30 +224,45 @@ export function createAlertNotifier(options: AlertNotifierOptions): AlertNotifie
     }
   }
 
-  return {
-    async sweep(now = clock()) {
-      const sent: AlertEdge[] = [];
-      for (const connection of options.connections(now)) {
-        const edges = alertEdges({
-          facts: { ...connection, report: report(connection.fingerprint) },
-          notified: options.store.notified(connection.fingerprint),
-          now: now.toISOString(),
-          ...(options.darkAfterMs !== undefined ? { darkAfterMs: options.darkAfterMs } : {}),
+  async function sweepOnce(now: Date): Promise<AlertEdge[]> {
+    const sent: AlertEdge[] = [];
+    for (const connection of options.connections(now)) {
+      const edges = alertEdges({
+        facts: { ...connection, report: report(connection.fingerprint) },
+        notified: options.store.notified(connection.fingerprint),
+        now: now.toISOString(),
+        ...(options.darkAfterMs !== undefined ? { darkAfterMs: options.darkAfterMs } : {}),
+      });
+      if (edges.length === 0) continue;
+      for (const edge of edges) {
+        const body = alertMessage({
+          edge,
+          deployment: { name: connection.name, fingerprint: connection.fingerprint },
+          consoleOrigin: options.consoleOrigin,
         });
-        if (edges.length === 0) continue;
-        for (const edge of edges) {
-          const body = alertMessage({
-            edge,
-            deployment: { name: connection.name, fingerprint: connection.fingerprint },
-            consoleOrigin: options.consoleOrigin,
-          });
-          await fanOut(body, `${edge.condition} ${edge.state} for ${connection.name}`);
-          sent.push(edge);
-        }
-        // After the attempt, never after the success (#515 §12).
-        options.store.record(connection.fingerprint, edges, clock());
+        await fanOut(body, `${edge.condition} ${edge.state} for ${connection.name}`);
+        sent.push(edge);
       }
-      return sent;
+      // After the attempt, never after the success (#515 §12).
+      options.store.record(connection.fingerprint, edges, clock());
+    }
+    return sent;
+  }
+
+  /**
+   * One sweep at a time. The record is written after the attempt, so two sweeps
+   * running at once would both read "nothing notified" and both send. The timer
+   * and a connection change can each start one while a webhook is still
+   * answering, so a sweep waits for the one before it and then reads what that
+   * one recorded.
+   */
+  let last: Promise<unknown> = Promise.resolve();
+
+  return {
+    sweep(now) {
+      const turn = last.then(() => sweepOnce(now ?? clock()));
+      last = turn.catch(() => {});
+      return turn;
     },
 
     async test(by, now = clock()) {

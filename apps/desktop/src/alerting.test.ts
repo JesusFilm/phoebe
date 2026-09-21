@@ -18,6 +18,8 @@ function install(overrides: Partial<LocalInstall> = {}): LocalInstall {
     name: "youtube-studio",
     addedAt: "2026-09-18T09:00:00.000Z",
     state: "running",
+    deploymentName: "youtube-studio",
+    relayUrl: null,
     ...overrides,
   };
 }

@@ -1,7 +1,7 @@
 # Pipelines
 
 **Who this is for:** anyone who wants a tenant to run more than one stream of
-work at a time, and anyone who opened `phoebe list`, found several lines under one
+work at a time, and anyone who opened `phoebe status`, found several lines under one
 repository, and wants to know what they are. It answers what a pipeline is, how
 to declare one, and what the engine does differently once a tenant has two.
 
@@ -332,21 +332,25 @@ behind](architecture.md#reclaiming-what-a-pipeline-leaves-behind).
 
 ## Watching pipelines
 
-`phoebe list` keeps one pipeline per tenant and prints one indented line per pipeline
-beneath it. The implicit `work` pipeline prints like any other, one grammar with no
-collapsed form, and a solo deployment prints its single tenant the same way.
+`phoebe status` prints two indented lines per pipeline beneath its tenant: what
+the supervised process is doing, and what the pipeline itself is doing. The
+implicit `work` pipeline prints like any other, one grammar with no collapsed
+form, and a solo deployment prints its single tenant the same way.
 
 ```
-[phoebe] 2 of 2 declared tenant(s):
+[phoebe] fleet         1 tenant(s), 3 pipeline(s)  updated 2m ago
   children/widget  (acme/widget)
       ✓ config  ✓ env  ✓ data  arm: pat
-        work    working 1/2 issues 12
-        intake  waiting for slot
-        old     idle  (stale)
+        work    running 3h
+                working 1/2 issues 12
+        intake  running 3h
+                waiting for slot
+        old     not supervised  (stale)
+                idle
 ```
 
-The pipeline set is the same enumeration the supervisor spawns from, so `list` and the
-supervisor cannot disagree about what a tenant runs. A `state/<name>/` directory no
+The pipeline set is the same enumeration the supervisor spawns from, so what you
+read and what the supervisor spawns cannot disagree about what a tenant runs. A `state/<name>/` directory no
 enumerated pipeline produces prints as `(stale)`, the pipeline analogue of an
 `undeclared` tenant, reported and not acted on. A held tenant cannot be enumerated,
 since its config is exactly what discovery could not read, so its lines fall back to
@@ -357,13 +361,14 @@ snapshots are never compared. A pipeline polling every fifteen minutes is not si
 because the pipeline beside it wrote a second ago, and an idle pipeline is not sick for being
 idle a week.
 
-The one staleness claim is `wedged?`, and it is anchored to the only deadline the
-snapshot carries, each in-flight unit's own run budget. A working pipeline gets
-`wedged? <age>` beside the state it is still reporting once any of its units has
-outlived its own budget plus one poll interval, so a unit admitted late on a short
-budget can raise the flag while an older one beside it is still well inside its
-own. The age is the oldest unit's. It is a question, not a verdict, because
-nothing reading disk can see whether the process is alive.
+The one staleness claim is `wedged?`, and it has two clauses. `wedged? unit past
+its budget` fires when any in-flight unit has outlived its own run budget plus one
+poll interval, so a unit admitted late on a short budget can raise the flag while an
+older one beside it is still well inside its own. `wedged? no pass for <age>` fires
+when the engine has completed no loop pass in three poll intervals while not waiting
+for a slot — the clause that catches a pipeline whose process is alive but whose loop
+has stopped, which nothing reading disk alone could see. Either way it is a question
+and not a verdict.
 
 There is no per-pipeline stop verb. Hot `disabled: true` is the stop, and it is one
 edit with no relaunch. Today the flag is validated, enumerated and shown as
@@ -477,7 +482,7 @@ in the two research records below.
 - [`architecture.md`](architecture.md#asking-the-engine-which-pipelines-a-tenant-has),
   the supervisor's mechanics. Enumeration, the pipeline diff, the crash-loop rule, and
   the stale-state sweep.
-- [`operating.md`](operating.md#quick-reference), `phoebe list` and the other levers
+- [`operating.md`](operating.md#quick-reference), `phoebe status` and the other levers
   a human drives a deployment with.
 - [`workspace.md`](workspace.md#fleet-invariants), what stays true across a fleet
   once tenants have pipelines.

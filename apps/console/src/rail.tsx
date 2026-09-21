@@ -12,23 +12,29 @@
 // hidden. A browser has no local arm, so there the rail is the relay's group on
 // its own and reads exactly as it did before the companion existed.
 //
-// The installs under "This machine" are local installs (#555): a folder on this
-// machine, its state read from Compose, and `+ add` beside the heading because
-// adopting a folder is the one thing this group can do that the other cannot.
-// Three words and no fourth — running, stopped, not initialised. The relay's
-// dark and unseen are a remote reader's guesses about silence, and Compose
-// answers directly.
+// The installs under "This machine" arrive with #555, which is also what makes
+// `+ add` a control worth drawing; until then the group states that it is empty,
+// which is a fact rather than a placeholder.
 //
 // A local entry is selectable; a relay entry is not yet. Selecting an install
 // opens its install tab, which exists; selecting a deployment would open the
 // five tabs that #544 builds, and a link to a page nothing answers is a dead end
 // on screen.
 //
+// A paired install appears once, here, with a `paired` chip — and the row it is
+// on the relay is dropped from the group below rather than drawn twice (#526,
+// #558). Local is the richer arm: the verbs and the direct writes are there.
+//
 // The Relay group's signed-out entry is the companion's sign-in control (#554).
 // It asks for one thing — the relay's address — because that is the only part of
 // the flow that is the operator's to supply: the PKCE verifier, the system
 // browser, the hop back over `phoebe://auth` and the exchange all happen in main,
 // and the renderer never sees the token that comes out.
+//
+// A local entry opens its install page (#555), and each relay entry links to that
+// deployment's tabs (#544). The relay group's heading
+// links back to the fleet, so the grid is one click from anywhere rather than a
+// page an operator has to find their way back to.
 
 import { useState } from "react";
 import type { LocalInstall, RelayIdentity } from "phoebe-agent/contracts";
@@ -36,6 +42,7 @@ import type { Surface } from "./companion.ts";
 import { connectionReading, type RowFacts } from "./facts.ts";
 import { installReading } from "./local-install.ts";
 import type { RelaySignIn } from "./relay-client.ts";
+import { deploymentHref, FLEET_HREF } from "./route.ts";
 
 export function Rail({
   facts,
@@ -43,7 +50,9 @@ export function Rail({
   surface,
   signedIn,
   installs = [],
+  paired,
   selected = null,
+  selectedDeployment = null,
   onSelect,
   onAdd,
   signIn,
@@ -55,8 +64,16 @@ export function Rail({
   signedIn: boolean;
   /** The local arm. Empty in a browser, which has no local arm at all. */
   installs?: LocalInstall[];
+  /**
+   * The installs that are also a deployment on this relay, by directory. Passed
+   * in rather than worked out here: the same join decides which rows the Relay
+   * group below is not drawing (local-install.ts).
+   */
+  paired?: ReadonlySet<string>;
   /** The install whose page is open, by directory. */
   selected?: string | null;
+  /** The fingerprint of the deployment being shown, or null on the fleet page. */
+  selectedDeployment?: string | null;
   onSelect?: (dir: string) => void;
   onAdd?: () => void;
   /** How this arm signs in, or null while the answer is still being read. */
@@ -65,17 +82,24 @@ export function Rail({
 }) {
   const relay = (
     <section className="rail-group" aria-label="Relay">
-      <h2 className="rail-heading">
+      <a className="rail-heading" href={FLEET_HREF}>
         {surface === "companion"
           ? "Relay"
           : `Fleet — ${facts.length} ${facts.length === 1 ? "deployment" : "deployments"}`}
-      </h2>
+      </a>
       {!signedIn ? (
         <SignInControl signIn={signIn} onSignedIn={onSignedIn} />
       ) : facts.length === 0 ? (
         <p className="rail-empty">No deployment is paired with this relay yet.</p>
       ) : (
-        facts.map((row) => <RailEntry key={row.row.fingerprint} facts={row} now={now} />)
+        facts.map((row) => (
+          <RailEntry
+            key={row.row.fingerprint}
+            facts={row}
+            current={row.row.fingerprint === selectedDeployment}
+            now={now}
+          />
+        ))
       )}
     </section>
   );
@@ -107,6 +131,7 @@ export function Rail({
               key={install.dir}
               install={install}
               current={install.dir === selected}
+              paired={paired?.has(install.dir) ?? false}
               {...(onSelect !== undefined ? { onSelect } : {})}
             />
           ))
@@ -125,10 +150,13 @@ export function Rail({
 function InstallEntry({
   install,
   current,
+  paired,
   onSelect,
 }: {
   install: LocalInstall;
   current: boolean;
+  /** Also a deployment on this relay — so the Relay group is not drawing it. */
+  paired: boolean;
   onSelect?: (dir: string) => void;
 }) {
   const reading = installReading(install);
@@ -142,6 +170,7 @@ function InstallEntry({
       <div className="name">
         <span className={`mark ${reading.tone}`} aria-hidden="true" />
         {install.name}
+        {paired ? <span className="chip paired">paired</span> : null}
       </div>
       <div className="sub">{reading.text}</div>
     </button>
@@ -228,17 +257,21 @@ function SignInForm({
   );
 }
 
-function RailEntry({ facts, now }: { facts: RowFacts; now: Date }) {
+function RailEntry({ facts, current, now }: { facts: RowFacts; current: boolean; now: Date }) {
   const connection = connectionReading(facts.row, now);
   return (
-    <div className={`rail-entry state-${connection.tone}${facts.attention ? " attention" : ""}`}>
+    <a
+      className={`rail-entry state-${connection.tone}${facts.attention ? " attention" : ""}${current ? " current" : ""}`}
+      href={deploymentHref(facts.row.fingerprint)}
+      aria-current={current ? "page" : undefined}
+    >
       <div className="name">
         <span className={`mark ${connection.tone}`} aria-hidden="true" />
         {facts.row.name}
         {connection.maybeReplaced ? <span className="chip replaced">replaced?</span> : null}
       </div>
       <div className="sub">{[connection.text, ...subClauses(facts)].join(" · ")}</div>
-    </div>
+    </a>
   );
 }
 
@@ -251,6 +284,7 @@ function subClauses(facts: RowFacts): string[] {
   const clauses: string[] = [];
   if (facts.wedged > 0) clauses.push(`${facts.wedged} wedged`);
   if (facts.crashLooping > 0) clauses.push(`${facts.crashLooping} crash-looping`);
+  if (facts.doctor.fail > 0) clauses.push(`doctor ${facts.doctor.fail} fail`);
   if (facts.held > 0) clauses.push(`${facts.held} held`);
   if (facts.reconciling !== null) clauses.push(`reconciling (${facts.reconciling})`);
   if (facts.quarantinedSha !== null) clauses.push("quarantined commit");

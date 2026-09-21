@@ -12,8 +12,6 @@
 import { createServer, type Server } from "node:http";
 import { mkdirSync } from "node:fs";
 import { createAllowlist } from "./allowlist.ts";
-import { createConsoleAssets } from "./console-assets.ts";
-import { createDeviceCodes, createDevices } from "./devices.ts";
 import {
   createAlertNotifier,
   createAlertStore,
@@ -22,6 +20,8 @@ import {
   type AlertNotifier,
   type AlertSink,
 } from "./alerts.ts";
+import { createConsoleAssets } from "./console-assets.ts";
+import { createDeviceCodes, createDevices } from "./devices.ts";
 import { readRelayEnv, redirectUri, type RelayEnv } from "./env.ts";
 import { createRelayHandler } from "./http.ts";
 import { serveDeployments, type DeploymentGate } from "./deployments.ts";

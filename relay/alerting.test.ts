@@ -156,6 +156,7 @@ describe("alerting", () => {
           type: RELAY_MESSAGES.hello,
           protocol: RELAY_PROTOCOL,
           publicKey: opts.key.publicKey,
+          boxKey: opts.key.boxKey,
           name: "acme-site",
           ...(opts.token !== undefined
             ? { pairingToken: opts.token }
@@ -263,15 +264,11 @@ describe("alerting", () => {
       url: `http://localhost/#/d/${fingerprint}`,
     });
     expect(body.text).toContain("acme-site: dark");
-    // Recorded after the attempt, so the next sweep says nothing (#515 §12).
-    // Waited for rather than read straight away: the webhook's handler answers
-    // before the relay's own `await` on it has come back, and the write is on
-    // the far side of that.
-    await until(
-      () => (alertsFile() === null ? undefined : alertsFile()),
-      "alerts.json to be written",
-    );
-    expect(alertsFile()).toMatchObject({
+    // Recorded after the attempt, so the next sweep says nothing (#515 §12). The
+    // webhook has the body before the relay has its answer, so the file is
+    // waited for rather than read the instant the post arrives.
+    const recorded = await until(() => alertsFile() ?? undefined, "the raise to be recorded");
+    expect(recorded).toMatchObject({
       deployments: { [fingerprint]: { dark: { state: "raised" } } },
     });
   });
@@ -310,6 +307,9 @@ describe("alerting", () => {
   test("a restart never re-fires what is still true", async () => {
     const { fingerprint } = await pair();
     await until(() => raised("dark"), "the dark alert to be posted");
+    // The restart has to find the raise on the volume, and it is written after
+    // the post returns.
+    await until(() => alertsFile() ?? undefined, "the raise to be recorded");
 
     for (const socket of sockets.splice(0)) socket.terminate();
     await relay.close();

@@ -161,6 +161,7 @@ describe("reports over the relay", () => {
       dataBase: volume,
       crashLoop: () => ({ lastGoodSha: "good", failingSha: null, failureCount: 0 }),
       slots: () => ({ capacity: 2, inUse: 0, waiting: 0, overGranted: 0, floorBudget: 1 }),
+      rootConfig: () => ({ path: join(volume, "phoebe.config.ts"), fingerprint: "sha256:root" }),
       armOf: () => "pat",
       onReport: () => prepared.push(),
     });
