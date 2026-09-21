@@ -20,8 +20,7 @@ function labelNotFoundError(): Error {
 /** The same failure as current `gh` words it, having resolved names itself. */
 function labelNotFoundErrorCurrentGh(): Error {
   const err = new Error("gh failed") as Error & { stderr: string };
-  err.stderr =
-    "failed to update https://github.com/acme/widget/issues/7: 'bogus' not found\n";
+  err.stderr = "failed to update https://github.com/acme/widget/issues/7: 'bogus' not found\n";
   return err;
 }
 
