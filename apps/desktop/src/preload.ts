@@ -10,7 +10,14 @@
 
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 import { DESKTOP_BRIDGE_GLOBAL } from "phoebe-agent/contracts";
-import type { DesktopBridge, RelayArmState, RelayEvent } from "phoebe-agent/contracts";
+import type {
+  DesktopBridge,
+  LocalInstall,
+  RelayArmState,
+  RelayEvent,
+  RunExit,
+  RunLine,
+} from "phoebe-agent/contracts";
 import { BRIDGE_CHANNELS, type BridgeResult } from "./channels.ts";
 
 /** One invoke, with main's refusal turned back into a rejection. */
@@ -25,31 +32,45 @@ async function call<T>(channel: string, ...args: unknown[]): Promise<T> {
   });
 }
 
+/** One subscription, with its own unsubscribe. */
+function subscribe<T>(channel: string, onEvent: (payload: T) => void): () => void {
+  const listener = (_event: IpcRendererEvent, payload: T) => {
+    onEvent(payload);
+  };
+  ipcRenderer.on(channel, listener);
+  return () => {
+    ipcRenderer.off(channel, listener);
+  };
+}
+
 const bridge: DesktopBridge = {
   version: () => call<string>(BRIDGE_CHANNELS.version),
+  environment: () => call(BRIDGE_CHANNELS.environment),
+  installs: {
+    list: () => call(BRIDGE_CHANNELS.installsList),
+    pick: () => call(BRIDGE_CHANNELS.installsPick),
+    add: (dir) => call(BRIDGE_CHANNELS.installsAdd, dir),
+    remove: (dir) => call(BRIDGE_CHANNELS.installsRemove, dir),
+    changes: (onChange) => subscribe<LocalInstall[]>(BRIDGE_CHANNELS.installsChanged, onChange),
+  },
+  runs: {
+    start: (request) => call(BRIDGE_CHANNELS.runStart, request),
+    current: (install) => call(BRIDGE_CHANNELS.runCurrent, install),
+    cancel: (runId) => call(BRIDGE_CHANNELS.runCancel, runId),
+    lines: (onLine) => subscribe<RunLine>(BRIDGE_CHANNELS.runLine, onLine),
+    exits: (onExit) => subscribe<RunExit>(BRIDGE_CHANNELS.runExit, onExit),
+  },
+  preferences: {
+    get: () => call(BRIDGE_CHANNELS.preferencesGet),
+    set: (preferences) => call(BRIDGE_CHANNELS.preferencesSet, preferences),
+  },
   relay: {
     state: () => call(BRIDGE_CHANNELS.relayState),
     signIn: (request) => call(BRIDGE_CHANNELS.relaySignIn, request),
-    watch: (onState) => {
-      const listener = (_event: IpcRendererEvent, state: RelayArmState) => {
-        onState(state);
-      };
-      ipcRenderer.on(BRIDGE_CHANNELS.relayArm, listener);
-      return () => {
-        ipcRenderer.off(BRIDGE_CHANNELS.relayArm, listener);
-      };
-    },
+    watch: (onState) => subscribe<RelayArmState>(BRIDGE_CHANNELS.relayArm, onState),
     request: (request) => call(BRIDGE_CHANNELS.relayRequest, request),
     signOut: () => call(BRIDGE_CHANNELS.relaySignOut),
-    events: (onEvent) => {
-      const listener = (_event: IpcRendererEvent, relayEvent: RelayEvent) => {
-        onEvent(relayEvent);
-      };
-      ipcRenderer.on(BRIDGE_CHANNELS.relayEvent, listener);
-      return () => {
-        ipcRenderer.off(BRIDGE_CHANNELS.relayEvent, listener);
-      };
-    },
+    events: (onEvent) => subscribe<RelayEvent>(BRIDGE_CHANNELS.relayEvent, onEvent),
   },
 };
 

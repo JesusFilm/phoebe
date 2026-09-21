@@ -228,6 +228,134 @@ a {
   border: 1px dashed var(--muted);
 }
 
+/* ── the local arm ─────────────────────────────────────────────────────── */
+
+/* Three states, three marks, and none of them borrowed from the relay's four:
+   a local install is never dark and never unseen (#522 §7). Running reuses the
+   filled dot because it means the same thing the relay's connected does — this
+   is alive — and an operator reading one rail should not have to learn the same
+   fact twice. */
+.mark.running {
+  border-radius: 50%;
+  background: var(--ok);
+}
+
+.mark.stopped {
+  border-radius: 50%;
+  border: 2px solid var(--muted);
+}
+
+.mark.not-initialised {
+  border-radius: 2px;
+  border: 1px dashed var(--muted);
+}
+
+.rail-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.rail-add {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--accent);
+  font: inherit;
+  text-transform: none;
+  letter-spacing: normal;
+  cursor: pointer;
+}
+
+/* A local entry is a button, because it is the one rail entry that goes
+   somewhere. Stripped back to the shape of the div beside it so the two read as
+   one list. */
+.rail-entry.local {
+  width: 100%;
+  border: 0;
+  border-left: 3px solid transparent;
+  border-radius: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.rail-entry.local:hover {
+  background: var(--chip);
+}
+
+.rail-entry.local.current {
+  border-left-color: var(--accent);
+  background: var(--chip);
+}
+
+/* ── the install tab ───────────────────────────────────────────────────── */
+
+.tabs {
+  display: flex;
+  gap: 2px;
+  margin: 14px 0 4px;
+  border-bottom: 1px solid var(--line);
+}
+
+.tab {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: none;
+  color: var(--muted);
+  padding: 6px 10px;
+}
+
+.tab.current {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+}
+
+.tab:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.verbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0 6px;
+}
+
+button.quiet {
+  border-color: transparent;
+  color: var(--muted);
+}
+
+/* The verb's output. Fixed height and scrolled, because a run that prints a
+   thousand lines must not push the buttons that started it off the screen. */
+.run-lines {
+  max-height: 340px;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.run-lines .stderr {
+  color: var(--fail);
+}
+
+.outcome {
+  color: var(--ok);
+}
+
+.refusal {
+  color: var(--fail);
+}
+
 .chip {
   display: inline-block;
   padding: 0 6px;

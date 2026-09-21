@@ -203,3 +203,11 @@ export type {
 export { COMPANION_AUTH_URL, DEVICE_CODE_TTL_MS } from "./relay-routes.ts";
 export type { DeviceExchange, DeviceExchangeResult, RelayDevice } from "./relay-routes.ts";
 export type { RelaySignInRequest } from "./desktop-bridge.ts";
+export type {
+  CompanionEnvironment,
+  CompanionPreferences,
+  InstallState,
+  LocalInstall,
+} from "./local-install.ts";
+export { CANCELLABLE_VERBS, MAX_RUN_LINES } from "./verb-run.ts";
+export type { RunExit, RunLine, VerbRun, VerbRunRequest } from "./verb-run.ts";

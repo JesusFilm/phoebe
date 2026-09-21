@@ -11,8 +11,21 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { rowFacts, sortFleet } from "./facts.ts";
 import { FleetPage } from "./fleet-page.tsx";
 import { Rail } from "./rail.tsx";
+import { InstallPage } from "./install-page.tsx";
 import type { RelaySignIn } from "./relay-client.ts";
-import { ago, cell, child, client, NOW, report, row, stored, tenant } from "./test-fixture.ts";
+import {
+  ago,
+  bridge,
+  cell,
+  child,
+  client,
+  install,
+  NOW,
+  report,
+  row,
+  stored,
+  tenant,
+} from "./test-fixture.ts";
 
 /** The four states, one deployment each, plus one that is wedged. */
 const FLEET = sortFleet([
@@ -94,7 +107,7 @@ const SIGN_IN_PROMPT: RelaySignIn = {
 const rail = renderToStaticMarkup(
   <Rail
     facts={FLEET}
-    selected={null}
+    selectedDeployment={null}
     now={NOW}
     surface="browser"
     signedIn
@@ -159,7 +172,7 @@ describe("the rail", () => {
     const selected = renderToStaticMarkup(
       <Rail
         facts={FLEET}
-        selected="two"
+        selectedDeployment="two"
         now={NOW}
         surface="browser"
         signedIn
@@ -279,7 +292,7 @@ describe("doctor at fleet level (#507 §9)", () => {
     const markup = renderToStaticMarkup(
       <Rail
         facts={[rowFacts(row(), stored(failing))]}
-        selected={null}
+        selectedDeployment={null}
         now={NOW}
         surface="browser"
         signedIn
@@ -329,7 +342,7 @@ describe("the companion's shell", () => {
   const empty = renderToStaticMarkup(
     <Rail
       facts={[]}
-      selected={null}
+      selectedDeployment={null}
       now={NOW}
       surface="companion"
       signedIn={false}
@@ -356,7 +369,7 @@ describe("the companion's shell", () => {
     const markup = renderToStaticMarkup(
       <Rail
         facts={[]}
-        selected={null}
+        selectedDeployment={null}
         now={NOW}
         surface="companion"
         signedIn={false}
@@ -372,7 +385,7 @@ describe("the companion's shell", () => {
     const markup = renderToStaticMarkup(
       <Rail
         facts={[]}
-        selected={null}
+        selectedDeployment={null}
         now={NOW}
         surface="companion"
         signedIn={false}
@@ -393,7 +406,7 @@ describe("the companion's shell", () => {
     const markup = renderToStaticMarkup(
       <Rail
         facts={FLEET}
-        selected={null}
+        selectedDeployment={null}
         now={NOW}
         surface="companion"
         signedIn
@@ -409,5 +422,126 @@ describe("the companion's shell", () => {
   test("a browser has no local arm, so its rail is the fleet and nothing else", () => {
     expect(rail).not.toContain("This machine");
     expect(rail).toContain("Fleet — 4 deployments");
+  });
+});
+
+describe("the local arm on the rail", () => {
+  const installs = [
+    install({ dir: "/repos/one", name: "one", state: "running" }),
+    install({ dir: "/repos/two", name: "two", state: "stopped" }),
+    install({
+      dir: "/repos/three",
+      name: "three",
+      state: "not-initialised",
+      detail: "no container/compose.yml yet",
+    }),
+  ];
+  const markup = renderToStaticMarkup(
+    <Rail
+      facts={[]}
+      now={NOW}
+      surface="companion"
+      signedIn={false}
+      installs={installs}
+      selected="/repos/two"
+      onSelect={() => undefined}
+      onAdd={() => undefined}
+      signIn={null}
+      onSignedIn={noop}
+    />,
+  );
+
+  test("lists every install under This machine, in the order they were added", () => {
+    const names = [...markup.matchAll(/class="name">.*?<\/span>(.*?)</g)].map((match) => match[1]);
+
+    expect(names).toEqual(["one", "two", "three"]);
+  });
+
+  test("gives the three states three marks, and borrows none of the relay's four", () => {
+    for (const tone of ["running", "stopped", "not-initialised"]) {
+      expect(markup, tone).toContain(`class="mark ${tone}"`);
+    }
+    for (const word of ["dark", "unseen", "disconnected"]) {
+      expect(markup.toLowerCase(), word).not.toContain(word);
+    }
+  });
+
+  test("says why an install is in the state it is in, when there is a why", () => {
+    expect(markup).toContain("not initialised · no container/compose.yml yet");
+  });
+
+  test("marks the install whose page is open", () => {
+    expect(markup).toContain('aria-current="page"');
+  });
+
+  test("offers the one control the relay group has no equivalent of", () => {
+    expect(markup).toContain("+ add");
+  });
+
+  test("a browser's rail has no local group at all, control included", () => {
+    const browser = renderToStaticMarkup(
+      <Rail
+        facts={[]}
+        now={NOW}
+        surface="browser"
+        signedIn
+        installs={installs}
+        signIn={null}
+        onSignedIn={noop}
+      />,
+    );
+
+    expect(browser).not.toContain("This machine");
+    expect(browser).not.toContain("+ add");
+  });
+});
+
+describe("the install tab", () => {
+  function tab(overrides: Parameters<typeof install>[0] = {}) {
+    return renderToStaticMarkup(
+      <InstallPage install={install(overrides)} bridge={bridge()} onForget={() => undefined} />,
+    );
+  }
+
+  test("is where a not-initialised install lands, offering init and nothing that needs one", () => {
+    const markup = tab({ state: "not-initialised" });
+
+    expect(markup).toContain(">install<");
+    expect(markup).toContain(">Init<");
+    expect(markup).not.toContain(">Start<");
+    expect(markup).not.toContain(">Stop<");
+  });
+
+  test("a running install offers stop and doctor, never start beside them", () => {
+    const markup = tab({ state: "running" });
+
+    expect(markup).toContain(">Stop<");
+    expect(markup).toContain(">Doctor<");
+    expect(markup).not.toContain(">Start<");
+    expect(markup).not.toContain(">Init<");
+  });
+
+  test("a stopped install offers start and the upgrade check", () => {
+    const markup = tab({ state: "stopped" });
+
+    expect(markup).toContain(">Start<");
+    expect(markup).toContain(">Check for upgrades<");
+  });
+
+  test("carries the five deployment tabs, disabled and saying what they need", () => {
+    const markup = tab();
+
+    for (const name of ["overview", "pipelines", "doctor", "secrets", "config"]) {
+      expect(markup, name).toContain(`>${name}<`);
+    }
+    expect(markup).toContain("Needs a running container");
+  });
+
+  test("says forgetting deletes nothing, because a Forget button reads like one that does", () => {
+    expect(tab()).toContain("Nothing on disk is deleted");
+  });
+
+  test("names the folder it is about, since the rail only had room for its name", () => {
+    expect(tab()).toContain("/repos/youtube-studio");
   });
 });

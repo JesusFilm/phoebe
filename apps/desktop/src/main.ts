@@ -6,11 +6,17 @@
 // serves in a browser — loaded from disk over the console scheme. So there is no
 // UI code in here, and a page the operator sees is never written twice.
 //
-// Main is also the relay client (#523 §1): it holds the device token, makes every
-// call to the relay, and re-emits the relay's event stream to the renderer over
-// IPC. The wiring for that is here; the flow itself is relay-session.ts, which
-// needs no Electron to run. The host verbs and the local read loop arrive with
-// #555 and #556, behind the contract the preload already exposes.
+// What main answers is the companion's two arms. The local arm is the installs
+// on this machine, the Docker check and the verb runs that drive them (#555);
+// the local read loop that feeds their tabs joins it with #556. The remote arm
+// is the relay
+// (#523 §1): main holds the device token, makes every call, and re-emits the
+// relay's event stream to the renderer over IPC. The wiring for that is here;
+// the flow itself is relay-session.ts, which needs no Electron to run.
+//
+// Main owns state the window does not: `companion.json`, the device session and
+// the runs in flight. All of it is here rather than in the renderer for the same
+// reason — a reload must not lose them.
 
 import os from "node:os";
 import path from "node:path";
@@ -18,6 +24,7 @@ import { pathToFileURL } from "node:url";
 import {
   app,
   BrowserWindow,
+  dialog,
   ipcMain,
   nativeTheme,
   net,
@@ -25,13 +32,35 @@ import {
   safeStorage,
   shell,
 } from "electron";
-import type { RelayArmState, RelayEvent, RelayPassthrough } from "phoebe-agent/contracts";
+import type {
+  CompanionEnvironment,
+  CompanionPreferences,
+  LocalInstall,
+  RelayArmState,
+  RelayEvent,
+  RelayPassthrough,
+  VerbRun,
+  VerbRunRequest,
+} from "phoebe-agent/contracts";
 import { authCodeIn, authCodeInArgv } from "./auth-link.ts";
-import { answer, BRIDGE_CHANNELS, type BridgeResult } from "./channels.ts";
+import { answering, BRIDGE_CHANNELS, BridgeRefusal, type BridgeResult } from "./channels.ts";
+import {
+  addInstall,
+  COMPANION_FILE,
+  readCompanionFile,
+  removeInstall,
+  writeCompanionFile,
+  type CompanionFile,
+} from "./companion-file.ts";
 import { CONSOLE_SCHEME, consoleFileFor } from "./console-scheme.ts";
 import { consoleSource } from "./console-source.ts";
+import { probeDocker } from "./docker.ts";
+import { allInstallFacts } from "./install-facts.ts";
+import { resolveDeploymentCompose } from "../../../src/deployment-compose.ts";
 import { companionName, createRelaySession, type RelaySession } from "./relay-session.ts";
 import { createTokenVault } from "./vault.ts";
+import { dispatchVerb } from "./verb-dispatch.ts";
+import { createVerbRuns } from "./verb-runs.ts";
 
 // Before `ready`, which is the only time Chromium will take it. `standard` is
 // what gives the bundle a real origin — without it there is no `localStorage`,
@@ -59,7 +88,25 @@ function consoleBundleDir(): string {
   // the directory `apps/console` builds into, three levels up from `dist/`.
   return app.isPackaged
     ? path.join(process.resourcesPath, "console")
-    : path.join(__dirname, "..", "..", "..", "console");
+    : path.join(import.meta.dirname, "..", "..", "..", "console");
+}
+
+/** Where `companion.json` lives. Electron's own per-app directory (#527 §12). */
+function companionFile(): string {
+  return path.join(app.getPath("userData"), COMPANION_FILE);
+}
+
+/** Read the file, turning an unreadable one into a refusal that names it. */
+function readCompanion(): CompanionFile {
+  try {
+    return readCompanionFile(companionFile());
+  } catch (error) {
+    throw new BridgeRefusal({
+      code: "unknown",
+      message: error instanceof Error ? error.message : String(error),
+      instruction: `Fix or delete ${companionFile()} and reopen the companion.`,
+    });
+  }
 }
 
 /**
@@ -116,6 +163,44 @@ function broadcast(channel: string, payload: unknown): void {
 }
 
 /**
+ * The install list with this moment's facts on it. Derived on every call, which
+ * is the whole rule `companion.json` is built around (install-facts.ts).
+ */
+async function listInstalls(): Promise<LocalInstall[]> {
+  const stored = readCompanion().installs;
+  const docker = await probeDocker();
+  const installs = await allInstallFacts(stored, { dockerPresent: docker.present });
+  return installs;
+}
+
+/** Read, change, write, and tell the window. The only writer of the file. */
+async function editInstalls(change: (contents: CompanionFile) => CompanionFile) {
+  writeCompanionFile(companionFile(), change(readCompanion()));
+  const installs = await listInstalls();
+  broadcast(BRIDGE_CHANNELS.installsChanged, installs);
+  return installs;
+}
+
+/**
+ * The runs, held for the life of the process. Lines and exits go to every
+ * window as they happen; a window that opened late reads the buffer instead
+ * (#527 §13).
+ */
+const runs = createVerbRuns({
+  dispatch: dispatchVerb,
+  onLine: (line) => broadcast(BRIDGE_CHANNELS.runLine, line),
+  onExit: (exit) => {
+    broadcast(BRIDGE_CHANNELS.runExit, exit);
+    // A verb that just started or stopped a container changed the one fact the
+    // rail draws, and nothing else is watching for it until #556's read loop.
+    void listInstalls().then(
+      (installs) => broadcast(BRIDGE_CHANNELS.installsChanged, installs),
+      () => undefined,
+    );
+  },
+});
+
+/**
  * A URL the OS handed us. An auth link is spent against whichever sign-in this
  * process has open; anything else is not ours, and a code with no attempt
  * behind it is dropped — only the instance holding the verifier can spend one.
@@ -124,7 +209,6 @@ function deliverDeepLink(url: string): void {
   const code = authCodeIn(url);
   if (code !== null) relay?.deliver(code);
 }
-
 function createWindow(): void {
   const window = new BrowserWindow({
     width: 1180,
@@ -135,7 +219,7 @@ function createWindow(): void {
     backgroundColor: nativeTheme.shouldUseDarkColors ? "#14171c" : "#fafafa",
     title: "Phoebe",
     webPreferences: {
-      preload: path.join(__dirname, "preload.cjs"),
+      preload: path.join(import.meta.dirname, "preload.cjs"),
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
@@ -185,17 +269,76 @@ app.whenReady().then(
       return { ok: true, value: __COMPANION_VERSION__ };
     });
 
-    ipcMain.handle(BRIDGE_CHANNELS.relayState, () => answer(() => arm().state()));
+    ipcMain.handle(BRIDGE_CHANNELS.environment, () =>
+      answering<CompanionEnvironment>(async () => ({
+        companionVersion: __COMPANION_VERSION__,
+        platform: process.platform,
+        docker: await probeDocker(),
+      })),
+    );
+
+    ipcMain.handle(BRIDGE_CHANNELS.installsList, () => answering(listInstalls));
+
+    ipcMain.handle(BRIDGE_CHANNELS.installsPick, () =>
+      answering<string | null>(async () => {
+        const picked = await dialog.showOpenDialog({
+          title: "Add a local install",
+          message: "Pick the repository folder Phoebe runs from.",
+          properties: ["openDirectory", "createDirectory"],
+        });
+        return picked.canceled ? null : (picked.filePaths[0] ?? null);
+      }),
+    );
+
+    ipcMain.handle(BRIDGE_CHANNELS.installsAdd, (_event, dir: string) =>
+      // A folder that already carries a config is adopted exactly as it stands
+      // (#555): adding it records the directory and derives the rest, and init
+      // is a button the operator does not need to press.
+      answering(() =>
+        editInstalls((contents) => addInstall(contents, dir, new Date().toISOString())),
+      ),
+    );
+
+    ipcMain.handle(BRIDGE_CHANNELS.installsRemove, (_event, dir: string) =>
+      answering(() => editInstalls((contents) => removeInstall(contents, dir))),
+    );
+
+    ipcMain.handle(BRIDGE_CHANNELS.runStart, (_event, request: VerbRunRequest) =>
+      answering<string>(() => runs.start(request)),
+    );
+
+    ipcMain.handle(BRIDGE_CHANNELS.runCurrent, (_event, install: string) =>
+      answering<VerbRun | null>(() => runs.current(install)),
+    );
+
+    ipcMain.handle(BRIDGE_CHANNELS.runCancel, (_event, runId: string) =>
+      answering<void>(() => runs.cancel(runId)),
+    );
+
+    ipcMain.handle(BRIDGE_CHANNELS.preferencesGet, () =>
+      answering<CompanionPreferences>(() => readCompanion().preferences),
+    );
+
+    ipcMain.handle(BRIDGE_CHANNELS.preferencesSet, (_event, preferences: CompanionPreferences) =>
+      answering<CompanionPreferences>(() => {
+        const contents = readCompanion();
+        const next = { ...contents, preferences };
+        writeCompanionFile(companionFile(), next);
+        return next.preferences;
+      }),
+    );
+
+    ipcMain.handle(BRIDGE_CHANNELS.relayState, () => answering(() => arm().state()));
 
     ipcMain.handle(BRIDGE_CHANNELS.relaySignIn, (_event, request: { url: string }) =>
-      answer(() => arm().signIn(request.url)),
+      answering(() => arm().signIn(request.url)),
     );
 
     ipcMain.handle(BRIDGE_CHANNELS.relayRequest, (_event, request: RelayPassthrough) =>
-      answer(() => arm().request(request)),
+      answering(() => arm().request(request)),
     );
 
-    ipcMain.handle(BRIDGE_CHANNELS.relaySignOut, () => answer(() => arm().signOut()));
+    ipcMain.handle(BRIDGE_CHANNELS.relaySignOut, () => answering(() => arm().signOut()));
 
     createWindow();
 
@@ -212,7 +355,9 @@ app.whenReady().then(
   },
 );
 
-app.on("before-quit", () => relay?.close());
+app.on("before-quit", () => {
+  relay?.close();
+});
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();

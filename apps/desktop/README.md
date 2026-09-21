@@ -42,16 +42,41 @@ The one secret it holds is the relay's device token, and that lives in main behi
 `crypto.subtle` — Chromium 134, Electron 35. `package.json` pins a current major
 well above that; the floor is what a downgrade may not cross.
 
-`vp run build` is two passes, one per entry point, because a sandboxed preload's
-`require` resolves `electron` and a few built-ins and nothing else. A shared chunk
-on disk beside it is a file it could never load. Building needs no Electron
-binary, which is why the gate can run with `--ignore-scripts` and the agent
-container sets `ELECTRON_SKIP_BINARY_DOWNLOAD=1` (`.phoebe/container/compose.yml`). Running the app needs the
-binary; packaging is [#561](https://github.com/JesusFilm/phoebe/issues/561)'s.
+`vp run build` is two passes, one per entry point, and the two take different
+formats. The preload is CommonJS because a sandboxed preload has to be — Electron
+loads an ES-module preload only with the sandbox off — and it is bundled alone,
+because a sandboxed `require` resolves `electron` and a few built-ins and nothing
+else, so a shared chunk on disk beside it is a file it could never load. Main is
+an ES module because it bundles the engine's host verbs, and engine modules
+resolve their shipped `templates/` and `prompts/` through `import.meta`; a
+CommonJS pass replaces that with `{}` and main stops loading at import time.
+
+Building needs no Electron binary, which is why the gate can run with
+`--ignore-scripts` and the agent container sets `ELECTRON_SKIP_BINARY_DOWNLOAD=1`
+(`.phoebe/container/compose.yml`). Running the app needs the binary; packaging is
+[#561](https://github.com/JesusFilm/phoebe/issues/561)'s — including putting
+`templates/` and `prompts/` where `init` can find them, which is what
+`packageRoot()` in [`src/verb-dispatch.ts`](src/verb-dispatch.ts) hooks.
 
 ## What main answers today
 
-Its version, and the relay arm
+**The local arm, in full.** The installs on this machine, the Docker check, and
+the verb runs that drive them ([#555](https://github.com/JesusFilm/phoebe/issues/555)):
+
+- [`companion-file.ts`](src/companion-file.ts) — `companion.json` in `userData`:
+  the install directories, the relay URL, the preferences. Nothing else. Every
+  fact _about_ an install is derived on read.
+- [`install-facts.ts`](src/install-facts.ts) — that derivation. Running, stopped
+  or not initialised, from Compose and the folder itself.
+- [`docker.ts`](src/docker.ts) — the check. Docker is checked and never
+  installed; a missing one is a sentence and a link.
+- [`verb-runs.ts`](src/verb-runs.ts) — ids, line buffers, busy-ness and cancel.
+  One run per install, parallel across installs, 2000 lines kept, and the buffer
+  lives here so a renderer reload rejoins a run rather than losing it.
+- [`verb-dispatch.ts`](src/verb-dispatch.ts) — the six `run<Verb>` calls, in
+  this process (ADR 0001). No second Node, no `bin.mjs`, no stdout parsing.
+
+**The relay arm.**
 ([#554](https://github.com/JesusFilm/phoebe/issues/554)): sign-in, the JSON reads
 the renderer asks for, the relay's event stream re-emitted over IPC, and sign-out.
 Main is the relay client — it holds the device token and the renderer never sees
@@ -64,7 +89,12 @@ that land on the process holding the verifier: on Windows and Linux the OS
 launches a _second_ process with the URL on its command line, and without the lock
 one process would hold the code and the other the verifier.
 
-The host verbs and the install list
-([#555](https://github.com/JesusFilm/phoebe/issues/555)) and the local read loop
-([#556](https://github.com/JesusFilm/phoebe/issues/556)) are changes in here,
-behind the contract the preload already exposes.
+The local read loop
+([#556](https://github.com/JesusFilm/phoebe/issues/556)) is a change in here, behind
+the contract the preload already exposes.
+
+Two things a later ticket owes this package. `upgrade` and `migrate` spawn their
+children through `spawnSync`, which blocks main for as long as they run — so the
+window freezes, and neither can be cancelled (`CANCELLABLE_VERBS` is `start` and
+`stop`). And a run's lines are held only in memory, so quitting the app loses the
+last run's output.

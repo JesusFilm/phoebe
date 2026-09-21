@@ -6,6 +6,19 @@ import type { DesktopBridgeError } from "phoebe-agent/contracts";
 
 export const BRIDGE_CHANNELS = {
   version: "phoebe:version",
+  environment: "phoebe:environment",
+  installsList: "phoebe:installs/list",
+  installsPick: "phoebe:installs/pick",
+  installsAdd: "phoebe:installs/add",
+  installsRemove: "phoebe:installs/remove",
+  installsChanged: "phoebe:installs/changed",
+  runStart: "phoebe:runs/start",
+  runCurrent: "phoebe:runs/current",
+  runCancel: "phoebe:runs/cancel",
+  runLine: "phoebe:runs/line",
+  runExit: "phoebe:runs/exit",
+  preferencesGet: "phoebe:preferences/get",
+  preferencesSet: "phoebe:preferences/set",
   relayState: "phoebe:relay/state",
   relaySignIn: "phoebe:relay/sign-in",
   relayArm: "phoebe:relay/arm",
@@ -30,8 +43,36 @@ export function refusal(error: DesktopBridgeError): BridgeResult<never> {
   return { ok: false, error };
 }
 
-/** Carries a `DesktopBridgeError` out of a handler without losing its fields. */
+/**
+ * A refusal raised from inside main, where a throw is the natural shape.
+ *
+ * One error shape for the whole bridge (#527 §16) means the code and the
+ * instruction have to survive from wherever the decision was made to the
+ * handler that answers the invoke. An `Error` subclass carries them there; the
+ * handler turns it back into a {@link refusal}, and anything else that escapes
+ * becomes `unknown` with its message intact.
+ */
+export class BridgeRefusal extends Error {
+  readonly error: DesktopBridgeError;
+
+  constructor(error: DesktopBridgeError) {
+    super(error.message);
+    this.name = "BridgeRefusal";
+    this.error = error;
+  }
+}
+
+/**
+ * The refusal an arm attached to a thrown error, if it attached one.
+ *
+ * Two arms raise refusals and only one of them can import this file: the relay
+ * arm is written to run without Electron and carries its own `RelayRefusal`
+ * with the same payload under `detail`. Reading the field rather than the class
+ * is what lets both arrive at the same {@link refusal} without either arm
+ * depending on the other.
+ */
 export function detailOf(error: unknown): DesktopBridgeError | null {
+  if (error instanceof BridgeRefusal) return error.error;
   const detail = (error as { detail?: unknown } | null)?.detail;
   if (typeof detail !== "object" || detail === null) return null;
   const { code, message } = detail as Partial<DesktopBridgeError>;
@@ -41,14 +82,14 @@ export function detailOf(error: unknown): DesktopBridgeError | null {
 }
 
 /**
- * Run one handler and turn whatever comes out into the value the channel
- * carries. A refusal keeps its code; anything else that throws is `unknown`,
- * because a bug in main is not a thing the console can act on and pretending
- * otherwise would put a stack trace in a rail entry.
+ * Run one handler's body, answering with its value or with the refusal it
+ * raised. Every channel goes through here, so no handler has to remember to
+ * catch — and an unexpected throw arrives at the window as `unknown` with a
+ * message rather than as a promise that never settles.
  */
-export async function answer<T>(run: () => T | Promise<T>): Promise<BridgeResult<T>> {
+export async function answering<T>(body: () => T | Promise<T>): Promise<BridgeResult<T>> {
   try {
-    return { ok: true, value: await run() };
+    return { ok: true, value: await body() };
   } catch (error) {
     const detail = detailOf(error);
     if (detail !== null) return refusal(detail);

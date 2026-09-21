@@ -22,32 +22,44 @@
 // browser, the hop back over `phoebe://auth` and the exchange all happen in main,
 // and the renderer never sees the token that comes out.
 //
-// Each entry links to that deployment's tabs (#544). The relay group's heading
+// A local entry opens its install page (#555), and each relay entry links to that
+// deployment's tabs (#544). The relay group's heading
 // links back to the fleet, so the grid is one click from anywhere rather than a
 // page an operator has to find their way back to.
 
 import { useState } from "react";
-import type { RelayIdentity } from "phoebe-agent/contracts";
+import type { LocalInstall, RelayIdentity } from "phoebe-agent/contracts";
 import type { Surface } from "./companion.ts";
 import { connectionReading, type RowFacts } from "./facts.ts";
+import { installReading } from "./local-install.ts";
 import type { RelaySignIn } from "./relay-client.ts";
 import { deploymentHref, FLEET_HREF } from "./route.ts";
 
 export function Rail({
   facts,
-  selected,
   now,
   surface,
   signedIn,
+  installs = [],
+  selected = null,
+  selectedDeployment = null,
+  onSelect,
+  onAdd,
   signIn,
   onSignedIn,
 }: {
   facts: RowFacts[];
-  /** The fingerprint of the deployment being shown, or null on the fleet page. */
-  selected: string | null;
   now: Date;
   surface: Surface;
   signedIn: boolean;
+  /** The local arm. Empty in a browser, which has no local arm at all. */
+  installs?: LocalInstall[];
+  /** The install whose page is open, by directory. */
+  selected?: string | null;
+  /** The fingerprint of the deployment being shown, or null on the fleet page. */
+  selectedDeployment?: string | null;
+  onSelect?: (dir: string) => void;
+  onAdd?: () => void;
   /** How this arm signs in, or null while the answer is still being read. */
   signIn: RelaySignIn | null;
   onSignedIn: (identity: RelayIdentity) => void;
@@ -68,7 +80,7 @@ export function Rail({
           <RailEntry
             key={row.row.fingerprint}
             facts={row}
-            current={row.row.fingerprint === selected}
+            current={row.row.fingerprint === selectedDeployment}
             now={now}
           />
         ))
@@ -87,11 +99,60 @@ export function Rail({
   return (
     <nav className="rail" aria-label="This machine and the relay">
       <section className="rail-group" aria-label="This machine">
-        <h2 className="rail-heading">This machine</h2>
-        <p className="rail-empty">No local install yet.</p>
+        <h2 className="rail-heading">
+          This machine
+          {onAdd === undefined ? null : (
+            <button type="button" className="rail-add" onClick={onAdd}>
+              + add
+            </button>
+          )}
+        </h2>
+        {installs.length === 0 ? (
+          <p className="rail-empty">No local install yet.</p>
+        ) : (
+          installs.map((install) => (
+            <InstallEntry
+              key={install.dir}
+              install={install}
+              current={install.dir === selected}
+              {...(onSelect !== undefined ? { onSelect } : {})}
+            />
+          ))
+        )}
       </section>
       {relay}
     </nav>
+  );
+}
+
+/**
+ * One local install. A button rather than a div, because it is the one rail
+ * entry that goes somewhere — and a thing you click should be a thing a keyboard
+ * can reach.
+ */
+function InstallEntry({
+  install,
+  current,
+  onSelect,
+}: {
+  install: LocalInstall;
+  current: boolean;
+  onSelect?: (dir: string) => void;
+}) {
+  const reading = installReading(install);
+  return (
+    <button
+      type="button"
+      className={`rail-entry local state-${reading.tone}${current ? " current" : ""}`}
+      aria-current={current ? "page" : undefined}
+      onClick={() => onSelect?.(install.dir)}
+    >
+      <div className="name">
+        <span className={`mark ${reading.tone}`} aria-hidden="true" />
+        {install.name}
+      </div>
+      <div className="sub">{reading.text}</div>
+    </button>
   );
 }
 

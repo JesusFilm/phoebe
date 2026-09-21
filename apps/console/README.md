@@ -20,8 +20,17 @@ The browser arm is the relay's own origin, its `__Host-` session cookie and
 the desktop bridge, so nothing else in here knows which side it is running on.
 [`src/main.tsx`](src/main.tsx) picks between them by reading the global the
 companion's preload exposes; that is the only thing in the bundle that can tell
-the two surfaces apart, and the rail's "This machine" group is what it buys
-([#526](https://github.com/JesusFilm/phoebe/issues/526) shell A).
+the two surfaces apart ([#526](https://github.com/JesusFilm/phoebe/issues/526)
+shell A).
+
+The relay is one of the companion's two arms. The other is **local installs** —
+folders on this machine, listed under "This machine" on the rail, each with an
+**install tab** that takes one from nothing to running with buttons
+([#555](https://github.com/JesusFilm/phoebe/issues/555)). That arm goes through
+the bridge directly rather than through the relay client, because none of it is a
+relay call: [`src/local-install.ts`](src/local-install.ts) holds the readings and
+the reducers, and [`src/install-page.tsx`](src/install-page.tsx) renders them. A
+browser has no local arm at all and the group is not drawn there.
 
 Pages are hash routes, picked in [`src/app.tsx`](src/app.tsx): `#/fleet` is the
 rail and the grid, `#/people` is the allowlist and the pairing panel

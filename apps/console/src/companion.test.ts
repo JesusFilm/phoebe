@@ -2,48 +2,16 @@
 
 import { describe, expect, test } from "vite-plus/test";
 import { DESKTOP_BRIDGE_GLOBAL } from "phoebe-agent/contracts";
-import type { DesktopBridge, RelayArmState, RelayEvent } from "phoebe-agent/contracts";
+import type { DesktopBridge, RelayArmState } from "phoebe-agent/contracts";
 import { desktopBridge } from "./companion.ts";
 import { createBridgeRelayClient, isNotSignedIn } from "./relay-client.ts";
+import { bridge, type BridgeAnswers } from "./test-fixture.ts";
 
 const ADA = { sub: "1", email: "ada@example.test" };
 
 /** A bridge that answers `state` with whatever it is given and refuses the rest. */
-function bridgeOf(
-  state: RelayArmState,
-  answers: {
-    request?: (path: string) => unknown;
-    events?: RelayEvent[];
-    signIn?: (url: string) => RelayArmState;
-  } = {},
-): DesktopBridge {
-  return {
-    version: () => Promise.resolve("0.13.0"),
-    relay: {
-      state: () => Promise.resolve(state),
-      signIn: ({ url }) =>
-        answers.signIn === undefined
-          ? Promise.reject(new Error("this bridge does not sign in"))
-          : Promise.resolve(answers.signIn(url)),
-      watch: () => () => undefined,
-      request: ({ path }) => {
-        if (answers.request === undefined) return Promise.reject(signedOut());
-        return Promise.resolve(answers.request(path));
-      },
-      events: (onEvent) => {
-        for (const event of answers.events ?? []) onEvent(event);
-        return () => undefined;
-      },
-      signOut: () => Promise.resolve(),
-    },
-  };
-}
-
-/** What the preload throws when main refuses a call (#527 §16). */
-function signedOut(): Error {
-  return Object.assign(new Error("the companion is not signed in to a relay"), {
-    code: "signed-out",
-  });
+function bridgeOf(state: RelayArmState, answers: BridgeAnswers = {}): DesktopBridge {
+  return bridge({ ...answers, relay: state });
 }
 
 describe("which surface this is", () => {
