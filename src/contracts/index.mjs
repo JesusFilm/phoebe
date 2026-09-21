@@ -10,6 +10,8 @@
 // this. src/contracts/deployment.test.ts holds the two copies to the same value;
 // bootstrap/index.mjs exists for the same reason.
 
+export { openSecret, sealSecret } from "./secret-envelope.mjs";
+
 /** The `schema` integer `state/deployment.json` carries — see deployment.ts. */
 export const DEPLOYMENT_SCHEMA = 1;
 
