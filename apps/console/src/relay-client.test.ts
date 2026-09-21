@@ -84,6 +84,28 @@ describe("the reads", () => {
     for (const call of calls) expect(call.init?.credentials).toBe("same-origin");
   });
 
+  test("the version read goes to the open path and sends no accept-nothing", async () => {
+    const { fetch, calls } = fakeFetch({
+      [RELAY_ROUTES.version]: { body: { version: "0.13.0", console: 1 } },
+    });
+
+    expect(await createBrowserRelayClient({ fetch }).version()).toEqual({
+      version: "0.13.0",
+      console: 1,
+    });
+    expect(calls[0]?.url).toBe(RELAY_ROUTES.version);
+  });
+
+  test("a relay with no version route rejects with the 404, which is a verdict", async () => {
+    // relay-version.ts reads this status as "too old" rather than as a failure.
+    const failure = await createBrowserRelayClient({ fetch: fakeFetch({}).fetch })
+      .version()
+      .catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(RelayRequestError);
+    expect((failure as RelayRequestError).status).toBe(404);
+  });
+
   test("one deployment is the fleet path plus its fingerprint, encoded", async () => {
     const { fetch, calls } = fakeFetch({
       [`${RELAY_ROUTES.deployments}/a%2Fb`]: { body: { deployment: row(), report: null } },

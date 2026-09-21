@@ -9,6 +9,13 @@
 // the relay is one of two arms: the Relay group collapses to say so and This
 // machine is untouched (#526).
 //
+// Before any of that, the version handshake. `GET /api/version` is the first
+// thing the console asks any relay, and a relay serving a console protocol below
+// this bundle's gets asked nothing else (#525 §4, relay-version.ts): the Relay
+// arm says upgrade the relay first and the local arm carries on untouched, which
+// is the companion's whole shape — two arms, and one of them being unusable is
+// not the window being unusable.
+//
 // The stream does the updating. The page reads the fleet once, subscribes, and
 // then only applies events (#542) — there is no polling loop and no refetch on a
 // timer. What does tick is a clock, once a second, because half the facts on
@@ -25,6 +32,12 @@ import type {
   RelayIdentity,
 } from "phoebe-agent/contracts";
 import type { Surface } from "./companion.ts";
+import {
+  readRelayVersion,
+  RELAY_UPGRADE_DOC,
+  tooOldText,
+  type RelayVersionReading,
+} from "./relay-version.ts";
 import { readEditAnswer, type EditAnswer } from "./config-edit.ts";
 import { DeploymentPage, NoSuchDeployment } from "./deployment-page.tsx";
 import { rowFacts, sortFleet, type RowFacts } from "./facts.ts";
@@ -57,8 +70,22 @@ export function App({
 }) {
   const [session, setSession] = useState<Session>({ kind: "asking" });
   const [signIn, setSignIn] = useState<RelaySignIn | null>(null);
+  const [relay, setRelay] = useState<RelayVersionReading | null>(null);
 
   useEffect(() => {
+    let live = true;
+    void readRelayVersion(client).then((reading) => {
+      if (live) setRelay(reading);
+    });
+    return () => {
+      live = false;
+    };
+  }, [client]);
+
+  useEffect(() => {
+    // The gate: nothing is asked of a relay that has not answered its version,
+    // and nothing more is asked of one that answered too low.
+    if (relay === null || relay.kind === "too-old") return;
     let live = true;
     client.me().then(
       (identity) => {
@@ -72,7 +99,7 @@ export function App({
     return () => {
       live = false;
     };
-  }, [client]);
+  }, [client, relay]);
 
   // The session can end without the page asking for anything: in the companion
   // main drops the device token when the relay answers 401 on the event stream,
@@ -98,7 +125,25 @@ export function App({
     setSession(identity === null ? { kind: "signed-out" } : { kind: "signed-in", identity });
   }
 
-  if (session.kind === "asking") return <Notice title="Phoebe console">Signing in…</Notice>;
+  const refusal = relay?.kind === "too-old" ? tooOldText(relay.relay) : undefined;
+
+  // A browser was served this bundle by the relay it is refusing, so this is a
+  // case that should not arise — and if it ever does, the page says which end to
+  // move rather than rendering a fleet read off an API it does not speak.
+  if (refusal !== undefined && surface === "browser") {
+    return (
+      <Notice title="Phoebe console">
+        <p>{refusal}</p>
+        <p>
+          <a href={RELAY_UPGRADE_DOC}>How to upgrade the relay</a>
+        </p>
+      </Notice>
+    );
+  }
+
+  if (session.kind === "asking" && refusal === undefined) {
+    return <Notice title="Phoebe console">Signing in…</Notice>;
+  }
   if (session.kind === "signed-out" && surface === "browser") {
     return (
       <Notice title="Phoebe console">
@@ -128,6 +173,7 @@ export function App({
       identity={session.kind === "signed-in" ? session.identity : null}
       signIn={signIn}
       onSignedIn={setIdentity}
+      {...(refusal !== undefined ? { refusal } : {})}
       onSignedOut={() => setSession({ kind: "signed-out" })}
     />
   );
@@ -140,12 +186,15 @@ function Console({
   identity,
   signIn,
   onSignedIn,
+  refusal,
   onSignedOut,
 }: {
   client: RelayClient;
   surface: Surface;
   bridge: DesktopBridge | null;
   identity: RelayIdentity | null;
+  /** The relay-too-old sentence, when that is where this relay stands. */
+  refusal?: string;
   signIn: RelaySignIn | null;
   onSignedIn: (identity: RelayIdentity) => void;
   onSignedOut: () => void;
@@ -430,6 +479,7 @@ function Console({
           now={now}
           surface={surface}
           signedIn={identity !== null}
+          {...(refusal !== undefined ? { refusal } : {})}
           installs={installs}
           paired={pairedDirs}
           selected={openInstall}
@@ -453,7 +503,11 @@ function Console({
             onForget={forgetInstall}
           />
         ) : identity === null ? (
-          <CompanionHome installs={installs} onAdd={bridge === null ? undefined : addInstall} />
+          <CompanionHome
+            installs={installs}
+            onAdd={bridge === null ? undefined : addInstall}
+            {...(refusal !== undefined ? { refusal } : {})}
+          />
         ) : route.page === "people" ? (
           <PeoplePage client={client} now={now} onSignedOut={onSignedOut} />
         ) : trouble !== null ? (
@@ -484,9 +538,11 @@ function Console({
 function CompanionHome({
   installs,
   onAdd,
+  refusal,
 }: {
   installs: LocalInstall[];
   onAdd: (() => void) | undefined;
+  refusal?: string;
 }) {
   return (
     <main className="main">
@@ -514,10 +570,16 @@ function CompanionHome({
       </section>
       <section>
         <h2>Relay</h2>
-        <p className="muted">
-          Not signed in. A relay is how the companion reaches the deployments that run somewhere
-          else. Enter its address in the rail and sign-in opens in your own browser.
-        </p>
+        {refusal === undefined ? (
+          <p className="muted">
+            Not signed in. A relay is how the companion reaches the deployments that run somewhere
+            else. Enter its address in the rail and sign-in opens in your own browser.
+          </p>
+        ) : (
+          <p className="refusal">
+            {refusal} <a href={RELAY_UPGRADE_DOC}>How to upgrade the relay</a>
+          </p>
+        )}
       </section>
     </main>
   );

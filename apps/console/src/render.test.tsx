@@ -12,6 +12,7 @@ import { rowFacts, sortFleet } from "./facts.ts";
 import { FleetPage } from "./fleet-page.tsx";
 import { Rail } from "./rail.tsx";
 import { ConfigEditForm, InstallPage, InstallTab } from "./install-page.tsx";
+import { RELAY_UPGRADE_DOC, tooOldText } from "./relay-version.ts";
 import { ReceiptPanel } from "./deployment-tabs.tsx";
 import { pairReading } from "./local-install.ts";
 import type { RelaySignIn } from "./relay-client.ts";
@@ -340,6 +341,36 @@ describe("a report this console cannot read", () => {
   });
 });
 
+describe("a relay the console is too new for", () => {
+  const refusal = tooOldText({ version: "0.9.0", console: 0 });
+  const markup = renderToStaticMarkup(
+    <Rail
+      facts={[]}
+      now={NOW}
+      surface="companion"
+      signedIn={false}
+      refusal={refusal}
+      installs={[install({ dir: "/repos/one", name: "one" })]}
+      signIn={null}
+      onSignedIn={noop}
+    />,
+  );
+
+  test("the Relay group says which end to move, and links how", () => {
+    expect(markup).toContain("upgrade the relay first");
+    expect(markup).toContain(RELAY_UPGRADE_DOC);
+  });
+
+  test("it does not also say 'not signed in' — one sentence, the true one", () => {
+    expect(markup).not.toContain("Not signed in to a relay");
+  });
+
+  test("This machine is untouched: one arm refusing is not the window refusing", () => {
+    expect(markup).toContain("This machine");
+    expect(markup).toContain("one");
+  });
+});
+
 describe("the companion's shell", () => {
   // Shell A (#526): one rail, two groups. Signed out and with nothing installed,
   // this is the whole window.
@@ -583,6 +614,19 @@ describe("the install tab", () => {
 
   test("says forgetting deletes nothing, because a Forget button reads like one that does", () => {
     expect(tab()).toContain("Nothing on disk is deleted");
+  });
+
+  test("states the container's version beside the companion's, and refuses nothing on it", () => {
+    const markup = tab({ state: "stopped", containerVersion: "0.12.1" });
+
+    expect(markup).toContain("container 0.12.1");
+    // Every verb an install in this state is offered is still offered, and none
+    // of them is disabled by the skew.
+    const verbs = /<div class="verbs">(.*?)<\/div>/.exec(markup)?.[1] ?? "";
+    // Asked of the two verbs by name: pairing sits in the same row and is
+    // disabled on a stopped install for a reason of its own (#558).
+    expect(verbs).toContain('<button type="button">Start</button>');
+    expect(verbs).toContain('<button type="button">Check for upgrades</button>');
   });
 });
 

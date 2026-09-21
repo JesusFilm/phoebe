@@ -21,6 +21,8 @@ import {
   type AlertSink,
 } from "./alerts.ts";
 import { createConsoleAssets } from "./console-assets.ts";
+import { relayPackageVersion } from "./version.ts";
+import { CONSOLE_PROTOCOL } from "../src/contracts/console-protocol.ts";
 import { createDeviceCodes, createDevices } from "./devices.ts";
 import { readRelayEnv, redirectUri, type RelayEnv } from "./env.ts";
 import { createRelayHandler } from "./http.ts";
@@ -58,6 +60,11 @@ export type StartRelayOptions = {
    * the only value production has; a test points it at a directory it wrote.
    */
   consoleDir?: string;
+  /**
+   * The version `/api/version` reports. Defaults to the package the relay is
+   * running out of; a test that wants a known answer passes one.
+   */
+  version?: string;
   /** 0 asks the OS for a free port, which is how the tests bind. */
   port?: number;
   /** Overridden in tests; production talks to Google. */
@@ -109,6 +116,7 @@ export async function startRelay(options: StartRelayOptions): Promise<RunningRel
   mkdirSync(dataDir, { recursive: true });
 
   const callback = redirectUri(options.env.host, RELAY_ROUTES.callback);
+  const version = options.version ?? relayPackageVersion();
   const warn = options.warn ?? ((message: string) => process.stderr.write(`${message}\n`));
   // One registry, shared: the console mints into it over HTTP and the
   // deployment endpoint spends out of it over the socket.
@@ -177,6 +185,7 @@ export async function startRelay(options: StartRelayOptions): Promise<RunningRel
         redirectUri: callback,
       }),
     publicOrigin: new URL(callback).origin,
+    version,
     warn,
   });
 
@@ -228,6 +237,8 @@ export async function startRelay(options: StartRelayOptions): Promise<RunningRel
       ? `[phoebe:relay] allowlist seeded from ALLOWED_EMAILS: ${options.env.allowedEmails.join(", ")}`
       : `[phoebe:relay] ALLOWED_EMAILS is empty — the first verified sign-in claims this relay`,
   );
+
+  log(`[phoebe:relay] phoebe-agent ${version}, console protocol ${CONSOLE_PROTOCOL}`);
 
   log(
     `[phoebe:relay] deployments dial ${RELAY_DEPLOYMENTS_PATH} — ` +

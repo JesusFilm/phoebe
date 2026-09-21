@@ -4,7 +4,12 @@
 //
 // Not reachable from main.tsx, so nothing here reaches the bundle.
 
-import { DEPLOYMENT_SCHEMA, EFFECTIVE_CONFIG_VERSION, RELAY_EVENTS } from "phoebe-agent/contracts";
+import {
+  CONSOLE_PROTOCOL,
+  DEPLOYMENT_SCHEMA,
+  EFFECTIVE_CONFIG_VERSION,
+  RELAY_EVENTS,
+} from "phoebe-agent/contracts";
 import type {
   ChildLiveness,
   CompanionEnvironment,
@@ -320,6 +325,7 @@ export function person(overrides: Partial<RelayPerson> = {}): RelayPerson {
  */
 export function client(overrides: Partial<RelayClient> = {}): RelayClient {
   return {
+    version: () => Promise.resolve({ version: "0.13.0", console: CONSOLE_PROTOCOL }),
     me: () => Promise.resolve({ sub: "s", email: "ada@example.test" }),
     signIn: () => Promise.resolve({ kind: "navigate", href: "/auth/google/start" }),
     watchSession: () => () => {},
@@ -366,6 +372,7 @@ export function install(overrides: Partial<LocalInstall> = {}): LocalInstall {
     relayUrl: null,
     addedAt: ago(3600),
     state: "running",
+    containerVersion: "0.13.0",
     ...overrides,
   };
 }

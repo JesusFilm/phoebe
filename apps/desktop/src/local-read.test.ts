@@ -22,6 +22,7 @@ function install(overrides: Partial<LocalInstall> = {}): LocalInstall {
     state: "running",
     deploymentName: "youtube-studio",
     relayUrl: null,
+    containerVersion: null,
     ...overrides,
   };
 }

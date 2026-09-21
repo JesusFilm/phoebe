@@ -17,6 +17,12 @@
  * §2), so Google still knows exactly one redirect URI.
  */
 export const RELAY_ROUTES = {
+  /**
+   * GET — `{ version, console }`, and the only path under `/api` with no
+   * session in front of it (#525 §4). A companion reads it first and decides
+   * whether to go on; see console-protocol.ts for the rule and why it is open.
+   */
+  version: "/api/version",
   /** GET — start the Google authorization-code flow; redirects to Google. */
   signIn: "/auth/google/start",
   /** GET — Google's redirect back; the only URI registered with Google. */

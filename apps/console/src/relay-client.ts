@@ -25,6 +25,7 @@ import type {
   RelayIdentity,
   RelayPairingToken,
   RelayPerson,
+  RelayVersion,
   SecretReceiptDetail,
 } from "phoebe-agent/contracts";
 
@@ -84,6 +85,12 @@ export type SecretReceipt = {
 
 /** What the console can ask the relay for, whichever side of the seam it is on. */
 export type RelayClient = {
+  /**
+   * The relay's package version and the console protocol it serves (#525 §4).
+   * The one read with no session behind it, and the one every other read waits
+   * on — see relay-version.ts.
+   */
+  version: () => Promise<RelayVersion>;
   /**
    * Who the session belongs to, or null when there is no session. Null rather
    * than a throw because "not signed in" is a page the console draws, not an
@@ -250,6 +257,10 @@ export function createBrowserRelayClient(options: BrowserRelayClientOptions = {}
   }
 
   return {
+    version() {
+      return get<RelayVersion>(RELAY_ROUTES.version);
+    },
+
     async me() {
       try {
         return await get<RelayIdentity>(RELAY_ROUTES.me);
@@ -427,6 +438,10 @@ export function createBridgeRelayClient(bridge: DesktopBridge): RelayClient {
   }
 
   return {
+    version() {
+      return get<RelayVersion>(RELAY_ROUTES.version);
+    },
+
     async me() {
       return (await bridge.relay.state()).person;
     },

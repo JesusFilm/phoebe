@@ -85,6 +85,7 @@ export const RELAY_ROUTES = {
   deviceRevoke: "/auth/device/revoke",
   devices: "/api/devices",
   deviceRemove: "/api/devices/remove",
+  version: "/api/version",
 };
 
 /**
@@ -155,3 +156,6 @@ export const CANCELLABLE_VERBS = ["start", "stop"];
 
 /** The variable a pairing token travels in — see relay-protocol.ts (#558). */
 export const RELAY_TOKEN_ENV = "PHOEBE_RELAY_TOKEN";
+
+/** The console API version the relay publishes — see console-protocol.ts (#525 §4). */
+export const CONSOLE_PROTOCOL = 1;

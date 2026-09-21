@@ -18,6 +18,13 @@
 // with an age on it beside a container that is down is two contradicting facts on
 // one page.
 //
+// The versions sit in the same section as the buttons, because they are a reason
+// to press one. The local arm **reports and never refuses** (#525 §6): the
+// container's pinned phoebe-agent beside the companion's own version, a sentence
+// when they differ, and every verb still offered either way. The relay arm has a
+// refusal in it (relay-version.ts) and this one deliberately does not — the
+// companion drives this install, it does not have to agree with it.
+//
 // Every button is a verb run. The page starts one, then only applies the events
 // main sends it; the lines on screen are main's buffer, which is why reopening
 // the window mid-upgrade rejoins the same run rather than showing nothing.
@@ -51,12 +58,12 @@ import { DeploymentTabPanel, ReceiptPanel } from "./deployment-tabs.tsx";
 import {
   applyRunExit,
   applyRunLine,
+  configSetRequest,
   dockerReading,
   landingTab,
   localConfig,
   localConnection,
   offeredVerbs,
-  configSetRequest,
   outcomeReading,
   pairReading,
   type PairReading,
@@ -64,6 +71,7 @@ import {
   secretSetReading,
   secretSetRequest,
   secretWriterReading,
+  versionReading,
 } from "./local-install.ts";
 import { readReport } from "./report.ts";
 import { DEPLOYMENT_TABS, tabHasContent, type ConfigReading, type DeploymentTab } from "./tabs.ts";
@@ -400,6 +408,7 @@ export function InstallTab({
             Forget
           </button>
         </div>
+        <Versions install={install} environment={environment} />
         <p className="muted">
           {pairing.kind === "paired"
             ? "Paired — this install is the deployment the relay knows, so the rail draws it here and not under Relay."
@@ -588,6 +597,23 @@ function receiptOfRun(run: VerbRun | null): EditReceipt | null {
 function secretOutcomeOfRun(run: VerbRun | null): SecretSetOutcome | null {
   const outcome = run?.exit?.outcome;
   return outcome?.verb === "secret set" ? outcome.outcome : null;
+}
+
+/** The two versions, stated. Nothing on this page turns on their difference. */
+function Versions({
+  install,
+  environment,
+}: {
+  install: LocalInstall;
+  environment: CompanionEnvironment | null;
+}) {
+  const reading = versionReading(install, environment);
+  return (
+    <p className="muted">
+      {reading.text}
+      {reading.note === null ? null : ` — ${reading.note}`}
+    </p>
+  );
 }
 
 /** Docker as the companion found it — checked, never installed (#522 §2). */

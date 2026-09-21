@@ -393,6 +393,51 @@ export function pairReading(
   return { kind: "ready" };
 }
 
+/**
+ * The two versions the install tab states, side by side (#525 §6).
+ *
+ * **Nothing refuses on a difference.** The companion drives this install; it
+ * does not have to agree with it, and a window that locked its buttons because
+ * a pin was a patch behind would be a window that stopped an operator from
+ * running the very verb that fixes it. So this is a reading, and `Check for
+ * upgrades` sits a few lines above it.
+ */
+export type VersionReading = {
+  /** `container x.y.z · companion a.b.c`, with whichever halves are known. */
+  text: string;
+  /** Something to say beyond the two numbers, or null when there is not. */
+  note: string | null;
+};
+
+export function versionReading(
+  install: LocalInstall,
+  environment: CompanionEnvironment | null,
+): VersionReading {
+  const companion = environment === null ? null : environment.companionVersion;
+  const halves = [
+    install.containerVersion === null ? "container —" : `container ${install.containerVersion}`,
+    companion === null ? "companion —" : `companion ${companion}`,
+  ];
+  return { text: halves.join(" · "), note: versionNote(install, companion) };
+}
+
+function versionNote(install: LocalInstall, companion: string | null): string | null {
+  if (install.state === "not-initialised") {
+    return "This folder has no container yet, so there is no version in it to report.";
+  }
+  if (install.containerVersion === null) {
+    return (
+      "This install's Dockerfile pins no phoebe-agent version, so its build takes whatever " +
+      "npm published last. Check for upgrades writes a pin."
+    );
+  }
+  if (companion === null || companion === install.containerVersion) return null;
+  return (
+    `This install runs phoebe-agent ${install.containerVersion} and the companion is ${companion}. ` +
+    "Nothing here refuses on that — Check for upgrades moves the install."
+  );
+}
+
 /** Which verbs an install in this state can be asked for. */
 export function offeredVerbs(install: LocalInstall): {
   init: boolean;

@@ -44,6 +44,18 @@ export type LocalInstall = {
   /** Derived on every read, never stored. */
   state: InstallState;
   /**
+   * The `phoebe-agent` version this install's container is built from — the
+   * `ARG PHOEBE_AGENT_VERSION` pin in `container/Dockerfile`, which is what
+   * actually runs in there and what `upgrade` moves (#525 §6).
+   *
+   * Null covers three cases that read as one on screen: no container yet, a
+   * Dockerfile with no pin (the build takes whatever npm publishes), and a
+   * Dockerfile that could not be read. In none of them is there a version to
+   * state, and in none of them does anything refuse — the local arm reports this
+   * beside the companion's own version and leaves the remedy to a button.
+   */
+  containerVersion: string | null;
+  /**
    * The part of the state that is a guess rather than a reading — Docker absent,
    * the daemon down, Compose refusing. Present only when there is something to
    * say, because a line under every entry is a line nobody reads.

@@ -361,6 +361,18 @@ The opaque bearer a relay issues to a companion after Google sign-in, sent as
 `Authorization: Bearer` on every call main makes. Stored on the relay's volume as a
 SHA-256 hash in `devices.json`, so a restart keeps companions signed in. No expiry:
 revoking it from the People page is the only end it has.
+
+**Console protocol**:
+The integer the relay's JSON and SSE API carries at `/api/version`. The relay serves every
+console protocol up to its own, so a companion above it says upgrade the relay first and
+asks for nothing else. Separate from the handshake's protocol: a console-only change must
+not move the deployment wire.
+_Avoid_: API version
+
+**Follows the relay**:
+The companion's update rule. Signed in, the only update it is ever offered is the relay's
+own version, so there is one source of truth about what this relay can serve.
+_Avoid_: pinned, tracking
 _Avoid_: API key, session token
 
 **Device**:

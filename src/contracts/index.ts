@@ -218,3 +218,5 @@ export { RELAY_TOKEN_ENV } from "./relay-protocol.ts";
 export type { PairOutcome } from "./pair-outcome.ts";
 export type { RelayAlertEvent } from "./relay-events.ts";
 export type { LocalAlertEvent } from "./local-report.ts";
+export { CONSOLE_PROTOCOL } from "./console-protocol.ts";
+export type { RelayVersion } from "./console-protocol.ts";
