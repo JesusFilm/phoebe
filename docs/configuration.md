@@ -914,6 +914,10 @@ it is sent is [`operating.md` → Crash reporting](operating.md#crash-reporting)
 
 ## Relay (`relay`)
 
+This section is the field reference. What the relay is for, how to stand one up
+and what the console does once a deployment is paired is
+[`console.md`](console.md).
+
 Bootstrapper-only and **root config only**. `relay` names the console this
 deployment dials out to. The engine never reads it, `resolveConfig` drops it, no
 `PHOEBE_*` variable overlays it, and a tenant config carrying one is ignored the
@@ -1240,7 +1244,8 @@ Two flags matter when something else is driving:
 ### The same verb, from the console
 
 A deployment paired with a relay can be edited from the config tab of the web
-console, and it is this code that runs: the console sends `{ path, value }` with
+console ([`console.md`](console.md#what-the-console-shows)), and it is this code
+that runs: the console sends `{ path, value }` with
 the fingerprint its page was drawn from, the relay stamps the signed-in address
 as the edit's author, and the bootstrapper applies it to the file exactly as a
 shell run would. The receipt an operator sees is the one printed above, including

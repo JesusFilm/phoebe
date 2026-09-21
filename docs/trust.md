@@ -192,7 +192,8 @@ per-tenant **secret stores** at `<data>/<owner>/<repo>/state/secrets.json`, each
 readable by sibling tenants sharing the same uid.
 
 The secret store **joins** that residual rather than widening it. A value set
-through `phoebe secret set` or the console is decrypted on arrival and held in
+through `phoebe secret set` or the console ([`console.md`](console.md)) is
+decrypted on arrival and held in
 plaintext at mode `0600`: the same plaintext, the same uid, the same exposure as
 the tenant `.env` it sits above, and no new reader. End-to-end encryption over
 the wire is about the relay never holding a secret — not in storage, not in a
@@ -209,6 +210,11 @@ credentials, so the masked deployment env-file's guarantee is what it was.
 
 > **Co-locate in one container only repos whose mutual compromise is already
 > acceptable**, meaning the same org, the same token scope, the same trust domain.
+
+The same sentence holds one level up: every deployment paired with one relay is
+one trust domain, because one allowlist with no roles governs all of them.
+[`console.md` → Trust, briefly](console.md#trust-briefly) is where that and the
+rest of the relay's trust surface live.
 
 `phoebe init --tenant` prints this on every run, precisely when adding a tenant
 makes it relevant. The moment you need to co-locate **mutually-untrusted**

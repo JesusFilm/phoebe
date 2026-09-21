@@ -22,6 +22,10 @@ keeping, so a test guards it.
 
 Its version is the bootstrapper's version, and one changelog covers both.
 
+This page is the relay's mechanism. If you are standing one up for the first
+time, or working out what the console and the desktop companion are for, start
+at [`console.md`](console.md) and come back here for the details.
+
 ## Configuration is four environment variables, and an optional fifth
 
 | Variable               | What it is                                                                                                              |
@@ -636,6 +640,159 @@ A report whose `schema` this console does not know is not read at all. The card
 says so and still shows the relay's own connection facts, which never came from the
 report.
 
+### One deployment
+
+Selecting a deployment from the rail or the grid opens its tabs. The console
+routes on the hash, so a deployment is a URL an operator can send someone:
+`#/d/<fingerprint>` is the overview, and `/pipelines`, `/doctor`, `/secrets` and
+`/config` hang off it.
+
+**Overview** leads with three panels. The **connection** panel is the relay's own
+facts and nothing else — connected since, last heard, who paired it, how the last
+socket closed. Doctor answers none of those and never will, so they stay in their
+own panel rather than reading as checks about the deployment. Beside it, the
+engine ref and the running SHA, whether the deployment is deliberately behind its
+own config on a quarantined commit, what a reconcile is relaunching onto and why,
+and the slot broker's numbers. Under the panels, every enumerated pipeline with
+its two lines, the tenants discovery is holding and the errors holding them, and
+any config edit that is in a file and not yet in a commit.
+
+**Pipelines** is one row per pipeline: the process line (a child, since when,
+restarts, crash-looping), the state line the report derived, the units in flight
+against the budget each was given, and the wedged clause when there is one. A
+tenant that fills no row — held before its config was ever readable, or declaring
+no pipeline — is still a row, because it is exactly the tenant worth seeing.
+
+**Doctor** is the last report the bootstrapper's run produced: the deployment's
+checks, then each tenant's, with the trigger that produced them, how long ago,
+whether a run is in flight right now, and the last attempt that produced nothing.
+A deployment that has never run doctor says so; that is a fact about the
+deployment, not a verdict about it.
+
+**Secrets** never reads a value back. It lists every key each tenant reads —
+whether it is set, which tier the value came from, and who set it last — and
+never a value, a last four, a hash or a length. Setting one from here encrypts
+it in the browser to the deployment's own key; what the relay carries is an
+envelope it cannot open, and what comes back is `written`, `refused` or
+`undelivered`. Setting a secret without the relay seeing it, below, is the
+whole of that trip.
+
+**Config** is every effective-config leaf in one filterable table: the value, and
+which of the six sources supplied it. Filter by a path or a value — "what is
+`model` set to" and "who set it to `opus`" are the two questions that bring an
+operator here — and the chip beside the filter counts the leaves each source won,
+so clicking `overlay` narrows the table to what env decides. The source chip is
+on every row; the env name or file path behind it is in the row's disclosure,
+because which source won is what an operator scans for and the name behind it is
+what they read once they have found the row. A value that lost sits under the
+value that beat it, so "why isn't my file value taking effect" is answered where
+the question is asked. Deprecated aliases are listed above the table rather than
+row by row, and the fingerprint of the config file heads the tab — that is the
+text a later edit checks itself against.
+
+The last column is the edit. A leaf `phoebe config set` accepts carries an
+**Edit** button; every other leaf carries a sentence saying why not, with the
+exact change to make by hand and the `phoebe config set` line to make it with.
+The closed set is the deployment's own — the fleet declaration, the engine pin,
+the relay block, the host's `deployment` block, `paths`, a work kind's
+declaration, an opaque value, and any leaf a `PHOEBE_*` variable already sets —
+read from the same table the deployment refuses from, so the console cannot start
+offering an edit the deployment would turn away. In a workspace only the **root**
+config is editable: a tenant's row says which checkout its config lives in and
+gives the command for that file.
+
+Saving sends `{ path, value }` with the fingerprint the page was drawn from, and
+the answer is the deployment's receipt — `written` or `refused`, the refusal
+always carrying the manual edit. After `written`, the panel follows the report:
+the fleet drains onto the new config and comes back idle with `lastEditId` naming
+the edit, and the leaf above turns `file` with the new value. Nothing is applied
+except through the file.
+
+The table is section 5 of the report, which the running engine computed. A
+deployment whose engine is older than that section says so; its settings are
+unknown from here, which is not the same as having none, and `phoebe config` on
+the host still answers.
+
+A deployment that has never connected says that instead of showing four empty
+tabs — the pairing token was spent, nothing has booted since, and there is nothing
+to show until it does.
+
+## Setting a secret without the relay seeing it
+
+An operator with no shell on the host still needs to rotate a provider key. The
+console gives them one, and the relay in the middle never learns the value.
+
+Every deployment publishes two public keys in its `hello`: the Ed25519 key that
+is its identity, and an **X25519 box key** a console encrypts to. Both live in
+the one `state/relay-key` file with one lifecycle, and the handshake signature
+covers `nonce ‖ boxKey`, so the encrypting key is as attested as the signing one.
+Nothing in the path can substitute a key of its own. A deployment whose
+key file predates the box key grows one on its next boot and keeps its link: the
+signing key, and therefore the fingerprint and the link record, do not move.
+
+A set goes:
+
+1. The browser reads the box key off the deployment's row, and seals the value
+   with ECIES built from WebCrypto alone: an ephemeral X25519 key agreed with
+   the box key, HKDF-SHA256, AES-256-GCM. The additional authenticated data is
+   `keyFingerprint ‖ tenant ‖ key ‖ editId`, so the envelope opens for that
+   deployment, that tenant, that key name and that edit, and for nothing else.
+2. `POST /api/secrets` carries `{ fingerprint, tenant, key, action, id, envelope }`.
+   The relay forwards the envelope as the opaque string it is and adds one field:
+   **`by`**, the address of the signed-in session. A caller cannot choose whose
+   name the deployment records.
+3. The deployment opens the envelope with the private half that has never left
+   its volume, checks the key is one that tenant may set against the derived set
+   `phoebe secret set` uses, and writes it to the tenant secret store, with
+   `{ id, key, at, by }` in `state/secret-edits.json`. A successful write
+   triggers a doctor run and a fresh secrets inventory.
+4. The receipt comes back `written` or `refused`, and the console shows it.
+
+**What this promises, and what it does not.** The relay never _holds_ a secret:
+not in storage, not in a log line, not in a receipt, not in a memory dump, and
+not to anyone who reads its volume afterwards. It is not a defence against a
+hostile relay. The relay serves the browser the JavaScript that does the sealing,
+so a relay that wanted the value could serve code that keeps it. What the
+envelope buys is that a relay operator, a backup of its volume and a passive
+compromise of it all come up empty.
+
+**A clear is the same request without an envelope.** It removes the store entry
+and the tenant's `.env` or the ambient value governs again; there is no
+tombstone, because revoking a secret means rotating it.
+
+**Undelivered means run it on the host.** Nothing is queued: if the socket closed
+with the request in flight, the console says so and shows the command that does
+the same thing over a shell, with the value on stdin where it belongs.
+
+```sh
+printf %s "$ANTHROPIC_API_KEY" | docker compose exec -T phoebe \
+  phoebe secret set ANTHROPIC_API_KEY --tenant acme/widget
+```
+
+## Setting one config field
+
+`POST /api/deployments/config-set` with
+`{ fingerprint, id, path, value, configFingerprint }`:
+
+- `fingerprint` is the deployment; `id` is the edit's idempotency key, so the
+  same id twice is one write and the second call gets the first receipt back.
+- `path` is a dotted path into the config, the one the config tab printed.
+- `value` is a literal. An object or a list is a `400`: a leaf holds one value,
+  and rewriting a block is a file edit.
+- `configFingerprint` is the `sha256:` the report's config section carried. A
+  file that moved since is refused `stale` rather than merged.
+
+The relay stamps the signed-in address as the edit's `by` — that is the one field
+it authors, and a `by` in the body is ignored, so a browser cannot sign somebody
+else's name to an edit. Then it carries the patch down the rail and hands the
+receipt back without reading it.
+
+The answer is `{ outcome, receipt? }`. `outcome` is the deployment's own word or
+the relay's `undelivered`, and it is a `string` rather than a closed union
+because a deployment newer than its relay is quoted, not translated. A deployment
+the relay has no link for is a `404`; one it knows but cannot reach is a `200`
+carrying `undelivered` — in flight is never a queue, and the operator re-issues.
+
 ## Alerting
 
 The console is not the pager. An operator who is not looking at a tab cannot
@@ -946,9 +1103,8 @@ not do yet is list a person's devices with a remove beside each: the reads and
 the revoke are here, the panel is not. The design they came from is
 [the relay's shape](https://github.com/JesusFilm/phoebe/issues/506).
 
-Alerting is here but only partly fed. The webhook, the edge rule, `alerts.json`
-and the test button all work; `dark` and `replaced` are evaluated against the
-relay's own clocks on every sweep. `wedged`, `crash-looping` and `doctor-fail`
-are implemented in the rule and have nothing to read until the relay stores
-reports, and the `alert` event rides the same stream. Both wait on
-[reports over the relay](https://github.com/JesusFilm/phoebe/issues/542).
+Alerting is fully fed. The webhook, the edge rule, `alerts.json` and the `alert`
+event all work, and every sweep evaluates all five conditions: `dark` and
+`replaced` against the relay's own clocks, `wedged`, `crash-looping` and
+`doctor-fail` against the report the deployment last pushed. The fleet-wide test
+button is the one part still to land.
