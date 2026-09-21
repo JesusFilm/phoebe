@@ -57,6 +57,11 @@ services:
       # Where `boot` keeps engine checkouts. Pointed at a named volume below so
       # a restart fetches into an existing clone instead of cloning again.
       PHOEBE_ENGINE_DIR: /data/engine
+      # The pairing token, when one is waiting to be spent (#540). Single-use and
+      # read once at boot, so it is empty on every container after the one that
+      # pairs — which is why `phoebe doctor` asks for it to be taken back out of
+      # `.env` rather than left there.
+      PHOEBE_RELAY_TOKEN: "${PHOEBE_RELAY_TOKEN:-}"
       # Optional settings (docs/configuration.md → Settings). Each is forwarded
       # beside its permanent alias, so an older `.env` keeps working unchanged.
       PHOEBE_DEFAULT_PROVIDER: "${PHOEBE_DEFAULT_PROVIDER:-}"

@@ -47,18 +47,19 @@
 // fleet is quiet sends nothing for hours, and that is not silence — it is a
 // deployment with nothing to say (#541).
 //
-// **What comes the other way is a request, and it is answered at once**
-// (#503, #547). `config-set` is the first of them: the link hands the patch to
-// the bootstrapper's config-edit pen and sends that pen's receipt straight back,
-// `written` or `refused`. It authors nothing — not the refusal, not the
-// instruction beside it — because the console is entitled to the deployment's
-// own words about its own file, and a link that summarized them would be a
-// second opinion about a write it did not make.
+// **What comes the other way is a request, and it is answered at once** (#546).
+// `doctor-run` is the first of them: the link asks the supervisor's doctor
+// runner for a run and answers the receipt with which run the ask belongs to —
+// started, joined, or refused. Not with what doctor found. A run takes up to
+// five minutes and the answer to "did my press do anything" cannot, so the
+// finding arrives the way every finding does, as the next report.
 //
-// A receipt goes out for every ask, including the ones that went wrong here: the
-// relay's only other way to settle the request a console is holding open is the
-// socket closing, and `undelivered` for an edit that was refused for a reason
-// would send an operator looking for a network fault.
+// `config-set` is the second (#503, #547): the link hands the patch to the
+// bootstrapper's config-edit pen and sends that pen's receipt straight back,
+// `written` or `refused`. It authors nothing — not the refusal, not the manual
+// edit that rides with one. A receipt goes out for every ask, including the ones
+// that went wrong here, because `undelivered` for an edit that was refused for a
+// reason would send an operator looking for a network fault.
 //
 // **Nothing here is load-bearing for work.** A deployment with no relay, an
 // unreachable relay, or a refused link supervises its fleet exactly as it
@@ -68,12 +69,14 @@
 import {
   RELAY_CLOSE,
   RELAY_DARK_AFTER_MS,
+  RELAY_DOCTOR_RUN,
   RELAY_MESSAGES,
   RELAY_PROTOCOL,
   relayMessageType,
   relaySpeaks,
   type RelayChallenge,
   type RelayConfigSet,
+  type RelayDoctorRun,
   type RelayHello,
   type RelayMessageType,
   type RelayReceipt,
@@ -161,19 +164,27 @@ export type OpenRelaySocket = (url: string, handlers: RelaySocketHandlers) => Re
 /** Which of the link's two timers is being set. */
 export type RelayTimer = "retry" | "silence";
 
+/**
+ * What the deployment answers a `doctor-run` with (#546): which run the ask
+ * belongs to, and a sentence when that is `refused`. The words are the rail's
+ * own (`RELAY_DOCTOR_RUN`); this link does not invent one.
+ */
+export type DoctorRunAnswer = {
+  outcome: (typeof RELAY_DOCTOR_RUN)[keyof typeof RELAY_DOCTOR_RUN];
+  detail?: string;
+};
+
 export type RelayLinkDeps = {
   /** `relay.url` — where to dial. */
   url: string;
   /** `relay.name`, or the default this deployment answers to. */
   name: string;
-
   /**
    * The key on the volume, or null when this deployment has never paired. Null
    * with a token is a pairing; null without one is a deployment that cannot
    * dial at all.
    */
   key: DeploymentKey | null;
-
   /**
    * `PHOEBE_RELAY_TOKEN`, if the operator set it. Read from the environment,
    * held in memory for exactly as long as this link runs, and never written to
@@ -184,7 +195,6 @@ export type RelayLinkDeps = {
   mintKey: () => DeploymentKey;
   /** Persist a freshly minted key, as it is presented. */
   saveKey: (key: DeploymentKey) => void;
-
   /**
    * Take a just-minted key back off the volume. Called when the relay refuses
    * the pairing that minted it — a key nothing will accept is worse than none,
@@ -193,7 +203,6 @@ export type RelayLinkDeps = {
   forgetKey: () => void;
   /** Where the link's state goes: straight into the report's relay section. */
   onStatus: (status: RelayStatus) => void;
-
   /**
    * The report as it stands right now, or null before there is one (#542). Read
    * at the moment of every send rather than handed over, so a link that has been
@@ -201,7 +210,17 @@ export type RelayLinkDeps = {
    * was holding when the socket died.
    */
   report?: () => DeploymentReport | null;
-
+  /**
+   * A person pressed **Run doctor** in a console (#546). The answer is the
+   * receipt, and it is written now rather than when the run ends: doctor holds
+   * itself to five minutes, and a console waiting that long for one button is a
+   * console an operator reloads. What the run found goes up as the next report.
+   *
+   * Absent means this link was built without a doctor behind it — a test, or a
+   * deployment whose supervisor has none — and the ask is refused in those words
+   * rather than dropped, so nobody is left watching a receipt that never comes.
+   */
+  onDoctorRun?: (by: string) => DoctorRunAnswer;
   /**
    * A person changed one config field in a console (#503, #547). Answers the
    * receipt the pen produced — written, or refused with the manual edit — and
@@ -213,7 +232,6 @@ export type RelayLinkDeps = {
    * receipt that never comes.
    */
   onConfigSet?: (edit: ConfigEdit) => Promise<EditReceipt>;
-
   /**
    * Answer one `id`-bearing request from the relay (#550). Absent means this
    * deployment answers none: every request is then refused by return, which is
@@ -232,7 +250,6 @@ export type RelayLinkDeps = {
   warn?: (message: string) => void;
   open?: OpenRelaySocket;
   now?: () => number;
-
   /**
    * The two timers this module owns, named so a test can tell them apart: the
    * `retry` that dials again, and the `silence` that gives up on a connection
@@ -303,7 +320,6 @@ export function connectRelay(deps: RelayLinkDeps): RelayLink {
   let abandon: (() => void) | null = null;
   /** Has this connection finished its hello? Nothing is pushed before it has. */
   let ready = false;
-
   /**
    * The report this connection has already been given. Identity, not equality:
    * the live model builds a new object for every write and keeps the old one
@@ -431,6 +447,46 @@ export function connectRelay(deps: RelayLinkDeps): RelayLink {
       // and the edit either landed on disk or did not, whatever this send did.
       warn(
         `[phoebe] relay: could not answer the config edit — ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  };
+
+  /**
+   * Answer one `doctor-run` (#546). The receipt goes out whatever happened —
+   * including when there is no doctor to run and when asking for one threw —
+   * because the console is holding a request open on it and the relay's only
+   * other way to settle that request is the socket closing.
+   */
+  const runDoctor = (on: RelaySocket | null, message: RelayDoctorRun | null): void => {
+    if (on === null || message === null) return;
+    let answer: DoctorRunAnswer;
+    if (deps.onDoctorRun === undefined) {
+      answer = { outcome: RELAY_DOCTOR_RUN.refused, detail: "this deployment runs no doctor" };
+    } else {
+      try {
+        answer = deps.onDoctorRun(message.by);
+      } catch (error) {
+        answer = {
+          outcome: RELAY_DOCTOR_RUN.refused,
+          detail: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }
+    log(`[phoebe] relay: ${message.by} asked for a doctor run — ${answer.outcome}.`);
+    const receipt: RelayReceipt = {
+      type: RELAY_MESSAGES.receipt,
+      id: message.id,
+      outcome: answer.outcome,
+      ...(answer.detail !== undefined ? { detail: answer.detail } : {}),
+    };
+    try {
+      on.send(JSON.stringify(receipt));
+    } catch (error) {
+      // The socket died between the ask and the answer. The relay settles its
+      // own request `undelivered` on the close, so there is nothing to retry.
+      warn(
+        `[phoebe] relay: could not answer the doctor run — ` +
           `${error instanceof Error ? error.message : String(error)}`,
       );
     }
@@ -575,19 +631,24 @@ export function connectRelay(deps: RelayLinkDeps): RelayLink {
       onMessage: (data) => {
         heard();
         const frame = parseFrame(data);
-        const type = relayMessageType(frame);
-        if (type === RELAY_MESSAGES.configSet) {
+        if (relayMessageType(frame) === RELAY_MESSAGES.configSet) {
           // Only after the hello: a `config-set` before the handshake is an
           // unidentified socket asking for a write to this deployment's config.
           if (ready) void setConfig(current, parseConfigSet(frame));
           return;
         }
+        if (relayMessageType(frame) === RELAY_MESSAGES.doctorRun) {
+          // Only after the hello: a `doctor-run` before the handshake is a relay
+          // asking an unidentified socket to spend a tenant's API budget.
+          if (ready) runDoctor(current, parseDoctorRun(frame));
+          return;
+        }
+        const type = relayMessageType(frame);
         if (type !== RELAY_MESSAGES.challenge) {
           // Anything else on an admitted connection is a request or a
           // heartbeat. The heartbeat's whole payload is having arrived, which
-          // `heard()` above has already taken. Before the hello there is no
-          // admitted connection, so there is nothing here to answer.
-          if (ready) answerRequest(type, frame, current);
+          // `heard()` above has already taken.
+          answerRequest(type, frame, current);
           return;
         }
         if (answered) return;
@@ -678,6 +739,20 @@ export function connectRelay(deps: RelayLinkDeps): RelayLink {
 }
 
 /**
+ * A `doctor-run` with the two fields the deployment reads, or null. A relay
+ * that sent one without an `id` would be asking for a receipt it could not
+ * match, and one without a `by` would be asking on nobody's behalf — the report
+ * records who asked, so there is no such thing as an anonymous ask.
+ */
+export function parseDoctorRun(frame: unknown): RelayDoctorRun | null {
+  if (relayMessageType(frame) !== RELAY_MESSAGES.doctorRun) return null;
+  const message = frame as Partial<RelayDoctorRun>;
+  if (typeof message.id !== "string" || message.id.length === 0) return null;
+  if (typeof message.by !== "string" || message.by.length === 0) return null;
+  return { type: RELAY_MESSAGES.doctorRun, id: message.id, by: message.by };
+}
+
+/**
  * The two refusals this link writes itself: an edit with no pen behind it, and a
  * pen that threw where it was supposed to answer. Both carry the manual edit,
  * because every refusal does (#503) — a console that got a reason code and no
@@ -736,15 +811,12 @@ export function parseConfigSet(frame: unknown): RelayConfigSet | null {
 }
 
 /**
- * The message types that carry an `id` and want a receipt through the generic
- * handler (#506 §8). `config-set` is not among them: it has a seam of its own
- * (`onConfigSet`) because its receipt is the pen's, and it is dispatched before
- * this set is consulted.
+ * The message types the generic handler answers (#506 §8, #550). `config-set`
+ * and `doctor-run` are not here: each has a handler of its own above, because
+ * its receipt is the pen's or the doctor runner's, and both are dispatched
+ * before this set is consulted.
  */
-const REQUEST_TYPES: ReadonlySet<RelayMessageType> = new Set([
-  RELAY_MESSAGES.secretSet,
-  RELAY_MESSAGES.doctorRun,
-]);
+const REQUEST_TYPES: ReadonlySet<RelayMessageType> = new Set([RELAY_MESSAGES.secretSet]);
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);

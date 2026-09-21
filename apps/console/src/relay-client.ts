@@ -14,43 +14,20 @@
 
 import { RELAY_EVENTS, RELAY_ROUTES } from "phoebe-agent/contracts";
 import type {
+  DesktopBridge,
   RelayConfigSetAnswer,
   RelayConfigSetRequest,
-  DesktopBridge,
   RelayDeploymentDetail,
   RelayDeploymentRow,
+  RelayDoctorRunAnswer,
+  RelayDoctorRunResult,
   RelayEvent,
   RelayIdentity,
+  RelayPairingToken,
+  RelayPerson,
   RelayVersion,
   SecretReceiptDetail,
 } from "phoebe-agent/contracts";
-
-/**
- * One secret set or clear, as the console asks for it (#550). The envelope is
- * sealed in the page before this is built, and `by` is deliberately not here:
- * the relay stamps that from its own session, so a caller cannot choose whose
- * name lands in the deployment's ledger.
- */
-export type SecretRequest = {
-  fingerprint: string;
-  tenant: string;
-  key: string;
-  action: "set" | "clear";
-  /** The edit id, bound into the envelope's AAD before it was sealed. */
-  id: string;
-  /** The JSON of a sealed envelope. Absent on a clear — there is no value. */
-  envelope?: string;
-};
-
-/**
- * What came back: the deployment's own word (`written` / `refused`), or the
- * relay's `undelivered` when the socket closed with the request in flight.
- */
-export type SecretReceipt = {
-  id: string;
-  outcome: string;
-  detail?: SecretReceiptDetail;
-};
 
 /**
  * How this arm signs in (#523 §2). Two shapes because the two arms sign in by
@@ -78,6 +55,33 @@ export type RelaySignIn =
       /** Run one sign-in. Resolves with whoever signed in. */
       start: (relayUrl: string) => Promise<RelayIdentity>;
     };
+
+/**
+ * One secret set or clear, as the console asks for it (#550). The envelope is
+ * sealed in the page before this is built, and `by` is deliberately not here:
+ * the relay stamps that from its own session, so a caller cannot choose whose
+ * name lands in the deployment's ledger.
+ */
+export type SecretRequest = {
+  fingerprint: string;
+  tenant: string;
+  key: string;
+  action: "set" | "clear";
+  /** The edit id, bound into the envelope's AAD before it was sealed. */
+  id: string;
+  /** The JSON of a sealed envelope. Absent on a clear — there is no value. */
+  envelope?: string;
+};
+
+/**
+ * What came back: the deployment's own word (`written` / `refused`), or the
+ * relay's `undelivered` when the socket closed with the request in flight.
+ */
+export type SecretReceipt = {
+  id: string;
+  outcome: string;
+  detail?: SecretReceiptDetail;
+};
 
 /** What the console can ask the relay for, whichever side of the seam it is on. */
 export type RelayClient = {
@@ -108,14 +112,12 @@ export type RelayClient = {
   watchSession: (onChange: (identity: RelayIdentity | null) => void) => () => void;
   /** Every deployment the relay knows, unsorted: the order is the console's. */
   deployments: () => Promise<RelayDeploymentRow[]>;
-
   /**
    * One deployment's row and its last report. The fleet page asks per row,
    * because `/api/deployments` answers rows only and a bar segment per pipeline
    * is a fact from the report.
    */
   deployment: (fingerprint: string) => Promise<RelayDeploymentDetail>;
-
   /**
    * Set one field of one deployment's root config (#503, #547). Answers the
    * deployment's own receipt — `written` or `refused` — or the relay's
@@ -133,6 +135,16 @@ export type RelayClient = {
   setConfigField: (edit: RelayConfigSetRequest) => Promise<RelayConfigSetAnswer>;
 
   /**
+   * Ask one deployment to run doctor, or every deployment when no fingerprint is
+   * given (#546). Answers one result per deployment asked, whichever it was, so
+   * a page renders the two the same way.
+   *
+   * What the run finds is not here. It arrives as the next report on the event
+   * stream, which is the same path every other fact about a deployment takes.
+   */
+  runDoctor: (fingerprint?: string) => Promise<RelayDoctorRunResult[]>;
+
+  /**
    * Set or clear one tenant secret on a deployment (#550). The relay forwards
    * the envelope unopened and answers with whatever the deployment said.
    *
@@ -141,13 +153,31 @@ export type RelayClient = {
    * `outcome: "refused"`, because that is an answer and not a failure.
    */
   setSecret: (request: SecretRequest) => Promise<SecretReceipt>;
-
   /**
    * Watch the relay's event stream. Returns the unsubscribe; calling it closes
    * the stream. Errors on the stream are not surfaced — the transport redials on
    * its own, and a page that missed an event catches up by re-reading.
    */
   events: (onEvent: (event: RelayEvent) => void) => () => void;
+  /** Everyone who may sign in, as the People page lists them (#505 §6). */
+  people: () => Promise<RelayPerson[]>;
+  /**
+   * Add one person by address. The refusals — a malformed address, an address
+   * already on the list — arrive as a `RelayRequestError` whose `code` the page
+   * turns into a sentence.
+   */
+  addPerson: (email: string) => Promise<RelayPerson>;
+  /**
+   * Remove one person, and with them their sessions. Answers how many sessions
+   * ended, because "they are signed out now" is the half of a removal an
+   * operator cannot otherwise see.
+   */
+  removePerson: (email: string) => Promise<{ sessionsEnded: number }>;
+  /**
+   * Mint one pairing token. The string comes back once and the relay keeps only
+   * its expiry, so a caller that loses it mints another.
+   */
+  mintPairingToken: () => Promise<RelayPairingToken>;
 };
 
 /** A relay answer the console did not ask for. `code` is the body's `error`. */
@@ -207,6 +237,25 @@ export function createBrowserRelayClient(options: BrowserRelayClientOptions = {}
     return (await response.json()) as T;
   }
 
+  /**
+   * A verb. `body` is omitted rather than sent as `{}` when there is nothing to
+   * say, which is what the mint is: a POST whose whole content is that it
+   * happened.
+   */
+  async function post<T>(path: string, body?: unknown): Promise<T> {
+    const response = await call(path, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        accept: "application/json",
+        ...(body === undefined ? {} : { "content-type": "application/json" }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    if (!response.ok) throw new RelayRequestError(response.status, await errorCode(response));
+    return (await response.json()) as T;
+  }
+
   return {
     version() {
       return get<RelayVersion>(RELAY_ROUTES.version);
@@ -256,6 +305,25 @@ export function createBrowserRelayClient(options: BrowserRelayClientOptions = {}
       );
     },
 
+    async people() {
+      const body = await get<{ people: RelayPerson[] }>(RELAY_ROUTES.people);
+      return body.people;
+    },
+
+    async addPerson(email) {
+      const body = await post<{ person: RelayPerson }>(RELAY_ROUTES.people, { email });
+      return body.person;
+    },
+
+    async removePerson(email) {
+      const body = await post<{ sessionsEnded: number }>(RELAY_ROUTES.removePerson, { email });
+      return { sessionsEnded: body.sessionsEnded };
+    },
+
+    mintPairingToken() {
+      return post<RelayPairingToken>(RELAY_ROUTES.pairingTokens);
+    },
+
     async setConfigField(edit) {
       const response = await call(RELAY_ROUTES.configSet, {
         method: "POST",
@@ -265,6 +333,19 @@ export function createBrowserRelayClient(options: BrowserRelayClientOptions = {}
       });
       if (!response.ok) throw new RelayRequestError(response.status, await errorCode(response));
       return (await response.json()) as RelayConfigSetAnswer;
+    },
+
+    async runDoctor(fingerprint) {
+      const response = await call(RELAY_ROUTES.doctorRun, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        // An empty object, not an empty body: no fingerprint is what asks the
+        // whole fleet, and the relay reads that from the JSON it parses.
+        body: JSON.stringify(fingerprint === undefined ? {} : { fingerprint }),
+      });
+      if (!response.ok) throw new RelayRequestError(response.status, await errorCode(response));
+      return ((await response.json()) as RelayDoctorRunAnswer).results;
     },
 
     async setSecret(request) {
@@ -344,9 +425,13 @@ export function createBridgeRelayClient(bridge: DesktopBridge): RelayClient {
     }
   }
 
-  async function post(path: string, body: unknown): Promise<unknown> {
+  async function post<T>(path: string, body?: unknown): Promise<T> {
     try {
-      return await bridge.relay.request({ method: "POST", path, body });
+      return (await bridge.relay.request({
+        method: "POST",
+        path,
+        ...(body === undefined ? {} : { body }),
+      })) as T;
     } catch (error) {
       throw asRelayError(error);
     }
@@ -395,15 +480,38 @@ export function createBridgeRelayClient(bridge: DesktopBridge): RelayClient {
       );
     },
 
-    // The two writes go over the same passthrough the reads do, so the console
+    // The writes go over the same passthrough the reads do, so the console
     // bundle is one bundle: what changes between the arms is how the request
-    // travels, never what a page sends (#523 §3, #547, #550).
-    async setConfigField(edit) {
-      return (await post(RELAY_ROUTES.configSet, edit)) as RelayConfigSetAnswer;
+    // travels, never what a page sends (#523 §3).
+    async people() {
+      return (await get<{ people: RelayPerson[] }>(RELAY_ROUTES.people)).people;
     },
 
-    async setSecret(request) {
-      return (await post(RELAY_ROUTES.secrets, request)) as SecretReceipt;
+    async addPerson(email) {
+      return (await post<{ person: RelayPerson }>(RELAY_ROUTES.people, { email })).person;
+    },
+
+    async removePerson(email) {
+      const body = await post<{ sessionsEnded: number }>(RELAY_ROUTES.removePerson, { email });
+      return { sessionsEnded: body.sessionsEnded };
+    },
+
+    mintPairingToken() {
+      return post<RelayPairingToken>(RELAY_ROUTES.pairingTokens);
+    },
+
+    setConfigField(edit) {
+      return post<RelayConfigSetAnswer>(RELAY_ROUTES.configSet, edit);
+    },
+
+    async runDoctor(fingerprint) {
+      // An empty object, not an empty body: no fingerprint asks the whole fleet.
+      const asked = fingerprint === undefined ? {} : { fingerprint };
+      return (await post<RelayDoctorRunAnswer>(RELAY_ROUTES.doctorRun, asked)).results;
+    },
+
+    setSecret(request) {
+      return post<SecretReceipt>(RELAY_ROUTES.secrets, request);
     },
 
     events(onEvent) {

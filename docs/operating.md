@@ -263,6 +263,12 @@ instead of skipped. One run happens at a time. Asking while one is in flight
 joins it; asking mid-reconcile waits for the relaunch, then runs once against the
 engine that is actually running.
 
+"On request" is the console's **Run doctor**, on one deployment or on the whole
+fleet at once ([the relay](relay.md#run-doctor)). The press is answered straight
+away with which run it belongs to — started, joined, refused, or undelivered for
+a deployment the relay is not holding — and what the run found arrives in the
+report that follows it.
+
 Every run, yours included, holds itself to five minutes. A check that has not
 finished by then reports `?` with "deadline passed", and the rest of the report
 still lands. One unreachable tenant costs you that tenant's answers, not the

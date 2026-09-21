@@ -12,14 +12,17 @@ import type { CompanionUpdate } from "phoebe-agent/contracts";
 import { rowFacts, sortFleet } from "./facts.ts";
 import { FleetPage } from "./fleet-page.tsx";
 import { Rail } from "./rail.tsx";
-import { InstallPage, InstallTab } from "./install-page.tsx";
-import type { RelaySignIn } from "./relay-client.ts";
+import { ConfigEditForm, InstallPage, InstallTab } from "./install-page.tsx";
 import { RELAY_UPGRADE_DOC, tooOldText } from "./relay-version.ts";
+import { ReceiptPanel } from "./deployment-tabs.tsx";
+import { pairReading } from "./local-install.ts";
+import type { RelaySignIn } from "./relay-client.ts";
 import {
   ago,
   bridge,
   cell,
   child,
+  client,
   directory,
   install,
   localReport,
@@ -108,9 +111,17 @@ const SIGN_IN_PROMPT: RelaySignIn = {
 };
 
 const rail = renderToStaticMarkup(
-  <Rail facts={FLEET} now={NOW} surface="browser" signedIn signIn={null} onSignedIn={noop} />,
+  <Rail
+    facts={FLEET}
+    selectedDeployment={null}
+    now={NOW}
+    surface="browser"
+    signedIn
+    signIn={null}
+    onSignedIn={noop}
+  />,
 );
-const grid = renderToStaticMarkup(<FleetPage facts={FLEET} now={NOW} />);
+const grid = renderToStaticMarkup(<FleetPage facts={FLEET} client={client()} now={NOW} />);
 
 describe("the rail", () => {
   test("lists every deployment in the sort order, dark first", () => {
@@ -181,6 +192,14 @@ describe("the rail", () => {
 });
 
 describe("the grid", () => {
+  test("carries one Run doctor for the whole fleet, never disabled (#546)", () => {
+    // The deployments the relay cannot reach are part of the answer — each one
+    // refused undelivered by name — so there is nothing here to grey out.
+    expect(grid).toContain('aria-label="Run doctor"');
+    expect(grid).toContain(">Run doctor on every deployment<");
+    expect(grid).not.toContain("disabled=");
+  });
+
   test("draws one segment per enumerated pipeline", () => {
     const segments = [...grid.matchAll(/class="segment /g)];
 
@@ -216,6 +235,7 @@ describe("the grid", () => {
             ),
           ),
         ]}
+        client={client()}
         now={NOW}
       />,
     );
@@ -278,6 +298,7 @@ describe("doctor at fleet level (#507 §9)", () => {
     const markup = renderToStaticMarkup(
       <Rail
         facts={[rowFacts(row(), stored(failing))]}
+        selectedDeployment={null}
         now={NOW}
         surface="browser"
         signedIn
@@ -297,6 +318,7 @@ describe("doctor at fleet level (#507 §9)", () => {
             stored(report({ doctor: { ...report().doctor, report: null, at: null } })),
           ),
         ]}
+        client={client()}
         now={NOW}
       />,
     );
@@ -309,6 +331,7 @@ describe("a report this console cannot read", () => {
     const markup = renderToStaticMarkup(
       <FleetPage
         facts={[rowFacts(row({ name: "ahead-of-us" }), stored(report(), { schema: 99 }))]}
+        client={client()}
         now={NOW}
       />,
     );
@@ -319,12 +342,43 @@ describe("a report this console cannot read", () => {
   });
 });
 
+describe("a relay the console is too new for", () => {
+  const refusal = tooOldText({ version: "0.9.0", console: 0 });
+  const markup = renderToStaticMarkup(
+    <Rail
+      facts={[]}
+      now={NOW}
+      surface="companion"
+      signedIn={false}
+      refusal={refusal}
+      installs={[install({ dir: "/repos/one", name: "one" })]}
+      signIn={null}
+      onSignedIn={noop}
+    />,
+  );
+
+  test("the Relay group says which end to move, and links how", () => {
+    expect(markup).toContain("upgrade the relay first");
+    expect(markup).toContain(RELAY_UPGRADE_DOC);
+  });
+
+  test("it does not also say 'not signed in' — one sentence, the true one", () => {
+    expect(markup).not.toContain("Not signed in to a relay");
+  });
+
+  test("This machine is untouched: one arm refusing is not the window refusing", () => {
+    expect(markup).toContain("This machine");
+    expect(markup).toContain("one");
+  });
+});
+
 describe("the companion's shell", () => {
   // Shell A (#526): one rail, two groups. Signed out and with nothing installed,
   // this is the whole window.
   const empty = renderToStaticMarkup(
     <Rail
       facts={[]}
+      selectedDeployment={null}
       now={NOW}
       surface="companion"
       signedIn={false}
@@ -351,6 +405,7 @@ describe("the companion's shell", () => {
     const markup = renderToStaticMarkup(
       <Rail
         facts={[]}
+        selectedDeployment={null}
         now={NOW}
         surface="companion"
         signedIn={false}
@@ -366,6 +421,7 @@ describe("the companion's shell", () => {
     const markup = renderToStaticMarkup(
       <Rail
         facts={[]}
+        selectedDeployment={null}
         now={NOW}
         surface="companion"
         signedIn={false}
@@ -384,7 +440,15 @@ describe("the companion's shell", () => {
 
   test("keeps the relay's deployments in the relay's group once signed in", () => {
     const markup = renderToStaticMarkup(
-      <Rail facts={FLEET} now={NOW} surface="companion" signedIn signIn={null} onSignedIn={noop} />,
+      <Rail
+        facts={FLEET}
+        selectedDeployment={null}
+        now={NOW}
+        surface="companion"
+        signedIn
+        signIn={null}
+        onSignedIn={noop}
+      />,
     );
 
     expect(markup).toContain("jesusfilm-workspace");
@@ -419,7 +483,7 @@ describe("the local arm on the rail", () => {
       onSelect={() => undefined}
       onAdd={() => undefined}
       signIn={null}
-      onSignedIn={() => undefined}
+      onSignedIn={noop}
     />,
   );
 
@@ -459,7 +523,7 @@ describe("the local arm on the rail", () => {
         signedIn
         installs={installs}
         signIn={null}
-        onSignedIn={() => undefined}
+        onSignedIn={noop}
       />,
     );
 
@@ -476,11 +540,11 @@ describe("the companion's own update on the rail", () => {
         now={NOW}
         surface="companion"
         signedIn={false}
-        signIn={null}
-        onSignedIn={noop}
         update={update}
         onDownload={() => undefined}
         onRestart={() => undefined}
+        signIn={null}
+        onSignedIn={noop}
       />,
     );
   }
@@ -523,9 +587,9 @@ describe("the companion's own update on the rail", () => {
         now={NOW}
         surface="browser"
         signedIn
+        update={{ kind: "available", version: "0.14.0" }}
         signIn={null}
         onSignedIn={noop}
-        update={{ kind: "available", version: "0.14.0" }}
       />,
     );
 
@@ -539,14 +603,22 @@ describe("the install tab", () => {
    * install on overview (#526), and which verbs an install is offered is a
    * question about this tab rather than about where the page opened.
    */
-  function tab(overrides: Parameters<typeof install>[0] = {}) {
+  function tab(
+    overrides: Parameters<typeof install>[0] = {},
+    arm: { signedIn?: boolean; paired?: boolean } = {},
+  ) {
+    const subject = install(overrides);
     return renderToStaticMarkup(
       <InstallTab
-        install={install(overrides)}
+        install={subject}
         environment={null}
         run={null}
         running={false}
         trouble={null}
+        pairing={pairReading(subject, {
+          signedIn: arm.signedIn ?? true,
+          paired: arm.paired ?? false,
+        })}
         onStart={() => undefined}
         onForget={() => undefined}
         onCancel={() => undefined}
@@ -578,6 +650,34 @@ describe("the install tab", () => {
     expect(markup).toContain(">Check for upgrades<");
   });
 
+  test("a running install on a signed-in companion is offered the pairing", () => {
+    const markup = tab({ state: "running" }, { signedIn: true });
+
+    expect(markup).toContain(">Pair with the relay<");
+    expect(markup).not.toContain('disabled="">Pair');
+  });
+
+  test("signed out, it is disabled and says to sign in", () => {
+    const markup = tab({ state: "running" }, { signedIn: false });
+
+    expect(markup).toContain("Sign in to a relay on the rail first");
+    expect(markup).toMatch(/disabled=""[^>]*>Pair with the relay/);
+  });
+
+  test("stopped, it is disabled and says to start the install", () => {
+    const markup = tab({ state: "stopped" }, { signedIn: true });
+
+    expect(markup).toContain("Start this install first");
+    expect(markup).toMatch(/disabled=""[^>]*>Pair with the relay/);
+  });
+
+  test("already paired, there is no button at all — only what it means", () => {
+    const markup = tab({ state: "running" }, { signedIn: true, paired: true });
+
+    expect(markup).not.toContain(">Pair with the relay<");
+    expect(markup).toContain("Paired");
+  });
+
   test("says forgetting deletes nothing, because a Forget button reads like one that does", () => {
     expect(tab()).toContain("Nothing on disk is deleted");
   });
@@ -587,12 +687,12 @@ describe("the install tab", () => {
 
     expect(markup).toContain("container 0.12.1");
     // Every verb an install in this state is offered is still offered, and none
-    // of them is disabled by the skew. The five greyed tabs above are #556's and
-    // have nothing to do with a version.
+    // of them is disabled by the skew.
     const verbs = /<div class="verbs">(.*?)<\/div>/.exec(markup)?.[1] ?? "";
-    expect(verbs).toContain(">Start<");
-    expect(verbs).toContain(">Check for upgrades<");
-    expect(verbs).not.toContain("disabled");
+    // Asked of the two verbs by name: pairing sits in the same row and is
+    // disabled on a stopped install for a reason of its own (#558).
+    expect(verbs).toContain('<button type="button">Start</button>');
+    expect(verbs).toContain('<button type="button">Check for upgrades</button>');
   });
 });
 
@@ -606,6 +706,8 @@ describe("a local install's page", () => {
       <InstallPage
         install={one}
         bridge={bridge()}
+        signedIn
+        paired={false}
         report={event === null ? null : localReport({ facts: one, ...event })}
         now={NOW}
         onForget={() => undefined}
@@ -694,32 +796,182 @@ describe("a local install's page", () => {
   });
 });
 
-describe("a relay the console is too new for", () => {
-  const refusal = tooOldText({ version: "0.9.0", console: 0 });
-  const markup = renderToStaticMarkup(
-    <Rail
-      facts={[]}
-      now={NOW}
-      surface="companion"
-      signedIn={false}
-      signIn={null}
-      onSignedIn={noop}
-      refusal={refusal}
-      installs={[install({ dir: "/repos/one", name: "one" })]}
-    />,
-  );
+describe("the two local writes on screen (#557)", () => {
+  function page(
+    overrides: Parameters<typeof install>[0] = {},
+    event: Parameters<typeof localReport>[0] | null = {},
+  ) {
+    const one = install(overrides);
+    return renderToStaticMarkup(
+      <InstallPage
+        install={one}
+        bridge={bridge()}
+        signedIn
+        paired={false}
+        report={event === null ? null : localReport({ facts: one, ...event })}
+        now={NOW}
+        onForget={() => undefined}
+      />,
+    );
+  }
 
-  test("the Relay group says which end to move, and links how", () => {
-    expect(markup).toContain("upgrade the relay first");
-    expect(markup).toContain(RELAY_UPGRADE_DOC);
+  test("the config tab carries the edit form and the fingerprint it checks against", () => {
+    const markup = page({ state: "stopped" }, {});
+
+    expect(markup).toContain("Change one field");
+    expect(markup).toContain("sha256:0f1e2d3c4b5a6978");
+    expect(markup).toContain("pipelines.work.pollIntervalMs");
   });
 
-  test("it does not also say 'not signed in' — one sentence, the true one", () => {
-    expect(markup).not.toContain("Not signed in to a relay");
+  test("the edit form says it writes this machine and no relay is involved", () => {
+    const markup = page({ state: "stopped" }, {});
+
+    expect(markup).toContain("straight to");
+    expect(markup).toContain("No relay is involved");
   });
 
-  test("This machine is untouched: one arm refusing is not the window refusing", () => {
+  test("a folder with no config has no edit form to offer", () => {
+    const markup = page(
+      { state: "stopped" },
+      { directory: directory({ configText: null, configFingerprint: null }) },
+    );
+
+    expect(markup).not.toContain("Change one field");
+  });
+
+  /** The install tab alone, which is where the secret form lives. */
+  function secretTab(overrides: Parameters<typeof install>[0] = {}) {
+    return renderToStaticMarkup(
+      <InstallTab
+        install={install(overrides)}
+        environment={null}
+        run={null}
+        running={false}
+        trouble={null}
+        pairing={{ kind: "ready" }}
+        onStart={() => undefined}
+        onForget={() => undefined}
+        onCancel={() => undefined}
+      />,
+    );
+  }
+
+  test("the secret form is on the install tab, reachable with nothing running", () => {
+    const markup = secretTab({ state: "not-initialised" });
+
+    expect(markup).toContain("Set a secret");
+    expect(markup).toContain('type="password"');
+  });
+
+  test("it says no envelope is built and nothing is sent to a relay (#526)", () => {
+    const markup = secretTab({ state: "not-initialised" });
+
+    expect(markup).toContain("Nothing is sealed to anybody");
+    expect(markup).toContain("even if this install is paired");
+  });
+
+  test("it names the writer before a value is pasted — the file, with nothing running", () => {
+    const markup = secretTab({ state: "stopped" });
+
+    expect(markup).toContain(".env");
+    expect(markup).not.toContain("tenant secret store on the data volume");
+  });
+
+  test("and the store, on a running container", () => {
+    expect(secretTab({ state: "running" })).toContain("tenant secret store on the data volume");
+  });
+
+  test("a refusal renders its reason and the exact edit to make by hand (#503)", () => {
+    const markup = renderToStaticMarkup(
+      <ConfigEditForm
+        install={install({ state: "stopped" })}
+        config={{
+          kind: "file",
+          path: "/repos/youtube-studio/phoebe.config.ts",
+          text: "export default defineConfig({})",
+          fingerprint: "sha256:abc",
+        }}
+        running={false}
+        receipt={{
+          id: "e1",
+          state: "refused",
+          file: "/repos/youtube-studio/phoebe.config.ts",
+          path: "engine.ref",
+          reason: "not-editable",
+          why: "the engine pin moves with `phoebe upgrade`",
+          instruction: "Run `phoebe upgrade --ref v2` in that folder.",
+          at: ago(1),
+        }}
+        onStart={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain("Refused (not-editable)");
+    expect(markup).toContain("phoebe upgrade --ref v2");
+  });
+
+  test("a written receipt says what landed and that a reconcile follows", () => {
+    const markup = renderToStaticMarkup(
+      <ReceiptPanel
+        receipt={{
+          id: "e1",
+          state: "written",
+          file: "/repos/youtube-studio/phoebe.config.ts",
+          path: "checkCommand",
+          value: "pnpm run check",
+          fingerprint: "sha256:after",
+          at: ago(1),
+        }}
+      />,
+    );
+
+    expect(markup).toContain("checkCommand");
+    expect(markup).toContain("pnpm run check");
+    expect(markup).toContain("reconciles onto it");
+  });
+});
+
+describe("a paired install on the rail (#558)", () => {
+  const PAIRED = install({ dir: "/repos/one", name: "one", deploymentName: "the-fleet" });
+  const FLEET = sortFleet([rowFacts(row({ fingerprint: "FP1", name: "the-fleet" }), null)]);
+
+  function rail(paired: Set<string>, facts = FLEET) {
+    return renderToStaticMarkup(
+      <Rail
+        facts={facts}
+        now={NOW}
+        surface="companion"
+        signedIn
+        installs={[PAIRED]}
+        paired={paired}
+        signIn={null}
+        onSignedIn={() => undefined}
+      />,
+    );
+  }
+
+  test("wears a paired chip under This machine", () => {
+    const markup = rail(new Set(["/repos/one"]), []);
+
     expect(markup).toContain("This machine");
-    expect(markup).toContain("one");
+    expect(markup).toContain('class="chip paired"');
+    expect(markup).toContain(">paired<");
+  });
+
+  test("shows once: the row it is on the relay is not drawn beside it", () => {
+    // The Relay group is handed the rows that are *not* local installs, so with
+    // its one row claimed the group says what an empty relay says.
+    const markup = rail(new Set(["/repos/one"]), []);
+
+    expect(markup).toContain("No deployment is paired with this relay yet.");
+    expect(markup.match(/the-fleet/g)).toBeNull();
+    expect(markup.match(/class="name">/g)).toHaveLength(1);
+  });
+
+  test("an unpaired install wears no chip, and its relay group still draws its rows", () => {
+    const markup = rail(new Set());
+
+    expect(markup).not.toContain("chip paired");
+    expect(markup).toContain("the-fleet");
   });
 });

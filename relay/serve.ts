@@ -12,8 +12,6 @@
 import { createServer, type Server } from "node:http";
 import { mkdirSync } from "node:fs";
 import { createAllowlist } from "./allowlist.ts";
-import { createConsoleAssets } from "./console-assets.ts";
-import { createDeviceCodes, createDevices } from "./devices.ts";
 import {
   createAlertNotifier,
   createAlertStore,
@@ -22,6 +20,10 @@ import {
   type AlertNotifier,
   type AlertSink,
 } from "./alerts.ts";
+import { createConsoleAssets } from "./console-assets.ts";
+import { relayPackageVersion } from "./version.ts";
+import { CONSOLE_PROTOCOL } from "../src/contracts/console-protocol.ts";
+import { createDeviceCodes, createDevices } from "./devices.ts";
 import { readRelayEnv, redirectUri, type RelayEnv } from "./env.ts";
 import { createRelayHandler } from "./http.ts";
 import { serveDeployments, type DeploymentGate } from "./deployments.ts";
@@ -30,9 +32,7 @@ import { createLinks, createPairingTokens } from "./links.ts";
 import { createReports } from "./reports.ts";
 import { createGoogleIdentityProvider, type IdentityProvider } from "./oidc.ts";
 import { createSessionStore } from "./sessions.ts";
-import { relayPackageVersion } from "./version.ts";
 import { ALERT_DARK_AFTER_MS } from "../src/contracts/alerts.ts";
-import { CONSOLE_PROTOCOL } from "../src/contracts/console-protocol.ts";
 import {
   RELAY_DEPLOYMENTS_PATH,
   RELAY_HEARTBEAT_MS,
@@ -60,6 +60,11 @@ export type StartRelayOptions = {
    * the only value production has; a test points it at a directory it wrote.
    */
   consoleDir?: string;
+  /**
+   * The version `/api/version` reports. Defaults to the package the relay is
+   * running out of; a test that wants a known answer passes one.
+   */
+  version?: string;
   /** 0 asks the OS for a free port, which is how the tests bind. */
   port?: number;
   /** Overridden in tests; production talks to Google. */
@@ -84,11 +89,6 @@ export type StartRelayOptions = {
    * lands (#524 §1), and a test passes one to watch what would have been sent.
    */
   alertSinks?: readonly AlertSink[];
-  /**
-   * The version `/api/version` reports. Defaults to the package the relay is
-   * running out of; a test that wants a known answer passes one.
-   */
-  version?: string;
   /** Start-up lines. Defaults to stdout. */
   log?: (message: string) => void;
   /** Refusals and unreachable-Google complaints. Defaults to stderr. */

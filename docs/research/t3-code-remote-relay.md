@@ -8,6 +8,11 @@ map ([#497](https://github.com/JesusFilm/phoebe/issues/497)), read 2026-09-09 di
 owns it. The local install under `~/.t3/` was inspected read-only and is used only as
 corroboration, marked as such.
 
+First captured on the throwaway `research/t3-code-remote-relay` branch while #497 was being
+charted, then landed here on the ticket's own resolution after a second reading of the same
+tree. The second pass added the loopback origin rule, the connector handshake, the two-minute
+mint credential and its scopes, and the client rebuild that self-hosting the relay implies.
+
 T3 Code is a client (web, Electron desktop, iOS/Android) that controls coding agents running in an
 **environment**: one server process on the machine that owns the workspace
 ([docs/internals/glossary.md](https://github.com/pingdotgg/t3code/blob/e16b8b059c9f5ff6dfed1addecffb831c6aee043/docs/internals/glossary.md)).
@@ -28,10 +33,17 @@ the main finding.
   ([infra/relay/src/environments/ManagedEndpointProvider.ts](https://github.com/pingdotgg/t3code/blob/e16b8b059c9f5ff6dfed1addecffb831c6aee043/infra/relay/src/environments/ManagedEndpointProvider.ts)).
 - **Hosting: one hosted relay, Cloudflare Worker plus Postgres, deployed with Alchemy;
   self-hosting is supported but not the product.** `infra/relay/alchemy.run.ts` provisions the
-  Worker, queues, tunnel zone and PlanetScale database; `relay.t3.codes` is the production
-  instance; a self-hosted relay is a different `T3CODE_RELAY_URL` baked into a source build
+  Worker, queues, Hyperdrive, tunnel and DNS records across two Cloudflare zones, a PlanetScale
+  database and Axiom trace datasets, with Clerk and APNs credentials as runtime secrets; the
+  `prod` stage owns the retained database every other stage branches from, so it deploys first.
+  `relay.t3.codes` is the production instance; a self-hosted relay is a different
+  `T3CODE_RELAY_URL` baked into a source build, and since "client and bundled-server builds
+  embed the public values", pointing desktop, mobile and web at your own relay means building
+  your own clients
   ([infra/relay/README.md](https://github.com/pingdotgg/t3code/blob/e16b8b059c9f5ff6dfed1addecffb831c6aee043/infra/relay/README.md),
-  [.env.example](https://github.com/pingdotgg/t3code/blob/e16b8b059c9f5ff6dfed1addecffb831c6aee043/.env.example)).
+  [.env.example](https://github.com/pingdotgg/t3code/blob/e16b8b059c9f5ff6dfed1addecffb831c6aee043/.env.example),
+  [docs/operations/connect-setup.md](https://github.com/pingdotgg/t3code/blob/e16b8b059c9f5ff6dfed1addecffb831c6aee043/docs/operations/connect-setup.md),
+  [docs/operations/relay-observability.md](https://github.com/pingdotgg/t3code/blob/e16b8b059c9f5ff6dfed1addecffb831c6aee043/docs/operations/relay-observability.md)).
 - **Connection direction: the environment dials out, twice.** Outbound HTTPS to the relay to link
   and to publish activity, and an outbound `cloudflared` connection that carries inbound client
   traffic back to a loopback origin. The environment's own listener stays on `127.0.0.1` for this
@@ -159,10 +171,17 @@ localHttpPort}` the tunnel will front
    records the link for the `(user, environment)` pair, and if `managedTunnelsEnabled`,
    provisions a Cloudflare Tunnel and a `prod-<digest>.<RELAY_TUNNEL_ZONE_NAME>` hostname,
    returning `endpointRuntime = {providerKind, connectorToken, tunnelId, tunnelName}`
-   (`RelayManagedEndpointRuntimeConfig`, relay.ts line 181; README "Deployment").
+   (`RelayManagedEndpointRuntimeConfig`, relay.ts line 181; README "Deployment"). It refuses
+   before it provisions anything if the proof's origin is not loopback: `isLoopbackOrigin`
+   accepts `127.0.0.1`, `::1` and `localhost` with a port in 1–65535, and nothing else
+   (ManagedEndpointProvider.ts). The whole provisioning run is an eleven-stage checkpointed
+   sequence (`derive-environment-hash` … `mark-allocation-ready`) so a retry can reconcile
+   partial work.
 3. The environment stores that config in its secret store and spawns
-   `cloudflared tunnel run` with the connector token, restarting on exit with a
-   1 s → 60 s backoff and a 30 s "stable uptime" reset
+   `cloudflared tunnel run` with the connector token passed as `TUNNEL_TOKEN` in the child's
+   environment, then waits for the line `Registered tunnel connection` on its stderr before
+   calling the route live. It restarts on exit with a 1 s → 60 s backoff and a 30 s
+   "stable uptime" reset
    ([ManagedEndpointRuntime.ts](https://github.com/pingdotgg/t3code/blob/e16b8b059c9f5ff6dfed1addecffb831c6aee043/apps/server/src/cloud/ManagedEndpointRuntime.ts)
    lines 78–82, 276). The `cloudflared` binary is downloaded from Cloudflare's GitHub releases,
    pinned at `2026.5.2`
@@ -284,8 +303,15 @@ then itself calls the environment's `POST /api/t3-connect/mint-credential` over 
 `httpBaseUrl` with a relay-signed proof naming the environment, the user, the operation and the
 client's DPoP key thumbprint
 ([infra/relay/src/environments/EnvironmentConnector.ts](https://github.com/pingdotgg/t3code/blob/e16b8b059c9f5ff6dfed1addecffb831c6aee043/infra/relay/src/environments/EnvironmentConnector.ts)
-lines 298, 467, 623; environmentHttp.ts line 610). The environment returns a one-time bootstrap
-credential and a signed response bound to the request nonce and that thumbprint; the relay
+lines 298, 467, 623; environmentHttp.ts line 610). The environment checks that proof's lifetime,
+scope, nonce and JTI against a replay guard, then creates a pairing link with
+`ttl: Duration.minutes(2)`, subject `cloud-connect`, the standard client scopes
+(`orchestration:read`, `orchestration:operate`, `terminal:operate`, `review:write`,
+`relay:read`) and the client's proof-key thumbprint bound in
+([apps/server/src/cloud/http.ts](https://github.com/pingdotgg/t3code/blob/e16b8b059c9f5ff6dfed1addecffb831c6aee043/apps/server/src/cloud/http.ts)).
+A brokered connect therefore never carries `access:write` or `relay:write`: the administrative
+scopes stay with whoever paired the machine directly. The environment returns that one-time
+bootstrap credential and a signed response bound to the request nonce and that thumbprint; the relay
 verifies the binding (EnvironmentConnector.ts lines 218–241) and hands the credential to the
 client, which redeems it directly at the environment's `/oauth/token`. "The relay never
 receives that session token, and possessing the bootstrap credential alone does not permit

@@ -1,5 +1,5 @@
-// The console's shell: the session gate, the fleet it holds, and the rail and
-// grid it hands them to.
+// The console's shell: the session gate, the fleet it holds, the rail and grid it
+// hands them to, and the hash the pages are chosen by.
 //
 // Everything it needs from the relay arrives through the one client seam, so this
 // component is the same component in the companion's renderer with a different
@@ -23,7 +23,7 @@
 // stopped listening.
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { RELAY_EVENTS } from "phoebe-agent/contracts";
+import { RELAY_EVENTS, RELAY_ROUTES } from "phoebe-agent/contracts";
 import type {
   AlertBody,
   CompanionUpdate,
@@ -33,23 +33,25 @@ import type {
   RelayIdentity,
 } from "phoebe-agent/contracts";
 import type { Surface } from "./companion.ts";
-import { readEditAnswer, type EditAnswer } from "./config-edit.ts";
-import { DeploymentPage, NoSuchDeployment } from "./deployment-page.tsx";
-import { rowFacts, sortFleet, type RowFacts } from "./facts.ts";
-import { applyEvent, EMPTY_FLEET, loadFleet, type FleetState } from "./fleet-state.ts";
-import { FleetPage } from "./fleet-page.tsx";
-import { InstallPage } from "./install-page.tsx";
-import { createNotifier, type AlertSubject, type Notifiable } from "./notifications.ts";
-import { Rail } from "./rail.tsx";
-import { isNotSignedIn, type RelayClient, type RelaySignIn } from "./relay-client.ts";
 import {
   readRelayVersion,
   RELAY_UPGRADE_DOC,
   tooOldText,
   type RelayVersionReading,
 } from "./relay-version.ts";
+import { readEditAnswer, type EditAnswer } from "./config-edit.ts";
+import { DeploymentPage, NoSuchDeployment } from "./deployment-page.tsx";
+import { rowFacts, sortFleet, type RowFacts } from "./facts.ts";
+import { applyEvent, EMPTY_FLEET, loadFleet, type FleetState } from "./fleet-state.ts";
+import { FleetPage } from "./fleet-page.tsx";
+import { InstallPage } from "./install-page.tsx";
+import { pairedInstalls } from "./local-install.ts";
+import { PeoplePage } from "./people-page.tsx";
+import { createNotifier, type AlertSubject, type Notifiable } from "./notifications.ts";
+import { Rail } from "./rail.tsx";
+import { isNotSignedIn, type RelayClient, type RelaySignIn } from "./relay-client.ts";
 import { configOf } from "./report.ts";
-import { deploymentHref, FLEET_ROUTE, parseRoute, type Route } from "./route.ts";
+import { FLEET_HREF, FLEET_ROUTE, PEOPLE_HREF, parseRoute, type Route } from "./route.ts";
 
 type Session =
   | { kind: "asking" }
@@ -192,23 +194,31 @@ function Console({
   surface: Surface;
   bridge: DesktopBridge | null;
   identity: RelayIdentity | null;
-  signIn: RelaySignIn | null;
-  onSignedIn: (identity: RelayIdentity) => void;
   /** The relay-too-old sentence, when that is where this relay stands. */
   refusal?: string;
+  signIn: RelaySignIn | null;
+  onSignedIn: (identity: RelayIdentity) => void;
   onSignedOut: () => void;
 }) {
+  const route = useRoute();
   const [fleet, setFleet] = useState<FleetState>(EMPTY_FLEET);
   const [loaded, setLoaded] = useState(false);
   const [trouble, setTrouble] = useState<string | null>(null);
   const [installs, setInstalls] = useState<LocalInstall[]>([]);
   const [reports, setReports] = useState<Record<string, LocalReportEvent>>({});
   const [openInstall, setOpenInstall] = useState<string | null>(null);
+  const [relayUrl, setRelayUrl] = useState<string | null>(null);
   // Default on (#524 §8), and read back off `companion.json` the moment main
   // answers. A browser never asks — there is nothing there to notify with.
   const [notifications, setNotifications] = useState(true);
-  const route = useRoute();
   const now = useNow(1000);
+
+  // The two arms share one page area, and an open install wins it. A rail link
+  // into the relay arm moves the hash, so following one closes the install —
+  // otherwise the address would change and the page would not.
+  useEffect(() => {
+    setOpenInstall(null);
+  }, [route]);
 
   useEffect(() => {
     if (bridge === null) return;
@@ -222,13 +232,13 @@ function Console({
   }, [bridge]);
 
   // Bring the window forward and land on the page the alert is about (#524 §6).
-  // Both arms have a page: an install has its install tab, and a deployment has
-  // the five tabs #544 built, which the hash names.
+  // A local install has a page here; a deployment's five tabs are #544's, so
+  // until they exist a click on a relay alert does the half it can — the window
+  // comes up on the fleet, which is where the row is.
   const openAlert = useCallback((notifiable: Notifiable) => {
     globalThis.focus();
     const subject = notifiable.subject;
     if (subject?.arm === "local") setOpenInstall(subject.install);
-    else if (subject?.arm === "relay") window.location.hash = deploymentHref(subject.fingerprint);
   }, []);
 
   const notifier = useMemo(
@@ -315,6 +325,26 @@ function Console({
     return undefined;
   }, [bridge, openInstall]);
 
+  // Which relay this companion is signed in to — the other half of the join
+  // that decides whether a local install is also a row on the fleet (#558).
+  // Watched rather than read once: signing in to a different relay changes
+  // which rows these installs are, without anything else on the page moving.
+  useEffect(() => {
+    if (bridge === null) return;
+    let live = true;
+    bridge.relay.state().then(
+      (state) => {
+        if (live) setRelayUrl(state.url);
+      },
+      () => undefined,
+    );
+    const unsubscribe = bridge.relay.watch((state) => setRelayUrl(state.url));
+    return () => {
+      live = false;
+      unsubscribe();
+    };
+  }, [bridge]);
+
   const addInstall = useCallback(() => {
     if (bridge === null) return;
     void bridge.installs.pick().then(async (dir) => {
@@ -383,10 +413,29 @@ function Console({
     [fleet],
   );
 
+  // A paired install is one thing on two arms, and the rail draws it once.
+  const paired = useMemo(
+    () => pairedInstalls(installs, facts, relayUrl),
+    [installs, facts, relayUrl],
+  );
+  const pairedDirs = useMemo(() => new Set(paired.keys()), [paired]);
+  const relayFacts = useMemo(() => {
+    const claimed = new Set(paired.values());
+    return facts.filter((row) => !claimed.has(row.row.fingerprint));
+  }, [facts, paired]);
+
   return (
     <>
       <header className="topbar">
         <span className="brand">{surface === "companion" ? "Phoebe" : "Phoebe console"}</span>
+        <nav className="pages" aria-label="Pages">
+          <a href={FLEET_HREF} className={route.page === "people" ? "" : "current"}>
+            Fleet
+          </a>
+          <a href={PEOPLE_HREF} className={route.page === "people" ? "current" : ""}>
+            People
+          </a>
+        </nav>
         <span className="spacer" />
         {bridge === null ? null : (
           <label className="notifications">
@@ -428,16 +477,19 @@ function Console({
       </header>
       <div className="frame">
         <Rail
-          facts={facts}
+          facts={relayFacts}
           now={now}
           surface={surface}
           signedIn={identity !== null}
           {...(refusal !== undefined ? { refusal } : {})}
           installs={installs}
+          paired={pairedDirs}
           selected={openInstall}
-          selectedDeployment={route.page === "deployment" ? route.fingerprint : null}
-          update={update}
+          selectedDeployment={
+            openInstall === null && route.page === "deployment" ? route.fingerprint : null
+          }
           onSelect={setOpenInstall}
+          update={update}
           {...(bridge === null
             ? {}
             : {
@@ -459,6 +511,8 @@ function Console({
             bridge={bridge}
             report={reports[open.dir] ?? null}
             now={now}
+            signedIn={identity !== null}
+            paired={paired.has(open.dir)}
             onForget={forgetInstall}
           />
         ) : identity === null ? (
@@ -467,13 +521,15 @@ function Console({
             onAdd={bridge === null ? undefined : addInstall}
             {...(refusal !== undefined ? { refusal } : {})}
           />
+        ) : route.page === "people" ? (
+          <PeoplePage client={client} now={now} onSignedOut={onSignedOut} />
         ) : trouble !== null ? (
           <main className="main">
             <h1>Fleet</h1>
             <p className="muted">The relay did not answer: {trouble}</p>
           </main>
         ) : loaded ? (
-          <Page route={route} facts={facts} now={now} client={client} />
+          <Page route={route} facts={facts} client={client} now={now} />
         ) : (
           <main className="main">
             <h1>Fleet</h1>
@@ -489,8 +545,8 @@ function Console({
  * The companion's home: both arms, and what each one is holding. Signed out, it
  * is the whole window. Adding a local install is a control here as well as on
  * the rail, because an empty companion has a rail nobody has looked at yet.
- * Signing in is the rail's, beside the group it fills, so this page points at
- * it rather than putting a second copy of the same form on screen.
+ * Signing in is the rail's, beside the group it fills, so this page points at it
+ * rather than putting a second copy of the same form on screen.
  */
 function CompanionHome({
   installs,
@@ -553,16 +609,16 @@ function ignore(): void {}
 function Page({
   route,
   facts,
-  now,
   client,
+  now,
 }: {
   route: Route;
   facts: RowFacts[];
-  now: Date;
-  /** Handed on to the deployment page, whose secrets tab sends through it. */
+  /** The pages that ask for something need the seam too, not only the shell. */
   client: RelayClient;
+  now: Date;
 }) {
-  if (route.page === "fleet") return <FleetPage facts={facts} now={now} />;
+  if (route.page !== "deployment") return <FleetPage facts={facts} client={client} now={now} />;
   const found = facts.find((row) => row.row.fingerprint === route.fingerprint);
   if (found === undefined) return <NoSuchDeployment fingerprint={route.fingerprint} />;
   // The fingerprint the page was drawn with, not a fresh read of it: that is
@@ -574,8 +630,8 @@ function Page({
     <DeploymentPage
       facts={found}
       tab={route.tab}
-      now={now}
       client={client}
+      now={now}
       onEdit={(edit) => sendConfigEdit(client, found.row.fingerprint, loaded, edit)}
     />
   );

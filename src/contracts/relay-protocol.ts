@@ -31,6 +31,15 @@ export const RELAY_PROTOCOL = 1;
 export const RELAY_DEPLOYMENTS_PATH = "/deployments";
 
 /**
+ * The variable a pairing token travels in. The bootstrapper reads it out of the
+ * container's environment at boot; the companion writes it into the install's
+ * root `.env` when it pairs one (#558). Two codebases, one name — which is what
+ * puts it here rather than in either of them.
+ * Mirrored by hand in index.mjs.
+ */
+export const RELAY_TOKEN_ENV = "PHOEBE_RELAY_TOKEN";
+
+/**
  * How often the relay pings (#506 §7, #541). Twenty seconds, a constant on both
  * sides rather than configuration: an operator who tuned it would be making one
  * deployment's idea of "recently" disagree with its relay's.
@@ -64,6 +73,36 @@ export const RELAY_DARK_AFTER_MS = 60_000;
  * deployment-side ledgers make a re-issue idempotent.
  */
 export const RELAY_UNDELIVERED = "undelivered";
+
+/**
+ * What a deployment answers a `doctor-run` with (#546, decided in #507 §7).
+ * Three words, and the receipt is written the moment the ask lands rather than
+ * when the run ends: doctor holds itself to five minutes, and a console left
+ * waiting that long for a button to come back would be a console an operator
+ * reloads.
+ *
+ * What the run found arrives the way every other fact about a deployment does —
+ * as the next report, pushed when the doctor section moves and carried down the
+ * event stream (#542). So the receipt says which run this ask belongs to, and
+ * the report says what that run saw.
+ */
+export const RELAY_DOCTOR_RUN = {
+  /** No run was in flight: this ask is the run. */
+  started: "started",
+  /** One was already under way, or already asked for. This ask joined it. */
+  joined: "joined",
+  /** The deployment will not run one now; `detail` is the sentence why. */
+  refused: "refused",
+} as const;
+
+/**
+ * One receipt outcome for a doctor run, including the relay's own word for a
+ * deployment it could not reach. A console shows all four and invents none of
+ * them.
+ */
+export type DoctorRunOutcome =
+  | (typeof RELAY_DOCTOR_RUN)[keyof typeof RELAY_DOCTOR_RUN]
+  | typeof RELAY_UNDELIVERED;
 
 /**
  * Every message type on the rail, as one closed record. `as const` so a typo in
@@ -214,10 +253,15 @@ export type RelaySecretSet = {
   by: string;
 };
 
-/** relay → deployment: run doctor and answer with what it said. */
+/**
+ * relay → deployment: run doctor now. Answered by a receipt carrying one of
+ * {@link RELAY_DOCTOR_RUN}'s words — which run this ask belongs to, not what
+ * that run found.
+ */
 export type RelayDoctorRun = {
   type: typeof RELAY_MESSAGES.doctorRun;
   id: string;
+  /** The signed-in address that asked. It lands in the report's doctor section. */
   by: string;
 };
 

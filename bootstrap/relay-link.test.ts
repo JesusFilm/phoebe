@@ -1,6 +1,7 @@
 // The deployment's side of the handshake, driven through a fake socket: what it
 // sends when, what it does with each refusal, how long it waits before dialling
-// again, and what the report says while it is doing it.
+// again, what the report says while it is doing it, and what it answers when a
+// console asks it to run doctor.
 //
 // Nothing here opens a real connection. The socket seam is one function, so the
 // test is the far side of it — which is also how the close codes get exercised,
@@ -12,6 +13,7 @@ import { describe, expect, test } from "vite-plus/test";
 import {
   RELAY_CLOSE,
   RELAY_DARK_AFTER_MS,
+  RELAY_DOCTOR_RUN,
   RELAY_MESSAGES,
   RELAY_PROTOCOL,
 } from "../src/contracts/relay-protocol.ts";
@@ -27,6 +29,7 @@ import {
   RECONNECT_CAP_MS,
   RECONNECT_FIRST_MS,
   reconnectDelayMs,
+  type DoctorRunAnswer,
   type InboundRequest,
   type RelaySocketHandlers,
   type RelayTimer,
@@ -72,14 +75,16 @@ type Harness = {
   hello: () => Record<string, unknown>;
   /** Every report frame the newest dial has sent, oldest first. */
   reports: () => Array<Record<string, unknown>>;
-  /** Every receipt frame the newest dial has sent, oldest first. */
+  /** Every receipt the newest dial has written, oldest first (#546). */
   receipts: () => Array<Record<string, unknown>>;
+  /** Who this link was asked to run doctor for, in order. */
+  asked: string[];
   /** The report the model would hand over next. */
   setReport: (report: DeploymentReport | null) => void;
   /** The model wrote a report: the cue boot gives the link. */
   push: () => void;
   /** Every request the answerer was handed. */
-  asked: () => InboundRequest[];
+  requests: InboundRequest[];
   stop: () => void;
 };
 
@@ -91,6 +96,8 @@ function harness(
     report?: DeploymentReport | null;
     /** The pen behind the link, or absent for a link built without one. */
     onConfigSet?: (edit: ConfigEdit) => Promise<EditReceipt>;
+    /** Omitted on purpose by the test for a link with no doctor behind it. */
+    doctorRun?: (by: string) => DoctorRunAnswer;
     /** Absent means the link is built with no answerer at all. */
     answer?: (request: InboundRequest) => Promise<RequestAnswer>;
   } = {},
@@ -104,7 +111,8 @@ function harness(
   const warnings: string[] = [];
   let clock = 1_000_000;
   let report: DeploymentReport | null = overrides.report ?? null;
-  const asked: InboundRequest[] = [];
+  const asked: string[] = [];
+  const requests: InboundRequest[] = [];
 
   const drop = (timer: Timer): void => {
     const at = timers.indexOf(timer);
@@ -129,12 +137,20 @@ function harness(
       ? {}
       : {
           onRequest: (request: InboundRequest) => {
-            asked.push(request);
+            requests.push(request);
             return overrides.answer!(request);
           },
         }),
     report: () => report,
     ...(overrides.onConfigSet !== undefined ? { onConfigSet: overrides.onConfigSet } : {}),
+    ...(overrides.doctorRun !== undefined
+      ? {
+          onDoctorRun: (by: string) => {
+            asked.push(by);
+            return overrides.doctorRun!(by);
+          },
+        }
+      : {}),
     log: (message) => logs.push(message),
     warn: (message) => warnings.push(message),
     open: (url, handlers) => {
@@ -201,11 +217,12 @@ function harness(
       newest()
         .sent.map((frame) => JSON.parse(frame) as Record<string, unknown>)
         .filter((frame) => frame["type"] === RELAY_MESSAGES.receipt),
+    asked,
     setReport: (next) => {
       report = next;
     },
     push: () => link.push(),
-    asked: () => asked,
+    requests,
     stop: () => link.stop(),
   };
 }
@@ -717,6 +734,114 @@ describe("a config edit off the rail (#503, #547)", () => {
   });
 });
 
+describe("answering a doctor run", () => {
+  const doctorRun = (id: string, by = "ada@example.test") => ({
+    type: RELAY_MESSAGES.doctorRun,
+    id,
+    by,
+  });
+
+  test("asks the deployment's doctor and receipts the word it gets back", () => {
+    const relay = harness({
+      pairingToken: "mint-fresh",
+      doctorRun: () => ({ outcome: RELAY_DOCTOR_RUN.started }),
+    });
+    relay.challenge();
+
+    relay.deliver(doctorRun("req-1"));
+
+    expect(relay.asked).toEqual(["ada@example.test"]);
+    expect(relay.receipts()).toEqual([
+      { type: RELAY_MESSAGES.receipt, id: "req-1", outcome: "started" },
+    ]);
+  });
+
+  test("a second ask during that run is receipted `joined`, and nothing is doubled", () => {
+    let running = false;
+    const relay = harness({
+      pairingToken: "mint-fresh",
+      doctorRun: () => {
+        const outcome = running ? RELAY_DOCTOR_RUN.joined : RELAY_DOCTOR_RUN.started;
+        running = true;
+        return { outcome };
+      },
+    });
+    relay.challenge();
+
+    relay.deliver(doctorRun("req-1"));
+    relay.deliver(doctorRun("req-2"));
+
+    expect(relay.receipts().map((receipt) => receipt["outcome"])).toEqual(["started", "joined"]);
+  });
+
+  test("the receipt carries the detail a refusal explains itself with", () => {
+    const relay = harness({
+      pairingToken: "mint-fresh",
+      doctorRun: () => ({ outcome: RELAY_DOCTOR_RUN.refused, detail: "shutting down" }),
+    });
+    relay.challenge();
+
+    relay.deliver(doctorRun("req-1"));
+
+    expect(relay.receipts()[0]).toMatchObject({ outcome: "refused", detail: "shutting down" });
+  });
+
+  test("a link with no doctor behind it refuses in those words rather than going quiet", () => {
+    // Silence would leave the console holding a request until the socket closed.
+    const relay = harness({ pairingToken: "mint-fresh" });
+    relay.challenge();
+
+    relay.deliver(doctorRun("req-1"));
+
+    expect(relay.receipts()[0]).toMatchObject({ outcome: "refused" });
+    expect(relay.receipts()[0]!["detail"]).toContain("no doctor");
+  });
+
+  test("an ask that throws is a refusal, not an exception on the socket", () => {
+    const relay = harness({
+      pairingToken: "mint-fresh",
+      doctorRun: () => {
+        throw new Error("the runner is gone");
+      },
+    });
+    relay.challenge();
+
+    relay.deliver(doctorRun("req-1"));
+
+    expect(relay.receipts()[0]).toMatchObject({
+      outcome: "refused",
+      detail: "the runner is gone",
+    });
+  });
+
+  test("an ask before the hello is ignored: the relay has not been answered yet", () => {
+    const relay = harness({
+      pairingToken: "mint-fresh",
+      doctorRun: () => ({ outcome: RELAY_DOCTOR_RUN.started }),
+    });
+    relay.dials[0]!.handlers.onOpen();
+
+    relay.deliver(doctorRun("req-1"));
+
+    expect(relay.asked).toEqual([]);
+    expect(relay.receipts()).toEqual([]);
+  });
+
+  test("a malformed ask is dropped rather than receipted under an id it invented", () => {
+    const relay = harness({
+      pairingToken: "mint-fresh",
+      doctorRun: () => ({ outcome: RELAY_DOCTOR_RUN.started }),
+    });
+    relay.challenge();
+
+    relay.deliver({ type: RELAY_MESSAGES.doctorRun, by: "ada@example.test" });
+    relay.deliver({ type: RELAY_MESSAGES.doctorRun, id: "req-1" });
+
+    expect(relay.asked).toEqual([]);
+    expect(relay.receipts()).toEqual([]);
+  });
+});
+
 describe("answering a request", () => {
   /** A paired link, connected, with an answerer behind it. */
   const connected = (answer?: (request: InboundRequest) => Promise<RequestAnswer>): Harness => {
@@ -743,9 +868,9 @@ describe("answering a request", () => {
     relay.deliver(secretSet("edit-1"));
     await Promise.resolve();
 
-    expect(relay.asked()).toHaveLength(1);
-    expect(relay.asked()[0]).toMatchObject({ type: RELAY_MESSAGES.secretSet, id: "edit-1" });
-    expect(relay.asked()[0]?.frame["key"]).toBe("ANTHROPIC_API_KEY");
+    expect(relay.requests).toHaveLength(1);
+    expect(relay.requests[0]).toMatchObject({ type: RELAY_MESSAGES.secretSet, id: "edit-1" });
+    expect(relay.requests[0]?.frame["key"]).toBe("ANTHROPIC_API_KEY");
   });
 
   test("the answer comes back as a receipt under the same id", async () => {
@@ -793,7 +918,7 @@ describe("answering a request", () => {
     relay.deliver({ type: RELAY_MESSAGES.secretSet, tenant: "acme/widget" });
     await Promise.resolve();
 
-    expect(relay.asked()).toEqual([]);
+    expect(relay.requests).toEqual([]);
     expect(relay.receipts()).toEqual([]);
   });
 
@@ -804,7 +929,7 @@ describe("answering a request", () => {
     relay.deliver({ type: "phoebe:relay:something-new", id: "edit-1" });
     await Promise.resolve();
 
-    expect(relay.asked()).toEqual([]);
+    expect(relay.requests).toEqual([]);
     expect(relay.receipts()).toEqual([]);
   });
 
@@ -813,7 +938,7 @@ describe("answering a request", () => {
     relay.deliver({ type: RELAY_MESSAGES.heartbeat });
     await Promise.resolve();
 
-    expect(relay.asked()).toEqual([]);
+    expect(relay.requests).toEqual([]);
     expect(relay.receipts()).toEqual([]);
   });
 });

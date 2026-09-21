@@ -1,28 +1,38 @@
 // The relay's HTTP surface: the sign-in flow, the reads and verbs behind it, and
-// the console's own build (#538, #540, #541, #542, #543, #551).
+// the console's own build (#538, #540, #541, #542, #543, #548, #551).
 //
 // What a signed-in person can ask for is who they are, a pairing token for a new
-// deployment, the fleet as the socket endpoint knows it — with what the relay
-// last alerted about each link — one deployment with the last report it pushed,
-// the stream those reports arrive on, the forgetting of one deployment, one
-// field of one deployment's config set, the setting of one tenant secret —
-// which the relay carries sealed and stamps with who asked, without ever being
-// able to read it (#550) — and one test alert. The console's pages sit on
-// exactly these answers, and the relay hands the pages out too — the bundle is
-// in the same package (console-assets.ts).
+// deployment, the fleet as the socket endpoint knows it, one deployment with the
+// last report it pushed, the stream those reports arrive on, the forgetting of
+// one deployment, one field of one deployment's config set, and a doctor run on
+// one of them or on all of them. The
+// console's pages sit on exactly these answers, and the relay hands the pages out
+// too — the bundle is in the same package (console-assets.ts).
 //
-// **A verb that travels to a deployment is a courier's job** (#503, #547, #550).
-// The relay stamps the signed-in address onto the edit — that is the one field
-// it authors, and it authors it because a browser must not be able to name
-// someone else as the editor — sends the patch down the rail, and hands the
-// receipt back exactly as it came. It does not read the receipt, judge it, or
-// translate its word, so a deployment newer than its relay is quoted rather than
-// summarized.
+// **Two verbs so far, and both are a courier's** (#546, #547). The relay sends
+// `doctor-run` down a socket and repeats the receipt that comes back; it answers
+// no check itself, because every check reads files, env, a clone or credentials
+// that only the deployment has (#507 §8).
+// `config-set` is carried the same way: the relay checks the body's shape, stamps
+// the signed-in address on it — a browser must not be able to name someone else
+// as the editor — and hands the receipt back exactly as it came.
+//
+// **Nothing here asks what a caller is allowed to do, because there are no
+// roles** (#505 §6). Everyone on the allowlist can do everything, so the session
+// is the whole of authorization and every route's first line is the same. The
+// two things a session cannot do are not permissions: they are facts about the
+// list — you are on it, and the environment owns that entry.
+//
+// Setting a tenant secret is the third verb (#550): the relay carries the
+// envelope sealed and stamps it with who asked, without ever being able to read it.
 //
 // **The API is matched first, and a path under it never falls through to a page.**
 // Every route below is tried before the console sees the request, and the console
 // only ever answers with a file it has. So `/api/anything-else` is still the JSON
 // 404 it always was, which is what a browser fetching JSON can branch on.
+//
+// The fleet read also carries what the relay last alerted about each link, and
+// one verb sends a test alert (#551).
 //
 // **Two reads and one stream, and the stream is not a third read.** Every event
 // on `/api/events` has a `GET` behind it that answers the same question in full,
@@ -45,17 +55,20 @@
 // out before it has a session to find it out with (#525 §4, console-protocol.ts).
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { randomUUID } from "node:crypto";
 import { CONSOLE_PROTOCOL } from "../src/contracts/console-protocol.ts";
 import type { RelayVersion } from "../src/contracts/console-protocol.ts";
+import { randomUUID } from "node:crypto";
 import {
   RELAY_HEARTBEAT_MS,
   RELAY_MESSAGES,
   RELAY_UNDELIVERED,
-  type RelayReceipt,
-  type RelayRequest,
-  type RelaySecretSet,
 } from "../src/contracts/relay-protocol.ts";
+import type {
+  RelayReceipt,
+  RelayRequest,
+  RelaySecretSet,
+} from "../src/contracts/relay-protocol.ts";
+import { RELAY_DEPLOYMENTS_PATH } from "../src/contracts/relay-protocol.ts";
 import { COMPANION_AUTH_URL, RELAY_ROUTES } from "../src/contracts/relay-routes.ts";
 import type {
   DeviceExchangeResult,
@@ -63,12 +76,16 @@ import type {
   RelayConfigSetRequest,
   RelayDeploymentDetail,
   RelayDeploymentRow,
+  RelayDoctorRunAnswer,
+  RelayDoctorRunResult,
   RelayIdentity,
+  RelayPairingToken,
+  RelayPerson,
 } from "../src/contracts/relay-routes.ts";
-import type { RelayAlertFacts } from "../src/contracts/alerts.ts";
 import type { RelayEvent } from "../src/contracts/relay-events.ts";
 import { isFingerprint } from "../src/ed25519.ts";
-import type { Allowlist } from "./allowlist.ts";
+import type { RelayAlertFacts } from "../src/contracts/alerts.ts";
+import { isSelf, normalizeEmail, type Allowlist } from "./allowlist.ts";
 import { bearerToken, type DeviceCodes, type Devices } from "./devices.ts";
 import type { ConsoleAssets } from "./console-assets.ts";
 import type { RelayEvents } from "./events.ts";
@@ -106,9 +123,9 @@ export type RelayHandlerOptions = {
     rows: (now?: Date) => RelayDeploymentRow[];
     forget: (fingerprint: string) => Link | null;
     /**
-     * Carry one `id`-bearing request to a deployment and wait for its receipt
-     * (#547, #550). Answers `undelivered` rather than queueing when there is no
-     * live socket.
+     * Send one `id`-bearing request down a deployment's socket and wait for its
+     * receipt. Answers `undelivered` for a deployment the relay is not holding,
+     * which is how a dark one is refused without a timer (#506 §8).
      */
     request: (fingerprint: string, message: RelayRequest) => Promise<RelayReceipt>;
   };
@@ -217,8 +234,17 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
     if (method === "POST" && url.pathname === RELAY_ROUTES.configSet) {
       return await setConfigField(request, response);
     }
+    if (method === "POST" && url.pathname === RELAY_ROUTES.doctorRun) {
+      return await askForDoctor(request, response);
+    }
     if (method === "GET" && url.pathname === RELAY_ROUTES.events) {
       return streamEvents(request, response);
+    }
+    if (url.pathname === RELAY_ROUTES.people && (method === "GET" || method === "POST")) {
+      return method === "GET" ? listPeople(request, response) : await addPerson(request, response);
+    }
+    if (method === "POST" && url.pathname === RELAY_ROUTES.removePerson) {
+      return await removePerson(request, response);
     }
     if (method === "POST" && url.pathname === RELAY_ROUTES.secrets) {
       return await setSecret(request, response);
@@ -489,7 +515,8 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
     }
     const minted = options.tokens.mint(who.email, clock());
     warn(`[phoebe:relay] ${who.email} minted a pairing token`);
-    json(response, 201, minted);
+    const body: RelayPairingToken = { ...minted, relayUrl: deploymentUrl(options.publicOrigin) };
+    json(response, 201, body);
   }
 
   /**
@@ -546,7 +573,7 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
    * available when delivery is one attempt with no retry.
    */
   async function sendTestAlert(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    const session = options.sessions.get(parseCookies(request.headers.cookie).get(SESSION_COOKIE));
+    const session = caller(request);
     if (session === null) {
       json(response, 401, { error: "not-signed-in" });
       return;
@@ -644,6 +671,120 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
   }
 
   /**
+   * Everyone who may sign in (#505 §6). No roles ride along, because there are
+   * none: every person here can see every deployment, mint a token, and edit
+   * this very list. What each row does carry is where it came from and whether
+   * it is the reader's own, which is what decides the two things the page
+   * cannot offer — removing yourself, and removing the environment's.
+   */
+  function listPeople(request: IncomingMessage, response: ServerResponse): void {
+    const session = caller(request);
+    if (session === null) {
+      json(response, 401, { error: "not-signed-in" });
+      return;
+    }
+    const people: RelayPerson[] = options.allowlist.entries().map((entry) => ({
+      email: entry.email,
+      addedBy: entry.addedBy,
+      addedAt: entry.addedAt,
+      fromEnvironment: entry.addedBy === "environment",
+      signedIn: entry.sub !== undefined,
+      self: isSelf(entry, session),
+    }));
+    json(response, 200, { people });
+  }
+
+  /**
+   * Add one person by address. 409 rather than a silent 200 when they are
+   * already listed: the operator typed an address expecting it to be new, and
+   * the useful answer is that it was not.
+   */
+  async function addPerson(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const session = caller(request);
+    if (session === null) {
+      json(response, 401, { error: "not-signed-in" });
+      return;
+    }
+    const email = emailIn(await readJsonBody(request));
+    if (email === null) {
+      json(response, 400, { error: "no-email" });
+      return;
+    }
+    const addition = options.allowlist.add(email, session.email, clock());
+    if (addition.kind === "bad-email") {
+      json(response, 400, { error: "bad-email" });
+      return;
+    }
+    if (addition.kind === "already-listed") {
+      json(response, 409, { error: "already-listed" });
+      return;
+    }
+    warn(`[phoebe:relay] ${session.email} added ${addition.entry.email} to the allowlist`);
+    const person: RelayPerson = {
+      email: addition.entry.email,
+      addedBy: addition.entry.addedBy,
+      addedAt: addition.entry.addedAt,
+      fromEnvironment: false,
+      signedIn: false,
+      self: false,
+    };
+    json(response, 201, { person });
+  }
+
+  /**
+   * Remove one person, and end their sessions with them (#505 §6). Removing
+   * someone who is reading the console and leaving them signed in would leave
+   * them able to add themselves back, which is not a removal.
+   *
+   * Two refusals, both 409, both about the list rather than the caller: you
+   * cannot remove yourself — there are no roles, so the last person out would
+   * lock the relay — and you cannot remove what `ALLOWED_EMAILS` holds, because
+   * that entry is not in the file and would return at the next start. The way
+   * out of either is the way in: edit the variable and restart.
+   */
+  async function removePerson(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const session = caller(request);
+    if (session === null) {
+      json(response, 401, { error: "not-signed-in" });
+      return;
+    }
+    const asked = emailIn(await readJsonBody(request));
+    if (asked === null) {
+      json(response, 400, { error: "no-email" });
+      return;
+    }
+    const email = normalizeEmail(asked);
+    if (email === null) {
+      json(response, 400, { error: "bad-email" });
+      return;
+    }
+    const listed = options.allowlist.entries().find((entry) => entry.email === email);
+    if (listed !== undefined && isSelf(listed, session)) {
+      json(response, 409, { error: "cannot-remove-yourself" });
+      return;
+    }
+
+    const removal = options.allowlist.remove(email);
+    if (removal.kind === "from-environment") {
+      json(response, 409, { error: "from-environment" });
+      return;
+    }
+    if (removal.kind === "no-such-person") {
+      json(response, 404, { error: "no-such-person" });
+      return;
+    }
+    const sessionsEnded = options.sessions.closeEveryone({
+      ...(removal.entry.sub !== undefined ? { sub: removal.entry.sub } : {}),
+      email: removal.entry.email,
+    });
+    warn(
+      `[phoebe:relay] ${session.email} removed ${removal.entry.email} from the allowlist ` +
+        `(${sessionsEnded} session(s) ended)`,
+    );
+    json(response, 200, { removed: { email: removal.entry.email }, sessionsEnded });
+  }
+
+  /**
    * Set or clear one tenant secret on a deployment (#550, decided in #504).
    *
    * **The relay's whole job here is carrying and stamping.** The envelope came
@@ -666,7 +807,7 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
    * it never learns whether what it carried was a secret at all.
    */
   async function setSecret(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    const session = options.sessions.get(parseCookies(request.headers.cookie).get(SESSION_COOKIE));
+    const session = caller(request);
     if (session === null) {
       json(response, 401, { error: "not-signed-in" });
       return;
@@ -782,7 +923,7 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
    * request.
    */
   async function setConfigField(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    const session = options.sessions.get(parseCookies(request.headers.cookie).get(SESSION_COOKIE));
+    const session = caller(request);
     if (session === null) {
       json(response, 401, { error: "not-signed-in" });
       return;
@@ -818,6 +959,96 @@ export function createRelayHandler(options: RelayHandlerOptions): RelayHandler {
         : { outcome: receipt.outcome, receipt: receipt.detail };
     json(response, 200, answer);
   }
+
+  /**
+   * **Run doctor** (#546, decided in #507 §10). A body naming a fingerprint asks
+   * that deployment; a body naming none asks every deployment this relay knows.
+   * One button either way, one `doctor-run` per deployment, and one result per
+   * deployment in the answer — so the fleet-wide press reports itself per
+   * deployment rather than as a single word for the whole fleet.
+   *
+   * **The relay runs no check.** It carries the ask and repeats what came back.
+   * Every check reads the deployment's own files, env, clone or credentials, so
+   * there is nothing here the relay could answer even if it wanted to (#507 §8).
+   *
+   * The asks go out together rather than one after another: fifty deployments
+   * answering in series would make the last operator's wait the sum of forty-nine
+   * round trips. Nothing is refused for being slow — a deployment writes its
+   * receipt the moment the ask lands, and one that has stopped answering
+   * altogether is terminated by its own heartbeat inside the dark window, which
+   * settles the request `undelivered`.
+   */
+  async function askForDoctor(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const session = caller(request);
+    if (session === null) {
+      json(response, 401, { error: "not-signed-in" });
+      return;
+    }
+    const asked = (await readJsonBody(request)) as { fingerprint?: unknown };
+    if (asked.fingerprint !== undefined && typeof asked.fingerprint !== "string") {
+      json(response, 400, { error: "no-fingerprint" });
+      return;
+    }
+    const fleet = options.fleet();
+    const rows = fleet.rows(clock());
+    const targets =
+      asked.fingerprint === undefined
+        ? rows
+        : rows.filter((row) => row.fingerprint === asked.fingerprint);
+    // A fleet-wide ask with nothing paired is an empty list; one deployment that
+    // is not there is a 404, the same as every other read of a named deployment.
+    if (asked.fingerprint !== undefined && targets.length === 0) {
+      json(response, 404, { error: "no-such-deployment" });
+      return;
+    }
+    warn(
+      `[phoebe:relay] ${session.email} asked ${
+        asked.fingerprint === undefined ? `the fleet (${targets.length})` : asked.fingerprint
+      } to run doctor`,
+    );
+    const results = await Promise.all(
+      targets.map(async (row): Promise<RelayDoctorRunResult> => {
+        const message: RelayRequest = {
+          type: RELAY_MESSAGES.doctorRun,
+          id: randomUUID(),
+          by: session.email,
+        };
+        const receipt = await fleet.request(row.fingerprint, message);
+        return {
+          fingerprint: row.fingerprint,
+          name: row.name,
+          state: row.state,
+          outcome: receipt.outcome,
+          ...(receipt.detail !== undefined ? { detail: receipt.detail } : {}),
+        };
+      }),
+    );
+    const answer: RelayDoctorRunAnswer = { results };
+    json(response, 200, answer);
+  }
+}
+
+/**
+ * The `email` a People request carried, or null when it carried none. Whether
+ * the string is an address is `normalizeEmail`'s question, asked after this one:
+ * a body with no field at all and a body with a nonsense address are different
+ * mistakes and get different words.
+ */
+function emailIn(body: unknown): string | null {
+  const email = (body as { email?: unknown }).email;
+  return typeof email === "string" && email.trim() !== "" ? email : null;
+}
+
+/**
+ * What `relay.url` has to say to reach this relay: the deployments path on this
+ * origin, as a WebSocket URL. The relay derives it from `RELAY_HOST` rather than
+ * letting the console guess from its own location, because the companion has no
+ * location to guess from and an operator pasting the wrong one pairs nothing.
+ */
+function deploymentUrl(publicOrigin: string): string {
+  const url = new URL(RELAY_DEPLOYMENTS_PATH, publicOrigin);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  return url.href;
 }
 
 /**
@@ -852,9 +1083,10 @@ export function deploymentIn(pathname: string): string | null {
 }
 
 /**
- * One request body as JSON, or `{}` for anything that is not. Capped, because
- * this endpoint is behind a session but the body arrives before the relay has
- * decided anything and an unbounded read is an unbounded allocation.
+ * One request body as a JSON object, or `{}` for anything that is not — `null`
+ * and a bare array included, so every caller can read a field off what comes
+ * back. Capped, because the body arrives before the relay has decided anything
+ * and an unbounded read is an unbounded allocation.
  */
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {
   const limit = 64 * 1024;
@@ -867,7 +1099,8 @@ async function readJsonBody(request: IncomingMessage): Promise<unknown> {
     chunks.push(buffer);
   }
   try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+    const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed : {};
   } catch {
     return {};
   }

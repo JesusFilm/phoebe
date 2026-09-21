@@ -31,6 +31,7 @@ import type {
   EditLedgerEntry,
   FleetCell,
   ReconcileState,
+  RelayStoredReport,
   StoredReport,
   TenantFacts,
 } from "phoebe-agent/contracts";

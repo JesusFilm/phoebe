@@ -981,12 +981,12 @@ function runFleet(opts: {
   deployment: DeploymentState;
   /** The deployment's doctor runs (#534), triggered from the same two moments. */
   doctor: DoctorRunner;
-  /** The config-edit pen (#536): pointed at each new checkout, nudged on a write. */
-  editor: ConfigEditor;
   /** The secrets inventory (#550), retaken when the tenant set moves. */
   secrets: SecretInventoryRunner;
   /** The tenants discovery is holding, for the inventory's own list. */
   heldTenants: () => readonly HeldTenant[];
+  /** The config-edit pen (#536): pointed at each new checkout, nudged on a write. */
+  editor: ConfigEditor;
   hostKnobs: DeploymentHostKnobs;
 }): Promise<EngineExit> {
   const { broker, deployment, doctor } = opts;
@@ -1903,16 +1903,30 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       ),
   });
   doctor.start();
+  // Dialled here rather than beside the model it reports into: the link carries
+  // the console's asks as well as the report, and "Run doctor" has to reach the
+  // runner built above (#546). Nothing is lost by the wait — a push before the
+  // first connection is a no-op, and every connection opens with the whole
+  // report anyway.
+  relay.start(deployment, {
+    // The pen goes up the rail with the link (#503, #547): a console's edit is
+    // the same call a shell `phoebe config set` makes, arriving from a message
+    // instead of from argv, so there is one writer and one reconcile path.
+    configSet: (edit) => editor.apply(edit),
+    runDoctor: (by) => {
+      const ask = doctor.request("request", by);
+      // The report is where what doctor found goes (#507 §7). Nothing here waits
+      // for it: the receipt has already said which run the asker is watching.
+      void ask.result.catch(() => {});
+      return { outcome: ask.outcome, ...(ask.detail !== undefined ? { detail: ask.detail } : {}) };
+    },
+  });
 
   // Dialled last, after everything an inbound request reaches: the secrets
   // handler the link was built with runs against `secrets` and `doctor`, and a
   // socket that opened before those existed would be a socket that could ask for
   // one of them (#550).
-  //
-  // The pen goes up the rail with the link (#503, #547): a console's edit is the
-  // same call a shell `phoebe config set` makes, arriving from a message instead
-  // of from argv, so there is one writer and one reconcile path.
-  relay.start(deployment, { verbs: { configSet: (edit) => editor.apply(edit) } });
+  relay.start(deployment);
 
   if (workspace !== null) {
     // GitHub App mode (#209): if the supervisor holds App credentials, fetch

@@ -157,10 +157,8 @@ a {
 }
 
 .rail-heading {
+  display: block;
   margin: 0;
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
   padding: 4px 14px 8px;
   font-size: 11px;
   font-weight: 600;
@@ -261,9 +259,10 @@ a {
   border: 1px dashed var(--muted);
 }
 
-.rail-heading a {
-  color: inherit;
-  text-decoration: none;
+.rail-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
 }
 
 .rail-add {
@@ -321,7 +320,7 @@ a {
   border-bottom: 1px solid var(--line);
 }
 
-button.tab {
+.tab {
   border: 0;
   border-bottom: 2px solid transparent;
   border-radius: 0;
@@ -330,12 +329,12 @@ button.tab {
   padding: 6px 10px;
 }
 
-button.tab.current {
+.tab.current {
   color: var(--fg);
   border-bottom-color: var(--accent);
 }
 
-button.tab:disabled {
+.tab:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
@@ -508,7 +507,7 @@ button.quiet {
   border-bottom: 1px solid var(--line);
 }
 
-a.tab {
+.tab {
   padding: 5px 12px;
   border: 1px solid transparent;
   border-bottom: none;
@@ -518,7 +517,7 @@ a.tab {
   text-decoration: none;
 }
 
-a.tab.current {
+.tab.current {
   border-color: var(--line);
   background: var(--panel);
   color: var(--fg);
@@ -665,6 +664,21 @@ table.rows tr.attention td {
   margin: 40px auto;
 }
 
+/* ── run doctor ────────────────────────────────────────────────────────── */
+
+.run-doctor {
+  margin: 0 0 14px;
+}
+
+.run-doctor button:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.run-doctor p {
+  margin: 6px 0 0;
+}
+
 /* ── the config tab ────────────────────────────────────────────────────── */
 
 .filters {
@@ -777,25 +791,12 @@ details.why > summary::marker {
 
 /* A receipt, under the row it answers. Bordered on the left like a warning,
  * because it is the same kind of thing: a sentence about this row that outlives
- * the moment it appeared in. The colour is the outcome's. */
+ * the moment it appeared in. */
 .receipt {
-  border-left: 3px solid var(--line);
+  border-left: 3px solid var(--accent);
   background: var(--panel);
-  margin: 10px 0;
+  margin: 6px 0;
   padding: 6px 10px;
-}
-
-.receipt.written {
-  border-left-color: var(--ok);
-}
-
-.receipt.refused,
-.receipt.undelivered {
-  border-left-color: var(--fail);
-}
-
-.receipt code {
-  word-break: break-all;
 }
 
 /* A command to copy. Pre-wrapped, so a long `--config` path wraps rather than
@@ -809,6 +810,124 @@ details.why > summary::marker {
   background: var(--bg);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+/* ── the page tabs ─────────────────────────────────────────────────────── */
+
+.pages {
+  display: flex;
+  gap: 14px;
+}
+
+.pages a {
+  text-decoration: none;
+  color: var(--muted);
+  padding-bottom: 2px;
+  border-bottom: 2px solid transparent;
+}
+
+.pages a.current {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+}
+
+/* ── the People page ───────────────────────────────────────────────────── */
+
+.add-person {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 0 6px;
+}
+
+.add-person input {
+  font: inherit;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: inherit;
+  min-width: 260px;
+}
+
+.trouble {
+  color: var(--fail);
+}
+
+.people {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  max-width: 720px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.person {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.person:last-child {
+  border-bottom: none;
+}
+
+.person .name {
+  font-weight: 600;
+}
+
+.person .facts:last-of-type {
+  margin-left: auto;
+}
+
+.person button {
+  margin-left: auto;
+}
+
+/* ── minting a pairing token ───────────────────────────────────────────── */
+
+.pairing {
+  margin-top: 26px;
+  max-width: 720px;
+}
+
+.pairing h2 {
+  font-size: 15px;
+  margin: 0 0 4px;
+}
+
+.pairing .legend {
+  margin-bottom: 8px;
+}
+
+.token {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--warn);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.token p {
+  margin: 0 0 8px;
+}
+
+.token ol {
+  margin: 0 0 8px;
+  padding-left: 20px;
+}
+
+.token-value {
+  /* The one string on the page that has to survive a double-click. */
+  user-select: all;
+  word-break: break-all;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--chip);
 }
 
 /* The secrets tab's one form, and the receipt it leaves behind (#550). */
@@ -831,6 +950,59 @@ details.why > summary::marker {
 .secret-actions {
   display: flex;
   gap: 8px;
+}
+
+.receipt {
+  border-left: 3px solid var(--line);
+  margin: 10px 0;
+}
+
+.receipt.written {
+  border-left-color: var(--ok);
+}
+
+.receipt.refused,
+.receipt.undelivered {
+  border-left-color: var(--fail);
+}
+
+.receipt code {
+  word-break: break-all;
+}
+
+/* ── the rail's sign-in control (#554) ─────────────────────────────────── */
+
+.rail-signin form {
+  display: grid;
+  gap: 4px;
+  padding: 2px 14px 6px;
+}
+
+.rail-signin label {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.rail-signin input {
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: inherit;
+  min-width: 0;
+}
+
+.rail-note {
+  margin: 0;
+  padding: 0 14px 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.rail-note.trouble {
+  color: var(--fail);
 }
 
 /* ── the deployment tabs ───────────────────────────────────────────────── */

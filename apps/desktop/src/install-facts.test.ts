@@ -68,6 +68,8 @@ describe("what Compose says", () => {
     expect(facts).toEqual({
       ...STORED,
       name: "youtube-studio",
+      deploymentName: "youtube-studio",
+      relayUrl: null,
       state: "running",
       containerVersion: null,
     });
@@ -167,6 +169,8 @@ describe("what the folder says with no container", () => {
     name: "youtube-studio",
     addedAt: STORED.addedAt,
     state: "running" as const,
+    deploymentName: "youtube-studio",
+    relayUrl: null,
     containerVersion: null,
   };
 
@@ -178,7 +182,9 @@ describe("what the folder says with no container", () => {
 
     expect(facts.configPath).toBe(path.join(DIR, "phoebe.config.ts"));
     expect(facts.configText).toBe("export default defineConfig({})\n");
-    expect(facts.configFingerprint).toMatch(/^[0-9a-f]{16}$/);
+    // The writer's own format, so the fingerprint a window was shown is the
+    // one `config set` checks itself against (#503, #527 §11).
+    expect(facts.configFingerprint).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(facts.envPresent).toBe(true);
   });
 
@@ -218,6 +224,84 @@ describe("what the folder says with no container", () => {
     expect(directoryFacts({ ...RUNNING, state: "stopped" }, { exists }).bootstrapperRunning).toBe(
       false,
     );
+  });
+});
+
+describe("what the root config says", () => {
+  const CONFIG = path.join(DIR, "phoebe.config.ts");
+
+  /** A folder whose config holds `extra` inside the config object. */
+  function withConfig(extra: string): { read: (file: string) => string } {
+    return {
+      read: (file) => {
+        if (file !== CONFIG) throw new Error(`nothing reads ${file}`);
+        return `const config = {\n  repoSlug: "jesusfilm/youtube-studio",${extra}\n};\nexport default config;\n`;
+      },
+    };
+  }
+
+  test("a config with no relay block dials nothing", async () => {
+    const facts = await installFacts(STORED, {
+      exists: INITIALISED,
+      dockerPresent: false,
+      ...withConfig(""),
+    });
+
+    expect(facts.relayUrl).toBeNull();
+  });
+
+  test("the relay block's url is the relay this install dials", async () => {
+    const facts = await installFacts(STORED, {
+      exists: INITIALISED,
+      dockerPresent: false,
+      ...withConfig(`\n  relay: { url: "wss://relay.example.test/deployments" },`),
+    });
+
+    expect(facts.relayUrl).toBe("wss://relay.example.test/deployments");
+  });
+
+  test("with no relay name, the deployment answers to its repoSlug", async () => {
+    const facts = await installFacts(STORED, {
+      exists: INITIALISED,
+      dockerPresent: false,
+      ...withConfig(""),
+    });
+
+    expect(facts.deploymentName).toBe("jesusfilm/youtube-studio");
+    // Beside the folder's own name, not instead of it — the rail draws one and
+    // the relay's rows are matched on the other.
+    expect(facts.name).toBe("youtube-studio");
+  });
+
+  test("`relay.name` wins, because that is what the deployment tells the relay", async () => {
+    const facts = await installFacts(STORED, {
+      exists: INITIALISED,
+      dockerPresent: false,
+      ...withConfig(`\n  relay: { url: "wss://r.test/deployments", name: "the-fleet" },`),
+    });
+
+    expect(facts.deploymentName).toBe("the-fleet");
+  });
+
+  test("a config that will not parse is read as a config with nothing in it", async () => {
+    const facts = await installFacts(STORED, {
+      exists: INITIALISED,
+      dockerPresent: false,
+      read: () => "const config = {",
+    });
+
+    expect(facts.relayUrl).toBeNull();
+    expect(facts.deploymentName).toBe("youtube-studio");
+    // And the install itself is still readable: a broken config is not a reason
+    // for the rail to lose the entry.
+    expect(facts.state).toBe("stopped");
+  });
+
+  test("a folder with no config yet answers with its own name", async () => {
+    const facts = await installFacts(STORED, { exists: folder() });
+
+    expect(facts.deploymentName).toBe("youtube-studio");
+    expect(facts.relayUrl).toBeNull();
   });
 });
 

@@ -20,6 +20,7 @@ import {
   ago,
   cell,
   check,
+  client,
   child,
   configReport,
   doctor,
@@ -29,7 +30,6 @@ import {
   row,
   snapshot,
   stored,
-  stubClient,
   tenant,
 } from "./test-fixture.ts";
 
@@ -110,7 +110,7 @@ const BUSY_FACTS = rowFacts(row({ name: "jesusfilm-workspace" }), stored(BUSY));
 
 function render(tab: DeploymentTab, facts = BUSY_FACTS): string {
   return renderToStaticMarkup(
-    <DeploymentPage facts={facts} tab={tab} now={NOW} client={stubClient()} />,
+    <DeploymentPage facts={facts} tab={tab} client={client()} now={NOW} />,
   );
 }
 
@@ -124,8 +124,8 @@ function renderEditable(facts = BUSY_FACTS): string {
     <DeploymentPage
       facts={facts}
       tab="config"
+      client={client()}
       now={NOW}
-      client={stubClient()}
       onEdit={() => Promise.reject(new Error("no test presses this"))}
     />,
   );
@@ -140,10 +140,12 @@ describe("the tabs", () => {
   test("names the tabs the console answers, and links each one", () => {
     // Overview is the bare deployment URL, so one deployment has one address.
     expect(overview).toContain(`href="#/d/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA">overview<`);
-    for (const tab of ["pipelines", "doctor", "secrets", "config"]) {
+    for (const tab of ["pipelines", "doctor", "config", "secrets"]) {
       expect(overview, tab).toContain(`href="#/d/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/${tab}"`);
     }
   });
+
+  test("does not offer a tab nothing answers yet", () => {});
 
   test("marks the current tab for a screen reader, not only with a colour", () => {
     expect(doctorTab).toContain('aria-current="page"');
@@ -253,6 +255,24 @@ describe("the doctor tab", () => {
     expect(markup).toContain("doctor never run");
     expect(markup).toContain("never produced a doctor report");
     expect(markup).not.toContain("chip check");
+  });
+
+  test("offers the run, because a connected deployment can be asked (#546)", () => {
+    expect(doctorTab).toContain('aria-label="Run doctor"');
+    expect(doctorTab).toContain(">Run doctor<");
+    expect(doctorTab).not.toContain("disabled");
+  });
+
+  test("is disabled with the reason when the relay is not holding the connection", () => {
+    const gone = rowFacts(
+      row({ state: "dark", connectedSince: null, lastSeen: ago(2 * 86_400) }),
+      stored(report()),
+    );
+    const markup = render("doctor", gone);
+
+    expect(markup).toContain("disabled");
+    expect(markup).toContain("has been dark");
+    expect(markup).toContain("would come back undelivered");
   });
 });
 
@@ -463,6 +483,13 @@ describe("a deployment that has never connected", () => {
       expect(markup, tab).toContain("has never connected");
       expect(markup, tab).toContain("#/d/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
     }
+  });
+
+  test("doctor keeps its button, disabled: there is nothing to ask until it boots", () => {
+    const markup = render("doctor", unseen);
+    expect(markup).toContain(">Run doctor<");
+    expect(markup).toContain("disabled");
+    expect(markup).toContain("nothing to ask until it boots");
   });
 
   test("a report this console cannot read is its own kind of nothing", () => {

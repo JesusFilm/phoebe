@@ -177,6 +177,30 @@ describe("a companion signing in", () => {
     expect(fleet.status).toBe(200);
   });
 
+  test("and the doors that write: no route behind the sign-in reads the cookie alone", async () => {
+    // Each of these landed beside the device flow rather than on top of it. A
+    // route that asked the cookie instead of `caller` would answer a signed-in
+    // companion 401, which the companion reads as "signed out".
+    const { token } = await signIn();
+    const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+    const post = (path: string, body: unknown = {}) =>
+      fetch(`${origin}${path}`, { method: "POST", headers, body: JSON.stringify(body) });
+
+    const answers = {
+      people: await fetch(`${origin}${RELAY_ROUTES.people}`, { headers }),
+      addPerson: await post(RELAY_ROUTES.people),
+      removePerson: await post(RELAY_ROUTES.removePerson),
+      configSet: await post(RELAY_ROUTES.configSet),
+      doctorRun: await post(RELAY_ROUTES.doctorRun),
+      secrets: await post(RELAY_ROUTES.secrets),
+      testAlert: await post(RELAY_ROUTES.testAlert),
+    };
+
+    for (const [route, response] of Object.entries(answers)) {
+      expect(response.status, route).not.toBe(401);
+    }
+  });
+
   test("a made-up bearer is 401, not a session", async () => {
     const response = await fetch(`${origin}${RELAY_ROUTES.me}`, {
       headers: { authorization: "Bearer guessed" },

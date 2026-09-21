@@ -22,6 +22,11 @@
 // drained onto a different engine, and a report of a deployment halfway between
 // two engines describes neither — and runs once when the fleet is back up.
 //
+// **Every ask is answered twice** (#546). Once within the moment, with which run
+// it belongs to — `started`, `joined`, `refused` — which is what a console
+// receipt carries back to the operator standing at the button. And once when the
+// run ends, in the report, which is where what doctor found has always lived.
+//
 // **The clocks.** Doctor holds itself to five minutes internally
 // (src/doctor-deadline.ts); this kills the child thirty seconds later, which
 // only bites when the child is too wedged to honour its own deadline. On a kill
@@ -36,6 +41,7 @@ import type {
   DoctorSection,
   DoctorTrigger,
 } from "../src/contracts/doctor.ts";
+import { RELAY_DOCTOR_RUN } from "../src/contracts/relay-protocol.ts";
 import { DOCTOR_DEADLINE_MS } from "../src/doctor-deadline.ts";
 import { DOCTOR_LEASE_ENV, encodeDoctorLeases, type DoctorLeases } from "../src/doctor-lease.ts";
 
@@ -63,14 +69,33 @@ export type DoctorRunResult =
   | { outcome: "ok"; report: DoctorReport }
   | { outcome: DoctorFailure; detail: string };
 
+/**
+ * What became of one ask, answered the moment it lands (#546). Two halves,
+ * because a console and the report want different things: `outcome` is the word
+ * a receipt carries back within the moment, and `result` is the run itself,
+ * which may be five minutes away.
+ *
+ * `started` and `joined` are the whole of it on a running deployment. `refused`
+ * is the one that is not about doctor at all — a container on its way down,
+ * where the honest answer is that nothing will run.
+ */
+export type DoctorAsk = {
+  outcome: (typeof RELAY_DOCTOR_RUN)[keyof typeof RELAY_DOCTOR_RUN];
+  /** Why, for `refused`. Absent otherwise: a run that began explains itself. */
+  detail?: string;
+  /** The run this ask belongs to, whether it began it or joined it. */
+  result: Promise<DoctorRunResult>;
+};
+
 export type DoctorRunner = {
   /**
    * Ask for a run. A run already in flight is joined rather than doubled, and a
-   * reconcile parks the ask until the fleet is back up — so the returned
-   * promise is "the result of the run your trigger belongs to", which is what
-   * a console receipt needs it to be.
+   * reconcile parks the ask until the fleet is back up — so `result` is "the
+   * result of the run your trigger belongs to", which is what the report needs
+   * it to be, and `outcome` is which of those two happened, which is what a
+   * console receipt needs it to be.
    */
-  request: (trigger: DoctorTrigger, by?: string) => Promise<DoctorRunResult>;
+  request: (trigger: DoctorTrigger, by?: string) => DoctorAsk;
   /** The engine axis is moving: park triggers until the fleet comes back. */
   noteReconcile: () => void;
   /**
@@ -215,13 +240,24 @@ export function createDoctorRunner(deps: DoctorRunnerDeps): DoctorRunner {
     return promise;
   };
 
-  const request = (nextTrigger: DoctorTrigger, nextBy?: string): Promise<DoctorRunResult> => {
+  const request = (nextTrigger: DoctorTrigger, nextBy?: string): DoctorAsk => {
     if (stopped) {
-      return Promise.resolve({ outcome: "crashed", detail: "the deployment is shutting down" });
+      const detail = "the deployment is shutting down";
+      return {
+        outcome: RELAY_DOCTOR_RUN.refused,
+        detail,
+        result: Promise.resolve({ outcome: "crashed", detail }),
+      };
     }
-    if (inFlight !== null) return inFlight;
-    if (reconciling) return park(nextTrigger, nextBy);
-    return beginRun(nextTrigger, nextBy);
+    // A run in flight, and a run a reconcile already parked, are the same answer
+    // to the asker: somebody else's trigger owns the run, and this one rides it.
+    if (inFlight !== null) return { outcome: RELAY_DOCTOR_RUN.joined, result: inFlight };
+    // A reconcile parks a trigger of its own the moment it begins, so an ask
+    // during one always has a run to join: the single one the relaunch releases.
+    if (reconciling) {
+      return { outcome: RELAY_DOCTOR_RUN.joined, result: park(nextTrigger, nextBy) };
+    }
+    return { outcome: RELAY_DOCTOR_RUN.started, result: beginRun(nextTrigger, nextBy) };
   };
 
   return {
@@ -246,7 +282,7 @@ export function createDoctorRunner(deps: DoctorRunnerDeps): DoctorRunner {
         waiting.release(beginRun(waiting.trigger, waiting.by));
         return;
       }
-      if (first) void request("boot").catch(() => {});
+      if (first) void request("boot").result.catch(() => {});
     },
 
     start() {

@@ -35,8 +35,8 @@ const PHOEBE_SERVICE = "phoebe";
  * What main execs to get a report. `-T` because there is no TTY behind a window
  * and Compose allocating one would wrap the JSON in control characters.
  *
- * One constant rather than an inline array: `phoebe status --json` is the verb
- * #533 is landing, and when its flags move this is the line that moves with it.
+ * One constant rather than an inline array: `phoebe status --json` is #533's
+ * verb, and if its flags move this is the line that moves with it.
  */
 export const STATUS_ARGV: readonly string[] = [
   "exec",

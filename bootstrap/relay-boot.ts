@@ -30,10 +30,12 @@
 
 import { readRelayField, type RelayField } from "../src/config-schema.ts";
 import type { ConfigEdit, EditReceipt } from "../src/contracts/config-edit.ts";
+import { RELAY_TOKEN_ENV } from "../src/contracts/relay-protocol.ts";
 import type { DeploymentArm, DeploymentIdentity } from "../src/contracts/deployment.ts";
 import type { DeploymentState } from "./deployment-state.ts";
 import {
   connectRelay,
+  type DoctorRunAnswer,
   type InboundRequest,
   type RelayLink,
   type OpenRelaySocket,
@@ -48,12 +50,18 @@ import {
   type DeploymentKey,
 } from "./relay-key.ts";
 
-/** The env var the operator pastes a freshly minted pairing token into. */
-export const RELAY_TOKEN_ENV = "PHOEBE_RELAY_TOKEN";
+/**
+ * The env var a freshly minted pairing token travels in — pasted by an operator,
+ * or written by the companion when it pairs an install. Defined in contracts,
+ * because the writer is a different codebase from this reader (#558), and
+ * re-exported here so everything that reads it goes on importing it from the
+ * module that spends it.
+ */
+export { RELAY_TOKEN_ENV } from "../src/contracts/relay-protocol.ts";
 
 /**
  * What a console may ask this deployment to *do*, as opposed to read (#503,
- * #547). One record rather than a parameter per verb: `secret-set` (#550)
+ * #546, #547). One record rather than a parameter per verb: `secret-set` (#550)
  * lands beside `configSet` here, and the link is handed the whole of it.
  *
  * Each verb is optional, and an absent one is refused in its own words by the
@@ -61,6 +69,8 @@ export const RELAY_TOKEN_ENV = "PHOEBE_RELAY_TOKEN";
  * console holding a request open is answered either way.
  */
 export type RelayVerbs = {
+  /** Run doctor because `by` pressed the button. Answered with the receipt's word. */
+  runDoctor?: (by: string) => DoctorRunAnswer;
   /** Apply one field patch to the root config, and answer with the receipt. */
   configSet?: (edit: ConfigEdit) => Promise<EditReceipt>;
 };
@@ -89,21 +99,19 @@ export type PrepareRelayOptions = {
   open?: OpenRelaySocket;
 };
 
-/** The verbs, handed over at {@link PreparedRelay.start} rather than at prepare. */
-export type StartRelayOptions = { verbs?: RelayVerbs };
-
 export type PreparedRelay = {
   /** The report's identity section, read afresh at every publish. */
   identity: () => DeploymentIdentity;
   /**
    * Dial, reporting into the live model. A no-op with no `relay.url`.
    *
-   * The verbs arrive here and not at prepare time because they are the
-   * supervisor's, and the supervisor is built after the report is: the pen is
-   * pointed at the running engine, and the report's identity has to exist
-   * before either.
+   * `verbs` is what a console may ask this deployment to do (#546, #547). It is
+   * a second argument rather than a `prepareRelay` option because the verbs are
+   * the supervisor's, and the supervisor is built after the report is: the pen
+   * is pointed at the running engine, the doctor runner reports into the model,
+   * and the report's identity has to exist before either.
    */
-  start: (deployment: DeploymentState, options?: StartRelayOptions) => void;
+  start: (deployment: DeploymentState, verbs?: RelayVerbs) => void;
   /**
    * The report moved: push it up the link (#542). A no-op before {@link start},
    * with no relay configured, or while the socket is down — the next connection
@@ -158,7 +166,7 @@ export function prepareRelay(options: PrepareRelayOptions): PreparedRelay {
       ...(relay !== undefined ? { relayUrl: relay.url } : {}),
     }),
 
-    start(deployment, started = {}) {
+    start(deployment, verbs) {
       if (relay === undefined) return;
       const token = options.env[RELAY_TOKEN_ENV];
       log(`[phoebe] boot: relay ${relay.url} as ${name}.`);
@@ -180,10 +188,11 @@ export function prepareRelay(options: PrepareRelayOptions): PreparedRelay {
         },
         onStatus: (status) => deployment.noteRelay(status),
         ...(options.onRequest !== undefined ? { onRequest: options.onRequest } : {}),
+        ...(verbs?.runDoctor !== undefined ? { onDoctorRun: verbs.runDoctor } : {}),
         // Pulled at the moment of every send rather than handed over, so a link
         // that reconnects after five minutes sends what the model holds then.
         report: () => deployment.latest(),
-        ...(started.verbs?.configSet !== undefined ? { onConfigSet: started.verbs.configSet } : {}),
+        ...(verbs?.configSet !== undefined ? { onConfigSet: verbs.configSet } : {}),
         log,
         warn,
         ...(options.open !== undefined ? { open: options.open } : {}),

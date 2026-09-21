@@ -69,7 +69,6 @@ export type ChildLiveness = {
   state: ChildState;
   /** When it entered `state`: running since, draining since, exited at. */
   since: string;
-
   /**
    * How many times this pipeline's child has died on its own since the container
    * booted. Counted at the death, so a child inside its respawn backoff already
@@ -79,7 +78,6 @@ export type ChildLiveness = {
   /** Its last self-death was fast enough to count as a crash-loop tick (#401). */
   crashLooping: boolean;
   lastExit: ChildExit | null;
-
   /**
    * When this child last reported a completed loop pass over IPC — the clock the
    * `no-pass` wedged clause reads.
@@ -130,7 +128,6 @@ export type BootstrapperReport = {
   engineRef: string | null;
   /** The commit actually running. Null for a local mount — there is nothing to name. */
   engineSha: string | null;
-
   /**
    * The commit this launch is running away from, when it is a crash-loop
    * fallback: the deployment is deliberately behind its own config, and that is
@@ -316,14 +313,12 @@ export type DeploymentReport = {
   bootstrapper: BootstrapperReport;
   relay: RelayReport;
   fleet: FleetReport;
-
   /**
    * What the last `phoebe doctor` run found, with its age (#507 §4). The
    * bootstrapper spawns those runs; a manual `phoebe doctor` prints and touches
    * nothing here.
    */
   doctor: DoctorSection;
-
   /**
    * Config edits applied here and not yet in a commit (#503). Absent until the
    * writer that keeps the ledger lands (#547); an addition, so it does not move
@@ -331,7 +326,6 @@ export type DeploymentReport = {
    * rather than as "none".
    */
   edits?: EditLedgerEntry[];
-
   /**
    * Every tenant's effective config, as the running engine computed it (#502,
    * #535). Absent until the bootstrapper that embeds the engine's answer lands
@@ -341,7 +335,6 @@ export type DeploymentReport = {
    * deployment has none".
    */
   config?: ConfigReport;
-
   /**
    * Which secrets each tenant has and where they come from (#504, #550) —
    * presence and provenance, never a value. Absent on a report from a

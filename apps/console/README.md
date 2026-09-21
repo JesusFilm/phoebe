@@ -32,6 +32,13 @@ relay call: [`src/local-install.ts`](src/local-install.ts) holds the readings an
 the reducers, and [`src/install-page.tsx`](src/install-page.tsx) renders them. A
 browser has no local arm at all and the group is not drawn there.
 
+Pages are hash routes, picked in [`src/app.tsx`](src/app.tsx): `#/fleet` is the
+rail and the grid, `#/people` is the allowlist and the pairing panel
+([#548](https://github.com/JesusFilm/phoebe/issues/548)). The hash and not the
+path, because the relay serves this build and nothing else — a real path would
+need a catch-all there, and a catch-all is what costs the relay its ability to
+say a route does not exist.
+
 A local install's other five tabs — overview, pipelines, doctor, secrets, config —
 are the ones every deployment has, and they are fed without a relay: main's local
 read loop execs `status --json` in the container and emits the same `report` event
@@ -70,6 +77,15 @@ Pages are hash routes ([`src/route.ts`](src/route.ts)), because the relay serves
 no single-page fallback and the companion loads the bundle off a custom scheme
 where there is no server to ask. Links are plain `href`s into the hash; the
 browser does the navigating and the history, and the app only listens.
+
+The one thing the pages ask the relay to _do_ is a doctor run
+([#546](https://github.com/JesusFilm/phoebe/issues/546)). The words around it —
+why a deployment cannot be asked, what each receipt reads as — are pure and live
+in [`src/doctor-run.ts`](src/doctor-run.ts); [`src/run-doctor.tsx`](src/run-doctor.tsx)
+is the button itself, the same one on a deployment's doctor tab and on the fleet
+page. A press is answered within the moment with which run it belongs to, and
+what that run found arrives afterwards as the next report on the stream — so
+nothing here waits five minutes for a button.
 
 One page writes: the secrets tab ([`src/secrets-tab.tsx`](src/secrets-tab.tsx)).
 It seals a value in the browser to the deployment's published box key and sends

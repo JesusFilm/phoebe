@@ -4,8 +4,12 @@
 //
 // Not reachable from main.tsx, so nothing here reaches the bundle.
 
-import { DEPLOYMENT_SCHEMA, EFFECTIVE_CONFIG_VERSION, RELAY_EVENTS } from "phoebe-agent/contracts";
-import type { RelayClient, SecretReceipt, SecretRequest } from "./relay-client.ts";
+import {
+  CONSOLE_PROTOCOL,
+  DEPLOYMENT_SCHEMA,
+  EFFECTIVE_CONFIG_VERSION,
+  RELAY_EVENTS,
+} from "phoebe-agent/contracts";
 import type {
   ChildLiveness,
   CompanionEnvironment,
@@ -23,6 +27,7 @@ import type {
   RelayArmState,
   RelayDeploymentRow,
   RelayEvent,
+  RelayPerson,
   RelayStoredReport,
   SecretListing,
   SecretsSection,
@@ -33,6 +38,7 @@ import type {
   VerbRun,
   VerbRunRequest,
 } from "phoebe-agent/contracts";
+import type { RelayClient, SecretReceipt, SecretRequest } from "./relay-client.ts";
 
 export const NOW = new Date("2026-09-18T12:00:00.000Z");
 
@@ -301,39 +307,40 @@ export function stored(
   };
 }
 
-/**
- * A relay client for a component test: every method throws unless the test
- * overrode it, so a page that reached the relay without being asked to fails
- * loudly rather than silently resolving.
- */
-export function stubClient(overrides: Partial<RelayClient> = {}): RelayClient {
-  const unasked = (what: string) => () =>
-    Promise.reject(new Error(`this test never calls ${what}`));
+export function person(overrides: Partial<RelayPerson> = {}): RelayPerson {
   return {
-    version: unasked("version"),
-    me: unasked("me"),
-    signIn: unasked("signIn"),
-    watchSession: () => () => {},
-    signOut: unasked("signOut"),
-    deployments: unasked("deployments"),
-    deployment: unasked("deployment"),
-    setConfigField: unasked("setConfigField"),
-    setSecret: unasked("setSecret"),
-    events: () => () => {},
+    email: "ada@example.test",
+    addedBy: "grace@example.test",
+    addedAt: ago(86_400),
+    fromEnvironment: false,
+    signedIn: true,
+    self: false,
     ...overrides,
   };
 }
 
-// ── the companion's side ──────────────────────────────────────────────────
-
-/** One local install, with only the fields a test cares about spelled out. */
-export function install(overrides: Partial<LocalInstall> = {}): LocalInstall {
+/**
+ * A relay client that answers nothing. Every page now takes the seam, and a
+ * render test that only wants markup should not have to invent five methods to
+ * get it — `overrides` is where a test that does care puts the one it reads.
+ */
+export function client(overrides: Partial<RelayClient> = {}): RelayClient {
   return {
-    dir: "/repos/youtube-studio",
-    name: "youtube-studio",
-    addedAt: ago(3600),
-    state: "running",
-    containerVersion: "0.13.0",
+    version: () => Promise.resolve({ version: "0.13.0", console: CONSOLE_PROTOCOL }),
+    me: () => Promise.resolve({ sub: "s", email: "ada@example.test" }),
+    signIn: () => Promise.resolve({ kind: "navigate", href: "/auth/google/start" }),
+    watchSession: () => () => {},
+    signOut: () => Promise.resolve(),
+    deployments: () => Promise.resolve([]),
+    deployment: () => Promise.reject(new Error("no such deployment")),
+    runDoctor: () => Promise.resolve([]),
+    setConfigField: () => Promise.resolve({ outcome: "written" }),
+    setSecret: () => Promise.reject(new Error("nothing stubbed setSecret")),
+    events: () => () => {},
+    people: () => Promise.resolve([]),
+    addPerson: () => Promise.reject(new Error("nothing stubbed addPerson")),
+    removePerson: () => Promise.resolve({ sessionsEnded: 0 }),
+    mintPairingToken: () => Promise.reject(new Error("nothing stubbed mintPairingToken")),
     ...overrides,
   };
 }
@@ -346,12 +353,28 @@ export function recordingClient(receipt: Partial<SecretReceipt> & { outcome: str
   const sent: SecretRequest[] = [];
   return {
     sent,
-    client: stubClient({
+    client: client({
       setSecret: (request) => {
         sent.push(request);
         return Promise.resolve({ id: request.id, ...receipt });
       },
     }),
+  };
+}
+
+// ── the companion's side ──────────────────────────────────────────────────
+
+/** One local install, with only the fields a test cares about spelled out. */
+export function install(overrides: Partial<LocalInstall> = {}): LocalInstall {
+  return {
+    dir: "/repos/youtube-studio",
+    name: "youtube-studio",
+    deploymentName: "youtube-studio",
+    relayUrl: null,
+    addedAt: ago(3600),
+    state: "running",
+    containerVersion: "0.13.0",
+    ...overrides,
   };
 }
 
@@ -470,7 +493,7 @@ export function directory(overrides: Partial<InstallDirectoryFacts> = {}): Insta
   return {
     configPath: "/repos/youtube-studio/phoebe.config.ts",
     configText: 'export default defineConfig({ repoSlug: "JesusFilm/youtube-studio" })\n',
-    configFingerprint: "0f1e2d3c4b5a6978",
+    configFingerprint: "sha256:0f1e2d3c4b5a6978",
     envPresent: true,
     bootstrapperRunning: true,
     ...overrides,

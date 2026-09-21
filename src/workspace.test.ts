@@ -69,14 +69,14 @@ describe("pnpm-workspace.yaml", () => {
   test("allows electron's build and nothing else", () => {
     const allowBuilds = workspace.match(/^allowBuilds:\n((?:\s+\S.*\n?)*)/m);
     expect(allowBuilds).not.toBeNull();
-    // A `false` entry runs nothing; it is a refusal written down so the next
-    // `pnpm install` stops asking. What this guards is the list that runs.
-    const allowed = allowBuilds![1]
+    const entries = allowBuilds![1]
       .split("\n")
       .map((line) => line.trim())
-      .filter((line) => line !== "" && !line.startsWith("#"))
-      .filter((line) => line.endsWith(": true"));
-    expect(allowed).toEqual(["electron: true"]);
+      .filter((line) => line !== "" && !line.startsWith("#"));
+    // An entry set to `false` is a script somebody read and decided not to run,
+    // which pnpm wants said out loud. Only a `true` lets anything execute.
+    expect(entries.filter((entry) => entry.endsWith(": true"))).toEqual(["electron: true"]);
+    expect(entries.every((entry) => /: (true|false)$/.test(entry))).toBe(true);
   });
 });
 

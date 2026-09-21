@@ -12,17 +12,23 @@
 // hidden. A browser has no local arm, so there the rail is the relay's group on
 // its own and reads exactly as it did before the companion existed.
 //
-// The installs under "This machine" are local installs (#555): a folder on this
-// machine, its state read from Compose, and `+ add` beside the heading because
-// adopting a folder is the one thing this group can do that the other cannot.
-// Three words and no fourth — running, stopped, not initialised. The relay's
-// dark and unseen are a remote reader's guesses about silence, and Compose
-// answers directly.
+// The installs under "This machine" arrive with #555, which is also what makes
+// `+ add` a control worth drawing; until then the group states that it is empty,
+// which is a fact rather than a placeholder.
 //
-// Both groups lead somewhere. Selecting an install opens its install tab;
-// selecting a deployment opens the five tabs #544 built, which is why a relay
-// entry is a link into the hash while an install entry is a button — one is a
-// route the browser owns, the other is a choice only this window holds.
+// The Relay group has one state that is not about deployments at all: a relay
+// serving a console protocol below this bundle's (#525 §4). The group says so
+// and links the upgrade doc, and This machine goes on working beside it — which
+// is the point of two arms rather than one.
+//
+// A local entry is selectable; a relay entry is not yet. Selecting an install
+// opens its install tab, which exists; selecting a deployment would open the
+// five tabs that #544 builds, and a link to a page nothing answers is a dead end
+// on screen.
+//
+// A paired install appears once, here, with a `paired` chip — and the row it is
+// on the relay is dropped from the group below rather than drawn twice (#526,
+// #558). Local is the richer arm: the verbs and the direct writes are there.
 //
 // The Relay group's signed-out entry is the companion's sign-in control (#554).
 // It asks for one thing — the relay's address — because that is the only part of
@@ -30,16 +36,16 @@
 // browser, the hop back over `phoebe://auth` and the exchange all happen in main,
 // and the renderer never sees the token that comes out.
 //
-// The Relay group has one state that is not about deployments at all: a relay
-// serving a console protocol below this bundle's (#525 §4). The group says so
-// and links the upgrade doc, and This machine goes on working beside it — which
-// is the point of two arms rather than one.
-//
 // Under both groups sits the one line that is about the window itself: a newer
 // companion, when there is one (#525 §3). It is at the foot of the rail rather
 // than in either group because an update belongs to neither arm, and it says
 // nothing at all until there is something to click — a check that found nothing
 // is not news.
+//
+// A local entry opens its install page (#555), and each relay entry links to that
+// deployment's tabs (#544). The relay group's heading
+// links back to the fleet, so the grid is one click from anywhere rather than a
+// page an operator has to find their way back to.
 
 import { useState } from "react";
 import type { CompanionUpdate, LocalInstall, RelayIdentity } from "phoebe-agent/contracts";
@@ -47,8 +53,8 @@ import type { Surface } from "./companion.ts";
 import { connectionReading, type RowFacts } from "./facts.ts";
 import { installReading } from "./local-install.ts";
 import type { RelaySignIn } from "./relay-client.ts";
-import { RELAY_UPGRADE_DOC } from "./relay-version.ts";
 import { deploymentHref, FLEET_HREF } from "./route.ts";
+import { RELAY_UPGRADE_DOC } from "./relay-version.ts";
 
 export function Rail({
   facts,
@@ -57,6 +63,7 @@ export function Rail({
   signedIn,
   refusal,
   installs = [],
+  paired,
   selected = null,
   selectedDeployment = null,
   update = null,
@@ -75,6 +82,12 @@ export function Rail({
   refusal?: string;
   /** The local arm. Empty in a browser, which has no local arm at all. */
   installs?: LocalInstall[];
+  /**
+   * The installs that are also a deployment on this relay, by directory. Passed
+   * in rather than worked out here: the same join decides which rows the Relay
+   * group below is not drawing (local-install.ts).
+   */
+  paired?: ReadonlySet<string>;
   /** The install whose page is open, by directory. */
   selected?: string | null;
   /** The fingerprint of the deployment being shown, or null on the fleet page. */
@@ -91,15 +104,11 @@ export function Rail({
 }) {
   const relay = (
     <section className="rail-group" aria-label="Relay">
-      <h2 className="rail-heading">
-        {surface === "companion" ? (
-          "Relay"
-        ) : (
-          <a href={FLEET_HREF}>
-            Fleet — {facts.length} {facts.length === 1 ? "deployment" : "deployments"}
-          </a>
-        )}
-      </h2>
+      <a className="rail-heading" href={FLEET_HREF}>
+        {surface === "companion"
+          ? "Relay"
+          : `Fleet — ${facts.length} ${facts.length === 1 ? "deployment" : "deployments"}`}
+      </a>
       {refusal !== undefined ? (
         <p className="rail-empty refusal">
           {refusal} <a href={RELAY_UPGRADE_DOC}>How to upgrade the relay</a>
@@ -148,6 +157,7 @@ export function Rail({
               key={install.dir}
               install={install}
               current={install.dir === selected}
+              paired={paired?.has(install.dir) ?? false}
               {...(onSelect !== undefined ? { onSelect } : {})}
             />
           ))
@@ -224,10 +234,13 @@ function UpdateNotice({
 function InstallEntry({
   install,
   current,
+  paired,
   onSelect,
 }: {
   install: LocalInstall;
   current: boolean;
+  /** Also a deployment on this relay — so the Relay group is not drawing it. */
+  paired: boolean;
   onSelect?: (dir: string) => void;
 }) {
   const reading = installReading(install);
@@ -241,6 +254,7 @@ function InstallEntry({
       <div className="name">
         <span className={`mark ${reading.tone}`} aria-hidden="true" />
         {install.name}
+        {paired ? <span className="chip paired">paired</span> : null}
       </div>
       <div className="sub">{reading.text}</div>
     </button>

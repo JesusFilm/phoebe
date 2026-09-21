@@ -130,13 +130,13 @@ The fleet page puts one card per deployment beside the rail, with one bar segmen
 per pipeline. Selecting a deployment opens its five tabs. The route is in the
 hash, so a deployment is a URL you can send someone.
 
-| Tab           | What it answers                                                                                                                        |
-| ------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| **Overview**  | Connection facts in their own panel, the engine ref and running SHA, reconcile state, slots, every pipeline's two lines, held tenants. |
-| **Pipelines** | One row per pipeline: the process line, the state line, units in flight against their budgets, the wedged clause.                      |
-| **Doctor**    | The last run's checks with the trigger that produced them and how long ago. A deployment that has never run one says so.               |
-| **Secrets**   | Which keys each tenant reads, whether each is set, and where the value came from. Never a value.                                       |
-| **Config**    | Every effective-config leaf, filterable, with the source that supplied it and a shadowed value under the one that beat it.             |
+| Tab           | What it answers                                                                                                                              |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Overview**  | Connection facts in their own panel, the engine ref and running SHA, reconcile state, slots, every pipeline's two lines, held tenants.       |
+| **Pipelines** | One row per pipeline: the process line, the state line, units in flight against their budgets, the wedged clause.                            |
+| **Doctor**    | The last run's checks with the trigger that produced them and how long ago, and **Run doctor**. The fleet page has one for every deployment. |
+| **Secrets**   | Which keys each tenant reads, whether each is set, and where the value came from. Never a value.                                             |
+| **Config**    | Every effective-config leaf, filterable, with the source that supplied it and a shadowed value under the one that beat it.                   |
 
 Two of the tabs write. The config tab sends one `{ path, value }` patch against
 the fingerprint its page was drawn from, and the deployment answers `written` or
@@ -208,8 +208,11 @@ clear.
 repository folder on this machine that the companion drives through Docker
 Compose. You point it at a folder, and an **install** tab runs the host verbs in
 place with their output streaming into the window: `init`, `start`, `stop`,
-`upgrade --check`, `doctor`. The same five tabs sit beside it, fed by a local read
-loop rather than a socket. Docker is checked, never installed.
+`upgrade --check`, `doctor`, and `pair` once you are signed in to a relay: it mints
+the token, writes the address into the config and the token into `.env`, and
+recreates the container, so nothing is pasted by hand. The same five tabs sit
+beside it, fed by a local read loop rather than a socket. Docker is checked, never
+installed.
 
 The local arm still adds no listener to the deployment container. Main spawns
 `docker compose` exactly as you would at a shell, and reads through
@@ -274,16 +277,9 @@ without anyone watching is worse than one that did not land.
 
 ## Not here yet
 
-The People page, where the allowlist is managed and each person's devices are
-listed with a remove beside them. The reads and the revoke are implemented; the
-page is not.
-
-Running doctor from the console. The rail carries the message and the relay will
-deliver it and wait for a receipt exactly as it does for a config edit, and
-nothing sends one yet.
-
-Pairing a local install from inside the companion, which today means minting the
-token in the console and editing the config and `.env` by hand.
+A person's devices on the People page. The page manages the allowlist and mints
+pairing tokens, and the relay already lists and revokes devices, but no panel puts
+a person's devices on screen with a remove beside each.
 
 Unit history and cost, live engine output over the relay, muting one deployment's
 alerts without forgetting it, and a mobile app. All recorded against
