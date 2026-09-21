@@ -1,29 +1,38 @@
 // `phoebe relay <subcommand>` — the relay's command surface (#506 §1).
 //
-// Two subcommands, and they run on opposite machines. `serve` is the relay
-// process itself; `leave` runs on a deployment host and deletes that
-// deployment's key, which is why it takes no `--data-dir` and reads
-// `PHOEBE_DATA_DIR` the way `phoebe doctor` does. `phoebe relay init` — the
-// scaffolded Dockerfile, compose file and `.env.example` — is its own ticket;
-// the parser refuses an unknown subcommand by name rather than falling through
-// to anything, so adding it is additive.
+// Three subcommands, and they run on different machines. `serve` is the relay
+// process itself; `init` writes the container files an operator stands it up
+// from; `leave` runs on a deployment host and deletes that deployment's key,
+// which is why it takes no `--data-dir` and reads `PHOEBE_DATA_DIR` the way
+// `phoebe doctor` does. The parser refuses an unknown subcommand by name rather
+// than falling through to anything, so adding one is additive.
 
+import { resolve as resolvePath } from "node:path";
 import { relayLeave } from "../bootstrap/relay-leave.ts";
 import { resolveDataBase } from "../src/paths.ts";
+import { relayInitNextSteps, runRelayInit } from "./init.ts";
 import { runRelayServe } from "./serve.ts";
+import { formatInitReport } from "../src/init.ts";
 
 export type ParsedRelayArgs = {
   help: boolean;
-  subcommand: "serve" | "leave" | null;
+  subcommand: "serve" | "init" | "leave" | null;
   dataDir?: string;
   port?: number;
+  targetDir?: string;
 };
+
+/** Flags `serve` owns; naming them with `init` is a typo worth a sentence. */
+const SERVE_ONLY_FLAGS = ["--port", "--data-dir"] as const;
 
 export const RELAY_HELP_TEXT = `phoebe relay — the self-hosted service deployments dial into
 
 Usage:
   phoebe relay serve [--port <n>] [--data-dir <path>]
                         Serve the console and the deployment socket
+  phoebe relay init [dir]
+                        Scaffold relay/{Dockerfile,compose.yml,.env.example}
+                        (default dir: the current one)
   phoebe relay leave    On a deployment host: delete this deployment's key so it
                         stops proving who it is. Also remove the \`relay\` block
                         from the root config, and forget it on the relay.
@@ -51,8 +60,17 @@ export function parseRelayArgs(argv: readonly string[]): ParsedRelayArgs {
       parsed.help = true;
       continue;
     }
-    if (arg === "serve" || arg === "leave") {
+    if ((arg === "serve" || arg === "init" || arg === "leave") && parsed.subcommand === null) {
       parsed.subcommand = arg;
+      continue;
+    }
+    if (parsed.subcommand === "init" && !arg.startsWith("-")) {
+      if (parsed.targetDir !== undefined) {
+        throw new Error(
+          `\`phoebe relay init\` takes at most one directory (got \`${parsed.targetDir}\` and \`${arg}\`).`,
+        );
+      }
+      parsed.targetDir = arg;
       continue;
     }
     if (arg === "--port" || arg === "--data-dir") {
@@ -89,6 +107,12 @@ export function parseRelayArgs(argv: readonly string[]): ParsedRelayArgs {
         "PHOEBE_DATA_DIR. See `phoebe relay --help`.",
     );
   }
+  if (parsed.subcommand === "init" && (parsed.port !== undefined || parsed.dataDir !== undefined)) {
+    throw new Error(
+      `${SERVE_ONLY_FLAGS.join(" and ")} configure \`phoebe relay serve\`, not \`phoebe relay init\` — ` +
+        `the scaffolded compose file gives the relay both.`,
+    );
+  }
   return parsed;
 }
 
@@ -101,11 +125,19 @@ export async function runRelayCli(argv: readonly string[]): Promise<void> {
   }
   if (parsed.subcommand === null) {
     throw new Error(
-      "`phoebe relay` needs a subcommand: `serve` or `leave`. See `phoebe relay --help`.",
+      "`phoebe relay` needs a subcommand: `serve`, `init` or `leave`. See `phoebe relay --help`.",
     );
   }
   if (parsed.subcommand === "leave") {
     relayLeave({ dataBase: resolveDataBase(process.env) });
+    return;
+  }
+  if (parsed.subcommand === "init") {
+    const targetDir = resolvePath(parsed.targetDir ?? process.cwd());
+    const report = runRelayInit({ targetDir });
+    process.stdout.write(
+      formatInitReport(report, targetDir, "relay init") + relayInitNextSteps(targetDir),
+    );
     return;
   }
   await runRelayServe({

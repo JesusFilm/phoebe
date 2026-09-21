@@ -22,6 +22,9 @@ import {
   type PromptFilesConfig,
   type ResolvedPipeline,
 } from "./config-schema.ts";
+import { envNames, readNumber, settingAt } from "./settings-catalogue.ts";
+
+const POLL_INTERVAL_SETTING = settingAt("pollIntervalMs");
 
 /**
  * Read `--pipeline <name>` / `--pipeline=<name>` off the engine child's argv.
@@ -57,13 +60,14 @@ export function declaredPipeline(config: PhoebeConfig, name: string): ResolvedPi
  * `PHOEBE_POLL_INTERVAL_MS`, else the default (#408). The declaration outranks
  * the env var because a fleet-wide cadence is exactly the wrong answer for a
  * pipeline whose whole point is a different one — an intake pipeline polling every 15s
- * beside a work pipeline polling every 5 min.
+ * beside a work pipeline polling every 5 min. In catalogue terms the pipeline's
+ * own `pollIntervalMs` is the more specific path; the env name addresses the
+ * tenant leaf it would otherwise inherit, and named pipelines stay file-only.
  */
 export function resolvePollIntervalMs(pipeline: ResolvedPipeline, env: NodeJS.ProcessEnv): number {
   if (pipeline.pollIntervalMs !== undefined) return pipeline.pollIntervalMs;
-  const fromEnv = Number(env["PHOEBE_POLL_INTERVAL_MS"]);
-  if (Number.isFinite(fromEnv) && fromEnv > 0) return fromEnv;
-  return PIPELINE_DEFAULTS.pollIntervalMs;
+  const fromEnv = readNumber(env, envNames(POLL_INTERVAL_SETTING));
+  return fromEnv ?? PIPELINE_DEFAULTS.pollIntervalMs;
 }
 
 /**

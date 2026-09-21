@@ -17,6 +17,9 @@
 //   - **Read at publish time** — the crash-loop record, the broker's numbers,
 //     and whatever is on the tenants' disks that the live matrix does not
 //     account for.
+//   - **The doctor runner** (bootstrap/doctor-runner.ts) — the last report it
+//     got back, the run it has in flight, the last attempt that produced
+//     nothing.
 //
 // Two rules keep it honest.
 //
@@ -45,6 +48,7 @@ import type {
   ChildExit,
   ChildLiveness,
   ChildState,
+  ConfigSource,
   CrashLoopRecord,
   DeploymentIdentity,
   DeploymentReport,
@@ -54,7 +58,13 @@ import type {
   SlotReport,
   TenantFacts,
 } from "../src/contracts/deployment.ts";
+import type { DoctorSection } from "../src/contracts/doctor.ts";
+import {
+  EFFECTIVE_CONFIG_VERSION,
+  type TenantEffectiveConfig,
+} from "../src/contracts/effective-config.ts";
 import type { StatusSnapshot } from "../src/contracts/status-snapshot.ts";
+import { boundConfigRows, unknownConfig, type ConfigCollector } from "./config-report.ts";
 import { PIPELINE_DEFAULTS } from "../src/config-schema.ts";
 import { derivePaths } from "../src/paths.ts";
 import {
@@ -121,6 +131,21 @@ export type DeploymentStateDeps = {
   crashLoop: () => CrashLoopRecord;
   /** The slot broker's numbers, read at publish time. */
   slots: () => SlotReport;
+  /**
+   * The root config an edit checks itself against (#503), read at publish time.
+   * Cheap on a steady deployment: the hash is re-taken only when the file's stat
+   * moves (bootstrap/config-report.ts).
+   */
+  rootConfig: () => ConfigSource;
+  /**
+   * The last config edit this deployment applied to its own root config (#536),
+   * read at publish time from the edit ledger. Read rather than notified,
+   * because the edit and the reconcile it causes can happen in different
+   * processes: a shell `phoebe config set` writes the file and the supervisor
+   * finds it on the next poll, exactly as it finds a hand edit. Absent for a
+   * deployment that has never been edited through the verb.
+   */
+  lastEditId?: () => string | null;
   /** One tenant's credential arm, resolved the one shared way (#162). */
   armOf: (tenant: { envPath: string }) => CredentialArm;
   now?: () => number;
@@ -142,6 +167,13 @@ export type DeploymentState = {
     ref: string | null;
     sha: string | null;
     quarantinedSha: string | null;
+    /**
+     * How to ask *this* checkout for a tenant's effective config (#535). It
+     * arrives with the engine because the answer is the engine's: a relaunch
+     * onto a different commit is a different answer, and a new collector is how
+     * the cached rows are dropped without a second trigger.
+     */
+    config?: ConfigCollector;
   }) => void;
   /** The engine axis moved; the fleet is draining onto a new engine. */
   noteReconcile: (reason: "config" | "ref") => void;
@@ -153,6 +185,12 @@ export type DeploymentState = {
   noteExit: (pipelineId: string, exit: EngineExit) => void;
   /** One child's IPC report — a completed pass, or a snapshot it just wrote. */
   noteEngineReport: (pipelineId: string, report: EngineReport) => void;
+  /**
+   * The doctor section as the runner now has it (#507 §7) — a run starting, a
+   * run landing, an attempt failing. The runner owns the section's history (the
+   * last report, the last failed attempt); this holds it and publishes it.
+   */
+  noteDoctor: (section: Omit<DoctorSection, "updatedAt">) => void;
   /** The live pipeline matrix, as of this poll. */
   notePipelines: (pipelines: readonly SupervisedPipeline[]) => void;
   /**
@@ -189,6 +227,25 @@ type ChildRecord = {
 const iso = (ms: number): string => new Date(ms).toISOString();
 
 /**
+ * The reconcile section with the last applied edit's id on it. Stamped at
+ * publish rather than carried in the live state: the id outlives the reconcile
+ * it set going, and a console reading an idle deployment still wants to know
+ * which edit it settled on.
+ */
+function withLastEdit(state: ReconcileState, lastEditId: string | null): ReconcileState {
+  return lastEditId === null ? state : { ...state, lastEditId };
+}
+
+/**
+ * How a tenant names itself in the config section when the engine never got to
+ * answer for it: its slug if discovery recovered one, else its directory. The
+ * engine's own rows name themselves — `repoSlug`, or the config's path.
+ */
+function nameOf(tenant: { slug: string | null; dir: string }): string {
+  return tenant.slug ?? tenant.dir;
+}
+
+/**
  * Build the live model. Nothing is written until something is noted: a
  * deployment that has not come up yet has no report to make.
  */
@@ -213,7 +270,62 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
   };
   let reconcile: ReconcileState = { phase: "idle", since: iso(now()) };
   let relay: RelayStatus = UNCONFIGURED_RELAY;
+  // "Never": a deployment that has not run doctor yet says so, rather than
+  // leaving the section out and making every reader handle its absence.
+  let doctor: Omit<DoctorSection, "updatedAt"> = { report: null, at: null, trigger: null };
   let last: DeploymentReport | null = null;
+  /** The running engine's collector — set by `noteEngine`, dropped with the launch. */
+  let collector: ConfigCollector | null = null;
+  /** The config section as it stands: already ordered, already inside its budget. */
+  let config: { tenants: TenantEffectiveConfig[]; omitted: number } = { tenants: [], omitted: 0 };
+
+  /**
+   * Re-read every tenant's effective config and re-fit the section.
+   *
+   * Called from the two hooks that can move it — the poll's pipeline matrix and
+   * the hold list — never from `publish`, because a cache miss here spawns an
+   * engine process per tenant and `publish` runs on every child's every status
+   * write. The collector answers from its cache unless a tenant's config or
+   * `.env` actually moved, so a steady fleet pays a stat per tenant per poll.
+   *
+   * A held tenant carries its discovery error rather than the resolution it had
+   * before it was held (#501 §5): the settings of a tenant nobody can read are
+   * unknown, and the last good ones are the most convincing way to be wrong.
+   * A tenant nothing has asked yet — the window before the first engine is
+   * materialized — has no row at all rather than a manufactured one.
+   */
+  const refreshConfig = (): void => {
+    const heldById = new Map(holds.map((hold) => [hold.id, hold] as const));
+    const rows: { id: string; row: TenantEffectiveConfig }[] = [];
+    const asked = new Set<string>();
+    for (const pipeline of live) {
+      const tenant = pipeline.tenant;
+      if (asked.has(tenant.id)) continue;
+      asked.add(tenant.id);
+      const held = heldById.get(tenant.id);
+      if (held !== undefined) {
+        rows.push({ id: tenant.id, row: unknownConfig(nameOf(tenant), `held — ${held.reason}`) });
+        continue;
+      }
+      if (collector === null) continue;
+      rows.push({
+        id: tenant.id,
+        row: collector.read({
+          id: tenant.id,
+          configPath: tenant.configPath,
+          envPath: tenant.envPath,
+          cwd: tenant.dir,
+        }),
+      });
+    }
+    for (const held of holds) {
+      if (asked.has(held.id)) continue;
+      asked.add(held.id);
+      rows.push({ id: held.id, row: unknownConfig(nameOf(held), `held — ${held.reason}`) });
+    }
+    rows.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    config = boundConfigRows(rows.map((entry) => entry.row));
+  };
 
   /** The tenant a cell belongs to, with the facts `phoebe list` shows for it. */
   const factsFor = (
@@ -379,12 +491,19 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
           engineSha: engine.sha,
           quarantinedSha: engine.quarantinedSha,
           crashLoop: deps.crashLoop(),
-          reconcile,
+          reconcile: withLastEdit(reconcile, deps.lastEditId?.() ?? null),
           children: livenessOf(at),
           slots: deps.slots(),
         },
         relay,
         fleet: buildFleet(at),
+        doctor,
+        config: {
+          version: collector?.version() ?? EFFECTIVE_CONFIG_VERSION,
+          root: deps.rootConfig(),
+          tenants: config.tenants,
+          omitted: config.omitted,
+        },
       };
       const next = stampReport(draft, last, iso(at));
       if (next === null) return;
@@ -397,7 +516,14 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
 
   return {
     noteEngine(next) {
-      engine = { ...next };
+      engine = { ref: next.ref, sha: next.sha, quarantinedSha: next.quarantinedSha };
+      if (next.config !== undefined) {
+        collector = next.config;
+        // A new checkout is a new answer, so the section is re-read here rather
+        // than left until the next poll: a reconcile onto a different engine is
+        // exactly when an operator is watching the report.
+        refreshConfig();
+      }
       publish();
     },
 
@@ -473,6 +599,11 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
       publish();
     },
 
+    noteDoctor(section) {
+      doctor = section;
+      publish();
+    },
+
     notePipelines(pipelines) {
       live = [...pipelines];
       // A pipeline the matrix no longer names is a pipeline this deployment no
@@ -482,6 +613,7 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
       const orphaned: string[] = [];
       for (const id of children.keys()) if (!named.has(id)) orphaned.push(id);
       for (const id of orphaned) children.delete(id);
+      refreshConfig();
       publish();
     },
 
@@ -492,6 +624,7 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
 
     noteHolds(held) {
       holds = [...held];
+      refreshConfig();
       publish();
     },
 
