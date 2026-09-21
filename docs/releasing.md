@@ -45,6 +45,28 @@ automatically.
 So publishing always waits on a human merging the version PR. Nothing reaches npm
 straight from a feature branch.
 
+## The workspace apps ride the root version
+
+The repo is a pnpm workspace, and the packages under `apps/*` are private. They
+carry no version of their own and read the root package's version at build time,
+so one changeset and one `CHANGELOG.md` entry cover the engine and the apps
+together.
+
+`privatePackages: { version: false, tag: false }` in
+[`.changeset/config.json`](../.changeset/config.json) is what holds that.
+`changeset version` skips every private package, so it never writes a version
+into an app's `package.json` and never cuts a tag for one. The `ignore` list
+says the same thing one name at a time, but a name in `ignore` matching no
+package in the workspace is a hard config error, so it cannot carry a rule that
+has to hold before the first app exists.
+
+One consequence is worth knowing. A PR touching **only** `apps/*` passes the
+changeset gate with no changeset, because `changeset status` resolves those
+files to a package it has been told to skip. Such a change rides out with the
+next release some engine change triggers, and says nothing in the changelog. If
+an app change deserves a release note, a new window or a changed sign-in flow,
+write the changeset by hand against the root package.
+
 ## After the release: the pinned tags in the docs
 
 Three places carry a concrete engine tag that readers copy verbatim, and all

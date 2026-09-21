@@ -132,6 +132,8 @@ phoebe upgrade --check [--json] # report current vs latest; exit 1 when behind
   written when a migration applies and validation succeeds.
 - Migration-scaffolded artifacts such as new prompt files and compose fragments, written
   as create-if-absent; operator overrides are never touched.
+- One field of the root `phoebe.config.ts`, written by `phoebe config set` — the
+  leaf you named, as a literal, with every other byte of the file left alone.
 
 The two migration entries are written by `phoebe migrate`, whether you invoke it
 yourself or `phoebe upgrade` runs it for you. `upgrade` spawns the target
@@ -145,8 +147,10 @@ either way.
    and [Declaring the fleet](workspace.md#declaring-the-fleet-workspacetenants).
 2. Commits. It writes files and lists them; the operator reviews and commits per
    repo.
-3. Runs these writes from a boot, poll, or reconcile path. Only the two
-   operator-initiated verbs, `upgrade` and `migrate`, may write.
+3. Runs these writes from a boot, poll, or reconcile path. Only operator-initiated
+   verbs write — `upgrade`, `migrate`, and `config set`. A config edit that arrives
+   over the relay is still operator-initiated: a person asked for it in the console,
+   and the relay stamps their email on the ledger entry.
 4. Touches `/data`, named volumes, or git history.
 
 Every other "Phoebe never writes" or "Phoebe never edits the root config" claim
@@ -726,6 +730,39 @@ No volume data is affected. To confirm the mask is active:
 docker compose -f container/compose.yml --env-file .env run --rm --entrypoint cat phoebe /etc/phoebe/.env
 # should produce no output (empty file)
 ```
+
+## One-time: mount the root config read-write for `phoebe config set`
+
+**This applies to any deployment whose `container/compose.yml` does not already
+include the `../phoebe.config.ts:/etc/phoebe/phoebe.config.ts:rw` bind mount.**
+Fresh installs from `phoebe init` include it automatically, and
+`phoebe doctor`'s `config-pen` check reports whether yours does.
+
+[`phoebe config set`](configuration.md#changing-one-field-phoebe-config-set)
+changes one field of the root config in place. The deployment directory is
+mounted `:ro`, so without this second mount the container has no writable path
+and the verb refuses every edit — which is correct but not obvious, since
+nothing else about the deployment looks different.
+
+Add this entry to the `volumes:` list of the `phoebe` service in
+`container/compose.yml`, immediately after the `..:/etc/phoebe:ro` line:
+
+```yaml
+- ../phoebe.config.ts:/etc/phoebe/phoebe.config.ts:rw
+```
+
+It is a **file** mount, not a directory one: the write lands on the same inode
+the host sees, and the rest of the deployment directory — every tenant config
+and every `.env` — stays read-only. Then recreate the container, because a
+Compose mount cannot be added to a running one:
+
+```bash
+phoebe stop
+phoebe start
+```
+
+Skipping this step costs you nothing else. Editing `phoebe.config.ts` by hand
+works exactly as it always has, and boot reconciles onto it either way.
 
 ## First install
 

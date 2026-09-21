@@ -1,13 +1,22 @@
 // Runtime surface of `phoebe-agent/contracts` — the `import` condition of the
-// subpath export. Nearly everything in contracts is type declarations, and
-// types leave nothing behind at runtime; this entry carries the few values that
-// are pure enough to live in the subpath.
+// subpath export. Almost everything here is types, and types leave nothing
+// behind at runtime; what is left is the handful of pure constants a reader
+// needs to *check* something, written twice by hand.
 //
-// A value here is written twice: typed in index.ts for the type condition, and
-// in plain JS here for Node, which will not type-strip a `.ts` file out of
-// node_modules. Same reason bootstrap/index.mjs exists. The two copies are held
-// together by index.test.ts, which compares them key by key — a hand-written
-// mirror nothing checks is a mirror that drifts.
+// Twice, because Node will not type-strip a `.ts` file out of node_modules: an
+// installed consumer's `import { DEPLOYMENT_SCHEMA } from "phoebe-agent/contracts"`
+// resolves to this file and never to index.ts. The type condition points at the
+// `.ts`, so a type-checker reads the documented declaration and a runtime reads
+// this. src/contracts/deployment.test.ts holds the two copies to the same value;
+// bootstrap/index.mjs exists for the same reason.
+
+export { openSecret, sealSecret } from "./secret-envelope.mjs";
+
+/** The `schema` integer `state/deployment.json` carries — see deployment.ts. */
+export const DEPLOYMENT_SCHEMA = 1;
+
+/** The effective config's own shape version — see effective-config.ts. */
+export const EFFECTIVE_CONFIG_VERSION = 1;
 
 /**
  * The relay's HTTP paths (#538). Mirror of `RELAY_ROUTES` in relay-routes.ts;

@@ -403,7 +403,7 @@ describe("runInit — workspace profile (#93)", () => {
     expect(envExample).toContain("ANTHROPIC_API_KEY=");
     expect(envExample).toContain("CURSOR_API_KEY=");
     expect(envExample).toContain("OPENAI_KEY=");
-    expect(envExample).toContain("PHOEBE_AGENT");
+    expect(envExample).toContain("PHOEBE_DEFAULT_PROVIDER");
     expect(envExample).not.toMatch(/^TENANT_/m);
     expect(envExample).not.toMatch(/^REPO_/m);
   });
