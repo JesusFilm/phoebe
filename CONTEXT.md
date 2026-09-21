@@ -527,4 +527,3 @@ Every raise has a matching clear, unseen is silent, and the edge rule that decid
 pure function both the relay and the companion run. It is a transition, never a record —
 `alerts.json` holds the last state notified per (deployment, condition) and nothing else.
 _Avoid_: notification (the events stream already notifies the browser), incident, page
-
