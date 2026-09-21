@@ -147,6 +147,33 @@ describe("the sweep", () => {
     expect(sink.taken).toHaveLength(1);
   });
 
+  test("a sweep that starts while another is still sending waits its turn", async () => {
+    // The record is written after the attempt, so two sweeps running at once
+    // would both find nothing notified and both send. A slow webhook and a
+    // connection change landing mid-post is all it takes.
+    let release = (): void => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const taken: AlertBody[] = [];
+    const slow: AlertSink = {
+      name: "the slow sink",
+      async send(body) {
+        taken.push(body);
+        await held;
+      },
+    };
+    const sweeper = notifier({ connections: [dark()], sinks: [slow] });
+
+    const first = sweeper.sweep();
+    const second = sweeper.sweep();
+    release();
+
+    expect(await first).toHaveLength(1);
+    expect(await second).toEqual([]);
+    expect(taken).toHaveLength(1);
+  });
+
   test("a restart re-reads the file and stays quiet about what is still true", async () => {
     const sink = recorder();
     await notifier({ connections: [dark()], sinks: [sink] }).sweep();
