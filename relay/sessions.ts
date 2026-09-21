@@ -68,6 +68,16 @@ export type SessionStore = {
   get: (id: string | undefined) => Session | null;
   /** Forget one session. Idempotent. */
   close: (id: string | undefined) => void;
+  /**
+   * Forget every session one person holds, and say how many there were (#505
+   * §6: a removed user's sessions end).
+   *
+   * Matched on `sub` when the entry has one and on the address otherwise, which
+   * is how the allowlist itself matches. Sessions are the only place a removal
+   * has to reach: nothing of Google's outlives the callback, so a person with
+   * no session and no allowlist entry is a person with no way back in.
+   */
+  closeEveryone: (person: { sub?: string; email: string }) => number;
   /** How many sessions are open — the one number worth reporting. */
   size: () => number;
 };
@@ -117,6 +127,18 @@ export function createSessionStore(): SessionStore {
 
     close(id) {
       if (id !== undefined) sessions.delete(id);
+    },
+
+    closeEveryone(person) {
+      let closed = 0;
+      for (const [id, session] of sessions) {
+        const same =
+          person.sub !== undefined ? session.sub === person.sub : session.email === person.email;
+        if (!same) continue;
+        sessions.delete(id);
+        closed += 1;
+      }
+      return closed;
     },
 
     size() {

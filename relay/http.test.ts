@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
 import { RELAY_ROUTES } from "../src/contracts/relay-routes.ts";
 import type { RelayEnv } from "./env.ts";
-import { SIGNED_IN_LANDING } from "./http.ts";
+import { readConfigSet, SIGNED_IN_LANDING } from "./http.ts";
 import {
   pkceChallenge,
   type AuthParams,
@@ -58,6 +58,7 @@ function env(overrides: Partial<RelayEnv> = {}): RelayEnv {
     clientId: "client-id",
     clientSecret: "client-secret",
     allowedEmails: [],
+    alertWebhook: null,
     ...overrides,
   };
 }
@@ -298,7 +299,10 @@ describe("the relay's door", () => {
     });
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ deployments: [] });
+    expect(await response.json()).toEqual({
+      deployments: [],
+      alerts: { webhook: false, last: {} },
+    });
   });
 
   test("forgetting is behind the session too", async () => {
@@ -405,5 +409,40 @@ describe("the console the relay serves", () => {
 
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({ error: "no-such-route" });
+  });
+});
+
+describe("the config-set body (#503, #547)", () => {
+  const good = {
+    fingerprint: "A".repeat(32),
+    id: "edit-1",
+    path: "pipelines.work.concurrency",
+    value: 4,
+    configFingerprint: "sha256:loaded",
+  };
+
+  test("reads the patch, and the four literals a leaf may hold", () => {
+    expect(readConfigSet(good)).toEqual(good);
+    for (const value of ["a", 4, true, null]) {
+      expect(readConfigSet({ ...good, value })?.value).toBe(value);
+    }
+  });
+
+  test("drops the body's idea of who is editing: that field is the relay's", () => {
+    const read = readConfigSet({ ...good, by: "someone-else@example.test" });
+    expect(read).not.toHaveProperty("by");
+  });
+
+  test("refuses anything that is not one well-formed patch", () => {
+    expect(readConfigSet(null)).toBeNull();
+    expect(readConfigSet("a string")).toBeNull();
+    expect(readConfigSet({ ...good, fingerprint: "not-a-fingerprint" })).toBeNull();
+    expect(readConfigSet({ ...good, id: "" })).toBeNull();
+    expect(readConfigSet({ ...good, path: 7 })).toBeNull();
+    expect(readConfigSet({ ...good, configFingerprint: undefined })).toBeNull();
+    // A leaf holds a literal; an object or a list is a file edit, not a patch.
+    expect(readConfigSet({ ...good, value: { a: 1 } })).toBeNull();
+    expect(readConfigSet({ ...good, value: [1] })).toBeNull();
+    expect(readConfigSet({ ...good, value: undefined })).toBeNull();
   });
 });

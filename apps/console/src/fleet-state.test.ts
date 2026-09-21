@@ -3,10 +3,10 @@
 
 import { describe, expect, test } from "vite-plus/test";
 import { RELAY_EVENTS } from "phoebe-agent/contracts";
-import type { RelayDeploymentDetail, RelayEvent, RelayIdentity } from "phoebe-agent/contracts";
+import type { RelayDeploymentDetail, RelayEvent } from "phoebe-agent/contracts";
 import { applyEvent, EMPTY_FLEET, loadFleet } from "./fleet-state.ts";
 import type { RelayClient } from "./relay-client.ts";
-import { ago, report, row, stored } from "./test-fixture.ts";
+import { ago, client as stubClient, report, row, stored } from "./test-fixture.ts";
 
 /** A client that answers from a table, and records nothing it was not asked. */
 function fakeClient(
@@ -15,19 +15,14 @@ function fakeClient(
     .filter((detail): detail is RelayDeploymentDetail => !(detail instanceof Error))
     .map((detail) => detail.deployment),
 ): RelayClient {
-  return {
-    me: () => Promise.resolve({ sub: "s", email: "ada@example.test" } satisfies RelayIdentity),
-    signIn: () => Promise.resolve({ kind: "navigate", href: "/auth/google/start" }),
-    watchSession: () => () => {},
-    signOut: () => Promise.resolve(),
+  return stubClient({
     deployments: () => Promise.resolve(rows),
     deployment: (fingerprint) => {
       const detail = details[fingerprint];
       if (detail === undefined) return Promise.reject(new Error("no such deployment"));
       return detail instanceof Error ? Promise.reject(detail) : Promise.resolve(detail);
     },
-    events: () => () => {},
-  };
+  });
 }
 
 describe("the initial read", () => {

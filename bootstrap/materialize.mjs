@@ -102,9 +102,14 @@ export function ensureEngine({ packageRoot, baseDir, version }) {
     }
     linkDependencies(packageRoot, dir);
     // The copied `.ts` modules must load as ESM; the nearest package.json to
-    // `<dir>/bootstrap/cli.ts` is this one. A minimal `{"type":"module"}` is
-    // enough — nothing reads its own package fields at runtime.
-    writeFileSync(join(dir, "package.json"), '{\n  "type": "module"\n}\n');
+    // `<dir>/bootstrap/cli.ts` is this one. It carries the version as well,
+    // because the copy reads its own manifest for it: `phoebe relay init` pins
+    // the scaffolded relay image to the CLI that wrote it (#539), and that
+    // lookup runs from here, not from the package under node_modules.
+    writeFileSync(
+      join(dir, "package.json"),
+      `${JSON.stringify({ type: "module", version }, null, 2)}\n`,
+    );
     // Write the marker last so a copy interrupted midway re-runs next time.
     writeFileSync(marker, `${version}\n`);
   }

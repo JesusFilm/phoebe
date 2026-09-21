@@ -12,7 +12,7 @@ import { rowFacts, sortFleet } from "./facts.ts";
 import { FleetPage } from "./fleet-page.tsx";
 import { Rail } from "./rail.tsx";
 import type { RelaySignIn } from "./relay-client.ts";
-import { ago, cell, child, NOW, report, row, stored, tenant } from "./test-fixture.ts";
+import { ago, cell, child, client, NOW, report, row, stored, tenant } from "./test-fixture.ts";
 
 /** The four states, one deployment each, plus one that is wedged. */
 const FLEET = sortFleet([
@@ -92,9 +92,17 @@ const SIGN_IN_PROMPT: RelaySignIn = {
 };
 
 const rail = renderToStaticMarkup(
-  <Rail facts={FLEET} now={NOW} surface="browser" signedIn signIn={null} onSignedIn={noop} />,
+  <Rail
+    facts={FLEET}
+    selected={null}
+    now={NOW}
+    surface="browser"
+    signedIn
+    signIn={null}
+    onSignedIn={noop}
+  />,
 );
-const grid = renderToStaticMarkup(<FleetPage facts={FLEET} now={NOW} />);
+const grid = renderToStaticMarkup(<FleetPage facts={FLEET} client={client()} now={NOW} />);
 
 describe("the rail", () => {
   test("lists every deployment in the sort order, dark first", () => {
@@ -140,9 +148,39 @@ describe("the rail", () => {
       expect(rail.toLowerCase(), word).not.toContain(word);
     }
   });
+
+  test("every entry opens that deployment's tabs (#544)", () => {
+    for (const fingerprint of ["one", "two", "three", "four"]) {
+      expect(rail, fingerprint).toContain(`href="#/d/${fingerprint}"`);
+    }
+  });
+
+  test("the entry being shown is marked for a screen reader too", () => {
+    const selected = renderToStaticMarkup(
+      <Rail
+        facts={FLEET}
+        selected="two"
+        now={NOW}
+        surface="browser"
+        signedIn
+        signIn={null}
+        onSignedIn={noop}
+      />,
+    );
+    expect(selected).toContain('aria-current="page"');
+    expect(selected).toContain("rail-entry state-disconnected attention current");
+  });
 });
 
 describe("the grid", () => {
+  test("carries one Run doctor for the whole fleet, never disabled (#546)", () => {
+    // The deployments the relay cannot reach are part of the answer — each one
+    // refused undelivered by name — so there is nothing here to grey out.
+    expect(grid).toContain('aria-label="Run doctor"');
+    expect(grid).toContain(">Run doctor on every deployment<");
+    expect(grid).not.toContain("disabled=");
+  });
+
   test("draws one segment per enumerated pipeline", () => {
     const segments = [...grid.matchAll(/class="segment /g)];
 
@@ -178,6 +216,7 @@ describe("the grid", () => {
             ),
           ),
         ]}
+        client={client()}
         now={NOW}
       />,
     );
@@ -202,6 +241,70 @@ describe("the grid", () => {
   test("explains the bar rather than leaving the colours to be guessed", () => {
     expect(grid).toContain("green working");
   });
+
+  test("gives doctor its counts and its age now that the report carries a section", () => {
+    expect(grid).toContain("doctor healthy — 3 h ago (schedule)");
+  });
+
+  test("a card's name opens that deployment", () => {
+    expect(grid).toContain('class="name" href="#/d/one"');
+  });
+});
+
+describe("doctor at fleet level (#507 §9)", () => {
+  const failing = report({
+    doctor: {
+      ...report().doctor,
+      report: {
+        checks: [{ id: "engine", state: "fail", detail: "c0ffee1 quarantined" }],
+        tenants: [],
+        ok: false,
+      },
+    },
+  });
+
+  test("a failing check joins the attention clause the sort reads", () => {
+    const [first] = sortFleet([
+      rowFacts(row({ fingerprint: "quiet", name: "zeta" }), stored(report())),
+      rowFacts(row({ fingerprint: "sick", name: "alpha" }), stored(failing)),
+    ]);
+
+    // Name order would put alpha first anyway, so the fingerprint is the tell:
+    // attention outranks name, and the failing row is the one with attention.
+    expect(first?.row.fingerprint).toBe("sick");
+    expect(first?.attention).toBe(true);
+  });
+
+  test("the rail names the fail count without naming a warn count beside it", () => {
+    const markup = renderToStaticMarkup(
+      <Rail
+        facts={[rowFacts(row(), stored(failing))]}
+        selected={null}
+        now={NOW}
+        surface="browser"
+        signedIn
+        signIn={null}
+        onSignedIn={noop}
+      />,
+    );
+    expect(markup).toContain("doctor 1 fail");
+  });
+
+  test("a deployment that has never run doctor says never, not healthy", () => {
+    const markup = renderToStaticMarkup(
+      <FleetPage
+        facts={[
+          rowFacts(
+            row(),
+            stored(report({ doctor: { ...report().doctor, report: null, at: null } })),
+          ),
+        ]}
+        client={client()}
+        now={NOW}
+      />,
+    );
+    expect(markup).toContain("doctor never run");
+  });
 });
 
 describe("a report this console cannot read", () => {
@@ -209,6 +312,7 @@ describe("a report this console cannot read", () => {
     const markup = renderToStaticMarkup(
       <FleetPage
         facts={[rowFacts(row({ name: "ahead-of-us" }), stored(report(), { schema: 99 }))]}
+        client={client()}
         now={NOW}
       />,
     );
@@ -225,6 +329,7 @@ describe("the companion's shell", () => {
   const empty = renderToStaticMarkup(
     <Rail
       facts={[]}
+      selected={null}
       now={NOW}
       surface="companion"
       signedIn={false}
@@ -251,6 +356,7 @@ describe("the companion's shell", () => {
     const markup = renderToStaticMarkup(
       <Rail
         facts={[]}
+        selected={null}
         now={NOW}
         surface="companion"
         signedIn={false}
@@ -266,6 +372,7 @@ describe("the companion's shell", () => {
     const markup = renderToStaticMarkup(
       <Rail
         facts={[]}
+        selected={null}
         now={NOW}
         surface="companion"
         signedIn={false}
@@ -284,7 +391,15 @@ describe("the companion's shell", () => {
 
   test("keeps the relay's deployments in the relay's group once signed in", () => {
     const markup = renderToStaticMarkup(
-      <Rail facts={FLEET} now={NOW} surface="companion" signedIn signIn={null} onSignedIn={noop} />,
+      <Rail
+        facts={FLEET}
+        selected={null}
+        now={NOW}
+        surface="companion"
+        signedIn
+        signIn={null}
+        onSignedIn={noop}
+      />,
     );
 
     expect(markup).toContain("jesusfilm-workspace");

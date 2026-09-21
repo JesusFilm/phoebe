@@ -39,14 +39,25 @@ import {
   type GithubSource,
 } from "../bootstrap/github-engine.ts";
 import { matchConfigFlag } from "./cli-flags.ts";
+import type {
+  UpgradeCheckReport,
+  UpgradeHalfOutcome,
+  UpgradeOutcome,
+  UpgradeTarget,
+} from "./contracts/upgrade-outcome.ts";
+import type { VerbIo } from "./contracts/verb-io.ts";
 import { createCrashReporterForConfig, type CrashReporter } from "./crash-reporter.ts";
 import { ensureReportingConsent, promptReportingConsent } from "./reporting-consent.ts";
 import { isInsideContainer } from "./execution-gate.ts";
 import { defaultGit, type GitRunner } from "./git-model.ts";
 import { loadUserConfig, resolveConfigPath } from "./load-config.ts";
+import { PROCESS_IO, SILENT_IO } from "./verb-io.ts";
 
-/** Which halves of the install this invocation moves. */
-export type UpgradeTarget = "engine" | "cli" | "both";
+// The outcomes now live in `phoebe-agent/contracts` (#552) so a console can
+// render an upgrade without loading the half that rewrites a config in place
+// and shells out to git and npm. Re-exported here so every existing reader goes
+// on importing them off this module.
+export type { UpgradeCheckReport, UpgradeHalfOutcome, UpgradeOutcome, UpgradeTarget };
 
 export type ParsedUpgradeArgs = {
   /** Explicit ref (tag/branch/SHA); undefined = latest release tag. */
@@ -440,29 +451,6 @@ export function dockerfileEditInstruction(newVersion: string): string {
 
 // ---------------------------------------------------------------- check mode
 
-export type UpgradeCheckReport = {
-  engine: {
-    source: "github" | "local";
-    /** The configured ref (defaults applied); null for a local mount. */
-    ref: string | null;
-    /** Highest release tag on the engine repo; null when unreachable. */
-    latest: string | null;
-    /** True when the ref is a branch/other ref that already tracks a tip. */
-    tracking: boolean;
-    /** Behind the latest release; null when it cannot be determined. */
-    behind: boolean | null;
-  };
-  cli: {
-    installed: string | null;
-    latest: string | null;
-    behind: boolean | null;
-    /** Present when `installed` reflects the container/Dockerfile ARG pin rather than npm ls -g. */
-    source?: "dockerfile";
-  };
-  /** False when either half is known to be behind. */
-  ok: boolean;
-};
-
 /** Fold the two halves into the `--check` verdict. Pure, for tests. */
 export function buildCheckReport(fields: {
   source: ResolvedEngineSource;
@@ -536,10 +524,14 @@ export function buildCheckReport(fields: {
  * the common case. Non-TTY callers never reach this: a script silently choosing
  * a target is exactly the ambiguity the prompt exists to avoid, so they must
  * pass a flag.
+ *
+ * Both streams are arguments rather than defaults, because this is CLI-layer
+ * code and `runUpgrade` must never find a terminal under it (#552): the verb
+ * takes a resolved target, and only {@link runUpgradeCli} asks a person.
  */
 export async function promptUpgradeTarget(
-  input: NodeJS.ReadableStream = process.stdin,
-  output: NodeJS.WritableStream = process.stdout,
+  input: NodeJS.ReadableStream,
+  output: NodeJS.WritableStream,
 ): Promise<UpgradeTarget> {
   const rl = createInterface({ input, output });
   try {
@@ -581,11 +573,43 @@ Rollback is the same command with the previous ref (printed on every upgrade).
 Pinned refs never auto-roll-back — pinning means pinning (docs/upgrading.md).
 `;
 
-type UpgradeIo = {
+/**
+ * Every seam the two halves reach the world through, resolved. `runUpgrade`
+ * builds one of these from {@link UpgradeDeps} and hands it down; neither half
+ * defaults anything itself, so neither half can reach a real stream or a real
+ * npm by forgetting to.
+ */
+type UpgradeSeams = {
+  git: GitRunner;
+  npm: NpmRunner;
+  stdout: (line: string) => void;
+  stderr: (line: string) => void;
+  runMigrations: (opts: {
+    source: GithubSource;
+    configPath: string;
+    token: string | undefined;
+  }) => number | null;
+  readDockerfile: () => string | null;
+  writeDockerfile: (content: string) => void;
+  isInContainer: () => boolean;
+  reportFault: (stage: "migrate" | "flip", error: Error) => void;
+};
+
+/** The injectable half of {@link RunUpgradeOptions}. Everything has a default. */
+export type UpgradeDeps = {
   git?: GitRunner;
   npm?: NpmRunner;
-  stdout?: (line: string) => void;
-  stderr?: (line: string) => void;
+  io?: Partial<VerbIo>;
+  /** Where the deployment is resolved from. Defaults to `process.cwd()`. */
+  cwd?: string;
+  /** The token git and the engine-repo probes authenticate with. */
+  token?: string | undefined;
+  /**
+   * The one consent question (#474), asked before the engine half runs. Defaults
+   * to never asking — an in-process caller has no TTY; the CLI passes the
+   * prompt.
+   */
+  askReportingConsent?: () => Promise<boolean | null>;
   /**
    * Materialize the target engine checkout, probe for `src/migrations/index.ts`,
    * and spawn `phoebe migrate` from that checkout if the index exists. Returns the
@@ -608,6 +632,22 @@ type UpgradeIo = {
    * the target's migrations failing, the ref rewrite refused. Named by stage.
    */
   reportFault?: (stage: "migrate" | "flip", error: Error) => void;
+};
+
+export type RunUpgradeOptions = {
+  /** Explicit ref (tag/branch/SHA); absent = the latest release tag. */
+  ref?: string;
+  /**
+   * Which half to move. The verb never guesses and never asks: a bare
+   * `phoebe upgrade` is resolved against a TTY by {@link runUpgradeCli} before
+   * it gets here, and an explicit non-release ref narrows to `engine` below.
+   */
+  target?: UpgradeTarget;
+  /** Read-only probe: report where both halves stand and change nothing. */
+  check?: boolean;
+  /** Path to the root phoebe.config.ts; relative paths resolve against `deps.cwd`. */
+  configPath?: string;
+  deps?: UpgradeDeps;
 };
 
 /**
@@ -656,42 +696,48 @@ function lsRemoteLatestTag(
   }
 }
 
-/** `phoebe upgrade` entry — parses, prompts if needed, runs the chosen halves. */
-export async function runUpgradeCli(argv: readonly string[]): Promise<void> {
-  const parsed = parseUpgradeArgs(argv);
+/**
+ * The upgrade verb: move the named half (or both) of the deployment, or report
+ * where they stand. Writes every line through `deps.io`, decides no exit code,
+ * and asks no questions — a target is an argument, and the consent prompt is a
+ * dep the CLI supplies (#552). Refusals come back as outcomes, not throws: a
+ * refused rewrite has already printed the exact edit it declined to make.
+ */
+export async function runUpgrade(opts: RunUpgradeOptions): Promise<UpgradeOutcome> {
+  const cwd = opts.deps?.cwd ?? process.cwd();
+  const io: VerbIo = { ...SILENT_IO, ...opts.deps?.io };
+  const token = opts.deps?.token;
 
   // Compute the Dockerfile path from the config path (or default) without calling
   // resolveConfigPath yet — it throws for absent configs, but `phoebe upgrade --cli`
   // on a host with no config.ts must still work. We just check existence ourselves.
-  const configFilename = parsed.configPath ?? "phoebe.config.ts";
+  const configFilename = opts.configPath ?? "phoebe.config.ts";
   const deploymentRoot = dirname(
-    isAbsolute(configFilename) ? configFilename : join(process.cwd(), configFilename),
+    isAbsolute(configFilename) ? configFilename : join(cwd, configFilename),
   );
   const dockerfilePath = join(deploymentRoot, "container", "Dockerfile");
 
-  const io: Required<UpgradeIo> = {
-    git: defaultGit,
-    npm: defaultNpm,
-    stdout: (line) => process.stdout.write(`${line}\n`),
-    stderr: (line) => process.stderr.write(`${line}\n`),
-    runMigrations: defaultRunMigrations,
-    readDockerfile: () =>
-      existsSync(dockerfilePath) ? readFileSync(dockerfilePath, "utf8") : null,
-    writeDockerfile: (content) => writeFileSync(dockerfilePath, content, "utf8"),
-    isInContainer: isInsideContainer,
+  let reporter: CrashReporter | undefined;
+  const seams: UpgradeSeams = {
+    git: opts.deps?.git ?? defaultGit,
+    npm: opts.deps?.npm ?? defaultNpm,
+    stdout: io.stdout,
+    stderr: io.stderr,
+    runMigrations: opts.deps?.runMigrations ?? defaultRunMigrations,
+    readDockerfile:
+      opts.deps?.readDockerfile ??
+      (() => (existsSync(dockerfilePath) ? readFileSync(dockerfilePath, "utf8") : null)),
+    writeDockerfile:
+      opts.deps?.writeDockerfile ?? ((content) => writeFileSync(dockerfilePath, content, "utf8")),
+    isInContainer: opts.deps?.isInContainer ?? isInsideContainer,
     // Bound once the consent question has had its chance to write the block,
     // so a "yes" given on this very run covers this run's own failure.
-    reportFault: (stage, error) => {
-      void reporter?.report({ phase: "upgrade", level: "error", error, tags: { stage } });
-    },
+    reportFault:
+      opts.deps?.reportFault ??
+      ((stage, error) => {
+        void reporter?.report({ phase: "upgrade", level: "error", error, tags: { stage } });
+      }),
   };
-  let reporter: CrashReporter | undefined;
-  if (parsed.help) {
-    process.stdout.write(UPGRADE_HELP_TEXT);
-    return;
-  }
-
-  const token = process.env["GH_TOKEN"];
 
   // The root config is loaded lazily: only `--check` and the engine half need
   // it. A host that carries nothing but the npm launcher must still be able to
@@ -699,7 +745,7 @@ export async function runUpgradeCli(argv: readonly string[]): Promise<void> {
   let cached: { configPath: string; source: ResolvedEngineSource } | undefined;
   const engineConfig = async (): Promise<{ configPath: string; source: ResolvedEngineSource }> => {
     if (cached === undefined) {
-      const configPath = resolveConfigPath(parsed.configPath, process.cwd());
+      const configPath = resolveConfigPath(opts.configPath, cwd);
       const source = readEngineSource(
         (await loadUserConfig(configPath)) as unknown as Record<string, unknown>,
       );
@@ -708,42 +754,109 @@ export async function runUpgradeCli(argv: readonly string[]): Promise<void> {
     return cached;
   };
 
-  if (parsed.check) {
+  if (opts.check === true) {
     const { source } = await engineConfig();
-    const dockerfileContent = io.readDockerfile();
+    const dockerfileContent = seams.readDockerfile();
     const dockerfilePin = dockerfileContent !== null ? readDockerfilePin(dockerfileContent) : null;
     const report = buildCheckReport({
       source,
-      latestTag: source.source === "github" ? lsRemoteLatestTag(source, token, io.git) : null,
-      installedCli: installedCliVersion(io.npm),
-      latestCli: latestCliVersion(io.npm),
+      latestTag: source.source === "github" ? lsRemoteLatestTag(source, token, seams.git) : null,
+      installedCli: installedCliVersion(seams.npm),
+      latestCli: latestCliVersion(seams.npm),
       dockerfilePin,
     });
-    if (parsed.json) {
-      io.stdout(JSON.stringify(report));
-    } else {
-      io.stdout(formatCheckReport(report));
-    }
-    if (!report.ok) process.exitCode = 1;
-    return;
+    return { kind: "checked", report, ok: report.ok };
   }
 
   // Resolve the target half(s). An explicit non-release ref narrows to
   // engine-only — the npm package has no version for a branch or SHA.
-  const refKind = parsed.ref !== undefined ? classifyRef(parsed.ref) : "release-tag";
-  let target = parsed.target;
-  if (parsed.ref !== undefined && refKind !== "release-tag") {
+  const refKind = opts.ref !== undefined ? classifyRef(opts.ref) : "release-tag";
+  let target = opts.target;
+  if (opts.ref !== undefined && refKind !== "release-tag") {
     if (target === "cli" || target === "both") {
       throw new Error(
-        `Only the engine can run \`${parsed.ref}\` — the npm CLI has no ${refKind} versions. ` +
+        `Only the engine can run \`${opts.ref}\` — the npm CLI has no ${refKind} versions. ` +
           `Drop \`--${target}\` or name a release tag (vX.Y.Z).`,
       );
     }
     target = "engine";
   }
   if (target === undefined) {
+    throw new Error(
+      '`phoebe upgrade` needs a target — pass "engine", "cli", or "both". ' +
+        "(The CLI asks on a TTY; an in-process caller chooses.)",
+    );
+  }
+
+  // Both halves share one resolved release version so "--both" cannot straddle.
+  // A cli-only bare upgrade takes npm's latest instead — no config needed.
+  let releaseTag: string | null = null;
+  if (opts.ref !== undefined && refKind === "release-tag") {
+    releaseTag = opts.ref;
+  } else if (opts.ref === undefined && (target === "engine" || target === "both")) {
+    const { source } = await engineConfig();
+    if (source.source === "github") releaseTag = lsRemoteLatestTag(source, token, seams.git);
+  }
+
+  let engine: UpgradeHalfOutcome | null = null;
+  let cli: UpgradeHalfOutcome | null = null;
+  if (target === "engine" || target === "both") {
+    const { configPath, source } = await engineConfig();
+    await ensureReportingConsent({
+      configPath,
+      ask: opts.deps?.askReportingConsent ?? (async () => null),
+      stdout: io.stdout,
+      stderr: io.stderr,
+    });
+    reporter = await createCrashReporterForConfig(configPath);
+    engine = upgradeEngineHalf({
+      configPath,
+      source,
+      ref: opts.ref ?? releaseTag,
+      refKind,
+      token,
+      io: seams,
+    });
+  }
+  if (target === "cli" || target === "both") {
+    if (engine?.kind === "refused") {
+      // The whole point of `--both` is landing both halves on one version; a
+      // refused engine rewrite must not leave the deployment straddling two.
+      io.stderr("cli: skipped — the engine half was refused, so the CLI stays where it is.");
+      cli = { kind: "skipped", reason: "engine-refused" };
+    } else {
+      cli = upgradeCliHalf({ releaseTag, io: seams });
+    }
+  }
+  await reporter?.flush();
+  return {
+    kind: "upgraded",
+    target,
+    engine,
+    cli,
+    ok: engine?.kind !== "refused" && cli?.kind !== "refused",
+  };
+}
+
+/**
+ * `phoebe upgrade` entry — parses argv, asks the one question a terminal can
+ * answer, runs the verb, prints what it reported, and turns the outcome into an
+ * exit code. Everything below this function is stream-free (#552).
+ */
+export async function runUpgradeCli(argv: readonly string[]): Promise<void> {
+  const parsed = parseUpgradeArgs(argv);
+  if (parsed.help) {
+    process.stdout.write(UPGRADE_HELP_TEXT);
+    return;
+  }
+
+  // Asking a person is the CLI's job. A non-release ref narrows to the engine
+  // inside the verb, so it is not an ambiguity worth a prompt.
+  let target = parsed.target;
+  const refIsRelease = parsed.ref === undefined || classifyRef(parsed.ref) === "release-tag";
+  if (!parsed.check && target === undefined && refIsRelease) {
     if (process.stdin.isTTY && process.stdout.isTTY) {
-      target = await promptUpgradeTarget();
+      target = await promptUpgradeTarget(process.stdin, process.stdout);
     } else {
       throw new Error(
         "No target given and no TTY to ask on — pass --engine, --cli, or --both " +
@@ -752,46 +865,25 @@ export async function runUpgradeCli(argv: readonly string[]): Promise<void> {
     }
   }
 
-  // Both halves share one resolved release version so "--both" cannot straddle.
-  // A cli-only bare upgrade takes npm's latest instead — no config needed.
-  let releaseTag: string | null = null;
-  if (parsed.ref !== undefined && refKind === "release-tag") {
-    releaseTag = parsed.ref;
-  } else if (parsed.ref === undefined && (target === "engine" || target === "both")) {
-    const { source } = await engineConfig();
-    if (source.source === "github") releaseTag = lsRemoteLatestTag(source, token, io.git);
-  }
+  const outcome = await runUpgrade({
+    ...(parsed.ref !== undefined ? { ref: parsed.ref } : {}),
+    ...(target !== undefined ? { target } : {}),
+    check: parsed.check,
+    ...(parsed.configPath !== undefined ? { configPath: parsed.configPath } : {}),
+    deps: {
+      io: PROCESS_IO,
+      token: process.env["GH_TOKEN"],
+      askReportingConsent: promptReportingConsent,
+    },
+  });
 
-  let engineMoved = true;
-  if (target === "engine" || target === "both") {
-    const { configPath, source } = await engineConfig();
-    await ensureReportingConsent({
-      configPath,
-      ask: promptReportingConsent,
-      stdout: io.stdout,
-      stderr: io.stderr,
-    });
-    reporter = await createCrashReporterForConfig(configPath);
-    engineMoved = upgradeEngineHalf({
-      configPath,
-      source,
-      ref: parsed.ref ?? releaseTag,
-      refKind,
-      token,
-      io,
-    });
+  if (outcome.kind === "checked") {
+    const body = parsed.json ? JSON.stringify(outcome.report) : formatCheckReport(outcome.report);
+    process.stdout.write(`${body}\n`);
   }
-  if (target === "cli" || target === "both") {
-    if (!engineMoved) {
-      // The whole point of `--both` is landing both halves on one version; a
-      // refused engine rewrite must not leave the deployment straddling two.
-      io.stderr("cli: skipped — the engine half was refused, so the CLI stays where it is.");
-      await reporter?.flush();
-      return;
-    }
-    upgradeCliHalf({ releaseTag, io });
-  }
-  await reporter?.flush();
+  // One place decides the exit code: a half that refused, or a probe that found
+  // the deployment behind.
+  if (!outcome.ok) process.exitCode = 1;
 }
 
 function formatCheckReport(report: UpgradeCheckReport): string {
@@ -828,14 +920,18 @@ function formatCheckReport(report: UpgradeCheckReport): string {
   return lines.join("\n");
 }
 
+/**
+ * Move the engine pin. Returns what became of the half rather than setting an
+ * exit code: the CLI and the companion read the same value (#552).
+ */
 export function upgradeEngineHalf(opts: {
   configPath: string;
   source: ResolvedEngineSource;
   ref: string | null;
   refKind: RefKind;
   token: string | undefined;
-  io: Required<UpgradeIo>;
-}): boolean {
+  io: UpgradeSeams;
+}): UpgradeHalfOutcome {
   const { configPath, source, io } = opts;
   if (source.source === "local") {
     throw new Error(
@@ -853,7 +949,7 @@ export function upgradeEngineHalf(opts: {
 
   if (ref === source.ref) {
     io.stdout(`engine: already at ${ref} — nothing to do.`);
-    return true;
+    return { kind: "unchanged", reason: "already-current" };
   }
 
   // Validate-then-commit: a typo'd tag or branch must fail here, before a
@@ -906,8 +1002,7 @@ export function upgradeEngineHalf(opts: {
       "migrate",
       new Error(`the target engine's migrations failed (exit ${String(migrateExitCode)})`),
     );
-    process.exitCode = 1;
-    return false;
+    return { kind: "refused", stage: "migrate" };
   }
 
   const content = readFileSync(configPath, "utf8");
@@ -919,8 +1014,7 @@ export function upgradeEngineHalf(opts: {
         `  ${engineEditInstruction(ref)}`,
     );
     io.reportFault("flip", new Error(`refused to rewrite engine.ref — ${result.reason}`));
-    process.exitCode = 1;
-    return false;
+    return { kind: "refused", stage: "flip" };
   }
   // In-place write on the same inode, deliberately not write-temp-then-rename:
   // the container bind-mounts this file, and a new inode is invisible to it.
@@ -939,10 +1033,18 @@ export function upgradeEngineHalf(opts: {
         ? "  (pinned refs never auto-roll-back — pinning means pinning)"
         : ""),
   );
-  return true;
+  return { kind: "moved", from: result.previousRef, to: ref };
 }
 
-export function upgradeCliHalf(opts: { releaseTag: string | null; io: Required<UpgradeIo> }): void {
+/**
+ * Move the npm launcher pin — the Dockerfile ARG on a container deployment, the
+ * global npm prefix on a host. Returns what became of the half; see
+ * {@link upgradeEngineHalf}.
+ */
+export function upgradeCliHalf(opts: {
+  releaseTag: string | null;
+  io: UpgradeSeams;
+}): UpgradeHalfOutcome {
   const { io } = opts;
 
   if (io.isInContainer()) {
@@ -951,7 +1053,7 @@ export function upgradeCliHalf(opts: { releaseTag: string | null; io: Required<U
         "  phoebe upgrade --cli  # rewrites container/Dockerfile\n" +
         "  phoebe start --build  # rebuilds the image with the new pin",
     );
-    return;
+    return { kind: "unchanged", reason: "baked-into-image" };
   }
 
   // Release tag vX.Y.Z ⇔ phoebe-agent@X.Y.Z — one number line.
@@ -974,7 +1076,7 @@ export function upgradeCliHalf(opts: { releaseTag: string | null; io: Required<U
         "cli: container/Dockerfile has no PHOEBE_AGENT_VERSION pin — " +
           "the build pulls the latest published version. Nothing to move.",
       );
-      return;
+      return { kind: "unchanged", reason: "nothing-pinned" };
     }
     if (registryLatest !== null && desired !== registryLatest && opts.releaseTag !== null) {
       io.stderr(
@@ -984,7 +1086,7 @@ export function upgradeCliHalf(opts: { releaseTag: string | null; io: Required<U
     }
     if (pin.version === desired) {
       io.stdout(`cli: container/Dockerfile already pins ${desired} — nothing to do.`);
-      return;
+      return { kind: "unchanged", reason: "already-current" };
     }
     const result = rewriteDockerfilePin(dockerfileContent, desired);
     if (!result.ok) {
@@ -992,15 +1094,14 @@ export function upgradeCliHalf(opts: { releaseTag: string | null; io: Required<U
         `cli: refusing to rewrite container/Dockerfile — ${result.reason}.\n` +
           `Apply the edit yourself:\n  ${dockerfileEditInstruction(desired)}`,
       );
-      process.exitCode = 1;
-      return;
+      return { kind: "refused", stage: "pin" };
     }
     io.writeDockerfile(result.content);
     io.stdout(`cli: container/Dockerfile ${result.previousVersion} → ${desired}.`);
     io.stdout("Rebuild the image to make the new launcher active:");
     io.stdout("  phoebe start --build");
     io.stdout(`To roll back: phoebe upgrade v${result.previousVersion} --cli`);
-    return;
+    return { kind: "moved", from: result.previousVersion, to: desired };
   }
 
   // Host deployment — no container/Dockerfile. Install into the global npm prefix.
@@ -1017,8 +1118,9 @@ export function upgradeCliHalf(opts: { releaseTag: string | null; io: Required<U
     );
   } else if (installed === desired) {
     io.stdout(`cli: already at ${installed} — nothing to do.`);
-    return;
+    return { kind: "unchanged", reason: "already-current" };
   }
   io.npm(["install", "-g", `phoebe-agent@${desired}`], { timeout: 300_000 });
   io.stdout(`cli: ${installed ?? "(none)"} → ${desired} installed globally.`);
+  return { kind: "moved", from: installed, to: desired };
 }
