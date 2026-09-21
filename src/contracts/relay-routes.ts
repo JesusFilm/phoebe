@@ -41,6 +41,13 @@ export const RELAY_ROUTES = {
    */
   forget: "/api/deployments/forget",
   /**
+   * POST — **set one config field** on one deployment (#503, #547). The
+   * deployment's fingerprint rides in the body beside the patch, for the reason
+   * `forget` does: one importable constant, and the per-deployment read this
+   * shares a prefix with is a GET.
+   */
+  configSet: "/api/deployments/config-set",
+  /**
    * POST — **run doctor** (#546, decided in #507 §10). One deployment when the
    * body names a fingerprint, every deployment the relay knows when it does
    * not: one button for the fleet, one message per deployment, and one receipt
@@ -167,6 +174,56 @@ export type RelayStoredReport = {
 export type RelayDeploymentDetail = {
   deployment: RelayDeploymentRow;
   report: RelayStoredReport | null;
+};
+
+/**
+ * The body of `POST /api/deployments/config-set` — one field patch, addressed
+ * to one deployment (#503, #547).
+ *
+ * What is deliberately not here is the author. The relay stamps the signed-in
+ * address onto the edit before it goes on the rail, so a console cannot name
+ * someone else as the editor and the ledger entry carries the session's word
+ * rather than the browser's (#506).
+ */
+export type RelayConfigSetRequest = {
+  /** Which deployment. A console reads it off the row it is looking at. */
+  fingerprint: string;
+  /** Idempotency key. The same id twice is the same edit, answered identically. */
+  id: string;
+  /** The dotted path of the leaf, as the effective-config tree spells it. */
+  path: string;
+  /** The new value. A leaf is a literal; nothing here carries an object. */
+  value: string | number | boolean | null;
+  /** The `sha256:` the page was shown, out of the report's config section. */
+  configFingerprint: string;
+};
+
+/**
+ * What the relay answers a config-set with: the deployment's own receipt, or
+ * the relay's own word that it never got there.
+ *
+ * Two arms rather than one, because the relay is a courier and not a judge. A
+ * receipt is quoted verbatim — a deployment newer than its relay passes through
+ * rather than being mistranslated — and `undelivered` is the one outcome the
+ * relay is entitled to author, because it is a fact about the socket and not
+ * about the edit. A console renders that arm with the manual edit it composed
+ * itself, since there is no receipt to carry one.
+ *
+ * `receipt` is `unknown` for the reason {@link RelayStoredReport.report} is:
+ * the deployment owns the shape (`EditReceipt` in config-edit.ts) and the relay
+ * hands the bytes on without reading a field of them. A console narrows it.
+ */
+export type RelayConfigSetAnswer = {
+  /**
+   * The deployment's own word — `written` or `refused` — or the relay's
+   * `undelivered`. A `string` and not a union of the three, because the relay
+   * quotes what it was told: a deployment newer than its relay may answer a
+   * word this relay has never heard of, and passing it through is how a console
+   * one version ahead reads it.
+   */
+  outcome: string;
+  /** The receipt, absent only when the deployment never got the ask. */
+  receipt?: unknown;
 };
 
 /**

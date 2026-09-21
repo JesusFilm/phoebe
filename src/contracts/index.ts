@@ -32,11 +32,14 @@ export type {
   EditRefused,
   EditWritten,
 } from "./config-edit.ts";
+export { CLOSED_EDIT_BLOCKS } from "./config-edit.ts";
 export { RELAY_ROUTES } from "./relay-routes.ts";
 export type {
   RelayConnectionState,
   RelayDeploymentDetail,
   RelayDeploymentRow,
+  RelayConfigSetAnswer,
+  RelayConfigSetRequest,
   RelayDoctorRunAnswer,
   RelayDoctorRunResult,
   RelayIdentity,

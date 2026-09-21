@@ -36,6 +36,10 @@ import { startRelay, type RunningRelay } from "./serve.ts";
 const OFF_LIMITS = [
   "src/pipeline-listing.ts",
   "src/contracts/deployment.ts",
+  // The edit receipt is the deployment's answer about the deployment's own file
+  // (#503). The relay carries one verbatim and reads no field of it, so naming
+  // the shape would be the first step towards policing the word (#547).
+  "src/contracts/config-edit.ts",
   "src/contracts/pipeline-state.ts",
   "src/contracts/status-snapshot.ts",
   // The relay answers none of doctor's checks (#507 §8, #546). It carries a
@@ -52,6 +56,7 @@ const DERIVERS = [
   "wedgedVerdict",
   "DeploymentReport",
   "StatusSnapshot",
+  "EditReceipt",
   "DoctorReport",
   "DoctorCheck",
 ];

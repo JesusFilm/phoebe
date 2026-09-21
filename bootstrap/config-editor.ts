@@ -31,11 +31,14 @@ import { readFileSync } from "node:fs";
 import {
   applyConfigEdit,
   configEditLedgerPath,
+  EDIT_LEDGER_VERSION,
   fingerprintOf,
   lastEditIdOf,
   liveLedger,
+  type EditLedger,
 } from "../src/config-edit.ts";
 import type { ConfigEdit, EditReceipt } from "../src/contracts/config-edit.ts";
+import type { EditLedgerEntry } from "../src/contracts/deployment.ts";
 import { diagnosis, engineCommandFor, lastJsonLine, type EngineCommand } from "./pipelines.ts";
 
 /** The deployment's config-edit pen: apply an edit, and say which one last landed. */
@@ -43,6 +46,18 @@ export type ConfigEditor = {
   apply: (edit: ConfigEdit) => Promise<EditReceipt>;
   /** The newest applied edit still describing the file, for the report's reconcile section. */
   lastEditId: () => string | null;
+  /**
+   * The ledger's live entries — the edits this deployment applied and has not
+   * seen committed (#503) — for the report's own `edits` section. Read at
+   * publish time from the same file `lastEditId` reads, so the id in the
+   * reconcile section and the entries beside it can never disagree.
+   *
+   * The ledger's `after` fingerprint is dropped on the way out: it is how this
+   * module decides an entry is still live, and a reader that saw it would be
+   * holding a second copy of a question already answered by the entry's
+   * presence.
+   */
+  liveEdits: () => EditLedgerEntry[];
   /** Point the validator at a freshly materialized checkout. */
   useEngine: (entry: string) => void;
   /** Break the reconcile poll's wait; set once the supervisor is running. */
@@ -76,6 +91,28 @@ export function createConfigEditor(opts: {
   let run: EngineCommand | null = opts.run ?? null;
   let nudge: (() => void) | null = null;
 
+  /**
+   * The ledger as it stands against the file right now. Both readers below take
+   * it fresh rather than caching: a shell `phoebe config set` writes the same
+   * two files from another process, and a cached answer would leave the report
+   * describing edits this process happens to remember.
+   */
+  const ledger = (): EditLedger => {
+    let source: string;
+    try {
+      source = read(opts.rootConfigPath);
+    } catch {
+      return { version: EDIT_LEDGER_VERSION, applied: [] };
+    }
+    let raw: string | null;
+    try {
+      raw = read(ledgerPath);
+    } catch {
+      raw = null;
+    }
+    return liveLedger(raw, fingerprintOf(source));
+  };
+
   return {
     useEngine(entry) {
       if (opts.run === undefined) run = engineCommandFor(entry);
@@ -84,19 +121,10 @@ export function createConfigEditor(opts: {
       nudge = next;
     },
     lastEditId() {
-      let source: string;
-      try {
-        source = read(opts.rootConfigPath);
-      } catch {
-        return null;
-      }
-      let raw: string | null;
-      try {
-        raw = read(ledgerPath);
-      } catch {
-        raw = null;
-      }
-      return lastEditIdOf(liveLedger(raw, fingerprintOf(source)));
+      return lastEditIdOf(ledger());
+    },
+    liveEdits() {
+      return ledger().applied.map(({ after: _after, ...entry }) => entry);
     },
     apply: async (edit) =>
       await applyConfigEdit(edit, {

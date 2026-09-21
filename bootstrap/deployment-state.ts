@@ -52,6 +52,7 @@ import type {
   CrashLoopRecord,
   DeploymentIdentity,
   DeploymentReport,
+  EditLedgerEntry,
   FleetCell,
   ReconcileState,
   RelayReport,
@@ -146,6 +147,13 @@ export type DeploymentStateDeps = {
    * deployment that has never been edited through the verb.
    */
   lastEditId?: () => string | null;
+  /**
+   * The config edits applied here and not yet in a commit (#503), read at
+   * publish time from the same ledger {@link DeploymentStateDeps.lastEditId}
+   * reads. Absent for a deployment with no editor — the section then is too,
+   * which a reader states as "none known" rather than as "none".
+   */
+  edits?: () => EditLedgerEntry[];
   /** One tenant's credential arm, resolved the one shared way (#162). */
   armOf: (tenant: { envPath: string }) => CredentialArm;
   now?: () => number;
@@ -517,6 +525,10 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
           tenants: config.tenants,
           omitted: config.omitted,
         },
+        // Absent, not empty, when nothing keeps a ledger: an empty list is a
+        // deployment that has been edited and committed since, which is a
+        // different fact from one that cannot tell you either way.
+        ...(deps.edits !== undefined ? { edits: deps.edits() } : {}),
       };
       const next = stampReport(draft, last, iso(at));
       if (next === null) return;

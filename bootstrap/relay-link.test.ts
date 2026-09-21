@@ -18,11 +18,13 @@ import {
   RELAY_PROTOCOL,
 } from "../src/contracts/relay-protocol.ts";
 import { verifyNonceSignature } from "../src/ed25519.ts";
+import type { ConfigEdit, EditReceipt } from "../src/contracts/config-edit.ts";
 import type { DeploymentReport } from "../src/contracts/deployment.ts";
 import type { RelayStatus } from "./deployment-state.ts";
 import { generateDeploymentKey, type DeploymentKey } from "./relay-key.ts";
 import {
   connectRelay,
+  parseConfigSet,
   PROTOCOL_RETRY_MS,
   RECONNECT_CAP_MS,
   RECONNECT_FIRST_MS,
@@ -88,6 +90,8 @@ function harness(
     pairingToken?: string;
     protocol?: number;
     report?: DeploymentReport | null;
+    /** The pen behind the link, or absent for a link built without one. */
+    onConfigSet?: (edit: ConfigEdit) => Promise<EditReceipt>;
     /** Omitted on purpose by the test for a link with no doctor behind it. */
     doctorRun?: (by: string) => DoctorRunAnswer;
   } = {},
@@ -123,6 +127,7 @@ function harness(
     },
     onStatus: (status) => statuses.push(status),
     report: () => report,
+    ...(overrides.onConfigSet !== undefined ? { onConfigSet: overrides.onConfigSet } : {}),
     ...(overrides.doctorRun !== undefined
       ? {
           onDoctorRun: (by: string) => {
@@ -565,6 +570,145 @@ describe("pushing the report", () => {
     expect(relay.reports()).toEqual([
       { type: RELAY_MESSAGES.report, schema: 1, report: { schema: 1, updatedAt: "first" } },
     ]);
+  });
+});
+
+describe("a config edit off the rail (#503, #547)", () => {
+  /** A pen that records what it was asked and answers written. */
+  function pen() {
+    const asked: ConfigEdit[] = [];
+    return {
+      asked,
+      apply: (edit: ConfigEdit): Promise<EditReceipt> => {
+        asked.push(edit);
+        return Promise.resolve({
+          id: edit.id,
+          state: "written",
+          file: "/etc/phoebe/phoebe.config.ts",
+          path: edit.path,
+          value: edit.value,
+          fingerprint: "sha256:after",
+          at: "2026-09-18T12:00:00.000Z",
+          ...(edit.by !== undefined ? { by: edit.by } : {}),
+        });
+      },
+    };
+  }
+
+  const CONFIG_SET = {
+    type: RELAY_MESSAGES.configSet,
+    id: "edit-1",
+    path: "pipelines.work.concurrency",
+    value: 4,
+    fingerprint: "sha256:loaded",
+    by: "ada@example.test",
+  };
+
+  test("the pen is asked with the patch, the fingerprint and the relay's stamp", async () => {
+    const writer = pen();
+    const relay = harness({ key: generateDeploymentKey(), onConfigSet: writer.apply });
+    relay.challenge();
+
+    relay.deliver(CONFIG_SET);
+    await Promise.resolve();
+
+    expect(writer.asked).toEqual([
+      {
+        id: "edit-1",
+        path: "pipelines.work.concurrency",
+        value: 4,
+        fingerprint: "sha256:loaded",
+        by: "ada@example.test",
+      },
+    ]);
+  });
+
+  test("and the receipt goes back under the id the relay asked with", async () => {
+    const writer = pen();
+    const relay = harness({ key: generateDeploymentKey(), onConfigSet: writer.apply });
+    relay.challenge();
+
+    relay.deliver(CONFIG_SET);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const receipt = relay.receipts()[0]!;
+    expect(receipt["id"]).toBe("edit-1");
+    expect(receipt["outcome"]).toBe("written");
+    // Verbatim: the link carries the pen's words and writes none of its own.
+    expect((receipt["detail"] as Record<string, unknown>)["state"]).toBe("written");
+    expect((receipt["detail"] as Record<string, unknown>)["by"]).toBe("ada@example.test");
+  });
+
+  test("a link with no pen refuses in those words, with the edit to make by hand", async () => {
+    const relay = harness({ key: generateDeploymentKey() });
+    relay.challenge();
+
+    relay.deliver(CONFIG_SET);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const detail = relay.receipts()[0]!["detail"] as Record<string, unknown>;
+    expect(relay.receipts()[0]!["outcome"]).toBe("refused");
+    expect(detail["why"]).toContain("holds no pen");
+    expect(detail["instruction"]).toContain("pipelines: { work: { concurrency: 4 } }");
+  });
+
+  test("a pen that threw is still answered, because the console is holding the ask open", async () => {
+    const relay = harness({
+      key: generateDeploymentKey(),
+      onConfigSet: () => Promise.reject(new Error("the volume went away")),
+    });
+    relay.challenge();
+
+    relay.deliver(CONFIG_SET);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const detail = relay.receipts()[0]!["detail"] as Record<string, unknown>;
+    expect(detail["why"]).toBe("the volume went away");
+    expect(detail["instruction"]).toContain("by hand");
+  });
+
+  test("an edit before the hello is ignored: that socket has not identified itself", async () => {
+    const writer = pen();
+    const relay = harness({ key: generateDeploymentKey(), onConfigSet: writer.apply });
+    relay.dials[0]!.handlers.onOpen();
+
+    relay.deliver(CONFIG_SET);
+    await Promise.resolve();
+
+    expect(writer.asked).toEqual([]);
+    expect(relay.receipts()).toEqual([]);
+  });
+
+  test("a malformed edit is dropped rather than guessed at", async () => {
+    const writer = pen();
+    const relay = harness({ key: generateDeploymentKey(), onConfigSet: writer.apply });
+    relay.challenge();
+
+    for (const frame of [
+      { ...CONFIG_SET, id: "" },
+      { ...CONFIG_SET, by: undefined },
+      { ...CONFIG_SET, fingerprint: undefined },
+      { ...CONFIG_SET, path: 7 },
+      { ...CONFIG_SET, value: { nested: true } },
+    ]) {
+      relay.deliver(frame);
+      await Promise.resolve();
+    }
+
+    expect(writer.asked).toEqual([]);
+    expect(relay.receipts()).toEqual([]);
+  });
+
+  test("parseConfigSet keeps the literals and refuses everything else", () => {
+    for (const value of ["a", 4, true, null]) {
+      expect(parseConfigSet({ ...CONFIG_SET, value })?.value).toBe(value);
+    }
+    expect(parseConfigSet({ ...CONFIG_SET, value: [] })).toBeNull();
+    expect(parseConfigSet({ type: "phoebe:relay:heartbeat" })).toBeNull();
   });
 });
 

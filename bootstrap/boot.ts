@@ -1761,6 +1761,9 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     // one an edit's fingerprint must be taken over.
     rootConfig: createRootConfigSource(configPath),
     lastEditId: () => editor.lastEditId(),
+    // The ledger's live entries, so a console can say "edits not yet in a
+    // commit" without reading this deployment's git (#503).
+    edits: () => editor.liveEdits(),
     // Workspace: the tenant's own `.env` weighed against the deployment env.
     // Solo: the root *is* the tenant, so those are the same env (#162).
     armOf:
@@ -1810,6 +1813,10 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   // first connection is a no-op, and every connection opens with the whole
   // report anyway.
   relay.start(deployment, {
+    // The pen goes up the rail with the link (#503, #547): a console's edit is
+    // the same call a shell `phoebe config set` makes, arriving from a message
+    // instead of from argv, so there is one writer and one reconcile path.
+    configSet: (edit) => editor.apply(edit),
     runDoctor: (by) => {
       const ask = doctor.request("request", by);
       // The report is where what doctor found goes (#507 §7). Nothing here waits

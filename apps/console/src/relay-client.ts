@@ -14,6 +14,8 @@
 
 import { RELAY_EVENTS, RELAY_ROUTES } from "phoebe-agent/contracts";
 import type {
+  RelayConfigSetAnswer,
+  RelayConfigSetRequest,
   RelayDeploymentDetail,
   RelayDeploymentRow,
   RelayDoctorRunAnswer,
@@ -40,6 +42,22 @@ export type RelayClient = {
    * is a fact from the report.
    */
   deployment: (fingerprint: string) => Promise<RelayDeploymentDetail>;
+  /**
+   * Set one field of one deployment's root config (#503, #547). Answers the
+   * deployment's own receipt — `written` or `refused` — or the relay's
+   * `undelivered` when it never got there. All three are outcomes a page
+   * renders, so none of them throws.
+   *
+   * What does throw is the relay refusing the request itself: a session that is
+   * gone, a patch it will not carry, a deployment it has no link for. Those are
+   * about this call rather than about the config, and the caller says so in
+   * different words.
+   *
+   * The author is not a parameter. The relay stamps the signed-in address on
+   * the way past, which is what makes the ledger's `by` the session's word.
+   */
+  setConfigField: (edit: RelayConfigSetRequest) => Promise<RelayConfigSetAnswer>;
+
   /**
    * Ask one deployment to run doctor, or every deployment when no fingerprint is
    * given (#546). Answers one result per deployment asked, whichever it was, so
@@ -145,6 +163,17 @@ export function createBrowserRelayClient(options: BrowserRelayClientOptions = {}
       return get<RelayDeploymentDetail>(
         `${RELAY_ROUTES.deployments}/${encodeURIComponent(fingerprint)}`,
       );
+    },
+
+    async setConfigField(edit) {
+      const response = await call(RELAY_ROUTES.configSet, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify(edit),
+      });
+      if (!response.ok) throw new RelayRequestError(response.status, await errorCode(response));
+      return (await response.json()) as RelayConfigSetAnswer;
     },
 
     async runDoctor(fingerprint) {

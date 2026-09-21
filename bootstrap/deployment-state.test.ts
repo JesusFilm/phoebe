@@ -658,7 +658,7 @@ describe("the config section", () => {
     });
     h.state.notePipelines([pipelineOf("/t/b", "work"), pipelineOf("/t/a", "work")]);
 
-    const config = h.latest()!.config;
+    const config = h.latest()!.config!;
     expect(config.version).toBe(3);
     expect(config.omitted).toBe(0);
     expect(config.tenants.map((tenant) => tenant.tenant)).toEqual(["acme/t/a", "acme/t/b"]);
@@ -668,7 +668,7 @@ describe("the config section", () => {
   test("the root config's source fingerprint is what a later edit checks against", () => {
     const h = harness();
     h.state.noteEngine({ ref: "main", sha: "abc", quarantinedSha: null });
-    expect(h.latest()!.config.root).toEqual({
+    expect(h.latest()!.config!.root).toEqual({
       path: "/deployment/phoebe.config.ts",
       fingerprint: "sha256:root",
     });
@@ -683,7 +683,7 @@ describe("the config section", () => {
       config: collectorOf(rowFor),
     });
     h.state.notePipelines([pipelineOf("/t/a", "work"), pipelineOf("/t/a", "intake")]);
-    expect(h.latest()!.config.tenants).toHaveLength(1);
+    expect(h.latest()!.config!.tenants).toHaveLength(1);
   });
 
   test("a held tenant carries its discovery error, never the resolution it had before", () => {
@@ -695,12 +695,12 @@ describe("the config section", () => {
       config: collectorOf(rowFor),
     });
     h.state.notePipelines([pipelineOf("/t/a", "work")]);
-    expect(h.latest()!.config.tenants[0]!.fields).not.toBeNull();
+    expect(h.latest()!.config!.tenants[0]!.fields).not.toBeNull();
 
     h.state.noteHolds([
       { id: "/t/a", dir: "/t/a", envPath: "/t/a/.env", slug: "acme/widget", reason: "mint failed" },
     ]);
-    expect(h.latest()!.config.tenants).toEqual([
+    expect(h.latest()!.config!.tenants).toEqual([
       {
         tenant: "acme/widget",
         error: "held — mint failed",
@@ -722,7 +722,7 @@ describe("the config section", () => {
     h.state.noteHolds([
       { id: "/t/held", dir: "/t/held", envPath: "/t/held/.env", slug: null, reason: "no config" },
     ]);
-    expect(h.latest()!.config.tenants).toEqual([
+    expect(h.latest()!.config!.tenants).toEqual([
       { tenant: "/t/held", error: "held — no config", fields: null, env: null, warnings: [] },
     ]);
   });
@@ -736,7 +736,7 @@ describe("the config section", () => {
       config: collectorOf(() => rowFor("/t/a")),
     });
     h.state.notePipelines([pipelineOf("/t/a", "work")]);
-    expect(h.latest()!.config.tenants[0]!.tenant).toBe("acme/t/a");
+    expect(h.latest()!.config!.tenants[0]!.tenant).toBe("acme/t/a");
 
     h.state.noteEngine({
       ref: "main",
@@ -744,7 +744,7 @@ describe("the config section", () => {
       quarantinedSha: null,
       config: collectorOf(() => ({ ...rowFor("/t/a"), tenant: "renamed" })),
     });
-    expect(h.latest()!.config.tenants[0]!.tenant).toBe("renamed");
+    expect(h.latest()!.config!.tenants[0]!.tenant).toBe("renamed");
   });
 
   test("a section that did not move keeps its stamp, and writes nothing on its own", () => {
@@ -756,12 +756,12 @@ describe("the config section", () => {
       config: collectorOf(rowFor),
     });
     h.state.notePipelines([pipelineOf("/t/a", "work")]);
-    const stamp = h.latest()!.config.updatedAt;
+    const stamp = h.latest()!.config!.updatedAt;
 
     h.advance(60_000);
     h.state.notePipelines([pipelineOf("/t/a", "work")]);
     expect(h.written).toHaveLength(2);
-    expect(h.latest()!.config.updatedAt).toBe(stamp);
+    expect(h.latest()!.config!.updatedAt).toBe(stamp);
   });
 
   test("a config the engine could not compute is the error arm, and supervision goes on", () => {
@@ -773,14 +773,75 @@ describe("the config section", () => {
       config: collectorOf((id) => unknownConfig(id, "could not read the effective config — boom")),
     });
     h.state.notePipelines([pipelineOf("/t/a", "work")]);
-    expect(h.latest()!.config.tenants[0]!.error).toContain("could not read");
+    expect(h.latest()!.config!.tenants[0]!.error).toContain("could not read");
     expect(h.latest()!.fleet.cells).toHaveLength(1);
   });
 
   test("before the first engine is materialized the section is empty, not invented", () => {
     const h = harness();
     h.state.notePipelines([pipelineOf("/t/a", "work")]);
-    expect(h.latest()!.config.tenants).toEqual([]);
+    expect(h.latest()!.config!.tenants).toEqual([]);
+  });
+});
+
+describe("the edit ledger the report ships (#503, #547)", () => {
+  const entry = {
+    id: "edit-1",
+    file: "/etc/phoebe/phoebe.config.ts",
+    path: "pipelines.work.concurrency",
+    value: 4,
+    at: "2026-05-05T00:00:00.000Z",
+    by: "ada@example.test",
+  };
+
+  test("a deployment with no pen has no section — absent, never an empty list", () => {
+    const h = harness();
+    h.state.noteEngine({ ref: "main", sha: "abc", quarantinedSha: null });
+    expect(h.latest()!.edits).toBeUndefined();
+  });
+
+  test("a pen's live entries ride in every report, read at publish time", () => {
+    let live = [entry];
+    const h = harness({ edits: () => live });
+    h.state.noteEngine({ ref: "main", sha: "abc", quarantinedSha: null });
+    expect(h.latest()!.edits).toEqual([entry]);
+
+    // The operator committed: the pen's list empties, and the report says so.
+    live = [];
+    h.state.publish();
+    expect(h.latest()!.edits).toEqual([]);
+  });
+
+  test("the ledger moving is news on its own, even when nothing else moved", () => {
+    let live: (typeof entry)[] = [];
+    const h = harness({ edits: () => live });
+    h.state.noteEngine({ ref: "main", sha: "abc", quarantinedSha: null });
+    const writes = h.written.length;
+
+    live = [entry];
+    h.state.publish();
+
+    expect(h.written.length).toBe(writes + 1);
+  });
+
+  test("an unmoved ledger writes nothing, like every other section", () => {
+    const h = harness({ edits: () => [entry] });
+    h.state.noteEngine({ ref: "main", sha: "abc", quarantinedSha: null });
+    const writes = h.written.length;
+
+    h.advance(60_000);
+    h.state.publish();
+
+    expect(h.written.length).toBe(writes);
+  });
+
+  test("the last applied edit's id rides on the reconcile section, for a console to follow", () => {
+    const h = harness({ lastEditId: () => "edit-1" });
+    h.state.noteEngine({ ref: "main", sha: "abc", quarantinedSha: null });
+    expect(h.latest()!.bootstrapper.reconcile).toMatchObject({
+      phase: "idle",
+      lastEditId: "edit-1",
+    });
   });
 });
 

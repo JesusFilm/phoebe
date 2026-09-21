@@ -75,6 +75,7 @@ export const RELAY_ROUTES = {
   forget: "/api/deployments/forget",
   testAlert: "/api/alerts/test",
   doctorRun: "/api/deployments/doctor-run",
+  configSet: "/api/deployments/config-set",
   events: "/api/events",
 };
 
@@ -97,3 +98,33 @@ export const ALERT_DARK_AFTER_MS = 300_000;
 
 /** The five conditions (#515 §3). Mirror of `ALERT_CONDITIONS` in alerts.ts. */
 export const ALERT_CONDITIONS = ["dark", "wedged", "crash-looping", "doctor-fail", "replaced"];
+/**
+ * The config-edit closed set (#503). Mirror of `CLOSED_EDIT_BLOCKS` in
+ * config-edit.ts; the doc comments live there.
+ */
+export const CLOSED_EDIT_BLOCKS = [
+  {
+    prefix: "workspace",
+    why: "the fleet declaration is yours — adding, removing or reordering tenants is a git edit, never a console one",
+  },
+  {
+    prefix: "engine",
+    why: "`engine.ref` picks which engine runs and moves with `phoebe upgrade`, so the migrations for the new ref run with it",
+  },
+  {
+    prefix: "relay",
+    why: "the relay block is the pairing's own, written when a deployment is paired rather than edited field by field",
+  },
+  {
+    prefix: "deployment",
+    why: "the `deployment` block holds the host's lifecycle commands, which run outside the container and are not the container's to rewrite",
+  },
+  {
+    prefix: "paths",
+    why: "`paths` is derived from `repoSlug` and the data volume; nothing at that path is read from the file",
+  },
+  {
+    prefix: "workKinds",
+    why: "top-level `workKinds` is the permanent alias for `pipelines.work.kinds` — set it at the path the effective config prints",
+  },
+];

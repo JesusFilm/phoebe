@@ -325,8 +325,15 @@ export type DeploymentReport = {
    * rather than as "none".
    */
   edits?: EditLedgerEntry[];
-  /** Every tenant's effective config, as the running engine computed it (#502, #535). */
-  config: ConfigReport;
+  /**
+   * Every tenant's effective config, as the running engine computed it (#502,
+   * #535). Absent until the bootstrapper that embeds the engine's answer lands
+   * (#535), and absent from a deployment running an engine older than that; an
+   * addition, so it does not move {@link DEPLOYMENT_SCHEMA}, and a reader treats
+   * absence as "this deployment did not report its settings", never as "this
+   * deployment has none".
+   */
+  config?: ConfigReport;
   /** When any section last moved. */
   updatedAt: string;
 };

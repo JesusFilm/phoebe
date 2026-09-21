@@ -50,6 +50,12 @@ export type ConfigLeafRow = {
 /** One tenant's rows, or the reason there are none. */
 export type TenantLeaves = {
   tenant: string;
+  /**
+   * The file this tenant's settings were read from, when the report names it
+   * (#547). What tells the one editable config — the root, the only read-write
+   * mount — from a tenant's own, which is edited in its checkout.
+   */
+  configPath: string | undefined;
   /** Why the settings are unknown, or null when they are known. */
   error: string | null;
   rows: ConfigLeafRow[];
@@ -75,6 +81,7 @@ export const SOURCE_ORDER: readonly SettingSource[] = [
 export function tenantLeaves(config: ConfigReport): TenantLeaves[] {
   return config.tenants.map((tenant) => ({
     tenant: tenant.tenant,
+    configPath: typeof tenant.configPath === "string" ? tenant.configPath : undefined,
     error: tenant.error,
     rows: leafRows(tenant),
     warnings: Array.isArray(tenant.warnings) ? tenant.warnings : [],

@@ -3,7 +3,7 @@
 // is actually working. (A `--fix` mode that repairs at the current pin is a
 // mapped follow-up.)
 //
-// Eight deployment checks, all reads of state that already exists (three more —
+// Nine deployment checks, all reads of state that already exists (three more —
 // `labels`, `stray-members` and `stale-state` — are per tenant and live in the
 // tenant sweep below):
 //   1. cli            — installed bootstrapper vs the npm registry's latest
