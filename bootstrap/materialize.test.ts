@@ -59,8 +59,12 @@ describe("ensureEngine", () => {
     expect(existsSync(join(dir, "src", "main.ts"))).toBe(true);
     expect(existsSync(join(dir, "templates", "container", "Dockerfile"))).toBe(true);
     expect(existsSync(join(dir, "prompts", "issues-prompt.md"))).toBe(true);
-    // An ESM package.json is written so the copied `.ts` loads as a module.
-    expect(JSON.parse(readFileSync(join(dir, "package.json"), "utf8"))).toEqual({ type: "module" });
+    // An ESM package.json is written so the copied `.ts` loads as a module, and
+    // it names the version, which the copy reads from its own manifest (#539).
+    expect(JSON.parse(readFileSync(join(dir, "package.json"), "utf8"))).toEqual({
+      type: "module",
+      version: "1.2.3",
+    });
   });
 
   test("links the package's runtime dependencies into the copy", () => {

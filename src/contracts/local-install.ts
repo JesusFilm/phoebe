@@ -24,6 +24,21 @@ export type LocalInstall = {
   dir: string;
   /** The folder's own name — what the rail shows, since `dir` is too long for it. */
   name: string;
+  /**
+   * What this install answers to on a relay (#505 §3) — `relay.name`, or the
+   * solo `repoSlug`, or the folder's name. Beside {@link LocalInstall.name}
+   * rather than instead of it, because they are two different names: one is what
+   * the operator sees on the rail, the other is what a deployment row on a relay
+   * is called, and a paired install is matched to its row by the second.
+   */
+  deploymentName: string;
+  /**
+   * The relay this install's root config dials, or null when it names none.
+   * Read out of the config's `relay` block on every list, like everything else
+   * here: the block is the pairing's own (#540), and the companion is not the
+   * only thing that can write it.
+   */
+  relayUrl: string | null;
   /** When the operator added it, ISO 8601. The one derived-from-nothing field. */
   addedAt: string;
   /** Derived on every read, never stored. */

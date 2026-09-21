@@ -52,12 +52,34 @@ export type TemplateParams = {
   installCommand: string;
   /** The npm package name of the CLI — normally `phoebe-agent`. */
   cliBin: string;
+  /** The npm version a scaffolded image pins that CLI to. */
+  cliVersion: string;
 };
 
 export const DEFAULT_TEMPLATE_PARAMS: TemplateParams = {
   installCommand: "npm ci",
   cliBin: "phoebe-agent",
+  cliVersion: thisPackageVersion(),
 };
+
+/**
+ * This package's own version — the pin `phoebe relay init` writes into the
+ * relay image, because the relay's version *is* the bootstrapper's (#506 §1).
+ * Whatever CLI scaffolds the file is the CLI the image should install, so this
+ * is read rather than hard-coded in the template.
+ *
+ * It throws rather than falling back. The published `bin` launcher reads this
+ * same manifest before it can run at all, so an unreadable one is a broken
+ * install, not a case to paper over with an unpinned scaffold.
+ */
+function thisPackageVersion(): string {
+  const raw = readFileSync(new URL("../package.json", import.meta.url), "utf8");
+  const { version } = JSON.parse(raw) as { version?: unknown };
+  if (typeof version !== "string") {
+    throw new Error("phoebe-agent's package.json carries no version to pin a scaffolded image to.");
+  }
+  return version;
+}
 
 /**
  * The scaffolded config's crash-reporting line (#474), exactly as both config
@@ -260,7 +282,12 @@ export type RunInitOptions = {
   deps?: InitDeps;
 };
 
-function readShippedFile(
+/**
+ * Read one file out of the shipped package — a `templates/…` or `prompts/…`
+ * path. Exported for the relay's own scaffolder (`relay/init.ts`), which reads
+ * `templates/relay/…` from wherever this package was installed.
+ */
+export function readShippedFile(
   relPath: string,
   packageRoot: string | undefined,
   moduleDir: string,
@@ -533,9 +560,13 @@ export function copyShippedPromptsInto(
   return written;
 }
 
-/** Human-readable summary suitable for the CLI to stdout after init runs. */
-export function formatInitReport(report: InitReport, targetDir: string): string {
-  const lines = [`[phoebe] init → ${targetDir}`];
+/**
+ * Human-readable summary suitable for the CLI to stdout after init runs.
+ * `command` names the scaffolder in the first line, so `phoebe relay init`
+ * reports under its own name rather than `phoebe init`'s.
+ */
+export function formatInitReport(report: InitReport, targetDir: string, command = "init"): string {
+  const lines = [`[phoebe] ${command} → ${targetDir}`];
   const emit = (label: string, paths: readonly string[]): void => {
     if (paths.length === 0) return;
     lines.push(`  ${label}:`);

@@ -12,17 +12,27 @@
 // page says so and shows the relay's own connection facts, which are never in the
 // report. Guessing would be worse than a blank cell.
 //
-// **A known schema is still checked.** The body arrived over HTTP from a process
-// this one does not control, so every section is narrowed before it is indexed.
-// Anything missing reads as absent rather than throwing — one malformed report
-// must not take the fleet page down with it.
+// **A known schema is still checked.** The body arrived from a process this one
+// does not control, so every section is narrowed before it is indexed. Anything
+// missing reads as absent rather than throwing — one malformed report must not
+// take the fleet page down with it.
+//
+// One narrowing for both arms. The local read loop emits the same triple over
+// the desktop bridge that the relay stores (`StoredReport`, #556), so a page
+// reading a local install and a page reading a remote deployment reach the same
+// verdicts about the same bytes.
 
 import { DEPLOYMENT_SCHEMA } from "phoebe-agent/contracts";
 import type {
   ChildLiveness,
+  ConfigReport,
   DeploymentReport,
+  DoctorSection,
+  EditLedgerEntry,
   FleetCell,
+  ReconcileState,
   RelayStoredReport,
+  StoredReport,
   TenantFacts,
 } from "phoebe-agent/contracts";
 
@@ -37,7 +47,7 @@ export type ReportReading =
   | { kind: "read"; receivedAt: string; report: DeploymentReport };
 
 /** Narrow one stored report, or say why not. */
-export function readReport(stored: RelayStoredReport | null): ReportReading {
+export function readReport(stored: StoredReport | null): ReportReading {
   if (stored === null) return { kind: "none" };
   if (stored.schema !== DEPLOYMENT_SCHEMA) return { kind: "unreadable", schema: stored.schema };
   const body = stored.report;
@@ -86,4 +96,50 @@ export function childrenOf(report: DeploymentReport): Map<string, ChildLiveness>
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The doctor section, or null when the report carries none. Null is the answer
+ * for two different deployments — one running an engine older than #534, and one
+ * whose section did not survive the trip — and neither is "doctor passed".
+ */
+export function doctorOf(report: DeploymentReport): DoctorSection | null {
+  return isRecord(report.doctor) ? report.doctor : null;
+}
+
+/**
+ * Every tenant's effective config, as the engine computed it (#502, #535), or
+ * null when the report carries no such section. Null covers a deployment
+ * running an engine older than the section and a section that did not survive
+ * the trip, and neither of them is "this deployment configures nothing" — the
+ * tab says which, rather than drawing an empty table.
+ */
+export function configOf(report: DeploymentReport): ConfigReport | null {
+  return isRecord(report.config) && Array.isArray(report.config.tenants)
+    ? (report.config as unknown as ConfigReport)
+    : null;
+}
+
+/**
+ * Config edits applied on the deployment and not yet in a commit (#503). An
+ * absent section is an empty list here, because the only thing a reader can do
+ * with "this engine does not keep a ledger" is say nothing — and saying nothing
+ * is what an empty list renders as.
+ */
+export function editsOf(report: DeploymentReport): EditLedgerEntry[] {
+  return Array.isArray(report.edits) ? (report.edits.filter(isRecord) as EditLedgerEntry[]) : [];
+}
+
+/**
+ * The reconcile section — what the bootstrapper is doing about a config or an
+ * engine that moved, and which edit it last applied (#503, #536). Null when the
+ * report carries no bootstrapper section, which is the same "cannot say" every
+ * other reader of a malformed report gets.
+ */
+export function reconcileOf(report: DeploymentReport): ReconcileState | null {
+  const bootstrapper = bootstrapperOf(report);
+  const reconcile = bootstrapper?.reconcile;
+  return isRecord(reconcile) && typeof reconcile.phase === "string"
+    ? (reconcile as unknown as ReconcileState)
+    : null;
 }

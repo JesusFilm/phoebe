@@ -20,6 +20,7 @@
 import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import type { MintedPairingToken } from "../src/contracts/relay-routes.ts";
 import { fingerprintOf } from "../src/ed25519.ts";
 
 /** The file's name on the relay volume. */
@@ -32,6 +33,17 @@ export const PAIRING_TOKEN_TTL_MS = 15 * 60_000;
 export type Link = {
   /** Raw Ed25519 public key, base64url — the identity, and the dedupe key. */
   publicKey: string;
+  /**
+   * Raw X25519 public key, base64url — the **box key** a console seals a secret
+   * to (#549). Recorded from the hello that carried it, under a signature that
+   * covered it, and re-recorded on every handshake so a deployment that grew a
+   * box key on an upgrade is encryptable to as soon as it reconnects.
+   *
+   * Empty for a link paired by a relay older than box keys: a link with a
+   * signing key and no way to encrypt to it. The console shows such a
+   * deployment its secrets but cannot set one until it reconnects.
+   */
+  boxKey: string;
   /** Derived from the key; the name reports and URLs use. */
   fingerprint: string;
   /** What the deployment calls itself. Displayed, never matched on. */
@@ -57,9 +69,15 @@ export type Links = {
    * `firstSeen` and takes the new name: re-pairing an existing key is an
    * operator repeating themselves, not a second deployment.
    */
-  pair: (deployment: { publicKey: string; name: string; by: string }, now: Date) => Link;
-  /** Stamp a completed handshake. Silent when the key is unknown. */
-  seen: (publicKey: string, now: Date) => void;
+  pair: (
+    deployment: { publicKey: string; boxKey: string; name: string; by: string },
+    now: Date,
+  ) => Link;
+  /**
+   * Stamp a completed handshake, and re-record the box key it presented. Silent
+   * when the key is unknown.
+   */
+  seen: (publicKey: string, boxKey: string, now: Date) => void;
   /**
    * **Forget** one deployment, by fingerprint (#505 §4). Returns the link that
    * went, or null when this relay never knew it.
@@ -77,11 +95,24 @@ export type Links = {
 export function createLinks(dataDir: string): Links {
   const path = join(dataDir, LINKS_FILENAME);
 
-  /** A missing, unreadable or malformed file is a relay that knows nobody. */
+  /**
+   * A missing, unreadable or malformed file is a relay that knows nobody.
+   *
+   * A file written before box keys existed has no `boxKey` on its links, and
+   * every reader downstream treats that field as present-but-empty rather than
+   * as optional. Filled in here, on the way out, so there is one place that
+   * knows the old shape.
+   */
   function read(): LinksFile {
     try {
       const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<LinksFile>;
-      return { links: Array.isArray(parsed.links) ? parsed.links : [] };
+      const links = Array.isArray(parsed.links) ? parsed.links : [];
+      return {
+        links: links.map((link) => ({
+          ...link,
+          boxKey: typeof link.boxKey === "string" ? link.boxKey : "",
+        })),
+      };
     } catch {
       return { links: [] };
     }
@@ -105,12 +136,14 @@ export function createLinks(dataDir: string): Links {
       const existing = file.links.find((link) => link.publicKey === deployment.publicKey);
       if (existing !== undefined) {
         existing.name = deployment.name;
+        existing.boxKey = deployment.boxKey;
         existing.lastSeen = now.toISOString();
         write(file);
         return existing;
       }
       const link: Link = {
         publicKey: deployment.publicKey,
+        boxKey: deployment.boxKey,
         fingerprint: fingerprintOf(deployment.publicKey),
         name: deployment.name,
         firstSeen: now.toISOString(),
@@ -122,11 +155,12 @@ export function createLinks(dataDir: string): Links {
       return link;
     },
 
-    seen(publicKey, now) {
+    seen(publicKey, boxKey, now) {
       const file = read();
       const link = file.links.find((entry) => entry.publicKey === publicKey);
       if (link === undefined) return;
       link.lastSeen = now.toISOString();
+      link.boxKey = boxKey;
       write(file);
     },
 
@@ -140,11 +174,12 @@ export function createLinks(dataDir: string): Links {
   };
 }
 
-/** A minted token, as the console shows it exactly once. */
-export type PairingToken = {
-  token: string;
-  expiresAt: string;
-};
+/**
+ * A minted token, as the console — or the companion — reads it exactly once.
+ * The shape is in `phoebe-agent/contracts`, because the relay mints it and a
+ * second codebase spends it; this alias is what the relay's own code calls it.
+ */
+export type PairingToken = MintedPairingToken;
 
 export type PairingTokens = {
   /** Mint one. The string is shown once and the relay keeps only its expiry. */

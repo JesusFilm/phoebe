@@ -8,26 +8,36 @@ import { describe, expect, test } from "vite-plus/test";
 import {
   CANCELLABLE_VERBS as typedCancellable,
   CONSOLE_PROTOCOL as typedConsole,
+  CLOSED_EDIT_BLOCKS as typedClosedBlocks,
+  COMPANION_AUTH_URL as typedAuthUrl,
   DESKTOP_BRIDGE_GLOBAL as typedGlobal,
+  DEVICE_CODE_TTL_MS as typedCodeTtl,
   MAX_RUN_LINES as typedMaxLines,
   RELAY_CLOSE as typedClose,
   RELAY_DARK_AFTER_MS as typedDark,
   RELAY_DEPLOYMENTS_PATH as typedPath,
+  RELAY_DOCTOR_RUN as typedDoctorRun,
+  RELAY_TOKEN_ENV as typedTokenEnv,
   RELAY_EVENTS as typedEvents,
   RELAY_HEARTBEAT_MS as typedHeartbeat,
   RELAY_MESSAGES as typedMessages,
   RELAY_PROTOCOL as typedProtocol,
+  CONSOLE_PROTOCOL as shippedConsole,
   RELAY_ROUTES as typed,
   RELAY_UNDELIVERED as typedUndelivered,
 } from "./index.ts";
 import {
   CANCELLABLE_VERBS as shippedCancellable,
-  CONSOLE_PROTOCOL as shippedConsole,
+  CLOSED_EDIT_BLOCKS as shippedClosedBlocks,
+  COMPANION_AUTH_URL as shippedAuthUrl,
   DESKTOP_BRIDGE_GLOBAL as shippedGlobal,
+  DEVICE_CODE_TTL_MS as shippedCodeTtl,
   MAX_RUN_LINES as shippedMaxLines,
   RELAY_CLOSE as shippedClose,
   RELAY_DARK_AFTER_MS as shippedDark,
   RELAY_DEPLOYMENTS_PATH as shippedPath,
+  RELAY_DOCTOR_RUN as shippedDoctorRun,
+  RELAY_TOKEN_ENV as shippedTokenEnv,
   RELAY_EVENTS as shippedEvents,
   RELAY_HEARTBEAT_MS as shippedHeartbeat,
   RELAY_MESSAGES as shippedMessages,
@@ -57,12 +67,15 @@ describe("the deployment rail's constants are mirrored too", () => {
   test.each([
     ["RELAY_PROTOCOL", typedProtocol, shippedProtocol],
     ["RELAY_DEPLOYMENTS_PATH", typedPath, shippedPath],
+    ["RELAY_TOKEN_ENV", typedTokenEnv, shippedTokenEnv],
     ["RELAY_MESSAGES", typedMessages, shippedMessages],
     ["RELAY_CLOSE", typedClose, shippedClose],
     ["RELAY_HEARTBEAT_MS", typedHeartbeat, shippedHeartbeat],
     ["RELAY_DARK_AFTER_MS", typedDark, shippedDark],
     ["RELAY_UNDELIVERED", typedUndelivered, shippedUndelivered],
+    ["RELAY_DOCTOR_RUN", typedDoctorRun, shippedDoctorRun],
     ["RELAY_EVENTS", typedEvents, shippedEvents],
+    ["CLOSED_EDIT_BLOCKS", typedClosedBlocks, shippedClosedBlocks],
   ])("%s is the same on both sides", (_name, typedValue, shippedValue) => {
     expect(shippedValue).toEqual(typedValue);
   });
@@ -101,6 +114,23 @@ describe("the companion's bridge global", () => {
     // The preload writes this global and the console bundle reads it; the two
     // ship together, so the only way they can disagree is through this file.
     expect(shippedGlobal).toBe(typedGlobal);
+  });
+});
+
+describe("the companion's sign-in constants (#554)", () => {
+  test.each([
+    ["COMPANION_AUTH_URL", typedAuthUrl, shippedAuthUrl],
+    ["DEVICE_CODE_TTL_MS", typedCodeTtl, shippedCodeTtl],
+  ])("%s is the same on both sides", (_name, typedValue, shippedValue) => {
+    expect(shippedValue).toEqual(typedValue);
+  });
+
+  test("the landing is on the scheme the companion registers, under its own host", () => {
+    // The relay redirects to this and the companion registers the scheme in
+    // front of it; the host is what keeps it off the renderer's own origin.
+    const landing = new URL(typedAuthUrl);
+    expect(landing.protocol).toBe("phoebe:");
+    expect(landing.host).toBe("auth");
   });
 });
 

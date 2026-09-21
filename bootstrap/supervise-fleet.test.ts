@@ -136,6 +136,7 @@ function harness(initial: TenantSample[]) {
   let launches = 0;
   let throwOnDiscover = false;
   let engineChanges = 0;
+  let nudge: () => void = () => {};
   const discoverErrors: unknown[] = [];
 
   // A (re)materialized engine is checked out at the *current* tracked ref, so
@@ -156,6 +157,9 @@ function harness(initial: TenantSample[]) {
   const result = superviseFleet({
     intervalMs: 1000,
     crashBackoffMs: 500,
+    onNudge: (fn) => {
+      nudge = fn;
+    },
     launch: () => {
       launches += 1;
       return engine();
@@ -209,6 +213,7 @@ function harness(initial: TenantSample[]) {
       engineState.remoteSha = sha;
     },
     tick: clock.tick,
+    nudge: () => nudge(),
     requestStop: () => {
       stopRequested = true;
       clock.tick();
@@ -222,6 +227,25 @@ describe("superviseFleet", () => {
     await settle();
     const slugs = h.spawned.map((s) => s.slug).sort((a, b) => (a ?? "").localeCompare(b ?? ""));
     expect(slugs).toEqual(["acme/gadget", "acme/widget"]);
+  });
+
+  test("a nudge polls now instead of waiting out the interval (#536)", async () => {
+    const h = harness([sample("acme/widget", "fp1")]);
+    await settle();
+    expect(h.spawned).toHaveLength(1);
+
+    // A config edit's write: the file moved, and the writer nudges rather than
+    // leaving the fleet a poll interval behind its own config.
+    h.setTenants([sample("acme/widget", "fp2")]);
+    h.nudge();
+    await settle();
+    expect(h.spawned).toHaveLength(2);
+
+    // Re-armed: the next nudge works too, without a tick in between.
+    h.setTenants([sample("acme/widget", "fp3")]);
+    h.nudge();
+    await settle();
+    expect(h.spawned).toHaveLength(3);
   });
 
   test("hot-adds a tenant that appears", async () => {

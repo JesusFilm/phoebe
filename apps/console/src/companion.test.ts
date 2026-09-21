@@ -84,4 +84,43 @@ describe("the companion's relay client", () => {
     // Same predicate, same page, whichever arm raised it.
     await expect(client.deployments()).rejects.toSatisfy(isNotSignedIn);
   });
+
+  test("signs in by prompt, carrying what the arm can promise about keeping it (#554)", async () => {
+    const client = createBridgeRelayClient(
+      bridgeOf(
+        {
+          url: "https://relay.example.test",
+          person: null,
+          persisted: false,
+          reason: "no keyring here",
+        },
+        { signIn: (url) => ({ url, person: ADA, persisted: false }) },
+      ),
+    );
+
+    const how = await client.signIn();
+
+    expect(how).toMatchObject({
+      kind: "prompt",
+      relay: "https://relay.example.test",
+      persisted: false,
+      reason: "no keyring here",
+    });
+    if (how.kind !== "prompt") throw new Error("the companion's arm signs in by prompt");
+    await expect(how.start("https://relay.example.test")).resolves.toEqual(ADA);
+  });
+
+  test("a sign-in that comes back with nobody is not a session", async () => {
+    const client = createBridgeRelayClient(
+      bridgeOf(
+        { url: null, person: null, persisted: true },
+        { signIn: (url) => ({ url, person: null, persisted: true }) },
+      ),
+    );
+
+    const how = await client.signIn();
+    if (how.kind !== "prompt") throw new Error("the companion's arm signs in by prompt");
+
+    await expect(how.start("https://relay.example.test")).rejects.toThrow("did not complete");
+  });
 });

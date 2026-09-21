@@ -11,6 +11,7 @@ const STARTED = new Date("2026-09-18T12:00:00.000Z");
 function link(overrides: Partial<Link> = {}): Link {
   return {
     publicKey: "pk-widget",
+    boxKey: "box-widget",
     fingerprint: "fp-widget",
     name: "acme/widget",
     firstSeen: "2026-09-01T09:00:00.000Z",
@@ -34,7 +35,12 @@ describe("connectionOf", () => {
       now: at(10 * RELAY_DARK_AFTER_MS),
     });
 
-    expect(verdict).toEqual({ state: "connected", disconnectedForSeconds: null });
+    expect(verdict).toEqual({
+      state: "connected",
+      disconnectedForSeconds: null,
+      quietForMs: null,
+      quietSince: null,
+    });
   });
 
   test("inside the window it is a duration, not a verdict", () => {
@@ -45,7 +51,12 @@ describe("connectionOf", () => {
       now: at(17_400),
     });
 
-    expect(verdict).toEqual({ state: "disconnected", disconnectedForSeconds: 12 });
+    expect(verdict).toEqual({
+      state: "disconnected",
+      disconnectedForSeconds: 12,
+      quietForMs: 12_400,
+      quietSince: at(5_000).toISOString(),
+    });
   });
 
   test("past the threshold it is dark, and the seconds stop being interesting", () => {
@@ -56,7 +67,12 @@ describe("connectionOf", () => {
       now: at(5_000 + RELAY_DARK_AFTER_MS),
     });
 
-    expect(verdict).toEqual({ state: "dark", disconnectedForSeconds: null });
+    expect(verdict).toEqual({
+      state: "dark",
+      disconnectedForSeconds: null,
+      quietForMs: RELAY_DARK_AFTER_MS,
+      quietSince: at(5_000).toISOString(),
+    });
   });
 
   test("a clean close and a half-open socket are the same silence", () => {
@@ -90,7 +106,12 @@ describe("connectionOf", () => {
       now: at(9_000),
     });
 
-    expect(verdict).toEqual({ state: "disconnected", disconnectedForSeconds: 9 });
+    expect(verdict).toEqual({
+      state: "disconnected",
+      disconnectedForSeconds: 9,
+      quietForMs: 9_000,
+      quietSince: STARTED.toISOString(),
+    });
   });
 
   test("and a minute after the restart that same deployment is dark", () => {
@@ -112,7 +133,12 @@ describe("connectionOf", () => {
       now: at(10 * RELAY_DARK_AFTER_MS),
     });
 
-    expect(verdict).toEqual({ state: "unseen", disconnectedForSeconds: null });
+    expect(verdict).toEqual({
+      state: "unseen",
+      disconnectedForSeconds: null,
+      quietForMs: null,
+      quietSince: null,
+    });
   });
 });
 
@@ -133,6 +159,8 @@ describe("deploymentRows", () => {
       {
         fingerprint: "fp-widget",
         name: "acme/widget",
+        publicKey: "pk-widget",
+        boxKey: "box-widget",
         firstSeen: "2026-09-01T09:00:00.000Z",
         lastSeen: "2026-09-18T11:59:30.000Z",
         pairedBy: "ada@example.test",

@@ -3,10 +3,10 @@
 
 import { describe, expect, test } from "vite-plus/test";
 import { CONSOLE_PROTOCOL, RELAY_EVENTS } from "phoebe-agent/contracts";
-import type { RelayDeploymentDetail, RelayEvent, RelayIdentity } from "phoebe-agent/contracts";
+import type { RelayDeploymentDetail, RelayEvent } from "phoebe-agent/contracts";
 import { applyEvent, EMPTY_FLEET, loadFleet } from "./fleet-state.ts";
 import type { RelayClient } from "./relay-client.ts";
-import { ago, report, row, stored } from "./test-fixture.ts";
+import { ago, client as stubClient, report, row, stored } from "./test-fixture.ts";
 
 /** A client that answers from a table, and records nothing it was not asked. */
 function fakeClient(
@@ -15,18 +15,15 @@ function fakeClient(
     .filter((detail): detail is RelayDeploymentDetail => !(detail instanceof Error))
     .map((detail) => detail.deployment),
 ): RelayClient {
-  return {
+  return stubClient({
     version: () => Promise.resolve({ version: "0.13.0", console: CONSOLE_PROTOCOL }),
-    me: () => Promise.resolve({ sub: "s", email: "ada@example.test" } satisfies RelayIdentity),
-    signOut: () => Promise.resolve(),
     deployments: () => Promise.resolve(rows),
     deployment: (fingerprint) => {
       const detail = details[fingerprint];
       if (detail === undefined) return Promise.reject(new Error("no such deployment"));
       return detail instanceof Error ? Promise.reject(detail) : Promise.resolve(detail);
     },
-    events: () => () => {},
-  };
+  });
 }
 
 describe("the initial read", () => {
@@ -102,6 +99,28 @@ describe("one event applied", () => {
     );
 
     expect(after.rows.map((entry) => entry.fingerprint)).toEqual(["one", "two"]);
+  });
+
+  test("an alert changes nothing: it is a moment, not a fact (#524 §1)", () => {
+    const before = { rows: [paired], reports: {} };
+
+    const after = applyEvent(before, {
+      type: RELAY_EVENTS.alert,
+      at: ago(0),
+      alert: {
+        schema: 1,
+        kind: "alert",
+        condition: "dark",
+        state: "raised",
+        deployment: { name: "alpha", keyFingerprint: "one" },
+        since: ago(5),
+        detail: "no heartbeat for 5 min",
+        text: "alpha: dark (no heartbeat for 5 min)",
+        url: "https://relay.example/#/d/one",
+      },
+    });
+
+    expect(after).toBe(before);
   });
 
   test("an event that lands before the read applies to the empty fleet", () => {

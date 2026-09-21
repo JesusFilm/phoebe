@@ -10,16 +10,19 @@ report** whenever anything in it moves. The relay keeps the latest report per
 deployment, lists the fleet as connected, disconnected for so many seconds, dark
 or unseen, answers one deployment with both halves of that picture, and streams
 the changes as they happen. You can forget a deployment from the relay and a
-deployment can leave from its own side.
+deployment can leave from its own side. It also
+alerts: when a deployment crosses into or out of a named condition, the relay
+sends one message about it.
 
 The relay is a separate image, a separate compose file and a separate volume
-from any deployment. A deployment that names no relay never dials one and runs
-exactly as it does now, and the deployment container still has no inbound
-listener. That is a property worth keeping, so a test guards it.
+from any deployment, all three written by `phoebe relay init`. A deployment
+that names no relay never dials one and runs exactly as it does now, and the
+deployment container still has no inbound listener. That is a property worth
+keeping, so a test guards it.
 
 Its version is the bootstrapper's version, and one changelog covers both.
 
-## Configuration is four environment variables
+## Configuration is four environment variables, and an optional fifth
 
 | Variable               | What it is                                                                                                              |
 | ---------------------- | ----------------------------------------------------------------------------------------------------------------------- |
@@ -27,20 +30,25 @@ Its version is the bootstrapper's version, and one changelog covers both.
 | `GOOGLE_CLIENT_ID`     | The Google "Web application" OAuth client id.                                                                           |
 | `GOOGLE_CLIENT_SECRET` | Its secret. Keep it out of the image and out of git.                                                                    |
 | `ALLOWED_EMAILS`       | Comma-separated addresses merged into the allowlist at every start.                                                     |
+| `RELAY_ALERT_WEBHOOK`  | Optional. Where one message per alert edge is POSTed. Unset means nothing is posted.                                    |
 
-All four must be set. `phoebe relay serve` refuses to start otherwise, and the
+The first four must be set. `phoebe relay serve` refuses to start otherwise, and the
 error names every variable it did not get rather than making you find them one
 restart at a time. The first three must also be non-blank, because a blank
 hostname or a blank secret is no better than an absent one.
 
-`ALLOWED_EMAILS` is the exception, and the difference matters. Blank is an
-answer: nobody is seeded, and the first verified Google sign-in claims the
-relay. Set it in production and that window never opens.
+`ALLOWED_EMAILS` is the exception among the four, and the difference matters.
+Blank is an answer: nobody is seeded, and the first verified Google sign-in
+claims the relay. Set it in production and that window never opens.
+
+`RELAY_ALERT_WEBHOOK` is the one variable you may leave out entirely. Leaving it
+out means no webhook — it does not mean no alerting. See below.
 
 There is no `relay.config.ts`, and there will not be one. The port (8787), the
 heartbeat interval, the dark threshold and the pairing-token lifetime are
-constants in the code. An operator who tunes them is making the fleet's timing
-disagree with the relay's.
+constants in the code, and so is the five-minute wait before silence becomes an
+alert. An operator who tunes them is making the fleet's timing disagree with the
+relay's.
 
 Two flags exist for running `phoebe relay serve` somewhere other than its
 container: `--port` and `--data-dir`. Both default to what the scaffolded
@@ -67,6 +75,68 @@ Copy the client id and secret into the relay's environment. Press **Publish app*
 later if the allowlist outgrows 100 people; these scopes still need no
 verification.
 
+## Standing it up
+
+`phoebe relay init` writes the relay's container files into `relay/`, beside
+wherever you run it. Three files, all yours to commit and edit:
+
+| File           | What it is                                                                                                                                            |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Dockerfile`   | The relay image: the deployment image minus git, `gh` and every agent CLI. `ARG PHOEBE_AGENT_VERSION` pins the version of the CLI that scaffolded it. |
+| `compose.yml`  | Two services, `relay` and a Caddy sidecar, and one named volume.                                                                                      |
+| `.env.example` | The four variables. Copy it to `.env`, which the scaffold gitignores.                                                                                 |
+
+Then, in this order:
+
+1. `cp .env.example .env` and fill in all four variables. `ALLOWED_EMAILS` may
+   be empty, but read what that means above before you leave it that way.
+2. Create the Google client as the section above describes. Its one authorized
+   redirect URI is `https://<RELAY_HOST>/auth/google/callback`.
+3. Point `RELAY_HOST` at this host in DNS and let ports 80 and 443 reach it.
+   Caddy answers the certificate challenge on 80, so a name that does not
+   resolve yet means no certificate.
+4. `docker compose up -d --build`, then `docker compose logs -f` until Caddy
+   says it has a certificate and the relay says which port it is on.
+5. Open `https://<RELAY_HOST>/auth/google/start` and sign in.
+
+### The sidecar
+
+The relay listens on plain HTTP on 8787 and nothing publishes that port. Caddy
+is the only front door: `caddy reverse-proxy --from $RELAY_HOST --to relay:8787`
+is its whole configuration, and it gets the certificate for that name itself.
+There is no Caddyfile to keep in step with `.env`.
+
+Already running a proxy? Delete the `caddy` service, publish the relay's 8787
+however you normally do, and point yours at it. The relay never terminates TLS,
+so nothing else changes.
+
+### One volume
+
+`relay-data`, mounted at `/data` in both containers. The relay writes
+`/data/relay`; Caddy writes `/data/caddy`, which is where the official image
+keeps certificates. One volume is one thing to back up, and persisting Caddy's
+half is what makes a restart reuse the certificate it has rather than ask Let's
+Encrypt for another one and walk into the weekly duplicate limit.
+
+Caddy starts after the relay, and that ordering is load-bearing. Docker seeds a
+fresh named volume from the image of whichever container mounts it first,
+ownership included. The relay image carries a `phoebe`-owned `/data` and the
+Caddy image carries no `/data` at all, so the relay has to be the one to seed
+it — the other way round leaves `/data` root-owned and the unprivileged relay
+unable to write.
+
+### Re-running init, and upgrading
+
+`phoebe relay init` never overwrites a file that is already there. It reports
+what it created and what it skipped, and says in as many words that the skipped
+ones were left alone. Run it again whenever you like; to regenerate a file you
+have edited, delete that file first.
+
+Upgrading is an edit to `ARG PHOEBE_AGENT_VERSION` and a
+`docker compose up -d --build`. Upgrade the relay before the deployments that
+dial it: a relay speaks every protocol version up to its own, and one older than
+a deployment refuses the connection.
+
 ## What the relay does with a sign-in
 
 The flow is OpenID Connect's authorization-code flow, run by
@@ -90,7 +160,50 @@ withhold the pre-auth cookie on exactly that request and fail every sign-in.
 
 Nothing of Google's is kept. No refresh token is requested, the userinfo
 endpoint is never called, and the ID token is read once and dropped. A relay
-restart signs everyone out, which costs one redirect.
+restart signs every **browser** out, which costs one redirect.
+
+## Signing the companion in
+
+The desktop companion cannot use any of that. Google refuses to sign anyone in
+inside an embedded webview, and a `__Host-` cookie cannot reach an app whose
+pages are loaded from disk. So the companion signs in through the operator's own
+browser and comes back on a second redirect.
+
+It starts at `GET /auth/device/start?challenge=…&name=…`. The challenge is the
+SHA-256 of a PKCE verifier the app's main process mints and never sends anywhere
+else; the name is what the device will be listed as. From there it is the same
+Google flow and the same allowlist check a browser gets. What differs is the
+landing: instead of a session cookie and `/`, the relay mints a **one-time code**
+and redirects to `phoebe://auth?code=…`, the custom scheme the companion
+registers with the OS.
+
+The code is single use, lives sixty seconds, and is bound to that challenge. Any
+app on the machine can register `phoebe://` and be handed the URL; only the one
+holding the verifier can spend it at `POST /auth/device/exchange`.
+
+What the exchange answers with is a **device token**: an opaque bearer, sent as
+`Authorization: Bearer` on every call the companion makes. The relay keeps its
+SHA-256 in `devices.json` on the volume, beside the person's `sub`, address,
+device name and last seen — never the token itself, so a copy of that file is not
+a set of working credentials. A relay restart keeps companions signed in, which
+is the point.
+
+It does not expire. Revocation is the only end it has, and there are three:
+
+- the companion's own sign-out, `POST /auth/device/revoke`, which revokes the
+  bearer the request carries;
+- `POST /api/devices/remove` with an `id`, from the console;
+- the same route with a `sub`, which takes every device that person signed in.
+  That is what removing them from the allowlist has to do, since an allowlist they
+  are off is not consulted again by a bearer they already hold.
+
+On a 401 the companion drops the token and asks the operator to sign in again. It
+does not retry: the relay has said this token is not one it knows, and that
+answer does not change by being asked twice.
+
+The token is encrypted at rest with Electron's `safeStorage`. On a machine with
+no keyring the companion refuses to persist it, keeps it in memory for the
+session, and says so on screen.
 
 ## The allowlist
 
@@ -114,34 +227,75 @@ Entries from `ALLOWED_EMAILS` are never written to the file. They are recomputed
 at every start, which is what makes editing the variable and restarting a real
 way out of a lockout.
 
+### The People page maintains it
+
+The console's **People** page is where the list is kept: add by email, remove
+anyone else, and mint a pairing token from the same page. There are no roles.
+Everyone on the list can read every deployment, mint tokens, and edit this very
+list, so the page carries no permissions column and never will.
+
+Two rows have no Remove beside them, and neither is a privilege:
+
+- **Yourself.** Nobody can put you back — there is no role above you and no
+  console for someone who is not on the list — so removing yourself is a
+  lockout with extra steps.
+- **Anything from `ALLOWED_EMAILS`.** That entry is not in the file to delete
+  and would return at the next start. The page says "from environment" and
+  leaves it; the way out is the variable and a restart.
+
+**Removing someone ends their sessions.** The relay closes every session that
+person holds, so a console open in front of them goes dead at its next request
+rather than at their next reload — and the answer says how many sessions ended,
+because that is the half of a removal an operator cannot otherwise see. A relay
+holds nothing else of theirs: no refresh token was ever requested, so a person
+off the list has no way back in.
+
 ## Routes
 
 Paths live in `phoebe-agent/contracts` as `RELAY_ROUTES`, so the console imports
 them instead of copying strings.
 
-| Method | Path                             | What happens                                              |
-| ------ | -------------------------------- | --------------------------------------------------------- |
-| `GET`  | `/api/version`                   | `{ version, console }`. No session in front of it.        |
-| `GET`  | `/auth/google/start`             | Redirects to Google.                                      |
-| `GET`  | `/auth/google/callback`          | Google's redirect back. The only URI Google knows.        |
-| `POST` | `/auth/sign-out`                 | Drops the session. 204.                                   |
-| `GET`  | `/api/me`                        | `{ sub, email }` for a signed-in caller, 401 otherwise.   |
-| `POST` | `/api/pairing-tokens`            | Mints one pairing token. Shown once; 401 otherwise.       |
-| `GET`  | `/api/deployments`               | Every link, with where the relay holds each one.          |
-| `GET`  | `/api/deployments/<fingerprint>` | One link's row, plus the last report it pushed.           |
-| `POST` | `/api/deployments/forget`        | Forgets one deployment, named by fingerprint in the body. |
-| `GET`  | `/api/events`                    | The event stream: reports and connection changes.         |
-| `GET`  | `/` and `/assets/…`              | The console's build. Public, and the only paths that are. |
+| Method | Path                             | What happens                                                |
+| ------ | -------------------------------- | ----------------------------------------------------------- |
+| `GET`  | `/auth/google/start`             | Redirects to Google.                                        |
+| `GET`  | `/auth/google/callback`          | Google's redirect back. The only URI Google knows.          |
+| `POST` | `/auth/sign-out`                 | Drops the session. 204.                                     |
+| `GET`  | `/api/version`                   | `{ version, console }`. No session in front of it.          |
+| `GET`  | `/api/me`                        | `{ sub, email }` for a signed-in caller, 401 otherwise.     |
+| `POST` | `/api/pairing-tokens`            | Mints one pairing token. Shown once; 401 otherwise.         |
+| `GET`  | `/api/deployments`               | Every link, where the relay holds it, and its last alert.   |
+| `GET`  | `/api/deployments/<fingerprint>` | One link's row, plus the last report it pushed.             |
+| `POST` | `/api/deployments/forget`        | Forgets one deployment, named by fingerprint in the body.   |
+| `POST` | `/api/deployments/config-set`    | Sets one config field on one deployment.                    |
+| `POST` | `/api/deployments/doctor-run`    | Runs doctor on one deployment, or on every one.             |
+| `GET`  | `/api/events`                    | The event stream: reports, connection changes and alerts.   |
+| `POST` | `/api/alerts/test`               | Sends one `{ kind: "test" }` body to every alert sink.      |
+| `GET`  | `/api/people`                    | Everyone who may sign in.                                   |
+| `POST` | `/api/people`                    | Adds one, by email in the body.                             |
+| `POST` | `/api/people/remove`             | Removes one, by email in the body, and ends their sessions. |
+| `POST` | `/api/secrets`                   | Sets or clears one tenant secret, as a sealed envelope.     |
+| `GET`  | `/auth/device/start`             | Starts a companion's sign-in. Lands on `phoebe://auth`.     |
+| `POST` | `/auth/device/exchange`          | Spends a one-time code for a device token.                  |
+| `POST` | `/auth/device/revoke`            | Revokes the bearer on the request. 204 either way.          |
+| `GET`  | `/api/devices`                   | Every companion signed in to this relay.                    |
+| `POST` | `/api/devices/remove`            | Revokes devices by `id`, or a person's by `sub`.            |
+| `GET`  | `/` and `/assets/…`              | The console's build. Public, and the only paths that are.   |
+
+Every route behind the door reads one of two carriers — a `__Host-` session
+cookie or an `Authorization: Bearer` — and none of them knows which one it got.
+A browser has the first, a companion has the second, and nothing a signed-in
+person may ask for depends on what they are holding.
 
 `/api/version` is the one path under `/api` with no door on it. The Upgrading
-section below says why. A successful sign-in lands on `/`, the console. The pages are public on purpose:
+section below says why. A successful browser sign-in lands on `/`, the console.
+The pages are public on purpose:
 the sign-in control is part of the bundle, and every read behind it answers 401
 on its own. A path with no file behind it is still a JSON `no-such-route` — the
 console routes on the URL hash, so the relay needs no catch-all and keeps being
 able to say a route does not exist.
 
-The fingerprint rides in the forget body rather than in the path so the route
-stays one constant a console imports. No fingerprint spells `forget`, and the
+The fingerprint rides in the forget and config-set bodies rather than in the path
+so each route stays one constant a console imports. No fingerprint spells `forget`, and the
 per-deployment read that shares the prefix is a `GET`. That read only matches a
 real fingerprint — 32 characters of base64url — so a path segment that is not one
 is a `no-such-route` and never reaches the volume the reports are named on.
@@ -178,7 +332,13 @@ no long-lived bearer token exists anywhere. The credential an operator handles i
 spendable once; the identity that outlives it is a key the deployment generated
 itself and has never sent.
 
-From the operator's side it is three steps.
+From the operator's side it is three steps — or one, from the companion. The
+[desktop companion](https://github.com/JesusFilm/phoebe/issues/522) does all
+three for a local install behind a **Pair with the relay** button on its install
+tab: it mints the token with its own device credential, writes the address and
+the token, and nudges Compose so the container comes back holding both. The
+token never appears in the run's output. What follows is the same thing by hand,
+and what the companion is doing under the button.
 
 1. Mint a token on the relay: `POST /api/pairing-tokens` while signed in. It is
    good for fifteen minutes and shown once, and the relay keeps it in memory, so
@@ -198,6 +358,10 @@ From the operator's side it is three steps.
    # .env. Compose carries this into the container the way GH_TOKEN travels.
    PHOEBE_RELAY_TOKEN=<the token>
    ```
+
+   The scaffolded `container/compose.yml` forwards that variable. A deployment
+   scaffolded before it did needs the line adding to its `environment:` block,
+   or the token stays on the host and the deployment never pairs.
 
 3. Boot. The deployment dials, generates an Ed25519 **deployment key**, presents
    it with the token, and the relay records the public half as a **link** in
@@ -299,6 +463,35 @@ holding is refused the same word up front. Nothing is replayed on reconnect:
 the operator re-issues, and the deployment-side ledgers make a re-issue
 idempotent.
 
+### Run doctor
+
+A person presses **Run doctor** on a deployment, or once for the whole fleet. The
+relay sends one `doctor-run` per deployment and collects the receipts; there is no
+second message type and no fleet-wide verb on the wire.
+
+A receipt comes back within the moment and says which run the press belongs to,
+not what the run found:
+
+- **started** — nothing was in flight, so this press is the run.
+- **joined** — a run was already under way, or a reconcile had already parked one.
+  Doctor is a read of the same world, so two presses spend one tenant's API
+  budget, not two.
+- **refused** — the deployment will not run one now, and says why. A container on
+  its way down is the case this exists for.
+- **undelivered** — the relay is not holding that deployment's connection. It is
+  refused up front rather than queued, the same as every other request.
+
+What doctor found arrives afterwards, as the next report: the deployment's own
+model moves its doctor section and pushes it, and the console's open stream
+carries it. That is why the console's button never sits spinning for five
+minutes, and why a deployment that is dark shows its last-known report with an
+age beside a disabled button.
+
+The relay answers **none** of doctor's checks. Every one of them reads the
+deployment's files, env, clone or credentials, or calls GitHub with them. What
+the relay knows — connected since, last heard, the last close code — is the
+connection panel beside doctor and is never a check.
+
 ### Forget, and leave
 
 Two verbs end a pairing, one on each side, and neither needs the other.
@@ -385,7 +578,7 @@ Both are behind the session cookie and answer 401 without it.
 ### The event stream
 
 `GET /api/events` is one server-sent-events stream, so pages update without
-polling. Four event names, each with the payload a reader would otherwise have
+polling. Five event names, each with the payload a reader would otherwise have
 fetched:
 
 | Event          | Payload                                         |
@@ -394,10 +587,17 @@ fetched:
 | `connected`    | `{ at, deployment }` — the row, as it now reads |
 | `disconnected` | `{ at, deployment }`                            |
 | `dark`         | `{ at, deployment }`                            |
+| `alert`        | `{ at, alert }` — the webhook's body, verbatim  |
 
 A connection event's name is the word the row now carries, and each is said once
 per change rather than once per check. `unseen` is never an event: it is where
 every link starts, so nothing ever becomes it.
+
+`alert` is the odd one out: it carries no row and no report, and nothing on any
+page changes when it arrives. It is the moment worth interrupting someone about,
+and the desktop companion is what does the interrupting — a browser drops it. See
+[Alerting](#alerting) for what is in the body, and `apps/desktop` for what the
+companion does with it.
 
 There is no replay and no resume cursor. Every event has a read behind it that
 answers the same question in full, so a page that missed one refetches
@@ -436,6 +636,293 @@ A report whose `schema` this console does not know is not read at all. The card
 says so and still shows the relay's own connection facts, which never came from the
 report.
 
+## Alerting
+
+The console is not the pager. An operator who is not looking at a tab cannot
+answer "is it alive", so the relay says something when a deployment crosses into
+or out of one of five conditions:
+
+| Condition       | Raised when                                         | Cleared when                       |
+| --------------- | --------------------------------------------------- | ---------------------------------- |
+| `dark`          | Five minutes with no heartbeat.                     | The next completed handshake.      |
+| `wedged`        | A pipeline's wedged verdict turns true in a report. | It turns false in a later report.  |
+| `crash-looping` | The bootstrapper's crash-looping flag turns true.   | It turns false.                    |
+| `doctor-fail`   | The report's overall doctor verdict becomes `fail`. | A later report is not `fail`.      |
+| `replaced`      | A newer link has taken a dark link's name.          | The old deployment turns up again. |
+
+**Unseen is silent.** A link nothing has ever connected on is setup in progress,
+not an incident.
+
+**Darkness waits five minutes, not sixty seconds.** The fleet page says "dark"
+from the 60 s mark, because that is when the relay stops believing the socket.
+The alert waits out the next four minutes, so the most common cause of darkness
+— someone restarting a container — is usually over before anything is sent.
+
+**A dark deployment sends no other clears.** Its reports are stale, so
+`wedged`, `crash-looping` and `doctor-fail` hold where they were until it
+reconnects and reports. Then each is re-read against the fresh report.
+
+An alert is a transition, not a record. There is no list, no acknowledge, no
+mute and no history page: the fleet row already says what is true now, and
+`alerts.json` on the volume holds only the last state actually sent per
+(deployment, condition). Forgetting a deployment deletes its entries, and sends
+no clear on the way out — forget is the mute for a dead key.
+
+That file is why a restart never wakes you twice. On boot the relay re-evaluates
+everything and compares against what it last sent, so a still-dark deployment
+stays quiet and one that recovered overnight gets its clear.
+
+### The message
+
+One condition per message, no digest:
+
+```json
+{
+  "schema": 1,
+  "kind": "alert",
+  "condition": "wedged",
+  "state": "raised",
+  "deployment": { "name": "acme-site", "keyFingerprint": "…" },
+  "pipeline": "acme-site/sentry",
+  "since": "2026-09-18T11:12:00Z",
+  "detail": "no pass for 17 min",
+  "text": "acme-site: pipeline sentry wedged (no pass for 17 min)",
+  "url": "https://relay.example/#/d/…"
+}
+```
+
+`pipeline` is present on `wedged` and `crash-looping` only. `text` is there so
+a generic incoming webhook renders something readable with no integration
+written; anything that knows what Phoebe is reads the fields beside it.
+
+Delivery is one attempt with a five-second cap and no retry queue. A failure is
+logged at warn naming the condition, and `alerts.json` is written after the
+attempt rather than after the success — otherwise a webhook outage would come
+back as a storm of everything it missed. A lost alert is visible in the relay's
+log and in the fleet page's own state.
+
+There is no signing. The URL is the secret, the way every incoming-webhook
+product treats it, which is also why the relay never logs it.
+
+### Leaving `RELAY_ALERT_WEBHOOK` out
+
+Unset means **no webhook**, not no alerting. The relay still evaluates every
+edge and still keeps `alerts.json`, because the webhook is one of two sinks: the
+other is an `alert` event on the events stream, which the desktop companion
+turns into an OS notification and the browser ignores. That sink is not
+configurable, so evaluation cannot be.
+
+`phoebe relay serve` logs one line at start saying which of the two you have.
+
+The edge rule itself is a pure function in `phoebe-agent/contracts`
+(`src/contracts/alerts.ts`), shared rather than reimplemented: the relay runs it
+over the fleet, and the companion runs it over a local install's report, where
+there is no relay and so no `dark` and no `replaced`.
+
+## The console
+
+The console is the operator's view of the fleet: a **rail** down the left listing
+every deployment, and a **grid** beside it with one card per deployment and one
+bar segment per pipeline. It is one React bundle in `apps/console`, built into
+`console/` at the root of this package, which is how `phoebe relay serve` hands it
+out of the single install. The same bundle is what the desktop companion will load
+from disk.
+
+The rail is always on screen, because "is everything alive" is the question the
+console exists to answer. Rows are sorted dark first, then anything with a wedged
+pipeline, a crash-looping child or a failing doctor check, then by name. There is
+no health score and no "needs attention" word: every line is a count of something
+an operator can go and look at.
+
+The four connection words each get their own mark, not four shades of one — a
+filled dot for connected, a ring for disconnected with the seconds the relay
+counted, a square for dark with its age, a dashed outline for unseen with when it
+was paired. `replaced?` rides beside the word rather than instead of it. Light and
+dark themes follow the OS.
+
+Updates arrive over `GET /api/events`. The page reads the fleet once, subscribes,
+and then only applies events; there is no polling loop and no reload. Everything
+it asks the relay for goes through one **relay client** seam — in a browser that is
+the session cookie plus `EventSource`, and in the companion it will be the desktop
+bridge with main holding the device token.
+
+A report whose `schema` this console does not know is not read at all. The card
+says so and still shows the relay's own connection facts, which never came from the
+report.
+
+Beside the fleet is **People**, reached from the tabs in the top bar and from
+`#/people` — the pages are hash routes, so none of them reaches the relay and the
+relay keeps being able to say a path does not exist. Minting a pairing token lives
+on that page, because adding a person and pairing a deployment are the same act.
+The token comes back once, and the panel says the two settings to make —
+`relay.url` in the root `phoebe.config.ts`, spelled out with this relay's own
+address, and `PHOEBE_RELAY_TOKEN` in the root `.env` — while the characters are
+still on screen.
+
+### One deployment
+
+Selecting a deployment from the rail or the grid opens its tabs. The console
+routes on the hash, so a deployment is a URL an operator can send someone:
+`#/d/<fingerprint>` is the overview, and `/pipelines`, `/doctor`, `/config` and
+`/secrets` hang off it.
+
+**Overview** leads with three panels. The **connection** panel is the relay's own
+facts and nothing else — connected since, last heard, who paired it, how the last
+socket closed. Doctor answers none of those and never will, so they stay in their
+own panel rather than reading as checks about the deployment. Beside it, the
+engine ref and the running SHA, whether the deployment is deliberately behind its
+own config on a quarantined commit, what a reconcile is relaunching onto and why,
+and the slot broker's numbers. Under the panels, every enumerated pipeline with
+its two lines, the tenants discovery is holding and the errors holding them, and
+any config edit that is in a file and not yet in a commit.
+
+**Pipelines** is one row per pipeline: the process line (a child, since when,
+restarts, crash-looping), the state line the report derived, the units in flight
+against the budget each was given, and the wedged clause when there is one. A
+tenant that fills no row — held before its config was ever readable, or declaring
+no pipeline — is still a row, because it is exactly the tenant worth seeing.
+
+**Doctor** is the last report the bootstrapper's run produced: the deployment's
+checks, then each tenant's, with the trigger that produced them, how long ago,
+whether a run is in flight right now, and the last attempt that produced nothing.
+A deployment that has never run doctor says so; that is a fact about the
+deployment, not a verdict about it.
+
+The tab also carries **Run doctor**, and the fleet page carries one for every
+deployment at once. A deployment the relay is not holding a connection for has
+the button disabled with the reason on screen rather than a press that comes back
+refused — the relay already said it is disconnected, dark or never booted, and
+saying it twice in two vocabularies helps nobody. The fleet press is never
+disabled: the deployments it cannot reach are part of the answer, each named with
+the word that came back.
+
+**Config** is every effective-config leaf in one filterable table: the value, and
+which of the six sources supplied it. Filter by a path or a value — "what is
+`model` set to" and "who set it to `opus`" are the two questions that bring an
+operator here — and the chip beside the filter counts the leaves each source won,
+so clicking `overlay` narrows the table to what env decides. The source chip is
+on every row; the env name or file path behind it is in the row's disclosure,
+because which source won is what an operator scans for and the name behind it is
+what they read once they have found the row. A value that lost sits under the
+value that beat it, so "why isn't my file value taking effect" is answered where
+the question is asked. Deprecated aliases are listed above the table rather than
+row by row, and the fingerprint of the config file heads the tab — that is the
+text a later edit checks itself against.
+
+The last column is the edit. A leaf `phoebe config set` accepts carries an
+**Edit** button; every other leaf carries a sentence saying why not, with the
+exact change to make by hand and the `phoebe config set` line to make it with.
+The closed set is the deployment's own — the fleet declaration, the engine pin,
+the relay block, the host's `deployment` block, `paths`, a work kind's
+declaration, an opaque value, and any leaf a `PHOEBE_*` variable already sets —
+read from the same table the deployment refuses from, so the console cannot start
+offering an edit the deployment would turn away. In a workspace only the **root**
+config is editable: a tenant's row says which checkout its config lives in and
+gives the command for that file.
+
+Saving sends `{ path, value }` with the fingerprint the page was drawn from, and
+the answer is the deployment's receipt — `written` or `refused`, the refusal
+always carrying the manual edit. After `written`, the panel follows the report:
+the fleet drains onto the new config and comes back idle with `lastEditId` naming
+the edit, and the leaf above turns `file` with the new value. Nothing is applied
+except through the file.
+
+The table is section 5 of the report, which the running engine computed. A
+deployment whose engine is older than that section says so; its settings are
+unknown from here, which is not the same as having none, and `phoebe config` on
+the host still answers.
+
+**Secrets** is the one tab that writes. It lists every key each tenant reads —
+whether it is set, which tier the value came from, and who set it last — and
+never a value, a last four, a hash or a length. Setting one from here encrypts
+it in the browser to the deployment's own key; what the relay carries is an
+envelope it cannot open, and what comes back is `written`, `refused` or
+`undelivered`. The next section is the whole of that trip.
+
+A deployment that has never connected says that instead of showing empty tabs —
+the pairing token was spent, nothing has booted since, and there is nothing to
+show until it does.
+
+## Setting a secret without the relay seeing it
+
+An operator with no shell on the host still needs to rotate a provider key. The
+console gives them one, and the relay in the middle never learns the value.
+
+Every deployment publishes two public keys in its `hello`: the Ed25519 key that
+is its identity, and an **X25519 box key** a console encrypts to. Both live in
+the one `state/relay-key` file with one lifecycle, and the handshake signature
+covers `nonce ‖ boxKey`, so the encrypting key is as attested as the signing one.
+Nothing in the path can substitute a key of its own. A deployment whose
+key file predates the box key grows one on its next boot and keeps its link: the
+signing key, and therefore the fingerprint and the link record, do not move.
+
+A set goes:
+
+1. The browser reads the box key off the deployment's row, and seals the value
+   with ECIES built from WebCrypto alone: an ephemeral X25519 key agreed with
+   the box key, HKDF-SHA256, AES-256-GCM. The additional authenticated data is
+   `keyFingerprint ‖ tenant ‖ key ‖ editId`, so the envelope opens for that
+   deployment, that tenant, that key name and that edit, and for nothing else.
+2. `POST /api/secrets` carries `{ fingerprint, tenant, key, action, id, envelope }`.
+   The relay forwards the envelope as the opaque string it is and adds one field:
+   **`by`**, the address of the signed-in session. A caller cannot choose whose
+   name the deployment records.
+3. The deployment opens the envelope with the private half that has never left
+   its volume, checks the key is one that tenant may set against the derived set
+   `phoebe secret set` uses, and writes it to the tenant secret store, with
+   `{ id, key, at, by }` in `state/secret-edits.json`. A successful write
+   triggers a doctor run and a fresh secrets inventory.
+4. The receipt comes back `written` or `refused`, and the console shows it.
+
+**What this promises, and what it does not.** The relay never _holds_ a secret:
+not in storage, not in a log line, not in a receipt, not in a memory dump, and
+not to anyone who reads its volume afterwards. It is not a defence against a
+hostile relay. The relay serves the browser the JavaScript that does the sealing,
+so a relay that wanted the value could serve code that keeps it. What the
+envelope buys is that a relay operator, a backup of its volume and a passive
+compromise of it all come up empty.
+
+**A clear is the same request without an envelope.** It removes the store entry
+and the tenant's `.env` or the ambient value governs again; there is no
+tombstone, because revoking a secret means rotating it.
+
+**Undelivered means run it on the host.** Nothing is queued: if the socket closed
+with the request in flight, the console says so and shows the command that does
+the same thing over a shell, with the value on stdin where it belongs.
+
+```sh
+printf %s "$ANTHROPIC_API_KEY" | docker compose exec -T phoebe \
+  phoebe secret set ANTHROPIC_API_KEY --tenant acme/widget
+```
+
+A deployment that has never connected says that instead of showing five empty
+tabs — the pairing token was spent, nothing has booted since, and there is nothing
+to show until it does.
+
+### Setting one config field
+
+`POST /api/deployments/config-set` with
+`{ fingerprint, id, path, value, configFingerprint }`:
+
+- `fingerprint` is the deployment; `id` is the edit's idempotency key, so the
+  same id twice is one write and the second call gets the first receipt back.
+- `path` is a dotted path into the config, the one the config tab printed.
+- `value` is a literal. An object or a list is a `400`: a leaf holds one value,
+  and rewriting a block is a file edit.
+- `configFingerprint` is the `sha256:` the report's config section carried. A
+  file that moved since is refused `stale` rather than merged.
+
+The relay stamps the signed-in address as the edit's `by` — that is the one field
+it authors, and a `by` in the body is ignored, so a browser cannot sign somebody
+else's name to an edit. Then it carries the patch down the rail and hands the
+receipt back without reading it.
+
+The answer is `{ outcome, receipt? }`. `outcome` is the deployment's own word or
+the relay's `undelivered`, and it is a `string` rather than a closed union
+because a deployment newer than its relay is quoted, not translated. A deployment
+the relay has no link for is a `404`; one it knows but cannot reach is a `200`
+carrying `undelivered` — in flight is never a queue, and the operator re-issues.
+
 ## Running it by hand
 
 ```sh
@@ -446,17 +933,22 @@ ALLOWED_EMAILS= \
   npx phoebe-agent relay serve --data-dir ./relay-data
 ```
 
-In a container the relay will listen on plain HTTP on port 8787 with a Caddy
-sidecar in front of it terminating TLS, keyed on `RELAY_HOST`. Operators who
-run their own proxy delete the sidecar and point theirs at the relay; the relay
-never terminates TLS itself. That scaffold is not written yet, so for now you
-run the command above.
+That is the local-development shape: no container, no proxy, no certificate.
+`localhost` is the one host Google exempts from its HTTPS rule for redirect
+URIs, which is what makes it work at all. Anywhere else, run the scaffold.
 
 ## Not here yet
 
-The verbs themselves — config writes, sealed secrets, doctor runs. The rail
-carries them, the relay will deliver them and wait for a receipt, and nothing
-sends one yet. On the console's side the fleet page is here and the rest is not:
-selecting a deployment, its effective config, and the People page all join this
-same process. See
+One page. All three verbs — config edits, doctor runs and sealed secrets — are
+delivered and answered with a receipt, and on the console's side the fleet page,
+the People page and a deployment's five tabs are here. What the People page does
+not do yet is list a person's devices with a remove beside each: the reads and
+the revoke are here, the panel is not. The design they came from is
 [the relay's shape](https://github.com/JesusFilm/phoebe/issues/506).
+
+Alerting is here but only partly fed. The webhook, the edge rule, `alerts.json`
+and the test button all work; `dark` and `replaced` are evaluated against the
+relay's own clocks on every sweep. `wedged`, `crash-looping` and `doctor-fail`
+are implemented in the rule and have nothing to read until the relay stores
+reports, and the `alert` event rides the same stream. Both wait on
+[reports over the relay](https://github.com/JesusFilm/phoebe/issues/542).
