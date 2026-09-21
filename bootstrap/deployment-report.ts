@@ -37,6 +37,7 @@ import { dirname, join } from "node:path";
 import {
   DEPLOYMENT_SCHEMA,
   type BootstrapperReport,
+  type ConfigReport,
   type DeploymentIdentity,
   type DeploymentReport,
   type FleetReport,
@@ -61,6 +62,7 @@ export type DeploymentDraft = {
   bootstrapper: Omit<BootstrapperReport, "updatedAt">;
   fleet: Omit<FleetReport, "updatedAt">;
   doctor: Omit<DoctorSection, "updatedAt">;
+  config: Omit<ConfigReport, "updatedAt">;
 };
 
 /**
@@ -115,7 +117,10 @@ export function stampReport(
   // shows, and an age that stopped advancing is the one thing worse than none.
   const doctorMoved =
     previous === null || contentOf(unstamped(previous.doctor)) !== contentOf(draft.doctor);
-  if (!identityMoved && !bootstrapperMoved && !fleetMoved && !doctorMoved) return null;
+  const configMoved =
+    previous === null || contentOf(unstamped(previous.config)) !== contentOf(draft.config);
+  if (!identityMoved && !bootstrapperMoved && !fleetMoved && !doctorMoved && !configMoved)
+    return null;
   return {
     schema: DEPLOYMENT_SCHEMA,
     identity: draft.identity,
@@ -130,6 +135,10 @@ export function stampReport(
     doctor: {
       ...draft.doctor,
       updatedAt: doctorMoved ? now : (previous?.doctor.updatedAt ?? now),
+    },
+    config: {
+      ...draft.config,
+      updatedAt: configMoved ? now : (previous?.config.updatedAt ?? now),
     },
     updatedAt: now,
   };

@@ -3,12 +3,36 @@
 // clone, launches an agent CLI, or pushes runs only where the container
 // marker exists (created by the Dockerfile).
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 export const CONTAINER_MARKER_PATH = "/.phoebe-container";
 
 export function isInsideContainer(exists: (path: string) => boolean = existsSync): boolean {
   return exists(CONTAINER_MARKER_PATH);
+}
+
+/**
+ * PID 1's command line, spaces for the NUL separators, or the empty string when
+ * it cannot be read. The container's main process is `phoebe boot`, so this is
+ * the one question a process inside the container can ask about the
+ * bootstrapper without a pidfile: doctor's `supervisor` check quotes it,
+ * `phoebe status` turns it into the header that says the report is not moving.
+ */
+export function pidOneCmdline(read: (path: string) => string = readProcFile): string {
+  try {
+    return read("/proc/1/cmdline").replaceAll("\0", " ");
+  } catch {
+    return "";
+  }
+}
+
+function readProcFile(path: string): string {
+  return readFileSync(path, "utf8");
+}
+
+/** Is `phoebe boot` the process holding this container open? */
+export function bootIsMainProcess(cmdline: string = pidOneCmdline()): boolean {
+  return cmdline.includes("boot");
 }
 
 export type ExecutionDecision = "execute" | "dry-run" | "refuse";
