@@ -17,6 +17,13 @@ function labelNotFoundError(): Error {
   return err;
 }
 
+/** The same failure as current `gh` words it, having resolved names itself. */
+function labelNotFoundErrorCurrentGh(): Error {
+  const err = new Error("gh failed") as Error & { stderr: string };
+  err.stderr = "failed to update https://github.com/acme/widget/issues/7: 'bogus' not found\n";
+  return err;
+}
+
 /**
  * A writer over a repo that holds `existing` labels: an add for a label the
  * repo does not have fails the way GitHub fails it, and `createLabel` makes it
@@ -134,5 +141,22 @@ describe("addLabelCreatingIfMissing", () => {
       thrown = err;
     }
     expect(isLabelNotFoundError(thrown)).toBe(true);
+  });
+
+  test("current gh's \"'<name>' not found\" wording also heals", () => {
+    const calls: string[] = [];
+    let created = false;
+    const repo: LabelWriter = {
+      addIssueLabel: (n, l) => {
+        calls.push(`add:${n}:${l}`);
+        if (!created) throw labelNotFoundErrorCurrentGh();
+      },
+      createLabel: (name) => {
+        calls.push(`create:${name}`);
+        created = true;
+      },
+    };
+    addLabelCreatingIfMissing(repo, 7, mergedLabelOf({ mergedLabel: "landed" }), () => {});
+    expect(calls).toEqual(["add:7:landed", "create:landed", "add:7:landed"]);
   });
 });
