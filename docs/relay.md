@@ -543,9 +543,9 @@ from disk.
 
 The rail is always on screen, because "is everything alive" is the question the
 console exists to answer. Rows are sorted dark first, then anything with a wedged
-pipeline or a crash-looping child, then by name. There is no health score and no
-"needs attention" word: every line is a count of something an operator can go and
-look at.
+pipeline, a crash-looping child or a failing doctor check, then by name. There is
+no health score and no "needs attention" word: every line is a count of something
+an operator can go and look at.
 
 The four connection words each get their own mark, not four shades of one — a
 filled dot for connected, a ring for disconnected with the seconds the relay
@@ -562,6 +562,39 @@ bridge with main holding the device token.
 A report whose `schema` this console does not know is not read at all. The card
 says so and still shows the relay's own connection facts, which never came from the
 report.
+
+### One deployment
+
+Selecting a deployment from the rail or the grid opens its tabs. The console
+routes on the hash, so a deployment is a URL an operator can send someone:
+`#/d/<fingerprint>` is the overview and `#/d/<fingerprint>/pipelines` and
+`/doctor` are the other two.
+
+**Overview** leads with three panels. The **connection** panel is the relay's own
+facts and nothing else — connected since, last heard, who paired it, how the last
+socket closed. Doctor answers none of those and never will, so they stay in their
+own panel rather than reading as checks about the deployment. Beside it, the
+engine ref and the running SHA, whether the deployment is deliberately behind its
+own config on a quarantined commit, what a reconcile is relaunching onto and why,
+and the slot broker's numbers. Under the panels, every enumerated pipeline with
+its two lines, the tenants discovery is holding and the errors holding them, and
+any config edit that is in a file and not yet in a commit.
+
+**Pipelines** is one row per pipeline: the process line (a child, since when,
+restarts, crash-looping), the state line the report derived, the units in flight
+against the budget each was given, and the wedged clause when there is one. A
+tenant that fills no row — held before its config was ever readable, or declaring
+no pipeline — is still a row, because it is exactly the tenant worth seeing.
+
+**Doctor** is the last report the bootstrapper's run produced: the deployment's
+checks, then each tenant's, with the trigger that produced them, how long ago,
+whether a run is in flight right now, and the last attempt that produced nothing.
+A deployment that has never run doctor says so; that is a fact about the
+deployment, not a verdict about it.
+
+A deployment that has never connected says that instead of showing three empty
+tabs — the pairing token was spent, nothing has booted since, and there is nothing
+to show until it does.
 
 ## Running it by hand
 
@@ -581,9 +614,9 @@ URIs, which is what makes it work at all. Anywhere else, run the scaffold.
 
 The verbs themselves — config writes, sealed secrets, doctor runs. The rail
 carries them, the relay will deliver them and wait for a receipt, and nothing
-sends one yet. On the console's side the fleet page is here and the rest is not:
-selecting a deployment, its effective config, and the People page all join this
-same process. See
+sends one yet. On the console's side the fleet page and a deployment's three
+read-only tabs are here; the secrets tab, the effective-config tab and the People
+page all join this same process. See
 [the relay's shape](https://github.com/JesusFilm/phoebe/issues/506).
 
 Alerting is here but only partly fed. The webhook, the edge rule, `alerts.json`

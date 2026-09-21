@@ -233,6 +233,31 @@ export type RelayReport = {
 };
 
 /**
+ * One config edit this deployment applied to its own files and has not seen
+ * committed (#503). The ledger itself lives on the data volume
+ * (`state/config-edits.json`); the report ships the **live** entries, which is
+ * what lets a console say "edits not yet in a commit" without reading the
+ * deployment's git.
+ *
+ * An entry leaves the live set when the file's fingerprint moves by a hand other
+ * than the writer's — the operator edited it, or committed it. There is no
+ * "mark committed" action and no verb for one.
+ */
+export type EditLedgerEntry = {
+  /** The edit's id, as its receipt carried it. */
+  id: string;
+  /** The file the value went into, as the deployment names it. */
+  file: string;
+  /** The dotted path of the leaf that was written. */
+  path: string;
+  /** What was written. A leaf is a literal; nothing here carries an object. */
+  value: string | number | boolean | null;
+  at: string;
+  /** The allowlisted email the relay stamped on the edit; absent for a shell run. */
+  by?: string;
+};
+
+/**
  * The config source a later edit checks itself against (#503). Only the root
  * `phoebe.config.ts` is mounted read-write, so it is the one file a console can
  * ask this deployment to change, and the one file worth fingerprinting here.
@@ -295,6 +320,13 @@ export type DeploymentReport = {
    * nothing here.
    */
   doctor: DoctorSection;
+  /**
+   * Config edits applied here and not yet in a commit (#503). Absent until the
+   * writer that keeps the ledger lands (#547); an addition, so it does not move
+   * {@link DEPLOYMENT_SCHEMA}, and a reader treats absence as "none known"
+   * rather than as "none".
+   */
+  edits?: EditLedgerEntry[];
   /** When any section last moved. */
   updatedAt: string;
 };

@@ -125,6 +125,7 @@ export {
   type DeploymentArm,
   type DeploymentIdentity,
   type DeploymentReport,
+  type EditLedgerEntry,
   type FleetCell,
   type FleetReport,
   type ReconcileState,

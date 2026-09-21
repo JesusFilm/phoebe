@@ -9,7 +9,8 @@
 // bar's colours are the pipeline states the deployment already derived and wrote
 // down (#501) — the console recomputes none of them.
 
-import { age, connectionReading, type PipelineFacts, type RowFacts } from "./facts.ts";
+import { age, connectionReading, doctorLine, type PipelineFacts, type RowFacts } from "./facts.ts";
+import { deploymentHref } from "./route.ts";
 
 export function FleetPage({ facts, now }: { facts: RowFacts[]; now: Date }) {
   return (
@@ -36,10 +37,10 @@ function Cell({ facts, now }: { facts: RowFacts; now: Date }) {
       aria-label={facts.row.name}
     >
       <div className="cell-head">
-        <span className="name">
+        <a className="name" href={deploymentHref(facts.row.fingerprint)}>
           <span className={`mark ${connection.tone}`} aria-hidden="true" />
           {facts.row.name}
-        </span>
+        </a>
         <span className="muted">{connection.text}</span>
         {connection.maybeReplaced ? <span className="chip replaced">replaced?</span> : null}
       </div>
@@ -47,6 +48,7 @@ function Cell({ facts, now }: { facts: RowFacts; now: Date }) {
       <Bar pipelines={facts.pipelines} />
       <PipelineCounts facts={facts} />
       <div className="facts">{engineLine(facts)}</div>
+      <div className="facts">{doctorLine(facts.doctor, now)}</div>
       <div className="facts">{reportLine(facts, now)}</div>
     </section>
   );
