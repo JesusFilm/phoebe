@@ -6,7 +6,7 @@ import { RELAY_EVENTS } from "phoebe-agent/contracts";
 import type { RelayDeploymentDetail, RelayEvent } from "phoebe-agent/contracts";
 import { applyEvent, EMPTY_FLEET, loadFleet } from "./fleet-state.ts";
 import type { RelayClient } from "./relay-client.ts";
-import { ago, report, row, stored, stubClient } from "./test-fixture.ts";
+import { ago, client as stubClient, report, row, stored } from "./test-fixture.ts";
 
 /** A client that answers from a table, and records nothing it was not asked. */
 function fakeClient(

@@ -14,8 +14,12 @@
 
 import { RELAY_EVENTS, RELAY_ROUTES } from "phoebe-agent/contracts";
 import type {
+  RelayConfigSetAnswer,
+  RelayConfigSetRequest,
   RelayDeploymentDetail,
   RelayDeploymentRow,
+  RelayDoctorRunAnswer,
+  RelayDoctorRunResult,
   RelayEvent,
   RelayIdentity,
   RelayPairingToken,
@@ -40,6 +44,31 @@ export type RelayClient = {
    * is a fact from the report.
    */
   deployment: (fingerprint: string) => Promise<RelayDeploymentDetail>;
+  /**
+   * Set one field of one deployment's root config (#503, #547). Answers the
+   * deployment's own receipt — `written` or `refused` — or the relay's
+   * `undelivered` when it never got there. All three are outcomes a page
+   * renders, so none of them throws.
+   *
+   * What does throw is the relay refusing the request itself: a session that is
+   * gone, a patch it will not carry, a deployment it has no link for. Those are
+   * about this call rather than about the config, and the caller says so in
+   * different words.
+   *
+   * The author is not a parameter. The relay stamps the signed-in address on
+   * the way past, which is what makes the ledger's `by` the session's word.
+   */
+  setConfigField: (edit: RelayConfigSetRequest) => Promise<RelayConfigSetAnswer>;
+
+  /**
+   * Ask one deployment to run doctor, or every deployment when no fingerprint is
+   * given (#546). Answers one result per deployment asked, whichever it was, so
+   * a page renders the two the same way.
+   *
+   * What the run finds is not here. It arrives as the next report on the event
+   * stream, which is the same path every other fact about a deployment takes.
+   */
+  runDoctor: (fingerprint?: string) => Promise<RelayDoctorRunResult[]>;
   /**
    * Watch the relay's event stream. Returns the unsubscribe; calling it closes
    * the stream. Errors on the stream are not surfaced — the transport redials on
@@ -193,6 +222,30 @@ export function createBrowserRelayClient(options: BrowserRelayClientOptions = {}
 
     mintPairingToken() {
       return post<RelayPairingToken>(RELAY_ROUTES.pairingTokens);
+    },
+
+    async setConfigField(edit) {
+      const response = await call(RELAY_ROUTES.configSet, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify(edit),
+      });
+      if (!response.ok) throw new RelayRequestError(response.status, await errorCode(response));
+      return (await response.json()) as RelayConfigSetAnswer;
+    },
+
+    async runDoctor(fingerprint) {
+      const response = await call(RELAY_ROUTES.doctorRun, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        // An empty object, not an empty body: no fingerprint is what asks the
+        // whole fleet, and the relay reads that from the JSON it parses.
+        body: JSON.stringify(fingerprint === undefined ? {} : { fingerprint }),
+      });
+      if (!response.ok) throw new RelayRequestError(response.status, await errorCode(response));
+      return ((await response.json()) as RelayDoctorRunAnswer).results;
     },
 
     events(onEvent) {

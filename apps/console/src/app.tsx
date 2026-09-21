@@ -14,12 +14,16 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { RELAY_ROUTES } from "phoebe-agent/contracts";
 import type { RelayIdentity } from "phoebe-agent/contracts";
-import { rowFacts, sortFleet } from "./facts.ts";
+import { readEditAnswer, type EditAnswer } from "./config-edit.ts";
+import { DeploymentPage, NoSuchDeployment } from "./deployment-page.tsx";
+import { rowFacts, sortFleet, type RowFacts } from "./facts.ts";
 import { applyEvent, EMPTY_FLEET, loadFleet, type FleetState } from "./fleet-state.ts";
 import { FleetPage } from "./fleet-page.tsx";
 import { PeoplePage } from "./people-page.tsx";
 import { Rail } from "./rail.tsx";
 import { isNotSignedIn, type RelayClient } from "./relay-client.ts";
+import { configOf } from "./report.ts";
+import { FLEET_HREF, FLEET_ROUTE, PEOPLE_HREF, parseRoute, type Route } from "./route.ts";
 
 type Session =
   | { kind: "asking" }
@@ -84,7 +88,7 @@ function Console({
   identity: RelayIdentity;
   onSignedOut: () => void;
 }) {
-  const route = useHashRoute();
+  const route = useRoute();
   const [fleet, setFleet] = useState<FleetState>(EMPTY_FLEET);
   const [loaded, setLoaded] = useState(false);
   const [trouble, setTrouble] = useState<string | null>(null);
@@ -126,11 +130,11 @@ function Console({
     <>
       <header className="topbar">
         <span className="brand">Phoebe console</span>
-        <nav className="tabs" aria-label="Pages">
-          <a href={`#${FLEET_ROUTE}`} className={route === PEOPLE_ROUTE ? "" : "current"}>
+        <nav className="pages" aria-label="Pages">
+          <a href={FLEET_HREF} className={route.page === "people" ? "" : "current"}>
             Fleet
           </a>
-          <a href={`#${PEOPLE_ROUTE}`} className={route === PEOPLE_ROUTE ? "current" : ""}>
+          <a href={PEOPLE_HREF} className={route.page === "people" ? "current" : ""}>
             People
           </a>
         </nav>
@@ -146,8 +150,12 @@ function Console({
         </button>
       </header>
       <div className="frame">
-        <Rail facts={facts} now={now} />
-        {route === PEOPLE_ROUTE ? (
+        <Rail
+          facts={facts}
+          selected={route.page === "deployment" ? route.fingerprint : null}
+          now={now}
+        />
+        {route.page === "people" ? (
           <PeoplePage client={client} now={now} onSignedOut={onSignedOut} />
         ) : trouble !== null ? (
           <main className="main">
@@ -155,7 +163,7 @@ function Console({
             <p className="muted">The relay did not answer: {trouble}</p>
           </main>
         ) : loaded ? (
-          <FleetPage facts={facts} now={now} />
+          <Page route={route} facts={facts} client={client} now={now} />
         ) : (
           <main className="main">
             <h1>Fleet</h1>
@@ -167,32 +175,83 @@ function Console({
   );
 }
 
-/** The fleet, and the page every unknown hash falls back to. */
-const FLEET_ROUTE = "/fleet";
-/** The allowlist and the pairing panel (#548). */
-const PEOPLE_ROUTE = "/people";
-
 /**
- * The path in the URL's hash, and a re-render when it changes.
- *
- * The hash and not the path, because the relay serves the console's build and
- * nothing else: a real path would need a catch-all route on the relay, and a
- * catch-all is what costs it the ability to say a route does not exist
- * (relay/console-assets.ts). Nothing here reaches the server.
+ * Which page the hash names. A fingerprint the fleet does not hold gets the
+ * "no such deployment" page rather than a redirect: a link that silently became
+ * the fleet page would look like the deployment is fine.
  */
-function useHashRoute(): string {
-  const [route, setRoute] = useState(routeInHash);
-  useEffect(() => {
-    const onChange = () => setRoute(routeInHash());
-    window.addEventListener("hashchange", onChange);
-    return () => window.removeEventListener("hashchange", onChange);
-  }, []);
-  return route;
+function Page({
+  route,
+  facts,
+  client,
+  now,
+}: {
+  route: Route;
+  facts: RowFacts[];
+  /** The pages that ask for something need the seam too, not only the shell. */
+  client: RelayClient;
+  now: Date;
+}) {
+  if (route.page !== "deployment") return <FleetPage facts={facts} client={client} now={now} />;
+  const found = facts.find((row) => row.row.fingerprint === route.fingerprint);
+  if (found === undefined) return <NoSuchDeployment fingerprint={route.fingerprint} />;
+  // The fingerprint the page was drawn with, not a fresh read of it: that is
+  // what makes the edit optimistic-concurrency-checked rather than applied to
+  // text nobody looked at (#503).
+  const loaded =
+    found.reading.kind === "read" ? (configOf(found.reading.report)?.root.fingerprint ?? "") : "";
+  return (
+    <DeploymentPage
+      facts={found}
+      tab={route.tab}
+      client={client}
+      now={now}
+      onEdit={(edit) => sendConfigEdit(client, found.row.fingerprint, loaded, edit)}
+    />
+  );
 }
 
-function routeInHash(): string {
-  const hash = window.location.hash.replace(/^#/, "");
-  return hash === "" ? FLEET_ROUTE : hash;
+/**
+ * One config edit, from a row's Save to the answer it renders (#503, #547).
+ *
+ * The id is minted here, and it is the edit's idempotency key: the same id twice
+ * is the same edit, and the deployment answers the second with the first one's
+ * receipt. That is what makes a retry — a double-press, a reconnect — free of a
+ * second write.
+ */
+async function sendConfigEdit(
+  client: RelayClient,
+  fingerprint: string,
+  configFingerprint: string,
+  edit: { path: string; value: string | number | boolean | null },
+): Promise<{ id: string; answer: EditAnswer }> {
+  const id = crypto.randomUUID();
+  const answer = await client.setConfigField({
+    fingerprint,
+    id,
+    path: edit.path,
+    value: edit.value,
+    configFingerprint,
+  });
+  return { id, answer: readEditAnswer(answer) };
+}
+
+/**
+ * The route, kept in step with the address bar. Links are plain `href`s into the
+ * hash, so the browser does the navigating and the history; this only listens.
+ */
+function useRoute(): Route {
+  const [route, setRoute] = useState<Route>(() =>
+    typeof window === "undefined" ? FLEET_ROUTE : parseRoute(window.location.hash),
+  );
+  useEffect(() => {
+    const onHashChange = (): void => setRoute(parseRoute(window.location.hash));
+    window.addEventListener("hashchange", onHashChange);
+    // The hash may have moved between the first render and this effect.
+    onHashChange();
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+  return route;
 }
 
 /** A clock that ticks, so the durations on screen keep being true. */

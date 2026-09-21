@@ -132,6 +132,22 @@ describe("the reads", () => {
     expect((failure as RelayRequestError).code).toBe("unreadable");
   });
 
+  test("running doctor posts the fingerprint, and posts none for the fleet (#546)", async () => {
+    const results = [{ fingerprint: "one", name: "alpha", state: "connected", outcome: "started" }];
+    const { fetch, calls } = fakeFetch({ [RELAY_ROUTES.doctorRun]: { body: { results } } });
+    const client = createBrowserRelayClient({ fetch });
+
+    expect(await client.runDoctor("one")).toEqual(results);
+    expect(await client.runDoctor()).toEqual(results);
+
+    expect(calls.map((call) => call.init?.body)).toEqual(['{"fingerprint":"one"}', "{}"]);
+    for (const call of calls) {
+      expect(call.url).toBe(RELAY_ROUTES.doctorRun);
+      expect(call.init?.method).toBe("POST");
+      expect(call.init?.credentials).toBe("same-origin");
+    }
+  });
+
   test("signing out treats a session that is already gone as done", async () => {
     const { fetch, calls } = fakeFetch({
       [RELAY_ROUTES.signOut]: { status: 401, body: { error: "not-signed-in" } },

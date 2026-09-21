@@ -48,8 +48,11 @@ Either a default export or a named `export const config` is accepted.
 See [`examples/solo/`](../examples/solo/) for a complete single-repo layout
 (config + `.env.example` + README) built from exactly this shape.
 
-Load order (`src/cli.ts`): load the file → apply the `PHOEBE_*` env overlay →
+Load order (`src/cli.ts`): load the file → apply the `PHOEBE_*` settings →
 merge shipped defaults (`resolveConfig`) → install the resolved config → run.
+Every `PHOEBE_*` name is one entry in the settings catalogue
+(`src/settings-catalogue.ts`), under [one rule](#settings-phoebe_): env beats
+file at a path, and a more specific path beats what it would inherit.
 
 ## Required fields
 
@@ -218,7 +221,7 @@ are exactly what its per-pipeline fingerprint leaves out
 It spawns one child per pipeline and relaunches a pipeline when its own cold config moves
 ([Supervising pipelines](architecture.md#supervising-pipelines)). `priority` and
 `concurrency` are live in the broker (below). A pipeline's `disabled` is validated and
-listed — `phoebe list` shows the pipeline as `(disabled)` — but not yet acted on; the
+listed — `phoebe status` shows the pipeline as `(disabled)` — but not yet acted on; the
 ticket that switches a pipeline off comes later. A kind's
 `disabled` is live now, since it is what took over from omission.
 
@@ -244,13 +247,14 @@ at once. What runs is whatever both allow.
 The cap is derived rather than fixed: `max(concurrency)` across the live pipelines. A
 pipeline's declared concurrency is reachable when nothing else is working, and the cap
 still binds across pipelines. Every pipeline at the default 1 derives 1, which is the fleet
-Phoebe has always run. `PHOEBE_MAX_CONCURRENT_AGENTS` replaces the derived
-number, winning even when it is lower — the operator knows the machine and the
-tenant does not. A pipeline declaring more than the cap is not rewritten to fit; it
-queues, and boot says so on one line:
+Phoebe has always run. `deployment.slotCap` replaces the derived number, and
+`PHOEBE_DEPLOYMENT_SLOT_CAP` replaces that — either wins even when it is lower,
+because the operator knows the machine and the tenant does not. A pipeline
+declaring more than the cap is not rewritten to fit; it queues, and boot says so
+on one line:
 
 ```
-[phoebe] boot: slot cap 2 — PHOEBE_MAX_CONCURRENT_AGENTS=2 replaces max(concurrency)=4; floorBudget=1; declaring more than the cap and queuing for it (not clamped): acme/gadget:work(4)
+[phoebe] boot: slot cap 2 — PHOEBE_DEPLOYMENT_SLOT_CAP=2 replaces max(concurrency)=4; floorBudget=1; declaring more than the cap and queuing for it (not clamped): acme/gadget:work(4)
 ```
 
 The cap is recomputed on a reconcile that reshapes pipelines, never on a hot edit: a
@@ -259,7 +263,8 @@ already draining and respawning.
 
 **The slot floor.** A pipeline holding no slot with work waiting is _starved_, and one
 long unit elsewhere can keep it that way for as long as that unit runs. Such a
-pipeline is granted one slot over the cap. `PHOEBE_SLOT_FLOOR_BUDGET` (default 1) is
+pipeline is granted one slot over the cap. `deployment.slotFloorBudget` /
+`PHOEBE_DEPLOYMENT_SLOT_FLOOR_BUDGET` (default 1) is
 how many of those over-cap grants may exist at once across the container, so the
 worst case is `cap + floorBudget` — two numbers, both in the boot line. Set it to
 0 for a hard ceiling, and accept what that costs a starved pipeline.
@@ -294,7 +299,7 @@ each owns a slice of both rather than the whole thing.
 
 | Thing                          | Owned by                                                                                                                                                                                    |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `state/<pipeline>/status.json` | The pipeline alone. `phoebe list` reads every pipeline's, one line each.                                                                                                                    |
+| `state/<pipeline>/status.json` | The pipeline alone. The deployment report carries every pipeline's, one cell each.                                                                                                          |
 | Stdout lines                   | Tagged `[phoebe:<owner>/<repo>:<pipeline>]`, including `work`'s. Match it as a prefix, not a fixed string.                                                                                  |
 | The four tracker sweeps        | Scoped to the kinds the pipeline schedules, so two pipelines cover every object exactly once. A pipeline scheduling none of a sweep's kinds skips it.                                       |
 | The origin clone               | Shared. Cloned once, the first clone serialized by a lock under `state/`; a pipeline whose kinds all declare `scratch` never clones at all.                                                 |
@@ -356,9 +361,10 @@ See [`work-kinds.md`](work-kinds.md).
 | `providerEnv`     | `{ cursor: "CURSOR_API_KEY", claude: "ANTHROPIC_API_KEY", codex: "OPENAI_KEY" }` | Env var holding each provider's API key. This is the only key the agent child inherits for the active provider.                                                                                                                                                                                                             |
 | `workKinds`       | `{}`                                                                             | **Deprecated alias** for [`pipelines.work.kinds`](#pipelines); still honoured. Per-work-kind overrides, e.g. `{ reviews: { provider: "claude", model: "claude-haiku-4-5", effort: "low" } }`. Keys are the work kinds — a built-in name is a tuning block, any other name declares a tenant-authored kind, described below. |
 
-`PHOEBE_AGENT`, `PHOEBE_MODEL`, and `PHOEBE_EFFORT` override `defaultProvider`
-and the active provider's entry in `defaultModels` / `defaultEfforts` for one
-run, without editing the config.
+`PHOEBE_DEFAULT_PROVIDER` (permanent alias `PHOEBE_AGENT`), `PHOEBE_MODEL`, and
+`PHOEBE_EFFORT` set the same three leaves for one run, without editing the
+config. `model` and `effort` are the config fields those two names address:
+`defaultModels` and `defaultEfforts` are the per-provider floor under them.
 
 ### Per-work-kind overrides
 
@@ -369,7 +375,8 @@ repo default. Each knob resolves independently, most specific wins:
 1. per-kind env (`PHOEBE_REVIEWS_MODEL`)
 2. per-kind config (`workKinds.reviews.model`)
 3. global env (`PHOEBE_MODEL`)
-4. repo defaults (`defaultProvider` / `defaultModels` / `defaultEfforts`)
+4. the global leaf (`model` / `effort` / `defaultProvider`)
+5. repo defaults (`defaultModels` / `defaultEfforts`)
 
 Per-kind _config_ deliberately outranks global _env_: a kind's block is
 durable policy that survives a blanket `PHOEBE_MODEL` / `PHOEBE_AGENT`
@@ -682,9 +689,38 @@ identity at the next work-unit boundary, no container restart.
 set by `phoebe boot`; a bare `phoebe run` on your laptop uses your own
 `~/.gitconfig`, which is what you want there.
 
-## Lifecycle commands (`deployment`)
+## The deployment block (`deployment`)
 
-Host-CLI-only. `phoebe start` and `phoebe stop` drive the scaffolded
+Bootstrapper- and host-CLI-only, in two halves: the **lifecycle commands** below,
+read by `phoebe start` / `phoebe stop`, and three **host knobs** read by
+`phoebe boot`. Either half stands alone — a block carrying only knobs leaves
+compose driving start and stop, and a block carrying only commands leaves the
+knobs at their defaults. `resolveConfig` drops the whole block, so the engine
+never sees it.
+
+### Host knobs
+
+These protect the machine rather than describing the work, which is why they sit
+on the deployment block rather than beside the tenant's fields. Each has a
+derived env name that beats it, as env beats file everywhere.
+
+| Field                 | Default            | Env name                                  | Meaning                                                                                                                   |
+| --------------------- | ------------------ | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `slotCap`             | `max(concurrency)` | `PHOEBE_DEPLOYMENT_SLOT_CAP`              | Work units executing at once across the container. See [Concurrency](#concurrency-the-pipelines-knob-and-the-fleets-cap). |
+| `slotFloorBudget`     | `1`                | `PHOEBE_DEPLOYMENT_SLOT_FLOOR_BUDGET`     | Over-cap grants allowed at once for starved pipelines. `0` is a hard ceiling.                                             |
+| `reconcileIntervalMs` | `60000`            | `PHOEBE_DEPLOYMENT_RECONCILE_INTERVAL_MS` | How often boot samples the config and the tracked ref.                                                                    |
+
+```ts
+deployment: { slotCap: 3, slotFloorBudget: 0 },
+```
+
+The knobs are read **once, at boot**. Editing them relaunches nothing by itself;
+they take effect at the next container start. (`slotCap` is also recomputed on a
+reconcile that reshapes pipelines, because the derivation it replaces is.)
+
+### Lifecycle commands
+
+`phoebe start` and `phoebe stop` drive the scaffolded
 `container/compose.yml` with `docker compose` by default. The `deployment` block
 replaces that driver with **literal shell command strings**, the same shape as
 `installCommand`, `checkCommand`, and `testCommand` rather than a runtime name, for
@@ -703,7 +739,7 @@ host with inherited stdio. Exit 0 is success, non-zero is failure. Both
 `startCommand` and `stopCommand` must be present and non-empty together
 (`resolveConfig` rejects a half-declared block, or a blank `stopNowCommand`), so
 a deployment that has bypassed compose for start can never silently fall back to
-compose for stop. Like `engine`, `workspace`, and `configDir`, it is host-side
+compose for stop. Like `engine`, `workspace`, and `configDir`, the block is host-side
 only: `resolveConfig` drops it and the engine never sees it (the engine never
 calls `phoebe start`/`phoebe stop`). The in-container refusal on `phoebe start`
 / `phoebe stop` still applies, because start and stop are host actions in every shape.
@@ -778,7 +814,8 @@ engine requires. See [`upgrading.md` → What Phoebe may write](upgrading.md#wha
 ### Reconcile (config + ref watch)
 
 `phoebe boot` launches the engine and then keeps the **right** engine
-running. Every `PHOEBE_RECONCILE_INTERVAL_MS` (default 60s) it samples two
+running. Every `PHOEBE_DEPLOYMENT_RECONCILE_INTERVAL_MS` — or
+`deployment.reconcileIntervalMs`, default 60s — it samples two
 things and compares them against what the running engine was launched from:
 
 | Watched            | How it is sampled              | Relaunches when                                    |
@@ -906,63 +943,299 @@ it, for the same reason nothing on the relay can rewrite `engine.ref`. A console
 that could move the address it is reached at could strand a deployment where no
 operator can find it.
 
-## Environment overlay (`PHOEBE_*`)
+## Settings (`PHOEBE_*`)
 
-`PHOEBE_*` env vars provide **one-off run overrides** without editing
-`phoebe.config.ts` (`src/load-config.ts`). The overlay is additive: an unset
-var leaves the field untouched, so `resolveConfig` can still fall back to a
-default. Only **scalar** fields are overlayable. Nested records
-(`promptFiles`, `defaultModels`, `defaultEfforts`, `providerEnv`, `workOrder`) stay
-config-file territory.
+Every setting Phoebe reads from the environment is one entry in the **settings
+catalogue** (`src/settings-catalogue.ts`): a config path, one env name derived
+from it, and any permanent aliases. There is one precedence rule, and it covers
+all of them:
 
-| Env var                          | Config field            | Notes                                                   |
-| -------------------------------- | ----------------------- | ------------------------------------------------------- |
-| `PHOEBE_REPO_SLUG`               | `repoSlug`              |                                                         |
-| `PHOEBE_REPO_URL`                | `repoUrl`               |                                                         |
-| `PHOEBE_DEFAULT_BRANCH`          | `defaultBranch`         |                                                         |
-| `PHOEBE_BRANCH_PREFIX`           | `branchPrefix`          |                                                         |
-| `PHOEBE_READY_LABEL`             | `readyLabel`            |                                                         |
-| `PHOEBE_RESEARCH_LABEL`          | `researchLabel`         |                                                         |
-| `PHOEBE_PROCESSING_LABEL`        | `processingLabel`       |                                                         |
-| `PHOEBE_MERGED_LABEL`            | `mergedLabel`           |                                                         |
-| `PHOEBE_FEATURE_LABEL`           | `featureLabel`          |                                                         |
-| `PHOEBE_PR_OPT_OUT_LABEL`        | `prOptOutLabel`         |                                                         |
-| `PHOEBE_INSTALL_COMMAND`         | `installCommand`        |                                                         |
-| `PHOEBE_CHECK_COMMAND`           | `checkCommand`          |                                                         |
-| `PHOEBE_TEST_COMMAND`            | `testCommand`           |                                                         |
-| `PHOEBE_READY_COMMAND`           | `readyCommand`          |                                                         |
-| `PHOEBE_BLOCKED_BY_PATTERN`      | `blockedByPattern`      |                                                         |
-| `PHOEBE_PART_OF_PATTERN`         | `partOfPattern`         |                                                         |
-| `PHOEBE_REVIEWS_SUCCESS_HEADING` | `reviewsSuccessHeading` |                                                         |
-| `PHOEBE_PR_SCOPE`                | `prScope`               | Validated: must be `phoebe` or `all`.                   |
-| `PHOEBE_DRAFT_PRS`               | `draftPrs`              | Validated: `skip-non-phoebe`, `skip-all`, or `include`. |
-| `PHOEBE_DEFAULT_PROVIDER`        | `defaultProvider`       | Validated: `cursor`, `claude`, or `codex`.              |
-| `PHOEBE_FEATURE_BRANCH_CATCH_UP` | `featureBranchCatchUp`  | Validated: must be `true` or `false`.                   |
+> **Env beats file at a path, and a more specific path beats what it would
+> inherit.**
 
-### Runtime toggles (read directly, not overlaid onto config)
+That is the whole of it. `PHOEBE_MODEL` sets the global `model` leaf; a kind's
+own `model` is a more specific path and keeps winning; `PHOEBE_REVIEWS_MODEL`
+sets that kind's leaf and beats the field. The timeout ladder
+(`PHOEBE_REVIEWS_RUN_TIMEOUT_MS` → the kind's `runTimeoutMs` →
+`PHOEBE_RUN_TIMEOUT_MS` → the tenant's `runTimeoutMs`) and the poll ladder (a
+pipeline's `pollIntervalMs` → `PHOEBE_POLL_INTERVAL_MS`) fall out of the same
+sentence. A kind's _config_ block outranking the _global_ env var is the rule,
+not an exception to it: the block is the more specific path.
 
-| Env var                                      | Default              | Meaning                                                                                                                                                                                                                                                                                                                                        |
-| -------------------------------------------- | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PHOEBE_AGENT`                               | _none_               | Provider for this run (`cursor` \| `claude` \| `codex`).                                                                                                                                                                                                                                                                                       |
-| `PHOEBE_MODEL`                               | _none_               | Model for this run.                                                                                                                                                                                                                                                                                                                            |
-| `PHOEBE_EFFORT`                              | _none_               | Reasoning effort for this run, overriding the active provider's `defaultEfforts` entry. Only `claude` honours it (`low` \| `medium` \| `high` \| `xhigh` \| `max`).                                                                                                                                                                            |
-| `PHOEBE_<KIND>_AGENT` / `_MODEL` / `_EFFORT` | _none_               | Per-work-kind variants of the trio above, where `<KIND>` is the upcased kind name — `CONFLICTS`, `CHECKS`, `REVIEWS`, `ISSUES`, `RESEARCH`, or a custom kind's name with hyphens as underscores (`stale-pr-nudger` → `PHOEBE_STALE_PR_NUDGER_MODEL`). Outrank everything, including the kind's tuning block. Empty string reads as unset.      |
-| `PHOEBE_<KIND>_RUN_TIMEOUT_MS`               | _none_               | Per-work-kind whole-unit budget, same naming rule. Top of the [`runTimeoutMs` ladder](#per-work-kind-overrides): it outranks the kind's block, which outranks `PHOEBE_RUN_TIMEOUT_MS`.                                                                                                                                                         |
-| `PHOEBE_POLL_INTERVAL_MS`                    | `300000`             | Persistent-mode idle poll interval, for pipelines that declare no [`pollIntervalMs`](#pipelines) of their own. A declared cadence outranks this. Under the App arm this is the capacity lever, since a shorter interval raises the per-tenant request rate ([github-app-mode.md §5](github-app-mode.md#5-capacity)).                           |
-| `PHOEBE_ENGINE_DIR`                          | `<tmp>/phoebe-agent` | Base dir `phoebe boot` clones a `github` engine source into (and bin.mjs materializes under). Put it on a persistent volume so github boots fetch instead of re-cloning.                                                                                                                                                                       |
-| `PHOEBE_RECONCILE_INTERVAL_MS`               | `60000`              | How often `phoebe boot` polls the mounted config and the tracked ref for a drain-and-relaunch (see Engine source → Reconcile).                                                                                                                                                                                                                 |
-| `PHOEBE_BASE`                                | _none_               | Force the worktree base ref for issues (bypasses blocker resolution).                                                                                                                                                                                                                                                                          |
-| `PHOEBE_DATA_DIR`                            | `/data/repos`        | Base dir for derived tenant paths (host/dev override). Each tenant nests under `<base>/<owner>/<repo>/`.                                                                                                                                                                                                                                       |
-| `PHOEBE_MAX_CONCURRENT_AGENTS`               | derived              | Cap on concurrently-executing work units (the bootstrapper's slot broker), in solo and fleet alike. Defaults to `max(concurrency)` across the live pipelines, which is 1 unless a pipeline declares more. Setting it replaces that, even when lower. See [Concurrency](#concurrency-the-pipelines-knob-and-the-fleets-cap).                    |
-| `PHOEBE_SLOT_FLOOR_BUDGET`                   | `1`                  | How many pipelines may hold a slot over the cap at once because they are starved — no slot held, work waiting. The container's worst case is the cap plus this. `0` makes the cap a hard ceiling.                                                                                                                                              |
-| `PHOEBE_RUN_TIMEOUT_MS`                      | `2700000` (45 min)   | Whole-unit wall-clock budget; a unit that exceeds it is aborted so it can't hold the concurrency slot forever. Under the App arm the effective ceiling is ≈50 min (installation tokens expire after 60 min). Also settable as the `runTimeoutMs` config field.                                                                                 |
-| `PHOEBE_MAX_UNPRODUCTIVE_RUNS`               | `3`                  | Consecutive unproductive runs (no PR produced) before an issue unit is quarantined (`phoebe:quarantined` label + escalation comment). PR-shaped units (conflicts/checks/reviews) are quarantined after K timeouts instead. Also the `maxUnproductiveRuns` config field. `PHOEBE_MAX_UNIT_TIMEOUTS` / `maxUnitTimeouts` are deprecated aliases. |
+Three boundaries the rule does not cross:
+
+- **Env addresses tenant-level and kind-level paths only** — `PHOEBE_<FIELD>`
+  and `PHOEBE_<KIND>_<FIELD>`, with hyphens in a custom kind's name mapped to
+  underscores (`stale-pr-nudger` → `PHOEBE_STALE_PR_NUDGER_MODEL`). **Named
+  pipelines are file-only.** A pipeline's `pollIntervalMs` inherits from the
+  tenant leaf `PHOEBE_POLL_INTERVAL_MS` sets; there is no
+  `PHOEBE_<PIPELINE>_POLL_INTERVAL_MS`.
+- **Env sets leaves only.** Records keyed by names you chose (`promptFiles`,
+  `providerEnv`, `workOrder`, `defaultModels`, `defaultEfforts`) stay
+  config-file territory. The `model` and `effort` leaves cover the one thing
+  people reached into `defaultModels` for.
+- **An empty value reads as unset**, so a compose file passing `"${VAR:-}"`
+  through never forces a blank.
+
+A bad value is an error, not a silent default: the enum and boolean settings
+throw at startup naming the variable you set.
+
+### Permanent aliases
+
+Renamed settings keep answering to their old names **with no removal date**.
+The old names live in `.env` files — the one file neither `phoebe migrate` nor
+`phoebe upgrade` can edit — so a removal date would be a scheduled promise of
+breakage. Set both and the canonical name wins.
+
+| Old name                       | Canonical name                            |
+| ------------------------------ | ----------------------------------------- |
+| `PHOEBE_AGENT`                 | `PHOEBE_DEFAULT_PROVIDER`                 |
+| `PHOEBE_<KIND>_AGENT`          | `PHOEBE_<KIND>_PROVIDER`                  |
+| `PHOEBE_MAX_UNIT_TIMEOUTS`     | `PHOEBE_MAX_UNPRODUCTIVE_RUNS`            |
+| `PHOEBE_MAX_CONCURRENT_AGENTS` | `PHOEBE_DEPLOYMENT_SLOT_CAP`              |
+| `PHOEBE_SLOT_FLOOR_BUDGET`     | `PHOEBE_DEPLOYMENT_SLOT_FLOOR_BUDGET`     |
+| `PHOEBE_RECONCILE_INTERVAL_MS` | `PHOEBE_DEPLOYMENT_RECONCILE_INTERVAL_MS` |
+
+### The catalogue
+
+`reader` says who reads the setting: the **engine**'s work loop, or the
+**bootstrapper** (`phoebe boot`, `phoebe start`, `phoebe stop`). A
+bootstrapper-only setting never reaches an engine child.
+
+| Env var                                   | Config path                      | Reader       | Notes                                                                                                                    |
+| ----------------------------------------- | -------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| `PHOEBE_REPO_SLUG`                        | `repoSlug`                       | engine       |                                                                                                                          |
+| `PHOEBE_REPO_URL`                         | `repoUrl`                        | engine       |                                                                                                                          |
+| `PHOEBE_DEFAULT_BRANCH`                   | `defaultBranch`                  | engine       |                                                                                                                          |
+| `PHOEBE_BRANCH_PREFIX`                    | `branchPrefix`                   | engine       |                                                                                                                          |
+| `PHOEBE_READY_LABEL`                      | `readyLabel`                     | engine       |                                                                                                                          |
+| `PHOEBE_RESEARCH_LABEL`                   | `researchLabel`                  | engine       |                                                                                                                          |
+| `PHOEBE_PROCESSING_LABEL`                 | `processingLabel`                | engine       |                                                                                                                          |
+| `PHOEBE_MERGED_LABEL`                     | `mergedLabel`                    | engine       |                                                                                                                          |
+| `PHOEBE_FEATURE_LABEL`                    | `featureLabel`                   | engine       |                                                                                                                          |
+| `PHOEBE_PR_OPT_OUT_LABEL`                 | `prOptOutLabel`                  | engine       |                                                                                                                          |
+| `PHOEBE_INSTALL_COMMAND`                  | `installCommand`                 | engine       |                                                                                                                          |
+| `PHOEBE_CHECK_COMMAND`                    | `checkCommand`                   | engine       |                                                                                                                          |
+| `PHOEBE_TEST_COMMAND`                     | `testCommand`                    | engine       |                                                                                                                          |
+| `PHOEBE_READY_COMMAND`                    | `readyCommand`                   | engine       |                                                                                                                          |
+| `PHOEBE_BLOCKED_BY_PATTERN`               | `blockedByPattern`               | engine       |                                                                                                                          |
+| `PHOEBE_PART_OF_PATTERN`                  | `partOfPattern`                  | engine       |                                                                                                                          |
+| `PHOEBE_REVIEWS_SUCCESS_HEADING`          | `reviewsSuccessHeading`          | engine       |                                                                                                                          |
+| `PHOEBE_PR_SCOPE`                         | `prScope`                        | engine       | `phoebe` \| `all`.                                                                                                       |
+| `PHOEBE_DRAFT_PRS`                        | `draftPrs`                       | engine       | `skip-non-phoebe` \| `skip-all` \| `include`.                                                                            |
+| `PHOEBE_FEATURE_BRANCH_CATCH_UP`          | `featureBranchCatchUp`           | engine       | `true` \| `false`.                                                                                                       |
+| `PHOEBE_DEFAULT_PROVIDER`                 | `defaultProvider`                | engine       | `cursor` \| `claude` \| `codex`. Per kind: `PHOEBE_<KIND>_PROVIDER`.                                                     |
+| `PHOEBE_MODEL`                            | `model`                          | engine       | For the active provider. Per kind: `PHOEBE_<KIND>_MODEL`.                                                                |
+| `PHOEBE_EFFORT`                           | `effort`                         | engine       | For the active provider; only `claude` honours it. Per kind: `PHOEBE_<KIND>_EFFORT`.                                     |
+| `PHOEBE_RUN_TIMEOUT_MS`                   | `runTimeoutMs`                   | engine       | Default 2700000 (45 min). Per kind: `PHOEBE_<KIND>_RUN_TIMEOUT_MS`.                                                      |
+| `PHOEBE_MAX_UNPRODUCTIVE_RUNS`            | `maxUnproductiveRuns`            | engine       | Default 3. Consecutive unproductive runs before a unit is quarantined.                                                   |
+| `PHOEBE_POLL_INTERVAL_MS`                 | `pollIntervalMs`                 | engine       | Default 300000. Env-only: a pipeline's own `pollIntervalMs` is the file channel.                                         |
+| `PHOEBE_BASE`                             | `kinds.issues.base`              | engine       | Env-only. Forces the worktree base ref for issues, bypassing blocker resolution.                                         |
+| `PHOEBE_DEPLOYMENT_SLOT_CAP`              | `deployment.slotCap`             | bootstrapper | Default `max(concurrency)` across live pipelines. See [Concurrency](#concurrency-the-pipelines-knob-and-the-fleets-cap). |
+| `PHOEBE_DEPLOYMENT_SLOT_FLOOR_BUDGET`     | `deployment.slotFloorBudget`     | bootstrapper | Default 1. `0` makes the cap a hard ceiling.                                                                             |
+| `PHOEBE_DEPLOYMENT_RECONCILE_INTERVAL_MS` | `deployment.reconcileIntervalMs` | bootstrapper | Default 60000.                                                                                                           |
+
+`phoebe --help` prints this list from the same catalogue, so the two cannot
+drift apart. A test fails the build on any `PHOEBE_*` name in the tree that is
+neither catalogued nor declared a deployment fact below.
+
+### Facts, not settings
+
+Two `PHOEBE_*` names are **not** settings. They say where things are — written
+by the scaffolded compose file, reported in the deployment report, never knobs
+you turn to change behaviour:
+
+| Env var             | Default              | Meaning                                                                                                            |
+| ------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `PHOEBE_ENGINE_DIR` | `<tmp>/phoebe-agent` | Base dir `phoebe boot` clones a `github` engine source into. Put it on a persistent volume to fetch, not re-clone. |
+| `PHOEBE_DATA_DIR`   | `/data/repos`        | Base dir for derived tenant paths. Each tenant nests under `<base>/<owner>/<repo>/`.                               |
+
+`PHOEBE_GH_LOGIN` is neither: it is a credential Phoebe mints and passes along.
 
 Secrets (`GH_TOKEN` and the active provider's key) are also read from the
 environment. See [`ai-install.md`](ai-install.md) and `.env.example`. In a
 workspace deployment each tenant's secrets live in its own co-located
 `.env`, read by the bootstrapper and scrubbed so a tenant's engine child sees only
 its own (workspace two-tier model: [`workspace.md`](workspace.md)).
+
+## Tenant secrets: the store and `phoebe secret`
+
+A `.env` is a file, and editing a file means reaching the machine it is on. The
+**secret store** is the other way in: one file per tenant on the data volume,
+`<data>/<owner>/<repo>/state/secrets.json` at mode `0600`, holding values an
+operator set without touching `.env`.
+
+```sh
+printf %s "$ANTHROPIC_API_KEY" | phoebe secret set ANTHROPIC_API_KEY
+phoebe secret ls              # which keys are set, and from where
+phoebe secret clear ANTHROPIC_API_KEY
+```
+
+The value is read from **stdin only**, to the end of the stream with one trailing
+newline stripped. Never as an argument: an argument lands in shell history and in
+`/proc/<pid>/cmdline`, which a co-tenant sharing the container's uid can read.
+Nothing prints a value back. Not `ls`, not `phoebe config`, not the deployment
+report. Write-only is the point.
+
+**The store is the tier above the `.env`.** A key set in both is the store's, and
+both `phoebe config` and `phoebe doctor` say so. The `env` section flags the key
+`shadowed`, and doctor raises a warn naming it. Clearing removes the entry so the
+`.env` (or the ambient env) governs again. There is no tombstone, because
+revoking a secret means rotating it, not deleting it.
+
+**What may be set is derived from your own config**, never a fixed list: every env
+key a scheduled work kind declares in `requiredEnv`, plus `GH_TOKEN`, plus the
+variable names in `providerEnv`. Write a custom kind and its key is settable the
+same day. Three families are refused. The GitHub App credentials are deployment
+scope, with a blast radius spanning every repo the App is installed on, so they
+stay in the deployment's env-file. The `PHOEBE_*` settings are knobs, not
+secrets. The git identity variables belong to `gitIdentity`.
+
+Delivery reuses what already exists. The supervisor's credential lease re-reads
+the store on every request, so a `GH_TOKEN` rotation reaches a running child in
+place. Every other key rides the reconcile digest, so setting one relaunches the
+children that would hold it. A successful `set` then runs `phoebe doctor`, which
+is what tells you the key is where the child will look for it. `--no-doctor`
+skips that for a scripted rotation.
+
+Two costs, both deliberate. The store does not survive `docker compose down -v`:
+it lives on the data volume, and wiping the volume wipes it. And it holds
+plaintext at rest, in exactly the place a tenant `.env` already sits. See
+[`trust.md`](trust.md#one-container--one-trust-domain).
+
+In solo the store is the only channel. The deployment's `.env` is Compose's
+create-time input and is masked inside the container, so changing a value there
+means recreating the container. Solo's `GH_TOKEN` is two secrets wearing one
+name, the agent's and the engine clone's, so a store rotation moves the agent's
+and leaves the clone on the old one until the next recreate. A stale-but-valid
+clone token keeps working; a revoked one surfaces as the reconcile failure the
+deployment report already carries.
+
+## Seeing what applies: `phoebe config`
+
+Reading the ladder above and reading your own deployment are different jobs.
+The second one is a command:
+
+```sh
+phoebe config              # every setting, its value, and where it came from
+phoebe config --json       # the same object, for a script or a console
+```
+
+Each line is one setting, with its source in brackets:
+
+```
+  defaultProvider = "claude"  (overlay via PHOEBE_AGENT from tenantEnv)
+    shadowed: (file via phoebe.config.ts) = "cursor"
+```
+
+| Source      | What it means                                                |
+| ----------- | ------------------------------------------------------------ |
+| `default`   | Nothing said otherwise; this is what Phoebe ships.           |
+| `file`      | Your `phoebe.config.ts`, named by `via`.                     |
+| `alias`     | A permanent older name — the table above.                    |
+| `overlay`   | A `PHOEBE_*` variable under its catalogued name.             |
+| `derived`   | Computed from another setting (`defaultModels`, `repoSlug`). |
+| `inherited` | A shallower path's value, taken unchanged.                   |
+
+The `shadowed` lines are what lost, and they exist for one question: why isn't
+my config file value taking effect? Whatever beat it is on the line above.
+Nothing is hidden — defaults print too, and every pipeline's kinds print the
+values they will actually use, inherited ones included.
+
+Below the tree is an `env` section. It says that a variable is set and which
+file set it, never what it holds, so you can check a key reached the container
+on a screen somebody else can see. A key the secret store supplied reads
+`present (store)`, and `shadowed` beside it means the `.env` sets that key too
+and is being outranked. Then `warnings`, which lists the deprecated aliases this
+tenant is using so you do not have to hunt for them in the tree.
+
+Run it against a workspace root and every tenant reports. A tenant whose config
+will not load is one row carrying its error; the exit code turns non-zero only
+when no tenant loaded at all.
+
+**You rarely need to run it to read it.** The same object rides in the
+deployment report as its `config` section, so `phoebe status --json`, the relay
+and the console all show a tenant's settings without asking the deployment a
+second question. The text `phoebe status` leaves it out, because settings are
+what this verb is for and a status screen reciting every leaf would bury the
+question it exists to answer. The section also carries a content hash of the root
+`phoebe.config.ts` it was read from, which is what a later remote edit checks
+itself against before writing.
+
+One deployment writes one file, so the section has a byte budget. On a workspace
+far larger than any Phoebe has run, the first tenants by id carry their configs
+and the rest are counted in `config.omitted`. Run `phoebe config` in the
+container to read one of those.
+
+## Changing one field: `phoebe config set`
+
+```sh
+phoebe config set pipelines.work.pollIntervalMs 30000
+phoebe config set defaultProvider claude
+```
+
+The path is the one `phoebe config` printed. The value is read as JSON when it
+parses as JSON (`42`, `true`, `null`, `"two words"`) and as a plain string
+otherwise, so `claude` and `"claude"` mean the same thing.
+
+What happens is deliberately small. The file is parsed, one literal is replaced,
+and every other byte — your comments, your key order, your formatting — is left
+exactly as you wrote it. The result is loaded through the engine's own loader
+before anything is written, so a value the config rejects costs you a message
+and nothing else. Then the file is written in place and the deployment
+reconciles onto it the way it would onto an edit you made by hand.
+
+**What it will not change**, each refused by name:
+
+| Refused                                         | Because                                                                      |
+| ----------------------------------------------- | ---------------------------------------------------------------------------- |
+| `workspace.*`                                   | Your fleet declaration is a git edit.                                        |
+| `engine.*`                                      | The engine pin moves with `phoebe upgrade`, so the new ref's migrations run. |
+| `relay.*`, `deployment.*`                       | The pairing's and the host's, not the container's.                           |
+| A work kind's declaration, `paths.*`            | Code, and a derivation — neither is a literal to set.                        |
+| A leaf a `PHOEBE_*` variable already sets       | Env beats file, so the write would be shadowed.                              |
+| A value in the file that is not a plain literal | Replacing a computed value is a guess about intent.                          |
+
+A kind's _settings_ are fine — `pipelines.work.kinds.issues.model` is a literal
+and moves like any other. It is the block itself, which may name a module or hold
+an inline definition, that a splice cannot see inside of.
+
+Every refusal prints the exact edit to make by hand, which is also what the
+console shows when it cannot apply one for you.
+
+In a workspace, this writes the **root** config only. A tenant's own
+`phoebe.config.ts` lives in that tenant's checkout, and you edit it there and
+commit it, the way you always have — pass `--config` to point the verb at one
+from a shell.
+
+Two flags matter when something else is driving:
+
+- `--fingerprint <sha256:…>` refuses the write unless the file still hashes to
+  what you were shown. The deployment report's config section carries that hash;
+  a console sends it back, and a file that moved in between is refused rather
+  than merged.
+- `--id <id>` makes the edit idempotent. Applied edits are recorded in
+  `state/config-edits.json` on the data volume, so the same id twice is one
+  write and the second call gets the first one's receipt back. The record rolls
+  off as soon as you edit or commit the file yourself.
+
+### The same verb, from the console
+
+A deployment paired with a relay can be edited from the config tab of the web
+console, and it is this code that runs: the console sends `{ path, value }` with
+the fingerprint its page was drawn from, the relay stamps the signed-in address
+as the edit's author, and the bootstrapper applies it to the file exactly as a
+shell run would. The receipt an operator sees is the one printed above, including
+the manual edit when it is a refusal.
+
+Two things the console adds. It offers the affordance only on leaves this verb
+accepts, from the same table of refusals — so a closed leaf shows the sentence
+and the command instead of a button that would be turned away. And after
+`written` it follows the deployment's report: the reconcile it set going appears
+there as `reconciling (config)` and then as idle with `lastEditId` naming the
+edit, with the leaf reading `file` at its new value. The report also ships the
+live ledger, so a console can say "edits not yet in a commit" without reading
+your git. [`relay.md`](relay.md#setting-one-config-field) has the route and the answers.
 
 ## GitHub App arm
 
