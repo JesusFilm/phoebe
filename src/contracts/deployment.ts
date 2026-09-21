@@ -97,10 +97,19 @@ export type CrashLoopRecord = {
   failureCount: number;
 };
 
-/** Is the bootstrapper relaunching the fleet onto a different engine, and why? */
+/**
+ * Is the bootstrapper relaunching the fleet onto a different engine, and why?
+ *
+ * `lastEditId` is the id of the last config edit this deployment applied to its
+ * own root config (#503, #536) — the thread a console pulls to get from "my edit
+ * was written" to "and here is what the deployment did about it". It is on the
+ * reconcile section rather than beside the config section because that is the
+ * question it answers: an edit's receipt ends at `written`, and what happened
+ * next is a reconcile. Absent until this deployment has applied one.
+ */
 export type ReconcileState =
-  | { phase: "idle"; since: string }
-  | { phase: "reconciling"; reason: "config" | "ref"; since: string };
+  | { phase: "idle"; since: string; lastEditId?: string }
+  | { phase: "reconciling"; reason: "config" | "ref"; since: string; lastEditId?: string };
 
 /** The global concurrency broker's numbers (#407): the cap and what is against it. */
 export type SlotReport = {
@@ -316,15 +325,8 @@ export type DeploymentReport = {
    * rather than as "none".
    */
   edits?: EditLedgerEntry[];
-  /**
-   * Every tenant's effective config, as the running engine computed it (#502,
-   * #535). Absent until the bootstrapper that embeds the engine's answer lands
-   * (#535), and absent from a deployment running an engine older than that; an
-   * addition, so it does not move {@link DEPLOYMENT_SCHEMA}, and a reader treats
-   * absence as "this deployment did not report its settings", never as "this
-   * deployment has none".
-   */
-  config?: ConfigReport;
+  /** Every tenant's effective config, as the running engine computed it (#502, #535). */
+  config: ConfigReport;
   /** When any section last moved. */
   updatedAt: string;
 };

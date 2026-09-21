@@ -90,6 +90,7 @@ describe("reports over the relay", () => {
         clientId: "client-id",
         clientSecret: "client-secret",
         allowedEmails: [],
+        alertWebhook: null,
       },
       dataDir,
       port: 0,
@@ -161,6 +162,7 @@ describe("reports over the relay", () => {
       crashLoop: () => ({ lastGoodSha: "good", failingSha: null, failureCount: 0 }),
       slots: () => ({ capacity: 2, inUse: 0, waiting: 0, overGranted: 0, floorBudget: 1 }),
       armOf: () => "pat",
+      rootConfig: () => ({ path: join(volume, "phoebe.config.ts"), fingerprint: null }),
       onReport: () => prepared.push(),
     });
     prepared.start(state);
