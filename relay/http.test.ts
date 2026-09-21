@@ -6,7 +6,7 @@
 // `email_verified` gate, the allowlist decision, the session cookie, and the
 // 401 on the way in — runs for real against a bound port.
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
@@ -345,5 +345,69 @@ describe("the relay's door", () => {
 
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: "no-fingerprint" });
+  });
+});
+
+describe("the console the relay serves", () => {
+  let dataDir: string;
+  let consoleDir: string;
+  let relay: RunningRelay | null = null;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), "phoebe-relay-"));
+    consoleDir = mkdtempSync(join(tmpdir(), "phoebe-console-"));
+    writeFileSync(join(consoleDir, "index.html"), "<!doctype html><title>Phoebe console</title>\n");
+  });
+
+  afterEach(async () => {
+    await relay?.close();
+    relay = null;
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(consoleDir, { recursive: true, force: true });
+  });
+
+  async function serveWithConsole(): Promise<string> {
+    relay = await startRelay({
+      env: env(),
+      dataDir,
+      consoleDir,
+      port: 0,
+      identity: fakeGoogle(ADA).provider,
+      log: () => {},
+      warn: () => {},
+    });
+    return `http://127.0.0.1:${relay.port}`;
+  }
+
+  test("a browser at the root gets the console, signed in or not", async () => {
+    // The bundle has to be reachable without a session: the sign-in control is
+    // part of it, and the reads behind it answer 401 on their own.
+    const response = await fetch(`${await serveWithConsole()}/`);
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("Phoebe console");
+  });
+
+  test("a completed sign-in lands on the console rather than on a JSON read", async () => {
+    const origin = await serveWithConsole();
+
+    const started = await fetch(`${origin}${RELAY_ROUTES.signIn}`, { redirect: "manual" });
+    const [pair] = (started.headers.getSetCookie()[0] ?? "").split(";");
+    const finished = await fetch(`${origin}${RELAY_ROUTES.callback}?code=xyz`, {
+      redirect: "manual",
+      headers: { cookie: pair ?? "" },
+    });
+
+    expect(finished.headers.get("location")).toBe(SIGNED_IN_LANDING);
+    expect(SIGNED_IN_LANDING).not.toBe(RELAY_ROUTES.me);
+  });
+
+  test("the API still refuses an unknown path in JSON rather than serving a page", async () => {
+    const origin = await serveWithConsole();
+
+    const response = await fetch(`${origin}${RELAY_ROUTES.deployments}/not-a-fingerprint`);
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "no-such-route" });
   });
 });

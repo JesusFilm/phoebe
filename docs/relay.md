@@ -2,8 +2,9 @@
 
 `phoebe relay serve` runs the relay: one process, shipped in `phoebe-agent`,
 that an operator signs into with Google and that deployments dial over a
-WebSocket. A web console reads from it; the pages are still being built, but
-everything they read exists. You sign in, you mint a pairing token, a deployment
+WebSocket. It also serves the **console**, the web pages an operator reads the
+fleet on — built from `apps/console` and published inside the same package, so
+there is no second thing to install. You sign in, you mint a pairing token, a deployment
 spends it and then holds its connection open, pushing its whole **deployment
 report** whenever anything in it moves. The relay keeps the latest report per
 deployment, lists the fleet as connected, disconnected for so many seconds, dark
@@ -200,9 +201,13 @@ them instead of copying strings.
 | `POST` | `/api/deployments/forget`        | Forgets one deployment, named by fingerprint in the body. |
 | `GET`  | `/api/events`                    | The event stream: reports and connection changes.         |
 | `POST` | `/api/alerts/test`               | Sends one `{ kind: "test" }` body to every alert sink.    |
+| `GET`  | `/` and `/assets/…`              | The console's build. Public, and the only paths that are. |
 
-A successful sign-in lands on `/api/me` today, because who you are is the only
-thing the relay can show you yet. The console's own page takes that over.
+A successful sign-in lands on `/`, the console. The pages are public on purpose:
+the sign-in control is part of the bundle, and every read behind it answers 401
+on its own. A path with no file behind it is still a JSON `no-such-route` — the
+console routes on the URL hash, so the relay needs no catch-all and keeps being
+able to say a route does not exist.
 
 The fingerprint rides in the forget body rather than in the path so the route
 stays one constant a console imports. No fingerprint spells `forget`, and the
@@ -527,6 +532,37 @@ The edge rule itself is a pure function in `phoebe-agent/contracts`
 over the fleet, and the companion runs it over a local install's report, where
 there is no relay and so no `dark` and no `replaced`.
 
+## The console
+
+The console is the operator's view of the fleet: a **rail** down the left listing
+every deployment, and a **grid** beside it with one card per deployment and one
+bar segment per pipeline. It is one React bundle in `apps/console`, built into
+`console/` at the root of this package, which is how `phoebe relay serve` hands it
+out of the single install. The same bundle is what the desktop companion will load
+from disk.
+
+The rail is always on screen, because "is everything alive" is the question the
+console exists to answer. Rows are sorted dark first, then anything with a wedged
+pipeline or a crash-looping child, then by name. There is no health score and no
+"needs attention" word: every line is a count of something an operator can go and
+look at.
+
+The four connection words each get their own mark, not four shades of one — a
+filled dot for connected, a ring for disconnected with the seconds the relay
+counted, a square for dark with its age, a dashed outline for unseen with when it
+was paired. `replaced?` rides beside the word rather than instead of it. Light and
+dark themes follow the OS.
+
+Updates arrive over `GET /api/events`. The page reads the fleet once, subscribes,
+and then only applies events; there is no polling loop and no reload. Everything
+it asks the relay for goes through one **relay client** seam — in a browser that is
+the session cookie plus `EventSource`, and in the companion it will be the desktop
+bridge with main holding the device token.
+
+A report whose `schema` this console does not know is not read at all. The card
+says so and still shows the relay's own connection facts, which never came from the
+report.
+
 ## Running it by hand
 
 ```sh
@@ -545,8 +581,9 @@ URIs, which is what makes it work at all. Anywhere else, run the scaffold.
 
 The verbs themselves — config writes, sealed secrets, doctor runs. The rail
 carries them, the relay will deliver them and wait for a receipt, and nothing
-sends one yet. The console's pages are the other half. Both join this same
-process. See
+sends one yet. On the console's side the fleet page is here and the rest is not:
+selecting a deployment, its effective config, and the People page all join this
+same process. See
 [the relay's shape](https://github.com/JesusFilm/phoebe/issues/506).
 
 Alerting is here but only partly fed. The webhook, the edge rule, `alerts.json`

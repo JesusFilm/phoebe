@@ -19,6 +19,7 @@ import {
   type AlertNotifier,
   type AlertSink,
 } from "./alerts.ts";
+import { createConsoleAssets } from "./console-assets.ts";
 import { readRelayEnv, redirectUri, type RelayEnv } from "./env.ts";
 import { createRelayHandler } from "./http.ts";
 import { serveDeployments, type DeploymentGate } from "./deployments.ts";
@@ -50,6 +51,11 @@ export type StartRelayOptions = {
   env: RelayEnv;
   /** The relay volume. */
   dataDir?: string;
+  /**
+   * Where the console build sits. Defaults to the one in this package, which is
+   * the only value production has; a test points it at a directory it wrote.
+   */
+  consoleDir?: string;
   /** 0 asks the OS for a free port, which is how the tests bind. */
   port?: number;
   /** Overridden in tests; production talks to Google. */
@@ -111,6 +117,7 @@ export async function startRelay(options: StartRelayOptions): Promise<RunningRel
   // open responses that a restart closes and a browser redials.
   const reports = createReports(dataDir);
   const events = createRelayEvents({ warn });
+  const consoleAssets = createConsoleAssets(options.consoleDir);
   // The knot this unties: the socket endpoint needs the HTTP server, the server
   // needs the handler, and the handler needs the endpoint. One `let` and a
   // thunk, assigned before the port is bound and therefore before any request
@@ -151,6 +158,7 @@ export async function startRelay(options: StartRelayOptions): Promise<RunningRel
     },
     reports,
     events,
+    console: consoleAssets,
     alerts: { facts: notifier.facts, test: notifier.test },
     sessions: createSessionStore(),
     identity:
@@ -202,6 +210,11 @@ export async function startRelay(options: StartRelayOptions): Promise<RunningRel
   const port = await listen(server, options.port ?? RELAY_PORT);
   log(`[phoebe:relay] listening on port ${port}`);
   log(`[phoebe:relay] sign in at ${new URL(RELAY_ROUTES.signIn, new URL(callback).origin).href}`);
+  log(
+    consoleAssets.built
+      ? `[phoebe:relay] serving the console from ${consoleAssets.dir}`
+      : `[phoebe:relay] no console build at ${consoleAssets.dir} — the API answers, the pages do not`,
+  );
   log(
     options.env.allowedEmails.length > 0
       ? `[phoebe:relay] allowlist seeded from ALLOWED_EMAILS: ${options.env.allowedEmails.join(", ")}`
