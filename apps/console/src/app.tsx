@@ -26,6 +26,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { RELAY_EVENTS, RELAY_ROUTES } from "phoebe-agent/contracts";
 import type {
   AlertBody,
+  CompanionUpdate,
   DesktopBridge,
   LocalInstall,
   LocalReportEvent,
@@ -368,6 +369,7 @@ function Console({
   );
 
   const open = installs.find((install) => install.dir === openInstall) ?? null;
+  const update = useCompanionUpdate(bridge);
 
   useEffect(() => {
     // Signed out, there is no fleet to read and no stream to hold open. The
@@ -487,7 +489,18 @@ function Console({
             openInstall === null && route.page === "deployment" ? route.fingerprint : null
           }
           onSelect={setOpenInstall}
-          {...(bridge === null ? {} : { onAdd: addInstall })}
+          update={update}
+          {...(bridge === null
+            ? {}
+            : {
+                onAdd: addInstall,
+                // Neither call answers with anything the rail draws: what the
+                // click did arrives as the next pushed state, and a refusal is
+                // main saying the button was not the next step — which is a
+                // state the notice had already stopped offering.
+                onDownload: () => void bridge.updates.download().catch(noop),
+                onRestart: () => void bridge.updates.restart().catch(noop),
+              })}
           signIn={signIn}
           onSignedIn={onSignedIn}
         />
@@ -667,6 +680,34 @@ function useRoute(): Route {
   return route;
 }
 
+/**
+ * The companion's own update, as main knows it (#525 §3). One read and then
+ * main's pushes, the same shape as every other fact the bridge carries: the
+ * check runs in main, so the window is a reader of it and never a driver.
+ * Null in a browser, which has no bridge and updates with a reload.
+ */
+function useCompanionUpdate(bridge: DesktopBridge | null): CompanionUpdate | null {
+  const [update, setUpdate] = useState<CompanionUpdate | null>(null);
+
+  useEffect(() => {
+    if (bridge === null) return;
+    let live = true;
+    bridge.updates.state().then(
+      (state) => {
+        if (live) setUpdate(state);
+      },
+      () => undefined,
+    );
+    const unsubscribe = bridge.updates.changes((changed) => setUpdate(changed));
+    return () => {
+      live = false;
+      unsubscribe();
+    };
+  }, [bridge]);
+
+  return update;
+}
+
 /** A clock that ticks, so the durations on screen keep being true. */
 function useNow(everyMs: number): Date {
   const [now, setNow] = useState(() => new Date());
@@ -685,6 +726,8 @@ function Notice({ title, children }: { title: string; children: ReactNode }) {
     </div>
   );
 }
+
+function noop(): void {}
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);

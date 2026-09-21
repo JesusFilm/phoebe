@@ -300,6 +300,17 @@ a {
   background: var(--chip);
 }
 
+/* The companion's own update, at the foot of the rail. Muted and one line: it
+   is news about the window rather than about a deployment, and the rail is a
+   list of deployments. */
+.rail-update {
+  margin-top: 10px;
+  padding: 8px 14px 0;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+}
+
 /* ── the install tab ───────────────────────────────────────────────────── */
 
 .tabs {

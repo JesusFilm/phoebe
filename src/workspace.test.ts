@@ -69,11 +69,14 @@ describe("pnpm-workspace.yaml", () => {
   test("allows electron's build and nothing else", () => {
     const allowBuilds = workspace.match(/^allowBuilds:\n((?:\s+\S.*\n?)*)/m);
     expect(allowBuilds).not.toBeNull();
-    const allowed = allowBuilds![1]
+    const entries = allowBuilds![1]
       .split("\n")
-      .filter((line) => line.trim() !== "")
-      .map((line) => line.trim());
-    expect(allowed).toEqual(["electron: true"]);
+      .map((line) => line.trim())
+      .filter((line) => line !== "" && !line.startsWith("#"));
+    // An entry set to `false` is a script somebody read and decided not to run,
+    // which pnpm wants said out loud. Only a `true` lets anything execute.
+    expect(entries.filter((entry) => entry.endsWith(": true"))).toEqual(["electron: true"]);
+    expect(entries.every((entry) => /: (true|false)$/.test(entry))).toBe(true);
   });
 });
 

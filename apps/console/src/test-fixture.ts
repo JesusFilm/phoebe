@@ -13,6 +13,7 @@ import {
 import type {
   ChildLiveness,
   CompanionEnvironment,
+  CompanionUpdate,
   ConfigReport,
   DeploymentReport,
   DesktopBridge,
@@ -20,8 +21,8 @@ import type {
   DoctorSection,
   FleetCell,
   InstallDirectoryFacts,
-  LocalInstall,
   LocalAlertEvent,
+  LocalInstall,
   LocalReportEvent,
   RelayArmState,
   RelayDeploymentRow,
@@ -427,6 +428,18 @@ export function bridge(answers: BridgeAnswers = {}): DesktopBridge {
       lines: () => () => undefined,
       exits: () => () => undefined,
     },
+    updates: {
+      state: () => Promise.resolve(answers.update ?? { kind: "checking" }),
+      download: () => {
+        answers.updateCalls?.push("download");
+        return Promise.resolve();
+      },
+      restart: () => {
+        answers.updateCalls?.push("restart");
+        return Promise.resolve();
+      },
+      changes: () => () => undefined,
+    },
     preferences: {
       get: () => Promise.resolve({ notifications: true }),
       set: (preferences) => Promise.resolve(preferences),
@@ -469,6 +482,10 @@ export type BridgeAnswers = {
   reports?: LocalReportEvent[];
   /** What main raised over a local install (#559). */
   alerts?: LocalAlertEvent[];
+  /** Where the companion's own update stands (#525 §3). */
+  update?: CompanionUpdate;
+  /** Collects the update buttons the page pressed. */
+  updateCalls?: string[];
 };
 
 /** The directory facts main derives with no container involved (#527 §6). */

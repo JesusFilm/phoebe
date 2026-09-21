@@ -220,3 +220,4 @@ export type { RelayAlertEvent } from "./relay-events.ts";
 export type { LocalAlertEvent } from "./local-report.ts";
 export { CONSOLE_PROTOCOL } from "./console-protocol.ts";
 export type { RelayVersion } from "./console-protocol.ts";
+export type { CompanionUpdate } from "./companion-update.ts";

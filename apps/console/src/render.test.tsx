@@ -8,6 +8,7 @@
 
 import { describe, expect, test } from "vite-plus/test";
 import { renderToStaticMarkup } from "react-dom/server";
+import type { CompanionUpdate } from "phoebe-agent/contracts";
 import { rowFacts, sortFleet } from "./facts.ts";
 import { FleetPage } from "./fleet-page.tsx";
 import { Rail } from "./rail.tsx";
@@ -528,6 +529,71 @@ describe("the local arm on the rail", () => {
 
     expect(browser).not.toContain("This machine");
     expect(browser).not.toContain("+ add");
+  });
+});
+
+describe("the companion's own update on the rail", () => {
+  function railWith(update: CompanionUpdate) {
+    return renderToStaticMarkup(
+      <Rail
+        facts={[]}
+        now={NOW}
+        surface="companion"
+        signedIn={false}
+        update={update}
+        onDownload={() => undefined}
+        onRestart={() => undefined}
+        signIn={null}
+        onSignedIn={noop}
+      />,
+    );
+  }
+
+  test("offers the download only once there is a build to download", () => {
+    const markup = railWith({ kind: "available", version: "0.14.0" });
+
+    expect(markup).toContain("Phoebe 0.14.0 is available");
+    expect(markup).toContain("Download");
+  });
+
+  test("says what a download is doing while it does it", () => {
+    expect(railWith({ kind: "downloading", version: "0.14.0", percent: 42 })).toContain("42%");
+  });
+
+  test("a staged build names the quit as the moment it installs", () => {
+    const markup = railWith({ kind: "ready", version: "0.14.0" });
+
+    expect(markup).toContain("installs when you quit");
+    expect(markup).toContain("Restart now");
+  });
+
+  test("says nothing when there is nothing to say", () => {
+    // Checking, nothing newer, a feed nobody could read, and the platforms that
+    // do not update at all: four states, no line on the rail (#525 §3).
+    for (const update of [
+      { kind: "checking" },
+      { kind: "current" },
+      { kind: "unread", message: "fetch failed" },
+      { kind: "unsupported", reason: "the macOS build is unsigned", releases: "https://x.test" },
+    ] satisfies CompanionUpdate[]) {
+      expect(railWith(update), update.kind).not.toContain("rail-update");
+    }
+  });
+
+  test("a browser is never told about a companion build", () => {
+    const browser = renderToStaticMarkup(
+      <Rail
+        facts={[]}
+        now={NOW}
+        surface="browser"
+        signedIn
+        update={{ kind: "available", version: "0.14.0" }}
+        signIn={null}
+        onSignedIn={noop}
+      />,
+    );
+
+    expect(browser).not.toContain("0.14.0");
   });
 });
 
