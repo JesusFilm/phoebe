@@ -184,7 +184,7 @@ per-pipeline stop verb, because hot `disabled: true` is the stop.
 
 ## Checking the deployment's health: `phoebe doctor`
 
-`phoebe doctor` (report-only) runs ten checks and exits 1 when any fails:
+`phoebe doctor` (report-only) runs eleven checks and exits 1 when any fails:
 
 - **cli.** Installed `phoebe-agent` against the npm registry's latest.
 - **engine.** The configured pin against the latest release tag, plus the commit
@@ -201,13 +201,18 @@ per-pipeline stop verb, because hot `disabled: true` is the stop.
   `ARG PHOEBE_AGENT_VERSION` pin in `container/Dockerfile` for a container
   deployment and the npm-global install for a host one. An engine that declares
   no floor, or a local-mount engine, reports "does not apply".
+- **config-pen.** Whether the root `phoebe.config.ts` is mounted read-write, which
+  is what `phoebe config set` needs to apply an edit. A deployment that came up
+  before that mount existed looks identical until the first edit fails, so the
+  check names the volume line to add and the restart that picks it up. In-container
+  only, like **supervisor**.
 
 In workspace mode it also sweeps every tenant, using the same enumeration boot
 supervises with, checking each tenant's `GH_TOKEN` is present the way its
 engine child reads it, and that its repo answers to that token. Held tenants
 surface as failures with their hold reason. `--json` for scripts.
 
-The other three run per tenant:
+The other four run per tenant:
 
 - **labels.** The four workflow labels — `readyLabel`, `processingLabel`,
   `mergedLabel` and `prOptOutLabel` — exist in the tenant's repo. Any that does
@@ -233,6 +238,39 @@ The other three run per tenant:
   by path is the tier that sweep refuses to touch — a worktree that is dirty or
   holds commits `origin` has not seen — with a one-line hint for reclaiming it
   by hand. **Warn, never fail**: accumulated dirt is a chore, not a fault.
+- **secret-store.** Which keys the tenant's [secret
+  store](configuration.md#tenant-secrets-the-store-and-phoebe-secret) holds, and
+  which of them the tenant's `.env` also sets. The store outranks the file, so a
+  key in both means a `.env` edit that does nothing, which is the one silent
+  failure this design would otherwise introduce. Each such key is named, with
+  `phoebe secret clear <KEY>` as the repair. A store file that will not parse is
+  its own warn, because every delivery path reads it fail-closed and nothing else
+  would ever mention it. **Warn, never fail**: shadowing is a state you may have
+  meant. Never a value, in any state.
+
+**You are not the only one who runs it.** The bootstrapper runs doctor itself:
+once the fleet comes up, again after a reconcile lands, on request, and every six
+hours. What it finds goes into the deployment report, so the last report and its
+age are there to read without anyone having remembered to ask. Those runs are
+spawned as a child process and carry each tenant's installation token, which is
+why `repo`, `labels` and `stray-members` are answered on an App-arm deployment
+instead of skipped. One run happens at a time. Asking while one is in flight
+joins it; asking mid-reconcile waits for the relaunch, then runs once against the
+engine that is actually running.
+
+Every run, yours included, holds itself to five minutes. A check that has not
+finished by then reports `?` with "deadline passed", and the rest of the report
+still lands. One unreachable tenant costs you that tenant's answers, not the
+whole report. The bootstrapper kills its own doctor child thirty seconds past
+that as a backstop. When it does, the last report stays where it is with its age,
+and the failed attempt is recorded beside it.
+
+`phoebe secret set` runs one too, on the run that succeeds: setting a key is the
+moment you want "did it work" answered, and this is the check that answers it.
+
+Typing `phoebe doctor` yourself prints and changes nothing. The report on the
+volume is the bootstrapper's, and a manual run carries no leases, so an App-arm
+tenant's tracker checks read `unknown` as they always have.
 
 Division of labor: `phoebe upgrade` moves you between versions; `phoebe migrate`
 reshapes your files for the version you are moving to; `phoebe doctor` tells you
@@ -267,13 +305,13 @@ unusual.
 `node scripts/verify-tenant-token.mjs` says which grant is missing, before
 Phoebe runs.
 
-| Invocation                                         | Verifies                                                            |
-| -------------------------------------------------- | ------------------------------------------------------------------- |
-| `verify-tenant-token.mjs`                          | The cwd's tenant, its `phoebe.config.ts` and its `.env`.            |
-| `verify-tenant-token.mjs ./core`                   | A specific tenant directory (repeatable).                           |
-| `verify-tenant-token.mjs --all`                    | Every tenant of the deployment rooted here, one section each.       |
-| `verify-tenant-token.mjs --slug o/r --token ghp_…` | A token you have not written to a file yet.                         |
-| `--json` / `--check`                               | Machine-readable output / exit 1 on any finding (as `phoebe list`). |
+| Invocation                                         | Verifies                                                              |
+| -------------------------------------------------- | --------------------------------------------------------------------- |
+| `verify-tenant-token.mjs`                          | The cwd's tenant, its `phoebe.config.ts` and its `.env`.              |
+| `verify-tenant-token.mjs ./core`                   | A specific tenant directory (repeatable).                             |
+| `verify-tenant-token.mjs --all`                    | Every tenant of the deployment rooted here, one section each.         |
+| `verify-tenant-token.mjs --slug o/r --token ghp_…` | A token you have not written to a file yet.                           |
+| `--json` / `--check`                               | Machine-readable output / exit 1 on any finding (as `phoebe status`). |
 
 It reports each of the five permissions
 [onboarding §2](phoebe-core-onboarding.md#2-operator-github-token-a-fine-grained-pat)
@@ -334,9 +372,15 @@ how a crash report becomes a front-loaded issue here.
 
 ## One-off overrides without editing config
 
-Most scalar fields have a `PHOEBE_*` env override for a single run, such as
-`PHOEBE_AGENT=claude`, `PHOEBE_PR_SCOPE=all`, or `PHOEBE_POLL_INTERVAL_MS=60000`.
-See the [environment overlay table](configuration.md#environment-overlay-phoebe_).
+Most scalar fields have a `PHOEBE_*` name that sets them for a single run, such
+as `PHOEBE_DEFAULT_PROVIDER=claude`, `PHOEBE_PR_SCOPE=all`, or
+`PHOEBE_POLL_INTERVAL_MS=60000`. One rule decides who wins: env beats the config
+file at a path, and a more specific path beats what it would inherit. See the
+[settings catalogue](configuration.md#settings-phoebe_).
+
+To see which of them is actually in force, run `phoebe config`: every setting
+with its value, the thing that supplied it, and whatever it beat. See
+[Seeing what applies](configuration.md#seeing-what-applies-phoebe-config).
 
 ## Quick reference
 
@@ -352,6 +396,8 @@ See the [environment overlay table](configuration.md#environment-overlay-phoebe_
 | Hand a PR back                                | Remove the label / mark ready-for-review.                                                                                                                                       |
 | Force a janitor to retry                      | Push, advance the base, post new review feedback, or delete the newest failure comment.                                                                                         |
 | Let Phoebe maintain all PRs, not just its own | `prScope: "all"`.                                                                                                                                                               |
+| See what a setting resolves to, and why       | `phoebe config` (add `--json` for a machine).                                                                                                                                   |
+| Change one setting without an editor          | `phoebe config set <path> <value>` — one literal, in place, validated first.                                                                                                    |
 
 ## Running many repos in one container
 
@@ -364,73 +410,138 @@ that declares `workspace: { depth }` (walk) or `workspace: { tenants: [...] }`
 Read [`trust.md`](trust.md) first: co-locating repos means co-locating them in
 one trust domain.
 
-| Action                            | How                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Add a repo                        | Place the checkout under the root (`git clone` / `git submodule add`), then `phoebe init --tenant <dir>` (host-side) and, on the declared arm, add the dir to `workspace.tenants` yourself. Phoebe never edits your fleet declaration; `workspace.tenants` is yours. The bootstrapper discovers it next poll. Fill in its `.env`.                                                                                                                                                                                                                                |
-| Remove a repo                     | Drop the child from `workspace.tenants` and/or delete its config dir (host-side; Phoebe never edits your fleet declaration). Reversible, because the tenant's `/data` is retained and re-adding re-uses it.                                                                                                                                                                                                                                                                                                                                                      |
-| Reclaim a deleted pipeline's disk | Nothing to do: the next boot, and any later pipeline-set change, sweeps the state of pipelines the config no longer declares. A worktree that is dirty or holds unpushed commits is left for you, named by `phoebe doctor`'s `stale-state` check. Run `phoebe sweep-state` (in-container) to do it now.                                                                                                                                                                                                                                                          |
-| Reclaim a removed repo's disk     | `phoebe purge <owner/repo> --yes` (in-container). Destructive; refuses while a live config still claims the slug.                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| Apply deployment migrations       | `phoebe migrate` (host-side, in the deployment dir). Rewrites config content and scaffolds missing artifacts across root and fleet; lists uncommitted paths for you to review and commit per repo. See [`upgrading.md` → phoebe migrate](upgrading.md#phoebe-migrate-reshaping-your-files-for-the-current-ref).                                                                                                                                                                                                                                                  |
-| Check every tenant's GitHub token | `node scripts/verify-tenant-token.mjs --all` (host-side, in the deployment dir). One section per tenant; `--check` exits non-zero when any is short a grant. See [Checking a tenant's GitHub token](#checking-a-tenants-github-token).                                                                                                                                                                                                                                                                                                                           |
-| See every tenant + its health     | `phoebe list` (in-container): one row per tenant — config present? `.env` present? retained data? which credential arm? — and beneath it one indented line per pipeline (see below). Tenants that cannot boot show `held — <reason>`. Use `--json` for scriptable output and `--check` to exit non-zero when a declared tenant is held; declared-arm accounting, meaning `N of M`, declared order, and `undeclared` are reported but don't affect the exit code — see [`workspace.md` → Declaring the fleet](workspace.md#declaring-the-fleet-workspacetenants). |
+| Action                            | How                                                                                                                                                                                                                                                                                                                                                                         |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Add a repo                        | Place the checkout under the root (`git clone` / `git submodule add`), then `phoebe init --tenant <dir>` (host-side) and, on the declared arm, add the dir to `workspace.tenants` yourself. Phoebe never edits your fleet declaration; `workspace.tenants` is yours. The bootstrapper discovers it next poll. Fill in its `.env`.                                           |
+| Remove a repo                     | Drop the child from `workspace.tenants` and/or delete its config dir (host-side; Phoebe never edits your fleet declaration). Reversible, because the tenant's `/data` is retained and re-adding re-uses it.                                                                                                                                                                 |
+| Reclaim a deleted pipeline's disk | Nothing to do: the next boot, and any later pipeline-set change, sweeps the state of pipelines the config no longer declares. A worktree that is dirty or holds unpushed commits is left for you, named by `phoebe doctor`'s `stale-state` check. Run `phoebe sweep-state` (in-container) to do it now.                                                                     |
+| Reclaim a removed repo's disk     | `phoebe purge <owner/repo> --yes` (in-container). Destructive; refuses while a live config still claims the slug.                                                                                                                                                                                                                                                           |
+| Apply deployment migrations       | `phoebe migrate` (host-side, in the deployment dir). Rewrites config content and scaffolds missing artifacts across root and fleet; lists uncommitted paths for you to review and commit per repo. See [`upgrading.md` → phoebe migrate](upgrading.md#phoebe-migrate-reshaping-your-files-for-the-current-ref).                                                             |
+| Check every tenant's GitHub token | `node scripts/verify-tenant-token.mjs --all` (host-side, in the deployment dir). One section per tenant; `--check` exits non-zero when any is short a grant. See [Checking a tenant's GitHub token](#checking-a-tenants-github-token).                                                                                                                                      |
+| See what the deployment is doing  | `phoebe status`, either side of the container wall (see below). It reads the deployment report: the bootstrapper line, the relay line when there is one, the fleet with two lines per pipeline, and doctor in one line. `--json` prints the report file verbatim, `--check` exits 1 when something needs a look. `phoebe list` is a deprecated alias for its fleet section. |
 
-**Reading `phoebe list`.** A tenant prints its own row — path, slug, the
-config/env/data flags, its credential arm — and beneath it one indented line per
-pipeline. The implicit `work` pipeline prints like any other, and a solo deployment
-prints its single tenant the same way:
+**Reading `phoebe status`.** One verb answers "is it alive, and what is it
+doing", either side of the container wall. Inside the container it reads the
+deployment report off the data volume; on the host it drives the deployment's
+`container/compose.yml` and execs itself in the container, exactly as `phoebe
+start` and `phoebe stop` drive Compose — so run it from the deployment directory
+and you get the same answer either way:
 
 ```
-[phoebe] 2 of 2 declared tenant(s):
+[phoebe] bootstrapper  engine main → a1b2c3d  slots 1/4  report 2m ago
+[phoebe] relay         relay.example  connected 5h
+[phoebe] fleet         2 tenant(s), 3 pipeline(s)  updated 2m ago
   children/widget  (acme/widget)
       ✓ config  ✓ env  ✓ data  arm: pat
-        work    working 1/2 issues 12
-        intake  waiting for slot
-        old     idle  (stale)
-  children/sprocket  (acme/sprocket)
-      held — missing repoSlug in phoebe.config.ts  ✓ config  ✓ env  ✓ data  arm: app
-        work    idle  (from disk)
+        work    running 3h
+                working 1/2 issues 12
+        intake  exited (code 1) 2m ago, 3 restarts, crash-looping
+                idle  wedged? no pass for 17m
+  children/sprocket
+      held — missing repoSlug in phoebe.config.ts
+        work  not supervised  (from disk)
+              idle
+[phoebe] doctor        0 fail, 1 warn — 4h ago (schedule)
 ```
 
-The pipeline set is the one the supervisor spawns from, so `list` and the supervisor
-cannot disagree about what a tenant runs. Each line's state comes from that pipeline's
-own `state/<name>/status.json` and nothing else:
+Top to bottom is priority order: read down until something looks wrong and stop.
+The bootstrapper line names the engine ref and the commit actually running, says
+`quarantined (avoiding <sha>)` when the crash-loop guard has put the deployment
+on last-known-good, says `reconciling (config|ref)` while a relaunch is under
+way, and ends with the age of the report itself. The relay line appears only
+when this deployment has a relay. The doctor line is the last run's counts and
+its age, or `never run`; `--verbose` inlines the whole doctor table under it.
+
+**Two lines per pipeline.** The first is the _process_: what the bootstrapper's
+child is doing — running, draining, exited with its code or signal — plus its
+restart count and whether those restarts are fast enough to count as a
+crash-loop. A cell with no child reads `not supervised`. The second is the
+_state_, from that pipeline's own `state/<name>/status.json`:
 
 - `no status` — the pipeline exists; nothing has written a snapshot for it yet.
 - `working k/N <units>` — `N` is the pipeline's declared `concurrency`.
 - `waiting for slot` — a pass picked a unit and is queued on the fleet cap.
 - `idle`.
-- `wedged? <age>` beside a working pipeline with a unit that has been running longer
-  than its own run budget plus one poll interval. Each unit is weighed against
-  its own budget; `<age>` is the oldest unit's.
+- `wedged? unit past its budget` — some in-flight unit has outlived its own run
+  budget plus one poll interval. Each unit is weighed against its own budget.
+- `wedged? no pass for <age>` — the engine has completed no loop pass in three
+  poll intervals while not waiting for a slot. This is how a pipeline whose
+  process is alive but whose loop has stopped becomes visible at all: an idle
+  engine writes no snapshot, so without it the pipeline would read `idle`
+  forever.
 
-`wedged?` is a question, not a verdict: `list` reads files, not processes. An
-idle pipeline is never wedged however long it has been idle, and pipelines are never
-weighed against each other — a pipeline that polls every 15 minutes is not sick for
-being quieter than the one beside it.
+`wedged?` is a question, not a verdict. An idle pipeline that is still passing is
+never wedged however long it has been idle, and pipelines are never weighed
+against each other — one that polls every 15 minutes is not sick for being
+quieter than the one beside it.
 
 `(stale)` marks a `state/<name>/` directory this tenant's config no longer
 declares: a renamed or deleted pipeline whose snapshot outlived it. It is
 reported, never acted on, and it does not affect `--check`. A held tenant is one
-whose config could not be read, so there is no pipeline set to ask for — `list` shows
-the snapshots that are on disk and marks each one `(from disk)`.
+whose config could not be read, so there is no pipeline set to ask for. `status`
+shows the snapshots that are on disk instead, and marks each one `(from disk)`.
+
+**Nothing in the view is computed twice.** Every state and every `wedged?`
+verdict comes straight out of the report, where the bootstrapper derived it once.
+That is what stops this command and the web console disagreeing about a pipeline.
+`--json` prints `state/deployment.json` byte for byte, for the same reason.
+
+**A missing or old report is stated as a fact, never as a state.** Inside the
+container the one live question `status` asks is whether `phoebe boot` is still
+the process holding the container open. When it is not, the view opens with
+`bootstrapper not running; last report 3h ago` and prints the report beneath it —
+the facts are still the last true ones, and how old they are is the news. With no
+file at all: `no deployment report: the bootstrapper has not booted on this
+volume`. From the host, a container that is not running is reported before any
+exec. There is no staleness threshold, because "3h old" is a fact an operator can
+act on and "stale" is a guess.
+
+**`--check` for a cron.** Exit 1 when something needs a look: a wedged pipeline,
+a crash-looping one, a failing check in the report's doctor section, a held
+tenant, a bootstrapper that is not running, or no report at all. Doctor
+_warnings_ and stale pipeline directories deliberately do not trip it. It names
+the findings on stderr, so the cron mail says which one fired.
+
+**`phoebe list` is deprecated.** It still works. It prints the fleet section
+above, the bootstrapper-not-running header included, plus a one-line notice, and
+it goes away at the next major. Two things it used to print are gone with it: the
+`N of M declared tenant(s)` header and the `undeclared:` footer. Neither has a
+home in the deployment report yet, and the report is now the one source every
+reader shares. `phoebe pipelines` (the supervisor's machine interface) and
+`phoebe doctor` (print-only, credential-free by hand) are unaffected.
 
 **The deployment report.** The bootstrapper keeps one file on the data volume,
 `<data>/state/deployment.json`, that says what the whole deployment is doing right
 now: who it is, which engine commit it is running, what its crash-loop record and
 its reconcile state are, how each supervised child is faring, where the slot cap
-stands, and one entry per (tenant × pipeline) cell with that pipeline's raw
-`status.json` and its derived state. It carries a `schema` integer, it is
+stands, one entry per (tenant × pipeline) cell with that pipeline's raw
+`status.json` and its derived state, and what the last
+[doctor run](#checking-the-deployments-health-phoebe-doctor) found, with the
+trigger that started it, when it was taken, whether one is running now, and the
+last attempt that produced nothing. It carries a `schema` integer, it is
 replaced atomically, and it is rewritten only when something in it moves — a fixed
 set of current facts, never a log. Nothing on disk grows with uptime.
 
-Two things in it are worth knowing before you read the file. The `wedged` verdict
-is wider than `phoebe list`'s: as well as a unit past its budget, it fires when a
-pipeline has completed no loop pass in three poll intervals while not waiting for a
-slot — which is how an engine whose process is alive but whose loop has stopped
-becomes visible, since an idle engine writes no snapshot. And each child's
-`lastPassAt` is **not** an age to display: it advances every pass and the file is
-not rewritten for it, so between writes it is deliberately stale. The published
-form of that clock is the `noPassForMs` inside a wedged verdict.
+`phoebe status` is that file rendered, and `phoebe status --json` is that file.
+Reading it by hand, one field needs a warning: each child's `lastPassAt` is **not**
+an age to display. It advances every pass and the file is not rewritten for it, so
+between writes it is deliberately stale on a perfectly healthy idle pipeline. The
+published form of that clock is the `noPassForMs` inside a wedged verdict, stamped
+at the moment the verdict was taken.
+
+**Settings ride in the report too.** Its `config` section is every tenant's
+effective config, each setting with its value and where that value came from, in
+the shape [`phoebe config`](configuration.md#seeing-what-applies-phoebe-config)
+prints. The running engine computes it, per tenant, so the report says what the
+engine actually believes rather than what the bootstrapper would guess. A tenant
+that is held, or whose file will not load, carries its error instead of the
+resolution it had before. The section also carries a content hash of the root
+`phoebe.config.ts` it was derived from, which is what a remote config edit checks
+itself against. Only `--json` shows it. The text view is the fleet.
+
+The section is written to a byte budget, so a workspace with an unusual number of
+tenants writes a report that stops growing rather than one that does not. The
+tenants left out are counted in `config.omitted` and read with `phoebe config`.
 
 **Stopping one pipeline.** There is no per-pipeline stop verb yet. Setting
 `disabled: true` on that pipeline in the tenant's `phoebe.config.ts` is hot at the

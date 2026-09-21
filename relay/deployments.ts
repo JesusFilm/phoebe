@@ -69,10 +69,16 @@ import {
   type RelayReportMessage,
   type RelayRequest,
 } from "../src/contracts/relay-protocol.ts";
+import type { ConnectionAlertFacts } from "../src/contracts/alerts.ts";
 import { RELAY_EVENTS } from "../src/contracts/relay-events.ts";
 import type { RelayDeploymentRow, RelayStoredReport } from "../src/contracts/relay-routes.ts";
 import { verifyNonceSignature } from "../src/ed25519.ts";
-import { deploymentRows, NOTHING_HEARD, type ConnectionFacts } from "./connection.ts";
+import {
+  alertConnections,
+  deploymentRows,
+  NOTHING_HEARD,
+  type ConnectionFacts,
+} from "./connection.ts";
 import type { RelayEventSink } from "./events.ts";
 import type { IncomingReport, Reports } from "./reports.ts";
 import type { Link, Links, PairingTokens } from "./links.ts";
@@ -116,6 +122,21 @@ export type DeploymentGateOptions = {
   darkAfterMs?: number;
   log?: (message: string) => void;
   warn?: (message: string) => void;
+  /** Where alert edges are evaluated, when there is anywhere (#515). */
+  alerts?: AlertHook;
+};
+
+/**
+ * What this endpoint tells the alert notifier (#515). Two moments, because
+ * silence is an event nobody fires: the notifier sweeps on its own timer for
+ * darkness, and this hook is how a connection arriving or leaving gets its
+ * clear or its raise now rather than up to one sweep later.
+ */
+export type AlertHook = {
+  /** A connection came or went — re-evaluate this fleet. */
+  changed: () => void;
+  /** A link is gone: drop its entries, and send no clear (#515 §5). */
+  forgotten: (fingerprint: string) => void;
 };
 
 export type DeploymentGate = {
@@ -127,6 +148,12 @@ export type DeploymentGate = {
    * Derived on every call, because that is the only way it is ever right.
    */
   rows: (now?: Date) => RelayDeploymentRow[];
+  /**
+   * The same links as {@link DeploymentGate.rows}, in the vocabulary the alert
+   * edge rule reads: the silence clock in ms rather than the seconds a console
+   * is shown, and no facts the rule has no opinion about.
+   */
+  alertConnections: (now?: Date) => ConnectionAlertFacts[];
   /**
    * Send one `id`-bearing request and wait for its receipt. Answers
    * `undelivered` — never queues, never throws — when the deployment is not
@@ -312,6 +339,9 @@ export function serveDeployments(options: DeploymentGateOptions): DeploymentGate
     heard.set(link.fingerprint, now);
     log(`[phoebe:relay] ${link.name} (${link.fingerprint}) connected`);
     announce(now);
+    // A deployment that has come back clears its dark alert now, not at the
+    // next sweep: the operator is most likely reading their phone right now.
+    options.alerts?.changed();
     return entry;
   }
 
@@ -437,6 +467,7 @@ export function serveDeployments(options: DeploymentGateOptions): DeploymentGate
       );
     }
     announce();
+    options.alerts?.changed();
   }
 
   /** The connection facts one link's row is built from. */
@@ -464,6 +495,15 @@ export function serveDeployments(options: DeploymentGateOptions): DeploymentGate
     connected: () => [...live.values()].map(({ link, socket, since }) => ({ link, socket, since })),
 
     rows: (now = clock()) => rowsAt(now),
+
+    alertConnections: (now = clock()) =>
+      alertConnections({
+        links: options.links.all(),
+        facts: factsOf,
+        relayStartedAt: startedAt,
+        now,
+        darkAfterMs,
+      }),
 
     request(fingerprint, message) {
       const entry = live.get(fingerprint);
@@ -494,6 +534,10 @@ export function serveDeployments(options: DeploymentGateOptions): DeploymentGate
       // deployment that pairs the same key again.
       options.reports.forget(fingerprint);
       announced.delete(fingerprint);
+      // Forgetting is the mute for a dead key (#515 §8): the entries go, and
+      // nothing is sent — a clear for a deployment nobody is watching any more
+      // would be the relay talking about a link it no longer has.
+      options.alerts?.forgotten(fingerprint);
       log(`[phoebe:relay] forgot ${link.name} (${fingerprint})`);
       return link;
     },

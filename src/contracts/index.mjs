@@ -10,9 +10,13 @@
 // this. src/contracts/deployment.test.ts and src/contracts/index.test.ts hold
 // the copies to the same value; bootstrap/index.mjs exists for the same reason.
 
+export { openSecret, sealSecret } from "./secret-envelope.mjs";
+
 /** The `schema` integer `state/deployment.json` carries — see deployment.ts. */
 export const DEPLOYMENT_SCHEMA = 1;
 
+/** The effective config's own shape version — see effective-config.ts. */
+export const EFFECTIVE_CONFIG_VERSION = 1;
 /** The wire version both ends exchange in the handshake — see relay-protocol.ts. */
 export const RELAY_PROTOCOL = 1;
 
@@ -61,6 +65,7 @@ export const RELAY_ROUTES = {
   pairingTokens: "/api/pairing-tokens",
   deployments: "/api/deployments",
   forget: "/api/deployments/forget",
+  testAlert: "/api/alerts/test",
   events: "/api/events",
 };
 
@@ -74,3 +79,12 @@ export const RELAY_EVENTS = {
   disconnected: "disconnected",
   dark: "dark",
 };
+
+/** The `schema` integer every alert body carries (#515 §9) — see alerts.ts. */
+export const ALERT_SCHEMA = 1;
+
+/** How long after the last heartbeat silence becomes an alert (#515 §4). */
+export const ALERT_DARK_AFTER_MS = 300_000;
+
+/** The five conditions (#515 §3). Mirror of `ALERT_CONDITIONS` in alerts.ts. */
+export const ALERT_CONDITIONS = ["dark", "wedged", "crash-looping", "doctor-fail", "replaced"];

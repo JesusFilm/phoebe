@@ -187,8 +187,19 @@ cannot set up.
 The deployment env-file (`/etc/phoebe/.env`) is **not** part of this residual:
 `compose.yml` masks it with a `/dev/null` bind mount, so the file is empty
 inside the container even though the deployment root is mounted read-only. The
-residual is only the per-tenant `.env` files at `/etc/phoebe/<child>/.env`, each
+residual is the per-tenant `.env` files at `/etc/phoebe/<child>/.env` and the
+per-tenant **secret stores** at `<data>/<owner>/<repo>/state/secrets.json`, each
 readable by sibling tenants sharing the same uid.
+
+The secret store **joins** that residual rather than widening it. A value set
+through `phoebe secret set` or the console is decrypted on arrival and held in
+plaintext at mode `0600`: the same plaintext, the same uid, the same exposure as
+the tenant `.env` it sits above, and no new reader. End-to-end encryption over
+the wire is about the relay never holding a secret. It was never a claim about
+the disk, and holding ciphertext here would only put the key that opens it on the
+same volume. What the store adds to this document is one file path, and the line
+above is it. The store is **tenant scope only**. It never holds the GitHub App
+credentials, so the masked deployment env-file's guarantee is what it was.
 
 **So the constraint is a policy, and it is first-class:**
 
