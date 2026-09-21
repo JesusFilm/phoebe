@@ -17,3 +17,14 @@ export const DEPLOYMENT_SCHEMA = 1;
 
 /** The effective config's own shape version — see effective-config.ts. */
 export const EFFECTIVE_CONFIG_VERSION = 1;
+
+/**
+ * The relay's HTTP paths (#538). Mirror of `RELAY_ROUTES` in relay-routes.ts;
+ * the doc comments live there.
+ */
+export const RELAY_ROUTES = {
+  signIn: "/auth/google/start",
+  callback: "/auth/google/callback",
+  signOut: "/auth/sign-out",
+  me: "/api/me",
+};

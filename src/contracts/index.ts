@@ -79,3 +79,5 @@ export type {
   ShadowedValue,
   TenantEffectiveConfig,
 } from "./effective-config.ts";
+export { RELAY_ROUTES } from "./relay-routes.ts";
+export type { RelayIdentity, RelayRoute } from "./relay-routes.ts";
