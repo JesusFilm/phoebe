@@ -58,6 +58,15 @@ jobs:
 
       - run: vp run -r test
         if: ${{ !cancelled() }}
+      # The last step of the root `ready` script, and the one that keeps a broken
+      # Electron main from being invisible until someone packages the companion
+      # (#521 §6). Building it needs no Electron binary — `--ignore-scripts`
+      # above already skips the postinstall that fetches one, and this says so a
+      # second time so the step keeps working if that flag ever goes.
+      - run: vp run -r build
+        if: ${{ !cancelled() }}
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
 
   pack-and-smoke:
     runs-on: ubuntu-latest
