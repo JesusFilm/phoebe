@@ -1,5 +1,5 @@
-// The console's shell: the session gate, the fleet it holds, and the rail and
-// grid it hands them to.
+// The console's shell: the session gate, the fleet it holds, the rail and grid it
+// hands them to, and the hash the pages are chosen by.
 //
 // Everything it needs from the relay arrives through the one client seam, so this
 // component is the same component in the companion's renderer with a different
@@ -19,10 +19,11 @@ import { DeploymentPage, NoSuchDeployment } from "./deployment-page.tsx";
 import { rowFacts, sortFleet, type RowFacts } from "./facts.ts";
 import { applyEvent, EMPTY_FLEET, loadFleet, type FleetState } from "./fleet-state.ts";
 import { FleetPage } from "./fleet-page.tsx";
+import { PeoplePage } from "./people-page.tsx";
 import { Rail } from "./rail.tsx";
 import { isNotSignedIn, type RelayClient } from "./relay-client.ts";
 import { configOf } from "./report.ts";
-import { FLEET_ROUTE, parseRoute, type Route } from "./route.ts";
+import { FLEET_HREF, FLEET_ROUTE, PEOPLE_HREF, parseRoute, type Route } from "./route.ts";
 
 type Session =
   | { kind: "asking" }
@@ -87,11 +88,11 @@ function Console({
   identity: RelayIdentity;
   onSignedOut: () => void;
 }) {
+  const route = useRoute();
   const [fleet, setFleet] = useState<FleetState>(EMPTY_FLEET);
   const [loaded, setLoaded] = useState(false);
   const [trouble, setTrouble] = useState<string | null>(null);
   const now = useNow(1000);
-  const route = useRoute();
 
   useEffect(() => {
     let live = true;
@@ -129,6 +130,14 @@ function Console({
     <>
       <header className="topbar">
         <span className="brand">Phoebe console</span>
+        <nav className="pages" aria-label="Pages">
+          <a href={FLEET_HREF} className={route.page === "people" ? "" : "current"}>
+            Fleet
+          </a>
+          <a href={PEOPLE_HREF} className={route.page === "people" ? "current" : ""}>
+            People
+          </a>
+        </nav>
         <span className="spacer" />
         <span className="muted">{identity.email}</span>
         <button
@@ -146,7 +155,9 @@ function Console({
           selected={route.page === "deployment" ? route.fingerprint : null}
           now={now}
         />
-        {trouble !== null ? (
+        {route.page === "people" ? (
+          <PeoplePage client={client} now={now} onSignedOut={onSignedOut} />
+        ) : trouble !== null ? (
           <main className="main">
             <h1>Fleet</h1>
             <p className="muted">The relay did not answer: {trouble}</p>
@@ -181,7 +192,7 @@ function Page({
   client: RelayClient;
   now: Date;
 }) {
-  if (route.page === "fleet") return <FleetPage facts={facts} client={client} now={now} />;
+  if (route.page !== "deployment") return <FleetPage facts={facts} client={client} now={now} />;
   const found = facts.find((row) => row.row.fingerprint === route.fingerprint);
   if (found === undefined) return <NoSuchDeployment fingerprint={route.fingerprint} />;
   // The fingerprint the page was drawn with, not a fresh read of it: that is

@@ -43,6 +43,8 @@ export type {
   RelayDoctorRunAnswer,
   RelayDoctorRunResult,
   RelayIdentity,
+  RelayPairingToken,
+  RelayPerson,
   RelayRoute,
   RelayStoredReport,
 } from "./relay-routes.ts";

@@ -77,6 +77,8 @@ export const RELAY_ROUTES = {
   doctorRun: "/api/deployments/doctor-run",
   configSet: "/api/deployments/config-set",
   events: "/api/events",
+  people: "/api/people",
+  removePerson: "/api/people/remove",
 };
 
 /**

@@ -20,6 +20,13 @@ The browser arm is the relay's own origin, its `__Host-` session cookie and
 the desktop bridge ([#553](https://github.com/JesusFilm/phoebe/issues/553)), so
 nothing else in here knows which side it is running on.
 
+Pages are hash routes, picked in [`src/app.tsx`](src/app.tsx): `#/fleet` is the
+rail and the grid, `#/people` is the allowlist and the pairing panel
+([#548](https://github.com/JesusFilm/phoebe/issues/548)). The hash and not the
+path, because the relay serves this build and nothing else — a real path would
+need a catch-all there, and a catch-all is what costs the relay its ability to
+say a route does not exist.
+
 `vp run dev` serves the bundle on its own origin with no relay behind it, so the
 pages land on the signed-out notice. To see real data, build and let the relay
 serve it.

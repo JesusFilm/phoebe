@@ -13,6 +13,7 @@ import type {
   DoctorSection,
   FleetCell,
   RelayDeploymentRow,
+  RelayPerson,
   RelayStoredReport,
   StatusSnapshot,
   TenantEffectiveConfig,
@@ -257,6 +258,18 @@ export function stored(
   };
 }
 
+export function person(overrides: Partial<RelayPerson> = {}): RelayPerson {
+  return {
+    email: "ada@example.test",
+    addedBy: "grace@example.test",
+    addedAt: ago(86_400),
+    fromEnvironment: false,
+    signedIn: true,
+    self: false,
+    ...overrides,
+  };
+}
+
 /**
  * A relay client that answers nothing. Every page now takes the seam, and a
  * render test that only wants markup should not have to invent five methods to
@@ -271,6 +284,10 @@ export function client(overrides: Partial<RelayClient> = {}): RelayClient {
     runDoctor: () => Promise.resolve([]),
     setConfigField: () => Promise.resolve({ outcome: "written" }),
     events: () => () => {},
+    people: () => Promise.resolve([]),
+    addPerson: () => Promise.reject(new Error("nothing stubbed addPerson")),
+    removePerson: () => Promise.resolve({ sessionsEnded: 0 }),
+    mintPairingToken: () => Promise.reject(new Error("nothing stubbed mintPairingToken")),
     ...overrides,
   };
 }

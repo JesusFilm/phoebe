@@ -12,7 +12,7 @@ import {
   RelayRequestError,
   type EventSourceLike,
 } from "./relay-client.ts";
-import { ago, row } from "./test-fixture.ts";
+import { ago, person, row } from "./test-fixture.ts";
 
 type Call = { url: string; init: RequestInit | undefined };
 
@@ -210,5 +210,49 @@ describe("the stream", () => {
     );
 
     expect(seen).toEqual(["report"]);
+  });
+});
+
+describe("the People verbs", () => {
+  test("read the list, and send an address as JSON on the two writes", async () => {
+    const { fetch, calls } = fakeFetch({
+      [RELAY_ROUTES.people]: { body: { people: [person()] } },
+      [RELAY_ROUTES.removePerson]: { body: { sessionsEnded: 2 } },
+    });
+    const client = createBrowserRelayClient({ fetch });
+
+    expect(await client.people()).toEqual([person()]);
+    await client.addPerson("grace@example.test");
+    expect(await client.removePerson("grace@example.test")).toEqual({ sessionsEnded: 2 });
+
+    expect(calls.map((call) => [call.url, call.init?.method])).toEqual([
+      [RELAY_ROUTES.people, undefined],
+      [RELAY_ROUTES.people, "POST"],
+      [RELAY_ROUTES.removePerson, "POST"],
+    ]);
+    expect(calls[1]?.init?.body).toBe(JSON.stringify({ email: "grace@example.test" }));
+    for (const call of calls) expect(call.init?.credentials).toBe("same-origin");
+  });
+
+  test("a refusal keeps the relay's code, which is what the page words", async () => {
+    const { fetch } = fakeFetch({
+      [RELAY_ROUTES.people]: { status: 409, body: { error: "already-listed" } },
+    });
+
+    const failure = await createBrowserRelayClient({ fetch })
+      .addPerson("grace@example.test")
+      .catch((error: unknown) => error);
+
+    expect((failure as RelayRequestError).code).toBe("already-listed");
+  });
+
+  test("minting is a POST with no body at all", async () => {
+    const minted = { token: "t", expiresAt: ago(-900), relayUrl: "wss://relay.test/deployments" };
+    const { fetch, calls } = fakeFetch({ [RELAY_ROUTES.pairingTokens]: { body: minted } });
+
+    expect(await createBrowserRelayClient({ fetch }).mintPairingToken()).toEqual(minted);
+
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(calls[0]?.init?.body).toBeUndefined();
   });
 });

@@ -22,6 +22,8 @@ import type {
   RelayDoctorRunResult,
   RelayEvent,
   RelayIdentity,
+  RelayPairingToken,
+  RelayPerson,
 } from "phoebe-agent/contracts";
 
 /** What the console can ask the relay for, whichever side of the seam it is on. */
@@ -73,6 +75,25 @@ export type RelayClient = {
    * its own, and a page that missed an event catches up by re-reading.
    */
   events: (onEvent: (event: RelayEvent) => void) => () => void;
+  /** Everyone who may sign in, as the People page lists them (#505 §6). */
+  people: () => Promise<RelayPerson[]>;
+  /**
+   * Add one person by address. The refusals — a malformed address, an address
+   * already on the list — arrive as a `RelayRequestError` whose `code` the page
+   * turns into a sentence.
+   */
+  addPerson: (email: string) => Promise<RelayPerson>;
+  /**
+   * Remove one person, and with them their sessions. Answers how many sessions
+   * ended, because "they are signed out now" is the half of a removal an
+   * operator cannot otherwise see.
+   */
+  removePerson: (email: string) => Promise<{ sessionsEnded: number }>;
+  /**
+   * Mint one pairing token. The string comes back once and the relay keeps only
+   * its expiry, so a caller that loses it mints another.
+   */
+  mintPairingToken: () => Promise<RelayPairingToken>;
 };
 
 /** A relay answer the console did not ask for. `code` is the body's `error`. */
@@ -132,6 +153,25 @@ export function createBrowserRelayClient(options: BrowserRelayClientOptions = {}
     return (await response.json()) as T;
   }
 
+  /**
+   * A verb. `body` is omitted rather than sent as `{}` when there is nothing to
+   * say, which is what the mint is: a POST whose whole content is that it
+   * happened.
+   */
+  async function post<T>(path: string, body?: unknown): Promise<T> {
+    const response = await call(path, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        accept: "application/json",
+        ...(body === undefined ? {} : { "content-type": "application/json" }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    if (!response.ok) throw new RelayRequestError(response.status, await errorCode(response));
+    return (await response.json()) as T;
+  }
+
   return {
     async me() {
       try {
@@ -163,6 +203,25 @@ export function createBrowserRelayClient(options: BrowserRelayClientOptions = {}
       return get<RelayDeploymentDetail>(
         `${RELAY_ROUTES.deployments}/${encodeURIComponent(fingerprint)}`,
       );
+    },
+
+    async people() {
+      const body = await get<{ people: RelayPerson[] }>(RELAY_ROUTES.people);
+      return body.people;
+    },
+
+    async addPerson(email) {
+      const body = await post<{ person: RelayPerson }>(RELAY_ROUTES.people, { email });
+      return body.person;
+    },
+
+    async removePerson(email) {
+      const body = await post<{ sessionsEnded: number }>(RELAY_ROUTES.removePerson, { email });
+      return { sessionsEnded: body.sessionsEnded };
+    },
+
+    mintPairingToken() {
+      return post<RelayPairingToken>(RELAY_ROUTES.pairingTokens);
     },
 
     async setConfigField(edit) {
