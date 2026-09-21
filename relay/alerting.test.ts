@@ -208,8 +208,11 @@ describe("alerting", () => {
       url: `http://localhost/#/d/${fingerprint}`,
     });
     expect(body.text).toContain("acme-site: dark");
-    // Recorded after the attempt, so the next sweep says nothing (#515 §12).
-    expect(alertsFile()).toMatchObject({
+    // Recorded after the attempt, so the next sweep says nothing (#515 §12). The
+    // webhook has the body before the relay has its answer, so the file is
+    // waited for rather than read the instant the post arrives.
+    const recorded = await until(() => alertsFile() ?? undefined, "the raise to be recorded");
+    expect(recorded).toMatchObject({
       deployments: { [fingerprint]: { dark: { state: "raised" } } },
     });
   });
@@ -248,6 +251,9 @@ describe("alerting", () => {
   test("a restart never re-fires what is still true", async () => {
     const { fingerprint } = await pair();
     await until(() => raised("dark"), "the dark alert to be posted");
+    // The restart has to find the raise on the volume, and it is written after
+    // the post returns.
+    await until(() => alertsFile() ?? undefined, "the raise to be recorded");
 
     for (const socket of sockets.splice(0)) socket.terminate();
     await relay.close();
