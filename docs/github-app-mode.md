@@ -189,7 +189,7 @@ your repo's branch protection before relying on the flow above.
 ### What you see
 
 At boot, the bootstrapper's log line includes the arm tally (`app: N tenants`).
-`phoebe list` shows an `arm` column; tenants on the App arm show `app`. A
+`phoebe status` shows an `arm` column; tenants on the App arm show `app`. A
 tenant that failed to mint a token shows `held — mint failed: <reason>` in
 place of the current unit.
 

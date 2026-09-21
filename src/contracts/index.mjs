@@ -10,9 +10,13 @@
 // this. src/contracts/deployment.test.ts and src/contracts/index.test.ts hold
 // the copies to the same value; bootstrap/index.mjs exists for the same reason.
 
+export { openSecret, sealSecret } from "./secret-envelope.mjs";
+
 /** The `schema` integer `state/deployment.json` carries — see deployment.ts. */
 export const DEPLOYMENT_SCHEMA = 1;
 
+/** The effective config's own shape version — see effective-config.ts. */
+export const EFFECTIVE_CONFIG_VERSION = 1;
 /** The wire version both ends exchange in the handshake — see relay-protocol.ts. */
 export const RELAY_PROTOCOL = 1;
 
