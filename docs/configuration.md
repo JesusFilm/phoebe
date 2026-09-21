@@ -1027,6 +1027,46 @@ workspace deployment each tenant's secrets live in its own co-located
 `.env`, read by the bootstrapper and scrubbed so a tenant's engine child sees only
 its own (workspace two-tier model: [`workspace.md`](workspace.md)).
 
+## Seeing what applies: `phoebe config`
+
+Reading the ladder above and reading your own deployment are different jobs.
+The second one is a command:
+
+```sh
+phoebe config              # every setting, its value, and where it came from
+phoebe config --json       # the same object, for a script or a console
+```
+
+Each line is one setting, with its source in brackets:
+
+```
+  defaultProvider = "claude"  (overlay via PHOEBE_AGENT from tenantEnv)
+    shadowed: (file via phoebe.config.ts) = "cursor"
+```
+
+| Source      | What it means                                                |
+| ----------- | ------------------------------------------------------------ |
+| `default`   | Nothing said otherwise; this is what Phoebe ships.           |
+| `file`      | Your `phoebe.config.ts`, named by `via`.                     |
+| `alias`     | A permanent older name — the table above.                    |
+| `overlay`   | A `PHOEBE_*` variable under its catalogued name.             |
+| `derived`   | Computed from another setting (`defaultModels`, `repoSlug`). |
+| `inherited` | A shallower path's value, taken unchanged.                   |
+
+The `shadowed` lines are what lost, and they exist for one question: why isn't
+my config file value taking effect? Whatever beat it is on the line above.
+Nothing is hidden — defaults print too, and every pipeline's kinds print the
+values they will actually use, inherited ones included.
+
+Below the tree is an `env` section. It says that a variable is set and which
+file set it, never what it holds, so you can check a key reached the container
+on a screen somebody else can see. Then `warnings`, which lists the deprecated
+aliases this tenant is using so you do not have to hunt for them in the tree.
+
+Run it against a workspace root and every tenant reports. A tenant whose config
+will not load is one row carrying its error; the exit code turns non-zero only
+when no tenant loaded at all.
+
 ## GitHub App arm
 
 Two variables in the **deployment** env-file select the `app` credential arm.
