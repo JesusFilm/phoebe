@@ -54,6 +54,7 @@ import { createEngine, type EngineRunOptions } from "./main.ts";
 import type { DrainSignal } from "./drain.ts";
 import { CredentialRefreshBlockedError, type CredentialClient } from "./credential-client.ts";
 import type { SlotClient } from "./slot-client.ts";
+import type { ReportClient } from "./report-client.ts";
 import { createEmitUnitEvent, type StatusSnapshot, type UnitRef } from "./unit-event.ts";
 import type {
   AnyWorkKindDefinition,
@@ -2881,6 +2882,8 @@ function concurrentEngine(opts: {
   github?: GitHubStubOverrides;
   credentialClient?: CredentialClient;
   slotClient?: SlotClient;
+  /** The deployment report's rail (#532), when a test watches what it hears. */
+  reportClient?: ReportClient;
   /** Root for the derived tenant paths — a tmpdir when a test lets one be written. */
   dataBase?: string;
   /** Wrap the git stub, to see what the engine asked of it (#423). */
@@ -2923,6 +2926,7 @@ function concurrentEngine(opts: {
     drain,
     slotClient: opts.slotClient ?? null,
     credentialClient: opts.credentialClient ?? null,
+    reportClient: opts.reportClient ?? null,
     emitUnitEvent: createEmitUnitEvent({
       tenant: config.repoSlug,
       pipeline: "work",
@@ -2972,6 +2976,34 @@ function concurrentEngine(opts: {
 async function settle(): Promise<void> {
   for (let i = 0; i < 50; i++) await Promise.resolve();
 }
+
+describe("the deployment report's rail", () => {
+  test("every completed pass is reported, carrying this pipeline's cadence", async () => {
+    // #532/#507: the supervisor cannot know a pipeline's poll interval — it is
+    // declared on the pipeline and overlaid by env, both resolved in here — and
+    // without the pass itself an engine whose loop has stopped looks idle forever.
+    const gated = gatedKind({ refs: [1] });
+    const passes: number[] = [];
+    const engine = concurrentEngine({
+      kinds: [gated],
+      concurrency: 1,
+      reportClient: {
+        pass: (pollIntervalMs) => passes.push(pollIntervalMs),
+        snapshot: () => {},
+      },
+    });
+    const loop = engine.loop();
+    await settle();
+
+    await gated.release("u:1");
+    await settle();
+    expect(passes.length).toBeGreaterThan(0);
+    expect(new Set(passes)).toEqual(new Set([1_000]));
+
+    engine.drain.request();
+    await loop;
+  });
+});
 
 describe("rolling top-up inside one pipeline", () => {
   test("concurrency 2 has both units running before either finishes", async () => {
