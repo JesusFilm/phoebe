@@ -11,7 +11,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { rowFacts, sortFleet } from "./facts.ts";
 import { FleetPage } from "./fleet-page.tsx";
 import { Rail } from "./rail.tsx";
-import { InstallPage, InstallTab } from "./install-page.tsx";
+import { ConfigEditForm, InstallPage, InstallTab } from "./install-page.tsx";
+import { ReceiptPanel } from "./deployment-tabs.tsx";
 import type { RelaySignIn } from "./relay-client.ts";
 import {
   ago,
@@ -643,5 +644,137 @@ describe("a local install's page", () => {
     const markup = page({ state: "stopped" }, {});
 
     expect(markup).not.toMatch(/disabled="" [^>]*>config</);
+  });
+});
+
+describe("the two local writes on screen (#557)", () => {
+  function page(
+    overrides: Parameters<typeof install>[0] = {},
+    event: Parameters<typeof localReport>[0] | null = {},
+  ) {
+    const one = install(overrides);
+    return renderToStaticMarkup(
+      <InstallPage
+        install={one}
+        bridge={bridge()}
+        report={event === null ? null : localReport({ facts: one, ...event })}
+        now={NOW}
+        onForget={() => undefined}
+      />,
+    );
+  }
+
+  test("the config tab carries the edit form and the fingerprint it checks against", () => {
+    const markup = page({ state: "stopped" }, {});
+
+    expect(markup).toContain("Change one field");
+    expect(markup).toContain("sha256:0f1e2d3c4b5a6978");
+    expect(markup).toContain("pipelines.work.pollIntervalMs");
+  });
+
+  test("the edit form says it writes this machine and no relay is involved", () => {
+    const markup = page({ state: "stopped" }, {});
+
+    expect(markup).toContain("straight to");
+    expect(markup).toContain("No relay is involved");
+  });
+
+  test("a folder with no config has no edit form to offer", () => {
+    const markup = page(
+      { state: "stopped" },
+      { directory: directory({ configText: null, configFingerprint: null }) },
+    );
+
+    expect(markup).not.toContain("Change one field");
+  });
+
+  /** The install tab alone, which is where the secret form lives. */
+  function secretTab(overrides: Parameters<typeof install>[0] = {}) {
+    return renderToStaticMarkup(
+      <InstallTab
+        install={install(overrides)}
+        environment={null}
+        run={null}
+        running={false}
+        trouble={null}
+        onStart={() => undefined}
+        onForget={() => undefined}
+        onCancel={() => undefined}
+      />,
+    );
+  }
+
+  test("the secret form is on the install tab, reachable with nothing running", () => {
+    const markup = secretTab({ state: "not-initialised" });
+
+    expect(markup).toContain("Set a secret");
+    expect(markup).toContain('type="password"');
+  });
+
+  test("it says no envelope is built and nothing is sent to a relay (#526)", () => {
+    const markup = secretTab({ state: "not-initialised" });
+
+    expect(markup).toContain("Nothing is sealed to anybody");
+    expect(markup).toContain("even if this install is paired");
+  });
+
+  test("it names the writer before a value is pasted — the file, with nothing running", () => {
+    const markup = secretTab({ state: "stopped" });
+
+    expect(markup).toContain(".env");
+    expect(markup).not.toContain("tenant secret store on the data volume");
+  });
+
+  test("and the store, on a running container", () => {
+    expect(secretTab({ state: "running" })).toContain("tenant secret store on the data volume");
+  });
+
+  test("a refusal renders its reason and the exact edit to make by hand (#503)", () => {
+    const markup = renderToStaticMarkup(
+      <ConfigEditForm
+        install={install({ state: "stopped" })}
+        config={{
+          kind: "file",
+          path: "/repos/youtube-studio/phoebe.config.ts",
+          text: "export default defineConfig({})",
+          fingerprint: "sha256:abc",
+        }}
+        running={false}
+        receipt={{
+          id: "e1",
+          state: "refused",
+          file: "/repos/youtube-studio/phoebe.config.ts",
+          path: "engine.ref",
+          reason: "not-editable",
+          why: "the engine pin moves with `phoebe upgrade`",
+          instruction: "Run `phoebe upgrade --ref v2` in that folder.",
+          at: ago(1),
+        }}
+        onStart={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain("Refused (not-editable)");
+    expect(markup).toContain("phoebe upgrade --ref v2");
+  });
+
+  test("a written receipt says what landed and that a reconcile follows", () => {
+    const markup = renderToStaticMarkup(
+      <ReceiptPanel
+        receipt={{
+          id: "e1",
+          state: "written",
+          file: "/repos/youtube-studio/phoebe.config.ts",
+          path: "checkCommand",
+          value: "pnpm run check",
+          fingerprint: "sha256:after",
+          at: ago(1),
+        }}
+      />,
+    );
+
+    expect(markup).toContain("checkCommand");
+    expect(markup).toContain("pnpm run check");
+    expect(markup).toContain("reconciles onto it");
   });
 });

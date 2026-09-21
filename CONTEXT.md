@@ -128,6 +128,22 @@ The on-volume record of the edits this deployment applied and who asked for them
 `state/config-edits.json`. It answers a redelivered edit with its original receipt, and
 rolls off whole once the file moves by a hand other than the writer's.
 _Avoid_: audit log, history
+**Secret store**:
+The bootstrapper-owned, per-tenant file of console-set secret values on the data volume,
+`state/secrets.json` at mode `0600`. The tier above the tenant's `.env`, and the only
+channel a deployment has for a secret nobody can reach a file to edit.
+_Avoid_: vault, keyring, secrets file (ambiguous with `.env`)
+
+**Tenant-scope / deployment-scope secret**:
+Whether a secret belongs to one tenant's engine child or to the deployment as a whole.
+The line the secret store never crosses: the App key and the engine-clone token stay
+deployment scope, in the env-file, reached by editing it.
+_Avoid_: local/global, child/root
+
+**Clear** (a secret):
+Removing a key from the secret store so the `.env` or ambient value governs again. Not a
+tombstone and not a revocation — revoking a secret is rotating it.
+_Avoid_: unset, delete, revoke
 
 **Arm**:
 One of a mutually exclusive pair of shapes a deployment takes, resolved rather than
@@ -472,6 +488,19 @@ Compose's event stream for the moment a container moves, and a `status --json` e
 15 s while it is up. What comes out is the relay's own `report` event, so a page renders
 either arm without knowing which it has.
 _Avoid_: watcher, sync, poller
+
+**Secret writer**:
+Which of the two places a local `secret set` puts a value: through the running container
+into the tenant secret store, or into the deployment `.env` on this machine when there is
+no container to reach. Read off the install's state rather than chosen, and named in the
+outcome, because the two are not interchangeable.
+_Avoid_: backend, target, sink
+
+**Run argument**:
+A value the companion hands a verb run over the bridge and holds for that run only — the
+secret value, and nothing else today. Never persisted, never logged, and never echoed in a
+`run:line`.
+_Avoid_: parameter, payload, input
 
 **Alert**:
 A message the relay sends out when a deployment or one of its pipelines crosses into or

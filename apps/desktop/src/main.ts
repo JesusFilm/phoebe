@@ -7,11 +7,18 @@
 // UI code in here, and a page the operator sees is never written twice.
 //
 // What main answers is the companion's two arms. The local arm is the installs
-// on this machine, the Docker check, the verb runs that drive them (#555) and
-// the local read loop that feeds their tabs (#556). The remote arm is the relay
-// (#523 §1): main holds the device token, makes every call, and re-emits the
-// relay's event stream to the renderer over IPC. The wiring for that is here;
-// the flow itself is relay-session.ts, which needs no Electron to run.
+// on this machine, the Docker check, the verb runs that drive them (#555), the
+// local read loop that feeds their tabs (#556) and the two write verbs that
+// change them (#557). The remote arm is the relay (#523 §1): main holds the
+// device token, makes every call, and re-emits the relay's event stream to the
+// renderer over IPC. The wiring for that is here; the flow itself is
+// relay-session.ts, which needs no Electron to run.
+//
+// The write verbs go nowhere near the relay arm, by decision (#526): a config
+// edit and a secret on a local install run against this machine even when the
+// install is also paired. So there is no envelope built in this process and no
+// request made on anybody's behalf — main writes the file, or execs into the
+// container beside it.
 //
 // Main owns state the window does not: `companion.json`, the device session, the
 // runs in flight, and the watchers and timers of the read loop. All of it is
@@ -62,7 +69,7 @@ import { createLocalReads } from "./local-read.ts";
 import { resolveDeploymentCompose } from "../../../src/deployment-compose.ts";
 import { companionName, createRelaySession, type RelaySession } from "./relay-session.ts";
 import { createTokenVault } from "./vault.ts";
-import { dispatchVerb } from "./verb-dispatch.ts";
+import { createDispatchVerb } from "./verb-dispatch.ts";
 import { createVerbRuns } from "./verb-runs.ts";
 
 // Before `ready`, which is the only time Chromium will take it. `standard` is
@@ -224,7 +231,12 @@ async function editInstalls(change: (contents: CompanionFile) => CompanionFile) 
  * (#527 §13).
  */
 const runs = createVerbRuns({
-  dispatch: dispatchVerb,
+  // The dispatch reads an install's state through main's own derivation, so
+  // `secret set` picks its writer off the same fact the rail is drawing (#527 §8)
+  // — including the Docker probe, which a second reading could disagree about.
+  dispatch: createDispatchVerb({
+    installState: async (dir) => (await factsFor(dir))?.state ?? "not-initialised",
+  }),
   onLine: (line) => broadcast(BRIDGE_CHANNELS.runLine, line),
   onExit: (exit) => {
     broadcast(BRIDGE_CHANNELS.runExit, exit);

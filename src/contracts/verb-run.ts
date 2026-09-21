@@ -16,6 +16,13 @@
 //    somewhere other than the output they are watching.
 //  - **The buffer survives a reload.** Runs live in main, so reopening the
 //    window during an upgrade rejoins it mid-stream rather than showing nothing.
+//
+// A fourth rule holds for one argument only. **A secret value is a run argument
+// and nothing else** (#527 §7): it travels to main as in-memory structured-clone
+// data, is held for the run, and is gone when the run ends. Main never writes it
+// to `companion.json`, never logs it, and no `run:line` echoes it — which is
+// why `secret set` streams the writer's own sentences and never the value it
+// wrote. On the renderer's side the same rule is the field clearing on submit.
 
 import type { HostVerb, VerbOutcome } from "./host-verb.ts";
 import type { InitProfile } from "./init-report.ts";
@@ -35,12 +42,18 @@ export const MAX_RUN_LINES = 2000;
  * holds: `start` and `stop` drive Compose through an injected runner, and that
  * runner is where the child lands.
  *
- * Shorter than §2's list, and deliberately. `init` writes files in-process and
- * `doctor` probes over fetch — a cancel on either is a button that does nothing.
- * `upgrade` and `migrate` do spawn, but through `spawnSync`, which blocks the
- * process that called them; a cancel could not be delivered while one is in
- * flight, so offering the control would be a lie about what it does. Making
- * those two spawn asynchronously is what would add them here.
+ * Shorter than §2's list, and deliberately. `init` writes files in-process,
+ * `doctor` probes over fetch and `config set` splices a file — a cancel on any of
+ * them is a button that does nothing. `upgrade` and `migrate` do spawn, but
+ * through `spawnSync`, which blocks the process that called them; a cancel could
+ * not be delivered while one is in flight, so offering the control would be a lie
+ * about what it does. Making those two spawn asynchronously is what would add
+ * them here.
+ *
+ * `secret set` spawns too, on a running install: one `compose exec` that returns
+ * in under a second. It is left off because a cancel landing inside it would
+ * leave the operator not knowing whether the value reached the store, and "run it
+ * again" is a better answer to a slow one than "it may or may not be set".
  * Mirrored by hand in index.mjs.
  */
 export const CANCELLABLE_VERBS: readonly HostVerb[] = ["start", "stop"];
@@ -57,7 +70,29 @@ export type VerbRunRequest =
   | { install: string; verb: "stop"; now?: boolean }
   | { install: string; verb: "upgrade"; check?: boolean; target?: UpgradeTarget; ref?: string }
   | { install: string; verb: "migrate"; check?: boolean }
-  | { install: string; verb: "doctor" };
+  | { install: string; verb: "doctor" }
+  // Both arms of `config set` carry the fingerprint the caller was shown (#503,
+  // #527 §11). A local edit racing a hand edit in a terminal is refused `stale`
+  // exactly as a relayed one is; there is one writer and one check behind both.
+  | {
+      install: string;
+      verb: "config set";
+      /** Dotted path into the config, the same path the effective-config tree carries. */
+      path: string;
+      value: string | number | boolean | null;
+      /** The `sha256:<hex>` of the file as the caller read it. */
+      fingerprint: string;
+    }
+  // `value` is the secret itself. See the fourth rule above: it lives for the
+  // run and appears in no file, no log and no line.
+  | {
+      install: string;
+      verb: "secret set";
+      /** The tenant whose store takes it. Omitted on a solo install. */
+      tenant?: string;
+      key: string;
+      value: string;
+    };
 
 /** One line a running verb wrote. Carries no newline — the tab decides that. */
 export type RunLine = {

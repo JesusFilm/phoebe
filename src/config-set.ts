@@ -1,10 +1,12 @@
 // `phoebe config set <path> <value>` — the write half of `phoebe config` (#536;
 // decision #503).
 //
-// One verb, two callers. An operator types it at a shell; the relay hands the
-// same `{ path, value }` to the same writer (src/config-edit.ts) from a message.
-// Nothing about the edit changes between the two — only where the fingerprint
-// came from, and whether there is a supervisor loop in this process to nudge.
+// One verb, three callers. An operator types it at a shell; the relay hands the
+// same `{ path, value }` to the same writer (src/config-edit.ts) from a message;
+// the companion calls {@link runConfigSet} in its main process for an install on
+// this machine (#557). Nothing about the edit changes between the three — only
+// where the fingerprint came from, whether there is a supervisor loop in this
+// process to nudge, and whether there is a ledger volume to keep a record on.
 //
 // The command also carries the validation half the bootstrapper spawns:
 // `--validate` loads the config through the engine's own loader, applies the
@@ -226,6 +228,71 @@ export function formatReceipt(receipt: EditReceipt): string {
   return `refused (${receipt.reason}): ${receipt.why}\n\n${receipt.instruction}\n`;
 }
 
+/** What one `config set` is, wherever it was asked for. */
+export type ConfigSetRequest = {
+  /** The root config to edit. The one file any arm of this verb may write. */
+  configPath: string;
+  path: string;
+  value: string | number | boolean | null;
+  /**
+   * The `sha256:<hex>` the caller was shown (#503). Absent only for a caller
+   * that read the file and writes it in the same breath, with no report in
+   * between to go stale — the shell run below is the one of those.
+   */
+  fingerprint?: string;
+  id?: string;
+  by?: string;
+};
+
+export type ConfigSetDeps = {
+  env?: NodeJS.ProcessEnv;
+  /**
+   * Where the edit ledger lives. Defaults to the deployment's own data volume;
+   * pass null for a caller with no redelivery to answer (see
+   * {@link ConfigEditDeps.ledgerPath}).
+   */
+  ledgerPath?: string | null;
+};
+
+/**
+ * Apply one field patch and answer with the receipt. The whole verb, with no
+ * argv and no stdout in it — which is what lets the companion call it in main
+ * and stream the receipt into an install tab (#527 §3).
+ */
+export async function runConfigSet(
+  request: ConfigSetRequest,
+  deps: ConfigSetDeps = {},
+): Promise<EditReceipt> {
+  const env = deps.env ?? process.env;
+  const fingerprint = request.fingerprint ?? fingerprintOf(readConfigOrEmpty(request.configPath));
+  const validate: PatchValidator = async (candidate) =>
+    await validateConfigPatch({
+      configPath: request.configPath,
+      path: candidate.path,
+      value: candidate.value,
+      env,
+    });
+
+  return await applyConfigEdit(
+    {
+      id: request.id ?? localEditId({ path: request.path, value: request.value, fingerprint }),
+      path: request.path,
+      value: request.value,
+      fingerprint,
+      ...(request.by !== undefined ? { by: request.by } : {}),
+    },
+    {
+      file: request.configPath,
+      ledgerPath:
+        deps.ledgerPath === undefined
+          ? configEditLedgerPath(resolveDataBase(env))
+          : deps.ledgerPath,
+      validate,
+      env,
+    },
+  );
+}
+
 /** `phoebe config set` entry. */
 export async function runConfigSetCli(argv: readonly string[]): Promise<void> {
   const parsed = parseConfigSetArgs(argv);
@@ -250,26 +317,16 @@ export async function runConfigSetCli(argv: readonly string[]): Promise<void> {
   }
 
   // A shell run has no fingerprint to check itself against — it read the file
-  // and writes it in one process, with no report in between to go stale. It
-  // still goes through the same check, against the file as it stands now.
-  const fingerprint = parsed.fingerprint ?? fingerprintOf(readConfigOrEmpty(configPath));
-  const validate: PatchValidator = async (candidate) =>
-    await validateConfigPatch({ configPath, path: candidate.path, value: candidate.value });
-
-  const receipt = await applyConfigEdit(
-    {
-      id: parsed.id ?? localEditId({ path: parsed.path, value, fingerprint }),
-      path: parsed.path,
-      value,
-      fingerprint,
-      ...(parsed.by !== undefined ? { by: parsed.by } : {}),
-    },
-    {
-      file: configPath,
-      ledgerPath: configEditLedgerPath(resolveDataBase(process.env)),
-      validate,
-    },
-  );
+  // and writes it in one process, with no report in between to go stale. The
+  // verb takes the file as it stands now and checks against that.
+  const receipt = await runConfigSet({
+    configPath,
+    path: parsed.path,
+    value,
+    ...(parsed.fingerprint !== undefined ? { fingerprint: parsed.fingerprint } : {}),
+    ...(parsed.id !== undefined ? { id: parsed.id } : {}),
+    ...(parsed.by !== undefined ? { by: parsed.by } : {}),
+  });
 
   process.stdout.write(parsed.json ? `${JSON.stringify(receipt)}\n` : formatReceipt(receipt));
   if (receipt.state === "refused") process.exitCode = 1;
