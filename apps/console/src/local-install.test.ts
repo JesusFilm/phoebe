@@ -7,15 +7,25 @@ import type { OutcomeOf, VerbRun } from "phoebe-agent/contracts";
 import {
   applyRunExit,
   applyRunLine,
+  configSetRequest,
   dockerReading,
   installReading,
+  landingTab,
+  localConfig,
+  localConnection,
   offeredVerbs,
   outcomeReading,
+  readLiteral,
+  receiptReading,
+  renderableReport,
+  secretSetReading,
+  secretSetRequest,
+  secretWriterReading,
   pairedInstalls,
   pairReading,
   sameRelay,
 } from "./local-install.ts";
-import { environment, install, row } from "./test-fixture.ts";
+import { ago, directory, environment, install, localReport, row } from "./test-fixture.ts";
 
 function runOf(overrides: Partial<VerbRun> = {}): VerbRun {
   return {
@@ -232,6 +242,238 @@ describe("the Docker check", () => {
       kind: "ready",
       text: "Docker is running · companion 0.13.0 on linux",
     });
+  });
+});
+
+describe("the local read, as the page reads it", () => {
+  test("the connection card names the arm, the path and the bridge (#556)", () => {
+    const card = localConnection(install());
+
+    expect(card.arm).toBe("Local install");
+    expect(card.detail).toBe("/repos/youtube-studio");
+    expect(card.note).toContain("desktop bridge");
+    expect(card.note).toContain("No relay");
+  });
+
+  test("the card says what the container is doing, in the install's own three words", () => {
+    expect(localConnection(install({ state: "running" })).note).toContain("its container is up");
+    expect(localConnection(install({ state: "stopped" })).note).toContain(
+      "its container is not up",
+    );
+    expect(localConnection(install({ state: "not-initialised" })).note).toContain(
+      "no Phoebe install",
+    );
+  });
+
+  test("a running install renders the report the loop read", () => {
+    const event = localReport();
+
+    expect(renderableReport(install(), event)?.report).toEqual(event.report?.report);
+  });
+
+  test("a stopped install renders no report, however fresh the last one was (#526)", () => {
+    // The event still carries one: main read it while the container was up and
+    // the window has held it since. Rendering it would put a description of a
+    // running deployment beside a container that is down.
+    const held = localReport({ facts: install({ state: "running" }) });
+
+    expect(renderableReport(install({ state: "stopped" }), held)).toBeNull();
+  });
+
+  test("an event for another install is not this install's report", () => {
+    const other = localReport({ facts: install({ dir: "/repos/elsewhere" }) });
+
+    expect(renderableReport(install(), other)).toBeNull();
+  });
+
+  test("lands on install when there is nothing installed, on config when nothing runs", () => {
+    expect(landingTab(install({ state: "not-initialised" }))).toBe("install");
+    expect(landingTab(install({ state: "stopped" }))).toBe("config");
+    expect(landingTab(install({ state: "running" }))).toBe("overview");
+  });
+
+  test("the config comes off the directory facts, which a stopped install still has", () => {
+    const event = localReport({
+      facts: install({ state: "stopped" }),
+      directory: directory({ bootstrapperRunning: false }),
+    });
+
+    expect(localConfig(event)).toEqual({
+      kind: "file",
+      path: "/repos/youtube-studio/phoebe.config.ts",
+      text: directory().configText,
+      fingerprint: "sha256:0f1e2d3c4b5a6978",
+    });
+  });
+
+  test("a folder with no config says which file is missing", () => {
+    const event = localReport({
+      directory: directory({ configText: null, configFingerprint: null }),
+    });
+
+    expect(localConfig(event)).toEqual({
+      kind: "absent",
+      path: "/repos/youtube-studio/phoebe.config.ts",
+    });
+  });
+
+  test("before the first read there is no config to show, which is not the same as none", () => {
+    expect(localConfig(null)).toBeNull();
+  });
+});
+
+describe("what the two write verbs read as (#557)", () => {
+  test("a written receipt names the field and the literal that landed", () => {
+    expect(
+      receiptReading({
+        id: "e1",
+        state: "written",
+        file: "/repos/widget/phoebe.config.ts",
+        path: "checkCommand",
+        value: "pnpm run check",
+        fingerprint: "sha256:after",
+        at: ago(1),
+      }),
+    ).toBe(`wrote checkCommand = "pnpm run check"`);
+  });
+
+  test("a refusal names the reason and the why — the two halves an operator acts on", () => {
+    expect(
+      receiptReading({
+        id: "e1",
+        state: "refused",
+        file: "/repos/widget/phoebe.config.ts",
+        path: "engine.ref",
+        reason: "not-editable",
+        why: "the engine pin moves with `phoebe upgrade`",
+        instruction: "write it by hand",
+        at: ago(1),
+      }),
+    ).toBe("refused (not-editable): the engine pin moves with `phoebe upgrade`");
+  });
+
+  test("the same outcome shape reads through one reader, whatever the verb", () => {
+    expect(
+      outcomeReading({
+        verb: "secret set",
+        outcome: {
+          key: "GH_TOKEN",
+          tenant: "acme/widget",
+          writer: "container",
+          target: "the tenant secret store on this install's data volume",
+          at: ago(1),
+        },
+      }),
+    ).toContain("through the container");
+  });
+
+  test("a host-env write says which file on this machine took it", () => {
+    expect(
+      secretSetReading({
+        key: "GH_TOKEN",
+        tenant: null,
+        writer: "host-env",
+        target: "/repos/widget/.env",
+        at: ago(1),
+      }),
+    ).toBe("set GH_TOKEN into /repos/widget/.env on this machine");
+  });
+
+  test("which writer is said before the value is pasted, and it follows the state", () => {
+    expect(secretWriterReading(install({ state: "running" }))).toContain("secret store");
+    expect(secretWriterReading(install({ state: "stopped" }))).toContain(".env");
+    expect(secretWriterReading(install({ state: "not-initialised" }))).toContain(".env");
+  });
+});
+
+describe("the requests a write form submits (#557)", () => {
+  const config = {
+    kind: "file" as const,
+    path: "/repos/youtube-studio/phoebe.config.ts",
+    text: "x",
+    fingerprint: "sha256:abc",
+  };
+
+  test("`config set` carries the fingerprint the tab was showing, not one that was typed", () => {
+    expect(
+      configSetRequest({
+        install: install(),
+        config,
+        path: "checkCommand",
+        literal: '"pnpm check"',
+      }),
+    ).toEqual({
+      install: "/repos/youtube-studio",
+      verb: "config set",
+      path: "checkCommand",
+      value: "pnpm check",
+      fingerprint: "sha256:abc",
+    });
+  });
+
+  test('a JSON literal keeps its type — 300000 is a number, "300000" a string', () => {
+    expect(readLiteral("300000")).toBe(300000);
+    expect(readLiteral('"300000"')).toBe("300000");
+    expect(readLiteral("true")).toBe(true);
+    expect(readLiteral("null")).toBeNull();
+  });
+
+  test("a bare word is refused with the quotes it needed", () => {
+    expect(() => readLiteral("main")).toThrow(/needs its quotes/);
+  });
+
+  test("a block is refused — one leaf moves at a time", () => {
+    expect(() => readLiteral('{ "a": 1 }')).toThrow(/scalar or null/);
+    expect(() => readLiteral("[1]")).toThrow(/scalar or null/);
+  });
+
+  test("no field named is no edit, rather than an edit at the root", () => {
+    expect(() =>
+      configSetRequest({ install: install(), config, path: "  ", literal: "1" }),
+    ).toThrow(/dotted path/);
+  });
+
+  test("a folder with no config has nothing to change", () => {
+    expect(() =>
+      configSetRequest({
+        install: install(),
+        config: { kind: "absent", path: "/repos/youtube-studio/phoebe.config.ts" },
+        path: "checkCommand",
+        literal: '"x"',
+      }),
+    ).toThrow(/no \/repos\/youtube-studio\/phoebe.config.ts/);
+  });
+
+  test("`secret set` carries the value as a run argument and no envelope of any kind", () => {
+    const request = secretSetRequest({ install: install(), key: "GH_TOKEN", value: "ghp_x" });
+
+    expect(request).toEqual({
+      install: "/repos/youtube-studio",
+      verb: "secret set",
+      key: "GH_TOKEN",
+      value: "ghp_x",
+    });
+    expect(Object.keys(request)).not.toContain("envelope");
+  });
+
+  test("an empty tenant box is left off, so the install decides for itself", () => {
+    expect(
+      secretSetRequest({ install: install(), key: "GH_TOKEN", value: "ghp_x", tenant: "   " }),
+    ).not.toHaveProperty("tenant");
+    expect(
+      secretSetRequest({
+        install: install(),
+        key: "GH_TOKEN",
+        value: "ghp_x",
+        tenant: "acme/widget",
+      }),
+    ).toMatchObject({ tenant: "acme/widget" });
+  });
+
+  test("a blank is not a secret — clearing one is a different verb", () => {
+    expect(() => secretSetRequest({ install: install(), key: "GH_TOKEN", value: "" })).toThrow(
+      /blank is not a secret/,
+    );
   });
 });
 

@@ -60,8 +60,12 @@ Building needs no Electron binary, which is why the gate can run with
 
 ## What main answers today
 
-**The local arm, in full.** The installs on this machine, the Docker check, and
-the verb runs that drive them ([#555](https://github.com/JesusFilm/phoebe/issues/555)):
+**The local arm, in full.** The installs on this machine, the Docker check, the
+verb runs that drive them ([#555](https://github.com/JesusFilm/phoebe/issues/555)),
+the local read loop that feeds their tabs
+([#556](https://github.com/JesusFilm/phoebe/issues/556)) the two writes that
+change them ([#557](https://github.com/JesusFilm/phoebe/issues/557)) and pairing
+([#558](https://github.com/JesusFilm/phoebe/issues/558)):
 
 - [`companion-file.ts`](src/companion-file.ts) — `companion.json` in `userData`:
   the install directories, the relay URL, the preferences. Nothing else. Every
@@ -73,19 +77,29 @@ the verb runs that drive them ([#555](https://github.com/JesusFilm/phoebe/issues
 - [`verb-runs.ts`](src/verb-runs.ts) — ids, line buffers, busy-ness and cancel.
   One run per install, parallel across installs, 2000 lines kept, and the buffer
   lives here so a renderer reload rejoins a run rather than losing it.
-- [`verb-dispatch.ts`](src/verb-dispatch.ts) — the six `run<Verb>` calls, in
-  this process (ADR 0001). No second Node, no `bin.mjs`, no stdout parsing.
+- [`verb-dispatch.ts`](src/verb-dispatch.ts) — the `run<Verb>` calls, in this
+  process (ADR 0001). No second Node, no `bin.mjs`, no stdout parsing.
+- [`secret-write.ts`](src/secret-write.ts) — the two secret writers and the rule
+  that picks between them. A running install's value goes through the container
+  into the tenant secret store; a stopped or freshly initialised one's goes into
+  the deployment `.env` on this machine, which is where the first `GH_TOKEN` is
+  typed. The value is piped on the child's stdin and never put in an argument.
+- [`local-read.ts`](src/local-read.ts) — the read loop: Compose's event stream
+  for the moment a container moves, a 15 s poll for how it is doing, and one
+  `report` event out — the relay's own, so the tabs do not branch on arm.
+- [`container-read.ts`](src/container-read.ts) — the two seams under it: the
+  `phoebe status --json` exec, and the `docker compose events` subscription.
 - [`pair.ts`](src/pair.ts) — the seventh verb, and the one the engine does not
   have: a mint on the relay, the address into the config, the token into the
   root `.env`, and an `up -d` so Compose recreates the container holding both
   ([#558](https://github.com/JesusFilm/phoebe/issues/558)). The token goes into
   the file and into no line.
 
-**The relay arm** ([#554](https://github.com/JesusFilm/phoebe/issues/554)):
-sign-in, the JSON reads the renderer asks for, the relay's event stream
-re-emitted over IPC, and sign-out. Main is the relay client — it holds the device
-token and the renderer never sees it
-([#523 §1](https://github.com/JesusFilm/phoebe/issues/523)).
+**The relay arm**
+([#554](https://github.com/JesusFilm/phoebe/issues/554)) is sign-in, the JSON reads
+the renderer asks for, the relay's event stream re-emitted over IPC, and sign-out.
+Main is the relay client — it holds the device token and the renderer never sees
+it ([#523 §1](https://github.com/JesusFilm/phoebe/issues/523)).
 
 Sign-in runs in the operator's own browser, because Google refuses an embedded
 webview. Main mints a PKCE verifier, opens `${relay}/auth/device/start`, and the
@@ -94,8 +108,23 @@ that land on the process holding the verifier: on Windows and Linux the OS
 launches a _second_ process with the URL on its command line, and without the lock
 one process would hold the code and the other the verifier.
 
-The local read loop ([#556](https://github.com/JesusFilm/phoebe/issues/556)) is a
-change in here, behind the contract the preload already exposes.
+**The writes never reach that arm.** A
+local install's config edit and secrets run against this machine even when the
+same install is paired with a relay — so nothing in main builds an envelope, and
+both forms in the console say so. The envelope exists for a deployment a console
+can only reach through a server; this one is a folder. `config set` carries the
+fingerprint the window was shown, so an edit composed against a config a terminal
+has since changed is refused `stale` with the manual edit to make instead —
+identically on both arms, which is what the fingerprint is for.
+
+The loop reads `phoebe status --json` inside the container: the verb is
+[#533](https://github.com/JesusFilm/phoebe/issues/533)'s and the report it prints
+is [#532](https://github.com/JesusFilm/phoebe/issues/532)'s. A container running an
+engine older than those answers the exec with its own sentence, and the read
+comes back `report: null` with that sentence on it — the path the tabs draw
+anyway when nothing is running. `STATUS_ARGV` in
+[`src/container-read.ts`](src/container-read.ts) is the one line that moves if the
+verb's flags do.
 
 Two things a later ticket owes this package. `upgrade` and `migrate` spawn their
 children through `spawnSync`, which blocks main for as long as they run — so the

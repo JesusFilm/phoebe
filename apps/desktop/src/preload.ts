@@ -13,6 +13,7 @@ import { DESKTOP_BRIDGE_GLOBAL } from "phoebe-agent/contracts";
 import type {
   DesktopBridge,
   LocalInstall,
+  LocalReportEvent,
   RelayArmState,
   RelayEvent,
   RunExit,
@@ -52,6 +53,8 @@ const bridge: DesktopBridge = {
     add: (dir) => call(BRIDGE_CHANNELS.installsAdd, dir),
     remove: (dir) => call(BRIDGE_CHANNELS.installsRemove, dir),
     changes: (onChange) => subscribe<LocalInstall[]>(BRIDGE_CHANNELS.installsChanged, onChange),
+    reports: (onReport) => subscribe<LocalReportEvent>(BRIDGE_CHANNELS.installsReport, onReport),
+    refresh: (dir) => call(BRIDGE_CHANNELS.installsRefresh, dir),
   },
   runs: {
     start: (request) => call(BRIDGE_CHANNELS.runStart, request),
@@ -67,15 +70,7 @@ const bridge: DesktopBridge = {
   relay: {
     state: () => call(BRIDGE_CHANNELS.relayState),
     signIn: (request) => call(BRIDGE_CHANNELS.relaySignIn, request),
-    watch: (onState) => {
-      const listener = (_event: IpcRendererEvent, state: RelayArmState) => {
-        onState(state);
-      };
-      ipcRenderer.on(BRIDGE_CHANNELS.relayArm, listener);
-      return () => {
-        ipcRenderer.off(BRIDGE_CHANNELS.relayArm, listener);
-      };
-    },
+    watch: (onState) => subscribe<RelayArmState>(BRIDGE_CHANNELS.relayArm, onState),
     request: (request) => call(BRIDGE_CHANNELS.relayRequest, request),
     signOut: () => call(BRIDGE_CHANNELS.relaySignOut),
     events: (onEvent) => subscribe<RelayEvent>(BRIDGE_CHANNELS.relayEvent, onEvent),

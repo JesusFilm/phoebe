@@ -1,15 +1,26 @@
 // Which verb a run actually runs (#527 §3, ADR 0001).
 //
-// Six of the seven arms are one `run<Verb>` call, in this process. No second
-// Node, no `bin.mjs`, no stdout parsing: main ships the same package as the
-// renderer, so it calls the verb functions directly and reads the typed outcome
-// each one returns. That is the seam #552 reshaped the verbs to expose, and this
-// file is its only consumer.
+// Nine arms, in this process. No second Node, no `bin.mjs`, no stdout parsing:
+// main ships the same package as the renderer, so it calls the verb functions
+// directly and reads the typed outcome each one returns. That is the seam #552
+// reshaped the verbs to expose, and this file is its only consumer.
 //
-// `pair` is the seventh, and the one verb the engine does not have: it needs the
+// Seven of the eight are a `run<Verb>` call. The eighth is `secret set`, and
+// it is the one verb with no engine function behind it on this arm: its two
+// writers are the companion's own (secret-write.ts), because where a local
+// secret goes depends on whether there is a container to put it in (#527 §8).
+//
+// **The local arm builds no envelope, and dials no relay.** Both write verbs
+// here run against this machine — the config file under the operator's own
+// hand, the secret through the container beside it — even when the same install
+// is paired with a relay (#526). Sealing a value to a deployment the companion
+// can reach across a filesystem, so that it could travel through a server, would
+// be work done to reach somewhere it is already standing.
+//
+// `pair` is the arm that is not a bare engine verb. Pairing needs the relay's
 // device token, which only the companion holds, so it is composed here out of a
-// mint, two file writes and a nudge (pair.ts, #527 §14). That is why this module
-// is built with the relay arm rather than being a bare function.
+// mint, two file writes and a nudge (pair.ts, #527 §14). That is one reason this
+// module is a factory over what main holds rather than a bare function.
 //
 // Two things every arm has in common. Each verb's io is the run's line sink, so
 // its output lands in the install tab rather than in whatever stream the
@@ -20,9 +31,14 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { app } from "electron";
-import type { VerbIo } from "phoebe-agent/contracts";
+import type { InstallState, VerbIo } from "phoebe-agent/contracts";
 import { BridgeRefusal } from "./channels.ts";
-import type { CommandRunner } from "../../../src/deployment-compose.ts";
+import { runConfigSet } from "../../../src/config-set.ts";
+import {
+  formatResolveFailure,
+  resolveDeploymentCompose,
+  type CommandRunner,
+} from "../../../src/deployment-compose.ts";
 import { runDoctor } from "../../../src/doctor.ts";
 import { runInit } from "../../../src/init.ts";
 import { runMigrate } from "../../../src/migrate.ts";
@@ -30,6 +46,13 @@ import { runStart } from "../../../src/start.ts";
 import { runStop } from "../../../src/stop.ts";
 import { runUpgrade } from "../../../src/upgrade.ts";
 import { pairInstall, type PairArm } from "./pair.ts";
+import {
+  secretSetOutcome,
+  secretTargetOf,
+  secretWriterFor,
+  setSecretInContainer,
+  setSecretInHostEnv,
+} from "./secret-write.ts";
 import type { Dispatch, Killable } from "./verb-runs.ts";
 
 /** The config file that sits at the root of an install. */
@@ -49,18 +72,25 @@ function packageRoot(): string {
     : path.join(import.meta.dirname, "..", "..", "..");
 }
 
-/** What the dispatch needs from the rest of main. */
+/**
+ * What the dispatch needs from outside itself, and both entries are main's.
+ *
+ * `installState` is `secret set`'s: which of the two writers takes a value is a
+ * reading of the install's state at the moment of the write (#527 §8), and main
+ * is the process that derives that state for everything else on screen.
+ *
+ * `relayArm` is `pair`'s: the relay arm pairing mints on, or null when this
+ * companion is signed out. Read at the moment of the run rather than handed over
+ * once: a sign-out between opening the window and pressing the button is the
+ * ordinary case.
+ */
 export type DispatchDeps = {
-  /**
-   * The relay arm pairing mints on, or null when this companion is signed out.
-   * Read at the moment of the run rather than handed over once: a sign-out
-   * between opening the window and pressing the button is the ordinary case.
-   */
+  installState: (dir: string) => Promise<InstallState>;
   relayArm: () => PairArm | null;
 };
 
-/** The real dispatch — one arm per verb. */
-export function createVerbDispatch(deps: DispatchDeps): Dispatch {
+/** The dispatch — one arm per verb. */
+export function createDispatchVerb(deps: DispatchDeps): Dispatch {
   return async (request, { io, register }) => {
     const install = request.install;
     const configPath = path.join(install, CONFIG_FILE);
@@ -126,6 +156,75 @@ export function createVerbDispatch(deps: DispatchDeps): Dispatch {
         return { verb: "doctor", outcome };
       }
 
+      case "config set": {
+        // The fingerprint the window was shown rides in the request (#527 §11), so
+        // an edit composed against a config a terminal has since changed is
+        // refused `stale` here exactly as it would be over a relay.
+        io.stdout(`[phoebe] config set ${request.path} in ${configPath}`);
+        const outcome = await runConfigSet(
+          {
+            configPath,
+            path: request.path,
+            value: request.value,
+            fingerprint: request.fingerprint,
+          },
+          // No ledger: the ledger answers a redelivered edit, and there is no
+          // delivery here to repeat. The volume one would live on is inside the
+          // container this edit deliberately does not go through.
+          { ledgerPath: null },
+        );
+        io.stdout(
+          outcome.state === "written"
+            ? `  written — the deployment reconciles onto it the way it would a hand edit`
+            : `  refused (${outcome.reason}): ${outcome.why}`,
+        );
+        if (outcome.state === "refused") io.stdout(`  ${outcome.instruction}`);
+        return { verb: "config set", outcome };
+      }
+
+      case "secret set": {
+        // Nothing about the value is printed, here or below. What the operator
+        // watches is which writer took it and where it landed.
+        const writer = secretWriterFor(await deps.installState(install));
+        io.stdout(
+          writer === "container"
+            ? `[phoebe] secret set ${request.key} — through the container on ${install}`
+            : `[phoebe] secret set ${request.key} — into this install's .env on ${install}`,
+        );
+        let target: string;
+        if (writer === "container") {
+          const deployment = resolveDeploymentCompose(install);
+          if ("kind" in deployment) throw new Error(formatResolveFailure(deployment));
+          await setSecretInContainer({
+            deployment,
+            key: request.key,
+            value: request.value,
+            ...(request.tenant !== undefined ? { tenant: request.tenant } : {}),
+            io,
+          });
+          target = secretTargetOf(writer, null);
+        } else {
+          target = secretTargetOf(
+            writer,
+            setSecretInHostEnv({ dir: install, key: request.key, value: request.value, io }),
+          );
+        }
+        io.stdout(
+          writer === "container"
+            ? "  the running engine picks it up on its next relaunch"
+            : "  it reaches the engine the next time this install starts",
+        );
+        return {
+          verb: "secret set",
+          outcome: secretSetOutcome({
+            key: request.key,
+            tenant: request.tenant ?? null,
+            writer,
+            target,
+            at: new Date().toISOString(),
+          }),
+        };
+      }
       case "pair": {
         const arm = deps.relayArm();
         if (arm === null) {

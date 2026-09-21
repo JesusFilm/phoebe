@@ -7,6 +7,7 @@
 import { describe, expect, test } from "vite-plus/test";
 import {
   CANCELLABLE_VERBS as typedCancellable,
+  CLOSED_EDIT_BLOCKS as typedClosedBlocks,
   COMPANION_AUTH_URL as typedAuthUrl,
   DESKTOP_BRIDGE_GLOBAL as typedGlobal,
   DEVICE_CODE_TTL_MS as typedCodeTtl,
@@ -14,6 +15,7 @@ import {
   RELAY_CLOSE as typedClose,
   RELAY_DARK_AFTER_MS as typedDark,
   RELAY_DEPLOYMENTS_PATH as typedPath,
+  RELAY_DOCTOR_RUN as typedDoctorRun,
   RELAY_TOKEN_ENV as typedTokenEnv,
   RELAY_EVENTS as typedEvents,
   RELAY_HEARTBEAT_MS as typedHeartbeat,
@@ -24,6 +26,7 @@ import {
 } from "./index.ts";
 import {
   CANCELLABLE_VERBS as shippedCancellable,
+  CLOSED_EDIT_BLOCKS as shippedClosedBlocks,
   COMPANION_AUTH_URL as shippedAuthUrl,
   DESKTOP_BRIDGE_GLOBAL as shippedGlobal,
   DEVICE_CODE_TTL_MS as shippedCodeTtl,
@@ -31,6 +34,7 @@ import {
   RELAY_CLOSE as shippedClose,
   RELAY_DARK_AFTER_MS as shippedDark,
   RELAY_DEPLOYMENTS_PATH as shippedPath,
+  RELAY_DOCTOR_RUN as shippedDoctorRun,
   RELAY_TOKEN_ENV as shippedTokenEnv,
   RELAY_EVENTS as shippedEvents,
   RELAY_HEARTBEAT_MS as shippedHeartbeat,
@@ -67,7 +71,9 @@ describe("the deployment rail's constants are mirrored too", () => {
     ["RELAY_HEARTBEAT_MS", typedHeartbeat, shippedHeartbeat],
     ["RELAY_DARK_AFTER_MS", typedDark, shippedDark],
     ["RELAY_UNDELIVERED", typedUndelivered, shippedUndelivered],
+    ["RELAY_DOCTOR_RUN", typedDoctorRun, shippedDoctorRun],
     ["RELAY_EVENTS", typedEvents, shippedEvents],
+    ["CLOSED_EDIT_BLOCKS", typedClosedBlocks, shippedClosedBlocks],
   ])("%s is the same on both sides", (_name, typedValue, shippedValue) => {
     expect(shippedValue).toEqual(typedValue);
   });
@@ -97,21 +103,6 @@ describe("the companion's bridge global", () => {
   });
 });
 
-describe("the verb run's constants", () => {
-  test.each([
-    ["MAX_RUN_LINES", typedMaxLines, shippedMaxLines],
-    ["CANCELLABLE_VERBS", typedCancellable, shippedCancellable],
-  ])("%s is the same on both sides", (_name, typedValue, shippedValue) => {
-    expect(shippedValue).toEqual(typedValue);
-  });
-
-  test("only the verbs whose child the companion holds can be cancelled (#527 §2)", () => {
-    // `start` and `stop` drive Compose through an injected runner, so the
-    // companion has the child to signal. Nothing else does — see verb-run.ts.
-    expect([...typedCancellable].sort()).toEqual(["start", "stop"]);
-  });
-});
-
 describe("the companion's sign-in constants (#554)", () => {
   test.each([
     ["COMPANION_AUTH_URL", typedAuthUrl, shippedAuthUrl],
@@ -126,5 +117,20 @@ describe("the companion's sign-in constants (#554)", () => {
     const landing = new URL(typedAuthUrl);
     expect(landing.protocol).toBe("phoebe:");
     expect(landing.host).toBe("auth");
+  });
+});
+
+describe("the verb run's constants", () => {
+  test.each([
+    ["MAX_RUN_LINES", typedMaxLines, shippedMaxLines],
+    ["CANCELLABLE_VERBS", typedCancellable, shippedCancellable],
+  ])("%s is the same on both sides", (_name, typedValue, shippedValue) => {
+    expect(shippedValue).toEqual(typedValue);
+  });
+
+  test("only the verbs whose child the companion holds can be cancelled (#527 §2)", () => {
+    // `start` and `stop` drive Compose through an injected runner, so the
+    // companion has the child to signal. Nothing else does — see verb-run.ts.
+    expect([...typedCancellable].sort()).toEqual(["start", "stop"]);
   });
 });

@@ -11,14 +11,19 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { rowFacts, sortFleet } from "./facts.ts";
 import { FleetPage } from "./fleet-page.tsx";
 import { Rail } from "./rail.tsx";
-import { InstallPage } from "./install-page.tsx";
+import { ConfigEditForm, InstallPage, InstallTab } from "./install-page.tsx";
+import { ReceiptPanel } from "./deployment-tabs.tsx";
+import { pairReading } from "./local-install.ts";
 import type { RelaySignIn } from "./relay-client.ts";
 import {
   ago,
   bridge,
   cell,
   child,
+  client,
+  directory,
   install,
+  localReport,
   NOW,
   report,
   row,
@@ -104,9 +109,17 @@ const SIGN_IN_PROMPT: RelaySignIn = {
 };
 
 const rail = renderToStaticMarkup(
-  <Rail facts={FLEET} now={NOW} surface="browser" signedIn signIn={null} onSignedIn={noop} />,
+  <Rail
+    facts={FLEET}
+    selectedDeployment={null}
+    now={NOW}
+    surface="browser"
+    signedIn
+    signIn={null}
+    onSignedIn={noop}
+  />,
 );
-const grid = renderToStaticMarkup(<FleetPage facts={FLEET} now={NOW} />);
+const grid = renderToStaticMarkup(<FleetPage facts={FLEET} client={client()} now={NOW} />);
 
 describe("the rail", () => {
   test("lists every deployment in the sort order, dark first", () => {
@@ -152,9 +165,39 @@ describe("the rail", () => {
       expect(rail.toLowerCase(), word).not.toContain(word);
     }
   });
+
+  test("every entry opens that deployment's tabs (#544)", () => {
+    for (const fingerprint of ["one", "two", "three", "four"]) {
+      expect(rail, fingerprint).toContain(`href="#/d/${fingerprint}"`);
+    }
+  });
+
+  test("the entry being shown is marked for a screen reader too", () => {
+    const selected = renderToStaticMarkup(
+      <Rail
+        facts={FLEET}
+        selectedDeployment="two"
+        now={NOW}
+        surface="browser"
+        signedIn
+        signIn={null}
+        onSignedIn={noop}
+      />,
+    );
+    expect(selected).toContain('aria-current="page"');
+    expect(selected).toContain("rail-entry state-disconnected attention current");
+  });
 });
 
 describe("the grid", () => {
+  test("carries one Run doctor for the whole fleet, never disabled (#546)", () => {
+    // The deployments the relay cannot reach are part of the answer — each one
+    // refused undelivered by name — so there is nothing here to grey out.
+    expect(grid).toContain('aria-label="Run doctor"');
+    expect(grid).toContain(">Run doctor on every deployment<");
+    expect(grid).not.toContain("disabled=");
+  });
+
   test("draws one segment per enumerated pipeline", () => {
     const segments = [...grid.matchAll(/class="segment /g)];
 
@@ -190,6 +233,7 @@ describe("the grid", () => {
             ),
           ),
         ]}
+        client={client()}
         now={NOW}
       />,
     );
@@ -214,6 +258,70 @@ describe("the grid", () => {
   test("explains the bar rather than leaving the colours to be guessed", () => {
     expect(grid).toContain("green working");
   });
+
+  test("gives doctor its counts and its age now that the report carries a section", () => {
+    expect(grid).toContain("doctor healthy — 3 h ago (schedule)");
+  });
+
+  test("a card's name opens that deployment", () => {
+    expect(grid).toContain('class="name" href="#/d/one"');
+  });
+});
+
+describe("doctor at fleet level (#507 §9)", () => {
+  const failing = report({
+    doctor: {
+      ...report().doctor,
+      report: {
+        checks: [{ id: "engine", state: "fail", detail: "c0ffee1 quarantined" }],
+        tenants: [],
+        ok: false,
+      },
+    },
+  });
+
+  test("a failing check joins the attention clause the sort reads", () => {
+    const [first] = sortFleet([
+      rowFacts(row({ fingerprint: "quiet", name: "zeta" }), stored(report())),
+      rowFacts(row({ fingerprint: "sick", name: "alpha" }), stored(failing)),
+    ]);
+
+    // Name order would put alpha first anyway, so the fingerprint is the tell:
+    // attention outranks name, and the failing row is the one with attention.
+    expect(first?.row.fingerprint).toBe("sick");
+    expect(first?.attention).toBe(true);
+  });
+
+  test("the rail names the fail count without naming a warn count beside it", () => {
+    const markup = renderToStaticMarkup(
+      <Rail
+        facts={[rowFacts(row(), stored(failing))]}
+        selectedDeployment={null}
+        now={NOW}
+        surface="browser"
+        signedIn
+        signIn={null}
+        onSignedIn={noop}
+      />,
+    );
+    expect(markup).toContain("doctor 1 fail");
+  });
+
+  test("a deployment that has never run doctor says never, not healthy", () => {
+    const markup = renderToStaticMarkup(
+      <FleetPage
+        facts={[
+          rowFacts(
+            row(),
+            stored(report({ doctor: { ...report().doctor, report: null, at: null } })),
+          ),
+        ]}
+        client={client()}
+        now={NOW}
+      />,
+    );
+    expect(markup).toContain("doctor never run");
+  });
 });
 
 describe("a report this console cannot read", () => {
@@ -221,6 +329,7 @@ describe("a report this console cannot read", () => {
     const markup = renderToStaticMarkup(
       <FleetPage
         facts={[rowFacts(row({ name: "ahead-of-us" }), stored(report(), { schema: 99 }))]}
+        client={client()}
         now={NOW}
       />,
     );
@@ -237,6 +346,7 @@ describe("the companion's shell", () => {
   const empty = renderToStaticMarkup(
     <Rail
       facts={[]}
+      selectedDeployment={null}
       now={NOW}
       surface="companion"
       signedIn={false}
@@ -263,6 +373,7 @@ describe("the companion's shell", () => {
     const markup = renderToStaticMarkup(
       <Rail
         facts={[]}
+        selectedDeployment={null}
         now={NOW}
         surface="companion"
         signedIn={false}
@@ -278,6 +389,7 @@ describe("the companion's shell", () => {
     const markup = renderToStaticMarkup(
       <Rail
         facts={[]}
+        selectedDeployment={null}
         now={NOW}
         surface="companion"
         signedIn={false}
@@ -296,7 +408,15 @@ describe("the companion's shell", () => {
 
   test("keeps the relay's deployments in the relay's group once signed in", () => {
     const markup = renderToStaticMarkup(
-      <Rail facts={FLEET} now={NOW} surface="companion" signedIn signIn={null} onSignedIn={noop} />,
+      <Rail
+        facts={FLEET}
+        selectedDeployment={null}
+        now={NOW}
+        surface="companion"
+        signedIn
+        signIn={null}
+        onSignedIn={noop}
+      />,
     );
 
     expect(markup).toContain("jesusfilm-workspace");
@@ -331,7 +451,7 @@ describe("the local arm on the rail", () => {
       onSelect={() => undefined}
       onAdd={() => undefined}
       signIn={null}
-      onSignedIn={() => undefined}
+      onSignedIn={noop}
     />,
   );
 
@@ -371,7 +491,7 @@ describe("the local arm on the rail", () => {
         signedIn
         installs={installs}
         signIn={null}
-        onSignedIn={() => undefined}
+        onSignedIn={noop}
       />,
     );
 
@@ -381,25 +501,37 @@ describe("the local arm on the rail", () => {
 });
 
 describe("the install tab", () => {
+  /**
+   * The tab with the buttons, rendered on its own. The page lands a running
+   * install on overview (#526), and which verbs an install is offered is a
+   * question about this tab rather than about where the page opened.
+   */
   function tab(
     overrides: Parameters<typeof install>[0] = {},
     arm: { signedIn?: boolean; paired?: boolean } = {},
   ) {
+    const subject = install(overrides);
     return renderToStaticMarkup(
-      <InstallPage
-        install={install(overrides)}
-        bridge={bridge()}
-        signedIn={arm.signedIn ?? true}
-        paired={arm.paired ?? false}
+      <InstallTab
+        install={subject}
+        environment={null}
+        run={null}
+        running={false}
+        trouble={null}
+        pairing={pairReading(subject, {
+          signedIn: arm.signedIn ?? true,
+          paired: arm.paired ?? false,
+        })}
+        onStart={() => undefined}
         onForget={() => undefined}
+        onCancel={() => undefined}
       />,
     );
   }
 
-  test("is where a not-initialised install lands, offering init and nothing that needs one", () => {
+  test("a not-initialised install is offered init and nothing that needs one", () => {
     const markup = tab({ state: "not-initialised" });
 
-    expect(markup).toContain(">install<");
     expect(markup).toContain(">Init<");
     expect(markup).not.toContain(">Start<");
     expect(markup).not.toContain(">Stop<");
@@ -449,21 +581,243 @@ describe("the install tab", () => {
     expect(markup).toContain("Paired");
   });
 
-  test("carries the five deployment tabs, disabled and saying what they need", () => {
-    const markup = tab();
-
-    for (const name of ["overview", "pipelines", "doctor", "secrets", "config"]) {
-      expect(markup, name).toContain(`>${name}<`);
-    }
-    expect(markup).toContain("Needs a running container");
-  });
-
   test("says forgetting deletes nothing, because a Forget button reads like one that does", () => {
     expect(tab()).toContain("Nothing on disk is deleted");
   });
+});
+
+describe("a local install's page", () => {
+  function page(
+    overrides: Parameters<typeof install>[0] = {},
+    event: Parameters<typeof localReport>[0] | null = null,
+  ) {
+    const one = install(overrides);
+    return renderToStaticMarkup(
+      <InstallPage
+        install={one}
+        bridge={bridge()}
+        signedIn
+        paired={false}
+        report={event === null ? null : localReport({ facts: one, ...event })}
+        now={NOW}
+        onForget={() => undefined}
+      />,
+    );
+  }
+
+  test("carries the same six tabs whatever the install is doing", () => {
+    const markup = page();
+
+    for (const name of ["install", "overview", "pipelines", "doctor", "secrets", "config"]) {
+      expect(markup, name).toContain(`>${name}<`);
+    }
+  });
 
   test("names the folder it is about, since the rail only had room for its name", () => {
-    expect(tab()).toContain("/repos/youtube-studio");
+    expect(page()).toContain("/repos/youtube-studio");
+  });
+
+  test("a not-initialised install lands on the install tab (#526)", () => {
+    const markup = page({ state: "not-initialised" });
+
+    expect(markup).toContain(">Init<");
+  });
+
+  test("a running install lands on overview, and its card says local install (#556)", () => {
+    const markup = page({ state: "running" }, {});
+
+    expect(markup).toContain("Local install");
+    expect(markup).toContain("/repos/youtube-studio");
+    expect(markup).toContain("desktop bridge");
+    expect(markup).toContain("its container is up");
+  });
+
+  test("the overview renders the report the loop read, not a relay's row", () => {
+    const markup = page({ state: "running" }, {});
+
+    expect(markup).toContain("youtube-studio");
+    expect(markup).toContain("v0.13.0");
+    expect(markup).toContain("1/2 in use");
+  });
+
+  test("a stopped install lands on config, read from the file (#526)", () => {
+    const markup = page(
+      { state: "stopped" },
+      { directory: directory({ bootstrapperRunning: false }) },
+    );
+
+    expect(markup).toContain("phoebe.config.ts");
+    expect(markup).toContain("defineConfig");
+  });
+
+  test("a stopped install does not render the report the window is still holding", () => {
+    // The event carries one — main read it while the container was up, and the
+    // window has held it since. Four tabs are shut over it and not one of the
+    // report's numbers is on the page (#526).
+    const markup = page({ state: "stopped" }, { facts: install({ state: "running" }) });
+
+    expect(markup).not.toContain("1/2 in use");
+    expect(markup).not.toContain("Slots");
+    for (const name of ["overview", "pipelines", "doctor", "secrets"]) {
+      expect(markup, name).toMatch(
+        new RegExp(`disabled="" title="Needs a running container\\.">${name}<`),
+      );
+    }
+    expect(markup).toContain("defineConfig");
+  });
+
+  test("a stopped install is pointed at the install tab, where the start button is (#526)", () => {
+    const markup = page({ state: "stopped" }, {});
+
+    expect(markup).toContain("Go to the install tab");
+  });
+
+  test("a running install mid-read says it is reading, not that nothing is running", () => {
+    const markup = page({ state: "running" }, null);
+
+    expect(markup).toContain("Reading this install");
+    expect(markup).not.toContain("Go to the install tab");
+  });
+
+  test("config stays open on a stopped install, because a file is readable either way", () => {
+    const markup = page({ state: "stopped" }, {});
+
+    expect(markup).not.toMatch(/disabled="" [^>]*>config</);
+  });
+});
+
+describe("the two local writes on screen (#557)", () => {
+  function page(
+    overrides: Parameters<typeof install>[0] = {},
+    event: Parameters<typeof localReport>[0] | null = {},
+  ) {
+    const one = install(overrides);
+    return renderToStaticMarkup(
+      <InstallPage
+        install={one}
+        bridge={bridge()}
+        signedIn
+        paired={false}
+        report={event === null ? null : localReport({ facts: one, ...event })}
+        now={NOW}
+        onForget={() => undefined}
+      />,
+    );
+  }
+
+  test("the config tab carries the edit form and the fingerprint it checks against", () => {
+    const markup = page({ state: "stopped" }, {});
+
+    expect(markup).toContain("Change one field");
+    expect(markup).toContain("sha256:0f1e2d3c4b5a6978");
+    expect(markup).toContain("pipelines.work.pollIntervalMs");
+  });
+
+  test("the edit form says it writes this machine and no relay is involved", () => {
+    const markup = page({ state: "stopped" }, {});
+
+    expect(markup).toContain("straight to");
+    expect(markup).toContain("No relay is involved");
+  });
+
+  test("a folder with no config has no edit form to offer", () => {
+    const markup = page(
+      { state: "stopped" },
+      { directory: directory({ configText: null, configFingerprint: null }) },
+    );
+
+    expect(markup).not.toContain("Change one field");
+  });
+
+  /** The install tab alone, which is where the secret form lives. */
+  function secretTab(overrides: Parameters<typeof install>[0] = {}) {
+    return renderToStaticMarkup(
+      <InstallTab
+        install={install(overrides)}
+        environment={null}
+        run={null}
+        running={false}
+        trouble={null}
+        pairing={{ kind: "ready" }}
+        onStart={() => undefined}
+        onForget={() => undefined}
+        onCancel={() => undefined}
+      />,
+    );
+  }
+
+  test("the secret form is on the install tab, reachable with nothing running", () => {
+    const markup = secretTab({ state: "not-initialised" });
+
+    expect(markup).toContain("Set a secret");
+    expect(markup).toContain('type="password"');
+  });
+
+  test("it says no envelope is built and nothing is sent to a relay (#526)", () => {
+    const markup = secretTab({ state: "not-initialised" });
+
+    expect(markup).toContain("Nothing is sealed to anybody");
+    expect(markup).toContain("even if this install is paired");
+  });
+
+  test("it names the writer before a value is pasted — the file, with nothing running", () => {
+    const markup = secretTab({ state: "stopped" });
+
+    expect(markup).toContain(".env");
+    expect(markup).not.toContain("tenant secret store on the data volume");
+  });
+
+  test("and the store, on a running container", () => {
+    expect(secretTab({ state: "running" })).toContain("tenant secret store on the data volume");
+  });
+
+  test("a refusal renders its reason and the exact edit to make by hand (#503)", () => {
+    const markup = renderToStaticMarkup(
+      <ConfigEditForm
+        install={install({ state: "stopped" })}
+        config={{
+          kind: "file",
+          path: "/repos/youtube-studio/phoebe.config.ts",
+          text: "export default defineConfig({})",
+          fingerprint: "sha256:abc",
+        }}
+        running={false}
+        receipt={{
+          id: "e1",
+          state: "refused",
+          file: "/repos/youtube-studio/phoebe.config.ts",
+          path: "engine.ref",
+          reason: "not-editable",
+          why: "the engine pin moves with `phoebe upgrade`",
+          instruction: "Run `phoebe upgrade --ref v2` in that folder.",
+          at: ago(1),
+        }}
+        onStart={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain("Refused (not-editable)");
+    expect(markup).toContain("phoebe upgrade --ref v2");
+  });
+
+  test("a written receipt says what landed and that a reconcile follows", () => {
+    const markup = renderToStaticMarkup(
+      <ReceiptPanel
+        receipt={{
+          id: "e1",
+          state: "written",
+          file: "/repos/youtube-studio/phoebe.config.ts",
+          path: "checkCommand",
+          value: "pnpm run check",
+          fingerprint: "sha256:after",
+          at: ago(1),
+        }}
+      />,
+    );
+
+    expect(markup).toContain("checkCommand");
+    expect(markup).toContain("pnpm run check");
+    expect(markup).toContain("reconciles onto it");
   });
 });
 

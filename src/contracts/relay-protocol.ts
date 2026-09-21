@@ -75,6 +75,36 @@ export const RELAY_DARK_AFTER_MS = 60_000;
 export const RELAY_UNDELIVERED = "undelivered";
 
 /**
+ * What a deployment answers a `doctor-run` with (#546, decided in #507 §7).
+ * Three words, and the receipt is written the moment the ask lands rather than
+ * when the run ends: doctor holds itself to five minutes, and a console left
+ * waiting that long for a button to come back would be a console an operator
+ * reloads.
+ *
+ * What the run found arrives the way every other fact about a deployment does —
+ * as the next report, pushed when the doctor section moves and carried down the
+ * event stream (#542). So the receipt says which run this ask belongs to, and
+ * the report says what that run saw.
+ */
+export const RELAY_DOCTOR_RUN = {
+  /** No run was in flight: this ask is the run. */
+  started: "started",
+  /** One was already under way, or already asked for. This ask joined it. */
+  joined: "joined",
+  /** The deployment will not run one now; `detail` is the sentence why. */
+  refused: "refused",
+} as const;
+
+/**
+ * One receipt outcome for a doctor run, including the relay's own word for a
+ * deployment it could not reach. A console shows all four and invents none of
+ * them.
+ */
+export type DoctorRunOutcome =
+  | (typeof RELAY_DOCTOR_RUN)[keyof typeof RELAY_DOCTOR_RUN]
+  | typeof RELAY_UNDELIVERED;
+
+/**
  * Every message type on the rail, as one closed record. `as const` so a typo in
  * a sender is a type error rather than a message the far side silently drops.
  */
@@ -154,9 +184,22 @@ export type RelayHello = {
   protocol: number;
   /** The deployment key's public half — raw Ed25519, base64url. */
   publicKey: string;
+  /**
+   * The deployment's **box key**: raw X25519, base64url, the key a console
+   * seals a secret to (#549, decided in #514). It rides in the hello rather
+   * than being fetched separately so the link record learns both keys in one
+   * step, and so the signature below can cover it.
+   */
+  boxKey: string;
   /** What a console shows for this deployment. The relay never keys on it. */
   name: string;
-  /** Base64url signature over the challenge nonce. */
+  /**
+   * Base64url signature over `nonce ‖ boxKey`, the raw bytes of each
+   * (`helloSignedBytes` in src/ed25519.ts). The box key is inside the signature
+   * because it is what secrets are encrypted to: a signature covering only the
+   * nonce would let anything in the path substitute the key a console encrypts
+   * to and keep the deployment's own attestation intact.
+   */
   signature?: string;
   /** The single-use pairing token, on a first connection only. */
   pairingToken?: string;
@@ -178,20 +221,47 @@ export type RelayConfigSet = {
   by: string;
 };
 
-/** relay → deployment: one secret, sealed to this deployment. */
+/**
+ * relay → deployment: one secret, sealed to this deployment (#550). Clearing a
+ * key is the same message with `action: "clear"` and no envelope — the store
+ * has no tombstone, so a clear removes the entry and the tier beneath it
+ * governs again (#504).
+ *
+ * The `id` is the edit: the deployment writes it into
+ * `state/secret-edits.json`, and the envelope's AAD binds it, so a request
+ * replayed under a second id cannot open.
+ */
 export type RelaySecretSet = {
   type: typeof RELAY_MESSAGES.secretSet;
   id: string;
+  /** Which tenant's store, as `owner/repo`. The store is tenant scope only. */
+  tenant: string;
   key: string;
-  /** Opaque to the relay: the browser sealed it, the deployment opens it. */
-  envelope: string;
+  action: "set" | "clear";
+  /**
+   * The JSON of a `SecretEnvelope`, on a `set`. Opaque to the relay: the
+   * browser sealed it to the deployment's box key, the deployment opens it, and
+   * nothing in between can — which is the whole of the write-only promise
+   * (#504, #514).
+   */
+  envelope?: string;
+  /**
+   * The signed-in address that asked for it. The relay stamps this from its own
+   * session and a deployment records it in the secret ledger; a console cannot
+   * choose it.
+   */
   by: string;
 };
 
-/** relay → deployment: run doctor and answer with what it said. */
+/**
+ * relay → deployment: run doctor now. Answered by a receipt carrying one of
+ * {@link RELAY_DOCTOR_RUN}'s words — which run this ask belongs to, not what
+ * that run found.
+ */
 export type RelayDoctorRun = {
   type: typeof RELAY_MESSAGES.doctorRun;
   id: string;
+  /** The signed-in address that asked. It lands in the report's doctor section. */
   by: string;
 };
 

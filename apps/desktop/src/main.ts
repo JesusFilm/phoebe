@@ -6,17 +6,24 @@
 // serves in a browser — loaded from disk over the console scheme. So there is no
 // UI code in here, and a page the operator sees is never written twice.
 //
-// What main answers is the local arm in full — the installs on this machine,
-// the Docker check, and the verb runs that drive them (#555) — beside the relay
-// arm, where main is the relay client proper (#523 §1, #554): it holds the
+// What main answers is the companion's two arms. The local arm is the installs
+// on this machine, the Docker check, the verb runs that drive them (#555), the
+// local read loop that feeds their tabs (#556) and the two write verbs that
+// change them (#557), one of which pairs the install with the relay (#558). The remote arm is the relay (#523 §1): main holds the
 // device token, makes every call, and re-emits the relay's event stream to the
 // renderer over IPC. The wiring for that is here; the flow itself is
-// relay-session.ts, which needs no Electron to run. The local read loop joins
-// with #556, behind the contract the preload already exposes.
+// relay-session.ts, which needs no Electron to run.
 //
-// Main owns state the window does not: `companion.json`, the device token, and
-// the runs in flight. All three are here rather than in the renderer for the
-// same reason — a reload must not lose them.
+// The write verbs go nowhere near the relay arm, by decision (#526): a config
+// edit and a secret on a local install run against this machine even when the
+// install is also paired. So there is no envelope built in this process and no
+// request made on anybody's behalf — main writes the file, or execs into the
+// container beside it.
+//
+// Main owns state the window does not: `companion.json`, the device session, the
+// runs in flight, and the watchers and timers of the read loop. All of it is
+// here rather than in the renderer for the same reason — a reload must not lose
+// them.
 
 import os from "node:os";
 import path from "node:path";
@@ -37,6 +44,7 @@ import type {
   CompanionEnvironment,
   CompanionPreferences,
   LocalInstall,
+  LocalReportEvent,
   MintedPairingToken,
   RelayArmState,
   RelayEvent,
@@ -62,12 +70,15 @@ import {
 } from "./companion-file.ts";
 import { CONSOLE_SCHEME, consoleFileFor } from "./console-scheme.ts";
 import { consoleSource } from "./console-source.ts";
+import { readContainerReport, watchContainerEvents } from "./container-read.ts";
 import { probeDocker } from "./docker.ts";
-import { allInstallFacts } from "./install-facts.ts";
+import { allInstallFacts, directoryFacts, installFacts } from "./install-facts.ts";
+import { createLocalReads } from "./local-read.ts";
 import type { PairArm } from "./pair.ts";
+import { resolveDeploymentCompose } from "../../../src/deployment-compose.ts";
 import { companionName, createRelaySession, type RelaySession } from "./relay-session.ts";
 import { createTokenVault } from "./vault.ts";
-import { createVerbDispatch } from "./verb-dispatch.ts";
+import { createDispatchVerb } from "./verb-dispatch.ts";
 import { createVerbRuns } from "./verb-runs.ts";
 
 // Before `ready`, which is the only time Chromium will take it. `standard` is
@@ -177,8 +188,43 @@ function broadcast(channel: string, payload: unknown): void {
 async function listInstalls(): Promise<LocalInstall[]> {
   const stored = readCompanion().installs;
   const docker = await probeDocker();
-  return allInstallFacts(stored, { dockerPresent: docker.present });
+  const installs = await allInstallFacts(stored, { dockerPresent: docker.present });
+  // Every list is also the loop's list. Adding a folder starts reading it and
+  // forgetting one stops, with no second place that has to remember to say so.
+  reads.sync(installs);
+  return installs;
 }
+
+/** One install's facts, for the loop's own re-derivation between lists. */
+async function factsFor(dir: string): Promise<LocalInstall | null> {
+  const stored = readCompanion().installs.find((install) => install.dir === dir);
+  if (stored === undefined) return null;
+  const docker = await probeDocker();
+  return installFacts(stored, { dockerPresent: docker.present });
+}
+
+/**
+ * The local read loop (#556). Its seams are the real ones here and stubs in the
+ * test: Compose's event stream, one `status --json` exec, and the directory.
+ *
+ * An install whose folder has no `container/compose.yml` has nothing to watch
+ * and nothing to exec, so both seams answer without reaching Docker at all.
+ */
+const reads = createLocalReads({
+  facts: factsFor,
+  directory: (install) => directoryFacts(install),
+  read: async (install) => {
+    const deployment = resolveDeploymentCompose(install.dir);
+    if ("kind" in deployment) return { ok: false, reason: "no container/compose.yml yet" };
+    return readContainerReport({ deployment });
+  },
+  watch: (install, onChange) => {
+    const deployment = resolveDeploymentCompose(install.dir);
+    if ("kind" in deployment) return () => undefined;
+    return watchContainerEvents({ deployment, onChange });
+  },
+  emit: (event) => broadcast(BRIDGE_CHANNELS.installsReport, event),
+});
 
 /** Read, change, write, and tell the window. The only writer of the file. */
 async function editInstalls(change: (contents: CompanionFile) => CompanionFile) {
@@ -194,12 +240,20 @@ async function editInstalls(change: (contents: CompanionFile) => CompanionFile) 
  * (#527 §13).
  */
 const runs = createVerbRuns({
-  dispatch: createVerbDispatch({ relayArm: pairArm }),
+  // The dispatch reads an install's state through main's own derivation, so
+  // `secret set` picks its writer off the same fact the rail is drawing (#527 §8)
+  // — including the Docker probe, which a second reading could disagree about.
+  dispatch: createDispatchVerb({
+    relayArm: pairArm,
+    installState: async (dir) => (await factsFor(dir))?.state ?? "not-initialised",
+  }),
   onLine: (line) => broadcast(BRIDGE_CHANNELS.runLine, line),
   onExit: (exit) => {
     broadcast(BRIDGE_CHANNELS.runExit, exit);
-    // A verb that just started or stopped a container changed the one fact the
-    // rail draws, and nothing else is watching for it until #556's read loop.
+    // A verb that just started or stopped a container changed the fact the rail
+    // draws. The read loop hears the container move on its own; this is for the
+    // verbs that move nothing — an `init` that made a folder initialised has no
+    // Docker event behind it.
     void listInstalls().then(
       (installs) => broadcast(BRIDGE_CHANNELS.installsChanged, installs),
       () => undefined,
@@ -366,6 +420,10 @@ app.whenReady().then(
       answering(() => editInstalls((contents) => removeInstall(contents, dir))),
     );
 
+    ipcMain.handle(BRIDGE_CHANNELS.installsRefresh, (_event, dir: string) =>
+      answering<LocalReportEvent>(() => reads.refresh(dir)),
+    );
+
     ipcMain.handle(BRIDGE_CHANNELS.runStart, (_event, request: VerbRunRequest) =>
       answering<string>(async () => {
         if (request.verb === "pair") await assertPairable(request.install);
@@ -421,7 +479,10 @@ app.whenReady().then(
   },
 );
 
-app.on("before-quit", () => relay?.close());
+app.on("before-quit", () => {
+  reads.stop();
+  relay?.close();
+});
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();

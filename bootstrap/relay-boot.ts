@@ -18,15 +18,29 @@
 // `relay.url` and stopped halfway — the link says so through the report and
 // never dials, because there is nothing it could say to the relay.
 //
+// **What the console may ask this deployment to do arrives at `start`**, as
+// {@link RelayVerbs} (#547). They are the supervisor's, not the config's — the
+// config-edit pen is pointed at the running engine — so they are handed over
+// with the reporting channel rather than read here. A verb this deployment does
+// not have is refused in its own words by the link, never dropped.
+//
 // No `relay` block, or a block with no `url`: none of this runs, the report's
 // relay section says `configured: false`, and the deployment is the deployment
 // it was before this file existed.
 
 import { readRelayField, type RelayField } from "../src/config-schema.ts";
+import type { ConfigEdit, EditReceipt } from "../src/contracts/config-edit.ts";
 import { RELAY_TOKEN_ENV } from "../src/contracts/relay-protocol.ts";
 import type { DeploymentArm, DeploymentIdentity } from "../src/contracts/deployment.ts";
 import type { DeploymentState } from "./deployment-state.ts";
-import { connectRelay, type RelayLink, type OpenRelaySocket } from "./relay-link.ts";
+import {
+  connectRelay,
+  type DoctorRunAnswer,
+  type InboundRequest,
+  type RelayLink,
+  type OpenRelaySocket,
+  type RequestAnswer,
+} from "./relay-link.ts";
 import {
   forgetDeploymentKey,
   generateDeploymentKey,
@@ -45,6 +59,22 @@ import {
  */
 export { RELAY_TOKEN_ENV } from "../src/contracts/relay-protocol.ts";
 
+/**
+ * What a console may ask this deployment to *do*, as opposed to read (#503,
+ * #546, #547). One record rather than a parameter per verb: `secret-set` (#550)
+ * lands beside `configSet` here, and the link is handed the whole of it.
+ *
+ * Each verb is optional, and an absent one is refused in its own words by the
+ * link rather than dropped — a deployment that cannot do a thing says so, and a
+ * console holding a request open is answered either way.
+ */
+export type RelayVerbs = {
+  /** Run doctor because `by` pressed the button. Answered with the receipt's word. */
+  runDoctor?: (by: string) => DoctorRunAnswer;
+  /** Apply one field patch to the root config, and answer with the receipt. */
+  configSet?: (edit: ConfigEdit) => Promise<EditReceipt>;
+};
+
 export type PrepareRelayOptions = {
   /** The root config, as loaded — the only place a `relay` block is read from. */
   rootConfig: unknown;
@@ -56,6 +86,15 @@ export type PrepareRelayOptions = {
   env: NodeJS.ProcessEnv;
   log?: (message: string) => void;
   warn?: (message: string) => void;
+  /**
+   * Answer one `id`-bearing request the relay sends down (#550). Handed the
+   * deployment's own box key through {@link PreparedRelay.boxKey}, because the
+   * key is read here and the verbs that need it live elsewhere.
+   *
+   * Absent means this deployment answers nothing, which is what a build with no
+   * verbs wired should say out loud rather than by silence.
+   */
+  onRequest?: (request: InboundRequest) => Promise<RequestAnswer>;
   /** Injected by the tests; production dials a real socket. */
   open?: OpenRelaySocket;
 };
@@ -63,14 +102,29 @@ export type PrepareRelayOptions = {
 export type PreparedRelay = {
   /** The report's identity section, read afresh at every publish. */
   identity: () => DeploymentIdentity;
-  /** Dial, reporting into the live model. A no-op with no `relay.url`. */
-  start: (deployment: DeploymentState) => void;
+  /**
+   * Dial, reporting into the live model. A no-op with no `relay.url`.
+   *
+   * `verbs` is what a console may ask this deployment to do (#546, #547). It is
+   * a second argument rather than a `prepareRelay` option because the verbs are
+   * the supervisor's, and the supervisor is built after the report is: the pen
+   * is pointed at the running engine, the doctor runner reports into the model,
+   * and the report's identity has to exist before either.
+   */
+  start: (deployment: DeploymentState, verbs?: RelayVerbs) => void;
   /**
    * The report moved: push it up the link (#542). A no-op before {@link start},
    * with no relay configured, or while the socket is down — the next connection
    * opens with the whole report either way.
    */
   push: () => void;
+  /**
+   * The box key's private half and the fingerprint an envelope is bound to, or
+   * null before this deployment has a key at all (#549). Read through a thunk
+   * because pairing can happen mid-run: a deployment that paired a moment ago
+   * can be sent a secret without waiting for a restart.
+   */
+  boxKey: () => { boxPrivateKey: Uint8Array; fingerprint: string } | null;
   /** Stop dialling; the deployment is going down. */
   stop: () => void;
 };
@@ -112,7 +166,7 @@ export function prepareRelay(options: PrepareRelayOptions): PreparedRelay {
       ...(relay !== undefined ? { relayUrl: relay.url } : {}),
     }),
 
-    start(deployment) {
+    start(deployment, verbs) {
       if (relay === undefined) return;
       const token = options.env[RELAY_TOKEN_ENV];
       log(`[phoebe] boot: relay ${relay.url} as ${name}.`);
@@ -133,14 +187,20 @@ export function prepareRelay(options: PrepareRelayOptions): PreparedRelay {
           key = minted;
         },
         onStatus: (status) => deployment.noteRelay(status),
+        ...(options.onRequest !== undefined ? { onRequest: options.onRequest } : {}),
+        ...(verbs?.runDoctor !== undefined ? { onDoctorRun: verbs.runDoctor } : {}),
         // Pulled at the moment of every send rather than handed over, so a link
         // that reconnects after five minutes sends what the model holds then.
         report: () => deployment.latest(),
+        ...(verbs?.configSet !== undefined ? { onConfigSet: verbs.configSet } : {}),
         log,
         warn,
         ...(options.open !== undefined ? { open: options.open } : {}),
       });
     },
+
+    boxKey: () =>
+      key === null ? null : { boxPrivateKey: key.boxPrivateKey, fingerprint: key.fingerprint },
 
     push() {
       link?.push();

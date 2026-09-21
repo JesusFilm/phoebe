@@ -12,7 +12,9 @@
 
 import path from "node:path";
 import { existsSync, readFileSync } from "node:fs";
-import type { LocalInstall } from "phoebe-agent/contracts";
+import type { InstallDirectoryFacts, LocalInstall } from "phoebe-agent/contracts";
+import { TENANT_CONFIG_FILE } from "../../../bootstrap/tenants.ts";
+import { fingerprintOf } from "../../../src/config-edit.ts";
 import { editConfigGetField, editConfigGetRelay } from "../../../src/config-handle.ts";
 import {
   findPhoebeService,
@@ -175,6 +177,51 @@ export function allInstallFacts(
   deps: FactsDeps = {},
 ): Promise<LocalInstall[]> {
   return Promise.all(installs.map((install) => installFacts(install, deps)));
+}
+
+/** The seams the directory read reaches the disk through. */
+export type DirectoryDeps = {
+  read?: (file: string) => string;
+  exists?: (file: string) => boolean;
+};
+
+/**
+ * What the folder says with no container to ask (#527 §6, #508 §4).
+ *
+ * This is the whole of a stopped install's page: the config as the file holds
+ * it, whether a `.env` is beside it, and the bootstrapper not running. Read
+ * every time rather than held, like everything else here — an operator who edits
+ * the config in a terminal and clicks refresh is asking exactly this question.
+ *
+ * The `.env` is checked for existence and never opened. Its contents are
+ * secrets, and a fact that travels to a renderer is a fact that can end up in a
+ * dev-tools console.
+ */
+export function directoryFacts(
+  install: LocalInstall,
+  deps: DirectoryDeps = {},
+): InstallDirectoryFacts {
+  const exists = deps.exists ?? existsSync;
+  const read = deps.read ?? ((file: string) => readFileSync(file, "utf8"));
+  const configPath = path.join(install.dir, TENANT_CONFIG_FILE);
+
+  let configText: string | null = null;
+  try {
+    if (exists(configPath)) configText = read(configPath);
+  } catch {
+    // A config that cannot be read reads as one that is not there. The state on
+    // the install already says the folder is not initialised, and a second
+    // rendering of the same fault helps nobody.
+    configText = null;
+  }
+
+  return {
+    configPath,
+    configText,
+    configFingerprint: configText === null ? null : fingerprintOf(configText),
+    envPresent: exists(path.join(install.dir, ".env")),
+    bootstrapperRunning: install.state === "running",
+  };
 }
 
 /**

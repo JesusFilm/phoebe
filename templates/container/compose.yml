@@ -62,11 +62,16 @@ services:
       # pairs — which is why `phoebe doctor` asks for it to be taken back out of
       # `.env` rather than left there.
       PHOEBE_RELAY_TOKEN: "${PHOEBE_RELAY_TOKEN:-}"
-      # Optional runtime toggles.
+      # Optional settings (docs/configuration.md → Settings). Each is forwarded
+      # beside its permanent alias, so an older `.env` keeps working unchanged.
+      PHOEBE_DEFAULT_PROVIDER: "${PHOEBE_DEFAULT_PROVIDER:-}"
       PHOEBE_AGENT: "${PHOEBE_AGENT:-}"
       PHOEBE_MODEL: "${PHOEBE_MODEL:-}"
       PHOEBE_EFFORT: "${PHOEBE_EFFORT:-}"
       PHOEBE_POLL_INTERVAL_MS: "${PHOEBE_POLL_INTERVAL_MS:-}"
+      PHOEBE_DEPLOYMENT_SLOT_CAP: "${PHOEBE_DEPLOYMENT_SLOT_CAP:-}"
+      PHOEBE_MAX_CONCURRENT_AGENTS: "${PHOEBE_MAX_CONCURRENT_AGENTS:-}"
+      PHOEBE_DEPLOYMENT_RECONCILE_INTERVAL_MS: "${PHOEBE_DEPLOYMENT_RECONCILE_INTERVAL_MS:-}"
       PHOEBE_RECONCILE_INTERVAL_MS: "${PHOEBE_RECONCILE_INTERVAL_MS:-}"
     volumes:
       # Two named volumes (#62). All tenant data nests under /data/repos as
@@ -81,6 +86,13 @@ services:
       # added/removed tenant dirs and atomic-save/`git pull` renames, so `boot`'s
       # reconcile watch notices them without a `--force-recreate`.
       - ..:/etc/phoebe:ro
+      # The pen. `phoebe config set` changes one field of the root config in
+      # place — the console's remote edit, and the same verb at a shell. That
+      # needs exactly one writable path, so it gets exactly one: this file, over
+      # the read-only directory mount above, which stays read-only for everything
+      # else including every tenant config in a workspace. A *file* mount, so the
+      # write lands on the same inode the host sees; the writer never renames.
+      - ../phoebe.config.ts:/etc/phoebe/phoebe.config.ts:rw
       # The deployment env-file is Compose's input, not the container's. It sits
       # inside the read-only deployment mount above, where every tenant's engine
       # child (same uid 10001) could read the deployment GH_TOKEN straight off
