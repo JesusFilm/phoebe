@@ -63,3 +63,10 @@ is the button itself, the same one on a deployment's doctor tab and on the fleet
 page. A press is answered within the moment with which run it belongs to, and
 what that run found arrives afterwards as the next report on the stream — so
 nothing here waits five minutes for a button.
+
+One page writes: the secrets tab ([`src/secrets-tab.tsx`](src/secrets-tab.tsx)).
+It seals a value in the browser to the deployment's published box key and sends
+the envelope through the same client seam, so the relay carries something it
+cannot open ([#550](https://github.com/JesusFilm/phoebe/issues/550)). Nothing on
+that page ever shows a value — not a last four, not a hash, not a length — because
+the section it renders carries none.

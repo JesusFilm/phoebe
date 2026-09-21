@@ -17,7 +17,7 @@ import {
   RELAY_MESSAGES,
   RELAY_PROTOCOL,
 } from "../src/contracts/relay-protocol.ts";
-import { verifyNonceSignature } from "../src/ed25519.ts";
+import { verifyHelloSignature } from "../src/ed25519.ts";
 import type { ConfigEdit, EditReceipt } from "../src/contracts/config-edit.ts";
 import type { DeploymentReport } from "../src/contracts/deployment.ts";
 import type { RelayStatus } from "./deployment-state.ts";
@@ -30,8 +30,10 @@ import {
   RECONNECT_FIRST_MS,
   reconnectDelayMs,
   type DoctorRunAnswer,
+  type InboundRequest,
   type RelaySocketHandlers,
   type RelayTimer,
+  type RequestAnswer,
 } from "./relay-link.ts";
 
 const NONCE = Buffer.from("nonce-from-the-relay").toString("base64url");
@@ -81,6 +83,8 @@ type Harness = {
   setReport: (report: DeploymentReport | null) => void;
   /** The model wrote a report: the cue boot gives the link. */
   push: () => void;
+  /** Every request the answerer was handed. */
+  requests: InboundRequest[];
   stop: () => void;
 };
 
@@ -94,6 +98,8 @@ function harness(
     onConfigSet?: (edit: ConfigEdit) => Promise<EditReceipt>;
     /** Omitted on purpose by the test for a link with no doctor behind it. */
     doctorRun?: (by: string) => DoctorRunAnswer;
+    /** Absent means the link is built with no answerer at all. */
+    answer?: (request: InboundRequest) => Promise<RequestAnswer>;
   } = {},
 ): Harness {
   const dials: Dialled[] = [];
@@ -106,6 +112,7 @@ function harness(
   let clock = 1_000_000;
   let report: DeploymentReport | null = overrides.report ?? null;
   const asked: string[] = [];
+  const requests: InboundRequest[] = [];
 
   const drop = (timer: Timer): void => {
     const at = timers.indexOf(timer);
@@ -126,6 +133,14 @@ function harness(
       forgotten.push(true);
     },
     onStatus: (status) => statuses.push(status),
+    ...(overrides.answer === undefined
+      ? {}
+      : {
+          onRequest: (request: InboundRequest) => {
+            requests.push(request);
+            return overrides.answer!(request);
+          },
+        }),
     report: () => report,
     ...(overrides.onConfigSet !== undefined ? { onConfigSet: overrides.onConfigSet } : {}),
     ...(overrides.doctorRun !== undefined
@@ -207,6 +222,7 @@ function harness(
       report = next;
     },
     push: () => link.push(),
+    requests,
     stop: () => link.stop(),
   };
 }
@@ -294,7 +310,13 @@ describe("a deployment that has already paired", () => {
     relay.challenge();
     const hello = relay.hello();
     expect(hello["publicKey"]).toBe(key.publicKey);
-    expect(verifyNonceSignature(key.publicKey, NONCE, hello["signature"] as string)).toBe(true);
+    expect(
+      verifyHelloSignature(
+        key.publicKey,
+        { nonce: NONCE, boxKey: key.boxKey },
+        hello["signature"] as string,
+      ),
+    ).toBe(true);
   });
 
   test("saves nothing — the key is already where it belongs", () => {
@@ -816,6 +838,107 @@ describe("answering a doctor run", () => {
     relay.deliver({ type: RELAY_MESSAGES.doctorRun, id: "req-1" });
 
     expect(relay.asked).toEqual([]);
+    expect(relay.receipts()).toEqual([]);
+  });
+});
+
+describe("answering a request", () => {
+  /** A paired link, connected, with an answerer behind it. */
+  const connected = (answer?: (request: InboundRequest) => Promise<RequestAnswer>): Harness => {
+    const relay = harness({
+      key: generateDeploymentKey(),
+      ...(answer !== undefined ? { answer } : {}),
+    });
+    relay.challenge();
+    return relay;
+  };
+
+  const secretSet = (id: string) => ({
+    type: RELAY_MESSAGES.secretSet,
+    id,
+    tenant: "acme/widget",
+    key: "ANTHROPIC_API_KEY",
+    action: "set",
+    envelope: '{"v":1}',
+    by: "ada@example.test",
+  });
+
+  test("the request reaches the answerer with its id and its frame", async () => {
+    const relay = connected(async () => ({ outcome: "written" }));
+    relay.deliver(secretSet("edit-1"));
+    await Promise.resolve();
+
+    expect(relay.requests).toHaveLength(1);
+    expect(relay.requests[0]).toMatchObject({ type: RELAY_MESSAGES.secretSet, id: "edit-1" });
+    expect(relay.requests[0]?.frame["key"]).toBe("ANTHROPIC_API_KEY");
+  });
+
+  test("the answer comes back as a receipt under the same id", async () => {
+    const relay = connected(async () => ({
+      outcome: "written",
+      detail: { key: "ANTHROPIC_API_KEY" },
+    }));
+    relay.deliver(secretSet("edit-1"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(relay.receipts()).toEqual([
+      {
+        type: RELAY_MESSAGES.receipt,
+        id: "edit-1",
+        outcome: "written",
+        detail: { key: "ANTHROPIC_API_KEY" },
+      },
+    ]);
+  });
+
+  test("a handler that throws is a refusal, not a console left waiting", async () => {
+    const relay = connected(() => Promise.reject(new Error("the volume is read-only")));
+    relay.deliver(secretSet("edit-1"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(relay.receipts()[0]).toMatchObject({
+      id: "edit-1",
+      outcome: "refused",
+      detail: "the volume is read-only",
+    });
+  });
+
+  test("a build with no answerer refuses by return rather than by silence", async () => {
+    const relay = connected();
+    relay.deliver(secretSet("edit-1"));
+    await Promise.resolve();
+
+    expect(relay.receipts()[0]).toMatchObject({ id: "edit-1", outcome: "refused" });
+  });
+
+  test("a request with no id is dropped — there is nothing to answer under", async () => {
+    const relay = connected(async () => ({ outcome: "written" }));
+    relay.deliver({ type: RELAY_MESSAGES.secretSet, tenant: "acme/widget" });
+    await Promise.resolve();
+
+    expect(relay.requests).toEqual([]);
+    expect(relay.receipts()).toEqual([]);
+  });
+
+  test("a type this build has never heard of is dropped in silence", async () => {
+    // A relay newer than its deployments is allowed to say things they do not
+    // know, and there is no id to refuse under either way.
+    const relay = connected(async () => ({ outcome: "written" }));
+    relay.deliver({ type: "phoebe:relay:something-new", id: "edit-1" });
+    await Promise.resolve();
+
+    expect(relay.requests).toEqual([]);
+    expect(relay.receipts()).toEqual([]);
+  });
+
+  test("a heartbeat is not a request", async () => {
+    const relay = connected(async () => ({ outcome: "written" }));
+    relay.deliver({ type: RELAY_MESSAGES.heartbeat });
+    await Promise.resolve();
+
+    expect(relay.requests).toEqual([]);
     expect(relay.receipts()).toEqual([]);
   });
 });

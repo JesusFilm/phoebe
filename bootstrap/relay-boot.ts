@@ -35,8 +35,10 @@ import type { DeploymentState } from "./deployment-state.ts";
 import {
   connectRelay,
   type DoctorRunAnswer,
+  type InboundRequest,
   type RelayLink,
   type OpenRelaySocket,
+  type RequestAnswer,
 } from "./relay-link.ts";
 import {
   forgetDeploymentKey,
@@ -77,6 +79,15 @@ export type PrepareRelayOptions = {
   env: NodeJS.ProcessEnv;
   log?: (message: string) => void;
   warn?: (message: string) => void;
+  /**
+   * Answer one `id`-bearing request the relay sends down (#550). Handed the
+   * deployment's own box key through {@link PreparedRelay.boxKey}, because the
+   * key is read here and the verbs that need it live elsewhere.
+   *
+   * Absent means this deployment answers nothing, which is what a build with no
+   * verbs wired should say out loud rather than by silence.
+   */
+  onRequest?: (request: InboundRequest) => Promise<RequestAnswer>;
   /** Injected by the tests; production dials a real socket. */
   open?: OpenRelaySocket;
 };
@@ -100,6 +111,13 @@ export type PreparedRelay = {
    * opens with the whole report either way.
    */
   push: () => void;
+  /**
+   * The box key's private half and the fingerprint an envelope is bound to, or
+   * null before this deployment has a key at all (#549). Read through a thunk
+   * because pairing can happen mid-run: a deployment that paired a moment ago
+   * can be sent a secret without waiting for a restart.
+   */
+  boxKey: () => { boxPrivateKey: Uint8Array; fingerprint: string } | null;
   /** Stop dialling; the deployment is going down. */
   stop: () => void;
 };
@@ -162,6 +180,7 @@ export function prepareRelay(options: PrepareRelayOptions): PreparedRelay {
           key = minted;
         },
         onStatus: (status) => deployment.noteRelay(status),
+        ...(options.onRequest !== undefined ? { onRequest: options.onRequest } : {}),
         ...(verbs?.runDoctor !== undefined ? { onDoctorRun: verbs.runDoctor } : {}),
         // Pulled at the moment of every send rather than handed over, so a link
         // that reconnects after five minutes sends what the model holds then.
@@ -172,6 +191,9 @@ export function prepareRelay(options: PrepareRelayOptions): PreparedRelay {
         ...(options.open !== undefined ? { open: options.open } : {}),
       });
     },
+
+    boxKey: () =>
+      key === null ? null : { boxPrivateKey: key.boxPrivateKey, fingerprint: key.fingerprint },
 
     push() {
       link?.push();

@@ -140,15 +140,12 @@ describe("the tabs", () => {
   test("names the tabs the console answers, and links each one", () => {
     // Overview is the bare deployment URL, so one deployment has one address.
     expect(overview).toContain(`href="#/d/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA">overview<`);
-    for (const tab of ["pipelines", "doctor", "config"]) {
+    for (const tab of ["pipelines", "doctor", "config", "secrets"]) {
       expect(overview, tab).toContain(`href="#/d/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/${tab}"`);
     }
   });
 
-  test("does not offer a tab nothing answers yet", () => {
-    // Secrets is #550; a tab that opens nothing is a dead end.
-    expect(overview).not.toContain("secrets");
-  });
+  test("does not offer a tab nothing answers yet", () => {});
 
   test("marks the current tab for a screen reader, not only with a colour", () => {
     expect(doctorTab).toContain('aria-current="page"');

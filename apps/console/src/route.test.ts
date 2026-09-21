@@ -35,10 +35,18 @@ describe("parseRoute", () => {
     }
   });
 
-  test("a tab this console does not have lands on the overview, not on nothing", () => {
-    // `secrets` and `config` are variant C's other two tabs (#550, #545). An
-    // operator following a link from a newer console gets the deployment.
+  test("the secrets tab is a route of its own (#550)", () => {
     expect(parseRoute("#/d/AAAA/secrets")).toMatchObject({
+      page: "deployment",
+      fingerprint: "AAAA",
+      tab: "secrets",
+    });
+  });
+
+  test("a tab this console does not have lands on the overview, not on nothing", () => {
+    // An operator following a link from a newer console gets the deployment
+    // rather than a blank page.
+    expect(parseRoute("#/d/AAAA/history")).toMatchObject({
       page: "deployment",
       fingerprint: "AAAA",
       tab: "overview",

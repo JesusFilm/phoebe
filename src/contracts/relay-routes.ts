@@ -83,6 +83,19 @@ export const RELAY_ROUTES = {
    * verb, so the effort stays read-only from a deployment's point of view.
    */
   testAlert: "/api/alerts/test",
+  /**
+   * POST — set or clear one tenant secret on a deployment (#550). The body
+   * carries the fingerprint, the tenant, the key and — on a set — the envelope
+   * the **browser** sealed to that deployment's box key. The relay forwards it
+   * unopened and cannot do otherwise; what it adds is `by`, from its own
+   * session, so the ledger entry on the deployment names a person rather than
+   * whatever the caller claimed.
+   *
+   * The answer is the deployment's receipt: `written`, `refused`, or the
+   * relay's own `undelivered` when the socket went away with the request in
+   * flight. Nothing is queued.
+   */
+  secrets: "/api/secrets",
 } as const;
 
 /** One of the relay's paths. */
@@ -176,6 +189,20 @@ export type RelayDeploymentRow = {
   fingerprint: string;
   /** What the deployment calls itself. Two rows may share one. */
   name: string;
+  /**
+   * The deployment key's public half — raw Ed25519, base64url. The fingerprint
+   * above is derived from exactly these bytes, so an operator comparing the
+   * fingerprint on this page with the one in the container's log is comparing
+   * against this key and not against the relay's word for it (#514 §8).
+   */
+  publicKey: string;
+  /**
+   * The deployment's **box key**: raw X25519, base64url, what the console seals
+   * a secret to (#549). Null for a link paired before box keys existed — that
+   * deployment's secrets can be read but not set, until it reconnects and its
+   * hello carries one.
+   */
+  boxKey: string | null;
   /** ISO 8601, when the pairing token was spent. */
   firstSeen: string;
   /** ISO 8601 of the last completed handshake, or null for an unseen link. */

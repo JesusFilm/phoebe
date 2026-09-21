@@ -20,10 +20,11 @@
 // be unable to show a running child whose loop has stopped, which is the case
 // the whole `wedged?` verdict exists for.
 //
-// `secrets` is the one tab variant C also has; it is #550 and is not linked
-// here, because a tab that opens nothing is worse than a tab that is not there
-// yet. The config tab is its own file (config-tab.tsx) — it is a table with a
-// filter over it rather than a view of the lines this module derives.
+// **Secrets is the one tab that sends a value.** The others render what the
+// deployment said, and the config tab asks for an edit; the secrets tab seals an
+// envelope in this browser and sends it (secrets-tab.tsx, #550). The config tab
+// is its own file too (config-tab.tsx) — it is a table with a filter over it
+// rather than a view of the lines this module derives.
 
 import type { DeploymentReport, DoctorCheck, TenantFacts } from "phoebe-agent/contracts";
 import type { EditSeam } from "./config-edit-row.tsx";
@@ -53,6 +54,7 @@ import type { RelayClient } from "./relay-client.ts";
 import { editsOf } from "./report.ts";
 import { deploymentHref, DEPLOYMENT_TABS, type DeploymentTab } from "./route.ts";
 import { RunDoctor } from "./run-doctor.tsx";
+import { SecretsTab } from "./secrets-tab.tsx";
 
 export function DeploymentPage({
   facts,
@@ -147,6 +149,7 @@ function Tab({
   }
   if (tab === "pipelines") return <PipelinesTab report={facts.reading.report} now={now} />;
   if (tab === "doctor") return <DoctorTab facts={facts} client={client} now={now} />;
+  if (tab === "secrets") return <SecretsTab facts={facts} client={client} now={now} />;
   return (
     <ConfigTab
       report={facts.reading.report}

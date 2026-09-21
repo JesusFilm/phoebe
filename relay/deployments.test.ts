@@ -142,6 +142,11 @@ describe("pair and connect", () => {
     expect(connected.link.name).toBe("acme/widget");
     expect(connected.link.fingerprint).toBe(onDisk.fingerprint);
     expect(createLinks(dataDir).find(onDisk.publicKey)?.pairedBy).toBe(ADA.email);
+    // Both public halves land on the link in one step, from the one hello that
+    // carried them (#549): the signing key the fingerprint names, and the box
+    // key a console seals a secret to.
+    expect(createLinks(dataDir).find(onDisk.publicKey)?.boxKey).toBe(onDisk.boxKey);
+    expect(relay.deployments.rows()[0]?.boxKey).toBe(onDisk.boxKey);
     expect(state(statuses)).toBe("connected");
   });
 
@@ -219,6 +224,7 @@ describe("pair and connect", () => {
             type: RELAY_MESSAGES.hello,
             protocol: 1,
             publicKey: key.publicKey,
+            boxKey: key.boxKey,
             name: "acme/widget",
             signature: key.sign(stale),
           }),

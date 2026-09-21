@@ -157,3 +157,11 @@ export type {
   ShadowedValue,
   TenantEffectiveConfig,
 } from "./effective-config.ts";
+export type {
+  SecretListing,
+  SecretOutcome,
+  SecretReceiptDetail,
+  SecretSource,
+  SecretsSection,
+  TenantSecrets,
+} from "./secrets.ts";

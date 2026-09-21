@@ -11,6 +11,7 @@ const STARTED = new Date("2026-09-18T12:00:00.000Z");
 function link(overrides: Partial<Link> = {}): Link {
   return {
     publicKey: "pk-widget",
+    boxKey: "box-widget",
     fingerprint: "fp-widget",
     name: "acme/widget",
     firstSeen: "2026-09-01T09:00:00.000Z",
@@ -158,6 +159,8 @@ describe("deploymentRows", () => {
       {
         fingerprint: "fp-widget",
         name: "acme/widget",
+        publicKey: "pk-widget",
+        boxKey: "box-widget",
         firstSeen: "2026-09-01T09:00:00.000Z",
         lastSeen: "2026-09-18T11:59:30.000Z",
         pairedBy: "ada@example.test",

@@ -78,6 +78,7 @@ import {
   type RelayConfigSet,
   type RelayDoctorRun,
   type RelayHello,
+  type RelayMessageType,
   type RelayReceipt,
   type RelayReportMessage,
 } from "../src/contracts/relay-protocol.ts";
@@ -231,6 +232,17 @@ export type RelayLinkDeps = {
    * receipt that never comes.
    */
   onConfigSet?: (edit: ConfigEdit) => Promise<EditReceipt>;
+  /**
+   * Answer one `id`-bearing request from the relay (#550). Absent means this
+   * deployment answers none: every request is then refused by return, which is
+   * the honest answer and keeps the console from waiting on a receipt that was
+   * never coming.
+   *
+   * A throw is a refusal with the thrown message — a handler is not required to
+   * turn its own faults into outcomes, and a request left unanswered would hold
+   * a console open until the socket closed.
+   */
+  onRequest?: (request: InboundRequest) => Promise<RequestAnswer>;
   /** The deployment key's fingerprint, once there is one to report. */
   onPaired?: (key: DeploymentKey) => void;
   /** Operator-facing lines. Defaults to stdout through the caller. */
@@ -248,6 +260,24 @@ export type RelayLinkDeps = {
   protocol?: number;
   random?: () => number;
 };
+
+/**
+ * One inbound request, checked as far as the transport can check it: the type is
+ * one the rail declares and there is an `id` to answer under. Every field past
+ * that belongs to the verb — a secret's tenant, key and envelope are the secret
+ * handler's to validate (bootstrap/secret-delivery.ts), and a link that tried
+ * would be a second place to keep each verb's shape.
+ */
+export type InboundRequest = {
+  type: RelayMessageType;
+  /** The request id. The receipt carries it back, and it is the edit's own id. */
+  id: string;
+  /** The frame as it arrived. */
+  frame: Record<string, unknown>;
+};
+
+/** What a verb answers with. The outcome is its own word (#506 §8). */
+export type RequestAnswer = { outcome: string; detail?: unknown };
 
 export type RelayLink = {
   /**
@@ -462,6 +492,53 @@ export function connectRelay(deps: RelayLinkDeps): RelayLink {
     }
   };
 
+  /**
+   * Answer one inbound request, or refuse it. Every path here ends in exactly
+   * one receipt: a request with no handler, a handler that threw and a handler
+   * that answered all leave the console with a word rather than a wait.
+   *
+   * A frame this build does not recognise is dropped in silence — it has no
+   * `id` to answer under, and a relay newer than this deployment is allowed to
+   * say things it has not heard of.
+   */
+  function answerRequest(
+    type: RelayMessageType | null,
+    frame: unknown,
+    socketNow: RelaySocket | null,
+  ): void {
+    if (type === null || !REQUEST_TYPES.has(type)) return;
+    if (typeof frame !== "object" || frame === null) return;
+    const body = frame as Record<string, unknown>;
+    const id = body["id"];
+    if (typeof id !== "string" || id.length === 0) return;
+
+    const send = (answer: RequestAnswer): void => {
+      const receipt: RelayReceipt = {
+        type: RELAY_MESSAGES.receipt,
+        id,
+        outcome: answer.outcome,
+        ...(answer.detail !== undefined ? { detail: answer.detail } : {}),
+      };
+      try {
+        socketNow?.send(JSON.stringify(receipt));
+      } catch (error) {
+        // The socket died between the answer and the write. The relay settles
+        // its own pending request as `undelivered` when that happens, so the
+        // console is not left waiting — there is nothing to do but say so.
+        warn(`[phoebe] relay: could not send the receipt for ${id} — ${messageOf(error)}`);
+      }
+    };
+
+    const handler = deps.onRequest;
+    if (handler === undefined) {
+      send({ outcome: "refused", detail: `this deployment does not answer ${type}` });
+      return;
+    }
+    handler({ type, id, frame: body }).then(send, (error: unknown) =>
+      send({ outcome: "refused", detail: messageOf(error) }),
+    );
+  }
+
   function dial(): void {
     if (stopped) return;
     let answered = false;
@@ -566,7 +643,14 @@ export function connectRelay(deps: RelayLinkDeps): RelayLink {
           if (ready) runDoctor(current, parseDoctorRun(frame));
           return;
         }
-        if (relayMessageType(frame) !== RELAY_MESSAGES.challenge) return;
+        const type = relayMessageType(frame);
+        if (type !== RELAY_MESSAGES.challenge) {
+          // Anything else on an admitted connection is a request or a
+          // heartbeat. The heartbeat's whole payload is having arrived, which
+          // `heard()` above has already taken.
+          answerRequest(type, frame, current);
+          return;
+        }
         if (answered) return;
         answered = true;
         const challenge = frame as RelayChallenge;
@@ -589,10 +673,23 @@ export function connectRelay(deps: RelayLinkDeps): RelayLink {
           type: RELAY_MESSAGES.hello,
           protocol,
           publicKey: key.publicKey,
+          boxKey: key.boxKey,
           name: deps.name,
           ...(paired ? { signature: key.sign(challenge.nonce) } : { pairingToken: token ?? "" }),
         };
         current?.send(JSON.stringify(hello));
+        // A key file written before box keys existed grew one when it was read
+        // (#549). The hello has now committed to it under a signature, so it has
+        // to be the key on the volume before the next boot mints a different
+        // one and the relay's record goes stale.
+        if (paired && !key.boxKeyOnVolume) {
+          deps.saveKey(key);
+          key = { ...key, boxKeyOnVolume: true };
+          log(
+            "[phoebe] relay: added a box key to state/relay-key — this deployment can now be " +
+              "sent secrets from the console. The signing key, and the link, are unchanged.",
+          );
+        }
         if (!paired) {
           // The token is spent whatever the relay decides; a second attempt
           // with it would be refused and would keep a live credential in memory
@@ -711,6 +808,18 @@ export function parseConfigSet(frame: unknown): RelayConfigSet | null {
     fingerprint: message.fingerprint,
     by: message.by,
   };
+}
+
+/**
+ * The message types the generic handler answers (#506 §8, #550). `config-set`
+ * and `doctor-run` are not here: each has a handler of its own above, because
+ * its receipt is the pen's or the doctor runner's, and both are dispatched
+ * before this set is consulted.
+ */
+const REQUEST_TYPES: ReadonlySet<RelayMessageType> = new Set([RELAY_MESSAGES.secretSet]);
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /** A frame, or null for anything that is not JSON. Never throws at the caller. */

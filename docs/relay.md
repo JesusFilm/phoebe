@@ -229,6 +229,7 @@ them instead of copying strings.
 | `GET`  | `/api/people`                    | Everyone who may sign in.                                   |
 | `POST` | `/api/people`                    | Adds one, by email in the body.                             |
 | `POST` | `/api/people/remove`             | Removes one, by email in the body, and ends their sessions. |
+| `POST` | `/api/secrets`                   | Sets or clears one tenant secret, as a sealed envelope.     |
 | `GET`  | `/` and `/assets/…`              | The console's build. Public, and the only paths that are.   |
 
 A successful sign-in lands on `/`, the console. The pages are public on purpose:
@@ -633,8 +634,8 @@ still on screen.
 
 Selecting a deployment from the rail or the grid opens its tabs. The console
 routes on the hash, so a deployment is a URL an operator can send someone:
-`#/d/<fingerprint>` is the overview, and `/pipelines`, `/doctor` and `/config`
-hang off it.
+`#/d/<fingerprint>` is the overview, and `/pipelines`, `/doctor`, `/config` and
+`/secrets` hang off it.
 
 **Overview** leads with three panels. The **connection** panel is the relay's own
 facts and nothing else — connected since, last heard, who paired it, how the last
@@ -702,7 +703,70 @@ deployment whose engine is older than that section says so; its settings are
 unknown from here, which is not the same as having none, and `phoebe config` on
 the host still answers.
 
-A deployment that has never connected says that instead of showing four empty
+**Secrets** is the one tab that writes. It lists every key each tenant reads —
+whether it is set, which tier the value came from, and who set it last — and
+never a value, a last four, a hash or a length. Setting one from here encrypts
+it in the browser to the deployment's own key; what the relay carries is an
+envelope it cannot open, and what comes back is `written`, `refused` or
+`undelivered`. The next section is the whole of that trip.
+
+A deployment that has never connected says that instead of showing empty tabs —
+the pairing token was spent, nothing has booted since, and there is nothing to
+show until it does.
+
+## Setting a secret without the relay seeing it
+
+An operator with no shell on the host still needs to rotate a provider key. The
+console gives them one, and the relay in the middle never learns the value.
+
+Every deployment publishes two public keys in its `hello`: the Ed25519 key that
+is its identity, and an **X25519 box key** a console encrypts to. Both live in
+the one `state/relay-key` file with one lifecycle, and the handshake signature
+covers `nonce ‖ boxKey`, so the encrypting key is as attested as the signing one.
+Nothing in the path can substitute a key of its own. A deployment whose
+key file predates the box key grows one on its next boot and keeps its link: the
+signing key, and therefore the fingerprint and the link record, do not move.
+
+A set goes:
+
+1. The browser reads the box key off the deployment's row, and seals the value
+   with ECIES built from WebCrypto alone: an ephemeral X25519 key agreed with
+   the box key, HKDF-SHA256, AES-256-GCM. The additional authenticated data is
+   `keyFingerprint ‖ tenant ‖ key ‖ editId`, so the envelope opens for that
+   deployment, that tenant, that key name and that edit, and for nothing else.
+2. `POST /api/secrets` carries `{ fingerprint, tenant, key, action, id, envelope }`.
+   The relay forwards the envelope as the opaque string it is and adds one field:
+   **`by`**, the address of the signed-in session. A caller cannot choose whose
+   name the deployment records.
+3. The deployment opens the envelope with the private half that has never left
+   its volume, checks the key is one that tenant may set against the derived set
+   `phoebe secret set` uses, and writes it to the tenant secret store, with
+   `{ id, key, at, by }` in `state/secret-edits.json`. A successful write
+   triggers a doctor run and a fresh secrets inventory.
+4. The receipt comes back `written` or `refused`, and the console shows it.
+
+**What this promises, and what it does not.** The relay never _holds_ a secret:
+not in storage, not in a log line, not in a receipt, not in a memory dump, and
+not to anyone who reads its volume afterwards. It is not a defence against a
+hostile relay. The relay serves the browser the JavaScript that does the sealing,
+so a relay that wanted the value could serve code that keeps it. What the
+envelope buys is that a relay operator, a backup of its volume and a passive
+compromise of it all come up empty.
+
+**A clear is the same request without an envelope.** It removes the store entry
+and the tenant's `.env` or the ambient value governs again; there is no
+tombstone, because revoking a secret means rotating it.
+
+**Undelivered means run it on the host.** Nothing is queued: if the socket closed
+with the request in flight, the console says so and shows the command that does
+the same thing over a shell, with the value on stdin where it belongs.
+
+```sh
+printf %s "$ANTHROPIC_API_KEY" | docker compose exec -T phoebe \
+  phoebe secret set ANTHROPIC_API_KEY --tenant acme/widget
+```
+
+A deployment that has never connected says that instead of showing five empty
 tabs — the pairing token was spent, nothing has booted since, and there is nothing
 to show until it does.
 
@@ -746,11 +810,10 @@ URIs, which is what makes it work at all. Anywhere else, run the scaffold.
 
 ## Not here yet
 
-One verb: sealed secrets. The rail carries it and the relay will deliver it the
-way it delivers a config edit or a doctor run; nothing sends one yet. On the
-console's side the fleet page, the People page, a deployment's four tabs, the
-config edit and the doctor run are here; the secrets tab joins this same
-process. See
+Nothing on the rail. All three verbs — config edits, doctor runs and sealed
+secrets — are delivered and answered with a receipt, and on the console's side
+the fleet page, the People page and a deployment's five tabs are here. The design
+they came from is
 [the relay's shape](https://github.com/JesusFilm/phoebe/issues/506).
 
 Alerting is here but only partly fed. The webhook, the edge rule, `alerts.json`

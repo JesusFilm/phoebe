@@ -79,6 +79,7 @@ export const RELAY_ROUTES = {
   events: "/api/events",
   people: "/api/people",
   removePerson: "/api/people/remove",
+  secrets: "/api/secrets",
 };
 
 /**

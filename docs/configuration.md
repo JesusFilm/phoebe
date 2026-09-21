@@ -1098,6 +1098,14 @@ children that would hold it. A successful `set` then runs `phoebe doctor`, which
 is what tells you the key is where the child will look for it. `--no-doctor`
 skips that for a scripted rotation.
 
+**The console is the same store, reached from a browser.** A deployment paired
+with a relay can be sent a secret from the console's secrets tab: the value is
+encrypted in the browser to the deployment's own key, the relay forwards the
+envelope without being able to open it, and the deployment decrypts on arrival
+into this same file. The ledger records the sender's address as `by` where a
+local run writes `local`. Presence and provenance are all either side ever
+shows. See [`relay.md`](relay.md#setting-a-secret-without-the-relay-seeing-it).
+
 Two costs, both deliberate. The store does not survive `docker compose down -v`:
 it lives on the data volume, and wiping the volume wipes it. And it holds
 plaintext at rest, in exactly the place a tenant `.env` already sits. See

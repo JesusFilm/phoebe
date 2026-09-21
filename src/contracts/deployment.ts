@@ -28,6 +28,7 @@ import type { CredentialArm } from "./credential-arm.ts";
 import type { DoctorSection } from "./doctor.ts";
 import type { TenantEffectiveConfig } from "./effective-config.ts";
 import type { PipelineSource, PipelineState, WedgedVerdict } from "./pipeline-state.ts";
+import type { SecretsSection } from "./secrets.ts";
 import type { StatusSnapshot } from "./status-snapshot.ts";
 
 /** The report shape this engine writes. Bump on a breaking change, never on an addition. */
@@ -334,6 +335,13 @@ export type DeploymentReport = {
    * deployment has none".
    */
   config?: ConfigReport;
+  /**
+   * Which secrets each tenant has and where they come from (#504, #550) —
+   * presence and provenance, never a value. Absent on a report from a
+   * deployment that predates the section, which a reader treats as "not
+   * known" rather than as "this tenant has no secrets".
+   */
+  secrets?: SecretsSection;
   /** When any section last moved. */
   updatedAt: string;
 };

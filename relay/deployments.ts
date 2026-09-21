@@ -11,8 +11,9 @@
 // A `hello` arrives one of two ways, and the relay treats them very differently:
 //
 //  - **With a signature.** The relay looks the public key up in `links.json`. No
-//    link means no deployment — `unlinked`. A link whose key does not verify the
-//    nonce means someone is replaying someone else's hello — `bad-signature`.
+//    link means no deployment — `unlinked`. A link whose key does not verify
+//    `nonce ‖ boxKey` means someone is replaying someone else's hello, or
+//    substituting the key secrets would be sealed to — `bad-signature`.
 //  - **With a pairing token.** The relay spends the token (single use, fifteen
 //    minutes, in memory) and records the public key as the link. An unknown,
 //    expired or already-spent token is `token-spent`, one word for all three,
@@ -72,7 +73,8 @@ import {
 import type { ConnectionAlertFacts } from "../src/contracts/alerts.ts";
 import { RELAY_EVENTS } from "../src/contracts/relay-events.ts";
 import type { RelayDeploymentRow, RelayStoredReport } from "../src/contracts/relay-routes.ts";
-import { verifyNonceSignature } from "../src/ed25519.ts";
+import { verifyHelloSignature } from "../src/ed25519.ts";
+import { isBoxKey } from "../src/x25519.ts";
 import {
   alertConnections,
   deploymentRows,
@@ -291,7 +293,12 @@ export function serveDeployments(options: DeploymentGateOptions): DeploymentGate
           return { admitted: false, code: RELAY_CLOSE.tokenSpent, reason: "token-spent" };
         }
         const link = options.links.pair(
-          { publicKey: hello.publicKey, name: hello.name, by: spent.by },
+          {
+            publicKey: hello.publicKey,
+            boxKey: hello.boxKey,
+            name: hello.name,
+            by: spent.by,
+          },
           now,
         );
         log(
@@ -306,12 +313,19 @@ export function serveDeployments(options: DeploymentGateOptions): DeploymentGate
       }
       if (
         hello.signature === undefined ||
-        !verifyNonceSignature(hello.publicKey, nonce, hello.signature)
+        !verifyHelloSignature(hello.publicKey, { nonce, boxKey: hello.boxKey }, hello.signature)
       ) {
         return { admitted: false, code: RELAY_CLOSE.badSignature, reason: "bad-signature" };
       }
-      options.links.seen(hello.publicKey, now);
-      return { admitted: true, link: { ...link, lastSeen: now.toISOString() } };
+      // The box key is re-recorded on every handshake, not just at pairing: a
+      // deployment whose key file predates box keys grows one on its next boot,
+      // and the signature just verified is over this key, so taking its word
+      // for it is exactly as safe as admitting the connection at all.
+      options.links.seen(hello.publicKey, hello.boxKey, now);
+      return {
+        admitted: true,
+        link: { ...link, boxKey: hello.boxKey, lastSeen: now.toISOString() },
+      };
     }
   });
 
@@ -588,6 +602,11 @@ export function parseHello(data: string): RelayHello | null {
   if (!Number.isInteger(hello.protocol)) return null;
   if (typeof hello.publicKey !== "string" || hello.publicKey.length === 0) return null;
   if (typeof hello.name !== "string" || hello.name.length === 0) return null;
+  // The box key is checked against its curve here, at the edge, because this is
+  // the last moment anyone can tell the deployment about it: a malformed key
+  // recorded on the link would fail much later, in a browser, sealing a secret
+  // to something that is not a key.
+  if (!isBoxKey(hello.boxKey)) return null;
   const signed = typeof hello.signature === "string" && hello.signature.length > 0;
   const pairing = typeof hello.pairingToken === "string" && hello.pairingToken.length > 0;
   if (signed === pairing) return null;
@@ -595,6 +614,7 @@ export function parseHello(data: string): RelayHello | null {
     type: RELAY_MESSAGES.hello,
     protocol: hello.protocol as number,
     publicKey: hello.publicKey,
+    boxKey: hello.boxKey,
     name: hello.name,
     ...(signed ? { signature: hello.signature } : { pairingToken: hello.pairingToken }),
   };

@@ -155,6 +155,7 @@ describe("alerting", () => {
           type: RELAY_MESSAGES.hello,
           protocol: RELAY_PROTOCOL,
           publicKey: opts.key.publicKey,
+          boxKey: opts.key.boxKey,
           name: "acme-site",
           ...(opts.token !== undefined
             ? { pairingToken: opts.token }

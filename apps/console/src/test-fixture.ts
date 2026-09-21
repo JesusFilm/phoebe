@@ -15,11 +15,14 @@ import type {
   RelayDeploymentRow,
   RelayPerson,
   RelayStoredReport,
+  SecretListing,
+  SecretsSection,
   StatusSnapshot,
   TenantEffectiveConfig,
   TenantFacts,
+  TenantSecrets,
 } from "phoebe-agent/contracts";
-import type { RelayClient } from "./relay-client.ts";
+import type { RelayClient, SecretReceipt, SecretRequest } from "./relay-client.ts";
 
 export const NOW = new Date("2026-09-18T12:00:00.000Z");
 
@@ -28,10 +31,22 @@ export function ago(seconds: number): string {
   return new Date(NOW.getTime() - seconds * 1000).toISOString();
 }
 
+/**
+ * A box key the browser can really import: 32 bytes of base64url, which is all
+ * X25519 asks of a public key. A test that wants to open what the tab sealed
+ * generates its own pair and overrides this.
+ */
+export const BOX_KEY = "cGhvZWJlIGNvbnNvbGUgYm94IGtleSBmaXh0dXJlISE";
+
 export function row(overrides: Partial<RelayDeploymentRow> = {}): RelayDeploymentRow {
   return {
     fingerprint: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
     name: "youtube-studio",
+    publicKey: "cGstZGVwbG95bWVudC1maXh0dXJlLTMyLWJ5dGVzISE",
+    // A real X25519 key, because the secrets tab seals to it for real: the tests
+    // that exercise a set open the envelope again with the matching private
+    // half (secrets-render.test.tsx).
+    boxKey: BOX_KEY,
     firstSeen: ago(86_400),
     lastSeen: ago(12),
     pairedBy: "ada@example.test",
@@ -216,6 +231,24 @@ export function configReport(overrides: Partial<ConfigReport> = {}): ConfigRepor
   };
 }
 
+export function listing(overrides: Partial<SecretListing> = {}): SecretListing {
+  return { key: "ANTHROPIC_API_KEY", present: false, source: "missing", ...overrides };
+}
+
+export function tenantSecrets(overrides: Partial<TenantSecrets> = {}): TenantSecrets {
+  return {
+    tenant: "JesusFilm/youtube-studio",
+    path: "/etc/phoebe",
+    error: null,
+    keys: [listing()],
+    ...overrides,
+  };
+}
+
+export function secrets(overrides: Partial<SecretsSection> = {}): SecretsSection {
+  return { tenants: [tenantSecrets()], updatedAt: ago(30), ...overrides };
+}
+
 export function report(overrides: Partial<DeploymentReport> = {}): DeploymentReport {
   return {
     schema: DEPLOYMENT_SCHEMA,
@@ -283,11 +316,29 @@ export function client(overrides: Partial<RelayClient> = {}): RelayClient {
     deployment: () => Promise.reject(new Error("no such deployment")),
     runDoctor: () => Promise.resolve([]),
     setConfigField: () => Promise.resolve({ outcome: "written" }),
+    setSecret: () => Promise.reject(new Error("nothing stubbed setSecret")),
     events: () => () => {},
     people: () => Promise.resolve([]),
     addPerson: () => Promise.reject(new Error("nothing stubbed addPerson")),
     removePerson: () => Promise.resolve({ sessionsEnded: 0 }),
     mintPairingToken: () => Promise.reject(new Error("nothing stubbed mintPairingToken")),
     ...overrides,
+  };
+}
+
+/** A client whose `setSecret` answers with `outcome`, recording what it was sent. */
+export function recordingClient(receipt: Partial<SecretReceipt> & { outcome: string }): {
+  client: RelayClient;
+  sent: SecretRequest[];
+} {
+  const sent: SecretRequest[] = [];
+  return {
+    sent,
+    client: client({
+      setSecret: (request) => {
+        sent.push(request);
+        return Promise.resolve({ id: request.id, ...receipt });
+      },
+    }),
   };
 }

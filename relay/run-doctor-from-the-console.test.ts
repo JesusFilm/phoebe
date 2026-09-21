@@ -202,6 +202,7 @@ describe("run doctor from the console", () => {
             type: RELAY_MESSAGES.hello,
             protocol: RELAY_PROTOCOL,
             publicKey: key.publicKey,
+            boxKey: key.boxKey,
             name,
             pairingToken: token,
           }),

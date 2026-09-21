@@ -104,6 +104,7 @@ import {
   type SlotBroker,
 } from "./slot-broker.ts";
 import {
+  TENANT_CONFIG_FILE,
   TENANT_ENV_FILE,
   discoverTenants,
   discoverWorkspaceTenants,
@@ -118,8 +119,12 @@ import {
 } from "./tenants.ts";
 import { readConfigDir } from "./config-dir.ts";
 import { prepareRelay } from "./relay-boot.ts";
+import { RELAY_MESSAGES } from "../src/contracts/relay-protocol.ts";
+import { deliverSecret } from "./secret-delivery.ts";
 import { resolveDataBase } from "../src/paths.ts";
 import { tenantSecrets, tenantStateDir, type SecretValues } from "../src/secret-store.ts";
+import type { InventoryTenant } from "../src/secret-inventory.ts";
+import { createSecretInventory, type SecretInventoryRunner } from "./secret-inventory-runner.ts";
 import type { DeploymentArm, SlotReport } from "../src/contracts/deployment.ts";
 import { readGitIdentity, soloIdentityEnv, type GitIdentity } from "./git-identity.ts";
 import {
@@ -846,6 +851,56 @@ export function trackFleetPipelines(
 }
 
 /**
+ * The pipeline hook, plus the secrets inventory when the tenant set has moved
+ * (#550). One wrapper for both arms, so neither can grow a tenant a console
+ * would never hear about.
+ */
+export function withSecretInventory(
+  track: NonNullable<SuperviseFleetDeps["onPipelines"]>,
+  secrets: SecretInventoryRunner,
+  heldTenants: () => readonly HeldTenant[],
+): NonNullable<SuperviseFleetDeps["onPipelines"]> {
+  return (matrix) => {
+    track(matrix);
+    secrets.refreshIfTenantsMoved(inventoryTenants(matrix.pipelines, heldTenants()));
+  };
+}
+
+/**
+ * Which tenants an inventory covers: every tenant with a pipeline, plus every
+ * tenant discovery is holding. A hold is in the list rather than left out of it
+ * because "this tenant's keys are unknown, and here is why" is the answer an
+ * operator needs — an absent row reads as a tenant that has no secrets.
+ */
+export function inventoryTenants(
+  pipelines: readonly SupervisedPipeline[],
+  held: readonly HeldTenant[],
+): InventoryTenant[] {
+  const tenants = new Map<string, InventoryTenant>();
+  for (const pipeline of pipelines) {
+    const { tenant } = pipeline;
+    tenants.set(tenant.configPath, {
+      configPath: tenant.configPath,
+      path: tenant.dir,
+      slug: tenant.slug,
+    });
+  }
+  for (const hold of held) {
+    // Keyed on the hold's own id — the normalized config dir, the same key the
+    // matrix uses — so a tenant that is both held and still running pipelines
+    // appears once, as held. Its `configPath` is the conventional one and is
+    // never read: a held tenant reports the hold instead of its keys.
+    tenants.set(hold.id, {
+      configPath: join(hold.dir, TENANT_CONFIG_FILE),
+      path: hold.dir,
+      slug: hold.slug,
+      heldReason: hold.reason,
+    });
+  }
+  return [...tenants.values()];
+}
+
+/**
  * Wrap a warning so it is printed for the first fault only. For a fault that
  * recurs on a timer — a data volume that will not take the deployment report —
  * the second line says nothing the first did not.
@@ -926,6 +981,10 @@ function runFleet(opts: {
   deployment: DeploymentState;
   /** The deployment's doctor runs (#534), triggered from the same two moments. */
   doctor: DoctorRunner;
+  /** The secrets inventory (#550), retaken when the tenant set moves. */
+  secrets: SecretInventoryRunner;
+  /** The tenants discovery is holding, for the inventory's own list. */
+  heldTenants: () => readonly HeldTenant[];
   /** The config-edit pen (#536): pointed at each new checkout, nudged on a write. */
   editor: ConfigEditor;
   hostKnobs: DeploymentHostKnobs;
@@ -1059,7 +1118,11 @@ function runFleet(opts: {
         `[phoebe] boot: pipeline reconcile — +${added.length} added, -${removed.length} removed, ` +
           `~${changed.length} relaunched (no container restart).`,
       ),
-    onPipelines: trackFleetPipelines(broker, deployment, process.env, opts.hostKnobs),
+    onPipelines: withSecretInventory(
+      trackFleetPipelines(broker, deployment, process.env, opts.hostKnobs),
+      opts.secrets,
+      opts.heldTenants,
+    ),
     onChildExit: ({ pipeline, exit }) => reportPipelineExit(pipeline, exit),
     onLaunchError: (error) => {
       console.error(`[phoebe] boot: fleet (re)launch failed — ${describe(error)}. Retrying.`);
@@ -1746,6 +1809,34 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     env: process.env,
     log: (message) => console.log(message),
     warn: (message) => console.warn(message),
+    // What the relay may ask this deployment to do (#550). `relay` is referenced
+    // from inside its own initializer on purpose: the handler needs the box key
+    // `prepareRelay` just read off the volume, and nothing calls it until a
+    // socket is up — which is long after this assignment.
+    onRequest: async (request) => {
+      if (request.type !== RELAY_MESSAGES.secretSet) {
+        return { outcome: "refused", detail: `this deployment does not answer ${request.type}` };
+      }
+      return await deliverSecret(request, {
+        configPath,
+        dataBase,
+        processEnv: process.env,
+        key: () => relay.boxKey(),
+        log: (message) => console.log(message),
+        // A set is the moment an operator wants "did it work" answered (#507
+        // §6), and two things answer it: doctor, whose `declared-env` check
+        // reads the same env the child will hold, and the inventory, whose
+        // provenance is what the page they set it from is watching.
+        onWritten: ({ tenant, by }) => {
+          void secrets.refreshLast();
+          void doctor.request("request", by);
+          console.log(
+            `[phoebe] boot: a console secret landed for ${tenant} — running doctor and ` +
+              `retaking the secrets inventory.`,
+          );
+        },
+      });
+    },
   });
   // The config-edit pen (#536, decision #503). Built with the root config's path
   // and nothing else: a workspace's tenant configs sit under the same `:ro`
@@ -1782,6 +1873,11 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
         `Supervision is unaffected; the report is retried on every change.`,
     ),
   });
+  // The secrets inventory (#550): which keys each tenant has and where from,
+  // retaken when the tenant set moves and when an edit lands, never on a poll —
+  // taking it loads every tenant's work kinds.
+  const secrets = createSecretInventory({ state: deployment, dataBase, processEnv: process.env });
+
   // The deployment's doctor runs (#507 §4-§7, #534). One cell for the leases
   // because only the workspace arm can hold any: solo's App-arm child mints its
   // own token in-loop, so the supervisor has nothing to hand over there, and
@@ -1826,6 +1922,12 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     },
   });
 
+  // Dialled last, after everything an inbound request reaches: the secrets
+  // handler the link was built with runs against `secrets` and `doctor`, and a
+  // socket that opened before those existed would be a socket that could ask for
+  // one of them (#550).
+  relay.start(deployment);
+
   if (workspace !== null) {
     // GitHub App mode (#209): if the supervisor holds App credentials, fetch
     // the bot identity once at fleet startup and wire up a per-tenant mint fn.
@@ -1851,6 +1953,10 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       }
     }
 
+    // The tenants discovery is holding right now. Kept out here because two
+    // readers want it: the report's own section, and the secrets inventory,
+    // where a held tenant is a tenant whose keys just became unknown.
+    let held: readonly HeldTenant[] = [];
     let fleetExit: EngineExit;
     try {
       fleetExit = await runFleet({
@@ -1865,11 +1971,14 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
         doctor,
         editor,
         hostKnobs,
+        secrets,
+        heldTenants: () => held,
         // The root `workspace` block is re-read every poll from here on: this
         // callback owns both the hot tenant list and the shape-change abort (#139).
-        discover: workspaceDiscover(configDir, configPath, workspace, appMint, (held) =>
-          deployment.noteHolds(held),
-        ),
+        discover: workspaceDiscover(configDir, configPath, workspace, appMint, (holding) => {
+          held = holding;
+          deployment.noteHolds(holding);
+        }),
       });
     } catch (error) {
       if (error instanceof WorkspaceStructuralChangeError) {
@@ -2053,7 +2162,13 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       onChildExit: ({ pipeline, exit }) => reportPipelineExit(pipeline, exit),
       // Solo contends on the same broker, so its pipelines size and order it too:
       // one tenant, but its own pipelines' `concurrency` and `priority`.
-      onPipelines: trackFleetPipelines(broker, deployment, process.env, hostKnobs),
+      // Solo has no tenant axis, so the inventory is taken once, when the one
+      // tenant's pipelines first appear.
+      onPipelines: withSecretInventory(
+        trackFleetPipelines(broker, deployment, process.env, hostKnobs),
+        secrets,
+        () => [],
+      ),
       // Solo backs off on the engine constant, not the fleet's per-pipeline one: the
       // relaunch line quotes it, so the two must not drift.
       crashBackoffMs: CRASH_BACKOFF_MS,
