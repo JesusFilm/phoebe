@@ -176,6 +176,44 @@ describe("createEmitUnitEvent", () => {
     expect(written!.lastTimeoutAt).toBe("2026-07-31T12:00:00.000Z");
   });
 
+  test("the folded snapshot is handed to the supervisor, once it is on disk", () => {
+    const reported: StatusSnapshot[] = [];
+    let written: StatusSnapshot | null = null;
+    const emit = createEmitUnitEvent({
+      tenant: "acme/widget",
+      pipeline: "work",
+      statusPath: "/tmp/state/work/status.json",
+      now: () => "2026-07-31T12:00:00.000Z",
+      log: () => {},
+      read: () => written,
+      write: (_path, snapshot) => {
+        written = snapshot;
+      },
+      onSnapshot: (snapshot) => reported.push(snapshot),
+    });
+
+    emit({ unit: { kind: "issues", id: "42" }, event: "started" });
+    expect(reported).toEqual([written]);
+  });
+
+  test("a write that failed is not reported as a snapshot the supervisor can trust", () => {
+    const reported: StatusSnapshot[] = [];
+    const emit = createEmitUnitEvent({
+      tenant: "acme/widget",
+      pipeline: "work",
+      statusPath: "/tmp/state/work/status.json",
+      log: () => {},
+      read: () => null,
+      write: () => {
+        throw new Error("disk full");
+      },
+      onSnapshot: (snapshot) => reported.push(snapshot),
+    });
+
+    emit({ unit: { kind: "issues", id: "1" }, event: "started" });
+    expect(reported).toEqual([]);
+  });
+
   test("a snapshot write failure is swallowed, not thrown", () => {
     const lines: string[] = [];
     const emit = createEmitUnitEvent({

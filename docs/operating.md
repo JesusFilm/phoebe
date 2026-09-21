@@ -421,6 +421,24 @@ reported, never acted on, and it does not affect `--check`. A held tenant is one
 whose config could not be read, so there is no pipeline set to ask for — `list` shows
 the snapshots that are on disk and marks each one `(from disk)`.
 
+**The deployment report.** The bootstrapper keeps one file on the data volume,
+`<data>/state/deployment.json`, that says what the whole deployment is doing right
+now: who it is, which engine commit it is running, what its crash-loop record and
+its reconcile state are, how each supervised child is faring, where the slot cap
+stands, and one entry per (tenant × pipeline) cell with that pipeline's raw
+`status.json` and its derived state. It carries a `schema` integer, it is
+replaced atomically, and it is rewritten only when something in it moves — a fixed
+set of current facts, never a log. Nothing on disk grows with uptime.
+
+Two things in it are worth knowing before you read the file. The `wedged` verdict
+is wider than `phoebe list`'s: as well as a unit past its budget, it fires when a
+pipeline has completed no loop pass in three poll intervals while not waiting for a
+slot — which is how an engine whose process is alive but whose loop has stopped
+becomes visible, since an idle engine writes no snapshot. And each child's
+`lastPassAt` is **not** an age to display: it advances every pass and the file is
+not rewritten for it, so between writes it is deliberately stale. The published
+form of that clock is the `noPassForMs` inside a wedged verdict.
+
 **Stopping one pipeline.** There is no per-pipeline stop verb yet. Setting
 `disabled: true` on that pipeline in the tenant's `phoebe.config.ts` is hot at the
 pipeline scope — the supervisor picks up the edit without relaunching anything, and

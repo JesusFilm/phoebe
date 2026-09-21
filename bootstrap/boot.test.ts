@@ -9,7 +9,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
 import {
+  brokerSlots,
   checkMinBootstrap,
+  deploymentName,
+  engineRefOf,
   isMovingBranch,
   LOCAL_ENGINE_DIR,
   reportPipelineExit,
@@ -19,12 +22,15 @@ import {
   setupGitCredentials,
   pipelineArgv,
   tenantFingerprint,
+  warnOnce,
+  trackFleetPipelines,
   trackPipelines,
   workspacePipelineFingerprint,
 } from "./boot.ts";
 import { pipelineLabel, type SupervisedPipeline } from "./pipelines.ts";
 import type { DiscoveredTenant } from "./tenants.ts";
 import { createSlotBroker } from "./slot-broker.ts";
+import type { DeploymentState } from "./deployment-state.ts";
 
 describe("resolveEngineEntry", () => {
   test("a local source execs the engine CLI under the mounted dir", () => {
@@ -380,6 +386,105 @@ describe("pipelineArgv", () => {
   });
 });
 
+describe("the deployment report's wiring", () => {
+  const pipeline: SupervisedPipeline = {
+    id: "/etc/phoebe/repos/acme/widget#work",
+    tenant: {
+      id: "/etc/phoebe/repos/acme/widget",
+      slug: "acme/widget",
+      dir: "/etc/phoebe/repos/acme/widget",
+      configPath: "/etc/phoebe/repos/acme/widget/phoebe.config.ts",
+      envPath: "/etc/phoebe/repos/acme/widget/.env",
+      gitIdentity: null,
+    },
+    pipeline: {
+      name: "work",
+      disabled: false,
+      priority: 0,
+      concurrency: 1,
+      needsClone: true,
+      env: [],
+      fingerprint: "abc123",
+    },
+    enumerated: true,
+    siblingEnv: [],
+  };
+
+  test("a deployment is named after its solo tenant, or its workspace root", () => {
+    expect(deploymentName({ arm: "solo", configDir: "/etc/phoebe", soloSlug: "acme/widget" })).toBe(
+      "acme/widget",
+    );
+    // No usable `repoSlug`: the directory name is better than nothing.
+    expect(deploymentName({ arm: "solo", configDir: "/etc/phoebe", soloSlug: null })).toBe(
+      "phoebe",
+    );
+    expect(deploymentName({ arm: "workspace", configDir: "/etc/phoebe/", soloSlug: null })).toBe(
+      "phoebe",
+    );
+  });
+
+  test("the slots section is the broker's own numbers", async () => {
+    const broker = createSlotBroker({ capacity: 2, floorBudget: 1 });
+    await broker.acquire("/etc/phoebe/repos/acme/widget#work");
+    expect(brokerSlots(broker)).toEqual({
+      capacity: 2,
+      inUse: 1,
+      waiting: 0,
+      overGranted: 0,
+      floorBudget: 1,
+    });
+  });
+
+  test("a report the volume will not take is warned about once, not once a poll", () => {
+    const original = console.warn;
+    const lines: string[] = [];
+    console.warn = (...args: unknown[]) => lines.push(args.map(String).join(" "));
+    try {
+      const warn = warnOnce((error) => `could not write — ${String(error)}`);
+      warn(new Error("read-only volume"));
+      warn(new Error("read-only volume"));
+      warn(new Error("read-only volume"));
+      expect(lines).toEqual(["could not write — Error: read-only volume"]);
+    } finally {
+      console.warn = original;
+    }
+  });
+
+  test("the engine ref is what the config names, with a mount reading as local", () => {
+    expect(engineRefOf({ source: { source: "github", repo: "o/r", ref: "main" } } as never)).toBe(
+      "main",
+    );
+    expect(engineRefOf({ source: { source: "local" } } as never)).toBe("local");
+  });
+
+  test("the pipeline hook feeds the broker and the report from one poll", () => {
+    const broker = createSlotBroker({ capacity: 1 });
+    const seen: number[] = [];
+    // The cap line is operator-facing output; this test is not about it.
+    const original = console.log;
+    console.log = () => {};
+    const log = { restore: () => (console.log = original) };
+    try {
+      const track = trackFleetPipelines(
+        broker,
+        {
+          notePipelines: (pipelines: readonly SupervisedPipeline[]) => seen.push(pipelines.length),
+        } as unknown as DeploymentState,
+        {},
+      );
+      track({ pipelines: [pipeline], reshaped: true });
+      expect(broker.capacity).toBe(1);
+      expect(seen).toEqual([1]);
+      // Every poll re-derives the report, reshaped or not: nothing else fires
+      // when a pipeline goes quiet, which is what the wedged flag is about.
+      track({ pipelines: [pipeline], reshaped: false });
+      expect(seen).toEqual([1, 1]);
+    } finally {
+      log.restore();
+    }
+  });
+});
+
 describe("trackPipelines", () => {
   const pipeline = (
     slug: string,
@@ -727,6 +832,7 @@ describe("crash reporting hooks (#474)", () => {
       fallbackFor: () => null,
       record: (run: unknown) => recorded.push(run),
       noteAlive: () => {},
+      state: () => ({ lastGoodSha: null, failingSha: null, failureCount: 0 }),
       shouldRetry: () => false,
     };
     const onRunEnd = recordRunEnd(guard, reporter);
