@@ -88,6 +88,24 @@ name), `overlay` (a `PHOEBE_*` variable), `derived`, or `inherited` from a shall
 path. One of exactly six; values that lost ride along as **shadowed**.
 _Avoid_: origin, provenance, toggle
 
+**Config edit**:
+One field patch to a config file — `{ path, value }` against a fingerprint — applied in
+place by the splice substrate, at a shell or through the relay. Never a whole file, and
+never more than one leaf.
+_Avoid_: change, update, patch (that is the wire shape, not the act)
+
+**Edit receipt**:
+The deployment's answer to a config edit: `written`, or `refused` with the reason and the
+exact manual edit. It ends there — what the reconcile it set going did is the deployment
+report's news.
+_Avoid_: ack, response
+
+**Edit ledger**:
+The on-volume record of the edits this deployment applied and who asked for them,
+`state/config-edits.json`. It answers a redelivered edit with its original receipt, and
+rolls off whole once the file moves by a hand other than the writer's.
+_Avoid_: audit log, history
+
 **Arm**:
 One of a mutually exclusive pair of shapes a deployment takes, resolved rather than
 configured. The deployment arms are **solo** (one tenant) and **workspace** (a fleet); the

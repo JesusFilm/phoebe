@@ -24,6 +24,7 @@ import {
   editConfigMoveField,
   editConfigRemoveField,
   editConfigSetField,
+  editConfigSetFieldAt,
   isConfigRefusal,
   workKindInstruction,
 } from "./config-handle.ts";
@@ -795,5 +796,92 @@ describe("editConfigListKeys", () => {
   test("refuses a block that is not an object literal", () => {
     const result = editConfigListKeys(MINIMAL(`\n  promptFiles: loadPrompts(),`), ["promptFiles"]);
     expect(result.ok).toBe(false);
+  });
+});
+
+// ------------------------------------------------------------------ setFieldAt
+
+describe("editConfigSetFieldAt", () => {
+  test("overwrites a nested literal and leaves every other byte alone", () => {
+    const content = MINIMAL(
+      `\n  // keep me\n  pipelines: {\n    work: {\n      pollIntervalMs: 60000,\n    },\n  },`,
+    );
+    const result = editConfigSetFieldAt(content, ["pipelines", "work", "pollIntervalMs"], 30000);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.content).toContain("pollIntervalMs: 30000");
+    expect(result.content).toContain("// keep me");
+    expect(result.content).toBe(content.replace("60000", "30000"));
+  });
+
+  test("overwrites a top-level literal", () => {
+    const result = editConfigSetFieldAt(MINIMAL(), ["checkCommand"], "pnpm run check");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.content).toContain(`checkCommand: "pnpm run check"`);
+  });
+
+  test("creates the blocks the path names but the config does not have", () => {
+    const result = editConfigSetFieldAt(MINIMAL(), ["kinds", "issues", "base"], "develop");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.content).toContain("kinds: {");
+    expect(result.content).toContain("issues: {");
+    expect(result.content).toContain(`base: "develop"`);
+    expect(result.content).toContain(`repoSlug: "acme/test"`);
+  });
+
+  test("writes booleans, numbers and null as literals", () => {
+    for (const [value, written] of [
+      [true, "true"],
+      [7, "7"],
+      [null, "null"],
+    ] as const) {
+      const result = editConfigSetFieldAt(MINIMAL(), ["reporting", "maintainers"], value);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.content).toContain(`maintainers: ${written}`);
+    }
+  });
+
+  test("refuses a computed value rather than overwriting it", () => {
+    const content = MINIMAL(`\n  readyCommand: process.env.READY ?? "npm run ready",`);
+    const result = editConfigSetFieldAt(content, ["readyCommand"], "pnpm run ready");
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toContain("not a plain literal");
+    expect(result.reason).toContain("process.env");
+  });
+
+  test("refuses a shorthand property", () => {
+    const shorthand = `const repoSlug = "x/y";\nconst config = { repoSlug };\nexport default config;\n`;
+    const result = editConfigSetFieldAt(shorthand, ["repoSlug"], "new/repo");
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toContain("shorthand");
+  });
+
+  test("refuses when an intermediate is not a plain object literal", () => {
+    const content = MINIMAL(`\n  pipelines: buildPipelines(),`);
+    const result = editConfigSetFieldAt(content, ["pipelines", "work", "concurrency"], 2);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toContain("not a plain object literal");
+  });
+
+  test("refuses an empty path", () => {
+    const result = editConfigSetFieldAt(MINIMAL(), [], 1);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toContain("needs a path");
+  });
+
+  test("replaces the whole annotated node, assertion included", () => {
+    const content = MINIMAL(`\n  effort: "high" as const,`);
+    const result = editConfigSetFieldAt(content, ["effort"], "medium");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.content).toContain(`effort: "medium",`);
+    expect(result.content).not.toContain("as const");
   });
 });
