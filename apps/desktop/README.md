@@ -157,6 +157,20 @@ change them ([#557](https://github.com/JesusFilm/phoebe/issues/557)) and pairing
   root `.env`, and an `up -d` so Compose recreates the container holding both
   ([#558](https://github.com/JesusFilm/phoebe/issues/558)). The token goes into
   the file and into no line.
+- [`wsl.ts`](src/wsl.ts) — a local install inside a WSL distro. Windows shows the
+  distro's files at `\\wsl.localhost\<distro>\…`, the folder picker hands that
+  path back, and every file this package reads or writes goes through it
+  unchanged. Docker does not: Compose run from Windows would resolve the
+  deployment's bind mounts to UNC paths Docker Desktop cannot mount, and the
+  containers are the distro's own. So for such an install every `docker` the
+  companion would spawn — the `ps` behind the rail, the `status --json` exec,
+  the events stream, `up`/`stop`, the stdin-fed `secret set`, pairing's nudge —
+  runs as `wsl.exe -d <distro> --cd <dir> --exec docker …` with each path argument
+  translated to the distro's. The rail and the install tab say which distro. This
+  machine's own Docker check is not consulted for it; a distro with no Docker
+  fails the read or the run with its own words. `docker events` under `wsl.exe`
+  has one rough edge: killing the relay closes the pipe and the Linux side exits
+  on the next write rather than at once.
 
 **The relay arm**
 ([#554](https://github.com/JesusFilm/phoebe/issues/554)) is sign-in, the JSON reads

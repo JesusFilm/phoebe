@@ -61,6 +61,14 @@ export type LocalInstall = {
    * say, because a line under every entry is a line nobody reads.
    */
   detail?: string;
+  /**
+   * Set when the folder is inside a WSL distro — `\\wsl.localhost\<distro>\…`
+   * as Windows shows it. `dir` is the path the distro knows it by, and Docker
+   * for this install is the distro's own, reached through `wsl.exe`
+   * (apps/desktop/src/wsl.ts) rather than this machine's PATH. Absent for a
+   * folder on the machine's own filesystem, which is every install elsewhere.
+   */
+  wsl?: { distro: string; dir: string };
 };
 
 /**

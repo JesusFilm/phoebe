@@ -47,6 +47,7 @@ import { runStop } from "../../../src/stop.ts";
 import { runUpgrade } from "../../../src/upgrade.ts";
 import { pairInstall, type PairArm } from "./pair.ts";
 import {
+  defaultStdinSpawner,
   secretSetOutcome,
   secretTargetOf,
   secretWriterFor,
@@ -54,6 +55,7 @@ import {
   setSecretInHostEnv,
 } from "./secret-write.ts";
 import type { Dispatch, Killable } from "./verb-runs.ts";
+import { wslLocationOf, wslRunner, wslStdinSpawner } from "./wsl.ts";
 
 /** The config file that sits at the root of an install. */
 const CONFIG_FILE = "phoebe.config.ts";
@@ -94,7 +96,18 @@ export function createDispatchVerb(deps: DispatchDeps): Dispatch {
   return async (request, { io, register }) => {
     const install = request.install;
     const configPath = path.join(install, CONFIG_FILE);
-    const runner = streamingRunner(io, register);
+    // An install inside a WSL distro drives the distro's Docker, so every child
+    // a verb spawns runs in there (wsl.ts). The file-writing verbs — init,
+    // config set, upgrade, migrate, doctor — reach the folder as Windows shows it
+    // and need nothing.
+    const wsl = wslLocationOf(install);
+    const runner =
+      wsl === null
+        ? streamingRunner(io, register)
+        : wslRunner(wsl, streamingRunner(io, register));
+    // This machine's PATH says nothing about the distro's; its Compose answers
+    // for itself, and a distro with no Docker fails the run with its own words.
+    const dockerInDistro = wsl === null ? {} : { dockerAvailable: true };
 
     switch (request.verb) {
       case "init": {
@@ -121,7 +134,7 @@ export function createDispatchVerb(deps: DispatchDeps): Dispatch {
       case "start": {
         const outcome = await runStart({
           build: request.build ?? false,
-          deps: { cwd: install, runner, io },
+          deps: { cwd: install, runner, io, ...dockerInDistro },
         });
         return { verb: "start", outcome };
       }
@@ -129,7 +142,7 @@ export function createDispatchVerb(deps: DispatchDeps): Dispatch {
       case "stop": {
         const outcome = await runStop({
           now: request.now ?? false,
-          deps: { cwd: install, runner, io },
+          deps: { cwd: install, runner, io, ...dockerInDistro },
         });
         return { verb: "stop", outcome };
       }
@@ -205,6 +218,7 @@ export function createDispatchVerb(deps: DispatchDeps): Dispatch {
             value: request.value,
             ...(request.tenant !== undefined ? { tenant: request.tenant } : {}),
             io,
+            ...(wsl === null ? {} : { spawner: wslStdinSpawner(wsl, defaultStdinSpawner) }),
           });
           target = secretTargetOf(writer, null);
         } else {

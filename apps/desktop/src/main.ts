@@ -74,18 +74,26 @@ import {
 } from "./companion-file.ts";
 import { CONSOLE_SCHEME, consoleFileFor } from "./console-scheme.ts";
 import { consoleSource } from "./console-source.ts";
-import { readContainerReport, watchContainerEvents } from "./container-read.ts";
+import {
+  defaultEventSpawner,
+  readContainerReport,
+  watchContainerEvents,
+} from "./container-read.ts";
 import { probeDocker } from "./docker.ts";
 import { allInstallFacts, directoryFacts, installFacts } from "./install-facts.ts";
 import { createLocalReads } from "./local-read.ts";
 import type { PairArm } from "./pair.ts";
-import { resolveDeploymentCompose } from "../../../src/deployment-compose.ts";
+import {
+  defaultCommandRunner,
+  resolveDeploymentCompose,
+} from "../../../src/deployment-compose.ts";
 import { companionName, createRelaySession, type RelaySession } from "./relay-session.ts";
 import { chooseFeed } from "./update-feed.ts";
 import { createCompanionUpdates } from "./updates.ts";
 import { createTokenVault } from "./vault.ts";
 import { createDispatchVerb } from "./verb-dispatch.ts";
 import { createVerbRuns } from "./verb-runs.ts";
+import { wslEventSpawner, wslLocationOf, wslRunner } from "./wsl.ts";
 
 // Before `ready`, which is the only time Chromium will take it. `standard` is
 // what gives the bundle a real origin — without it there is no `localStorage`,
@@ -256,15 +264,26 @@ async function factsFor(dir: string): Promise<LocalInstall | null> {
 const reads = createLocalReads({
   facts: factsFor,
   directory: (install) => directoryFacts(install),
+  // An install inside a WSL distro is read and watched from inside the distro:
+  // its containers are the distro's Docker's, not this machine's (wsl.ts).
   read: async (install) => {
     const deployment = resolveDeploymentCompose(install.dir);
     if ("kind" in deployment) return { ok: false, reason: "no container/compose.yml yet" };
-    return readContainerReport({ deployment });
+    const wsl = wslLocationOf(install.dir);
+    return readContainerReport({
+      deployment,
+      ...(wsl === null ? {} : { runner: wslRunner(wsl, defaultCommandRunner) }),
+    });
   },
   watch: (install, onChange) => {
     const deployment = resolveDeploymentCompose(install.dir);
     if ("kind" in deployment) return () => undefined;
-    return watchContainerEvents({ deployment, onChange });
+    const wsl = wslLocationOf(install.dir);
+    return watchContainerEvents({
+      deployment,
+      onChange,
+      ...(wsl === null ? {} : { deps: { spawn: wslEventSpawner(wsl, defaultEventSpawner) } }),
+    });
   },
   emit: (event) => {
     broadcast(BRIDGE_CHANNELS.installsReport, event);

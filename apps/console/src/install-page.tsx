@@ -179,6 +179,13 @@ export function InstallPage({
     <main className="main install-tab">
       <h1>{install.name}</h1>
       <p className="muted mono">{install.dir}</p>
+      {install.wsl === undefined ? null : (
+        <p className="muted">
+          Inside the WSL distro <code>{install.wsl.distro}</code>, at{" "}
+          <span className="mono">{install.wsl.dir}</span>. Docker for this install runs in the
+          distro.
+        </p>
+      )}
 
       <nav className="tabs" aria-label="This install">
         <button
@@ -334,7 +341,15 @@ export function InstallTab({
     <>
       <section>
         <h2>Docker</h2>
-        <DockerCheck environment={environment} />
+        {install.wsl === undefined ? (
+          <DockerCheck environment={environment} />
+        ) : (
+          <p className="muted">
+            Asked inside the <code>{install.wsl.distro}</code> distro through <code>wsl.exe</code>,
+            not on this machine&apos;s own PATH. A distro with no Docker says so on the rail and
+            when a verb runs.
+          </p>
+        )}
       </section>
 
       <section>

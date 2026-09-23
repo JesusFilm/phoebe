@@ -23,6 +23,7 @@ import { TENANT_CONFIG_FILE } from "../../../bootstrap/tenants.ts";
 import { fingerprintOf } from "../../../src/config-edit.ts";
 import { editConfigGetField, editConfigGetRelay } from "../../../src/config-handle.ts";
 import {
+  defaultCommandRunner,
   findPhoebeService,
   isContainerRunning,
   parseComposePsJson,
@@ -32,6 +33,7 @@ import {
 } from "../../../src/deployment-compose.ts";
 import { readDockerfilePin, type DockerfilePin } from "../../../src/upgrade.ts";
 import type { StoredInstall } from "./companion-file.ts";
+import { wslLocationOf, wslRunner } from "./wsl.ts";
 
 /** The config file at the root of an install. */
 const CONFIG_FILE = "phoebe.config.ts";
@@ -65,11 +67,17 @@ export async function installFacts(
   deps: FactsDeps = {},
 ): Promise<LocalInstall> {
   const exists = deps.exists ?? existsSync;
+  // A folder inside a WSL distro reads like any other; only Docker differs, and
+  // for that every command below runs inside the distro (wsl.ts).
+  const wsl = wslLocationOf(stored.dir);
   const base = {
     dir: stored.dir,
-    name: path.basename(stored.dir),
+    // A WSL folder is named by its Linux path's last segment: the same word on
+    // every platform, where `basename` would need Windows's separator to see it.
+    name: wsl === null ? path.basename(stored.dir) : (wsl.dir.split("/").pop() || wsl.distro),
     addedAt: stored.addedAt,
     containerVersion: null,
+    ...(wsl === null ? {} : { wsl }),
     ...configFacts(stored.dir, exists, deps.read ?? ((file) => readFileSync(file, "utf8"))),
   };
 
@@ -91,7 +99,9 @@ export async function installFacts(
 
   const versioned = { ...base, containerVersion: containerVersion(deployment.containerDir, deps) };
 
-  if (deps.dockerPresent === false) {
+  // This machine's PATH says nothing about a distro's. A WSL install asks its
+  // own Compose, and a distro with no Docker answers for itself below.
+  if (deps.dockerPresent === false && wsl === null) {
     return {
       ...versioned,
       state: "stopped",
@@ -99,11 +109,13 @@ export async function installFacts(
     };
   }
 
+  const runner = wsl === null ? deps.runner : wslRunner(wsl, deps.runner ?? defaultCommandRunner);
+
   try {
     const result = await runCompose({
       deployment,
       args: ["ps", "-a", "--format", "json"],
-      ...(deps.runner !== undefined ? { runner: deps.runner } : {}),
+      ...(runner !== undefined ? { runner } : {}),
     });
     if (result.code !== 0) {
       return { ...versioned, state: "stopped", detail: firstLine(result.stderr || result.stdout) };

@@ -223,7 +223,8 @@ function concernsPhoebe(line: string): boolean {
   return service === undefined || service === PHOEBE_SERVICE;
 }
 
-const defaultEventSpawner: EventSpawner = (spec) =>
+/** The real spawner. Exported so a WSL install can wrap it (wsl.ts). */
+export const defaultEventSpawner: EventSpawner = (spec) =>
   spawn(spec.file, spec.args as string[], {
     cwd: spec.cwd,
     stdio: ["ignore", "pipe", "ignore"],

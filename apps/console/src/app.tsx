@@ -565,7 +565,8 @@ function CompanionHome({
         {installs.length === 0 ? (
           <p className="muted">
             No local install yet. A local install is a repository folder on this machine that the
-            companion drives through Docker Compose.
+            companion drives through Docker Compose. A folder inside a WSL distro counts: pick it
+            under Linux in the folder picker, and its Docker is asked inside the distro.
           </p>
         ) : (
           <p className="muted">
