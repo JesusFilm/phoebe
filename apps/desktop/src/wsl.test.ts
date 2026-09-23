@@ -4,6 +4,7 @@ import type { EventSpawner } from "./container-read.ts";
 import type { StdinSpawner } from "./secret-write.ts";
 import {
   linuxPathIn,
+  listWslDistros,
   withoutWslNoise,
   wslCommand,
   wslEventSpawner,
@@ -124,6 +125,45 @@ describe("what wsl.exe itself says", () => {
   test("its UTF-16 messages lose their NULs; the command's own output is untouched", () => {
     expect(withoutWslNoise("T\u0000h\u0000e\u0000r\u0000e\u0000")).toBe("There");
     expect(withoutWslNoise('{"Name":"phoebe"}\n')).toBe('{"Name":"phoebe"}\n');
+  });
+});
+
+describe("which distros this machine has", () => {
+  /** `wsl.exe -l -q` as it really prints: UTF-16, so a NUL after every character. */
+  function wslList(code: number, ...names: string[]): CommandRunner {
+    const text = names.map((name) => `${name}\r\n`).join("");
+    const noisy = text.split("").map((char) => `${char}\u0000`).join("");
+    return () => Promise.resolve({ code, stdout: noisy, stderr: "" });
+  }
+
+  test("the names wsl.exe lists, readable, in its order", async () => {
+    const distros = await listWslDistros({
+      platform: "win32",
+      runner: wslList(0, "archlinux", "docker-desktop"),
+    });
+
+    expect(distros).toEqual(["archlinux", "docker-desktop"]);
+  });
+
+  test("off Windows there are none, and wsl.exe is not even asked", async () => {
+    let asked = false;
+    const distros = await listWslDistros({
+      platform: "linux",
+      runner: () => {
+        asked = true;
+        return Promise.resolve({ code: 0, stdout: "archlinux\n", stderr: "" });
+      },
+    });
+
+    expect(distros).toEqual([]);
+    expect(asked).toBe(false);
+  });
+
+  test("a wsl.exe that fails or is missing means no distro to offer", async () => {
+    expect(await listWslDistros({ platform: "win32", runner: wslList(1) })).toEqual([]);
+    expect(
+      await listWslDistros({ platform: "win32", runner: () => Promise.reject(new Error("ENOENT")) }),
+    ).toEqual([]);
   });
 });
 

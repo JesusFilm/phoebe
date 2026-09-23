@@ -18,7 +18,7 @@
 // `--exec` rather than `--`: the command runs without the distro's shell, so an
 // argument arrives as it was given and nothing is quoted twice.
 
-import type { CommandRunner } from "../../../src/deployment-compose.ts";
+import { defaultCommandRunner, type CommandRunner } from "../../../src/deployment-compose.ts";
 import type { EventSpawner } from "./container-read.ts";
 import type { StdinSpawner } from "./secret-write.ts";
 
@@ -91,6 +91,32 @@ export function wslCommand(
  */
 export function withoutWslNoise(text: string): string {
   return text.replaceAll("\u0000", "");
+}
+
+/** Where Windows serves every distro's files. The picker opens here (#527 §12). */
+export const WSL_PICKER_ROOT = "\\\\wsl.localhost\\";
+
+/**
+ * The distros on this machine, as `wsl.exe -l -q` names them, in its order.
+ * Empty off Windows, on a Windows with no WSL, and when `wsl.exe` fails to
+ * answer — every one of those is a machine with no distro to offer.
+ */
+export async function listWslDistros(
+  deps: { runner?: CommandRunner; platform?: string } = {},
+): Promise<string[]> {
+  if ((deps.platform ?? process.platform) !== "win32") return [];
+  const runner = deps.runner ?? defaultCommandRunner;
+  let result;
+  try {
+    result = await runner({ file: "wsl.exe", args: ["-l", "-q"] });
+  } catch {
+    return [];
+  }
+  if (result.code !== 0) return [];
+  return withoutWslNoise(result.stdout)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
 }
 
 /** A runner whose every command runs inside the distro. */

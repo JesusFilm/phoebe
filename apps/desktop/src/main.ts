@@ -93,7 +93,13 @@ import { createCompanionUpdates } from "./updates.ts";
 import { createTokenVault } from "./vault.ts";
 import { createDispatchVerb } from "./verb-dispatch.ts";
 import { createVerbRuns } from "./verb-runs.ts";
-import { wslEventSpawner, wslLocationOf, wslRunner } from "./wsl.ts";
+import {
+  listWslDistros,
+  WSL_PICKER_ROOT,
+  wslEventSpawner,
+  wslLocationOf,
+  wslRunner,
+} from "./wsl.ts";
 
 // Before `ready`, which is the only time Chromium will take it. `standard` is
 // what gives the bundle a real origin — without it there is no `localStorage`,
@@ -461,6 +467,7 @@ app.whenReady().then(
         companionVersion: __COMPANION_VERSION__,
         platform: process.platform,
         docker: await probeDocker(),
+        wslDistros: await listWslDistros(),
       })),
     );
 
@@ -494,12 +501,15 @@ app.whenReady().then(
 
     ipcMain.handle(BRIDGE_CHANNELS.installsList, () => answering(listInstalls));
 
-    ipcMain.handle(BRIDGE_CHANNELS.installsPick, () =>
+    ipcMain.handle(BRIDGE_CHANNELS.installsPick, (_event, inside?: "wsl") =>
       answering<string | null>(async () => {
+        // Opened inside the distros when asked: the Windows picker will not take
+        // a typed path, and its own way to WSL is a node at the foot of its tree.
         const picked = await dialog.showOpenDialog({
-          title: "Add a local install",
+          title: inside === "wsl" ? "Add a local install from WSL" : "Add a local install",
           message: "Pick the repository folder Phoebe runs from.",
           properties: ["openDirectory", "createDirectory"],
+          ...(inside === "wsl" ? { defaultPath: WSL_PICKER_ROOT } : {}),
         });
         return picked.canceled ? null : (picked.filePaths[0] ?? null);
       }),

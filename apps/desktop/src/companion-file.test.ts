@@ -94,6 +94,12 @@ describe("the install list", () => {
     expect(contents.installs).toEqual([{ dir: "/repos/youtube-studio", addedAt: AT }]);
   });
 
+  test("a relative path is refused rather than resolved against the companion's cwd", () => {
+    expect(() => addInstall(emptyCompanionFile(), "repos/youtube-studio", AT)).toThrow(
+      "not a full path",
+    );
+  });
+
   test("adding the same folder twice leaves one entry with its first date", () => {
     // The operator asking twice means they want it there, which it is.
     const once = addInstall(emptyCompanionFile(), "/repos/one", AT);

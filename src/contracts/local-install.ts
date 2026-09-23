@@ -92,6 +92,12 @@ export type CompanionEnvironment = {
     /** Did the daemon answer? False when Docker is installed but not running. */
     daemonRunning: boolean;
   };
+  /**
+   * The WSL distros on this machine, as `wsl.exe -l -q` lists them. Empty off
+   * Windows and on a Windows with no WSL. Non-empty is what makes the home page
+   * offer a picker opened inside the distros (`installs.pick("wsl")`).
+   */
+  wslDistros: string[];
 };
 
 /**

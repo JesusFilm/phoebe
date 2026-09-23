@@ -158,9 +158,12 @@ change them ([#557](https://github.com/JesusFilm/phoebe/issues/557)) and pairing
   ([#558](https://github.com/JesusFilm/phoebe/issues/558)). The token goes into
   the file and into no line.
 - [`wsl.ts`](src/wsl.ts) — a local install inside a WSL distro. Windows shows the
-  distro's files at `\\wsl.localhost\<distro>\…`, the folder picker hands that
-  path back, and every file this package reads or writes goes through it
-  unchanged. Docker does not: Compose run from Windows would resolve the
+  distro's files at `\\wsl.localhost\<distro>\…`, and every file this package
+  reads or writes goes through that path unchanged. "Add a WSL folder" on the home
+  page opens the picker at that root, because the Windows picker ignores a typed
+  path and keeps distros under a "Linux" node at the foot of its tree; the button
+  appears when `wsl.exe -l -q` lists a distro, which the environment probe
+  reports as `wslDistros`. Docker does not: Compose run from Windows would resolve the
   deployment's bind mounts to UNC paths Docker Desktop cannot mount, and the
   containers are the distro's own. So for such an install every `docker` the
   companion would spawn — the `ps` behind the rail, the `status --json` exec,

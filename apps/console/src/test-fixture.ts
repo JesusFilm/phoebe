@@ -384,6 +384,7 @@ export function environment(overrides: Partial<CompanionEnvironment> = {}): Comp
     companionVersion: "0.13.0",
     platform: "linux",
     docker: { present: true, composeVersion: "v2.29.7", daemonRunning: true },
+    wslDistros: [],
     ...overrides,
   };
 }

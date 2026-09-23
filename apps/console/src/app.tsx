@@ -345,16 +345,39 @@ function Console({
     };
   }, [bridge]);
 
-  const addInstall = useCallback(() => {
+  // `inside: "wsl"` opens the picker among the distros. The Windows picker cannot
+  // be typed into and keeps WSL under a "Linux" node at the foot of its tree, so
+  // a folder inside a distro is reached by starting the picker there.
+  const addInstall = useCallback(
+    (inside?: "wsl") => {
+      if (bridge === null) return;
+      void bridge.installs.pick(inside).then(async (dir) => {
+        if (dir === null) return;
+        setInstalls(await bridge.installs.add(dir));
+        // Straight to its page. A folder that already carries a config is adopted
+        // as it stands and needs nothing; one that does not lands on the install
+        // tab, which is where init is (#526).
+        setOpenInstall(dir);
+      });
+    },
+    [bridge],
+  );
+
+  // Whether this machine has WSL distros to pick inside. Asked once: a distro
+  // installed while the window is open is a relaunch away.
+  const [wslDistros, setWslDistros] = useState<string[]>([]);
+  useEffect(() => {
     if (bridge === null) return;
-    void bridge.installs.pick().then(async (dir) => {
-      if (dir === null) return;
-      setInstalls(await bridge.installs.add(dir));
-      // Straight to its page. A folder that already carries a config is adopted
-      // as it stands and needs nothing; one that does not lands on the install
-      // tab, which is where init is (#526).
-      setOpenInstall(dir);
-    });
+    let live = true;
+    bridge.environment().then(
+      (probed) => {
+        if (live) setWslDistros(probed.wslDistros);
+      },
+      () => undefined,
+    );
+    return () => {
+      live = false;
+    };
   }, [bridge]);
 
   const forgetInstall = useCallback(
@@ -518,7 +541,8 @@ function Console({
         ) : identity === null ? (
           <CompanionHome
             installs={installs}
-            onAdd={bridge === null ? undefined : addInstall}
+            onAdd={bridge === null ? undefined : () => addInstall()}
+            onAddWsl={bridge === null || wslDistros.length === 0 ? undefined : () => addInstall("wsl")}
             {...(refusal !== undefined ? { refusal } : {})}
           />
         ) : route.page === "people" ? (
@@ -551,10 +575,13 @@ function Console({
 function CompanionHome({
   installs,
   onAdd,
+  onAddWsl,
   refusal,
 }: {
   installs: LocalInstall[];
   onAdd: (() => void) | undefined;
+  /** The picker opened among the WSL distros. Only on a machine that has some. */
+  onAddWsl: (() => void) | undefined;
   refusal?: string;
 }) {
   return (
@@ -565,8 +592,10 @@ function CompanionHome({
         {installs.length === 0 ? (
           <p className="muted">
             No local install yet. A local install is a repository folder on this machine that the
-            companion drives through Docker Compose. A folder inside a WSL distro counts: pick it
-            under Linux in the folder picker, and its Docker is asked inside the distro.
+            companion drives through Docker Compose.
+            {onAddWsl === undefined
+              ? null
+              : " A folder inside a WSL distro counts, and its Docker is asked inside the distro."}
           </p>
         ) : (
           <p className="muted">
@@ -575,10 +604,15 @@ function CompanionHome({
           </p>
         )}
         {onAdd === undefined ? null : (
-          <p>
+          <p className="actions">
             <button type="button" onClick={onAdd}>
               Add a folder
             </button>
+            {onAddWsl === undefined ? null : (
+              <button type="button" onClick={onAddWsl}>
+                Add a WSL folder
+              </button>
+            )}
           </p>
         )}
       </section>

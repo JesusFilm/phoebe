@@ -82,6 +82,11 @@ export function writeCompanionFile(file: string, contents: CompanionFile): void 
  * means they want it there, which it is.
  */
 export function addInstall(contents: CompanionFile, dir: string, addedAt: string): CompanionFile {
+  // A typed path has to be a whole one. Resolving a relative one against the
+  // companion's own working directory would record a folder nobody named.
+  if (!path.isAbsolute(dir)) {
+    throw new Error(`${dir} is not a full path. Type the folder's path from its root.`);
+  }
   const absolute = path.resolve(dir);
   if (contents.installs.some((install) => install.dir === absolute)) return contents;
   return { ...contents, installs: [...contents.installs, { dir: absolute, addedAt }] };
