@@ -2,7 +2,7 @@
 // fleet page, never a throw and never a blank screen.
 
 import { describe, expect, test } from "vite-plus/test";
-import { deploymentHref, parseRoute, PEOPLE_HREF } from "./route.ts";
+import { ADD_HREF, deploymentHref, parseRoute, PEOPLE_HREF } from "./route.ts";
 
 describe("parseRoute", () => {
   test("an empty hash, a bare hash and the fleet hash are all the fleet", () => {
@@ -15,6 +15,11 @@ describe("parseRoute", () => {
     expect(parseRoute(PEOPLE_HREF)).toEqual({ page: "people" });
     // A longer path is not a page this console has, so it is the fleet.
     expect(parseRoute("#/people/ada")).toEqual({ page: "fleet" });
+  });
+
+  test("the add page has an address of its own, so the rail's + add can go there", () => {
+    expect(parseRoute(ADD_HREF)).toEqual({ page: "add" });
+    expect(parseRoute("#/add/folder")).toEqual({ page: "fleet" });
   });
 
   test("a deployment with no tab is its overview", () => {
