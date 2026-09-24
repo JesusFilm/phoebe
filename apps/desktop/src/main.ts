@@ -79,6 +79,7 @@ import {
   readContainerReport,
   watchContainerEvents,
 } from "./container-read.ts";
+import { deploymentDirOf } from "./deployment-dir.ts";
 import { probeDocker } from "./docker.ts";
 import { allInstallFacts, directoryFacts, installFacts } from "./install-facts.ts";
 import { createLocalReads } from "./local-read.ts";
@@ -273,7 +274,7 @@ const reads = createLocalReads({
   // An install inside a WSL distro is read and watched from inside the distro:
   // its containers are the distro's Docker's, not this machine's (wsl.ts).
   read: async (install) => {
-    const deployment = resolveDeploymentCompose(install.dir);
+    const deployment = resolveDeploymentCompose(deploymentDirOf(install.dir).dir);
     if ("kind" in deployment) return { ok: false, reason: "no container/compose.yml yet" };
     const wsl = wslLocationOf(install.dir);
     return readContainerReport({
@@ -282,7 +283,7 @@ const reads = createLocalReads({
     });
   },
   watch: (install, onChange) => {
-    const deployment = resolveDeploymentCompose(install.dir);
+    const deployment = resolveDeploymentCompose(deploymentDirOf(install.dir).dir);
     if ("kind" in deployment) return () => undefined;
     const wsl = wslLocationOf(install.dir);
     return watchContainerEvents({

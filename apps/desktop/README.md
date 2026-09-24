@@ -157,6 +157,13 @@ change them ([#557](https://github.com/JesusFilm/phoebe/issues/557)) and pairing
   root `.env`, and an `up -d` so Compose recreates the container holding both
   ([#558](https://github.com/JesusFilm/phoebe/issues/558)). The token goes into
   the file and into no line.
+- [`deployment-dir.ts`](src/deployment-dir.ts) — where an install's deployment
+  files are. A repository can be a workspace child at its root and a standalone
+  deployment in `.phoebe/` beside it (`configDir`, docs/configuration.md; this
+  repo is one). The install is the folder the operator picked; its compose file,
+  `.env`, Dockerfile pin and the config the container mounts are read from
+  whichever of the root and `.phoebe/` carries `container/compose.yml`, root
+  first. Every verb but `init` works on that root. The install page says which.
 - [`wsl.ts`](src/wsl.ts) — a local install inside a WSL distro. Windows shows the
   distro's files at `\\wsl.localhost\<distro>\…`, and every file this package
   reads or writes goes through that path unchanged. "Add a WSL folder" on the home

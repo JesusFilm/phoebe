@@ -69,6 +69,13 @@ export type LocalInstall = {
    * folder on the machine's own filesystem, which is every install elsewhere.
    */
   wsl?: { distro: string; dir: string };
+  /**
+   * The subfolder the deployment lives in when it is not the folder's root —
+   * `.phoebe`, for a repository that is a workspace child at its root and a
+   * standalone deployment one level down (apps/desktop/src/deployment-dir.ts).
+   * Absent when the compose file, the config and the `.env` sit at the root.
+   */
+  deploymentDir?: string;
 };
 
 /**

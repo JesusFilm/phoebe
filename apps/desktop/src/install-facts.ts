@@ -33,6 +33,7 @@ import {
 } from "../../../src/deployment-compose.ts";
 import { readDockerfilePin, type DockerfilePin } from "../../../src/upgrade.ts";
 import type { StoredInstall } from "./companion-file.ts";
+import { deploymentDirOf } from "./deployment-dir.ts";
 import { wslLocationOf, wslRunner } from "./wsl.ts";
 
 /** The config file at the root of an install. */
@@ -70,6 +71,9 @@ export async function installFacts(
   // A folder inside a WSL distro reads like any other; only Docker differs, and
   // for that every command below runs inside the distro (wsl.ts).
   const wsl = wslLocationOf(stored.dir);
+  // The deployment's files may sit one folder down in `.phoebe/`
+  // (deployment-dir.ts); every fact about the deployment is read from there.
+  const root = deploymentDirOf(stored.dir, exists);
   const base = {
     dir: stored.dir,
     // A WSL folder is named by its Linux path's last segment: the same word on
@@ -78,14 +82,15 @@ export async function installFacts(
     addedAt: stored.addedAt,
     containerVersion: null,
     ...(wsl === null ? {} : { wsl }),
-    ...configFacts(stored.dir, exists, deps.read ?? ((file) => readFileSync(file, "utf8"))),
+    ...(root.nested === null ? {} : { deploymentDir: root.nested }),
+    ...configFacts(root.dir, exists, deps.read ?? ((file) => readFileSync(file, "utf8"))),
   };
 
   if (!exists(stored.dir)) {
     return { ...base, state: "not-initialised", detail: "this folder is not on disk any more" };
   }
 
-  const deployment = resolveDeploymentCompose(stored.dir, exists);
+  const deployment = resolveDeploymentCompose(root.dir, exists);
   if ("kind" in deployment) {
     return {
       ...base,
@@ -243,7 +248,8 @@ export function directoryFacts(
 ): InstallDirectoryFacts {
   const exists = deps.exists ?? existsSync;
   const read = deps.read ?? ((file: string) => readFileSync(file, "utf8"));
-  const configPath = path.join(install.dir, TENANT_CONFIG_FILE);
+  const root = deploymentDirOf(install.dir, exists).dir;
+  const configPath = path.join(root, TENANT_CONFIG_FILE);
 
   let configText: string | null = null;
   try {
@@ -259,7 +265,7 @@ export function directoryFacts(
     configPath,
     configText,
     configFingerprint: configText === null ? null : fingerprintOf(configText),
-    envPresent: exists(path.join(install.dir, ".env")),
+    envPresent: exists(path.join(root, ".env")),
     bootstrapperRunning: install.state === "running",
   };
 }

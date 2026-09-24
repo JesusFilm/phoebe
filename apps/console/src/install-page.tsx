@@ -179,6 +179,13 @@ export function InstallPage({
     <main className="main install-tab">
       <h1>{install.name}</h1>
       <p className="muted mono">{install.dir}</p>
+      {install.deploymentDir === undefined ? null : (
+        <p className="muted">
+          The deployment lives in <span className="mono">{install.deploymentDir}/</span> under this
+          folder: its config, its <span className="mono">.env</span> and its container. The
+          folder&apos;s own config is the entry a workspace above it reads.
+        </p>
+      )}
       {install.wsl === undefined ? null : (
         <p className="muted">
           Inside the WSL distro <code>{install.wsl.distro}</code>, at{" "}

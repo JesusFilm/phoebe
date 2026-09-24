@@ -364,6 +364,77 @@ describe("which phoebe-agent the container is on", () => {
   });
 });
 
+describe("a repo that is a workspace child at its root and a deployment in .phoebe/", () => {
+  const NESTED = folder(
+    "phoebe.config.ts",
+    path.join(".phoebe", "phoebe.config.ts"),
+    path.join(".phoebe", ".env"),
+    path.join(".phoebe", "container", "compose.yml"),
+  );
+  // Two configs: the tenant entry at the root, and the deployment's own below.
+  const configs = (file: string): string =>
+    file === path.join(DIR, ".phoebe", "phoebe.config.ts")
+      ? 'const config = {\n  repoSlug: "acme/solo",\n  relay: { url: "wss://relay.acme/deployments" },\n};\nexport default config;\n'
+      : 'const config = {\n  repoSlug: "acme/child",\n};\nexport default config;\n';
+
+  test("is driven from .phoebe/, and says so", async () => {
+    const seen: { args: readonly string[]; cwd?: string | undefined }[] = [];
+    const runner: CommandRunner = (spec) => {
+      seen.push(spec);
+      return Promise.resolve({
+        code: 0,
+        stdout: JSON.stringify([{ Service: "phoebe", State: "running" }]),
+        stderr: "",
+      });
+    };
+
+    const facts = await installFacts(STORED, {
+      exists: NESTED,
+      read: configs,
+      readFile: dockerfile("0.13.0"),
+      runner,
+    });
+
+    expect(facts.state).toBe("running");
+    expect(facts.deploymentDir).toBe(".phoebe");
+    expect(facts.containerVersion).toBe("0.13.0");
+    expect(seen[0]?.cwd).toBe(path.join(path.resolve(DIR), ".phoebe", "container"));
+  });
+
+  test("its name and relay are the deployment's, not the tenant entry's", async () => {
+    const facts = await installFacts(STORED, { exists: NESTED, read: configs, dockerPresent: false });
+
+    expect(facts.deploymentName).toBe("acme/solo");
+    expect(facts.relayUrl).toBe("wss://relay.acme/deployments");
+  });
+
+  test("the directory facts read the deployment's config and .env", () => {
+    const facts = directoryFacts(
+      {
+        dir: DIR,
+        name: "youtube-studio",
+        deploymentName: "acme/solo",
+        relayUrl: null,
+        addedAt: STORED.addedAt,
+        state: "stopped",
+        containerVersion: null,
+        deploymentDir: ".phoebe",
+      },
+      { exists: NESTED, read: configs },
+    );
+
+    expect(facts.configPath).toBe(path.join(DIR, ".phoebe", "phoebe.config.ts"));
+    expect(facts.configText).toContain("acme/solo");
+    expect(facts.envPresent).toBe(true);
+  });
+
+  test("a stock layout carries no deploymentDir, because there is nothing to say", async () => {
+    const facts = await installFacts(STORED, { exists: INITIALISED, dockerPresent: false });
+
+    expect(facts.deploymentDir).toBeUndefined();
+  });
+});
+
 describe("an install inside a WSL distro", () => {
   const B = "\\";
   const WSL_DIR = `${B}${B}wsl.localhost${B}archlinux${B}home${B}mike${B}development`;

@@ -39,6 +39,7 @@ import {
 } from "../../../src/deployment-compose.ts";
 import { setDotenvValue } from "../../../src/dotenv-edit.ts";
 import { BridgeRefusal } from "./channels.ts";
+import { deploymentDirOf } from "./deployment-dir.ts";
 import { installConfigFacts } from "./install-facts.ts";
 
 /** The config file at the root of an install. */
@@ -82,7 +83,10 @@ export async function pairInstall(
   const exists = deps.exists ?? existsSync;
   const io = deps.io;
 
-  const deployment = resolveDeploymentCompose(install, exists);
+  // The deployment's files may sit in `.phoebe/` under the folder; the config
+  // the relay address goes into and the `.env` the token goes into are there.
+  const root = deploymentDirOf(install, exists).dir;
+  const deployment = resolveDeploymentCompose(root, exists);
   if ("kind" in deployment) {
     throw new BridgeRefusal({
       code: "not-initialised",
@@ -91,7 +95,7 @@ export async function pairInstall(
     });
   }
 
-  const configPath = path.join(install, CONFIG_FILE);
+  const configPath = path.join(root, CONFIG_FILE);
   const configBefore = readOrRefuse(read, configPath);
   const relayUrl = deploymentsUrlFor(arm.url);
   const existing = editConfigGetRelay(configBefore);
@@ -131,7 +135,7 @@ export async function pairInstall(
   );
 
   // 3. The token. Its value goes into the file and into no line above or below.
-  const envPath = path.join(install, ENV_FILE);
+  const envPath = path.join(root, ENV_FILE);
   const envBefore = exists(envPath) ? readOrRefuse(read, envPath) : "";
   write(envPath, setDotenvValue(envBefore, RELAY_TOKEN_ENV, minted.token));
   io.stdout(`  ${ENV_FILE}: ${RELAY_TOKEN_ENV} written`);
