@@ -429,6 +429,12 @@ export function bridge(answers: BridgeAnswers = {}): DesktopBridge {
       lines: () => () => undefined,
       exits: () => () => undefined,
     },
+    logs: {
+      follow: () => Promise.resolve(answers.logs ?? []),
+      stop: () => Promise.resolve(),
+      lines: () => () => undefined,
+      ended: () => () => undefined,
+    },
     updates: {
       state: () => Promise.resolve(answers.update ?? { kind: "checking" }),
       download: () => {
@@ -468,6 +474,8 @@ export function bridge(answers: BridgeAnswers = {}): DesktopBridge {
 /** What a test wants the bridge above to answer with. */
 export type BridgeAnswers = {
   relay?: RelayArmState;
+  /** What `logs.follow` hands a pane that opens: the lines held so far. */
+  logs?: string[];
   environment?: CompanionEnvironment;
   installs?: LocalInstall[];
   picked?: string | null;

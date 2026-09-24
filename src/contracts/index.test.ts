@@ -12,6 +12,8 @@ import {
   COMPANION_AUTH_URL as typedAuthUrl,
   DESKTOP_BRIDGE_GLOBAL as typedGlobal,
   DEVICE_CODE_TTL_MS as typedCodeTtl,
+  LOG_TAIL_LINES as typedLogTail,
+  MAX_LOG_LINES as typedMaxLogLines,
   MAX_RUN_LINES as typedMaxLines,
   RELAY_CLOSE as typedClose,
   RELAY_DARK_AFTER_MS as typedDark,
@@ -32,6 +34,8 @@ import {
   COMPANION_AUTH_URL as shippedAuthUrl,
   DESKTOP_BRIDGE_GLOBAL as shippedGlobal,
   DEVICE_CODE_TTL_MS as shippedCodeTtl,
+  LOG_TAIL_LINES as shippedLogTail,
+  MAX_LOG_LINES as shippedMaxLogLines,
   MAX_RUN_LINES as shippedMaxLines,
   RELAY_CLOSE as shippedClose,
   RELAY_DARK_AFTER_MS as shippedDark,
@@ -138,6 +142,8 @@ describe("the verb run's constants", () => {
   test.each([
     ["MAX_RUN_LINES", typedMaxLines, shippedMaxLines],
     ["CANCELLABLE_VERBS", typedCancellable, shippedCancellable],
+    ["MAX_LOG_LINES", typedMaxLogLines, shippedMaxLogLines],
+    ["LOG_TAIL_LINES", typedLogTail, shippedLogTail],
   ])("%s is the same on both sides", (_name, typedValue, shippedValue) => {
     expect(shippedValue).toEqual(typedValue);
   });

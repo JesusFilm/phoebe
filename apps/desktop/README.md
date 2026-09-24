@@ -152,6 +152,13 @@ change them ([#557](https://github.com/JesusFilm/phoebe/issues/557)) and pairing
   `report` event out — the relay's own, so the tabs do not branch on arm.
 - [`container-read.ts`](src/container-read.ts) — the two seams under it: the
   `phoebe status --json` exec, and the `docker compose events` subscription.
+- [`container-logs.ts`](src/container-logs.ts) — the logs pane's stream:
+  `docker compose logs --follow` on the phoebe service, one child per install
+  for as long as a pane wants it, its lines kept (bounded) so a pane opened late
+  joins with the tail. Unlike the events watcher it does not re-subscribe when
+  the stream ends: that end says the container stopped, the pane shows it, and
+  the operator reopens the pane when the container is back. The container is
+  log-stateless by decision (#73); these are Docker's lines, read back.
 - [`pair.ts`](src/pair.ts) — the seventh verb, and the one the engine does not
   have: a mint on the relay, the address into the config, the token into the
   root `.env`, and an `up -d` so Compose recreates the container holding both

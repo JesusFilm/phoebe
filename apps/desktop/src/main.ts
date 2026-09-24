@@ -74,6 +74,7 @@ import {
 } from "./companion-file.ts";
 import { CONSOLE_SCHEME, consoleFileFor } from "./console-scheme.ts";
 import { consoleSource } from "./console-source.ts";
+import { createContainerLogs } from "./container-logs.ts";
 import {
   defaultEventSpawner,
   readContainerReport,
@@ -86,6 +87,7 @@ import { createLocalReads } from "./local-read.ts";
 import type { PairArm } from "./pair.ts";
 import {
   defaultCommandRunner,
+  formatResolveFailure,
   resolveDeploymentCompose,
 } from "../../../src/deployment-compose.ts";
 import { companionName, createRelaySession, type RelaySession } from "./relay-session.ts";
@@ -302,6 +304,15 @@ const reads = createLocalReads({
     }
     showBadge();
   },
+});
+
+/**
+ * The logs pane's streams (container-logs.ts). Lines and endings go to every
+ * window, tagged with their install; a pane keeps the ones that are its own.
+ */
+const logs = createContainerLogs({
+  onLine: (line) => broadcast(BRIDGE_CHANNELS.logsLine, line),
+  onEnded: (end) => broadcast(BRIDGE_CHANNELS.logsEnded, end),
 });
 
 /** Read, change, write, and tell the window. The only writer of the file. */
@@ -531,6 +542,7 @@ app.whenReady().then(
         // counting an install that is no longer on the rail is a number the
         // operator cannot act on or clear.
         alerts.forgetInstall(dir);
+        logs.stop(dir);
         showBadge();
         return editInstalls((contents) => removeInstall(contents, dir));
       }),
@@ -553,6 +565,29 @@ app.whenReady().then(
 
     ipcMain.handle(BRIDGE_CHANNELS.runCancel, (_event, runId: string) =>
       answering<void>(() => runs.cancel(runId)),
+    );
+
+    ipcMain.handle(BRIDGE_CHANNELS.logsFollow, (_event, dir: string) =>
+      answering<string[]>(() => {
+        const deployment = resolveDeploymentCompose(deploymentDirOf(dir).dir);
+        if ("kind" in deployment) {
+          throw new BridgeRefusal({
+            code: "not-initialised",
+            message: formatResolveFailure(deployment),
+            instruction: "Init and start this install; its container is what prints logs.",
+          });
+        }
+        // Followed from inside the distro for a WSL install, like every other
+        // `docker` the companion spawns for one (wsl.ts).
+        const wsl = wslLocationOf(dir);
+        const spawner =
+          wsl === null ? defaultEventSpawner : wslEventSpawner(wsl, defaultEventSpawner);
+        return logs.follow(dir, deployment, spawner);
+      }),
+    );
+
+    ipcMain.handle(BRIDGE_CHANNELS.logsStop, (_event, dir: string) =>
+      answering<void>(() => logs.stop(dir)),
     );
 
     ipcMain.handle(BRIDGE_CHANNELS.preferencesGet, () =>
@@ -602,6 +637,7 @@ app.whenReady().then(
 
 app.on("before-quit", () => {
   reads.stop();
+  logs.stopAll();
   relay?.close();
 });
 
