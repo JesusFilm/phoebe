@@ -51,7 +51,8 @@ import { useState } from "react";
 import type { CompanionUpdate, LocalInstall, RelayIdentity } from "phoebe-agent/contracts";
 import type { Surface } from "./companion.ts";
 import { connectionReading, type RowFacts } from "./facts.ts";
-import { installReading } from "./local-install.ts";
+import { Play } from "lucide-react";
+import { installReading, offeredVerbs } from "./local-install.ts";
 import type { RelaySignIn } from "./relay-client.ts";
 import { deploymentHref, FLEET_HREF } from "./route.ts";
 import { RELAY_UPGRADE_DOC } from "./relay-version.ts";
@@ -68,6 +69,7 @@ export function Rail({
   selectedDeployment = null,
   update = null,
   onSelect,
+  onStart,
   onAdd,
   onDownload,
   onRestart,
@@ -95,6 +97,8 @@ export function Rail({
   /** The companion's own update. Null in a browser, which updates with a reload. */
   update?: CompanionUpdate | null;
   onSelect?: (dir: string) => void;
+  /** Start a stopped install from its entry. Absent in a browser, which has no local arm. */
+  onStart?: (dir: string) => void;
   onAdd?: () => void;
   onDownload?: () => void;
   onRestart?: () => void;
@@ -159,6 +163,7 @@ export function Rail({
               current={install.dir === selected}
               paired={paired?.has(install.dir) ?? false}
               {...(onSelect !== undefined ? { onSelect } : {})}
+              {...(onStart !== undefined ? { onStart } : {})}
             />
           ))
         )}
@@ -236,28 +241,47 @@ function InstallEntry({
   current,
   paired,
   onSelect,
+  onStart,
 }: {
   install: LocalInstall;
   current: boolean;
   /** Also a deployment on this relay — so the Relay group is not drawing it. */
   paired: boolean;
   onSelect?: (dir: string) => void;
+  /** Start this install from the rail. Drawn only where there is one to start. */
+  onStart?: (dir: string) => void;
 }) {
   const reading = installReading(install);
   return (
-    <button
-      type="button"
-      className={`rail-entry local state-${reading.tone}${current ? " current" : ""}`}
-      aria-current={current ? "page" : undefined}
-      onClick={() => onSelect?.(install.dir)}
-    >
-      <div className="name">
-        <span className={`mark ${reading.tone}`} aria-hidden="true" />
-        {install.name}
-        {paired ? <span className="chip paired">paired</span> : null}
-      </div>
-      <div className="sub">{reading.text}</div>
-    </button>
+    <div className={`rail-entry local state-${reading.tone}${current ? " current" : ""}`}>
+      <button
+        type="button"
+        className="rail-select"
+        aria-current={current ? "page" : undefined}
+        onClick={() => onSelect?.(install.dir)}
+      >
+        <div className="name">
+          <span className={`mark ${reading.tone}`} aria-hidden="true" />
+          {install.name}
+          {paired ? <span className="chip paired">paired</span> : null}
+        </div>
+        <div className="sub">{reading.text}</div>
+      </button>
+      {onStart !== undefined && offeredVerbs(install).start ? (
+        // The shortcut: a stopped install is one click from running without
+        // opening its page first. The page opens anyway, so the run's output
+        // has somewhere to land.
+        <button
+          type="button"
+          className="rail-action"
+          title={`Start ${install.name}`}
+          aria-label={`Start ${install.name}`}
+          onClick={() => onStart(install.dir)}
+        >
+          <Play size={12} strokeWidth={2.25} aria-hidden="true" />
+        </button>
+      ) : null}
+    </div>
   );
 }
 

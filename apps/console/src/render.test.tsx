@@ -481,11 +481,20 @@ describe("the local arm on the rail", () => {
       installs={installs}
       selected="/repos/two"
       onSelect={() => undefined}
+      onStart={() => undefined}
       onAdd={() => undefined}
       signIn={null}
       onSignedIn={noop}
     />,
   );
+
+  test("the stopped install has a start shortcut on its entry, and only it", () => {
+    // one is running, two is stopped, three has nothing to start.
+    expect(markup.match(/class="rail-action"/g)).toHaveLength(1);
+    expect(markup).toMatch(/two[\s\S]*?class="rail-action"[^>]*aria-label="Start two"/);
+    // An icon, named for a screen reader by the button and hidden from it itself.
+    expect(markup).toMatch(/class="rail-action"[^>]*>\s*<svg[^>]*aria-hidden="true"/);
+  });
 
   test("lists every install under This machine, in the order they were added", () => {
     const names = [...markup.matchAll(/class="name">.*?<\/span>(.*?)</g)].map((match) => match[1]);
