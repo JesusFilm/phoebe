@@ -93,6 +93,7 @@ export function InstallPage({
   now,
   signedIn,
   paired,
+  initialTab,
   onForget,
 }: {
   install: LocalInstall;
@@ -104,9 +105,13 @@ export function InstallPage({
   signedIn: boolean;
   /** Whether this install is already a deployment on that relay. */
   paired: boolean;
+  /** The tab to open on, when the rail asked for one; otherwise the landing tab. */
+  initialTab?: DeploymentTab | "install";
   onForget: (dir: string) => void;
 }) {
-  const [tab, setTab] = useState<DeploymentTab | "install">(() => landingTab(install));
+  const [tab, setTab] = useState<DeploymentTab | "install">(
+    () => initialTab ?? landingTab(install),
+  );
   const [environment, setEnvironment] = useState<CompanionEnvironment | null>(null);
   const [run, setRun] = useState<VerbRun | null>(null);
   const [trouble, setTrouble] = useState<string | null>(null);

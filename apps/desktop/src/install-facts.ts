@@ -34,6 +34,7 @@ import {
 import { readDockerfilePin, type DockerfilePin } from "../../../src/upgrade.ts";
 import type { StoredInstall } from "./companion-file.ts";
 import { deploymentDirOf } from "./deployment-dir.ts";
+import { workspaceBlockOf, workspaceChildren } from "./workspace-children.ts";
 import { wslLocationOf, wslRunner } from "./wsl.ts";
 
 /** The config file at the root of an install. */
@@ -48,6 +49,8 @@ export type FactsDeps = {
   dockerPresent?: boolean;
   /** How `container/Dockerfile` is read — `readFileSync` on a real machine. */
   readFile?: (file: string) => string;
+  /** A directory's subdirectories, for a workspace's children. `readdirSync` on a real machine. */
+  listDirs?: (dir: string) => string[];
 };
 
 /**
@@ -74,16 +77,31 @@ export async function installFacts(
   // The deployment's files may sit one folder down in `.phoebe/`
   // (deployment-dir.ts); every fact about the deployment is read from there.
   const root = deploymentDirOf(stored.dir, exists);
+  const read = deps.read ?? ((file: string) => readFileSync(file, "utf8"));
+  // A workspace root lists its children, found the way the bootstrapper finds
+  // them (workspace-children.ts), so the rail can open the root out.
+  const block = workspaceBlockOf(configSource(root.dir, exists, read));
+  const workspace =
+    block === null
+      ? null
+      : {
+          children: workspaceChildren(root.dir, block, {
+            exists,
+            read,
+            ...(deps.listDirs !== undefined ? { listDirs: deps.listDirs } : {}),
+          }),
+        };
   const base = {
     dir: stored.dir,
     // A WSL folder is named by its Linux path's last segment: the same word on
     // every platform, where `basename` would need Windows's separator to see it.
-    name: wsl === null ? path.basename(stored.dir) : (wsl.dir.split("/").pop() || wsl.distro),
+    name: wsl === null ? path.basename(stored.dir) : wsl.dir.split("/").pop() || wsl.distro,
     addedAt: stored.addedAt,
     containerVersion: null,
     ...(wsl === null ? {} : { wsl }),
     ...(root.nested === null ? {} : { deploymentDir: root.nested }),
-    ...configFacts(root.dir, exists, deps.read ?? ((file) => readFileSync(file, "utf8"))),
+    ...(workspace === null ? {} : { workspace }),
+    ...configFacts(root.dir, exists, read),
   };
 
   if (!exists(stored.dir)) {

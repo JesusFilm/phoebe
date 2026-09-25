@@ -48,13 +48,35 @@
 // page an operator has to find their way back to.
 
 import { useState } from "react";
-import type { CompanionUpdate, LocalInstall, RelayIdentity } from "phoebe-agent/contracts";
+import type {
+  CompanionUpdate,
+  LocalInstall,
+  LocalReportEvent,
+  RelayIdentity,
+} from "phoebe-agent/contracts";
 import type { Surface } from "./companion.ts";
 import { connectionReading, type RowFacts } from "./facts.ts";
-import { Pause, Play, RotateCcw, Square } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Cloud,
+  Laptop,
+  Pause,
+  Play,
+  RotateCcw,
+  Settings,
+  Square,
+  Terminal,
+} from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { Spinner } from "~/components/ui/spinner";
-import { installActions, installReading, type InstallAction } from "./local-install.ts";
+import {
+  installActions,
+  installReading,
+  workspaceChildren,
+  type InstallAction,
+  type RailChild,
+} from "./local-install.ts";
 import type { RelaySignIn } from "./relay-client.ts";
 import { deploymentHref, FLEET_HREF } from "./route.ts";
 import { RELAY_UPGRADE_DOC } from "./relay-version.ts";
@@ -71,7 +93,10 @@ export function Rail({
   selectedDeployment = null,
   update = null,
   busy,
+  reports,
+  defaultExpanded,
   onSelect,
+  onOpen,
   onAction,
   onAdd,
   onDownload,
@@ -101,7 +126,13 @@ export function Rail({
   update?: CompanionUpdate | null;
   /** The installs with a verb run in flight, by directory (run-activity.ts). */
   busy?: ReadonlySet<string>;
+  /** The latest read per install, by directory: what a workspace's children are doing. */
+  reports?: Readonly<Record<string, LocalReportEvent>>;
+  /** The workspaces opened out to their children to begin with, by directory. */
+  defaultExpanded?: ReadonlySet<string>;
   onSelect?: (dir: string) => void;
+  /** Open an install on a tab: the gear's install tab, a child's pipelines. */
+  onOpen?: (dir: string, tab: "install" | "pipelines") => void;
   /** The entry shortcuts. Absent in a browser, which has no local arm. */
   onAction?: (dir: string, action: InstallAction) => void;
   onAdd?: () => void;
@@ -111,6 +142,9 @@ export function Rail({
   signIn: RelaySignIn | null;
   onSignedIn: (identity: RelayIdentity) => void;
 }) {
+  // Which workspaces are opened out to their children. Closed to begin with:
+  // a rail of six workspaces opened out is a list, not a rail.
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => defaultExpanded ?? new Set());
   const relay = (
     <section className="rail-group" aria-label="Relay">
       <a className="rail-heading" href={FLEET_HREF}>
@@ -168,7 +202,18 @@ export function Rail({
               current={install.dir === selected}
               paired={paired?.has(install.dir) ?? false}
               busy={busy?.has(install.dir) ?? false}
+              children={workspaceChildren(install, reports?.[install.dir] ?? null)}
+              expanded={expanded.has(install.dir)}
+              onToggle={() =>
+                setExpanded((held) => {
+                  const next = new Set(held);
+                  if (next.has(install.dir)) next.delete(install.dir);
+                  else next.add(install.dir);
+                  return next;
+                })
+              }
               {...(onSelect !== undefined ? { onSelect } : {})}
+              {...(onOpen !== undefined ? { onOpen } : {})}
               {...(onAction !== undefined ? { onAction } : {})}
             />
           ))
@@ -247,7 +292,11 @@ function InstallEntry({
   current,
   paired,
   busy,
+  children,
+  expanded,
+  onToggle,
   onSelect,
+  onOpen,
   onAction,
 }: {
   install: LocalInstall;
@@ -256,22 +305,55 @@ function InstallEntry({
   paired: boolean;
   /** A verb run is in flight on this install: the shortcuts give way to a spinner. */
   busy: boolean;
+  /** A workspace's children, read against its report; empty for a solo install. */
+  children: RailChild[];
+  expanded: boolean;
+  onToggle: () => void;
   onSelect?: (dir: string) => void;
+  /** Open the install on one tab: the gear's install tab, a child's pipelines. */
+  onOpen?: (dir: string, tab: "install" | "pipelines") => void;
   /** The shortcuts: start on a stopped install; pause, stop and restart on a running one. */
   onAction?: (dir: string, action: InstallAction) => void;
 }) {
   const reading = installReading(install);
   const actions = onAction === undefined ? [] : installActions(install);
+  const workspace = install.workspace !== undefined;
+  // Where it runs, as T3 Code's project list says where each project is: this
+  // machine, or a distro inside WSL.
+  const Platform = install.wsl === undefined ? Laptop : Terminal;
+  const platformTitle =
+    install.wsl === undefined ? "This machine" : `WSL, in the ${install.wsl.distro} distro`;
   return (
     <div className={`rail-entry local state-${reading.tone}${current ? " current" : ""}`}>
+      {workspace ? (
+        <button
+          type="button"
+          className="rail-chevron"
+          aria-expanded={expanded}
+          aria-label={expanded ? `Collapse ${install.name}` : `Expand ${install.name}`}
+          title={expanded ? "Hide the children" : `${children.length} in this workspace`}
+          onClick={onToggle}
+        >
+          {expanded ? (
+            <ChevronDown size={13} aria-hidden="true" />
+          ) : (
+            <ChevronRight size={13} aria-hidden="true" />
+          )}
+        </button>
+      ) : null}
       <button
         type="button"
         className="rail-select"
+        // A long name is cut to the line (console.css); the whole of it on hover.
+        title={install.name}
         aria-current={current ? "page" : undefined}
         onClick={() => onSelect?.(install.dir)}
       >
         <div className="name">
           <span className={`mark ${reading.tone}`} aria-hidden="true" />
+          <span className="platform" title={platformTitle} aria-label={platformTitle}>
+            <Platform size={12} aria-hidden="true" />
+          </span>
           {install.name}
           {paired ? <span className="chip paired">paired</span> : null}
         </div>
@@ -289,11 +371,13 @@ function InstallEntry({
             aria-label={`Working on ${install.name}`}
           />
         </span>
-      ) : actions.length === 0 ? null : (
+      ) : (
         // The shortcuts: one click from the rail, without opening the page
         // first. The page opens anyway, so the run's output has somewhere to
         // land (local-install.ts, `installActions`). Coss UI's button, ghost
-        // and icon-sized, as T3 Code draws its own.
+        // and icon-sized, as T3 Code draws its own. The gear is the install's
+        // settings: the install tab, where init, start, upgrade, secrets and
+        // forget live.
         <span className="rail-actions">
           {actions.map((action) => {
             const [Icon, label] = ACTION_ICONS[action];
@@ -311,8 +395,42 @@ function InstallEntry({
               </Button>
             );
           })}
+          {onOpen === undefined ? null : (
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              className="rail-gear"
+              title={`Settings for ${install.name}`}
+              aria-label={`Settings for ${install.name}`}
+              onClick={() => onOpen(install.dir, "install")}
+            >
+              <Settings aria-hidden="true" />
+            </Button>
+          )}
         </span>
       )}
+      {workspace && expanded ? (
+        <ul className="rail-children" aria-label={`Children of ${install.name}`}>
+          {children.length === 0 ? (
+            <li className="rail-child muted">no children with a config yet</li>
+          ) : (
+            children.map((child) => (
+              <li key={child.dir}>
+                <button
+                  type="button"
+                  className="rail-child"
+                  title={child.dir}
+                  onClick={() => onOpen?.(install.dir, "pipelines")}
+                >
+                  <span className={`mark ${child.tone}`} aria-hidden="true" />
+                  <span className="label">{child.label}</span>
+                  {child.text === "" ? null : <span className="word">{child.text}</span>}
+                </button>
+              </li>
+            ))
+          )}
+        </ul>
+      ) : null}
     </div>
   );
 }
@@ -408,18 +526,35 @@ function SignInForm({
 function RailEntry({ facts, current, now }: { facts: RowFacts; current: boolean; now: Date }) {
   const connection = connectionReading(facts.row, now);
   return (
-    <a
-      className={`rail-entry state-${connection.tone}${facts.attention ? " attention" : ""}${current ? " current" : ""}`}
-      href={deploymentHref(facts.row.fingerprint)}
-      aria-current={current ? "page" : undefined}
-    >
-      <div className="name">
-        <span className={`mark ${connection.tone}`} aria-hidden="true" />
-        {facts.row.name}
-        {connection.maybeReplaced ? <span className="chip replaced">replaced?</span> : null}
-      </div>
-      <div className="sub">{[connection.text, ...subClauses(facts)].join(" · ")}</div>
-    </a>
+    <div className="rail-relay-row">
+      <a
+        className={`rail-entry state-${connection.tone}${facts.attention ? " attention" : ""}${current ? " current" : ""}`}
+        href={deploymentHref(facts.row.fingerprint)}
+        aria-current={current ? "page" : undefined}
+      >
+        <div className="name">
+          <span className={`mark ${connection.tone}`} aria-hidden="true" />
+          <span
+            className="platform"
+            title="Reached through the relay"
+            aria-label="Reached through the relay"
+          >
+            <Cloud size={12} aria-hidden="true" />
+          </span>
+          {facts.row.name}
+          {connection.maybeReplaced ? <span className="chip replaced">replaced?</span> : null}
+        </div>
+        <div className="sub">{[connection.text, ...subClauses(facts)].join(" · ")}</div>
+      </a>
+      <a
+        className="rail-gear"
+        href={deploymentHref(facts.row.fingerprint, "config")}
+        title={`Settings for ${facts.row.name}`}
+        aria-label={`Settings for ${facts.row.name}`}
+      >
+        <Settings size={14} aria-hidden="true" />
+      </a>
+    </div>
   );
 }
 

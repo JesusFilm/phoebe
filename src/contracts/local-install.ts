@@ -76,6 +76,23 @@ export type LocalInstall = {
    * Absent when the compose file, the config and the `.env` sit at the root.
    */
   deploymentDir?: string;
+  /**
+   * Set when the deployment's config carries a `workspace` block: the install
+   * is a workspace root, and these are the children under it as the
+   * bootstrapper would discover them (apps/desktop/src/workspace-children.ts).
+   * Absent for a solo install.
+   */
+  workspace?: { children: LocalInstallChild[] };
+};
+
+/** One child of a workspace install, as the rail lists it under the root. */
+export type LocalInstallChild = {
+  /** The child's directory, absolute. */
+  dir: string;
+  /** The folder's name. */
+  name: string;
+  /** Its `repoSlug`, which is how the report names the tenant; null when unreadable. */
+  slug: string | null;
 };
 
 /**

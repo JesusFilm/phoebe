@@ -208,6 +208,7 @@ export type {
   CompanionPreferences,
   InstallState,
   LocalInstall,
+  LocalInstallChild,
 } from "./local-install.ts";
 export { LOG_TAIL_LINES, MAX_LOG_LINES } from "./container-logs.ts";
 export type { LogLine, LogsEnded } from "./container-logs.ts";

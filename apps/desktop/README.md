@@ -164,6 +164,13 @@ change them ([#557](https://github.com/JesusFilm/phoebe/issues/557)) and pairing
   root `.env`, and an `up -d` so Compose recreates the container holding both
   ([#558](https://github.com/JesusFilm/phoebe/issues/558)). The token goes into
   the file and into no line.
+- [`workspace-children.ts`](src/workspace-children.ts) — the children under a
+  workspace root, for the rail to open out. The root's `workspace` block is read
+  off the config's source text, never loaded, and the folders are walked with the
+  bootstrapper's own skip rule (bootstrap/tenants.ts): to `depth`, or the declared
+  `tenants`, a child being a folder carrying `phoebe.config.ts`. Each comes with
+  its `repoSlug` when the config states one, so the rail can name it the way the
+  fleet does.
 - [`deployment-dir.ts`](src/deployment-dir.ts) — where an install's deployment
   files are. A repository can be a workspace child at its root and a standalone
   deployment in `.phoebe/` beside it (`configDir`, docs/configuration.md; this

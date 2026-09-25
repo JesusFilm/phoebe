@@ -8,8 +8,10 @@
 
 import { describe, expect, test } from "vite-plus/test";
 import { renderToStaticMarkup } from "react-dom/server";
+import { DEPLOYMENT_SCHEMA } from "phoebe-agent/contracts";
 import type { CompanionUpdate } from "phoebe-agent/contracts";
 import { rowFacts, sortFleet } from "./facts.ts";
+import { deploymentHref } from "./route.ts";
 import { FleetPage } from "./fleet-page.tsx";
 import { Rail } from "./rail.tsx";
 import { ConfigEditForm, InstallPage, InstallTab } from "./install-page.tsx";
@@ -124,8 +126,18 @@ const rail = renderToStaticMarkup(
 const grid = renderToStaticMarkup(<FleetPage facts={FLEET} client={client()} now={NOW} />);
 
 describe("the rail", () => {
+  test("every deployment is marked as reached through the relay, with a gear onto its config", () => {
+    expect(rail.match(/lucide-cloud/g)).toHaveLength(FLEET.length);
+    expect(rail.match(/rail-gear"/g)).toHaveLength(FLEET.length);
+    expect(rail).toContain(
+      `class="rail-gear" href="${deploymentHref(FLEET[0]!.row.fingerprint, "config")}" title="Settings for ${FLEET[0]!.row.name}"`,
+    );
+  });
+
   test("lists every deployment in the sort order, dark first", () => {
-    const names = [...rail.matchAll(/class="name">.*?<\/span>(.*?)</g)].map((match) => match[1]);
+    const names = [...rail.matchAll(/class="platform"[^>]*>[\s\S]*?<\/span>([^<]*)</g)].map(
+      (match) => match[1],
+    );
 
     // Dark first; then the two with something on them, by name; then the rest.
     expect(names).toEqual([
@@ -497,7 +509,7 @@ describe("the local arm on the rail", () => {
       expect(markup, label).toContain(`aria-label="${label}"`);
     }
     expect(markup).not.toContain('aria-label="Start one"');
-    expect(markup).not.toContain('three"');
+    expect(markup).not.toMatch(/aria-label="(Start|Pause|Stop|Restart) three"/);
     // An icon, named for a screen reader by the button and hidden from it itself.
     expect(markup).toMatch(/class="[^"]*rail-action[^"]*"[^>]*>\s*<svg[^>]*aria-hidden="true"/);
   });
@@ -525,9 +537,131 @@ describe("the local arm on the rail", () => {
   });
 
   test("lists every install under This machine, in the order they were added", () => {
-    const names = [...markup.matchAll(/class="name">.*?<\/span>(.*?)</g)].map((match) => match[1]);
+    const names = [...markup.matchAll(/class="platform"[^>]*>[\s\S]*?<\/span>([^<]*)</g)].map(
+      (match) => match[1],
+    );
 
     expect(names).toEqual(["one", "two", "three"]);
+  });
+
+  test("says where each install runs: this machine, or a WSL distro", () => {
+    const mixed = renderToStaticMarkup(
+      <Rail
+        facts={[]}
+        now={NOW}
+        surface="companion"
+        signedIn={false}
+        installs={[
+          install({ dir: "/repos/one", name: "one" }),
+          install({
+            dir: "\\\\wsl.localhost\\archlinux\\home\\mike\\two",
+            name: "two",
+            wsl: { distro: "archlinux", dir: "/home/mike/two" },
+          }),
+        ]}
+        signIn={null}
+        onSignedIn={noop}
+      />,
+    );
+
+    expect(mixed).toMatch(/title="This machine"[^>]*>\s*<svg[^>]*lucide-laptop/);
+    expect(mixed).toMatch(/title="WSL, in the archlinux distro"[^>]*>\s*<svg[^>]*lucide-terminal/);
+  });
+
+  test("a gear on every install opens its settings: the install tab", () => {
+    const opened: [string, string][] = [];
+    const withGear = renderToStaticMarkup(
+      <Rail
+        facts={[]}
+        now={NOW}
+        surface="companion"
+        signedIn={false}
+        installs={installs}
+        onOpen={(dir, tab) => opened.push([dir, tab])}
+        signIn={null}
+        onSignedIn={noop}
+      />,
+    );
+
+    for (const name of ["one", "two", "three"]) {
+      expect(withGear, name).toContain(`aria-label="Settings for ${name}"`);
+    }
+    expect(withGear.match(/rail-gear"/g)).toHaveLength(3);
+    // Without a way to open a page there is no gear to press.
+    expect(markup).not.toContain("rail-gear");
+  });
+
+  test("a workspace has a chevron, closed to begin with, and its children once opened", () => {
+    const workspace = install({
+      dir: "/repos/ws",
+      name: "ws",
+      state: "running",
+      workspace: {
+        children: [
+          { dir: "/repos/ws/a", name: "a", slug: "acme/a" },
+          { dir: "/repos/ws/b", name: "b", slug: null },
+        ],
+      },
+    });
+    const closed = renderToStaticMarkup(
+      <Rail
+        facts={[]}
+        now={NOW}
+        surface="companion"
+        signedIn={false}
+        installs={[workspace, install({ dir: "/repos/solo", name: "solo" })]}
+        onOpen={() => undefined}
+        signIn={null}
+        onSignedIn={noop}
+      />,
+    );
+    const opened = renderToStaticMarkup(
+      <Rail
+        facts={[]}
+        now={NOW}
+        surface="companion"
+        signedIn={false}
+        installs={[workspace]}
+        reports={{
+          "/repos/ws": localReport({
+            facts: workspace,
+            report: {
+              schema: DEPLOYMENT_SCHEMA,
+              receivedAt: ago(2),
+              report: report({
+                fleet: {
+                  tenants: [tenant({ id: "/w/a", path: "/w/a", slug: "acme/a", held: true })],
+                  cells: [],
+                  updatedAt: ago(12),
+                },
+              }),
+            },
+          }),
+        }}
+        defaultExpanded={new Set(["/repos/ws"])}
+        onOpen={() => undefined}
+        signIn={null}
+        onSignedIn={noop}
+      />,
+    );
+
+    // One chevron: the solo install has nothing to open out.
+    expect(closed.match(/rail-chevron"/g)).toHaveLength(1);
+    expect(closed).toContain('aria-expanded="false"');
+    expect(closed).toContain('aria-label="Expand ws"');
+    expect(closed).toContain('title="2 in this workspace"');
+    expect(closed).not.toContain("rail-children");
+
+    expect(opened).toContain('aria-expanded="true"');
+    expect(opened).toMatch(/class="rail-children"/);
+    // The slug labels a child when it has one, the folder otherwise; the fleet
+    // says what each is doing, and a folder the fleet does not know says so.
+    expect(opened).toMatch(
+      /class="mark attention"[^>]*><\/span><span class="label">acme\/a<\/span><span class="word">held/,
+    );
+    expect(opened).toMatch(
+      /class="mark idle"[^>]*><\/span><span class="label">b<\/span><span class="word">not in the fleet/,
+    );
   });
 
   test("gives the three states three marks, and borrows none of the relay's four", () => {

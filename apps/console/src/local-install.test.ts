@@ -13,6 +13,7 @@ import {
   installReading,
   landingTab,
   versionReading,
+  workspaceChildren,
   localConfig,
   localConnection,
   offeredVerbs,
@@ -27,7 +28,17 @@ import {
   pairReading,
   sameRelay,
 } from "./local-install.ts";
-import { ago, directory, environment, install, localReport, row } from "./test-fixture.ts";
+import {
+  ago,
+  cell,
+  directory,
+  environment,
+  install,
+  localReport,
+  report,
+  row,
+  tenant,
+} from "./test-fixture.ts";
 
 function runOf(overrides: Partial<VerbRun> = {}): VerbRun {
   return {
@@ -691,5 +702,109 @@ describe("the two versions the install tab states", () => {
 
     expect(reading.text).toBe("container 0.13.0 · companion —");
     expect(reading.note).toBeNull();
+  });
+});
+
+describe("what a workspace's children are doing, for the rail", () => {
+  const workspace = install({
+    dir: "/repos/ws",
+    name: "ws",
+    workspace: {
+      children: [
+        { dir: "/repos/ws/a", name: "a", slug: "acme/a" },
+        { dir: "/repos/ws/b", name: "b", slug: null },
+        { dir: "/repos/ws/c", name: "c", slug: "acme/c" },
+        { dir: "/repos/ws/d", name: "d", slug: "acme/d" },
+        { dir: "/repos/ws/e", name: "e", slug: "acme/e" },
+      ],
+    },
+  });
+  const fleet = {
+    tenants: [
+      tenant({ id: "/w/a", path: "/w/a", slug: "acme/a", held: true }),
+      // Matched by folder when the config has no slug.
+      tenant({ id: "/w/b", path: "/w/b/", slug: "acme/other", held: false }),
+      tenant({ id: "/w/c", path: "/w/c", slug: "acme/c" }),
+      tenant({ id: "/w/d", path: "/w/d", slug: "acme/d" }),
+    ],
+    cells: [
+      cell({ id: "/w/b#work", tenant: tenant({ id: "/w/b" }), state: "working" }),
+      cell({
+        id: "/w/c#work",
+        tenant: tenant({ id: "/w/c" }),
+        state: "idle",
+        wedged: { wedged: true, reason: "no-pass", noPassForMs: 1_020_000 },
+      }),
+      cell({ id: "/w/d#work", tenant: tenant({ id: "/w/d" }), state: "waiting for slot" }),
+    ],
+    updatedAt: ago(12),
+  };
+  const event = localReport({
+    facts: workspace,
+    report: { schema: report().schema, receivedAt: ago(2), report: report({ fleet }) },
+  });
+
+  test("labels each child by slug, else folder, and says what the fleet has it doing", () => {
+    expect(workspaceChildren(workspace, event)).toEqual([
+      { dir: "/repos/ws/a", label: "acme/a", tone: "attention", text: "held" },
+      { dir: "/repos/ws/b", label: "b", tone: "running", text: "working" },
+      { dir: "/repos/ws/c", label: "acme/c", tone: "attention", text: "wedged" },
+      { dir: "/repos/ws/d", label: "acme/d", tone: "running", text: "waiting for a slot" },
+      { dir: "/repos/ws/e", label: "acme/e", tone: "idle", text: "not in the fleet" },
+    ]);
+  });
+
+  test("a tenant with no pipelines says so; one whose cells all idle is idle", () => {
+    const quiet = localReport({
+      facts: workspace,
+      report: {
+        schema: report().schema,
+        receivedAt: ago(2),
+        report: report({
+          fleet: {
+            tenants: [
+              tenant({ id: "/w/a", path: "/w/a", slug: "acme/a" }),
+              tenant({ id: "/w/c", path: "/w/c", slug: "acme/c" }),
+            ],
+            cells: [cell({ id: "/w/c#work", tenant: tenant({ id: "/w/c" }), state: "idle" })],
+            updatedAt: ago(12),
+          },
+        }),
+      },
+    });
+    const [a, , c] = workspaceChildren(
+      install({
+        dir: "/repos/ws",
+        workspace: {
+          children: [
+            { dir: "/repos/ws/a", name: "a", slug: "acme/a" },
+            { dir: "/repos/ws/b", name: "b", slug: null },
+            { dir: "/repos/ws/c", name: "c", slug: "acme/c" },
+          ],
+        },
+      }),
+      quiet,
+    );
+
+    expect(a).toMatchObject({ tone: "idle", text: "no pipelines" });
+    expect(c).toMatchObject({ tone: "idle", text: "idle" });
+  });
+
+  test("a stopped workspace lists its folders with nothing to say about them", () => {
+    const stopped = install({ ...workspace, state: "stopped" });
+
+    expect(workspaceChildren(stopped, localReport({ facts: stopped }))).toEqual(
+      workspace.workspace!.children.map((child) => ({
+        dir: child.dir,
+        label: child.slug ?? child.name,
+        tone: "stopped",
+        text: "",
+      })),
+    );
+    expect(workspaceChildren(workspace, null)).toHaveLength(5);
+  });
+
+  test("a solo install has no children", () => {
+    expect(workspaceChildren(install(), event)).toEqual([]);
   });
 });

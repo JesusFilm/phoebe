@@ -23,6 +23,7 @@ import type {
   VerbRun,
   VerbRunRequest,
 } from "phoebe-agent/contracts";
+import { readReport } from "./report.ts";
 import type { ConfigReading, ConnectionCard, DeploymentTab } from "./tabs.ts";
 
 // ── the two write verbs, as requests (#557) ───────────────────────────────
@@ -476,6 +477,62 @@ export function installActions(install: LocalInstall): InstallAction[] {
   if (offered.start) return ["start"];
   if (offered.stop) return ["pause", "stop", "restart"];
   return [];
+}
+
+// ── a workspace's children, as the rail lists them under the root ───────────
+
+/** One child row under a workspace's rail entry. */
+export type RailChild = {
+  dir: string;
+  /** The slug when the config has one, else the folder's name. */
+  label: string;
+  /** The state word beside it, and the mark's tone. */
+  tone: "running" | "stopped" | "attention" | "idle";
+  text: string;
+};
+
+/**
+ * The children a workspace install lists, read against its latest report. With
+ * the container running, the report's fleet says what each tenant is doing:
+ * held, wedged, working, waiting, or idle. Stopped, the folder is all there is,
+ * so the child is listed and says nothing more. A child on disk the report does
+ * not know is "not in the fleet" — a folder the bootstrapper has not picked up
+ * yet, or one it skipped.
+ */
+export function workspaceChildren(
+  install: LocalInstall,
+  event: LocalReportEvent | null,
+): RailChild[] {
+  const children = install.workspace?.children ?? [];
+  const reading = readReport(renderableReport(install, event));
+  const report = reading.kind === "read" ? reading.report : null;
+  return children.map((child) => {
+    const label = child.slug ?? child.name;
+    if (report === null || install.state !== "running") {
+      return { dir: child.dir, label, tone: "stopped", text: "" };
+    }
+    const tenant = report.fleet.tenants.find(
+      (candidate) =>
+        (child.slug !== null && candidate.slug === child.slug) ||
+        candidate.path.replace(/[\\/]+$/, "").endsWith(`/${child.name}`) ||
+        candidate.path.replace(/[\\/]+$/, "").endsWith(`\\${child.name}`),
+    );
+    if (tenant === undefined)
+      return { dir: child.dir, label, tone: "idle", text: "not in the fleet" };
+    if (tenant.held) return { dir: child.dir, label, tone: "attention", text: "held" };
+    const cells = report.fleet.cells.filter((cell) => cell.tenant.id === tenant.id);
+    if (cells.some((cell) => cell.wedged.wedged)) {
+      return { dir: child.dir, label, tone: "attention", text: "wedged" };
+    }
+    if (cells.some((cell) => cell.state === "working")) {
+      return { dir: child.dir, label, tone: "running", text: "working" };
+    }
+    if (cells.some((cell) => cell.state === "waiting for slot")) {
+      return { dir: child.dir, label, tone: "running", text: "waiting for a slot" };
+    }
+    if (cells.length === 0) return { dir: child.dir, label, tone: "idle", text: "no pipelines" };
+    return { dir: child.dir, label, tone: "idle", text: "idle" };
+  });
 }
 
 // ── the local read loop, as the page reads it (#556) ──────────────────────

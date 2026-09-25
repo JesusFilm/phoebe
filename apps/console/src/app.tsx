@@ -217,6 +217,8 @@ function Console({
   const [installs, setInstalls] = useState<LocalInstall[]>([]);
   const [reports, setReports] = useState<Record<string, LocalReportEvent>>({});
   const [openInstall, setOpenInstall] = useState<string | null>(null);
+  /** The tab the rail asked the install's page to open on, when it asked. */
+  const [openTab, setOpenTab] = useState<"install" | "pipelines" | undefined>(undefined);
   const [relayUrl, setRelayUrl] = useState<string | null>(null);
   // Default on (#524 §8), and read back off `companion.json` the moment main
   // answers. A browser never asks — there is nothing there to notify with.
@@ -595,7 +597,11 @@ function Console({
           selectedDeployment={
             openInstall === null && route.page === "deployment" ? route.fingerprint : null
           }
-          onSelect={setOpenInstall}
+          onSelect={(dir) => {
+            setOpenTab(undefined);
+            setOpenInstall(dir);
+          }}
+          reports={reports}
           update={update}
           {...(bridge === null
             ? {}
@@ -614,6 +620,12 @@ function Console({
                 // main saying the button was not the next step — which is a
                 // state the notice had already stopped offering.
                 busy: busyInstalls(activity),
+                // The gear and a workspace's children open the page on a tab:
+                // settings on the install tab, a child on pipelines.
+                onOpen: (dir: string, tab: "install" | "pipelines") => {
+                  setOpenTab(tab);
+                  setOpenInstall(dir);
+                },
                 // The rail's shortcuts. The page opens first so the run's lines
                 // have somewhere to land; a refusal (`busy`, most likely) is
                 // the page's to show from the run it reads on mount.
@@ -629,9 +641,10 @@ function Console({
         />
         {open !== null && bridge !== null ? (
           <InstallPage
-            key={open.dir}
+            key={`${open.dir}#${openTab ?? ""}`}
             install={open}
             bridge={bridge}
+            {...(openTab !== undefined ? { initialTab: openTab } : {})}
             report={reports[open.dir] ?? null}
             now={now}
             signedIn={identity !== null}

@@ -283,14 +283,16 @@ a {
    stripped back to the shape of the div beside it so the two read as one list. */
 .rail-entry.local {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: 0 6px;
   padding: 0;
 }
 
 .rail-entry.local .rail-select {
   flex: 1;
   min-width: 0;
+  overflow: hidden;
   padding: 6px 14px 6px 11px;
   border: 0;
   border-radius: 0;
@@ -1269,4 +1271,126 @@ details.why > summary::marker {
 
 .install-title .logs-toggle[aria-pressed="true"] {
   color: var(--accent);
+}
+
+/* ── the rail's project rows ───────────────────────────────────────────── */
+
+/* Each entry, local or relay, carries where it runs and a gear, the way T3 Code's
+   project list does: a platform icon before the name, and settings at the edge
+   with the shortcuts. */
+/* One line each, as T3 Code's project list: a long name is cut, not wrapped,
+   and the mark and the icon stay on the name's line. */
+.rail-entry.local .name,
+.rail-entry.local .sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rail-entry .platform {
+  display: inline-flex;
+  margin-right: 6px;
+  color: var(--muted);
+  vertical-align: -2px;
+}
+
+.rail-entry.local .rail-gear {
+  color: var(--muted);
+}
+
+/* A relay entry is a link; its gear is a second link beside it. */
+.rail-relay-row {
+  display: flex;
+  align-items: center;
+}
+
+.rail-relay-row .rail-entry {
+  flex: 1;
+  min-width: 0;
+}
+
+.rail-relay-row .rail-gear {
+  flex: none;
+  margin-right: 8px;
+  color: var(--muted);
+}
+
+/* A workspace opens out: a chevron before its icon, and its children indented
+   under it, each with a mark and a word. */
+.rail-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-left: 8px;
+  margin-right: -6px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  vertical-align: -3px;
+}
+
+.rail-chevron:hover {
+  background: var(--chip);
+}
+
+.rail-children {
+  flex-basis: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0 0 4px;
+  list-style: none;
+}
+
+.rail-child.muted {
+  color: var(--muted);
+  cursor: default;
+}
+
+.rail-child {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 14px 3px 40px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.rail-child:hover {
+  background: var(--chip);
+}
+
+.rail-child .label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rail-child .word {
+  flex: none;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.mark.attention {
+  border-radius: 50%;
+  background: var(--warn);
+}
+
+.mark.idle {
+  border-radius: 50%;
+  border: 2px solid var(--idle);
 }
