@@ -6,6 +6,7 @@ import {
   channelOf,
   channelsIn,
   linesIn,
+  tenantChannel,
 } from "./logs-channels.ts";
 
 const LINES = [
@@ -63,5 +64,23 @@ describe("the tabs", () => {
     expect(channelLabel("JesusFilm/phoebe:claude")).toBe("phoebe:claude");
     expect(channelLabel(ALL_CHANNEL)).toBe("all");
     expect(channelLabel(BOOT_CHANNEL)).toBe("boot");
+  });
+});
+
+describe("a workspace child's own tab", () => {
+  const scope = tenantChannel("JesusFilm/phoebe");
+
+  test("sits after boot, and is there before its first line", () => {
+    expect(channelsIn([], scope)).toEqual([ALL_CHANNEL, scope]);
+    expect(channelsIn(LINES, scope).slice(0, 3)).toEqual([ALL_CHANNEL, BOOT_CHANNEL, scope]);
+  });
+
+  test("shows every line under the slug, engine and agent alike, and nobody else's", () => {
+    expect(linesIn(LINES, scope)).toEqual([LINES[1], LINES[2], LINES[3], LINES[4]]);
+    expect(linesIn(LINES, tenantChannel("JesusFilm/youtube-studio"))).toEqual([LINES[5]]);
+  });
+
+  test("is labelled by the repo alone", () => {
+    expect(channelLabel(scope)).toBe("phoebe");
   });
 });

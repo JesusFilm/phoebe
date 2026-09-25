@@ -439,6 +439,55 @@ describe("a repo that is a workspace child at its root and a deployment in .phoe
   });
 });
 
+describe("a workspace root", () => {
+  const WORKSPACE =
+    'const config = {\n  engine: { ref: "main" },\n  workspace: { depth: 1 },\n};\nexport default config;\n';
+  const CHILD = (slug: string) =>
+    `const config = {\n  repoSlug: "${slug}",\n};\nexport default config;\n`;
+  const present = new Set([
+    DIR,
+    path.join(DIR, "phoebe.config.ts"),
+    path.join(DIR, "container", "compose.yml"),
+    path.join(DIR, "widget", "phoebe.config.ts"),
+    path.join(DIR, "api", "phoebe.config.ts"),
+  ]);
+  const sources: Record<string, string> = {
+    [path.join(DIR, "phoebe.config.ts")]: WORKSPACE,
+    [path.join(DIR, "widget", "phoebe.config.ts")]: CHILD("acme/widget"),
+    [path.join(DIR, "api", "phoebe.config.ts")]: CHILD("acme/api"),
+  };
+  const deps = {
+    exists: (file: string) => present.has(file),
+    read: (file: string) => {
+      const source = sources[file];
+      if (source === undefined) throw new Error(`no ${file}`);
+      return source;
+    },
+    listDirs: (dir: string) => (dir === DIR ? ["widget", "node_modules", "api", ".git"] : []),
+    dockerPresent: false,
+  };
+
+  test("lists its children as the bootstrapper would find them, by slug", async () => {
+    const facts = await installFacts(STORED, deps);
+
+    expect(facts.workspace?.children.map((child) => child.slug)).toEqual([
+      "acme/api",
+      "acme/widget",
+    ]);
+    expect(facts.workspace?.children[0]?.dir).toBe(path.join(DIR, "api"));
+  });
+
+  test("a solo install has no children to list", async () => {
+    const facts = await installFacts(STORED, {
+      exists: INITIALISED,
+      read: () => CHILD("acme/solo"),
+      dockerPresent: false,
+    });
+
+    expect(facts.workspace).toBeUndefined();
+  });
+});
+
 describe("an install inside a WSL distro", () => {
   const B = "\\";
   const WSL_DIR = `${B}${B}wsl.localhost${B}archlinux${B}home${B}mike${B}development`;

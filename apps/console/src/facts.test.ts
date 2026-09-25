@@ -259,3 +259,19 @@ describe("ages", () => {
     expect(age("not a date", NOW)).toBe("unknown");
   });
 });
+
+describe("where a deployment runs", () => {
+  test("is the identity's host, and null from a bootstrapper that never said", () => {
+    expect(rowFacts(row(), stored(report())).host).toBe("linux");
+    expect(
+      rowFacts(
+        row(),
+        stored(report({ identity: { name: "youtube-studio", arm: "solo", host: "wsl" } })),
+      ).host,
+    ).toBe("wsl");
+    expect(
+      rowFacts(row(), stored(report({ identity: { name: "youtube-studio", arm: "solo" } }))).host,
+    ).toBeNull();
+    expect(rowFacts(row(), null).host).toBeNull();
+  });
+});

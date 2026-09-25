@@ -44,12 +44,26 @@ export type DeploymentArm = "solo" | "workspace";
  * volume, which is what makes it identifiable to anything outside the
  * container, and `relayUrl` is absent until the config names one.
  */
+/**
+ * The kind of machine a deployment runs on, as far as its bootstrapper can tell
+ * from inside the container: the kernel it sees. A WSL2 kernel is `wsl` whether
+ * the daemon is Docker Desktop's or a distro's own, a LinuxKit kernel is Docker
+ * Desktop on a Mac, and `windows` or `macos` outright means the bootstrapper is
+ * running on the host itself, with no container at all.
+ */
+export type HostPlatform = "windows" | "macos" | "linux" | "wsl";
+
 export type DeploymentIdentity = {
   name: string;
   keyFingerprint?: string;
   arm: DeploymentArm;
   /** The relay this deployment dials, as `relay.url` names it. */
   relayUrl?: string;
+  /**
+   * Where this deployment runs. Optional because a bootstrapper from before it
+   * was reported says nothing here, and an addition moves no schema.
+   */
+  host?: HostPlatform;
 };
 
 /** Where a supervised child is in its lifecycle, transients included. */

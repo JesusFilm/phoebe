@@ -31,7 +31,12 @@
 import { readRelayField, type RelayField } from "../src/config-schema.ts";
 import type { ConfigEdit, EditReceipt } from "../src/contracts/config-edit.ts";
 import { RELAY_TOKEN_ENV } from "../src/contracts/relay-protocol.ts";
-import type { DeploymentArm, DeploymentIdentity } from "../src/contracts/deployment.ts";
+import type {
+  DeploymentArm,
+  DeploymentIdentity,
+  HostPlatform,
+} from "../src/contracts/deployment.ts";
+import { readHostPlatform } from "./host-platform.ts";
 import type { DeploymentState } from "./deployment-state.ts";
 import {
   connectRelay,
@@ -97,6 +102,8 @@ export type PrepareRelayOptions = {
   onRequest?: (request: InboundRequest) => Promise<RequestAnswer>;
   /** Injected by the tests; production dials a real socket. */
   open?: OpenRelaySocket;
+  /** Where this deployment runs; read off the kernel (host-platform.ts) when absent. */
+  host?: HostPlatform;
 };
 
 export type PreparedRelay = {
@@ -157,11 +164,14 @@ export function prepareRelay(options: PrepareRelayOptions): PreparedRelay {
   const keyPath = relayKeyPath(options.dataBase);
   let key: DeploymentKey | null = relay === undefined ? null : readDeploymentKey(keyPath);
   let link: RelayLink | null = null;
+  // Read once: the kernel does not change under a running container.
+  const host = options.host ?? readHostPlatform();
 
   return {
     identity: () => ({
       name,
       arm: options.arm,
+      host,
       ...(key !== null ? { keyFingerprint: key.fingerprint } : {}),
       ...(relay !== undefined ? { relayUrl: relay.url } : {}),
     }),

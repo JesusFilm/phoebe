@@ -8,10 +8,13 @@
 
 import { describe, expect, test } from "vite-plus/test";
 import { renderToStaticMarkup } from "react-dom/server";
+import { DEPLOYMENT_SCHEMA } from "phoebe-agent/contracts";
 import type { CompanionUpdate } from "phoebe-agent/contracts";
 import { rowFacts, sortFleet } from "./facts.ts";
+import { deploymentHref } from "./route.ts";
 import { FleetPage } from "./fleet-page.tsx";
 import { Rail } from "./rail.tsx";
+import { ConsoleView } from "./console-view.tsx";
 import { ConfigEditForm, InstallPage, InstallTab } from "./install-page.tsx";
 import { RELAY_UPGRADE_DOC, tooOldText } from "./relay-version.ts";
 import { ReceiptPanel } from "./deployment-tabs.tsx";
@@ -124,8 +127,41 @@ const rail = renderToStaticMarkup(
 const grid = renderToStaticMarkup(<FleetPage facts={FLEET} client={client()} now={NOW} />);
 
 describe("the rail", () => {
+  test("every deployment carries its host's mark, with a gear onto its config", () => {
+    // The fixture's bootstrapper says Linux; a report from before the field
+    // says nothing, and that entry gets a cloud: reached through the relay,
+    // host unknown.
+    const read = FLEET.filter((facts) => facts.reading.kind === "read").length;
+    expect(rail.match(/data-host="linux"/g)).toHaveLength(read);
+    expect(rail.match(/title="Linux"/g)).toHaveLength(read);
+    expect(rail.match(/lucide-cloud/g)).toHaveLength(FLEET.length - read);
+    const older = renderToStaticMarkup(
+      <Rail
+        facts={[
+          rowFacts(
+            row({ fingerprint: "old" }),
+            stored(report({ identity: { name: "youtube-studio", arm: "solo" } })),
+          ),
+        ]}
+        selectedDeployment={null}
+        now={NOW}
+        surface="browser"
+        signedIn
+        signIn={null}
+        onSignedIn={noop}
+      />,
+    );
+    expect(older).toMatch(/title="Host not reported yet"[^>]*>\s*<svg[^>]*lucide-cloud/);
+    expect(rail.match(/rail-gear"/g)).toHaveLength(FLEET.length);
+    expect(rail).toContain(
+      `class="rail-gear" href="${deploymentHref(FLEET[0]!.row.fingerprint, "config")}" title="Settings for ${FLEET[0]!.row.name}"`,
+    );
+  });
+
   test("lists every deployment in the sort order, dark first", () => {
-    const names = [...rail.matchAll(/class="name">.*?<\/span>(.*?)</g)].map((match) => match[1]);
+    const names = [...rail.matchAll(/class="platform"[^>]*>[\s\S]*?<\/span>([^<]*)</g)].map(
+      (match) => match[1],
+    );
 
     // Dark first; then the two with something on them, by name; then the rest.
     expect(names).toEqual([
@@ -497,7 +533,7 @@ describe("the local arm on the rail", () => {
       expect(markup, label).toContain(`aria-label="${label}"`);
     }
     expect(markup).not.toContain('aria-label="Start one"');
-    expect(markup).not.toContain('three"');
+    expect(markup).not.toMatch(/aria-label="(Start|Pause|Stop|Restart) three"/);
     // An icon, named for a screen reader by the button and hidden from it itself.
     expect(markup).toMatch(/class="[^"]*rail-action[^"]*"[^>]*>\s*<svg[^>]*aria-hidden="true"/);
   });
@@ -525,9 +561,138 @@ describe("the local arm on the rail", () => {
   });
 
   test("lists every install under This machine, in the order they were added", () => {
-    const names = [...markup.matchAll(/class="name">.*?<\/span>(.*?)</g)].map((match) => match[1]);
+    const names = [...markup.matchAll(/class="platform"[^>]*>[\s\S]*?<\/span>([^<]*)</g)].map(
+      (match) => match[1],
+    );
 
     expect(names).toEqual(["one", "two", "three"]);
+  });
+
+  test("says which host each install runs on: this machine's, or Linux under WSL", () => {
+    const mixed = renderToStaticMarkup(
+      <Rail
+        facts={[]}
+        now={NOW}
+        surface="companion"
+        signedIn={false}
+        installs={[
+          install({ dir: "/repos/one", name: "one" }),
+          install({
+            dir: "\\\\wsl.localhost\\archlinux\\home\\mike\\two",
+            name: "two",
+            wsl: { distro: "archlinux", dir: "/home/mike/two" },
+          }),
+        ]}
+        platform="win32"
+        signIn={null}
+        onSignedIn={noop}
+      />,
+    );
+
+    expect(mixed).toMatch(/title="Windows"[^>]*>\s*<svg[^>]*data-host="windows"/);
+    expect(mixed).toMatch(
+      /title="Linux, in the archlinux WSL distro"[^>]*>\s*<svg[^>]*data-host="wsl"/,
+    );
+    // Before the environment has answered, a local install's host is not known.
+    expect(markup).toMatch(/title="Host not reported yet"[^>]*>\s*<svg[^>]*lucide-monitor/);
+  });
+
+  test("a gear on every install opens its settings: the install tab", () => {
+    const opened: string[] = [];
+    const withGear = renderToStaticMarkup(
+      <Rail
+        facts={[]}
+        now={NOW}
+        surface="companion"
+        signedIn={false}
+        installs={installs}
+        onSettings={(dir) => opened.push(dir)}
+        signIn={null}
+        onSignedIn={noop}
+      />,
+    );
+
+    for (const name of ["one", "two", "three"]) {
+      expect(withGear, name).toContain(`aria-label="Settings for ${name}"`);
+    }
+    expect(withGear.match(/rail-gear"/g)).toHaveLength(3);
+    // Without a way to open a page there is no gear to press.
+    expect(markup).not.toContain("rail-gear");
+  });
+
+  test("a workspace has a chevron, closed to begin with, and its children once opened", () => {
+    const workspace = install({
+      dir: "/repos/ws",
+      name: "ws",
+      state: "running",
+      workspace: {
+        children: [
+          { dir: "/repos/ws/a", name: "a", slug: "acme/a" },
+          { dir: "/repos/ws/b", name: "b", slug: null },
+        ],
+      },
+    });
+    const closed = renderToStaticMarkup(
+      <Rail
+        facts={[]}
+        now={NOW}
+        surface="companion"
+        signedIn={false}
+        installs={[workspace, install({ dir: "/repos/solo", name: "solo" })]}
+        onSettings={() => undefined}
+        onChild={() => undefined}
+        signIn={null}
+        onSignedIn={noop}
+      />,
+    );
+    const opened = renderToStaticMarkup(
+      <Rail
+        facts={[]}
+        now={NOW}
+        surface="companion"
+        signedIn={false}
+        installs={[workspace]}
+        reports={{
+          "/repos/ws": localReport({
+            facts: workspace,
+            report: {
+              schema: DEPLOYMENT_SCHEMA,
+              receivedAt: ago(2),
+              report: report({
+                fleet: {
+                  tenants: [tenant({ id: "/w/a", path: "/w/a", slug: "acme/a", held: true })],
+                  cells: [],
+                  updatedAt: ago(12),
+                },
+              }),
+            },
+          }),
+        }}
+        defaultExpanded={new Set(["/repos/ws"])}
+        onSettings={() => undefined}
+        onChild={() => undefined}
+        signIn={null}
+        onSignedIn={noop}
+      />,
+    );
+
+    // One chevron: the solo install has nothing to open out.
+    expect(closed.match(/rail-chevron"/g)).toHaveLength(1);
+    expect(closed).toContain('aria-expanded="false"');
+    expect(closed).toContain('aria-label="Expand ws"');
+    expect(closed).toContain('title="2 in this workspace"');
+    expect(closed).not.toContain("rail-children");
+
+    expect(opened).toContain('aria-expanded="true"');
+    expect(opened).toMatch(/class="rail-children"/);
+    // The slug labels a child when it has one, the folder otherwise; the fleet
+    // says what each is doing, and a folder the fleet does not know says so.
+    expect(opened).toMatch(
+      /class="mark attention"[^>]*><\/span><span class="label">acme\/a<\/span><span class="word">held/,
+    );
+    expect(opened).toMatch(
+      /class="mark idle"[^>]*><\/span><span class="label">b<\/span><span class="word">not in the fleet/,
+    );
   });
 
   test("gives the three states three marks, and borrows none of the relay's four", () => {
@@ -1010,5 +1175,41 @@ describe("a paired install on the rail (#558)", () => {
 
     expect(markup).not.toContain("chip paired");
     expect(markup).toContain("the-fleet");
+  });
+});
+
+describe("the console, the page the rail opens", () => {
+  const view = renderToStaticMarkup(
+    <ConsoleView
+      bridge={bridge()}
+      install={install({ name: "youtube-studio", state: "running" })}
+      host="windows"
+      onSettings={() => undefined}
+    />,
+  );
+
+  test("names the install with its host and state, and carries the gear onto its settings", () => {
+    expect(view).toContain('aria-label="Console for youtube-studio"');
+    expect(view).toMatch(/title="Windows"[^>]*>\s*<svg[^>]*data-host="windows"/);
+    expect(view).toContain("<h1");
+    expect(view).toContain("running");
+    expect(view).toContain('aria-label="Settings for youtube-studio"');
+  });
+
+  test("starts on all with nothing yet, and on the child's own tab when opened from one", () => {
+    expect(view).toMatch(/class="console-channel current" aria-pressed="true"[^>]*>all</);
+    expect(view).toContain("Waiting for the container to print something");
+    const scoped = renderToStaticMarkup(
+      <ConsoleView
+        bridge={bridge()}
+        install={install()}
+        host={null}
+        tenant="JesusFilm/phoebe"
+        onSettings={() => undefined}
+      />,
+    );
+    expect(scoped).toMatch(
+      /class="console-channel current" aria-pressed="true" title="Every line from JesusFilm\/phoebe">phoebe</,
+    );
   });
 });

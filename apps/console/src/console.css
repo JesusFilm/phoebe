@@ -283,14 +283,16 @@ a {
    stripped back to the shape of the div beside it so the two read as one list. */
 .rail-entry.local {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: 0 6px;
   padding: 0;
 }
 
 .rail-entry.local .rail-select {
   flex: 1;
   min-width: 0;
+  overflow: hidden;
   padding: 6px 14px 6px 11px;
   border: 0;
   border-radius: 0;
@@ -1149,87 +1151,76 @@ details.why > summary::marker {
   max-width: 1300px;
 }
 
-.logs-drawer {
-  position: relative;
-  flex: none;
+/* The console (console-view.tsx): the page the rail opens on a local install.
+   A header with the name and the gear, one tab per pipeline, and the lines
+   filling the rest. */
+.main.console-view {
   display: flex;
   flex-direction: column;
-  min-width: 0;
-  overflow: hidden;
-  border-top: 1px solid var(--line);
-  background: var(--panel);
+  height: calc(100vh - 45px);
+  max-width: none;
+  padding: 0;
 }
 
-/* The drag handle: a thin strip over the top edge, invisible until hovered. */
-.logs-drawer-handle {
-  position: absolute;
-  inset: 0 0 auto 0;
-  height: 6px;
-  cursor: row-resize;
-  z-index: 2;
-  touch-action: none;
-}
-
-.logs-drawer-handle:hover,
-.logs-drawer-handle:active {
-  background: color-mix(in srgb, var(--accent) 35%, transparent);
-}
-
-.logs-drawer-bar {
+.console-bar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
-  height: 28px;
-  padding: 0 6px 0 10px;
+  padding: 10px 16px;
   border-bottom: 1px solid var(--line);
-  font-size: 12px;
 }
 
-.logs-drawer-tab {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex: none;
-  padding-right: 8px;
-  border-right: 1px solid var(--line);
-  color: var(--fg);
-}
-
-/* The tabs on the strip: one per pipeline that has spoken, beside all and the
-   bootstrapper. Text buttons, underlined when current, like the page's own tabs. */
-.logs-drawer-tabs {
+.console-name {
   display: flex;
-  align-items: stretch;
-  gap: 2px;
-  min-width: 0;
   flex: 1;
-  overflow-x: auto;
-  align-self: stretch;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
 }
 
-.logs-drawer-channel {
-  border: 0;
-  border-bottom: 2px solid transparent;
-  border-radius: 0;
-  background: none;
-  padding: 0 8px;
-  font-size: 11.5px;
-  color: var(--muted);
+.console-name h1 {
+  margin: 0;
+  font-size: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.logs-drawer-channel.current {
-  color: var(--fg);
-  border-bottom-color: var(--accent);
+.console-name .platform {
+  display: inline-flex;
+  color: var(--muted);
 }
 
-.logs-drawer-controls {
+.console-controls {
   display: inline-flex;
   align-items: center;
   gap: 2px;
-  flex: none;
   color: var(--muted);
+}
+
+.console-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+}
+
+.console-channel {
+  padding: 6px 8px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.console-channel.current {
+  color: inherit;
+  border-bottom-color: var(--accent);
 }
 
 .logs-lines {
@@ -1237,21 +1228,21 @@ details.why > summary::marker {
   min-height: 0;
   overflow: auto;
   margin: 0;
-  padding: 8px 10px;
+  padding: 8px 12px;
   font-size: 12px;
   line-height: 1.45;
   white-space: pre-wrap;
   word-break: break-word;
 }
 
-.logs-drawer-ended {
+.console-ended {
   margin: 0;
-  padding: 4px 10px;
+  padding: 4px 12px;
   border-top: 1px solid var(--line);
   font-size: 12px;
 }
 
-/* The drawer's toggle on the page's title row. */
+/* The way back to the console, on the tabbed page's title row. */
 .install-title {
   display: flex;
   align-items: center;
@@ -1263,10 +1254,128 @@ details.why > summary::marker {
   min-width: 0;
 }
 
-.install-title .logs-toggle {
+.install-title .console-open {
   color: var(--muted);
 }
 
-.install-title .logs-toggle[aria-pressed="true"] {
-  color: var(--accent);
+/* ── the rail's project rows ───────────────────────────────────────────── */
+
+/* Each entry, local or relay, carries where it runs and a gear, the way T3 Code's
+   project list does: a platform icon before the name, and settings at the edge
+   with the shortcuts. */
+/* One line each, as T3 Code's project list: a long name is cut, not wrapped,
+   and the mark and the icon stay on the name's line. */
+.rail-entry.local .name,
+.rail-entry.local .sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rail-entry .platform {
+  display: inline-flex;
+  margin-right: 6px;
+  color: var(--muted);
+  vertical-align: -2px;
+}
+
+.rail-entry.local .rail-gear {
+  color: var(--muted);
+}
+
+/* A relay entry is a link; its gear is a second link beside it. */
+.rail-relay-row {
+  display: flex;
+  align-items: center;
+}
+
+.rail-relay-row .rail-entry {
+  flex: 1;
+  min-width: 0;
+}
+
+.rail-relay-row .rail-gear {
+  flex: none;
+  margin-right: 8px;
+  color: var(--muted);
+}
+
+/* A workspace opens out: a chevron before its icon, and its children indented
+   under it, each with a mark and a word. */
+.rail-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-left: 8px;
+  margin-right: -6px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  vertical-align: -3px;
+}
+
+.rail-chevron:hover {
+  background: var(--chip);
+}
+
+.rail-children {
+  flex-basis: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0 0 4px;
+  list-style: none;
+}
+
+.rail-child.muted {
+  color: var(--muted);
+  cursor: default;
+}
+
+.rail-child {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 14px 3px 40px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.rail-child:hover {
+  background: var(--chip);
+}
+
+.rail-child .label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rail-child .word {
+  flex: none;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.mark.attention {
+  border-radius: 50%;
+  background: var(--warn);
+}
+
+.mark.idle {
+  border-radius: 50%;
+  border: 2px solid var(--idle);
 }

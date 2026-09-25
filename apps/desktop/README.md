@@ -152,18 +152,25 @@ change them ([#557](https://github.com/JesusFilm/phoebe/issues/557)) and pairing
   `report` event out — the relay's own, so the tabs do not branch on arm.
 - [`container-read.ts`](src/container-read.ts) — the two seams under it: the
   `phoebe status --json` exec, and the `docker compose events` subscription.
-- [`container-logs.ts`](src/container-logs.ts) — the logs drawer's stream:
+- [`container-logs.ts`](src/container-logs.ts) — the console's stream:
   `docker compose logs --follow` on the phoebe service, one child per install
-  for as long as the drawer wants it, its lines kept (bounded) so a drawer opened
+  for as long as the console wants it, its lines kept (bounded) so a console opened
   late joins with the tail. Unlike the events watcher it does not re-subscribe when
-  the stream ends: that end says the container stopped, the drawer shows it, and
-  the operator reopens the drawer when the container is back. The container is
+  the stream ends: that end says the container stopped, the console shows it, and
+  the console follows again when the container is back. The container is
   log-stateless by decision (#73); these are Docker's lines, read back.
 - [`pair.ts`](src/pair.ts) — the seventh verb, and the one the engine does not
   have: a mint on the relay, the address into the config, the token into the
   root `.env`, and an `up -d` so Compose recreates the container holding both
   ([#558](https://github.com/JesusFilm/phoebe/issues/558)). The token goes into
   the file and into no line.
+- [`workspace-children.ts`](src/workspace-children.ts) — the children under a
+  workspace root, for the rail to open out. The root's `workspace` block is read
+  off the config's source text, never loaded, and the folders are walked with the
+  bootstrapper's own skip rule (bootstrap/tenants.ts): to `depth`, or the declared
+  `tenants`, a child being a folder carrying `phoebe.config.ts`. Each comes with
+  its `repoSlug` when the config states one, so the rail can name it the way the
+  fleet does.
 - [`deployment-dir.ts`](src/deployment-dir.ts) — where an install's deployment
   files are. A repository can be a workspace child at its root and a standalone
   deployment in `.phoebe/` beside it (`configDir`, docs/configuration.md; this
