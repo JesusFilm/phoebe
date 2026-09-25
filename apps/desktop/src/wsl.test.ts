@@ -132,7 +132,10 @@ describe("which distros this machine has", () => {
   /** `wsl.exe -l -q` as it really prints: UTF-16, so a NUL after every character. */
   function wslList(code: number, ...names: string[]): CommandRunner {
     const text = names.map((name) => `${name}\r\n`).join("");
-    const noisy = text.split("").map((char) => `${char}\u0000`).join("");
+    const noisy = text
+      .split("")
+      .map((char) => `${char}\u0000`)
+      .join("");
     return () => Promise.resolve({ code, stdout: noisy, stderr: "" });
   }
 
@@ -162,7 +165,10 @@ describe("which distros this machine has", () => {
   test("a wsl.exe that fails or is missing means no distro to offer", async () => {
     expect(await listWslDistros({ platform: "win32", runner: wslList(1) })).toEqual([]);
     expect(
-      await listWslDistros({ platform: "win32", runner: () => Promise.reject(new Error("ENOENT")) }),
+      await listWslDistros({
+        platform: "win32",
+        runner: () => Promise.reject(new Error("ENOENT")),
+      }),
     ).toEqual([]);
   });
 });
@@ -175,7 +181,10 @@ describe("the three seams", () => {
       return Promise.resolve({ code: 1, stdout: "", stderr: "N\u0000o\u0000 distro" });
     };
 
-    const result = await wslRunner(LOCATION, runner)({
+    const result = await wslRunner(
+      LOCATION,
+      runner,
+    )({
       file: "docker",
       args: ["compose", "version"],
       cwd: `${DIR}${B}container`,
@@ -204,7 +213,10 @@ describe("the three seams", () => {
       return { stdout: null, on: () => undefined, kill: () => undefined };
     };
 
-    wslEventSpawner(LOCATION, spawner)({
+    wslEventSpawner(
+      LOCATION,
+      spawner,
+    )({
       file: "docker",
       args: ["compose", "-f", `${DIR}${B}container${B}compose.yml`, "events", "--json"],
       cwd: `${DIR}${B}container`,
@@ -222,7 +234,10 @@ describe("the three seams", () => {
       return Promise.resolve({ code: 0 });
     };
 
-    await wslStdinSpawner(LOCATION, spawner)({
+    await wslStdinSpawner(
+      LOCATION,
+      spawner,
+    )({
       file: "docker",
       args: ["compose", "exec", "-T", "phoebe", "phoebe", "secret", "set", "GH_TOKEN"],
       cwd: `${DIR}${B}container`,
