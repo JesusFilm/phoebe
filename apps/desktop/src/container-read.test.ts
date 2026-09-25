@@ -42,7 +42,7 @@ function compose(result: { code?: number; stdout?: string; stderr?: string }): {
 }
 
 describe("reading the report", () => {
-  test("execs `phoebe status --json` in the container, with no TTY", async () => {
+  test("reads the report file in the container through sh, with no TTY", async () => {
     const { runner, calls } = compose({ stdout: '{"schema":1}' });
 
     await readContainerReport({ deployment: DEPLOYMENT, runner });
@@ -56,6 +56,27 @@ describe("reading the report", () => {
       ...STATUS_ARGV,
     ]);
     expect(STATUS_ARGV).toContain("-T");
+    // The file, not the verb: a container running the engine from a mounted
+    // checkout has no `phoebe` on its PATH, and `status --json` prints the
+    // file verbatim anyway (#508 §3).
+    expect(STATUS_ARGV.slice(0, 3)).toEqual(["exec", "-T", "phoebe"]);
+    expect(STATUS_ARGV.slice(-3)).toEqual([
+      "sh",
+      "-c",
+      'cat "${PHOEBE_DATA_DIR:-/data/repos}/state/deployment.json"',
+    ]);
+  });
+
+  test("a container that never wrote the report is told apart from a read that broke", async () => {
+    const { runner } = compose({
+      code: 1,
+      stderr: "cat: can't open '/data/repos/state/deployment.json': No such file or directory\n",
+    });
+
+    const read = await readContainerReport({ deployment: DEPLOYMENT, runner });
+
+    expect(read.ok).toBe(false);
+    if (!read.ok) expect(read.reason).toContain("predates");
   });
 
   test("hoists the schema, so a reader decides before it indexes a field", async () => {

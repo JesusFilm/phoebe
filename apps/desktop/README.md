@@ -237,14 +237,17 @@ fingerprint the window was shown, so an edit composed against a config a termina
 has since changed is refused `stale` with the manual edit to make instead —
 identically on both arms, which is what the fingerprint is for.
 
-The loop reads `phoebe status --json` inside the container: the verb is
-[#533](https://github.com/JesusFilm/phoebe/issues/533)'s and the report it prints
-is [#532](https://github.com/JesusFilm/phoebe/issues/532)'s. A container running an
-engine older than those answers the exec with its own sentence, and the read
-comes back `report: null` with that sentence on it — the path the tabs draw
-anyway when nothing is running. `STATUS_ARGV` in
+The loop reads the deployment report inside the container — the file
+[#532](https://github.com/JesusFilm/phoebe/issues/532) has the bootstrapper write,
+`cat` through `sh` at the path `resolveDataBase` derives. Not `phoebe status --json`,
+though that prints the same bytes ([#508 §3](https://github.com/JesusFilm/phoebe/issues/508)):
+a container running the engine from a mounted checkout, as this repo's own
+`.phoebe/` does, has no `phoebe` on its PATH, and the read is not the place to know
+how each container starts its engine. A container whose bootstrapper predates the
+report has no file to read, and the read comes back `report: null` with a sentence
+saying so — which the tabs show, rather than "reading…" forever. `STATUS_ARGV` in
 [`src/container-read.ts`](src/container-read.ts) is the one line that moves if the
-verb's flags do.
+file does.
 
 ## The two version rules
 

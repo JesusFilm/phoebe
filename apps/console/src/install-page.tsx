@@ -270,7 +270,17 @@ export function InstallPage({
               connection={localConnection(install)}
               config={config}
               now={now}
-              empty={<NoReport install={install} onOpenInstall={() => setTab("install")} />}
+              empty={
+                <NoReport
+                  install={install}
+                  reason={
+                    report !== null && report.install === install.dir
+                      ? (report.reason ?? null)
+                      : null
+                  }
+                  onOpenInstall={() => setTab("install")}
+                />
+              }
               writes={{
                 config: (
                   <ConfigEditForm
@@ -312,13 +322,22 @@ export function InstallPage({
  */
 function NoReport({
   install,
+  reason,
   onOpenInstall,
 }: {
   install: LocalInstall;
+  /** Why the last read came back with no report, when it did. */
+  reason: string | null;
   onOpenInstall: () => void;
 }) {
   if (install.state === "running") {
-    return <p className="muted">Reading this install&apos;s report…</p>;
+    // A read that failed says why; "reading…" is only true before the first
+    // answer. The loop keeps asking, so a sentence here is not the end of it.
+    return reason === null ? (
+      <p className="muted">Reading this install&apos;s report…</p>
+    ) : (
+      <p className="refusal">The container answered with no report: {reason}</p>
+    );
   }
   return (
     <>
