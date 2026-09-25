@@ -481,19 +481,47 @@ describe("the local arm on the rail", () => {
       installs={installs}
       selected="/repos/two"
       onSelect={() => undefined}
-      onStart={() => undefined}
+      onAction={() => undefined}
       onAdd={() => undefined}
       signIn={null}
       onSignedIn={noop}
     />,
   );
 
-  test("the stopped install has a start shortcut on its entry, and only it", () => {
+  test("the stopped install has a start shortcut; the running one pause, stop and restart", () => {
     // one is running, two is stopped, three has nothing to start.
-    expect(markup.match(/class="rail-action"/g)).toHaveLength(1);
+    expect(markup.match(/class="rail-action"/g)).toHaveLength(4);
     expect(markup).toMatch(/two[\s\S]*?class="rail-action"[^>]*aria-label="Start two"/);
+    for (const label of ["Pause one", "Stop one", "Restart one"]) {
+      expect(markup, label).toContain(`aria-label="${label}"`);
+    }
+    expect(markup).not.toContain('aria-label="Start one"');
+    expect(markup).not.toContain('three"');
     // An icon, named for a screen reader by the button and hidden from it itself.
     expect(markup).toMatch(/class="rail-action"[^>]*>\s*<svg[^>]*aria-hidden="true"/);
+  });
+
+  test("an install with a run in flight shows a spinner where its shortcuts were", () => {
+    const busy = renderToStaticMarkup(
+      <Rail
+        facts={[]}
+        now={NOW}
+        surface="companion"
+        signedIn={false}
+        installs={installs}
+        busy={new Set(["/repos/one"])}
+        onSelect={() => undefined}
+        onAction={() => undefined}
+        signIn={null}
+        onSignedIn={noop}
+      />,
+    );
+
+    expect(busy).toContain('aria-label="Working on one"');
+    expect(busy).toMatch(/class="rail-action busy"[^>]*>\s*<svg[^>]*class="[^"]*spin/);
+    expect(busy).not.toContain('aria-label="Pause one"');
+    // The other entries keep their shortcuts.
+    expect(busy).toContain('aria-label="Start two"');
   });
 
   test("lists every install under This machine, in the order they were added", () => {

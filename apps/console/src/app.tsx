@@ -31,6 +31,7 @@ import type {
   LocalInstall,
   LocalReportEvent,
   RelayIdentity,
+  VerbRunRequest,
 } from "phoebe-agent/contracts";
 import type { Surface } from "./companion.ts";
 import {
@@ -45,7 +46,16 @@ import { rowFacts, sortFleet, type RowFacts } from "./facts.ts";
 import { applyEvent, EMPTY_FLEET, loadFleet, type FleetState } from "./fleet-state.ts";
 import { FleetPage } from "./fleet-page.tsx";
 import { InstallPage } from "./install-page.tsx";
-import { pairedInstalls } from "./local-install.ts";
+import { pairedInstalls, type InstallAction } from "./local-install.ts";
+import {
+  busyInstalls,
+  NO_ACTIVITY,
+  runAnswered,
+  runAsked,
+  runEnded,
+  runSeen,
+  type RunActivity,
+} from "./run-activity.ts";
 import { PeoplePage } from "./people-page.tsx";
 import { createNotifier, type AlertSubject, type Notifiable } from "./notifications.ts";
 import { Rail } from "./rail.tsx";
@@ -380,6 +390,77 @@ function Console({
     };
   }, [bridge]);
 
+  // Which installs have a run in flight, for the rail's spinner
+  // (run-activity.ts). Runs the rail starts are known from their id; runs the
+  // page starts are learned from their first line, by asking main which
+  // install's current run that is.
+  const [activity, setActivity] = useState<RunActivity>(NO_ACTIVITY);
+  const activityRef = useRef(activity);
+  activityRef.current = activity;
+  useEffect(() => {
+    if (bridge === null) return;
+    const offLines = bridge.runs.lines((line) => {
+      if (activityRef.current.runs.has(line.runId)) return;
+      for (const install of installs) {
+        void bridge.runs.current(install.dir).then((current) => {
+          if (current !== null && current.runId === line.runId && current.exit === undefined) {
+            setActivity((held) => runSeen(held, line.runId, install.dir));
+          }
+        }, noop);
+      }
+    });
+    const offExits = bridge.runs.exits((exit) => {
+      setActivity((held) => runEnded(held, exit.runId));
+    });
+    return () => {
+      offLines();
+      offExits();
+    };
+  }, [bridge, installs]);
+
+  /** Start one run from the rail and keep the spinner honest about it. */
+  const startTracked = useCallback(
+    async (request: VerbRunRequest): Promise<string | null> => {
+      if (bridge === null) return null;
+      setActivity((held) => runAsked(held, request.install));
+      let runId: string | null = null;
+      try {
+        runId = await bridge.runs.start(request);
+      } catch {
+        runId = null;
+      }
+      setActivity((held) => runAnswered(held, request.install, runId));
+      return runId;
+    },
+    [bridge],
+  );
+
+  /** One shortcut, as the runs it is (local-install.ts, `InstallAction`). */
+  const runAction = useCallback(
+    async (dir: string, action: InstallAction): Promise<void> => {
+      if (bridge === null) return;
+      switch (action) {
+        case "start":
+          await startTracked({ install: dir, verb: "start" });
+          return;
+        case "pause":
+          await startTracked({ install: dir, verb: "stop" });
+          return;
+        case "stop":
+          await startTracked({ install: dir, verb: "stop", now: true });
+          return;
+        case "restart": {
+          const stopped = await startTracked({ install: dir, verb: "stop" });
+          if (stopped === null) return;
+          await exitOf(bridge, dir, stopped);
+          await startTracked({ install: dir, verb: "start" });
+          return;
+        }
+      }
+    },
+    [bridge, startTracked],
+  );
+
   const forgetInstall = useCallback(
     (dir: string) => {
       if (bridge === null) return;
@@ -532,12 +613,13 @@ function Console({
                 // click did arrives as the next pushed state, and a refusal is
                 // main saying the button was not the next step — which is a
                 // state the notice had already stopped offering.
-                // The rail's start shortcut. The page opens first so the run's
-                // lines have somewhere to land; a refusal (`busy`, most likely)
-                // is the page's to show from the run it reads on mount.
-                onStart: (dir: string) => {
+                busy: busyInstalls(activity),
+                // The rail's shortcuts. The page opens first so the run's lines
+                // have somewhere to land; a refusal (`busy`, most likely) is
+                // the page's to show from the run it reads on mount.
+                onAction: (dir: string, action: InstallAction) => {
                   setOpenInstall(dir);
-                  void bridge.runs.start({ install: dir, verb: "start" }).catch(noop);
+                  void runAction(dir, action);
                 },
                 onDownload: () => void bridge.updates.download().catch(noop),
                 onRestart: () => void bridge.updates.restart().catch(noop),
@@ -731,6 +813,25 @@ async function sendConfigEdit(
  * The route, kept in step with the address bar. Links are plain `href`s into the
  * hash, so the browser does the navigating and the history; this only listens.
  */
+/** Resolves when the run with this id exits — a restart's wait between its halves. */
+function exitOf(bridge: DesktopBridge, dir: string, runId: string): Promise<void> {
+  return new Promise((resolve) => {
+    const off = bridge.runs.exits((exit) => {
+      if (exit.runId !== runId) return;
+      off();
+      resolve();
+    });
+    // The exit may have come and gone before this subscription existed; main
+    // still holds the install's last run, so ask it once.
+    void bridge.runs.current(dir).then((current) => {
+      if (current !== null && current.runId === runId && current.exit !== undefined) {
+        off();
+        resolve();
+      }
+    }, noop);
+  });
+}
+
 function useRoute(): Route {
   const [route, setRoute] = useState<Route>(() =>
     typeof window === "undefined" ? FLEET_ROUTE : parseRoute(window.location.hash),

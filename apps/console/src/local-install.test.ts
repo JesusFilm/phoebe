@@ -9,6 +9,7 @@ import {
   applyRunLine,
   configSetRequest,
   dockerReading,
+  installActions,
   installReading,
   landingTab,
   versionReading,
@@ -63,6 +64,14 @@ describe("how the rail reads an install", () => {
     );
 
     expect(reading.text).toBe("stopped · `docker` is not on PATH, so nothing can be running");
+  });
+});
+
+describe("which shortcuts a rail entry carries", () => {
+  test("start on a stopped install; pause, stop and restart on a running one; none otherwise", () => {
+    expect(installActions(install({ state: "stopped" }))).toEqual(["start"]);
+    expect(installActions(install({ state: "running" }))).toEqual(["pause", "stop", "restart"]);
+    expect(installActions(install({ state: "not-initialised" }))).toEqual([]);
   });
 });
 
