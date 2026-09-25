@@ -78,7 +78,7 @@ export async function installFacts(
     dir: stored.dir,
     // A WSL folder is named by its Linux path's last segment: the same word on
     // every platform, where `basename` would need Windows's separator to see it.
-    name: wsl === null ? path.basename(stored.dir) : (wsl.dir.split("/").pop() || wsl.distro),
+    name: wsl === null ? path.basename(stored.dir) : wsl.dir.split("/").pop() || wsl.distro,
     addedAt: stored.addedAt,
     containerVersion: null,
     ...(wsl === null ? {} : { wsl }),

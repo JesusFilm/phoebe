@@ -51,14 +51,7 @@ import { createNotifier, type AlertSubject, type Notifiable } from "./notificati
 import { Rail } from "./rail.tsx";
 import { isNotSignedIn, type RelayClient, type RelaySignIn } from "./relay-client.ts";
 import { configOf } from "./report.ts";
-import {
-  ADD_HREF,
-  FLEET_HREF,
-  FLEET_ROUTE,
-  PEOPLE_HREF,
-  parseRoute,
-  type Route,
-} from "./route.ts";
+import { ADD_HREF, FLEET_HREF, FLEET_ROUTE, PEOPLE_HREF, parseRoute, type Route } from "./route.ts";
 
 type Session =
   | { kind: "asking" }
@@ -560,7 +553,9 @@ function Console({
           <CompanionHome
             installs={installs}
             onAdd={bridge === null ? undefined : () => addInstall()}
-            onAddWsl={bridge === null || wslDistros.length === 0 ? undefined : () => addInstall("wsl")}
+            onAddWsl={
+              bridge === null || wslDistros.length === 0 ? undefined : () => addInstall("wsl")
+            }
             relay={identity === null ? null : { url: relayUrl, email: identity.email }}
             {...(refusal !== undefined ? { refusal } : {})}
           />
