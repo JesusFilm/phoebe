@@ -37,7 +37,11 @@ export type CompanionFile = {
 
 /** What a companion with nothing in it looks like. */
 export function emptyCompanionFile(): CompanionFile {
-  return { installs: [], relay: null, preferences: { notifications: true } };
+  return {
+    installs: [],
+    relay: null,
+    preferences: { notifications: true, consoleTheme: "system" },
+  };
 }
 
 /**
@@ -126,8 +130,14 @@ function coerce(parsed: unknown): CompanionFile {
     typeof (preferencesField as { notifications?: unknown }).notifications === "boolean"
       ? (preferencesField as { notifications: boolean }).notifications
       : empty.preferences.notifications;
+  const consoleTheme =
+    typeof preferencesField === "object" &&
+    preferencesField !== null &&
+    typeof (preferencesField as { consoleTheme?: unknown }).consoleTheme === "string"
+      ? (preferencesField as { consoleTheme: string }).consoleTheme
+      : empty.preferences.consoleTheme;
 
-  return { installs, relay, preferences: { notifications } };
+  return { installs, relay, preferences: { notifications, consoleTheme } };
 }
 
 function isStoredInstall(value: unknown): value is StoredInstall {

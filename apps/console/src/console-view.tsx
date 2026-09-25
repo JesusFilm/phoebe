@@ -2,18 +2,27 @@
 //
 // Picking an install on the rail lands here, the way picking a project in T3
 // Code lands on its terminal. The header says which install and where it runs,
-// with the gear onto its settings, the tabbed page (install-page.tsx). Below,
-// one tab per pipeline that has spoken (logs-channels.ts) and the lines. Open,
-// it follows over the bridge and stops the stream when the install changes
-// underneath it. What it shows is logs.ts's view; this file is the subscription
-// and the drawing.
+// with the theme picker and the gear onto its settings, the tabbed page
+// (install-page.tsx). Below, one tab per pipeline that has spoken
+// (logs-channels.ts) and the lines, drawn on the chosen theme (console-themes.ts,
+// log-line.tsx). Open, it follows over the bridge and stops the stream when the
+// install changes underneath it. What it shows is logs.ts's view; this file is
+// the subscription and the drawing.
 
 import { ArrowDownToLine, Settings } from "lucide-react";
-import { useEffect, useRef, useState, type UIEvent } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type UIEvent } from "react";
 import type { DesktopBridge, HostPlatform, LocalInstall } from "phoebe-agent/contracts";
 import { Button } from "~/components/ui/button";
+import {
+  consoleThemeProperties,
+  resolveConsoleTheme,
+  SYSTEM_CONSOLE_THEME,
+  type ConsoleThemeChoice,
+} from "./console-themes.ts";
+import { ConsoleThemePicker } from "./console-theme-picker.tsx";
 import { HostIcon, hostTitle } from "./host-icon.tsx";
 import { installReading } from "./local-install.ts";
+import { LogLine } from "./log-line.tsx";
 import { appendLogLine, EMPTY_LOGS, logsEnded, logsSeeded, type LogsView } from "./logs.ts";
 import { ALL_CHANNEL, channelLabel, channelsIn, linesIn, tenantChannel } from "./logs-channels.ts";
 
@@ -22,6 +31,8 @@ export function ConsoleView({
   install,
   host,
   tenant = null,
+  theme = SYSTEM_CONSOLE_THEME,
+  onTheme,
   onSettings,
 }: {
   bridge: DesktopBridge;
@@ -30,6 +41,10 @@ export function ConsoleView({
   host: HostPlatform | null;
   /** A workspace child's slug, when the rail opened this from one: its lines first. */
   tenant?: string | null;
+  /** The operator's theme choice (console-themes.ts); "system" until read. */
+  theme?: ConsoleThemeChoice;
+  /** The picker changed the theme. Absent, the picker is not drawn. */
+  onTheme?: (choice: ConsoleThemeChoice) => void;
   /** The gear: the install's tabbed page. */
   onSettings: () => void;
 }) {
@@ -44,6 +59,11 @@ export function ConsoleView({
   const shown = channels.includes(channel) ? channel : ALL_CHANNEL;
   const lines = linesIn(view.lines, shown);
   const reading = installReading(install);
+
+  // "System" is Phoebe's own light or dark by the OS, and follows it as it moves.
+  const systemDark = useSystemDark();
+  const palette = resolveConsoleTheme(theme, systemDark);
+  const themed = consoleThemeProperties(palette) as CSSProperties;
 
   // Followed again when the install's state moves: a container that came back
   // is a new stream, and the ended one below is not it.
@@ -88,7 +108,12 @@ export function ConsoleView({
   };
 
   return (
-    <main className="main console-view" aria-label={`Console for ${install.name}`}>
+    <main
+      className={`main console-view scheme-${palette.scheme}`}
+      aria-label={`Console for ${install.name}`}
+      data-theme={palette.id}
+      style={themed}
+    >
       <header className="console-bar">
         <span className="console-name">
           <span className="platform" title={hostTitle(host)} aria-label={hostTitle(host)}>
@@ -96,7 +121,7 @@ export function ConsoleView({
           </span>
           <span className={`mark ${reading.tone}`} aria-hidden="true" />
           <h1 title={install.dir}>{install.name}</h1>
-          <span className="muted">{reading.text}</span>
+          <span className="console-state">{reading.text}</span>
         </span>
         <span className="console-controls">
           {pinned ? null : (
@@ -110,6 +135,7 @@ export function ConsoleView({
               <ArrowDownToLine aria-hidden="true" />
             </Button>
           )}
+          {onTheme === undefined ? null : <ConsoleThemePicker theme={theme} onChoose={onTheme} />}
           <Button
             variant="ghost"
             size="icon-xs"
@@ -144,12 +170,26 @@ export function ConsoleView({
       </nav>
       <pre className="logs-lines" ref={box} onScroll={onScroll}>
         {view.lines.length === 0 && view.ended === null ? (
-          <span className="muted">Waiting for the container to print something…</span>
+          <span className="console-quiet">Waiting for the container to print something…</span>
         ) : (
-          lines.join("\n")
+          lines.map((line, index) => <LogLine key={index} line={line} palette={palette.ansi} />)
         )}
       </pre>
-      {view.ended === null ? null : <p className="console-ended muted">{view.ended}</p>}
+      {view.ended === null ? null : <p className="console-ended">{view.ended}</p>}
     </main>
   );
+}
+
+/** Whether the OS is dark right now, kept current as it changes. */
+function useSystemDark(): boolean {
+  const query =
+    typeof window === "undefined" ? null : window.matchMedia("(prefers-color-scheme: dark)");
+  const [dark, setDark] = useState(query?.matches ?? false);
+  useEffect(() => {
+    if (query === null) return;
+    const onChange = (): void => setDark(query.matches);
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, [query]);
+  return dark;
 }

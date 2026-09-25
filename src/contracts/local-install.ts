@@ -125,10 +125,15 @@ export type CompanionEnvironment = {
 };
 
 /**
- * The operator's preferences, as `companion.json` holds them (#527 §12). One
- * field today; notifications are raised in the renderer and this is the switch
- * that silences them (#524, §10).
+ * The operator's preferences, as `companion.json` holds them (#527 §12).
+ * Notifications are raised in the renderer and this is the switch that silences
+ * them (#524, §10). The console theme is the colours the console draws a local
+ * install's log lines in: a theme id the console knows (apps/console
+ * console-themes.ts), or `"system"` for Phoebe's own light or dark by the OS.
+ * Main stores the string and never reads it; an id from a newer console is an
+ * older one's `"system"`.
  */
 export type CompanionPreferences = {
   notifications: boolean;
+  consoleTheme: string;
 };

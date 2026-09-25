@@ -1152,14 +1152,18 @@ details.why > summary::marker {
 }
 
 /* The console (console-view.tsx): the page the rail opens on a local install.
-   A header with the name and the gear, one tab per pipeline, and the lines
-   filling the rest. */
+   A header with the name, the theme picker and the gear, one tab per pipeline,
+   and the lines filling the rest. Every colour is the theme's (console-themes.ts),
+   set on the element as custom properties, so the console reads like a terminal
+   in the operator's own scheme whatever the app around it is. */
 .main.console-view {
   display: flex;
   flex-direction: column;
   height: calc(100vh - 45px);
   max-width: none;
   padding: 0;
+  background: var(--console-bg);
+  color: var(--console-fg);
 }
 
 .console-bar {
@@ -1167,7 +1171,8 @@ details.why > summary::marker {
   align-items: center;
   gap: 8px;
   padding: 10px 16px;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--console-panel);
+  background: var(--console-panel);
 }
 
 .console-name {
@@ -1188,21 +1193,39 @@ details.why > summary::marker {
 
 .console-name .platform {
   display: inline-flex;
-  color: var(--muted);
+  color: var(--console-dim);
+}
+
+.console-state {
+  color: var(--console-dim);
 }
 
 .console-controls {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
-  color: var(--muted);
+  gap: 4px;
+  color: var(--console-dim);
+}
+
+/* The picker (console-theme-picker.tsx): the browser's own select, in the
+   theme's colours. */
+.console-theme-pick select {
+  max-width: 150px;
+  padding: 2px 4px;
+  border: 1px solid var(--console-dim);
+  border-radius: 4px;
+  background: var(--console-bg);
+  color: var(--console-fg);
+  font: inherit;
+  font-size: 12px;
 }
 
 .console-tabs {
   display: flex;
   gap: 2px;
   padding: 0 12px;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--console-panel);
+  background: var(--console-panel);
   overflow-x: auto;
 }
 
@@ -1211,7 +1234,7 @@ details.why > summary::marker {
   border: 0;
   border-bottom: 2px solid transparent;
   background: none;
-  color: var(--muted);
+  color: var(--console-dim);
   font: inherit;
   font-size: 12px;
   white-space: nowrap;
@@ -1219,8 +1242,8 @@ details.why > summary::marker {
 }
 
 .console-channel.current {
-  color: inherit;
-  border-bottom-color: var(--accent);
+  color: var(--console-fg);
+  border-bottom-color: var(--console-accent);
 }
 
 .logs-lines {
@@ -1233,12 +1256,41 @@ details.why > summary::marker {
   line-height: 1.45;
   white-space: pre-wrap;
   word-break: break-word;
+  background: var(--console-bg);
+  color: var(--console-fg);
+}
+
+/* One line's tags (log-line.tsx), each in its role's colour off the palette. */
+.log-tag.boot {
+  color: var(--console-tag-boot);
+}
+
+.log-tag.pipeline {
+  color: var(--console-tag-pipeline);
+}
+
+.log-tag.unit {
+  color: var(--console-tag-unit);
+}
+
+.log-tag.agent {
+  color: var(--console-tag-agent);
+}
+
+.log-tag.stderr {
+  color: var(--console-tag-stderr);
+}
+
+.console-quiet {
+  color: var(--console-dim);
 }
 
 .console-ended {
   margin: 0;
   padding: 4px 12px;
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--console-panel);
+  background: var(--console-panel);
+  color: var(--console-dim);
   font-size: 12px;
 }
 
