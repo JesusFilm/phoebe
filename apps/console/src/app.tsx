@@ -45,6 +45,11 @@ import { DeploymentPage, NoSuchDeployment } from "./deployment-page.tsx";
 import { rowFacts, sortFleet, type RowFacts } from "./facts.ts";
 import { applyEvent, EMPTY_FLEET, loadFleet, type FleetState } from "./fleet-state.ts";
 import { FleetPage } from "./fleet-page.tsx";
+import {
+  consoleThemeChoiceOf,
+  SYSTEM_CONSOLE_THEME,
+  type ConsoleThemeChoice,
+} from "./console-themes.ts";
 import { ConsoleView } from "./console-view.tsx";
 import { hostOfProcessPlatform } from "./host-icon.tsx";
 import { InstallPage } from "./install-page.tsx";
@@ -228,6 +233,16 @@ function Console({
   // Default on (#524 §8), and read back off `companion.json` the moment main
   // answers. A browser never asks — there is nothing there to notify with.
   const [notifications, setNotifications] = useState(true);
+  // The console's colour theme (console-themes.ts): the operator's preference,
+  // read with the rest and written back through the bridge when the picker moves.
+  const [consoleTheme, setConsoleTheme] = useState<ConsoleThemeChoice>(SYSTEM_CONSOLE_THEME);
+  const chooseConsoleTheme = (choice: ConsoleThemeChoice): void => {
+    setConsoleTheme(choice);
+    if (bridge === null) return;
+    void bridge.preferences
+      .set({ notifications, consoleTheme: choice })
+      .then((saved) => setConsoleTheme(consoleThemeChoiceOf(saved.consoleTheme)), ignore);
+  };
   const now = useNow(1000);
 
   // The two arms share one page area, and an open install wins it. A rail link
@@ -241,7 +256,9 @@ function Console({
     if (bridge === null) return;
     let live = true;
     bridge.preferences.get().then((preferences) => {
-      if (live) setNotifications(preferences.notifications);
+      if (!live) return;
+      setNotifications(preferences.notifications);
+      setConsoleTheme(consoleThemeChoiceOf(preferences.consoleTheme));
     }, ignore);
     return () => {
       live = false;
@@ -570,7 +587,7 @@ function Console({
                   void Notification.requestPermission();
                 }
                 void bridge.preferences
-                  .set({ notifications: wanted })
+                  .set({ notifications: wanted, consoleTheme })
                   .then((saved) => setNotifications(saved.notifications), ignore);
               }}
             />
@@ -669,6 +686,8 @@ function Console({
                 : "wsl"
             }
             tenant={openTenant}
+            theme={consoleTheme}
+            onTheme={chooseConsoleTheme}
             onSettings={() => setOpenView("settings")}
           />
         ) : open !== null && bridge !== null ? (

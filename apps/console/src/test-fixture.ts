@@ -448,7 +448,7 @@ export function bridge(answers: BridgeAnswers = {}): DesktopBridge {
       changes: () => () => undefined,
     },
     preferences: {
-      get: () => Promise.resolve({ notifications: true }),
+      get: () => Promise.resolve({ notifications: true, consoleTheme: "system" }),
       set: (preferences) => Promise.resolve(preferences),
     },
     relay: {
