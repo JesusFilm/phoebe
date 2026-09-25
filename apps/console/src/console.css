@@ -1099,6 +1099,7 @@ details.why > summary::marker {
 .actions button {
   width: auto;
 }
+<<<<<<< HEAD
 
 /* The logs pane beside an install's page: the page keeps its column, the pane
    takes the rest and stays put while the page scrolls. */
@@ -1158,3 +1159,5 @@ details.why > summary::marker {
 .tabs .logs-toggle {
   margin-left: auto;
 }
+=======
+>>>>>>> origin/phoebe/feature-497

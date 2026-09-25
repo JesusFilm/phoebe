@@ -74,7 +74,10 @@ import {
 } from "./companion-file.ts";
 import { CONSOLE_SCHEME, consoleFileFor } from "./console-scheme.ts";
 import { consoleSource } from "./console-source.ts";
+<<<<<<< HEAD
 import { createContainerLogs } from "./container-logs.ts";
+=======
+>>>>>>> origin/phoebe/feature-497
 import {
   defaultEventSpawner,
   readContainerReport,
@@ -85,11 +88,15 @@ import { probeDocker } from "./docker.ts";
 import { allInstallFacts, directoryFacts, installFacts } from "./install-facts.ts";
 import { createLocalReads } from "./local-read.ts";
 import type { PairArm } from "./pair.ts";
+<<<<<<< HEAD
 import {
   defaultCommandRunner,
   formatResolveFailure,
   resolveDeploymentCompose,
 } from "../../../src/deployment-compose.ts";
+=======
+import { defaultCommandRunner, resolveDeploymentCompose } from "../../../src/deployment-compose.ts";
+>>>>>>> origin/phoebe/feature-497
 import { companionName, createRelaySession, type RelaySession } from "./relay-session.ts";
 import { chooseFeed } from "./update-feed.ts";
 import { createCompanionUpdates } from "./updates.ts";

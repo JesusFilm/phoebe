@@ -181,6 +181,7 @@ export function InstallPage({
   const pairing = pairReading(install, { signedIn, paired });
 
   return (
+<<<<<<< ours
     <main className={`main install-tab${logsOpen ? " with-logs" : ""}`}>
       <div className="page-body">
         <h1>{install.name}</h1>
@@ -222,6 +223,75 @@ export function InstallPage({
                 onClick={() => setTab(name)}
               >
                 {name}
+=======
+    <main className="main install-tab">
+      <h1>{install.name}</h1>
+      <p className="muted mono">{install.dir}</p>
+      {install.deploymentDir === undefined ? null : (
+        <p className="muted">
+          The deployment lives in <span className="mono">{install.deploymentDir}/</span> under this
+          folder: its config, its <span className="mono">.env</span> and its container. The
+          folder&apos;s own config is the entry a workspace above it reads.
+        </p>
+      )}
+      {install.wsl === undefined ? null : (
+        <p className="muted">
+          Inside the WSL distro <code>{install.wsl.distro}</code>, at{" "}
+          <span className="mono">{install.wsl.dir}</span>. Docker for this install runs in the
+          distro.
+        </p>
+      )}
+
+      <nav className="tabs" aria-label="This install">
+        <button
+          type="button"
+          className={`tab${tab === "install" ? " current" : ""}`}
+          {...(tab === "install" ? { "aria-current": "page" as const } : {})}
+          onClick={() => setTab("install")}
+        >
+          install
+        </button>
+        {DEPLOYMENT_TABS.map((name) => {
+          const enabled = tabHasContent(name, available);
+          return (
+            <button
+              key={name}
+              type="button"
+              className={`tab${tab === name ? " current" : ""}`}
+              disabled={!enabled}
+              {...(tab === name ? { "aria-current": "page" as const } : {})}
+              {...(enabled ? {} : { title: "Needs a running container." })}
+              onClick={() => setTab(name)}
+            >
+              {name}
+            </button>
+          );
+        })}
+      </nav>
+
+      {tab === "install" ? (
+        <InstallTab
+          install={install}
+          environment={environment}
+          run={run}
+          running={running}
+          trouble={trouble}
+          pairing={pairing}
+          onStart={start}
+          onForget={onForget}
+          onCancel={(runId) => void bridge.runs.cancel(runId).catch(() => {})}
+        />
+      ) : (
+        <>
+          {install.state === "running" ? null : (
+            // The pointer #526 asks for, on the page rather than inside one tab:
+            // a stopped install lands here, and the button that changes that is
+            // one tab away.
+            <p className="muted">
+              Nothing is running, so config is the only tab with anything in it.{" "}
+              <button type="button" className="quiet" onClick={() => setTab("install")}>
+                Go to the install tab
+>>>>>>> theirs
               </button>
             );
           })}
