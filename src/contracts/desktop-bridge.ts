@@ -20,6 +20,7 @@
 // click that fetches it happens.
 
 import type { CompanionUpdate } from "./companion-update.ts";
+import type { LogLine, LogsEnded } from "./container-logs.ts";
 import type { CompanionEnvironment, CompanionPreferences, LocalInstall } from "./local-install.ts";
 import type { LocalAlertEvent, LocalReportEvent } from "./local-report.ts";
 import type { RelayEvent } from "./relay-events.ts";
@@ -158,6 +159,25 @@ export type DesktopBridge = {
     cancel: (runId: string) => Promise<void>;
     lines: (onLine: (line: RunLine) => void) => () => void;
     exits: (onExit: (exit: RunExit) => void) => () => void;
+  };
+  /**
+   * A running install's container output, followed (container-logs.ts). One
+   * stream per install, started by the first `follow` and reused by the next;
+   * `stop` ends it. Lines and endings arrive for every followed install, tagged
+   * with the install they belong to, so a pane filters for its own.
+   */
+  logs: {
+    /**
+     * Start following, or join the stream already running. Resolves with the
+     * lines main holds so far — the tail Docker handed over, and whatever came
+     * since — so a pane opened late starts full rather than empty. Rejects
+     * `not-initialised` for a folder with no container to ask.
+     */
+    follow: (install: string) => Promise<string[]>;
+    /** End the stream. Nothing is kept; the next follow starts afresh. */
+    stop: (install: string) => Promise<void>;
+    lines: (onLine: (line: LogLine) => void) => () => void;
+    ended: (onEnded: (end: LogsEnded) => void) => () => void;
   };
   /**
    * The companion's own updates (#525 §3). One check at launch, and then

@@ -16,6 +16,8 @@ import type {
   LocalAlertEvent,
   LocalInstall,
   LocalReportEvent,
+  LogLine,
+  LogsEnded,
   RelayArmState,
   RelayEvent,
   RunExit,
@@ -65,6 +67,12 @@ const bridge: DesktopBridge = {
     cancel: (runId) => call(BRIDGE_CHANNELS.runCancel, runId),
     lines: (onLine) => subscribe<RunLine>(BRIDGE_CHANNELS.runLine, onLine),
     exits: (onExit) => subscribe<RunExit>(BRIDGE_CHANNELS.runExit, onExit),
+  },
+  logs: {
+    follow: (install) => call(BRIDGE_CHANNELS.logsFollow, install),
+    stop: (install) => call(BRIDGE_CHANNELS.logsStop, install),
+    lines: (onLine) => subscribe<LogLine>(BRIDGE_CHANNELS.logsLine, onLine),
+    ended: (onEnded) => subscribe<LogsEnded>(BRIDGE_CHANNELS.logsEnded, onEnded),
   },
   updates: {
     state: () => call(BRIDGE_CHANNELS.updateState),

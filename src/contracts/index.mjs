@@ -154,6 +154,12 @@ export const MAX_RUN_LINES = 2000;
 /** The verbs a companion can cancel — see verb-run.ts (#527 §2). */
 export const CANCELLABLE_VERBS = ["start", "stop"];
 
+/** How many log lines main keeps per followed install — see container-logs.ts. */
+export const MAX_LOG_LINES = 2000;
+
+/** How far back a log follow starts — see container-logs.ts. */
+export const LOG_TAIL_LINES = 200;
+
 /** The variable a pairing token travels in — see relay-protocol.ts (#558). */
 export const RELAY_TOKEN_ENV = "PHOEBE_RELAY_TOKEN";
 
