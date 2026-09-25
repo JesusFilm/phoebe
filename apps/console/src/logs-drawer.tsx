@@ -20,6 +20,7 @@ import {
 import type { DesktopBridge, LocalInstall } from "phoebe-agent/contracts";
 import { Button } from "~/components/ui/button";
 import { appendLogLine, EMPTY_LOGS, logsEnded, logsSeeded, type LogsView } from "./logs.ts";
+import { ALL_CHANNEL, channelLabel, channelsIn, linesIn } from "./logs-channels.ts";
 import { draggedHeight } from "./logs-drawer-size.ts";
 
 export function LogsDrawer({
@@ -37,6 +38,12 @@ export function LogsDrawer({
   onClose: () => void;
 }) {
   const [view, setView] = useState<LogsView>(EMPTY_LOGS);
+  // The tab: every pipeline that has spoken is one (logs-channels.ts), and the
+  // stream stays one stream underneath — a tab only chooses which lines show.
+  const [channel, setChannel] = useState(ALL_CHANNEL);
+  const channels = channelsIn(view.lines);
+  const shown = channels.includes(channel) ? channel : ALL_CHANNEL;
+  const lines = linesIn(view.lines, shown);
 
   // Followed again when the install's state moves: a container that came back
   // is a new stream, and the ended one below is not it.
@@ -130,8 +137,21 @@ export function LogsDrawer({
         <span className="logs-drawer-tab">
           <TerminalSquare size={13} aria-hidden="true" />
           <span>{install.name}</span>
-          <span className="muted mono">docker compose logs --follow phoebe</span>
         </span>
+        <nav className="logs-drawer-tabs" aria-label="Pipelines">
+          {channels.map((name) => (
+            <button
+              key={name}
+              type="button"
+              className={`logs-drawer-channel${name === shown ? " current" : ""}`}
+              aria-pressed={name === shown}
+              title={name === ALL_CHANNEL ? "Every line the container printed" : name}
+              onClick={() => setChannel(name)}
+            >
+              {channelLabel(name)}
+            </button>
+          ))}
+        </nav>
         <span className="logs-drawer-controls">
           {pinned ? null : (
             <Button
@@ -159,7 +179,7 @@ export function LogsDrawer({
         {view.lines.length === 0 && view.ended === null ? (
           <span className="muted">Waiting for the container to print something…</span>
         ) : (
-          view.lines.join("\n")
+          lines.join("\n")
         )}
       </pre>
       {view.ended === null ? null : <p className="logs-drawer-ended muted">{view.ended}</p>}
