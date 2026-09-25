@@ -73,7 +73,16 @@ import {
   secretWriterReading,
   versionReading,
 } from "./local-install.ts";
-import { LogsPane } from "./logs-pane.tsx";
+import { TerminalSquare } from "lucide-react";
+import { Button } from "~/components/ui/button";
+import { LogsDrawer } from "./logs-drawer.tsx";
+import {
+  isLogsToggleShortcut,
+  rememberedHeight,
+  rememberedOpen,
+  rememberHeight,
+  rememberOpen,
+} from "./logs-drawer-size.ts";
 import { readReport } from "./report.ts";
 import { DEPLOYMENT_TABS, tabHasContent, type ConfigReading, type DeploymentTab } from "./tabs.ts";
 
@@ -101,10 +110,37 @@ export function InstallPage({
   const [environment, setEnvironment] = useState<CompanionEnvironment | null>(null);
   const [run, setRun] = useState<VerbRun | null>(null);
   const [trouble, setTrouble] = useState<string | null>(null);
-  // The logs pane, beside the page. Opened by the operator, never on its own;
-  // it stays open across a stop so the last lines can be read, and follows
-  // again when the container comes back (logs-pane.tsx).
-  const [logsOpen, setLogsOpen] = useState(false);
+  // The logs drawer along the page's bottom (logs-drawer.tsx). Opened by the
+  // operator, never on its own; it stays open across a stop so the last lines
+  // can be read, follows again when the container comes back, and remembers
+  // its height and whether it was open the way T3 Code's terminal drawer does.
+  const storage = typeof localStorage === "undefined" ? null : localStorage;
+  const [logsOpen, setLogsOpenState] = useState(() => rememberedOpen(storage));
+  const [logsHeight, setLogsHeightState] = useState(() =>
+    rememberedHeight(storage, typeof window === "undefined" ? 800 : window.innerHeight),
+  );
+  const setLogsOpen = (open: boolean): void => {
+    rememberOpen(storage, open);
+    setLogsOpenState(open);
+  };
+  const setLogsHeight = (height: number): void => {
+    rememberHeight(storage, height);
+    setLogsHeightState(height);
+  };
+
+  // Ctrl+` toggles the drawer, as it does T3 Code's terminal drawer.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (!isLogsToggleShortcut(event)) return;
+      event.preventDefault();
+      setLogsOpenState((open) => {
+        rememberOpen(storage, !open);
+        return !open;
+      });
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [storage]);
 
   // The run is main's, so the page reads it rather than owning it. Reading on
   // mount is what makes a reload rejoin a run in flight (#527 §13).
@@ -181,9 +217,22 @@ export function InstallPage({
   const pairing = pairReading(install, { signedIn, paired });
 
   return (
-    <main className={`main install-tab${logsOpen ? " with-logs" : ""}`}>
+    <main className="main install-tab">
       <div className="page-body">
-        <h1>{install.name}</h1>
+        <div className="install-title">
+          <h1>{install.name}</h1>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            className="logs-toggle"
+            aria-pressed={logsOpen}
+            title={logsOpen ? "Hide the logs (Ctrl+`)" : "Show the container's logs (Ctrl+`)"}
+            aria-label={logsOpen ? "Hide the logs" : "Show the container's logs"}
+            onClick={() => setLogsOpen(!logsOpen)}
+          >
+            <TerminalSquare aria-hidden="true" />
+          </Button>
+        </div>
         <p className="muted mono">{install.dir}</p>
         {install.deploymentDir === undefined ? null : (
           <p className="muted">
@@ -225,20 +274,6 @@ export function InstallPage({
               </button>
             );
           })}
-          <span className="tabs-actions">
-            <button
-              type="button"
-              className={`tab logs-toggle${logsOpen ? " current" : ""}`}
-              disabled={!logsOpen && install.state !== "running"}
-              aria-pressed={logsOpen}
-              {...(logsOpen || install.state === "running"
-                ? {}
-                : { title: "Needs a running container; its output is what the pane shows." })}
-              onClick={() => setLogsOpen((open) => !open)}
-            >
-              {logsOpen ? "hide logs" : "logs"}
-            </button>
-          </span>
         </nav>
 
         {tab === "install" ? (
@@ -308,7 +343,13 @@ export function InstallPage({
         )}
       </div>
       {logsOpen ? (
-        <LogsPane bridge={bridge} install={install} onClose={() => setLogsOpen(false)} />
+        <LogsDrawer
+          bridge={bridge}
+          install={install}
+          height={logsHeight}
+          onHeightChange={setLogsHeight}
+          onClose={() => setLogsOpen(false)}
+        />
       ) : null}
     </main>
   );
