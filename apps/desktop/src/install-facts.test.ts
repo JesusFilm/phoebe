@@ -363,3 +363,157 @@ describe("which phoebe-agent the container is on", () => {
     expect(facts.state).toBe("not-initialised");
   });
 });
+
+describe("a repo that is a workspace child at its root and a deployment in .phoebe/", () => {
+  const NESTED = folder(
+    "phoebe.config.ts",
+    path.join(".phoebe", "phoebe.config.ts"),
+    path.join(".phoebe", ".env"),
+    path.join(".phoebe", "container", "compose.yml"),
+  );
+  // Two configs: the tenant entry at the root, and the deployment's own below.
+  const configs = (file: string): string =>
+    file === path.join(DIR, ".phoebe", "phoebe.config.ts")
+      ? 'const config = {\n  repoSlug: "acme/solo",\n  relay: { url: "wss://relay.acme/deployments" },\n};\nexport default config;\n'
+      : 'const config = {\n  repoSlug: "acme/child",\n};\nexport default config;\n';
+
+  test("is driven from .phoebe/, and says so", async () => {
+    const seen: { args: readonly string[]; cwd?: string | undefined }[] = [];
+    const runner: CommandRunner = (spec) => {
+      seen.push(spec);
+      return Promise.resolve({
+        code: 0,
+        stdout: JSON.stringify([{ Service: "phoebe", State: "running" }]),
+        stderr: "",
+      });
+    };
+
+    const facts = await installFacts(STORED, {
+      exists: NESTED,
+      read: configs,
+      readFile: dockerfile("0.13.0"),
+      runner,
+    });
+
+    expect(facts.state).toBe("running");
+    expect(facts.deploymentDir).toBe(".phoebe");
+    expect(facts.containerVersion).toBe("0.13.0");
+    expect(seen[0]?.cwd).toBe(path.join(path.resolve(DIR), ".phoebe", "container"));
+  });
+
+  test("its name and relay are the deployment's, not the tenant entry's", async () => {
+    const facts = await installFacts(STORED, {
+      exists: NESTED,
+      read: configs,
+      dockerPresent: false,
+    });
+
+    expect(facts.deploymentName).toBe("acme/solo");
+    expect(facts.relayUrl).toBe("wss://relay.acme/deployments");
+  });
+
+  test("the directory facts read the deployment's config and .env", () => {
+    const facts = directoryFacts(
+      {
+        dir: DIR,
+        name: "youtube-studio",
+        deploymentName: "acme/solo",
+        relayUrl: null,
+        addedAt: STORED.addedAt,
+        state: "stopped",
+        containerVersion: null,
+        deploymentDir: ".phoebe",
+      },
+      { exists: NESTED, read: configs },
+    );
+
+    expect(facts.configPath).toBe(path.join(DIR, ".phoebe", "phoebe.config.ts"));
+    expect(facts.configText).toContain("acme/solo");
+    expect(facts.envPresent).toBe(true);
+  });
+
+  test("a stock layout carries no deploymentDir, because there is nothing to say", async () => {
+    const facts = await installFacts(STORED, { exists: INITIALISED, dockerPresent: false });
+
+    expect(facts.deploymentDir).toBeUndefined();
+  });
+});
+
+describe("an install inside a WSL distro", () => {
+  const B = "\\";
+  const WSL_DIR = `${B}${B}wsl.localhost${B}archlinux${B}home${B}mike${B}development`;
+  const WSL_STORED = { dir: WSL_DIR, addedAt: "2026-09-22T09:00:00.000Z" };
+
+  // The folder as Windows shows it, and as the resolver re-spells it — the same
+  // set on Windows, two spellings on a POSIX test runner, where `resolve` treats
+  // the UNC path as relative. Both are answered so the test holds on either.
+  function wslFolder(...files: string[]): (file: string) => boolean {
+    const roots = [WSL_DIR, path.resolve(WSL_DIR)];
+    const present = new Set(
+      roots.flatMap((root) => [root, ...files.map((f) => path.join(root, f))]),
+    );
+    return (file) => present.has(file);
+  }
+  const WSL_INITIALISED = wslFolder("phoebe.config.ts", path.join("container", "compose.yml"));
+
+  /** A Compose that records what it was asked to run and answers `ps` with `rows`. */
+  function recording(rows: unknown[]): {
+    runner: CommandRunner;
+    seen: { file: string; args: readonly string[] }[];
+  } {
+    const seen: { file: string; args: readonly string[] }[] = [];
+    const runner: CommandRunner = (spec) => {
+      seen.push(spec);
+      return Promise.resolve({ code: 0, stdout: JSON.stringify(rows), stderr: "" });
+    };
+    return { runner, seen };
+  }
+
+  test("says which distro it is in and where, beside the path Windows shows", async () => {
+    const facts = await installFacts(WSL_STORED, { exists: wslFolder(), dockerPresent: false });
+
+    expect(facts.dir).toBe(WSL_DIR);
+    expect(facts.name).toBe("development");
+    expect(facts.wsl).toEqual({ distro: "archlinux", dir: "/home/mike/development" });
+  });
+
+  test("a folder on this machine carries no distro", async () => {
+    const facts = await installFacts(STORED, { exists: folder(), dockerPresent: false });
+
+    expect(facts.wsl).toBeUndefined();
+  });
+
+  test("asks the distro's Compose through wsl.exe, and reads the state it answers", async () => {
+    const { runner, seen } = recording([{ Service: "phoebe", State: "running" }]);
+
+    const facts = await installFacts(WSL_STORED, {
+      exists: WSL_INITIALISED,
+      readFile: dockerfile("0.13.0"),
+      runner,
+    });
+
+    // The path translation itself is wsl.test.ts's: on a POSIX test runner
+    // `resolve` re-spells the UNC path into something no distro has a name for.
+    expect(facts.state).toBe("running");
+    expect(seen[0]?.file).toBe("wsl.exe");
+    expect(seen[0]?.args.slice(0, 2)).toEqual(["-d", "archlinux"]);
+    expect(seen[0]?.args).toContain("--exec");
+    expect(seen[0]?.args).toContain("docker");
+    expect(seen[0]?.args).toContain("compose");
+  });
+
+  test("this machine having no docker is not a verdict on the distro", async () => {
+    const { runner, seen } = recording([]);
+
+    const facts = await installFacts(WSL_STORED, {
+      exists: WSL_INITIALISED,
+      readFile: dockerfile("0.13.0"),
+      dockerPresent: false,
+      runner,
+    });
+
+    expect(seen).toHaveLength(1);
+    expect(facts.state).toBe("stopped");
+    expect(facts.detail).toBeUndefined();
+  });
+});

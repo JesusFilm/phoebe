@@ -214,8 +214,8 @@ export function secretSetOutcome(opts: {
   return { ...opts };
 }
 
-/** The real spawner: a pipe in, two pipes out, no shell. */
-const defaultStdinSpawner: StdinSpawner = (spec) =>
+/** The real spawner: a pipe in, two pipes out, no shell. Exported for wsl.ts to wrap. */
+export const defaultStdinSpawner: StdinSpawner = (spec) =>
   new Promise((resolve, reject) => {
     const child = spawn(spec.file, spec.args as string[], {
       cwd: spec.cwd,

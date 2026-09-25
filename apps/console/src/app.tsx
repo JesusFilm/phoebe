@@ -51,7 +51,7 @@ import { createNotifier, type AlertSubject, type Notifiable } from "./notificati
 import { Rail } from "./rail.tsx";
 import { isNotSignedIn, type RelayClient, type RelaySignIn } from "./relay-client.ts";
 import { configOf } from "./report.ts";
-import { FLEET_HREF, FLEET_ROUTE, PEOPLE_HREF, parseRoute, type Route } from "./route.ts";
+import { ADD_HREF, FLEET_HREF, FLEET_ROUTE, PEOPLE_HREF, parseRoute, type Route } from "./route.ts";
 
 type Session =
   | { kind: "asking" }
@@ -345,16 +345,39 @@ function Console({
     };
   }, [bridge]);
 
-  const addInstall = useCallback(() => {
+  // `inside: "wsl"` opens the picker among the distros. The Windows picker cannot
+  // be typed into and keeps WSL under a "Linux" node at the foot of its tree, so
+  // a folder inside a distro is reached by starting the picker there.
+  const addInstall = useCallback(
+    (inside?: "wsl") => {
+      if (bridge === null) return;
+      void bridge.installs.pick(inside).then(async (dir) => {
+        if (dir === null) return;
+        setInstalls(await bridge.installs.add(dir));
+        // Straight to its page. A folder that already carries a config is adopted
+        // as it stands and needs nothing; one that does not lands on the install
+        // tab, which is where init is (#526).
+        setOpenInstall(dir);
+      });
+    },
+    [bridge],
+  );
+
+  // Whether this machine has WSL distros to pick inside. Asked once: a distro
+  // installed while the window is open is a relaunch away.
+  const [wslDistros, setWslDistros] = useState<string[]>([]);
+  useEffect(() => {
     if (bridge === null) return;
-    void bridge.installs.pick().then(async (dir) => {
-      if (dir === null) return;
-      setInstalls(await bridge.installs.add(dir));
-      // Straight to its page. A folder that already carries a config is adopted
-      // as it stands and needs nothing; one that does not lands on the install
-      // tab, which is where init is (#526).
-      setOpenInstall(dir);
-    });
+    let live = true;
+    bridge.environment().then(
+      (probed) => {
+        if (live) setWslDistros(probed.wslDistros);
+      },
+      () => undefined,
+    );
+    return () => {
+      live = false;
+    };
   }, [bridge]);
 
   const forgetInstall = useCallback(
@@ -429,7 +452,10 @@ function Console({
       <header className="topbar">
         <span className="brand">{surface === "companion" ? "Phoebe" : "Phoebe console"}</span>
         <nav className="pages" aria-label="Pages">
-          <a href={FLEET_HREF} className={route.page === "people" ? "" : "current"}>
+          <a
+            href={FLEET_HREF}
+            className={route.page === "fleet" || route.page === "deployment" ? "current" : ""}
+          >
             Fleet
           </a>
           <a href={PEOPLE_HREF} className={route.page === "people" ? "current" : ""}>
@@ -493,7 +519,15 @@ function Console({
           {...(bridge === null
             ? {}
             : {
-                onAdd: addInstall,
+                // To the home page, where the ways to add are laid out — a
+                // folder, a WSL folder, a relay — rather than into one picker.
+                // The route change closes whichever install was open.
+                onAdd: () => {
+                  // Closed here as well as by the route effect: when the hash
+                  // is already `#/add`, setting it again changes nothing.
+                  setOpenInstall(null);
+                  window.location.hash = ADD_HREF;
+                },
                 // Neither call answers with anything the rail draws: what the
                 // click did arrives as the next pushed state, and a refusal is
                 // main saying the button was not the next step — which is a
@@ -515,10 +549,14 @@ function Console({
             paired={paired.has(open.dir)}
             onForget={forgetInstall}
           />
-        ) : identity === null ? (
+        ) : identity === null || route.page === "add" ? (
           <CompanionHome
             installs={installs}
-            onAdd={bridge === null ? undefined : addInstall}
+            onAdd={bridge === null ? undefined : () => addInstall()}
+            onAddWsl={
+              bridge === null || wslDistros.length === 0 ? undefined : () => addInstall("wsl")
+            }
+            relay={identity === null ? null : { url: relayUrl, email: identity.email }}
             {...(refusal !== undefined ? { refusal } : {})}
           />
         ) : route.page === "people" ? (
@@ -551,10 +589,16 @@ function Console({
 function CompanionHome({
   installs,
   onAdd,
+  onAddWsl,
+  relay,
   refusal,
 }: {
   installs: LocalInstall[];
   onAdd: (() => void) | undefined;
+  /** The picker opened among the WSL distros. Only on a machine that has some. */
+  onAddWsl: (() => void) | undefined;
+  /** The relay this companion is signed in to, or null when it is signed out. */
+  relay: { url: string | null; email: string } | null;
   refusal?: string;
 }) {
   return (
@@ -566,6 +610,9 @@ function CompanionHome({
           <p className="muted">
             No local install yet. A local install is a repository folder on this machine that the
             companion drives through Docker Compose.
+            {onAddWsl === undefined
+              ? null
+              : " A folder inside a WSL distro counts, and its Docker is asked inside the distro."}
           </p>
         ) : (
           <p className="muted">
@@ -574,16 +621,27 @@ function CompanionHome({
           </p>
         )}
         {onAdd === undefined ? null : (
-          <p>
+          <p className="actions">
             <button type="button" onClick={onAdd}>
               Add a folder
             </button>
+            {onAddWsl === undefined ? null : (
+              <button type="button" onClick={onAddWsl}>
+                Add a WSL folder
+              </button>
+            )}
           </p>
         )}
       </section>
       <section>
         <h2>Relay</h2>
-        {refusal === undefined ? (
+        {refusal === undefined && relay !== null ? (
+          <p className="muted">
+            Signed in as {relay.email}
+            {relay.url === null ? "" : ` to ${relay.url}`}. Its deployments are on the rail; to
+            reach a different relay, sign out first.
+          </p>
+        ) : refusal === undefined ? (
           <p className="muted">
             Not signed in. A relay is how the companion reaches the deployments that run somewhere
             else. Enter its address in the rail and sign-in opens in your own browser.

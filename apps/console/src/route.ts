@@ -20,12 +20,23 @@ export type DeploymentTab = (typeof DEPLOYMENT_TABS)[number];
 export type Route =
   | { page: "fleet" }
   | { page: "people" }
+  | { page: "add" }
   | { page: "deployment"; fingerprint: string; tab: DeploymentTab };
 
 export const FLEET_ROUTE: Route = { page: "fleet" };
 
 /** The hash for the fleet page. */
 export const FLEET_HREF = "#/fleet";
+
+/**
+ * The companion's home: the ways to add a local install, and the relay's state.
+ * The rail's "+ add" goes here rather than straight into a picker, because there
+ * is more than one picker to choose from and the relay is added from here too.
+ * A browser has no local arm, so for it this page is a home with nothing to add.
+ */
+export const ADD_ROUTE: Route = { page: "add" };
+
+export const ADD_HREF = "#/add";
 
 /** The allowlist and the pairing panel (#548). */
 export const PEOPLE_ROUTE: Route = { page: "people" };
@@ -57,6 +68,7 @@ export function parseRoute(hash: string): Route {
     .split("/")
     .filter((segment) => segment !== "");
   if (segments[0] === "people" && segments[1] === undefined) return PEOPLE_ROUTE;
+  if (segments[0] === "add" && segments[1] === undefined) return ADD_ROUTE;
   if (segments[0] !== "d" || segments[1] === undefined) return FLEET_ROUTE;
   const fingerprint = decodeURIComponent(segments[1]);
   if (fingerprint === "") return FLEET_ROUTE;

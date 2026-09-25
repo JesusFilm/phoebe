@@ -1088,3 +1088,14 @@ details.why > summary::marker {
 .rail-note.trouble {
   color: var(--fail);
 }
+
+/* Two ways to add on the home page, side by side. */
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.actions button {
+  width: auto;
+}

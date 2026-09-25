@@ -61,6 +61,21 @@ export type LocalInstall = {
    * say, because a line under every entry is a line nobody reads.
    */
   detail?: string;
+  /**
+   * Set when the folder is inside a WSL distro — `\\wsl.localhost\<distro>\…`
+   * as Windows shows it. `dir` is the path the distro knows it by, and Docker
+   * for this install is the distro's own, reached through `wsl.exe`
+   * (apps/desktop/src/wsl.ts) rather than this machine's PATH. Absent for a
+   * folder on the machine's own filesystem, which is every install elsewhere.
+   */
+  wsl?: { distro: string; dir: string };
+  /**
+   * The subfolder the deployment lives in when it is not the folder's root —
+   * `.phoebe`, for a repository that is a workspace child at its root and a
+   * standalone deployment one level down (apps/desktop/src/deployment-dir.ts).
+   * Absent when the compose file, the config and the `.env` sit at the root.
+   */
+  deploymentDir?: string;
 };
 
 /**
@@ -84,6 +99,12 @@ export type CompanionEnvironment = {
     /** Did the daemon answer? False when Docker is installed but not running. */
     daemonRunning: boolean;
   };
+  /**
+   * The WSL distros on this machine, as `wsl.exe -l -q` lists them. Empty off
+   * Windows and on a Windows with no WSL. Non-empty is what makes the home page
+   * offer a picker opened inside the distros (`installs.pick("wsl")`).
+   */
+  wslDistros: string[];
 };
 
 /**

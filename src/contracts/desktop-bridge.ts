@@ -106,8 +106,15 @@ export type DesktopBridge = {
    */
   installs: {
     list: () => Promise<LocalInstall[]>;
-    /** The folder picker. Null when the operator dismissed it. */
-    pick: () => Promise<string | null>;
+    /**
+     * The folder picker. Null when the operator dismissed it.
+     *
+     * `inside: "wsl"` opens it at `\\wsl.localhost\`, where the distros are. The
+     * Windows picker cannot be typed into and keeps that root under a "Linux"
+     * node at the foot of its tree, so a folder inside a distro is reached by
+     * starting there (apps/desktop/src/wsl.ts).
+     */
+    pick: (inside?: "wsl") => Promise<string | null>;
     /**
      * Adopt a folder. A folder that already carries a config is adopted as it
      * stands — the companion never re-inits over one (#555).

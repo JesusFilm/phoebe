@@ -461,8 +461,10 @@ _Avoid_: desktop console, dashboard, Phoebe app
 **Local install**:
 A repository folder on this machine the companion drives through Docker Compose. Its
 states are running, stopped and not initialised — the relay's dark and unseen are a remote
-reader's guesses about silence, and there is no silence here.
-_Avoid_: local deployment, local console
+reader's guesses about silence, and there is no silence here. A folder inside a WSL distro
+is one too; the companion reaches its Docker through `wsl.exe`, so the distro's own
+containers are the ones it drives.
+_Avoid_: local deployment, local console, WSL workspace
 
 **Desktop bridge**:
 The preload-exposed surface through which the console bundle reaches main's host verbs and

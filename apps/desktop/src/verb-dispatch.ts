@@ -33,6 +33,7 @@ import path from "node:path";
 import { app } from "electron";
 import type { InstallState, VerbIo } from "phoebe-agent/contracts";
 import { BridgeRefusal } from "./channels.ts";
+import { deploymentDirOf } from "./deployment-dir.ts";
 import { runConfigSet } from "../../../src/config-set.ts";
 import {
   formatResolveFailure,
@@ -47,6 +48,7 @@ import { runStop } from "../../../src/stop.ts";
 import { runUpgrade } from "../../../src/upgrade.ts";
 import { pairInstall, type PairArm } from "./pair.ts";
 import {
+  defaultStdinSpawner,
   secretSetOutcome,
   secretTargetOf,
   secretWriterFor,
@@ -54,6 +56,7 @@ import {
   setSecretInHostEnv,
 } from "./secret-write.ts";
 import type { Dispatch, Killable } from "./verb-runs.ts";
+import { wslLocationOf, wslRunner, wslStdinSpawner } from "./wsl.ts";
 
 /** The config file that sits at the root of an install. */
 const CONFIG_FILE = "phoebe.config.ts";
@@ -93,8 +96,21 @@ export type DispatchDeps = {
 export function createDispatchVerb(deps: DispatchDeps): Dispatch {
   return async (request, { io, register }) => {
     const install = request.install;
-    const configPath = path.join(install, CONFIG_FILE);
-    const runner = streamingRunner(io, register);
+    // The deployment's files may sit in `.phoebe/` under the folder
+    // (deployment-dir.ts). Every verb but init works on that root; init
+    // scaffolds the folder itself, since it runs only where there is none.
+    const root = deploymentDirOf(install).dir;
+    const configPath = path.join(root, CONFIG_FILE);
+    // An install inside a WSL distro drives the distro's Docker, so every child
+    // a verb spawns runs in there (wsl.ts). The file-writing verbs — init,
+    // config set, upgrade, migrate, doctor — reach the folder as Windows shows it
+    // and need nothing.
+    const wsl = wslLocationOf(install);
+    const runner =
+      wsl === null ? streamingRunner(io, register) : wslRunner(wsl, streamingRunner(io, register));
+    // This machine's PATH says nothing about the distro's; its Compose answers
+    // for itself, and a distro with no Docker fails the run with its own words.
+    const dockerInDistro = wsl === null ? {} : { dockerAvailable: true };
 
     switch (request.verb) {
       case "init": {
@@ -121,7 +137,7 @@ export function createDispatchVerb(deps: DispatchDeps): Dispatch {
       case "start": {
         const outcome = await runStart({
           build: request.build ?? false,
-          deps: { cwd: install, runner, io },
+          deps: { cwd: root, runner, io, ...dockerInDistro },
         });
         return { verb: "start", outcome };
       }
@@ -129,7 +145,7 @@ export function createDispatchVerb(deps: DispatchDeps): Dispatch {
       case "stop": {
         const outcome = await runStop({
           now: request.now ?? false,
-          deps: { cwd: install, runner, io },
+          deps: { cwd: root, runner, io, ...dockerInDistro },
         });
         return { verb: "stop", outcome };
       }
@@ -143,7 +159,7 @@ export function createDispatchVerb(deps: DispatchDeps): Dispatch {
           target: request.target ?? "both",
           ...(request.ref !== undefined ? { ref: request.ref } : {}),
           configPath,
-          deps: { cwd: install, io },
+          deps: { cwd: root, io },
         });
         return { verb: "upgrade", outcome };
       }
@@ -156,7 +172,7 @@ export function createDispatchVerb(deps: DispatchDeps): Dispatch {
 
       case "doctor": {
         io.stdout(`[phoebe] doctor ${install}`);
-        const outcome = await runDoctor({ configDir: install });
+        const outcome = await runDoctor({ configDir: root });
         return { verb: "doctor", outcome };
       }
 
@@ -197,7 +213,7 @@ export function createDispatchVerb(deps: DispatchDeps): Dispatch {
         );
         let target: string;
         if (writer === "container") {
-          const deployment = resolveDeploymentCompose(install);
+          const deployment = resolveDeploymentCompose(root);
           if ("kind" in deployment) throw new Error(formatResolveFailure(deployment));
           await setSecretInContainer({
             deployment,
@@ -205,12 +221,13 @@ export function createDispatchVerb(deps: DispatchDeps): Dispatch {
             value: request.value,
             ...(request.tenant !== undefined ? { tenant: request.tenant } : {}),
             io,
+            ...(wsl === null ? {} : { spawner: wslStdinSpawner(wsl, defaultStdinSpawner) }),
           });
           target = secretTargetOf(writer, null);
         } else {
           target = secretTargetOf(
             writer,
-            setSecretInHostEnv({ dir: install, key: request.key, value: request.value, io }),
+            setSecretInHostEnv({ dir: root, key: request.key, value: request.value, io }),
           );
         }
         io.stdout(

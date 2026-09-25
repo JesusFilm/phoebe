@@ -157,6 +157,30 @@ change them ([#557](https://github.com/JesusFilm/phoebe/issues/557)) and pairing
   root `.env`, and an `up -d` so Compose recreates the container holding both
   ([#558](https://github.com/JesusFilm/phoebe/issues/558)). The token goes into
   the file and into no line.
+- [`deployment-dir.ts`](src/deployment-dir.ts) — where an install's deployment
+  files are. A repository can be a workspace child at its root and a standalone
+  deployment in `.phoebe/` beside it (`configDir`, docs/configuration.md; this
+  repo is one). The install is the folder the operator picked; its compose file,
+  `.env`, Dockerfile pin and the config the container mounts are read from
+  whichever of the root and `.phoebe/` carries `container/compose.yml`, root
+  first. Every verb but `init` works on that root. The install page says which.
+- [`wsl.ts`](src/wsl.ts) — a local install inside a WSL distro. Windows shows the
+  distro's files at `\\wsl.localhost\<distro>\…`, and every file this package
+  reads or writes goes through that path unchanged. "Add a WSL folder" on the home
+  page opens the picker at that root, because the Windows picker ignores a typed
+  path and keeps distros under a "Linux" node at the foot of its tree; the button
+  appears when `wsl.exe -l -q` lists a distro, which the environment probe
+  reports as `wslDistros`. Docker does not: Compose run from Windows would resolve the
+  deployment's bind mounts to UNC paths Docker Desktop cannot mount, and the
+  containers are the distro's own. So for such an install every `docker` the
+  companion would spawn — the `ps` behind the rail, the `status --json` exec,
+  the events stream, `up`/`stop`, the stdin-fed `secret set`, pairing's nudge —
+  runs as `wsl.exe -d <distro> --cd <dir> --exec docker …` with each path argument
+  translated to the distro's. The rail and the install tab say which distro. This
+  machine's own Docker check is not consulted for it; a distro with no Docker
+  fails the read or the run with its own words. `docker events` under `wsl.exe`
+  has one rough edge: killing the relay closes the pipe and the Linux side exits
+  on the next write rather than at once.
 
 **The relay arm**
 ([#554](https://github.com/JesusFilm/phoebe/issues/554)) is sign-in, the JSON reads
