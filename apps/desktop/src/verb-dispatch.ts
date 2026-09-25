@@ -107,9 +107,7 @@ export function createDispatchVerb(deps: DispatchDeps): Dispatch {
     // and need nothing.
     const wsl = wslLocationOf(install);
     const runner =
-      wsl === null
-        ? streamingRunner(io, register)
-        : wslRunner(wsl, streamingRunner(io, register));
+      wsl === null ? streamingRunner(io, register) : wslRunner(wsl, streamingRunner(io, register));
     // This machine's PATH says nothing about the distro's; its Compose answers
     // for itself, and a distro with no Docker fails the run with its own words.
     const dockerInDistro = wsl === null ? {} : { dockerAvailable: true };
