@@ -402,7 +402,11 @@ describe("a repo that is a workspace child at its root and a deployment in .phoe
   });
 
   test("its name and relay are the deployment's, not the tenant entry's", async () => {
-    const facts = await installFacts(STORED, { exists: NESTED, read: configs, dockerPresent: false });
+    const facts = await installFacts(STORED, {
+      exists: NESTED,
+      read: configs,
+      dockerPresent: false,
+    });
 
     expect(facts.deploymentName).toBe("acme/solo");
     expect(facts.relayUrl).toBe("wss://relay.acme/deployments");
@@ -445,7 +449,9 @@ describe("an install inside a WSL distro", () => {
   // the UNC path as relative. Both are answered so the test holds on either.
   function wslFolder(...files: string[]): (file: string) => boolean {
     const roots = [WSL_DIR, path.resolve(WSL_DIR)];
-    const present = new Set(roots.flatMap((root) => [root, ...files.map((f) => path.join(root, f))]));
+    const present = new Set(
+      roots.flatMap((root) => [root, ...files.map((f) => path.join(root, f))]),
+    );
     return (file) => present.has(file);
   }
   const WSL_INITIALISED = wslFolder("phoebe.config.ts", path.join("container", "compose.yml"));
