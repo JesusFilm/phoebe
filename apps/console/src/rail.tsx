@@ -50,25 +50,16 @@
 import { useState } from "react";
 import type {
   CompanionUpdate,
+  HostPlatform,
   LocalInstall,
   LocalReportEvent,
   RelayIdentity,
 } from "phoebe-agent/contracts";
 import type { Surface } from "./companion.ts";
 import { connectionReading, type RowFacts } from "./facts.ts";
-import {
-  ChevronDown,
-  ChevronRight,
-  Cloud,
-  Laptop,
-  Pause,
-  Play,
-  RotateCcw,
-  Settings,
-  Square,
-  Terminal,
-} from "lucide-react";
+import { ChevronDown, ChevronRight, Pause, Play, RotateCcw, Settings, Square } from "lucide-react";
 import { Button } from "~/components/ui/button";
+import { HostIcon, hostOfProcessPlatform, hostTitle } from "./host-icon.tsx";
 import { Spinner } from "~/components/ui/spinner";
 import {
   installActions,
@@ -94,6 +85,7 @@ export function Rail({
   update = null,
   busy,
   reports,
+  platform,
   defaultExpanded,
   onSelect,
   onOpen,
@@ -128,6 +120,8 @@ export function Rail({
   busy?: ReadonlySet<string>;
   /** The latest read per install, by directory: what a workspace's children are doing. */
   reports?: Readonly<Record<string, LocalReportEvent>>;
+  /** The companion's `process.platform`: which host a local install runs on. */
+  platform?: string;
   /** The workspaces opened out to their children to begin with, by directory. */
   defaultExpanded?: ReadonlySet<string>;
   onSelect?: (dir: string) => void;
@@ -144,6 +138,8 @@ export function Rail({
 }) {
   // Which workspaces are opened out to their children. Closed to begin with:
   // a rail of six workspaces opened out is a list, not a rail.
+  // The host every non-WSL local install shares: this machine.
+  const companionHost = platform === undefined ? null : hostOfProcessPlatform(platform);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => defaultExpanded ?? new Set());
   const relay = (
     <section className="rail-group" aria-label="Relay">
@@ -202,6 +198,7 @@ export function Rail({
               current={install.dir === selected}
               paired={paired?.has(install.dir) ?? false}
               busy={busy?.has(install.dir) ?? false}
+              host={install.wsl === undefined ? companionHost : "wsl"}
               children={workspaceChildren(install, reports?.[install.dir] ?? null)}
               expanded={expanded.has(install.dir)}
               onToggle={() =>
@@ -292,6 +289,7 @@ function InstallEntry({
   current,
   paired,
   busy,
+  host,
   children,
   expanded,
   onToggle,
@@ -305,6 +303,8 @@ function InstallEntry({
   paired: boolean;
   /** A verb run is in flight on this install: the shortcuts give way to a spinner. */
   busy: boolean;
+  /** Where it runs: this machine's host, or a WSL distro. Null while the host is unknown. */
+  host: HostPlatform | null;
   /** A workspace's children, read against its report; empty for a solo install. */
   children: RailChild[];
   expanded: boolean;
@@ -318,11 +318,8 @@ function InstallEntry({
   const reading = installReading(install);
   const actions = onAction === undefined ? [] : installActions(install);
   const workspace = install.workspace !== undefined;
-  // Where it runs, as T3 Code's project list says where each project is: this
-  // machine, or a distro inside WSL.
-  const Platform = install.wsl === undefined ? Laptop : Terminal;
-  const platformTitle =
-    install.wsl === undefined ? "This machine" : `WSL, in the ${install.wsl.distro} distro`;
+  // Where it runs, as T3 Code's project list marks each project with its host.
+  const platformTitle = hostTitle(host, install.wsl?.distro);
   return (
     <div className={`rail-entry local state-${reading.tone}${current ? " current" : ""}`}>
       {workspace ? (
@@ -352,7 +349,7 @@ function InstallEntry({
         <div className="name">
           <span className={`mark ${reading.tone}`} aria-hidden="true" />
           <span className="platform" title={platformTitle} aria-label={platformTitle}>
-            <Platform size={12} aria-hidden="true" />
+            <HostIcon host={host} fallback="local" />
           </span>
           {install.name}
           {paired ? <span className="chip paired">paired</span> : null}
@@ -536,10 +533,10 @@ function RailEntry({ facts, current, now }: { facts: RowFacts; current: boolean;
           <span className={`mark ${connection.tone}`} aria-hidden="true" />
           <span
             className="platform"
-            title="Reached through the relay"
-            aria-label="Reached through the relay"
+            title={hostTitle(facts.host)}
+            aria-label={hostTitle(facts.host)}
           >
-            <Cloud size={12} aria-hidden="true" />
+            <HostIcon host={facts.host} fallback="relay" />
           </span>
           {facts.row.name}
           {connection.maybeReplaced ? <span className="chip replaced">replaced?</span> : null}

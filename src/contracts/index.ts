@@ -134,6 +134,7 @@ export {
   type CrashLoopRecord,
   type DeploymentArm,
   type DeploymentIdentity,
+  type HostPlatform,
   type DeploymentReport,
   type EditLedgerEntry,
   type FleetCell,

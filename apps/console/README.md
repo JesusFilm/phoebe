@@ -25,7 +25,7 @@ shell A).
 
 The relay is one of the companion's two arms. The other is **local installs** —
 folders on this machine, listed under "This machine" on the rail, each with an
-icon for where it runs and a gear onto its settings, a workspace root opening
+its host's mark ([`src/host-icon.tsx`](src/host-icon.tsx)) and a gear onto its settings, a workspace root opening
 out to its children ([`src/rail.tsx`](src/rail.tsx)), and each with an
 **install tab** that takes one from nothing to running with buttons
 ([#555](https://github.com/JesusFilm/phoebe/issues/555)). That arm goes through

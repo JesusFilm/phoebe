@@ -126,8 +126,31 @@ const rail = renderToStaticMarkup(
 const grid = renderToStaticMarkup(<FleetPage facts={FLEET} client={client()} now={NOW} />);
 
 describe("the rail", () => {
-  test("every deployment is marked as reached through the relay, with a gear onto its config", () => {
-    expect(rail.match(/lucide-cloud/g)).toHaveLength(FLEET.length);
+  test("every deployment carries its host's mark, with a gear onto its config", () => {
+    // The fixture's bootstrapper says Linux; a report from before the field
+    // says nothing, and that entry gets a cloud: reached through the relay,
+    // host unknown.
+    const read = FLEET.filter((facts) => facts.reading.kind === "read").length;
+    expect(rail.match(/data-host="linux"/g)).toHaveLength(read);
+    expect(rail.match(/title="Linux"/g)).toHaveLength(read);
+    expect(rail.match(/lucide-cloud/g)).toHaveLength(FLEET.length - read);
+    const older = renderToStaticMarkup(
+      <Rail
+        facts={[
+          rowFacts(
+            row({ fingerprint: "old" }),
+            stored(report({ identity: { name: "youtube-studio", arm: "solo" } })),
+          ),
+        ]}
+        selectedDeployment={null}
+        now={NOW}
+        surface="browser"
+        signedIn
+        signIn={null}
+        onSignedIn={noop}
+      />,
+    );
+    expect(older).toMatch(/title="Host not reported yet"[^>]*>\s*<svg[^>]*lucide-cloud/);
     expect(rail.match(/rail-gear"/g)).toHaveLength(FLEET.length);
     expect(rail).toContain(
       `class="rail-gear" href="${deploymentHref(FLEET[0]!.row.fingerprint, "config")}" title="Settings for ${FLEET[0]!.row.name}"`,
@@ -544,7 +567,7 @@ describe("the local arm on the rail", () => {
     expect(names).toEqual(["one", "two", "three"]);
   });
 
-  test("says where each install runs: this machine, or a WSL distro", () => {
+  test("says which host each install runs on: this machine's, or Linux under WSL", () => {
     const mixed = renderToStaticMarkup(
       <Rail
         facts={[]}
@@ -559,13 +582,18 @@ describe("the local arm on the rail", () => {
             wsl: { distro: "archlinux", dir: "/home/mike/two" },
           }),
         ]}
+        platform="win32"
         signIn={null}
         onSignedIn={noop}
       />,
     );
 
-    expect(mixed).toMatch(/title="This machine"[^>]*>\s*<svg[^>]*lucide-laptop/);
-    expect(mixed).toMatch(/title="WSL, in the archlinux distro"[^>]*>\s*<svg[^>]*lucide-terminal/);
+    expect(mixed).toMatch(/title="Windows"[^>]*>\s*<svg[^>]*data-host="windows"/);
+    expect(mixed).toMatch(
+      /title="Linux, in the archlinux WSL distro"[^>]*>\s*<svg[^>]*data-host="wsl"/,
+    );
+    // Before the environment has answered, a local install's host is not known.
+    expect(markup).toMatch(/title="Host not reported yet"[^>]*>\s*<svg[^>]*lucide-monitor/);
   });
 
   test("a gear on every install opens its settings: the install tab", () => {

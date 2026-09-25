@@ -268,7 +268,7 @@ export function secrets(overrides: Partial<SecretsSection> = {}): SecretsSection
 export function report(overrides: Partial<DeploymentReport> = {}): DeploymentReport {
   return {
     schema: DEPLOYMENT_SCHEMA,
-    identity: { name: "youtube-studio", arm: "solo" },
+    identity: { name: "youtube-studio", arm: "solo", host: "linux" },
     bootstrapper: {
       engineRef: "v0.13.0",
       engineSha: "dd6f67d",

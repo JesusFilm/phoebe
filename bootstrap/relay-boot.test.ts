@@ -40,6 +40,7 @@ function boot(opts: { rootConfig: unknown; dataBase: string; env?: NodeJS.Proces
     rootConfig: opts.rootConfig,
     defaultName: "acme/widget",
     arm: "solo",
+    host: "linux",
     dataBase: opts.dataBase,
     env: opts.env ?? {},
     warn: (message) => warnings.push(message),
@@ -73,7 +74,7 @@ describe("a deployment with no relay block", () => {
   });
 
   test("and its identity names no relay and no key", () => {
-    expect(run().identity()).toEqual({ name: "acme/widget", arm: "solo" });
+    expect(run().identity()).toEqual({ name: "acme/widget", arm: "solo", host: "linux" });
   });
 });
 

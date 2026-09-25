@@ -378,12 +378,16 @@ function Console({
   // Whether this machine has WSL distros to pick inside. Asked once: a distro
   // installed while the window is open is a relaunch away.
   const [wslDistros, setWslDistros] = useState<string[]>([]);
+  // And which host this is, for the rail's icon on every local install.
+  const [platform, setPlatform] = useState<string | null>(null);
   useEffect(() => {
     if (bridge === null) return;
     let live = true;
     bridge.environment().then(
       (probed) => {
-        if (live) setWslDistros(probed.wslDistros);
+        if (!live) return;
+        setWslDistros(probed.wslDistros);
+        setPlatform(probed.platform);
       },
       () => undefined,
     );
@@ -602,6 +606,7 @@ function Console({
             setOpenInstall(dir);
           }}
           reports={reports}
+          {...(platform === null ? {} : { platform })}
           update={update}
           {...(bridge === null
             ? {}

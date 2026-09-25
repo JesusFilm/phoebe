@@ -21,6 +21,8 @@ import type {
   PipelineState,
   RelayDeploymentRow,
   RelayStoredReport,
+  DeploymentIdentity,
+  HostPlatform,
 } from "phoebe-agent/contracts";
 import {
   bootstrapperOf,
@@ -135,6 +137,8 @@ export type RowFacts = {
   crashLooping: number;
   /** Tenants discovery would skip now — they run nothing new (#501). */
   held: number;
+  /** Where the deployment runs, when its bootstrapper says (contracts/deployment.ts). */
+  host: HostPlatform | null;
   engineRef: string | null;
   engineSha: string | null;
   quarantinedSha: string | null;
@@ -163,6 +167,7 @@ export function rowFacts(row: RelayDeploymentRow, stored: RelayStoredReport | nu
       wedged: 0,
       crashLooping: 0,
       held: 0,
+      host: null,
       engineRef: null,
       engineSha: null,
       quarantinedSha: null,
@@ -193,6 +198,9 @@ export function rowFacts(row: RelayDeploymentRow, stored: RelayStoredReport | nu
     wedged,
     crashLooping,
     held: tenantsOf(reading.report).filter((tenant) => tenant.held === true).length,
+    // The identity section can be absent from a known-schema report, like any
+    // other section (the test "sections missing… read as absent").
+    host: (reading.report.identity as DeploymentIdentity | undefined)?.host ?? null,
     engineRef: bootstrapper?.engineRef ?? null,
     engineSha: bootstrapper?.engineSha ?? null,
     quarantinedSha: bootstrapper?.quarantinedSha ?? null,
