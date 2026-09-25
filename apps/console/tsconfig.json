@@ -13,7 +13,10 @@
     "skipLibCheck": true,
     "esModuleInterop": true,
     "verbatimModuleSyntax": true,
-    "erasableSyntaxOnly": true
+    "erasableSyntaxOnly": true,
+    "paths": {
+      "~/*": ["./src/*"]
+    }
   },
   "include": ["src", "vite.config.ts"]
 }

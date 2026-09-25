@@ -93,3 +93,29 @@ the envelope through the same client seam, so the relay carries something it
 cannot open ([#550](https://github.com/JesusFilm/phoebe/issues/550)). Nothing on
 that page ever shows a value — not a last four, not a hash, not a length — because
 the section it renders carries none.
+
+## Components: Coss UI
+
+The console's components come from [Coss UI](https://coss.com/ui), the shadcn-style
+set on Base UI that T3 Code builds its desktop app from, added through the shadcn
+CLI against `components.json`:
+
+```sh
+pnpm dlx shadcn@latest add @coss/dialog   # from this directory; writes src/components/ui/dialog.tsx
+```
+
+Only the components something here uses are checked in — `button`, `spinner` and
+`tooltip` today — because each is a source file this repo then lints, type-checks
+and formats. Add the next one when there is a use for it, not before.
+
+What the CLI writes imports `~/lib/utils` and `~/components/ui/*`; the `~` alias
+is in `tsconfig.json` and `vite.config.ts`. Styling is Tailwind 4 through its Vite
+plugin, with the Coss theme's variables in [`src/index.css`](src/index.css) as
+`shadcn init @coss/style` wrote them, and two changes of ours. Tailwind's preflight
+is not imported: [`src/console.css`](src/console.css) was written against the
+browser's defaults and preflight would take them away from every page at once, so
+the base layer restores only the border defaults the components' utilities count
+on. And the `dark` variant is the class the CLI wrote, put on `<html>` by
+[`src/theme.ts`](src/theme.ts) whenever the OS is dark, so the components follow the
+OS the way the console's own colours do (#526). The fonts are the theme's — Inter,
+and Geist Mono for code — and console.css takes them by name.

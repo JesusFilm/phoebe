@@ -11,11 +11,16 @@ import { createRoot } from "react-dom/client";
 import { App } from "./app.tsx";
 import { desktopBridge } from "./companion.ts";
 import { createBridgeRelayClient, createBrowserRelayClient } from "./relay-client.ts";
+import { followSystemTheme } from "./theme.ts";
+// Tailwind and the Coss UI theme first, the console's own sheet after, so the
+// console's rules win where the two say different things about one element.
+import "./index.css";
 import "./console.css";
 
 const root = document.getElementById("root");
 if (root === null) throw new Error("the console's mount point is missing from index.html");
 
+followSystemTheme();
 const bridge = desktopBridge();
 
 createRoot(root).render(

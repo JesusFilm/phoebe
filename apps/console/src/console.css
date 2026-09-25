@@ -57,18 +57,20 @@
   box-sizing: border-box;
 }
 
+/* The families are the Coss theme's (index.css): Inter, and Geist Mono for
+   code. The sizes stay the console's own. */
 body {
   margin: 0;
-  font:
-    14px/1.45 system-ui,
-    sans-serif;
+  font-family: var(--font-sans, system-ui, sans-serif);
+  font-size: 14px;
+  line-height: 1.45;
   color: var(--fg);
   background: var(--bg);
 }
 
 code,
 .mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 12.5px;
 }
 
@@ -299,62 +301,22 @@ a {
   cursor: pointer;
 }
 
-/* The shortcuts: icons at the entry's edge, in the accent so they read as
-   actions and not as part of the name. Lucide, the set T3 Code draws from. One
-   on a stopped install, three on a running one, a spinner while a run is going. */
+/* The shortcuts at the entry's edge: Coss UI buttons (components/ui/button.tsx),
+   ghost and icon-sized, so they read as actions and not as part of the name;
+   a spinner in their place while a run is going. Their look is Tailwind's; this
+   only places them and tints the icons. */
 .rail-actions {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  margin-right: 10px;
+  gap: 2px;
+  margin-right: 8px;
   flex: none;
-}
-
-.rail-action {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: 1px solid var(--line);
-  border-radius: 50%;
-  background: var(--panel);
   color: var(--accent);
-  cursor: pointer;
 }
 
-.rail-action:hover {
-  border-color: var(--accent);
-}
-
-.rail-action.busy {
-  border-color: transparent;
+.rail-spinner {
   color: var(--muted);
-  cursor: default;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-@keyframes pulse {
-  50% {
-    opacity: 0.35;
-  }
-}
-
-.spin {
-  animation: spin 1s linear infinite;
-}
-
-/* A turning icon is motion; someone who asked for less gets a slow fade. */
-@media (prefers-reduced-motion: reduce) {
-  .spin {
-    animation: pulse 1.6s ease-in-out infinite;
-  }
+  margin: 0 4px;
 }
 
 .rail-entry.local:hover {
