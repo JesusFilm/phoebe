@@ -225,18 +225,20 @@ export function InstallPage({
               </button>
             );
           })}
-          <button
-            type="button"
-            className={`tab logs-toggle${logsOpen ? " current" : ""}`}
-            disabled={!logsOpen && install.state !== "running"}
-            aria-pressed={logsOpen}
-            {...(logsOpen || install.state === "running"
-              ? {}
-              : { title: "Needs a running container; its output is what the pane shows." })}
-            onClick={() => setLogsOpen((open) => !open)}
-          >
-            {logsOpen ? "hide logs" : "logs"}
-          </button>
+          <span className="tabs-actions">
+            <button
+              type="button"
+              className={`tab logs-toggle${logsOpen ? " current" : ""}`}
+              disabled={!logsOpen && install.state !== "running"}
+              aria-pressed={logsOpen}
+              {...(logsOpen || install.state === "running"
+                ? {}
+                : { title: "Needs a running container; its output is what the pane shows." })}
+              onClick={() => setLogsOpen((open) => !open)}
+            >
+              {logsOpen ? "hide logs" : "logs"}
+            </button>
+          </span>
         </nav>
 
         {tab === "install" ? (

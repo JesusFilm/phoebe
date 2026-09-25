@@ -459,6 +459,25 @@ export function offeredVerbs(install: LocalInstall): {
   };
 }
 
+/**
+ * The shortcuts a rail entry offers, in the order they are drawn.
+ *
+ * Four words over three verbs. `pause` is `stop` as it drains: the unit in
+ * flight finishes and no new one starts, which is what pausing an agent means
+ * when its state lives on volumes and a start resumes it. `stop` is
+ * `stop --now`, abandoning the unit. `restart` is a drain and then a start.
+ * The engine has no verb of its own for any of the three, and the rail does not
+ * pretend it does: each is the run the install tab would start.
+ */
+export type InstallAction = "start" | "pause" | "stop" | "restart";
+
+export function installActions(install: LocalInstall): InstallAction[] {
+  const offered = offeredVerbs(install);
+  if (offered.start) return ["start"];
+  if (offered.stop) return ["pause", "stop", "restart"];
+  return [];
+}
+
 // ── the local read loop, as the page reads it (#556) ──────────────────────
 
 /**

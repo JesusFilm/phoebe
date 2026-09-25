@@ -11,6 +11,7 @@
     "test": "vp test"
   },
   "dependencies": {
+    "lucide-react": "^0.564.0",
     "phoebe-agent": "workspace:*",
     "react": "^19.3.0",
     "react-dom": "^19.3.0"

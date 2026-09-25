@@ -276,19 +276,85 @@ a {
   cursor: pointer;
 }
 
-/* A local entry is a button, because it is the one rail entry that goes
-   somewhere. Stripped back to the shape of the div beside it so the two read as
-   one list. */
+/* A local entry holds a button, because it is the one rail entry that goes
+   somewhere, and beside it the start shortcut when there is one. The button is
+   stripped back to the shape of the div beside it so the two read as one list. */
 .rail-entry.local {
-  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+}
+
+.rail-entry.local .rail-select {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 14px 6px 11px;
   border: 0;
-  border-left: 3px solid transparent;
   border-radius: 0;
   background: none;
   color: inherit;
   font: inherit;
   text-align: left;
   cursor: pointer;
+}
+
+/* The shortcuts: icons at the entry's edge, in the accent so they read as
+   actions and not as part of the name. Lucide, the set T3 Code draws from. One
+   on a stopped install, three on a running one, a spinner while a run is going. */
+.rail-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 10px;
+  flex: none;
+}
+
+.rail-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--panel);
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.rail-action:hover {
+  border-color: var(--accent);
+}
+
+.rail-action.busy {
+  border-color: transparent;
+  color: var(--muted);
+  cursor: default;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+/* A turning icon is motion; someone who asked for less gets a slow fade. */
+@media (prefers-reduced-motion: reduce) {
+  .spin {
+    animation: pulse 1.6s ease-in-out infinite;
+  }
 }
 
 .rail-entry.local:hover {
@@ -1155,6 +1221,11 @@ details.why > summary::marker {
   font-size: 12px;
 }
 
-.tabs .logs-toggle {
+/* The row's right-hand end: start for a stopped install, and the logs pane's
+   toggle. Actions rather than tabs, so a real button beside the tab strip. */
+.tabs .tabs-actions {
   margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }

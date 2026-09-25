@@ -51,7 +51,8 @@ import { useState } from "react";
 import type { CompanionUpdate, LocalInstall, RelayIdentity } from "phoebe-agent/contracts";
 import type { Surface } from "./companion.ts";
 import { connectionReading, type RowFacts } from "./facts.ts";
-import { installReading } from "./local-install.ts";
+import { LoaderCircle, Pause, Play, RotateCcw, Square } from "lucide-react";
+import { installActions, installReading, type InstallAction } from "./local-install.ts";
 import type { RelaySignIn } from "./relay-client.ts";
 import { deploymentHref, FLEET_HREF } from "./route.ts";
 import { RELAY_UPGRADE_DOC } from "./relay-version.ts";
@@ -67,7 +68,9 @@ export function Rail({
   selected = null,
   selectedDeployment = null,
   update = null,
+  busy,
   onSelect,
+  onAction,
   onAdd,
   onDownload,
   onRestart,
@@ -94,7 +97,11 @@ export function Rail({
   selectedDeployment?: string | null;
   /** The companion's own update. Null in a browser, which updates with a reload. */
   update?: CompanionUpdate | null;
+  /** The installs with a verb run in flight, by directory (run-activity.ts). */
+  busy?: ReadonlySet<string>;
   onSelect?: (dir: string) => void;
+  /** The entry shortcuts. Absent in a browser, which has no local arm. */
+  onAction?: (dir: string, action: InstallAction) => void;
   onAdd?: () => void;
   onDownload?: () => void;
   onRestart?: () => void;
@@ -158,7 +165,9 @@ export function Rail({
               install={install}
               current={install.dir === selected}
               paired={paired?.has(install.dir) ?? false}
+              busy={busy?.has(install.dir) ?? false}
               {...(onSelect !== undefined ? { onSelect } : {})}
+              {...(onAction !== undefined ? { onAction } : {})}
             />
           ))
         )}
@@ -235,31 +244,78 @@ function InstallEntry({
   install,
   current,
   paired,
+  busy,
   onSelect,
+  onAction,
 }: {
   install: LocalInstall;
   current: boolean;
   /** Also a deployment on this relay — so the Relay group is not drawing it. */
   paired: boolean;
+  /** A verb run is in flight on this install: the shortcuts give way to a spinner. */
+  busy: boolean;
   onSelect?: (dir: string) => void;
+  /** The shortcuts: start on a stopped install; pause, stop and restart on a running one. */
+  onAction?: (dir: string, action: InstallAction) => void;
 }) {
   const reading = installReading(install);
+  const actions = onAction === undefined ? [] : installActions(install);
   return (
-    <button
-      type="button"
-      className={`rail-entry local state-${reading.tone}${current ? " current" : ""}`}
-      aria-current={current ? "page" : undefined}
-      onClick={() => onSelect?.(install.dir)}
-    >
-      <div className="name">
-        <span className={`mark ${reading.tone}`} aria-hidden="true" />
-        {install.name}
-        {paired ? <span className="chip paired">paired</span> : null}
-      </div>
-      <div className="sub">{reading.text}</div>
-    </button>
+    <div className={`rail-entry local state-${reading.tone}${current ? " current" : ""}`}>
+      <button
+        type="button"
+        className="rail-select"
+        aria-current={current ? "page" : undefined}
+        onClick={() => onSelect?.(install.dir)}
+      >
+        <div className="name">
+          <span className={`mark ${reading.tone}`} aria-hidden="true" />
+          {install.name}
+          {paired ? <span className="chip paired">paired</span> : null}
+        </div>
+        <div className="sub">{reading.text}</div>
+      </button>
+      {busy ? (
+        // Something is running on this install and its end is what changes the
+        // shortcuts, so until then there is one thing to show: that it is going.
+        <span className="rail-actions">
+          <span className="rail-action busy" role="img" aria-label={`Working on ${install.name}`}>
+            <LoaderCircle size={12} strokeWidth={2.25} className="spin" aria-hidden="true" />
+          </span>
+        </span>
+      ) : actions.length === 0 ? null : (
+        // The shortcuts: one click from the rail, without opening the page
+        // first. The page opens anyway, so the run's output has somewhere to
+        // land (local-install.ts, `installActions`).
+        <span className="rail-actions">
+          {actions.map((action) => {
+            const [Icon, label] = ACTION_ICONS[action];
+            return (
+              <button
+                key={action}
+                type="button"
+                className="rail-action"
+                title={`${label} ${install.name}`}
+                aria-label={`${label} ${install.name}`}
+                onClick={() => onAction?.(install.dir, action)}
+              >
+                <Icon size={12} strokeWidth={2.25} aria-hidden="true" />
+              </button>
+            );
+          })}
+        </span>
+      )}
+    </div>
   );
 }
+
+/** Each shortcut's icon and the verb it is read as. Lucide, as T3 Code draws. */
+const ACTION_ICONS: Record<InstallAction, [typeof Play, string]> = {
+  start: [Play, "Start"],
+  pause: [Pause, "Pause"],
+  stop: [Square, "Stop"],
+  restart: [RotateCcw, "Restart"],
+};
 
 /**
  * The signed-out Relay entry. Which control it is comes from the arm, not from
