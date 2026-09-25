@@ -8,9 +8,10 @@
 //   [phoebe:<owner>/<repo>:<pipeline>][<kind> <ref>] …   the same, on behalf of one unit
 //   [<owner>/<repo>:<command>] …                 an agent's own output
 //
-// The drawer turns that into tabs: every pipeline seen is one, beside "all" and
-// the bootstrapper. Nothing here changes a line; the drawer shows them as they
-// came, and a tab only chooses which.
+// The console turns that into tabs: every pipeline seen is one, beside "all"
+// and the bootstrapper, and a workspace child opened from the rail gets a tab
+// for everything under its slug. Nothing here changes a line; the console shows
+// them as they came, and a tab only chooses which.
 
 /** Every line, whatever it says. */
 export const ALL_CHANNEL = "all";
@@ -38,27 +39,51 @@ export function channelOf(line: string): string {
   return BOOT_CHANNEL;
 }
 
-/** The tabs to draw for these lines: all, then each channel in the order it first spoke. */
-export function channelsIn(lines: readonly string[]): string[] {
+/** Every channel under one tenant: `<owner>/<repo>:*`. The tab a workspace child opens on. */
+export function tenantChannel(slug: string): string {
+  return `${slug}:*`;
+}
+
+/** Whether a channel is one tenant's whole set rather than one pipeline's. */
+function isTenantChannel(channel: string): boolean {
+  return channel.endsWith(":*");
+}
+
+/**
+ * The tabs to draw for these lines: all, then boot, then the tenant scope when
+ * there is one (there before its first line, so a child opened from the rail
+ * has its tab from the start), then each channel in the order it first spoke.
+ */
+export function channelsIn(lines: readonly string[], scope: string | null = null): string[] {
   const seen = new Set<string>();
   for (const line of lines) seen.add(channelOf(line));
   const ordered = [...seen].filter((channel) => channel !== BOOT_CHANNEL);
-  return [ALL_CHANNEL, ...(seen.has(BOOT_CHANNEL) ? [BOOT_CHANNEL] : []), ...ordered];
+  return [
+    ALL_CHANNEL,
+    ...(seen.has(BOOT_CHANNEL) ? [BOOT_CHANNEL] : []),
+    ...(scope === null ? [] : [scope]),
+    ...ordered,
+  ];
 }
 
 /** The lines a tab shows. */
 export function linesIn(lines: readonly string[], channel: string): string[] {
   if (channel === ALL_CHANNEL) return [...lines];
+  if (isTenantChannel(channel)) {
+    const prefix = channel.slice(0, -1);
+    return lines.filter((line) => channelOf(line).startsWith(prefix));
+  }
   return lines.filter((line) => channelOf(line) === channel);
 }
 
 /**
  * What a tab is called. The repo without its owner, because every tab on one
- * drawer is one deployment's and the owner is the same on all of them; the
- * bootstrapper by name.
+ * console is one deployment's and the owner is the same on all of them; a
+ * tenant's whole set is the repo alone; the bootstrapper by name.
  */
 export function channelLabel(channel: string): string {
   if (channel === ALL_CHANNEL || channel === BOOT_CHANNEL) return channel;
-  const slash = channel.indexOf("/");
-  return slash === -1 ? channel : channel.slice(slash + 1);
+  const bare = isTenantChannel(channel) ? channel.slice(0, -2) : channel;
+  const slash = bare.indexOf("/");
+  return slash === -1 ? bare : bare.slice(slash + 1);
 }

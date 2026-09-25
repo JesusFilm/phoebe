@@ -45,8 +45,10 @@ import { DeploymentPage, NoSuchDeployment } from "./deployment-page.tsx";
 import { rowFacts, sortFleet, type RowFacts } from "./facts.ts";
 import { applyEvent, EMPTY_FLEET, loadFleet, type FleetState } from "./fleet-state.ts";
 import { FleetPage } from "./fleet-page.tsx";
+import { ConsoleView } from "./console-view.tsx";
+import { hostOfProcessPlatform } from "./host-icon.tsx";
 import { InstallPage } from "./install-page.tsx";
-import { pairedInstalls, type InstallAction } from "./local-install.ts";
+import { pairedInstalls, type InstallAction, type RailChild } from "./local-install.ts";
 import {
   busyInstalls,
   NO_ACTIVITY,
@@ -217,8 +219,11 @@ function Console({
   const [installs, setInstalls] = useState<LocalInstall[]>([]);
   const [reports, setReports] = useState<Record<string, LocalReportEvent>>({});
   const [openInstall, setOpenInstall] = useState<string | null>(null);
-  /** The tab the rail asked the install's page to open on, when it asked. */
-  const [openTab, setOpenTab] = useState<"install" | "pipelines" | undefined>(undefined);
+  // Which of an install's two views is up: the console the rail opens
+  // (console-view.tsx), or the tabbed page behind its gear (install-page.tsx).
+  // A workspace child opens the console on its own lines.
+  const [openView, setOpenView] = useState<"console" | "settings">("console");
+  const [openTenant, setOpenTenant] = useState<string | null>(null);
   const [relayUrl, setRelayUrl] = useState<string | null>(null);
   // Default on (#524 §8), and read back off `companion.json` the moment main
   // answers. A browser never asks — there is nothing there to notify with.
@@ -602,7 +607,8 @@ function Console({
             openInstall === null && route.page === "deployment" ? route.fingerprint : null
           }
           onSelect={(dir) => {
-            setOpenTab(undefined);
+            setOpenView("console");
+            setOpenTenant(null);
             setOpenInstall(dir);
           }}
           reports={reports}
@@ -625,10 +631,16 @@ function Console({
                 // main saying the button was not the next step — which is a
                 // state the notice had already stopped offering.
                 busy: busyInstalls(activity),
-                // The gear and a workspace's children open the page on a tab:
-                // settings on the install tab, a child on pipelines.
-                onOpen: (dir: string, tab: "install" | "pipelines") => {
-                  setOpenTab(tab);
+                // The gear is the tabbed page; a workspace child is the
+                // console, on the child's own lines.
+                onSettings: (dir: string) => {
+                  setOpenView("settings");
+                  setOpenTenant(null);
+                  setOpenInstall(dir);
+                },
+                onChild: (dir: string, child: RailChild) => {
+                  setOpenView("console");
+                  setOpenTenant(child.slug);
                   setOpenInstall(dir);
                 },
                 // The rail's shortcuts. The page opens first so the run's lines
@@ -644,12 +656,30 @@ function Console({
           signIn={signIn}
           onSignedIn={onSignedIn}
         />
-        {open !== null && bridge !== null ? (
+        {open !== null && bridge !== null && openView === "console" ? (
+          <ConsoleView
+            key={`${open.dir}#${openTenant ?? ""}`}
+            bridge={bridge}
+            install={open}
+            host={
+              open.wsl === undefined
+                ? platform === null
+                  ? null
+                  : hostOfProcessPlatform(platform)
+                : "wsl"
+            }
+            tenant={openTenant}
+            onSettings={() => setOpenView("settings")}
+          />
+        ) : open !== null && bridge !== null ? (
           <InstallPage
-            key={`${open.dir}#${openTab ?? ""}`}
+            key={open.dir}
             install={open}
             bridge={bridge}
-            {...(openTab !== undefined ? { initialTab: openTab } : {})}
+            onConsole={() => {
+              setOpenTenant(null);
+              setOpenView("console");
+            }}
             report={reports[open.dir] ?? null}
             now={now}
             signedIn={identity !== null}

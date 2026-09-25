@@ -484,6 +484,8 @@ export function installActions(install: LocalInstall): InstallAction[] {
 /** One child row under a workspace's rail entry. */
 export type RailChild = {
   dir: string;
+  /** The config's `repoSlug`, which is also the tag on its lines in the console. */
+  slug: string | null;
   /** The slug when the config has one, else the folder's name. */
   label: string;
   /** The state word beside it, and the mark's tone. */
@@ -509,7 +511,7 @@ export function workspaceChildren(
   return children.map((child) => {
     const label = child.slug ?? child.name;
     if (report === null || install.state !== "running") {
-      return { dir: child.dir, label, tone: "stopped", text: "" };
+      return { dir: child.dir, slug: child.slug, label, tone: "stopped", text: "" };
     }
     const tenant = report.fleet.tenants.find(
       (candidate) =>
@@ -518,20 +520,28 @@ export function workspaceChildren(
         candidate.path.replace(/[\\/]+$/, "").endsWith(`\\${child.name}`),
     );
     if (tenant === undefined)
-      return { dir: child.dir, label, tone: "idle", text: "not in the fleet" };
-    if (tenant.held) return { dir: child.dir, label, tone: "attention", text: "held" };
+      return { dir: child.dir, slug: child.slug, label, tone: "idle", text: "not in the fleet" };
+    if (tenant.held)
+      return { dir: child.dir, slug: child.slug, label, tone: "attention", text: "held" };
     const cells = report.fleet.cells.filter((cell) => cell.tenant.id === tenant.id);
     if (cells.some((cell) => cell.wedged.wedged)) {
-      return { dir: child.dir, label, tone: "attention", text: "wedged" };
+      return { dir: child.dir, slug: child.slug, label, tone: "attention", text: "wedged" };
     }
     if (cells.some((cell) => cell.state === "working")) {
-      return { dir: child.dir, label, tone: "running", text: "working" };
+      return { dir: child.dir, slug: child.slug, label, tone: "running", text: "working" };
     }
     if (cells.some((cell) => cell.state === "waiting for slot")) {
-      return { dir: child.dir, label, tone: "running", text: "waiting for a slot" };
+      return {
+        dir: child.dir,
+        slug: child.slug,
+        label,
+        tone: "running",
+        text: "waiting for a slot",
+      };
     }
-    if (cells.length === 0) return { dir: child.dir, label, tone: "idle", text: "no pipelines" };
-    return { dir: child.dir, label, tone: "idle", text: "idle" };
+    if (cells.length === 0)
+      return { dir: child.dir, slug: child.slug, label, tone: "idle", text: "no pipelines" };
+    return { dir: child.dir, slug: child.slug, label, tone: "idle", text: "idle" };
   });
 }
 

@@ -746,11 +746,23 @@ describe("what a workspace's children are doing, for the rail", () => {
 
   test("labels each child by slug, else folder, and says what the fleet has it doing", () => {
     expect(workspaceChildren(workspace, event)).toEqual([
-      { dir: "/repos/ws/a", label: "acme/a", tone: "attention", text: "held" },
-      { dir: "/repos/ws/b", label: "b", tone: "running", text: "working" },
-      { dir: "/repos/ws/c", label: "acme/c", tone: "attention", text: "wedged" },
-      { dir: "/repos/ws/d", label: "acme/d", tone: "running", text: "waiting for a slot" },
-      { dir: "/repos/ws/e", label: "acme/e", tone: "idle", text: "not in the fleet" },
+      { dir: "/repos/ws/a", slug: "acme/a", label: "acme/a", tone: "attention", text: "held" },
+      { dir: "/repos/ws/b", slug: null, label: "b", tone: "running", text: "working" },
+      { dir: "/repos/ws/c", slug: "acme/c", label: "acme/c", tone: "attention", text: "wedged" },
+      {
+        dir: "/repos/ws/d",
+        slug: "acme/d",
+        label: "acme/d",
+        tone: "running",
+        text: "waiting for a slot",
+      },
+      {
+        dir: "/repos/ws/e",
+        slug: "acme/e",
+        label: "acme/e",
+        tone: "idle",
+        text: "not in the fleet",
+      },
     ]);
   });
 
@@ -796,6 +808,7 @@ describe("what a workspace's children are doing, for the rail", () => {
     expect(workspaceChildren(stopped, localReport({ facts: stopped }))).toEqual(
       workspace.workspace!.children.map((child) => ({
         dir: child.dir,
+        slug: child.slug,
         label: child.slug ?? child.name,
         tone: "stopped",
         text: "",

@@ -14,6 +14,7 @@ import { rowFacts, sortFleet } from "./facts.ts";
 import { deploymentHref } from "./route.ts";
 import { FleetPage } from "./fleet-page.tsx";
 import { Rail } from "./rail.tsx";
+import { ConsoleView } from "./console-view.tsx";
 import { ConfigEditForm, InstallPage, InstallTab } from "./install-page.tsx";
 import { RELAY_UPGRADE_DOC, tooOldText } from "./relay-version.ts";
 import { ReceiptPanel } from "./deployment-tabs.tsx";
@@ -597,7 +598,7 @@ describe("the local arm on the rail", () => {
   });
 
   test("a gear on every install opens its settings: the install tab", () => {
-    const opened: [string, string][] = [];
+    const opened: string[] = [];
     const withGear = renderToStaticMarkup(
       <Rail
         facts={[]}
@@ -605,7 +606,7 @@ describe("the local arm on the rail", () => {
         surface="companion"
         signedIn={false}
         installs={installs}
-        onOpen={(dir, tab) => opened.push([dir, tab])}
+        onSettings={(dir) => opened.push(dir)}
         signIn={null}
         onSignedIn={noop}
       />,
@@ -638,7 +639,8 @@ describe("the local arm on the rail", () => {
         surface="companion"
         signedIn={false}
         installs={[workspace, install({ dir: "/repos/solo", name: "solo" })]}
-        onOpen={() => undefined}
+        onSettings={() => undefined}
+        onChild={() => undefined}
         signIn={null}
         onSignedIn={noop}
       />,
@@ -667,7 +669,8 @@ describe("the local arm on the rail", () => {
           }),
         }}
         defaultExpanded={new Set(["/repos/ws"])}
-        onOpen={() => undefined}
+        onSettings={() => undefined}
+        onChild={() => undefined}
         signIn={null}
         onSignedIn={noop}
       />,
@@ -1172,5 +1175,41 @@ describe("a paired install on the rail (#558)", () => {
 
     expect(markup).not.toContain("chip paired");
     expect(markup).toContain("the-fleet");
+  });
+});
+
+describe("the console, the page the rail opens", () => {
+  const view = renderToStaticMarkup(
+    <ConsoleView
+      bridge={bridge()}
+      install={install({ name: "youtube-studio", state: "running" })}
+      host="windows"
+      onSettings={() => undefined}
+    />,
+  );
+
+  test("names the install with its host and state, and carries the gear onto its settings", () => {
+    expect(view).toContain('aria-label="Console for youtube-studio"');
+    expect(view).toMatch(/title="Windows"[^>]*>\s*<svg[^>]*data-host="windows"/);
+    expect(view).toContain("<h1");
+    expect(view).toContain("running");
+    expect(view).toContain('aria-label="Settings for youtube-studio"');
+  });
+
+  test("starts on all with nothing yet, and on the child's own tab when opened from one", () => {
+    expect(view).toMatch(/class="console-channel current" aria-pressed="true"[^>]*>all</);
+    expect(view).toContain("Waiting for the container to print something");
+    const scoped = renderToStaticMarkup(
+      <ConsoleView
+        bridge={bridge()}
+        install={install()}
+        host={null}
+        tenant="JesusFilm/phoebe"
+        onSettings={() => undefined}
+      />,
+    );
+    expect(scoped).toMatch(
+      /class="console-channel current" aria-pressed="true" title="Every line from JesusFilm\/phoebe">phoebe</,
+    );
   });
 });

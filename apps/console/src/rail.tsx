@@ -88,7 +88,8 @@ export function Rail({
   platform,
   defaultExpanded,
   onSelect,
-  onOpen,
+  onSettings,
+  onChild,
   onAction,
   onAdd,
   onDownload,
@@ -125,8 +126,10 @@ export function Rail({
   /** The workspaces opened out to their children to begin with, by directory. */
   defaultExpanded?: ReadonlySet<string>;
   onSelect?: (dir: string) => void;
-  /** Open an install on a tab: the gear's install tab, a child's pipelines. */
-  onOpen?: (dir: string, tab: "install" | "pipelines") => void;
+  /** The gear: the install's tabbed page. Without it there is no gear. */
+  onSettings?: (dir: string) => void;
+  /** A workspace child: the console on the child's lines. */
+  onChild?: (dir: string, child: RailChild) => void;
   /** The entry shortcuts. Absent in a browser, which has no local arm. */
   onAction?: (dir: string, action: InstallAction) => void;
   onAdd?: () => void;
@@ -210,7 +213,8 @@ export function Rail({
                 })
               }
               {...(onSelect !== undefined ? { onSelect } : {})}
-              {...(onOpen !== undefined ? { onOpen } : {})}
+              {...(onSettings !== undefined ? { onSettings } : {})}
+              {...(onChild !== undefined ? { onChild } : {})}
               {...(onAction !== undefined ? { onAction } : {})}
             />
           ))
@@ -294,7 +298,8 @@ function InstallEntry({
   expanded,
   onToggle,
   onSelect,
-  onOpen,
+  onSettings,
+  onChild,
   onAction,
 }: {
   install: LocalInstall;
@@ -310,8 +315,10 @@ function InstallEntry({
   expanded: boolean;
   onToggle: () => void;
   onSelect?: (dir: string) => void;
-  /** Open the install on one tab: the gear's install tab, a child's pipelines. */
-  onOpen?: (dir: string, tab: "install" | "pipelines") => void;
+  /** The gear: the install's tabbed page. */
+  onSettings?: (dir: string) => void;
+  /** A child row: the console on that child's lines. */
+  onChild?: (dir: string, child: RailChild) => void;
   /** The shortcuts: start on a stopped install; pause, stop and restart on a running one. */
   onAction?: (dir: string, action: InstallAction) => void;
 }) {
@@ -373,8 +380,8 @@ function InstallEntry({
         // first. The page opens anyway, so the run's output has somewhere to
         // land (local-install.ts, `installActions`). Coss UI's button, ghost
         // and icon-sized, as T3 Code draws its own. The gear is the install's
-        // settings: the install tab, where init, start, upgrade, secrets and
-        // forget live.
+        // settings: the tabbed page, where init, start, upgrade, secrets, the
+        // report's tabs and forget live. The name itself opens the console.
         <span className="rail-actions">
           {actions.map((action) => {
             const [Icon, label] = ACTION_ICONS[action];
@@ -392,14 +399,14 @@ function InstallEntry({
               </Button>
             );
           })}
-          {onOpen === undefined ? null : (
+          {onSettings === undefined ? null : (
             <Button
               variant="ghost"
               size="icon-xs"
               className="rail-gear"
               title={`Settings for ${install.name}`}
               aria-label={`Settings for ${install.name}`}
-              onClick={() => onOpen(install.dir, "install")}
+              onClick={() => onSettings(install.dir)}
             >
               <Settings aria-hidden="true" />
             </Button>
@@ -417,7 +424,7 @@ function InstallEntry({
                   type="button"
                   className="rail-child"
                   title={child.dir}
-                  onClick={() => onOpen?.(install.dir, "pipelines")}
+                  onClick={() => onChild?.(install.dir, child)}
                 >
                   <span className={`mark ${child.tone}`} aria-hidden="true" />
                   <span className="label">{child.label}</span>
