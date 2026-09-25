@@ -10,6 +10,7 @@ import {
   readCompanionFile,
   removeInstall,
   writeCompanionFile,
+  updateInstall,
 } from "./companion-file.ts";
 
 /** The scratch directories this file made, removed after each test. */
@@ -126,5 +127,61 @@ describe("the install list", () => {
     const contents = addInstall(emptyCompanionFile(), "/repos/one", AT);
 
     expect(Object.keys(contents.installs[0]!).sort()).toEqual(["addedAt", "dir"]);
+  });
+});
+
+describe("an install's own settings", () => {
+  const AT = "2026-09-18T09:00:00.000Z";
+  const two = addInstall(addInstall(emptyCompanionFile(), "/repos/one", AT), "/repos/two", AT);
+  const one = path.resolve("/repos/one");
+  const other = path.resolve("/repos/two");
+
+  test("a display name is kept beside the folder, and cleared by an empty one", () => {
+    const named = updateInstall(two, "/repos/one", { label: "  Studio  " });
+    expect(named.installs[0]).toEqual({ dir: one, addedAt: AT, name: "Studio" });
+    expect(named.installs[1]).toEqual({ dir: other, addedAt: AT });
+    expect(updateInstall(named, "/repos/one", { label: null }).installs[0]).toEqual({
+      dir: one,
+      addedAt: AT,
+    });
+    expect(updateInstall(named, "/repos/one", { label: "" }).installs[0]).toEqual({
+      dir: one,
+      addedAt: AT,
+    });
+  });
+
+  test("a moved folder keeps the entry's date and name, and its place in the list", () => {
+    const named = updateInstall(two, "/repos/one", { label: "Studio" });
+    const moved = updateInstall(named, "/repos/one", { dir: "/repos/elsewhere" });
+    expect(moved.installs).toEqual([
+      {
+        dir: path.resolve("/repos/elsewhere"),
+        addedAt: "2026-09-18T09:00:00.000Z",
+        name: "Studio",
+      },
+      { dir: other, addedAt: AT },
+    ]);
+  });
+
+  test("refuses a folder another entry already has, a relative one, and an unknown install", () => {
+    expect(() => updateInstall(two, "/repos/one", { dir: "/repos/two" })).toThrow(
+      /already on the rail/,
+    );
+    expect(() => updateInstall(two, "/repos/one", { dir: "repos/three" })).toThrow(/full path/);
+    expect(() => updateInstall(two, "/repos/nine", { label: "x" })).toThrow(/not an install/);
+    // Pointing at itself is not a clash.
+    expect(updateInstall(two, "/repos/one", { dir: "/repos/one" }).installs).toEqual(two.installs);
+  });
+
+  test("a name round-trips through the file, and a blank one is dropped on read", () => {
+    const file = scratch();
+    writeCompanionFile(file, updateInstall(two, "/repos/one", { label: "Studio" }));
+    expect(readCompanionFile(file).installs[0]).toEqual({ dir: one, addedAt: AT, name: "Studio" });
+    writeFileSync(
+      file,
+      JSON.stringify({ installs: [{ dir: "/repos/one", addedAt: AT, name: "  " }] }),
+      "utf8",
+    );
+    expect(readCompanionFile(file).installs[0]).toEqual({ dir: one, addedAt: AT });
   });
 });

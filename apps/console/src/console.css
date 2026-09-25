@@ -1522,3 +1522,58 @@ details.why > summary::marker {
 .settings-facts dd {
   margin: 0;
 }
+
+/* ── a project's own settings, above its tabs (project-settings.tsx) ────── */
+
+.project-settings {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+/* One setting per row, as T3 Code lays its project config out: the name and a
+   line about it on the left, the control on the right. */
+.project-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 12px 16px;
+}
+
+.project-row + .project-row {
+  border-top: 1px solid var(--line);
+}
+
+.project-row-text {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.project-row-control {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  width: min(420px, 50%);
+  margin: 0;
+}
+
+.project-row-control .mono input,
+.project-row-control input.mono {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+}
+
+.project-settings .trouble {
+  margin: 0;
+  padding: 8px 16px;
+  border-top: 1px solid var(--line);
+  color: var(--fail);
+  font-size: 13px;
+}

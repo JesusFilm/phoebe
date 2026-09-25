@@ -405,6 +405,7 @@ export function bridge(answers: BridgeAnswers = {}): DesktopBridge {
       pick: () => Promise.resolve(answers.picked ?? null),
       add: () => Promise.resolve(answers.installs ?? []),
       remove: () => Promise.resolve([]),
+      update: () => Promise.resolve(answers.installs ?? []),
       changes: () => () => undefined,
       reports: (onReport) => {
         for (const event of answers.reports ?? []) onReport(event);

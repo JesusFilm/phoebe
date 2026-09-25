@@ -54,6 +54,7 @@ import type {
   RelayPassthrough,
   VerbRun,
   VerbRunRequest,
+  InstallPatch,
 } from "phoebe-agent/contracts";
 import { createCompanionAlerts } from "./alerting.ts";
 import { authCodeIn, authCodeInArgv } from "./auth-link.ts";
@@ -71,6 +72,7 @@ import {
   removeInstall,
   writeCompanionFile,
   type CompanionFile,
+  updateInstall,
 } from "./companion-file.ts";
 import { CONSOLE_SCHEME, consoleFileFor } from "./console-scheme.ts";
 import { consoleSource } from "./console-source.ts";
@@ -545,6 +547,21 @@ app.whenReady().then(
         logs.stop(dir);
         showBadge();
         return editInstalls((contents) => removeInstall(contents, dir));
+      }),
+    );
+
+    ipcMain.handle(BRIDGE_CHANNELS.installsUpdate, (_event, dir: string, patch: InstallPatch) =>
+      answering(() => {
+        // A folder that moves is a new identity for the read loop, the alerts
+        // and the logs stream, all keyed by directory: the old one is let go
+        // the way forgetting lets it go, and the new one is picked up from the
+        // list the change broadcasts.
+        if (patch.dir !== undefined && path.resolve(patch.dir) !== path.resolve(dir)) {
+          alerts.forgetInstall(dir);
+          logs.stop(dir);
+          showBadge();
+        }
+        return editInstalls((contents) => updateInstall(contents, dir, patch));
       }),
     );
 

@@ -22,8 +22,16 @@ export type InstallState = "running" | "stopped" | "not-initialised";
 export type LocalInstall = {
   /** Absolute path to the folder. The install's identity (#527 §12). */
   dir: string;
-  /** The folder's own name — what the rail shows, since `dir` is too long for it. */
+  /**
+   * What the rail shows, since `dir` is too long for it: the operator's
+   * {@link LocalInstall.label} when one is set, else the folder's own name.
+   */
   name: string;
+  /**
+   * The display name the operator gave this install on its settings, when they
+   * did. Stored in `companion.json` beside the folder; nothing on disk knows it.
+   */
+  label?: string;
   /**
    * What this install answers to on a relay (#505 §3) — `relay.name`, or the
    * solo `repoSlug`, or the folder's name. Beside {@link LocalInstall.name}
@@ -122,6 +130,16 @@ export type CompanionEnvironment = {
    * offer a picker opened inside the distros (`installs.pick("wsl")`).
    */
   wslDistros: string[];
+};
+
+/**
+ * A change to one install's own settings (#527 §12): the display name, where
+ * `null` clears it back to the folder's name, and the folder itself, which
+ * re-points the same entry at another location and keeps its date and label.
+ */
+export type InstallPatch = {
+  label?: string | null;
+  dir?: string;
 };
 
 /**

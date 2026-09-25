@@ -53,6 +53,7 @@ import type {
   SecretSetOutcome,
   VerbRun,
   VerbRunRequest,
+  InstallPatch,
 } from "phoebe-agent/contracts";
 import { DeploymentTabPanel, ReceiptPanel } from "./deployment-tabs.tsx";
 import {
@@ -75,6 +76,7 @@ import {
 } from "./local-install.ts";
 import { TerminalSquare } from "lucide-react";
 import { Button } from "~/components/ui/button";
+import { ProjectSettings } from "./project-settings.tsx";
 import { readReport } from "./report.ts";
 import { DEPLOYMENT_TABS, tabHasContent, type ConfigReading, type DeploymentTab } from "./tabs.ts";
 
@@ -86,6 +88,7 @@ export function InstallPage({
   signedIn,
   paired,
   onConsole,
+  onUpdate,
   onForget,
 }: {
   install: LocalInstall;
@@ -99,6 +102,8 @@ export function InstallPage({
   paired: boolean;
   /** Back to the console (console-view.tsx), the view the rail opens. */
   onConsole?: () => void;
+  /** Save a change to the install's own settings (project-settings.tsx). */
+  onUpdate: (dir: string, patch: InstallPatch) => Promise<void>;
   onForget: (dir: string) => void;
 }) {
   const [tab, setTab] = useState<DeploymentTab | "install">(() => landingTab(install));
@@ -212,6 +217,12 @@ export function InstallPage({
             distro.
           </p>
         )}
+
+        <ProjectSettings
+          install={install}
+          onUpdate={(patch) => onUpdate(install.dir, patch)}
+          onPickLocation={() => bridge.installs.pick(install.wsl === undefined ? undefined : "wsl")}
+        />
 
         <nav className="tabs" aria-label="This install">
           <button

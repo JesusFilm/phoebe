@@ -16,7 +16,9 @@
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { CompanionPreferences } from "phoebe-agent/contracts";
+import type { CompanionPreferences,
+  InstallPatch,
+} from "phoebe-agent/contracts";
 
 /** The file's name under `userData`. */
 export const COMPANION_FILE = "companion.json";
@@ -25,6 +27,8 @@ export const COMPANION_FILE = "companion.json";
 export type StoredInstall = {
   dir: string;
   addedAt: string;
+  /** The display name the operator gave it, when they did. Absent means the folder's. */
+  name?: string;
 };
 
 /** The whole file. */
@@ -96,6 +100,42 @@ export function addInstall(contents: CompanionFile, dir: string, addedAt: string
   return { ...contents, installs: [...contents.installs, { dir: absolute, addedAt }] };
 }
 
+/**
+ * Change one install's own settings: its display name, or the folder it points
+ * at. The entry keeps its date, and its name when only the folder moves. A
+ * folder another entry already has is refused: two entries for one folder
+ * would be two rail rows driving one container.
+ */
+export function updateInstall(
+  contents: CompanionFile,
+  dir: string,
+  patch: InstallPatch,
+): CompanionFile {
+  const absolute = path.resolve(dir);
+  const current = contents.installs.find((install) => install.dir === absolute);
+  if (current === undefined) throw new Error(`${dir} is not an install this companion knows.`);
+  let next: StoredInstall = { ...current };
+  if (patch.label !== undefined) {
+    const label = patch.label?.trim() ?? "";
+    if (label === "") delete next.name;
+    else next = { ...next, name: label };
+  }
+  if (patch.dir !== undefined) {
+    if (!path.isAbsolute(patch.dir)) {
+      throw new Error(`${patch.dir} is not a full path. Pick the folder from its root.`);
+    }
+    const moved = path.resolve(patch.dir);
+    if (moved !== absolute && contents.installs.some((install) => install.dir === moved)) {
+      throw new Error(`${moved} is already on the rail.`);
+    }
+    next = { ...next, dir: moved };
+  }
+  return {
+    ...contents,
+    installs: contents.installs.map((install) => (install.dir === absolute ? next : install)),
+  };
+}
+
 /** Forget a directory. Deletes nothing on disk (#527 §12). */
 export function removeInstall(contents: CompanionFile, dir: string): CompanionFile {
   const absolute = path.resolve(dir);
@@ -112,6 +152,9 @@ function coerce(parsed: unknown): CompanionFile {
     ? record["installs"].filter(isStoredInstall).map((install) => ({
         dir: path.resolve(install.dir),
         addedAt: install.addedAt,
+        ...(typeof install.name === "string" && install.name.trim() !== ""
+          ? { name: install.name }
+          : {}),
       }))
     : empty.installs;
 

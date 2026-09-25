@@ -133,6 +133,9 @@ change them ([#557](https://github.com/JesusFilm/phoebe/issues/557)) and pairing
 - [`companion-file.ts`](src/companion-file.ts) — `companion.json` in `userData`:
   the install directories, the relay URL, the preferences. Nothing else. Every
   fact _about_ an install is derived on read.
+  Each install is its folder and the date it was added, plus the display name
+  the operator gave it on its settings when they did (`name`); the folder can
+  be re-pointed from there too, which keeps the date and the name.
 - [`install-facts.ts`](src/install-facts.ts) — that derivation. Running, stopped
   or not initialised, from Compose and the folder itself.
 - [`docker.ts`](src/docker.ts) — the check. Docker is checked and never

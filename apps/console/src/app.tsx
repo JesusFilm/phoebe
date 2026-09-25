@@ -33,6 +33,7 @@ import type {
   RelayIdentity,
   VerbRunRequest,
   CompanionEnvironment,
+  InstallPatch,
 } from "phoebe-agent/contracts";
 import type { Surface } from "./companion.ts";
 import {
@@ -517,6 +518,21 @@ function Console({
     [bridge],
   );
 
+  // A change to an install's own settings. A moved folder is a new key for
+  // everything the window holds by directory, so the open page follows it.
+  const updateInstall = useCallback(
+    async (dir: string, patch: InstallPatch): Promise<void> => {
+      if (bridge === null) return;
+      const next = await bridge.installs.update(dir, patch);
+      setInstalls(next);
+      if (patch.dir !== undefined) {
+        const moved = next.find((install) => install.dir !== dir && !installs.some((held) => held.dir === install.dir));
+        setOpenInstall((current) => (current === dir ? (moved?.dir ?? patch.dir ?? null) : current));
+      }
+    },
+    [bridge, installs],
+  );
+
   const open = installs.find((install) => install.dir === openInstall) ?? null;
   const update = useCompanionUpdate(bridge);
 
@@ -697,6 +713,7 @@ function Console({
             now={now}
             signedIn={identity !== null}
             paired={paired.has(open.dir)}
+            onUpdate={updateInstall}
             onForget={forgetInstall}
           />
         ) : route.page === "settings" ? (

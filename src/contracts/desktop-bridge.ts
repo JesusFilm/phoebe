@@ -21,7 +21,12 @@
 
 import type { CompanionUpdate } from "./companion-update.ts";
 import type { LogLine, LogsEnded } from "./container-logs.ts";
-import type { CompanionEnvironment, CompanionPreferences, LocalInstall } from "./local-install.ts";
+import type {
+  CompanionEnvironment,
+  CompanionPreferences,
+  InstallPatch,
+  LocalInstall,
+} from "./local-install.ts";
 import type { LocalAlertEvent, LocalReportEvent } from "./local-report.ts";
 import type { RelayEvent } from "./relay-events.ts";
 import type { RelayIdentity } from "./relay-routes.ts";
@@ -123,6 +128,12 @@ export type DesktopBridge = {
     add: (dir: string) => Promise<LocalInstall[]>;
     /** Forget an install. Deletes nothing on disk (#527 §12). */
     remove: (dir: string) => Promise<LocalInstall[]>;
+    /**
+     * Change an install's own settings: its display name, or the folder it
+     * points at. A folder another entry already has is refused. Answers the
+     * list, like add and remove.
+     */
+    update: (dir: string, patch: InstallPatch) => Promise<LocalInstall[]>;
     /** The list again whenever it changed. Returns the unsubscribe. */
     changes: (onChange: (installs: LocalInstall[]) => void) => () => void;
     /**

@@ -913,9 +913,21 @@ describe("a local install's page", () => {
         report={event === null ? null : localReport({ facts: one, ...event })}
         now={NOW}
         onForget={() => undefined}
+        onUpdate={() => Promise.resolve()}
       />,
     );
   }
+
+  test("carries the project's own settings above the tabs, on every tab", () => {
+    const markup = page({ dir: "/repos/youtube-studio", label: "Studio", name: "Studio" });
+    const settings = markup.indexOf('aria-label="This project"');
+
+    expect(settings).toBeGreaterThan(-1);
+    expect(settings).toBeLessThan(markup.indexOf('<nav class="tabs"'));
+    expect(markup).toContain('value="Studio"');
+    expect(markup).toContain('placeholder="youtube-studio"');
+    expect(markup).toContain(">Change…</button>");
+  });
 
   test("carries the same six tabs whatever the install is doing", () => {
     const markup = page();
@@ -1013,6 +1025,7 @@ describe("the two local writes on screen (#557)", () => {
         report={event === null ? null : localReport({ facts: one, ...event })}
         now={NOW}
         onForget={() => undefined}
+        onUpdate={() => Promise.resolve()}
       />,
     );
   }
