@@ -106,6 +106,10 @@ export function createDispatchVerb(deps: DispatchDeps): Dispatch {
         const outcome = runInit({
           targetDir: install,
           ...(request.profile !== undefined ? { profile: request.profile } : {}),
+          // The pin a scaffolded image installs is this companion's own version,
+          // which is the root package's (#521 §4). Left to its default, `init`
+          // would look for a `package.json` beside the bundle and find the app's.
+          params: { cliVersion: __COMPANION_VERSION__ },
           deps: { packageRoot: packageRoot() },
         });
         for (const file of outcome.created) io.stdout(`  created  ${file}`);

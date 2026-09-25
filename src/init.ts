@@ -28,7 +28,7 @@ import type {
   InitTenantOutcome,
 } from "./contracts/init-report.ts";
 import { defaultGit, type GitRunner } from "./git-model.ts";
-import { resolvePackageResource } from "./package-resource.ts";
+import { moduleDirOf, resolvePackageResource } from "./package-resource.ts";
 import {
   defaultRepoUrl,
   parseSlug,
@@ -59,7 +59,12 @@ export type TemplateParams = {
 export const DEFAULT_TEMPLATE_PARAMS: TemplateParams = {
   installCommand: "npm ci",
   cliBin: "phoebe-agent",
-  cliVersion: thisPackageVersion(),
+  // A getter, so importing this module never touches the filesystem: the
+  // companion bundles it into a main process whose neighbouring `package.json`
+  // is the app's own, and passes the version it carries instead (#555).
+  get cliVersion() {
+    return thisPackageVersion();
+  },
 };
 
 /**
@@ -73,7 +78,10 @@ export const DEFAULT_TEMPLATE_PARAMS: TemplateParams = {
  * install, not a case to paper over with an unpinned scaffold.
  */
 function thisPackageVersion(): string {
-  const raw = readFileSync(new URL("../package.json", import.meta.url), "utf8");
+  // `moduleDirOf` and a `join`, never `new URL("../package.json", import.meta.url)`:
+  // a bundler rewrites the URL form into a `data:` URL that `readFileSync`
+  // refuses (see `package-resource.ts`).
+  const raw = readFileSync(join(moduleDirOf(import.meta.url), "..", "package.json"), "utf8");
   const { version } = JSON.parse(raw) as { version?: unknown };
   if (typeof version !== "string") {
     throw new Error("phoebe-agent's package.json carries no version to pin a scaffolded image to.");
@@ -331,7 +339,15 @@ export function runInit(opts: RunInitOptions): InitOutcome {
     });
     return { ...report, profile: "tenant", targetDir: tenantDir, tenant: { repoSlug, repoUrl } };
   }
-  const params: TemplateParams = { ...DEFAULT_TEMPLATE_PARAMS, ...opts.params };
+  // Resolved field by field, not spread: a spread reads every own property of
+  // `DEFAULT_TEMPLATE_PARAMS`, which runs the `cliVersion` getter and the
+  // `package.json` read behind it even when the caller supplied a version —
+  // the very read the companion passes `cliVersion` to avoid (#555).
+  const params: TemplateParams = {
+    installCommand: opts.params?.installCommand ?? DEFAULT_TEMPLATE_PARAMS.installCommand,
+    cliBin: opts.params?.cliBin ?? DEFAULT_TEMPLATE_PARAMS.cliBin,
+    cliVersion: opts.params?.cliVersion ?? DEFAULT_TEMPLATE_PARAMS.cliVersion,
+  };
   const moduleDir = dirname(fileURLToPath(import.meta.url));
 
   mkdirSync(targetDir, { recursive: true });
