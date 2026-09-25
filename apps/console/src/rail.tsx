@@ -51,7 +51,9 @@ import { useState } from "react";
 import type { CompanionUpdate, LocalInstall, RelayIdentity } from "phoebe-agent/contracts";
 import type { Surface } from "./companion.ts";
 import { connectionReading, type RowFacts } from "./facts.ts";
-import { LoaderCircle, Pause, Play, RotateCcw, Square } from "lucide-react";
+import { Pause, Play, RotateCcw, Square } from "lucide-react";
+import { Button } from "~/components/ui/button";
+import { Spinner } from "~/components/ui/spinner";
 import { installActions, installReading, type InstallAction } from "./local-install.ts";
 import type { RelaySignIn } from "./relay-client.ts";
 import { deploymentHref, FLEET_HREF } from "./route.ts";
@@ -278,29 +280,35 @@ function InstallEntry({
       {busy ? (
         // Something is running on this install and its end is what changes the
         // shortcuts, so until then there is one thing to show: that it is going.
+        // Turning, unless the OS asked for less motion, in which case it fades.
         <span className="rail-actions">
-          <span className="rail-action busy" role="img" aria-label={`Working on ${install.name}`}>
-            <LoaderCircle size={12} strokeWidth={2.25} className="spin" aria-hidden="true" />
-          </span>
+          <Spinner
+            className="rail-spinner motion-safe:animate-spin motion-reduce:animate-pulse"
+            size={14}
+            strokeWidth={2.25}
+            aria-label={`Working on ${install.name}`}
+          />
         </span>
       ) : actions.length === 0 ? null : (
         // The shortcuts: one click from the rail, without opening the page
         // first. The page opens anyway, so the run's output has somewhere to
-        // land (local-install.ts, `installActions`).
+        // land (local-install.ts, `installActions`). Coss UI's button, ghost
+        // and icon-sized, as T3 Code draws its own.
         <span className="rail-actions">
           {actions.map((action) => {
             const [Icon, label] = ACTION_ICONS[action];
             return (
-              <button
+              <Button
                 key={action}
-                type="button"
+                variant="ghost"
+                size="icon-xs"
                 className="rail-action"
                 title={`${label} ${install.name}`}
                 aria-label={`${label} ${install.name}`}
                 onClick={() => onAction?.(install.dir, action)}
               >
-                <Icon size={12} strokeWidth={2.25} aria-hidden="true" />
-              </button>
+                <Icon strokeWidth={2.25} aria-hidden="true" />
+              </Button>
             );
           })}
         </span>
