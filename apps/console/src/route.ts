@@ -21,6 +21,7 @@ export type Route =
   | { page: "fleet" }
   | { page: "people" }
   | { page: "add" }
+  | { page: "settings" }
   | { page: "deployment"; fingerprint: string; tab: DeploymentTab };
 
 export const FLEET_ROUTE: Route = { page: "fleet" };
@@ -37,6 +38,14 @@ export const FLEET_HREF = "#/fleet";
 export const ADD_ROUTE: Route = { page: "add" };
 
 export const ADD_HREF = "#/add";
+
+/**
+ * The console's own settings, behind the gear at the foot of the rail: the
+ * console's colours, desktop notifications, what this companion runs on.
+ */
+export const SETTINGS_ROUTE: Route = { page: "settings" };
+
+export const SETTINGS_HREF = "#/settings";
 
 /** The allowlist and the pairing panel (#548). */
 export const PEOPLE_ROUTE: Route = { page: "people" };
@@ -69,6 +78,7 @@ export function parseRoute(hash: string): Route {
     .filter((segment) => segment !== "");
   if (segments[0] === "people" && segments[1] === undefined) return PEOPLE_ROUTE;
   if (segments[0] === "add" && segments[1] === undefined) return ADD_ROUTE;
+  if (segments[0] === "settings" && segments[1] === undefined) return SETTINGS_ROUTE;
   if (segments[0] !== "d" || segments[1] === undefined) return FLEET_ROUTE;
   const fingerprint = decodeURIComponent(segments[1]);
   if (fingerprint === "") return FLEET_ROUTE;

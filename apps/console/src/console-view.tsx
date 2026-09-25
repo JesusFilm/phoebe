@@ -2,7 +2,7 @@
 //
 // Picking an install on the rail lands here, the way picking a project in T3
 // Code lands on its terminal. The header says which install and where it runs,
-// with the theme picker and the gear onto its settings, the tabbed page
+// with the gear onto its settings, the tabbed page
 // (install-page.tsx). Below, one tab per pipeline that has spoken
 // (logs-channels.ts) and the lines, drawn on the chosen theme (console-themes.ts,
 // log-line.tsx). Open, it follows over the bridge and stops the stream when the
@@ -19,7 +19,6 @@ import {
   SYSTEM_CONSOLE_THEME,
   type ConsoleThemeChoice,
 } from "./console-themes.ts";
-import { ConsoleThemePicker } from "./console-theme-picker.tsx";
 import { HostIcon, hostTitle } from "./host-icon.tsx";
 import { installReading } from "./local-install.ts";
 import { LogLine } from "./log-line.tsx";
@@ -32,7 +31,6 @@ export function ConsoleView({
   host,
   tenant = null,
   theme = SYSTEM_CONSOLE_THEME,
-  onTheme,
   onSettings,
 }: {
   bridge: DesktopBridge;
@@ -41,10 +39,8 @@ export function ConsoleView({
   host: HostPlatform | null;
   /** A workspace child's slug, when the rail opened this from one: its lines first. */
   tenant?: string | null;
-  /** The operator's theme choice (console-themes.ts); "system" until read. */
+  /** The operator's theme choice (console-themes.ts, chosen on the settings page); "system" until read. */
   theme?: ConsoleThemeChoice;
-  /** The picker changed the theme. Absent, the picker is not drawn. */
-  onTheme?: (choice: ConsoleThemeChoice) => void;
   /** The gear: the install's tabbed page. */
   onSettings: () => void;
 }) {
@@ -135,7 +131,6 @@ export function ConsoleView({
               <ArrowDownToLine aria-hidden="true" />
             </Button>
           )}
-          {onTheme === undefined ? null : <ConsoleThemePicker theme={theme} onChoose={onTheme} />}
           <Button
             variant="ghost"
             size="icon-xs"
@@ -181,7 +176,7 @@ export function ConsoleView({
 }
 
 /** Whether the OS is dark right now, kept current as it changes. */
-function useSystemDark(): boolean {
+export function useSystemDark(): boolean {
   const query =
     typeof window === "undefined" ? null : window.matchMedia("(prefers-color-scheme: dark)");
   const [dark, setDark] = useState(query?.matches ?? false);

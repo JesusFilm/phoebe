@@ -69,7 +69,7 @@ import {
   type RailChild,
 } from "./local-install.ts";
 import type { RelaySignIn } from "./relay-client.ts";
-import { deploymentHref, FLEET_HREF } from "./route.ts";
+import { deploymentHref, FLEET_HREF, SETTINGS_HREF } from "./route.ts";
 import { RELAY_UPGRADE_DOC } from "./relay-version.ts";
 
 export function Rail({
@@ -176,6 +176,7 @@ export function Rail({
     return (
       <nav className="rail" aria-label="Fleet">
         {relay}
+        <RailFoot />
       </nav>
     );
   }
@@ -226,7 +227,24 @@ export function Rail({
         {...(onDownload !== undefined ? { onDownload } : {})}
         {...(onRestart !== undefined ? { onRestart } : {})}
       />
+      <RailFoot />
     </nav>
+  );
+}
+
+/**
+ * The foot of the rail: a bare gear onto the console's own settings
+ * (settings-page.tsx), where T3 Code keeps its. A control, not a place on the
+ * rail, so it never reads as selected. The app's settings, not an install's:
+ * those are behind the gear on the install's own entry.
+ */
+function RailFoot() {
+  return (
+    <footer className="rail-foot">
+      <a className="rail-settings" href={SETTINGS_HREF} aria-label="Settings" title="Settings">
+        <Settings size={16} aria-hidden="true" />
+      </a>
+    </footer>
   );
 }
 

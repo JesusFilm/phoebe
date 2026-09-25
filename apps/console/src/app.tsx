@@ -32,6 +32,7 @@ import type {
   LocalReportEvent,
   RelayIdentity,
   VerbRunRequest,
+  CompanionEnvironment,
 } from "phoebe-agent/contracts";
 import type { Surface } from "./companion.ts";
 import {
@@ -50,7 +51,8 @@ import {
   SYSTEM_CONSOLE_THEME,
   type ConsoleThemeChoice,
 } from "./console-themes.ts";
-import { ConsoleView } from "./console-view.tsx";
+import { ConsoleView, useSystemDark } from "./console-view.tsx";
+import { SettingsPage } from "./settings-page.tsx";
 import { hostOfProcessPlatform } from "./host-icon.tsx";
 import { InstallPage } from "./install-page.tsx";
 import { pairedInstalls, type InstallAction, type RailChild } from "./local-install.ts";
@@ -236,6 +238,18 @@ function Console({
   // The console's colour theme (console-themes.ts): the operator's preference,
   // read with the rest and written back through the bridge when the picker moves.
   const [consoleTheme, setConsoleTheme] = useState<ConsoleThemeChoice>(SYSTEM_CONSOLE_THEME);
+  const systemDark = useSystemDark();
+  const chooseNotifications = (wanted: boolean): void => {
+    setNotifications(wanted);
+    // Asked on first enable and never again — the OS remembers its own
+    // answer, and a companion that asked on every launch would be the thing
+    // the preference exists to stop (#524 §8).
+    if (wanted && typeof Notification !== "undefined") void Notification.requestPermission();
+    if (bridge === null) return;
+    void bridge.preferences
+      .set({ notifications: wanted, consoleTheme })
+      .then((saved) => setNotifications(saved.notifications), ignore);
+  };
   const chooseConsoleTheme = (choice: ConsoleThemeChoice): void => {
     setConsoleTheme(choice);
     if (bridge === null) return;
@@ -402,6 +416,8 @@ function Console({
   const [wslDistros, setWslDistros] = useState<string[]>([]);
   // And which host this is, for the rail's icon on every local install.
   const [platform, setPlatform] = useState<string | null>(null);
+  // The whole answer too, for the settings page's account of this companion.
+  const [environment, setEnvironment] = useState<CompanionEnvironment | null>(null);
   useEffect(() => {
     if (bridge === null) return;
     let live = true;
@@ -410,6 +426,7 @@ function Console({
         if (!live) return;
         setWslDistros(probed.wslDistros);
         setPlatform(probed.platform);
+        setEnvironment(probed);
       },
       () => undefined,
     );
@@ -572,28 +589,6 @@ function Console({
           </a>
         </nav>
         <span className="spacer" />
-        {bridge === null ? null : (
-          <label className="notifications">
-            <input
-              type="checkbox"
-              checked={notifications}
-              onChange={(event) => {
-                const wanted = event.target.checked;
-                setNotifications(wanted);
-                // Asked on first enable and never again — the OS remembers its
-                // own answer, and a companion that asked on every launch would
-                // be the thing the preference exists to stop (#524 §8).
-                if (wanted && typeof Notification !== "undefined") {
-                  void Notification.requestPermission();
-                }
-                void bridge.preferences
-                  .set({ notifications: wanted, consoleTheme })
-                  .then((saved) => setNotifications(saved.notifications), ignore);
-              }}
-            />
-            Desktop notifications
-          </label>
-        )}
         {identity === null ? (
           <span className="muted">Not signed in</span>
         ) : (
@@ -687,7 +682,6 @@ function Console({
             }
             tenant={openTenant}
             theme={consoleTheme}
-            onTheme={chooseConsoleTheme}
             onSettings={() => setOpenView("settings")}
           />
         ) : open !== null && bridge !== null ? (
@@ -704,6 +698,17 @@ function Console({
             signedIn={identity !== null}
             paired={paired.has(open.dir)}
             onForget={forgetInstall}
+          />
+        ) : route.page === "settings" ? (
+          <SettingsPage
+            surface={surface}
+            environment={environment}
+            systemDark={systemDark}
+            notifications={notifications}
+            consoleTheme={consoleTheme}
+            {...(bridge === null
+              ? {}
+              : { onNotifications: chooseNotifications, onConsoleTheme: chooseConsoleTheme })}
           />
         ) : identity === null || route.page === "add" ? (
           <CompanionHome
