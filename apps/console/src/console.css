@@ -97,15 +97,6 @@ code,
   flex: 1;
 }
 
-/* The one device preference (#524 §8). A checkbox, because it is on or off. */
-.topbar .notifications {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--muted);
-}
-
 .frame {
   display: grid;
   grid-template-columns: 260px 1fr;
@@ -144,9 +135,37 @@ a {
 /* ── the rail ──────────────────────────────────────────────────────────── */
 
 .rail {
+  display: flex;
+  flex-direction: column;
   border-right: 1px solid var(--line);
   background: var(--panel);
-  padding: 10px 0;
+  padding: 10px 0 0;
+}
+
+/* The foot of the rail: the gear onto the console's own settings (settings-page.tsx),
+   pinned to the bottom the way T3 Code's is. */
+.rail-foot {
+  margin-top: auto;
+  padding: 8px 10px 10px;
+}
+
+/* A bare gear, an icon the size of the rail's other icon buttons. Not a place
+   on the rail, so no current state and nothing to select. */
+.rail-settings {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  color: var(--muted);
+  text-decoration: none;
+  user-select: none;
+}
+
+.rail-settings:hover {
+  background: var(--chip);
+  color: inherit;
 }
 
 /* Two groups in the companion, one in a browser (#526 shell A). The rule is on
@@ -1430,4 +1449,76 @@ details.why > summary::marker {
 .mark.idle {
   border-radius: 50%;
   border: 2px solid var(--idle);
+}
+
+/* ── the settings page ─────────────────────────────────────────────────── */
+
+.settings-page {
+  max-width: 760px;
+}
+
+.settings-section {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.settings-section h2 {
+  margin: 0 0 6px;
+  font-size: 15px;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 10px 0;
+}
+
+.settings-label {
+  min-width: 64px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.settings-check {
+  gap: 8px;
+}
+
+/* The picker on the settings page is in the app's colours; on the console it
+   is in the theme's. */
+.settings-page .console-theme-pick select {
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+}
+
+/* A sample of the console in the chosen theme: the same lines rule as the
+   console's, at a fixed height and with its own frame. */
+.settings-preview {
+  flex: none;
+  height: 132px;
+  margin-top: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.settings-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  margin: 8px 0 0;
+  font-size: 13px;
+}
+
+.settings-facts dt {
+  color: var(--muted);
+}
+
+.settings-facts dd {
+  margin: 0;
 }
