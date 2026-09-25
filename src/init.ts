@@ -339,7 +339,15 @@ export function runInit(opts: RunInitOptions): InitOutcome {
     });
     return { ...report, profile: "tenant", targetDir: tenantDir, tenant: { repoSlug, repoUrl } };
   }
-  const params: TemplateParams = { ...DEFAULT_TEMPLATE_PARAMS, ...opts.params };
+  // Resolved field by field, not spread: a spread reads every own property of
+  // `DEFAULT_TEMPLATE_PARAMS`, which runs the `cliVersion` getter and the
+  // `package.json` read behind it even when the caller supplied a version —
+  // the very read the companion passes `cliVersion` to avoid (#555).
+  const params: TemplateParams = {
+    installCommand: opts.params?.installCommand ?? DEFAULT_TEMPLATE_PARAMS.installCommand,
+    cliBin: opts.params?.cliBin ?? DEFAULT_TEMPLATE_PARAMS.cliBin,
+    cliVersion: opts.params?.cliVersion ?? DEFAULT_TEMPLATE_PARAMS.cliVersion,
+  };
   const moduleDir = dirname(fileURLToPath(import.meta.url));
 
   mkdirSync(targetDir, { recursive: true });
