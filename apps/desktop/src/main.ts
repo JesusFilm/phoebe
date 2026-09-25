@@ -85,15 +85,11 @@ import { probeDocker } from "./docker.ts";
 import { allInstallFacts, directoryFacts, installFacts } from "./install-facts.ts";
 import { createLocalReads } from "./local-read.ts";
 import type { PairArm } from "./pair.ts";
-<<<<<<< HEAD
 import {
   defaultCommandRunner,
   formatResolveFailure,
   resolveDeploymentCompose,
 } from "../../../src/deployment-compose.ts";
-=======
-import { defaultCommandRunner, resolveDeploymentCompose } from "../../../src/deployment-compose.ts";
->>>>>>> wsl-local-installs
 import { companionName, createRelaySession, type RelaySession } from "./relay-session.ts";
 import { chooseFeed } from "./update-feed.ts";
 import { createCompanionUpdates } from "./updates.ts";
