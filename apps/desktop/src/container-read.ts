@@ -18,6 +18,8 @@
 // be driven without a Docker daemon anywhere near it.
 
 import { spawn } from "node:child_process";
+import { DEPLOYMENT_FILE } from "../../../bootstrap/deployment-report.ts";
+import { DEFAULT_DATA_BASE } from "../../../src/paths.ts";
 import {
   buildComposeArgv,
   runCompose,
@@ -32,20 +34,37 @@ import {
 const PHOEBE_SERVICE = "phoebe";
 
 /**
- * What main execs to get a report. `-T` because there is no TTY behind a window
- * and Compose allocating one would wrap the JSON in control characters.
+ * What main execs to get a report: the report file, read where the bootstrapper
+ * writes it. `-T` because there is no TTY behind a window and Compose allocating
+ * one would wrap the JSON in control characters.
  *
- * One constant rather than an inline array: `phoebe status --json` is #533's
- * verb, and if its flags move this is the line that moves with it.
+ * The file rather than `phoebe status --json`, which prints it byte for byte
+ * (#508 §3): a container that runs the engine from a mounted checkout — this
+ * repo's own `.phoebe/` does — has no `phoebe` on its PATH, and the read is not
+ * the place to know how each container starts its engine. `sh` is in every image
+ * the templates build, and the path is the one `resolveDataBase` derives
+ * (src/paths.ts), with the same override.
+ *
+ * One constant rather than an inline array: the file is #532's, and if it moves
+ * this is the line that moves with it.
  */
 export const STATUS_ARGV: readonly string[] = [
   "exec",
   "-T",
   PHOEBE_SERVICE,
-  "phoebe",
-  "status",
-  "--json",
+  "sh",
+  "-c",
+  `cat "\${PHOEBE_DATA_DIR:-${DEFAULT_DATA_BASE}}/state/${DEPLOYMENT_FILE}"`,
 ];
+
+/**
+ * A container whose bootstrapper has never written the report: one built from a
+ * phoebe-agent that predates it (#532). The `cat` says "No such file", which is
+ * true and no help; this is what the tabs show instead.
+ */
+export const NO_REPORT_FILE_REASON =
+  "this container writes no deployment report — its phoebe-agent predates `phoebe status` " +
+  "(#532). Check for upgrades on the install tab, then rebuild.";
 
 /** One read of one container: the report it printed, or why there is none. */
 export type ContainerRead =
@@ -76,7 +95,11 @@ export async function readContainerReport(opts: {
   }
 
   if (result.code !== 0) {
-    return { ok: false, reason: firstLine(result.stderr || result.stdout) };
+    const said = firstLine(result.stderr || result.stdout);
+    return {
+      ok: false,
+      reason: /No such file or directory/.test(said) ? NO_REPORT_FILE_REASON : said,
+    };
   }
 
   let body: unknown;
