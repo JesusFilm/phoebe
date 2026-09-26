@@ -53,6 +53,8 @@ import {
   type ConsoleThemeChoice,
 } from "./console-themes.ts";
 import { ConsoleView, useSystemDark } from "./console-view.tsx";
+import { ChevronRight } from "lucide-react";
+import { routeCrumbs, type Crumbs } from "./crumbs.ts";
 import { SettingsPage } from "./settings-page.tsx";
 import { hostOfProcessPlatform } from "./host-icon.tsx";
 import { InstallPage } from "./install-page.tsx";
@@ -71,7 +73,7 @@ import { createNotifier, type AlertSubject, type Notifiable } from "./notificati
 import { Rail } from "./rail.tsx";
 import { isNotSignedIn, type RelayClient, type RelaySignIn } from "./relay-client.ts";
 import { configOf } from "./report.ts";
-import { ADD_HREF, FLEET_HREF, FLEET_ROUTE, PEOPLE_HREF, parseRoute, type Route } from "./route.ts";
+import { ADD_HREF, FLEET_ROUTE, parseRoute, type Route } from "./route.ts";
 
 type Session =
   | { kind: "asking" }
@@ -590,99 +592,86 @@ function Console({
   }, [facts, paired]);
 
   return (
-    <>
-      <header className="topbar">
-        <span className="brand">{surface === "companion" ? "Phoebe" : "Phoebe console"}</span>
-        <nav className="pages" aria-label="Pages">
-          <a
-            href={FLEET_HREF}
-            className={route.page === "fleet" || route.page === "deployment" ? "current" : ""}
-          >
-            Fleet
-          </a>
-          <a href={PEOPLE_HREF} className={route.page === "people" ? "current" : ""}>
-            People
-          </a>
-        </nav>
-        <span className="spacer" />
-        {identity === null ? (
-          <span className="muted">Not signed in</span>
-        ) : (
-          <>
-            <span className="muted">{identity.email}</span>
-            <button
-              type="button"
-              onClick={() => {
-                void client.signOut().then(onSignedOut, onSignedOut);
-              }}
-            >
-              Sign out
-            </button>
-          </>
-        )}
-      </header>
-      <div className="frame">
-        <Rail
-          facts={relayFacts}
-          now={now}
-          surface={surface}
-          signedIn={identity !== null}
-          {...(refusal !== undefined ? { refusal } : {})}
-          installs={installs}
-          paired={pairedDirs}
-          selected={openInstall}
-          selectedDeployment={
-            openInstall === null && route.page === "deployment" ? route.fingerprint : null
-          }
-          onSelect={(dir) => {
-            setOpenView("console");
-            setOpenTenant(null);
-            setOpenInstall(dir);
-          }}
-          reports={reports}
-          {...(platform === null ? {} : { platform })}
-          update={update}
-          {...(bridge === null
-            ? {}
-            : {
-                // To the home page, where the ways to add are laid out — a
-                // folder, a WSL folder, a relay — rather than into one picker.
-                // The route change closes whichever install was open.
-                onAdd: () => {
-                  // Closed here as well as by the route effect: when the hash
-                  // is already `#/add`, setting it again changes nothing.
-                  setOpenInstall(null);
-                  window.location.hash = ADD_HREF;
-                },
-                // Neither call answers with anything the rail draws: what the
-                // click did arrives as the next pushed state, and a refusal is
-                // main saying the button was not the next step — which is a
-                // state the notice had already stopped offering.
-                busy: busyInstalls(activity),
-                // The gear is the tabbed page; a workspace child is the
-                // console, on the child's own lines.
-                onSettings: (dir: string) => {
-                  setOpenView("settings");
-                  setOpenTenant(null);
-                  setOpenInstall(dir);
-                },
-                onChild: (dir: string, child: RailChild) => {
-                  setOpenView("console");
-                  setOpenTenant(child.slug);
-                  setOpenInstall(dir);
-                },
-                // The rail's shortcuts. The page opens first so the run's lines
-                // have somewhere to land; a refusal (`busy`, most likely) is
-                // the page's to show from the run it reads on mount.
-                onAction: (dir: string, action: InstallAction) => {
-                  setOpenInstall(dir);
-                  void runAction(dir, action);
-                },
-                onDownload: () => void bridge.updates.download().catch(noop),
-                onRestart: () => void bridge.updates.restart().catch(noop),
-              })}
-          signIn={signIn}
-          onSignedIn={onSignedIn}
+    <div className="frame">
+      <Rail
+        facts={relayFacts}
+        now={now}
+        surface={surface}
+        signedIn={identity !== null}
+        {...(refusal !== undefined ? { refusal } : {})}
+        installs={installs}
+        paired={pairedDirs}
+        selected={openInstall}
+        selectedDeployment={
+          openInstall === null && route.page === "deployment" ? route.fingerprint : null
+        }
+        onSelect={(dir) => {
+          setOpenView("console");
+          setOpenTenant(null);
+          setOpenInstall(dir);
+        }}
+        // The brand is home. The route effect closes the install when the
+        // hash moves; when it is already `#/fleet` nothing moves, so close it
+        // here too — the same guard `onAdd` carries below.
+        onHome={() => setOpenInstall(null)}
+        reports={reports}
+        {...(platform === null ? {} : { platform })}
+        update={update}
+        {...(bridge === null
+          ? {}
+          : {
+              // To the home page, where the ways to add are laid out — a
+              // folder, a WSL folder, a relay — rather than into one picker.
+              // The route change closes whichever install was open.
+              onAdd: () => {
+                // Closed here as well as by the route effect: when the hash
+                // is already `#/add`, setting it again changes nothing.
+                setOpenInstall(null);
+                window.location.hash = ADD_HREF;
+              },
+              // Neither call answers with anything the rail draws: what the
+              // click did arrives as the next pushed state, and a refusal is
+              // main saying the button was not the next step — which is a
+              // state the notice had already stopped offering.
+              busy: busyInstalls(activity),
+              // The gear is the tabbed page; a workspace child is the
+              // console, on the child's own lines.
+              onSettings: (dir: string) => {
+                setOpenView("settings");
+                setOpenTenant(null);
+                setOpenInstall(dir);
+              },
+              onChild: (dir: string, child: RailChild) => {
+                setOpenView("console");
+                setOpenTenant(child.slug);
+                setOpenInstall(dir);
+              },
+              // The rail's shortcuts. The page opens first so the run's lines
+              // have somewhere to land; a refusal (`busy`, most likely) is
+              // the page's to show from the run it reads on mount.
+              onAction: (dir: string, action: InstallAction) => {
+                setOpenInstall(dir);
+                void runAction(dir, action);
+              },
+              onDownload: () => void bridge.updates.download().catch(noop),
+              onRestart: () => void bridge.updates.restart().catch(noop),
+            })}
+        signIn={signIn}
+        onSignedIn={onSignedIn}
+      />
+      <section className="pane">
+        <RouteLine
+          crumbs={routeCrumbs({
+            surface,
+            route,
+            open,
+            view: openView,
+            tenant: openTenant,
+            facts,
+            signedIn: identity !== null,
+          })}
+          identity={identity}
+          onSignOut={() => void client.signOut().then(onSignedOut, onSignedOut)}
         />
         {open !== null && bridge !== null && openView === "console" ? (
           <ConsoleView
@@ -752,8 +741,8 @@ function Console({
             <p className="muted">Reading the fleet…</p>
           </main>
         )}
-      </div>
-    </>
+      </section>
+    </div>
   );
 }
 
@@ -986,4 +975,40 @@ function noop(): void {}
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * The top line of the right pane: where the console is (crumbs.ts), the way T3
+ * Code puts the project and thread at the top of its pane, and the relay session
+ * at its right edge. The rail is the map; this is the mark on it.
+ */
+function RouteLine({
+  crumbs,
+  identity,
+  onSignOut,
+}: {
+  crumbs: Crumbs;
+  identity: RelayIdentity | null;
+  onSignOut: () => void;
+}) {
+  return (
+    <header className="pane-route">
+      <nav className="crumbs" aria-label="Where you are">
+        {crumbs.map((crumb, index) => (
+          <span key={index} className={index === crumbs.length - 1 ? "crumb current" : "crumb"}>
+            {index === 0 ? null : <ChevronRight size={13} aria-hidden="true" />}
+            <span className="crumb-text">{crumb}</span>
+          </span>
+        ))}
+      </nav>
+      {identity === null ? null : (
+        <span className="pane-session">
+          <span className="muted">{identity.email}</span>
+          <button type="button" className="quiet" onClick={onSignOut}>
+            Sign out
+          </button>
+        </span>
+      )}
+    </header>
+  );
 }

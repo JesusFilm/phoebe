@@ -80,27 +80,84 @@ code,
 
 /* ── the frame ─────────────────────────────────────────────────────────── */
 
-.topbar {
+/* Two panes and nothing above them: the rail, and the pane it opens things in.
+   The rail scrolls on its own; the pane's top line stays put and the page under
+   it scrolls. */
+.frame {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  height: 100vh;
+}
+
+.pane {
   display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.pane > .main {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* The pane's top line: where the console is, as T3 Code puts the project and
+   thread at the top of its pane; the relay session at the right edge. */
+.pane-route {
+  display: flex;
+  flex: none;
   align-items: center;
   gap: 16px;
-  padding: 10px 20px;
+  height: 40px;
+  padding: 0 20px;
   border-bottom: 1px solid var(--line);
   background: var(--panel);
 }
 
-.topbar .brand {
-  font-weight: 700;
-}
-
-.topbar .spacer {
+.crumbs {
+  display: flex;
   flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--muted);
 }
 
-.frame {
-  display: grid;
-  grid-template-columns: 260px 1fr;
-  min-height: calc(100vh - 45px);
+/* A long name is cut short with an ellipsis rather than run under the session
+   controls; the earlier segments give way first, so where you are stays. */
+.crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.crumb svg {
+  flex: none;
+}
+
+.crumb-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.crumb.current {
+  flex: none;
+  max-width: 100%;
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.pane-session {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
 }
 
 .main {
@@ -137,9 +194,32 @@ a {
 .rail {
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
   border-right: 1px solid var(--line);
   background: var(--panel);
-  padding: 10px 0 0;
+  padding: 0 0 0;
+}
+
+/* The brand, at the top of the rail where the window's title would be. */
+.rail-brand {
+  display: flex;
+  flex: none;
+  align-items: center;
+  height: 40px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--line);
+  color: inherit;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.rail-brand:hover {
+  color: var(--accent);
+}
+
+.rail > .rail-group:first-of-type {
+  margin-top: 10px;
 }
 
 /* The foot of the rail: the gear onto the console's own settings (settings-page.tsx),
@@ -861,25 +941,6 @@ details.why > summary::marker {
   overflow-wrap: anywhere;
 }
 
-/* ── the page tabs ─────────────────────────────────────────────────────── */
-
-.pages {
-  display: flex;
-  gap: 14px;
-}
-
-.pages a {
-  text-decoration: none;
-  color: var(--muted);
-  padding-bottom: 2px;
-  border-bottom: 2px solid transparent;
-}
-
-.pages a.current {
-  color: var(--fg);
-  border-bottom-color: var(--accent);
-}
-
 /* ── the People page ───────────────────────────────────────────────────── */
 
 .add-person {
@@ -1157,7 +1218,8 @@ details.why > summary::marker {
 .main.install-tab {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 45px);
+  height: auto;
+  overflow: hidden;
   max-width: none;
   padding: 0;
 }
@@ -1178,7 +1240,8 @@ details.why > summary::marker {
 .main.console-view {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 45px);
+  height: auto;
+  overflow: hidden;
   max-width: none;
   padding: 0;
   background: var(--console-bg);
