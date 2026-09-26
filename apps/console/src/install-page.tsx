@@ -257,17 +257,6 @@ export function InstallPage({
           />
         ) : (
           <>
-            {install.state === "running" ? null : (
-              // The pointer #526 asks for, on the page rather than inside one tab:
-              // a stopped install lands here, and the button that changes that is
-              // one tab away.
-              <p className="muted">
-                Nothing is running, so config is the only tab with anything in it.{" "}
-                <button type="button" className="quiet" onClick={() => setTab("install")}>
-                  Go to the install tab
-                </button>
-              </p>
-            )}
             <DeploymentTabPanel
               tab={tab}
               reading={reading}

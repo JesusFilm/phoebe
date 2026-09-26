@@ -990,10 +990,14 @@ describe("a local install's page", () => {
     expect(markup).toContain("defineConfig");
   });
 
-  test("a stopped install is pointed at the install tab, where the start button is (#526)", () => {
+  test("a stopped install opens on config with no line about the other tabs", () => {
     const markup = page({ state: "stopped" }, {});
 
-    expect(markup).toContain("Go to the install tab");
+    // The rail's shortcut and the install tab are one click away; a sentence
+    // saying so on every stopped install was noise (#526 asked for a pointer,
+    // the rail now is one).
+    expect(markup).not.toContain("Nothing is running, so config");
+    expect(markup).toContain("defineConfig");
   });
 
   test("a running install mid-read says it is reading, not that nothing is running", () => {
