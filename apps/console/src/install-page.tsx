@@ -377,18 +377,12 @@ export function InstallTab({
 
   return (
     <>
-      <section>
-        <h2>Docker</h2>
-        {install.wsl === undefined ? (
+      {install.wsl === undefined ? (
+        <section>
+          <h2>Docker</h2>
           <DockerCheck environment={environment} />
-        ) : (
-          <p className="muted">
-            Asked inside the <code>{install.wsl.distro}</code> distro through <code>wsl.exe</code>,
-            not on this machine&apos;s own PATH. A distro with no Docker says so on the rail and
-            when a verb runs.
-          </p>
-        )}
-      </section>
+        </section>
+      ) : null}
 
       <section>
         <h2>This install</h2>
