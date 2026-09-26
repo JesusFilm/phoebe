@@ -990,10 +990,14 @@ describe("a local install's page", () => {
     expect(markup).toContain("defineConfig");
   });
 
-  test("a stopped install is pointed at the install tab, where the start button is (#526)", () => {
+  test("a stopped install opens on config with no line about the other tabs", () => {
     const markup = page({ state: "stopped" }, {});
 
-    expect(markup).toContain("Go to the install tab");
+    // The rail's shortcut and the install tab are one click away; a sentence
+    // saying so on every stopped install was noise (#526 asked for a pointer,
+    // the rail now is one).
+    expect(markup).not.toContain("Nothing is running, so config");
+    expect(markup).toContain("defineConfig");
   });
 
   test("a running install mid-read says it is reading, not that nothing is running", () => {
@@ -1001,6 +1005,56 @@ describe("a local install's page", () => {
 
     expect(markup).toContain("Reading this install");
     expect(markup).not.toContain("Go to the install tab");
+  });
+
+  test("a workspace's config tab carries a config space per tenant, each with its own edit form", () => {
+    const markup = page(
+      {
+        state: "stopped",
+        workspace: { children: [{ dir: "/repos/ws/a", name: "a", slug: "acme/a" }] },
+      },
+      {
+        directory: directory({
+          bootstrapperRunning: false,
+          tenants: [
+            {
+              dir: "/repos/ws/a",
+              name: "a",
+              slug: "acme/a",
+              configPath: "/repos/ws/a/phoebe.config.ts",
+              configText: 'export default defineConfig({ repoSlug: "acme/a" })\n',
+              configFingerprint: "sha256:aa",
+            },
+            {
+              dir: "/repos/ws/b",
+              name: "b",
+              slug: null,
+              configPath: "/repos/ws/b/phoebe.config.ts",
+              configText: null,
+              configFingerprint: null,
+            },
+          ],
+        }),
+      },
+    );
+
+    expect(markup).toContain('aria-label="Tenants"');
+    expect(markup).toContain('<span class="tenant-label">acme/a</span>');
+    expect(markup).toContain("repoSlug: &quot;acme/a&quot;");
+    expect(markup).toContain("<h2>Change one field in acme/a</h2>");
+    // The child with no config is listed and says so rather than being dropped.
+    expect(markup).toContain('<span class="tenant-label">b</span>');
+    expect(markup).toContain("in this folder");
+    // The root keeps its own form above them.
+    expect(markup.indexOf("<h2>Change one field</h2>")).toBeLessThan(
+      markup.indexOf('aria-label="Tenants"'),
+    );
+  });
+
+  test("a solo install's config tab has no tenants block", () => {
+    const markup = page({ state: "stopped" }, {});
+
+    expect(markup).not.toContain('aria-label="Tenants"');
   });
 
   test("config stays open on a stopped install, because a file is readable either way", () => {

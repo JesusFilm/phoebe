@@ -1640,3 +1640,33 @@ details.why > summary::marker {
   color: var(--fail);
   font-size: 13px;
 }
+
+/* ── a workspace's tenant configs, under the root's on the config tab ──── */
+
+.tenant-configs {
+  margin-top: 24px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.tenant-config {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.tenant-config summary {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  cursor: pointer;
+}
+
+.tenant-config .tenant-label {
+  font-weight: 600;
+}
+
+.tenant-config h2 {
+  font-size: 13px;
+}
