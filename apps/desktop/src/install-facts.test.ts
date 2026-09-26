@@ -442,7 +442,10 @@ describe("a repo that is a workspace child at its root and a deployment in .phoe
 describe("what the rail calls it", () => {
   test("the operator's label when there is one, else the folder's name", async () => {
     const exists = () => false;
-    const plain = await installFacts({ dir: "/repos/youtube-studio", addedAt: "2026-09-18T09:00:00.000Z" }, { exists });
+    const plain = await installFacts(
+      { dir: "/repos/youtube-studio", addedAt: "2026-09-18T09:00:00.000Z" },
+      { exists },
+    );
     expect(plain.name).toBe("youtube-studio");
     expect(plain.label).toBeUndefined();
     const named = await installFacts(

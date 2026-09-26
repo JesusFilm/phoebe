@@ -131,9 +131,14 @@ export type DesktopBridge = {
     /**
      * Change an install's own settings: its display name, or the folder it
      * points at. A folder another entry already has is refused. Answers the
-     * list, like add and remove.
+     * list, like add and remove, and the directory the entry now lives at as
+     * main stored it — so a page open on a moved entry follows it to the key
+     * the list carries, not to the path as picked.
      */
-    update: (dir: string, patch: InstallPatch) => Promise<LocalInstall[]>;
+    update: (
+      dir: string,
+      patch: InstallPatch,
+    ) => Promise<{ installs: LocalInstall[]; dir: string }>;
     /** The list again whenever it changed. Returns the unsubscribe. */
     changes: (onChange: (installs: LocalInstall[]) => void) => () => void;
     /**

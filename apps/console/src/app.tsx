@@ -525,18 +525,14 @@ function Console({
   const updateInstall = useCallback(
     async (dir: string, patch: InstallPatch): Promise<void> => {
       if (bridge === null) return;
-      const next = await bridge.installs.update(dir, patch);
+      const { installs: next, dir: now } = await bridge.installs.update(dir, patch);
       setInstalls(next);
-      if (patch.dir !== undefined) {
-        const moved = next.find(
-          (install) => install.dir !== dir && !installs.some((held) => held.dir === install.dir),
-        );
-        setOpenInstall((current) =>
-          current === dir ? (moved?.dir ?? patch.dir ?? null) : current,
-        );
-      }
+      // Main answers the directory as it stored it, so the open page follows a
+      // move to the key the list now carries — not to the path as picked, and
+      // not to a guess against a list that may have changed meanwhile.
+      if (now !== dir) setOpenInstall((current) => (current === dir ? now : current));
     },
-    [bridge, installs],
+    [bridge],
   );
 
   const open = installs.find((install) => install.dir === openInstall) ?? null;

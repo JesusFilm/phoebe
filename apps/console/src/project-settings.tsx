@@ -89,10 +89,16 @@ export function ProjectSettings({
             size="sm"
             disabled={saving}
             onClick={() => {
-              void onPickLocation().then((picked) => {
-                if (picked !== null && picked !== install.dir) return save({ dir: picked });
-                return undefined;
-              });
+              // The picker itself can fail — a distro that is gone, a dialog
+              // main could not open — and that reads like a refused save.
+              void onPickLocation()
+                .then((picked) => {
+                  if (picked !== null && picked !== install.dir) return save({ dir: picked });
+                  return undefined;
+                })
+                .catch((error: unknown) => {
+                  setTrouble(error instanceof Error ? error.message : String(error));
+                });
             }}
           >
             Change…
