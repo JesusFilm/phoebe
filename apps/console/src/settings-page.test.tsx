@@ -91,6 +91,8 @@ describe("the gear at the foot of the rail", () => {
     );
 
     for (const rail of [companion, browser]) {
+      // The brand heads the rail and is the way home, the fleet.
+      expect(rail).toMatch(/<nav class="rail"[^>]*><a class="rail-brand" href="#\/fleet">Phoebe/);
       expect(rail).toMatch(/<a class="rail-settings" href="#\/settings" aria-label="Settings"/);
       expect(rail).toMatch(
         /class="rail-settings"[^>]*>\s*<svg[^>]*lucide-settings[^>]*>[\s\S]*?<\/svg><\/a>/,

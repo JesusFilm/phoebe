@@ -175,6 +175,7 @@ export function Rail({
   if (surface === "browser") {
     return (
       <nav className="rail" aria-label="Fleet">
+        <RailBrand surface={surface} />
         {relay}
         <RailFoot />
       </nav>
@@ -183,6 +184,7 @@ export function Rail({
 
   return (
     <nav className="rail" aria-label="This machine and the relay">
+      <RailBrand surface={surface} />
       <section className="rail-group" aria-label="This machine">
         <h2 className="rail-heading">
           This machine
@@ -229,6 +231,15 @@ export function Rail({
       />
       <RailFoot />
     </nav>
+  );
+}
+
+/** The brand, at the top of the rail: home is the fleet, as it always was. */
+function RailBrand({ surface }: { surface: Surface }) {
+  return (
+    <a className="rail-brand" href={FLEET_HREF}>
+      {surface === "companion" ? "Phoebe" : "Phoebe console"}
+    </a>
   );
 }
 
