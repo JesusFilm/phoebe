@@ -119,20 +119,36 @@ code,
   display: flex;
   flex: 1;
   min-width: 0;
+  overflow: hidden;
   align-items: center;
   gap: 4px;
   font-size: 13px;
   color: var(--muted);
 }
 
+/* A long name is cut short with an ellipsis rather than run under the session
+   controls; the earlier segments give way first, so where you are stays. */
 .crumb {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  min-width: 0;
   white-space: nowrap;
 }
 
+.crumb svg {
+  flex: none;
+}
+
+.crumb-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .crumb.current {
+  flex: none;
+  max-width: 100%;
   color: var(--fg);
   font-weight: 600;
 }

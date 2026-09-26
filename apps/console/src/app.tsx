@@ -610,6 +610,10 @@ function Console({
           setOpenTenant(null);
           setOpenInstall(dir);
         }}
+        // The brand is home. The route effect closes the install when the
+        // hash moves; when it is already `#/fleet` nothing moves, so close it
+        // here too — the same guard `onAdd` carries below.
+        onHome={() => setOpenInstall(null)}
         reports={reports}
         {...(platform === null ? {} : { platform })}
         update={update}
@@ -993,7 +997,7 @@ function RouteLine({
         {crumbs.map((crumb, index) => (
           <span key={index} className={index === crumbs.length - 1 ? "crumb current" : "crumb"}>
             {index === 0 ? null : <ChevronRight size={13} aria-hidden="true" />}
-            {crumb}
+            <span className="crumb-text">{crumb}</span>
           </span>
         ))}
       </nav>

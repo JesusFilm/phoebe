@@ -92,6 +92,7 @@ export function Rail({
   onChild,
   onAction,
   onAdd,
+  onHome,
   onDownload,
   onRestart,
   signIn,
@@ -133,6 +134,12 @@ export function Rail({
   /** The entry shortcuts. Absent in a browser, which has no local arm. */
   onAction?: (dir: string, action: InstallAction) => void;
   onAdd?: () => void;
+  /**
+   * The brand: home, which is the fleet. The hash does the moving; this is for
+   * when the hash is already the fleet's and setting it again changes nothing,
+   * so the open install is closed here as well (as `onAdd` does).
+   */
+  onHome?: () => void;
   onDownload?: () => void;
   onRestart?: () => void;
   /** How this arm signs in, or null while the answer is still being read. */
@@ -175,7 +182,7 @@ export function Rail({
   if (surface === "browser") {
     return (
       <nav className="rail" aria-label="Fleet">
-        <RailBrand surface={surface} />
+        <RailBrand surface={surface} {...(onHome === undefined ? {} : { onHome })} />
         {relay}
         <RailFoot />
       </nav>
@@ -184,7 +191,7 @@ export function Rail({
 
   return (
     <nav className="rail" aria-label="This machine and the relay">
-      <RailBrand surface={surface} />
+      <RailBrand surface={surface} {...(onHome === undefined ? {} : { onHome })} />
       <section className="rail-group" aria-label="This machine">
         <h2 className="rail-heading">
           This machine
@@ -235,9 +242,13 @@ export function Rail({
 }
 
 /** The brand, at the top of the rail: home is the fleet, as it always was. */
-function RailBrand({ surface }: { surface: Surface }) {
+function RailBrand({ surface, onHome }: { surface: Surface; onHome?: () => void }) {
   return (
-    <a className="rail-brand" href={FLEET_HREF}>
+    <a
+      className="rail-brand"
+      href={FLEET_HREF}
+      {...(onHome === undefined ? {} : { onClick: onHome })}
+    >
       {surface === "companion" ? "Phoebe" : "Phoebe console"}
     </a>
   );
