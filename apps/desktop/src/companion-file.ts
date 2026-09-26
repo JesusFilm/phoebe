@@ -16,9 +16,7 @@
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { CompanionPreferences,
-  InstallPatch,
-} from "phoebe-agent/contracts";
+import type { CompanionPreferences, InstallPatch } from "phoebe-agent/contracts";
 
 /** The file's name under `userData`. */
 export const COMPANION_FILE = "companion.json";
