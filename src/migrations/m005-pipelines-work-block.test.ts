@@ -11,7 +11,7 @@
 //   verify: passes when the pipeline still resolves the same, throws when it does not.
 //   role filter: tenant only.
 //
-// The end-to-end pass through `runMigrate` — real files, real load, real
+// The end-to-end pass through `migrateDirectory` — real files, real load, real
 // verification — lives in migrate.test.ts.
 
 import { describe, expect, test } from "vite-plus/test";

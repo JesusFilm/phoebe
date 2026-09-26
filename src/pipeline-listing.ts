@@ -25,9 +25,16 @@
 // The state each line reports is read from that pipeline's own snapshot and nothing
 // else. Two snapshots are never compared: a pipeline that polls every 15 minutes is
 // not sick because the pipeline beside it wrote a second ago, and an idle pipeline is not
-// sick for being idle a week. The only staleness claim made here is `wedged?`,
-// and it is anchored to the one deadline the snapshot carries — the in-flight
-// unit's own run budget.
+// sick for being idle a week. The only staleness claim made here is `wedged?`.
+//
+// This module is that question's one owner (#501), for `phoebe list` and for the
+// deployment report alike, which is why it has two answers rather than two
+// implementations. `isWedged` is what a reader with nothing but the snapshot can
+// say: the in-flight unit against its own deadline. `wedgedVerdict` is the
+// widened form (#507), which also takes the pass clock the bootstrapper holds in
+// memory for its live children — the only way to see a loop that has stopped
+// while its process lives. `list` reads a tenant off disk and has no such clock,
+// so it asks the narrower question; the deployment report asks the wider one.
 
 import { readdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -41,16 +48,12 @@ import { applyEnvOverlay, loadUserConfig } from "./load-config.ts";
 import { enumeratePipelines } from "./pipeline-enumerate.ts";
 import { declaredPipeline, resolvePollIntervalMs } from "./pipeline.ts";
 import { readStatus, statusPathFor, type CurrentUnit, type StatusSnapshot } from "./unit-event.ts";
+import type { PipelineSource, PipelineState, WedgedVerdict } from "./contracts/pipeline-state.ts";
 
-/** Where a pipeline line came from — see the header. */
-export type PipelineSource = "enumerated" | "stale" | "disk";
-
-/**
- * What a pipeline is doing, from its own snapshot. Tested in this order, so a
- * pipeline that is both working and parked on a second slot reads as working: the
- * unit already in flight is the more useful fact.
- */
-export type PipelineState = "no status" | "working" | "waiting for slot" | "idle";
+// The vocabulary is in contracts (#528): the deployment report publishes both
+// derived answers, and a console that renders them must be able to name them
+// without loading this file. The derivation stays here, the one owner (#501).
+export type { PipelineSource, PipelineState, WedgedVerdict } from "./contracts/pipeline-state.ts";
 
 /** One pipeline line under a tenant. */
 export type PipelineListing = {
@@ -168,6 +171,57 @@ export function isWedged(
   });
 }
 
+/**
+ * How many poll intervals of silence make a pipeline wedged on the pass clause
+ * (#507). Three rather than one: a pass is reported at the *end* of a pass, so a
+ * pipeline that has just admitted a long unit reports nothing until that unit
+ * settles, and one missed interval is normal. Three is long enough that only a
+ * loop that has genuinely stopped reaches it.
+ */
+export const WEDGED_PASS_INTERVALS = 3;
+
+/**
+ * The widened `wedged?` question (#507), and the only derivation of it the
+ * deployment report publishes.
+ *
+ * Two clauses, either sufficient:
+ *
+ *   - **unit-overdue** — {@link isWedged}: some in-flight unit has outlived its
+ *     own run budget plus one poll interval.
+ *   - **no-pass** — the engine has completed no loop pass in
+ *     {@link WEDGED_PASS_INTERVALS} poll intervals. This is the clause that
+ *     catches a child whose process is alive but whose loop has stopped: an idle
+ *     engine writes no snapshot, so without it such a pipeline reads `idle`
+ *     forever.
+ *
+ * The pass clause is suppressed while the pipeline is waiting for a slot. A pass
+ * parked in `slotClient.acquire()` is blocked on the broker by design, and for
+ * as long as some sibling holds the cap that silence is the system working.
+ *
+ * `since` is the pass clock's zero point when no pass has been heard yet — the
+ * moment the child was spawned. Both null means nobody is running this pipeline
+ * (a stale or on-disk cell), so there is no loop to have stopped and only the
+ * unit clause can answer.
+ */
+export function wedgedVerdict(opts: {
+  snapshot: StatusSnapshot | null;
+  pollIntervalMs: number;
+  /** When this pipeline's child last reported a completed pass, in ms. */
+  lastPassAt: number | null;
+  /** When its child was spawned, in ms — the clock before the first pass. */
+  since: number | null;
+  now: number;
+}): WedgedVerdict {
+  if (isWedged(opts.snapshot, opts.pollIntervalMs, opts.now)) {
+    return { wedged: true, reason: "unit-overdue" };
+  }
+  const from = opts.lastPassAt ?? opts.since;
+  if (from === null || opts.snapshot?.waitingForSlot === true) return { wedged: false };
+  const silentFor = opts.now - from;
+  if (silentFor <= opts.pollIntervalMs * WEDGED_PASS_INTERVALS) return { wedged: false };
+  return { wedged: true, reason: "no-pass", noPassForMs: silentFor };
+}
+
 /** A coarse age for one line of operator output: `45s`, `12m`, `3h`, `2d`. */
 export function formatAge(ms: number): string {
   const seconds = Math.max(0, Math.floor(ms / 1000));
@@ -207,8 +261,12 @@ function listingFor(opts: {
  * legally have count, which is what keeps the tenant's other state — the
  * `clone.lock` directory, anything a later ticket puts there — from reading as
  * an abandoned pipeline.
+ *
+ * Exported for the deployment report (#532), which asks the same question of the
+ * same directories: what is on this tenant's disk that its live pipelines do not
+ * account for.
  */
-function stateDirNames(stateDir: string | null): string[] {
+export function stateDirNames(stateDir: string | null): string[] {
   if (stateDir === null) return [];
   let entries;
   try {

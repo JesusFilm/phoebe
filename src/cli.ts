@@ -11,10 +11,16 @@
 //                       `phoebe.config.ts`, overlays `PHOEBE_*` env vars,
 //                       installs the resolved config, then hands off to main.
 //
-// This is the only supported v1 programmatic surface: there is no exported
-// `run(config)` — CLI-only. That keeps every consumer on the same load/resolve/
-// install pipeline and leaves the door open to CLI-only concerns (init/pin
-// scaffolding, log formatting) without breaking a library API.
+// This stays the only *supported* programmatic surface: there is no exported
+// `run(config)`. That keeps every consumer on the same load/resolve/install
+// pipeline and leaves the door open to CLI-only concerns (init/pin scaffolding,
+// log formatting) without breaking a library API.
+//
+// Amended by #552, recorded in docs/adr/0001-host-verbs-are-an-embedding-seam.md:
+// each host verb also exists as `run<Verb>(opts)`, an in-process entry that
+// returns a typed outcome and writes through an injected io. That is an internal
+// seam for the companion, which ships the package and the app at one version
+// (#527 §3) — not a public API, and not a second way to run the engine.
 
 import { readFileSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
@@ -34,30 +40,15 @@ import {
   type CrashReporter,
 } from "./crash-reporter.ts";
 import { promptReportingConsent } from "./reporting-consent.ts";
-import {
-  copyShippedPromptsInto,
-  formatInitReport,
-  initTenant,
-  runInit,
-  type InitProfile,
-} from "./init.ts";
+import { formatInitReport, runInit, type InitProfile } from "./init.ts";
 import { formatInitTenantRegistrationAdviceForRoot } from "./init-tenant-advice.ts";
 import { applyEnvOverlay, loadUserConfig, resolveConfigPath } from "./load-config.ts";
+import { settingsHelp } from "./settings-catalogue.ts";
 import { parsePipelineName, selectPipeline } from "./pipeline.ts";
 import { runEngine } from "./main.ts";
 import { resolveDataBase } from "./paths.ts";
 import { setResolvedConfig } from "./resolved-config.ts";
-import { formatAge, oldestUnitAgeMs, type PipelineListing } from "./pipeline-listing.ts";
-import {
-  LIST_HELD_LEGEND,
-  LIST_STALE_LEGEND,
-  LIST_UNDECLARED_LEGEND,
-  listTenants,
-  purgeTenant,
-  TRUST_DOMAIN_NOTE,
-  type ListTenantsResult,
-  type TenantListing,
-} from "./tenant-commands.ts";
+import { purgeTenant, TRUST_DOMAIN_NOTE } from "./tenant-commands.ts";
 
 type ParsedArgs = { configPath: string | undefined; help: boolean; forward: string[] };
 
@@ -140,7 +131,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedArgs {
       const version = installedVersion();
       throw new Error(
         `Unknown command \`${arg}\` for \`phoebe\`${version === null ? "" : ` (phoebe-agent v${version})`}. ` +
-          `Known commands: boot, init, list, purge, upgrade, doctor, migrate, stop, start, pipelines, sweep-state. If \`${arg}\` was added in a newer ` +
+          `Known commands: boot, init, status, list, config, purge, upgrade, doctor, migrate, stop, start, relay, pipelines, sweep-state. If \`${arg}\` was added in a newer ` +
           `release, upgrade first: \`pnpm dlx phoebe-agent@latest upgrade\`. See \`phoebe --help\`.`,
       );
     }
@@ -273,7 +264,13 @@ Usage:
   phoebe init [--solo] [dir]       Scaffold a solo single-tenant deployment
   phoebe init --workspace [dir]    Scaffold a workspace root (multi-child)
   phoebe init --tenant [dir]       Scaffold a workspace child in-tree install
-  phoebe list [--json] [--check]   List tenants + health (in-container)
+  phoebe status [--json] [--check] [--verbose]
+                                   What the deployment is doing, from its report
+  phoebe list [--json] [--check]   Deprecated alias for status's fleet section
+  phoebe config [--json]           Every setting, its value, and where it came from
+  phoebe secret set <KEY>          Store a tenant secret; value on stdin only
+  phoebe secret clear <KEY>        Drop it again, so the .env value governs
+  phoebe secret ls [--json]        Which secrets are set, and where from
   phoebe purge <owner/repo> --yes  Wipe a removed tenant's data (in-container)
   phoebe upgrade [ref] [--engine|--cli|--both]
                                    Advance the pinned engine ref and/or the npm CLI
@@ -286,6 +283,8 @@ Usage:
                                    Delete tenant state no pipeline owns
   phoebe stop [--now]              Drain and stop the deployment container (host-side)
   phoebe start [--build]           Bring the deployment container up detached (host-side)
+  phoebe relay serve               Serve the relay: console + deployment socket
+  phoebe relay init [dir]          Scaffold the relay's container files (Caddy + TLS)
   phoebe [--config <path>] [flags] Run the engine
 
 Options (engine mode):
@@ -295,21 +294,7 @@ Options (engine mode):
   --pipeline <name>     Which pipeline to run (default: work)
   --help, -h            Show this message
 
-Environment overlays (each replaces the corresponding config field):
-  PHOEBE_REPO_SLUG, PHOEBE_REPO_URL, PHOEBE_DEFAULT_BRANCH, PHOEBE_BRANCH_PREFIX,
-  PHOEBE_READY_LABEL, PHOEBE_PROCESSING_LABEL, PHOEBE_PR_OPT_OUT_LABEL,
-  PHOEBE_INSTALL_COMMAND, PHOEBE_CHECK_COMMAND, PHOEBE_TEST_COMMAND,
-  PHOEBE_READY_COMMAND, PHOEBE_BLOCKED_BY_PATTERN, PHOEBE_REVIEWS_SUCCESS_HEADING,
-  PHOEBE_PR_SCOPE, PHOEBE_DRAFT_PRS, PHOEBE_DEFAULT_PROVIDER
-
-Runtime toggles (read directly by the engine, not overlaid onto the config):
-  PHOEBE_AGENT           Provider name to use for this run (cursor|claude|codex)
-  PHOEBE_MODEL           Model to use for this run
-  PHOEBE_EFFORT          Reasoning effort for this run (claude: low|medium|high|xhigh|max)
-  PHOEBE_<KIND>_AGENT    Per-work-kind variants of the trio above, where <KIND> is
-  PHOEBE_<KIND>_MODEL    one of CONFLICTS|CHECKS|REVIEWS|ISSUES|RESEARCH
-  PHOEBE_<KIND>_EFFORT   (e.g. PHOEBE_REVIEWS_MODEL); outrank the workKinds config block
-  PHOEBE_POLL_INTERVAL_MS Persistent-mode poll interval (default 300000)
+${settingsHelp()}
 `;
 
 const INIT_HELP_TEXT = `phoebe init — scaffold a consumer-owned runtime
@@ -381,155 +366,6 @@ function parseCommandArgs(argv: readonly string[]): {
     }
   }
   return { positionals, flags };
-}
-
-/**
- * The tenant's own columns. The engine-state column that used to sit here moved
- * to the pipeline lines below (#427): a tenant is several pipelines now, and one
- * state word for all of them could only ever be one pipeline's.
- */
-function formatHealthColumns(listing: TenantListing): string {
-  const flag = (label: string, on: boolean): string => `${on ? "✓" : "✗"} ${label}`;
-  return (
-    `${flag("config", listing.configValid)}  ${flag("env", listing.envPresent)}  ` +
-    `${flag("data", listing.retainedData)}  arm: ${listing.arm}`
-  );
-}
-
-/** Where the line came from, or that the pipeline is switched off. */
-function formatPipelineMark(pipeline: PipelineListing): string {
-  if (pipeline.source === "stale") return "  (stale)";
-  if (pipeline.source === "disk") return "  (from disk)";
-  return pipeline.disabled ? "  (disabled)" : "";
-}
-
-/**
- * One pipeline's state column. `working` carries `k/N` — what is in flight
- * against what the pipeline declared — and the refs themselves, so an operator can
- * go find the unit. `wedged?` rides along rather than replacing it: the pipeline is
- * still working as far as anything on disk knows, and the age is the reason to
- * doubt it.
- */
-function formatPipelineState(pipeline: PipelineListing, now: number): string {
-  if (pipeline.state !== "working") return pipeline.state;
-  const refs = pipeline.units.map((current) => `${current.unit.kind} ${current.unit.id}`);
-  const capacity =
-    pipeline.concurrency !== null
-      ? `${pipeline.units.length}/${pipeline.concurrency}`
-      : String(pipeline.units.length);
-  const age = oldestUnitAgeMs(pipeline.units, now);
-  const wedged = pipeline.wedged && age !== null ? `  wedged? ${formatAge(age)}` : "";
-  return `working ${capacity} ${refs.join(", ")}${wedged}`;
-}
-
-/** One indented line per pipeline, names padded into a column. */
-function formatPipelineLines(listing: TenantListing, now: number): string[] {
-  const width = Math.max(0, ...listing.pipelines.map((pipeline) => pipeline.name.length));
-  return listing.pipelines.map(
-    (pipeline) =>
-      `        ${pipeline.name.padEnd(width)}  ${formatPipelineState(pipeline, now)}` +
-      formatPipelineMark(pipeline),
-  );
-}
-
-function formatTenantListing(listing: TenantListing, now: number): string {
-  const slugSuffix = listing.slug !== null ? `  (${listing.slug})` : "";
-  const disabledSuffix = listing.disabled ? "  (disabled)" : "";
-  const header = `  ${listing.path}${slugSuffix}${disabledSuffix}`;
-  const held = `held — ${listing.reason ?? "held"}`;
-  const detail = !listing.held
-    ? formatHealthColumns(listing)
-    : listing.slug !== null
-      ? `${held}  ${formatHealthColumns(listing)}`
-      : held;
-  return [`${header}\n      ${detail}`, ...formatPipelineLines(listing, now)].join("\n");
-}
-
-/**
- * The machine-readable report. Each tenant carries its pipeline lines; the
- * tenant-level `status` field is gone with the column it fed (#427) — a reader
- * that wants one pipeline's snapshot names the pipeline.
- */
-export function formatListJson(result: ListTenantsResult): string {
-  return JSON.stringify({
-    declared: result.declared,
-    live: result.live,
-    solo: result.solo,
-    tenants: result.listings.map((listing) => ({
-      path: listing.path,
-      slug: listing.slug,
-      held: listing.held,
-      reason: listing.reason,
-      arm: listing.arm,
-      configValid: listing.configValid,
-      envPresent: listing.envPresent,
-      retainedData: listing.retainedData,
-      disabled: listing.disabled,
-      pipelines: listing.pipelines.map((pipeline) => ({
-        name: pipeline.name,
-        disabled: pipeline.disabled,
-        source: pipeline.source,
-        state: pipeline.state,
-        units: pipeline.units,
-        updatedAt: pipeline.updatedAt,
-        wedged: pipeline.wedged,
-      })),
-    })),
-    undeclared: result.undeclared,
-  });
-}
-
-/** The human report: tenant pipelines, their pipeline lines, and the legends. */
-export function formatListReport(result: ListTenantsResult, now: number): string {
-  if (result.listings.length === 0 && result.undeclared.length === 0) {
-    return "[phoebe] No tenants (nothing declared here — no workspace children, no root config).";
-  }
-  const header = result.solo
-    ? "[phoebe] 1 tenant (solo):"
-    : result.explicit && result.declared > 0
-      ? `[phoebe] ${result.live} of ${result.declared} declared tenant(s):`
-      : result.listings.length > 0
-        ? `[phoebe] ${result.listings.length} tenant(s):`
-        : "[phoebe] 0 declared tenant(s):";
-  const body = result.listings.map((listing) => formatTenantListing(listing, now)).join("\n");
-  const undeclaredSection =
-    result.undeclared.length > 0
-      ? `\n\nundeclared:\n${result.undeclared.map((path) => `  ${path}`).join("\n")}`
-      : "";
-  const legendParts: string[] = [];
-  if (result.listings.some((listing) => listing.held)) legendParts.push(LIST_HELD_LEGEND);
-  if (result.listings.some((listing) => listing.pipelines.some((p) => p.source === "stale"))) {
-    legendParts.push(LIST_STALE_LEGEND);
-  }
-  if (result.undeclared.length > 0) legendParts.push(LIST_UNDECLARED_LEGEND);
-  const legend = legendParts.length > 0 ? `\n${legendParts.join("\n")}` : "";
-  const main = body.length > 0 ? `${header}\n${body}` : header;
-  return `${main}${undeclaredSection}${legend}`;
-}
-
-/**
- * `phoebe list` — every tenant, its health columns, and one line per pipeline.
- *
- * `--check` stays structural: it exits 1 when the fleet declaration is not
- * honoured, and nothing a pipeline line says moves it. A wedged pipeline is a
- * question for an operator, not a failed assertion about the declaration.
- */
-async function runListCli(argv: readonly string[]): Promise<void> {
-  const { flags } = parseCommandArgs(argv);
-  const result = await listTenants({
-    configDir: process.cwd(),
-    dataBase: resolveDataBase(process.env),
-  });
-
-  process.stdout.write(
-    flags["json"] === true
-      ? `${formatListJson(result)}\n`
-      : `${formatListReport(result, Date.now())}\n`,
-  );
-
-  if (flags["check"] === true && result.explicit && result.listings.some((l) => l.held)) {
-    process.exitCode = 1;
-  }
 }
 
 /** `phoebe purge <owner/repo> --yes` — wipe a removed tenant's retained data. */
@@ -633,23 +469,25 @@ export async function runCli(): Promise<void> {
       return;
     }
     if (parsed.profile === "tenant") {
-      const result = initTenant({
+      const result = runInit({
         targetDir: parsed.targetDir,
-        ...(parsed.repoSlug !== undefined ? { repoSlug: parsed.repoSlug } : {}),
-        ...(parsed.repoUrl !== undefined ? { repoUrl: parsed.repoUrl } : {}),
-        withPrompts: parsed.withPrompts,
-        ...(parsed.withPrompts ? { seedPrompt: (dir: string) => copyShippedPromptsInto(dir) } : {}),
+        profile: "tenant",
+        tenant: {
+          ...(parsed.repoSlug !== undefined ? { repoSlug: parsed.repoSlug } : {}),
+          ...(parsed.repoUrl !== undefined ? { repoUrl: parsed.repoUrl } : {}),
+          withPrompts: parsed.withPrompts,
+        },
       });
       const rootDir = parsed.rootDir ?? process.cwd();
       const registrationAdvice = await formatInitTenantRegistrationAdviceForRoot({
         rootDir,
-        tenantDir: result.tenantDir,
+        tenantDir: result.targetDir,
       });
       process.stdout.write(
         formatInitReport(result, parsed.targetDir) +
-          `  repoSlug: ${result.repoSlug}\n` +
-          `  repoUrl:  ${result.repoUrl}\n` +
-          `\nFill in ${result.tenantDir}/.env (copy .env.example).\n` +
+          `  repoSlug: ${result.tenant.repoSlug}\n` +
+          `  repoUrl:  ${result.tenant.repoUrl}\n` +
+          `\nFill in ${result.targetDir}/.env (copy .env.example).\n` +
           registrationAdvice +
           `\nCrash reporting is the root config's decision (docs/operating.md → Crash reporting). ` +
           `To opt in, add beside \`engine\` in ${rootDir}/phoebe.config.ts:\n` +
@@ -689,9 +527,34 @@ export async function runCli(): Promise<void> {
     return;
   }
 
-  // In-container fleet commands (#95): list / purge act on the data volume.
-  // Neither loads the engine config.
-  if (args[0] === "list") return await runListCli(args.slice(1));
+  // `status` is the one verb for "is it alive and what is it doing" (#533): it
+  // reads the deployment report in the container and, on the host, execs itself
+  // through Compose the way `start` and `stop` do. `list` is the deprecated
+  // alias that prints its fleet section (#508 §3) — two verbs reading the same
+  // matrix from different sources is the disagreement #501 rejected. Lazy like
+  // its host-side neighbours, so the engine-run path loads no Compose plumbing.
+  if (args[0] === "status" || args[0] === "list") {
+    const { runStatusCli } = await import("./status.ts");
+    return await runStatusCli(args.slice(1), args[0] === "list" ? "list" : "status");
+  }
+  // The effective config (#531): every setting with its value and its source.
+  // Lazy like its neighbours — a plain engine run never loads it.
+  if (args[0] === "config") {
+    const { runConfigCli } = await import("./config-command.ts");
+    return await runConfigCli(args.slice(1));
+  }
+  // The tenant secret store (#504): set, clear and list. Lazy for the same
+  // reason as its neighbours, and doubly so — a set pulls doctor in behind it.
+  if (args[0] === "secret") {
+    const { runSecretCli } = await import("./secret-command.ts");
+    const result = await runSecretCli(args.slice(1));
+    // A set whose doctor run found a failing check: the write landed and is
+    // reported as landing; the exit code is doctor's, so a script that rotates a
+    // key notices the deployment is unhappy about it.
+    if (result !== undefined && !result.doctorOk) process.exitCode = 1;
+    return;
+  }
+  // `purge` acts on the data volume in-container and loads no engine config (#95).
   if (args[0] === "purge") return await runPurgeCli(args.slice(1));
 
   // Operator commands: upgrade moves the deployment between versions; doctor
@@ -733,6 +596,13 @@ export async function runCli(): Promise<void> {
   if (args[0] === "start") {
     const { runStartCli } = await import("./start.ts");
     return await runStartCli(args.slice(1));
+  }
+  // The relay (#538): a separate process, a separate image, a separate
+  // volume — the deployment container gains no listener from it. Lazy like the
+  // rest, so an engine run never loads the HTTP server or its OIDC client.
+  if (args[0] === "relay") {
+    const { runRelayCli } = await import("../relay/cli.ts");
+    return await runRelayCli(args.slice(1));
   }
 
   const parsed = parseCliArgs(args);

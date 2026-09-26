@@ -1,0 +1,1642 @@
+/* The console's one stylesheet.
+ *
+ * Light and dark both follow the OS (#526): every colour is a custom property
+ * declared once for light and re-declared under `prefers-color-scheme: dark`, so
+ * no component branches on the theme and there is no theme switch to keep in
+ * step with one. `color-scheme` on :root is what makes the browser's own
+ * scrollbars and form controls come along.
+ *
+ * The four connection words get four different marks rather than four shades of
+ * one: a filled dot, a ring, a square, and a hollow dot. Colour alone would make
+ * dark and disconnected the same row to anyone reading it in greyscale.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  --bg: #fafafa;
+  --panel: #ffffff;
+  --fg: #111418;
+  --muted: #5d6673;
+  --line: #dcdfe4;
+  --accent: #1f4fd8;
+  --ok: #1a7f37;
+  --warn: #9a6700;
+  --fail: #b91c1c;
+  --waiting: #2563eb;
+  --idle: #c3c8d0;
+  --dark: #3f4652;
+  --attention-bg: #fff8f0;
+  --dark-bg: #f1f2f4;
+  --chip: #eceef1;
+  --chip-set: #dfe6fa;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171c;
+    --panel: #1b1f26;
+    --fg: #e7eaee;
+    --muted: #98a1ae;
+    --line: #2c323b;
+    --accent: #7ba2ff;
+    --ok: #4ac26b;
+    --warn: #e3b341;
+    --fail: #f8776a;
+    --waiting: #6ea8ff;
+    --idle: #4a515c;
+    --dark: #8b939f;
+    --attention-bg: #2a1f16;
+    --dark-bg: #20242b;
+    --chip: #272c34;
+    --chip-set: #26314a;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* The families are the Coss theme's (index.css): Inter, and Geist Mono for
+   code. The sizes stay the console's own. */
+body {
+  margin: 0;
+  font-family: var(--font-sans, system-ui, sans-serif);
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--fg);
+  background: var(--bg);
+}
+
+code,
+.mono {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12.5px;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+/* ── the frame ─────────────────────────────────────────────────────────── */
+
+/* Two panes and nothing above them: the rail, and the pane it opens things in.
+   The rail scrolls on its own; the pane's top line stays put and the page under
+   it scrolls. */
+.frame {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  height: 100vh;
+}
+
+.pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.pane > .main {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* The pane's top line: where the console is, as T3 Code puts the project and
+   thread at the top of its pane; the relay session at the right edge. */
+.pane-route {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 16px;
+  height: 40px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.crumbs {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* A long name is cut short with an ellipsis rather than run under the session
+   controls; the earlier segments give way first, so where you are stays. */
+.crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.crumb svg {
+  flex: none;
+}
+
+.crumb-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.crumb.current {
+  flex: none;
+  max-width: 100%;
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.pane-session {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.main {
+  padding: 16px 20px;
+  max-width: 1300px;
+}
+
+h1 {
+  font-size: 18px;
+  margin: 0 0 4px;
+}
+
+.main h2 {
+  font-size: 14px;
+  margin: 18px 0 4px;
+}
+
+button {
+  font: inherit;
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: inherit;
+  cursor: pointer;
+}
+
+a {
+  color: var(--accent);
+}
+
+/* ── the rail ──────────────────────────────────────────────────────────── */
+
+.rail {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  border-right: 1px solid var(--line);
+  background: var(--panel);
+  padding: 0 0 0;
+}
+
+/* The brand, at the top of the rail where the window's title would be. */
+.rail-brand {
+  display: flex;
+  flex: none;
+  align-items: center;
+  height: 40px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--line);
+  color: inherit;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.rail-brand:hover {
+  color: var(--accent);
+}
+
+.rail > .rail-group:first-of-type {
+  margin-top: 10px;
+}
+
+/* The foot of the rail: the gear onto the console's own settings (settings-page.tsx),
+   pinned to the bottom the way T3 Code's is. */
+.rail-foot {
+  margin-top: auto;
+  padding: 8px 10px 10px;
+}
+
+/* A bare gear, an icon the size of the rail's other icon buttons. Not a place
+   on the rail, so no current state and nothing to select. */
+.rail-settings {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  color: var(--muted);
+  text-decoration: none;
+  user-select: none;
+}
+
+.rail-settings:hover {
+  background: var(--chip);
+  color: inherit;
+}
+
+/* Two groups in the companion, one in a browser (#526 shell A). The rule is on
+   the pair rather than on either group, so a browser's single group never draws
+   a divider for a group that is not there. */
+.rail-group + .rail-group {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.rail-heading {
+  display: block;
+  margin: 0;
+  padding: 4px 14px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.rail-entry {
+  display: block;
+  padding: 6px 14px;
+  border-left: 3px solid transparent;
+  color: inherit;
+  text-decoration: none;
+}
+
+.rail-entry:hover {
+  background: var(--chip);
+}
+
+.rail-entry.current {
+  border-left-color: var(--accent);
+  background: var(--chip);
+}
+
+.rail-entry.attention {
+  background: var(--attention-bg);
+}
+
+.rail-entry.state-dark {
+  background: var(--dark-bg);
+}
+
+.rail-entry .name {
+  font-weight: 600;
+}
+
+.rail-entry .sub {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.rail-empty {
+  padding: 6px 14px;
+  color: var(--muted);
+}
+
+/* ── the four connection marks ─────────────────────────────────────────── */
+
+.mark {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-right: 6px;
+  vertical-align: baseline;
+}
+
+.mark.connected {
+  border-radius: 50%;
+  background: var(--ok);
+}
+
+.mark.disconnected {
+  border-radius: 50%;
+  border: 2px solid var(--warn);
+}
+
+.mark.dark {
+  /* A square, not a dot: dark is the one word that means the relay lost it. */
+  background: var(--dark);
+}
+
+.mark.unseen {
+  border-radius: 50%;
+  border: 1px dashed var(--muted);
+}
+
+/* ── the local arm ─────────────────────────────────────────────────────── */
+
+/* Three states, three marks, and none of them borrowed from the relay's four:
+   a local install is never dark and never unseen (#522 §7). Running reuses the
+   filled dot because it means the same thing the relay's connected does — this
+   is alive — and an operator reading one rail should not have to learn the same
+   fact twice. */
+.mark.running {
+  border-radius: 50%;
+  background: var(--ok);
+}
+
+.mark.stopped {
+  border-radius: 50%;
+  border: 2px solid var(--muted);
+}
+
+.mark.not-initialised {
+  border-radius: 2px;
+  border: 1px dashed var(--muted);
+}
+
+.rail-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.rail-add {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--accent);
+  font: inherit;
+  text-transform: none;
+  letter-spacing: normal;
+  cursor: pointer;
+}
+
+/* A local entry holds a button, because it is the one rail entry that goes
+   somewhere, and beside it the start shortcut when there is one. The button is
+   stripped back to the shape of the div beside it so the two read as one list. */
+.rail-entry.local {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 6px;
+  padding: 0;
+}
+
+.rail-entry.local .rail-select {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  padding: 6px 14px 6px 11px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* The shortcuts at the entry's edge: Coss UI buttons (components/ui/button.tsx),
+   ghost and icon-sized, so they read as actions and not as part of the name;
+   a spinner in their place while a run is going. Their look is Tailwind's; this
+   only places them and tints the icons. */
+.rail-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-right: 8px;
+  flex: none;
+  color: var(--accent);
+}
+
+.rail-spinner {
+  color: var(--muted);
+  margin: 0 4px;
+}
+
+.rail-entry.local:hover {
+  background: var(--chip);
+}
+
+.rail-entry.local.current {
+  border-left-color: var(--accent);
+  background: var(--chip);
+}
+
+/* The companion's own update, at the foot of the rail. Muted and one line: it
+   is news about the window rather than about a deployment, and the rail is a
+   list of deployments. */
+.rail-update {
+  margin-top: 10px;
+  padding: 8px 14px 0;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* ── the install tab ───────────────────────────────────────────────────── */
+
+.tabs {
+  display: flex;
+  gap: 2px;
+  margin: 14px 0 4px;
+  border-bottom: 1px solid var(--line);
+}
+
+.tab {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: none;
+  color: var(--muted);
+  padding: 6px 10px;
+}
+
+.tab.current {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+}
+
+.tab:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.verbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0 6px;
+}
+
+button.quiet {
+  border-color: transparent;
+  color: var(--muted);
+}
+
+/* The verb's output. Fixed height and scrolled, because a run that prints a
+   thousand lines must not push the buttons that started it off the screen. */
+.run-lines {
+  max-height: 340px;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.run-lines .stderr {
+  color: var(--fail);
+}
+
+.outcome {
+  color: var(--ok);
+}
+
+.refusal {
+  color: var(--fail);
+}
+
+.chip {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: var(--chip);
+  color: var(--fg);
+  font-size: 12px;
+  margin-left: 4px;
+  white-space: nowrap;
+}
+
+.chip.replaced {
+  background: var(--warn);
+  color: #1a1206;
+}
+
+.chip.fail {
+  background: var(--fail);
+  color: #fff;
+}
+
+.chip.warn {
+  background: var(--warn);
+  color: #1a1206;
+}
+
+/* ── the grid ──────────────────────────────────────────────────────────── */
+
+.grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  margin-top: 14px;
+}
+
+.cell {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+
+.cell.attention {
+  border-color: var(--fail);
+}
+
+.cell.state-dark {
+  background: var(--dark-bg);
+}
+
+.cell-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.cell-head .name {
+  font-weight: 600;
+  color: inherit;
+  text-decoration: none;
+}
+
+.cell-head .name:hover {
+  text-decoration: underline;
+}
+
+.bar {
+  display: flex;
+  gap: 2px;
+  height: 8px;
+  margin: 10px 0 8px;
+}
+
+.bar-empty {
+  height: 8px;
+  margin: 10px 0 8px;
+  border: 1px dashed var(--line);
+  border-radius: 4px;
+}
+
+.segment {
+  flex: 1;
+  border-radius: 2px;
+  background: var(--idle);
+}
+
+.segment.working {
+  background: var(--ok);
+}
+
+.segment.waiting {
+  background: var(--waiting);
+}
+
+.segment.wedged {
+  background: var(--fail);
+}
+
+.segment.crash-looping {
+  background: var(--warn);
+}
+
+.segment.no-status {
+  background: transparent;
+  border: 1px solid var(--idle);
+}
+
+.segment.disabled {
+  opacity: 0.45;
+}
+
+.facts {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.legend {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 0;
+}
+
+/* ── one deployment ────────────────────────────────────────────────────── */
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin: 12px 0 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.tab {
+  padding: 5px 12px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  margin-bottom: -1px;
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.tab.current {
+  border-color: var(--line);
+  background: var(--panel);
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.panels {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+
+.panel h2 {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 6px;
+}
+
+.lead {
+  font-size: 16px;
+  margin: 0 0 8px;
+}
+
+h2 {
+  font-size: 14px;
+  margin: 18px 0 6px;
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 10px;
+  margin: 0;
+  font-size: 12px;
+}
+
+.kv dt {
+  color: var(--muted);
+}
+
+.kv dd {
+  margin: 0;
+}
+
+/* The colour a clause the report itself called a failure is painted in. Nothing
+ * on screen decides to use it; every user of it is quoting a verdict. */
+.bad {
+  color: var(--fail);
+}
+
+.held {
+  margin: 4px 0;
+}
+
+.glance {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+}
+
+.glance-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.glance-card.wedged {
+  border-left-color: var(--fail);
+}
+
+.glance-card .name {
+  font-weight: 600;
+}
+
+table.rows {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+}
+
+table.rows th,
+table.rows td {
+  text-align: left;
+  vertical-align: top;
+  padding: 5px 10px 5px 0;
+  border-bottom: 1px solid var(--line);
+  font-weight: inherit;
+}
+
+table.rows thead th {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+table.rows tr.attention th,
+table.rows tr.attention td {
+  background: var(--attention-bg);
+}
+
+.chip.check {
+  min-width: 58px;
+  text-align: center;
+}
+
+.chip.check.ok {
+  background: var(--ok);
+  color: #04180a;
+}
+
+.chip.check.fail {
+  background: var(--fail);
+  color: #fff;
+}
+
+.chip.check.warn {
+  background: var(--warn);
+  color: #1a1206;
+}
+
+.chip.check.unknown {
+  background: var(--chip);
+  color: var(--muted);
+}
+
+.notice {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px 16px;
+  max-width: 460px;
+  margin: 40px auto;
+}
+
+/* ── run doctor ────────────────────────────────────────────────────────── */
+
+.run-doctor {
+  margin: 0 0 14px;
+}
+
+.run-doctor button:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.run-doctor p {
+  margin: 6px 0 0;
+}
+
+/* ── the config tab ────────────────────────────────────────────────────── */
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0;
+}
+
+.filter {
+  font: inherit;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: inherit;
+  min-width: 240px;
+}
+
+/* The six sources, in three tiers rather than six colours: a value somebody set
+ * is tinted, a deprecated alias is the warn colour, and the three that mean
+ * "nobody said otherwise" are muted. Greyscale keeps all three apart, and the
+ * word in the chip is the precise answer either way. */
+button.chip {
+  border: 1px solid transparent;
+  padding: 0 6px;
+  margin: 0;
+  border-radius: 9px;
+}
+
+.chip.src.file,
+.chip.src.overlay {
+  background: var(--chip-set);
+}
+
+.chip.src.alias {
+  background: var(--warn);
+  color: #1a1206;
+}
+
+.chip.src.default,
+.chip.src.derived,
+.chip.src.inherited {
+  color: var(--muted);
+}
+
+.chip.picked {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+table.rows.config th[scope="row"] {
+  width: 34%;
+}
+
+.shadowed {
+  font-size: 12px;
+}
+
+/* The disclosure that holds `via` and `from` (#509): the chip is the summary,
+ * so the row reads as one chip until it is opened. */
+details.why > summary {
+  cursor: pointer;
+  list-style-position: inside;
+}
+
+details.why > summary::marker {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.warnings {
+  margin: 10px 0;
+}
+
+.warning {
+  border-left: 3px solid var(--warn);
+  background: var(--panel);
+  margin: 4px 0;
+  padding: 6px 10px;
+}
+
+/* The colour of a verdict the deployment itself called a success — the other
+ * half of `.bad`, and used for exactly the same reason: nothing on screen
+ * decides to be green, it is quoting a receipt that said `written`. */
+.good {
+  color: var(--ok);
+}
+
+/* The edit form on one leaf (#547). Inline in the row rather than in a dialog:
+ * the value being changed is the one on the line above it, and a modal would
+ * hide the source chip that says whether the change will take effect. */
+.editform {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.editform label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.editform .filter {
+  min-width: 140px;
+}
+
+/* A receipt, under the row it answers. Bordered on the left like a warning,
+ * because it is the same kind of thing: a sentence about this row that outlives
+ * the moment it appeared in. */
+.receipt {
+  border-left: 3px solid var(--accent);
+  background: var(--panel);
+  margin: 6px 0;
+  padding: 6px 10px;
+}
+
+/* A command to copy. Pre-wrapped, so a long `--config` path wraps rather than
+ * scrolling a table sideways. */
+.cmd {
+  font-size: 12px;
+  margin: 4px 0;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ── the People page ───────────────────────────────────────────────────── */
+
+.add-person {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 0 6px;
+}
+
+.add-person input {
+  font: inherit;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: inherit;
+  min-width: 260px;
+}
+
+.trouble {
+  color: var(--fail);
+}
+
+.people {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  max-width: 720px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.person {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.person:last-child {
+  border-bottom: none;
+}
+
+.person .name {
+  font-weight: 600;
+}
+
+.person .facts:last-of-type {
+  margin-left: auto;
+}
+
+.person button {
+  margin-left: auto;
+}
+
+/* ── minting a pairing token ───────────────────────────────────────────── */
+
+.pairing {
+  margin-top: 26px;
+  max-width: 720px;
+}
+
+.pairing h2 {
+  font-size: 15px;
+  margin: 0 0 4px;
+}
+
+.pairing .legend {
+  margin-bottom: 8px;
+}
+
+.token {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--warn);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.token p {
+  margin: 0 0 8px;
+}
+
+.token ol {
+  margin: 0 0 8px;
+  padding-left: 20px;
+}
+
+.token-value {
+  /* The one string on the page that has to survive a double-click. */
+  user-select: all;
+  word-break: break-all;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--chip);
+}
+
+/* The secrets tab's one form, and the receipt it leaves behind (#550). */
+.secret-form {
+  display: grid;
+  gap: 6px;
+  padding: 8px 0;
+  max-width: 560px;
+}
+
+.secret-form input {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  font: inherit;
+  padding: 6px 8px;
+}
+
+.secret-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.receipt {
+  border-left: 3px solid var(--line);
+  margin: 10px 0;
+}
+
+.receipt.written {
+  border-left-color: var(--ok);
+}
+
+.receipt.refused,
+.receipt.undelivered {
+  border-left-color: var(--fail);
+}
+
+.receipt code {
+  word-break: break-all;
+}
+
+/* ── the rail's sign-in control (#554) ─────────────────────────────────── */
+
+.rail-signin form {
+  display: grid;
+  gap: 4px;
+  padding: 2px 14px 6px;
+}
+
+.rail-signin label {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.rail-signin input {
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: inherit;
+  min-width: 0;
+}
+
+.rail-note {
+  margin: 0;
+  padding: 0 14px 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.rail-note.trouble {
+  color: var(--fail);
+}
+
+/* ── the deployment tabs ───────────────────────────────────────────────── */
+
+.pairs {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.pairs dt {
+  color: var(--muted);
+}
+
+.pairs dd {
+  margin: 0;
+}
+
+.rows {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.rows th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+  padding: 4px 8px 4px 0;
+}
+
+.rows td {
+  border-bottom: 1px solid var(--line);
+  padding: 6px 8px 6px 0;
+  vertical-align: top;
+}
+
+.config {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px 12px;
+  max-height: 460px;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* ── the rail's sign-in control (#554) ─────────────────────────────────── */
+
+.rail-signin form {
+  display: grid;
+  gap: 4px;
+  padding: 2px 14px 6px;
+}
+
+.rail-signin label {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.rail-signin input {
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: inherit;
+  min-width: 0;
+}
+
+.rail-note {
+  margin: 0;
+  padding: 0 14px 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.rail-note.trouble {
+  color: var(--fail);
+}
+
+/* Two ways to add on the home page, side by side. */
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.actions button {
+  width: auto;
+}
+
+/* ── the logs drawer ───────────────────────────────────────────────────── */
+
+/* An install's page is a column: the page scrolls, the drawer sits along the
+   bottom at the height the operator dragged it to, the shape T3 Code's terminal
+   drawer is. The frame's height is the window's less the top bar. */
+.main.install-tab {
+  display: flex;
+  flex-direction: column;
+  height: auto;
+  overflow: hidden;
+  max-width: none;
+  padding: 0;
+}
+
+.install-tab .page-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 20px;
+  max-width: 1300px;
+}
+
+/* The console (console-view.tsx): the page the rail opens on a local install.
+   A header with the name, the theme picker and the gear, one tab per pipeline,
+   and the lines filling the rest. Every colour is the theme's (console-themes.ts),
+   set on the element as custom properties, so the console reads like a terminal
+   in the operator's own scheme whatever the app around it is. */
+.main.console-view {
+  display: flex;
+  flex-direction: column;
+  height: auto;
+  overflow: hidden;
+  max-width: none;
+  padding: 0;
+  background: var(--console-bg);
+  color: var(--console-fg);
+}
+
+.console-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--console-panel);
+  background: var(--console-panel);
+}
+
+.console-name {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.console-name h1 {
+  margin: 0;
+  font-size: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.console-name .platform {
+  display: inline-flex;
+  color: var(--console-dim);
+}
+
+.console-state {
+  color: var(--console-dim);
+}
+
+.console-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--console-dim);
+}
+
+/* The picker (console-theme-picker.tsx): the browser's own select, in the
+   theme's colours. */
+.console-theme-pick select {
+  max-width: 150px;
+  padding: 2px 4px;
+  border: 1px solid var(--console-dim);
+  border-radius: 4px;
+  background: var(--console-bg);
+  color: var(--console-fg);
+  font: inherit;
+  font-size: 12px;
+}
+
+.console-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--console-panel);
+  background: var(--console-panel);
+  overflow-x: auto;
+}
+
+.console-channel {
+  padding: 6px 8px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--console-dim);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.console-channel.current {
+  color: var(--console-fg);
+  border-bottom-color: var(--console-accent);
+}
+
+.logs-lines {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--console-bg);
+  color: var(--console-fg);
+}
+
+/* One line's tags (log-line.tsx), each in its role's colour off the palette. */
+.log-tag.boot {
+  color: var(--console-tag-boot);
+}
+
+.log-tag.pipeline {
+  color: var(--console-tag-pipeline);
+}
+
+.log-tag.unit {
+  color: var(--console-tag-unit);
+}
+
+.log-tag.agent {
+  color: var(--console-tag-agent);
+}
+
+.log-tag.stderr {
+  color: var(--console-tag-stderr);
+}
+
+.console-quiet {
+  color: var(--console-dim);
+}
+
+.console-ended {
+  margin: 0;
+  padding: 4px 12px;
+  border-top: 1px solid var(--console-panel);
+  background: var(--console-panel);
+  color: var(--console-dim);
+  font-size: 12px;
+}
+
+/* The way back to the console, on the tabbed page's title row. */
+.install-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.install-title h1 {
+  flex: 1;
+  min-width: 0;
+}
+
+.install-title .console-open {
+  color: var(--muted);
+}
+
+/* ── the rail's project rows ───────────────────────────────────────────── */
+
+/* Each entry, local or relay, carries where it runs and a gear, the way T3 Code's
+   project list does: a platform icon before the name, and settings at the edge
+   with the shortcuts. */
+/* One line each, as T3 Code's project list: a long name is cut, not wrapped,
+   and the mark and the icon stay on the name's line. */
+.rail-entry.local .name,
+.rail-entry.local .sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rail-entry .platform {
+  display: inline-flex;
+  margin-right: 6px;
+  color: var(--muted);
+  vertical-align: -2px;
+}
+
+.rail-entry.local .rail-gear {
+  color: var(--muted);
+}
+
+/* A relay entry is a link; its gear is a second link beside it. */
+.rail-relay-row {
+  display: flex;
+  align-items: center;
+}
+
+.rail-relay-row .rail-entry {
+  flex: 1;
+  min-width: 0;
+}
+
+.rail-relay-row .rail-gear {
+  flex: none;
+  margin-right: 8px;
+  color: var(--muted);
+}
+
+/* A workspace opens out: a chevron before its icon, and its children indented
+   under it, each with a mark and a word. */
+.rail-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-left: 8px;
+  margin-right: -6px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  vertical-align: -3px;
+}
+
+.rail-chevron:hover {
+  background: var(--chip);
+}
+
+.rail-children {
+  flex-basis: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0 0 4px;
+  list-style: none;
+}
+
+.rail-child.muted {
+  color: var(--muted);
+  cursor: default;
+}
+
+.rail-child {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 14px 3px 40px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.rail-child:hover {
+  background: var(--chip);
+}
+
+.rail-child .label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rail-child .word {
+  flex: none;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.mark.attention {
+  border-radius: 50%;
+  background: var(--warn);
+}
+
+.mark.idle {
+  border-radius: 50%;
+  border: 2px solid var(--idle);
+}
+
+/* ── the settings page ─────────────────────────────────────────────────── */
+
+.settings-page {
+  max-width: 760px;
+}
+
+.settings-section {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.settings-section h2 {
+  margin: 0 0 6px;
+  font-size: 15px;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 10px 0;
+}
+
+.settings-label {
+  min-width: 64px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.settings-check {
+  gap: 8px;
+}
+
+/* The picker on the settings page is in the app's colours; on the console it
+   is in the theme's. */
+.settings-page .console-theme-pick select {
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+}
+
+/* A sample of the console in the chosen theme: the same lines rule as the
+   console's, at a fixed height and with its own frame. */
+.settings-preview {
+  flex: none;
+  height: 132px;
+  margin-top: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.settings-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  margin: 8px 0 0;
+  font-size: 13px;
+}
+
+.settings-facts dt {
+  color: var(--muted);
+}
+
+.settings-facts dd {
+  margin: 0;
+}
+
+/* ── a project's own settings, above its tabs (project-settings.tsx) ────── */
+
+.project-settings {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+/* One setting per row, as T3 Code lays its project config out: the name and a
+   line about it on the left, the control on the right. */
+.project-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 12px 16px;
+}
+
+.project-row + .project-row {
+  border-top: 1px solid var(--line);
+}
+
+.project-row-text {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.project-row-control {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  width: min(420px, 50%);
+  margin: 0;
+}
+
+.project-row-control .mono input,
+.project-row-control input.mono {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+}
+
+.project-settings .trouble {
+  margin: 0;
+  padding: 8px 16px;
+  border-top: 1px solid var(--line);
+  color: var(--fail);
+  font-size: 13px;
+}
