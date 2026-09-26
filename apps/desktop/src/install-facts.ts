@@ -93,9 +93,13 @@ export async function installFacts(
         };
   const base = {
     dir: stored.dir,
-    // A WSL folder is named by its Linux path's last segment: the same word on
-    // every platform, where `basename` would need Windows's separator to see it.
-    name: wsl === null ? path.basename(stored.dir) : wsl.dir.split("/").pop() || wsl.distro,
+    // The operator's label when they gave one; else the folder's name. A WSL
+    // folder is named by its Linux path's last segment: the same word on every
+    // platform, where `basename` would need Windows's separator to see it.
+    name:
+      stored.name ??
+      (wsl === null ? path.basename(stored.dir) : wsl.dir.split("/").pop() || wsl.distro),
+    ...(stored.name === undefined ? {} : { label: stored.name }),
     addedAt: stored.addedAt,
     containerVersion: null,
     ...(wsl === null ? {} : { wsl }),

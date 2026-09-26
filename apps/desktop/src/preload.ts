@@ -56,6 +56,7 @@ const bridge: DesktopBridge = {
     pick: (inside) => call(BRIDGE_CHANNELS.installsPick, inside),
     add: (dir) => call(BRIDGE_CHANNELS.installsAdd, dir),
     remove: (dir) => call(BRIDGE_CHANNELS.installsRemove, dir),
+    update: (dir, patch) => call(BRIDGE_CHANNELS.installsUpdate, dir, patch),
     changes: (onChange) => subscribe<LocalInstall[]>(BRIDGE_CHANNELS.installsChanged, onChange),
     reports: (onReport) => subscribe<LocalReportEvent>(BRIDGE_CHANNELS.installsReport, onReport),
     refresh: (dir) => call(BRIDGE_CHANNELS.installsRefresh, dir),

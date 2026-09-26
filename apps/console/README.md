@@ -106,8 +106,8 @@ CLI against `components.json`:
 pnpm dlx shadcn@latest add @coss/dialog   # from this directory; writes src/components/ui/dialog.tsx
 ```
 
-Only the components something here uses are checked in — `button`, `spinner` and
-`tooltip` today — because each is a source file this repo then lints, type-checks
+Only the components something here uses are checked in — `button`, `field`,
+`input`, `label`, `spinner` and `tooltip` today — because each is a source file this repo then lints, type-checks
 and formats. Add the next one when there is a use for it, not before.
 
 What the CLI writes imports `~/lib/utils` and `~/components/ui/*`; the `~` alias

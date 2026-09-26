@@ -54,6 +54,7 @@ import type {
   RelayPassthrough,
   VerbRun,
   VerbRunRequest,
+  InstallPatch,
 } from "phoebe-agent/contracts";
 import { createCompanionAlerts } from "./alerting.ts";
 import { authCodeIn, authCodeInArgv } from "./auth-link.ts";
@@ -71,6 +72,7 @@ import {
   removeInstall,
   writeCompanionFile,
   type CompanionFile,
+  updateInstall,
 } from "./companion-file.ts";
 import { CONSOLE_SCHEME, consoleFileFor } from "./console-scheme.ts";
 import { consoleSource } from "./console-source.ts";
@@ -545,6 +547,25 @@ app.whenReady().then(
         logs.stop(dir);
         showBadge();
         return editInstalls((contents) => removeInstall(contents, dir));
+      }),
+    );
+
+    ipcMain.handle(BRIDGE_CHANNELS.installsUpdate, (_event, dir: string, patch: InstallPatch) =>
+      answering(async () => {
+        // A folder that moves is a new identity for the read loop, the alerts
+        // and the logs stream, all keyed by directory: the old one is let go
+        // the way forgetting lets it go, and the new one is picked up from the
+        // list the change broadcasts. Let go only once the file is written:
+        // a refused move — a duplicate, a relative path, a failed write —
+        // leaves the entry where it was, and its alerts and logs with it.
+        const now = path.resolve(patch.dir ?? dir);
+        const installs = await editInstalls((contents) => updateInstall(contents, dir, patch));
+        if (now !== path.resolve(dir)) {
+          alerts.forgetInstall(dir);
+          logs.stop(dir);
+          showBadge();
+        }
+        return { installs, dir: now };
       }),
     );
 
