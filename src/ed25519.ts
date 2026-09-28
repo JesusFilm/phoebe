@@ -1,0 +1,125 @@
+// Ed25519 as the relay rail spells it (#540): raw 32-byte public keys in
+// base64url, signatures over the raw bytes a `hello` commits to, and one
+// fingerprint rule. The other curve on the rail — the X25519 box key a console
+// encrypts to, which this signature covers — is src/x25519.ts.
+//
+// Both ends of the rail need the same three answers and they live in different
+// halves of this package — the deployment key is the bootstrapper's
+// (bootstrap/relay-key.ts), the verification is the relay's (relay/links.ts) —
+// so the encoding decisions sit here, in one module neither half owns. A
+// fingerprint computed two ways is two fingerprints, and the relay names a
+// file after it.
+//
+// **Raw keys, not PEM, on the wire.** A PEM public key carries a header, a
+// footer and line breaks through JSON for no benefit; the 32 bytes are the key.
+// Node will only build a `KeyObject` from a structured encoding, so the fixed
+// 12-byte SPKI prefix for this one curve is prepended on the way in. It is a
+// constant because the curve is: an Ed25519 SPKI header never varies.
+
+import { createHash, createPublicKey, verify, type KeyObject } from "node:crypto";
+
+/** Raw public keys are 32 bytes on this curve, always. */
+export const ED25519_PUBLIC_KEY_BYTES = 32;
+
+/**
+ * The SPKI DER header every Ed25519 public key carries: `SEQUENCE { SEQUENCE {
+ * OID 1.3.101.112 }, BIT STRING }`, up to the 32 key bytes that follow it.
+ */
+const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
+
+/** The raw 32 bytes of a public key, base64url — the form `hello` carries. */
+export function rawPublicKeyOf(key: KeyObject): string {
+  const der = key.export({ type: "spki", format: "der" });
+  return der.subarray(der.length - ED25519_PUBLIC_KEY_BYTES).toString("base64url");
+}
+
+/**
+ * A `KeyObject` from the wire form, or null when the string is not 32 bytes of
+ * base64url. Null rather than a throw: the caller is a relay reading a frame a
+ * stranger sent, and a malformed key is a refusal, not an exception.
+ */
+export function publicKeyFromRaw(publicKey: string): KeyObject | null {
+  if (typeof publicKey !== "string" || publicKey.length === 0) return null;
+  const raw = Buffer.from(publicKey, "base64url");
+  if (raw.length !== ED25519_PUBLIC_KEY_BYTES) return null;
+  try {
+    return createPublicKey({
+      key: Buffer.concat([ED25519_SPKI_PREFIX, raw]),
+      format: "der",
+      type: "spki",
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * What a `hello` signs: the challenge nonce and the box key, concatenated
+ * (#549, decided in #514 §7). Both as the bytes they decode to rather than as
+ * their characters, so neither end has to re-encode the other's string to
+ * agree, and both fixed-width — 24 bytes of nonce, 32 of key — so the join
+ * needs no separator to stay unambiguous.
+ *
+ * The box key is in here because it is the key a console encrypts a secret to,
+ * and a deployment that could present a signature covering only the nonce could
+ * have any box key at all substituted in flight. Signing both is what makes the
+ * encrypting key as attested as the signing one.
+ */
+export function helloSignedBytes(nonce: string, boxKey: string): Buffer {
+  return Buffer.concat([Buffer.from(nonce, "base64url"), Buffer.from(boxKey, "base64url")]);
+}
+
+/**
+ * Does `signature` (base64url) sign `nonce ‖ boxKey` under `publicKey`? False
+ * for every malformed input, so one call answers "is this deployment who it
+ * says it is, presenting the key it says it has" with no exception path to get
+ * wrong.
+ */
+export function verifyHelloSignature(
+  publicKey: string,
+  hello: { nonce: string; boxKey: string },
+  signature: string,
+): boolean {
+  const key = publicKeyFromRaw(publicKey);
+  if (key === null || typeof signature !== "string") return false;
+  if (typeof hello.nonce !== "string" || typeof hello.boxKey !== "string") return false;
+  try {
+    return verify(
+      null,
+      helloSignedBytes(hello.nonce, hello.boxKey),
+      key,
+      Buffer.from(signature, "base64url"),
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The key fingerprint: SHA-256 of the raw public key, base64url, first 32
+ * characters. Long enough that no fleet collides, short enough to read aloud,
+ * and safe in a filename — the relay stores one report per fingerprint.
+ */
+export function fingerprintOf(publicKey: string): string {
+  return createHash("sha256")
+    .update(Buffer.from(publicKey, "base64url"))
+    .digest("base64url")
+    .slice(0, 32);
+}
+
+/**
+ * How long a fingerprint is, and the only characters one can contain. Both
+ * follow from {@link fingerprintOf}: 32 characters of base64url.
+ */
+export const FINGERPRINT_PATTERN = /^[A-Za-z0-9_-]{32}$/;
+
+/**
+ * Is this string shaped like a fingerprint? The relay names a file after one
+ * and reads the name out of a URL, so this is the guard between a path
+ * parameter and the volume: anything that is not exactly the form
+ * {@link fingerprintOf} produces — a `..`, a slash, a longer string — is not a
+ * fingerprint and never reaches the filesystem.
+ */
+export function isFingerprint(value: string): boolean {
+  return FINGERPRINT_PATTERN.test(value);
+}

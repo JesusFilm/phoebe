@@ -6,7 +6,7 @@
 source. It reads the deployment report (`state/deployment.json`) and renders it
 top to bottom in priority order. First the bootstrapper line, carrying the engine
 ref, the commit actually running, a quarantine or reconcile in progress, the slot
-cap and the report's age. Then the
+cap and the report's age. Then the relay line, when there is a relay. Then the
 fleet, two lines per pipeline: what the supervised process is doing, and what the
 pipeline itself is doing. Then doctor in one line. Run it on the host and it
 drives the deployment's Compose file and execs itself inside the container, the

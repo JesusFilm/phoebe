@@ -124,8 +124,8 @@ Flags:
   --validate       Answer whether the patched config loads, and write nothing
 
 Only plain literals move. A leaf a PHOEBE_* variable already sets, the fleet
-declaration, the engine pin and the host's \`deployment\` block are refused —
-and every refusal prints the edit to make by hand.
+declaration, the engine pin, the relay block and the host's \`deployment\` block
+are refused — and every refusal prints the edit to make by hand.
 `;
 
 /** The value at a dotted path, replaced, with only the objects along the path rebuilt. */

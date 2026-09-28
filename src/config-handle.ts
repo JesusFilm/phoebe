@@ -427,6 +427,84 @@ export function editConfigInsertFieldSource(
   };
 }
 
+/** What the root config's `relay` block says, as far as a reader needs it. */
+export type RelayBlockRead =
+  | { ok: false; reason: string }
+  | { ok: true; relay: { url: string | null; name: string | null } | null };
+
+/**
+ * Read the `relay` block out of a config's *source*, without loading it.
+ *
+ * The block is string leaves and nothing that has to be computed, so a static
+ * read answers the whole of it — and it has to be a static read, because the
+ * caller is a companion on the operator's own machine (#527 §14) and loading a
+ * config means executing the operator's TypeScript in the app's process.
+ *
+ * `relay: null` is a config with no block at all. A leaf that is not a plain
+ * string reads as null rather than as a refusal: the reader's question is "where
+ * does this install dial", and an expression it cannot evaluate is an honest
+ * "not from here".
+ */
+export function editConfigGetRelay(source: string): RelayBlockRead {
+  const resolved = resolveConfigObject(source);
+  if (!resolved.ok) return resolved;
+
+  if (findProp(resolved.configObj, "relay") === null) return { ok: true, relay: null };
+
+  return {
+    ok: true,
+    relay: {
+      url: stringLeafAt(source, resolved.configObj, ["relay", "url"]),
+      name: stringLeafAt(source, resolved.configObj, ["relay", "name"]),
+    },
+  };
+}
+
+/**
+ * Point the config at a relay: set `relay.url`, creating the block when there
+ * is none.
+ *
+ * The `relay` block is closed to `phoebe config set` on purpose — it is the
+ * pairing's own, written when a deployment is paired rather than edited field by
+ * field — and this is the writer a pairing uses (#558). It touches `url` and
+ * leaves every other leaf, `name` included, exactly as the operator left it.
+ *
+ * Refuses a `url` that is not a plain string literal. Something is there that
+ * somebody wrote deliberately, and a pairing is not a reason to overwrite it.
+ */
+export function editConfigSetRelayUrl(source: string, url: string): ConfigEditResult {
+  const resolved = resolveConfigObject(source);
+  if (!resolved.ok) return resolved;
+
+  const located = locatePath(source, resolved.configObj, ["relay", "url"]);
+  if (!located.ok) return located;
+  if (!located.found) return insertAtPath(source, ["relay", "url"], JSON.stringify(url), "");
+
+  if (located.prop.shorthand as boolean) {
+    return { ok: false, reason: "`relay.url` is a shorthand property — make the edit by hand" };
+  }
+  const valueNode: BNode = located.prop.value;
+  if (typeof extractLiteral(valueNode) !== "string") {
+    return { ok: false, reason: "`relay.url` is not a plain string — make the edit by hand" };
+  }
+
+  return {
+    ok: true,
+    content:
+      source.slice(0, valueNode.start as number) +
+      JSON.stringify(url) +
+      source.slice(valueNode.end as number),
+  };
+}
+
+/** One string leaf at `path`, or null when it is absent, computed or unreachable. */
+function stringLeafAt(source: string, configObj: BNode, path: readonly string[]): string | null {
+  const located = locatePath(source, configObj, path);
+  if (!located.ok || !located.found || (located.prop.shorthand as boolean)) return null;
+  const literal = extractLiteral(located.prop.value);
+  return typeof literal === "string" ? literal : null;
+}
+
 /**
  * Remove a top-level field from the config object. No-ops when the key is
  * absent.

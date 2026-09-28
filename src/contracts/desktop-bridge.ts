@@ -28,6 +28,8 @@ import type {
   LocalInstall,
 } from "./local-install.ts";
 import type { LocalAlertEvent, LocalReportEvent } from "./local-report.ts";
+import type { RelayEvent } from "./relay-events.ts";
+import type { RelayIdentity } from "./relay-routes.ts";
 import type { RunExit, RunLine, VerbRun, VerbRunRequest } from "./verb-run.ts";
 
 /**
@@ -60,6 +62,39 @@ export type DesktopBridgeError = {
   code: DesktopBridgeErrorCode;
   message: string;
   instruction?: string;
+};
+
+/**
+ * Who the companion is signed in to, if anyone (#527 §9).
+ *
+ * `person` is the identity or null rather than a `signedIn` flag beside an
+ * optional identity: two fields that can contradict each other are two fields a
+ * page has to decide between.
+ */
+export type RelayArmState = {
+  /** The relay this companion is paired with, or null before one is set. */
+  url: string | null;
+  /** The signed-in person, or null when there is no session. */
+  person: RelayIdentity | null;
+  /** Whether the session survives a relaunch. False with no keyring (#554). */
+  persisted: boolean;
+  /** What to tell the operator about the state above, when there is something. */
+  reason?: string;
+};
+
+/**
+ * How a renderer asks main to sign in (#554). The relay's URL is the only thing
+ * the renderer supplies, because it is the only part of the flow that is the
+ * operator's to type — everything after it is main's: the PKCE verifier, the
+ * system browser, the scheme hop back, and the exchange.
+ */
+export type RelaySignInRequest = { url: string };
+
+/** One call the companion makes on the relay's JSON API on the renderer's behalf. */
+export type RelayPassthrough = {
+  method: "GET" | "POST" | "DELETE";
+  path: string;
+  body?: unknown;
 };
 
 /**
@@ -179,5 +214,31 @@ export type DesktopBridge = {
   preferences: {
     get: () => Promise<CompanionPreferences>;
     set: (preferences: CompanionPreferences) => Promise<CompanionPreferences>;
+  };
+  /**
+   * The remote arm. Main holds the device token and makes the calls, so the
+   * renderer never learns the token and route knowledge stays in the console's
+   * relay-client seam (#527 §9).
+   */
+  relay: {
+    state: () => Promise<RelayArmState>;
+    /**
+     * Run a sign-in: the system browser opens, and this resolves once the code
+     * has come back over the custom scheme and been exchanged. It rejects when
+     * the operator abandons the attempt, which is a thing the rail can say.
+     */
+    signIn: (request: RelaySignInRequest) => Promise<RelayArmState>;
+    /**
+     * The arm's state, pushed whenever it changes without the renderer having
+     * asked — a 401 on the event stream is the case this exists for, since
+     * nothing the page did would otherwise tell it the session ended. Returns
+     * the unsubscribe.
+     */
+    watch: (onState: (state: RelayArmState) => void) => () => void;
+    request: (request: RelayPassthrough) => Promise<unknown>;
+    /** The relay's event stream, re-emitted. Returns the unsubscribe. */
+    events: (onEvent: (event: RelayEvent) => void) => () => void;
+    /** Revoke the device token on the relay, then forget it here. */
+    signOut: () => Promise<void>;
   };
 };

@@ -12,6 +12,7 @@
 //   * editConfigGetField / setField / removeField have happy-path coverage.
 //   * ConfigRefusal is detected by isConfigRefusal; plain Record is not.
 //   * configHandle delegates to the edit functions.
+//   * the `relay` block reads and writes statically — no config is ever loaded.
 
 import { describe, expect, test } from "vite-plus/test";
 import {
@@ -20,11 +21,13 @@ import {
   configHandle,
   editConfigAppendWorkKind,
   editConfigGetField,
+  editConfigGetRelay,
   editConfigListKeys,
   editConfigMoveField,
   editConfigRemoveField,
   editConfigSetField,
   editConfigSetFieldAt,
+  editConfigSetRelayUrl,
   isConfigRefusal,
   workKindInstruction,
 } from "./config-handle.ts";
@@ -883,5 +886,116 @@ describe("editConfigSetFieldAt", () => {
     if (!result.ok) return;
     expect(result.content).toContain(`effort: "medium",`);
     expect(result.content).not.toContain("as const");
+  });
+});
+
+// ------------------------------------------------------------------ the relay block
+
+const WSS = "wss://relay.example.test/deployments";
+
+describe("editConfigGetRelay", () => {
+  test("a config with no block reads as no relay at all", () => {
+    expect(editConfigGetRelay(MINIMAL())).toEqual({ ok: true, relay: null });
+  });
+
+  test("reads both leaves of a block that has them", () => {
+    const content = MINIMAL(`\n  relay: { url: "${WSS}", name: "the-fleet" },`);
+
+    expect(editConfigGetRelay(content)).toEqual({
+      ok: true,
+      relay: { url: WSS, name: "the-fleet" },
+    });
+  });
+
+  test("a block with only a url leaves the name null — the default names it", () => {
+    const content = MINIMAL(`\n  relay: { url: "${WSS}" },`);
+
+    expect(editConfigGetRelay(content)).toEqual({ ok: true, relay: { url: WSS, name: null } });
+  });
+
+  test("a computed block is a block whose leaves this reader cannot answer for", () => {
+    const content = MINIMAL(`\n  relay: relayFor(process.env),`);
+
+    expect(editConfigGetRelay(content)).toEqual({ ok: true, relay: { url: null, name: null } });
+  });
+
+  test("a config that does not parse is a refusal, not an empty read", () => {
+    const result = editConfigGetRelay("const config = {");
+
+    expect(result.ok).toBe(false);
+  });
+});
+
+describe("editConfigSetRelayUrl", () => {
+  test("writes the whole block when the config has none", () => {
+    const result = editConfigSetRelayUrl(MINIMAL(), WSS);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(editConfigGetRelay(result.content)).toEqual({
+      ok: true,
+      relay: { url: WSS, name: null },
+    });
+    // Everything that was there is still there, in its own words.
+    expect(result.content).toContain(`repoSlug: "acme/test"`);
+  });
+
+  test("moves an existing url and leaves the name beside it alone", () => {
+    const content = MINIMAL(
+      `\n  relay: { url: "wss://old.example/deployments", name: "the-fleet" },`,
+    );
+
+    const result = editConfigSetRelayUrl(content, WSS);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(editConfigGetRelay(result.content)).toEqual({
+      ok: true,
+      relay: { url: WSS, name: "the-fleet" },
+    });
+  });
+
+  test("adds the url to a block that has a name and no url yet", () => {
+    const content = MINIMAL(`\n  relay: { name: "the-fleet" },`);
+
+    const result = editConfigSetRelayUrl(content, WSS);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(editConfigGetRelay(result.content)).toEqual({
+      ok: true,
+      relay: { url: WSS, name: "the-fleet" },
+    });
+  });
+
+  test("refuses a url somebody computed rather than overwriting it", () => {
+    const content = MINIMAL(`\n  relay: { url: process.env.RELAY_URL! },`);
+
+    const result = editConfigSetRelayUrl(content, WSS);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toContain("not a plain string");
+  });
+
+  test("refuses a relay that is not an object literal", () => {
+    const result = editConfigSetRelayUrl(MINIMAL(`\n  relay: relayFor(process.env),`), WSS);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toContain("not a plain object literal");
+  });
+
+  test("the written config still parses as one, in the defineConfig form too", () => {
+    const content = `export default defineConfig({\n  repoSlug: "x/y",\n});\n`;
+
+    const result = editConfigSetRelayUrl(content, WSS);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(editConfigGetRelay(result.content)).toEqual({
+      ok: true,
+      relay: { url: WSS, name: null },
+    });
   });
 });

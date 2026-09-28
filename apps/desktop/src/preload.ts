@@ -18,6 +18,8 @@ import type {
   LocalReportEvent,
   LogLine,
   LogsEnded,
+  RelayArmState,
+  RelayEvent,
   RunExit,
   RunLine,
 } from "phoebe-agent/contracts";
@@ -82,6 +84,14 @@ const bridge: DesktopBridge = {
   preferences: {
     get: () => call(BRIDGE_CHANNELS.preferencesGet),
     set: (preferences) => call(BRIDGE_CHANNELS.preferencesSet, preferences),
+  },
+  relay: {
+    state: () => call(BRIDGE_CHANNELS.relayState),
+    signIn: (request) => call(BRIDGE_CHANNELS.relaySignIn, request),
+    watch: (onState) => subscribe<RelayArmState>(BRIDGE_CHANNELS.relayArm, onState),
+    request: (request) => call(BRIDGE_CHANNELS.relayRequest, request),
+    signOut: () => call(BRIDGE_CHANNELS.relaySignOut),
+    events: (onEvent) => subscribe<RelayEvent>(BRIDGE_CHANNELS.relayEvent, onEvent),
   },
 };
 

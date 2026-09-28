@@ -1,10 +1,15 @@
-// Builders for what every test here needs: an install, a report, and a bridge
-// to hand them over. Shared by the test files rather than copied into each, so a change to
+// Builders for the two things every test here needs: a relay row and a stored
+// report. Shared by the test files rather than copied into each, so a change to
 // the wire shape breaks in one place.
 //
 // Not reachable from main.tsx, so nothing here reaches the bundle.
 
-import { DEPLOYMENT_SCHEMA, EFFECTIVE_CONFIG_VERSION } from "phoebe-agent/contracts";
+import {
+  CONSOLE_PROTOCOL,
+  DEPLOYMENT_SCHEMA,
+  EFFECTIVE_CONFIG_VERSION,
+  RELAY_EVENTS,
+} from "phoebe-agent/contracts";
 import type {
   ChildLiveness,
   CompanionEnvironment,
@@ -19,18 +24,55 @@ import type {
   LocalAlertEvent,
   LocalInstall,
   LocalReportEvent,
-  StoredReport,
+  RelayArmState,
+  RelayDeploymentRow,
+  RelayEvent,
+  RelayPerson,
+  RelayStoredReport,
+  SecretListing,
+  SecretsSection,
+  StatusSnapshot,
   TenantEffectiveConfig,
   TenantFacts,
+  TenantSecrets,
   VerbRun,
   VerbRunRequest,
 } from "phoebe-agent/contracts";
+import type { RelayClient, SecretReceipt, SecretRequest } from "./relay-client.ts";
 
 export const NOW = new Date("2026-09-18T12:00:00.000Z");
 
 /** `seconds` ago, as an ISO instant. */
 export function ago(seconds: number): string {
   return new Date(NOW.getTime() - seconds * 1000).toISOString();
+}
+
+/**
+ * A box key the browser can really import: 32 bytes of base64url, which is all
+ * X25519 asks of a public key. A test that wants to open what the tab sealed
+ * generates its own pair and overrides this.
+ */
+export const BOX_KEY = "cGhvZWJlIGNvbnNvbGUgYm94IGtleSBmaXh0dXJlISE";
+
+export function row(overrides: Partial<RelayDeploymentRow> = {}): RelayDeploymentRow {
+  return {
+    fingerprint: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    name: "youtube-studio",
+    publicKey: "cGstZGVwbG95bWVudC1maXh0dXJlLTMyLWJ5dGVzISE",
+    // A real X25519 key, because the secrets tab seals to it for real: the tests
+    // that exercise a set open the envelope again with the matching private
+    // half (secrets-render.test.tsx).
+    boxKey: BOX_KEY,
+    firstSeen: ago(86_400),
+    lastSeen: ago(12),
+    pairedBy: "ada@example.test",
+    state: "connected",
+    connectedSince: ago(3600),
+    disconnectedForSeconds: null,
+    lastClose: null,
+    maybeReplaced: false,
+    ...overrides,
+  };
 }
 
 export function tenant(overrides: Partial<TenantFacts> = {}): TenantFacts {
@@ -90,6 +132,22 @@ export function doctor(overrides: Partial<DoctorSection> = {}): DoctorSection {
     at: ago(3 * 3600),
     trigger: "schedule",
     updatedAt: ago(3 * 3600),
+    ...overrides,
+  };
+}
+
+/** A pipeline's `status.json`, with whatever it has in flight. */
+export function snapshot(overrides: Partial<StatusSnapshot> = {}): StatusSnapshot {
+  return {
+    tenant: "JesusFilm/youtube-studio",
+    pipeline: "work",
+    currentUnits: [
+      { unit: { kind: "issues", id: "544" }, startedAt: ago(600), runBudgetMs: 5_400_000 },
+    ],
+    waitingForSlot: false,
+    lastError: null,
+    lastTimeoutAt: null,
+    updatedAt: ago(12),
     ...overrides,
   };
 }
@@ -189,6 +247,24 @@ export function configReport(overrides: Partial<ConfigReport> = {}): ConfigRepor
   };
 }
 
+export function listing(overrides: Partial<SecretListing> = {}): SecretListing {
+  return { key: "ANTHROPIC_API_KEY", present: false, source: "missing", ...overrides };
+}
+
+export function tenantSecrets(overrides: Partial<TenantSecrets> = {}): TenantSecrets {
+  return {
+    tenant: "JesusFilm/youtube-studio",
+    path: "/etc/phoebe",
+    error: null,
+    keys: [listing()],
+    ...overrides,
+  };
+}
+
+export function secrets(overrides: Partial<SecretsSection> = {}): SecretsSection {
+  return { tenants: [tenantSecrets()], updatedAt: ago(30), ...overrides };
+}
+
 export function report(overrides: Partial<DeploymentReport> = {}): DeploymentReport {
   return {
     schema: DEPLOYMENT_SCHEMA,
@@ -220,13 +296,69 @@ export function report(overrides: Partial<DeploymentReport> = {}): DeploymentRep
 
 export function stored(
   body: unknown = report(),
-  overrides: Partial<StoredReport> = {},
-): StoredReport {
+  overrides: Partial<RelayStoredReport> = {},
+): RelayStoredReport {
   return {
+    fingerprint: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
     schema: DEPLOYMENT_SCHEMA,
     receivedAt: ago(12),
     report: body,
     ...overrides,
+  };
+}
+
+export function person(overrides: Partial<RelayPerson> = {}): RelayPerson {
+  return {
+    email: "ada@example.test",
+    addedBy: "grace@example.test",
+    addedAt: ago(86_400),
+    fromEnvironment: false,
+    signedIn: true,
+    self: false,
+    ...overrides,
+  };
+}
+
+/**
+ * A relay client that answers nothing. Every page now takes the seam, and a
+ * render test that only wants markup should not have to invent five methods to
+ * get it — `overrides` is where a test that does care puts the one it reads.
+ */
+export function client(overrides: Partial<RelayClient> = {}): RelayClient {
+  return {
+    version: () => Promise.resolve({ version: "0.13.0", console: CONSOLE_PROTOCOL }),
+    me: () => Promise.resolve({ sub: "s", email: "ada@example.test" }),
+    signIn: () => Promise.resolve({ kind: "navigate", href: "/auth/google/start" }),
+    watchSession: () => () => {},
+    signOut: () => Promise.resolve(),
+    deployments: () => Promise.resolve([]),
+    deployment: () => Promise.reject(new Error("no such deployment")),
+    runDoctor: () => Promise.resolve([]),
+    setConfigField: () => Promise.resolve({ outcome: "written" }),
+    setSecret: () => Promise.reject(new Error("nothing stubbed setSecret")),
+    events: () => () => {},
+    people: () => Promise.resolve([]),
+    addPerson: () => Promise.reject(new Error("nothing stubbed addPerson")),
+    removePerson: () => Promise.resolve({ sessionsEnded: 0 }),
+    mintPairingToken: () => Promise.reject(new Error("nothing stubbed mintPairingToken")),
+    ...overrides,
+  };
+}
+
+/** A client whose `setSecret` answers with `outcome`, recording what it was sent. */
+export function recordingClient(receipt: Partial<SecretReceipt> & { outcome: string }): {
+  client: RelayClient;
+  sent: SecretRequest[];
+} {
+  const sent: SecretRequest[] = [];
+  return {
+    sent,
+    client: client({
+      setSecret: (request) => {
+        sent.push(request);
+        return Promise.resolve({ id: request.id, ...receipt });
+      },
+    }),
   };
 }
 
@@ -237,6 +369,8 @@ export function install(overrides: Partial<LocalInstall> = {}): LocalInstall {
   return {
     dir: "/repos/youtube-studio",
     name: "youtube-studio",
+    deploymentName: "youtube-studio",
+    relayUrl: null,
     addedAt: ago(3600),
     state: "running",
     containerVersion: "0.13.0",
@@ -262,6 +396,7 @@ export function environment(overrides: Partial<CompanionEnvironment> = {}): Comp
  * is what stops a page from feature-detecting its way around a missing arm.
  */
 export function bridge(answers: BridgeAnswers = {}): DesktopBridge {
+  const relayState = answers.relay ?? { url: null, person: null, persisted: false };
   return {
     version: () => Promise.resolve("0.13.0"),
     environment: () => Promise.resolve(answers.environment ?? environment()),
@@ -318,11 +453,29 @@ export function bridge(answers: BridgeAnswers = {}): DesktopBridge {
       get: () => Promise.resolve({ notifications: true, consoleTheme: "system" }),
       set: (preferences) => Promise.resolve(preferences),
     },
+    relay: {
+      state: () => Promise.resolve(relayState),
+      signIn: ({ url }) =>
+        answers.signIn === undefined
+          ? Promise.reject(new Error("this bridge does not sign in"))
+          : Promise.resolve(answers.signIn(url)),
+      watch: () => () => undefined,
+      request: ({ path }) => {
+        if (answers.request === undefined) return Promise.reject(signedOut());
+        return Promise.resolve(answers.request(path));
+      },
+      events: (onEvent) => {
+        for (const event of answers.events ?? []) onEvent(event);
+        return () => undefined;
+      },
+      signOut: () => Promise.resolve(),
+    },
   };
 }
 
 /** What a test wants the bridge above to answer with. */
 export type BridgeAnswers = {
+  relay?: RelayArmState;
   /** What `logs.follow` hands a pane that opens: the lines held so far. */
   logs?: string[];
   environment?: CompanionEnvironment;
@@ -332,6 +485,10 @@ export type BridgeAnswers = {
   runId?: string;
   /** Collects every run the page asked for. */
   started?: VerbRunRequest[];
+  request?: (path: string) => unknown;
+  events?: RelayEvent[];
+  /** What a sign-in through the companion resolves with (#554). */
+  signIn?: (url: string) => RelayArmState;
   /** What the local read loop has emitted, one event per install (#556). */
   reports?: LocalReportEvent[];
   /** What main raised over a local install (#559). */
@@ -358,7 +515,7 @@ export function directory(overrides: Partial<InstallDirectoryFacts> = {}): Insta
 export function localReport(overrides: Partial<LocalReportEvent> = {}): LocalReportEvent {
   const facts = overrides.facts ?? install();
   return {
-    type: "report",
+    type: RELAY_EVENTS.report,
     install: facts.dir,
     at: ago(2),
     facts,
@@ -369,6 +526,13 @@ export function localReport(overrides: Partial<LocalReportEvent> = {}): LocalRep
         : null,
     ...overrides,
   };
+}
+
+/** What the preload throws when main refuses a call (#527 §16). */
+export function signedOut(): Error {
+  return Object.assign(new Error("the companion is not signed in to a relay"), {
+    code: "signed-out",
+  });
 }
 
 /** What main refuses a read of a folder it does not hold with (#527 §16). */

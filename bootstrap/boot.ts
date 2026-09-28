@@ -118,12 +118,14 @@ import {
   type TenantSample,
 } from "./tenants.ts";
 import { readConfigDir } from "./config-dir.ts";
-import { readHostPlatform } from "./host-platform.ts";
+import { prepareRelay } from "./relay-boot.ts";
+import { RELAY_MESSAGES } from "../src/contracts/relay-protocol.ts";
+import { deliverSecret } from "./secret-delivery.ts";
 import { resolveDataBase } from "../src/paths.ts";
 import { tenantSecrets, tenantStateDir, type SecretValues } from "../src/secret-store.ts";
 import type { InventoryTenant } from "../src/secret-inventory.ts";
 import { createSecretInventory, type SecretInventoryRunner } from "./secret-inventory-runner.ts";
-import type { DeploymentArm, DeploymentIdentity, SlotReport } from "../src/contracts/deployment.ts";
+import type { DeploymentArm, SlotReport } from "../src/contracts/deployment.ts";
 import { readGitIdentity, soloIdentityEnv, type GitIdentity } from "./git-identity.ts";
 import {
   superviseFleet,
@@ -1795,20 +1797,54 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   // the name and the credential arm come from.
   const deploymentArm: DeploymentArm = workspace !== null ? "workspace" : "solo";
   const dataBase = resolveDataBase(process.env);
-  // Who this deployment is to a console (#505 §3). Read once: neither the name
-  // nor the kernel changes under a running container.
-  const identity: DeploymentIdentity = {
-    name: deploymentName({ arm: deploymentArm, configDir, soloSlug: soloSlug(rootConfig) }),
+  // The relay (#540), if the root config names one: who this deployment is to a
+  // console, and the link that tells one so. Prepared before the model is built
+  // because it owns the identity section; dialled after, because it reports
+  // into the model.
+  const relay = prepareRelay({
+    rootConfig,
+    defaultName: deploymentName({ arm: deploymentArm, configDir, soloSlug: soloSlug(rootConfig) }),
     arm: deploymentArm,
-    host: readHostPlatform(),
-  };
+    dataBase,
+    env: process.env,
+    log: (message) => console.log(message),
+    warn: (message) => console.warn(message),
+    // What the relay may ask this deployment to do (#550). `relay` is referenced
+    // from inside its own initializer on purpose: the handler needs the box key
+    // `prepareRelay` just read off the volume, and nothing calls it until a
+    // socket is up — which is long after this assignment.
+    onRequest: async (request) => {
+      if (request.type !== RELAY_MESSAGES.secretSet) {
+        return { outcome: "refused", detail: `this deployment does not answer ${request.type}` };
+      }
+      return await deliverSecret(request, {
+        configPath,
+        dataBase,
+        processEnv: process.env,
+        key: () => relay.boxKey(),
+        log: (message) => console.log(message),
+        // A set is the moment an operator wants "did it work" answered (#507
+        // §6), and two things answer it: doctor, whose `declared-env` check
+        // reads the same env the child will hold, and the inventory, whose
+        // provenance is what the page they set it from is watching.
+        onWritten: ({ tenant, by }) => {
+          void secrets.refreshLast();
+          void doctor.request("request", by);
+          console.log(
+            `[phoebe] boot: a console secret landed for ${tenant} — running doctor and ` +
+              `retaking the secrets inventory.`,
+          );
+        },
+      });
+    },
+  });
   // The config-edit pen (#536, decision #503). Built with the root config's path
   // and nothing else: a workspace's tenant configs sit under the same `:ro`
   // mount and stay the operator's to edit in their own checkouts, and this
   // editor cannot reach them because it was never given them.
   const editor = createConfigEditor({ rootConfigPath: configPath, dataBase });
   const deployment = createDeploymentState({
-    identity: () => identity,
+    identity: relay.identity,
     dataBase,
     crashLoop: () => guard.state(),
     slots: () => brokerSlots(broker),
@@ -1825,6 +1861,10 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       workspace !== null
         ? (tenant) => tenantArm(tenant.envPath)
         : () => resolveCredentialArm(process.env as Record<string, string | undefined>),
+    // The report just moved, so the relay's copy is out of date (#542). The
+    // link reads the report back out of the model and sends it whole; with no
+    // relay configured, or none connected, this is a call that does nothing.
+    onReport: () => relay.push(),
     // Once. A volume that refuses the first write will refuse every later one,
     // and a line per publish would bury the fleet's own output in the repetition.
     onWriteError: warnOnce(
@@ -1863,6 +1903,31 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       ),
   });
   doctor.start();
+  // Dialled here rather than beside the model it reports into: the link carries
+  // the console's asks as well as the report, and "Run doctor" has to reach the
+  // runner built above (#546). Nothing is lost by the wait — a push before the
+  // first connection is a no-op, and every connection opens with the whole
+  // report anyway.
+  relay.start(deployment, {
+    // The pen goes up the rail with the link (#503, #547): a console's edit is
+    // the same call a shell `phoebe config set` makes, arriving from a message
+    // instead of from argv, so there is one writer and one reconcile path.
+    configSet: (edit) => editor.apply(edit),
+    runDoctor: (by) => {
+      const ask = doctor.request("request", by);
+      // The report is where what doctor found goes (#507 §7). Nothing here waits
+      // for it: the receipt has already said which run the asker is watching.
+      void ask.result.catch(() => {});
+      return { outcome: ask.outcome, ...(ask.detail !== undefined ? { detail: ask.detail } : {}) };
+    },
+  });
+
+  // Dialled last, after everything an inbound request reaches: the secrets
+  // handler the link was built with runs against `secrets` and `doctor`, and a
+  // socket that opened before those existed would be a socket that could ask for
+  // one of them (#550).
+  relay.start(deployment);
+
   if (workspace !== null) {
     // GitHub App mode (#209): if the supervisor holds App credentials, fetch
     // the bot identity once at fleet startup and wire up a per-tenant mint fn.
@@ -1925,6 +1990,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       throw error;
     } finally {
       stop.dispose();
+      relay.stop();
       // Nothing in flight is cancelled: a doctor child outliving the drain by a
       // few seconds is harmless, and its six-hour clock is what must not
       // outlive it.
@@ -2142,6 +2208,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     // Drop the listeners before propagating: re-raising the engine's killing
     // signal must actually kill this process, and our own latch would swallow it.
     stop.dispose();
+    relay.stop();
     doctor.stop();
     await reporter.flush();
   }

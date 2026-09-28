@@ -21,6 +21,7 @@ import { existsSync, readFileSync } from "node:fs";
 import type { InstallDirectoryFacts, LocalInstall } from "phoebe-agent/contracts";
 import { TENANT_CONFIG_FILE } from "../../../bootstrap/tenants.ts";
 import { fingerprintOf } from "../../../src/config-edit.ts";
+import { editConfigGetField, editConfigGetRelay } from "../../../src/config-handle.ts";
 import {
   defaultCommandRunner,
   findPhoebeService,
@@ -104,6 +105,7 @@ export async function installFacts(
     ...(wsl === null ? {} : { wsl }),
     ...(root.nested === null ? {} : { deploymentDir: root.nested }),
     ...(workspace === null ? {} : { workspace }),
+    ...configFacts(root.dir, exists, read),
   };
 
   if (!exists(stored.dir)) {
@@ -170,6 +172,55 @@ function containerVersion(containerDir: string, deps: FactsDeps): string | null 
     return null;
   }
   return pin.kind === "pinned" ? pin.version : null;
+}
+
+/**
+ * The config file at the root of an install, and the two facts a rail reads off
+ * it: what a relay would call this deployment, and which relay it dials.
+ *
+ * Read as *source*, never loaded. Loading it would execute the operator's
+ * TypeScript in the companion's own process, on every list, for two strings.
+ * A config that will not parse, or one that is not there yet, answers the same
+ * way an absent block does — the folder's name, and no relay.
+ */
+function configFacts(
+  dir: string,
+  exists: (file: string) => boolean,
+  read: (file: string) => string,
+): { deploymentName: string; relayUrl: string | null } {
+  const source = configSource(dir, exists, read);
+  return source === null
+    ? { deploymentName: path.basename(dir), relayUrl: null }
+    : installConfigFacts(dir, source);
+}
+
+/**
+ * The same two facts, from a config an caller already has in hand — which is
+ * what pairing has, because it is about to rewrite it.
+ *
+ * The name is `relay.name`, or the solo `repoSlug`, or the folder's name: the
+ * same order `deploymentName` in bootstrap/boot.ts resolves. A name the rail
+ * matched on that the deployment does not answer to would join a local install
+ * to somebody else's row.
+ */
+export function installConfigFacts(
+  dir: string,
+  configSourceText: string,
+): { deploymentName: string; relayUrl: string | null } {
+  const relay = editConfigGetRelay(configSourceText);
+  const named = relay.ok ? relay.relay?.name : null;
+  return {
+    deploymentName: named ?? soloSlug(configSourceText) ?? path.basename(dir),
+    relayUrl: (relay.ok ? relay.relay?.url : null) ?? null,
+  };
+}
+
+/** The config's own `repoSlug`, when it declares a usable one. */
+function soloSlug(configSourceText: string): string | null {
+  const slug = editConfigGetField(configSourceText, "repoSlug");
+  if (!slug.ok || !slug.found || typeof slug.literal !== "string") return null;
+  const trimmed = slug.literal.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 /** The root config's text, or null when there is none to read. */

@@ -101,6 +101,7 @@ function OverviewTab({
 }) {
   const report = reading.report;
   const bootstrapper = bootstrapperOf(report);
+  const relay = report.relay;
   const cells = cellsOf(report);
   const tenants = tenantsOf(report);
   const slots = bootstrapper?.slots ?? null;
@@ -139,6 +140,14 @@ function OverviewTab({
               bootstrapper?.reconcile?.phase === "reconciling"
                 ? `relaunching the fleet, ${bootstrapper.reconcile.reason} moved`
                 : "idle"
+            }
+          />
+          <Pair
+            label="Relay"
+            value={
+              relay?.configured === true
+                ? `${relay.state}${relay.nextRetryAt === null ? "" : `, next dial ${relay.nextRetryAt}`}`
+                : "none configured"
             }
           />
           {slots === null ? null : (

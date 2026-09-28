@@ -2,7 +2,7 @@ import { describe, expect, test } from "vite-plus/test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Rail } from "./rail.tsx";
 import { SAMPLE_LINES, SettingsPage } from "./settings-page.tsx";
-import { environment } from "./test-fixture.ts";
+import { environment, NOW } from "./test-fixture.ts";
 
 function noop(): void {}
 
@@ -75,12 +75,24 @@ describe("the settings page", () => {
 
 describe("the gear at the foot of the rail", () => {
   test("is a bare gear onto the settings page on both surfaces, never a selected place", () => {
-    const companion = renderToStaticMarkup(<Rail surface="companion" installs={[]} />);
-    const browser = renderToStaticMarkup(<Rail surface="browser" />);
+    const companion = renderToStaticMarkup(
+      <Rail
+        facts={[]}
+        now={NOW}
+        surface="companion"
+        signedIn={false}
+        installs={[]}
+        signIn={null}
+        onSignedIn={noop}
+      />,
+    );
+    const browser = renderToStaticMarkup(
+      <Rail facts={[]} now={NOW} surface="browser" signedIn signIn={null} onSignedIn={noop} />,
+    );
 
     for (const rail of [companion, browser]) {
-      // The brand heads the rail and is the way home.
-      expect(rail).toMatch(/<nav class="rail"[^>]*><a class="rail-brand" href="#\/">Phoebe/);
+      // The brand heads the rail and is the way home, the fleet.
+      expect(rail).toMatch(/<nav class="rail"[^>]*><a class="rail-brand" href="#\/fleet">Phoebe/);
       expect(rail).toMatch(/<a class="rail-settings" href="#\/settings" aria-label="Settings"/);
       expect(rail).toMatch(
         /class="rail-settings"[^>]*>\s*<svg[^>]*lucide-settings[^>]*>[\s\S]*?<\/svg><\/a>/,

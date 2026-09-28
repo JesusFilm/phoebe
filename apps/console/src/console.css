@@ -153,6 +153,13 @@ code,
   font-weight: 600;
 }
 
+.pane-session {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+
 .main {
   padding: 16px 20px;
   max-width: 1300px;
@@ -283,6 +290,10 @@ a {
   background: var(--attention-bg);
 }
 
+.rail-entry.state-dark {
+  background: var(--dark-bg);
+}
+
 .rail-entry .name {
   font-weight: 600;
 }
@@ -307,9 +318,24 @@ a {
   vertical-align: baseline;
 }
 
+.mark.connected {
+  border-radius: 50%;
+  background: var(--ok);
+}
+
+.mark.disconnected {
+  border-radius: 50%;
+  border: 2px solid var(--warn);
+}
+
 .mark.dark {
   /* A square, not a dot: dark is the one word that means the relay lost it. */
   background: var(--dark);
+}
+
+.mark.unseen {
+  border-radius: 50%;
+  border: 1px dashed var(--muted);
 }
 
 /* ── the local arm ─────────────────────────────────────────────────────── */
@@ -490,6 +516,11 @@ button.quiet {
   white-space: nowrap;
 }
 
+.chip.replaced {
+  background: var(--warn);
+  color: #1a1206;
+}
+
 .chip.fail {
   background: var(--fail);
   color: #fff;
@@ -498,6 +529,15 @@ button.quiet {
 .chip.warn {
   background: var(--warn);
   color: #1a1206;
+}
+
+/* ── the grid ──────────────────────────────────────────────────────────── */
+
+.grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  margin-top: 14px;
 }
 
 .cell {
@@ -511,11 +551,38 @@ button.quiet {
   border-color: var(--fail);
 }
 
+.cell.state-dark {
+  background: var(--dark-bg);
+}
+
+.cell-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.cell-head .name {
+  font-weight: 600;
+  color: inherit;
+  text-decoration: none;
+}
+
+.cell-head .name:hover {
+  text-decoration: underline;
+}
+
 .bar {
   display: flex;
   gap: 2px;
   height: 8px;
   margin: 10px 0 8px;
+}
+
+.bar-empty {
+  height: 8px;
+  margin: 10px 0 8px;
+  border: 1px dashed var(--line);
+  border-radius: 4px;
 }
 
 .segment {
@@ -540,6 +607,11 @@ button.quiet {
   background: var(--warn);
 }
 
+.segment.no-status {
+  background: transparent;
+  border: 1px solid var(--idle);
+}
+
 .segment.disabled {
   opacity: 0.45;
 }
@@ -547,6 +619,12 @@ button.quiet {
 .facts {
   font-size: 12px;
   color: var(--muted);
+}
+
+.legend {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 0;
 }
 
 /* ── one deployment ────────────────────────────────────────────────────── */
@@ -575,6 +653,12 @@ button.quiet {
   font-weight: 600;
 }
 
+.panels {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
 .panel {
   background: var(--panel);
   border: 1px solid var(--line);
@@ -590,9 +674,30 @@ button.quiet {
   margin: 0 0 6px;
 }
 
+.lead {
+  font-size: 16px;
+  margin: 0 0 8px;
+}
+
 h2 {
   font-size: 14px;
   margin: 18px 0 6px;
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 10px;
+  margin: 0;
+  font-size: 12px;
+}
+
+.kv dt {
+  color: var(--muted);
+}
+
+.kv dd {
+  margin: 0;
 }
 
 /* The colour a clause the report itself called a failure is painted in. Nothing
@@ -603,6 +708,28 @@ h2 {
 
 .held {
   margin: 4px 0;
+}
+
+.glance {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+}
+
+.glance-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.glance-card.wedged {
+  border-left-color: var(--fail);
+}
+
+.glance-card .name {
+  font-weight: 600;
 }
 
 table.rows {
@@ -666,6 +793,31 @@ table.rows tr.attention td {
   margin: 40px auto;
 }
 
+/* ── run doctor ────────────────────────────────────────────────────────── */
+
+.run-doctor {
+  margin: 0 0 14px;
+}
+
+.run-doctor button:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.run-doctor p {
+  margin: 6px 0 0;
+}
+
+/* ── the config tab ────────────────────────────────────────────────────── */
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0;
+}
+
 .filter {
   font: inherit;
   padding: 3px 8px;
@@ -687,12 +839,19 @@ button.chip {
   border-radius: 9px;
 }
 
-.chip.src.file {
+.chip.src.file,
+.chip.src.overlay {
   background: var(--chip-set);
 }
 
+.chip.src.alias {
+  background: var(--warn);
+  color: #1a1206;
+}
+
 .chip.src.default,
-.chip.src.derived {
+.chip.src.derived,
+.chip.src.inherited {
   color: var(--muted);
 }
 
@@ -703,6 +862,10 @@ button.chip {
 
 table.rows.config th[scope="row"] {
   width: 34%;
+}
+
+.shadowed {
+  font-size: 12px;
 }
 
 /* The disclosure that holds `via` and `from` (#509): the chip is the summary,
@@ -717,11 +880,42 @@ details.why > summary::marker {
   font-size: 11px;
 }
 
+.warnings {
+  margin: 10px 0;
+}
+
 .warning {
   border-left: 3px solid var(--warn);
   background: var(--panel);
   margin: 4px 0;
   padding: 6px 10px;
+}
+
+/* The colour of a verdict the deployment itself called a success — the other
+ * half of `.bad`, and used for exactly the same reason: nothing on screen
+ * decides to be green, it is quoting a receipt that said `written`. */
+.good {
+  color: var(--ok);
+}
+
+/* The edit form on one leaf (#547). Inline in the row rather than in a dialog:
+ * the value being changed is the one on the line above it, and a modal would
+ * hide the source chip that says whether the change will take effect. */
+.editform {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.editform label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.editform .filter {
+  min-width: 140px;
 }
 
 /* A receipt, under the row it answers. Bordered on the left like a warning,
@@ -734,8 +928,90 @@ details.why > summary::marker {
   padding: 6px 10px;
 }
 
+/* A command to copy. Pre-wrapped, so a long `--config` path wraps rather than
+ * scrolling a table sideways. */
+.cmd {
+  font-size: 12px;
+  margin: 4px 0;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ── the People page ───────────────────────────────────────────────────── */
+
+.add-person {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 0 6px;
+}
+
+.add-person input {
+  font: inherit;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: inherit;
+  min-width: 260px;
+}
+
 .trouble {
   color: var(--fail);
+}
+
+.people {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  max-width: 720px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.person {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.person:last-child {
+  border-bottom: none;
+}
+
+.person .name {
+  font-weight: 600;
+}
+
+.person .facts:last-of-type {
+  margin-left: auto;
+}
+
+.person button {
+  margin-left: auto;
+}
+
+/* ── minting a pairing token ───────────────────────────────────────────── */
+
+.pairing {
+  margin-top: 26px;
+  max-width: 720px;
+}
+
+.pairing h2 {
+  font-size: 15px;
+  margin: 0 0 4px;
+}
+
+.pairing .legend {
+  margin-bottom: 8px;
 }
 
 .token {
@@ -755,6 +1031,37 @@ details.why > summary::marker {
   padding-left: 20px;
 }
 
+.token-value {
+  /* The one string on the page that has to survive a double-click. */
+  user-select: all;
+  word-break: break-all;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--chip);
+}
+
+/* The secrets tab's one form, and the receipt it leaves behind (#550). */
+.secret-form {
+  display: grid;
+  gap: 6px;
+  padding: 8px 0;
+  max-width: 560px;
+}
+
+.secret-form input {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  font: inherit;
+  padding: 6px 8px;
+}
+
+.secret-actions {
+  display: flex;
+  gap: 8px;
+}
+
 .receipt {
   border-left: 3px solid var(--line);
   margin: 10px 0;
@@ -764,12 +1071,48 @@ details.why > summary::marker {
   border-left-color: var(--ok);
 }
 
-.receipt.refused {
+.receipt.refused,
+.receipt.undelivered {
   border-left-color: var(--fail);
 }
 
 .receipt code {
   word-break: break-all;
+}
+
+/* ── the rail's sign-in control (#554) ─────────────────────────────────── */
+
+.rail-signin form {
+  display: grid;
+  gap: 4px;
+  padding: 2px 14px 6px;
+}
+
+.rail-signin label {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.rail-signin input {
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: inherit;
+  min-width: 0;
+}
+
+.rail-note {
+  margin: 0;
+  padding: 0 14px 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.rail-note.trouble {
+  color: var(--fail);
 }
 
 /* ── the deployment tabs ───────────────────────────────────────────────── */
@@ -819,6 +1162,41 @@ details.why > summary::marker {
   overflow: auto;
   font-size: 12px;
   line-height: 1.5;
+}
+
+/* ── the rail's sign-in control (#554) ─────────────────────────────────── */
+
+.rail-signin form {
+  display: grid;
+  gap: 4px;
+  padding: 2px 14px 6px;
+}
+
+.rail-signin label {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.rail-signin input {
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: inherit;
+  min-width: 0;
+}
+
+.rail-note {
+  margin: 0;
+  padding: 0 14px 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.rail-note.trouble {
+  color: var(--fail);
 }
 
 /* Two ways to add on the home page, side by side. */
@@ -1036,6 +1414,23 @@ details.why > summary::marker {
 }
 
 .rail-entry.local .rail-gear {
+  color: var(--muted);
+}
+
+/* A relay entry is a link; its gear is a second link beside it. */
+.rail-relay-row {
+  display: flex;
+  align-items: center;
+}
+
+.rail-relay-row .rail-entry {
+  flex: 1;
+  min-width: 0;
+}
+
+.rail-relay-row .rail-gear {
+  flex: none;
+  margin-right: 8px;
   color: var(--muted);
 }
 

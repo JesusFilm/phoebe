@@ -1,11 +1,14 @@
 // A local install's page: the five tabs every deployment has, and the **install
 // tab** beside them (#526, #522 §6).
 //
-// The five are fed by the `report` event: main's local read loop execs
-// `status --json` in the container and emits what it printed (#556). How the
-// facts got here is the overview's connection card, which this page builds.
+// The five are the same components a remote deployment's page renders, fed by
+// the same `report` event — main's local read loop execs `status --json` in the
+// container and emits what the relay's stream would have carried (#556). So
+// nothing under a tab knows which arm it is on, and the one place the arm shows
+// is the overview's connection card, which this page builds.
 //
-// The sixth is the folder taken from nothing to running with buttons. Check Docker, init, start, stop, ask upgrade where
+// The sixth is the one no remote deployment has: the folder taken from nothing
+// to running with buttons. Check Docker, init, start, stop, ask upgrade where
 // things stand, and watch the output as it happens.
 //
 // What a stopped install shows is a decision, not a fallback (#526): config from
@@ -18,8 +21,9 @@
 // The versions sit in the same section as the buttons, because they are a reason
 // to press one. The local arm **reports and never refuses** (#525 §6): the
 // container's pinned phoebe-agent beside the companion's own version, a sentence
-// when they differ, and every verb still offered either way. The
-// companion drives this install; it does not have to agree with it.
+// when they differ, and every verb still offered either way. The relay arm has a
+// refusal in it (relay-version.ts) and this one deliberately does not — the
+// companion drives this install, it does not have to agree with it.
 //
 // Every button is a verb run. The page starts one, then only applies the events
 // main sends it; the lines on screen are main's buffer, which is why reopening
@@ -32,8 +36,11 @@
 // tab, because the writer it reaches depends on whether a container is up and the
 // one case that has no container is the first `GH_TOKEN` (#527 §8).
 //
-// **Both run against this machine.** Nothing here builds an envelope and
-// nothing here signs in, and both forms say where the value went.
+// **Neither goes near the relay.** A local install's writes run against this
+// machine even when it is also paired, so nothing here builds an envelope and
+// nothing here signs in. Both forms say so, because "this went straight to the
+// folder" and "this was sealed and sent to a server" are different things to
+// have done with a secret.
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { CANCELLABLE_VERBS } from "phoebe-agent/contracts";
@@ -61,6 +68,8 @@ import {
   localConnection,
   offeredVerbs,
   outcomeReading,
+  pairReading,
+  type PairReading,
   renderableReport,
   secretSetReading,
   secretSetRequest,
@@ -78,6 +87,8 @@ export function InstallPage({
   bridge,
   report,
   now,
+  signedIn,
+  paired,
   onConsole,
   onUpdate,
   onForget,
@@ -87,6 +98,10 @@ export function InstallPage({
   /** The last read main emitted for this install, or null before the first. */
   report: LocalReportEvent | null;
   now: Date;
+  /** Whether the companion holds a relay session — what pairing mints on (#558). */
+  signedIn: boolean;
+  /** Whether this install is already a deployment on that relay. */
+  paired: boolean;
   /** Back to the console (console-view.tsx), the view the rail opens. */
   onConsole?: () => void;
   /** Save a change to the install's own settings (project-settings.tsx). */
@@ -174,6 +189,7 @@ export function InstallPage({
     report: reading.kind === "read" || install.state === "running",
     config: config !== null,
   };
+  const pairing = pairReading(install, { signedIn, paired });
 
   return (
     <main className="main install-tab">
@@ -241,6 +257,7 @@ export function InstallPage({
             run={run}
             running={running}
             trouble={trouble}
+            pairing={pairing}
             onStart={start}
             onForget={onForget}
             onCancel={(runId) => void bridge.runs.cancel(runId).catch(() => {})}
@@ -357,6 +374,7 @@ export function InstallTab({
   run,
   running,
   trouble,
+  pairing,
   onStart,
   onForget,
   onCancel,
@@ -366,6 +384,8 @@ export function InstallTab({
   run: VerbRun | null;
   running: boolean;
   trouble: string | null;
+  /** Where this install stands with the relay the companion is signed in to (#558). */
+  pairing: PairReading;
   onStart: (request: VerbRunRequest) => void;
   onForget: (dir: string) => void;
   onCancel: (runId: string) => void;
@@ -438,11 +458,28 @@ export function InstallTab({
               Doctor
             </button>
           ) : null}
+          {pairing.kind === "paired" ? null : (
+            <button
+              type="button"
+              disabled={running || pairing.kind === "blocked"}
+              {...(pairing.kind === "blocked" ? { title: pairing.reason } : {})}
+              onClick={() => onStart({ install: install.dir, verb: "pair" })}
+            >
+              Pair with the relay
+            </button>
+          )}
           <button type="button" className="quiet" onClick={() => onForget(install.dir)}>
             Forget
           </button>
         </div>
         <Versions install={install} environment={environment} />
+        <p className="muted">
+          {pairing.kind === "paired"
+            ? "Paired — this install is the deployment the relay knows, so the rail draws it here and not under Relay."
+            : pairing.kind === "blocked"
+              ? pairing.reason
+              : "Pairing mints a token on the relay, points this install's config at it and nudges the container. The token never leaves this machine in a line you can read."}
+        </p>
         <p className="muted">
           Forgetting removes this install from the companion. Nothing on disk is deleted.
         </p>
@@ -524,9 +561,9 @@ export function ConfigEditForm({
     <>
       <h2>{heading}</h2>
       <p className="muted">
-        Written straight to <span className="mono">{file.path}</span> on this machine. The edit
-        checks itself against the fingerprint above — if the file has moved since this tab read it,
-        the edit is refused and says what to type instead.
+        Written straight to <span className="mono">{file.path}</span> on this machine. No relay is
+        involved, and the edit checks itself against the fingerprint above — if the file has moved
+        since this tab read it, the edit is refused and says what to type instead.
       </p>
       <form className="verbs" onSubmit={submit}>
         <input
@@ -592,7 +629,8 @@ export function SecretSetForm({
       <p className="muted">{secretWriterReading(install)}</p>
       <p className="muted">
         The value goes straight from this window to this machine. Nothing is sealed to anybody and
-        nothing is sent anywhere else.
+        nothing is sent to a relay, even if this install is paired — that envelope exists for a
+        deployment a console can only reach through a server, and this one is a folder.
       </p>
       <form className="verbs" onSubmit={submit}>
         <input

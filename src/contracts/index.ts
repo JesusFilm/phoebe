@@ -22,6 +22,8 @@
 // an installed consumer's value import can never land on TypeScript. The `.mjs`
 // carries JSDoc, which is what makes the re-export below a typed one.
 
+export type { EnvelopeAad, SecretEnvelope } from "./secret-envelope.mjs";
+export { openSecret, sealSecret } from "./secret-envelope.mjs";
 export type { StopOutcome } from "./stop-outcome.ts";
 export type {
   ConfigEdit,
@@ -31,6 +33,56 @@ export type {
   EditWritten,
 } from "./config-edit.ts";
 export { CLOSED_EDIT_BLOCKS } from "./config-edit.ts";
+export { RELAY_ROUTES } from "./relay-routes.ts";
+export type {
+  RelayConnectionState,
+  RelayDeploymentDetail,
+  RelayDeploymentRow,
+  RelayConfigSetAnswer,
+  RelayConfigSetRequest,
+  RelayDoctorRunAnswer,
+  RelayDoctorRunResult,
+  RelayIdentity,
+  RelayPairingToken,
+  RelayPerson,
+  RelayRoute,
+  RelayStoredReport,
+} from "./relay-routes.ts";
+export { RELAY_EVENTS } from "./relay-events.ts";
+export type {
+  RelayConnectionEvent,
+  RelayEvent,
+  RelayEventName,
+  RelayReportEvent,
+} from "./relay-events.ts";
+// The two helpers in relay-protocol.ts (`relaySpeaks`, `relayMessageType`) are
+// deliberately not re-exported: a function mirrored by hand into index.mjs is a
+// second implementation, and no `toEqual` catches the day the two disagree.
+// This repo's own relay and bootstrapper import them from the module directly.
+export {
+  RELAY_CLOSE,
+  RELAY_DARK_AFTER_MS,
+  RELAY_DEPLOYMENTS_PATH,
+  RELAY_DOCTOR_RUN,
+  RELAY_HEARTBEAT_MS,
+  RELAY_MESSAGES,
+  RELAY_PROTOCOL,
+  RELAY_UNDELIVERED,
+  type DeploymentToRelay,
+  type DoctorRunOutcome,
+  type RelayChallenge,
+  type RelayCloseCode,
+  type RelayConfigSet,
+  type RelayDoctorRun,
+  type RelayHeartbeat,
+  type RelayHello,
+  type RelayMessageType,
+  type RelayReceipt,
+  type RelayReportMessage,
+  type RelayRequest,
+  type RelaySecretSet,
+  type RelayToDeployment,
+} from "./relay-protocol.ts";
 // The edge rule itself (`alertEdges` and the body builders in alerts.ts) is not
 // re-exported, for the reason above: it is the one piece of real logic in this
 // directory, and a hand-written copy of it in index.mjs would be a second
@@ -146,7 +198,12 @@ export type {
   DesktopBridge,
   DesktopBridgeError,
   DesktopBridgeErrorCode,
+  RelayArmState,
+  RelayPassthrough,
 } from "./desktop-bridge.ts";
+export { COMPANION_AUTH_URL, DEVICE_CODE_TTL_MS } from "./relay-routes.ts";
+export type { DeviceExchange, DeviceExchangeResult, RelayDevice } from "./relay-routes.ts";
+export type { RelaySignInRequest } from "./desktop-bridge.ts";
 export type {
   CompanionEnvironment,
   CompanionPreferences,
@@ -166,5 +223,11 @@ export type {
   TenantConfigFacts,
 } from "./local-report.ts";
 export type { SecretSetOutcome, SecretWriter } from "./secret-set.ts";
+export type { MintedPairingToken } from "./relay-routes.ts";
+export { RELAY_TOKEN_ENV } from "./relay-protocol.ts";
+export type { PairOutcome } from "./pair-outcome.ts";
+export type { RelayAlertEvent } from "./relay-events.ts";
 export type { LocalAlertEvent } from "./local-report.ts";
+export { CONSOLE_PROTOCOL } from "./console-protocol.ts";
+export type { RelayVersion } from "./console-protocol.ts";
 export type { CompanionUpdate } from "./companion-update.ts";
