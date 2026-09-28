@@ -148,9 +148,7 @@ either way.
 2. Commits. It writes files and lists them; the operator reviews and commits per
    repo.
 3. Runs these writes from a boot, poll, or reconcile path. Only operator-initiated
-   verbs write — `upgrade`, `migrate`, and `config set`. A config edit that arrives
-   over the relay is still operator-initiated: a person asked for it in the console,
-   and the relay stamps their email on the ledger entry.
+   verbs write — `upgrade`, `migrate`, and `config set`.
 4. Touches `/data`, named volumes, or git history.
 
 Every other "Phoebe never writes" or "Phoebe never edits the root config" claim

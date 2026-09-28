@@ -1,12 +1,9 @@
-// What main decides about alerts, with no Electron and no relay.
-//
-// Everything here is the local arm's half plus the badge, because those are the
-// two things main decides. The relay's edges were already decided by the relay
-// — what is asserted about them is only that they move the count.
+// What main decides about alerts, with no Electron: the edges of a local
+// install's reads, and the badge they add up to.
 
 import { describe, expect, test } from "vite-plus/test";
 import { DEPLOYMENT_SCHEMA } from "phoebe-agent/contracts";
-import type { AlertMessage, LocalInstall, LocalReportEvent } from "phoebe-agent/contracts";
+import type { LocalInstall, LocalReportEvent } from "phoebe-agent/contracts";
 import { createCompanionAlerts, reportAlertFacts } from "./alerting.ts";
 
 const DIR = "/repos/youtube-studio";
@@ -18,8 +15,6 @@ function install(overrides: Partial<LocalInstall> = {}): LocalInstall {
     name: "youtube-studio",
     addedAt: "2026-09-18T09:00:00.000Z",
     state: "running",
-    deploymentName: "youtube-studio",
-    relayUrl: null,
     containerVersion: null,
     ...overrides,
   };
@@ -196,49 +191,6 @@ describe("the badge", () => {
     expect(alerts.badge()).toBe(1);
   });
 
-  test("adds the relay's deployments to the local installs", () => {
-    const alerts = createCompanionAlerts();
-    alerts.local(read([{ id: "acme#sentry", wedged: true }]));
-
-    alerts.relay(alert({ condition: "dark", state: "raised" }));
-
-    expect(alerts.badge()).toBe(2);
-  });
-
-  test("a relay clear takes its deployment back off", () => {
-    const alerts = createCompanionAlerts();
-    alerts.relay(alert({ condition: "dark", state: "raised" }));
-
-    alerts.relay(alert({ condition: "dark", state: "cleared" }));
-
-    expect(alerts.badge()).toBe(0);
-  });
-
-  test("one condition clearing does not take a deployment still raised on another off", () => {
-    const alerts = createCompanionAlerts();
-    alerts.relay(alert({ condition: "dark", state: "raised" }));
-    alerts.relay(alert({ condition: "replaced", state: "raised" }));
-
-    alerts.relay(alert({ condition: "dark", state: "cleared" }));
-
-    expect(alerts.badge()).toBe(1);
-  });
-
-  test("the test alert is about the relay, so it raises nothing (#515 §13)", () => {
-    const alerts = createCompanionAlerts();
-
-    alerts.relay({
-      schema: 1,
-      kind: "test",
-      by: "ada@example.test",
-      at: "2026-09-18T10:00:00.000Z",
-      text: "Phoebe relay test alert",
-      url: "https://relay.example/",
-    });
-
-    expect(alerts.badge()).toBe(0);
-  });
-
   test("forgetting an install drops what it was raising", () => {
     const alerts = createCompanionAlerts();
     alerts.local(read([{ id: "acme#sentry", wedged: true }]));
@@ -254,16 +206,6 @@ describe("the badge", () => {
     alerts.forgetInstall(DIR);
 
     expect(alerts.local(read([{ id: "acme#sentry", wedged: true }]))).toEqual([]);
-  });
-
-  test("signing out drops the relay's half and keeps the local one", () => {
-    const alerts = createCompanionAlerts();
-    alerts.local(read([{ id: "acme#sentry", wedged: true }]));
-    alerts.relay(alert({ condition: "dark", state: "raised" }));
-
-    alerts.forgetRelay();
-
-    expect(alerts.badge()).toBe(1);
   });
 
   test("two installs in trouble are two", () => {
@@ -300,19 +242,3 @@ describe("the report, projected onto what the rule reads", () => {
     expect(reportAlertFacts(read([]))!.doctor).toBe("unknown");
   });
 });
-
-/** One relay alert, as the stream carries it. */
-function alert(overrides: Partial<AlertMessage>): AlertMessage {
-  return {
-    schema: 1,
-    kind: "alert",
-    condition: "dark",
-    state: "raised",
-    deployment: { name: "acme-site", keyFingerprint: "ff00" },
-    since: "2026-09-18T09:55:00.000Z",
-    detail: "no heartbeat for 5 min",
-    text: "acme-site: dark (no heartbeat for 5 min)",
-    url: "https://relay.example/#/d/ff00",
-    ...overrides,
-  };
-}

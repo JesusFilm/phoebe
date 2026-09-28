@@ -18,7 +18,6 @@
   "include": [
     "src",
     "bootstrap",
-    "relay",
     "kinds",
     "examples",
     "scripts",

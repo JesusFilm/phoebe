@@ -2,7 +2,7 @@
 "phoebe-agent": minor
 ---
 
-The companion ships, and an installed one keeps itself in step with its relay.
+The companion ships, and an installed one keeps itself up to date.
 
 Every `phoebe-agent@x.y.z` release now carries the app. A packaging stage runs
 after `changeset publish` on three runners and attaches the artifacts to the
@@ -23,12 +23,7 @@ for the app to quit unless you ask for a restart. A tool that drives Docker on
 your machine does not swap itself out while you are watching. Only the stable feed
 exists — there is no nightly channel.
 
-Which build you are offered is the relay's business. Signed in, the feed is pinned
-to the relay's own version, so the only update ever offered is one that relay
-serves; signed out, it is the newest stable release. Signed in to a relay that
-cannot be reached, nothing is checked at all, because the newest build there is
-may be one that relay cannot serve. There is no downgrade in any case: a companion
-ahead of its relay is told to upgrade the relay, never offered a way back.
+The build you are offered is the newest stable release. There is no downgrade.
 
 When there is something to do about a new build, the rail says so in one line, and
 that line is the only place an update is ever mentioned.

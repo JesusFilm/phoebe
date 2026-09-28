@@ -3,10 +3,9 @@
 Workspace home for the apps that ship beside the engine
 ([#521](https://github.com/JesusFilm/phoebe/issues/521)).
 
-- [`console`](console) — the web console: the rail and the fleet grid an operator
-  reads a relay's deployments on. Builds into `console/` at the repo root, which
-  the published package carries, so `phoebe relay serve` hands the pages out of
-  the one install. The companion beside it loads the same bundle from disk.
+- [`console`](console) — the console: the rail and the pages an operator reads
+  their installs on. Builds into `console/` at the repo root, which the companion
+  beside it loads from disk.
 
 - [`desktop`](desktop) — the companion: an Electron main and preload whose
   window loads the `console` bundle from disk over a privileged custom scheme. It

@@ -130,11 +130,9 @@ builds for the platform you are on and publishes nothing.
 
 The engine and the bootstrapper ship raw `.ts` and run under Node 24
 type-stripping, so nothing is compiled for them. The console is the exception:
-`apps/console` builds into `console/` at the root, the root package's `files`
-publishes that directory, and `phoebe relay serve` reads the pages out of it.
+`apps/console` builds into `console/` at the root, which the companion loads.
 
-`console/` is generated and gitignored, so a publish from a clean checkout would
-ship a relay whose pages answer 503. The root `prepublishOnly` script runs
+`console/` is generated and gitignored. The root `prepublishOnly` script runs
 `vp run -r build`, which `npm publish` — the binary `changeset publish` shells out
 to — fires before it packs. It does not fire on `npm pack`, so the packaging
 checks stay as fast as they were.

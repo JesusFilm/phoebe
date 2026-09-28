@@ -36,7 +36,8 @@
 // read. No report means no verdict on the three report-borne conditions, and a
 // doctor run that timed out says `unknown`, which is not a pass.
 
-import type { RelayConnectionState } from "./relay-routes.ts";
+/** Where a reader with a socket holds a deployment. A local read has none, and says null. */
+type RelayConnectionState = "connected" | "disconnected" | "dark" | "unseen";
 
 /** The `schema` integer every alert body carries. Versioned like the report. */
 export const ALERT_SCHEMA = 1;

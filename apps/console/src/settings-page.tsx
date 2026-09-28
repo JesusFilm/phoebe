@@ -6,8 +6,8 @@
 // colours, whether the desktop is told about alerts, and what this companion is
 // running on. Nothing about a deployment lives here; a deployment's settings are
 // its own tabbed page (install-page.tsx), behind the gear on its rail entry.
-// A browser the relay served has no companion behind it, so it gets the page
-// with the one thing that is still true of it.
+// A plain browser has no companion behind it, so it gets the page with the one
+// thing that is still true of it.
 
 import type { CSSProperties } from "react";
 import type { CompanionEnvironment } from "phoebe-agent/contracts";
@@ -54,9 +54,9 @@ export function SettingsPage({
       <main className="main settings-page">
         <h1>Settings</h1>
         <p className="muted">
-          This console is the relay&apos;s, served to a browser. It keeps nothing on this machine
-          beyond your sign-in, which is on the top bar. The companion app has the settings a machine
-          of its own needs: the console&apos;s colours and desktop notifications.
+          This console is open in a browser, which keeps nothing on this machine. The companion app
+          has the settings a machine of its own needs: the console&apos;s colours and desktop
+          notifications.
         </p>
       </main>
     );

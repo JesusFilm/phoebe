@@ -20,8 +20,6 @@ function install(overrides: Partial<LocalInstall> = {}): LocalInstall {
     name: "youtube-studio",
     addedAt: "2026-09-18T09:00:00.000Z",
     state: "running",
-    deploymentName: "youtube-studio",
-    relayUrl: null,
     containerVersion: null,
     ...overrides,
   };
@@ -152,7 +150,7 @@ describe("the two clocks", () => {
 });
 
 describe("what one read emits", () => {
-  test("a running install emits the report under the relay's own event word", async () => {
+  test("a running install emits the report, under the word `report`", async () => {
     const it = harness();
     it.loop.sync([install()]);
 

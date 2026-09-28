@@ -76,10 +76,9 @@ under one org owner, the GitHub App arm replaces the per-repo token ceremony. Se
 The full version, covering prerequisites, secrets, and verification, is
 [`docs/ai-install.md`](docs/ai-install.md). It runs top to bottom.
 
-**Watching it without a shell.** Pair a deployment with a self-hosted relay and
-you get the console: a web page over every deployment you have paired, what each
-one is doing, and the settings each one resolved. There is a desktop companion
-too, which adds the installs on your own machine. Start at
+**Watching it without a shell.** The desktop companion opens the console: every
+install on your own machine, what each one is doing, and the settings each one
+resolved. Start at
 [`docs/console.md`](docs/console.md).
 
 ## Configuration at a glance
@@ -139,8 +138,7 @@ Docs live under [`docs/`](docs/), in two groups.
 - [`docs/workspace.md`](docs/workspace.md), workspace mode topology, two-tier `.env`, operator runbook (plain-clone or submodule children).
 - [`docs/github-app-mode.md`](docs/github-app-mode.md), the GitHub App credential arm, for deployments spanning several repos under one org owner.
 - [`docs/claude-subscription-auth.md`](docs/claude-subscription-auth.md), driving the `claude` provider from a subscription rather than an API key.
-- [`docs/console.md`](docs/console.md), the console end to end: standing up a relay, pairing a deployment, what the console's pages show, alerting, the desktop companion's two arms, and what stays at a shell.
-- [`docs/relay.md`](docs/relay.md), the relay's own mechanism: `phoebe relay serve`, its environment variables, the routes, the handshake and the close codes.
+- [`docs/console.md`](docs/console.md), the console end to end: the desktop companion, what the console's pages show, alerting, and what stays at a shell.
 - [`docs/phoebe-core-onboarding.md`](docs/phoebe-core-onboarding.md), worked onboarding for `JesusFilm/core` (Nx + pnpm, no vp).
 
 **Working on Phoebe**, changing the engine itself:

@@ -30,9 +30,9 @@ the same way as ready issues (priority, age, `Blocked by #N`); see
 [`work-kinds.md`](work-kinds.md#research-resolve-wayfinder-research-tickets).
 
 Every lever here is a label on GitHub or a command at a shell. If you have
-neither, [`console.md`](console.md) is the other way in: a self-hosted relay
-serves a web console that reads the same deployment report this page renders, and
-a desktop companion drives local installs through the same host verbs.
+neither, [`console.md`](console.md) is the other way in: a desktop companion
+that reads the same deployment report this page renders, and drives local
+installs through the same host verbs.
 
 ## Starting a unit of work: `readyLabel`
 
@@ -263,12 +263,6 @@ instead of skipped. One run happens at a time. Asking while one is in flight
 joins it; asking mid-reconcile waits for the relaunch, then runs once against the
 engine that is actually running.
 
-"On request" is the console's **Run doctor**, on one deployment or on the whole
-fleet at once ([the relay](relay.md#run-doctor)). The press is answered straight
-away with which run it belongs to — started, joined, refused, or undelivered for
-a deployment the relay is not holding — and what the run found arrives in the
-report that follows it.
-
 Every run, yours included, holds itself to five minutes. A check that has not
 finished by then reports `?` with "deadline passed", and the rest of the report
 still lands. One unreachable tenant costs you that tenant's answers, not the
@@ -421,15 +415,15 @@ that declares `workspace: { depth }` (walk) or `workspace: { tenants: [...] }`
 Read [`trust.md`](trust.md) first: co-locating repos means co-locating them in
 one trust domain.
 
-| Action                            | How                                                                                                                                                                                                                                                                                                                                                                         |
-| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Add a repo                        | Place the checkout under the root (`git clone` / `git submodule add`), then `phoebe init --tenant <dir>` (host-side) and, on the declared arm, add the dir to `workspace.tenants` yourself. Phoebe never edits your fleet declaration; `workspace.tenants` is yours. The bootstrapper discovers it next poll. Fill in its `.env`.                                           |
-| Remove a repo                     | Drop the child from `workspace.tenants` and/or delete its config dir (host-side; Phoebe never edits your fleet declaration). Reversible, because the tenant's `/data` is retained and re-adding re-uses it.                                                                                                                                                                 |
-| Reclaim a deleted pipeline's disk | Nothing to do: the next boot, and any later pipeline-set change, sweeps the state of pipelines the config no longer declares. A worktree that is dirty or holds unpushed commits is left for you, named by `phoebe doctor`'s `stale-state` check. Run `phoebe sweep-state` (in-container) to do it now.                                                                     |
-| Reclaim a removed repo's disk     | `phoebe purge <owner/repo> --yes` (in-container). Destructive; refuses while a live config still claims the slug.                                                                                                                                                                                                                                                           |
-| Apply deployment migrations       | `phoebe migrate` (host-side, in the deployment dir). Rewrites config content and scaffolds missing artifacts across root and fleet; lists uncommitted paths for you to review and commit per repo. See [`upgrading.md` → phoebe migrate](upgrading.md#phoebe-migrate-reshaping-your-files-for-the-current-ref).                                                             |
-| Check every tenant's GitHub token | `node scripts/verify-tenant-token.mjs --all` (host-side, in the deployment dir). One section per tenant; `--check` exits non-zero when any is short a grant. See [Checking a tenant's GitHub token](#checking-a-tenants-github-token).                                                                                                                                      |
-| See what the deployment is doing  | `phoebe status`, either side of the container wall (see below). It reads the deployment report: the bootstrapper line, the relay line when there is one, the fleet with two lines per pipeline, and doctor in one line. `--json` prints the report file verbatim, `--check` exits 1 when something needs a look. `phoebe list` is a deprecated alias for its fleet section. |
+| Action                            | How                                                                                                                                                                                                                                                                                                                                       |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Add a repo                        | Place the checkout under the root (`git clone` / `git submodule add`), then `phoebe init --tenant <dir>` (host-side) and, on the declared arm, add the dir to `workspace.tenants` yourself. Phoebe never edits your fleet declaration; `workspace.tenants` is yours. The bootstrapper discovers it next poll. Fill in its `.env`.         |
+| Remove a repo                     | Drop the child from `workspace.tenants` and/or delete its config dir (host-side; Phoebe never edits your fleet declaration). Reversible, because the tenant's `/data` is retained and re-adding re-uses it.                                                                                                                               |
+| Reclaim a deleted pipeline's disk | Nothing to do: the next boot, and any later pipeline-set change, sweeps the state of pipelines the config no longer declares. A worktree that is dirty or holds unpushed commits is left for you, named by `phoebe doctor`'s `stale-state` check. Run `phoebe sweep-state` (in-container) to do it now.                                   |
+| Reclaim a removed repo's disk     | `phoebe purge <owner/repo> --yes` (in-container). Destructive; refuses while a live config still claims the slug.                                                                                                                                                                                                                         |
+| Apply deployment migrations       | `phoebe migrate` (host-side, in the deployment dir). Rewrites config content and scaffolds missing artifacts across root and fleet; lists uncommitted paths for you to review and commit per repo. See [`upgrading.md` → phoebe migrate](upgrading.md#phoebe-migrate-reshaping-your-files-for-the-current-ref).                           |
+| Check every tenant's GitHub token | `node scripts/verify-tenant-token.mjs --all` (host-side, in the deployment dir). One section per tenant; `--check` exits non-zero when any is short a grant. See [Checking a tenant's GitHub token](#checking-a-tenants-github-token).                                                                                                    |
+| See what the deployment is doing  | `phoebe status`, either side of the container wall (see below). It reads the deployment report: the bootstrapper line, the fleet with two lines per pipeline, and doctor in one line. `--json` prints the report file verbatim, `--check` exits 1 when something needs a look. `phoebe list` is a deprecated alias for its fleet section. |
 
 **Reading `phoebe status`.** One verb answers "is it alive, and what is it
 doing", either side of the container wall. Inside the container it reads the
@@ -440,7 +434,6 @@ and you get the same answer either way:
 
 ```
 [phoebe] bootstrapper  engine main → a1b2c3d  slots 1/4  report 2m ago
-[phoebe] relay         relay.example  connected 5h
 [phoebe] fleet         2 tenant(s), 3 pipeline(s)  updated 2m ago
   children/widget  (acme/widget)
       ✓ config  ✓ env  ✓ data  arm: pat
@@ -459,8 +452,8 @@ Top to bottom is priority order: read down until something looks wrong and stop.
 The bootstrapper line names the engine ref and the commit actually running, says
 `quarantined (avoiding <sha>)` when the crash-loop guard has put the deployment
 on last-known-good, says `reconciling (config|ref)` while a relaunch is under
-way, and ends with the age of the report itself. The relay line appears only
-when this deployment has a relay. The doctor line is the last run's counts and
+way, and ends with the age of the report itself. The doctor line is the last
+run's counts and
 its age, or `never run`; `--verbose` inlines the whole doctor table under it.
 
 **Two lines per pipeline.** The first is the _process_: what the bootstrapper's

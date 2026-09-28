@@ -2,7 +2,7 @@
 //
 // Contracts:
 //   * Every refusal leaves the disk untouched and carries an instruction.
-//   * The closed set is refused by name: fleet declaration, engine pin, relay,
+//   * The closed set is refused by name: fleet declaration, engine pin,
 //     the host `deployment` block, work-kind code, derived `paths`, a leaf a
 //     PHOEBE_* variable already sets, and an env-only setting.
 //   * A non-literal target is refused rather than overwritten.
@@ -104,7 +104,6 @@ describe("editabilityOf", () => {
   test.each([
     ["workspace.tenants", "fleet declaration"],
     ["engine.ref", "phoebe upgrade"],
-    ["relay.name", "pairing"],
     ["deployment.startCommand", "lifecycle commands"],
     ["pipelines.work.kinds.issues", "code, not a literal"],
     ["paths.workDir", "derived"],

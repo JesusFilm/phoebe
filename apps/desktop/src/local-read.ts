@@ -18,7 +18,6 @@
 // Nothing in here spawns anything or touches a disk. The seams are the whole
 // interface, and the test drives them with neither Docker nor a clock.
 
-import { RELAY_EVENTS } from "phoebe-agent/contracts";
 import type {
   InstallDirectoryFacts,
   InstallState,
@@ -117,7 +116,7 @@ export function createLocalReads(deps: LocalReadDeps): LocalReads {
     }
     const directory = deps.directory(facts);
     const at = now().toISOString();
-    const base = { type: RELAY_EVENTS.report, install: dir, at, facts, directory } as const;
+    const base = { type: "report", install: dir, at, facts, directory } as const;
 
     if (facts.state !== "running") {
       rearm(dir, false);

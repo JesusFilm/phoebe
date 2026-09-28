@@ -51,8 +51,7 @@ module.exports = {
     { from: "../../prompts", to: "phoebe-agent/prompts" },
   ],
 
-  // The feed a build carries with it, and the one the companion overrides at
-  // check time when it is following a relay (src/update-feed.ts). `generic`
+  // The feed a build carries with it (src/update-feed.ts). `generic`
   // against GitHub's own redirect to the newest stable release, because the
   // `github` provider reads a tag as a version and this repo's tags are
   // `phoebe-agent@x.y.z`. Declaring a provider at all is also what makes

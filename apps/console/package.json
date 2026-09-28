@@ -1,7 +1,7 @@
 {
   "name": "@phoebe/console",
   "private": true,
-  "description": "The Phoebe console — the operator's view of every deployment, served by the relay and loaded from disk by the companion.",
+  "description": "The Phoebe console — the operator's view of every deployment, loaded from disk by the companion.",
   "type": "module",
   "scripts": {
     "build": "vp build",

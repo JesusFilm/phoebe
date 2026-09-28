@@ -25,9 +25,8 @@
 // notification is the renderer's (#524 §2); setting the badge is main's, from
 // the count this answers.
 
-import { DEPLOYMENT_SCHEMA, RELAY_EVENTS } from "phoebe-agent/contracts";
+import { DEPLOYMENT_SCHEMA } from "phoebe-agent/contracts";
 import type {
-  AlertBody,
   AlertMessage,
   ChildLiveness,
   DeploymentReport,
@@ -59,21 +58,13 @@ export type CompanionAlerts = {
    * which is almost all of them.
    */
   local: (event: LocalReportEvent) => LocalAlertEvent[];
-  /**
-   * One alert off the relay's stream. Main forwards it to the window either
-   * way; what this does is keep the badge's half of the picture, because the
-   * renderer cannot set a badge and main is not the one drawing the alert.
-   */
-  relay: (body: AlertBody) => void;
   /** Forget one install: a removed folder must not leave a count behind. */
   forgetInstall: (dir: string) => void;
-  /** Drop everything the relay contributed. What signing out means for a badge. */
-  forgetRelay: () => void;
   /** Deployments and local installs in any raised condition (#524 §4). */
   badge: () => number;
 };
 
-/** The state one subject accumulates. Two maps, so signing out drops one. */
+/** The conditions each subject has raised, by subject. */
 type Raised = Map<string, Set<string>>;
 
 export function createCompanionAlerts(options: CompanionAlertsOptions = {}): CompanionAlerts {
@@ -81,7 +72,6 @@ export function createCompanionAlerts(options: CompanionAlertsOptions = {}): Com
   /** Last notified per install, keyed by directory — the local `alerts.json`. */
   const notified = new Map<string, NotifiedAlerts>();
   const raisedLocal: Raised = new Map();
-  const raisedRelay: Raised = new Map();
 
   return {
     local(event) {
@@ -110,7 +100,7 @@ export function createCompanionAlerts(options: CompanionAlertsOptions = {}): Com
       notified.set(event.install, held);
       if (seeding) return [];
       return edges.map((edge) => ({
-        type: RELAY_EVENTS.alert,
+        type: "alert",
         install: event.install,
         at,
         alert: {
@@ -128,23 +118,12 @@ export function createCompanionAlerts(options: CompanionAlertsOptions = {}): Com
       }));
     },
 
-    relay(body) {
-      // The test button's probe is a message about the relay, not about any
-      // deployment, so it raises nothing and clears nothing.
-      if (body.kind !== "alert") return;
-      const key =
-        body.pipeline === undefined ? body.condition : `${body.condition}:${body.pipeline}`;
-      mark(raisedRelay, body.deployment.keyFingerprint, key, body.state);
-    },
-
     forgetInstall(dir) {
       notified.delete(dir);
       raisedLocal.delete(dir);
     },
 
-    forgetRelay: () => raisedRelay.clear(),
-
-    badge: () => raisedLocal.size + raisedRelay.size,
+    badge: () => raisedLocal.size,
   };
 }
 

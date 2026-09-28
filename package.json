@@ -17,8 +17,6 @@
   "files": [
     "bootstrap",
     "src",
-    "relay",
-    "console",
     "kinds",
     "prompts",
     "templates",
@@ -53,14 +51,9 @@
     "version-packages": "changeset version",
     "release": "changeset publish"
   },
-  "dependencies": {
-    "openid-client": "^6.8.8",
-    "ws": "^8.21.3"
-  },
   "devDependencies": {
     "@changesets/cli": "^2.31.1",
     "@types/node": "^24.0.0",
-    "@types/ws": "^8.18.1",
     "typescript": "^7.0.0",
     "vite-plus": "^0.3.0"
   },

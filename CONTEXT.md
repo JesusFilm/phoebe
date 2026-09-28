@@ -313,155 +313,22 @@ crash-loop quarantine, an operator command throwing. Never a tenant's failure an
 anything from the work loop.
 _Avoid_: telemetry, error tracking (that is what the `sentry` kind reads), analytics
 
-### Relay
-
-**Relay**:
-The self-hosted process deployments dial into and the console reads from; one per
-operator. Ships in `phoebe-agent` and runs as `phoebe relay serve`, in its own image
-beside the deployment, never inside it.
-_Avoid_: server, hub, gateway, backend
-
-**Allowlist**:
-Who may sign into a relay: a file of `{ sub, email }` on the relay's volume, seeded by
-the first verified Google login when it is empty, merged at every start with the
-addresses in `ALLOWED_EMAILS`. A person is keyed on Google's `sub`; the address is what
-an operator types.
-_Avoid_: whitelist, access list, users
-
-**Pairing token**:
-The single-use credential the console mints so one deployment can register its key.
-Fifteen minutes, shown once, held in the relay's memory and never on its volume; the
-operator puts it in the root `.env` as `PHOEBE_RELAY_TOKEN` and removes it once pairing
-is done.
-_Avoid_: API key, join code
-
-**Device token**:
-The opaque bearer a relay issues to a companion after Google sign-in, sent as
-`Authorization: Bearer` on every call main makes. Stored on the relay's volume as a
-SHA-256 hash in `devices.json`, so a restart keeps companions signed in. No expiry:
-revoking it from the People page is the only end it has.
-_Avoid_: API key, session token
-
-**Device**:
-One signed-in companion as the relay sees it, named by the machine's hostname and OS, and
-listed under the person who signed it in. Removing a person revokes all of theirs.
-_Avoid_: client, machine
-
-**Relay-client seam**:
-The console bundle's one interface to the relay, filled two ways: a browser's own origin,
-cookie and `EventSource`, or the desktop bridge, where main holds the device token and
-makes the calls. Nothing else in the bundle fetches.
-_Avoid_: API client, transport
-
-**Deployment key**:
-The two key pairs in one file on the data volume (`state/relay-key`) that are a
-deployment's identity to its relay: an Ed25519 key that signs and an X25519 **box key**
-that receives. Generated in the container at the first pairing, presented as their public
-halves, and one lifecycle — minted, saved and forgotten together.
-_Avoid_: device key, machine key
-
-**Box key**:
-The X25519 half of the deployment key, the thing a console encrypts a secret to. It
-exists because Ed25519 cannot encrypt; the handshake signature covers `nonce ‖ boxKey`,
-so the key secrets are sealed to is attested by the key that identifies the deployment.
-_Avoid_: public key (ambiguous), encryption key, recipient key
-
-**Secret envelope**:
-One secret sealed in the browser to a deployment's box key: ECIES from WebCrypto
-primitives, bound to `keyFingerprint ‖ tenant ‖ key ‖ editId` so it opens for that
-deployment, tenant, key name and edit and nothing else. The relay stores and forwards it
-and cannot open it.
-_Avoid_: payload, blob, ciphertext (that is one field of it)
-
-**Link**:
-The relay's record of a deployment — both public keys, name, first seen — in
-`links.json`. The
-other half of the link is the key on the deployment's own volume; neither half needs the
-other's process to be alive.
-_Avoid_: registration (the act, not the record), enrollment
-
-**Protocol**:
-The integer both sides exchange in the handshake. A relay speaks every protocol up to its
-own and refuses anything above it, so the rule is: upgrade the relay first.
-_Avoid_: version (that is the package)
-
-**Heartbeat**:
-The relay's twenty-second ping, and the visible message that rides with it. The relay
-counts the pong, the deployment counts the message, and neither side can do the other's
-job: a built-in WebSocket client pongs on its own and can neither send a ping nor see one.
-_Avoid_: keepalive, poll
-
-**Dark**:
-A deployment the relay has not heard from for sixty seconds, however the connection ended.
-Clocked from the later of the last heartbeat and the relay's start, so a restart does not
-paint a healthy fleet dark. Requests to a dark deployment are refused undelivered.
-_Avoid_: down, offline, unreachable (none of those is a thing the relay can know)
-
-**Disconnected**:
-The relay no longer holds this deployment's connection and the dark threshold has not
-passed yet. A fact with a duration — "disconnected 12 s" — that a console states rather
-than a fourth state it holds.
-_Avoid_: reconnecting (the relay cannot know that), offline
-
-**Unseen**:
-A link with no completed handshake behind it. Not dark: nobody has lost this deployment,
-it has never arrived.
-_Avoid_: pending, inactive
-
-**Event stream**:
-The one server-sent-events connection a console holds open, `GET /api/events`, carrying a
-deployment's report as it arrives and the word for each connection as it changes. No
-replay and no resume: every event has a read behind it that answers the same question in
-full, so a page that missed one refetches.
-_Avoid_: websocket (that is the fleet's side), feed, subscription
-
-**Undelivered**:
-The outcome of a request whose deployment socket closed before a receipt arrived, and of
-one aimed at a deployment the relay is not holding. In-flight requests are refused with
-it, never queued, and nothing is replayed on reconnect.
-_Avoid_: failed, timed out
-
-**Forget**:
-The relay-side verb that deletes a link. The live connection closes with `unlinked` and
-the deployment stops dialling.
-_Avoid_: revoke, delete, unpair
-
-**Leave**:
-The host-side verb, `phoebe relay leave`, that deletes the deployment key from the data
-volume. The other half of forget, and neither half needs the other to work.
-_Avoid_: unlink, disconnect
-
-**Sink**:
-Somewhere an alert goes. There are two: the generic webhook `RELAY_ALERT_WEBHOOK` names,
-and the `alert` event on the events stream. The webhook is optional and the event is not,
-so an unset variable means no webhook rather than no alerting.
-_Avoid_: channel, target, subscriber
-
 ### Console
 
 **Console**:
-The operator's view of every deployment's report: the web page a relay serves, and the
-same React bundle the companion loads from disk over a scheme of its own, so a page an
-operator sees is never written twice. `phoebe status` is that report read on the host, not
+The operator's view of every deployment's report: one React bundle the companion loads
+from disk over a scheme of its own. `phoebe status` is that report read on the host, not
 a second console. See [`docs/console.md`](docs/console.md).
 _Avoid_: dashboard, UI, web app, local console
 
-**Remote deployment**:
-A deployment an operator reaches only through a relay, because they have no shell on the
-machine it runs on. Not a kind of deployment — the same deployment, described by how it is
-being reached. "Remote workspace" in conversation means one of these running the workspace
-arm.
-_Avoid_: remote workspace, remote instance, hosted deployment
-
 **Companion**:
-The desktop app: installer and configurator for local installs, client of the relay for
-remote deployments. Two arms, one window.
+The desktop app: installer and configurator for local installs.
 _Avoid_: desktop console, dashboard, Phoebe app
 
 **Local install**:
 A repository folder on this machine the companion drives through Docker Compose. Its
-states are running, stopped and not initialised — the relay's dark and unseen are a remote
-reader's guesses about silence, and there is no silence here. A folder inside a WSL distro
+states are running, stopped and not initialised, answered by Compose directly. A folder
+inside a WSL distro
 is one too; the companion reaches its Docker through `wsl.exe`, so the distro's own
 containers are the ones it drives.
 _Avoid_: local deployment, local console, WSL workspace
@@ -485,29 +352,15 @@ the raise it is about rather than piling up beside it.
 _Avoid_: push (rejected on desktop, undecided on mobile), toast, banner
 
 **Badge**:
-The count on the companion's dock or taskbar icon: how many deployments and local installs
-are in a raised condition right now. Subjects, not edges — three wedged pipelines on one
-deployment are one. Zero clears it, and there is no tray item beside it.
+The count on the companion's dock or taskbar icon: how many local installs are in a raised
+condition right now. Subjects, not edges — three wedged pipelines on one install are one. Zero clears it, and there is no tray item beside it.
 _Avoid_: counter, indicator, unread count
 
 **Local read loop**:
 Main's per-install pair of clocks that produces deployment reports for a local install:
 Compose's event stream for the moment a container moves, and a `status --json` exec every
-15 s while it is up. What comes out is the relay's own `report` event, so a page renders
-either arm without knowing which it has.
+15 s while it is up. What comes out is a `report` event, which is all a page renders.
 _Avoid_: watcher, sync, poller
-
-**Console protocol**:
-The integer the relay's JSON and SSE API carries at `/api/version`. The relay serves every
-console protocol up to its own, so a companion above it says upgrade the relay first and
-asks for nothing else. Separate from the handshake's protocol: a console-only change must
-not move the deployment wire.
-_Avoid_: API version
-
-**Follows the relay**:
-The companion's update rule. Signed in, the only update it is ever offered is the relay's
-own version, so there is one source of truth about what this relay can serve.
-_Avoid_: pinned, tracking
 
 **Secret writer**:
 Which of the two places a local `secret set` puts a value: through the running container
@@ -523,9 +376,8 @@ secret value, and nothing else today. Never persisted, never logged, and never e
 _Avoid_: parameter, payload, input
 
 **Alert**:
-A message the relay sends out when a deployment or one of its pipelines crosses into or
-out of a named condition: `dark`, `wedged`, `crash-looping`, `doctor-fail`, `replaced`.
-Every raise has a matching clear, unseen is silent, and the edge rule that decides is one
-pure function both the relay and the companion run. It is a transition, never a record —
-`alerts.json` holds the last state notified per (deployment, condition) and nothing else.
-_Avoid_: notification (the events stream already notifies the browser), incident, page
+What the companion raises when a local install or one of its pipelines crosses into or out
+of a named condition: `wedged`, `crash-looping`, `doctor-fail`. Every raise has a matching
+clear, and the edge rule that decides is one pure function. It is a transition, never a
+record.
+_Avoid_: incident, page

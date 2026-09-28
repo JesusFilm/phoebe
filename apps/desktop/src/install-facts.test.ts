@@ -68,8 +68,6 @@ describe("what Compose says", () => {
     expect(facts).toEqual({
       ...STORED,
       name: "youtube-studio",
-      deploymentName: "youtube-studio",
-      relayUrl: null,
       state: "running",
       containerVersion: null,
     });
@@ -169,8 +167,6 @@ describe("what the folder says with no container", () => {
     name: "youtube-studio",
     addedAt: STORED.addedAt,
     state: "running" as const,
-    deploymentName: "youtube-studio",
-    relayUrl: null,
     containerVersion: null,
   };
 
@@ -266,84 +262,6 @@ describe("what the folder says with no container", () => {
   });
 });
 
-describe("what the root config says", () => {
-  const CONFIG = path.join(DIR, "phoebe.config.ts");
-
-  /** A folder whose config holds `extra` inside the config object. */
-  function withConfig(extra: string): { read: (file: string) => string } {
-    return {
-      read: (file) => {
-        if (file !== CONFIG) throw new Error(`nothing reads ${file}`);
-        return `const config = {\n  repoSlug: "jesusfilm/youtube-studio",${extra}\n};\nexport default config;\n`;
-      },
-    };
-  }
-
-  test("a config with no relay block dials nothing", async () => {
-    const facts = await installFacts(STORED, {
-      exists: INITIALISED,
-      dockerPresent: false,
-      ...withConfig(""),
-    });
-
-    expect(facts.relayUrl).toBeNull();
-  });
-
-  test("the relay block's url is the relay this install dials", async () => {
-    const facts = await installFacts(STORED, {
-      exists: INITIALISED,
-      dockerPresent: false,
-      ...withConfig(`\n  relay: { url: "wss://relay.example.test/deployments" },`),
-    });
-
-    expect(facts.relayUrl).toBe("wss://relay.example.test/deployments");
-  });
-
-  test("with no relay name, the deployment answers to its repoSlug", async () => {
-    const facts = await installFacts(STORED, {
-      exists: INITIALISED,
-      dockerPresent: false,
-      ...withConfig(""),
-    });
-
-    expect(facts.deploymentName).toBe("jesusfilm/youtube-studio");
-    // Beside the folder's own name, not instead of it — the rail draws one and
-    // the relay's rows are matched on the other.
-    expect(facts.name).toBe("youtube-studio");
-  });
-
-  test("`relay.name` wins, because that is what the deployment tells the relay", async () => {
-    const facts = await installFacts(STORED, {
-      exists: INITIALISED,
-      dockerPresent: false,
-      ...withConfig(`\n  relay: { url: "wss://r.test/deployments", name: "the-fleet" },`),
-    });
-
-    expect(facts.deploymentName).toBe("the-fleet");
-  });
-
-  test("a config that will not parse is read as a config with nothing in it", async () => {
-    const facts = await installFacts(STORED, {
-      exists: INITIALISED,
-      dockerPresent: false,
-      read: () => "const config = {",
-    });
-
-    expect(facts.relayUrl).toBeNull();
-    expect(facts.deploymentName).toBe("youtube-studio");
-    // And the install itself is still readable: a broken config is not a reason
-    // for the rail to lose the entry.
-    expect(facts.state).toBe("stopped");
-  });
-
-  test("a folder with no config yet answers with its own name", async () => {
-    const facts = await installFacts(STORED, { exists: folder() });
-
-    expect(facts.deploymentName).toBe("youtube-studio");
-    expect(facts.relayUrl).toBeNull();
-  });
-});
-
 describe("which phoebe-agent the container is on", () => {
   test("is the Dockerfile's pin — what the image is built from, and what upgrade moves", async () => {
     const facts = await installFacts(STORED, {
@@ -413,7 +331,7 @@ describe("a repo that is a workspace child at its root and a deployment in .phoe
   // Two configs: the tenant entry at the root, and the deployment's own below.
   const configs = (file: string): string =>
     file === path.join(DIR, ".phoebe", "phoebe.config.ts")
-      ? 'const config = {\n  repoSlug: "acme/solo",\n  relay: { url: "wss://relay.acme/deployments" },\n};\nexport default config;\n'
+      ? 'const config = {\n  repoSlug: "acme/solo",\n};\nexport default config;\n'
       : 'const config = {\n  repoSlug: "acme/child",\n};\nexport default config;\n';
 
   test("is driven from .phoebe/, and says so", async () => {
@@ -440,24 +358,11 @@ describe("a repo that is a workspace child at its root and a deployment in .phoe
     expect(seen[0]?.cwd).toBe(path.join(path.resolve(DIR), ".phoebe", "container"));
   });
 
-  test("its name and relay are the deployment's, not the tenant entry's", async () => {
-    const facts = await installFacts(STORED, {
-      exists: NESTED,
-      read: configs,
-      dockerPresent: false,
-    });
-
-    expect(facts.deploymentName).toBe("acme/solo");
-    expect(facts.relayUrl).toBe("wss://relay.acme/deployments");
-  });
-
   test("the directory facts read the deployment's config and .env", () => {
     const facts = directoryFacts(
       {
         dir: DIR,
         name: "youtube-studio",
-        deploymentName: "acme/solo",
-        relayUrl: null,
         addedAt: STORED.addedAt,
         state: "stopped",
         containerVersion: null,

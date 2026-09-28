@@ -5,7 +5,6 @@ export default defineConfig({
     include: [
       "src/**/*.test.ts",
       "bootstrap/**/*.test.ts",
-      "relay/**/*.test.ts",
       "kinds/**/*.test.ts",
       "scripts/**/*.test.ts",
     ],

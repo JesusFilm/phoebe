@@ -1,10 +1,7 @@
-// The local arm, as the page holds it (#555).
+// The installs on this machine, as the page holds them (#555).
 //
-// The console bundle has two arms and one shape for each. The relay's arm is a
-// fleet of deployments with connection verdicts on them (fleet-state.ts); this
-// one is the installs on this machine, whose states Compose answers directly.
-// No dark, no unseen, no "maybe replaced" — those are a remote reader's guesses
-// about silence, and there is no silence here.
+// Their states are Compose's to answer, directly: running, stopped, not
+// initialised. There is no silence to read a verdict out of.
 //
 // What lives in this module is the part with no React in it: the words the rail
 // puts under a name, the reducers a run's events drive, and the one line an
@@ -171,8 +168,6 @@ export function outcomeReading(outcome: VerbOutcome): string {
       return receiptReading(outcome.outcome);
     case "secret set":
       return secretSetReading(outcome.outcome);
-    case "pair":
-      return pairOutcomeReading(outcome.outcome);
   }
 }
 
@@ -276,14 +271,6 @@ function doctorReading({ checks }: OutcomeOf<"doctor">): string {
   return warned > 0 ? `${warned} check(s) warned` : "every check passed";
 }
 
-function pairOutcomeReading(outcome: OutcomeOf<"pair">): string {
-  const moved = outcome.movedRelay ? ", moved off the relay it named before" : "";
-  return (
-    `paired as ${outcome.deploymentName} with ${outcome.relayUrl}${moved} — the token is ` +
-    `spendable until ${outcome.expiresAt}`
-  );
-}
-
 /**
  * What the install tab says about Docker (#522 §2, #527 §15).
  *
@@ -309,92 +296,6 @@ export function dockerReading(environment: CompanionEnvironment | null): DockerR
     kind: "ready",
     text: `Docker is running${compose} · companion ${environment.companionVersion} on ${environment.platform}`,
   };
-}
-
-/**
- * Which local installs are the relay rows the console is already drawing, and
- * which rows those are (#526, #558).
- *
- * A paired install is **one** thing on two arms: a folder this machine drives
- * through Compose, and a deployment that dials a relay. The rail shows it once,
- * under This machine, because local is the richer arm — the verbs and the
- * direct writes are there — and the Relay group drops the row it would
- * otherwise draw beside it.
- *
- * The join is the deployment's name on the relay it dials. `deploymentName` is
- * what the deployment tells the relay it is called (#505 §3), read off the same
- * config the deployment reads; the host of `relayUrl` is what says the two are
- * talking about the same relay at all. Hosts rather than whole URLs, because a
- * deployment dials `wss://host/deployments` and an operator signs in at
- * `https://host` — the same relay, spelled for two different protocols.
- *
- * Names are not unique on a relay (#505 §5), so two installs dialling one relay
- * under one name would both claim its row. That is a fleet with two deployments
- * answering to one name, which the relay itself cannot tell apart either; the
- * fix is a `relay.name` on one of them, and the rail saying so is better than
- * the rail hiding it.
- */
-export function pairedInstalls(
-  installs: readonly LocalInstall[],
-  facts: readonly { row: { fingerprint: string; name: string } }[],
-  relayUrl: string | null,
-): Map<string, string> {
-  const paired = new Map<string, string>();
-  for (const install of installs) {
-    if (!sameRelay(install.relayUrl, relayUrl)) continue;
-    const row = facts.find((candidate) => candidate.row.name === install.deploymentName);
-    if (row !== undefined) paired.set(install.dir, row.row.fingerprint);
-  }
-  return paired;
-}
-
-/**
- * Do these two addresses name one relay? Compared by host: the deployment's is
- * a `wss://` URL with the deployments path on it and the console's is the
- * `https://` address a person signed in at, and demanding they match as strings
- * would mean no install ever looked paired.
- */
-export function sameRelay(dialled: string | null, relay: string | null): boolean {
-  if (dialled === null || relay === null) return false;
-  try {
-    return new URL(dialled).host === new URL(relay).host;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Whether this install can be paired, and what to say when it cannot (#558).
- *
- * Two refusals, both of them states rather than failures: a companion with no
- * relay session has nothing to mint a token on, and a container that is not up
- * is not going to spend one. Each is a sentence on a disabled button, because
- * an operator who presses Pair and gets an error has learnt the same thing one
- * step later.
- */
-export type PairReading =
-  | { kind: "paired" }
-  | { kind: "ready" }
-  | { kind: "blocked"; reason: string };
-
-export function pairReading(
-  install: LocalInstall,
-  arm: { signedIn: boolean; paired: boolean },
-): PairReading {
-  if (arm.paired) return { kind: "paired" };
-  if (!arm.signedIn) {
-    return {
-      kind: "blocked",
-      reason: "Sign in to a relay on the rail first — pairing mints a token on it.",
-    };
-  }
-  if (install.state !== "running") {
-    return {
-      kind: "blocked",
-      reason: "Start this install first — pairing writes a token its next boot spends.",
-    };
-  }
-  return { kind: "ready" };
 }
 
 /**
@@ -553,10 +454,8 @@ export function workspaceChildren(
 /**
  * What the overview's connection card says about a local install.
  *
- * The card is the one place on the five tabs where the arm shows, and it has to:
- * "connected for 3 h" under a fingerprint means something different from a
- * container on this machine that the window can start and stop. Everything below
- * the card renders the report and never asks where it came from.
+ * The card says how the facts on the page got here. Everything below it renders
+ * the report and never asks where it came from.
  */
 export function localConnection(install: LocalInstall): ConnectionCard {
   const state =
@@ -568,7 +467,7 @@ export function localConnection(install: LocalInstall): ConnectionCard {
   return {
     arm: "Local install",
     detail: install.dir,
-    note: `Read over the desktop bridge: the companion asks this machine's Docker directly, so ${state}. No relay is involved and nothing listens on a port.`,
+    note: `Read over the desktop bridge: the companion asks this machine's Docker directly, so ${state}. Nothing listens on a port.`,
   };
 }
 
@@ -594,8 +493,7 @@ export function renderableReport(
  *
  * A not-initialised folder lands on install, because that is where the button
  * that initialises it is and the rest of the page is empty (#526). A stopped one
- * lands on config, the only tab it can fill. A running one lands on overview,
- * like a remote deployment.
+ * lands on config, the only tab it can fill. A running one lands on overview.
  */
 export function landingTab(install: LocalInstall): DeploymentTab | "install" {
   if (install.state === "not-initialised") return "install";
