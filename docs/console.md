@@ -35,7 +35,8 @@ initialised. Compose answers directly, so there is nothing to infer from silence
 
 A **rail** runs down the left with every install on it, always, whatever page you
 are on, because "is everything alive" is the question this thing exists to
-answer. A workspace opens out to its children.
+answer. A workspace opens out to its children, and each child's gear opens that
+tenant's own config.
 
 ## What the console shows
 

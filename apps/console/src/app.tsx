@@ -30,6 +30,7 @@ import { routeCrumbs, type Crumbs } from "./crumbs.ts";
 import { SettingsPage } from "./settings-page.tsx";
 import { hostOfProcessPlatform } from "./host-icon.tsx";
 import { InstallPage } from "./install-page.tsx";
+import { TenantPage } from "./tenant-page.tsx";
 import type { InstallAction, RailChild } from "./local-install.ts";
 import {
   busyInstalls,
@@ -59,7 +60,9 @@ export function App({
   // Which of an install's two views is up: the console the rail opens
   // (console-view.tsx), or the tabbed page behind its gear (install-page.tsx).
   // A workspace child opens the console on its own lines.
-  const [openView, setOpenView] = useState<"console" | "settings">("console");
+  const [openView, setOpenView] = useState<"console" | "settings" | "tenant">("console");
+  // The tenant whose config is open, by folder (tenant-page.tsx).
+  const [openChild, setOpenChild] = useState<string | null>(null);
   const [openTenant, setOpenTenant] = useState<string | null>(null);
   // Default on (#524 §8), and read back off `companion.json` the moment main
   // answers. A browser never asks — there is nothing there to notify with.
@@ -342,6 +345,7 @@ export function App({
         surface={surface}
         installs={installs}
         selected={openInstall}
+        selectedChild={openView === "tenant" ? openChild : null}
         onSelect={(dir) => {
           setOpenView("console");
           setOpenTenant(null);
@@ -383,6 +387,13 @@ export function App({
                 setOpenTenant(child.slug);
                 setOpenInstall(dir);
               },
+              // A child's gear is that tenant's own config.
+              onChildSettings: (dir: string, child: RailChild) => {
+                setOpenView("tenant");
+                setOpenChild(child.dir);
+                setOpenTenant(null);
+                setOpenInstall(dir);
+              },
               // The rail's shortcuts. The page opens first so the run's lines
               // have somewhere to land; a refusal (`busy`, most likely) is
               // the page's to show from the run it reads on mount.
@@ -402,6 +413,10 @@ export function App({
             open,
             view: openView,
             tenant: openTenant,
+            child:
+              open?.workspace?.children
+                .filter((child) => child.dir === openChild)
+                .map((child) => child.slug ?? child.name)[0] ?? null,
           })}
         />
         {open !== null && bridge !== null && openView === "console" ? (
@@ -420,11 +435,24 @@ export function App({
             theme={consoleTheme}
             onSettings={() => setOpenView("settings")}
           />
+        ) : open !== null && bridge !== null && openView === "tenant" && openChild !== null ? (
+          <TenantPage
+            key={`${open.dir}#${openChild}`}
+            install={open}
+            tenant={openChild}
+            bridge={bridge}
+            report={reports[open.dir] ?? null}
+            onWorkspace={() => setOpenView("settings")}
+          />
         ) : open !== null && bridge !== null ? (
           <InstallPage
             key={open.dir}
             install={open}
             bridge={bridge}
+            onTenant={(dir) => {
+              setOpenChild(dir);
+              setOpenView("tenant");
+            }}
             onConsole={() => {
               setOpenTenant(null);
               setOpenView("console");

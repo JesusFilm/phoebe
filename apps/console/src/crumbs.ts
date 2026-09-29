@@ -17,12 +17,15 @@ export function routeCrumbs(input: {
   /** The local install whose page is open, if one is. */
   open: LocalInstall | null;
   /** Which of the open install's views is up. */
-  view: "console" | "settings";
+  view: "console" | "settings" | "tenant";
   /** A workspace child the console was opened on, by slug. */
   tenant: string | null;
+  /** The tenant whose config is open, by what the rail calls it. */
+  child?: string | null;
 }): Crumbs {
-  const { route, open, view, tenant } = input;
+  const { route, open, view, tenant, child } = input;
   if (open !== null) {
+    if (view === "tenant") return ["This machine", open.name, child ?? "tenant", "Config"];
     if (view === "settings") return ["This machine", open.name, "Settings"];
     return ["This machine", open.name, tenant === null ? "Console" : tenant.split("/").pop()!];
   }

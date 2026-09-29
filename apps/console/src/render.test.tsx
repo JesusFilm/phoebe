@@ -11,6 +11,7 @@ import type { CompanionUpdate } from "phoebe-agent/contracts";
 import { Rail } from "./rail.tsx";
 import { ConsoleView } from "./console-view.tsx";
 import { ConfigEditForm, InstallPage, InstallTab } from "./install-page.tsx";
+import { TenantPage } from "./tenant-page.tsx";
 import { ReceiptPanel } from "./deployment-tabs.tsx";
 import {
   ago,
@@ -185,6 +186,46 @@ describe("the installs on the rail", () => {
     expect(opened).toMatch(
       /class="mark idle"[^>]*><\/span><span class="label">b<\/span><span class="word">not in the fleet/,
     );
+  });
+
+  test("each child carries a gear onto its own config, and the open one is marked", () => {
+    const workspace = install({
+      dir: "/repos/ws",
+      name: "ws",
+      workspace: {
+        children: [
+          { dir: "/repos/ws/a", name: "a", slug: "acme/a" },
+          { dir: "/repos/ws/b", name: "b", slug: null },
+        ],
+      },
+    });
+    const rail = renderToStaticMarkup(
+      <Rail
+        surface="companion"
+        installs={[workspace]}
+        selected="/repos/ws"
+        selectedChild="/repos/ws/b"
+        defaultExpanded={new Set(["/repos/ws"])}
+        onChild={() => undefined}
+        onChildSettings={() => undefined}
+      />,
+    );
+
+    expect(rail).toContain('aria-label="Config of acme/a"');
+    expect(rail).toContain('aria-label="Config of b"');
+    expect(rail.match(/class="rail-child-row current"/g)).toHaveLength(1);
+    expect(rail).toMatch(/class="rail-child-row current"><button[^>]*title="\/repos\/ws\/b"/);
+
+    // Without a page to open there is no gear on a child.
+    const bare = renderToStaticMarkup(
+      <Rail
+        surface="companion"
+        installs={[workspace]}
+        defaultExpanded={new Set(["/repos/ws"])}
+        onChild={() => undefined}
+      />,
+    );
+    expect(bare).not.toContain("Config of");
   });
 
   test("gives the three states three marks, and no verdict read out of silence", () => {
@@ -422,7 +463,7 @@ describe("a local install's page", () => {
     expect(markup).not.toContain("Go to the install tab");
   });
 
-  test("a workspace's config tab carries a config space per tenant, each with its own edit form", () => {
+  test("a workspace's config tab lists its tenants, each the way to a page of its own", () => {
     const markup = page(
       {
         state: "stopped",
@@ -455,12 +496,14 @@ describe("a local install's page", () => {
 
     expect(markup).toContain('aria-label="Tenants"');
     expect(markup).toContain('<span class="tenant-label">acme/a</span>');
-    expect(markup).toContain("repoSlug: &quot;acme/a&quot;");
-    expect(markup).toContain("<h2>Change one field in acme/a</h2>");
+    expect(markup).toContain('title="Open the config of acme/a"');
+    // A tenant's config is its own page's, so none of it is drawn here.
+    expect(markup).not.toContain("repoSlug: &quot;acme/a&quot;");
+    expect(markup).not.toContain("Change one field in");
     // The child with no config is listed and says so rather than being dropped.
     expect(markup).toContain('<span class="tenant-label">b</span>');
-    expect(markup).toContain("in this folder");
-    // The root keeps its own form above them.
+    expect(markup).toContain("no phoebe.config.ts in /repos/ws/b");
+    // The root keeps its own config above them.
     expect(markup.indexOf("<h2>Change one field</h2>")).toBeLessThan(
       markup.indexOf('aria-label="Tenants"'),
     );
@@ -609,6 +652,98 @@ describe("the two local writes on screen (#557)", () => {
     expect(markup).toContain("checkCommand");
     expect(markup).toContain("pnpm run check");
     expect(markup).toContain("reconciles onto it");
+  });
+});
+
+describe("a tenant's own config page", () => {
+  const workspace = install({
+    dir: "/repos/ws",
+    name: "ws",
+    state: "stopped",
+    workspace: {
+      children: [
+        { dir: "/repos/ws/a", name: "a", slug: "acme/a" },
+        { dir: "/repos/ws/b", name: "b", slug: null },
+      ],
+    },
+  });
+  const event = localReport({
+    facts: workspace,
+    directory: directory({
+      bootstrapperRunning: false,
+      tenants: [
+        {
+          dir: "/repos/ws/a",
+          name: "a",
+          slug: "acme/a",
+          configPath: "/repos/ws/a/phoebe.config.ts",
+          configText: 'export default defineConfig({ repoSlug: "acme/a" })\n',
+          configFingerprint: "sha256:aa",
+          configFields: [
+            {
+              path: "repoSlug",
+              scope: "tenant",
+              env: "PHOEBE_REPO_SLUG",
+              type: "string",
+              state: "set",
+              value: "acme/a",
+            },
+          ],
+        },
+        {
+          dir: "/repos/ws/b",
+          name: "b",
+          slug: null,
+          configPath: "/repos/ws/b/phoebe.config.ts",
+          configText: null,
+          configFingerprint: null,
+        },
+      ],
+    }),
+  });
+
+  function page(tenant: string, report: typeof event | null = event) {
+    return renderToStaticMarkup(
+      <TenantPage
+        install={workspace}
+        tenant={tenant}
+        bridge={bridge()}
+        report={report}
+        onWorkspace={() => undefined}
+      />,
+    );
+  }
+
+  test("is headed by the tenant, says whose it is, and carries the way back", () => {
+    const markup = page("/repos/ws/a");
+
+    expect(markup).toContain("<h1>acme/a</h1>");
+    expect(markup).toContain("A tenant of <strong>ws</strong>");
+    expect(markup).toContain('title="The config of ws"');
+  });
+
+  test("opens on the tenant's form, over its file and no other", () => {
+    const markup = page("/repos/ws/a");
+
+    expect(markup).toContain("/repos/ws/a/phoebe.config.ts");
+    expect(markup).toContain('aria-label="Repository in acme/a"');
+    expect(markup).toMatch(/aria-label="repoSlug"[^>]*value="acme\/a"/);
+    // None of the workspace's own page comes along.
+    expect(markup).not.toContain('aria-label="This project"');
+    expect(markup).not.toContain('class="tabs"');
+  });
+
+  test("a child with no config says which file is missing", () => {
+    const markup = page("/repos/ws/b");
+
+    expect(markup).toContain("<h1>b</h1>");
+    expect(markup).toContain("/repos/ws/b/phoebe.config.ts");
+    expect(markup).not.toContain("config-space");
+  });
+
+  test("before the first read it is reading, and a folder that is no child says so", () => {
+    expect(page("/repos/ws/a", null)).toContain("Reading the config");
+    expect(page("/repos/elsewhere")).toContain("This workspace has no such tenant.");
   });
 });
 
