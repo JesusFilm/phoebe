@@ -59,6 +59,7 @@ import { SettingsPage } from "./settings-page.tsx";
 import { hostOfProcessPlatform } from "./host-icon.tsx";
 import { InstallPage } from "./install-page.tsx";
 import { pairedInstalls, type InstallAction, type RailChild } from "./local-install.ts";
+import { TenantPage } from "./tenant-page.tsx";
 import {
   busyInstalls,
   NO_ACTIVITY,
@@ -232,7 +233,9 @@ function Console({
   // Which of an install's two views is up: the console the rail opens
   // (console-view.tsx), or the tabbed page behind its gear (install-page.tsx).
   // A workspace child opens the console on its own lines.
-  const [openView, setOpenView] = useState<"console" | "settings">("console");
+  const [openView, setOpenView] = useState<"console" | "settings" | "tenant">("console");
+  // The tenant whose config is open, by folder (tenant-page.tsx).
+  const [openChild, setOpenChild] = useState<string | null>(null);
   const [openTenant, setOpenTenant] = useState<string | null>(null);
   const [relayUrl, setRelayUrl] = useState<string | null>(null);
   // Default on (#524 §8), and read back off `companion.json` the moment main
@@ -605,6 +608,7 @@ function Console({
         selectedDeployment={
           openInstall === null && route.page === "deployment" ? route.fingerprint : null
         }
+        selectedChild={openView === "tenant" ? openChild : null}
         onSelect={(dir) => {
           setOpenView("console");
           setOpenTenant(null);
@@ -646,6 +650,13 @@ function Console({
                 setOpenTenant(child.slug);
                 setOpenInstall(dir);
               },
+              // A child's gear is that tenant's own config.
+              onChildSettings: (dir: string, child: RailChild) => {
+                setOpenView("tenant");
+                setOpenChild(child.dir);
+                setOpenTenant(null);
+                setOpenInstall(dir);
+              },
               // The rail's shortcuts. The page opens first so the run's lines
               // have somewhere to land; a refusal (`busy`, most likely) is
               // the page's to show from the run it reads on mount.
@@ -669,6 +680,10 @@ function Console({
             tenant: openTenant,
             facts,
             signedIn: identity !== null,
+            child:
+              open?.workspace?.children
+                .filter((child) => child.dir === openChild)
+                .map((child) => child.slug ?? child.name)[0] ?? null,
           })}
           identity={identity}
           onSignOut={() => void client.signOut().then(onSignedOut, onSignedOut)}
@@ -689,11 +704,24 @@ function Console({
             theme={consoleTheme}
             onSettings={() => setOpenView("settings")}
           />
+        ) : open !== null && bridge !== null && openView === "tenant" && openChild !== null ? (
+          <TenantPage
+            key={`${open.dir}#${openChild}`}
+            install={open}
+            tenant={openChild}
+            bridge={bridge}
+            report={reports[open.dir] ?? null}
+            onWorkspace={() => setOpenView("settings")}
+          />
         ) : open !== null && bridge !== null ? (
           <InstallPage
             key={open.dir}
             install={open}
             bridge={bridge}
+            onTenant={(dir) => {
+              setOpenChild(dir);
+              setOpenView("tenant");
+            }}
             onConsole={() => {
               setOpenTenant(null);
               setOpenView("console");

@@ -57,8 +57,6 @@ import type {
 } from "phoebe-agent/contracts";
 import { DeploymentTabPanel, ReceiptPanel } from "./deployment-tabs.tsx";
 import {
-  applyRunExit,
-  applyRunLine,
   configSetRequest,
   dockerReading,
   landingTab,
@@ -76,12 +74,13 @@ import {
   secretWriterReading,
   versionReading,
 } from "./local-install.ts";
-import { TerminalSquare } from "lucide-react";
+import { ChevronRight, TerminalSquare } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { ConfigSpace } from "./config-form.tsx";
 import { ProjectSettings } from "./project-settings.tsx";
 import { readReport } from "./report.ts";
 import { DEPLOYMENT_TABS, tabHasContent, type ConfigReading, type DeploymentTab } from "./tabs.ts";
+import { receiptOfRun, useInstallRun } from "./verb-run.ts";
 
 export function InstallPage({
   install,
@@ -91,6 +90,7 @@ export function InstallPage({
   signedIn,
   paired,
   onConsole,
+  onTenant,
   onUpdate,
   onForget,
 }: {
@@ -105,41 +105,15 @@ export function InstallPage({
   paired: boolean;
   /** Back to the console (console-view.tsx), the view the rail opens. */
   onConsole?: () => void;
+  /** Open one tenant's own config (tenant-page.tsx). Without it the list is not links. */
+  onTenant?: (dir: string) => void;
   /** Save a change to the install's own settings (project-settings.tsx). */
   onUpdate: (dir: string, patch: InstallPatch) => Promise<void>;
   onForget: (dir: string) => void;
 }) {
   const [tab, setTab] = useState<DeploymentTab | "install">(() => landingTab(install));
   const [environment, setEnvironment] = useState<CompanionEnvironment | null>(null);
-  const [run, setRun] = useState<VerbRun | null>(null);
-  const [trouble, setTrouble] = useState<string | null>(null);
-  // The run is main's, so the page reads it rather than owning it. Reading on
-  // mount is what makes a reload rejoin a run in flight (#527 §13).
-  useEffect(() => {
-    let live = true;
-    bridge.runs.current(install.dir).then(
-      (current) => {
-        if (live) setRun(current);
-      },
-      () => undefined,
-    );
-    return () => {
-      live = false;
-    };
-  }, [bridge, install.dir]);
-
-  useEffect(() => {
-    const unsubscribeLines = bridge.runs.lines((line) => {
-      setRun((current) => applyRunLine(current, line));
-    });
-    const unsubscribeExits = bridge.runs.exits((exit) => {
-      setRun((current) => applyRunExit(current, exit));
-    });
-    return () => {
-      unsubscribeLines();
-      unsubscribeExits();
-    };
-  }, [bridge]);
+  const { run, running, trouble, start } = useInstallRun(bridge, install.dir);
 
   useEffect(() => {
     let live = true;
@@ -153,30 +127,6 @@ export function InstallPage({
       live = false;
     };
   }, [bridge, run?.exit]);
-
-  const running = run !== null && run.exit === undefined;
-
-  // Which child the last `config set` named, so its receipt lands under that
-  // child's form and not under the root's as well.
-  const [editedTenant, setEditedTenant] = useState<string | null>(null);
-  function start(request: VerbRunRequest): void {
-    setTrouble(null);
-    if (request.verb === "config set") setEditedTenant(request.tenant ?? null);
-    bridge.runs.start(request).then(
-      (runId) => {
-        // A fresh record rather than a refetch: the first lines may already be
-        // on their way, and applying them to a stale run would drop them.
-        setRun({
-          runId,
-          install: install.dir,
-          verb: request.verb,
-          startedAt: new Date().toISOString(),
-          lines: [],
-        });
-      },
-      (error: unknown) => setTrouble(refusalText(error)),
-    );
-  }
 
   // The rule the whole stopped-install decision hangs off: what may be drawn is
   // not what was last received.
@@ -290,7 +240,7 @@ export function InstallPage({
                         install={install}
                         config={config}
                         running={running}
-                        receipt={editedTenant === null ? receiptOfRun(run) : null}
+                        receipt={receiptOfRun(run, config.path)}
                         onStart={start}
                         label="the root config"
                         file={
@@ -298,19 +248,15 @@ export function InstallPage({
                             install={install}
                             config={config}
                             running={running}
-                            receipt={editedTenant === null ? receiptOfRun(run) : null}
+                            receipt={receiptOfRun(run, config.path)}
                             onStart={start}
                           />
                         }
                       />
                     )}
-                    <TenantConfigs
-                      install={install}
+                    <TenantList
                       tenants={tenants}
-                      running={running}
-                      receipt={receiptOfRun(run)}
-                      editedTenant={editedTenant}
-                      onStart={start}
+                      {...(onTenant === undefined ? {} : { onTenant })}
                     />
                   </>
                 ),
@@ -676,12 +622,6 @@ export function SecretSetForm({
   );
 }
 
-/** The last run's receipt, when the last run was a `config set` that finished. */
-function receiptOfRun(run: VerbRun | null): EditReceipt | null {
-  const outcome = run?.exit?.outcome;
-  return outcome?.verb === "config set" ? outcome.outcome : null;
-}
-
 /** The same, for `secret set`. */
 function secretOutcomeOfRun(run: VerbRun | null): SecretSetOutcome | null {
   const outcome = run?.exit?.outcome;
@@ -778,37 +718,16 @@ function RunOutput({ run, onCancel }: { run: VerbRun | null; onCancel: (runId: s
 }
 
 /**
- * A refusal's own words. Every bridge call rejects with `{ code, message,
- * instruction? }` (#527 §16), and the instruction is the thing the operator can
- * run by hand — so it goes on screen beside the message, not in a console log.
+ * A workspace's tenants, as somewhere to go. Each keeps its own config, which is
+ * a different file saying different things, so each has a page of its own
+ * (tenant-page.tsx) and this is the list of them.
  */
-function refusalText(error: unknown): string {
-  if (!(error instanceof Error)) return String(error);
-  const instruction = (error as { instruction?: string }).instruction;
-  return instruction === undefined ? error.message : `${error.message} — ${instruction}`;
-}
-
-/**
- * A workspace's tenants, each with its own config space under the root's: the
- * same form over its settings, and the file as the folder holds it behind it.
- * The receipt is shown under the tenant the last run named, not under all of
- * them.
- */
-function TenantConfigs({
-  install,
+function TenantList({
   tenants,
-  running,
-  receipt,
-  editedTenant,
-  onStart,
+  onTenant,
 }: {
-  install: LocalInstall;
   tenants: TenantConfigReading[];
-  running: boolean;
-  receipt: EditReceipt | null;
-  /** The child the last `config set` named, so its receipt lands under it alone. */
-  editedTenant: string | null;
-  onStart: (request: VerbRunRequest) => void;
+  onTenant?: (dir: string) => void;
 }) {
   if (tenants.length === 0) return null;
   return (
@@ -818,43 +737,27 @@ function TenantConfigs({
         Each child of this workspace keeps its own <code>phoebe.config.ts</code>. The root above
         names the fleet; these say what each member does.
       </p>
-      {tenants.map((tenant) => (
-        <details key={tenant.dir} className="tenant-config" open>
-          <summary>
-            <span className="tenant-label">{tenant.label}</span>
-            <span className="muted mono">{tenant.config.path}</span>
-          </summary>
-          {tenant.config.kind === "absent" ? (
-            <p className="muted">
-              No <code>phoebe.config.ts</code> in this folder.
-            </p>
-          ) : (
-            <>
-              <p className="muted">{tenant.config.fingerprint}</p>
-              <ConfigSpace
-                install={install}
-                config={tenant.config}
-                running={running}
-                receipt={editedTenant === tenant.dir ? receipt : null}
-                onStart={onStart}
-                tenant={tenant.dir}
-                label={tenant.label}
-                file={
-                  <ConfigEditForm
-                    install={install}
-                    config={tenant.config}
-                    running={running}
-                    receipt={editedTenant === tenant.dir ? receipt : null}
-                    onStart={onStart}
-                    tenant={tenant.dir}
-                    heading={`Change one field in ${tenant.label}`}
-                  />
-                }
-              />
-            </>
-          )}
-        </details>
-      ))}
+      <ul className="tenant-list">
+        {tenants.map((tenant) => (
+          <li key={tenant.dir}>
+            <button
+              type="button"
+              className="tenant-link"
+              disabled={onTenant === undefined}
+              title={`Open the config of ${tenant.label}`}
+              onClick={() => onTenant?.(tenant.dir)}
+            >
+              <span className="tenant-label">{tenant.label}</span>
+              <span className="muted mono">
+                {tenant.config.kind === "absent"
+                  ? `no phoebe.config.ts in ${tenant.dir}`
+                  : tenant.config.path}
+              </span>
+              <ChevronRight size={14} aria-hidden="true" />
+            </button>
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }

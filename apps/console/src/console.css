@@ -1649,26 +1649,82 @@ details.why > summary::marker {
   border-top: 1px solid var(--line);
 }
 
-.tenant-config {
-  margin-top: 12px;
-  padding: 10px 12px;
+/* The list of them: a row each, the whole row the way in. */
+.tenant-list {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
   border: 1px solid var(--line);
   border-radius: 8px;
+  background: var(--panel);
 }
 
-.tenant-config summary {
+.tenant-list li + li {
+  border-top: 1px solid var(--line);
+}
+
+.tenant-link {
   display: flex;
   align-items: baseline;
   gap: 12px;
+  width: 100%;
+  padding: 10px 16px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
   cursor: pointer;
 }
 
-.tenant-config .tenant-label {
+.tenant-link:hover:not(:disabled) {
+  background: var(--chip);
+}
+
+.tenant-link .tenant-label {
   font-weight: 600;
 }
 
-.tenant-config h2 {
-  font-size: 13px;
+.tenant-link .mono {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tenant-link svg {
+  flex: none;
+  align-self: center;
+  color: var(--muted);
+}
+
+/* The way back to the workspace, on a tenant's own page (tenant-page.tsx). */
+.tenant-back {
+  color: var(--muted);
+}
+
+/* A child's row on the rail: its name, and the gear onto its config. */
+.rail-child-row {
+  display: flex;
+  align-items: center;
+}
+
+.rail-child-row .rail-child {
+  flex: 1;
+  min-width: 0;
+  padding-right: 4px;
+}
+
+.rail-child-row .rail-gear {
+  flex: none;
+  margin-right: 8px;
+}
+
+.rail-child-row.current {
+  background: var(--chip);
 }
 
 /* ── one config: a form first, the file behind it (config-form.tsx) ─────── */

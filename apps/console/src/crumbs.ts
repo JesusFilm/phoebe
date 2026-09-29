@@ -18,16 +18,19 @@ export function routeCrumbs(input: {
   /** The local install whose page is open, if one is. */
   open: LocalInstall | null;
   /** Which of the open install's views is up. */
-  view: "console" | "settings";
+  view: "console" | "settings" | "tenant";
   /** A workspace child the console was opened on, by slug. */
   tenant: string | null;
   /** The relay's rows, for a deployment's name. */
   facts: readonly RowFacts[];
   /** Whether a relay session is held; without one the companion is on its home. */
   signedIn: boolean;
+  /** The tenant whose config is open, by what the rail calls it. */
+  child?: string | null;
 }): Crumbs {
-  const { surface, route, open, view, tenant, facts, signedIn } = input;
+  const { surface, route, open, view, tenant, facts, signedIn, child } = input;
   if (open !== null) {
+    if (view === "tenant") return ["This machine", open.name, child ?? "tenant", "Config"];
     if (view === "settings") return ["This machine", open.name, "Settings"];
     return ["This machine", open.name, tenant === null ? "Console" : tenant.split("/").pop()!];
   }

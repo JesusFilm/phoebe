@@ -41,6 +41,13 @@ describe("where the console is, for the pane's top line", () => {
     expect(routeCrumbs({ ...base, surface: "browser" })).toEqual(["Fleet"]);
   });
 
+  test("a tenant's config is under its workspace, by the name the rail gives it", () => {
+    const workspace = install({ name: "jesusfilm" });
+    expect(
+      routeCrumbs({ ...base, open: workspace, view: "tenant", child: "JesusFilm/phoebe" }),
+    ).toEqual(["This machine", "jesusfilm", "JesusFilm/phoebe", "Config"]);
+  });
+
   test("home when signed out or asked for, and settings by itself", () => {
     expect(routeCrumbs({ ...base, signedIn: false })).toEqual(["Home"]);
     expect(routeCrumbs({ ...base, route: { page: "add" } })).toEqual(["Home"]);

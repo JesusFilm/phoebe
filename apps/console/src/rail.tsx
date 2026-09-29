@@ -82,6 +82,7 @@ export function Rail({
   paired,
   selected = null,
   selectedDeployment = null,
+  selectedChild = null,
   update = null,
   busy,
   reports,
@@ -90,6 +91,7 @@ export function Rail({
   onSelect,
   onSettings,
   onChild,
+  onChildSettings,
   onAction,
   onAdd,
   onHome,
@@ -131,6 +133,10 @@ export function Rail({
   onSettings?: (dir: string) => void;
   /** A workspace child: the console on the child's lines. */
   onChild?: (dir: string, child: RailChild) => void;
+  /** The gear on a workspace child: that tenant's own config. */
+  onChildSettings?: (dir: string, child: RailChild) => void;
+  /** The tenant whose config is open, by folder. */
+  selectedChild?: string | null;
   /** The entry shortcuts. Absent in a browser, which has no local arm. */
   onAction?: (dir: string, action: InstallAction) => void;
   onAdd?: () => void;
@@ -225,6 +231,8 @@ export function Rail({
               {...(onSelect !== undefined ? { onSelect } : {})}
               {...(onSettings !== undefined ? { onSettings } : {})}
               {...(onChild !== undefined ? { onChild } : {})}
+              {...(onChildSettings !== undefined ? { onChildSettings } : {})}
+              selectedChild={install.dir === selected ? selectedChild : null}
               {...(onAction !== undefined ? { onAction } : {})}
             />
           ))
@@ -340,6 +348,8 @@ function InstallEntry({
   onSelect,
   onSettings,
   onChild,
+  onChildSettings,
+  selectedChild,
   onAction,
 }: {
   install: LocalInstall;
@@ -359,6 +369,10 @@ function InstallEntry({
   onSettings?: (dir: string) => void;
   /** A child row: the console on that child's lines. */
   onChild?: (dir: string, child: RailChild) => void;
+  /** A child's gear: that tenant's own config. */
+  onChildSettings?: (dir: string, child: RailChild) => void;
+  /** The child whose config is open, by folder. */
+  selectedChild: string | null;
   /** The shortcuts: start on a stopped install; pause, stop and restart on a running one. */
   onAction?: (dir: string, action: InstallAction) => void;
 }) {
@@ -459,7 +473,10 @@ function InstallEntry({
             <li className="rail-child muted">no children with a config yet</li>
           ) : (
             children.map((child) => (
-              <li key={child.dir}>
+              <li
+                key={child.dir}
+                className={`rail-child-row${child.dir === selectedChild ? " current" : ""}`}
+              >
                 <button
                   type="button"
                   className="rail-child"
@@ -470,6 +487,18 @@ function InstallEntry({
                   <span className="label">{child.label}</span>
                   {child.text === "" ? null : <span className="word">{child.text}</span>}
                 </button>
+                {onChildSettings === undefined ? null : (
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    className="rail-gear"
+                    title={`Config of ${child.label}`}
+                    aria-label={`Config of ${child.label}`}
+                    onClick={() => onChildSettings(install.dir, child)}
+                  >
+                    <Settings aria-hidden="true" />
+                  </Button>
+                )}
               </li>
             ))
           )}
