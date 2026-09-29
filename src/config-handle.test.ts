@@ -999,6 +999,8 @@ describe("editConfigSetRelayUrl", () => {
       ok: true,
       relay: { url: WSS, name: null },
     });
+  });
+});
 
 describe("editConfigGetFieldAt", () => {
   const content = MINIMAL(`
