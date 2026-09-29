@@ -1,13 +1,21 @@
 import { describe, expect, test } from "vite-plus/test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ConfigFieldFacts } from "phoebe-agent/contracts";
-import { ConfigSpace, landingConfigView, valueOfDraft } from "./config-form.tsx";
+import { ConfigSpace, configGroups, landingConfigView, valueOfDraft } from "./config-form.tsx";
 import { install } from "./test-fixture.ts";
 
 const FIELDS: ConfigFieldFacts[] = [
-  { path: "repoSlug", env: "PHOEBE_REPO_SLUG", type: "string", state: "set", value: "acme/a" },
+  {
+    path: "repoSlug",
+    scope: "tenant",
+    env: "PHOEBE_REPO_SLUG",
+    type: "string",
+    state: "set",
+    value: "acme/a",
+  },
   {
     path: "defaultBranch",
+    scope: "tenant",
     env: "PHOEBE_DEFAULT_BRANCH",
     type: "string",
     state: "unset",
@@ -15,6 +23,7 @@ const FIELDS: ConfigFieldFacts[] = [
   },
   {
     path: "prScope",
+    scope: "tenant",
     env: "PHOEBE_PR_SCOPE",
     type: "enum",
     values: ["phoebe", "all"],
@@ -23,10 +32,30 @@ const FIELDS: ConfigFieldFacts[] = [
   },
   {
     path: "checkCommand",
+    scope: "tenant",
     env: "PHOEBE_CHECK_COMMAND",
     type: "string",
     state: "computed",
     raw: "commands.check",
+  },
+];
+
+const ROOT: ConfigFieldFacts[] = [
+  {
+    path: "engine.ref",
+    scope: "deployment",
+    type: "string",
+    state: "set",
+    value: "main",
+    locked: "Moves with `phoebe upgrade`, so the new ref's migrations run with it.",
+  },
+  {
+    path: "reporting.maintainers",
+    scope: "deployment",
+    type: "boolean",
+    state: "set",
+    value: false,
+    default: false,
   },
 ];
 
@@ -58,7 +87,7 @@ describe("one config on the config tab", () => {
 
     expect(markup).toMatch(/class="config-view current" aria-pressed="true">Form</);
     expect(markup).toMatch(/class="config-view" aria-pressed="false">File</);
-    expect(markup).toContain('aria-label="Settings in the root config"');
+    expect(markup).toContain('aria-label="Repository in the root config"');
     // The file's text and the by-hand form are the other view's.
     expect(markup).not.toContain("defineConfig");
     expect(markup).not.toContain("by hand");
@@ -100,6 +129,38 @@ describe("one config on the config tab", () => {
     const markup = space();
     expect(markup).toContain("defineConfig");
     expect(markup).toContain("by hand");
+  });
+});
+
+describe("whose rows a config's form has", () => {
+  test("a workspace root has the deployment's rows and no tenant's, under no heading", () => {
+    const markup = space(ROOT);
+
+    expect(markup).toContain('aria-label="Deployment in the root config"');
+    expect(markup).not.toContain("config-group");
+    expect(markup).not.toContain("repoSlug");
+  });
+
+  test("a locked row says why, shows the value, and has nothing to save", () => {
+    const markup = space([ROOT[0]!]);
+
+    expect(markup).toContain("Moves with `phoebe upgrade`");
+    expect(markup).toMatch(/aria-label="engine.ref"[^>]*readonly=""[^>]*value="main"/i);
+    expect(markup).not.toContain(">Save<");
+  });
+
+  test("a row with no env name does not claim one outranks it", () => {
+    expect(space([ROOT[1]!])).not.toContain("outranks the file");
+  });
+
+  test("a solo install's config has both kinds, the deployment's first, each headed", () => {
+    const groups = configGroups([...FIELDS, ...ROOT]);
+
+    expect(groups.map((group) => [group.heading, group.alone, group.fields.length])).toEqual([
+      ["Deployment", false, 2],
+      ["Repository", false, 4],
+    ]);
+    expect(space([...FIELDS, ...ROOT])).toContain('<h3 class="config-group">Deployment</h3>');
   });
 });
 

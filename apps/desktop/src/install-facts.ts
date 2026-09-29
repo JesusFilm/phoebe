@@ -251,7 +251,7 @@ export function directoryFacts(
       configPath: childPath,
       configText: text,
       configFingerprint: text === null ? null : fingerprintOf(text),
-      ...(text === null ? {} : { configFields: configFieldsOf(text) }),
+      ...(text === null ? {} : { configFields: configFieldsOf(text, "tenant") }),
     };
   });
 
@@ -259,7 +259,14 @@ export function directoryFacts(
     configPath,
     configText,
     configFingerprint: configText === null ? null : fingerprintOf(configText),
-    ...(configText === null ? {} : { configFields: configFieldsOf(configText) }),
+    ...(configText === null
+      ? {}
+      : {
+          configFields: configFieldsOf(
+            configText,
+            install.workspace === undefined ? "solo" : "workspace",
+          ),
+        }),
     envPresent: exists(path.join(root, ".env")),
     bootstrapperRunning: install.state === "running",
     ...(install.workspace === undefined ? {} : { tenants }),
