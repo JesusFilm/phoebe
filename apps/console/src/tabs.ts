@@ -11,6 +11,8 @@
 // readable report has four empty tabs and one that still works, because config
 // is the one thing that can be read off the disk with nothing running (#526).
 
+import type { ConfigFieldFacts } from "phoebe-agent/contracts";
+
 /** In the order the tab strip draws them. */
 export const DEPLOYMENT_TABS = ["overview", "pipelines", "doctor", "secrets", "config"] as const;
 
@@ -34,7 +36,14 @@ export type ConnectionCard = {
 
 /** The config as the page can show it, from wherever this arm reads one. */
 export type ConfigReading =
-  | { kind: "file"; path: string; text: string; fingerprint: string }
+  | {
+      kind: "file";
+      path: string;
+      text: string;
+      fingerprint: string;
+      /** The settings a form can offer. Absent when the companion did not read them. */
+      fields?: ConfigFieldFacts[];
+    }
   | { kind: "absent"; path: string };
 
 /**

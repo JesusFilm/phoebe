@@ -160,6 +160,7 @@ export type { LogLine, LogsEnded } from "./container-logs.ts";
 export { CANCELLABLE_VERBS, MAX_RUN_LINES } from "./verb-run.ts";
 export type { RunExit, RunLine, VerbRun, VerbRunRequest } from "./verb-run.ts";
 export type {
+  ConfigFieldFacts,
   InstallDirectoryFacts,
   LocalReportEvent,
   StoredReport,

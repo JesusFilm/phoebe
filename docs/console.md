@@ -45,16 +45,16 @@ disk.
 Selecting an install opens its container's output. The gear beside it opens the
 install's own page: the install tab, and five more.
 
-| Tab           | What it answers                                                                                                   |
-| ------------- | ----------------------------------------------------------------------------------------------------------------- |
-| **Overview**  | The engine ref and running SHA, reconcile state, slots, every pipeline's two lines, held tenants.                 |
-| **Pipelines** | One row per pipeline: the process line, the state line, units in flight against their budgets, the wedged clause. |
-| **Doctor**    | The last run's checks with the trigger that produced them and how long ago.                                       |
-| **Secrets**   | Which keys each tenant reads, whether each is set, and where the value came from. Never a value.                  |
-| **Config**    | The root config as the folder holds it, a form that changes one field, and each tenant's config on a workspace.   |
+| Tab           | What it answers                                                                                                     |
+| ------------- | ------------------------------------------------------------------------------------------------------------------- |
+| **Overview**  | The engine ref and running SHA, reconcile state, slots, every pipeline's two lines, held tenants.                   |
+| **Pipelines** | One row per pipeline: the process line, the state line, units in flight against their budgets, the wedged clause.   |
+| **Doctor**    | The last run's checks with the trigger that produced them and how long ago.                                         |
+| **Secrets**   | Which keys each tenant reads, whether each is set, and where the value came from. Never a value.                    |
+| **Config**    | The root config as a form over its settings, the file itself one press behind it, and each tenant's on a workspace. |
 
-Two things write, and both write to this machine. The config form sends one
-`{ path, value }` patch against the fingerprint its page was drawn from, and the
+Two things write, and both write to this machine. Each row of the config form
+saves itself, as one `{ path, value }` patch against the fingerprint its page was drawn from, and the
 answer is `written` or `refused`, a refusal always carrying the exact manual
 edit. The secret form hands the value to the running container's tenant store,
 or to the deployment `.env` when nothing is running.

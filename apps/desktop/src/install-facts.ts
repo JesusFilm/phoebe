@@ -32,6 +32,7 @@ import {
 } from "../../../src/deployment-compose.ts";
 import { readDockerfilePin, type DockerfilePin } from "../../../src/upgrade.ts";
 import type { StoredInstall } from "./companion-file.ts";
+import { configFieldsOf } from "./config-fields.ts";
 import { deploymentDirOf } from "./deployment-dir.ts";
 import { workspaceBlockOf, workspaceChildren } from "./workspace-children.ts";
 import { wslLocationOf, wslRunner } from "./wsl.ts";
@@ -250,6 +251,7 @@ export function directoryFacts(
       configPath: childPath,
       configText: text,
       configFingerprint: text === null ? null : fingerprintOf(text),
+      ...(text === null ? {} : { configFields: configFieldsOf(text) }),
     };
   });
 
@@ -257,6 +259,7 @@ export function directoryFacts(
     configPath,
     configText,
     configFingerprint: configText === null ? null : fingerprintOf(configText),
+    ...(configText === null ? {} : { configFields: configFieldsOf(configText) }),
     envPresent: exists(path.join(root, ".env")),
     bootstrapperRunning: install.state === "running",
     ...(install.workspace === undefined ? {} : { tenants }),

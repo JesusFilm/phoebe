@@ -69,6 +69,7 @@ import {
 } from "./local-install.ts";
 import { TerminalSquare } from "lucide-react";
 import { Button } from "~/components/ui/button";
+import { ConfigSpace } from "./config-form.tsx";
 import { ProjectSettings } from "./project-settings.tsx";
 import { readReport } from "./report.ts";
 import { DEPLOYMENT_TABS, tabHasContent, type ConfigReading, type DeploymentTab } from "./tabs.ts";
@@ -267,13 +268,25 @@ export function InstallPage({
               writes={{
                 config: (
                   <>
-                    <ConfigEditForm
-                      install={install}
-                      config={config}
-                      running={running}
-                      receipt={editedTenant === null ? receiptOfRun(run) : null}
-                      onStart={start}
-                    />
+                    {config === null || config.kind === "absent" ? null : (
+                      <ConfigSpace
+                        install={install}
+                        config={config}
+                        running={running}
+                        receipt={editedTenant === null ? receiptOfRun(run) : null}
+                        onStart={start}
+                        label="the root config"
+                        file={
+                          <ConfigEditForm
+                            install={install}
+                            config={config}
+                            running={running}
+                            receipt={editedTenant === null ? receiptOfRun(run) : null}
+                            onStart={start}
+                          />
+                        }
+                      />
+                    )}
                     <TenantConfigs
                       install={install}
                       tenants={tenants}
@@ -739,7 +752,7 @@ function refusalText(error: unknown): string {
 
 /**
  * A workspace's tenants, each with its own config space under the root's: the
- * file as the folder holds it, and the same one-field edit form pointed at it.
+ * same form over its settings, and the file as the folder holds it behind it.
  * The receipt is shown under the tenant the last run named, not under all of
  * them.
  */
@@ -780,15 +793,25 @@ function TenantConfigs({
           ) : (
             <>
               <p className="muted">{tenant.config.fingerprint}</p>
-              <pre className="config mono">{tenant.config.text}</pre>
-              <ConfigEditForm
+              <ConfigSpace
                 install={install}
                 config={tenant.config}
                 running={running}
                 receipt={editedTenant === tenant.dir ? receipt : null}
                 onStart={onStart}
                 tenant={tenant.dir}
-                heading={`Change one field in ${tenant.label}`}
+                label={tenant.label}
+                file={
+                  <ConfigEditForm
+                    install={install}
+                    config={tenant.config}
+                    running={running}
+                    receipt={editedTenant === tenant.dir ? receipt : null}
+                    onStart={onStart}
+                    tenant={tenant.dir}
+                    heading={`Change one field in ${tenant.label}`}
+                  />
+                }
               />
             </>
           )}
