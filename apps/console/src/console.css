@@ -1670,3 +1670,62 @@ details.why > summary::marker {
 .tenant-config h2 {
   font-size: 13px;
 }
+
+/* ── one config: a form first, the file behind it (config-form.tsx) ─────── */
+
+.config-space {
+  margin-top: 10px;
+}
+
+/* The switch between the two views: a pair of buttons, the current one filled. */
+.config-views {
+  display: inline-flex;
+  margin-bottom: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.config-view {
+  padding: 3px 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.config-view + .config-view {
+  border-left: 1px solid var(--line);
+}
+
+.config-view.current {
+  background: var(--panel);
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.config-form {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.config-form label.mono {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12.5px;
+}
+
+/* The browser's own select, drawn to sit beside Coss UI's inputs. */
+.config-choice {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+}

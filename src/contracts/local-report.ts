@@ -50,6 +50,12 @@ export type InstallDirectoryFacts = {
    * writes (#503), and the one thing on this type that is cheap to compare.
    */
   configFingerprint: string | null;
+  /**
+   * The settings a form can offer, each with what the file says about it. Empty
+   * for a config that will not parse; absent from a companion older than the
+   * field.
+   */
+  configFields?: ConfigFieldFacts[];
   /** Is there a root `.env` beside the config? Its contents are never read here. */
   envPresent: boolean;
   /**
@@ -66,6 +72,32 @@ export type InstallDirectoryFacts = {
   tenants?: TenantConfigFacts[];
 };
 
+/**
+ * One setting as a config file holds it, read off the source and never by
+ * loading it. The settings are the catalogue's (src/settings-catalogue.ts), the
+ * ones a file can carry and `config set` will write.
+ */
+export type ConfigFieldFacts = {
+  /** The config path, which is also what a `config set` names. */
+  path: string;
+  /** The env name that outranks the file at this path. */
+  env: string;
+  type: "string" | "number" | "integer" | "boolean" | "enum";
+  /** The closed set of accepted values, for an `enum`. */
+  values?: readonly string[];
+  /**
+   * What the file says: nothing, a plain literal a form can show and replace,
+   * or something computed, which is shown as written and left alone.
+   */
+  state: "unset" | "set" | "computed";
+  /** The literal, when `state` is `set`. */
+  value?: string | number | boolean | null;
+  /** The source text, when `state` is `computed`. */
+  raw?: string;
+  /** What applies when the file says nothing, where there is a default. */
+  default?: string | number | boolean;
+};
+
 /** One workspace child's config, as its folder holds it. */
 export type TenantConfigFacts = {
   /** The child's folder, the key a `config set` on it names as `tenant`. */
@@ -77,6 +109,8 @@ export type TenantConfigFacts = {
   configPath: string;
   configText: string | null;
   configFingerprint: string | null;
+  /** The child's settings, read the same way as the root's. */
+  configFields?: ConfigFieldFacts[];
 };
 
 /**

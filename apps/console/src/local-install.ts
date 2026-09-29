@@ -628,14 +628,21 @@ export function tenantConfigs(event: LocalReportEvent | null): TenantConfigReadi
             path: tenant.configPath,
             text: tenant.configText,
             fingerprint: tenant.configFingerprint,
+            ...(tenant.configFields === undefined ? {} : { fields: tenant.configFields }),
           },
   }));
 }
 
 export function localConfig(event: LocalReportEvent | null): ConfigReading | null {
   if (event === null) return null;
-  const { configPath, configText, configFingerprint } = event.directory;
+  const { configPath, configText, configFingerprint, configFields } = event.directory;
   if (configText === null || configFingerprint === null)
     return { kind: "absent", path: configPath };
-  return { kind: "file", path: configPath, text: configText, fingerprint: configFingerprint };
+  return {
+    kind: "file",
+    path: configPath,
+    text: configText,
+    fingerprint: configFingerprint,
+    ...(configFields === undefined ? {} : { fields: configFields }),
+  };
 }
