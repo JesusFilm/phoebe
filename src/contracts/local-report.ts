@@ -80,8 +80,16 @@ export type InstallDirectoryFacts = {
 export type ConfigFieldFacts = {
   /** The config path, which is also what a `config set` names. */
   path: string;
-  /** The env name that outranks the file at this path. */
-  env: string;
+  /**
+   * Whose setting it is: the deployment's, read off the root config alone, or a
+   * tenant's. A workspace root carries the first kind and its children the
+   * second; a solo install's one config carries both.
+   */
+  scope: "deployment" | "tenant";
+  /** The env name that outranks the file at this path, where there is one. */
+  env?: string;
+  /** Why this row is shown and not offered for change, when it is not. */
+  locked?: string;
   type: "string" | "number" | "integer" | "boolean" | "enum";
   /** The closed set of accepted values, for an `enum`. */
   values?: readonly string[];

@@ -366,6 +366,24 @@ export function editConfigGetField(source: string, key: string): GetFieldResult 
 }
 
 /**
+ * Read the field at `path`, however deep. The same answer
+ * {@link editConfigGetField} gives for a top-level key; a block along the way
+ * that is not a plain object literal is a refusal, as it is for a write.
+ */
+export function editConfigGetFieldAt(source: string, path: readonly string[]): GetFieldResult {
+  const resolved = resolveConfigObject(source);
+  if (!resolved.ok) return resolved;
+
+  const located = locatePath(source, resolved.configObj, path);
+  if (!located.ok) return located;
+  if (!located.found) return { ok: true, found: false };
+
+  const valueNode: BNode = located.prop.value;
+  const raw = source.slice(valueNode.start as number, valueNode.end as number);
+  return { ok: true, found: true, raw, literal: extractLiteral(valueNode) };
+}
+
+/**
  * Set a top-level scalar field in the config object. Creates the field if
  * absent. Refuses when the existing value is non-literal (template literal,
  * call expression, identifier, etc.) so a hand-authored override is never

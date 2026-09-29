@@ -22,6 +22,8 @@ import {
   editConfigAppendWorkKind,
   editConfigGetField,
   editConfigGetRelay,
+
+  editConfigGetFieldAt,
   editConfigListKeys,
   editConfigMoveField,
   editConfigRemoveField,
@@ -997,5 +999,23 @@ describe("editConfigSetRelayUrl", () => {
       ok: true,
       relay: { url: WSS, name: null },
     });
+
+describe("editConfigGetFieldAt", () => {
+  const content = MINIMAL(`
+  engine: { source: "github", ref: "main" },
+  workspace: depthOf(),`);
+
+  test("reads a literal inside a block, and says when the leaf is not there", () => {
+    expect(editConfigGetFieldAt(content, ["engine", "ref"])).toMatchObject({
+      ok: true,
+      found: true,
+      literal: "main",
+    });
+    expect(editConfigGetFieldAt(content, ["engine", "repo"])).toEqual({ ok: true, found: false });
+    expect(editConfigGetFieldAt(content, ["reporting", "dsn"])).toEqual({ ok: true, found: false });
+  });
+
+  test("a block that is not a plain object literal is a refusal", () => {
+    expect(editConfigGetFieldAt(content, ["workspace", "depth"]).ok).toBe(false);
   });
 });

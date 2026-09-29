@@ -1712,6 +1712,22 @@ details.why > summary::marker {
   background: var(--panel);
 }
 
+.config-form + .config-form {
+  margin-top: 14px;
+}
+
+/* A solo install's two kinds of row, each under its own heading. */
+.config-group {
+  margin: 0;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .config-form label.mono {
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 12.5px;

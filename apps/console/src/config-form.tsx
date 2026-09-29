@@ -2,7 +2,9 @@
 //
 // The form is the settings the companion read out of the file
 // (apps/desktop/src/config-fields.ts), one row each, laid out the way the
-// project's own settings are above the tabs. A row saves itself: `config set`
+// project's own settings are above the tabs. Which rows depends on whose config
+// it is: a workspace root has the deployment's few, a tenant has its own, and a
+// solo install's one config has both, under a heading each. A row saves itself: `config set`
 // moves one leaf at a time, so a form with one Save for the lot would be a form
 // that could half-apply.
 //
@@ -90,32 +92,65 @@ export function ConfigSpace({
         </p>
       ) : (
         <>
-          <section className="config-form" aria-label={`Settings in ${label}`}>
-            {fields.map((field) => (
-              <ConfigFieldRow
-                // Keyed on what the file says, so a row redraws on the value a
-                // save landed rather than holding the draft that asked for it.
-                key={`${field.path}:${field.state}:${String(field.value)}`}
-                field={field}
-                running={running}
-                onSave={(value) =>
-                  onStart({
-                    install: install.dir,
-                    verb: "config set",
-                    path: field.path,
-                    value,
-                    fingerprint: config.fingerprint,
-                    ...(tenant === undefined ? {} : { tenant }),
-                  })
-                }
-              />
-            ))}
-          </section>
+          {configGroups(fields).map((group) => (
+            <section
+              key={group.scope}
+              className="config-form"
+              aria-label={`${group.heading} in ${label}`}
+            >
+              {/* One kind of row needs no heading over it. */}
+              {group.alone ? null : <h3 className="config-group">{group.heading}</h3>}
+              {group.fields.map((field) => (
+                <ConfigFieldRow
+                  // Keyed on what the file says, so a row redraws on the value a
+                  // save landed rather than holding the draft that asked for it.
+                  key={`${field.path}:${field.state}:${String(field.value)}`}
+                  field={field}
+                  running={running}
+                  onSave={(value) =>
+                    onStart({
+                      install: install.dir,
+                      verb: "config set",
+                      path: field.path,
+                      value,
+                      fingerprint: config.fingerprint,
+                      ...(tenant === undefined ? {} : { tenant }),
+                    })
+                  }
+                />
+              ))}
+            </section>
+          ))}
           {receipt === null ? null : <ReceiptPanel receipt={receipt} />}
         </>
       )}
     </div>
   );
+}
+
+export type ConfigGroup = {
+  scope: ConfigFieldFacts["scope"];
+  heading: string;
+  /** The only group there is, so it goes without its heading. */
+  alone: boolean;
+  fields: ConfigFieldFacts[];
+};
+
+/** The rows by whose they are, the deployment's first, leaving out a kind with none. */
+export function configGroups(fields: readonly ConfigFieldFacts[]): ConfigGroup[] {
+  const groups = (
+    [
+      ["deployment", "Deployment"],
+      ["tenant", "Repository"],
+    ] as const
+  )
+    .map(([scope, heading]) => ({
+      scope,
+      heading,
+      fields: fields.filter((field) => field.scope === scope),
+    }))
+    .filter((group) => group.fields.length > 0);
+  return groups.map((group) => ({ ...group, alone: groups.length === 1 }));
 }
 
 /** What a row's control holds, as text: the file's value, or nothing. */
@@ -170,17 +205,30 @@ function ConfigFieldRow({
       <div className="project-row-text">
         <FieldLabel className="mono">{field.path}</FieldLabel>
         <FieldDescription>
-          {field.state === "computed"
-            ? "Computed in the file, so it is shown as written and changed there. "
-            : field.default === undefined
-              ? null
-              : `Defaults to ${fallback}. `}
-          <span className="mono">{field.env}</span> outranks the file.
+          {field.locked !== undefined
+            ? field.locked
+            : field.state === "computed"
+              ? "Computed in the file, so it is shown as written and changed there. "
+              : field.default === undefined
+                ? null
+                : `Defaults to ${fallback}. `}
+          {field.env === undefined || field.locked !== undefined ? null : (
+            <>
+              <span className="mono">{field.env}</span> outranks the file.
+            </>
+          )}
         </FieldDescription>
       </div>
-      {field.state === "computed" ? (
+      {field.state === "computed" || field.locked !== undefined ? (
         <div className="project-row-control">
-          <Input size="sm" className="mono" value={field.raw ?? ""} readOnly title={field.raw} />
+          <Input
+            size="sm"
+            className="mono"
+            aria-label={field.path}
+            value={field.state === "computed" ? (field.raw ?? "") : draftOf(field)}
+            readOnly
+            title={field.raw}
+          />
         </div>
       ) : (
         <form
