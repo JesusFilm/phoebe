@@ -64,6 +64,12 @@ export type LocalInstall = {
    */
   containerVersion: string | null;
   /**
+   * The folder is a workspace child and nothing more: it carries a tenant
+   * config and no deployment of its own, so its container is the workspace
+   * root's. What the install tab offers instead of init.
+   */
+  tenantOnly?: boolean;
+  /**
    * The part of the state that is a guess rather than a reading — Docker absent,
    * the daemon down, Compose refusing. Present only when there is something to
    * say, because a line under every entry is a line nobody reads.
