@@ -41,6 +41,18 @@ describe("resolveSentryOptions", () => {
     expect(resolved.applyReadyLabel).toBe(true);
   });
 
+  test("an empty `environments` is kept as given: it turns the filter off", () => {
+    const resolved = resolveSentryOptions(
+      { org: "acme", project: 1, environments: [] },
+      "kinds.sentry",
+    );
+    expect(resolved.environments).toEqual([]);
+    // Left out, the default still applies.
+    expect(resolveSentryOptions({ org: "acme", project: 1 }, "kinds.sentry").environments).toEqual(
+      SENTRY_OPTION_DEFAULTS.environments,
+    );
+  });
+
   test.each([
     [undefined, "needs an options block"],
     [{ project: 1 }, "`org` must be a non-empty string"],
@@ -53,7 +65,10 @@ describe("resolveSentryOptions", () => {
     ],
     [{ org: "acme", project: 1, window: "yesterday" }, '`window` must be a period like "24h"'],
     [{ org: "acme", project: 1, minEvents: 0 }, "`minEvents` must be a positive integer"],
-    [{ org: "acme", project: 1, environments: [] }, "`environments` must be a non-empty array"],
+    [
+      { org: "acme", project: 1, environments: [""] },
+      "`environments` must be an array of non-empty strings",
+    ],
     [{ org: "acme", project: 1, levels: ["error", 3] }, "`levels` must be a non-empty array"],
     [{ org: "acme", project: 1, applyReadyLabel: "yes" }, "`applyReadyLabel` must be a boolean"],
     [{ org: "acme", project: 1, projectSlug: "x" }, "unknown option `projectSlug`"],
