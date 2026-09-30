@@ -19,25 +19,25 @@ const config: PhoebeUserConfig = {
   testCommand: "pnpm run test",
   readyCommand: "pnpm run ready",
 
-  // Dogfood with Claude Code on Opus 5, running under a Claude Pro/Max
+  // Dogfood with Claude Code on Opus 5.5, running under a Claude Pro/Max
   // *subscription* rather than pay-as-you-go API billing: `providerEnv.claude`
   // points at CLAUDE_CODE_OAUTH_TOKEN, so `buildAgentEnv` hands the CLI that
   // token and never ANTHROPIC_API_KEY — no ambiguity about which credential is
   // used. Mint the token with `node scripts/hoist-claude-login.mjs` and see
   // docs/claude-subscription-auth.md for the whole path.
   //
-  // Baseline: opus-5 at low effort, because this is a long-running loop paying
-  // against subscription usage limits rather than metered API billing. Low is
-  // the right floor for the kinds whose spec arrives complete — a CI log, a
-  // reviewer's thread — and the kind blocks below lift the kinds that have to
-  // reconstruct intent instead.
+  // Baseline: opus-5.5 at low effort, because this is a long-running loop
+  // paying against subscription usage limits rather than metered API billing.
+  // Low is the floor a kind with no `effort` of its own runs at; every built-in
+  // kind below names its own level, so the floor reaches only tenant-authored
+  // kinds and a PHOEBE_MODEL override that names a model with no kind block.
   //
   // Mind the resolution ladder (docs/configuration.md): per-kind config
   // outranks global env, so PHOEBE_EFFORT now moves only the kinds that carry
   // no `effort` of their own. Use PHOEBE_<KIND>_EFFORT to override one of the
   // others for a single run.
   defaultProvider: "claude",
-  defaultModels: { claude: "claude-opus-5" },
+  defaultModels: { claude: "claude-opus-5-5" },
   defaultEfforts: { claude: "low" },
   providerEnv: { claude: "CLAUDE_CODE_OAUTH_TOKEN" },
 
@@ -54,15 +54,23 @@ const config: PhoebeUserConfig = {
   // Per-work-kind tuning (#300). One rule on both axes: spend where the agent
   // reconstructs intent, save where it executes a spec someone else wrote.
   //
+  // Effort is re-tuned for the 5.5 models rather than carried over. opus-5.5
+  // defaults to `medium`, and at that level it beat opus-5 at `high` on agentic
+  // coding in Anthropic's testing while thinking more per turn than opus-5 did
+  // at any given level — so the kinds that ran opus-5 at `high` run opus-5.5
+  // at `medium`: the same or better result for less of the usage limit. Lift a
+  // kind to `high` only once a run has shown medium falling short.
+  //
   //   conflicts — no spec at all. The agent infers intent from two diverging
   //               branches, and a bad resolution loses code silently. Also the
-  //               largest context draw, so it keeps opus-5's 1M window.
-  //   checks    — a failing CI log localises the fix. sonnet-5 is the same 1M
-  //               window at 60% off; medium rather than low because the cheap
-  //               failure mode here is papering over a red test.
-  //   reviews   — each thread is already specified by a human reviewer, and the
-  //               prompt's demand is instruction-following (paging GraphQL
-  //               review threads), not depth. Inherits `low` from above.
+  //               largest context draw, so it keeps opus-5.5's 1M window.
+  //   checks    — a failing CI log localises the fix. sonnet-5.5 is the same 1M
+  //               window at half the price; medium rather than low because the
+  //               cheap failure mode here is papering over a red test.
+  //   reviews   — each thread is already specified by a human reviewer, but the
+  //               kind still edits code and runs the ready gate, and sonnet-5.5
+  //               at `low` is prone to reporting a change done without running
+  //               a check that exercises it. Medium, not the `low` floor.
   //   issues    — open-ended implementation against a ticket.
   //   research  — answers land in wayfinder maps that later work builds on, so
   //               a wrong one propagates instead of failing loudly.
@@ -82,15 +90,19 @@ const config: PhoebeUserConfig = {
   pipelines: {
     work: {
       kinds: {
-        conflicts: { effort: "high", promptFile: "../prompts/conflict-prompt.md" },
+        conflicts: { effort: "medium", promptFile: "../prompts/conflict-prompt.md" },
         checks: {
-          model: "claude-sonnet-5",
+          model: "claude-sonnet-5-5",
           effort: "medium",
           promptFile: "../prompts/checks-prompt.md",
         },
-        reviews: { model: "claude-sonnet-5", promptFile: "../prompts/reviews-prompt.md" },
-        issues: { effort: "high", promptFile: "../prompts/issues-prompt.md" },
-        research: { effort: "high", promptFile: "../prompts/research-prompt.md" },
+        reviews: {
+          model: "claude-sonnet-5-5",
+          effort: "medium",
+          promptFile: "../prompts/reviews-prompt.md",
+        },
+        issues: { effort: "medium", promptFile: "../prompts/issues-prompt.md" },
+        research: { effort: "medium", promptFile: "../prompts/research-prompt.md" },
       },
     },
   },
