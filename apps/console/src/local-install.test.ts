@@ -84,11 +84,22 @@ describe("which shortcuts a rail entry carries", () => {
 });
 
 describe("which verbs an install offers", () => {
+  test("a tenant's folder is offered a deployment beside the tenant instead of init", () => {
+    const offered = offeredVerbs(install({ state: "not-initialised", tenantOnly: true }));
+
+    expect(offered.init).toBe(false);
+    expect(offered.solo).toBe(true);
+    expect(offered.start).toBe(false);
+    expect(offeredVerbs(install({ state: "not-initialised" })).solo).toBe(false);
+    expect(offeredVerbs(install({ state: "stopped" })).solo).toBe(false);
+  });
+
   test("a folder with no install in it offers init and nothing that needs one", () => {
     const offered = offeredVerbs(install({ state: "not-initialised" }));
 
     expect(offered).toEqual({
       init: true,
+      solo: false,
       start: false,
       stop: false,
       upgrade: false,

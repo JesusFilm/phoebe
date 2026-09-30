@@ -29,6 +29,7 @@ import path from "node:path";
 import { app } from "electron";
 import type { InstallState, VerbIo } from "phoebe-agent/contracts";
 import { deploymentDirOf } from "./deployment-dir.ts";
+import { initSoloBesideTenant } from "./solo-beside-tenant.ts";
 import { runConfigSet } from "../../../src/config-set.ts";
 import {
   formatResolveFailure,
@@ -101,6 +102,18 @@ export function createDispatchVerb(deps: DispatchDeps): Dispatch {
 
     switch (request.verb) {
       case "init": {
+        // A tenant's folder given a deployment of its own, beside the tenant
+        // (solo-beside-tenant.ts). Its own arm because it writes into `.phoebe/`
+        // and touches the tenant config, which a plain init never does.
+        if (request.beside === "tenant") {
+          const outcome = initSoloBesideTenant({
+            install,
+            io,
+            cliVersion: __COMPANION_VERSION__,
+            deps: { packageRoot: packageRoot() },
+          });
+          return { verb: "init", outcome };
+        }
         // `init` prints nothing of its own (#552) and returns the file lists
         // instead, so the run says what it is doing and then what it did. An
         // install tab with an empty output box and a green tick reads as a button

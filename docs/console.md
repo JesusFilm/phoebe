@@ -28,6 +28,12 @@ runs the host verbs in place with their output streaming into the window: `init`
 `start`, `stop`, `upgrade --check` and `doctor`. Docker is checked, never
 installed.
 
+A folder that is already a workspace's tenant is not offered `init` over the
+top of its config. It is offered a deployment of its own beside the tenant: the
+scaffold goes into `.phoebe/` under the folder with the tenant's settings
+carried over, and the tenant entry points the workspace at that folder for its
+`.env` and prompts, so the two share one set. The folder stays a tenant.
+
 The companion adds no listener to the deployment container. Main spawns
 `docker compose` exactly as you would at a shell, and reads through
 `compose exec`. An install has three states: running, stopped and not

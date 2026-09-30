@@ -40,6 +40,10 @@ describe("what a folder is", () => {
 
     expect(facts.state).toBe("not-initialised");
     expect(facts.detail).toContain("workspace child");
+    // Said as a fact too, so the install tab can offer the deployment beside it.
+    expect(facts.tenantOnly).toBe(true);
+    const bare = await installFacts(STORED, { exists: folder() });
+    expect(bare.tenantOnly).toBeUndefined();
   });
 
   test("a folder that is gone is named as gone, not as a folder waiting for init", async () => {

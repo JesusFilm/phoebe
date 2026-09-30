@@ -330,6 +330,9 @@ export function InstallTab({
   onCancel: (runId: string) => void;
 }) {
   const offered = offeredVerbs(install);
+  // Forget asks first. One click on a quiet button, and an install is gone from
+  // the rail with nothing on disk to say it was there.
+  const [forgetting, setForgetting] = useState(false);
 
   return (
     <>
@@ -359,6 +362,15 @@ export function InstallTab({
               onClick={() => onStart({ install: install.dir, verb: "init" })}
             >
               Init
+            </button>
+          ) : null}
+          {offered.solo ? (
+            <button
+              type="button"
+              disabled={running}
+              onClick={() => onStart({ install: install.dir, verb: "init", beside: "tenant" })}
+            >
+              Run it on its own too
             </button>
           ) : null}
           {offered.start ? (
@@ -397,14 +409,38 @@ export function InstallTab({
               Doctor
             </button>
           ) : null}
-          <button type="button" className="quiet" onClick={() => onForget(install.dir)}>
-            Forget
-          </button>
+          {forgetting ? null : (
+            <button type="button" className="quiet" onClick={() => setForgetting(true)}>
+              Forget
+            </button>
+          )}
         </div>
+        {forgetting ? (
+          <p className="confirm" role="alert">
+            Forget <strong>{install.name}</strong>? It leaves the rail; nothing on disk is deleted.{" "}
+            <button type="button" className="danger" onClick={() => onForget(install.dir)}>
+              Forget
+            </button>{" "}
+            <button type="button" className="quiet" onClick={() => setForgetting(false)}>
+              Keep
+            </button>
+          </p>
+        ) : null}
+        {offered.solo ? (
+          <p className="muted">
+            This folder is a tenant of a workspace, which runs its container. It can also run on its
+            own: a deployment of its own goes into <span className="mono">.phoebe/</span> under the
+            folder, with the tenant&apos;s settings carried over, and the tenant entry points the
+            workspace at that folder for its <span className="mono">.env</span> and prompts. It
+            stays a tenant either way.
+          </p>
+        ) : null}
         <Versions install={install} environment={environment} />
-        <p className="muted">
-          Forgetting removes this install from the companion. Nothing on disk is deleted.
-        </p>
+        {forgetting ? null : (
+          <p className="muted">
+            Forgetting removes this install from the companion. Nothing on disk is deleted.
+          </p>
+        )}
         {trouble === null ? null : <p className="refusal">{trouble}</p>}
       </section>
 

@@ -66,7 +66,13 @@ export const CANCELLABLE_VERBS: readonly HostVerb[] = ["start", "stop"];
  * `install` is the install's directory — its identity (#527 §12).
  */
 export type VerbRunRequest =
-  | { install: string; verb: "init"; profile?: InitProfile }
+  /**
+   * `beside: "tenant"` scaffolds into `.phoebe/` under a folder that is already
+   * a workspace child, carries the tenant config's settings onto the new one and
+   * points the tenant entry at the shared folder — a deployment of its own,
+   * beside the tenant it stays.
+   */
+  | { install: string; verb: "init"; profile?: InitProfile; beside?: "tenant" }
   | { install: string; verb: "start"; build?: boolean }
   | { install: string; verb: "stop"; now?: boolean }
   | { install: string; verb: "upgrade"; check?: boolean; target?: UpgradeTarget; ref?: string }

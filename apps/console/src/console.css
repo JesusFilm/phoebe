@@ -1403,3 +1403,17 @@ details.why > summary::marker {
   min-width: 0;
   font-size: 12px;
 }
+
+/* Forget asks first: the question in place of the sentence that was there. */
+.confirm {
+  margin: 10px 0 0;
+  padding: 8px 12px;
+  border: 1px solid var(--fail);
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.confirm button.danger {
+  border-color: var(--fail);
+  color: var(--fail);
+}

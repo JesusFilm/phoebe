@@ -342,6 +342,23 @@ describe("the install tab", () => {
 
   test("says forgetting deletes nothing, because a Forget button reads like one that does", () => {
     expect(tab()).toContain("Nothing on disk is deleted");
+    // And asks before it does anything: the first press is a question.
+    expect(tab()).toMatch(/<button type="button" class="quiet">Forget<\/button>/);
+    expect(tab()).not.toContain('class="confirm"');
+  });
+
+  test("a tenant's folder is offered a deployment of its own, and never a plain init", () => {
+    const markup = tab({
+      state: "not-initialised",
+      tenantOnly: true,
+      detail: "a workspace child, not a deployment",
+    });
+
+    expect(markup).toContain(">Run it on its own too<");
+    expect(markup).not.toContain(">Init<");
+    expect(markup).toContain("It stays a tenant either way.");
+    // A folder that is nobody's tenant is offered init, and no second deployment.
+    expect(tab({ state: "not-initialised" })).not.toContain("Run it on its own too");
   });
 
   test("states the container's version beside the companion's, and refuses nothing on it", () => {

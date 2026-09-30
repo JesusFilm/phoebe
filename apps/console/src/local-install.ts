@@ -346,6 +346,8 @@ function versionNote(install: LocalInstall, companion: string | null): string | 
 /** Which verbs an install in this state can be asked for. */
 export function offeredVerbs(install: LocalInstall): {
   init: boolean;
+  /** A tenant's folder can be given a deployment of its own, beside the tenant. */
+  solo: boolean;
   start: boolean;
   stop: boolean;
   upgrade: boolean;
@@ -356,7 +358,8 @@ export function offeredVerbs(install: LocalInstall): {
     // Init is offered on an un-initialised folder and nowhere else: a folder
     // that already carries a config is adopted as it stands (#555), and init
     // over the top of one is a button whose best outcome is doing nothing.
-    init: !initialised,
+    init: !initialised && install.tenantOnly !== true,
+    solo: !initialised && install.tenantOnly === true,
     start: initialised && install.state !== "running",
     stop: initialised && install.state === "running",
     upgrade: initialised,

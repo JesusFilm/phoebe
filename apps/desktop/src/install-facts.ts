@@ -116,6 +116,7 @@ export async function installFacts(
     return {
       ...base,
       state: "not-initialised",
+      ...(deployment.kind === "tenant-directory" ? { tenantOnly: true } : {}),
       detail:
         deployment.kind === "tenant-directory"
           ? "a workspace child, not a deployment — container lifecycle belongs to the workspace root"
