@@ -96,6 +96,11 @@ export type ConfigFieldFacts = {
   /** The closed set of accepted values, for an `enum`. */
   values?: readonly string[];
   /**
+   * Values worth offering for a `string`, none of them binding: the box takes
+   * whatever is typed, and these are what it offers first.
+   */
+  suggestions?: readonly string[];
+  /**
    * What the file says: nothing, a plain literal a form can show and replace,
    * or something computed, which is shown as written and left alone.
    */

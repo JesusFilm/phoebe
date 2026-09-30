@@ -21,8 +21,23 @@ import type {
   VerbRunRequest,
 } from "phoebe-agent/contracts";
 import { Button } from "~/components/ui/button";
+import {
+  Combobox,
+  ComboboxEmpty,
+  ComboboxInput,
+  ComboboxItem,
+  ComboboxList,
+  ComboboxPopup,
+} from "~/components/ui/combobox";
 import { Field, FieldDescription, FieldLabel } from "~/components/ui/field";
 import { Input } from "~/components/ui/input";
+import {
+  Select,
+  SelectItem,
+  SelectPopup,
+  SelectTrigger,
+  SelectValue,
+} from "~/components/ui/select";
 import { settingCopy } from "./config-copy.ts";
 import { ReceiptPanel } from "./deployment-tabs.tsx";
 import type { ConfigReading } from "./tabs.ts";
@@ -241,7 +256,24 @@ function ConfigFieldRow({
             if (value !== null) onSave(value);
           }}
         >
-          {choices === undefined ? (
+          {choices !== undefined ? (
+            <ChoiceControl
+              field={field}
+              choices={choices}
+              fallback={fallback}
+              draft={draft}
+              running={running}
+              onDraft={setDraft}
+            />
+          ) : field.suggestions !== undefined && field.suggestions.length > 0 ? (
+            <SuggestingControl
+              field={field}
+              fallback={fallback}
+              draft={draft}
+              running={running}
+              onDraft={setDraft}
+            />
+          ) : (
             <Input
               size="sm"
               className="mono"
@@ -252,21 +284,6 @@ function ConfigFieldRow({
               disabled={running}
               onChange={(event) => setDraft(event.target.value)}
             />
-          ) : (
-            <select
-              className="config-choice mono"
-              aria-label={field.path}
-              value={draft}
-              disabled={running}
-              onChange={(event) => setDraft(event.target.value)}
-            >
-              {field.state === "unset" ? <option value="">{fallback}</option> : null}
-              {choices.map((choice) => (
-                <option key={choice} value={choice}>
-                  {choice}
-                </option>
-              ))}
-            </select>
           )}
           <Button
             type="submit"
@@ -279,5 +296,109 @@ function ConfigFieldRow({
         </form>
       )}
     </Field>
+  );
+}
+
+/** The empty draft, as the select knows it: an item of its own, so unset stays pickable. */
+const UNSET = "";
+
+/**
+ * A closed set of values, as Coss UI's select rather than the browser's own,
+ * whose popup follows the OS and not the console's theme. An unset setting
+ * offers what applies without it as the first item, so a form can say nothing
+ * as deliberately as it says something.
+ */
+function ChoiceControl({
+  field,
+  choices,
+  fallback,
+  draft,
+  running,
+  onDraft,
+}: {
+  field: ConfigFieldFacts;
+  choices: readonly string[];
+  fallback: string;
+  draft: string;
+  running: boolean;
+  onDraft: (draft: string) => void;
+}) {
+  // The unset item says it is unset, and what applies: a default of `false`
+  // must not read as one more `false` in the list.
+  const unsetLabel = field.default === undefined ? "not set" : `not set (${fallback})`;
+  const items = [
+    ...(field.state === "unset" ? [{ value: UNSET, label: unsetLabel }] : []),
+    ...choices.map((choice) => ({ value: choice, label: choice })),
+  ];
+  return (
+    <Select
+      items={items}
+      value={draft}
+      disabled={running}
+      onValueChange={(picked) => onDraft(picked ?? UNSET)}
+    >
+      <SelectTrigger size="sm" className="mono config-choice" aria-label={field.path}>
+        <SelectValue />
+      </SelectTrigger>
+      <SelectPopup>
+        {items.map((item) => (
+          <SelectItem key={item.value} value={item.value} className="mono">
+            {item.label}
+          </SelectItem>
+        ))}
+      </SelectPopup>
+    </Select>
+  );
+}
+
+/**
+ * A text box that offers values before anything is typed, and takes whatever is
+ * typed: Coss UI's combobox with the draft as its input. Picking an item fills
+ * the box; the box is what is saved, so a value the list does not know is as
+ * good as one it does.
+ */
+function SuggestingControl({
+  field,
+  fallback,
+  draft,
+  running,
+  onDraft,
+}: {
+  field: ConfigFieldFacts;
+  fallback: string;
+  draft: string;
+  running: boolean;
+  onDraft: (draft: string) => void;
+}) {
+  const suggestions = field.suggestions ?? [];
+  return (
+    <Combobox
+      items={suggestions}
+      inputValue={draft}
+      onInputValueChange={(typed) => onDraft(typed)}
+      value={suggestions.includes(draft) ? draft : null}
+      onValueChange={(picked) => {
+        if (picked !== null) onDraft(picked);
+      }}
+      disabled={running}
+    >
+      <ComboboxInput
+        size="sm"
+        className="mono"
+        aria-label={field.path}
+        placeholder={fallback}
+        showClear={draft !== ""}
+      />
+      <ComboboxPopup>
+        <ComboboxEmpty>Nothing offered matches; what is typed is what is saved.</ComboboxEmpty>
+        <ComboboxList>
+          {(item: string) => (
+            <ComboboxItem key={item} value={item} className="mono">
+              {item}
+            </ComboboxItem>
+          )}
+        </ComboboxList>
+      </ComboboxPopup>
+    </Combobox>
   );
 }
