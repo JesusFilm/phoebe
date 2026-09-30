@@ -1389,9 +1389,12 @@ details.why > summary::marker {
   text-transform: uppercase;
 }
 
-.config-form label.mono {
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 12.5px;
+/* The path, after the name, the way the file spells it. */
+.config-form .setting-path {
+  margin-left: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
 }
 
 /* The browser's own select, drawn to sit beside Coss UI's inputs. */

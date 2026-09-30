@@ -23,6 +23,7 @@ import type {
 import { Button } from "~/components/ui/button";
 import { Field, FieldDescription, FieldLabel } from "~/components/ui/field";
 import { Input } from "~/components/ui/input";
+import { settingCopy } from "./config-copy.ts";
 import { ReceiptPanel } from "./deployment-tabs.tsx";
 import type { ConfigReading } from "./tabs.ts";
 
@@ -199,24 +200,26 @@ function ConfigFieldRow({
   const choices =
     field.type === "boolean" ? ["true", "false"] : field.type === "enum" ? field.values : undefined;
   const fallback = field.default === undefined ? "not set" : String(field.default);
+  const copy = settingCopy(field.path);
 
   return (
     <Field className="project-row">
       <div className="project-row-text">
-        <FieldLabel className="mono">{field.path}</FieldLabel>
+        <FieldLabel>
+          {copy.label}
+          {copy.label === field.path ? null : (
+            <span className="mono setting-path">{field.path}</span>
+          )}
+        </FieldLabel>
         <FieldDescription>
+          {copy.description === "" ? null : `${copy.description} `}
           {field.locked !== undefined
             ? field.locked
             : field.state === "computed"
-              ? "Computed in the file, so it is shown as written and changed there. "
+              ? "Computed in the file, so it is shown as written and changed there."
               : field.default === undefined
                 ? null
-                : `Defaults to ${fallback}. `}
-          {field.env === undefined || field.locked !== undefined ? null : (
-            <>
-              <span className="mono">{field.env}</span> outranks the file.
-            </>
-          )}
+                : `Defaults to ${fallback}.`}
         </FieldDescription>
       </div>
       {field.state === "computed" || field.locked !== undefined ? (
