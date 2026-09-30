@@ -948,6 +948,10 @@ describe("the install tab", () => {
     expect(markup).toContain(">Run it on its own too<");
     expect(markup).not.toContain(">Init<");
     expect(markup).toContain("It stays a tenant either way.");
+    // The offer opens the tab: it comes before the install's own section.
+    expect(markup.indexOf('aria-label="Run it on its own"')).toBeLessThan(
+      markup.indexOf("<h2>This install</h2>"),
+    );
     // A folder that is nobody's tenant is offered init, and no second deployment.
     expect(tab({ state: "not-initialised" })).not.toContain("Run it on its own too");
   });

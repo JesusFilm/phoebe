@@ -6,4 +6,4 @@ A config opens as a form. The config tab lists the settings a file can carry, on
 
 The companion reads the settings off the config's source, never by loading it, and hands them over beside the text as `configFields`.
 
-A folder that is a workspace child, a tenant config and no deployment of its own, is no longer offered init over the top of it. The install tab offers to run it on its own too: `init --solo` into `.phoebe/` under the folder, the tenant's settings carried onto the new config, the tenant entry pointed at that folder for its `.env` and prompts, and a root `.env` copied down. The folder stays a tenant. Forget now asks first, on every install.
+A folder that is a workspace child, a tenant config and no deployment of its own, is no longer offered init over the top of it. Adding one opens its install tab on the offer to run it on its own too: `init --solo` into `.phoebe/` under the folder, the tenant's settings carried onto the new config, the tenant entry pointed at that folder for its `.env` and prompts, and a root `.env` copied down. The folder stays a tenant. Forget now asks first, on every install.

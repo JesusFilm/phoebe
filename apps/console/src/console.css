@@ -1812,3 +1812,16 @@ details.why > summary::marker {
   border-color: var(--fail);
   color: var(--fail);
 }
+
+/* The offer a tenant's folder opens on: the next step, set apart from the rest. */
+.offer {
+  margin-bottom: 18px;
+  padding: 12px 16px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.offer h2 {
+  margin-top: 0;
+}
