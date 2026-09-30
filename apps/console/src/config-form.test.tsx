@@ -99,7 +99,7 @@ describe("one config on the config tab", () => {
     expect(markup).toMatch(/aria-label="repoSlug"[^>]*value="acme\/a"/);
     expect(markup).toMatch(/aria-label="defaultBranch"[^>]*placeholder="main"/);
     expect(markup).toContain("Defaults to main.");
-    expect(markup).toContain("PHOEBE_DEFAULT_BRANCH");
+    expect(markup).not.toContain("PHOEBE_DEFAULT_BRANCH");
   });
 
   test("an enum is a choice among its values", () => {
@@ -149,8 +149,21 @@ describe("whose rows a config's form has", () => {
     expect(markup).not.toContain(">Save<");
   });
 
-  test("a row with no env name does not claim one outranks it", () => {
-    expect(space([ROOT[1]!])).not.toContain("outranks the file");
+  test("a row is named for a person, with the path beside it and a sentence under it", () => {
+    const markup = space([FIELDS[0]!, ROOT[1]!]);
+
+    expect(markup).toContain("Repository<span");
+    expect(markup).toContain('class="mono setting-path">repoSlug</span>');
+    expect(markup).toContain("The GitHub owner/repo Phoebe works");
+    expect(markup).toContain("Report faults to the maintainers");
+    expect(markup).not.toContain("outranks the file");
+  });
+
+  test("a path this console has no words for is shown as itself", () => {
+    const markup = space([{ ...FIELDS[0]!, path: "somethingNew" }]);
+
+    expect(markup).toMatch(/>somethingNew<\/label>/);
+    expect(markup).not.toContain("setting-path");
   });
 
   test("a solo install's config has both kinds, the deployment's first, each headed", () => {
