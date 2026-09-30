@@ -48,13 +48,13 @@ export const config = defineConfig({
   // run's effective provider. Leaving this "cursor" and flipping the run with
   // PHOEBE_AGENT=claude would make every block below inert.
   //
-  // Baseline: opus-5 at low effort, because this is a long-running loop paying
-  // against subscription usage limits rather than metered API billing. Low is
-  // the right floor for the kinds whose spec arrives complete — a CI log, a
-  // reviewer's thread — and the kind blocks below lift the kinds that have to
-  // reconstruct intent instead.
+  // Baseline: opus-5.5 at low effort, because this is a long-running loop
+  // paying against subscription usage limits rather than metered API billing.
+  // Low is the floor a kind with no `effort` of its own runs at; every built-in
+  // kind below names its own level, so the floor reaches only tenant-authored
+  // kinds and a PHOEBE_MODEL override that names a model with no kind block.
   defaultProvider: "claude",
-  defaultModels: { claude: "claude-opus-5" },
+  defaultModels: { claude: "claude-opus-5-5" },
   defaultEfforts: { claude: "low" },
 
   // As a workspace tenant, reuse this repo's standalone `.phoebe/` folder: the
@@ -84,15 +84,23 @@ export const config = defineConfig({
   // Per-work-kind tuning (#300). One rule on both axes: spend where the agent
   // reconstructs intent, save where it executes a spec someone else wrote.
   //
+  // The opus kinds keep `high` on opus-5.5. Its API default is `medium`, and
+  // at any given level it thinks more per turn than opus-5 did, so `high` here
+  // buys more deliberation than it did before — a deliberate spend on the kinds
+  // where a wrong answer is expensive. Drop one to `medium` if the usage limit
+  // bites; Anthropic's own numbers put opus-5.5 `medium` at or above opus-5
+  // `high` on agentic coding.
+  //
   //   conflicts — no spec at all. The agent infers intent from two diverging
   //               branches, and a bad resolution loses code silently. Also the
-  //               largest context draw, so it keeps opus-5's 1M window.
-  //   checks    — a failing CI log localises the fix. sonnet-5 is the same 1M
-  //               window at 60% off; medium rather than low because the cheap
-  //               failure mode here is papering over a red test.
-  //   reviews   — each thread is already specified by a human reviewer, and the
-  //               prompt's demand is instruction-following (paging GraphQL
-  //               review threads), not depth. Inherits `low` from above.
+  //               largest context draw, so it keeps opus-5.5's 1M window.
+  //   checks    — a failing CI log localises the fix. sonnet-5.5 is the same 1M
+  //               window at half the price; medium rather than low because the
+  //               cheap failure mode here is papering over a red test.
+  //   reviews   — each thread is already specified by a human reviewer, but the
+  //               kind still edits code and runs the ready gate, and sonnet-5.5
+  //               at `low` is prone to reporting a change done without running
+  //               a check that exercises it. Medium, not the `low` floor.
   //   issues    — open-ended implementation against a ticket.
   //   research  — answers land in wayfinder maps that later work builds on, so
   //               a wrong one propagates instead of failing loudly.
@@ -142,11 +150,15 @@ export const config = defineConfig({
       kinds: {
         conflicts: { effort: "high", promptFile: "../prompts/conflict-prompt.md" },
         checks: {
-          model: "claude-sonnet-5",
+          model: "claude-sonnet-5-5",
           effort: "medium",
           promptFile: "../prompts/checks-prompt.md",
         },
-        reviews: { model: "claude-sonnet-5", promptFile: "../prompts/reviews-prompt.md" },
+        reviews: {
+          model: "claude-sonnet-5-5",
+          effort: "medium",
+          promptFile: "../prompts/reviews-prompt.md",
+        },
         issues: { effort: "high", promptFile: "../prompts/issues-prompt.md" },
         research: { effort: "high", promptFile: "../prompts/research-prompt.md" },
       },
