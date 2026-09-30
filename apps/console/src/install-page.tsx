@@ -343,6 +343,29 @@ export function InstallTab({
         </section>
       ) : null}
 
+      {offered.solo ? (
+        <section className="offer" aria-label="Run it on its own">
+          <h2>This folder is a tenant. Run it on its own too?</h2>
+          <p className="muted">
+            A workspace runs this folder&apos;s container, so there is nothing here to start. It can
+            also be a deployment of its own: the scaffold goes into{" "}
+            <span className="mono">.phoebe/</span> under the folder with the tenant&apos;s settings
+            carried over, and the tenant entry points the workspace at that folder for its{" "}
+            <span className="mono">.env</span> and prompts, so the two share one set. It stays a
+            tenant either way.
+          </p>
+          <div className="verbs">
+            <button
+              type="button"
+              disabled={running}
+              onClick={() => onStart({ install: install.dir, verb: "init", beside: "tenant" })}
+            >
+              Run it on its own too
+            </button>
+          </div>
+        </section>
+      ) : null}
+
       <section>
         <h2>This install</h2>
         <p>
@@ -362,15 +385,6 @@ export function InstallTab({
               onClick={() => onStart({ install: install.dir, verb: "init" })}
             >
               Init
-            </button>
-          ) : null}
-          {offered.solo ? (
-            <button
-              type="button"
-              disabled={running}
-              onClick={() => onStart({ install: install.dir, verb: "init", beside: "tenant" })}
-            >
-              Run it on its own too
             </button>
           ) : null}
           {offered.start ? (
@@ -424,15 +438,6 @@ export function InstallTab({
             <button type="button" className="quiet" onClick={() => setForgetting(false)}>
               Keep
             </button>
-          </p>
-        ) : null}
-        {offered.solo ? (
-          <p className="muted">
-            This folder is a tenant of a workspace, which runs its container. It can also run on its
-            own: a deployment of its own goes into <span className="mono">.phoebe/</span> under the
-            folder, with the tenant&apos;s settings carried over, and the tenant entry points the
-            workspace at that folder for its <span className="mono">.env</span> and prompts. It
-            stays a tenant either way.
           </p>
         ) : null}
         <Versions install={install} environment={environment} />

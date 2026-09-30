@@ -205,10 +205,15 @@ export function App({
       if (bridge === null) return;
       void bridge.installs.pick(inside).then(async (dir) => {
         if (dir === null) return;
-        setInstalls(await bridge.installs.add(dir));
-        // Straight to its page. A folder that already carries a config is adopted
-        // as it stands and needs nothing; one that does not lands on the install
-        // tab, which is where init is (#526).
+        const added = await bridge.installs.add(dir);
+        setInstalls(added);
+        // Straight to its page. A folder that already carries a deployment is
+        // adopted as it stands and opens on its console; one that does not opens
+        // on the install tab, where init is, or the offer to run a tenant's
+        // folder on its own (#526).
+        const state = added.find((install) => install.dir === dir)?.state;
+        setOpenView(state === "not-initialised" ? "settings" : "console");
+        setOpenTenant(null);
         setOpenInstall(dir);
       });
     },
