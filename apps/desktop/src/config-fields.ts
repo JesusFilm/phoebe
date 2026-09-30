@@ -24,8 +24,21 @@ import { SETTINGS } from "../../../src/settings-catalogue.ts";
 /** Which config this is: a workspace's root, one of its children, or a solo install's. */
 export type ConfigRole = "workspace" | "tenant" | "solo";
 
-type Row = Pick<ConfigFieldFacts, "path" | "scope" | "type" | "values" | "env" | "locked"> & {
+type Row = Pick<
+  ConfigFieldFacts,
+  "path" | "scope" | "type" | "values" | "suggestions" | "env" | "locked"
+> & {
   fallback?: string | number | boolean;
+};
+
+/**
+ * What a text box is worth offering before anything is typed. Not a closed set:
+ * a model name the provider gained yesterday is as good as any here.
+ */
+const SUGGESTIONS: Readonly<Record<string, readonly string[]>> = {
+  model: Object.values(CONFIG_DEFAULTS.defaultModels),
+  effort: ["low", "medium", "high", "xhigh", "max"],
+  defaultBranch: ["main", "master", "develop"],
 };
 
 const ENGINE_LOCK = "Moves with `phoebe upgrade`, so the new ref's migrations run with it.";
@@ -64,6 +77,7 @@ const TENANT_ROWS: readonly Row[] = SETTINGS.filter(
     type: setting.type,
     env: setting.env,
     ...(setting.values === undefined ? {} : { values: setting.values }),
+    ...(SUGGESTIONS[setting.path] === undefined ? {} : { suggestions: SUGGESTIONS[setting.path] }),
     ...(typeof fallback === "string" ||
     typeof fallback === "number" ||
     typeof fallback === "boolean"

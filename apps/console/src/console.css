@@ -1792,15 +1792,9 @@ details.why > summary::marker {
   font-weight: 400;
 }
 
-/* The browser's own select, drawn to sit beside Coss UI's inputs. */
+/* Coss UI's select, sized to sit beside its inputs in a row. */
 .config-choice {
   flex: 1;
   min-width: 0;
-  height: 28px;
-  padding: 0 8px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: transparent;
-  color: inherit;
   font-size: 12px;
 }

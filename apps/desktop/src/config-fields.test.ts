@@ -49,6 +49,17 @@ describe("a tenant's settings", () => {
     });
   });
 
+  test("a text setting with values worth offering carries them, and stays a text setting", () => {
+    const source = config('  repoSlug: "acme/widget",');
+
+    expect(field(source, "model")).toMatchObject({
+      type: "string",
+      suggestions: ["composer-2.5", "claude-sonnet-4-6", "gpt-5.4-mini"],
+    });
+    expect(field(source, "effort")?.suggestions).toContain("xhigh");
+    expect(field(source, "repoSlug")).not.toHaveProperty("suggestions");
+  });
+
   test("a computed value is handed over as written, not as a value to replace", () => {
     const source = config("  repoSlug: process.env.SLUG!,");
 

@@ -102,12 +102,36 @@ describe("one config on the config tab", () => {
     expect(markup).not.toContain("PHOEBE_DEFAULT_BRANCH");
   });
 
-  test("an enum is a choice among its values", () => {
+  test("an enum is a choice among its values, drawn by the console rather than the browser", () => {
     const markup = space(FIELDS);
 
-    expect(markup).toMatch(/<select[^>]*aria-label="prScope"/);
-    expect(markup).toContain('<option value="phoebe">phoebe</option>');
-    expect(markup).toMatch(/<option value="all" selected="">all<\/option>/);
+    // Coss UI's select: a button showing the value, never a native <select>.
+    expect(markup).toMatch(/<button[^>]*data-slot="select-trigger"[^>]*aria-label="prScope"/);
+    expect(markup).toMatch(/data-slot="select-value"[^>]*>all</);
+    expect(markup).not.toContain("<select");
+    // Unset, the trigger says so and what applies, not a value that reads as set.
+    const unset = space([{ ...ROOT[1]!, state: "unset", value: undefined }]);
+    expect(unset).toMatch(/data-slot="select-value"[^>]*>not set \(false\)</);
+  });
+
+  test("a text setting with values worth offering is a box that offers them and takes anything", () => {
+    const markup = space([
+      {
+        path: "model",
+        scope: "tenant",
+        type: "string",
+        state: "unset",
+        suggestions: ["composer-2.5", "claude-sonnet-4-6"],
+      },
+    ]);
+
+    // A combobox whose input is the draft: what is typed is what is saved.
+    expect(markup).toMatch(/<input[^>]*data-slot="combobox-input"[^>]*aria-label="model"/);
+    expect(markup).toMatch(/data-slot="combobox-trigger"/);
+    // With nothing typed, the box shows what applies without it.
+    expect(markup).toMatch(/aria-label="model"[^>]*placeholder="not set"/);
+    // A plain string setting stays a plain box.
+    expect(space([FIELDS[0]!])).not.toContain("combobox");
   });
 
   test("a computed value is shown as written, with nothing to save", () => {
