@@ -67,7 +67,7 @@ export const CANCELLABLE_VERBS: readonly HostVerb[] = ["start", "stop"];
  */
 export type VerbRunRequest =
   /**
-   * `beside: "tenant"` scaffolds into `.phoebe/` under a folder that is already
+   * `beside: "tenant"` scaffolds into a `.phoebe` folder under one that is already
    * a workspace child, carries the tenant config's settings onto the new one and
    * points the tenant entry at the shared folder — a deployment of its own,
    * beside the tenant it stays.
