@@ -54,12 +54,12 @@ const config: PhoebeUserConfig = {
   // Per-work-kind tuning (#300). One rule on both axes: spend where the agent
   // reconstructs intent, save where it executes a spec someone else wrote.
   //
-  // Effort is re-tuned for the 5.5 models rather than carried over. opus-5.5
-  // defaults to `medium`, and at that level it beat opus-5 at `high` on agentic
-  // coding in Anthropic's testing while thinking more per turn than opus-5 did
-  // at any given level — so the kinds that ran opus-5 at `high` run opus-5.5
-  // at `medium`: the same or better result for less of the usage limit. Lift a
-  // kind to `high` only once a run has shown medium falling short.
+  // The opus kinds keep `high` on opus-5.5. Its API default is `medium`, and
+  // at any given level it thinks more per turn than opus-5 did, so `high` here
+  // buys more deliberation than it did before — a deliberate spend on the kinds
+  // where a wrong answer is expensive. Drop one to `medium` if the usage limit
+  // bites; Anthropic's own numbers put opus-5.5 `medium` at or above opus-5
+  // `high` on agentic coding.
   //
   //   conflicts — no spec at all. The agent infers intent from two diverging
   //               branches, and a bad resolution loses code silently. Also the
@@ -90,7 +90,7 @@ const config: PhoebeUserConfig = {
   pipelines: {
     work: {
       kinds: {
-        conflicts: { effort: "medium", promptFile: "../prompts/conflict-prompt.md" },
+        conflicts: { effort: "high", promptFile: "../prompts/conflict-prompt.md" },
         checks: {
           model: "claude-sonnet-5-5",
           effort: "medium",
@@ -101,8 +101,8 @@ const config: PhoebeUserConfig = {
           effort: "medium",
           promptFile: "../prompts/reviews-prompt.md",
         },
-        issues: { effort: "medium", promptFile: "../prompts/issues-prompt.md" },
-        research: { effort: "medium", promptFile: "../prompts/research-prompt.md" },
+        issues: { effort: "high", promptFile: "../prompts/issues-prompt.md" },
+        research: { effort: "high", promptFile: "../prompts/research-prompt.md" },
       },
     },
   },
