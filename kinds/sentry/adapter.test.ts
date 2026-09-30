@@ -55,6 +55,13 @@ describe("buildListUrl", () => {
     expect(url.searchParams.get("limit")).toBe("100");
   });
 
+  test("no environments is no environment filter, so any environment and none both match", () => {
+    const url = new URL(buildListUrl(options({ environments: [] }), NOW));
+    expect(url.searchParams.has("environment")).toBe(false);
+    // The other gates are untouched.
+    expect(url.searchParams.get("query")).toBe("is:unresolved timesSeen:>=2 level:[error,fatal]");
+  });
+
   test("a single level is a plain term", () => {
     const url = new URL(buildListUrl(options({ levels: ["fatal"] }), NOW));
     expect(url.searchParams.get("query")).toBe("is:unresolved timesSeen:>=2 level:fatal");

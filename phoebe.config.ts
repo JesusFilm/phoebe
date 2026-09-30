@@ -131,6 +131,10 @@ export const config = defineConfig({
           path: "phoebe-agent/kinds/sentry",
           org: "jesusfilm-rb",
           project: 4512031884050432,
+          // Crash reports carry no environment, so the default's
+          // `["production"]` names one Sentry has never seen and the scan
+          // 404s. Empty is no filter.
+          environments: [],
         },
       },
     },
