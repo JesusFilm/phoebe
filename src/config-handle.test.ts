@@ -22,7 +22,6 @@ import {
   editConfigAppendWorkKind,
   editConfigGetField,
   editConfigGetRelay,
-
   editConfigGetFieldAt,
   editConfigListKeys,
   editConfigMoveField,
