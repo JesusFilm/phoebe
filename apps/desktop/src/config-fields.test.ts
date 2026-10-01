@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vite-plus/test";
-import { configFieldsOf, type ConfigRole } from "./config-fields.ts";
+import { configFieldsOf, LOCAL_OPEN_PATHS, type ConfigRole } from "./config-fields.ts";
 
 const config = (body: string): string => `export default defineConfig({\n${body}\n});\n`;
 
@@ -85,6 +85,7 @@ describe("a workspace root's settings", () => {
 
     expect(fields.map((one) => one.path)).toEqual([
       "engine.source",
+      "engine.repo",
       "engine.ref",
       "reporting.maintainers",
       "reporting.dsn",
@@ -94,12 +95,37 @@ describe("a workspace root's settings", () => {
     expect(fields.every((one) => one.scope === "deployment")).toBe(true);
   });
 
-  test("the engine and the fleet are shown, locked, with the reason", () => {
+  test("the engine is open, each row by its own way in", () => {
+    // Where it comes from is a choice of two; the repository offers the default
+    // and takes any; both are written by `config set`, which is let into them.
+    expect(field(ROOT, "engine.source", "workspace")).toMatchObject({
+      type: "enum",
+      values: ["github", "local"],
+      state: "set",
+      value: "github",
+    });
+    expect(field(ROOT, "engine.repo", "workspace")).toMatchObject({
+      state: "unset",
+      default: "JesusFilm/phoebe",
+      suggestions: ["JesusFilm/phoebe"],
+    });
+    expect(LOCAL_OPEN_PATHS).toEqual(["engine.source", "engine.repo"]);
+    // The ref moves with `upgrade`, and offers the refs the caller knows.
     expect(field(ROOT, "engine.ref", "workspace")).toMatchObject({
       state: "set",
       value: "main",
-      locked: expect.stringContaining("phoebe upgrade"),
+      via: "upgrade",
+      suggestions: ["main"],
     });
+    expect(field(ROOT, "engine.ref", "workspace")).not.toHaveProperty("locked");
+    const offered = configFieldsOf(ROOT, "workspace", { engineRefs: ["main", "v0.13.0"] });
+    expect(offered.find((one) => one.path === "engine.ref")?.suggestions).toEqual([
+      "main",
+      "v0.13.0",
+    ]);
+  });
+
+  test("the fleet is shown, locked, with the reason", () => {
     expect(field(ROOT, "workspace.depth", "workspace")).toMatchObject({
       value: 2,
       locked: expect.stringContaining("git edit"),
@@ -117,7 +143,6 @@ describe("a workspace root's settings", () => {
   });
 
   test("a locked row the file does not set is left out", () => {
-    expect(field(ROOT, "engine.repo", "workspace")).toBeUndefined();
     expect(field(ROOT, "workspace.tenants", "workspace")).toBeUndefined();
   });
 

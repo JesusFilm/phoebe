@@ -121,12 +121,19 @@ export type Editability = { ok: true } | { ok: false; reason: EditRefusalReason;
  * leaf the environment already sets would take the write and then go on being
  * ignored, which is the one outcome worse than a refusal.
  */
-export function editabilityOf(path: string, env: NodeJS.ProcessEnv): Editability {
+export function editabilityOf(
+  path: string,
+  env: NodeJS.ProcessEnv,
+  open: readonly string[] = [],
+): Editability {
   const refuse = (why: string): Editability => ({ ok: false, reason: "not-editable", why });
   if (path.trim() === "" || path.split(".").some((segment) => segment.trim() === "")) {
     return refuse(`"${path}" is not a config path`);
   }
   const segments = path.split(".");
+  // A leaf the caller was let into by name is past the closed set, and nothing
+  // else below applies to it: it is not a catalogued setting and has no env name.
+  if (open.includes(path)) return { ok: true };
   for (const block of CLOSED_EDIT_BLOCKS) {
     if (segments[0] === block.prefix) return refuse(block.why);
   }
@@ -274,6 +281,15 @@ export type ConfigEditDeps = {
    * ledger would live on is inside the container it is not going through.
    */
   ledgerPath: string | null;
+  /**
+   * Leaves inside a closed block this caller may write all the same, by exact
+   * path. The closed set is a rule about a console reaching a deployment from
+   * outside (#503). A companion writing an install's config on the operator's
+   * own disk is the operator's hand, and where the engine comes from is theirs
+   * to say there. `engine.ref` is never among them: it moves with `phoebe
+   * upgrade`, on every arm, so the new ref's migrations run with it.
+   */
+  open?: readonly string[];
   validate: PatchValidator;
   /** The environment the deployment resolves settings against. */
   env?: NodeJS.ProcessEnv;
@@ -357,7 +373,7 @@ export async function applyConfigEdit(
     );
   }
 
-  const editability = editabilityOf(edit.path, env);
+  const editability = editabilityOf(edit.path, env, deps.open);
   if (!editability.ok) return refuse(editability.reason, editability.why);
 
   const spliced = editConfigSetFieldAt(source, edit.path.split("."), edit.value);

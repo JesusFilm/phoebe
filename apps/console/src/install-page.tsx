@@ -217,6 +217,7 @@ export function InstallPage({
                         running={running}
                         receipt={receiptOfRun(run, config.path)}
                         onStart={start}
+                        status={<UpgradeStatus run={run} />}
                         label="the root config"
                         file={
                           <ConfigEditForm
@@ -709,6 +710,23 @@ function RunOutput({ run, onCancel }: { run: VerbRun | null; onCancel: (runId: s
         </p>
       )}
     </>
+  );
+}
+
+/**
+ * How the last engine move went, under the config form that asked for it. The
+ * run's own lines are on the install tab; this is the one sentence.
+ */
+function UpgradeStatus({ run }: { run: VerbRun | null }) {
+  if (run === null || run.verb !== "upgrade") return null;
+  if (run.exit === undefined) {
+    return <p className="muted">Moving the engine. The install tab has the run&apos;s output.</p>;
+  }
+  if (run.exit.outcome !== undefined) {
+    return <p className="outcome">{outcomeReading(run.exit.outcome)}</p>;
+  }
+  return (
+    <p className="refusal">The engine was not moved. The install tab has what the run said.</p>
   );
 }
 

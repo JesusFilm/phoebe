@@ -252,6 +252,8 @@ export type ConfigSetDeps = {
    * {@link ConfigEditDeps.ledgerPath}).
    */
   ledgerPath?: string | null;
+  /** Closed leaves this caller may write, by exact path (see {@link ConfigEditDeps.open}). */
+  open?: readonly string[];
 };
 
 /**
@@ -289,6 +291,7 @@ export async function runConfigSet(
           : deps.ledgerPath,
       validate,
       env,
+      ...(deps.open === undefined ? {} : { open: deps.open }),
     },
   );
 }

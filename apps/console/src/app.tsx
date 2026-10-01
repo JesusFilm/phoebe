@@ -197,6 +197,22 @@ export function App({
     return undefined;
   }, [bridge, openInstall]);
 
+  // Coming back to the window is a read too. A stopped install is not polled,
+  // so a config edited in a terminal would otherwise sit unseen behind a form
+  // still holding the old text, and the next edit from here would be refused as
+  // stale.
+  useEffect(() => {
+    if (bridge === null || openInstall === null || typeof window === "undefined") return;
+    const reread = (): void => {
+      bridge.installs.refresh(openInstall).then(
+        (event) => setReports((held) => ({ ...held, [event.install]: event })),
+        () => undefined,
+      );
+    };
+    window.addEventListener("focus", reread);
+    return () => window.removeEventListener("focus", reread);
+  }, [bridge, openInstall]);
+
   // `inside: "wsl"` opens the picker among the distros. The Windows picker cannot
   // be typed into and keeps WSL under a "Linux" node at the foot of its tree, so
   // a folder inside a distro is reached by starting the picker there.

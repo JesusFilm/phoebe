@@ -136,7 +136,8 @@ export const SETTING_COPY: Readonly<Record<string, SettingCopy>> = {
   },
   "engine.ref": {
     label: "Engine ref",
-    description: "The branch, tag or commit of the engine this deployment runs.",
+    description:
+      "The branch, tag or commit of the engine this deployment runs. Saving it runs an upgrade, so the new ref's migrations run with the move.",
   },
   "engine.repo": {
     label: "Engine repository",

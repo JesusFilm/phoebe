@@ -92,6 +92,11 @@ export type ConfigFieldFacts = {
   env?: string;
   /** Why this row is shown and not offered for change, when it is not. */
   locked?: string;
+  /**
+   * The verb that changes this row, when it is not `config set`. The engine's
+   * ref moves with `upgrade`, which runs the new ref's migrations with it.
+   */
+  via?: "upgrade";
   type: "string" | "number" | "integer" | "boolean" | "enum";
   /** The closed set of accepted values, for an `enum`. */
   values?: readonly string[];

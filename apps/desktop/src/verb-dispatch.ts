@@ -28,6 +28,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { app } from "electron";
 import type { InstallState, VerbIo } from "phoebe-agent/contracts";
+import { LOCAL_OPEN_PATHS } from "./config-fields.ts";
 import { deploymentDirOf } from "./deployment-dir.ts";
 import { initSoloBesideTenant } from "./solo-beside-tenant.ts";
 import { runConfigSet } from "../../../src/config-set.ts";
@@ -194,8 +195,10 @@ export function createDispatchVerb(deps: DispatchDeps): Dispatch {
           },
           // No ledger: the ledger answers a redelivered edit, and there is no
           // delivery here to repeat. The volume one would live on is inside the
-          // container this edit deliberately does not go through.
-          { ledgerPath: null },
+          // container this edit deliberately does not go through. And the
+          // engine's source and repository are open here: this is the operator's
+          // own disk, and where the engine comes from is theirs to say.
+          { ledgerPath: null, open: LOCAL_OPEN_PATHS },
         );
         io.stdout(
           outcome.state === "written"
