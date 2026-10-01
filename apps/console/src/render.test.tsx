@@ -1158,11 +1158,12 @@ describe("the two local writes on screen (#557)", () => {
     );
   }
 
-  test("the config tab carries the edit form and the fingerprint it checks against", () => {
+  test("the config tab carries the edit form, and keeps the fingerprint it checks against to itself", () => {
     const markup = page({ state: "stopped" }, {});
 
     expect(markup).toContain("Change one field");
-    expect(markup).toContain("sha256:0f1e2d3c4b5a6978");
+    // The fingerprint rides in the request; it is nothing a person reads.
+    expect(markup).not.toContain("sha256:0f1e2d3c4b5a6978");
     expect(markup).toContain("pipelines.work.pollIntervalMs");
   });
 
@@ -1389,8 +1390,9 @@ describe("a tenant's own config page", () => {
   test("opens on the tenant's form, over its file and no other", () => {
     const markup = page("/repos/ws/a");
 
-    expect(markup).toContain("/repos/ws/a/phoebe.config.ts");
     expect(markup).toContain('aria-label="Repository in acme/a"');
+    // No path and fingerprint line over the form: the page already says whose it is.
+    expect(markup).not.toContain("sha256:aa");
     expect(markup).toMatch(/aria-label="repoSlug"[^>]*value="acme\/a"/);
     // None of the workspace's own page comes along.
     expect(markup).not.toContain('aria-label="This project"');
