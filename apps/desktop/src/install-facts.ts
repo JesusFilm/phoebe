@@ -41,6 +41,15 @@ import { wslLocationOf, wslRunner } from "./wsl.ts";
 /** The config file at the root of an install. */
 const CONFIG_FILE = "phoebe.config.ts";
 
+/**
+ * The engine refs a form offers: the tip, and the release this companion is.
+ * The version is a build-time define, so a test run has only the tip to offer.
+ */
+const OFFER = {
+  engineRefs:
+    typeof __COMPANION_VERSION__ === "string" ? ["main", `v${__COMPANION_VERSION__}`] : ["main"],
+};
+
 /** The seams the derivation reaches the machine through. All injectable. */
 export type FactsDeps = {
   runner?: CommandRunner;
@@ -303,7 +312,7 @@ export function directoryFacts(
       configPath: childPath,
       configText: text,
       configFingerprint: text === null ? null : fingerprintOf(text),
-      ...(text === null ? {} : { configFields: configFieldsOf(text, "tenant") }),
+      ...(text === null ? {} : { configFields: configFieldsOf(text, "tenant", OFFER) }),
     };
   });
 
@@ -317,6 +326,7 @@ export function directoryFacts(
           configFields: configFieldsOf(
             configText,
             install.workspace === undefined ? "solo" : "workspace",
+            OFFER,
           ),
         }),
     envPresent: exists(path.join(root, ".env")),

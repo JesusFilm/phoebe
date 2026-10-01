@@ -64,6 +64,7 @@ export function ConfigSpace({
   tenant,
   label,
   file,
+  status,
 }: {
   install: LocalInstall;
   config: ConfigFile;
@@ -77,6 +78,8 @@ export function ConfigSpace({
   label: string;
   /** The form that names a path by hand, drawn under the file's text. */
   file: ReactNode;
+  /** What a save that was not a `config set` came to, said under the form. */
+  status?: ReactNode;
 }) {
   const [view, setView] = useState<ConfigView>(() => landingConfigView(config));
   const fields = config.fields ?? [];
@@ -124,24 +127,57 @@ export function ConfigSpace({
                   field={field}
                   running={running}
                   onSave={(value) =>
-                    onStart({
-                      install: install.dir,
-                      verb: "config set",
-                      path: field.path,
-                      value,
-                      fingerprint: config.fingerprint,
-                      ...(tenant === undefined ? {} : { tenant }),
-                    })
+                    onStart(
+                      saveRequest({
+                        install: install.dir,
+                        field,
+                        value,
+                        fingerprint: config.fingerprint,
+                        ...(tenant === undefined ? {} : { tenant }),
+                      }),
+                    )
                   }
                 />
               ))}
             </section>
           ))}
           {receipt === null ? null : <ReceiptPanel receipt={receipt} />}
+          {status}
         </>
       )}
     </div>
   );
+}
+
+/**
+ * The run one row's Save is. A `config set` against the fingerprint the form
+ * was drawn from, for every row but the engine's ref: that moves with
+ * `upgrade`, which runs the new ref's migrations before the config names it.
+ */
+export function saveRequest(opts: {
+  install: string;
+  field: Pick<ConfigFieldFacts, "path" | "via">;
+  value: string | number | boolean;
+  fingerprint: string;
+  tenant?: string;
+}): VerbRunRequest {
+  if (opts.field.via === "upgrade") {
+    return {
+      install: opts.install,
+      verb: "upgrade",
+      check: false,
+      target: "engine",
+      ref: String(opts.value),
+    };
+  }
+  return {
+    install: opts.install,
+    verb: "config set",
+    path: opts.field.path,
+    value: opts.value,
+    fingerprint: opts.fingerprint,
+    ...(opts.tenant === undefined ? {} : { tenant: opts.tenant }),
+  };
 }
 
 export type ConfigGroup = {

@@ -1,7 +1,13 @@
 import { describe, expect, test } from "vite-plus/test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ConfigFieldFacts } from "phoebe-agent/contracts";
-import { ConfigSpace, configGroups, landingConfigView, valueOfDraft } from "./config-form.tsx";
+import {
+  ConfigSpace,
+  configGroups,
+  landingConfigView,
+  saveRequest,
+  valueOfDraft,
+} from "./config-form.tsx";
 import { install } from "./test-fixture.ts";
 
 const FIELDS: ConfigFieldFacts[] = [
@@ -42,12 +48,12 @@ const FIELDS: ConfigFieldFacts[] = [
 
 const ROOT: ConfigFieldFacts[] = [
   {
-    path: "engine.ref",
+    path: "workspace.depth",
     scope: "deployment",
-    type: "string",
+    type: "integer",
     state: "set",
-    value: "main",
-    locked: "Moves with `phoebe upgrade`, so the new ref's migrations run with it.",
+    value: 2,
+    locked: "The fleet declaration is a git edit.",
   },
   {
     path: "reporting.maintainers",
@@ -168,8 +174,8 @@ describe("whose rows a config's form has", () => {
   test("a locked row says why, shows the value, and has nothing to save", () => {
     const markup = space([ROOT[0]!]);
 
-    expect(markup).toContain("Moves with `phoebe upgrade`");
-    expect(markup).toMatch(/aria-label="engine.ref"[^>]*readonly=""[^>]*value="main"/i);
+    expect(markup).toContain("The fleet declaration is a git edit.");
+    expect(markup).toMatch(/aria-label="workspace.depth"[^>]*readonly=""[^>]*value="2"/i);
     expect(markup).not.toContain(">Save<");
   });
 
@@ -198,6 +204,72 @@ describe("whose rows a config's form has", () => {
       ["Repository", false, 4],
     ]);
     expect(space([...FIELDS, ...ROOT])).toContain('<h3 class="config-group">Deployment</h3>');
+  });
+});
+
+describe("what a row's Save runs", () => {
+  test("a config set against the fingerprint the form was drawn from", () => {
+    expect(
+      saveRequest({
+        install: "/repos/a",
+        field: { path: "repoSlug" },
+        value: "acme/b",
+        fingerprint: "sha256:aa",
+      }),
+    ).toEqual({
+      install: "/repos/a",
+      verb: "config set",
+      path: "repoSlug",
+      value: "acme/b",
+      fingerprint: "sha256:aa",
+    });
+  });
+
+  test("a tenant's row names the tenant", () => {
+    expect(
+      saveRequest({
+        install: "/repos/ws",
+        field: { path: "repoSlug" },
+        value: "acme/b",
+        fingerprint: "sha256:aa",
+        tenant: "/repos/ws/a",
+      }),
+    ).toMatchObject({ verb: "config set", tenant: "/repos/ws/a" });
+  });
+
+  test("the engine's ref is an upgrade of the engine to that ref, not a config set", () => {
+    expect(
+      saveRequest({
+        install: "/repos/a",
+        field: { path: "engine.ref", via: "upgrade" },
+        value: "v0.14.0",
+        fingerprint: "sha256:aa",
+      }),
+    ).toEqual({
+      install: "/repos/a",
+      verb: "upgrade",
+      check: false,
+      target: "engine",
+      ref: "v0.14.0",
+    });
+  });
+
+  test("the engine's ref is a box that offers refs and takes any", () => {
+    const markup = space([
+      {
+        path: "engine.ref",
+        scope: "deployment",
+        type: "string",
+        state: "set",
+        value: "main",
+        via: "upgrade",
+        suggestions: ["main", "v0.13.0"],
+      },
+    ]);
+
+    expect(markup).toMatch(/<input[^>]*data-slot="combobox-input"[^>]*aria-label="engine.ref"/);
+    expect(markup).toMatch(/aria-label="engine.ref"[^>]*value="main"/);
+    expect(markup).toContain("Saving it runs an upgrade");
   });
 });
 

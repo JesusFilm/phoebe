@@ -49,6 +49,16 @@ export function useInstallRun(bridge: DesktopBridge, dir: string): InstallRun {
     };
   }, [bridge]);
 
+  // A run that ended may have changed what the folder holds: a config edit, an
+  // upgrade, an init. Main reads the install again and sends what it found down
+  // the same stream every other read arrives on, so a form shows the value that
+  // landed and sends the next edit against the file as it now is, not as it was.
+  const ended = run?.exit === undefined ? null : run.runId;
+  useEffect(() => {
+    if (ended === null) return;
+    void bridge.installs.refresh(dir).catch(() => undefined);
+  }, [bridge, dir, ended]);
+
   function start(request: VerbRunRequest): void {
     setTrouble(null);
     bridge.runs.start(request).then(

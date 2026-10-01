@@ -17,6 +17,7 @@
 // form shows it without offering to replace it.
 
 import type { ConfigFieldFacts } from "phoebe-agent/contracts";
+import { DEFAULT_ENGINE_REPO } from "../../../bootstrap/engine-source.ts";
 import { editConfigGetFieldAt } from "../../../src/config-handle.ts";
 import { CONFIG_DEFAULTS } from "../../../src/config-schema.ts";
 import { SETTINGS } from "../../../src/settings-catalogue.ts";
@@ -26,7 +27,7 @@ export type ConfigRole = "workspace" | "tenant" | "solo";
 
 type Row = Pick<
   ConfigFieldFacts,
-  "path" | "scope" | "type" | "values" | "suggestions" | "env" | "locked"
+  "path" | "scope" | "type" | "values" | "suggestions" | "env" | "locked" | "via"
 > & {
   fallback?: string | number | boolean;
 };
@@ -41,14 +42,32 @@ const SUGGESTIONS: Readonly<Record<string, readonly string[]>> = {
   defaultBranch: ["main", "master", "develop"],
 };
 
-const ENGINE_LOCK = "Moves with `phoebe upgrade`, so the new ref's migrations run with it.";
+/**
+ * The leaves of the closed `engine` block the companion writes with `config
+ * set` (verb-dispatch.ts). The ref is not one: it goes through `upgrade`.
+ */
+export const LOCAL_OPEN_PATHS: readonly string[] = ["engine.source", "engine.repo"];
+
 const FLEET_LOCK = "The fleet declaration is a git edit.";
 
 /** What a root config says about the deployment, in the order the template writes it. */
 const DEPLOYMENT_ROWS: readonly Row[] = [
-  { path: "engine.source", scope: "deployment", type: "string", locked: ENGINE_LOCK },
-  { path: "engine.ref", scope: "deployment", type: "string", locked: ENGINE_LOCK },
-  { path: "engine.repo", scope: "deployment", type: "string", locked: ENGINE_LOCK },
+  {
+    path: "engine.source",
+    scope: "deployment",
+    type: "enum",
+    values: ["github", "local"],
+    fallback: "github",
+  },
+  {
+    path: "engine.repo",
+    scope: "deployment",
+    type: "string",
+    suggestions: [DEFAULT_ENGINE_REPO],
+    fallback: DEFAULT_ENGINE_REPO,
+  },
+  // Saved through `upgrade`, so the new ref's migrations run with the move.
+  { path: "engine.ref", scope: "deployment", type: "string", fallback: "main", via: "upgrade" },
   { path: "reporting.maintainers", scope: "deployment", type: "boolean", fallback: false },
   { path: "reporting.dsn", scope: "deployment", type: "string" },
   { path: "reporting.includeRef", scope: "deployment", type: "boolean", fallback: false },
@@ -100,9 +119,18 @@ const ROWS: Record<ConfigRole, readonly Row[]> = {
  * A locked row the file does not set is left out. There is nothing to show and
  * nothing to change, so it would be a row about a field that is not there.
  */
-export function configFieldsOf(source: string, role: ConfigRole): ConfigFieldFacts[] {
+export function configFieldsOf(
+  source: string,
+  role: ConfigRole,
+  offer: { engineRefs?: readonly string[] } = {},
+): ConfigFieldFacts[] {
   const fields: ConfigFieldFacts[] = [];
-  for (const { fallback, ...row } of ROWS[role]) {
+  // The refs worth offering are the caller's to know: the tip, and the release
+  // this companion is. Any branch, tag or commit can still be typed.
+  const engineRefs = offer.engineRefs ?? ["main"];
+  for (const { fallback, ...declared } of ROWS[role]) {
+    const row =
+      declared.path === "engine.ref" ? { ...declared, suggestions: engineRefs } : declared;
     const read = editConfigGetFieldAt(source, row.path.split("."));
     if (!read.ok) {
       // The file itself does not parse: no form. A block that is computed is
