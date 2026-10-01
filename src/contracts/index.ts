@@ -226,6 +226,14 @@ export type {
   StoredReport,
   TenantConfigFacts,
 } from "./local-report.ts";
+export type {
+  HarnessFacts,
+  HarnessName,
+  HarnessPin,
+  HarnessReport,
+  HarnessUpdate,
+  HarnessUpdateOutcome,
+} from "./harness.ts";
 export type { SecretSetOutcome, SecretWriter } from "./secret-set.ts";
 export type { MintedPairingToken } from "./relay-routes.ts";
 export { RELAY_TOKEN_ENV } from "./relay-protocol.ts";

@@ -42,7 +42,7 @@
 // folder" and "this was sealed and sent to a server" are different things to
 // have done with a secret.
 
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { CANCELLABLE_VERBS } from "phoebe-agent/contracts";
 import type {
   CompanionEnvironment,
@@ -80,6 +80,7 @@ import { ConfigSpace } from "./config-form.tsx";
 import { ProjectSettings } from "./project-settings.tsx";
 import { readReport } from "./report.ts";
 import { DEPLOYMENT_TABS, tabHasContent, type ConfigReading, type DeploymentTab } from "./tabs.ts";
+import { HarnessSection } from "./harness-section.tsx";
 import { receiptOfRun, useInstallRun } from "./verb-run.ts";
 
 export function InstallPage({
@@ -113,7 +114,7 @@ export function InstallPage({
 }) {
   const [tab, setTab] = useState<DeploymentTab | "install">(() => landingTab(install));
   const [environment, setEnvironment] = useState<CompanionEnvironment | null>(null);
-  const { run, running, trouble, start } = useInstallRun(bridge, install.dir);
+  const { run, running, trouble, start, rebuild } = useInstallRun(bridge, install.dir);
 
   useEffect(() => {
     let live = true;
@@ -204,6 +205,15 @@ export function InstallPage({
             onStart={start}
             onForget={onForget}
             onCancel={(runId) => void bridge.runs.cancel(runId).catch(() => {})}
+            harness={
+              <HarnessSection
+                install={install}
+                bridge={bridge}
+                event={report}
+                busy={running}
+                onRebuild={() => rebuild(install.state === "running")}
+              />
+            }
           />
         ) : (
           <>
@@ -330,6 +340,7 @@ export function InstallTab({
   onStart,
   onForget,
   onCancel,
+  harness,
 }: {
   install: LocalInstall;
   environment: CompanionEnvironment | null;
@@ -341,6 +352,8 @@ export function InstallTab({
   onStart: (request: VerbRunRequest) => void;
   onForget: (dir: string) => void;
   onCancel: (runId: string) => void;
+  /** The AI harness section (harness-section.tsx), which needs the bridge this tab does not hold. */
+  harness?: ReactNode;
 }) {
   const offered = offeredVerbs(install);
   // Forget asks first. One click on a quiet button, and an install is gone from
@@ -478,6 +491,8 @@ export function InstallTab({
         )}
         {trouble === null ? null : <p className="refusal">{trouble}</p>}
       </section>
+
+      {harness}
 
       <SecretSetForm install={install} running={running} run={run} onStart={onStart} />
 

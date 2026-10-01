@@ -27,6 +27,7 @@ import type {
   InstallPatch,
   LocalInstall,
 } from "./local-install.ts";
+import type { HarnessReport, HarnessUpdate, HarnessUpdateOutcome } from "./harness.ts";
 import type {
   InstallRepair,
   LocalAlertEvent,
@@ -193,6 +194,17 @@ export type DesktopBridge = {
    * `stop` ends it. Lines and endings arrive for every followed install, tagged
    * with the install they belong to, so a pane filters for its own.
    */
+  /**
+   * The agent CLIs an install's container carries (harness.ts). A check reads
+   * the Dockerfile and asks the running container; it asks the network for the
+   * newest versions only when `lookUp` is set. An update moves one pin in the
+   * Dockerfile and rebuilds nothing: the rebuild is a `start --build` run.
+   */
+  harness: {
+    check: (dir: string, opts: { lookUp: boolean }) => Promise<HarnessReport>;
+    update: (dir: string, update: HarnessUpdate) => Promise<HarnessUpdateOutcome>;
+  };
+
   logs: {
     /**
      * Start following, or join the stream already running. Resolves with the

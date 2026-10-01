@@ -75,6 +75,7 @@ import { Rail } from "./rail.tsx";
 import { isNotSignedIn, type RelayClient, type RelaySignIn } from "./relay-client.ts";
 import { configOf } from "./report.ts";
 import { ADD_HREF, FLEET_ROUTE, parseRoute, type Route } from "./route.ts";
+import { exitOf } from "./verb-run.ts";
 
 type Session =
   | { kind: "asking" }
@@ -940,25 +941,6 @@ async function sendConfigEdit(
  * The route, kept in step with the address bar. Links are plain `href`s into the
  * hash, so the browser does the navigating and the history; this only listens.
  */
-/** Resolves when the run with this id exits — a restart's wait between its halves. */
-function exitOf(bridge: DesktopBridge, dir: string, runId: string): Promise<void> {
-  return new Promise((resolve) => {
-    const off = bridge.runs.exits((exit) => {
-      if (exit.runId !== runId) return;
-      off();
-      resolve();
-    });
-    // The exit may have come and gone before this subscription existed; main
-    // still holds the install's last run, so ask it once.
-    void bridge.runs.current(dir).then((current) => {
-      if (current !== null && current.runId === runId && current.exit !== undefined) {
-        off();
-        resolve();
-      }
-    }, noop);
-  });
-}
-
 function useRoute(): Route {
   const [route, setRoute] = useState<Route>(() =>
     typeof window === "undefined" ? FLEET_ROUTE : parseRoute(window.location.hash),

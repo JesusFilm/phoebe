@@ -108,6 +108,14 @@ wipe or somebody else's deployment, and the relay will not guess which.
 could move the address it is reached at could strand a deployment where nobody
 can find it.
 
+The install tab's **AI harness** section lists the agent CLIs the container
+carries (Cursor's `agent`, Claude Code, Codex): the version
+`container/Dockerfile` pins, the one the running container has, and, after
+**Check for updates**, the newest published. Each row can pin a version in the
+Dockerfile, and **Rebuild and restart** puts it in the container. A tenant's
+page shows the same for the one harness its provider runs. The container is the
+workspace's, so the pin it moves is shared by every tenant.
+
 ## What the console shows
 
 The console is one React bundle in `apps/console`, built into the package and

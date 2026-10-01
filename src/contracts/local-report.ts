@@ -15,6 +15,7 @@
 // report at all and still has a page to draw (#526).
 
 import type { AlertMessage } from "./alerts.ts";
+import type { HarnessName, HarnessPin } from "./harness.ts";
 import type { LocalInstall } from "./local-install.ts";
 import { RELAY_EVENTS } from "./relay-events.ts";
 import type { RelayStoredReport } from "./relay-routes.ts";
@@ -70,6 +71,13 @@ export type InstallDirectoryFacts = {
    * older than the field.
    */
   tenants?: TenantConfigFacts[];
+  /**
+   * What the install's Dockerfile says about each agent CLI (harness.ts). Read
+   * with the config, so a console can say a tenant's provider has no CLI in
+   * the container without asking anything. Absent when the install has no
+   * Dockerfile, and from a companion older than the field.
+   */
+  harnessPins?: { harness: HarnessName; pin: HarnessPin }[];
 };
 
 /**

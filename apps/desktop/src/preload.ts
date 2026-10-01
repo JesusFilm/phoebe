@@ -63,6 +63,10 @@ const bridge: DesktopBridge = {
     repair: (dir, repair) => call(BRIDGE_CHANNELS.installsRepair, dir, repair),
     alerts: (onAlert) => subscribe<LocalAlertEvent>(BRIDGE_CHANNELS.installsAlert, onAlert),
   },
+  harness: {
+    check: (dir, opts) => call(BRIDGE_CHANNELS.harnessCheck, dir, opts),
+    update: (dir, update) => call(BRIDGE_CHANNELS.harnessUpdate, dir, update),
+  },
   runs: {
     start: (request) => call(BRIDGE_CHANNELS.runStart, request),
     current: (install) => call(BRIDGE_CHANNELS.runCurrent, install),

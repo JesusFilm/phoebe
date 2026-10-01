@@ -20,6 +20,9 @@ import type {
   DoctorCheck,
   DoctorSection,
   FleetCell,
+  HarnessReport,
+  HarnessUpdate,
+  HarnessUpdateOutcome,
   InstallDirectoryFacts,
   InstallRepair,
   LocalAlertEvent,
@@ -427,6 +430,26 @@ export function bridge(answers: BridgeAnswers = {}): DesktopBridge {
         return () => undefined;
       },
     },
+    harness: {
+      check: (dir, opts) => {
+        answers.harnessChecks?.push({ dir, lookUp: opts.lookUp });
+        return answers.harness === undefined
+          ? Promise.reject(notAnInstall(dir))
+          : Promise.resolve(answers.harness);
+      },
+      update: (dir, update) => {
+        answers.harnessUpdates?.push({ dir, update });
+        return Promise.resolve(
+          answers.harnessUpdate ?? {
+            kind: "moved",
+            harness: update.harness,
+            from: null,
+            to: update.version,
+            file: `${dir}/container/Dockerfile`,
+          },
+        );
+      },
+    },
     runs: {
       start: (request) => {
         answers.started?.push(request);
@@ -486,6 +509,11 @@ export type BridgeAnswers = {
   logs?: string[];
   environment?: CompanionEnvironment;
   installs?: LocalInstall[];
+  /** What a harness check answers with; unset, the check is refused. */
+  harness?: HarnessReport;
+  harnessChecks?: { dir: string; lookUp: boolean }[];
+  harnessUpdate?: HarnessUpdateOutcome;
+  harnessUpdates?: { dir: string; update: HarnessUpdate }[];
   /** What a repair answers with, and where each one asked for is recorded. */
   repair?: RepairOutcome;
   repaired?: { dir: string; repair: InstallRepair }[];

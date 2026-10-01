@@ -58,6 +58,9 @@ import type {
   InstallPatch,
   InstallRepair,
   RepairOutcome,
+  HarnessReport,
+  HarnessUpdate,
+  HarnessUpdateOutcome,
 } from "phoebe-agent/contracts";
 import { createCompanionAlerts } from "./alerting.ts";
 import { authCodeIn, authCodeInArgv } from "./auth-link.ts";
@@ -88,6 +91,7 @@ import {
 import { deploymentDirOf } from "./deployment-dir.ts";
 import { probeDocker } from "./docker.ts";
 import { CONTAINER_UID, grantEnvAccess, tenantEnvPath } from "./env-access.ts";
+import { createHarness } from "./harness.ts";
 import { allInstallFacts, directoryFactsWithAccess, installFacts } from "./install-facts.ts";
 import { createLocalReads } from "./local-read.ts";
 import type { PairArm } from "./pair.ts";
@@ -267,6 +271,29 @@ async function factsFor(dir: string): Promise<LocalInstall | null> {
   if (stored === undefined) return null;
   const docker = await probeDocker();
   return installFacts(stored, { dockerPresent: docker.present });
+}
+
+/**
+ * The agent CLIs each install's container carries (harness.ts). Docker is asked
+ * where the install's containers are, as every other read is.
+ */
+const harness = createHarness({
+  runnerFor: (dir) => {
+    const wsl = wslLocationOf(dir);
+    return wsl === null ? defaultCommandRunner : wslRunner(wsl, defaultCommandRunner);
+  },
+});
+
+/** The install at `dir`, or the refusal every call on a folder main does not hold gets. */
+async function heldInstall(dir: string): Promise<LocalInstall> {
+  const install = await factsFor(dir);
+  if (install === null) {
+    throw new BridgeRefusal({
+      code: "refused",
+      message: `${dir} is not a local install the companion knows`,
+    });
+  }
+  return install;
 }
 
 /**
@@ -611,6 +638,27 @@ app.whenReady().then(
                   ? `The container's user (uid ${CONTAINER_UID}) may now read ${file}, and nobody else gained anything.`
                   : `${file} is now readable by every user on this machine: there was no ACL tool to name the container's user alone.`,
             };
+      }),
+    );
+
+    ipcMain.handle(BRIDGE_CHANNELS.harnessCheck, (_event, dir: string, opts: { lookUp: boolean }) =>
+      answering<HarnessReport>(async () => {
+        const install = await heldInstall(dir);
+        return harness.check({
+          dir,
+          running: install.state === "running",
+          lookUp: opts?.lookUp === true,
+        });
+      }),
+    );
+
+    ipcMain.handle(BRIDGE_CHANNELS.harnessUpdate, (_event, dir: string, update: HarnessUpdate) =>
+      answering<HarnessUpdateOutcome>(async () => {
+        await heldInstall(dir);
+        const outcome = await harness.update(dir, update);
+        // The pins ride on the install's read, so the rail and the page redraw.
+        if (outcome.kind === "moved") await reads.refresh(dir).catch(() => undefined);
+        return outcome;
       }),
     );
 
