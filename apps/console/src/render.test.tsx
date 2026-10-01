@@ -689,8 +689,15 @@ describe("the local arm on the rail", () => {
     // The slug labels a child when it has one, the folder otherwise; the fleet
     // says what each is doing, and a folder the fleet does not know says so.
     expect(opened).toMatch(
-      /class="mark attention"[^>]*><\/span><span class="label">acme\/a<\/span><span class="word">held/,
+      /class="mark attention"[^>]*><\/span><span class="label">acme\/a<\/span><span class="rail-problems">[\s\S]*?<\/span><span class="word">held/,
     );
+    // What is wrong shows without opening anything: one error on the held child,
+    // counted again on the workspace's own line with the fleet's size.
+    expect(opened).toMatch(/class="rail-problem error" aria-label="1 error"/);
+    expect(opened).toMatch(/class="rail-summary">2 tenants<span class="rail-problems"/);
+    // One summary where there are two installs: a solo one has no fleet to sum.
+    expect(closed.match(/class="rail-summary"/g)).toHaveLength(1);
+    expect(opened).toContain("Error — held:");
     expect(opened).toMatch(
       /class="mark idle"[^>]*><\/span><span class="label">b<\/span><span class="word">not in the fleet/,
     );

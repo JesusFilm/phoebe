@@ -120,7 +120,7 @@ describe("the definition", () => {
     expect(definition.promptFile).toBe(SENTRY_PROMPT_FILE);
     expect(existsSync(SENTRY_PROMPT_FILE)).toBe(true);
     expect(definition.effort).toBe("high");
-    expect(definition.model).toBe("claude-opus-5");
+    expect(definition.model).toBe("claude-opus-5-5");
   });
 
   test("a bad options block fails at the factory, naming the config path", () => {

@@ -178,7 +178,7 @@ After rebuild + restart, trigger a Claude unit and confirm the run authenticates
 A quick isolated check of the token itself, outside Phoebe:
 
 ```
-CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-… claude -p "say hi" --model claude-sonnet-4-6
+CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-… claude -p "say hi" --model claude-sonnet-5-5
 ```
 
 If that returns a completion, the container will authenticate the same way.

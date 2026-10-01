@@ -1825,3 +1825,66 @@ details.why > summary::marker {
 .offer h2 {
   margin-top: 0;
 }
+
+/* ── what is wrong, at a glance, on the rail ───────────────────────────── */
+
+.rail-problems {
+  display: inline-flex;
+  flex: none;
+  gap: 5px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.rail-problem {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.rail-problem.error {
+  color: var(--fail);
+}
+
+.rail-problem.warning {
+  color: var(--warn);
+}
+
+/* A tenant with every pipeline switched off: there, and not doing anything. */
+.rail-child.disabled .label {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
+/* A unit in flight: the mark breathes, unless the OS asked for less motion. */
+.mark.active {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 28%, transparent);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .mark.active {
+    animation: rail-active 1.6s ease-in-out infinite;
+  }
+}
+
+@keyframes rail-active {
+  0%,
+  100% {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--ok) 34%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--ok) 10%, transparent);
+  }
+}
+
+/* A workspace's fleet, summed, on a line of its own under the entry. */
+.rail-summary {
+  flex-basis: 100%;
+  width: 100%;
+  padding: 0 14px 5px 40px;
+  color: var(--muted);
+  font-size: 11.5px;
+}

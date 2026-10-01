@@ -11,3 +11,5 @@ A folder that is a workspace child, a tenant config and no deployment of its own
 A form no longer goes stale after a save. A run that ends, and coming back to the window, both read the install again, so a row shows the value that landed and the next edit is checked against the file as it now is.
 
 `config set` takes a list of closed leaves a caller on the same disk may write by exact path. The companion opens `engine.source` and `engine.repo` with it; `engine.ref` stays closed to `config set` on every arm.
+
+The rail says what each tenant is doing at a glance. A row's mark breathes while a unit is in flight, a tenant with every pipeline switched off is struck through and reads disabled, and a tenant with something wrong carries two small counts, errors and warnings, with each one named on hover: a hold and its reason, a wedged or crash-looping pipeline, a failing doctor check, a missing `.env`, a pipeline's last error, a doctor warning. The workspace's own line sums them: how many tenants, how many working, how many disabled, and the same two counts across the fleet, so a closed workspace still shows that something under it needs a look.
