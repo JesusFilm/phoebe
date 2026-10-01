@@ -362,19 +362,19 @@ key: `SENTRY_AUTH_TOKEN` in the tenant's `.env`, scope `event:read`, declared
 as `requiredEnv` and never opened to the agent. Only the two required fields
 have no default:
 
-| Option            | Default               | Meaning                                                                                                   |
-| ----------------- | --------------------- | --------------------------------------------------------------------------------------------------------- |
-| `org`             | required              | The organization slug in every Sentry URL.                                                                |
-| `project`         | required              | The **numeric** project id (`project=` in a Sentry issues URL); slug resolution needs a wider scope.      |
-| `url`             | `"https://sentry.io"` | The collector's origin, for self-hosted Sentry or GlitchTip.                                              |
-| `collector`       | `"sentry"`            | `"sentry"` or `"glitchtip"`: the read-surface policy. Bugsink reads differently and is not covered.       |
-| `window`          | `"24h"`               | A group must have been seen inside this period. Sentry's `statsPeriod` grammar: `30m`, `24h`, `7d`, `2w`. |
-| `minEvents`       | `2`                   | Events in the window before a group is a candidate.                                                       |
-| `environments`    | `["production"]`      | Environments a candidate must have been seen in.                                                          |
-| `levels`          | `["error", "fatal"]`  | Levels a candidate may carry.                                                                             |
-| `label`           | `"sentry"`            | On every filed issue, for humans to filter by. Created on demand.                                         |
-| `triagedLabel`    | `"triaged"`           | On a ready verdict when `applyReadyLabel` is off; a human flips it to `readyLabel`. Created on demand.    |
-| `applyReadyLabel` | `false`               | Apply the tenant's `readyLabel` to a ready verdict directly.                                              |
+| Option            | Default               | Meaning                                                                                                                                                                                      |
+| ----------------- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `org`             | required              | The organization slug in every Sentry URL.                                                                                                                                                   |
+| `project`         | required              | The **numeric** project id (`project=` in a Sentry issues URL); slug resolution needs a wider scope.                                                                                         |
+| `url`             | `"https://sentry.io"` | The collector's origin, for self-hosted Sentry or GlitchTip.                                                                                                                                 |
+| `collector`       | `"sentry"`            | `"sentry"` or `"glitchtip"`: the read-surface policy. Bugsink reads differently and is not covered.                                                                                          |
+| `window`          | `"24h"`               | A group must have been seen inside this period. Sentry's `statsPeriod` grammar: `30m`, `24h`, `7d`, `2w`.                                                                                    |
+| `minEvents`       | `2`                   | Events in the window before a group is a candidate.                                                                                                                                          |
+| `environments`    | `["production"]`      | Environments a candidate must have been seen in. `[]` turns the filter off, which is how to reach events with no environment. Sentry answers 404 for a name the organisation has never seen. |
+| `levels`          | `["error", "fatal"]`  | Levels a candidate may carry.                                                                                                                                                                |
+| `label`           | `"sentry"`            | On every filed issue, for humans to filter by. Created on demand.                                                                                                                            |
+| `triagedLabel`    | `"triaged"`           | On a ready verdict when `applyReadyLabel` is off; a human flips it to `readyLabel`. Created on demand.                                                                                       |
+| `applyReadyLabel` | `false`               | Apply the tenant's `readyLabel` to a ready verdict directly.                                                                                                                                 |
 
 A bad block fails registration, so `phoebe pipelines` and the pipeline's boot
 name the field rather than a unit dying later. The tuning knobs (`model`,
