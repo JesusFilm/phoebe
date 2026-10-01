@@ -1022,7 +1022,7 @@ export const CONFIG_DEFAULTS = {
   defaultProvider: "cursor" as ProviderName,
   defaultModels: {
     cursor: "composer-2.5",
-    claude: "claude-sonnet-4-6",
+    claude: "claude-sonnet-5-5",
     codex: "gpt-5.4-mini",
   } satisfies Record<ProviderName, string>,
   // Empty on purpose: no effort flag is passed unless a consumer asks for one,

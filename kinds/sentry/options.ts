@@ -21,7 +21,11 @@ export type SentryKindOptions = {
   window: string;
   /** Minimum events in the window before a group is a candidate. */
   minEvents: number;
-  /** Environments a candidate must have been seen in. */
+  /**
+   * Environments a candidate must have been seen in. Empty means any: no
+   * environment filter is sent, which is also the only way to reach events
+   * that carry no environment at all.
+   */
   environments: readonly string[];
   /** Levels a candidate may carry. */
   levels: readonly string[];
@@ -73,13 +77,19 @@ function nonEmptyString(at: string, key: string, value: unknown): string {
   return value;
 }
 
-function stringList(at: string, key: string, value: unknown): readonly string[] {
+function stringList(
+  at: string,
+  key: string,
+  value: unknown,
+  { allowEmpty = false }: { allowEmpty?: boolean } = {},
+): readonly string[] {
   if (
     !Array.isArray(value) ||
-    value.length === 0 ||
+    (value.length === 0 && !allowEmpty) ||
     value.some((v) => typeof v !== "string" || v.trim().length === 0)
   ) {
-    fail(at, `\`${key}\` must be a non-empty array of strings — got ${JSON.stringify(value)}.`);
+    const shape = allowEmpty ? "an array of non-empty strings" : "a non-empty array of strings";
+    fail(at, `\`${key}\` must be ${shape} — got ${JSON.stringify(value)}.`);
   }
   return value as string[];
 }
@@ -155,7 +165,8 @@ export function resolveSentryOptions(raw: unknown, at: string): SentryKindOption
     environments:
       block["environments"] === undefined
         ? SENTRY_OPTION_DEFAULTS.environments
-        : stringList(at, "environments", block["environments"]),
+        : // Empty is a value here, not a mistake: it turns the filter off.
+          stringList(at, "environments", block["environments"], { allowEmpty: true }),
     levels:
       block["levels"] === undefined
         ? SENTRY_OPTION_DEFAULTS.levels

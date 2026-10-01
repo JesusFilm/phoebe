@@ -54,7 +54,7 @@ describe("a tenant's settings", () => {
 
     expect(field(source, "model")).toMatchObject({
       type: "string",
-      suggestions: ["composer-2.5", "claude-sonnet-4-6", "gpt-5.4-mini"],
+      suggestions: ["composer-2.5", "claude-sonnet-5-5", "gpt-5.4-mini"],
     });
     expect(field(source, "effort")?.suggestions).toContain("xhigh");
     expect(field(source, "repoSlug")).not.toHaveProperty("suggestions");

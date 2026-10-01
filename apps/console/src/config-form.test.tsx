@@ -127,7 +127,7 @@ describe("one config on the config tab", () => {
         scope: "tenant",
         type: "string",
         state: "unset",
-        suggestions: ["composer-2.5", "claude-sonnet-4-6"],
+        suggestions: ["composer-2.5", "claude-sonnet-5-5"],
       },
     ]);
 
