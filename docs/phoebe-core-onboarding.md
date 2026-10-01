@@ -247,7 +247,7 @@ Set:
   | Provider | `PHOEBE_AGENT` | Key env var (`providerEnv`) | Example `PHOEBE_MODEL` (`defaultModels`) |
   | -------- | -------------- | --------------------------- | ---------------------------------------- |
   | Cursor   | `cursor`       | `CURSOR_API_KEY`            | `composer-2.5`                           |
-  | Claude   | `claude`       | `ANTHROPIC_API_KEY`         | `claude-sonnet-4-6`                      |
+  | Claude   | `claude`       | `ANTHROPIC_API_KEY`         | `claude-sonnet-5-5`                      |
   | Codex    | `codex`        | `OPENAI_KEY`                | `gpt-5.4-mini`                           |
 
   Leaving `PHOEBE_AGENT` unset falls back to `defaultProvider` (`cursor`). Setting

@@ -40,7 +40,7 @@ is the test fixture, and `phoebe init` won't overwrite it.
   mount of `phoebe.config.ts`. A file bind mount pins the host _inode_, so an
   editor that saves by rename would be invisible to `boot`'s config watch.
 - **Claude provider on a subscription.** `defaultProvider: "claude"` with
-  `claude-opus-5` at `low` effort, authenticating with `CLAUDE_CODE_OAUTH_TOKEN`
+  `claude-opus-5-5` at `low` effort, authenticating with `CLAUDE_CODE_OAUTH_TOKEN`
   (a Pro/Max subscription token) rather than `ANTHROPIC_API_KEY` — see
   [`docs/claude-subscription-auth.md`](../docs/claude-subscription-auth.md).
   The image therefore also carries a pinned `@anthropic-ai/claude-code`, and

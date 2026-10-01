@@ -69,7 +69,7 @@ export const SENTRY_PROMPT_FILE = join(import.meta.dirname, "prompt.md");
  * block like any kind.
  */
 export const MOST_CAPABLE_MODEL: Partial<Record<ProviderName, string>> = {
-  claude: "claude-opus-5",
+  claude: "claude-opus-5-5",
   codex: "gpt-5.4",
 };
 export const TRIAGE_EFFORT = "high";
