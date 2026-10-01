@@ -144,14 +144,6 @@ export function InstallPage({
             </Button>
           )}
         </div>
-        {install.deploymentDir === undefined ? null : (
-          <p className="muted">
-            The deployment lives in <span className="mono">{install.deploymentDir}/</span> under
-            this folder: its config, its <span className="mono">.env</span> and its container. The
-            folder&apos;s own config is the entry a workspace above it reads.
-          </p>
-        )}
-
         <ProjectSettings
           install={install}
           onUpdate={(patch) => onUpdate(install.dir, patch)}
@@ -525,8 +517,8 @@ export function ConfigEditForm({
       <h2>{heading}</h2>
       <p className="muted">
         Written straight to <span className="mono">{file.path}</span> on this machine. The edit
-        checks itself against the fingerprint above — if the file has moved since this tab read it,
-        the edit is refused and says what to type instead.
+        checks itself against the file as this tab read it: if it has moved since, the edit is
+        refused and says what to type instead.
       </p>
       <form className="verbs" onSubmit={submit}>
         <input

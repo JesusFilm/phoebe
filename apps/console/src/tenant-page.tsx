@@ -74,9 +74,6 @@ export function TenantPage({
             </p>
           ) : (
             <>
-              <p className="muted">
-                <span className="mono">{found.config.path}</span> · {found.config.fingerprint}
-              </p>
               <ConfigSpace
                 install={install}
                 config={found.config}
