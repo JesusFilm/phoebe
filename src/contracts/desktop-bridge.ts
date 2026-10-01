@@ -27,7 +27,12 @@ import type {
   InstallPatch,
   LocalInstall,
 } from "./local-install.ts";
-import type { LocalAlertEvent, LocalReportEvent } from "./local-report.ts";
+import type {
+  InstallRepair,
+  LocalAlertEvent,
+  LocalReportEvent,
+  RepairOutcome,
+} from "./local-report.ts";
 import type { RelayEvent } from "./relay-events.ts";
 import type { RelayIdentity } from "./relay-routes.ts";
 import type { RunExit, RunLine, VerbRun, VerbRunRequest } from "./verb-run.ts";
@@ -153,6 +158,12 @@ export type DesktopBridge = {
      * `report: null` (#527 §6).
      */
     refresh: (dir: string) => Promise<LocalReportEvent>;
+    /**
+     * Put one thing right on an install, and read it again. Never run on main's
+     * own initiative: every repair changes something on the operator's disk, so
+     * each is a button somebody pressed.
+     */
+    repair: (dir: string, repair: InstallRepair) => Promise<RepairOutcome>;
     /**
      * Every alert main raised over a local install (#524 §3). The relay arm's
      * alerts arrive on `relay.events` instead, because there they are the

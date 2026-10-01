@@ -1418,6 +1418,49 @@ describe("a tenant's own config page", () => {
     expect(page("/repos/ws/a", null)).toContain("Reading the config");
     expect(page("/repos/elsewhere")).toContain("This workspace has no such tenant.");
   });
+
+  test("a .env the container cannot read is said first, with the button that fixes it", () => {
+    const locked = localReport({
+      facts: workspace,
+      directory: directory({
+        bootstrapperRunning: false,
+        tenants: event.directory.tenants!.map((tenant) =>
+          tenant.dir === "/repos/ws/a"
+            ? { ...tenant, env: { path: "/repos/ws/a/.phoebe/.env", access: "unreadable" } }
+            : { ...tenant, env: { path: "/repos/ws/b/.env", access: "missing" } },
+        ),
+      }),
+    });
+    const markup = page("/repos/ws/a", locked);
+
+    expect(markup).toContain('aria-label="The container cannot read this tenant&#x27;s .env"');
+    expect(markup).toContain("/repos/ws/a/.phoebe/.env");
+    expect(markup).toContain("Let the container read it");
+    // Above the config, not under it.
+    expect(markup.indexOf("Let the container read it")).toBeLessThan(markup.indexOf("<h2>Config"));
+    // A readable file, a missing one and no answer at all warn about nothing.
+    expect(page("/repos/ws/b", locked)).not.toContain("Let the container read it");
+    expect(page("/repos/ws/a")).not.toContain("Let the container read it");
+
+    // And the rail shows it on a workspace that is not even running.
+    const rail = renderToStaticMarkup(
+      <Rail
+        facts={[]}
+        now={NOW}
+        surface="companion"
+        signedIn={false}
+        signIn={null}
+        onSignedIn={noop}
+        installs={[workspace]}
+        reports={{ "/repos/ws": locked }}
+        defaultExpanded={new Set(["/repos/ws"])}
+        onSettings={() => undefined}
+        onChild={() => undefined}
+      />,
+    );
+    expect(rail).toMatch(/class="rail-summary">2 tenants<span class="rail-problems"/);
+    expect(rail).toContain("Error — the container cannot read its .env");
+  });
 });
 
 describe("the console, the page the rail opens", () => {

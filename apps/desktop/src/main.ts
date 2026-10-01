@@ -26,6 +26,7 @@
 // here rather than in the renderer for the same reason — a reload must not lose
 // them.
 
+import { readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -55,6 +56,8 @@ import type {
   VerbRun,
   VerbRunRequest,
   InstallPatch,
+  InstallRepair,
+  RepairOutcome,
 } from "phoebe-agent/contracts";
 import { createCompanionAlerts } from "./alerting.ts";
 import { authCodeIn, authCodeInArgv } from "./auth-link.ts";
@@ -84,7 +87,8 @@ import {
 } from "./container-read.ts";
 import { deploymentDirOf } from "./deployment-dir.ts";
 import { probeDocker } from "./docker.ts";
-import { allInstallFacts, directoryFacts, installFacts } from "./install-facts.ts";
+import { CONTAINER_UID, grantEnvAccess, tenantEnvPath } from "./env-access.ts";
+import { allInstallFacts, directoryFactsWithAccess, installFacts } from "./install-facts.ts";
 import { createLocalReads } from "./local-read.ts";
 import type { PairArm } from "./pair.ts";
 import {
@@ -274,7 +278,7 @@ async function factsFor(dir: string): Promise<LocalInstall | null> {
  */
 const reads = createLocalReads({
   facts: factsFor,
-  directory: (install) => directoryFacts(install),
+  directory: (install) => directoryFactsWithAccess(install),
   // An install inside a WSL distro is read and watched from inside the distro:
   // its containers are the distro's Docker's, not this machine's (wsl.ts).
   read: async (install) => {
@@ -571,6 +575,43 @@ app.whenReady().then(
 
     ipcMain.handle(BRIDGE_CHANNELS.installsRefresh, (_event, dir: string) =>
       answering<LocalReportEvent>(() => reads.refresh(dir)),
+    );
+
+    ipcMain.handle(BRIDGE_CHANNELS.installsRepair, (_event, dir: string, repair: InstallRepair) =>
+      answering<RepairOutcome>(async () => {
+        const install = await factsFor(dir);
+        // Only a folder this install lists as its child: the repair changes a
+        // file's permissions, and it does that for nothing outside the install.
+        const child = install?.workspace?.children.find(
+          (candidate) => candidate.dir === repair.tenant,
+        );
+        if (install === null || child === undefined) {
+          throw new BridgeRefusal({
+            code: "refused",
+            message: `${repair.tenant} is not a tenant of an install the companion holds`,
+          });
+        }
+        const config = path.join(child.dir, "phoebe.config.ts");
+        let configText: string | null = null;
+        try {
+          configText = readFileSync(config, "utf8");
+        } catch {
+          configText = null;
+        }
+        const file = tenantEnvPath(child.dir, configText);
+        const how = await grantEnvAccess(install.dir, file);
+        // The read after it is what the rail redraws from.
+        await reads.refresh(dir).catch(() => undefined);
+        return how === "failed"
+          ? { fixed: false, detail: `${file} could not be opened to the container's user.` }
+          : {
+              fixed: true,
+              detail:
+                how === "acl"
+                  ? `The container's user (uid ${CONTAINER_UID}) may now read ${file}, and nobody else gained anything.`
+                  : `${file} is now readable by every user on this machine: there was no ACL tool to name the container's user alone.`,
+            };
+      }),
     );
 
     ipcMain.handle(BRIDGE_CHANNELS.runStart, (_event, request: VerbRunRequest) =>

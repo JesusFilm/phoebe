@@ -129,7 +129,35 @@ export type TenantConfigFacts = {
   configFingerprint: string | null;
   /** The child's settings, read the same way as the root's. */
   configFields?: ConfigFieldFacts[];
+  /**
+   * The child's `.env`, and whether the container can open it. Absent where
+   * there is nothing to ask: a folder on a filesystem with no permissions, or a
+   * probe that could not run.
+   */
+  env?: TenantEnvFacts;
 };
+
+/**
+ * A tenant's `.env`, as the container's user finds it. The container runs
+ * unprivileged, so a file its owner alone may read is a file the tenant's
+ * engine child starts without, and it says so as a missing credential rather
+ * than as a permission.
+ */
+export type TenantEnvFacts = {
+  path: string;
+  access: "readable" | "unreadable" | "missing";
+};
+
+/** Something the companion can put right on an install, by the operator's say-so. */
+export type InstallRepair = {
+  /** Let the container's user read one tenant's `.env`. */
+  kind: "env-access";
+  /** The tenant's folder. */
+  tenant: string;
+};
+
+/** What a repair came to, as a sentence, and whether it worked. */
+export type RepairOutcome = { fixed: boolean; detail: string };
 
 /**
  * One local read, finished. Emitted by the loop on every Docker lifecycle event,

@@ -219,6 +219,9 @@ export type { RunExit, RunLine, VerbRun, VerbRunRequest } from "./verb-run.ts";
 export type {
   ConfigFieldFacts,
   InstallDirectoryFacts,
+  InstallRepair,
+  RepairOutcome,
+  TenantEnvFacts,
   LocalReportEvent,
   StoredReport,
   TenantConfigFacts,

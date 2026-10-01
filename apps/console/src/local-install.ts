@@ -19,6 +19,7 @@ import type {
   RunExit,
   RunLine,
   StoredReport,
+  TenantEnvFacts,
   VerbOutcome,
   VerbRun,
   VerbRunRequest,
@@ -516,6 +517,18 @@ export type RailProblem = {
   text: string;
 };
 
+/** What the row and the tenant's page both say when the container is locked out of a `.env`. */
+export const ENV_UNREADABLE = "the container cannot read its .env";
+
+/**
+ * What the host said about a tenant's `.env`, or null where it said nothing:
+ * before the first read, on a filesystem with no permissions to ask about, and
+ * from a companion that does not look.
+ */
+export function tenantEnv(event: LocalReportEvent | null, dir: string): TenantEnvFacts | null {
+  return event?.directory.tenants?.find((tenant) => tenant.dir === dir)?.env ?? null;
+}
+
 /** How many of each, for the two badges. */
 export function problemCounts(problems: readonly RailProblem[]): {
   errors: number;
@@ -557,7 +570,13 @@ export function workspaceChildren(
 
   return children.map((child): RailChild => {
     const base = { dir: child.dir, slug: child.slug, label: child.slug ?? child.name };
-    const quiet = { active: false, enabled: null, problems: [] };
+    // The host's answer, not the container's: it holds whether the workspace is
+    // up or not, and it is the cause under whatever the tenant reports next.
+    const lockedOut: RailProblem[] =
+      tenantEnv(event, child.dir)?.access === "unreadable"
+        ? [{ level: "error", text: ENV_UNREADABLE }]
+        : [];
+    const quiet = { active: false, enabled: null, problems: lockedOut };
     if (report === null || install.state !== "running") {
       return { ...base, ...quiet, tone: "stopped", text: "" };
     }
@@ -570,7 +589,7 @@ export function workspaceChildren(
     }
 
     const cells = report.fleet.cells.filter((cell) => cell.tenant.id === tenant.id);
-    const problems: RailProblem[] = [];
+    const problems: RailProblem[] = [...lockedOut];
     if (tenant.held) {
       problems.push({ level: "error", text: `held: ${tenant.reason ?? "no reason given"}` });
     }
@@ -617,6 +636,7 @@ export function workspaceChildren(
     if (cells.some((cell) => crashLooping.has(cell.id))) {
       return { ...facts, tone: "attention", text: "crash-looping" };
     }
+    if (lockedOut.length > 0) return { ...facts, tone: "attention", text: ".env unreadable" };
     if (active) return { ...facts, tone: "running", text: "working" };
     if (cells.some((cell) => cell.state === "waiting for slot")) {
       return { ...facts, tone: "running", text: "waiting for a slot" };
