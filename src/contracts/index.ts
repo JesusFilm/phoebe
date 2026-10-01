@@ -169,6 +169,14 @@ export type {
   StoredReport,
   TenantConfigFacts,
 } from "./local-report.ts";
+export type {
+  HarnessFacts,
+  HarnessName,
+  HarnessPin,
+  HarnessReport,
+  HarnessUpdate,
+  HarnessUpdateOutcome,
+} from "./harness.ts";
 export type { SecretSetOutcome, SecretWriter } from "./secret-set.ts";
 export type { LocalAlertEvent } from "./local-report.ts";
 export type { CompanionUpdate } from "./companion-update.ts";

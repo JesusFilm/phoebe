@@ -44,6 +44,7 @@ import {
 import { createNotifier, type AlertSubject, type Notifiable } from "./notifications.ts";
 import { Rail } from "./rail.tsx";
 import { ADD_HREF, HOME_ROUTE, parseRoute, type Route } from "./route.ts";
+import { exitOf } from "./verb-run.ts";
 
 export function App({
   surface,
@@ -566,25 +567,6 @@ function ignore(): void {}
  * The route, kept in step with the address bar. Links are plain `href`s into the
  * hash, so the browser does the navigating and the history; this only listens.
  */
-/** Resolves when the run with this id exits — a restart's wait between its halves. */
-function exitOf(bridge: DesktopBridge, dir: string, runId: string): Promise<void> {
-  return new Promise((resolve) => {
-    const off = bridge.runs.exits((exit) => {
-      if (exit.runId !== runId) return;
-      off();
-      resolve();
-    });
-    // The exit may have come and gone before this subscription existed; main
-    // still holds the install's last run, so ask it once.
-    void bridge.runs.current(dir).then((current) => {
-      if (current !== null && current.runId === runId && current.exit !== undefined) {
-        off();
-        resolve();
-      }
-    }, noop);
-  });
-}
-
 function useRoute(): Route {
   const [route, setRoute] = useState<Route>(() =>
     typeof window === "undefined" ? HOME_ROUTE : parseRoute(window.location.hash),

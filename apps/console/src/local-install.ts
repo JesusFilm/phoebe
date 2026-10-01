@@ -21,6 +21,7 @@ import type {
   VerbRun,
   VerbRunRequest,
 } from "phoebe-agent/contracts";
+import { harnessPin, providerOf } from "./harness.ts";
 import { childrenOf, readReport } from "./report.ts";
 import type { ConfigReading, ConnectionCard, DeploymentTab } from "./tabs.ts";
 
@@ -477,7 +478,17 @@ export function workspaceChildren(
       tenantEnv(event, child.dir)?.access === "unreadable"
         ? [{ level: "error", text: ENV_UNREADABLE }]
         : [];
-    const quiet = { active: false, enabled: null, problems: lockedOut };
+    // The Dockerfile's answer, as true stopped as running: the config names a
+    // provider the container has no CLI for. A warning, not an error, because
+    // an env var can still point the tenant at another one.
+    const provider = providerOf(
+      event?.directory.tenants?.find((tenant) => tenant.dir === child.dir)?.configFields,
+    );
+    const noHarness: RailProblem[] =
+      provider !== null && harnessPin(event, provider)?.kind === "absent"
+        ? [{ level: "warning", text: `its provider (${provider}) has no CLI in the container` }]
+        : [];
+    const quiet = { active: false, enabled: null, problems: [...lockedOut, ...noHarness] };
     if (report === null || install.state !== "running") {
       return { ...base, ...quiet, tone: "stopped", text: "" };
     }
@@ -513,6 +524,7 @@ export function workspaceChildren(
         problems.push({ level: "error", text: `doctor ${check.id}: ${check.detail}` });
       }
     }
+    problems.push(...noHarness);
     if (!tenant.envPresent) problems.push({ level: "warning", text: "no .env beside its config" });
     for (const cell of cells) {
       const lastError = cell.snapshot?.lastError ?? null;

@@ -34,6 +34,7 @@ import { readDockerfilePin, type DockerfilePin } from "../../../src/upgrade.ts";
 import type { StoredInstall } from "./companion-file.ts";
 import { configFieldsOf } from "./config-fields.ts";
 import { probeEnvAccess, tenantEnvPath, type EnvAccessDeps } from "./env-access.ts";
+import { HARNESS_NAMES, readHarnessPins } from "./harness.ts";
 import { deploymentDirOf } from "./deployment-dir.ts";
 import { workspaceBlockOf, workspaceChildren } from "./workspace-children.ts";
 import { wslLocationOf, wslRunner } from "./wsl.ts";
@@ -282,7 +283,28 @@ export function directoryFacts(
     envPresent: exists(path.join(root, ".env")),
     bootstrapperRunning: install.state === "running",
     ...(install.workspace === undefined ? {} : { tenants }),
+    ...harnessPinsOf(root, exists, read),
   };
+}
+
+/**
+ * What the install's Dockerfile says about each agent CLI, as a field to spread
+ * in. Nothing at all when there is no Dockerfile to read: a tenant's folder, or
+ * a folder not initialised yet.
+ */
+function harnessPinsOf(
+  root: string,
+  exists: (file: string) => boolean,
+  read: (file: string) => string,
+): Pick<InstallDirectoryFacts, "harnessPins"> {
+  const file = path.join(root, "container", "Dockerfile");
+  try {
+    if (!exists(file)) return {};
+    const pins = readHarnessPins(read(file));
+    return { harnessPins: HARNESS_NAMES.map((harness) => ({ harness, pin: pins[harness] })) };
+  } catch {
+    return {};
+  }
 }
 
 /**

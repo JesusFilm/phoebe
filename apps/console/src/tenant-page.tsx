@@ -20,6 +20,7 @@ import type {
 } from "phoebe-agent/contracts";
 import { Button } from "~/components/ui/button";
 import { ConfigSpace } from "./config-form.tsx";
+import { HarnessSection } from "./harness-section.tsx";
 import { ConfigEditForm } from "./install-page.tsx";
 import { tenantConfigs, tenantEnv } from "./local-install.ts";
 import { receiptOfRun, refusalText, useInstallRun } from "./verb-run.ts";
@@ -41,7 +42,7 @@ export function TenantPage({
   /** Back to the workspace's own config. */
   onWorkspace: () => void;
 }) {
-  const { run, running, trouble, start } = useInstallRun(bridge, install.dir);
+  const { run, running, trouble, start, rebuild } = useInstallRun(bridge, install.dir);
   const found = tenantConfigs(report).find((candidate) => candidate.dir === tenant) ?? null;
   const child = install.workspace?.children.find((candidate) => candidate.dir === tenant);
   const label = found?.label ?? child?.slug ?? child?.name ?? tenant;
@@ -110,6 +111,14 @@ export function TenantPage({
           )}
           {trouble === null ? null : <p className="refusal">{trouble}</p>}
         </section>
+        <HarnessSection
+          install={install}
+          bridge={bridge}
+          event={report}
+          tenant={tenant}
+          busy={running}
+          onRebuild={() => rebuild(install.state === "running")}
+        />
       </div>
     </main>
   );

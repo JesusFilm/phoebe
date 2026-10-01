@@ -270,6 +270,31 @@ describe("what the folder says with no container", () => {
     expect(asked).toHaveLength(1);
   });
 
+  test("carries what the Dockerfile says about each agent CLI, when there is a Dockerfile", () => {
+    const dockerfile = path.join(DIR, "container", "Dockerfile");
+    const texts = new Map([
+      [path.join(DIR, "phoebe.config.ts"), "export default defineConfig({})\n"],
+      [
+        dockerfile,
+        "ARG CLAUDE_CODE_VERSION=2.1.228\nRUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}\n",
+      ],
+    ]);
+    const facts = directoryFacts(RUNNING, {
+      exists: (file) => texts.has(file),
+      read: (file) => texts.get(file) ?? "",
+    });
+
+    expect(facts.harnessPins).toEqual([
+      { harness: "cursor", pin: { kind: "absent" } },
+      { harness: "claude", pin: { kind: "pinned", version: "2.1.228" } },
+      { harness: "codex", pin: { kind: "absent" } },
+    ]);
+    // No Dockerfile is no field, which is how a page knows not to draw the section.
+    expect(
+      directoryFacts(RUNNING, { exists: folder("phoebe.config.ts"), read: () => "x" }).harnessPins,
+    ).toBeUndefined();
+  });
+
   test("a solo install has no tenants field at all", () => {
     const facts = directoryFacts(RUNNING, { exists: folder("phoebe.config.ts"), read: () => "x" });
 

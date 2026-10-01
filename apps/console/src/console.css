@@ -1454,7 +1454,12 @@ details.why > summary::marker {
   color: var(--fail);
 }
 
+/* `.warning` is also the panel a page puts a caution in; none of that here. */
 .rail-problem.warning {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
   color: var(--warn);
 }
 
@@ -1509,4 +1514,51 @@ details.why > summary::marker {
   gap: 6px;
   margin-top: 0;
   color: var(--warn);
+}
+
+/* ── the AI harness: one row per agent CLI the container carries ───────── */
+
+.harness-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.harness-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 14px;
+  font-size: 13px;
+}
+
+.harness-row + .harness-row {
+  border-top: 1px solid var(--line);
+}
+
+.harness-what {
+  min-width: 0;
+}
+
+.harness-name {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-bottom: 2px;
+  font-size: 14px;
+}
+
+.harness-move {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+}
+
+.harness-version {
+  width: 190px;
 }
