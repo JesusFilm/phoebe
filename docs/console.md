@@ -45,7 +45,10 @@ answer. A workspace opens out to its children, and each child's gear opens that
 tenant's own config. A child's row says whether it is working, whether it is
 switched on, and how many errors and warnings it has, each named on hover; the
 workspace's own line sums them, so a closed workspace still shows that
-something under it needs a look.
+something under it needs a look. One of those errors the companion finds
+itself, on the host: a tenant `.env` the container's unprivileged user cannot
+read. The tenant's page opens on it with a button that grants that user read
+access to the one file.
 
 ## What the console shows
 

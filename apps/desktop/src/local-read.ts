@@ -34,7 +34,8 @@ export type LocalReadDeps = {
   /** This install's facts right now, or null when it is no longer one. */
   facts: (dir: string) => Promise<LocalInstall | null>;
   /** What the folder says, container or no container. */
-  directory: (install: LocalInstall) => InstallDirectoryFacts;
+  /** May take a moment: it asks the host about the files as well as reading them. */
+  directory: (install: LocalInstall) => InstallDirectoryFacts | Promise<InstallDirectoryFacts>;
   /** One exec of `phoebe status --json` in the install's container. */
   read: (install: LocalInstall) => Promise<ContainerRead>;
   /** Subscribe to the container's lifecycle. Returns the unsubscribe. */
@@ -114,7 +115,7 @@ export function createLocalReads(deps: LocalReadDeps): LocalReads {
         instruction: "Add the folder on the rail, then read it again.",
       });
     }
-    const directory = deps.directory(facts);
+    const directory = await deps.directory(facts);
     const at = now().toISOString();
     const base = { type: "report", install: dir, at, facts, directory } as const;
 

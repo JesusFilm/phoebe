@@ -58,6 +58,7 @@ const bridge: DesktopBridge = {
     changes: (onChange) => subscribe<LocalInstall[]>(BRIDGE_CHANNELS.installsChanged, onChange),
     reports: (onReport) => subscribe<LocalReportEvent>(BRIDGE_CHANNELS.installsReport, onReport),
     refresh: (dir) => call(BRIDGE_CHANNELS.installsRefresh, dir),
+    repair: (dir, repair) => call(BRIDGE_CHANNELS.installsRepair, dir, repair),
     alerts: (onAlert) => subscribe<LocalAlertEvent>(BRIDGE_CHANNELS.installsAlert, onAlert),
   },
   runs: {

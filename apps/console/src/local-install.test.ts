@@ -13,7 +13,9 @@ import {
   installReading,
   landingTab,
   versionReading,
+  ENV_UNREADABLE,
   problemCounts,
+  tenantEnv,
   workspaceChildren,
   workspaceSummary,
   localConfig,
@@ -814,6 +816,104 @@ describe("what a workspace's children are doing, for the rail", () => {
     expect(problemCounts(troubledChild!.problems)).toEqual({ errors: 3, warnings: 3 });
     // A healthy tenant has nothing to count.
     expect(workspaceChildren(workspace, event)[1]!.problems).toEqual([]);
+  });
+});
+
+describe("a tenant whose .env the container cannot read", () => {
+  const workspace = install({
+    dir: "/repos/ws",
+    name: "ws",
+    workspace: {
+      children: [
+        { dir: "/repos/ws/a", name: "a", slug: "acme/a" },
+        { dir: "/repos/ws/b", name: "b", slug: "acme/b" },
+      ],
+    },
+  });
+  const tenants = [
+    {
+      dir: "/repos/ws/a",
+      name: "a",
+      slug: "acme/a",
+      configPath: "/repos/ws/a/phoebe.config.ts",
+      configText: null,
+      configFingerprint: null,
+      env: { path: "/repos/ws/a/.phoebe/.env", access: "unreadable" as const },
+    },
+    {
+      dir: "/repos/ws/b",
+      name: "b",
+      slug: "acme/b",
+      configPath: "/repos/ws/b/phoebe.config.ts",
+      configText: null,
+      configFingerprint: null,
+      env: { path: "/repos/ws/b/.env", access: "readable" as const },
+    },
+  ];
+
+  test("is an error on its row, first, and the row says so in a word", () => {
+    const event = localReport({
+      facts: workspace,
+      directory: directory({ tenants }),
+      report: {
+        schema: report().schema,
+        receivedAt: ago(2),
+        report: report({
+          fleet: {
+            tenants: [
+              tenant({ id: "/w/a", path: "/w/a", slug: "acme/a" }),
+              tenant({ id: "/w/b", path: "/w/b", slug: "acme/b" }),
+            ],
+            cells: [
+              cell({
+                id: "/w/a#work",
+                tenant: tenant({ id: "/w/a" }),
+                state: "idle",
+                snapshot: {
+                  tenant: "acme/a",
+                  pipeline: "work",
+                  currentUnits: [],
+                  waitingForSlot: false,
+                  lastError: "App mode active but GH_APP_ID is missing",
+                  lastTimeoutAt: null,
+                  updatedAt: ago(30),
+                },
+              }),
+              cell({ id: "/w/b#work", tenant: tenant({ id: "/w/b" }), state: "idle" }),
+            ],
+            updatedAt: ago(12),
+          },
+        }),
+      },
+    });
+    const [locked, fine] = workspaceChildren(workspace, event);
+
+    expect(locked).toMatchObject({ tone: "attention", text: ".env unreadable" });
+    // The cause, ahead of the symptom the tenant itself reports.
+    expect(locked!.problems).toEqual([
+      { level: "error", text: ENV_UNREADABLE },
+      { level: "warning", text: "work: App mode active but GH_APP_ID is missing" },
+    ]);
+    expect(fine!.problems).toEqual([]);
+    expect(tenantEnv(event, "/repos/ws/a")).toEqual(tenants[0]!.env);
+    expect(tenantEnv(event, "/repos/elsewhere")).toBeNull();
+    expect(tenantEnv(null, "/repos/ws/a")).toBeNull();
+  });
+
+  test("is as true of a stopped workspace, which has nothing else to say", () => {
+    const stopped = { ...workspace, state: "stopped" as const };
+    const event = localReport({
+      facts: stopped,
+      directory: directory({ bootstrapperRunning: false, tenants }),
+    });
+    const rows = workspaceChildren(stopped, event);
+
+    expect(rows[0]).toMatchObject({
+      tone: "stopped",
+      problems: [{ level: "error", text: ENV_UNREADABLE }],
+    });
+    expect(rows[1]!.problems).toEqual([]);
+    expect(workspaceSummary(rows)).toMatchObject({ errors: 1, warnings: 0 });
   });
 });
 

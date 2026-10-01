@@ -16,9 +16,11 @@ import type {
   DoctorSection,
   FleetCell,
   InstallDirectoryFacts,
+  InstallRepair,
   LocalAlertEvent,
   LocalInstall,
   LocalReportEvent,
+  RepairOutcome,
   StoredReport,
   TenantEffectiveConfig,
   TenantFacts,
@@ -281,6 +283,10 @@ export function bridge(answers: BridgeAnswers = {}): DesktopBridge {
         const event = (answers.reports ?? []).find((candidate) => candidate.install === dir);
         return event === undefined ? Promise.reject(notAnInstall(dir)) : Promise.resolve(event);
       },
+      repair: (dir, repair) => {
+        answers.repaired?.push({ dir, repair });
+        return Promise.resolve(answers.repair ?? { fixed: true, detail: "fixed" });
+      },
       alerts: (onAlert) => {
         for (const event of answers.alerts ?? []) onAlert(event);
         return () => undefined;
@@ -327,6 +333,9 @@ export type BridgeAnswers = {
   logs?: string[];
   environment?: CompanionEnvironment;
   installs?: LocalInstall[];
+  /** What a repair answers with, and where each one asked for is recorded. */
+  repair?: RepairOutcome;
+  repaired?: { dir: string; repair: InstallRepair }[];
   picked?: string | null;
   run?: VerbRun | null;
   runId?: string;

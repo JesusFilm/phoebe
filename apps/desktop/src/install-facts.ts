@@ -33,6 +33,7 @@ import {
 import { readDockerfilePin, type DockerfilePin } from "../../../src/upgrade.ts";
 import type { StoredInstall } from "./companion-file.ts";
 import { configFieldsOf } from "./config-fields.ts";
+import { probeEnvAccess, tenantEnvPath, type EnvAccessDeps } from "./env-access.ts";
 import { deploymentDirOf } from "./deployment-dir.ts";
 import { workspaceBlockOf, workspaceChildren } from "./workspace-children.ts";
 import { wslLocationOf, wslRunner } from "./wsl.ts";
@@ -281,6 +282,30 @@ export function directoryFacts(
     envPresent: exists(path.join(root, ".env")),
     bootstrapperRunning: install.state === "running",
     ...(install.workspace === undefined ? {} : { tenants }),
+  };
+}
+
+/**
+ * The directory's facts, with what the host says about each tenant's `.env`
+ * (env-access.ts). One child for the whole workspace, and nothing asked of a
+ * solo install: its `.env` is Compose's own input and never opened inside the
+ * container.
+ */
+export async function directoryFactsWithAccess(
+  install: LocalInstall,
+  deps: DirectoryDeps & EnvAccessDeps = {},
+): Promise<InstallDirectoryFacts> {
+  const facts = directoryFacts(install, deps);
+  if (facts.tenants === undefined || facts.tenants.length === 0) return facts;
+  const files = facts.tenants.map((tenant) => tenantEnvPath(tenant.dir, tenant.configText));
+  const access = await probeEnvAccess(install.dir, files, deps);
+  return {
+    ...facts,
+    tenants: facts.tenants.map((tenant, index) => {
+      const file = files[index]!;
+      const answer = access.get(file);
+      return answer === undefined ? tenant : { ...tenant, env: { path: file, access: answer } };
+    }),
   };
 }
 

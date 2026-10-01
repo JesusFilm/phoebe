@@ -287,7 +287,13 @@ function InstallEntry({
   const actions = onAction === undefined ? [] : installActions(install);
   const workspace = install.workspace !== undefined;
   // The fleet under it, summed, so a closed workspace still says what is wrong.
-  const summary = install.state === "running" ? workspaceSummary(children) : null;
+  // A stopped one has nothing to sum unless the host found something: a `.env`
+  // the container cannot read is as true stopped as running.
+  const summed = workspaceSummary(children);
+  const summary =
+    install.state === "running" || (summed !== null && summed.errors + summed.warnings > 0)
+      ? summed
+      : null;
   // Where it runs, as T3 Code's project list marks each project with its host.
   const platformTitle = hostTitle(host, install.wsl?.distro);
   return (
