@@ -42,7 +42,10 @@ initialised. Compose answers directly, so there is nothing to infer from silence
 A **rail** runs down the left with every install on it, always, whatever page you
 are on, because "is everything alive" is the question this thing exists to
 answer. A workspace opens out to its children, and each child's gear opens that
-tenant's own config.
+tenant's own config. A child's row says whether it is working, whether it is
+switched on, and how many errors and warnings it has, each named on hover; the
+workspace's own line sums them, so a closed workspace still shows that
+something under it needs a look.
 
 ## What the console shows
 

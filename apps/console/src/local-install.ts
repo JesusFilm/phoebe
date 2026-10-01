@@ -20,7 +20,7 @@ import type {
   VerbRun,
   VerbRunRequest,
 } from "phoebe-agent/contracts";
-import { readReport } from "./report.ts";
+import { childrenOf, readReport } from "./report.ts";
 import type { ConfigReading, ConnectionCard, DeploymentTab } from "./tabs.ts";
 
 // ── the two write verbs, as requests (#557) ───────────────────────────────
@@ -398,15 +398,47 @@ export type RailChild = {
   /** The state word beside it, and the mark's tone. */
   tone: "running" | "stopped" | "attention" | "idle";
   text: string;
+  /** A unit is in flight on one of its pipelines right now. */
+  active: boolean;
+  /**
+   * Whether it does any work: false when every pipeline it declares is switched
+   * off. Null when there is nothing to say it by: a stopped workspace, or a
+   * folder the fleet does not know.
+   */
+  enabled: boolean | null;
+  /** What is wrong, worst first, one line each. What the row's badges count. */
+  problems: RailProblem[];
 };
+
+/** One thing wrong with a tenant, as the rail's hover says it. */
+export type RailProblem = {
+  /** An error stops work; a warning is something to look at. */
+  level: "error" | "warning";
+  text: string;
+};
+
+/** How many of each, for the two badges. */
+export function problemCounts(problems: readonly RailProblem[]): {
+  errors: number;
+  warnings: number;
+} {
+  const errors = problems.filter((problem) => problem.level === "error").length;
+  return { errors, warnings: problems.length - errors };
+}
 
 /**
  * The children a workspace install lists, read against its latest report. With
  * the container running, the report's fleet says what each tenant is doing:
- * held, wedged, working, waiting, or idle. Stopped, the folder is all there is,
- * so the child is listed and says nothing more. A child on disk the report does
- * not know is "not in the fleet" — a folder the bootstrapper has not picked up
- * yet, or one it skipped.
+ * held, wedged, working, waiting, or idle; whether any of its pipelines is
+ * switched on; and what is wrong with it, from the fleet, the supervisor and
+ * the last doctor run. Stopped, the folder is all there is, so the child is
+ * listed and says nothing more. A child on disk the report does not know is
+ * "not in the fleet" — a folder the bootstrapper has not picked up yet, or one
+ * it skipped.
+ *
+ * Nothing here is a second opinion. Every word and every problem is a verdict
+ * the deployment already reached and wrote down (#501); this only gathers the
+ * ones that are about one tenant onto its row.
  */
 export function workspaceChildren(
   install: LocalInstall,
@@ -415,41 +447,116 @@ export function workspaceChildren(
   const children = install.workspace?.children ?? [];
   const reading = readReport(renderableReport(install, event));
   const report = reading.kind === "read" ? reading.report : null;
-  return children.map((child) => {
-    const label = child.slug ?? child.name;
+  const crashLooping = new Set(
+    report === null
+      ? []
+      : [...childrenOf(report).values()]
+          .filter((child) => child.crashLooping)
+          .map((child) => child.id),
+  );
+  const doctorRows = report?.doctor?.report?.tenants ?? [];
+
+  return children.map((child): RailChild => {
+    const base = { dir: child.dir, slug: child.slug, label: child.slug ?? child.name };
+    const quiet = { active: false, enabled: null, problems: [] };
     if (report === null || install.state !== "running") {
-      return { dir: child.dir, slug: child.slug, label, tone: "stopped", text: "" };
+      return { ...base, ...quiet, tone: "stopped", text: "" };
     }
     const tenant = report.fleet.tenants.find(
       (candidate) =>
-        (child.slug !== null && candidate.slug === child.slug) ||
-        candidate.path.replace(/[\\/]+$/, "").endsWith(`/${child.name}`) ||
-        candidate.path.replace(/[\\/]+$/, "").endsWith(`\\${child.name}`),
+        (child.slug !== null && candidate.slug === child.slug) || sameFolder(candidate.path, child),
     );
-    if (tenant === undefined)
-      return { dir: child.dir, slug: child.slug, label, tone: "idle", text: "not in the fleet" };
-    if (tenant.held)
-      return { dir: child.dir, slug: child.slug, label, tone: "attention", text: "held" };
+    if (tenant === undefined) {
+      return { ...base, ...quiet, tone: "idle", text: "not in the fleet" };
+    }
+
     const cells = report.fleet.cells.filter((cell) => cell.tenant.id === tenant.id);
+    const problems: RailProblem[] = [];
+    if (tenant.held) {
+      problems.push({ level: "error", text: `held: ${tenant.reason ?? "no reason given"}` });
+    }
+    if (!tenant.configValid && !tenant.held) {
+      problems.push({ level: "error", text: "its config does not load" });
+    }
+    for (const cell of cells) {
+      if (cell.wedged.wedged) {
+        problems.push({ level: "error", text: `${cell.pipeline}: wedged` });
+      }
+      if (crashLooping.has(cell.id)) {
+        problems.push({ level: "error", text: `${cell.pipeline}: crash-looping` });
+      }
+    }
+    const doctor = doctorRows.find(
+      (row) => (row.slug !== null && row.slug === tenant.slug) || row.path === tenant.path,
+    );
+    for (const check of doctor?.checks ?? []) {
+      if (check.state === "fail") {
+        problems.push({ level: "error", text: `doctor ${check.id}: ${check.detail}` });
+      }
+    }
+    if (!tenant.envPresent) problems.push({ level: "warning", text: "no .env beside its config" });
+    for (const cell of cells) {
+      const lastError = cell.snapshot?.lastError ?? null;
+      if (lastError !== null) {
+        problems.push({ level: "warning", text: `${cell.pipeline}: ${lastError}` });
+      }
+    }
+    for (const check of doctor?.checks ?? []) {
+      if (check.state === "warn") {
+        problems.push({ level: "warning", text: `doctor ${check.id}: ${check.detail}` });
+      }
+    }
+
+    const active = cells.some((cell) => cell.state === "working");
+    const enabled = cells.length === 0 ? null : cells.some((cell) => !cell.disabled);
+    const facts = { ...base, active, enabled, problems };
+
+    if (tenant.held) return { ...facts, tone: "attention", text: "held" };
     if (cells.some((cell) => cell.wedged.wedged)) {
-      return { dir: child.dir, slug: child.slug, label, tone: "attention", text: "wedged" };
+      return { ...facts, tone: "attention", text: "wedged" };
     }
-    if (cells.some((cell) => cell.state === "working")) {
-      return { dir: child.dir, slug: child.slug, label, tone: "running", text: "working" };
+    if (cells.some((cell) => crashLooping.has(cell.id))) {
+      return { ...facts, tone: "attention", text: "crash-looping" };
     }
+    if (active) return { ...facts, tone: "running", text: "working" };
     if (cells.some((cell) => cell.state === "waiting for slot")) {
-      return {
-        dir: child.dir,
-        slug: child.slug,
-        label,
-        tone: "running",
-        text: "waiting for a slot",
-      };
+      return { ...facts, tone: "running", text: "waiting for a slot" };
     }
-    if (cells.length === 0)
-      return { dir: child.dir, slug: child.slug, label, tone: "idle", text: "no pipelines" };
-    return { dir: child.dir, slug: child.slug, label, tone: "idle", text: "idle" };
+    if (cells.length === 0) return { ...facts, tone: "idle", text: "no pipelines" };
+    if (enabled === false) return { ...facts, tone: "stopped", text: "disabled" };
+    return { ...facts, tone: "idle", text: "idle" };
   });
+}
+
+/** Is this fleet path the child's folder? Compared by its last segment, either separator. */
+function sameFolder(fleetPath: string, child: { name: string }): boolean {
+  const trimmed = fleetPath.replace(/[\\/]+$/, "");
+  return trimmed.endsWith(`/${child.name}`) || trimmed.endsWith(`\\${child.name}`);
+}
+
+/** A workspace, summed over its children, for the line under its name. */
+export type WorkspaceSummary = {
+  /** `3 tenants · 1 working · 1 disabled`, with only the clauses that are true. */
+  text: string;
+  errors: number;
+  warnings: number;
+};
+
+/**
+ * What a workspace's entry says about its fleet without being opened: how many
+ * tenants, how many are working, how many are switched off, and how many
+ * errors and warnings there are across them. Null for a solo install, and for a
+ * workspace with nothing to count.
+ */
+export function workspaceSummary(children: readonly RailChild[]): WorkspaceSummary | null {
+  if (children.length === 0) return null;
+  const clauses = [`${children.length} ${children.length === 1 ? "tenant" : "tenants"}`];
+  const working = children.filter((child) => child.active).length;
+  const disabled = children.filter((child) => child.enabled === false).length;
+  if (working > 0) clauses.push(`${working} working`);
+  if (disabled > 0) clauses.push(`${disabled} disabled`);
+  const { errors, warnings } = problemCounts(children.flatMap((child) => child.problems));
+  return { text: clauses.join(" · "), errors, warnings };
 }
 
 // ── the local read loop, as the page reads it (#556) ──────────────────────

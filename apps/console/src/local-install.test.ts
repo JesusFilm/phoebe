@@ -13,7 +13,9 @@ import {
   installReading,
   landingTab,
   versionReading,
+  problemCounts,
   workspaceChildren,
+  workspaceSummary,
   localConfig,
   tenantConfigs,
   localConnection,
@@ -29,7 +31,10 @@ import {
 import {
   ago,
   cell,
+  check,
+  child,
   directory,
+  doctor,
   environment,
   install,
   localReport,
@@ -600,7 +605,7 @@ describe("what a workspace's children are doing, for the rail", () => {
   });
 
   test("labels each child by slug, else folder, and says what the fleet has it doing", () => {
-    expect(workspaceChildren(workspace, event)).toEqual([
+    expect(workspaceChildren(workspace, event)).toMatchObject([
       { dir: "/repos/ws/a", slug: "acme/a", label: "acme/a", tone: "attention", text: "held" },
       { dir: "/repos/ws/b", slug: null, label: "b", tone: "running", text: "working" },
       { dir: "/repos/ws/c", slug: "acme/c", label: "acme/c", tone: "attention", text: "wedged" },
@@ -667,6 +672,10 @@ describe("what a workspace's children are doing, for the rail", () => {
         label: child.slug ?? child.name,
         tone: "stopped",
         text: "",
+        // Nothing is known about a tenant with no container to ask.
+        active: false,
+        enabled: null,
+        problems: [],
       })),
     );
     expect(workspaceChildren(workspace, null)).toHaveLength(5);
@@ -674,6 +683,178 @@ describe("what a workspace's children are doing, for the rail", () => {
 
   test("a solo install has no children", () => {
     expect(workspaceChildren(install(), event)).toEqual([]);
+  });
+
+  test("says whether each is active, and whether it is switched on at all", () => {
+    const [held, working, wedged, waiting, absent] = workspaceChildren(workspace, event);
+
+    expect(working).toMatchObject({ active: true, enabled: true });
+    expect(waiting).toMatchObject({ active: false, enabled: true });
+    expect(wedged).toMatchObject({ active: false, enabled: true });
+    // Nothing enumerated for a held tenant, and nothing known of a stranger.
+    expect(held!.enabled).toBeNull();
+    expect(absent).toMatchObject({ active: false, enabled: null, problems: [] });
+  });
+
+  test("a tenant with every pipeline switched off is disabled, and says so", () => {
+    const off = localReport({
+      facts: workspace,
+      report: {
+        schema: report().schema,
+        receivedAt: ago(2),
+        report: report({
+          fleet: {
+            tenants: [tenant({ id: "/w/c", path: "/w/c", slug: "acme/c" })],
+            cells: [
+              cell({
+                id: "/w/c#work",
+                tenant: tenant({ id: "/w/c" }),
+                state: "idle",
+                disabled: true,
+              }),
+              cell({
+                id: "/w/c#intake",
+                pipeline: "intake",
+                tenant: tenant({ id: "/w/c" }),
+                state: "idle",
+                disabled: true,
+              }),
+            ],
+            updatedAt: ago(12),
+          },
+        }),
+      },
+    });
+
+    expect(workspaceChildren(workspace, off)[2]).toMatchObject({
+      enabled: false,
+      tone: "stopped",
+      text: "disabled",
+    });
+  });
+
+  test("gathers what is wrong with a tenant, errors before warnings", () => {
+    const troubled = localReport({
+      facts: workspace,
+      report: {
+        schema: report().schema,
+        receivedAt: ago(2),
+        report: report({
+          bootstrapper: {
+            ...report().bootstrapper,
+            children: [child({ id: "/w/c#intake", crashLooping: true })],
+          },
+          fleet: {
+            tenants: [
+              tenant({
+                id: "/w/a",
+                path: "/w/a",
+                slug: "acme/a",
+                held: true,
+                reason: "no repoSlug",
+              }),
+              tenant({ id: "/w/c", path: "/w/c", slug: "acme/c", envPresent: false }),
+            ],
+            cells: [
+              cell({
+                id: "/w/c#work",
+                tenant: tenant({ id: "/w/c" }),
+                state: "idle",
+                wedged: { wedged: true, reason: "no-pass", noPassForMs: 1_020_000 },
+                snapshot: {
+                  tenant: "acme/c",
+                  pipeline: "work",
+                  currentUnits: [],
+                  waitingForSlot: false,
+                  lastError: "gh: rate limited",
+                  lastTimeoutAt: null,
+                  updatedAt: ago(30),
+                },
+              }),
+              cell({
+                id: "/w/c#intake",
+                pipeline: "intake",
+                tenant: tenant({ id: "/w/c" }),
+                state: "idle",
+              }),
+            ],
+            updatedAt: ago(12),
+          },
+          doctor: doctor({
+            report: {
+              ok: false,
+              checks: [],
+              tenants: [
+                {
+                  path: "/w/c",
+                  slug: "acme/c",
+                  checks: [
+                    check({ id: "token", state: "fail", detail: "no GH_TOKEN" }),
+                    check({ id: "stale-state", state: "warn", detail: "one stray directory" }),
+                    check({ id: "config", state: "ok" }),
+                  ],
+                },
+              ],
+            },
+          }),
+        }),
+      },
+    });
+    const [held, , troubledChild] = workspaceChildren(workspace, troubled);
+
+    expect(held!.problems).toEqual([{ level: "error", text: "held: no repoSlug" }]);
+    expect(troubledChild!.problems).toEqual([
+      { level: "error", text: "work: wedged" },
+      { level: "error", text: "intake: crash-looping" },
+      { level: "error", text: "doctor token: no GH_TOKEN" },
+      { level: "warning", text: "no .env beside its config" },
+      { level: "warning", text: "work: gh: rate limited" },
+      { level: "warning", text: "doctor stale-state: one stray directory" },
+    ]);
+    expect(problemCounts(troubledChild!.problems)).toEqual({ errors: 3, warnings: 3 });
+    // A healthy tenant has nothing to count.
+    expect(workspaceChildren(workspace, event)[1]!.problems).toEqual([]);
+  });
+});
+
+describe("a workspace, summed over its tenants", () => {
+  const row = (overrides: Partial<ReturnType<typeof workspaceChildren>[number]> = {}) => ({
+    dir: "/w/a",
+    slug: "acme/a",
+    label: "acme/a",
+    tone: "idle" as const,
+    text: "idle",
+    active: false,
+    enabled: true,
+    problems: [],
+    ...overrides,
+  });
+
+  test("counts the tenants, and only the clauses that are true", () => {
+    expect(workspaceSummary([row(), row()])).toEqual({ text: "2 tenants", errors: 0, warnings: 0 });
+    expect(workspaceSummary([row({ active: true })])?.text).toBe("1 tenant · 1 working");
+    expect(
+      workspaceSummary([row({ active: true }), row({ enabled: false }), row({ enabled: null })])
+        ?.text,
+    ).toBe("3 tenants · 1 working · 1 disabled");
+  });
+
+  test("adds up what is wrong across them", () => {
+    const summary = workspaceSummary([
+      row({ problems: [{ level: "error", text: "held: x" }] }),
+      row({
+        problems: [
+          { level: "error", text: "work: wedged" },
+          { level: "warning", text: "no .env beside its config" },
+        ],
+      }),
+    ]);
+
+    expect(summary).toMatchObject({ errors: 2, warnings: 1 });
+  });
+
+  test("a solo install has nothing to sum", () => {
+    expect(workspaceSummary([])).toBeNull();
   });
 });
 
