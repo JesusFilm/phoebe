@@ -1,5 +1,5 @@
-// The update alert: one line over the page that says installs have updates,
-// and takes them.
+// The update alert: one line floating over the page that says installs have
+// updates, and takes them.
 //
 // It works the way T3 Code's does, because that is the alert the people using
 // this already know. One line, whatever the number of installs behind it: an
@@ -8,6 +8,11 @@
 // into the update itself, with a spinner and the step it is on, and a failure
 // turns it into "Could not update" with a Retry. A dismissal is remembered for
 // exactly what was on offer, so tomorrow's newer version is a new line.
+//
+// It floats over the foot of the pane rather than sitting above the page. A
+// console is a fixed height of lines pinned to the newest, and a line that
+// took a row of that height would move every one of them each time it came and
+// went. Over the page, nothing under it moves.
 //
 // **Update** takes the harness updates: each pin is moved in the Dockerfile,
 // and on a running install the new version is put into the container beside

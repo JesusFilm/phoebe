@@ -90,6 +90,8 @@ code,
 }
 
 .pane {
+  /* What the update alert floats over (update-alert.tsx). */
+  position: relative;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -1700,10 +1702,29 @@ details.why > summary::marker {
 /* ── updates on offer: the alert over the page, and the rail's count ─────
 
    One line, as T3 Code draws its own: an icon, a title that opens the list,
-   one quiet action, a dismiss. */
+   one quiet action, a dismiss. It floats over the foot of the pane and takes
+   no room from the page under it, so a console keeps its full height and
+   nothing moves when the line comes or goes. The list opens upward. */
 
 .update-alerts {
-  padding: 8px 16px 0;
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  z-index: 20;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 4px;
+  width: min(760px, calc(100% - 32px));
+  transform: translateX(-50%);
+  /* Only the line and its list take clicks; the gap between them does not. */
+  pointer-events: none;
+}
+
+.update-alerts > * {
+  pointer-events: auto;
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 20%),
+    0 10px 28px rgb(0 0 0 / 32%);
 }
 
 .update-alert {
@@ -1775,8 +1796,10 @@ details.why > summary::marker {
 
 .update-list {
   list-style: none;
-  margin: 4px 0 0;
+  max-height: 50vh;
+  margin: 0;
   padding: 4px 10px;
+  overflow: auto;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel);
