@@ -20,7 +20,15 @@ import { basename, dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { TENANT_CONFIG_FILE, TENANT_ENV_FILE } from "../bootstrap/tenants.ts";
 import { DEFAULT_PROMPT_FILE_BY_KIND } from "./config-schema.ts";
+import type {
+  InitOutcome,
+  InitProfile,
+  InitReport,
+  InitScaffoldOutcome,
+  InitTenantOutcome,
+} from "./contracts/init-report.ts";
 import { defaultGit, type GitRunner } from "./git-model.ts";
+import { moduleDirOf, resolvePackageResource } from "./package-resource.ts";
 import {
   defaultRepoUrl,
   parseSlug,
@@ -32,8 +40,11 @@ import {
   TENANT_PLACEHOLDER_URL,
 } from "./tenant-commands.ts";
 
-/** Init scaffold profile — which file set lands under the target dir. */
-export type InitProfile = "solo" | "workspace" | "tenant";
+// The report and the profile now live in `phoebe-agent/contracts` (#552) so an
+// install tab can render a scaffold without loading the filesystem code below.
+// Re-exported here so every existing reader goes on importing them off this
+// module.
+export type { InitOutcome, InitProfile, InitReport, InitScaffoldOutcome, InitTenantOutcome };
 
 /** Placeholder tokens rendered into every scaffolded file. */
 export type TemplateParams = {
@@ -41,12 +52,42 @@ export type TemplateParams = {
   installCommand: string;
   /** The npm package name of the CLI — normally `phoebe-agent`. */
   cliBin: string;
+  /** The npm version a scaffolded image pins that CLI to. */
+  cliVersion: string;
 };
 
 export const DEFAULT_TEMPLATE_PARAMS: TemplateParams = {
   installCommand: "npm ci",
   cliBin: "phoebe-agent",
+  // A getter, so importing this module never touches the filesystem: the
+  // companion bundles it into a main process whose neighbouring `package.json`
+  // is the app's own, and passes the version it carries instead (#555).
+  get cliVersion() {
+    return thisPackageVersion();
+  },
 };
+
+/**
+ * This package's own version — the pin `phoebe relay init` writes into the
+ * relay image, because the relay's version *is* the bootstrapper's (#506 §1).
+ * Whatever CLI scaffolds the file is the CLI the image should install, so this
+ * is read rather than hard-coded in the template.
+ *
+ * It throws rather than falling back. The published `bin` launcher reads this
+ * same manifest before it can run at all, so an unreadable one is a broken
+ * install, not a case to paper over with an unpinned scaffold.
+ */
+function thisPackageVersion(): string {
+  // `moduleDirOf` and a `join`, never `new URL("../package.json", import.meta.url)`:
+  // a bundler rewrites the URL form into a `data:` URL that `readFileSync`
+  // refuses (see `package-resource.ts`).
+  const raw = readFileSync(join(moduleDirOf(import.meta.url), "..", "package.json"), "utf8");
+  const { version } = JSON.parse(raw) as { version?: unknown };
+  if (typeof version !== "string") {
+    throw new Error("phoebe-agent's package.json carries no version to pin a scaffolded image to.");
+  }
+  return version;
+}
 
 /**
  * The scaffolded config's crash-reporting line (#474), exactly as both config
@@ -220,39 +261,15 @@ export function mergeGitignore(existing: string, entries: readonly string[]): st
   return `${existing}${separator}\n# Phoebe\n${missing.join("\n")}\n`;
 }
 
-export type InitReport = {
-  /** New files written (destination paths, relative to the target dir). */
-  created: string[];
-  /** `.gitignore` entries appended in-place (destination paths). */
-  updated: string[];
-  /** Existing files left alone (destination paths). */
-  skipped: string[];
+/** The seams `runInit` reaches the world through — all injectable (#552). */
+export type InitDeps = {
+  /** Root for shipped `templates/` and `prompts/`. Defaults to the walk-up from this module. */
+  packageRoot?: string;
+  /** Git runner for the tenant profile's origin prefill. */
+  git?: GitRunner;
+  /** Override the prompt seeder. Defaults to {@link copyShippedPromptsInto}. */
+  seedPrompt?: (promptsDir: string) => string[];
 };
-
-/**
- * Walk up from this module's directory to find the shipped resource root. This
- * runs from `src/init.ts` (no build step) and reads `templates/…` + `prompts/…`
- * from the package root. Stops at a `node_modules` boundary so an installed dep
- * never resolves scaffold sources from the consuming repo. (Runtime `promptFiles`
- * loading is separate — see `resolvePromptFile` in `prompt.ts`, which reads
- * from the consumer runtime root.)
- */
-function resolvePackageResource(relativePath: string, moduleDir: string): string {
-  let dir = moduleDir;
-  while (true) {
-    const candidate = join(dir, relativePath);
-    if (existsSync(candidate)) {
-      return candidate;
-    }
-    const parent = dirname(dir);
-    if (parent === dir || basename(parent) === "node_modules") {
-      throw new Error(
-        `Could not find ${relativePath} within the Phoebe package (searched from ${moduleDir})`,
-      );
-    }
-    dir = parent;
-  }
-}
 
 export type RunInitOptions = {
   /** Directory the scaffolded files land under. Created if missing. */
@@ -268,12 +285,17 @@ export type RunInitOptions = {
    * `maintainers: false`.
    */
   reportingMaintainers?: boolean;
-  /** Root for shipped `templates/` and `prompts/` (test seam). Defaults to
-   *  the walk-up from this module. */
-  packageRoot?: string;
+  /** Tenant profile only: the origin-prefill overrides and the prompt opt-in. */
+  tenant?: Pick<InitTenantOptions, "repoSlug" | "repoUrl" | "withPrompts">;
+  deps?: InitDeps;
 };
 
-function readShippedFile(
+/**
+ * Read one file out of the shipped package — a `templates/…` or `prompts/…`
+ * path. Exported for the relay's own scaffolder (`relay/init.ts`), which reads
+ * `templates/relay/…` from wherever this package was installed.
+ */
+export function readShippedFile(
   relPath: string,
   packageRoot: string | undefined,
   moduleDir: string,
@@ -285,22 +307,47 @@ function readShippedFile(
 }
 
 /**
- * Execute the plan: create missing files, additively update `.gitignore`, and
- * leave every existing file alone. Returns a report so the CLI (and tests)
- * can render a summary without re-walking the filesystem.
+ * The init verb: execute the plan for the chosen profile, create missing files,
+ * additively update `.gitignore`, and leave every existing file alone. Returns
+ * the outcome so a caller — the CLI printer, a companion's install tab — can
+ * render a summary without re-walking the filesystem. Prints nothing itself
+ * (#552).
  *
  * Not idempotent in the "produces the same output twice" sense — running init
  * twice on a directory the consumer has edited must not change their files.
  * That's the entire guarded-re-run contract. A second run into an empty
  * directory *does* reproduce the first-run output.
+ *
+ * The tenant profile is a different scaffold, not a different set of files, so
+ * it is delegated to {@link initTenant} rather than planned: origin prefill
+ * makes the config dynamic. One verb still covers all three profiles, because a
+ * second caller should not have to know which arm it is asking for.
  */
-export function runInit(opts: RunInitOptions): InitReport {
+export function runInit(opts: RunInitOptions & { profile: "tenant" }): InitTenantOutcome;
+export function runInit(opts: RunInitOptions): InitScaffoldOutcome;
+export function runInit(opts: RunInitOptions): InitOutcome {
   const targetDir = resolvePath(opts.targetDir);
   const profile = opts.profile ?? "solo";
   if (profile === "tenant") {
-    throw new Error("`phoebe init --tenant` uses initTenant(), not runInit().");
+    const { tenantDir, repoSlug, repoUrl, ...report } = initTenant({
+      targetDir: opts.targetDir,
+      ...(opts.tenant?.repoSlug !== undefined ? { repoSlug: opts.tenant.repoSlug } : {}),
+      ...(opts.tenant?.repoUrl !== undefined ? { repoUrl: opts.tenant.repoUrl } : {}),
+      withPrompts: opts.tenant?.withPrompts ?? false,
+      ...(opts.deps?.seedPrompt !== undefined ? { seedPrompt: opts.deps.seedPrompt } : {}),
+      ...(opts.deps?.git !== undefined ? { git: opts.deps.git } : {}),
+    });
+    return { ...report, profile: "tenant", targetDir: tenantDir, tenant: { repoSlug, repoUrl } };
   }
-  const params: TemplateParams = { ...DEFAULT_TEMPLATE_PARAMS, ...opts.params };
+  // Resolved field by field, not spread: a spread reads every own property of
+  // `DEFAULT_TEMPLATE_PARAMS`, which runs the `cliVersion` getter and the
+  // `package.json` read behind it even when the caller supplied a version —
+  // the very read the companion passes `cliVersion` to avoid (#555).
+  const params: TemplateParams = {
+    installCommand: opts.params?.installCommand ?? DEFAULT_TEMPLATE_PARAMS.installCommand,
+    cliBin: opts.params?.cliBin ?? DEFAULT_TEMPLATE_PARAMS.cliBin,
+    cliVersion: opts.params?.cliVersion ?? DEFAULT_TEMPLATE_PARAMS.cliVersion,
+  };
   const moduleDir = dirname(fileURLToPath(import.meta.url));
 
   mkdirSync(targetDir, { recursive: true });
@@ -334,7 +381,7 @@ export function runInit(opts: RunInitOptions): InitReport {
     if (output.source.kind === "template") {
       const rawTemplate = readShippedFile(
         join("templates", output.source.templateRelPath),
-        opts.packageRoot,
+        opts.deps?.packageRoot,
         moduleDir,
       );
       const rendered = renderTemplate(rawTemplate, params);
@@ -342,13 +389,17 @@ export function runInit(opts: RunInitOptions): InitReport {
     } else {
       // Shipped prompts ship verbatim — the engine's own render step handles
       // their `{{PLACEHOLDER}}` tokens at run time.
-      const prompt = readShippedFile(output.source.promptRelPath, opts.packageRoot, moduleDir);
+      const prompt = readShippedFile(
+        output.source.promptRelPath,
+        opts.deps?.packageRoot,
+        moduleDir,
+      );
       writeFileSync(destAbs, prompt);
     }
     report.created.push(output.destRelPath);
   }
 
-  return report;
+  return { ...report, profile, targetDir };
 }
 
 /**
@@ -525,9 +576,13 @@ export function copyShippedPromptsInto(
   return written;
 }
 
-/** Human-readable summary suitable for the CLI to stdout after init runs. */
-export function formatInitReport(report: InitReport, targetDir: string): string {
-  const lines = [`[phoebe] init → ${targetDir}`];
+/**
+ * Human-readable summary suitable for the CLI to stdout after init runs.
+ * `command` names the scaffolder in the first line, so `phoebe relay init`
+ * reports under its own name rather than `phoebe init`'s.
+ */
+export function formatInitReport(report: InitReport, targetDir: string, command = "init"): string {
+  const lines = [`[phoebe] ${command} → ${targetDir}`];
   const emit = (label: string, paths: readonly string[]): void => {
     if (paths.length === 0) return;
     lines.push(`  ${label}:`);

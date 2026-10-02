@@ -3,7 +3,7 @@
 // is actually working. (A `--fix` mode that repairs at the current pin is a
 // mapped follow-up.)
 //
-// Seven deployment checks, all reads of state that already exists (three more —
+// Nine deployment checks, all reads of state that already exists (three more —
 // `labels`, `stray-members` and `stale-state` — are per tenant and live in the
 // tenant sweep below):
 //   1. cli            — installed bootstrapper vs the npm registry's latest
@@ -17,6 +17,12 @@
 //   7. launcher-floor — is the launcher at or above the engine's declared minBootstrap
 //                       floor? A violation deadlocks the deployment outright, not
 //                       merely slows it — the two checks are not the same thing.
+//   8. relay          — where this deployment stands with its console: unpaired,
+//                       paired, paired with a stale token still in `.env`, or
+//                       refused (#540)
+//   9. config-pen     — is the root config mounted read-write, so `phoebe config set`
+//                       can apply an edit at all (#503)? A deployment that came up
+//                       before that mount existed looks identical until the first edit.
 //
 // A tenant's scheduled work kinds may declare env keys of their own (#425);
 // doctor reports a missing one as a tenant finding, ahead of the engine child
@@ -33,8 +39,17 @@
 // five-permission grant probe stays in scripts/verify-tenant-token.mjs (it ships
 // with the repo, not the package); doctor's per-tenant probe is the
 // reachability slice of it.
+//
+// Two things the run gains once the bootstrapper is the one starting it (#507,
+// #534). It answers within a **five-minute deadline** — whatever has not
+// finished by then reports `unknown`, so one unreachable tenant cannot erase
+// the rest of the report (src/doctor-deadline.ts). And it accepts **credential
+// leases** on its env (src/doctor-lease.ts): the installation tokens the
+// supervisor already holds for its App-arm tenants, which is what turns `repo`,
+// `labels` and `stray-members` from "not probed (App arm)" into real checks. A
+// manual `phoebe doctor` sets neither variable and behaves as it always has.
 
-import { existsSync, readFileSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import {
@@ -44,6 +59,9 @@ import {
   type CrashLoopState,
 } from "../bootstrap/crash-loop.ts";
 import { type CredentialArm, resolveCredentialArm } from "../bootstrap/credential-arm.ts";
+import { deploymentReportPath, readDeploymentReport } from "../bootstrap/deployment-report.ts";
+import { RELAY_TOKEN_ENV } from "../bootstrap/relay-boot.ts";
+import { relayKeyPath } from "../bootstrap/relay-key.ts";
 import { parseDotenv } from "../bootstrap/engine-child-env.ts";
 import { readEngineSource, type ResolvedEngineSource } from "../bootstrap/engine-source.ts";
 import {
@@ -51,8 +69,9 @@ import {
   githubEngineDir,
   LS_REMOTE_TIMEOUT_MS,
 } from "../bootstrap/github-engine.ts";
-import { TENANT_CONFIG_FILE } from "../bootstrap/tenants.ts";
-import { isInsideContainer } from "./execution-gate.ts";
+import { TENANT_CONFIG_FILE, TENANT_ENV_FILE } from "../bootstrap/tenants.ts";
+import type { RelayReport } from "./contracts/deployment.ts";
+import { bootIsMainProcess, isInsideContainer, pidOneCmdline } from "./execution-gate.ts";
 import { featureBranch } from "./feature-branch.ts";
 import { defaultGit, type GitRunner } from "./git-model.ts";
 import { parseParentIssueUrl, pickIntegrationPr } from "./github-client.ts";
@@ -72,9 +91,11 @@ import {
   CONFIG_DEFAULTS,
   DEFAULT_PIPELINE_NAME,
   DEFAULT_PROMPT_FILE_BY_KIND,
+  readRelayField,
   resolveConfig,
 } from "./config-schema.ts";
 import { resolveDataBase } from "./paths.ts";
+import { readSecretStore, secretStorePath, tenantStateDir } from "./secret-store.ts";
 import { enumerateDeclaredEnv } from "./pipeline-enumerate.ts";
 import {
   createWorktreeInspector,
@@ -92,30 +113,32 @@ import {
   type StrayMember,
 } from "./stray-members.ts";
 import { enumerateWorkspaceTenants } from "./tenant-commands.ts";
+import type {
+  CheckState,
+  DoctorCheck,
+  DoctorReport,
+  MissingDeclaredEnvKey,
+  TenantDoctorRow,
+} from "./contracts/doctor.ts";
+import {
+  createDeadline,
+  DEADLINE_DETAIL,
+  DOCTOR_DEADLINE_MS,
+  noDeadline,
+  type Deadline,
+} from "./doctor-deadline.ts";
+import { DOCTOR_LEASE_ENV, parseDoctorLeases, type DoctorLeases } from "./doctor-lease.ts";
 
-/** A scheduled kind's declared key that its pipeline's env does not hold (#425). */
-export type MissingDeclaredEnvKey = { pipeline: string; kind: string; key: string };
+// The report and its leaves live in `phoebe-agent/contracts` (#507 §7, #552) so
+// the five tabs of a console can render a health panel without loading the
+// checks below, which reach GitHub, git, npm and the data volume. Re-exported
+// here so every existing reader goes on importing them off this module.
+export type { CheckState, DoctorCheck, DoctorReport, MissingDeclaredEnvKey, TenantDoctorRow };
 
-export type CheckState = "ok" | "warn" | "fail" | "unknown";
-
-export type DoctorCheck = {
-  id: string;
-  state: CheckState;
-  detail: string;
-};
-
-export type TenantDoctorRow = {
-  path: string;
-  slug: string | null;
-  checks: DoctorCheck[];
-};
-
-export type DoctorReport = {
-  checks: DoctorCheck[];
-  tenants: TenantDoctorRow[];
-  /** False when any deployment or tenant check failed. */
-  ok: boolean;
-};
+/** One check a run did not get to before {@link DOCTOR_DEADLINE_MS} (#507 §7). */
+function deadlineCheck(id: string): DoctorCheck {
+  return { id, state: "unknown", detail: DEADLINE_DETAIL };
+}
 
 /** Fold every check into the report verdict. Pure, for tests. */
 export function buildDoctorReport(checks: DoctorCheck[], tenants: TenantDoctorRow[]): DoctorReport {
@@ -257,17 +280,70 @@ export function launcherFloorCheck(fields: {
   };
 }
 
+/**
+ * Is the pen there? (#503, #536.)
+ *
+ * `phoebe config set` writes the root `phoebe.config.ts` and nothing else, which
+ * works only because the scaffolded compose mounts that one file read-write over
+ * the read-only deployment directory. A deployment that came up before that
+ * mount existed reads exactly like one that has it — until the first edit, which
+ * fails on a `:ro` filesystem for no reason an operator can see from the
+ * refusal. So the check is a `W_OK` probe, and the fix is to recreate the
+ * container, because a Compose mount cannot be added to a running one.
+ *
+ * Only answerable inside the container. On the host the file is an ordinary
+ * writable file in the operator's own checkout, which says nothing about how the
+ * container sees it — so the answer there is "unknown", never a pass.
+ */
+export function configPenCheck(fields: {
+  configPath: string;
+  inContainer: boolean;
+  writable: (path: string) => boolean;
+}): DoctorCheck {
+  if (!fields.inContainer) {
+    return {
+      id: "config-pen",
+      state: "unknown",
+      detail:
+        "not in the container — run `docker compose exec phoebe phoebe doctor` to check the mount",
+    };
+  }
+  if (fields.writable(fields.configPath)) {
+    return {
+      id: "config-pen",
+      state: "ok",
+      detail: `${fields.configPath} is mounted read-write — \`phoebe config set\` can apply an edit`,
+    };
+  }
+  return {
+    id: "config-pen",
+    state: "warn",
+    detail:
+      `${fields.configPath} is read-only, so \`phoebe config set\` will refuse every edit. ` +
+      `Fix: add the root config as a read-write file mount to the volumes in ` +
+      `container/compose.yml (docs/upgrading.md gives the line), then ` +
+      `\`phoebe stop && phoebe start\` — a mount cannot be added to a running container. ` +
+      `Editing the file by hand works either way.`,
+  };
+}
+
 /** Same default as boot.ts `engineBaseDir` — where github engine clones live. */
 function engineBaseDir(env: NodeJS.ProcessEnv): string {
   return env["PHOEBE_ENGINE_DIR"] ?? join(tmpdir(), "phoebe-agent");
 }
 
-type DoctorDeps = {
-  configDir: string;
-  env: NodeJS.ProcessEnv;
+/** The seams every check reaches the world through — all injectable (#552). */
+export type DoctorDeps = {
+  /** Defaults to `process.env`; the CLI passes the real environment. */
+  env?: NodeJS.ProcessEnv;
   git?: GitRunner;
   npm?: NpmRunner;
   fetchFn?: typeof fetch;
+  /**
+   * The run's clock (#507 §7). Defaults to a fresh {@link DOCTOR_DEADLINE_MS}
+   * one; a test passes {@link noDeadline} or a short one of its own.
+   */
+  deadline?: Deadline;
 };
 
 const PROBE_TIMEOUT_MS = 30_000;
@@ -783,6 +859,96 @@ export function declaredEnvCheck(
   };
 }
 
+/**
+ * The `secret-store` check (#504) — the loud half of "the store wins over the
+ * `.env`".
+ *
+ * The store is the tier above the tenant's file, so a key set in both means a
+ * file edit that does nothing, which is exactly the silent failure #503 traded
+ * away. Warn, never fail: shadowing is a state an operator chose and may have
+ * meant, and the same relationship `prompt-drift` has with its files. The
+ * remedy is named in the line — clear the store entry and the file governs
+ * again.
+ *
+ * A store that will not parse is its own warn. Every delivery path reads it
+ * fail-closed (values simply do not arrive), so nothing else in the deployment
+ * would ever mention the file is broken.
+ */
+export function secretStoreCheck(fields: {
+  /** The store's keys and values, or null when the file will not parse. */
+  store: Record<string, string> | null;
+  /** The keys it sets that the `.env` or the ambient env also set. */
+  shadowed: readonly string[];
+  envLabel: string;
+  path: string;
+}): DoctorCheck {
+  if (fields.store === null) {
+    return {
+      id: "secret-store",
+      state: "warn",
+      detail: `${fields.path} will not parse — no console-set secret is reaching this tenant`,
+    };
+  }
+  const keys = Object.keys(fields.store);
+  if (keys.length === 0) {
+    return { id: "secret-store", state: "ok", detail: "no console-set secrets" };
+  }
+  const shadowed = [...fields.shadowed].sort();
+  if (shadowed.length === 0) {
+    return {
+      id: "secret-store",
+      state: "ok",
+      detail: `${keys.length} key(s) set in the store; nothing shadowed`,
+    };
+  }
+  return {
+    id: "secret-store",
+    state: "warn",
+    detail:
+      `${shadowed.join(", ")} set in the secret store and in ${fields.envLabel} — the store wins. ` +
+      `\`phoebe secret clear <KEY>\` hands the key back to the file.`,
+  };
+}
+
+/** What doctor knows about one tenant's secret store. */
+export type TenantSecretStore = {
+  /** The store's contents, or null when the file exists and will not parse. */
+  values: Record<string, string> | null;
+  /** Where it is — null when the tenant has no slug, so no store is possible. */
+  path: string | null;
+  /** Keys it sets that `lower` also sets. */
+  shadowed: string[];
+};
+
+/**
+ * Read one tenant's store the way doctor needs it: the values, the path to name
+ * in a line, and the collisions against the tier below. A slug-less tenant has
+ * no store to read and no check to run.
+ */
+export function readTenantSecretStore(
+  slug: string | null,
+  dataBase: string,
+  lower: Record<string, string | undefined>,
+): TenantSecretStore {
+  const stateDir = tenantStateDir(slug, dataBase);
+  if (stateDir === null) return { values: {}, path: null, shadowed: [] };
+  const path = secretStorePath(stateDir);
+  let values: Record<string, string> | null;
+  try {
+    values = readSecretStore(stateDir);
+  } catch {
+    values = null;
+  }
+  const shadowed =
+    values === null
+      ? []
+      : Object.keys(values).filter((key) => {
+          const beneath = lower[key];
+          return typeof beneath === "string" && beneath.length > 0;
+        });
+  return { values, path, shadowed };
+}
+
 /** A tenant's `.env` as its engine child would parse it; empty when unreadable. */
 function readTenantDotenv(envPath: string): Record<string, string> {
   try {
@@ -794,6 +960,26 @@ function readTenantDotenv(envPath: string): Record<string, string> {
 
 function nonEmpty(value: string | undefined): string | undefined {
   return value !== undefined && value.length > 0 ? value : undefined;
+}
+
+/**
+ * Which credential one tenant's checks run on (#507 §5). Its own `GH_TOKEN`
+ * first — a tenant carrying one is on the PAT arm and the supervisor leases it
+ * nothing — then whatever was leased for its slug. Pure, for tests.
+ *
+ * The arm is decided elsewhere and deliberately: a lease does not move a tenant
+ * onto the PAT arm, it only means the App arm's checks can be answered for
+ * once.
+ */
+export function tenantCredential(fields: {
+  own: string | undefined;
+  slug: string | null;
+  leases: DoctorLeases;
+}): { token: string | undefined; leased: boolean } {
+  const own = nonEmpty(fields.own);
+  if (own !== undefined) return { token: own, leased: false };
+  const leased = fields.slug === null ? undefined : nonEmpty(fields.leases[fields.slug]);
+  return { token: leased, leased: leased !== undefined };
 }
 
 /**
@@ -812,12 +998,17 @@ export function tenantTokenCheck(fields: {
   token: string | undefined;
   envLabel: string;
   inContainer: boolean;
+  /** This run holds a supervisor-leased installation token for the tenant (#507 §5). */
+  leased?: boolean;
 }): DoctorCheck {
   if (fields.arm === "app") {
     return {
       id: "token",
       state: "ok",
-      detail: "App arm: installation token minted by the GitHub App at runtime",
+      detail:
+        fields.leased === true
+          ? "App arm: installation token minted by the GitHub App, leased to this run"
+          : "App arm: installation token minted by the GitHub App at runtime",
     };
   }
   if (fields.token !== undefined) {
@@ -842,6 +1033,114 @@ export function tenantTokenCheck(fields: {
       `no GH_TOKEN in ${fields.envLabel} — the supervisor scrubs its own env, so this ` +
       `tenant's child boots with no token at all`,
   };
+}
+
+/**
+ * The `relay` check (#505 §4, #540) — one line for the whole console side of a
+ * deployment, in the four words the pairing decision has.
+ *
+ * `unpaired`     `relay.url` is set and there is no key on the volume yet.
+ * `paired`       a key is there and the link is live, or between retries.
+ * `token-stale`  paired, but `PHOEBE_RELAY_TOKEN` is still set. The token is
+ *                spent and useless; leaving it in `.env` leaves a dead
+ *                credential lying where the next person will assume it works.
+ * `refused`      the relay turned this deployment away in a way no retry fixes.
+ *
+ * Only `refused` fails. A deployment that has not paired yet is mid-setup and a
+ * lingering token is a chore, but a refusal means a console cannot see this
+ * deployment at all and nothing about it will change on its own.
+ */
+export function relayCheck(fields: {
+  /** `relay.url`, or null when the config names no relay. */
+  url: string | null;
+  /** Why the block could not be read, when that is why `url` is null. */
+  configError?: string;
+  /** Is there a deployment key on the volume? */
+  keyPresent: boolean;
+  /** Is `PHOEBE_RELAY_TOKEN` still set anywhere doctor can see? */
+  tokenPresent: boolean;
+  /** The report's relay section, when there is a report to read. */
+  reported: RelayReport | null;
+}): DoctorCheck {
+  if (fields.configError !== undefined) {
+    return {
+      id: "relay",
+      state: "warn",
+      detail: `the \`relay\` block does not parse, so boot ignores it: ${fields.configError}`,
+    };
+  }
+  if (fields.url === null) {
+    return {
+      id: "relay",
+      state: "ok",
+      detail: "no `relay` block — this deployment dials nothing and is read locally",
+    };
+  }
+  const close = fields.reported?.lastClose ?? null;
+  if (fields.reported?.state === "unpaired" && fields.keyPresent && close !== null) {
+    return {
+      id: "relay",
+      state: "fail",
+      detail:
+        `refused by ${fields.url} — close ${close.code}${close.reason ? ` (${close.reason})` : ""} ` +
+        `at ${close.at}; the link stopped dialling and waits for a config change`,
+    };
+  }
+  if (!fields.keyPresent) {
+    return fields.tokenPresent
+      ? {
+          id: "relay",
+          state: "ok",
+          detail: `unpaired — ${RELAY_TOKEN_ENV} is set; the next boot pairs with ${fields.url}`,
+        }
+      : {
+          id: "relay",
+          state: "warn",
+          detail:
+            `unpaired — ${fields.url} is configured but there is no key on the volume and no ` +
+            `${RELAY_TOKEN_ENV}. Mint a pairing token on the relay and set it in the root \`.env\``,
+        };
+  }
+  if (fields.tokenPresent) {
+    return {
+      id: "relay",
+      state: "warn",
+      detail:
+        `token-stale — paired with ${fields.url}, but ${RELAY_TOKEN_ENV} is still set. ` +
+        `The token was spent at pairing; remove it from the root \`.env\``,
+    };
+  }
+  const where = fields.reported === null ? "" : ` (${fields.reported.state})`;
+  return { id: "relay", state: "ok", detail: `paired with ${fields.url}${where}` };
+}
+
+/**
+ * The `relay` block as doctor reads it: the URL, or the complaint that stopped
+ * it being read. A malformed block is reported rather than skipped — boot
+ * ignores one with a warning, and a doctor that answered "no relay configured"
+ * would agree with boot about the behaviour while hiding the typo behind it.
+ */
+function readRelayBlock(rootConfig: Record<string, unknown> | null): {
+  url: string | null;
+  error: string | null;
+} {
+  if (rootConfig === null) return { url: null, error: null };
+  try {
+    return { url: readRelayField(rootConfig)?.url ?? null, error: null };
+  } catch (error) {
+    return { url: null, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * Is a pairing token still lying around? Both places it could be: the process
+ * env (doctor run inside the container) and the root `.env` (doctor run on the
+ * host against the file the operator actually edits).
+ */
+function relayTokenPresent(env: NodeJS.ProcessEnv, configDir: string): boolean {
+  if ((env[RELAY_TOKEN_ENV] ?? "").length > 0) return true;
+  const dotenv = readTenantDotenv(join(configDir, TENANT_ENV_FILE));
+  return (dotenv[RELAY_TOKEN_ENV] ?? "").length > 0;
 }
 
 /**
@@ -946,8 +1245,24 @@ export async function tenantRow(fields: {
    */
   env?: NodeJS.ProcessEnv;
   git?: GitRunner;
+  /**
+   * True when {@link tenantRow.token} is an installation token the supervisor
+   * leased for this run (#507 §5) rather than a `GH_TOKEN` out of the tenant's
+   * own `.env`. It changes nothing about what is probed — a token is a token —
+   * only what the `token` check says the credential is.
+   */
+  leased?: boolean;
+  /**
+   * This tenant's secret store (#504), when the caller read one. Undefined skips
+   * the check entirely — a caller that never looked must not report "no
+   * console-set secrets" as though it had.
+   */
+  secrets?: TenantSecretStore;
+  /** The run's clock (#507 §7). Checks it cannot beat report `unknown`. */
+  deadline?: Deadline;
 }): Promise<TenantDoctorRow> {
   const checks: DoctorCheck[] = [];
+  const deadline = fields.deadline ?? noDeadline();
 
   // Load the user config once: captures `disabled`, the four label names,
   // and the issues prompt path override — all from a single file read.
@@ -1020,25 +1335,48 @@ export async function tenantRow(fields: {
     checks.push(declaredEnvCheck(fields.declaredEnv, fields.envLabel));
   }
 
+  // The store, and what it shadows. Before the token check, because when the
+  // store holds `GH_TOKEN` this is the line that says where the credential the
+  // next check reports on actually came from.
+  if (fields.secrets !== undefined && fields.secrets.path !== null) {
+    checks.push(
+      secretStoreCheck({
+        store: fields.secrets.values,
+        shadowed: fields.secrets.shadowed,
+        envLabel: fields.envLabel,
+        path: fields.secrets.path,
+      }),
+    );
+  }
+
   const tokenCheck = tenantTokenCheck(fields);
   checks.push(tokenCheck);
 
   let repoPassed = false;
-  if (fields.arm === "app") {
-    // Probing the repo requires minting a token, which doctor does not do.
-    // Repo access is verified at runtime when the token is minted.
+  if (fields.arm === "app" && fields.token === undefined) {
+    // Probing the repo requires an installation token. The supervisor's own run
+    // leases one (#507 §5) and lands in the branch below; a manual run mints
+    // nothing, so repo access is verified at runtime instead.
     checks.push({
       id: "repo",
       state: "unknown",
       detail: "not probed (App arm — repo access verified at runtime when the token is minted)",
     });
   } else if (fields.token !== undefined) {
-    if (fields.slug !== null) {
-      const probe = await probeRepo(fields.slug, fields.token, fields.fetchFn);
-      repoPassed = probe.ok;
-      checks.push({ id: "repo", state: probe.ok ? "ok" : "fail", detail: probe.detail });
-    } else {
+    if (fields.slug === null) {
       checks.push({ id: "repo", state: "unknown", detail: "not probed (no repoSlug)" });
+    } else {
+      const probe = await deadline.race(probeRepo(fields.slug, fields.token, fields.fetchFn));
+      if (!probe.done) {
+        checks.push(deadlineCheck("repo"));
+      } else {
+        repoPassed = probe.value.ok;
+        checks.push({
+          id: "repo",
+          state: probe.value.ok ? "ok" : "fail",
+          detail: probe.value.detail,
+        });
+      }
     }
   } else {
     checks.push({
@@ -1057,8 +1395,11 @@ export async function tenantRow(fields: {
   if (fields.configPath !== undefined && !configLoaded) {
     checks.push({ id: "labels", state: "unknown", detail: "not evaluated (config load failed)" });
   } else if (fields.slug !== null && repoPassed && fields.token !== undefined) {
-    const allLabels = await fetchRepoLabels(fields.slug, fields.token, fields.fetchFn);
-    if (allLabels === null) {
+    const listed = await deadline.race(fetchRepoLabels(fields.slug, fields.token, fields.fetchFn));
+    const allLabels = listed.done ? listed.value : null;
+    if (!listed.done) {
+      checks.push(deadlineCheck("labels"));
+    } else if (allLabels === null) {
       // Non-200 from the label list endpoint means access denied, not labels
       // missing — avoid emitting a spurious `gh label create` remediation.
       checks.push({
@@ -1095,8 +1436,8 @@ export async function tenantRow(fields: {
       detail: "not evaluated (config load failed)",
     });
   } else if (fields.slug !== null && repoPassed && fields.token !== undefined) {
-    checks.push(
-      await tenantStrayMembers({
+    const strays = await deadline.race(
+      tenantStrayMembers({
         slug: fields.slug,
         token: fields.token,
         fetchFn: fields.fetchFn,
@@ -1104,6 +1445,9 @@ export async function tenantRow(fields: {
         walk: { featureLabel, branchPrefix, partOfPattern },
       }),
     );
+    // The graph walk is the run's longest single call — pages of issues, then a
+    // query per feature — so it is the check the deadline most often takes.
+    checks.push(strays.done ? strays.value : deadlineCheck("stray-members"));
   } else {
     const reason =
       fields.slug === null
@@ -1150,36 +1494,52 @@ export async function tenantRow(fields: {
   // Stale-state check: the only one that looks at the data volume, so it runs
   // last and asks nothing of the tracker.
   if (fields.configPath !== undefined && fields.dataBase !== undefined) {
-    checks.push(
-      await tenantStaleState({
+    const stale = await deadline.race(
+      tenantStaleState({
         configPath: fields.configPath,
         dataBase: fields.dataBase,
         ...(fields.git !== undefined ? { git: fields.git } : {}),
       }),
     );
+    checks.push(stale.done ? stale.value : deadlineCheck("stale-state"));
   }
 
   return { path: fields.path, slug: fields.slug, checks };
 }
 
-/** Run every check and assemble the report. The CLI renders it. */
-export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
+/**
+ * The doctor verb: run every check and assemble the report. Renders nothing and
+ * decides no exit code — the CLI printer and the companion's install tab format
+ * the same value (#552).
+ */
+export async function runDoctor(
+  opts: { configDir: string },
+  deps: DoctorDeps = {},
+): Promise<DoctorReport> {
   const git = deps.git ?? defaultGit;
   const npm = deps.npm ?? defaultNpm;
   const fetchFn = deps.fetchFn ?? fetch;
-  const token = deps.env["GH_TOKEN"];
+  const env = deps.env ?? process.env;
+  const token = env["GH_TOKEN"];
   const checks: DoctorCheck[] = [];
+  // The run's own clock. Started here rather than by the caller so a manual
+  // `phoebe doctor` is bounded too — one hung tenant used to hold the terminal
+  // open forever.
+  const deadline = deps.deadline ?? createDeadline(DOCTOR_DEADLINE_MS);
+  // What the supervisor leased for this run, keyed by tenant slug (#507 §5).
+  // Empty for a manual run, which is what keeps that one credential-free.
+  const leases: DoctorLeases = parseDoctorLeases(env[DOCTOR_LEASE_ENV]);
 
   // 3. Root config loads + engine field parses. Everything engine-shaped hangs
   // off this, so it runs first even though it is check three in the docs.
-  const configPath = join(deps.configDir, TENANT_CONFIG_FILE);
+  const configPath = join(opts.configDir, TENANT_CONFIG_FILE);
   let source: ResolvedEngineSource | null = null;
   let rootConfig: Record<string, unknown> | null = null;
   if (!existsSync(configPath)) {
     checks.push({
       id: "config",
       state: "fail",
-      detail: `no ${TENANT_CONFIG_FILE} at ${deps.configDir}`,
+      detail: `no ${TENANT_CONFIG_FILE} at ${opts.configDir}`,
     });
   } else {
     try {
@@ -1229,7 +1589,7 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
 
     // 2. The pin vs the latest release, plus what is actually checked out.
     let materialized = "";
-    const cloneDir = githubEngineDir(engineBaseDir(deps.env), source.repo);
+    const cloneDir = githubEngineDir(engineBaseDir(env), source.repo);
     if (existsSync(join(cloneDir, ".git"))) {
       try {
         materialized = `; materialized ${git(["-C", cloneDir, "rev-parse", "HEAD"]).trim().slice(0, 12)}`;
@@ -1319,21 +1679,16 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
   }
 
   // 5. Crash-loop / quarantine state.
-  checks.push(crashLoopCheck(readCrashLoopState(crashLoopStatePath(engineBaseDir(deps.env)))));
+  checks.push(crashLoopCheck(readCrashLoopState(crashLoopStatePath(engineBaseDir(env)))));
 
   // 6. Supervisor liveness. Only answerable from inside the container, where
   // `phoebe boot` should be PID 1. On the host this is honest "unknown" — there
   // is no pidfile, and guessing from status.json age would misread an idle
   // (event-driven, not heartbeat) deployment as dead.
   if (isInsideContainer()) {
-    let cmdline = "";
-    try {
-      cmdline = readFileSync("/proc/1/cmdline", "utf8").replaceAll("\0", " ");
-    } catch {
-      cmdline = "";
-    }
+    const cmdline = pidOneCmdline();
     checks.push(
-      cmdline.includes("boot")
+      bootIsMainProcess(cmdline)
         ? { id: "supervisor", state: "ok", detail: "phoebe boot is the container's main process" }
         : {
             id: "supervisor",
@@ -1368,11 +1723,11 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
       detail: "local mount — floor check does not apply",
     });
   } else {
-    const floorEngineDir = githubEngineDir(engineBaseDir(deps.env), source.repo);
+    const floorEngineDir = githubEngineDir(engineBaseDir(env), source.repo);
     const minBootstrap = existsSync(join(floorEngineDir, ".git"))
       ? readMinBootstrap(floorEngineDir)
       : null;
-    const dockerfilePath = join(deps.configDir, "container", "Dockerfile");
+    const dockerfilePath = join(opts.configDir, "container", "Dockerfile");
     let launcherVersion: string | null = null;
     let launcherSource: "dockerfile" | "npm-global" | "unknown" = "unknown";
     if (existsSync(dockerfilePath)) {
@@ -1389,15 +1744,46 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
     checks.push(launcherFloorCheck({ minBootstrap, launcherVersion, launcherSource }));
   }
 
+  // Where tenant data lives, and where the deployment keeps its own state: the
+  // container constant unless `PHOEBE_DATA_DIR` moves it, which is how doctor
+  // reads a mounted volume from the host.
+  const dataBase = resolveDataBase(env);
+
+  // 8. The relay. Read from three places at once — the config's `relay` block,
+  // the key on the volume, and the report the bootstrapper writes — because no
+  // one of them alone distinguishes "not set up yet" from "turned away".
+  const relay = readRelayBlock(rootConfig);
+  checks.push(
+    relayCheck({
+      url: relay.url,
+      ...(relay.error !== null ? { configError: relay.error } : {}),
+      keyPresent: existsSync(relayKeyPath(dataBase)),
+      tokenPresent: relayTokenPresent(env, opts.configDir),
+      reported: readDeploymentReport(deploymentReportPath(dataBase))?.relay ?? null,
+    }),
+  );
+
+  // 9. The config pen — can this deployment apply a `phoebe config set` at all?
+  checks.push(
+    configPenCheck({
+      configPath: join(opts.configDir, TENANT_CONFIG_FILE),
+      inContainer: isInsideContainer(),
+      writable: (path) => {
+        try {
+          accessSync(path, constants.W_OK);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+    }),
+  );
+
   // Tenant sweep: workspace mode enumerates the same fleet boot supervises;
   // solo probes the root itself (the deployment root IS the tenant there).
   const tenants: TenantDoctorRow[] = [];
   const inContainer = isInsideContainer();
-  // Where tenant data lives, for the stale-state check: the container constant
-  // unless `PHOEBE_DATA_DIR` moves it, which is how doctor reads a mounted
-  // volume from the host.
-  const dataBase = resolveDataBase(deps.env);
-  const enumeration = await enumerateWorkspaceTenants({ configDir: deps.configDir });
+  const enumeration = await enumerateWorkspaceTenants({ configDir: opts.configDir });
   if (enumeration !== null) {
     // Bounded, order-preserving: each probe can wait out its 30s timeout, so a
     // serial sweep over a fleet of unreachable tenants would take
@@ -1410,19 +1796,33 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
     // that one snapshot feeds the declared-key scan, the token, and the
     // PHOEBE_* overlay — so an edit mid-sweep cannot split one report.
     const dotenvByTenant = new Map<string, Record<string, string>>();
+    const storeByTenant = new Map<string, TenantSecretStore>();
     const declaredEnvByTenant = new Map<string, MissingDeclaredEnvKey[] | null>();
     for (const tenant of enumeration.tenants) {
-      const tenantEnv = readTenantDotenv(tenant.envPath);
+      // The store over the file, exactly as the supervisor builds the child's
+      // env (#504): every check below asks what the child would hold, and after
+      // the store that is no longer what the `.env` alone says.
+      const dotenv = readTenantDotenv(tenant.envPath);
+      const store = readTenantSecretStore(tenant.slug, dataBase, dotenv);
+      storeByTenant.set(tenant.id, store);
+      const tenantEnv = { ...dotenv, ...store.values };
       dotenvByTenant.set(tenant.id, tenantEnv);
+      // A kind module that hangs on import would hold the whole sweep here, and
+      // this loop is serial by necessity — so it is the one place the deadline
+      // has to gate rather than race. A tenant past it reports `unknown` for
+      // the scan and still gets every other check.
       declaredEnvByTenant.set(
         tenant.id,
-        await scanDeclaredEnv({ configPath: tenant.configPath, env: tenantEnv }),
+        deadline.expired()
+          ? null
+          : await scanDeclaredEnv({ configPath: tenant.configPath, env: tenantEnv }),
       );
     }
     tenants.push(
       ...(await mapBounded(enumeration.tenants, TENANT_PROBE_CONCURRENCY, (tenant) => {
         const tenantEnv = dotenvByTenant.get(tenant.id) ?? {};
-        const tokenValue = nonEmpty(tenantEnv["GH_TOKEN"]);
+        const own = nonEmpty(tenantEnv["GH_TOKEN"]);
+        const credential = tenantCredential({ own, slug: tenant.slug, leases });
         return tenantRow({
           declaredEnv: declaredEnvByTenant.get(tenant.id) ?? null,
           path: tenant.dir,
@@ -1430,8 +1830,10 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
           // Per tenant, not per deployment: a fleet mixes arms whenever one
           // tenant keeps its own PAT, and #157's per-installation approvals
           // make that the normal state during any permission change.
-          arm: resolveCredentialArm({ GH_TOKEN: tokenValue }, deps.env),
-          token: tokenValue,
+          arm: resolveCredentialArm({ GH_TOKEN: own }, deps.env),
+          token: credential.token,
+          leased: credential.leased,
+          deadline,
           envLabel: tenant.envPath,
           fetchFn,
           inContainer,
@@ -1440,6 +1842,7 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
           // The tenant's own `.env`, so a per-tenant PHOEBE_MERGED_LABEL (or
           // any other overlay key) is checked as its engine child reads it.
           env: tenantEnv,
+          secrets: storeByTenant.get(tenant.id) ?? { values: {}, path: null, shadowed: [] },
           git,
         });
       })),
@@ -1455,27 +1858,41 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
     // Solo: the child inherits the supervisor's env, so the ambient token is
     // the truth here (and only here) — same reasoning as verify-tenant-token.
     const slug = rootConfig["repoSlug"];
+    // Solo's store sits on the same data volume under the same slug. It is the
+    // only channel solo has — there is no tenant `.env` inside the container —
+    // so it is layered over the ambient env before anything is checked.
+    const soloStore = readTenantSecretStore(slug, dataBase, env);
+    const soloEnv: NodeJS.ProcessEnv = { ...deps.env, ...soloStore.values };
+    const credential = tenantCredential({ own: nonEmpty(soloEnv["GH_TOKEN"]), slug, leases });
     tenants.push(
       await tenantRow({
-        path: deps.configDir,
+        path: opts.configDir,
         slug,
         // Solo: the ambient container env is this tenant's env-file, so it is
         // what the declared keys are checked against.
-        declaredEnv: await scanDeclaredEnv({ configPath, env: deps.env }),
+        declaredEnv: deadline.expired()
+          ? null
+          : await scanDeclaredEnv({ configPath, env: soloEnv }),
         // Solo: the root is the tenant, so one env answers both halves.
-        arm: resolveCredentialArm(deps.env),
-        token: token !== undefined && token.length > 0 ? token : undefined,
+        arm: resolveCredentialArm(soloEnv),
+        token: credential.token,
+        leased: credential.leased,
+        deadline,
         envLabel: "the environment",
         fetchFn,
         inContainer,
         configPath,
         dataBase,
-        env: deps.env,
+        env: soloEnv,
+        secrets: soloStore,
         git,
       }),
     );
   }
 
+  // The timer is unrefed, so a forgotten one cannot hold a process open — but
+  // a CLI run that ends by printing should not sit on one either.
+  deadline.cancel();
   return buildDoctorReport(checks, tenants);
 }
 
@@ -1520,6 +1937,14 @@ repo, no open member of a retired feature left wearing one, every env key a
 scheduled work kind declares set in that tenant's .env, and (when the issues
 prompt is overridden) that it includes the blocker-recording rule.
 
+A run answers within five minutes; a check that does not finish by then reports
+\`?\` (deadline passed) rather than holding the whole report open. The
+bootstrapper runs doctor itself — at boot, after a reconcile, on request and
+every six hours — and its runs carry each tenant's installation token, so the
+repo, labels and stray-member checks are real on App-arm deployments. That
+report, with its age, is in \`<data>/state/deployment.json\`; this command prints
+and changes nothing.
+
 The full five-permission token probe is scripts/verify-tenant-token.mjs.
 Exit code is 1 when any check fails. \`phoebe upgrade\` moves versions;
 doctor reports whether the version you are on works.
@@ -1539,7 +1964,7 @@ export async function runDoctorCli(argv: readonly string[]): Promise<void> {
     }
     throw new Error(`Unknown flag \`${arg}\` for \`phoebe doctor\`. See \`phoebe doctor --help\`.`);
   }
-  const report = await runDoctor({ configDir: process.cwd(), env: process.env });
+  const report = await runDoctor({ configDir: process.cwd() }, { env: process.env });
   process.stdout.write(json ? `${JSON.stringify(report)}\n` : `${formatDoctorReport(report)}\n`);
   if (!report.ok) process.exitCode = 1;
 }

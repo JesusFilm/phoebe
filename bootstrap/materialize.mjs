@@ -10,13 +10,71 @@
 // The bundled copy is the transitional engine source. Later tickets (#40/#41)
 // teach bootstrap/cli.ts to resolve the engine from a local mount / git ref; the
 // "run raw `.ts` from a dir outside node_modules" shape is what stays.
+//
+// Escaping node_modules costs the copy its dependency resolution, so the copy
+// gets a `node_modules` of its own holding one symlink per runtime dependency
+// (linkDependencies below). The package had none until the relay's OIDC client
+// (#538); anything it gains from here works the same way.
 
-import { cpSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { cpSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 
 // Package subtrees to copy: the TypeScript bootstrapper + engine, plus the
 // scaffold resources `phoebe init` reads (init walks up from src/ to find them).
-const MATERIALIZED_PARTS = ["bootstrap", "src", "templates", "prompts"];
+const MATERIALIZED_PARTS = ["bootstrap", "src", "relay", "templates", "prompts"];
+
+/**
+ * Resolve `name` from `fromDir` the way Node does: walk up, appending
+ * `node_modules` to every ancestor that is not itself a `node_modules`
+ * directory. Returns the package directory, or null when it is not installed.
+ */
+function findDependency(fromDir, name) {
+  let dir = fromDir;
+  for (;;) {
+    if (basename(dir) !== "node_modules") {
+      const candidate = join(dir, "node_modules", name);
+      if (existsSync(candidate)) return candidate;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+/**
+ * Give the materialized copy a `node_modules` of its own, holding a symlink to
+ * each of the package's runtime dependencies where they really live.
+ *
+ * Without this the copy cannot import them at all: it sits in a temp dir (or on
+ * the data volume) with no `node_modules` above it, so `import "openid-client"`
+ * from `relay/` resolves against nothing. Only the *direct* dependencies are
+ * linked — their own dependencies resolve from the real directory the symlink
+ * points at, because Node resolves through symlinks by default.
+ *
+ * A dependency that is not installed is skipped rather than fatal: the import
+ * that needs it fails with Node's own "Cannot find package" at the moment it is
+ * used, which names the package, instead of this copy step failing every verb.
+ */
+function linkDependencies(packageRoot, dir) {
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
+  } catch {
+    return;
+  }
+  const kind = process.platform === "win32" ? "junction" : "dir";
+  for (const name of Object.keys(manifest.dependencies ?? {})) {
+    const resolved = findDependency(packageRoot, name);
+    if (resolved === null) continue;
+    const link = join(dir, "node_modules", name);
+    mkdirSync(dirname(link), { recursive: true });
+    try {
+      symlinkSync(resolved, link, kind);
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+    }
+  }
+}
 
 /** Version-keyed materialization directory under `baseDir`. */
 export function engineDir(baseDir, version) {
@@ -42,10 +100,16 @@ export function ensureEngine({ packageRoot, baseDir, version }) {
         cpSync(from, join(dir, part), { recursive: true });
       }
     }
+    linkDependencies(packageRoot, dir);
     // The copied `.ts` modules must load as ESM; the nearest package.json to
-    // `<dir>/bootstrap/cli.ts` is this one. A minimal `{"type":"module"}` is
-    // enough — nothing reads its own package fields at runtime.
-    writeFileSync(join(dir, "package.json"), '{\n  "type": "module"\n}\n');
+    // `<dir>/bootstrap/cli.ts` is this one. It carries the version as well,
+    // because the copy reads its own manifest for it: `phoebe relay init` pins
+    // the scaffolded relay image to the CLI that wrote it (#539), and that
+    // lookup runs from here, not from the package under node_modules.
+    writeFileSync(
+      join(dir, "package.json"),
+      `${JSON.stringify({ type: "module", version }, null, 2)}\n`,
+    );
     // Write the marker last so a copy interrupted midway re-runs next time.
     writeFileSync(marker, `${version}\n`);
   }

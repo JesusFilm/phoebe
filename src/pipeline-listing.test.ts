@@ -10,6 +10,8 @@ import {
   isWedged,
   listPipelines,
   pipelineState,
+  wedgedVerdict,
+  WEDGED_PASS_INTERVALS,
   type PipelineFacts,
 } from "./pipeline-listing.ts";
 import { emptyStatus, type StatusSnapshot } from "./unit-event.ts";
@@ -109,6 +111,105 @@ describe("isWedged", () => {
       ],
     });
     expect(isWedged(mixed, poll, NOW)).toBe(true);
+  });
+});
+
+describe("wedgedVerdict", () => {
+  const budget = 10 * MINUTE;
+  const poll = 5 * MINUTE;
+  const silence = WEDGED_PASS_INTERVALS * poll;
+  const working = (ageMs: number): StatusSnapshot =>
+    snapshot({ currentUnits: [inFlight("1", new Date(NOW - ageMs).toISOString(), budget)] });
+
+  test("the unit clause is `isWedged`, named", () => {
+    expect(
+      wedgedVerdict({
+        snapshot: working(budget + poll + 1),
+        pollIntervalMs: poll,
+        lastPassAt: NOW,
+        since: NOW,
+        now: NOW,
+      }),
+    ).toEqual({ wedged: true, reason: "unit-overdue" });
+  });
+
+  test("no pass in three poll intervals is wedged, and says how long the silence is", () => {
+    expect(
+      wedgedVerdict({
+        snapshot: snapshot(),
+        pollIntervalMs: poll,
+        lastPassAt: NOW - silence - MINUTE,
+        since: null,
+        now: NOW,
+      }),
+    ).toEqual({ wedged: true, reason: "no-pass", noPassForMs: silence + MINUTE });
+  });
+
+  test("silence inside three poll intervals is an engine with nothing to do", () => {
+    expect(
+      wedgedVerdict({
+        snapshot: snapshot(),
+        pollIntervalMs: poll,
+        lastPassAt: NOW - silence,
+        since: null,
+        now: NOW,
+      }),
+    ).toEqual({ wedged: false });
+  });
+
+  test("a pipeline parked on the broker is silent by design", () => {
+    expect(
+      wedgedVerdict({
+        snapshot: snapshot({ waitingForSlot: true }),
+        pollIntervalMs: poll,
+        lastPassAt: NOW - 10 * silence,
+        since: null,
+        now: NOW,
+      }),
+    ).toEqual({ wedged: false });
+  });
+
+  test("before the first pass the clock runs from the spawn", () => {
+    expect(
+      wedgedVerdict({
+        snapshot: null,
+        pollIntervalMs: poll,
+        lastPassAt: null,
+        since: NOW - silence - MINUTE,
+        now: NOW,
+      }),
+    ).toMatchObject({ wedged: true, reason: "no-pass" });
+    expect(
+      wedgedVerdict({
+        snapshot: null,
+        pollIntervalMs: poll,
+        lastPassAt: null,
+        since: NOW - MINUTE,
+        now: NOW,
+      }),
+    ).toEqual({ wedged: false });
+  });
+
+  test("with nobody running the pipeline, only the unit clause can answer", () => {
+    // A stale or on-disk cell: there is no loop to have stopped.
+    expect(
+      wedgedVerdict({
+        snapshot: snapshot({ updatedAt: "2020-01-01T00:00:00.000Z" }),
+        pollIntervalMs: poll,
+        lastPassAt: null,
+        since: null,
+        now: NOW,
+      }),
+    ).toEqual({ wedged: false });
+    expect(
+      wedgedVerdict({
+        snapshot: working(budget + poll + 1),
+        pollIntervalMs: poll,
+        lastPassAt: null,
+        since: null,
+        now: NOW,
+      }),
+    ).toEqual({ wedged: true, reason: "unit-overdue" });
   });
 });
 

@@ -1,6 +1,6 @@
 // `phoebe migrate` contracts:
 //   * parseMigrateArgs rejects --dir and --only; accepts --config and --help.
-//   * runMigrate: not-applicable when detect returns null; applied when detect
+//   * migrateDirectory: not-applicable when detect returns null; applied when detect
 //     returns non-null and apply + validation succeed; failed (no file written)
 //     when apply throws; failed + reverted when post-apply validation fails;
 //     a failed migration does not halt remaining migrations in the directory.
@@ -36,8 +36,8 @@ import {
   formatFleetMigrateReport,
   formatMigrateReport,
   parseMigrateArgs,
-  runFleetMigrate,
   runMigrate,
+  migrateDirectory,
   type FleetMigrateReport,
   type Migration,
   type MigrateJson,
@@ -196,13 +196,13 @@ describe("parseMigrateArgs", () => {
   });
 });
 
-// ----------------------------------------------------------------- runMigrate
+// ----------------------------------------------------------------- migrateDirectory
 
-describe("runMigrate", () => {
+describe("migrateDirectory", () => {
   test("no migrations → empty results, ok=true", async () => {
     const dir = makeTempDir();
     const configPath = scaffoldDeployment(dir);
-    const report = await runMigrate({
+    const report = await migrateDirectory({
       dir,
       role: "solo-root",
       configPath,
@@ -217,7 +217,7 @@ describe("runMigrate", () => {
   test("migration not-applicable when detect returns null", async () => {
     const dir = makeTempDir();
     const configPath = scaffoldDeployment(dir);
-    const report = await runMigrate({
+    const report = await migrateDirectory({
       dir,
       role: "solo-root",
       configPath,
@@ -233,7 +233,7 @@ describe("runMigrate", () => {
   test("migration applied → file written and journaled", async () => {
     const dir = makeTempDir();
     const configPath = scaffoldDeployment(dir);
-    const report = await runMigrate({
+    const report = await migrateDirectory({
       dir,
       role: "solo-root",
       configPath,
@@ -252,14 +252,14 @@ describe("runMigrate", () => {
     const dir = makeTempDir();
     const configPath = scaffoldDeployment(dir);
     const migration = makeApplyingMigration("test-idem", "prompts/idem.md", "# Idem\n");
-    await runMigrate({
+    await migrateDirectory({
       dir,
       role: "solo-root",
       configPath,
       migrations: [migration],
       validateFn: async () => {},
     });
-    const second = await runMigrate({
+    const second = await migrateDirectory({
       dir,
       role: "solo-root",
       configPath,
@@ -274,7 +274,7 @@ describe("runMigrate", () => {
     const dir = makeTempDir();
     const configPath = scaffoldDeployment(dir);
     const afterMigration = makeApplyingMigration("after", "prompts/after.md", "# After\n");
-    const report = await runMigrate({
+    const report = await migrateDirectory({
       dir,
       role: "solo-root",
       configPath,
@@ -297,7 +297,7 @@ describe("runMigrate", () => {
     const configPath = scaffoldDeployment(dir);
     let calls = 0;
     const afterMigration = makeApplyingMigration("after2", "prompts/after2.md", "# After2\n");
-    const report = await runMigrate({
+    const report = await migrateDirectory({
       dir,
       role: "solo-root",
       configPath,
@@ -339,7 +339,7 @@ describe("runMigrate", () => {
         return { "some-file.txt": "content" };
       },
     };
-    const report = await runMigrate({
+    const report = await migrateDirectory({
       dir,
       role: "solo-root",
       configPath,
@@ -356,7 +356,7 @@ describe("runMigrate", () => {
     // Write a file that exists before migration runs
     const configPath = scaffoldDeployment(dir, { "prompts/pre-existing.md": "old content\n" });
     // Migration targets a different path
-    const report = await runMigrate({
+    const report = await migrateDirectory({
       dir,
       role: "solo-root",
       configPath,
@@ -386,7 +386,7 @@ describe("runMigrate", () => {
         return { "prompts/existing.md": "new content\n" };
       },
     };
-    await runMigrate({
+    await migrateDirectory({
       dir,
       role: "solo-root",
       configPath,
@@ -401,7 +401,7 @@ describe("runMigrate", () => {
   test("engine SHA is read (may be null in test env) and placed in report", async () => {
     const dir = makeTempDir();
     const configPath = scaffoldDeployment(dir);
-    const report = await runMigrate({
+    const report = await migrateDirectory({
       dir,
       role: "solo-root",
       configPath,
@@ -413,9 +413,9 @@ describe("runMigrate", () => {
   });
 });
 
-// ----------------------------------------------------------------- runMigrate flush-loop gaps (#248)
+// ----------------------------------------------------------------- migrateDirectory flush-loop gaps (#248)
 
-describe("runMigrate — flush-loop gaps", () => {
+describe("migrateDirectory — flush-loop gaps", () => {
   test("mid-flush write failure reverts already-written entries, records failed, continues to next migration", async () => {
     const dir = makeTempDir();
     const configPath = scaffoldDeployment(dir);
@@ -450,7 +450,7 @@ describe("runMigrate — flush-loop gaps", () => {
     );
 
     try {
-      const report = await runMigrate({
+      const report = await migrateDirectory({
         dir,
         role: "solo-root",
         configPath,
@@ -501,7 +501,7 @@ describe("runMigrate — flush-loop gaps", () => {
     };
 
     try {
-      const fleet = await runFleetMigrate({
+      const fleet = await runMigrate({
         configPath,
         migrations: [flushFailMigration],
         validateFn: async () => {},
@@ -563,7 +563,7 @@ describe("runMigrate — flush-loop gaps", () => {
     };
 
     try {
-      const report = await runMigrate({
+      const report = await migrateDirectory({
         dir,
         role: "solo-root",
         configPath,
@@ -583,13 +583,13 @@ describe("runMigrate — flush-loop gaps", () => {
   });
 });
 
-// ----------------------------------------------------------------- runMigrate check mode
+// ----------------------------------------------------------------- migrateDirectory check mode
 
-describe("runMigrate check mode", () => {
+describe("migrateDirectory check mode", () => {
   test("applicable migration reports 'applicable' state and writes nothing", async () => {
     const dir = makeTempDir();
     const configPath = scaffoldDeployment(dir);
-    const report = await runMigrate({
+    const report = await migrateDirectory({
       dir,
       role: "solo-root",
       configPath,
@@ -606,7 +606,7 @@ describe("runMigrate check mode", () => {
   test("non-applicable migration still reports 'not-applicable' in check mode", async () => {
     const dir = makeTempDir();
     const configPath = scaffoldDeployment(dir);
-    const report = await runMigrate({
+    const report = await migrateDirectory({
       dir,
       role: "solo-root",
       configPath,
@@ -638,7 +638,7 @@ describe("runMigrate check mode", () => {
         return {};
       },
     };
-    await runMigrate({
+    await migrateDirectory({
       dir,
       role: "solo-root",
       configPath,
@@ -655,7 +655,7 @@ describe("runMigrate check mode", () => {
   test("check mode: applicable detail comes from describe()", async () => {
     const dir = makeTempDir();
     const configPath = scaffoldDeployment(dir);
-    const report = await runMigrate({
+    const report = await migrateDirectory({
       dir,
       role: "solo-root",
       configPath,
@@ -905,7 +905,7 @@ function makeTenant(
 function fakeEnumerate(
   tenants: WorkspaceEnumeration["tenants"],
   holds: WorkspaceEnumeration["holds"] = [],
-): NonNullable<Parameters<typeof runFleetMigrate>[0]["enumerateFn"]> {
+): NonNullable<Parameters<typeof runMigrate>[0]["enumerateFn"]> {
   return async () => ({
     workspace: { depth: 1 } as WorkspaceEnumeration["workspace"],
     explicit: false,
@@ -932,11 +932,11 @@ function makeTenantMigration(id: string, relPath: string, content: string): Migr
   };
 }
 
-describe("runMigrate — ConfigRefusal", () => {
+describe("migrateDirectory — ConfigRefusal", () => {
   test("ConfigRefusal from apply → manual state, no file written, ok=true", async () => {
     const dir = makeTempDir();
     const configPath = scaffoldDeployment(dir);
-    const report = await runMigrate({
+    const report = await migrateDirectory({
       dir,
       role: "solo-root",
       configPath,
@@ -969,7 +969,7 @@ describe("runMigrate — ConfigRefusal", () => {
         return { "after.md": "# After\n" };
       },
     };
-    const report = await runMigrate({
+    const report = await migrateDirectory({
       dir,
       role: "solo-root",
       configPath,
@@ -1016,13 +1016,13 @@ function makeWorkspaceRootMigration(id: string, relPath: string, content: string
   };
 }
 
-// ----------------------------------------------------------------- runFleetMigrate
+// ----------------------------------------------------------------- runMigrate
 
-describe("runFleetMigrate: solo-root", () => {
+describe("runMigrate: solo-root", () => {
   test("returns empty tenantEntries for a solo deployment", async () => {
     const dir = makeTempDir();
     const configPath = scaffoldDeployment(dir);
-    const fleet = await runFleetMigrate({
+    const fleet = await runMigrate({
       configPath,
       migrations: [],
       validateFn: async () => {},
@@ -1035,7 +1035,7 @@ describe("runFleetMigrate: solo-root", () => {
   test("valid root with no applicable migrations → rootPreexistingInvalid=false", async () => {
     const dir = makeTempDir();
     const configPath = scaffoldDeployment(dir);
-    const fleet = await runFleetMigrate({
+    const fleet = await runMigrate({
       configPath,
       migrations: [],
       validateFn: async () => {},
@@ -1047,7 +1047,7 @@ describe("runFleetMigrate: solo-root", () => {
     // Regression: must not silently report validation=true for an invalid root
     const dir = makeTempDir();
     const configPath = scaffoldDeployment(dir);
-    const fleet = await runFleetMigrate({
+    const fleet = await runMigrate({
       configPath,
       migrations: [],
       validateFn: async () => {
@@ -1062,7 +1062,7 @@ describe("runFleetMigrate: solo-root", () => {
   });
 });
 
-describe("runFleetMigrate: workspace-root fleet walk", () => {
+describe("runMigrate: workspace-root fleet walk", () => {
   test("clean tenant with applicable migration → migrated verdict", async () => {
     const rootDir = makeTempDir();
     const configPath = scaffoldWorkspaceRoot(rootDir);
@@ -1070,7 +1070,7 @@ describe("runFleetMigrate: workspace-root fleet walk", () => {
     scaffoldDeployment(childDir);
 
     const migration = makeTenantMigration("t001", "prompts/tenant.md", "# Tenant\n");
-    const fleet = await runFleetMigrate({
+    const fleet = await runMigrate({
       configPath,
       migrations: [migration],
       validateFn: async () => {},
@@ -1094,7 +1094,7 @@ describe("runFleetMigrate: workspace-root fleet walk", () => {
     scaffoldDeployment(childDir);
 
     const migration = makeTenantMigration("t001", "prompts/tenant.md", "# Tenant\n");
-    const fleet = await runFleetMigrate({
+    const fleet = await runMigrate({
       configPath,
       migrations: [migration],
       validateFn: async () => {},
@@ -1114,7 +1114,7 @@ describe("runFleetMigrate: workspace-root fleet walk", () => {
     const configPath = scaffoldWorkspaceRoot(rootDir);
     const childDir = makeTempDir();
 
-    const fleet = await runFleetMigrate({
+    const fleet = await runMigrate({
       configPath,
       migrations: [],
       validateFn: async () => {},
@@ -1138,7 +1138,7 @@ describe("runFleetMigrate: workspace-root fleet walk", () => {
     scaffoldDeployment(childDir);
 
     const rootOnlyMigration = makeWorkspaceRootMigration("r001", "root-only.md", "# Root\n");
-    const fleet = await runFleetMigrate({
+    const fleet = await runMigrate({
       configPath,
       migrations: [rootOnlyMigration],
       validateFn: async () => {},
@@ -1160,7 +1160,7 @@ describe("runFleetMigrate: workspace-root fleet walk", () => {
     const childDir = makeTempDir();
     scaffoldDeployment(childDir);
 
-    const fleet = await runFleetMigrate({
+    const fleet = await runMigrate({
       configPath,
       migrations: [],
       validateFn: async () => {},
@@ -1178,7 +1178,7 @@ describe("runFleetMigrate: workspace-root fleet walk", () => {
     const childDir = makeTempDir();
     scaffoldDeployment(childDir);
 
-    const fleet = await runFleetMigrate({
+    const fleet = await runMigrate({
       configPath,
       migrations: [],
       validateFn: async (cp) => {
@@ -1214,7 +1214,7 @@ describe("runFleetMigrate: workspace-root fleet walk", () => {
       },
     };
 
-    const fleet = await runFleetMigrate({
+    const fleet = await runMigrate({
       configPath,
       migrations: [throwingTenantMigration],
       validateFn: async () => {},
@@ -1237,7 +1237,7 @@ describe("runFleetMigrate: workspace-root fleet walk", () => {
     scaffoldDeployment(childDir);
 
     const migration = makeTenantMigration("t-revert", "prompts/revert-me.md", "# Rev\n");
-    const fleet = await runFleetMigrate({
+    const fleet = await runMigrate({
       configPath,
       migrations: [migration],
       validateFn: async (cp, n) => {
@@ -1263,7 +1263,7 @@ describe("runFleetMigrate: workspace-root fleet walk", () => {
     scaffoldDeployment(dirtyDir);
 
     const migration = makeTenantMigration("t-multi", "prompts/multi.md", "# Multi\n");
-    const fleet = await runFleetMigrate({
+    const fleet = await runMigrate({
       configPath,
       migrations: [migration],
       validateFn: async () => {},
@@ -1285,7 +1285,7 @@ describe("runFleetMigrate: workspace-root fleet walk", () => {
     const rootDir = makeTempDir();
     const configPath = scaffoldWorkspaceRoot(rootDir);
 
-    const fleet = await runFleetMigrate({
+    const fleet = await runMigrate({
       configPath,
       migrations: [],
       validateFn: async () => {},
@@ -1310,7 +1310,7 @@ function scaffoldWorkspaceRootOnly(dir: string): string {
   return configPath;
 }
 
-describe("runFleetMigrate: workspace-root without tenant fields (#354)", () => {
+describe("runMigrate: workspace-root without tenant fields (#354)", () => {
   test("root migration applies and validates — not reverted — when workspace-root has no tenant fields", async () => {
     const rootDir = makeTempDir();
     const configPath = scaffoldWorkspaceRootOnly(rootDir);
@@ -1320,7 +1320,7 @@ describe("runFleetMigrate: workspace-root without tenant fields (#354)", () => {
       "container/Dockerfile",
       "FROM ubuntu:22.04\n",
     );
-    const fleet = await runFleetMigrate({
+    const fleet = await runMigrate({
       configPath,
       migrations: [rootMigration],
       // validateFn mirrors the fixed validateUserConfig: passes for workspace-root configs.
@@ -1340,7 +1340,7 @@ describe("runFleetMigrate: workspace-root without tenant fields (#354)", () => {
     const rootDir = makeTempDir();
     const configPath = scaffoldWorkspaceRootOnly(rootDir);
 
-    const fleet = await runFleetMigrate({
+    const fleet = await runMigrate({
       configPath,
       migrations: [],
       // Same fixed validator: workspace-root passes without tenant fields.
@@ -1523,14 +1523,14 @@ describe("formatFleetMigrateReport", () => {
   });
 });
 
-// ----------------------------------------------------------------- runFleetMigrate check mode
+// ----------------------------------------------------------------- runMigrate check mode
 
-describe("runFleetMigrate check mode", () => {
+describe("runMigrate check mode", () => {
   test("solo-root check: applicable migration reports applicable, nothing written", async () => {
     const dir = makeTempDir();
     const configPath = scaffoldDeployment(dir);
     const migration = makeApplyingMigration("chk-solo", "prompts/chk.md", "# Chk\n");
-    const fleet = await runFleetMigrate({
+    const fleet = await runMigrate({
       configPath,
       migrations: [migration],
       validateFn: async () => {},
@@ -1549,7 +1549,7 @@ describe("runFleetMigrate check mode", () => {
     scaffoldDeployment(childDir);
 
     const migration = makeTenantMigration("t-chk", "prompts/t.md", "# T\n");
-    const fleet = await runFleetMigrate({
+    const fleet = await runMigrate({
       configPath,
       migrations: [migration],
       validateFn: async () => {},
@@ -1571,7 +1571,7 @@ describe("runFleetMigrate check mode", () => {
     const childDir = makeTempDir();
     scaffoldDeployment(childDir);
 
-    const fleet = await runFleetMigrate({
+    const fleet = await runMigrate({
       configPath,
       migrations: [],
       validateFn: async () => {},
@@ -1587,14 +1587,14 @@ describe("runFleetMigrate check mode", () => {
 
 // ----------------------------------------------------------------- full-stack integration
 
-describe("runMigrate with real research prompt migration", () => {
+describe("migrateDirectory with real research prompt migration", () => {
   test("solo deployment missing research-prompt.md gets it scaffolded", async () => {
     const dir = makeTempDir();
     const configPath = scaffoldDeployment(dir);
     // prompts/ directory exists but research-prompt.md does not
     mkdirSync(join(dir, "prompts"), { recursive: true });
 
-    const report = await runMigrate({
+    const report = await migrateDirectory({
       dir,
       role: "solo-root",
       configPath,
@@ -1612,9 +1612,14 @@ describe("runMigrate with real research prompt migration", () => {
     const configPath = scaffoldDeployment(dir);
     mkdirSync(join(dir, "prompts"), { recursive: true });
 
-    await runMigrate({ dir, role: "solo-root", configPath, migrations: [researchPromptMigration] });
+    await migrateDirectory({
+      dir,
+      role: "solo-root",
+      configPath,
+      migrations: [researchPromptMigration],
+    });
 
-    const second = await runMigrate({
+    const second = await migrateDirectory({
       dir,
       role: "solo-root",
       configPath,
@@ -1728,11 +1733,11 @@ describe("m002 addResearchToWorkOrderMigration: detect → apply → detect retu
     expect(addResearchToWorkOrderMigration.appliesTo).toContain("tenant");
   });
 
-  test("runMigrate applies m002 and journals phoebe.config.ts", async () => {
+  test("migrateDirectory applies m002 and journals phoebe.config.ts", async () => {
     const dir = makeTempDir();
     writeFileSync(join(dir, "phoebe.config.ts"), CONFIG_WITH_EXPLICIT_WORK_ORDER);
 
-    const report = await runMigrate({
+    const report = await migrateDirectory({
       dir,
       role: "solo-root",
       configPath: join(dir, "phoebe.config.ts"),
@@ -1748,12 +1753,12 @@ describe("m002 addResearchToWorkOrderMigration: detect → apply → detect retu
     expect(report.ok).toBe(true);
   });
 
-  test("runMigrate: m002 not-applicable on second run (idempotent)", async () => {
+  test("migrateDirectory: m002 not-applicable on second run (idempotent)", async () => {
     const dir = makeTempDir();
     writeFileSync(join(dir, "phoebe.config.ts"), CONFIG_WITH_EXPLICIT_WORK_ORDER);
     const configPath = join(dir, "phoebe.config.ts");
 
-    await runMigrate({
+    await migrateDirectory({
       dir,
       role: "solo-root",
       configPath,
@@ -1761,7 +1766,7 @@ describe("m002 addResearchToWorkOrderMigration: detect → apply → detect retu
       validateFn: async () => {},
     });
 
-    const second = await runMigrate({
+    const second = await migrateDirectory({
       dir,
       role: "solo-root",
       configPath,
@@ -1773,7 +1778,7 @@ describe("m002 addResearchToWorkOrderMigration: detect → apply → detect retu
     expect(second.journal).toHaveLength(0);
   });
 
-  test("runMigrate: m002 reports manual when workOrder is dynamic, config unchanged", async () => {
+  test("migrateDirectory: m002 reports manual when workOrder is dynamic, config unchanged", async () => {
     const dynamicContent = MINIMAL_CONFIG.replace(
       "};",
       '  workOrder: [...BASE_ORDER, "checks"],\n};',
@@ -1782,7 +1787,7 @@ describe("m002 addResearchToWorkOrderMigration: detect → apply → detect retu
     writeFileSync(join(dir, "phoebe.config.ts"), dynamicContent);
     const configPath = join(dir, "phoebe.config.ts");
 
-    const report = await runMigrate({
+    const report = await migrateDirectory({
       dir,
       role: "solo-root",
       configPath,
@@ -2272,7 +2277,7 @@ describe("m005 pipelinesWorkBlockMigration end-to-end", () => {
     const configPath = join(dir, "phoebe.config.ts");
     writeFileSync(configPath, TENANT_CONFIG_WITH_WORK_FIELDS);
 
-    const report = await runMigrate({
+    const report = await migrateDirectory({
       dir,
       role: "tenant",
       configPath,
@@ -2303,7 +2308,7 @@ describe("m005 pipelinesWorkBlockMigration end-to-end", () => {
     // No scratch file from `verify` survives the run.
     expect(readdirSync(dir).filter((name) => name.startsWith("."))).toEqual([]);
 
-    const second = await runMigrate({
+    const second = await migrateDirectory({
       dir,
       role: "tenant",
       configPath,
@@ -2321,7 +2326,7 @@ describe("m005 pipelinesWorkBlockMigration end-to-end", () => {
     );
     writeFileSync(configPath, before);
 
-    const report = await runMigrate({
+    const report = await migrateDirectory({
       dir,
       role: "tenant",
       configPath,
@@ -2339,7 +2344,7 @@ describe("m005 pipelinesWorkBlockMigration end-to-end", () => {
       const dir = makeTempDir();
       const configPath = join(dir, "phoebe.config.ts");
       writeFileSync(configPath, TENANT_CONFIG_WITH_WORK_FIELDS);
-      const report = await runMigrate({
+      const report = await migrateDirectory({
         dir,
         role,
         configPath,
@@ -2357,7 +2362,7 @@ describe("Migration.verify", () => {
     const configPath = scaffoldDeployment(dir);
     const before = readFileSync(configPath, "utf8");
 
-    const report = await runMigrate({
+    const report = await migrateDirectory({
       dir,
       role: "solo-root",
       configPath,
@@ -2384,7 +2389,7 @@ describe("Migration.verify", () => {
     let onDisk: PhoebeUserConfig | undefined;
     let fromSource: PhoebeUserConfig | undefined;
 
-    const report = await runMigrate({
+    const report = await migrateDirectory({
       dir,
       role: "solo-root",
       configPath,

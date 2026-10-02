@@ -381,3 +381,92 @@ describe("definition-level defaults (#303)", () => {
     expect(picked.model).toBe(config.defaultModels.claude);
   });
 });
+
+// The catalogue's names (#530): one setting, one canonical name, and the older
+// spelling kept forever because it lives in operators' `.env` files.
+describe("the catalogued names", () => {
+  test("PHOEBE_<KIND>_PROVIDER is the canonical per-kind provider name", () => {
+    const picked = selectProviderForKind({
+      kind: "reviews",
+      env: { PHOEBE_REVIEWS_PROVIDER: "codex" },
+      config: selectionConfig(),
+    });
+    expect(picked.provider).toBe("codex");
+  });
+
+  test("PHOEBE_<KIND>_AGENT is a permanent alias of it", () => {
+    const picked = selectProviderForKind({
+      kind: "reviews",
+      env: { PHOEBE_REVIEWS_AGENT: "codex" },
+      config: selectionConfig(),
+    });
+    expect(picked.provider).toBe("codex");
+  });
+
+  test("the canonical name wins when both are set", () => {
+    const picked = selectProviderForKind({
+      kind: "reviews",
+      env: { PHOEBE_REVIEWS_PROVIDER: "codex", PHOEBE_REVIEWS_AGENT: "claude" },
+      config: selectionConfig(),
+    });
+    expect(picked.provider).toBe("codex");
+  });
+
+  test("an unknown value is reported against the name the operator set", () => {
+    expect(() =>
+      selectProviderForKind({
+        kind: "reviews",
+        env: { PHOEBE_REVIEWS_PROVIDER: "gemini" },
+        config: selectionConfig(),
+      }),
+    ).toThrow(/PHOEBE_REVIEWS_PROVIDER "gemini"/);
+  });
+
+  test("PHOEBE_DEFAULT_PROVIDER addresses the global leaf PHOEBE_AGENT does", () => {
+    const picked = selectProviderForKind({
+      kind: "issues",
+      env: { PHOEBE_DEFAULT_PROVIDER: "claude" },
+      config: selectionConfig(),
+    });
+    expect(picked.provider).toBe("claude");
+  });
+});
+
+// The two new global leaves (#530): `model` and `effort` mean "for the active
+// provider", so they sit under the env names that address them and above the
+// per-provider records that used to be the only way to say it.
+describe("the global model and effort leaves", () => {
+  test("model is used for whichever provider the run lands on", () => {
+    const config = selectionConfig({ model: "from-the-file" });
+    expect(selectProviderForKind({ kind: "issues", env: {}, config }).model).toBe("from-the-file");
+    expect(
+      selectProviderForKind({ kind: "issues", env: { PHOEBE_AGENT: "claude" }, config }).model,
+    ).toBe("from-the-file");
+  });
+
+  test("PHOEBE_MODEL beats the file leaf; a kind's block beats both", () => {
+    const config = selectionConfig({
+      model: "from-the-file",
+      workKinds: { reviews: { model: "from-the-block" } },
+    });
+    expect(
+      selectProviderForKind({ kind: "issues", env: { PHOEBE_MODEL: "from-env" }, config }).model,
+    ).toBe("from-env");
+    expect(
+      selectProviderForKind({ kind: "reviews", env: { PHOEBE_MODEL: "from-env" }, config }).model,
+    ).toBe("from-the-block");
+  });
+
+  test("effort resolves on the same ladder, above defaultEfforts", () => {
+    const config = selectionConfig({ effort: "medium", defaultEfforts: { cursor: "low" } });
+    expect(selectProviderForKind({ kind: "checks", env: {}, config }).effort).toBe("medium");
+    expect(
+      selectProviderForKind({ kind: "checks", env: { PHOEBE_EFFORT: "max" }, config }).effort,
+    ).toBe("max");
+  });
+
+  test("a kind block's explicit clear still wins over the global leaf", () => {
+    const config = selectionConfig({ effort: "medium", workKinds: { checks: { effort: null } } });
+    expect(selectProviderForKind({ kind: "checks", env: {}, config }).effort).toBeUndefined();
+  });
+});

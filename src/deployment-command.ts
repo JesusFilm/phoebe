@@ -11,7 +11,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 import { TENANT_CONFIG_FILE } from "../bootstrap/tenants.ts";
-import { readDeploymentField, type DeploymentField } from "./config-schema.ts";
+import { readDeploymentField, type DeploymentCommands } from "./config-schema.ts";
 import {
   assertHostLifecycle,
   defaultCommandRunner,
@@ -47,8 +47,8 @@ export async function resolveDeploymentCommands(opts: {
   command: "start" | "stop";
   cwd: string;
   inContainer?: boolean;
-  provided?: DeploymentField;
-}): Promise<DeploymentField | undefined> {
+  provided?: DeploymentCommands;
+}): Promise<DeploymentCommands | undefined> {
   assertHostLifecycle(opts.command, opts.inContainer);
   return opts.provided ?? (await readDeploymentCommands(opts.cwd));
 }
@@ -63,7 +63,7 @@ export async function resolveDeploymentCommands(opts: {
  * vaguer complaint about the config. A config that exists but is broken still
  * throws — a mistyped `deployment` block must not silently fall back to compose.
  */
-export async function readDeploymentCommands(cwd: string): Promise<DeploymentField | undefined> {
+export async function readDeploymentCommands(cwd: string): Promise<DeploymentCommands | undefined> {
   const configPath = join(cwd, TENANT_CONFIG_FILE);
   if (!existsSync(configPath)) return undefined;
   return readDeploymentField(await loadUserConfig(configPath));

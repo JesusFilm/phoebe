@@ -20,6 +20,18 @@ function makeFakePackage(root: string): void {
   writeFileSync(join(root, "prompts", "issues-prompt.md"), "# prompt\n");
 }
 
+/** Give the fake package a runtime dependency, installed where npm puts it. */
+function installDependency(root: string, name: string): string {
+  const dir = join(root, "node_modules", name);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ name, version: "1.0.0" }));
+  writeFileSync(
+    join(root, "package.json"),
+    JSON.stringify({ name: "phoebe-agent", dependencies: { [name]: "^1.0.0" } }),
+  );
+  return dir;
+}
+
 describe("ensureEngine", () => {
   let base: string;
   let pkg: string;
@@ -47,8 +59,53 @@ describe("ensureEngine", () => {
     expect(existsSync(join(dir, "src", "main.ts"))).toBe(true);
     expect(existsSync(join(dir, "templates", "container", "Dockerfile"))).toBe(true);
     expect(existsSync(join(dir, "prompts", "issues-prompt.md"))).toBe(true);
-    // An ESM package.json is written so the copied `.ts` loads as a module.
-    expect(JSON.parse(readFileSync(join(dir, "package.json"), "utf8"))).toEqual({ type: "module" });
+    // An ESM package.json is written so the copied `.ts` loads as a module, and
+    // it names the version, which the copy reads from its own manifest (#539).
+    expect(JSON.parse(readFileSync(join(dir, "package.json"), "utf8"))).toEqual({
+      type: "module",
+      version: "1.2.3",
+    });
+  });
+
+  test("links the package's runtime dependencies into the copy", () => {
+    // Without this the copy cannot import them at all: it sits outside every
+    // node_modules the install put them in.
+    installDependency(pkg, "openid-client");
+
+    const dir = engineDir(base, "1.2.3");
+    ensureEngine({ packageRoot: pkg, baseDir: base, version: "1.2.3" });
+
+    const linked = join(dir, "node_modules", "openid-client", "package.json");
+    expect(existsSync(linked)).toBe(true);
+    expect(JSON.parse(readFileSync(linked, "utf8")).name).toBe("openid-client");
+  });
+
+  test("finds a dependency hoisted beside the package, as a global install leaves it", () => {
+    // npm -g and pnpm both put deps in the node_modules the package sits in.
+    const installRoot = join(base, "install", "node_modules");
+    const hoisted = join(installRoot, "phoebe-agent");
+    makeFakePackage(hoisted);
+    writeFileSync(
+      join(hoisted, "package.json"),
+      JSON.stringify({ name: "phoebe-agent", dependencies: { "openid-client": "^1.0.0" } }),
+    );
+    mkdirSync(join(installRoot, "openid-client"), { recursive: true });
+    writeFileSync(join(installRoot, "openid-client", "package.json"), '{"name":"openid-client"}');
+
+    ensureEngine({ packageRoot: hoisted, baseDir: base, version: "1.2.3" });
+
+    expect(
+      existsSync(join(engineDir(base, "1.2.3"), "node_modules", "openid-client", "package.json")),
+    ).toBe(true);
+  });
+
+  test("a dependency that is not installed is skipped, not fatal", () => {
+    writeFileSync(
+      join(pkg, "package.json"),
+      JSON.stringify({ name: "phoebe-agent", dependencies: { "never-installed": "^1.0.0" } }),
+    );
+
+    expect(() => ensureEngine({ packageRoot: pkg, baseDir: base, version: "1.2.3" })).not.toThrow();
   });
 
   test("is idempotent — a second call does not re-copy over a materialized dir", () => {

@@ -5,13 +5,21 @@ coding agent. This file orients any agent that lands here.
 
 ## What this repo is
 
-A single npm package, **`phoebe-agent`**, published as a thin **bootstrapper**
+One npm package, **`phoebe-agent`**, published as a thin **bootstrapper**
 (`bootstrap/`) around the **engine** (`src/`). Consumers do not vendor this
 source: they install the package, keep one config file plus prompt overrides, and
 run the container files that `phoebe init` scaffolds for them. In the container
 `phoebe boot` is the long-lived main process — it checks the engine out at the
 git ref the consumer's `engine` config field names, runs it, and relaunches it
 when that ref or the config moves.
+
+The repo is a pnpm workspace ([`pnpm-workspace.yaml`](pnpm-workspace.yaml)). The
+package stays at the root and is the only thing that publishes; [`apps/`](apps)
+holds the apps that ship beside it, starting with
+[`apps/console`](apps/console), the web console the relay serves. Each app is private and
+rides the root version, so `apps/*` never adds a package to npm — it adds
+packages the root `ready` gate lints, type-checks, tests, and builds.
+
 `JesusFilm/youtube-studio` incubated Phoebe. Design decisions are recorded on this
 repository's own tracker and under `docs/research/`.
 

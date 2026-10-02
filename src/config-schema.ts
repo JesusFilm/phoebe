@@ -548,23 +548,75 @@ export type WorkspaceField =
 export type { GitIdentity };
 
 /**
- * Host-CLI-only lifecycle commands (#189/#260). Literal shell strings, like
- * `installCommand`/`checkCommand`, not a runtime name — `podman compose …`,
- * `systemctl …`, or a different compose invocation all fit. Read only by
- * `phoebe start` / `phoebe stop` on the host; the engine never sees it (see the
- * field doc on {@link PhoebeUserConfig.deployment}).
+ * The host-side deployment block, in two halves and never read by the engine
+ * (see the field doc on {@link PhoebeUserConfig.deployment}).
+ *
+ * **Lifecycle commands** (#189/#260) — literal shell strings, like
+ * `installCommand`/`checkCommand` rather than a runtime name, so `podman
+ * compose …`, `systemctl …`, or a different compose invocation all fit. Read by
+ * `phoebe start` / `phoebe stop` on the host.
+ *
+ * **Host knobs** (#530) — the three numbers that protect the machine, read by
+ * `phoebe boot` and catalogued like every other setting, so each has an env
+ * name that beats it. They live here rather than beside the tenant's fields
+ * because they are the operator's business, not the repo's.
+ *
+ * Either half stands alone: a block carrying only knobs leaves compose driving
+ * start and stop, and a block carrying only commands leaves the knobs at their
+ * defaults. What is rejected is a *half-declared* lifecycle.
  */
 export type DeploymentField = {
-  /** Bring the deployment up. Run by `phoebe start`. */
-  startCommand: string;
-  /** Drain and stop the deployment. Run by `phoebe stop`. */
-  stopCommand: string;
+  /** Bring the deployment up. Run by `phoebe start`. Required with `stopCommand`. */
+  startCommand?: string;
+  /** Drain and stop the deployment. Run by `phoebe stop`. Required with `startCommand`. */
+  stopCommand?: string;
   /**
    * Optional short-grace stop for `phoebe stop --now`.
    * When absent, `--now` falls back to `stopCommand`.
    */
   stopNowCommand?: string;
+  /**
+   * Cap on work units executing at once across the whole container (#407/#530).
+   * Absent ⇒ `max(concurrency)` across the live pipelines. Its derived env name
+   * `PHOEBE_DEPLOYMENT_SLOT_CAP` (permanent alias `PHOEBE_MAX_CONCURRENT_AGENTS`)
+   * beats it, as env beats file everywhere.
+   */
+  slotCap?: number;
+  /** Over-cap grants allowed fleet-wide at once for starved pipelines. Absent ⇒ 1. */
+  slotFloorBudget?: number;
+  /** How often `phoebe boot` polls the config and the tracked ref. Absent ⇒ 60s. */
+  reconcileIntervalMs?: number;
 };
+
+/**
+ * The lifecycle half of {@link DeploymentField}, as `phoebe start` / `phoebe
+ * stop` need it: both commands present. A block that carries only the host
+ * knobs has no lifecycle half, and those two commands keep driving compose.
+ */
+export type DeploymentCommands = {
+  startCommand: string;
+  stopCommand: string;
+  stopNowCommand?: string;
+};
+
+/** The bootstrapper's half of {@link DeploymentField} — the three host knobs. */
+export type DeploymentHostKnobs = {
+  slotCap?: number;
+  slotFloorBudget?: number;
+  reconcileIntervalMs?: number;
+};
+
+/**
+ * What each host knob accepts. Written once and read twice — by the strict
+ * rejection at `resolveConfig` and by the lenient read `phoebe boot` does — so
+ * the two can never disagree about what a usable value is. `slotFloorBudget`
+ * floors at 0 because a hard ceiling is a legitimate answer (#407).
+ */
+const HOST_KNOB_SHAPES = [
+  { key: "slotCap", min: 1, integer: true },
+  { key: "slotFloorBudget", min: 0, integer: true },
+  { key: "reconcileIntervalMs", min: 1, integer: false },
+] as const satisfies readonly { key: keyof DeploymentHostKnobs; min: number; integer: boolean }[];
 
 /**
  * The crash reporter's switch (#474): where Phoebe's *own* install and
@@ -586,6 +638,30 @@ export type ReportingField = {
    * Default false.
    */
   includeRef?: boolean;
+};
+
+/**
+ * The relay this deployment dials out to (#505 §2, #540). Bootstrapper-only and
+ * root-only: `resolveConfig` drops it, no `PHOEBE_*` var overlays it, and a
+ * tenant config carrying one is ignored the way a tenant `engine` block is.
+ * A remote config edit refuses it for the same reason it refuses `engine.ref` —
+ * a relay that could rewrite the address it is reached at could strand a
+ * deployment where no operator can find it.
+ *
+ * No block, or no `url`, and the deployment never dials: it behaves exactly as
+ * a deployment did before this field existed. Changing either value is a local
+ * file edit; the reconcile that notices it is what redials.
+ */
+export type RelayField = {
+  /** The relay's WebSocket URL, e.g. `wss://relay.example.com/deployments`. */
+  url: string;
+  /**
+   * What a console calls this deployment. Defaults to the solo tenant's
+   * `repoSlug`, or the workspace root's directory name. The relay keys on the
+   * deployment's public key and merely displays this, so two deployments may
+   * share a name.
+   */
+  name?: string;
 };
 
 export type PromptFilesConfig = {
@@ -697,9 +773,23 @@ export type PhoebeConfig = {
    * Per-provider reasoning-effort level, e.g. `{ claude: "low" }`. Partial on
    * purpose: an unset provider passes no effort flag at all, so that CLI's own
    * default stands, and a provider whose CLI has no such knob ignores it.
-   * Env-overridable for the active provider via `PHOEBE_EFFORT`.
+   * The per-provider floor under {@link effort}.
    */
   defaultEfforts: Partial<Record<ProviderName, string>>;
+  /**
+   * Model for *the active provider*, whichever that turns out to be — the leaf
+   * `defaultModels` fills per provider, hoisted so one name addresses it.
+   * `PHOEBE_MODEL` is its derived env name and beats it; a kind's own `model`
+   * is a more specific path and beats both. Absent ⇒ `defaultModels[provider]`.
+   */
+  model?: string;
+  /**
+   * Reasoning effort for *the active provider* — the leaf `defaultEfforts`
+   * fills per provider. `PHOEBE_EFFORT` is its derived env name and beats it; a
+   * kind's own `effort` beats both. Absent ⇒ `defaultEfforts[provider]`, which
+   * is itself empty by default, so no effort flag is passed at all.
+   */
+  effort?: string;
   /**
    * Per-work-kind agent overrides (#300), e.g.
    * `{ reviews: { provider: "claude", model: "claude-haiku-4-5", effort: "low" } }`.
@@ -810,6 +900,12 @@ export type PhoebeUserConfig = {
    */
   reporting?: ReportingField;
   /**
+   * The relay this deployment dials (see {@link RelayField}). Root config only,
+   * bootstrapper-only: the engine never reads it, `resolveConfig` drops it, and
+   * it is not `PHOEBE_*`-overlayable — the `engine`/`workspace` precedent.
+   */
+  relay?: RelayField;
+  /**
    * Bootstrapper-only asset directory (#98). Relocates where this tenant's
    * co-located `.env` and prompt/asset files live to a subdirectory of the dir
    * holding this `phoebe.config.ts` — e.g. `configDir: ".phoebe"` reuses a
@@ -843,7 +939,8 @@ export type PhoebeUserConfig = {
    */
   gitIdentity?: GitIdentity;
   /**
-   * Host-CLI-only lifecycle commands (#189/#260): literal shell strings that
+   * Host-side lifecycle commands (#189/#260) and the three host knobs (#530);
+   * see {@link DeploymentField}. The commands are literal shell strings that
    * bring the deployment up or down from the host. When absent (the default)
    * `phoebe start` / `phoebe stop` drive the scaffolded docker compose file.
    * When present, the compose driver is bypassed and the strings run via
@@ -880,6 +977,10 @@ export type PhoebeUserConfig = {
   defaultProvider?: ProviderName;
   defaultModels?: Partial<Record<ProviderName, string>>;
   defaultEfforts?: Partial<Record<ProviderName, string>>;
+  /** Model for the active provider (see {@link PhoebeConfig.model}). */
+  model?: string;
+  /** Reasoning effort for the active provider (see {@link PhoebeConfig.effort}). */
+  effort?: string;
   /**
    * Per-work-kind overrides + custom kinds (#300/#303); see
    * {@link PhoebeConfig.workKinds}.
@@ -1096,6 +1197,72 @@ export function validateUserConfig(user: PhoebeUserConfig): void {
   if (user.reporting !== undefined) {
     validateReportingField(user.reporting);
   }
+  if (user.relay !== undefined) {
+    validateRelayField(user.relay);
+  }
+}
+
+/**
+ * Reject a malformed `relay` block. `url` is required and must be a WebSocket
+ * URL: an operator who pastes the console's `https://` address is one letter
+ * from a deployment that dials forever and never says why, so the scheme is
+ * checked here rather than surfacing as a connection error every retry.
+ */
+export function validateRelayField(relay: RelayField): void {
+  if (typeof relay !== "object" || relay === null || Array.isArray(relay)) {
+    throw new Error(
+      `phoebe.config.ts \`relay\` must be an object with \`url\` and an optional \`name\` ` +
+        `(got ${JSON.stringify(relay)}).`,
+    );
+  }
+  for (const key of Object.keys(relay)) {
+    if (key !== "url" && key !== "name") {
+      throw new Error(
+        `phoebe.config.ts \`relay\` names unknown field "${key}". The block holds only \`url\` ` +
+          `and \`name\`.`,
+      );
+    }
+  }
+  if (typeof relay.url !== "string" || relay.url.trim().length === 0) {
+    throw new Error(
+      `phoebe.config.ts \`relay.url\` must be a non-empty \`wss://\` URL ` +
+        `(got ${JSON.stringify(relay.url)}).`,
+    );
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(relay.url);
+  } catch {
+    throw new Error(
+      `phoebe.config.ts \`relay.url\` is not a URL (got ${JSON.stringify(relay.url)}).`,
+    );
+  }
+  // `ws://` is allowed so a relay behind a trusted local proxy, or a test, can
+  // be reached; `wss://` is what an operator over the open internet wants, and
+  // an `https://` paste is the mistake worth naming.
+  if (parsed.protocol !== "wss:" && parsed.protocol !== "ws:") {
+    throw new Error(
+      `phoebe.config.ts \`relay.url\` must be a WebSocket URL — \`wss://host/deployments\`, ` +
+        `not ${JSON.stringify(relay.url)}.`,
+    );
+  }
+  if (relay.name !== undefined && (typeof relay.name !== "string" || relay.name.trim() === "")) {
+    throw new Error(
+      `phoebe.config.ts \`relay.name\` must be a non-empty string when present ` +
+        `(got ${JSON.stringify(relay.name)}).`,
+    );
+  }
+}
+
+/**
+ * Read the validated `relay` block off a loaded config, before or instead of
+ * `resolveConfig`, which drops it. `undefined` when the block is absent, which
+ * every reader treats as "this deployment dials nothing".
+ */
+export function readRelayField(user: { relay?: unknown }): RelayField | undefined {
+  if (user.relay === undefined) return undefined;
+  validateRelayField(user.relay as RelayField);
+  return user.relay as RelayField;
 }
 
 /**
@@ -1156,10 +1323,39 @@ export function readReportingField(user: { reporting?: unknown }): ReportingFiel
  */
 export function readDeploymentField(user: {
   deployment?: DeploymentField;
-}): DeploymentField | undefined {
+}): DeploymentCommands | undefined {
   if (user.deployment === undefined) return undefined;
   validateDeploymentField(user.deployment);
-  return user.deployment;
+  const { startCommand, stopCommand, stopNowCommand } = user.deployment;
+  // A knobs-only block declares no lifecycle commands, so `phoebe start` /
+  // `phoebe stop` stay on the compose driver rather than running nothing.
+  if (startCommand === undefined || stopCommand === undefined) return undefined;
+  return {
+    startCommand,
+    stopCommand,
+    ...(stopNowCommand !== undefined ? { stopNowCommand } : {}),
+  };
+}
+
+/**
+ * Read the three host knobs off a loaded user config (#530). Lenient where
+ * {@link readDeploymentField} is strict: `phoebe boot` calls this before it has
+ * anywhere to report a config error, and a value that fails its test is simply
+ * no answer, leaving the env name or the default to win. The strict rejection
+ * of the same block happens at `resolveConfig` and on the host CLIs.
+ */
+export function readDeploymentHostKnobs(user: unknown): DeploymentHostKnobs {
+  const block = (user as { deployment?: unknown } | null | undefined)?.deployment;
+  if (typeof block !== "object" || block === null || Array.isArray(block)) return {};
+  const record = block as Record<string, unknown>;
+  const knobs: DeploymentHostKnobs = {};
+  for (const { key, min, integer } of HOST_KNOB_SHAPES) {
+    const value = record[key];
+    if (typeof value !== "number" || !Number.isFinite(value) || value < min) continue;
+    if (integer && !Number.isInteger(value)) continue;
+    knobs[key] = value;
+  }
+  return knobs;
 }
 
 /**
@@ -1407,8 +1603,32 @@ function validateDeploymentField(deployment: DeploymentField): void {
         `\`stopCommand\` (got ${JSON.stringify(deployment)}).`,
     );
   }
+  for (const { key, min, integer } of HOST_KNOB_SHAPES) {
+    const value = deployment[key];
+    if (value === undefined) continue;
+    const ok =
+      typeof value === "number" &&
+      Number.isFinite(value) &&
+      value >= min &&
+      (!integer || Number.isInteger(value));
+    if (!ok) {
+      throw new Error(
+        `phoebe.config.ts \`deployment.${key}\` must be ` +
+          `${integer ? "an integer" : "a number"} ≥ ${min} (got ${JSON.stringify(value)}).`,
+      );
+    }
+  }
   const isBlank = (value: unknown): boolean =>
     typeof value !== "string" || value.trim().length === 0;
+  // A block carrying only host knobs declares no lifecycle at all, which is a
+  // whole answer: compose keeps driving start and stop. The pair check applies
+  // once either command is named — and to a block that says nothing whatsoever,
+  // which is a half-written lifecycle rather than a deliberate silence.
+  const declaresLifecycle = (["startCommand", "stopCommand", "stopNowCommand"] as const).some(
+    (key) => deployment[key] !== undefined,
+  );
+  const declaresKnob = HOST_KNOB_SHAPES.some(({ key }) => deployment[key] !== undefined);
+  if (!declaresLifecycle && declaresKnob) return;
   const missing = (["startCommand", "stopCommand"] as const).filter((key) =>
     isBlank(deployment[key]),
   );
@@ -1498,6 +1718,10 @@ export function resolveConfig(
     defaultProvider: user.defaultProvider ?? CONFIG_DEFAULTS.defaultProvider,
     defaultModels: { ...CONFIG_DEFAULTS.defaultModels, ...user.defaultModels },
     defaultEfforts: { ...CONFIG_DEFAULTS.defaultEfforts, ...user.defaultEfforts },
+    // Absent stays absent: these two leaves have no default of their own — the
+    // per-provider records below them are the default (#530).
+    ...(user.model !== undefined ? { model: user.model } : {}),
+    ...(user.effort !== undefined ? { effort: user.effort } : {}),
     workKinds: { ...CONFIG_DEFAULTS.workKinds, ...user.workKinds },
     pipelines: resolvePipelines(user),
     providerEnv: { ...CONFIG_DEFAULTS.providerEnv, ...user.providerEnv },

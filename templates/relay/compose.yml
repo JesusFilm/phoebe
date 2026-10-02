@@ -1,0 +1,91 @@
+# Phoebe relay compose file — scaffolded by `phoebe relay init`, consumer-owned.
+#
+# Two services and one volume. `relay` is `phoebe relay serve` on plain HTTP on
+# an internal port; `caddy` sits in front of it and gets a Let's Encrypt
+# certificate for `RELAY_HOST` on its own (#506 §2). From this directory, with a
+# filled-in `.env` beside this file:
+#
+#   docker compose up -d --build     # build the relay image and start both
+#   docker compose logs -f           # follow the sign-in and certificate lines
+#   docker compose down              # stop; the volume and its certificates stay
+#
+# Before the first `up`, `RELAY_HOST` must already resolve to this host and
+# ports 80 and 443 must reach it, or Caddy cannot answer the ACME challenge and
+# the certificate never issues. Everything else is in `.env`.
+#
+# Running your own proxy? Delete the `caddy` service, publish the relay's 8787
+# however you normally do, and point your proxy at it. The relay never
+# terminates TLS itself, so nothing else has to change.
+#
+# This is not the deployment's compose file. Deployments keep no inbound
+# listener: they dial *out* to this relay and nothing dials in.
+
+# Project name — namespaces this instance's containers and the volume. A host
+# running both a Phoebe deployment and its relay wants two names, which is why
+# this one is not `phoebe`.
+name: ${COMPOSE_PROJECT_NAME:-phoebe-relay}
+
+services:
+  relay:
+    build:
+      context: .
+    image: phoebe-relay:latest
+    restart: unless-stopped
+    environment:
+      # The relay's whole configuration (#506 §9). Populate via `.env` — see
+      # `.env.example`. The first three are useless when blank, so Compose
+      # refuses to start without them; ALLOWED_EMAILS uses `?` rather than `:?`
+      # because *blank is an answer*: it means nobody is seeded and the first
+      # verified Google sign-in claims this relay. Set it in production and that
+      # window never opens.
+      RELAY_HOST: "${RELAY_HOST:?RELAY_HOST is required — the public hostname this relay answers on, e.g. relay.example.com}"
+      GOOGLE_CLIENT_ID: "${GOOGLE_CLIENT_ID:?GOOGLE_CLIENT_ID is required — see docs/relay.md for the Google client}"
+      GOOGLE_CLIENT_SECRET: "${GOOGLE_CLIENT_SECRET:?GOOGLE_CLIENT_SECRET is required — see docs/relay.md for the Google client}"
+      ALLOWED_EMAILS: "${ALLOWED_EMAILS?ALLOWED_EMAILS must be set, though it may be empty — empty leaves this relay to the first verified sign-in}"
+    volumes:
+      # One named volume, mounted at /data in both services (#506 §3). The relay
+      # writes /data/relay: allowlist.json today, the deployment links and their
+      # last reports later. Caddy writes /data/caddy. Neither reads the other's,
+      # and one volume is one thing to back up.
+      - relay-data:/data
+    # No `ports`. Only Caddy reaches 8787, over the compose network.
+
+  caddy:
+    # Pinned, as everything in a Phoebe image is. Bump deliberately; `latest`
+    # would mean two hosts running this file get different proxies.
+    image: caddy:2.11.4-alpine
+    restart: unless-stopped
+    # Caddy is the front door, so it is the one service with published ports.
+    # 443 is the site; 80 is the ACME HTTP challenge and the redirect to 443.
+    ports:
+      - "80:80"
+      - "443:443"
+    # `caddy reverse-proxy` is the whole configuration: one upstream, automatic
+    # HTTPS for the name in `--from`. No Caddyfile to keep in step with `.env`.
+    command:
+      [
+        "caddy",
+        "reverse-proxy",
+        "--from",
+        "${RELAY_HOST:?RELAY_HOST is required — it is the name Caddy gets a certificate for}",
+        "--to",
+        "relay:8787",
+      ]
+    depends_on:
+      # Ordering, not readiness — Caddy retries an upstream that is not up yet.
+      # What this buys is the volume: Docker seeds a fresh named volume from the
+      # image of whichever container mounts it first, ownership included. The
+      # relay image carries a phoebe-owned /data and Caddy's carries no /data at
+      # all, so the relay must be the one to seed it. Started the other way
+      # round, /data would be root-owned and the relay could not write.
+      - relay
+    volumes:
+      # The same volume. The official image puts its certificates and ACME
+      # account under $XDG_DATA_HOME/caddy, and that image sets XDG_DATA_HOME to
+      # /data — so this mount is what makes a restart reuse the certificate it
+      # already has instead of asking Let's Encrypt for another one and walking
+      # into a rate limit.
+      - relay-data:/data
+
+volumes:
+  relay-data:

@@ -21,6 +21,10 @@
 
 import { createHash } from "node:crypto";
 
+import { envNames, readNumber, settingAt } from "./settings-catalogue.ts";
+
+const MAX_UNPRODUCTIVE_RUNS_SETTING = settingAt("maxUnproductiveRuns");
+
 /** Phoebe-owned skip label — distinct from the user-supplied `prOptOutLabel`. */
 export const PHOEBE_QUARANTINE_LABEL = "phoebe:quarantined";
 
@@ -30,19 +34,22 @@ export const DEFAULT_MAX_UNPRODUCTIVE_RUNS = 3;
 export const DEFAULT_MAX_UNIT_TIMEOUTS = DEFAULT_MAX_UNPRODUCTIVE_RUNS;
 
 /**
- * Resolve K: `PHOEBE_MAX_UNPRODUCTIVE_RUNS` (a positive integer) wins, else
- * `PHOEBE_MAX_UNIT_TIMEOUTS` (deprecated alias), else the config field, else
- * the default 3. A fleet-protection backstop, not a per-repo tuning knob
- * (mirrors #72's timeout resolution).
+ * Resolve K: `PHOEBE_MAX_UNPRODUCTIVE_RUNS` (a positive integer) wins, else its
+ * permanent alias `PHOEBE_MAX_UNIT_TIMEOUTS`, else the config field, else the
+ * default 3. A fleet-protection backstop, not a per-repo tuning knob (mirrors
+ * #72's timeout resolution). Both names come from the settings catalogue, and a
+ * name set to something that is not a positive integer is no answer at all —
+ * which is what lets the alias still be heard behind a typo'd new name.
  */
 export function resolveMaxUnproductiveRuns(
   env: NodeJS.ProcessEnv,
   configValue: number = DEFAULT_MAX_UNPRODUCTIVE_RUNS,
 ): number {
-  const rawNew = Number(env["PHOEBE_MAX_UNPRODUCTIVE_RUNS"]);
-  if (Number.isInteger(rawNew) && rawNew >= 1) return rawNew;
-  const rawOld = Number(env["PHOEBE_MAX_UNIT_TIMEOUTS"]);
-  if (Number.isInteger(rawOld) && rawOld >= 1) return rawOld;
+  const fromEnv = readNumber(env, envNames(MAX_UNPRODUCTIVE_RUNS_SETTING), {
+    integer: true,
+    min: 1,
+  });
+  if (fromEnv !== undefined) return fromEnv;
   return Number.isInteger(configValue) && configValue >= 1
     ? configValue
     : DEFAULT_MAX_UNPRODUCTIVE_RUNS;

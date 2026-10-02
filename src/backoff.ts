@@ -6,6 +6,12 @@
 // synchronous too. The engine is a single-purpose daemon whose calls already
 // block on `execFileSync`, so blocking a further few seconds costs nothing it
 // was not already paying.
+//
+// One thing here is not synchronous: `jitteredBackoffMs` at the foot of the
+// file, the delay rule for a connection that reconnects on a timer rather than
+// a call that returns. It sits beside the sync driver because the two are one
+// retry rulebook — same ladder, same reason for the jitter — and a second file
+// would let them drift.
 
 export type SleepSync = (ms: number) => void;
 
@@ -46,4 +52,31 @@ export function withBackoffSync<T>(
       sleep(delayMs);
     }
   }
+}
+
+/**
+ * The delay before retry `attempt` (0-based) of something that reconnects
+ * rather than returns: full jitter under a ceiling that doubles from `firstMs`
+ * and stops at `capMs`.
+ *
+ * Three ways this differs from {@link withBackoffSync}, and each one is why the
+ * relay link (bootstrap/relay-link.ts) needs its own delay rather than a
+ * schedule:
+ *
+ *  - **Async.** A socket's retry is a timer, not a blocked thread; the link is
+ *    in the supervisor's event loop and must not stop it.
+ *  - **No terminal attempt.** The top rung repeats forever. A relay that has
+ *    been down for an hour is worth a knock every half-minute, and the
+ *    deployment is the side with nothing better to do.
+ *  - **Jittered.** Uniform over `[0, ceiling]` rather than the ceiling itself
+ *    (RFC 6455 §7.2.3): fifty deployments whose relay just restarted come back
+ *    spread across the window instead of in one thundering reconnect.
+ */
+export function jitteredBackoffMs(
+  attempt: number,
+  opts: { firstMs: number; capMs: number; random?: () => number },
+): number {
+  const rungs = Math.max(Math.trunc(attempt), 0);
+  const ceiling = Math.min(opts.firstMs * 2 ** rungs, opts.capMs);
+  return Math.round((opts.random ?? Math.random)() * ceiling);
 }
