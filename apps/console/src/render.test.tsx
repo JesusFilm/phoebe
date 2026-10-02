@@ -323,6 +323,42 @@ describe("the install tab", () => {
     );
   }
 
+  test("a run's output is not on the tab: its status is, and the way to the console", () => {
+    const run = {
+      runId: "run-1",
+      install: "/repos/youtube-studio",
+      verb: "start" as const,
+      startedAt: ago(5),
+      lines: [{ runId: "run-1", stream: "stdout" as const, line: "[phoebe] Started." }],
+      exit: {
+        runId: "run-1",
+        code: 0,
+        outcome: { verb: "start" as const, outcome: { kind: "started" as const } },
+      },
+    };
+    const markup = renderToStaticMarkup(
+      <InstallTab
+        install={install()}
+        environment={null}
+        run={run}
+        running={false}
+        trouble={null}
+        onStart={() => undefined}
+        onForget={() => undefined}
+        onCancel={() => undefined}
+        onCli={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain("<h2>Last run</h2>");
+    expect(markup).toContain("<code>phoebe start</code>");
+    expect(markup).toContain("finished");
+    expect(markup).toContain("Open its output in the console");
+    // The lines themselves are the console's, under cli.
+    expect(markup).not.toContain("[phoebe] Started.");
+    expect(tab()).toContain("Nothing has run on this install yet.");
+  });
+
   test("a not-initialised install is offered init and nothing that needs one", () => {
     const markup = tab({ state: "not-initialised" });
 

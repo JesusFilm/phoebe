@@ -19,6 +19,14 @@ export const ALL_CHANNEL = "all";
 /** The bootstrapper's lines, and any line with no tag the console knows. */
 export const BOOT_CHANNEL = "boot";
 
+/**
+ * What `phoebe` itself printed on this machine: the lines of the verb the
+ * companion last ran on the install (`start`, `stop`, `upgrade`, `doctor`, a
+ * config edit). Not the container's output, so it is no line in "all" and no
+ * tag decides it; the console holds the run and this is its tab.
+ */
+export const CLI_CHANNEL = "cli";
+
 const PIPELINE_TAG = /^\[phoebe:([^\]:]+):([^\]]+)\]/;
 const AGENT_TAG = /^\[([^\]:]+\/[^\]:]+):([^\]]+)\]/;
 
@@ -50,17 +58,25 @@ function isTenantChannel(channel: string): boolean {
 }
 
 /**
- * The tabs to draw for these lines: all, then boot, then the tenant scope when
+ * The tabs to draw for these lines: all, then boot, then cli when a verb has
+ * run on the install, then the tenant scope when
  * there is one (there before its first line, so a child opened from the rail
  * has its tab from the start), then each channel in the order it first spoke.
  */
-export function channelsIn(lines: readonly string[], scope: string | null = null): string[] {
+export function channelsIn(
+  lines: readonly string[],
+  scope: string | null = null,
+  cli = false,
+): string[] {
   const seen = new Set<string>();
   for (const line of lines) seen.add(channelOf(line));
   const ordered = [...seen].filter((channel) => channel !== BOOT_CHANNEL);
   return [
     ALL_CHANNEL,
     ...(seen.has(BOOT_CHANNEL) ? [BOOT_CHANNEL] : []),
+    // The CLI's tab is there once a verb has run, beside the bootstrapper's:
+    // the two that are about the deployment rather than about a pipeline.
+    ...(cli ? [CLI_CHANNEL] : []),
     ...(scope === null ? [] : [scope]),
     ...ordered,
   ];
@@ -82,7 +98,9 @@ export function linesIn(lines: readonly string[], channel: string): string[] {
  * tenant's whole set is the repo alone; the bootstrapper by name.
  */
 export function channelLabel(channel: string): string {
-  if (channel === ALL_CHANNEL || channel === BOOT_CHANNEL) return channel;
+  if (channel === ALL_CHANNEL || channel === BOOT_CHANNEL || channel === CLI_CHANNEL) {
+    return channel;
+  }
   const bare = isTenantChannel(channel) ? channel.slice(0, -2) : channel;
   const slash = bare.indexOf("/");
   return slash === -1 ? bare : bare.slice(slash + 1);

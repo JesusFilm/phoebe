@@ -51,6 +51,7 @@ import {
 import { createNotifier, type AlertSubject, type Notifiable } from "./notifications.ts";
 import { Rail } from "./rail.tsx";
 import { ADD_HREF, HOME_ROUTE, parseRoute, type Route } from "./route.ts";
+import { CLI_CHANNEL } from "./logs-channels.ts";
 import { UpdateAlerts } from "./update-alert.tsx";
 import { exitOf } from "./verb-run.ts";
 
@@ -73,6 +74,8 @@ export function App({
   // The tenant whose config is open, by folder (tenant-page.tsx).
   const [openChild, setOpenChild] = useState<string | null>(null);
   const [openTenant, setOpenTenant] = useState<string | null>(null);
+  // The console tab somebody asked for by name: `cli`, to watch a verb run.
+  const [openChannel, setOpenChannel] = useState<string | null>(null);
   // Default on (#524 §8), and read back off `companion.json` the moment main
   // answers. A browser never asks — there is nothing there to notify with.
   const [notifications, setNotifications] = useState(true);
@@ -439,6 +442,7 @@ export function App({
         onSelect={(dir) => {
           setOpenView("console");
           setOpenTenant(null);
+          setOpenChannel(null);
           setOpenInstall(dir);
         }}
         // The brand is home. The route effect closes the install when the
@@ -478,6 +482,7 @@ export function App({
               onChild: (dir: string, child: RailChild) => {
                 setOpenView("console");
                 setOpenTenant(child.slug);
+                setOpenChannel(null);
                 setOpenInstall(dir);
               },
               // A child's gear is that tenant's own config.
@@ -487,10 +492,12 @@ export function App({
                 setOpenTenant(null);
                 setOpenInstall(dir);
               },
-              // The rail's shortcuts. The page opens first so the run's lines
-              // have somewhere to land; a refusal (`busy`, most likely) is
-              // the page's to show from the run it reads on mount.
+              // The rail's shortcuts. The console opens on its cli tab first,
+              // so the run's lines have somewhere to land.
               onAction: (dir: string, action: InstallAction) => {
+                setOpenView("console");
+                setOpenTenant(null);
+                setOpenChannel(CLI_CHANNEL);
                 setOpenInstall(dir);
                 void runAction(dir, action);
               },
@@ -527,9 +534,10 @@ export function App({
         )}
         {open !== null && bridge !== null && openView === "console" ? (
           <ConsoleView
-            key={`${open.dir}#${openTenant ?? ""}`}
+            key={`${open.dir}#${openTenant ?? ""}#${openChannel ?? ""}`}
             bridge={bridge}
             install={open}
+            channel={openChannel}
             host={
               open.wsl === undefined
                 ? platform === null
@@ -562,6 +570,12 @@ export function App({
             }}
             onConsole={() => {
               setOpenTenant(null);
+              setOpenChannel(null);
+              setOpenView("console");
+            }}
+            onCli={() => {
+              setOpenTenant(null);
+              setOpenChannel(CLI_CHANNEL);
               setOpenView("console");
             }}
             report={reports[open.dir] ?? null}

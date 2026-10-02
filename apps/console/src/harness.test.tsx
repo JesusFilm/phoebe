@@ -613,7 +613,7 @@ describe("Phoebe's own versions", () => {
           lines: [],
         },
       }),
-    ).toContain("Upgrading. The output below has the run.");
+    ).toContain("Upgrading. The console&#x27;s cli tab has the run.");
   });
 
   test("a local engine and no launcher leave nothing to move", () => {

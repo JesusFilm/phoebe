@@ -291,3 +291,32 @@ describe("the console's header", () => {
     expect(view(null)).not.toContain("console-pulse");
   });
 });
+
+describe("the console's cli tab", () => {
+  function view(channel: string | null) {
+    return renderToStaticMarkup(
+      <ConsoleView
+        bridge={bridge()}
+        install={workspace}
+        host="linux"
+        report={null}
+        channel={channel}
+        onSettings={() => undefined}
+      />,
+    );
+  }
+
+  test("asked for by name, it is the tab open, before main has said what ran", () => {
+    const markup = view("cli");
+
+    expect(markup).toMatch(/class="console-channel current"[^>]*aria-pressed="true"[^>]*>cli</);
+    expect(markup).toContain("What phoebe printed when the companion last ran a verb");
+    expect(markup).toContain("Nothing has run on this install yet.");
+    // It is not the container's quiet: that sentence belongs to the other tabs.
+    expect(markup).not.toContain("Waiting for the container");
+  });
+
+  test("with no run and nobody asking, there is no such tab", () => {
+    expect(view(null)).not.toMatch(/>cli</);
+  });
+});

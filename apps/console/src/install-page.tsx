@@ -35,7 +35,7 @@
 // **Both run against this machine.** Nothing here builds an envelope and
 // nothing here signs in, and both forms say where the value went.
 
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { CANCELLABLE_VERBS } from "phoebe-agent/contracts";
 import type {
   CompanionEnvironment,
@@ -80,6 +80,7 @@ export function InstallPage({
   report,
   now,
   onConsole,
+  onCli,
   onTenant,
   onUpdate,
   onForget,
@@ -91,6 +92,8 @@ export function InstallPage({
   now: Date;
   /** Back to the console (console-view.tsx), the view the rail opens. */
   onConsole?: () => void;
+  /** The console on its cli tab: where a verb's output is read. */
+  onCli?: () => void;
   /** Open one tenant's own config (tenant-page.tsx). Without it the list is not links. */
   onTenant?: (dir: string) => void;
   /** Save a change to the install's own settings (project-settings.tsx). */
@@ -188,6 +191,7 @@ export function InstallPage({
             onStart={start}
             onForget={onForget}
             onCancel={(runId) => void bridge.runs.cancel(runId).catch(() => {})}
+            {...(onCli === undefined ? {} : { onCli })}
             harness={
               <HarnessSection
                 install={install}
@@ -324,6 +328,7 @@ export function InstallTab({
   onStart,
   onForget,
   onCancel,
+  onCli,
   harness,
 }: {
   install: LocalInstall;
@@ -334,6 +339,8 @@ export function InstallTab({
   onStart: (request: VerbRunRequest) => void;
   onForget: (dir: string) => void;
   onCancel: (runId: string) => void;
+  /** Open the console on its cli tab, where this install's run output is. */
+  onCli?: () => void;
   /** The AI harness section (harness-section.tsx), which needs the bridge this tab does not hold. */
   harness?: ReactNode;
 }) {
@@ -462,8 +469,8 @@ export function InstallTab({
       <SecretSetForm install={install} running={running} run={run} onStart={onStart} />
 
       <section>
-        <h2>Output</h2>
-        <RunOutput run={run} onCancel={onCancel} />
+        <h2>Last run</h2>
+        <RunStatus run={run} onCancel={onCancel} onCli={onCli} />
       </section>
     </>
   );
@@ -684,15 +691,20 @@ function DockerCheck({ environment }: { environment: CompanionEnvironment | null
   }
 }
 
-/** The verb run's lines while it runs, and what it decided when it ends. */
-function RunOutput({ run, onCancel }: { run: VerbRun | null; onCancel: (runId: string) => void }) {
-  const tail = useRef<HTMLDivElement>(null);
-
-  // Follow the tail. An operator watching a start does not want to scroll.
-  useEffect(() => {
-    tail.current?.scrollTo({ top: tail.current.scrollHeight });
-  }, [run?.lines.length]);
-
+/**
+ * The last verb run on the install: which, how it went, and what it decided.
+ * Its lines are in the console, under the cli tab (console-view.tsx), which is
+ * where output is read; this is the status and the way there.
+ */
+function RunStatus({
+  run,
+  onCancel,
+  onCli,
+}: {
+  run: VerbRun | null;
+  onCancel: (runId: string) => void;
+  onCli?: () => void;
+}) {
   if (run === null) {
     return <p className="muted">Nothing has run on this install yet.</p>;
   }
@@ -714,36 +726,40 @@ function RunOutput({ run, onCancel }: { run: VerbRun | null; onCancel: (runId: s
           </>
         ) : null}
       </p>
-      <div className="run-lines mono" ref={tail} aria-label="Verb output">
-        {run.lines.map((line, index) => (
-          <div key={index} className={line.stream}>
-            {line.line}
-          </div>
-        ))}
-      </div>
       {run.exit?.outcome === undefined ? null : (
         <p className={run.exit.code === 0 ? "outcome" : "refusal"}>
           {outcomeReading(run.exit.outcome)}
         </p>
       )}
+      <div className="verbs">
+        <button type="button" disabled={onCli === undefined} onClick={onCli}>
+          Open its output in the console
+        </button>
+      </div>
     </>
   );
 }
 
 /**
  * How the last engine move went, under the config form that asked for it. The
- * run's own lines are on the install tab; this is the one sentence.
+ * run's own lines are in the console, under cli; this is the one sentence.
  */
 function UpgradeStatus({ run }: { run: VerbRun | null }) {
   if (run === null || run.verb !== "upgrade") return null;
   if (run.exit === undefined) {
-    return <p className="muted">Moving the engine. The install tab has the run&apos;s output.</p>;
+    return (
+      <p className="muted">
+        Moving the engine. The console&apos;s cli tab has the run&apos;s output.
+      </p>
+    );
   }
   if (run.exit.outcome !== undefined) {
     return <p className="outcome">{outcomeReading(run.exit.outcome)}</p>;
   }
   return (
-    <p className="refusal">The engine was not moved. The install tab has what the run said.</p>
+    <p className="refusal">
+      The engine was not moved. The console&apos;s cli tab has what the run said.
+    </p>
   );
 }
 

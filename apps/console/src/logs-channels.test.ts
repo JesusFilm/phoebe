@@ -5,6 +5,7 @@ import {
   channelLabel,
   channelOf,
   channelsIn,
+  CLI_CHANNEL,
   linesIn,
   tenantChannel,
 } from "./logs-channels.ts";
@@ -82,5 +83,32 @@ describe("a workspace child's own tab", () => {
 
   test("is labelled by the repo alone", () => {
     expect(channelLabel(scope)).toBe("phoebe");
+  });
+});
+
+describe("the cli tab", () => {
+  const lines = ["[phoebe] boot: ok", "[phoebe:acme/a:work] cycle"];
+
+  test("is there once a verb has run, beside the bootstrapper's and ahead of the pipelines", () => {
+    expect(channelsIn(lines, null, true)).toEqual([
+      ALL_CHANNEL,
+      BOOT_CHANNEL,
+      CLI_CHANNEL,
+      "acme/a:work",
+    ]);
+    expect(channelsIn(lines, "acme/a:*", true)).toEqual([
+      ALL_CHANNEL,
+      BOOT_CHANNEL,
+      CLI_CHANNEL,
+      "acme/a:*",
+      "acme/a:work",
+    ]);
+  });
+
+  test("is not a tab until one has, and no container line belongs to it", () => {
+    expect(channelsIn(lines)).not.toContain(CLI_CHANNEL);
+    // A container that prints the word is still the container's line.
+    expect(channelOf("cli")).toBe(BOOT_CHANNEL);
+    expect(channelLabel(CLI_CHANNEL)).toBe("cli");
   });
 });

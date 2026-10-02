@@ -6,7 +6,7 @@
 // apply the lines and the exit as they arrive, and say why when main refuses to
 // start one.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { DesktopBridge, EditReceipt, VerbRun, VerbRunRequest } from "phoebe-agent/contracts";
 import { applyRunExit, applyRunLine } from "./local-install.ts";
 
@@ -29,6 +29,10 @@ export type InstallRun = {
 export function useInstallRun(bridge: DesktopBridge, dir: string): InstallRun {
   const [run, setRun] = useState<VerbRun | null>(null);
   const [trouble, setTrouble] = useState<string | null>(null);
+  // The run this page holds, for the subscription below to compare against
+  // without being torn down each time a line lands.
+  const held = useRef<string | null>(null);
+  held.current = run?.runId ?? null;
 
   useEffect(() => {
     let live = true;
@@ -44,17 +48,37 @@ export function useInstallRun(bridge: DesktopBridge, dir: string): InstallRun {
   }, [bridge, dir]);
 
   useEffect(() => {
+    // A line for a run this page does not hold is a run started somewhere
+    // else: the rail's shortcuts, another page, an alert. Lines carry no
+    // install, so main is asked what this install is running, once per run id,
+    // and the answer is adopted when it is that run. What main hands back has
+    // every line so far, so nothing printed before the adoption is lost.
+    const asked = new Set<string>();
+    let live = true;
+    const adopt = (runId: string): void => {
+      if (asked.has(runId)) return;
+      asked.add(runId);
+      void bridge.runs.current(dir).then(
+        (current) => {
+          if (live && current !== null && current.runId === runId) setRun(current);
+        },
+        () => undefined,
+      );
+    };
     const unsubscribeLines = bridge.runs.lines((line) => {
+      if (held.current !== line.runId) adopt(line.runId);
       setRun((current) => applyRunLine(current, line));
     });
     const unsubscribeExits = bridge.runs.exits((exit) => {
+      if (held.current !== exit.runId) adopt(exit.runId);
       setRun((current) => applyRunExit(current, exit));
     });
     return () => {
+      live = false;
       unsubscribeLines();
       unsubscribeExits();
     };
-  }, [bridge]);
+  }, [bridge, dir]);
 
   // A run that ended may have changed what the folder holds: a config edit, an
   // upgrade, an init. Main reads the install again and sends what it found down

@@ -306,7 +306,7 @@ export function upgradeReading(
         : engine.kind === "unchanged"
           ? "The engine is already on that ref."
           : engine.kind === "refused"
-            ? `The engine was not moved: its ${engine.stage} step was refused. The output below says why.`
+            ? `The engine was not moved: its ${engine.stage} step was refused. The console's cli tab says why.`
             : "The engine was left alone.",
     );
   }
@@ -319,7 +319,7 @@ export function upgradeReading(
             ? "The Dockerfile pins no launcher version, so there was nothing to move."
             : "The launcher is already at that version."
           : cli.kind === "refused"
-            ? "The launcher was not moved: the Dockerfile's pin could not be rewritten. The output below says why."
+            ? "The launcher was not moved: the Dockerfile's pin could not be rewritten. The console's cli tab says why."
             : "The launcher was left alone, because the engine was refused.",
     );
   }

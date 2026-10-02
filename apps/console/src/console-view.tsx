@@ -6,17 +6,21 @@
 // wrong (console-status.ts), with the gear onto its settings, the tabbed page
 // (install-page.tsx). Below, one tab per pipeline that has spoken
 // (logs-channels.ts) and the lines, drawn on the chosen theme (console-themes.ts,
-// log-line.tsx). Open, it follows over the bridge and stops the stream when the
+// log-line.tsx). Beside the container's tabs is `cli`: what the last verb the
+// companion ran on this install printed (verb-run.ts). A start, an upgrade and
+// a doctor are output too, and the console is where output is read. Open, it follows over the bridge and stops the stream when the
 // install changes underneath it. What it shows is logs.ts's view; this file is
 // the subscription and the drawing.
 
 import { ArrowDownToLine, CircleAlert, Settings, TriangleAlert } from "lucide-react";
 import { useEffect, useRef, useState, type CSSProperties, type UIEvent } from "react";
+import { CANCELLABLE_VERBS } from "phoebe-agent/contracts";
 import type {
   DesktopBridge,
   HostPlatform,
   LocalInstall,
   LocalReportEvent,
+  VerbRun,
 } from "phoebe-agent/contracts";
 import { Button } from "~/components/ui/button";
 import {
@@ -25,12 +29,30 @@ import {
   SYSTEM_CONSOLE_THEME,
   type ConsoleThemeChoice,
 } from "./console-themes.ts";
-import { channelStatus, channelTitle, consoleStatus } from "./console-status.ts";
+import {
+  channelStatus,
+  channelTitle,
+  consoleStatus,
+  type ChannelStatus,
+} from "./console-status.ts";
 import { HostIcon, hostTitle } from "./host-icon.tsx";
-import { installReading, problemCounts, type RailProblem } from "./local-install.ts";
+import {
+  installReading,
+  outcomeReading,
+  problemCounts,
+  type RailProblem,
+} from "./local-install.ts";
 import { LogLine } from "./log-line.tsx";
 import { appendLogLine, EMPTY_LOGS, logsEnded, logsSeeded, type LogsView } from "./logs.ts";
-import { ALL_CHANNEL, channelLabel, channelsIn, linesIn, tenantChannel } from "./logs-channels.ts";
+import {
+  ALL_CHANNEL,
+  channelLabel,
+  channelsIn,
+  CLI_CHANNEL,
+  linesIn,
+  tenantChannel,
+} from "./logs-channels.ts";
+import { useInstallRun } from "./verb-run.ts";
 
 export function ConsoleView({
   bridge,
@@ -38,6 +60,7 @@ export function ConsoleView({
   host,
   report = null,
   tenant = null,
+  channel: wanted = null,
   theme = SYSTEM_CONSOLE_THEME,
   onSettings,
 }: {
@@ -49,6 +72,8 @@ export function ConsoleView({
   host: HostPlatform | null;
   /** A workspace child's slug, when the rail opened this from one: its lines first. */
   tenant?: string | null;
+  /** The tab to open on, when something asked for one: `cli`, to watch a run. */
+  channel?: string | null;
   /** The operator's theme choice (console-themes.ts, chosen on the settings page); "system" until read. */
   theme?: ConsoleThemeChoice;
   /** The gear: the install's tabbed page. */
@@ -60,10 +85,45 @@ export function ConsoleView({
   // Opened from a workspace child, the child's own tab is there from the start
   // and is the one open, before its first line.
   const scope = tenant === null ? null : tenantChannel(tenant);
-  const [channel, setChannel] = useState(scope ?? ALL_CHANNEL);
-  const channels = channelsIn(view.lines, scope);
+  const [channel, setChannel] = useState(wanted ?? scope ?? ALL_CHANNEL);
+  // The verb the companion is running on this install, or last ran.
+  const { run } = useInstallRun(bridge, install.dir);
+  const channels = channelsIn(view.lines, scope, run !== null || wanted === CLI_CHANNEL);
   const shown = channels.includes(channel) ? channel : ALL_CHANNEL;
-  const lines = linesIn(view.lines, shown);
+  const lines = shown === CLI_CHANNEL ? [] : linesIn(view.lines, shown);
+  const cli = shown === CLI_CHANNEL;
+  const cliRunning = run !== null && run.exit === undefined;
+
+  // Main holds one run per install and the next replaces it. A restart is two,
+  // and its stop is worth reading after its start has begun, so the runs this
+  // console has watched stay on the tab above the current one, as a terminal
+  // keeps what scrolled past. A few, and only for as long as it is open.
+  const [past, setPast] = useState<VerbRun[]>([]);
+  const latest = useRef<VerbRun | null>(null);
+  useEffect(() => {
+    const before = latest.current;
+    if (before !== null && run !== null && before.runId !== run.runId) {
+      setPast((held) => [...held, before].slice(-PAST_RUNS));
+    }
+    latest.current = run;
+  }, [run]);
+
+  // A verb that starts while the console is open is what the operator just
+  // pressed, so its tab comes forward. The run that was already there when the
+  // console opened is left where it is: opening a console is not asking for it.
+  const firstRun = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    const id = run?.runId ?? null;
+    if (firstRun.current === undefined) {
+      // Null until main answers; the first answer is the run that was there.
+      firstRun.current = id;
+      return;
+    }
+    if (id !== null && id !== firstRun.current) {
+      firstRun.current = id;
+      if (run?.exit === undefined) setChannel(CLI_CHANNEL);
+    }
+  }, [run?.runId, run?.exit]);
   const reading = installReading(install);
   // What the report says is happening now, beside what the lines say happened.
   const status = consoleStatus(install, report);
@@ -117,7 +177,7 @@ export function ConsoleView({
   useEffect(() => {
     const element = box.current;
     if (pinned && element !== null) element.scrollTop = element.scrollHeight;
-  }, [view, pinned]);
+  }, [view, pinned, shown, run?.lines.length, past.length]);
   const onScroll = (event: UIEvent<HTMLPreElement>): void => {
     const element = event.currentTarget;
     setPinned(element.scrollTop + element.clientHeight >= element.scrollHeight - 4);
@@ -196,13 +256,21 @@ export function ConsoleView({
       <nav className="console-tabs" aria-label="Pipelines">
         {channels.map((name) => {
           // "all" is the header's own subject, so its tab carries nothing extra.
-          const tab = name === ALL_CHANNEL ? NOTHING : channelStatus(status, name);
+          // The CLI's is lit while a verb runs, and marked when one failed.
+          const tab =
+            name === ALL_CHANNEL
+              ? NOTHING
+              : name === CLI_CHANNEL
+                ? cliStatus(run)
+                : channelStatus(status, name);
           const what =
             name === ALL_CHANNEL
               ? "Every line the container printed"
-              : name === scope
-                ? `Every line from ${tenant}`
-                : name;
+              : name === CLI_CHANNEL
+                ? "What phoebe printed when the companion last ran a verb on this install"
+                : name === scope
+                  ? `Every line from ${tenant}`
+                  : name;
           return (
             <button
               key={name}
@@ -234,18 +302,79 @@ export function ConsoleView({
         </ul>
       ) : null}
       <pre className="logs-lines" ref={box} onScroll={onScroll}>
-        {view.lines.length === 0 && view.ended === null ? (
+        {cli ? (
+          run === null ? (
+            <span className="console-quiet">Nothing has run on this install yet.</span>
+          ) : (
+            [...past, run].map((one) => (
+              <span key={one.runId} className="cli-run">
+                <span className="console-quiet">
+                  $ phoebe {one.verb}
+                  {"\n"}
+                </span>
+                {one.lines.map((line, index) => (
+                  <span key={index} className={line.stream === "stderr" ? "cli-stderr" : undefined}>
+                    <LogLine line={line.line} palette={palette.ansi} />
+                  </span>
+                ))}
+              </span>
+            ))
+          )
+        ) : view.lines.length === 0 && view.ended === null ? (
           <span className="console-quiet">Waiting for the container to print something…</span>
         ) : (
           lines.map((line, index) => <LogLine key={index} line={line} palette={palette.ansi} />)
         )}
       </pre>
-      {view.ended === null ? null : <p className="console-ended">{view.ended}</p>}
+      {cli ? (
+        run === null ? null : (
+          <p
+            className={`console-ended console-cli${run.exit !== undefined && run.exit.code !== 0 ? " failed" : ""}`}
+            role="status"
+          >
+            <code>phoebe {run.verb}</code>
+            {" · "}
+            {run.exit === undefined
+              ? "running…"
+              : run.exit.code === 0
+                ? "finished"
+                : `exited ${run.exit.code}`}
+            {run.exit?.outcome === undefined ? null : ` · ${outcomeReading(run.exit.outcome)}`}
+            {cliRunning && CANCELLABLE_VERBS.includes(run.verb) ? (
+              <button
+                type="button"
+                className="console-cancel"
+                onClick={() => void bridge.runs.cancel(run.runId).catch(() => undefined)}
+              >
+                Cancel
+              </button>
+            ) : null}
+          </p>
+        )
+      ) : view.ended === null ? null : (
+        <p className="console-ended">{view.ended}</p>
+      )}
     </main>
   );
 }
 
 const NOTHING = { active: false, units: [], problems: [] };
+
+/** How many earlier runs the cli tab keeps above the current one. */
+const PAST_RUNS = 8;
+
+/** The CLI tab's standing: lit while a verb runs, and an error when the last one failed. */
+function cliStatus(run: VerbRun | null): ChannelStatus {
+  if (run === null) return NOTHING;
+  if (run.exit === undefined) return { active: true, units: [run.verb], problems: [] };
+  return run.exit.code === 0
+    ? NOTHING
+    : {
+        active: false,
+        units: [],
+        problems: [{ level: "error", text: `phoebe ${run.verb} exited ${run.exit.code}` }],
+      };
+}
 
 /** One problem as a line of hover text. */
 function problemLine(problem: RailProblem): string {
