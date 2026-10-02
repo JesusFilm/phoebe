@@ -1,5 +1,15 @@
 # phoebe-agent
 
+## 0.14.0
+
+### Minor Changes
+
+- 6685383: The Claude models Phoebe runs move to the current generation. The shipped `defaultModels.claude` is `claude-sonnet-5-5` (was `claude-sonnet-4-6`), and the `sentry` kind's most-capable default is `claude-opus-5-5` (was `claude-opus-5`), still at `high` effort. A consumer that names its own `defaultModels.claude` or a kind `model` is unaffected. The engine repo's own configs move to `claude-opus-5-5` / `claude-sonnet-5-5` the opus kinds keep `high`, and `reviews` runs sonnet-5.5 at `medium` rather than the `low` floor, since Sonnet 5.5 at `low` tends to skip the check that exercises a change.
+
+### Patch Changes
+
+- 3d40dea: Document the Claude Code CLI version floor. The CLI rejects a model released after it with a `does not support this model` error, and the unit ends with `Agent exited with code 1`; the current models (`claude-opus-5-5`, `claude-sonnet-5-5`, the latter the shipped `defaultModels.claude`) need CLI 2.1.280 or newer. `docs/claude-subscription-auth.md` now says so beside the install step, and notes that an unpinned `npm install -g @anthropic-ai/claude-code` stays frozen at the version the image was built with until a `docker compose build --no-cache`. The engine repo's own dogfood image pin moves to 2.1.287.
+
 ## 0.13.2
 
 ### Patch Changes
