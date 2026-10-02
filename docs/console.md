@@ -108,6 +108,10 @@ wipe or somebody else's deployment, and the relay will not guess which.
 could move the address it is reached at could strand a deployment where nobody
 can find it.
 
+The console's header names each pipeline with a unit in flight and the work it
+is on, and counts the install's errors and warnings; pressing the counts lists
+them. A pipeline's tab pulses while it is working and carries its own counts.
+
 The install tab's **AI harness** section lists the agent CLIs the container
 carries (Cursor's `agent`, Claude Code, Codex): the version
 `container/Dockerfile` pins, the one the running container has, and, after

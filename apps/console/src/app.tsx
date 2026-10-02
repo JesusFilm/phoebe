@@ -722,6 +722,7 @@ function Console({
                   : hostOfProcessPlatform(platform)
                 : "wsl"
             }
+            report={reports[open.dir] ?? null}
             tenant={openTenant}
             theme={consoleTheme}
             onSettings={() => setOpenView("settings")}

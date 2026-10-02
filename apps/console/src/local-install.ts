@@ -13,6 +13,8 @@
 import { MAX_RUN_LINES } from "phoebe-agent/contracts";
 import type {
   CompanionEnvironment,
+  DeploymentReport,
+  FleetCell,
   LocalInstall,
   LocalReportEvent,
   OutcomeOf,
@@ -20,6 +22,7 @@ import type {
   RunLine,
   StoredReport,
   TenantEnvFacts,
+  TenantFacts,
   VerbOutcome,
   VerbRun,
   VerbRunRequest,
@@ -539,6 +542,82 @@ export function problemCounts(problems: readonly RailProblem[]): {
   return { errors, warnings: problems.length - errors };
 }
 
+/** The cells whose engine child the supervisor has given up restarting quickly. */
+export function crashLoopingCells(report: DeploymentReport): Set<string> {
+  return new Set(
+    [...childrenOf(report).values()].filter((child) => child.crashLooping).map((child) => child.id),
+  );
+}
+
+/**
+ * What is wrong with one pipeline, errors and warnings apart so a caller can
+ * place them among a tenant's others. Each names its pipeline, because the list
+ * it lands in is a tenant's.
+ */
+export function cellProblems(
+  cell: FleetCell,
+  crashLooping: ReadonlySet<string>,
+): { errors: RailProblem[]; warnings: RailProblem[] } {
+  const errors: RailProblem[] = [];
+  if (cell.wedged.wedged) errors.push({ level: "error", text: `${cell.pipeline}: wedged` });
+  if (crashLooping.has(cell.id)) {
+    errors.push({ level: "error", text: `${cell.pipeline}: crash-looping` });
+  }
+  const lastError = cell.snapshot?.lastError ?? null;
+  return {
+    errors,
+    warnings:
+      lastError === null ? [] : [{ level: "warning", text: `${cell.pipeline}: ${lastError}` }],
+  };
+}
+
+/**
+ * Everything wrong with one tenant of a running deployment, worst first: what
+ * the fleet, the supervisor and the last doctor run say, with what the host
+ * found (`host`) placed at the head of each level, since a file the container
+ * cannot read is the cause under whatever the tenant reports next.
+ */
+export function fleetTenantProblems(
+  report: DeploymentReport,
+  tenant: TenantFacts,
+  host: { errors: readonly RailProblem[]; warnings: readonly RailProblem[] } = {
+    errors: [],
+    warnings: [],
+  },
+): RailProblem[] {
+  const crashLooping = crashLoopingCells(report);
+  const cells = report.fleet.cells
+    .filter((cell) => cell.tenant.id === tenant.id)
+    .map((cell) => cellProblems(cell, crashLooping));
+  const doctor = (report.doctor?.report?.tenants ?? []).find(
+    (row) => (row.slug !== null && row.slug === tenant.slug) || row.path === tenant.path,
+  );
+  const checks = doctor?.checks ?? [];
+
+  const problems: RailProblem[] = [...host.errors];
+  if (tenant.held) {
+    problems.push({ level: "error", text: `held: ${tenant.reason ?? "no reason given"}` });
+  }
+  if (!tenant.configValid && !tenant.held) {
+    problems.push({ level: "error", text: "its config does not load" });
+  }
+  for (const cell of cells) problems.push(...cell.errors);
+  for (const check of checks) {
+    if (check.state === "fail") {
+      problems.push({ level: "error", text: `doctor ${check.id}: ${check.detail}` });
+    }
+  }
+  problems.push(...host.warnings);
+  if (!tenant.envPresent) problems.push({ level: "warning", text: "no .env beside its config" });
+  for (const cell of cells) problems.push(...cell.warnings);
+  for (const check of checks) {
+    if (check.state === "warn") {
+      problems.push({ level: "warning", text: `doctor ${check.id}: ${check.detail}` });
+    }
+  }
+  return problems;
+}
+
 /**
  * The children a workspace install lists, read against its latest report. With
  * the container running, the report's fleet says what each tenant is doing:
@@ -560,14 +639,7 @@ export function workspaceChildren(
   const children = install.workspace?.children ?? [];
   const reading = readReport(renderableReport(install, event));
   const report = reading.kind === "read" ? reading.report : null;
-  const crashLooping = new Set(
-    report === null
-      ? []
-      : [...childrenOf(report).values()]
-          .filter((child) => child.crashLooping)
-          .map((child) => child.id),
-  );
-  const doctorRows = report?.doctor?.report?.tenants ?? [];
+  const crashLooping = report === null ? new Set<string>() : crashLoopingCells(report);
 
   return children.map((child): RailChild => {
     const base = { dir: child.dir, slug: child.slug, label: child.slug ?? child.name };
@@ -600,42 +672,10 @@ export function workspaceChildren(
     }
 
     const cells = report.fleet.cells.filter((cell) => cell.tenant.id === tenant.id);
-    const problems: RailProblem[] = [...lockedOut];
-    if (tenant.held) {
-      problems.push({ level: "error", text: `held: ${tenant.reason ?? "no reason given"}` });
-    }
-    if (!tenant.configValid && !tenant.held) {
-      problems.push({ level: "error", text: "its config does not load" });
-    }
-    for (const cell of cells) {
-      if (cell.wedged.wedged) {
-        problems.push({ level: "error", text: `${cell.pipeline}: wedged` });
-      }
-      if (crashLooping.has(cell.id)) {
-        problems.push({ level: "error", text: `${cell.pipeline}: crash-looping` });
-      }
-    }
-    const doctor = doctorRows.find(
-      (row) => (row.slug !== null && row.slug === tenant.slug) || row.path === tenant.path,
-    );
-    for (const check of doctor?.checks ?? []) {
-      if (check.state === "fail") {
-        problems.push({ level: "error", text: `doctor ${check.id}: ${check.detail}` });
-      }
-    }
-    problems.push(...noHarness);
-    if (!tenant.envPresent) problems.push({ level: "warning", text: "no .env beside its config" });
-    for (const cell of cells) {
-      const lastError = cell.snapshot?.lastError ?? null;
-      if (lastError !== null) {
-        problems.push({ level: "warning", text: `${cell.pipeline}: ${lastError}` });
-      }
-    }
-    for (const check of doctor?.checks ?? []) {
-      if (check.state === "warn") {
-        problems.push({ level: "warning", text: `doctor ${check.id}: ${check.detail}` });
-      }
-    }
+    const problems = fleetTenantProblems(report, tenant, {
+      errors: lockedOut,
+      warnings: noHarness,
+    });
 
     const active = cells.some((cell) => cell.state === "working");
     const enabled = cells.length === 0 ? null : cells.some((cell) => !cell.disabled);

@@ -1957,3 +1957,137 @@ details.why > summary::marker {
 .harness-version {
   width: 190px;
 }
+
+/* ── the console's header: what is working now, and what is wrong ──────── */
+
+.console-activity {
+  display: flex;
+  min-width: 0;
+  gap: 6px;
+  overflow: hidden;
+}
+
+/* One pipeline with a unit in flight. Pressing it opens that pipeline's tab. */
+.console-working {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 9px;
+  border: 1px solid color-mix(in srgb, var(--console-ok) 55%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--console-ok) 14%, transparent);
+  color: var(--console-fg);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.console-unit {
+  color: var(--console-tag-unit);
+}
+
+.console-pulse {
+  display: inline-block;
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--console-ok);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--console-ok) 28%, transparent);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .console-pulse {
+    animation: console-pulse 1.6s ease-in-out infinite;
+  }
+}
+
+@keyframes console-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--console-ok) 36%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--console-ok) 8%, transparent);
+  }
+}
+
+.console-channel {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* A tab whose pipeline is working reads as lit even when it is not the one open. */
+.console-channel.active {
+  color: var(--console-fg);
+}
+
+.console-problems {
+  display: inline-flex;
+  flex: none;
+  gap: 6px;
+}
+
+.console-problem {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.console-problem.error,
+.console-problem-list .error {
+  color: var(--console-fail);
+}
+
+/* `.warning` is also the panel a page puts a caution in; none of that here. */
+.console-problem.warning,
+.console-problem-list .warning {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--console-warn);
+}
+
+.console-problems-toggle {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border: 1px solid color-mix(in srgb, var(--console-dim) 45%, transparent);
+  border-radius: 999px;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+}
+
+.console-problems-toggle[aria-expanded="true"] {
+  background: color-mix(in srgb, var(--console-dim) 18%, transparent);
+}
+
+.console-problem-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--console-panel);
+  background: var(--console-panel);
+  font-size: 12px;
+}
+
+.console-problem-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 0;
+}
+
+.console-problem-list li svg {
+  flex: none;
+  transform: translateY(2px);
+}
