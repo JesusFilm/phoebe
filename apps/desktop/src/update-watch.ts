@@ -18,11 +18,14 @@ export const UPDATE_CHECK_DELAY_MS = 20_000;
 /** Vendors ship daily at most; a few hours is soon enough to hear about it. */
 export const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
-export type UpdateWatchDeps = {
+/** As much of an install as the watch reads: where it is, and whether it has a container. */
+export type WatchedInstall = Pick<LocalInstall, "dir" | "state">;
+
+export type UpdateWatchDeps<Install extends WatchedInstall = LocalInstall> = {
   /** The preference, read at the moment a check would start. */
   enabled: () => boolean;
-  installs: () => Promise<LocalInstall[]>;
-  check: (install: LocalInstall, lookUp: boolean) => Promise<HarnessReport>;
+  installs: () => Promise<Install[]>;
+  check: (install: Install, lookUp: boolean) => Promise<HarnessReport>;
   emit: (install: string, report: HarnessReport) => void;
   delayMs?: number;
   intervalMs?: number;
@@ -38,7 +41,9 @@ export type UpdateWatch = {
   stop: () => void;
 };
 
-export function createUpdateWatch(deps: UpdateWatchDeps): UpdateWatch {
+export function createUpdateWatch<Install extends WatchedInstall = LocalInstall>(
+  deps: UpdateWatchDeps<Install>,
+): UpdateWatch {
   const setTimer = deps.setTimer ?? ((run, ms) => setTimeout(run, ms));
   const clearTimer =
     deps.clearTimer ?? ((timer) => clearTimeout(timer as ReturnType<typeof setTimeout>));

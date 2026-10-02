@@ -1,21 +1,14 @@
 import { describe, expect, test } from "vite-plus/test";
-import type { HarnessReport, LocalInstall } from "phoebe-agent/contracts";
+import type { HarnessReport } from "phoebe-agent/contracts";
 import {
   createUpdateWatch,
   UPDATE_CHECK_DELAY_MS,
   UPDATE_CHECK_INTERVAL_MS,
+  type WatchedInstall,
 } from "./update-watch.ts";
 
-function install(dir: string, state: LocalInstall["state"] = "running"): LocalInstall {
-  return {
-    dir,
-    name: dir,
-    deploymentName: null,
-    relayUrl: null,
-    addedAt: "2026-10-01T00:00:00.000Z",
-    state,
-    containerVersion: null,
-  } as LocalInstall;
+function install(dir: string, state: WatchedInstall["state"] = "running"): WatchedInstall {
+  return { dir, state };
 }
 
 const REPORT: HarnessReport = {
@@ -27,7 +20,7 @@ const REPORT: HarnessReport = {
 };
 
 /** A watch over fake timers: `fire` runs the pending one and waits for its round. */
-function setup(installs: LocalInstall[], on = true) {
+function setup(installs: WatchedInstall[], on = true) {
   let enabled = on;
   const checks: [string, boolean][] = [];
   const emitted: string[] = [];
