@@ -1,6 +1,6 @@
 // Which side of the seam this bundle is running on.
 //
-// One bundle, two places it can be opened: a plain browser, and the
+// One bundle serves two surfaces: a browser pointed at a relay, and the
 // companion's window, where the same files are loaded from disk over a custom
 // scheme (#522 §4). The only difference the bundle can observe is the desktop
 // bridge the companion's preload exposes — there is no build flag, no user-agent
@@ -13,7 +13,7 @@
 import { DESKTOP_BRIDGE_GLOBAL } from "phoebe-agent/contracts";
 import type { DesktopBridge } from "phoebe-agent/contracts";
 
-/** Where the console is running: a plain browser, or the companion. */
+/** Where the console is running: a browser the relay served it to, or the companion. */
 export type Surface = "browser" | "companion";
 
 /**
@@ -35,5 +35,5 @@ export function desktopBridge(host: object = globalThis): DesktopBridge | null {
 function isBridge(value: unknown): value is DesktopBridge {
   if (typeof value !== "object" || value === null) return false;
   const candidate = value as Partial<DesktopBridge>;
-  return typeof candidate.version === "function" && typeof candidate.installs === "object";
+  return typeof candidate.version === "function" && typeof candidate.relay === "object";
 }

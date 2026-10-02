@@ -331,12 +331,33 @@ describe("the alert on screen", () => {
 
   test("the rail counts them beside the install's state", () => {
     const rail = renderToStaticMarkup(
-      <Rail surface="companion" installs={[solo]} updates={{ [solo.dir]: 2 }} onSettings={noop} />,
+      <Rail
+        surface="companion"
+        facts={[]}
+        now={new Date()}
+        signedIn={false}
+        signIn={null}
+        onSignedIn={() => undefined}
+        installs={[solo]}
+        updates={{ [solo.dir]: 2 }}
+        onSettings={noop}
+      />,
     );
 
     expect(rail).toMatch(/class="rail-updates"[^>]*aria-label="2 updates available"/);
     expect(
-      renderToStaticMarkup(<Rail surface="companion" installs={[solo]} onSettings={noop} />),
+      renderToStaticMarkup(
+        <Rail
+          surface="companion"
+          facts={[]}
+          now={new Date()}
+          signedIn={false}
+          signIn={null}
+          onSignedIn={() => undefined}
+          installs={[solo]}
+          onSettings={noop}
+        />,
+      ),
     ).not.toContain("rail-updates");
   });
 });

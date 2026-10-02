@@ -640,6 +640,30 @@ export type ReportingField = {
   includeRef?: boolean;
 };
 
+/**
+ * The relay this deployment dials out to (#505 §2, #540). Bootstrapper-only and
+ * root-only: `resolveConfig` drops it, no `PHOEBE_*` var overlays it, and a
+ * tenant config carrying one is ignored the way a tenant `engine` block is.
+ * A remote config edit refuses it for the same reason it refuses `engine.ref` —
+ * a relay that could rewrite the address it is reached at could strand a
+ * deployment where no operator can find it.
+ *
+ * No block, or no `url`, and the deployment never dials: it behaves exactly as
+ * a deployment did before this field existed. Changing either value is a local
+ * file edit; the reconcile that notices it is what redials.
+ */
+export type RelayField = {
+  /** The relay's WebSocket URL, e.g. `wss://relay.example.com/deployments`. */
+  url: string;
+  /**
+   * What a console calls this deployment. Defaults to the solo tenant's
+   * `repoSlug`, or the workspace root's directory name. The relay keys on the
+   * deployment's public key and merely displays this, so two deployments may
+   * share a name.
+   */
+  name?: string;
+};
+
 export type PromptFilesConfig = {
   issue: string;
   conflict: string;
@@ -875,6 +899,12 @@ export type PhoebeUserConfig = {
    * and `resolveConfig` drops it — the `engine` precedent.
    */
   reporting?: ReportingField;
+  /**
+   * The relay this deployment dials (see {@link RelayField}). Root config only,
+   * bootstrapper-only: the engine never reads it, `resolveConfig` drops it, and
+   * it is not `PHOEBE_*`-overlayable — the `engine`/`workspace` precedent.
+   */
+  relay?: RelayField;
   /**
    * Bootstrapper-only asset directory (#98). Relocates where this tenant's
    * co-located `.env` and prompt/asset files live to a subdirectory of the dir
@@ -1167,6 +1197,72 @@ export function validateUserConfig(user: PhoebeUserConfig): void {
   if (user.reporting !== undefined) {
     validateReportingField(user.reporting);
   }
+  if (user.relay !== undefined) {
+    validateRelayField(user.relay);
+  }
+}
+
+/**
+ * Reject a malformed `relay` block. `url` is required and must be a WebSocket
+ * URL: an operator who pastes the console's `https://` address is one letter
+ * from a deployment that dials forever and never says why, so the scheme is
+ * checked here rather than surfacing as a connection error every retry.
+ */
+export function validateRelayField(relay: RelayField): void {
+  if (typeof relay !== "object" || relay === null || Array.isArray(relay)) {
+    throw new Error(
+      `phoebe.config.ts \`relay\` must be an object with \`url\` and an optional \`name\` ` +
+        `(got ${JSON.stringify(relay)}).`,
+    );
+  }
+  for (const key of Object.keys(relay)) {
+    if (key !== "url" && key !== "name") {
+      throw new Error(
+        `phoebe.config.ts \`relay\` names unknown field "${key}". The block holds only \`url\` ` +
+          `and \`name\`.`,
+      );
+    }
+  }
+  if (typeof relay.url !== "string" || relay.url.trim().length === 0) {
+    throw new Error(
+      `phoebe.config.ts \`relay.url\` must be a non-empty \`wss://\` URL ` +
+        `(got ${JSON.stringify(relay.url)}).`,
+    );
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(relay.url);
+  } catch {
+    throw new Error(
+      `phoebe.config.ts \`relay.url\` is not a URL (got ${JSON.stringify(relay.url)}).`,
+    );
+  }
+  // `ws://` is allowed so a relay behind a trusted local proxy, or a test, can
+  // be reached; `wss://` is what an operator over the open internet wants, and
+  // an `https://` paste is the mistake worth naming.
+  if (parsed.protocol !== "wss:" && parsed.protocol !== "ws:") {
+    throw new Error(
+      `phoebe.config.ts \`relay.url\` must be a WebSocket URL — \`wss://host/deployments\`, ` +
+        `not ${JSON.stringify(relay.url)}.`,
+    );
+  }
+  if (relay.name !== undefined && (typeof relay.name !== "string" || relay.name.trim() === "")) {
+    throw new Error(
+      `phoebe.config.ts \`relay.name\` must be a non-empty string when present ` +
+        `(got ${JSON.stringify(relay.name)}).`,
+    );
+  }
+}
+
+/**
+ * Read the validated `relay` block off a loaded config, before or instead of
+ * `resolveConfig`, which drops it. `undefined` when the block is absent, which
+ * every reader treats as "this deployment dials nothing".
+ */
+export function readRelayField(user: { relay?: unknown }): RelayField | undefined {
+  if (user.relay === undefined) return undefined;
+  validateRelayField(user.relay as RelayField);
+  return user.relay as RelayField;
 }
 
 /**

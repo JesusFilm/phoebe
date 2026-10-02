@@ -3,7 +3,7 @@
 // what propagates.
 
 import { describe, expect, test } from "vite-plus/test";
-import { withBackoffSync } from "./backoff.ts";
+import { jitteredBackoffMs, withBackoffSync } from "./backoff.ts";
 
 /** A recording sleep so no test ever actually waits. */
 function spySleep(): { sleepSync: (ms: number) => void; slept: number[] } {
@@ -101,5 +101,31 @@ describe("withBackoffSync", () => {
     ).toThrow("boom 1");
     expect(calls()).toBe(1);
     expect(slept).toEqual([]);
+  });
+});
+
+describe("jitteredBackoffMs", () => {
+  const ladder = { firstMs: 5_000, capMs: 30_000 };
+
+  test("the first delay is uniform over the first rung", () => {
+    expect(jitteredBackoffMs(0, { ...ladder, random: () => 0 })).toBe(0);
+    expect(jitteredBackoffMs(0, { ...ladder, random: () => 0.5 })).toBe(2_500);
+    expect(jitteredBackoffMs(0, { ...ladder, random: () => 1 })).toBe(5_000);
+  });
+
+  test("the ceiling doubles each attempt until the cap, then stays there", () => {
+    const ceilings = [0, 1, 2, 3, 4, 20].map((attempt) =>
+      jitteredBackoffMs(attempt, { ...ladder, random: () => 1 }),
+    );
+    expect(ceilings).toEqual([5_000, 10_000, 20_000, 30_000, 30_000, 30_000]);
+  });
+
+  test("there is no terminal attempt — a caller may keep asking forever", () => {
+    expect(jitteredBackoffMs(Number.MAX_SAFE_INTEGER, { ...ladder, random: () => 1 })).toBe(30_000);
+  });
+
+  test("a negative or fractional attempt reads as the first rung", () => {
+    expect(jitteredBackoffMs(-3, { ...ladder, random: () => 1 })).toBe(5_000);
+    expect(jitteredBackoffMs(0.9, { ...ladder, random: () => 1 })).toBe(5_000);
   });
 });

@@ -53,8 +53,12 @@ const VERB_MODULES = {
  * writes the host `.env`. Neither is a `run<Verb>` in this package, and the CLI
  * verb the first of them calls is `secret-command.ts` — held to this rule by its
  * own `runSecretCli` wrapper, one process removed from the companion.
+ *
+ * `pair` is composed in the companion's main process out of a relay mint, two
+ * file writes and a nudge (#527 §14, #558). It needs the device token, which the
+ * engine never holds, so there is no `src/pair.ts`.
  */
-const NOT_A_MODULE_HERE = ["secret set"] as const;
+const NOT_A_MODULE_HERE = ["secret set", "pair"] as const;
 
 const VERBS = Object.keys(VERB_MODULES) as Array<keyof typeof VERB_MODULES>;
 

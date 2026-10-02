@@ -31,6 +31,7 @@ describe("reading", () => {
   test("a companion that has never run reads as empty rather than as an error", () => {
     expect(readCompanionFile(scratch())).toEqual({
       installs: [],
+      relay: null,
       preferences: { notifications: true, consoleTheme: "system", autoCheckUpdates: false },
     });
   });
@@ -39,6 +40,7 @@ describe("reading", () => {
     const file = scratch();
     const contents = {
       installs: [{ dir: "/repos/youtube-studio", addedAt: "2026-09-18T09:00:00.000Z" }],
+      relay: { url: "https://relay.example.test" },
       preferences: { notifications: false, consoleTheme: "nord", autoCheckUpdates: true },
     };
 
@@ -62,6 +64,7 @@ describe("reading", () => {
       file,
       JSON.stringify({
         installs: [{ dir: "/repos/one", addedAt: "2026-09-18T09:00:00.000Z" }, { dir: 7 }],
+        relay: "https://relay.example.test",
         preferences: { notifications: "yes", consoleTheme: 3 },
       }),
       "utf8",
@@ -70,6 +73,7 @@ describe("reading", () => {
     const contents = readCompanionFile(file);
 
     expect(contents.installs).toEqual([{ dir: "/repos/one", addedAt: "2026-09-18T09:00:00.000Z" }]);
+    expect(contents.relay).toBeNull();
     expect(contents.preferences).toEqual({
       notifications: true,
       consoleTheme: "system",
