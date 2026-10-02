@@ -283,12 +283,34 @@ export function directoryFacts(
     configText = null;
   }
 
+  // A workspace's children, each config read the same way. The list is the
+  // install's own (workspace-children.ts), so a folder that is not one of its
+  // children is never read here.
+  const tenants = (install.workspace?.children ?? []).map((child) => {
+    const childPath = path.join(child.dir, TENANT_CONFIG_FILE);
+    let text: string | null = null;
+    try {
+      if (exists(childPath)) text = read(childPath);
+    } catch {
+      text = null;
+    }
+    return {
+      dir: child.dir,
+      name: child.name,
+      slug: child.slug,
+      configPath: childPath,
+      configText: text,
+      configFingerprint: text === null ? null : fingerprintOf(text),
+    };
+  });
+
   return {
     configPath,
     configText,
     configFingerprint: configText === null ? null : fingerprintOf(configText),
     envPresent: exists(path.join(root, ".env")),
     bootstrapperRunning: install.state === "running",
+    ...(install.workspace === undefined ? {} : { tenants }),
   };
 }
 

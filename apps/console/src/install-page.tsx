@@ -63,6 +63,8 @@ import {
   dockerReading,
   landingTab,
   localConfig,
+  tenantConfigs,
+  type TenantConfigReading,
   localConnection,
   offeredVerbs,
   outcomeReading,
@@ -153,8 +155,12 @@ export function InstallPage({
 
   const running = run !== null && run.exit === undefined;
 
+  // Which child the last `config set` named, so its receipt lands under that
+  // child's form and not under the root's as well.
+  const [editedTenant, setEditedTenant] = useState<string | null>(null);
   function start(request: VerbRunRequest): void {
     setTrouble(null);
+    if (request.verb === "config set") setEditedTenant(request.tenant ?? null);
     bridge.runs.start(request).then(
       (runId) => {
         // A fresh record rather than a refetch: the first lines may already be
@@ -175,6 +181,7 @@ export function InstallPage({
   // not what was last received.
   const reading = readReport(renderableReport(install, report));
   const config = localConfig(report);
+  const tenants = tenantConfigs(report);
   // A running install's tabs are live while its first read is in flight. The
   // four that need a report are closed only when there is no container behind
   // them, which is the state #526 wrote the rule for.
@@ -257,17 +264,6 @@ export function InstallPage({
           />
         ) : (
           <>
-            {install.state === "running" ? null : (
-              // The pointer #526 asks for, on the page rather than inside one tab:
-              // a stopped install lands here, and the button that changes that is
-              // one tab away.
-              <p className="muted">
-                Nothing is running, so config is the only tab with anything in it.{" "}
-                <button type="button" className="quiet" onClick={() => setTab("install")}>
-                  Go to the install tab
-                </button>
-              </p>
-            )}
             <DeploymentTabPanel
               tab={tab}
               reading={reading}
@@ -287,13 +283,23 @@ export function InstallPage({
               }
               writes={{
                 config: (
-                  <ConfigEditForm
-                    install={install}
-                    config={config}
-                    running={running}
-                    receipt={receiptOfRun(run)}
-                    onStart={start}
-                  />
+                  <>
+                    <ConfigEditForm
+                      install={install}
+                      config={config}
+                      running={running}
+                      receipt={editedTenant === null ? receiptOfRun(run) : null}
+                      onStart={start}
+                    />
+                    <TenantConfigs
+                      install={install}
+                      tenants={tenants}
+                      running={running}
+                      receipt={receiptOfRun(run)}
+                      editedTenant={editedTenant}
+                      onStart={start}
+                    />
+                  </>
                 ),
                 secrets: (
                   <p className="muted">
@@ -388,18 +394,12 @@ export function InstallTab({
 
   return (
     <>
-      <section>
-        <h2>Docker</h2>
-        {install.wsl === undefined ? (
+      {install.wsl === undefined ? (
+        <section>
+          <h2>Docker</h2>
           <DockerCheck environment={environment} />
-        ) : (
-          <p className="muted">
-            Asked inside the <code>{install.wsl.distro}</code> distro through <code>wsl.exe</code>,
-            not on this machine&apos;s own PATH. A distro with no Docker says so on the rail and
-            when a verb runs.
-          </p>
-        )}
-      </section>
+        </section>
+      ) : null}
 
       <section>
         <h2>This install</h2>
@@ -515,6 +515,8 @@ export function ConfigEditForm({
   running,
   receipt,
   onStart,
+  tenant,
+  heading = "Change one field",
 }: {
   install: LocalInstall;
   config: ConfigReading | null;
@@ -522,6 +524,10 @@ export function ConfigEditForm({
   /** The receipt the last `config set` on this install answered with, if any. */
   receipt: EditReceipt | null;
   onStart: (request: VerbRunRequest) => void;
+  /** A workspace child's folder: the edit goes to its config rather than the root's. */
+  tenant?: string;
+  /** The heading over the form; the root's says which file below it. */
+  heading?: string;
 }) {
   const [field, setField] = useState("");
   const [literal, setLiteral] = useState("");
@@ -536,7 +542,13 @@ export function ConfigEditForm({
     event.preventDefault();
     let request: VerbRunRequest;
     try {
-      request = configSetRequest({ install, config: file, path: field, literal });
+      request = configSetRequest({
+        install,
+        config: file,
+        path: field,
+        literal,
+        ...(tenant === undefined ? {} : { tenant }),
+      });
     } catch (error) {
       setUnreadable(error instanceof Error ? error.message : String(error));
       return;
@@ -547,7 +559,7 @@ export function ConfigEditForm({
 
   return (
     <>
-      <h2>Change one field</h2>
+      <h2>{heading}</h2>
       <p className="muted">
         Written straight to <span className="mono">{file.path}</span> on this machine. No relay is
         involved, and the edit checks itself against the fingerprint above — if the file has moved
@@ -761,4 +773,65 @@ function refusalText(error: unknown): string {
   if (!(error instanceof Error)) return String(error);
   const instruction = (error as { instruction?: string }).instruction;
   return instruction === undefined ? error.message : `${error.message} — ${instruction}`;
+}
+
+/**
+ * A workspace's tenants, each with its own config space under the root's: the
+ * file as the folder holds it, and the same one-field edit form pointed at it.
+ * The receipt is shown under the tenant the last run named, not under all of
+ * them.
+ */
+function TenantConfigs({
+  install,
+  tenants,
+  running,
+  receipt,
+  editedTenant,
+  onStart,
+}: {
+  install: LocalInstall;
+  tenants: TenantConfigReading[];
+  running: boolean;
+  receipt: EditReceipt | null;
+  /** The child the last `config set` named, so its receipt lands under it alone. */
+  editedTenant: string | null;
+  onStart: (request: VerbRunRequest) => void;
+}) {
+  if (tenants.length === 0) return null;
+  return (
+    <section className="tenant-configs" aria-label="Tenants">
+      <h2>Tenants</h2>
+      <p className="muted">
+        Each child of this workspace keeps its own <code>phoebe.config.ts</code>. The root above
+        names the fleet; these say what each member does.
+      </p>
+      {tenants.map((tenant) => (
+        <details key={tenant.dir} className="tenant-config" open>
+          <summary>
+            <span className="tenant-label">{tenant.label}</span>
+            <span className="muted mono">{tenant.config.path}</span>
+          </summary>
+          {tenant.config.kind === "absent" ? (
+            <p className="muted">
+              No <code>phoebe.config.ts</code> in this folder.
+            </p>
+          ) : (
+            <>
+              <p className="muted">{tenant.config.fingerprint}</p>
+              <pre className="config mono">{tenant.config.text}</pre>
+              <ConfigEditForm
+                install={install}
+                config={tenant.config}
+                running={running}
+                receipt={editedTenant === tenant.dir ? receipt : null}
+                onStart={onStart}
+                tenant={tenant.dir}
+                heading={`Change one field in ${tenant.label}`}
+              />
+            </>
+          )}
+        </details>
+      ))}
+    </section>
+  );
 }

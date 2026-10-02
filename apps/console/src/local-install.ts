@@ -67,6 +67,8 @@ export function configSetRequest(opts: {
   config: ConfigReading;
   path: string;
   literal: string;
+  /** A workspace child's folder, when the edit is to its config rather than the root's. */
+  tenant?: string;
 }): VerbRunRequest {
   if (opts.config.kind === "absent") {
     throw new Error(`There is no ${opts.config.path} to change.`);
@@ -79,6 +81,7 @@ export function configSetRequest(opts: {
     path,
     value: readLiteral(opts.literal),
     fingerprint: opts.config.fingerprint,
+    ...(opts.tenant === undefined ? {} : { tenant: opts.tenant }),
   };
 }
 
@@ -600,6 +603,35 @@ export function landingTab(install: LocalInstall): DeploymentTab | "install" {
 }
 
 /** The config as the directory facts hand it over (#527 §6). */
+/** One workspace child's config, read for the config tab. */
+export type TenantConfigReading = {
+  dir: string;
+  /** The slug when the config states one, else the folder's name. */
+  label: string;
+  config: ConfigReading;
+};
+
+/**
+ * The configs under a workspace root, one per child, in the rail's order. Empty
+ * on a solo install, before the first read, and from a companion that does
+ * not read them.
+ */
+export function tenantConfigs(event: LocalReportEvent | null): TenantConfigReading[] {
+  return (event?.directory.tenants ?? []).map((tenant) => ({
+    dir: tenant.dir,
+    label: tenant.slug ?? tenant.name,
+    config:
+      tenant.configText === null || tenant.configFingerprint === null
+        ? { kind: "absent", path: tenant.configPath }
+        : {
+            kind: "file",
+            path: tenant.configPath,
+            text: tenant.configText,
+            fingerprint: tenant.configFingerprint,
+          },
+  }));
+}
+
 export function localConfig(event: LocalReportEvent | null): ConfigReading | null {
   if (event === null) return null;
   const { configPath, configText, configFingerprint } = event.directory;

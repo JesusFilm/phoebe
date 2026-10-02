@@ -88,6 +88,11 @@ export type VerbRunRequest =
       value: string | number | boolean | null;
       /** The `sha256:<hex>` of the file as the caller read it. */
       fingerprint: string;
+      /**
+       * On a workspace, the child whose config takes the edit, by its folder
+       * (InstallDirectoryFacts.tenants). Omitted, the root config does.
+       */
+      tenant?: string;
     }
   // `value` is the secret itself. See the fourth rule above: it lives for the
   // run and appears in no file, no log and no line.

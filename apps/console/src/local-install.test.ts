@@ -15,6 +15,7 @@ import {
   versionReading,
   workspaceChildren,
   localConfig,
+  tenantConfigs,
   localConnection,
   offeredVerbs,
   outcomeReading,
@@ -819,5 +820,77 @@ describe("what a workspace's children are doing, for the rail", () => {
 
   test("a solo install has no children", () => {
     expect(workspaceChildren(install(), event)).toEqual([]);
+  });
+});
+
+describe("a workspace's tenant configs, for the config tab", () => {
+  test("one reading per child, labelled by slug else folder, absent when there is no file", () => {
+    const event = localReport({
+      directory: directory({
+        tenants: [
+          {
+            dir: "/w/a",
+            name: "a",
+            slug: "acme/a",
+            configPath: "/w/a/phoebe.config.ts",
+            configText: "export default {}\n",
+            configFingerprint: "sha256:aa",
+          },
+          {
+            dir: "/w/b",
+            name: "b",
+            slug: null,
+            configPath: "/w/b/phoebe.config.ts",
+            configText: null,
+            configFingerprint: null,
+          },
+        ],
+      }),
+    });
+
+    expect(tenantConfigs(event)).toEqual([
+      {
+        dir: "/w/a",
+        label: "acme/a",
+        config: {
+          kind: "file",
+          path: "/w/a/phoebe.config.ts",
+          text: "export default {}\n",
+          fingerprint: "sha256:aa",
+        },
+      },
+      { dir: "/w/b", label: "b", config: { kind: "absent", path: "/w/b/phoebe.config.ts" } },
+    ]);
+  });
+
+  test("nothing on a solo install, before the first read, or from a companion that does not read them", () => {
+    expect(tenantConfigs(localReport())).toEqual([]);
+    expect(tenantConfigs(null)).toEqual([]);
+  });
+
+  test("a config set aimed at a tenant carries its folder", () => {
+    const config = {
+      kind: "file" as const,
+      path: "/w/a/phoebe.config.ts",
+      text: "x",
+      fingerprint: "sha256:aa",
+    };
+    expect(
+      configSetRequest({
+        install: install(),
+        config,
+        path: "engine.ref",
+        literal: '"main"',
+        tenant: "/w/a",
+      }),
+    ).toMatchObject({
+      verb: "config set",
+      tenant: "/w/a",
+      fingerprint: "sha256:aa",
+      value: "main",
+    });
+    expect(
+      configSetRequest({ install: install(), config, path: "engine.ref", literal: '"main"' }),
+    ).not.toHaveProperty("tenant");
   });
 });
