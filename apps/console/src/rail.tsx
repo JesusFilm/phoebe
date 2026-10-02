@@ -58,6 +58,7 @@ import type {
 import type { Surface } from "./companion.ts";
 import { connectionReading, type RowFacts } from "./facts.ts";
 import {
+  ArrowUpCircle,
   ChevronDown,
   ChevronRight,
   CircleAlert,
@@ -99,6 +100,7 @@ export function Rail({
   update = null,
   busy,
   reports,
+  updates,
   platform,
   defaultExpanded,
   onSelect,
@@ -137,6 +139,8 @@ export function Rail({
   busy?: ReadonlySet<string>;
   /** The latest read per install, by directory: what a workspace's children are doing. */
   reports?: Readonly<Record<string, LocalReportEvent>>;
+  /** How many updates are on offer per install, by directory (update-alert.tsx). */
+  updates?: Readonly<Record<string, number>>;
   /** The companion's `process.platform`: which host a local install runs on. */
   platform?: string;
   /** The workspaces opened out to their children to begin with, by directory. */
@@ -230,6 +234,7 @@ export function Rail({
               current={install.dir === selected}
               paired={paired?.has(install.dir) ?? false}
               busy={busy?.has(install.dir) ?? false}
+              updates={updates?.[install.dir] ?? 0}
               host={install.wsl === undefined ? companionHost : "wsl"}
               children={workspaceChildren(install, reports?.[install.dir] ?? null)}
               expanded={expanded.has(install.dir)}
@@ -354,6 +359,7 @@ function InstallEntry({
   current,
   paired,
   busy,
+  updates = 0,
   host,
   children,
   expanded,
@@ -371,6 +377,8 @@ function InstallEntry({
   paired: boolean;
   /** A verb run is in flight on this install: the shortcuts give way to a spinner. */
   busy: boolean;
+  /** How many updates the last check found on offer. */
+  updates?: number;
   /** Where it runs: this machine's host, or a WSL distro. Null while the host is unknown. */
   host: HostPlatform | null;
   /** A workspace's children, read against its report; empty for a solo install. */
@@ -436,7 +444,19 @@ function InstallEntry({
           {install.name}
           {paired ? <span className="chip paired">paired</span> : null}
         </div>
-        <div className="sub">{reading.text}</div>
+        <div className="sub">
+          {reading.text}
+          {updates === 0 ? null : (
+            <span
+              className="rail-updates"
+              title={`${updates} ${updates === 1 ? "update" : "updates"} available`}
+              aria-label={`${updates} ${updates === 1 ? "update" : "updates"} available`}
+            >
+              <ArrowUpCircle size={11} aria-hidden="true" />
+              {updates}
+            </span>
+          )}
+        </div>
       </button>
       {busy ? (
         // Something is running on this install and its end is what changes the

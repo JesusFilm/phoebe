@@ -58,6 +58,8 @@ import type {
   InstallPatch,
   InstallRepair,
   RepairOutcome,
+  HarnessApplyOutcome,
+  HarnessName,
   HarnessReport,
   HarnessUpdate,
   HarnessUpdateOutcome,
@@ -95,6 +97,7 @@ import { createHarness } from "./harness.ts";
 import { allInstallFacts, directoryFactsWithAccess, installFacts } from "./install-facts.ts";
 import { createLocalReads } from "./local-read.ts";
 import type { PairArm } from "./pair.ts";
+import { createUpdateWatch } from "./update-watch.ts";
 import {
   defaultCommandRunner,
   formatResolveFailure,
@@ -282,6 +285,18 @@ const harness = createHarness({
     const wsl = wslLocationOf(dir);
     return wsl === null ? defaultCommandRunner : wslRunner(wsl, defaultCommandRunner);
   },
+});
+
+/**
+ * The automatic check (update-watch.ts). It reads the preference each time it
+ * would run, so turning it off is enough to stop it.
+ */
+const updateWatch = createUpdateWatch({
+  enabled: () => readCompanion().preferences.autoCheckUpdates,
+  installs: listInstalls,
+  check: (install, lookUp) =>
+    harness.check({ dir: install.dir, running: install.state === "running", lookUp }),
+  emit: (install, report) => broadcast(BRIDGE_CHANNELS.harnessReport, { install, report }),
 });
 
 /** The install at `dir`, or the refusal every call on a folder main does not hold gets. */
@@ -643,12 +658,24 @@ app.whenReady().then(
 
     ipcMain.handle(BRIDGE_CHANNELS.harnessCheck, (_event, dir: string, opts: { lookUp: boolean }) =>
       answering<HarnessReport>(async () => {
-        const install = await heldInstall(dir);
-        return harness.check({
+        const report = await harness.check({
           dir,
-          running: install.state === "running",
+          running: (await heldInstall(dir)).state === "running",
           lookUp: opts?.lookUp === true,
         });
+        // Every window hears it, so the alert and the rail agree with the page.
+        broadcast(BRIDGE_CHANNELS.harnessReport, { install: dir, report });
+        return report;
+      }),
+    );
+
+    ipcMain.handle(BRIDGE_CHANNELS.harnessApply, (_event, dir: string, name: HarnessName) =>
+      answering<HarnessApplyOutcome>(async () => {
+        const install = await heldInstall(dir);
+        if (install.state !== "running") {
+          return { kind: "refused", harness: name, why: "the install is not running" };
+        }
+        return harness.apply(dir, name);
       }),
     );
 
@@ -707,8 +734,11 @@ app.whenReady().then(
     ipcMain.handle(BRIDGE_CHANNELS.preferencesSet, (_event, preferences: CompanionPreferences) =>
       answering<CompanionPreferences>(() => {
         const contents = readCompanion();
-        const next = { ...contents, preferences };
+        // Over what is held, so a console that predates a preference does not
+        // erase it by not sending it.
+        const next = { ...contents, preferences: { ...contents.preferences, ...preferences } };
         writeCompanionFile(companionFile(), next);
+        updateWatch.refresh();
         return next.preferences;
       }),
     );
@@ -726,6 +756,7 @@ app.whenReady().then(
     ipcMain.handle(BRIDGE_CHANNELS.relaySignOut, () => answering(() => arm().signOut()));
 
     createWindow();
+    updateWatch.refresh();
 
     // One check, and no poll (#525 §3). It is fired after the window exists so
     // the first thing the operator sees is the window rather than a wait on

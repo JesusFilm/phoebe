@@ -32,7 +32,7 @@ describe("reading", () => {
     expect(readCompanionFile(scratch())).toEqual({
       installs: [],
       relay: null,
-      preferences: { notifications: true, consoleTheme: "system" },
+      preferences: { notifications: true, consoleTheme: "system", autoCheckUpdates: false },
     });
   });
 
@@ -41,7 +41,7 @@ describe("reading", () => {
     const contents = {
       installs: [{ dir: "/repos/youtube-studio", addedAt: "2026-09-18T09:00:00.000Z" }],
       relay: { url: "https://relay.example.test" },
-      preferences: { notifications: false, consoleTheme: "nord" },
+      preferences: { notifications: false, consoleTheme: "nord", autoCheckUpdates: true },
     };
 
     writeCompanionFile(file, contents);
@@ -74,7 +74,11 @@ describe("reading", () => {
 
     expect(contents.installs).toEqual([{ dir: "/repos/one", addedAt: "2026-09-18T09:00:00.000Z" }]);
     expect(contents.relay).toBeNull();
-    expect(contents.preferences).toEqual({ notifications: true, consoleTheme: "system" });
+    expect(contents.preferences).toEqual({
+      notifications: true,
+      consoleTheme: "system",
+      autoCheckUpdates: false,
+    });
   });
 
   test("leaves no temporary behind, so the next read sees one file", () => {

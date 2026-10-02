@@ -27,7 +27,14 @@ import type {
   InstallPatch,
   LocalInstall,
 } from "./local-install.ts";
-import type { HarnessReport, HarnessUpdate, HarnessUpdateOutcome } from "./harness.ts";
+import type {
+  HarnessApplyOutcome,
+  HarnessName,
+  HarnessReport,
+  HarnessReportEvent,
+  HarnessUpdate,
+  HarnessUpdateOutcome,
+} from "./harness.ts";
 import type {
   InstallRepair,
   LocalAlertEvent,
@@ -203,6 +210,16 @@ export type DesktopBridge = {
   harness: {
     check: (dir: string, opts: { lookUp: boolean }) => Promise<HarnessReport>;
     update: (dir: string, update: HarnessUpdate) => Promise<HarnessUpdateOutcome>;
+    /**
+     * Put the version the Dockerfile pins into the running container, without
+     * a rebuild and without touching a unit in flight.
+     */
+    apply: (dir: string, harness: HarnessName) => Promise<HarnessApplyOutcome>;
+    /**
+     * Every report main produces: a page's check, and the automatic one the
+     * `autoCheckUpdates` preference turns on. Returns the unsubscribe.
+     */
+    reports: (onReport: (event: HarnessReportEvent) => void) => () => void;
   };
 
   logs: {

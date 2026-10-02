@@ -3,6 +3,7 @@ import { describe, expect, test } from "vite-plus/test";
 import type { CommandRunner } from "../../../src/deployment-compose.ts";
 import {
   createHarness,
+  cursorDigestsOf,
   cursorTarball,
   isBehind,
   latestLauncherVersion,
@@ -320,9 +321,16 @@ describe("the check and the update", () => {
     const ran: (readonly string[])[] = [];
     const runner: CommandRunner = (spec) => {
       ran.push(spec.args);
+      // An apply ends on what the one command answers; a check lists them all.
+      const applied = spec.args.includes("-u")
+        ? spec.args.at(-3) === "claude"
+          ? "2.1.228 (Claude Code)\n"
+          : "2026.07.23-e383d2b\n"
+        : null;
       return Promise.resolve({
         code: 0,
         stdout:
+          applied ??
           "agent|2026.07.23-e383d2b\nclaude|2.1.228 (Claude Code)\ncodex|\nphoebe-agent|0.13.0\n",
         stderr: "",
       });
@@ -460,6 +468,53 @@ describe("the check and the update", () => {
     ]);
     expect(files.get(DOCKERFILE)).toContain("ARG CURSOR_AGENT_SHA256_X64=x64-digest");
     expect(files.get(DOCKERFILE)).toContain("ARG CURSOR_AGENT_SHA256_ARM64=arm-digest");
+  });
+
+  test("applying puts the pinned version into the container, as root, beside the old one", async () => {
+    const { harness, ran } = setup();
+
+    // The fake container answers with 2.1.228, which is what the file pins.
+    const outcome = await harness.apply(DIR, "claude");
+
+    expect(outcome).toEqual({ kind: "applied", harness: "claude", version: "2.1.228" });
+    const argv = ran[0]!;
+    const at = argv.indexOf("exec");
+    expect(argv.slice(at, at + 5)).toEqual(["exec", "-T", "-u", "root", "phoebe"]);
+    // The command, the package and the version go in as arguments, not as script.
+    expect(argv.slice(-3)).toEqual(["claude", "@anthropic-ai/claude-code", "2.1.228"]);
+    const script = argv[argv.indexOf("-c") + 1]!;
+    expect(script).toContain('npm install -g --prefix "$d.tmp" "$pkg@$v"');
+    expect(script).toContain('mv -Tf "/usr/local/bin/$h.new" "/usr/local/bin/$h"');
+    expect(script).not.toContain("2.1.228");
+  });
+
+  test("Cursor is applied from its tarball, checked against the digests the file pins", async () => {
+    const { harness, ran } = setup();
+
+    const outcome = await harness.apply(DIR, "cursor");
+
+    expect(outcome).toEqual({ kind: "applied", harness: "cursor", version: "2026.07.23-e383d2b" });
+    expect(ran[0]!.slice(-3)).toEqual(["2026.07.23-e383d2b", "aaaa", "bbbb"]);
+    expect(ran[0]![ran[0]!.indexOf("-c") + 1]).toContain("sha256sum -c -");
+    expect(cursorDigestsOf("FROM node:24\n")).toEqual({ x64: "", arm64: "" });
+  });
+
+  test("a container that answers another version after the switch is not called applied", async () => {
+    const { harness, files } = setup();
+    files.set(DOCKERFILE, WITH_CLAUDE.replace("2.1.228", "2.1.287"));
+
+    const outcome = await harness.apply(DIR, "claude");
+
+    expect(outcome).toMatchObject({ kind: "refused" });
+    if (outcome.kind === "refused") expect(outcome.why).toContain("answers 2.1.228");
+  });
+
+  test("nothing is applied that the Dockerfile does not pin", async () => {
+    const { harness, ran } = setup(`${TEMPLATE}RUN npm install -g @anthropic-ai/claude-code\n`);
+
+    expect(await harness.apply(DIR, "claude")).toMatchObject({ kind: "refused" });
+    expect(await harness.apply(DIR, "codex")).toMatchObject({ kind: "refused" });
+    expect(ran).toEqual([]);
   });
 
   test("the version already pinned is left alone", async () => {

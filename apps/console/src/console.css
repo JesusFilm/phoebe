@@ -2091,3 +2091,119 @@ details.why > summary::marker {
   flex: none;
   transform: translateY(2px);
 }
+
+/* ── updates on offer: the alert over the page, and the rail's count ─────
+
+   One line, as T3 Code draws its own: an icon, a title that opens the list,
+   one quiet action, a dismiss. */
+
+.update-alerts {
+  padding: 8px 16px 0;
+}
+
+.update-alert {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 2px 6px 2px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  font-size: 13px;
+}
+
+.update-alert.failed {
+  border-color: color-mix(in srgb, var(--fail) 60%, transparent);
+}
+
+.update-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--muted);
+}
+
+.update-alert.idle .update-icon {
+  color: var(--accent);
+}
+
+.update-alert.failed .update-icon {
+  color: var(--fail);
+}
+
+.update-alert.done .update-icon {
+  color: var(--ok);
+}
+
+.update-title {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  font-weight: 500;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.update-separator {
+  margin: 0 6px;
+  color: var(--muted);
+}
+
+.update-detail {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.update-actions {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+}
+
+.update-list {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  font-size: 12px;
+}
+
+.update-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 0;
+}
+
+.update-list li + li {
+  border-top: 1px solid var(--line);
+}
+
+.update-target {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.rail-updates {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 6px;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: middle;
+}

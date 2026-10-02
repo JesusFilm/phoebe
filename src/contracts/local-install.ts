@@ -160,4 +160,10 @@ export type InstallPatch = {
 export type CompanionPreferences = {
   notifications: boolean;
   consoleTheme: string;
+  /**
+   * Check every install's agent versions against the newest on a timer, and say
+   * so when one is behind. Off by default: the check asks npm and Cursor, and
+   * the companion asks nobody anything the operator did not ask it to.
+   */
+  autoCheckUpdates: boolean;
 };

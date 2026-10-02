@@ -101,6 +101,11 @@ export type Notifier = {
     enabled: boolean;
     focused: boolean;
   }) => Notifiable | null;
+  /**
+   * Show a banner that is already made, with the same two suppressions. For
+   * what is not an alert and so has no edge rule behind it: updates on offer.
+   */
+  raise: (notifiable: Notifiable, manner: { enabled: boolean; focused: boolean }) => boolean;
 };
 
 /**
@@ -108,17 +113,25 @@ export type Notifier = {
  * onto whatever it is replacing, and silent — every time, not only for a clear.
  */
 export function createNotifier(options: NotifierOptions): Notifier {
+  const banner = (notifiable: Notifiable): void => {
+    const notification = new options.Notification(notifiable.title, {
+      body: notifiable.body,
+      tag: notifiable.tag,
+      silent: true,
+    });
+    notification.onclick = () => options.open(notifiable);
+  };
   return {
     show(input) {
       const notifiable = notificationFor(input);
       if (notifiable === null) return null;
-      const notification = new options.Notification(notifiable.title, {
-        body: notifiable.body,
-        tag: notifiable.tag,
-        silent: true,
-      });
-      notification.onclick = () => options.open(notifiable);
+      banner(notifiable);
       return notifiable;
+    },
+    raise(notifiable, manner) {
+      if (!manner.enabled || manner.focused) return false;
+      banner(notifiable);
+      return true;
     },
   };
 }

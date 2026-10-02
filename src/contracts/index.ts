@@ -227,10 +227,12 @@ export type {
   TenantConfigFacts,
 } from "./local-report.ts";
 export type {
+  HarnessApplyOutcome,
   HarnessFacts,
   HarnessName,
   HarnessPin,
   HarnessReport,
+  HarnessReportEvent,
   HarnessUpdate,
   HarnessUpdateOutcome,
   LauncherFacts,

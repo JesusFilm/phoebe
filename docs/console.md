@@ -112,6 +112,14 @@ The console's header names each pipeline with a unit in flight and the work it
 is on, and counts the install's errors and warnings; pressing the counts lists
 them. A pipeline's tab pulses while it is working and carries its own counts.
 
+With **Check for updates automatically** on (Settings → Updates), the companion
+reads every install shortly after launch and every six hours, and shows one
+line over the page when any is behind: "Update available for …", with
+**Update**, a list behind the title, and a dismiss that is remembered for that
+set of versions. It never updates by itself. **Update** moves each harness pin
+and, on a running install, puts the new version into the container beside the
+old one, so a unit in flight finishes on what it started with.
+
 The install tab's **Phoebe** section lists the launcher (`phoebe-agent`, pinned
 in `container/Dockerfile`) and the engine (`engine.ref` in the config), each
 with a field and a button that runs `upgrade` for that half.

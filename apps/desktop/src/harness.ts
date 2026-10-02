@@ -21,6 +21,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type {
+  HarnessApplyOutcome,
   HarnessFacts,
   HarnessName,
   HarnessPin,
@@ -346,6 +347,93 @@ export function parseLauncherVersion(stdout: string): string | null {
   return null;
 }
 
+// ── putting a pinned version into a running container ─────────────────────
+
+/** Where swapped-in npm harnesses live, one folder per version, beside the image's own. */
+const SWAP_ROOT = "/opt/phoebe-harness";
+
+/**
+ * Install one npm harness beside the one the container has, then switch the
+ * command to it. `$1` is the command, `$2` the package, `$3` the version.
+ *
+ * Beside, not over: an `npm install -g` over the top rewrites files a unit in
+ * flight may still be reading. A folder per version leaves the old tree whole,
+ * and `mv -T` of a symlink is one rename, so every spawn resolves to a complete
+ * install: the old one before the switch, the new one after. The last line is
+ * what the command answers after it, which is the proof the caller reads.
+ */
+const APPLY_NPM = [
+  "set -eu",
+  'h="$1"; pkg="$2"; v="$3"',
+  `d="${SWAP_ROOT}/$h-$v"`,
+  'if [ ! -e "$d/bin/$h" ]; then',
+  '  rm -rf "$d.tmp"',
+  '  npm install -g --prefix "$d.tmp" "$pkg@$v" >/tmp/phoebe-harness.log 2>&1 ' +
+    "|| { tail -n 3 /tmp/phoebe-harness.log >&2; exit 1; }",
+  `  mkdir -p ${SWAP_ROOT}; mv "$d.tmp" "$d"`,
+  "fi",
+  'ln -sfn "$d/bin/$h" "/usr/local/bin/$h.new"',
+  'mv -Tf "/usr/local/bin/$h.new" "/usr/local/bin/$h"',
+  '"$h" --version 2>/dev/null | head -n 1',
+].join("\n");
+
+/**
+ * The same for Cursor, which is a tarball rather than a package: fetched for
+ * the container's own architecture, checked against the digest the Dockerfile
+ * pins when it pins one (`$2` x64, `$3` arm64), unpacked beside the old one
+ * with the template's `chmod 0711` on its bundled node, and both command names
+ * switched. `$1` is the version.
+ */
+const APPLY_CURSOR = [
+  "set -eu",
+  'v="$1"',
+  'case "$(dpkg --print-architecture 2>/dev/null || uname -m)" in',
+  '  amd64|x86_64) a=x64; s="$2" ;;',
+  '  arm64|aarch64) a=arm64; s="$3" ;;',
+  '  *) echo "cursor-agent publishes no build for this architecture" >&2; exit 1 ;;',
+  "esac",
+  'd="/opt/cursor-agent-$v"',
+  'if [ ! -x "$d/cursor-agent" ]; then',
+  "  t=$(mktemp)",
+  `  curl -fsSL -o "$t" "https://${CURSOR_DOWNLOADS}/lab/$v/linux/$a/agent-cli-package.tar.gz"`,
+  '  if [ -n "$s" ]; then echo "$s  $t" | sha256sum -c - >/dev/null; fi',
+  '  rm -rf "$d.tmp"; mkdir -p "$d.tmp"',
+  '  tar --strip-components=1 -xzf "$t" -C "$d.tmp"',
+  '  chmod 0711 "$d.tmp/node"; rm -f "$t"; mv "$d.tmp" "$d"',
+  "fi",
+  "for n in agent cursor-agent; do",
+  '  ln -sfn "$d/cursor-agent" "/usr/local/bin/$n.new"',
+  '  mv -Tf "/usr/local/bin/$n.new" "/usr/local/bin/$n"',
+  "done",
+  "agent --version 2>/dev/null | head -n 1",
+].join("\n");
+
+/**
+ * The exec that puts `version` of one harness into the running container. As
+ * root, because `/usr/local/bin` and `/opt` are root's in the image; the engine
+ * child that runs the result is still the unprivileged user.
+ */
+export function applyArgv(
+  harness: HarnessName,
+  version: string,
+  digests: { x64: string; arm64: string } = { x64: "", arm64: "" },
+): readonly string[] {
+  const { command, package: pkg } = HARNESSES[harness];
+  const exec = ["exec", "-T", "-u", "root", PHOEBE_SERVICE, "sh", "-c"];
+  return pkg === null
+    ? [...exec, APPLY_CURSOR, "sh", version, digests.x64, digests.arm64]
+    : [...exec, APPLY_NPM, "sh", command, pkg, version];
+}
+
+/** The two digests a Dockerfile pins for Cursor, empty where it pins none. */
+export function cursorDigestsOf(content: string): { x64: string; arm64: string } {
+  const args = argsOf(content.split(/\r?\n/));
+  return {
+    x64: args.get(CURSOR_SHA_ARGS.x64) ?? "",
+    arm64: args.get(CURSOR_SHA_ARGS.arm64) ?? "",
+  };
+}
+
 // ── looking a version up ───────────────────────────────────────────────────
 
 /** GET a URL as text. Throws on anything but a 2xx. */
@@ -560,6 +648,46 @@ export function createHarness(deps: HarnessDeps = {}) {
         containerAsked: inContainer !== null,
         latestAt,
       };
+    },
+
+    /**
+     * Put the version the Dockerfile pins into the install's running container
+     * ({@link APPLY_NPM}). The pin is the source: this never installs a version
+     * the file does not name, so a container and the next build of its image
+     * agree.
+     */
+    async apply(dir: string, harness: HarnessName): Promise<HarnessApplyOutcome> {
+      const refused = (why: string): HarnessApplyOutcome => ({ kind: "refused", harness, why });
+      if (!HARNESS_NAMES.includes(harness)) return refused(`${String(harness)} is not a harness`);
+      const { file, content } = dockerfileText(dir);
+      if (content === null) return refused(`there is no Dockerfile at ${file}`);
+      const pin = readHarnessPins(content)[harness];
+      if (pin.kind !== "pinned" || !SAFE_VERSION.test(pin.version)) {
+        return refused("the Dockerfile pins no version of it to put there");
+      }
+      const deployment = resolveDeploymentCompose(deploymentDirOf(dir, exists).dir, exists);
+      if ("kind" in deployment) return refused("this install has no container");
+      let result;
+      try {
+        result = await runCompose({
+          deployment,
+          args: applyArgv(harness, pin.version, cursorDigestsOf(content)),
+          runner: runnerFor(dir),
+        });
+      } catch (error) {
+        return refused(error instanceof Error ? error.message : String(error));
+      }
+      if (result.code !== 0) {
+        const said = (result.stderr || result.stdout).trim().split("\n").pop() ?? "";
+        return refused(said === "" ? "the container refused the install" : said);
+      }
+      // What the command answers now is the proof, not the exit code alone.
+      const now = /\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?/.exec(result.stdout)?.[0] ?? null;
+      return now === pin.version
+        ? { kind: "applied", harness, version: pin.version }
+        : refused(
+            `the container's ${HARNESSES[harness].command} answers ${now ?? "nothing"} after the switch`,
+          );
     },
 
     /** Pin one harness in the install's Dockerfile. Never rebuilds anything. */

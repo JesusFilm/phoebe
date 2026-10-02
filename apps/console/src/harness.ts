@@ -11,6 +11,7 @@
 
 import type {
   ConfigFieldFacts,
+  HarnessApplyOutcome,
   HarnessFacts,
   HarnessName,
   HarnessPin,
@@ -333,7 +334,7 @@ export function updateReading(outcome: HarnessUpdateOutcome): string {
       return (
         `The Dockerfile now pins ${label} ${outcome.to}` +
         (outcome.from === null ? "" : ` (was ${outcome.from})`) +
-        ". The container keeps the one it was built with until the image is rebuilt."
+        "."
       );
     case "unchanged":
       return `${label} is already pinned to ${outcome.version}.`;
@@ -343,4 +344,125 @@ export function updateReading(outcome: HarnessUpdateOutcome): string {
         (outcome.instruction === null ? "" : ` ${outcome.instruction}`)
       );
   }
+}
+
+/** What putting a harness into the running container came to, as a sentence. */
+export function applyReading(outcome: HarnessApplyOutcome): string {
+  return outcome.kind === "applied"
+    ? `The running container has ${HARNESS_LABEL[outcome.harness]} ${outcome.version} too. ` +
+        "A unit in flight finishes on the version it started with, and the next one starts on this."
+    : `${HARNESS_LABEL[outcome.harness]} was not put into the running container: ${outcome.why}. ` +
+        "A rebuild installs it.";
+}
+
+// ── updates on offer: what the automatic check found behind ───────────────
+
+/** One thing an install could move to. */
+export type AvailableUpdate =
+  | { kind: "harness"; harness: HarnessName; label: string; from: string | null; to: string }
+  | { kind: "launcher"; from: string | null; to: string }
+  | { kind: "engine"; from: string | null; to: string };
+
+/**
+ * What is behind on one install, by its last report: each installed harness the
+ * newest version has passed, and Phoebe's own launcher and engine where they
+ * are pinned to a release. Nothing before a look-up, since "behind" needs a
+ * newest to be behind.
+ */
+export function availableUpdates(
+  install: LocalInstall,
+  event: LocalReportEvent | null,
+  report: HarnessReport | null,
+): AvailableUpdate[] {
+  if (report === null || report.dockerfile === null) return [];
+  const updates: AvailableUpdate[] = [];
+  for (const row of harnessRows(report, event, harnessUsers(install, event))) {
+    if (row.pin.kind !== "absent" && row.behind === true && row.latest !== null) {
+      updates.push({
+        kind: "harness",
+        harness: row.harness,
+        label: row.label,
+        // What it is on now: the pin, or what the container has when nothing is pinned.
+        from: row.pin.kind === "pinned" ? row.pin.version : row.running,
+        to: row.latest,
+      });
+    }
+  }
+  const { launcher, engine } = phoebeVersions(install, event, report);
+  if (launcher !== null && launcher.pin.kind === "pinned" && launcher.behind === true) {
+    if (launcher.latest !== null) {
+      updates.push({ kind: "launcher", from: launcher.pin.version, to: launcher.latest });
+    }
+  }
+  if (engine !== null && engine.source === "github" && engine.behind === true) {
+    if (engine.latest !== null) {
+      updates.push({ kind: "engine", from: engine.ref, to: engine.latest });
+    }
+  }
+  return updates;
+}
+
+/** One update, named: `Claude Code 2.1.288`. */
+function updateName(update: AvailableUpdate): string {
+  return update.kind === "harness"
+    ? `${update.label} ${update.to}`
+    : update.kind === "launcher"
+      ? `the Phoebe launcher ${update.to}`
+      : `the Phoebe engine ${update.to}`;
+}
+
+/** One update as a move: `Claude Code 2.1.269 → 2.1.288`. */
+export function updateArrow(update: AvailableUpdate): string {
+  const name =
+    update.kind === "harness"
+      ? update.label
+      : update.kind === "launcher"
+        ? "Phoebe launcher"
+        : "Phoebe engine";
+  return update.from === null ? `${name} ${update.to}` : `${name} ${update.from} → ${update.to}`;
+}
+
+/** Several things as a phrase: `a`, `a and b`, `a, b and c`. */
+function listed(names: readonly string[]): string {
+  if (names.length <= 1) return names[0] ?? "";
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+/** Everything on offer, as the object of "can move to". */
+export function updatesReading(updates: readonly AvailableUpdate[]): string {
+  return listed(updates.map(updateName));
+}
+
+/** What is on offer, as a string to compare: dismissing one set does not dismiss the next. */
+export function updatesSignature(updates: readonly AvailableUpdate[]): string {
+  return updates
+    .map((update) => `${update.kind === "harness" ? update.harness : update.kind}@${update.to}`)
+    .join(",");
+}
+
+/** What became of one harness update taken from the alert. */
+export type TakenUpdate = {
+  label: string;
+  to: string;
+  /** Why it did not go all the way, or null when it did. */
+  why: string | null;
+  /** Whether a running container has it now. */
+  applied: boolean;
+};
+
+/** What pressing Update came to, as a sentence or two. */
+export function takenReading(results: readonly TakenUpdate[], running: boolean): string {
+  const went = results.filter((result) => result.why === null);
+  const failed = results.filter((result) => result.why !== null);
+  const parts: string[] = [];
+  if (went.length > 0) {
+    parts.push(
+      `${listed(went.map((result) => `${result.label} ${result.to}`))} ${went.length === 1 ? "is" : "are"} pinned in the Dockerfile` +
+        (running
+          ? " and in the running container. A unit in flight finishes on the version it started with, and the next one starts on the new."
+          : ". The next build of the image installs " + (went.length === 1 ? "it." : "them.")),
+    );
+  }
+  for (const result of failed) parts.push(`${result.label}: ${result.why}.`);
+  return parts.join(" ");
 }

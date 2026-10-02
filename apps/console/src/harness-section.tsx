@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type {
   DesktopBridge,
+  HarnessApplyOutcome,
   HarnessName,
   HarnessReport,
   HarnessUpdateOutcome,
@@ -26,6 +27,7 @@ import type {
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import {
+  applyReading,
   awaitingRebuild,
   engineReading,
   engineStanding,
@@ -79,6 +81,8 @@ export function HarnessSection({
   const [updating, setUpdating] = useState<HarnessName | null>(null);
   const [outcome, setOutcome] = useState<HarnessUpdateOutcome | null>(null);
   const [trouble, setTrouble] = useState<string | null>(null);
+  const [applying, setApplying] = useState<HarnessName | null>(null);
+  const [applied, setApplied] = useState<HarnessApplyOutcome | null>(null);
 
   const check = useCallback(
     (lookUp: boolean) => {
@@ -109,13 +113,39 @@ export function HarnessSection({
     void check(false);
   }, [check, pins, install.state, install.containerVersion, ended]);
 
+  // Put what the Dockerfile pins into the running container, then read it again.
+  const apply = useCallback(
+    async (harnesses: readonly HarnessName[]): Promise<void> => {
+      for (const harness of harnesses) {
+        setApplying(harness);
+        try {
+          setApplied(await bridge.harness.apply(install.dir, harness));
+        } catch (error) {
+          setApplied({ kind: "refused", harness, why: refusalText(error) });
+        }
+      }
+      setApplying(null);
+      await check(false);
+    },
+    [bridge, install.dir, check],
+  );
+
+  const running = install.state === "running";
   const update = (harness: HarnessName, version: string): void => {
     setUpdating(harness);
     setOutcome(null);
+    setApplied(null);
     bridge.harness
       .update(install.dir, { harness, version })
-      .then(setOutcome, (error: unknown) =>
-        setOutcome({ kind: "refused", harness, why: refusalText(error), instruction: null }),
+      .then(
+        (moved) => {
+          setOutcome(moved);
+          // A running install gets it now, beside the one it has, so no unit
+          // in flight is disturbed and the next one starts on the new version.
+          if (moved.kind !== "refused" && running) void apply([harness]);
+        },
+        (error: unknown) =>
+          setOutcome({ kind: "refused", harness, why: refusalText(error), instruction: null }),
       )
       .finally(() => setUpdating(null));
   };
@@ -159,10 +189,13 @@ export function HarnessSection({
         lookingUp={lookingUp}
         updating={updating}
         outcome={outcome}
+        applying={applying}
+        applied={applied}
         trouble={trouble}
         busy={busy}
         onLookUp={() => void check(true)}
         onUpdate={update}
+        onApply={(harnesses) => void apply(harnesses)}
         onRebuild={onRebuild}
       />
     </>
@@ -370,10 +403,13 @@ export function HarnessPanel({
   lookingUp,
   updating,
   outcome,
+  applying = null,
+  applied = null,
   trouble,
   busy,
   onLookUp,
   onUpdate,
+  onApply,
   onRebuild,
 }: {
   install: LocalInstall;
@@ -385,10 +421,16 @@ export function HarnessPanel({
   lookingUp: boolean;
   updating: HarnessName | null;
   outcome: HarnessUpdateOutcome | null;
+  /** The harness being put into the running container right now. */
+  applying?: HarnessName | null;
+  /** What the last such apply came to. */
+  applied?: HarnessApplyOutcome | null;
   trouble: string | null;
   busy: boolean;
   onLookUp: () => void;
   onUpdate: (harness: HarnessName, version: string) => void;
+  /** Put the pinned versions of these into the running container. */
+  onApply?: (harnesses: HarnessName[]) => void;
   onRebuild: () => void;
 }) {
   const stale = awaitingRebuild(rows);
@@ -441,8 +483,17 @@ export function HarnessPanel({
         <Button size="sm" variant="outline" disabled={lookingUp} onClick={onLookUp}>
           {lookingUp ? "Checking…" : "Check for updates"}
         </Button>
+        {stale.length === 0 || !running || onApply === undefined ? null : (
+          <Button
+            size="sm"
+            disabled={busy || applying !== null}
+            onClick={() => onApply(stale.map((row) => row.harness))}
+          >
+            {applying === null ? "Apply to the running container" : "Applying…"}
+          </Button>
+        )}
         {stale.length === 0 && outcome?.kind !== "moved" ? null : (
-          <Button size="sm" disabled={busy} onClick={onRebuild}>
+          <Button size="sm" variant="outline" disabled={busy} onClick={onRebuild}>
             {running ? "Rebuild and restart" : "Rebuild and start"}
           </Button>
         )}
@@ -462,7 +513,7 @@ export function HarnessPanel({
       {unsaid.map((row) => (
         <p key={row.harness} className="warning">
           The Dockerfile pins {row.label} {row.pin.kind === "pinned" ? row.pin.version : ""} and the
-          container has {row.running}. Rebuild to pick the pin up.
+          container has {row.running}. Apply it to the running container, or rebuild.
         </p>
       ))}
       {updating === "cursor" ? (
@@ -473,6 +524,17 @@ export function HarnessPanel({
       {outcome === null ? null : (
         <p className={outcome.kind === "refused" ? "refusal" : "receipt written"} role="status">
           {updateReading(outcome)}
+          {outcome.kind !== "moved" || running ? null : " The next build of the image installs it."}
+        </p>
+      )}
+      {applying === null ? null : (
+        <p className="muted">
+          Putting it into the running container, beside the one a unit may be using.
+        </p>
+      )}
+      {applied === null || applying !== null ? null : (
+        <p className={applied.kind === "applied" ? "receipt written" : "refusal"} role="status">
+          {applyReading(applied)}
         </p>
       )}
       {trouble === null ? null : <p className="refusal">{trouble}</p>}
