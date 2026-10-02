@@ -13,6 +13,7 @@ import { DESKTOP_BRIDGE_GLOBAL } from "phoebe-agent/contracts";
 import type {
   CompanionUpdate,
   DesktopBridge,
+  HarnessReportEvent,
   LocalAlertEvent,
   LocalInstall,
   LocalReportEvent,
@@ -64,6 +65,8 @@ const bridge: DesktopBridge = {
   harness: {
     check: (dir, opts) => call(BRIDGE_CHANNELS.harnessCheck, dir, opts),
     update: (dir, update) => call(BRIDGE_CHANNELS.harnessUpdate, dir, update),
+    apply: (dir, harness) => call(BRIDGE_CHANNELS.harnessApply, dir, harness),
+    reports: (onReport) => subscribe<HarnessReportEvent>(BRIDGE_CHANNELS.harnessReport, onReport),
   },
   runs: {
     start: (request) => call(BRIDGE_CHANNELS.runStart, request),

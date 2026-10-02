@@ -85,3 +85,19 @@ export type HarnessUpdateOutcome =
       /** The edit to make by hand, when there is one to name. */
       instruction: string | null;
     };
+
+/**
+ * What came of putting a pinned harness into a running container.
+ *
+ * The version the Dockerfile pins is installed beside the one the container
+ * has, and the command is switched to it in one step. A unit already running
+ * keeps the files it started on; the next unit spawned gets the new one. So
+ * this never changes a CLI under a unit that is using it. A container made
+ * fresh from the old image loses it, which is what the pin and a rebuild are for.
+ */
+export type HarnessApplyOutcome =
+  | { kind: "applied"; harness: HarnessName; version: string }
+  | { kind: "refused"; harness: HarnessName; why: string };
+
+/** One install's report, whichever check produced it: a page's, or the automatic one. */
+export type HarnessReportEvent = { install: string; report: HarnessReport };

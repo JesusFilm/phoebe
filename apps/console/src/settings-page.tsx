@@ -38,6 +38,8 @@ export function SettingsPage({
   onNotifications,
   consoleTheme,
   onConsoleTheme,
+  autoCheckUpdates = false,
+  onAutoCheckUpdates,
 }: {
   surface: Surface;
   /** What main found on this machine, or null before it answered. */
@@ -48,6 +50,9 @@ export function SettingsPage({
   onNotifications?: (wanted: boolean) => void;
   consoleTheme: ConsoleThemeChoice;
   onConsoleTheme?: (choice: ConsoleThemeChoice) => void;
+  /** Check every install's agent versions on a timer (update-alert.tsx). */
+  autoCheckUpdates?: boolean;
+  onAutoCheckUpdates?: (wanted: boolean) => void;
 }) {
   if (surface === "browser") {
     return (
@@ -111,6 +116,25 @@ export function SettingsPage({
             onChange={(event) => onNotifications?.(event.target.checked)}
           />
           Desktop notifications
+        </label>
+      </section>
+
+      <section className="settings-section" aria-labelledby="settings-updates">
+        <h2 id="settings-updates">Updates</h2>
+        <p className="muted">
+          Check each workspace and install for newer agent versions: Phoebe&apos;s launcher and
+          engine, and the Cursor, Claude Code and Codex CLIs its container carries. Shortly after
+          launch and every few hours, the companion asks npm and Cursor what is newest and says so
+          when an install is behind, with a button to update. It never updates anything by itself.
+        </p>
+        <label className="settings-row settings-check">
+          <input
+            type="checkbox"
+            checked={autoCheckUpdates}
+            disabled={onAutoCheckUpdates === undefined}
+            onChange={(event) => onAutoCheckUpdates?.(event.target.checked)}
+          />
+          Check for updates automatically
         </label>
       </section>
 

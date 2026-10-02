@@ -12,6 +12,7 @@ import type {
   AlertBody,
   CompanionUpdate,
   DesktopBridge,
+  HarnessReport,
   LocalInstall,
   LocalReportEvent,
   VerbRunRequest,
@@ -29,6 +30,12 @@ import { ChevronRight } from "lucide-react";
 import { routeCrumbs, type Crumbs } from "./crumbs.ts";
 import { SettingsPage } from "./settings-page.tsx";
 import { hostOfProcessPlatform } from "./host-icon.tsx";
+import {
+  availableUpdates,
+  updatesReading,
+  updatesSignature,
+  type AvailableUpdate,
+} from "./harness.ts";
 import { InstallPage } from "./install-page.tsx";
 import { TenantPage } from "./tenant-page.tsx";
 import type { InstallAction, RailChild } from "./local-install.ts";
@@ -44,6 +51,7 @@ import {
 import { createNotifier, type AlertSubject, type Notifiable } from "./notifications.ts";
 import { Rail } from "./rail.tsx";
 import { ADD_HREF, HOME_ROUTE, parseRoute, type Route } from "./route.ts";
+import { UpdateAlerts } from "./update-alert.tsx";
 import { exitOf } from "./verb-run.ts";
 
 export function App({
@@ -71,6 +79,10 @@ export function App({
   // The console's colour theme (console-themes.ts): the operator's preference,
   // read with the rest and written back through the bridge when the picker moves.
   const [consoleTheme, setConsoleTheme] = useState<ConsoleThemeChoice>(SYSTEM_CONSOLE_THEME);
+  // Off until the operator asks for it: the check asks npm and Cursor.
+  const [autoCheckUpdates, setAutoCheckUpdates] = useState(false);
+  // The last harness report per install, from a page's check or the automatic one.
+  const [harnessReports, setHarnessReports] = useState<Record<string, HarnessReport>>({});
   const systemDark = useSystemDark();
   const chooseNotifications = (wanted: boolean): void => {
     setNotifications(wanted);
@@ -80,14 +92,21 @@ export function App({
     if (wanted && typeof Notification !== "undefined") void Notification.requestPermission();
     if (bridge === null) return;
     void bridge.preferences
-      .set({ notifications: wanted, consoleTheme })
+      .set({ notifications: wanted, consoleTheme, autoCheckUpdates })
       .then((saved) => setNotifications(saved.notifications), ignore);
+  };
+  const chooseAutoCheckUpdates = (wanted: boolean): void => {
+    setAutoCheckUpdates(wanted);
+    if (bridge === null) return;
+    void bridge.preferences
+      .set({ notifications, consoleTheme, autoCheckUpdates: wanted })
+      .then((saved) => setAutoCheckUpdates(saved.autoCheckUpdates === true), ignore);
   };
   const chooseConsoleTheme = (choice: ConsoleThemeChoice): void => {
     setConsoleTheme(choice);
     if (bridge === null) return;
     void bridge.preferences
-      .set({ notifications, consoleTheme: choice })
+      .set({ notifications, consoleTheme: choice, autoCheckUpdates })
       .then((saved) => setConsoleTheme(consoleThemeChoiceOf(saved.consoleTheme)), ignore);
   };
   const now = useNow(1000);
@@ -105,6 +124,7 @@ export function App({
       if (!live) return;
       setNotifications(preferences.notifications);
       setConsoleTheme(consoleThemeChoiceOf(preferences.consoleTheme));
+      setAutoCheckUpdates(preferences.autoCheckUpdates === true);
     }, ignore);
     return () => {
       live = false;
@@ -148,6 +168,54 @@ export function App({
     },
     [notifier],
   );
+
+  // What each install could move to, by its last harness report. The alert, the
+  // rail's count and the notification are all this one reading.
+  const updatesByInstall = useMemo(() => {
+    const found: Record<string, AvailableUpdate[]> = {};
+    for (const install of installs) {
+      const updates = availableUpdates(
+        install,
+        reports[install.dir] ?? null,
+        harnessReports[install.dir] ?? null,
+      );
+      if (updates.length > 0) found[install.dir] = updates;
+    }
+    return found;
+  }, [installs, reports, harnessReports]);
+
+  useEffect(() => {
+    if (bridge === null) return;
+    return bridge.harness.reports(({ install, report }) => {
+      setHarnessReports((held) => ({ ...held, [install]: report }));
+    });
+  }, [bridge]);
+
+  // One notification per set of updates: what was said is not said again until
+  // what is on offer changes.
+  const toldUpdates = useRef<Record<string, string>>({});
+  useEffect(() => {
+    for (const install of installs) {
+      const updates = updatesByInstall[install.dir];
+      if (updates === undefined) continue;
+      const signature = updatesSignature(updates);
+      if (toldUpdates.current[install.dir] === signature) continue;
+      toldUpdates.current[install.dir] = signature;
+      notifier?.raise(
+        {
+          tag: `${install.dir}:updates`,
+          title: install.name,
+          body: `Updates are available: ${updatesReading(updates)}.`,
+          subject: { arm: "local", install: install.dir },
+          pipeline: null,
+        },
+        {
+          enabled: wanted.current,
+          focused: typeof document === "undefined" ? false : document.hasFocus(),
+        },
+      );
+    }
+  }, [installs, updatesByInstall, notifier]);
 
   // The installs. One read, then main's `installs:changed` does the updating:
   // the page holds no copy it has to reconcile, and every fact on screen was derived by the
@@ -378,6 +446,9 @@ export function App({
         // here too — the same guard `onAdd` carries below.
         onHome={() => setOpenInstall(null)}
         reports={reports}
+        updates={Object.fromEntries(
+          Object.entries(updatesByInstall).map(([dir, updates]) => [dir, updates.length]),
+        )}
         {...(platform === null ? {} : { platform })}
         update={update}
         {...(bridge === null
@@ -441,6 +512,19 @@ export function App({
                 .map((child) => child.slug ?? child.name)[0] ?? null,
           })}
         />
+        {bridge === null ? null : (
+          <UpdateAlerts
+            bridge={bridge}
+            installs={installs}
+            events={reports}
+            reports={harnessReports}
+            onReview={(dir) => {
+              setOpenView("settings");
+              setOpenTenant(null);
+              setOpenInstall(dir);
+            }}
+          />
+        )}
         {open !== null && bridge !== null && openView === "console" ? (
           <ConsoleView
             key={`${open.dir}#${openTenant ?? ""}`}
@@ -492,9 +576,14 @@ export function App({
             systemDark={systemDark}
             notifications={notifications}
             consoleTheme={consoleTheme}
+            autoCheckUpdates={autoCheckUpdates}
             {...(bridge === null
               ? {}
-              : { onNotifications: chooseNotifications, onConsoleTheme: chooseConsoleTheme })}
+              : {
+                  onNotifications: chooseNotifications,
+                  onConsoleTheme: chooseConsoleTheme,
+                  onAutoCheckUpdates: chooseAutoCheckUpdates,
+                })}
           />
         ) : (
           <CompanionHome

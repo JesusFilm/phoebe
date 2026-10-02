@@ -31,7 +31,7 @@ describe("reading", () => {
   test("a companion that has never run reads as empty rather than as an error", () => {
     expect(readCompanionFile(scratch())).toEqual({
       installs: [],
-      preferences: { notifications: true, consoleTheme: "system" },
+      preferences: { notifications: true, consoleTheme: "system", autoCheckUpdates: false },
     });
   });
 
@@ -39,7 +39,7 @@ describe("reading", () => {
     const file = scratch();
     const contents = {
       installs: [{ dir: "/repos/youtube-studio", addedAt: "2026-09-18T09:00:00.000Z" }],
-      preferences: { notifications: false, consoleTheme: "nord" },
+      preferences: { notifications: false, consoleTheme: "nord", autoCheckUpdates: true },
     };
 
     writeCompanionFile(file, contents);
@@ -70,7 +70,11 @@ describe("reading", () => {
     const contents = readCompanionFile(file);
 
     expect(contents.installs).toEqual([{ dir: "/repos/one", addedAt: "2026-09-18T09:00:00.000Z" }]);
-    expect(contents.preferences).toEqual({ notifications: true, consoleTheme: "system" });
+    expect(contents.preferences).toEqual({
+      notifications: true,
+      consoleTheme: "system",
+      autoCheckUpdates: false,
+    });
   });
 
   test("leaves no temporary behind, so the next read sees one file", () => {

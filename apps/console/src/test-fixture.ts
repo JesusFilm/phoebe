@@ -15,6 +15,8 @@ import type {
   DoctorCheck,
   DoctorSection,
   FleetCell,
+  HarnessApplyOutcome,
+  HarnessName,
   HarnessReport,
   HarnessUpdate,
   HarnessUpdateOutcome,
@@ -302,6 +304,13 @@ export function bridge(answers: BridgeAnswers = {}): DesktopBridge {
           ? Promise.reject(notAnInstall(dir))
           : Promise.resolve(answers.harness);
       },
+      apply: (dir, harness) => {
+        answers.harnessApplies?.push({ dir, harness });
+        return Promise.resolve(
+          answers.harnessApply ?? { kind: "applied", harness, version: "0.0.0" },
+        );
+      },
+      reports: () => () => undefined,
       update: (dir, update) => {
         answers.harnessUpdates?.push({ dir, update });
         return Promise.resolve(
@@ -344,7 +353,8 @@ export function bridge(answers: BridgeAnswers = {}): DesktopBridge {
       changes: () => () => undefined,
     },
     preferences: {
-      get: () => Promise.resolve({ notifications: true, consoleTheme: "system" }),
+      get: () =>
+        Promise.resolve({ notifications: true, consoleTheme: "system", autoCheckUpdates: false }),
       set: (preferences) => Promise.resolve(preferences),
     },
   };
@@ -361,6 +371,8 @@ export type BridgeAnswers = {
   harnessChecks?: { dir: string; lookUp: boolean }[];
   harnessUpdate?: HarnessUpdateOutcome;
   harnessUpdates?: { dir: string; update: HarnessUpdate }[];
+  harnessApply?: HarnessApplyOutcome;
+  harnessApplies?: { dir: string; harness: HarnessName }[];
   /** What a repair answers with, and where each one asked for is recorded. */
   repair?: RepairOutcome;
   repaired?: { dir: string; repair: InstallRepair }[];
