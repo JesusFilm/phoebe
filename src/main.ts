@@ -50,6 +50,7 @@ import {
   type CredentialClient,
 } from "./credential-client.ts";
 import { createSlotClient, type SlotClient } from "./slot-client.ts";
+import { createReportClient, type ReportClient } from "./report-client.ts";
 import {
   RunTimeoutError,
   resolveRunTimeoutMs,
@@ -62,6 +63,7 @@ import {
   statusPathFor,
   type EmitUnitEvent,
   type EngineLog,
+  type StatusSnapshot,
   type UnitRef,
 } from "./unit-event.ts";
 import {
@@ -343,6 +345,12 @@ export type EngineOptions = {
   slotClient: SlotClient | null;
   /** The bootstrapper's credential lease (#211/#205), or null when unbrokered. */
   credentialClient: CredentialClient | null;
+  /**
+   * The deployment report's rail (#532), or null when nothing is supervising
+   * this engine. The loop tells it about each completed pass; the unit-event
+   * chokepoint tells it about each `status.json` write.
+   */
+  reportClient?: ReportClient | null;
   /** Per-unit observability (#73): the tagged log line and the status snapshot. */
   emitUnitEvent: EmitUnitEvent;
   /**
@@ -369,6 +377,7 @@ export type Engine = {
  */
 export function createEngine(options: EngineOptions): Engine {
   const { config, env, drain, slotClient, credentialClient, emitUnitEvent } = options;
+  const reportClient = options.reportClient ?? null;
   const { runOnce, dryRun, pollIntervalMs } = options.run;
   // `--run-once` means one unit, so it pins the pipeline's concurrency to 1 rather
   // than honouring a declaration that would have it admit several and then
@@ -1900,6 +1909,11 @@ export function createEngine(options: EngineOptions): Engine {
    * nothing left to settle, so this is the idle poll the loop has always done.
    */
   async function waitForNextPass(): Promise<void> {
+    // Every way a pass ends comes through here, which is what makes this the one
+    // place the pass is reported (#532/#507). The bootstrapper holds the arrival
+    // in memory as this pipeline's pass clock; a pass that keeps arriving is the
+    // only evidence that a loop with nothing to do is still turning.
+    reportClient?.pass(pollIntervalMs);
     if (pendingWake) {
       pendingWake = false;
       return;
@@ -2562,7 +2576,16 @@ export async function runEngine(
   // the supervisor grants one. A standalone engine (no channel) gets null here
   // and runs unbrokered — it is already serialized to one unit.
   const ipcChannel = {
-    send: process.send?.bind(process),
+    // Spelled out rather than bound, so the error-first callback lands in the
+    // argument `process.send` actually reserves for it. Without one, a send over
+    // a channel the supervisor has already closed emits an `'error'` on
+    // `process` that nothing listens for — which kills the engine (#532).
+    send:
+      process.send === undefined
+        ? undefined
+        : (message: unknown, callback?: (error: Error | null) => void): void => {
+            process.send?.(message, undefined, undefined, callback);
+          },
     on: (event: "message" | "disconnect", listener: (message: unknown) => void) => {
       process.on(event, listener);
     },
@@ -2581,6 +2604,11 @@ export async function runEngine(
   // standalone engine (no channel) gets null here and runs with its existing
   // GH_TOKEN unchanged.
   const credentialClient = createCredentialClient(ipcChannel);
+  // The deployment report's rail (#532): the same channel again, carrying this
+  // pipeline's pass clock and its `status.json` writes up to the bootstrapper,
+  // which folds both into `state/deployment.json`. Null when standalone — there
+  // is no deployment report without a bootstrapper keeping one.
+  const reportClient = createReportClient(ipcChannel);
 
   // Per-repo observability (#73): one tagged `[phoebe:<slug>:<pipeline>]` line
   // per unit event + a `status.json` snapshot under this pipeline's own dir in
@@ -2591,6 +2619,12 @@ export async function runEngine(
     tenant: config.repoSlug,
     pipeline: pipelineName,
     statusPath: statusPathFor(config.paths.stateDir, pipelineName),
+    // The snapshot the supervisor publishes is the one this process just wrote,
+    // handed over rather than re-read: `fs.watch` was rejected for this (#501),
+    // and a re-read would race the next event's rename.
+    ...(reportClient !== null
+      ? { onSnapshot: (snapshot: StatusSnapshot) => reportClient.snapshot(snapshot) }
+      : {}),
   });
 
   const drain = installDrainSignal();
@@ -2603,6 +2637,7 @@ export async function runEngine(
       drain,
       slotClient,
       credentialClient,
+      reportClient,
       emitUnitEvent,
       run: { runOnce, dryRun, pollIntervalMs, concurrency },
     });

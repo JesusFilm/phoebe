@@ -122,7 +122,23 @@ describe("planInitOutputs", () => {
 
   test("tenant profile uses initTenant (dynamic origin prefill), not the static plan", () => {
     expect(() => planInitOutputs("tenant")).toThrow(/initTenant/);
-    expect(() => runInit({ targetDir: makeTempDir(), profile: "tenant" })).toThrow(/initTenant/);
+  });
+
+  // One verb covers all three profiles (#552): a second caller asks for
+  // `init --tenant` without knowing that arm is a different scaffolder.
+  test("runInit delegates the tenant profile to initTenant", () => {
+    const outcome = runInit({
+      targetDir: makeTempDir(),
+      profile: "tenant",
+      tenant: { repoSlug: "acme/widget" },
+      deps: { git: () => "" },
+    });
+    expect(outcome.profile).toBe("tenant");
+    expect(outcome.tenant).toEqual({
+      repoSlug: "acme/widget",
+      repoUrl: "https://github.com/acme/widget.git",
+    });
+    expect(outcome.created).toContain("phoebe.config.ts");
   });
 
   test("the retired supervisor + daemon-overlay scaffolding is gone", () => {
@@ -137,12 +153,13 @@ describe("planInitOutputs", () => {
 });
 
 describe("renderTemplate", () => {
-  test("substitutes {{INSTALL_COMMAND}} and {{CLI_BIN}}", () => {
-    const out = renderTemplate("run {{INSTALL_COMMAND}} then {{CLI_BIN}}", {
+  test("substitutes {{INSTALL_COMMAND}}, {{CLI_BIN}} and {{CLI_VERSION}}", () => {
+    const out = renderTemplate("run {{INSTALL_COMMAND}} then {{CLI_BIN}}@{{CLI_VERSION}}", {
       installCommand: "pnpm i",
       cliBin: "phoebe-agent",
+      cliVersion: "1.2.3",
     });
-    expect(out).toBe("run pnpm i then phoebe-agent");
+    expect(out).toBe("run pnpm i then phoebe-agent@1.2.3");
   });
 
   test("throws on an unknown {{TOKEN}}", () => {
@@ -402,7 +419,7 @@ describe("runInit — workspace profile (#93)", () => {
     expect(envExample).toContain("ANTHROPIC_API_KEY=");
     expect(envExample).toContain("CURSOR_API_KEY=");
     expect(envExample).toContain("OPENAI_KEY=");
-    expect(envExample).toContain("PHOEBE_AGENT");
+    expect(envExample).toContain("PHOEBE_DEFAULT_PROVIDER");
     expect(envExample).not.toMatch(/^TENANT_/m);
     expect(envExample).not.toMatch(/^REPO_/m);
   });

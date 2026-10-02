@@ -32,7 +32,12 @@
 // never disagree with whether boot can actually mint.
 import { GH_APP_ID_KEY } from "./github-app.ts";
 
-export type CredentialArm = "pat" | "app";
+import type { CredentialArm } from "../src/contracts/credential-arm.ts";
+
+// The answer's vocabulary lives in contracts (#528): the deployment report
+// states each tenant's arm, and a console renders it without loading this
+// resolver, which reads a GitHub App key out of the deployment env.
+export type { CredentialArm } from "../src/contracts/credential-arm.ts";
 
 /**
  * Whether a credential value counts as present: non-null and not whitespace.

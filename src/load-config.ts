@@ -1,6 +1,9 @@
 // Consumer-facing config plumbing: `loadUserConfig` (dynamic TS import via
-// native Node type-stripping) and `applyEnvOverlay` (`PHOEBE_*` overrides for
-// scalar fields). The `defineConfig` typing helper lives in the bootstrapper
+// native Node type-stripping) and `applyEnvOverlay`, which evaluates the one
+// precedence rule for every tenant leaf the settings catalogue marks as
+// config-built. The names come from the catalogue (src/settings-catalogue.ts),
+// not from a list here — there is one contract and one place it is written.
+// The `defineConfig` typing helper lives in the bootstrapper
 // (bootstrap/define-config.ts), the published package surface.
 //
 // The Phoebe CLI (src/cli.ts) chains these: load the user's config, overlay
@@ -11,118 +14,65 @@
 import { pathToFileURL } from "node:url";
 import { existsSync } from "node:fs";
 import { isAbsolute, resolve as resolvePath } from "node:path";
-import type { PhoebeUserConfig, ProviderName } from "./config-schema.ts";
-import { PROVIDER_NAMES } from "./config-schema.ts";
+import type { PhoebeUserConfig } from "./config-schema.ts";
+import {
+  overlayEnvNames,
+  readEnv,
+  SETTINGS,
+  type Setting,
+  type SettingRead,
+} from "./settings-catalogue.ts";
 
 /**
- * Scalar-only overlay: each `PHOEBE_*` env var, when set to a non-empty
- * string, replaces the corresponding user-config field. Most are strings taken
- * verbatim; the enum and boolean fields are validated and rejected on a bad
- * value. Nested records
- * (`promptFiles`, `paths`, `defaultModels`, `defaultEfforts`, `providerEnv`, `workOrder`) stay
- * config-file territory — env vars are for one-off run overrides where the
- * consumer doesn't want to edit `phoebe.config.ts`, and expanding structured
- * shapes into env keys defeats the point.
+ * The tenant leaves the overlay writes onto the config as it is built — the
+ * `overlay: "all" | "canonical"` half of the settings catalogue (#530). Every
+ * other catalogued setting is read by the module that owns its ladder, because
+ * a kind block sits between the kind-level env name and the tenant leaf and
+ * only that module can put it there.
  *
- * A field-scoped list (rather than magic name-mangling) keeps the surface
- * documented and predictable: users can grep for `PHOEBE_` here and see the
- * complete overlay contract.
+ * Keeping the names in the catalogue rather than in a list here is what makes
+ * one grep answer "what can env set?" — this module no longer holds a second,
+ * quietly divergent copy of the contract.
  */
-export const ENV_OVERLAY_KEYS = [
-  { env: "PHOEBE_REPO_SLUG", key: "repoSlug" },
-  { env: "PHOEBE_REPO_URL", key: "repoUrl" },
-  { env: "PHOEBE_DEFAULT_BRANCH", key: "defaultBranch" },
-  { env: "PHOEBE_BRANCH_PREFIX", key: "branchPrefix" },
-  { env: "PHOEBE_READY_LABEL", key: "readyLabel" },
-  { env: "PHOEBE_RESEARCH_LABEL", key: "researchLabel" },
-  { env: "PHOEBE_PROCESSING_LABEL", key: "processingLabel" },
-  { env: "PHOEBE_MERGED_LABEL", key: "mergedLabel" },
-  { env: "PHOEBE_FEATURE_LABEL", key: "featureLabel" },
-  { env: "PHOEBE_PR_OPT_OUT_LABEL", key: "prOptOutLabel" },
-  { env: "PHOEBE_INSTALL_COMMAND", key: "installCommand" },
-  { env: "PHOEBE_CHECK_COMMAND", key: "checkCommand" },
-  { env: "PHOEBE_TEST_COMMAND", key: "testCommand" },
-  { env: "PHOEBE_READY_COMMAND", key: "readyCommand" },
-  { env: "PHOEBE_BLOCKED_BY_PATTERN", key: "blockedByPattern" },
-  { env: "PHOEBE_PART_OF_PATTERN", key: "partOfPattern" },
-  { env: "PHOEBE_REVIEWS_SUCCESS_HEADING", key: "reviewsSuccessHeading" },
-] as const satisfies ReadonlyArray<{ env: string; key: keyof PhoebeUserConfig }>;
-
-/**
- * Boolean fields the overlay covers. Kept as strict `"true"`/`"false"` rather
- * than accepting `1`/`yes`/`on`: an env var that silently reads a typo as
- * `false` would turn a janitor off without saying so, and the validated-enum
- * fields (`PHOEBE_PR_SCOPE`, `PHOEBE_DRAFT_PRS`) already set the precedent
- * that a bad value is an error, not a default.
- */
-const BOOLEAN_OVERLAY_KEYS = [
-  { env: "PHOEBE_FEATURE_BRANCH_CATCH_UP", key: "featureBranchCatchUp" },
-] as const satisfies ReadonlyArray<{ env: string; key: keyof PhoebeUserConfig }>;
-
-const PR_SCOPE_VALUES = ["phoebe", "all"] as const;
-const DRAFT_PRS_VALUES = ["skip-non-phoebe", "skip-all", "include"] as const;
-
-function readNonEmpty(env: NodeJS.ProcessEnv, key: string): string | undefined {
-  const raw = env[key];
-  if (typeof raw !== "string" || raw.length === 0) return undefined;
-  return raw;
-}
+const OVERLAY_SETTINGS = SETTINGS.filter((entry) => entry.overlay !== "none");
 
 /**
  * Apply the `PHOEBE_*` overlay onto a user config and return a new object.
- * The overlay is additive over what the config file declared — an unset env
- * var leaves the field untouched (so `resolveConfig` can still fall back to
- * `CONFIG_DEFAULTS` if the field was also absent from the config file).
+ * Additive over what the config file declared — an unset env var leaves the
+ * field untouched, so `resolveConfig` can still fall back to `CONFIG_DEFAULTS`
+ * when the field was absent from the file too.
+ *
+ * Strings are taken verbatim; enums and booleans are validated and a bad value
+ * throws. Booleans stay strict `"true"`/`"false"` rather than accepting
+ * `1`/`yes`/`on`: a var that silently read a typo as `false` would turn a
+ * janitor off without saying so.
  */
 export function applyEnvOverlay(user: PhoebeUserConfig, env: NodeJS.ProcessEnv): PhoebeUserConfig {
-  const overlaid: PhoebeUserConfig = { ...user };
-  for (const { env: envKey, key } of ENV_OVERLAY_KEYS) {
-    const value = readNonEmpty(env, envKey);
-    if (value !== undefined) {
-      (overlaid as Record<string, unknown>)[key] = value;
-    }
+  const overlaid = { ...user } as PhoebeUserConfig & Record<string, unknown>;
+  for (const entry of OVERLAY_SETTINGS) {
+    const read = readEnv(env, overlayEnvNames(entry));
+    if (read === undefined) continue;
+    overlaid[entry.path] = coerce(entry, read);
   }
-
-  for (const { env: envKey, key } of BOOLEAN_OVERLAY_KEYS) {
-    const value = readNonEmpty(env, envKey);
-    if (value === undefined) continue;
-    if (value !== "true" && value !== "false") {
-      throw new Error(`${envKey} must be "true" or "false" (got "${value}").`);
-    }
-    (overlaid as Record<string, unknown>)[key] = value === "true";
-  }
-
-  const prScope = readNonEmpty(env, "PHOEBE_PR_SCOPE");
-  if (prScope !== undefined) {
-    if (!(PR_SCOPE_VALUES as readonly string[]).includes(prScope)) {
-      throw new Error(
-        `PHOEBE_PR_SCOPE must be one of ${PR_SCOPE_VALUES.join(", ")} (got "${prScope}").`,
-      );
-    }
-    overlaid.prScope = prScope as PhoebeUserConfig["prScope"];
-  }
-
-  const draftPrs = readNonEmpty(env, "PHOEBE_DRAFT_PRS");
-  if (draftPrs !== undefined) {
-    if (!(DRAFT_PRS_VALUES as readonly string[]).includes(draftPrs)) {
-      throw new Error(
-        `PHOEBE_DRAFT_PRS must be one of ${DRAFT_PRS_VALUES.join(", ")} (got "${draftPrs}").`,
-      );
-    }
-    overlaid.draftPrs = draftPrs as PhoebeUserConfig["draftPrs"];
-  }
-
-  const defaultProvider = readNonEmpty(env, "PHOEBE_DEFAULT_PROVIDER");
-  if (defaultProvider !== undefined) {
-    if (!(PROVIDER_NAMES as readonly string[]).includes(defaultProvider)) {
-      throw new Error(
-        `PHOEBE_DEFAULT_PROVIDER must be one of ${PROVIDER_NAMES.join(", ")} (got "${defaultProvider}").`,
-      );
-    }
-    overlaid.defaultProvider = defaultProvider as ProviderName;
-  }
-
   return overlaid;
+}
+
+/** One env value as the field at this path holds it, or a throw naming the var. */
+function coerce(entry: Setting, read: SettingRead): string | boolean {
+  const { via, value } = read;
+  if (entry.type === "boolean") {
+    if (value !== "true" && value !== "false") {
+      throw new Error(`${via} must be "true" or "false" (got "${value}").`);
+    }
+    return value === "true";
+  }
+  if (entry.type === "enum") {
+    const values = entry.values ?? [];
+    if (!values.includes(value)) {
+      throw new Error(`${via} must be one of ${values.join(", ")} (got "${value}").`);
+    }
+  }
+  return value;
 }
 
 /**

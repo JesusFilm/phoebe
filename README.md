@@ -30,6 +30,11 @@ pinned CLI. You never vendor the engine source into your repo, only a small
 config file, your prompt overrides, and the container files `phoebe init`
 scaffolds for you.
 
+The package carries a second entry point, **`phoebe-agent/contracts`**: the types
+shared by anything that reads a deployment from outside the engine. Nothing
+behind that subpath imports a Node built-in, so a browser bundle can load it.
+Configuring Phoebe never goes near it.
+
 ## Quickstart
 
 From the root of the repo you want Phoebe to work:
@@ -70,6 +75,11 @@ under one org owner, the GitHub App arm replaces the per-repo token ceremony. Se
 
 The full version, covering prerequisites, secrets, and verification, is
 [`docs/ai-install.md`](docs/ai-install.md). It runs top to bottom.
+
+**Watching it without a shell.** The desktop companion opens the console: every
+install on your own machine, what each one is doing, and the settings each one
+resolved. Start at
+[`docs/console.md`](docs/console.md).
 
 ## Configuration at a glance
 
@@ -128,6 +138,7 @@ Docs live under [`docs/`](docs/), in two groups.
 - [`docs/workspace.md`](docs/workspace.md), workspace mode topology, two-tier `.env`, operator runbook (plain-clone or submodule children).
 - [`docs/github-app-mode.md`](docs/github-app-mode.md), the GitHub App credential arm, for deployments spanning several repos under one org owner.
 - [`docs/claude-subscription-auth.md`](docs/claude-subscription-auth.md), driving the `claude` provider from a subscription rather than an API key.
+- [`docs/console.md`](docs/console.md), the console end to end: the desktop companion, what the console's pages show, alerting, and what stays at a shell.
 - [`docs/phoebe-core-onboarding.md`](docs/phoebe-core-onboarding.md), worked onboarding for `JesusFilm/core` (Nx + pnpm, no vp).
 
 **Working on Phoebe**, changing the engine itself:

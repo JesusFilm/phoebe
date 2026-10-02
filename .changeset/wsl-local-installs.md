@@ -1,0 +1,7 @@
+---
+"phoebe-agent": minor
+---
+
+The companion takes a folder inside a WSL distro as a local install. On a machine with WSL the home page offers "Add a WSL folder" beside "Add a folder": the same picker, opened at `\\wsl.localhost\` where the distros are, because the Windows picker will not take a typed path and keeps that root under a "Linux" node at the foot of its tree. The config, the Dockerfile pin and the `.env` are read and written through that path like any other folder's. Docker is the difference: Compose run from Windows would resolve the deployment's bind mounts to UNC paths Docker Desktop cannot mount, and the containers are the distro's own. So every `docker` the companion spawns for such an install — the `ps` behind the rail, the `status --json` read, the events stream, start and stop, `secret set` into the container, pairing's `up -d` — now runs inside the distro through `wsl.exe --exec`, with each path translated to the one the distro knows. The rail and the install tab name the distro, and this machine's own Docker check is not held against it.
+
+A repository that is a workspace child at its root and a standalone deployment in `.phoebe/` beside it is now a local install too. The companion used to read the root config, call the folder a workspace child and offer nothing; it now drives the deployment in `.phoebe/`, reading its config, its `.env` and its Dockerfile pin from there, and the install page says so. The rail's "+ add" goes to the home page, where the ways to add sit side by side.
