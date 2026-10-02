@@ -233,6 +233,7 @@ export type {
   HarnessReport,
   HarnessUpdate,
   HarnessUpdateOutcome,
+  LauncherFacts,
 } from "./harness.ts";
 export type { SecretSetOutcome, SecretWriter } from "./secret-set.ts";
 export type { MintedPairingToken } from "./relay-routes.ts";

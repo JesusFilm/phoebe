@@ -50,6 +50,9 @@ export const HARNESSES: Record<
   codex: { command: "codex", package: "@openai/codex", arg: "CODEX_VERSION" },
 };
 
+/** The engine's own package: what the image installs to boot from. */
+export const LAUNCHER_PACKAGE = "phoebe-agent";
+
 const CURSOR_SHA_ARGS = { x64: "CURSOR_AGENT_SHA256_X64", arm64: "CURSOR_AGENT_SHA256_ARM64" };
 const CURSOR_DOWNLOADS = "downloads.cursor.com";
 const CURSOR_INSTALLER = "https://cursor.com/install";
@@ -77,7 +80,8 @@ function argsOf(lines: readonly string[]): Map<string, string> {
 /** A package named on a line, with the version spec after its `@`, if any. */
 function packageSpec(pkg: string): RegExp {
   const escaped = pkg.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
-  return new RegExp(`${escaped}(?:@([^\\s"'\\\\;&|]+))?(?=[\\s"'\\\\;&|]|$)`, "g");
+  // Not the tail of a longer name or a path: `/data/<name>` is a directory.
+  return new RegExp(`(?<![\\w/.-])${escaped}(?:@([^\\s"'\\\\;&|]+))?(?=[\\s"'\\\\;&|]|$)`, "g");
 }
 
 /** The ARG a spec such as `${NAME}` names, or null when it is not a variable. */
@@ -106,22 +110,41 @@ export function readHarnessPins(content: string): Record<HarnessName, HarnessPin
       }
       continue;
     }
-    let found: HarnessPin = { kind: "absent" };
-    for (const line of live) {
-      const match = packageSpec(pkg).exec(line);
-      if (match === null) continue;
-      const spec = match[1];
-      const variable = spec === undefined ? null : variableOf(spec);
-      const version = variable === null ? spec : args.get(variable);
-      found =
-        version !== undefined && EXACT_VERSION.test(version)
-          ? { kind: "pinned", version }
-          : { kind: "unpinned" };
-      break;
-    }
-    pins[harness] = found;
+    pins[harness] = packagePin(live, args, pkg);
   }
   return pins;
+}
+
+/** How one npm package is installed, by the first live line that names it. */
+function packagePin(
+  live: readonly string[],
+  args: ReadonlyMap<string, string>,
+  pkg: string,
+): HarnessPin {
+  for (const line of live) {
+    const match = packageSpec(pkg).exec(line);
+    if (match === null) continue;
+    const spec = match[1];
+    const variable = spec === undefined ? null : variableOf(spec);
+    const version = variable === null ? spec : args.get(variable);
+    return version !== undefined && EXACT_VERSION.test(version)
+      ? { kind: "pinned", version }
+      : { kind: "unpinned" };
+  }
+  return { kind: "absent" };
+}
+
+/**
+ * What a Dockerfile says about the launcher. Absent is a real answer here: a
+ * container that runs the engine from a mounted checkout installs none.
+ */
+export function readLauncherPin(content: string): HarnessPin {
+  const lines = content.split(/\r?\n/);
+  return packagePin(
+    lines.filter((line) => !isComment(line)),
+    argsOf(lines),
+    LAUNCHER_PACKAGE,
+  );
 }
 
 /** Whether moving Cursor's pin in this Dockerfile needs the two digests. */
@@ -286,7 +309,10 @@ export function isBehind(current: string | null, latest: string | null): boolean
 const VERSIONS_SCRIPT =
   'for c in agent claude codex; do if command -v "$c" >/dev/null 2>&1; then ' +
   'printf "%s|%s\\n" "$c" "$(timeout 20 "$c" --version 2>/dev/null | head -n 1)"; ' +
-  'else printf "%s|\\n" "$c"; fi; done';
+  'else printf "%s|\\n" "$c"; fi; done; ' +
+  // The launcher has no flag to ask; its installed package.json says.
+  `printf "${LAUNCHER_PACKAGE}|%s\\n" "$(sed -n 's/.*"version": *"\\([^"]*\\)".*/\\1/p' ` +
+  `"$(npm root -g 2>/dev/null)/${LAUNCHER_PACKAGE}/package.json" 2>/dev/null | head -n 1)"`;
 
 export const VERSIONS_ARGV: readonly string[] = [
   "exec",
@@ -307,6 +333,17 @@ export function parseVersions(stdout: string): Record<HarnessName, string | null
     versions[harness] = /\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?/.exec(said)?.[0] ?? null;
   }
   return versions;
+}
+
+/** The launcher's version off the same output, or null when the container installs none. */
+export function parseLauncherVersion(stdout: string): string | null {
+  for (const line of stdout.split("\n")) {
+    const [name, said] = line.trim().split("|");
+    if (name === LAUNCHER_PACKAGE && said !== undefined) {
+      return /\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?/.exec(said)?.[0] ?? null;
+    }
+  }
+  return null;
 }
 
 // ── looking a version up ───────────────────────────────────────────────────
@@ -355,6 +392,46 @@ export async function latestVersion(
   }
 }
 
+/** The newest published launcher, or null when the registry cannot be had. */
+export async function latestLauncherVersion(
+  fetchText: TextFetcher = defaultFetchText,
+): Promise<string | null> {
+  try {
+    const body = JSON.parse(
+      await fetchText(`https://registry.npmjs.org/${LAUNCHER_PACKAGE}/latest`),
+    ) as { version?: unknown };
+    return typeof body.version === "string" && SAFE_VERSION.test(body.version)
+      ? body.version
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Runs `npm` and returns what it printed: the seam `upgrade` asks the registry through. */
+export type NpmLike = (args: readonly string[], opts?: { timeout?: number }) => string;
+
+/**
+ * An `npm` for `upgrade` that answers the one question it asks of the registry
+ * (`npm view <launcher> version`) with a version already looked up, and hands
+ * everything else to the real one.
+ *
+ * `upgrade` shells out to `npm` for the latest launcher, and the companion's
+ * process often has none to run: a packaged app's PATH is not a terminal's, and
+ * on Windows `npm` is a `.cmd` that a plain exec does not find. The registry
+ * answers the same question over HTTPS. Null means it could not be reached, and
+ * that is thrown, which is how `upgrade` already reads a failed `npm view`.
+ */
+export function registryNpm(latest: string | null, fallback: NpmLike): NpmLike {
+  return (args, opts) => {
+    if (args[0] === "view" && args[1] === LAUNCHER_PACKAGE && args[2] === "version") {
+      if (latest === null) throw new Error("the npm registry could not be reached");
+      return latest;
+    }
+    return fallback(args, opts);
+  };
+}
+
 /** Where Cursor serves one architecture's tarball of one version. */
 export function cursorTarball(version: string, arch: "x64" | "arm64"): string {
   return `https://${CURSOR_DOWNLOADS}/lab/${version}/linux/${arch}/agent-cli-package.tar.gz`;
@@ -396,6 +473,7 @@ export function createHarness(deps: HarnessDeps = {}) {
   const now = deps.now ?? (() => new Date());
 
   const latest = new Map<HarnessName, string>();
+  let latestLauncher: string | null = null;
   let latestAt: string | null = null;
 
   function dockerfileText(dir: string): { file: string; content: string | null } {
@@ -407,7 +485,9 @@ export function createHarness(deps: HarnessDeps = {}) {
     }
   }
 
-  async function runningVersions(dir: string): Promise<Record<HarnessName, string | null> | null> {
+  async function runningVersions(
+    dir: string,
+  ): Promise<(Record<HarnessName, string | null> & { launcher: string | null }) | null> {
     const deployment = resolveDeploymentCompose(deploymentDirOf(dir, exists).dir, exists);
     if ("kind" in deployment) return null;
     try {
@@ -416,7 +496,9 @@ export function createHarness(deps: HarnessDeps = {}) {
         args: VERSIONS_ARGV,
         runner: runnerFor(dir),
       });
-      return result.code === 0 ? parseVersions(result.stdout) : null;
+      return result.code === 0
+        ? { ...parseVersions(result.stdout), launcher: parseLauncherVersion(result.stdout) }
+        : null;
     } catch {
       return null;
     }
@@ -434,12 +516,15 @@ export function createHarness(deps: HarnessDeps = {}) {
       const [inContainer] = await Promise.all([
         opts.running ? runningVersions(opts.dir) : Promise.resolve(null),
         opts.lookUp
-          ? Promise.all(
-              HARNESS_NAMES.map(async (harness) => {
+          ? Promise.all([
+              ...HARNESS_NAMES.map(async (harness) => {
                 const found = await latestVersion(harness, fetchText);
                 if (found !== null) latest.set(harness, found);
               }),
-            ).then(() => {
+              latestLauncherVersion(fetchText).then((found) => {
+                if (found !== null) latestLauncher = found;
+              }),
+            ]).then(() => {
               latestAt = now().toISOString();
             })
           : Promise.resolve(),
@@ -453,9 +538,25 @@ export function createHarness(deps: HarnessDeps = {}) {
           pin.kind === "pinned" ? pin.version : pin.kind === "unpinned" ? running : null;
         return { harness, pin, running, latest: newest, behind: isBehind(current, newest) };
       });
+      const launcherPin: HarnessPin =
+        content === null ? { kind: "absent" } : readLauncherPin(content);
+      const launcherRunning = inContainer?.launcher ?? null;
       return {
         dockerfile: content === null ? null : file,
         harnesses,
+        launcher: {
+          pin: launcherPin,
+          running: launcherRunning,
+          latest: latestLauncher,
+          behind: isBehind(
+            launcherPin.kind === "pinned"
+              ? launcherPin.version
+              : launcherPin.kind === "unpinned"
+                ? launcherRunning
+                : null,
+            latestLauncher,
+          ),
+        },
         containerAsked: inContainer !== null,
         latestAt,
       };

@@ -437,13 +437,13 @@ function versionNote(install: LocalInstall, companion: string | null): string | 
   if (install.containerVersion === null) {
     return (
       "This install's Dockerfile pins no phoebe-agent version, so its build takes whatever " +
-      "npm published last. Check for upgrades writes a pin."
+      "npm published last."
     );
   }
   if (companion === null || companion === install.containerVersion) return null;
   return (
     `This install runs phoebe-agent ${install.containerVersion} and the companion is ${companion}. ` +
-    "Nothing here refuses on that — Check for upgrades moves the install."
+    "Nothing here refuses on that. The launcher under Phoebe, below, moves the install."
   );
 }
 

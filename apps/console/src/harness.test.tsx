@@ -13,17 +13,23 @@ import type {
 } from "phoebe-agent/contracts";
 import {
   awaitingRebuild,
+  engineReading,
+  engineStanding,
   harnessReading,
   harnessRows,
   harnessStanding,
   harnessUsers,
+  launcherStanding,
+  launcherVersionOf,
+  phoebeVersions,
   providerOf,
   updateReading,
   updateVerb,
+  upgradeReading,
 } from "./harness.ts";
-import { HarnessPanel, HarnessSection } from "./harness-section.tsx";
+import { HarnessPanel, HarnessSection, PhoebePanel } from "./harness-section.tsx";
 import { workspaceChildren } from "./local-install.ts";
-import { bridge, directory, install, localReport } from "./test-fixture.ts";
+import { ago, bridge, directory, install, localReport } from "./test-fixture.ts";
 import { rebuildRequests, runInSequence } from "./verb-run.ts";
 
 /** The provider row of a config's field facts: set to `value`, or left to the default. */
@@ -96,6 +102,12 @@ function report(overrides: Partial<HarnessReport> = {}): HarnessReport {
     dockerfile: "/repos/ws/container/Dockerfile",
     containerAsked: true,
     latestAt: "2026-10-01T12:00:00.000Z",
+    launcher: {
+      pin: { kind: "pinned", version: "0.13.2" },
+      running: "0.13.0",
+      latest: "0.14.1",
+      behind: true,
+    },
     harnesses: [
       facts({
         harness: "cursor",
@@ -382,6 +394,259 @@ describe("the rail, for a tenant whose provider the container cannot run", () =>
   test("an installed harness, pinned or not, warns about nothing", () => {
     expect(workspaceChildren(workspace, event())[0]!.problems).toEqual([]);
     expect(workspaceChildren(workspace, event({ kind: "unpinned" }))[0]!.problems).toEqual([]);
+  });
+});
+
+describe("Phoebe's own versions", () => {
+  /** The engine rows of a root config's field facts. */
+  function engineFields(ref: string | undefined, source: "github" | "local" = "github") {
+    return [
+      {
+        path: "engine.source",
+        scope: "deployment" as const,
+        type: "enum" as const,
+        values: ["github", "local"],
+        state: "set" as const,
+        value: source,
+      },
+      {
+        path: "engine.ref",
+        scope: "deployment" as const,
+        type: "string" as const,
+        default: "main",
+        ...(ref === undefined
+          ? { state: "unset" as const }
+          : { state: "set" as const, value: ref }),
+      },
+    ];
+  }
+  const root = (ref: string | undefined, source: "github" | "local" = "github") =>
+    localReport({
+      facts: workspace,
+      directory: directory({
+        bootstrapperRunning: false,
+        configFields: engineFields(ref, source),
+        harnessPins: pins({ kind: "absent" }),
+      }),
+    });
+
+  test("the launcher is the check's facts, and the install's pin before any check", () => {
+    expect(phoebeVersions(workspace, root("v0.13.2"), report()).launcher).toMatchObject({
+      pin: { kind: "pinned", version: "0.13.2" },
+      running: "0.13.0",
+      latest: "0.14.1",
+    });
+    expect(
+      phoebeVersions({ ...workspace, containerVersion: "0.12.1" }, root("v0.13.2"), null).launcher,
+    ).toEqual({
+      pin: { kind: "pinned", version: "0.12.1" },
+      running: null,
+      latest: null,
+      behind: null,
+    });
+  });
+
+  test("an image that installs no launcher has none to list", () => {
+    const mounted = report({
+      launcher: { pin: { kind: "absent" }, running: null, latest: "0.14.1", behind: null },
+    });
+
+    expect(phoebeVersions(workspace, root(undefined, "local"), mounted)).toEqual({
+      launcher: null,
+      engine: { source: "local" },
+    });
+  });
+
+  test("an engine on a release tag is behind or current by the newest release", () => {
+    expect(phoebeVersions(workspace, root("v0.13.2"), report()).engine).toEqual({
+      source: "github",
+      ref: "v0.13.2",
+      release: true,
+      latest: "v0.14.1",
+      behind: true,
+    });
+    expect(phoebeVersions(workspace, root("v0.14.1"), report()).engine).toMatchObject({
+      behind: false,
+    });
+    expect(
+      engineReading({
+        source: "github",
+        ref: "v0.13.2",
+        release: true,
+        latest: "v0.14.1",
+        behind: true,
+      }),
+    ).toBe("ref v0.13.2 · latest v0.14.1");
+  });
+
+  test("an engine on a branch follows it, and is neither behind nor current", () => {
+    const engine = phoebeVersions(workspace, root(undefined), report()).engine!;
+
+    expect(engine).toMatchObject({ source: "github", ref: "main", release: false, behind: null });
+    expect(engineReading(engine)).toBe("ref main · follows that ref as it moves");
+    expect(engineStanding(engine)).toBeNull();
+  });
+
+  test("a launcher the container has not caught up with needs a rebuild before anything else", () => {
+    expect(launcherStanding(report().launcher)).toEqual({ text: "needs rebuild", tone: "warn" });
+    expect(launcherStanding({ ...report().launcher, running: "0.13.2" })).toEqual({
+      text: "behind",
+      tone: "warn",
+    });
+  });
+
+  test("a launcher version is three numbers, with or without the v", () => {
+    expect(launcherVersionOf("0.14.1")).toBe("0.14.1");
+    expect(launcherVersionOf(" v0.14.1 ")).toBe("0.14.1");
+    expect(launcherVersionOf("main")).toBeNull();
+    expect(launcherVersionOf("")).toBeNull();
+  });
+
+  test("an upgrade's outcome is a sentence per half, and says when a rebuild is owed", () => {
+    expect(
+      upgradeReading({
+        kind: "upgraded",
+        target: "cli",
+        engine: null,
+        cli: { kind: "moved", from: "0.13.2", to: "0.14.1" },
+        ok: true,
+      }),
+    ).toEqual({
+      text: "The Dockerfile now pins the launcher at 0.14.1 (was 0.13.2). Rebuild to put it in the container.",
+      ok: true,
+      rebuild: true,
+    });
+    expect(
+      upgradeReading({
+        kind: "upgraded",
+        target: "engine",
+        engine: { kind: "refused", stage: "migrate" },
+        cli: null,
+        ok: false,
+      }),
+    ).toMatchObject({ ok: false, rebuild: false });
+    // A check moves nothing, and has its own line on the tab.
+    expect(
+      upgradeReading({
+        kind: "checked",
+        ok: true,
+        report: {
+          engine: { source: "local", ref: null, latest: null, tracking: false, behind: null },
+          cli: { installed: null, latest: null, behind: null },
+          ok: true,
+        },
+      }),
+    ).toBeNull();
+  });
+
+  function phoebe(overrides: Partial<Parameters<typeof PhoebePanel>[0]> = {}) {
+    const noop = (): void => undefined;
+    return renderToStaticMarkup(
+      <PhoebePanel
+        install={workspace}
+        versions={phoebeVersions(workspace, root("v0.13.2"), report())}
+        containerAsked
+        run={null}
+        lookingUp={false}
+        busy={false}
+        onLookUp={noop}
+        onUpgrade={noop}
+        onRebuild={noop}
+        {...overrides}
+      />,
+    );
+  }
+
+  test("lists the launcher and the engine, each with a field offering the latest", () => {
+    const markup = phoebe();
+
+    expect(markup).toContain('aria-label="Phoebe versions"');
+    expect(markup).toContain("pinned to 0.13.2 · the container has 0.13.0 · latest 0.14.1");
+    expect(markup).toMatch(/aria-label="Version of the launcher"[^>]*value="0.14.1"/);
+    expect(markup).toContain("ref v0.13.2 · latest v0.14.1");
+    expect(markup).toMatch(/aria-label="Ref of the engine"[^>]*value="v0.14.1"/);
+    expect(markup).toContain(">Upgrade<");
+    expect(markup).toContain(">Move<");
+  });
+
+  test("a pin ahead of the container offers the rebuild", () => {
+    const markup = phoebe();
+
+    expect(markup).toContain("The Dockerfile pins the launcher at 0.13.2 and the container has");
+    expect(markup).toContain("Rebuild and start");
+  });
+
+  test("an upgrade just run is said in the section, and one in flight says so", () => {
+    const moved = phoebe({
+      run: {
+        runId: "run-1",
+        install: workspace.dir,
+        verb: "upgrade",
+        startedAt: ago(5),
+        lines: [],
+        exit: {
+          runId: "run-1",
+          code: 0,
+          outcome: {
+            verb: "upgrade",
+            outcome: {
+              kind: "upgraded",
+              target: "cli",
+              engine: null,
+              cli: { kind: "moved", from: "0.13.2", to: "0.14.1" },
+              ok: true,
+            },
+          },
+        },
+      },
+    });
+
+    expect(moved).toContain("The Dockerfile now pins the launcher at 0.14.1 (was 0.13.2)");
+    expect(moved).toContain("Rebuild and start");
+    expect(
+      phoebe({
+        run: {
+          runId: "run-2",
+          install: workspace.dir,
+          verb: "upgrade",
+          startedAt: ago(1),
+          lines: [],
+        },
+      }),
+    ).toContain("Upgrading. The output below has the run.");
+  });
+
+  test("a local engine and no launcher leave nothing to move", () => {
+    const markup = phoebe({
+      versions: { launcher: null, engine: { source: "local" } },
+    });
+
+    expect(markup).toContain("runs from a folder mounted into the container");
+    expect(markup).not.toContain(">Move<");
+    expect(markup).not.toContain(">Upgrade<");
+    expect(phoebe({ versions: { launcher: null, engine: null } })).toBe("");
+  });
+
+  test("the install's page draws it above the harnesses, and a tenant's page does not", () => {
+    const noop = (): void => undefined;
+    const page = (tenant?: string) =>
+      renderToStaticMarkup(
+        <HarnessSection
+          install={{ ...workspace, containerVersion: "0.13.2" }}
+          bridge={bridge()}
+          event={event()}
+          busy={false}
+          onRebuild={noop}
+          onStart={noop}
+          {...(tenant === undefined ? {} : { tenant })}
+        />,
+      );
+
+    expect(page().indexOf('aria-label="Phoebe versions"')).toBeGreaterThan(-1);
+    expect(page().indexOf('aria-label="Phoebe versions"')).toBeLessThan(
+      page().indexOf('aria-label="AI harness"'),
+    );
+    expect(page("/repos/ws/a")).not.toContain("Phoebe versions");
   });
 });
 

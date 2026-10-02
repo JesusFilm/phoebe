@@ -16,8 +16,10 @@ import type {
   HarnessPin,
   HarnessReport,
   HarnessUpdateOutcome,
+  LauncherFacts,
   LocalInstall,
   LocalReportEvent,
+  UpgradeOutcome,
 } from "phoebe-agent/contracts";
 
 /** Each harness by the name its vendor gives it, not the provider's short one. */
@@ -122,7 +124,10 @@ export function pinReading(pin: HarnessPin): string {
  * A clause is left out when there is nothing to say it by, rather than filled
  * with a dash.
  */
-export function harnessReading(row: HarnessRow, containerAsked: boolean): string {
+export function harnessReading(
+  row: Pick<HarnessFacts, "pin" | "running" | "latest">,
+  containerAsked: boolean,
+): string {
   const parts = [pinReading(row.pin)];
   if (row.running !== null) parts.push(`the container has ${row.running}`);
   else if (containerAsked && row.pin.kind !== "absent") {
@@ -141,7 +146,7 @@ export function harnessStanding(
   }
   // A pin the container has not caught up with outranks how the pin compares:
   // "current" beside a container on an older one would be the wrong word.
-  if (awaitingRebuild([row]).length > 0) return { text: "needs rebuild", tone: "warn" };
+  if (needsRebuild(row)) return { text: "needs rebuild", tone: "warn" };
   if (row.behind === true) return { text: "behind", tone: "warn" };
   if (row.behind === false) return { text: "current", tone: "ok" };
   return null;
@@ -157,9 +162,167 @@ export function updateVerb(pin: HarnessPin): "Update" | "Pin" | "Install" {
  * state a moved pin leaves behind until the image is rebuilt.
  */
 export function awaitingRebuild(rows: readonly HarnessRow[]): HarnessRow[] {
-  return rows.filter(
-    (row) => row.pin.kind === "pinned" && row.running !== null && row.running !== row.pin.version,
+  return rows.filter(needsRebuild);
+}
+
+/** The same, for one set of facts: a harness's, or the launcher's. */
+export function needsRebuild(facts: Pick<HarnessFacts, "pin" | "running">): boolean {
+  return (
+    facts.pin.kind === "pinned" && facts.running !== null && facts.running !== facts.pin.version
   );
+}
+
+// ── Phoebe's own versions: the launcher in the image, the engine in the config ──
+
+const RELEASE_TAG = /^v(\d+)\.(\d+)\.(\d+)$/;
+
+/** Whether a launcher version is one `upgrade` can name: `X.Y.Z`, with or without the `v`. */
+export function launcherVersionOf(typed: string): string | null {
+  const bare = typed.trim().replace(/^v/, "");
+  return /^\d+\.\d+\.\d+$/.test(bare) ? bare : null;
+}
+
+/** What the config says the engine is. */
+export type EngineReading =
+  | { source: "local" }
+  | {
+      source: "github";
+      ref: string;
+      /** A release tag, as opposed to a branch or a commit the engine follows. */
+      release: boolean;
+      /** The newest release tag, when the launcher's latest has been looked up. */
+      latest: string | null;
+      behind: boolean | null;
+    };
+
+/** Phoebe's two versions on one install. */
+export type PhoebeVersions = {
+  /** The launcher in the container, or null when the image installs none. */
+  launcher: LauncherFacts | null;
+  /** Null when the config cannot be read, or computes its engine. */
+  engine: EngineReading | null;
+};
+
+/** A field's literal: what the file sets, or the default it leaves standing. */
+function literalOf(fields: readonly ConfigFieldFacts[] | undefined, path: string): unknown {
+  const field = fields?.find((candidate) => candidate.path === path);
+  if (field === undefined) return undefined;
+  return field.state === "set" ? field.value : field.state === "unset" ? field.default : undefined;
+}
+
+/**
+ * The launcher and the engine, off the last check and the install's read. The
+ * launcher's pin is on the install before any check has answered. The engine's
+ * newest release is the launcher's newest version with a `v`: a release is one
+ * number for both (docs/releasing.md), so one look-up answers for the two.
+ */
+export function phoebeVersions(
+  install: LocalInstall,
+  event: LocalReportEvent | null,
+  report: HarnessReport | null,
+): PhoebeVersions {
+  const checked = report !== null && report.dockerfile !== null ? report.launcher : null;
+  const launcher: LauncherFacts | null =
+    checked !== null
+      ? checked.pin.kind === "absent"
+        ? null
+        : checked
+      : install.containerVersion === null
+        ? null
+        : {
+            pin: { kind: "pinned", version: install.containerVersion },
+            running: null,
+            latest: report?.launcher.latest ?? null,
+            behind: null,
+          };
+
+  const fields = event?.directory.configFields;
+  const source = literalOf(fields, "engine.source");
+  const ref = literalOf(fields, "engine.ref");
+  let engine: EngineReading | null = null;
+  if (source === "local") engine = { source: "local" };
+  else if (source === "github" && typeof ref === "string") {
+    const newest = report?.launcher.latest ?? null;
+    const latest = newest === null ? null : `v${newest}`;
+    const mine = RELEASE_TAG.exec(ref);
+    const theirs = latest === null ? null : RELEASE_TAG.exec(latest);
+    let behind: boolean | null = null;
+    if (mine !== null && theirs !== null) {
+      behind = false;
+      for (let index = 1; index <= 3; index += 1) {
+        if (Number(mine[index]) !== Number(theirs[index])) {
+          behind = Number(mine[index]) < Number(theirs[index]);
+          break;
+        }
+      }
+    }
+    engine = { source: "github", ref, release: mine !== null, latest, behind };
+  }
+  return { launcher, engine };
+}
+
+/** The word beside the launcher's name. */
+export function launcherStanding(
+  launcher: LauncherFacts,
+): { text: string; tone: "ok" | "warn" | "fail" } | null {
+  if (needsRebuild(launcher)) return { text: "needs rebuild", tone: "warn" };
+  if (launcher.behind === true) return { text: "behind", tone: "warn" };
+  if (launcher.behind === false) return { text: "current", tone: "ok" };
+  return null;
+}
+
+/** The line under the engine's name. */
+export function engineReading(engine: EngineReading): string {
+  if (engine.source === "local") return "runs from a folder mounted into the container";
+  if (!engine.release) return `ref ${engine.ref} · follows that ref as it moves`;
+  return engine.latest === null
+    ? `ref ${engine.ref}`
+    : `ref ${engine.ref} · latest ${engine.latest}`;
+}
+
+/** The word beside the engine's name. */
+export function engineStanding(
+  engine: EngineReading,
+): { text: string; tone: "ok" | "warn" | "fail" } | null {
+  if (engine.source === "local" || engine.behind === null) return null;
+  return engine.behind ? { text: "behind", tone: "warn" } : { text: "current", tone: "ok" };
+}
+
+/**
+ * What an `upgrade` run came to, one sentence per half it touched. Null for a
+ * check, which moves nothing and has its own line on the tab.
+ */
+export function upgradeReading(
+  outcome: UpgradeOutcome,
+): { text: string; ok: boolean; rebuild: boolean } | null {
+  if (outcome.kind !== "upgraded") return null;
+  const parts: string[] = [];
+  const { engine, cli } = outcome;
+  if (engine !== null) {
+    parts.push(
+      engine.kind === "moved"
+        ? `The engine ref is now ${engine.to}${engine.from === null ? "" : ` (was ${engine.from})`}.`
+        : engine.kind === "unchanged"
+          ? "The engine is already on that ref."
+          : engine.kind === "refused"
+            ? `The engine was not moved: its ${engine.stage} step was refused. The output below says why.`
+            : "The engine was left alone.",
+    );
+  }
+  if (cli !== null) {
+    parts.push(
+      cli.kind === "moved"
+        ? `The Dockerfile now pins the launcher at ${cli.to}${cli.from === null ? "" : ` (was ${cli.from})`}. Rebuild to put it in the container.`
+        : cli.kind === "unchanged"
+          ? cli.reason === "nothing-pinned"
+            ? "The Dockerfile pins no launcher version, so there was nothing to move."
+            : "The launcher is already at that version."
+          : cli.kind === "refused"
+            ? "The launcher was not moved: the Dockerfile's pin could not be rewritten. The output below says why."
+            : "The launcher was left alone, because the engine was refused.",
+    );
+  }
+  return { text: parts.join(" "), ok: outcome.ok, rebuild: cli?.kind === "moved" };
 }
 
 /** What an update came to, as a sentence. */

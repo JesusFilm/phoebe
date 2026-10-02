@@ -20,18 +20,28 @@ import type {
   HarnessUpdateOutcome,
   LocalInstall,
   LocalReportEvent,
+  VerbRun,
+  VerbRunRequest,
 } from "phoebe-agent/contracts";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import {
   awaitingRebuild,
+  engineReading,
+  engineStanding,
   harnessReading,
   harnessRows,
   harnessStanding,
   harnessUsers,
+  launcherStanding,
+  launcherVersionOf,
+  needsRebuild,
+  phoebeVersions,
   updateReading,
   updateVerb,
+  upgradeReading,
   type HarnessRow,
+  type PhoebeVersions,
 } from "./harness.ts";
 import { refusalText } from "./verb-run.ts";
 
@@ -42,6 +52,8 @@ export function HarnessSection({
   tenant,
   busy,
   onRebuild,
+  run = null,
+  onStart,
 }: {
   /** The install whose container it is: the workspace, on a tenant's page. */
   install: LocalInstall;
@@ -54,6 +66,13 @@ export function HarnessSection({
   busy: boolean;
   /** Stop the install if it is up, then start it with a rebuild. */
   onRebuild: () => void;
+  /** The install's current or last run: an upgrade's outcome is read off it. */
+  run?: VerbRun | null;
+  /**
+   * Start a run on the install. Given on the install's own page, where Phoebe's
+   * launcher and engine are listed above the harnesses and moved by `upgrade`.
+   */
+  onStart?: (request: VerbRunRequest) => void;
 }) {
   const [report, setReport] = useState<HarnessReport | null>(null);
   const [lookingUp, setLookingUp] = useState(false);
@@ -82,10 +101,13 @@ export function HarnessSection({
 
   // Checked again whenever the pins or the container's state move: an update
   // lands as a fresh read of the install, and so does a hand edit or a rebuild.
+  // And when a run ends: an upgrade has moved the launcher's pin, and a rebuild
+  // has changed what the container carries.
   const pins = JSON.stringify(event?.directory.harnessPins ?? null);
+  const ended = run?.exit === undefined ? null : run.runId;
   useEffect(() => {
     void check(false);
-  }, [check, pins, install.state]);
+  }, [check, pins, install.state, install.containerVersion, ended]);
 
   const update = (harness: HarnessName, version: string): void => {
     setUpdating(harness);
@@ -112,21 +134,229 @@ export function HarnessSection({
   }
 
   return (
-    <HarnessPanel
-      install={install}
-      rows={rows}
-      shared={tenant !== undefined}
-      containerAsked={report?.containerAsked ?? false}
-      latestAt={report?.latestAt ?? null}
-      lookingUp={lookingUp}
-      updating={updating}
-      outcome={outcome}
-      trouble={trouble}
-      busy={busy}
-      onLookUp={() => void check(true)}
-      onUpdate={update}
-      onRebuild={onRebuild}
-    />
+    <>
+      {onStart === undefined || tenant !== undefined ? null : (
+        <PhoebePanel
+          install={install}
+          versions={phoebeVersions(install, event, report)}
+          containerAsked={report?.containerAsked ?? false}
+          run={run}
+          lookingUp={lookingUp}
+          busy={busy}
+          onLookUp={() => void check(true)}
+          onUpgrade={(target, ref) =>
+            onStart({ install: install.dir, verb: "upgrade", check: false, target, ref })
+          }
+          onRebuild={onRebuild}
+        />
+      )}
+      <HarnessPanel
+        install={install}
+        rows={rows}
+        shared={tenant !== undefined}
+        containerAsked={report?.containerAsked ?? false}
+        latestAt={report?.latestAt ?? null}
+        lookingUp={lookingUp}
+        updating={updating}
+        outcome={outcome}
+        trouble={trouble}
+        busy={busy}
+        onLookUp={() => void check(true)}
+        onUpdate={update}
+        onRebuild={onRebuild}
+      />
+    </>
+  );
+}
+
+/**
+ * Phoebe's own two versions, above the harnesses it runs.
+ *
+ * The launcher is pinned in the Dockerfile like a harness, and the engine is a
+ * ref in the config. Both are moved by an `upgrade` run rather than by an edit
+ * from here, because an upgrade is more than the edit: the engine's migrations
+ * run with it, and the run's output is where a refusal explains itself.
+ */
+export function PhoebePanel({
+  install,
+  versions,
+  containerAsked,
+  run,
+  lookingUp,
+  busy,
+  onLookUp,
+  onUpgrade,
+  onRebuild,
+}: {
+  install: LocalInstall;
+  versions: PhoebeVersions;
+  containerAsked: boolean;
+  run: VerbRun | null;
+  lookingUp: boolean;
+  busy: boolean;
+  onLookUp: () => void;
+  onUpgrade: (target: "cli" | "engine", ref: string) => void;
+  onRebuild: () => void;
+}) {
+  const { launcher, engine } = versions;
+  if (launcher === null && engine === null) return null;
+  const upgrading = run !== null && run.verb === "upgrade" && run.exit === undefined;
+  const outcome = run?.exit?.outcome;
+  const said = outcome?.verb === "upgrade" ? upgradeReading(outcome.outcome) : null;
+  const failed =
+    run !== null && run.verb === "upgrade" && run.exit !== undefined && outcome === undefined;
+  const stale = launcher !== null && needsRebuild(launcher);
+  const launcherStand = launcher === null ? null : launcherStanding(launcher);
+  const engineStand = engine === null ? null : engineStanding(engine);
+
+  return (
+    <section className="harness" aria-label="Phoebe versions">
+      <h2>Phoebe</h2>
+      <p className="muted">
+        Phoebe&apos;s own two versions. The launcher is the{" "}
+        <span className="mono">phoebe-agent</span> package the image installs and boots from. The
+        engine is the ref the config names, which the launcher checks out and runs.
+      </p>
+      <ul className="harness-list">
+        {launcher === null ? null : (
+          <li className="harness-row">
+            <div className="harness-what">
+              <div className="harness-name">
+                <strong>Launcher</strong>
+                <span className="chip">phoebe-agent</span>
+                {launcherStand === null ? null : (
+                  <span className={`chip check ${launcherStand.tone}`}>{launcherStand.text}</span>
+                )}
+              </div>
+              <div className="muted">{harnessReading(launcher, containerAsked)}</div>
+              {launcher.pin.kind === "unpinned" ? (
+                <div className="muted">
+                  The Dockerfile names no version, so each build installs the newest. Rebuild to
+                  take it.
+                </div>
+              ) : null}
+            </div>
+            {launcher.pin.kind !== "pinned" ? null : (
+              <MoveField
+                label="Version of the launcher"
+                offered={launcher.latest ?? ""}
+                placeholder="version"
+                current={launcher.pin.version}
+                parse={launcherVersionOf}
+                verb="Upgrade"
+                busy={busy}
+                onMove={(version) => onUpgrade("cli", `v${version}`)}
+              />
+            )}
+          </li>
+        )}
+        {engine === null ? null : (
+          <li className="harness-row">
+            <div className="harness-what">
+              <div className="harness-name">
+                <strong>Engine</strong>
+                <span className="chip">engine.ref</span>
+                {engineStand === null ? null : (
+                  <span className={`chip check ${engineStand.tone}`}>{engineStand.text}</span>
+                )}
+              </div>
+              <div className="muted">{engineReading(engine)}</div>
+              {engine.source === "github" ? (
+                <div className="muted">
+                  A running install picks a new engine up by itself, and its migrations run with the
+                  move.
+                </div>
+              ) : null}
+            </div>
+            {engine.source !== "github" ? null : (
+              <MoveField
+                label="Ref of the engine"
+                offered={engine.release ? (engine.latest ?? "") : ""}
+                placeholder="tag, branch or commit"
+                current={engine.ref}
+                parse={(typed) => (/^[\w./-]+$/.test(typed.trim()) ? typed.trim() : null)}
+                verb="Move"
+                busy={busy}
+                onMove={(ref) => onUpgrade("engine", ref)}
+              />
+            )}
+          </li>
+        )}
+      </ul>
+      <div className="verbs">
+        <Button size="sm" variant="outline" disabled={lookingUp} onClick={onLookUp}>
+          {lookingUp ? "Checking…" : "Check for updates"}
+        </Button>
+        {!stale && said?.rebuild !== true ? null : (
+          <Button size="sm" disabled={busy} onClick={onRebuild}>
+            {install.state === "running" ? "Rebuild and restart" : "Rebuild and start"}
+          </Button>
+        )}
+      </div>
+      {stale && said?.rebuild !== true && launcher !== null && launcher.pin.kind === "pinned" ? (
+        <p className="warning">
+          The Dockerfile pins the launcher at {launcher.pin.version} and the container has{" "}
+          {launcher.running}. Rebuild to pick the pin up.
+        </p>
+      ) : null}
+      {upgrading ? (
+        <p className="muted">Upgrading. The output below has the run.</p>
+      ) : said !== null ? (
+        <p className={said.ok ? "receipt written" : "refusal"} role="status">
+          {said.text}
+        </p>
+      ) : failed ? (
+        <p className="refusal">The upgrade did not finish. The output below says why.</p>
+      ) : null}
+    </section>
+  );
+}
+
+/** A version field and the button that moves to what is in it. */
+function MoveField({
+  label,
+  offered,
+  placeholder,
+  current,
+  parse,
+  verb,
+  busy,
+  onMove,
+}: {
+  label: string;
+  /** What the field holds until something is typed: the latest known, or nothing. */
+  offered: string;
+  placeholder: string;
+  /** Where it stands now; moving to the same place is not offered. */
+  current: string;
+  /** What was typed, as the value to move to, or null when it is not one. */
+  parse: (typed: string) => string | null;
+  verb: string;
+  busy: boolean;
+  onMove: (value: string) => void;
+}) {
+  const [typed, setTyped] = useState<string | null>(null);
+  const draft = typed ?? offered;
+  const value = parse(draft);
+  return (
+    <div className="harness-move">
+      <Input
+        size="sm"
+        className="harness-version mono"
+        aria-label={label}
+        placeholder={placeholder}
+        value={draft}
+        onChange={(event) => setTyped(event.target.value)}
+      />
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={busy || value === null || value === current || `v${value}` === current}
+        onClick={() => value !== null && onMove(value)}
+      >
+        {verb}
+      </Button>
+    </div>
   );
 }
 

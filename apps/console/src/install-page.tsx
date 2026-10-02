@@ -212,6 +212,8 @@ export function InstallPage({
                 event={report}
                 busy={running}
                 onRebuild={() => rebuild(install.state === "running")}
+                run={run}
+                onStart={start}
               />
             }
           />

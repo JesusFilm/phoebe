@@ -36,6 +36,7 @@ import type { InstallState, VerbIo } from "phoebe-agent/contracts";
 import { BridgeRefusal } from "./channels.ts";
 import { LOCAL_OPEN_PATHS } from "./config-fields.ts";
 import { deploymentDirOf } from "./deployment-dir.ts";
+import { latestLauncherVersion, registryNpm } from "./harness.ts";
 import { initSoloBesideTenant } from "./solo-beside-tenant.ts";
 import { runConfigSet } from "../../../src/config-set.ts";
 import {
@@ -48,7 +49,7 @@ import { runInit } from "../../../src/init.ts";
 import { runMigrate } from "../../../src/migrate.ts";
 import { runStart } from "../../../src/start.ts";
 import { runStop } from "../../../src/stop.ts";
-import { runUpgrade } from "../../../src/upgrade.ts";
+import { defaultNpm, runUpgrade } from "../../../src/upgrade.ts";
 import { pairInstall, type PairArm } from "./pair.ts";
 import {
   defaultStdinSpawner,
@@ -169,12 +170,24 @@ export function createDispatchVerb(deps: DispatchDeps): Dispatch {
         // The companion always passes a target, so upgrade's TTY picker is never
         // reached (#527 §3). It asks no consent question either: the dep defaults
         // to never asking, which is the right answer with no terminal.
+        // The latest launcher is looked up here, over HTTPS, and handed to
+        // upgrade as the answer its `npm view` would give (harness.ts): this
+        // process often has no npm to run.
+        const check = request.check ?? true;
+        const target = request.target ?? "both";
+        const asksRegistry = check || target !== "engine";
         const outcome = await runUpgrade({
-          check: request.check ?? true,
-          target: request.target ?? "both",
+          check,
+          target,
           ...(request.ref !== undefined ? { ref: request.ref } : {}),
           configPath,
-          deps: { cwd: root, io },
+          deps: {
+            cwd: root,
+            io,
+            ...(asksRegistry
+              ? { npm: registryNpm(await latestLauncherVersion(), defaultNpm) }
+              : {}),
+          },
         });
         return { verb: "upgrade", outcome };
       }
