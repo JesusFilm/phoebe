@@ -39,11 +39,20 @@ export type HarnessFacts = {
   behind: boolean | null;
 };
 
+/**
+ * The launcher: the engine's own npm package, which the image installs and the
+ * container boots from. Not a harness, and moved by `upgrade` rather than by a
+ * harness update, because moving it can mean migrations. It is pinned in the
+ * same file and stale in the same way, so its facts are read with theirs.
+ */
+export type LauncherFacts = Omit<HarnessFacts, "harness">;
+
 /** Every harness on one install, as the last check found them. */
 export type HarnessReport = {
   /** The Dockerfile that was read, or null when the install has none. */
   dockerfile: string | null;
   harnesses: HarnessFacts[];
+  launcher: LauncherFacts;
   /** Whether a running container answered. False for a stopped install. */
   containerAsked: boolean;
   /** When `latest` was last looked up, ISO-8601. Null before the first lookup. */

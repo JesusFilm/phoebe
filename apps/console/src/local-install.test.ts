@@ -529,8 +529,8 @@ describe("the two versions the install tab states", () => {
     );
 
     expect(reading.note).toContain("Nothing here refuses");
-    expect(reading.note).toContain("Check for upgrades");
-    // The remedy is a button in this same section, and it stays offered.
+    expect(reading.note).toContain("The launcher under Phoebe");
+    // The remedy is on this same tab, and the check stays offered.
     expect(offeredVerbs(install({ containerVersion: "0.12.1" })).upgrade).toBe(true);
   });
 

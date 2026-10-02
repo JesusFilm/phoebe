@@ -54,6 +54,10 @@ The console's header names each pipeline with a unit in flight and the work it
 is on, and counts the install's errors and warnings; pressing the counts lists
 them. A pipeline's tab pulses while it is working and carries its own counts.
 
+The install tab's **Phoebe** section lists the launcher (`phoebe-agent`, pinned
+in `container/Dockerfile`) and the engine (`engine.ref` in the config), each
+with a field and a button that runs `upgrade` for that half.
+
 The install tab's **AI harness** section lists the agent CLIs the container
 carries (Cursor's `agent`, Claude Code, Codex): the version
 `container/Dockerfile` pins, the one the running container has, and, after

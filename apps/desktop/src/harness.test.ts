@@ -5,10 +5,14 @@ import {
   createHarness,
   cursorTarball,
   isBehind,
+  latestLauncherVersion,
   latestVersion,
   needsCursorDigests,
+  parseLauncherVersion,
   parseVersions,
   readHarnessPins,
+  readLauncherPin,
+  registryNpm,
   rewriteHarnessPin,
 } from "./harness.ts";
 
@@ -69,6 +73,57 @@ describe("what a Dockerfile says about each harness", () => {
     expect(readHarnessPins("RUN npm install -g @openai/codex-extras@1.0.0\n").codex).toEqual({
       kind: "absent",
     });
+  });
+});
+
+describe("what a Dockerfile says about the launcher", () => {
+  test("the template pins it through its ARG", () => {
+    expect(readLauncherPin(TEMPLATE)).toEqual({ kind: "pinned", version: "0.13.2" });
+  });
+
+  test("installed with no version is unpinned", () => {
+    expect(readLauncherPin("RUN npm install -g phoebe-agent\n")).toEqual({ kind: "unpinned" });
+  });
+
+  test("a container that runs the engine from a mount installs none, whatever its paths are called", () => {
+    expect(
+      readLauncherPin(
+        "# no `npm install -g phoebe-agent` here\nENV PHOEBE_ENGINE_DIR=/data/phoebe-agent\nCOPY . /opt/phoebe-agent\n",
+      ),
+    ).toEqual({ kind: "absent" });
+  });
+});
+
+describe("upgrade's npm, answered from the registry", () => {
+  const real = (args: readonly string[]) => `real:${args.join(" ")}`;
+
+  test("answers the one question upgrade asks of the registry", () => {
+    expect(registryNpm("0.14.1", real)(["view", "phoebe-agent", "version"])).toBe("0.14.1");
+  });
+
+  test("an unreachable registry throws, as a failed npm view does", () => {
+    expect(() => registryNpm(null, real)(["view", "phoebe-agent", "version"])).toThrow(
+      /could not be reached/,
+    );
+  });
+
+  test("everything else goes to the real npm", () => {
+    expect(registryNpm("0.14.1", real)(["ls", "-g", "--json"])).toBe("real:ls -g --json");
+    expect(registryNpm("0.14.1", real)(["view", "left-pad", "version"])).toBe(
+      "real:view left-pad version",
+    );
+  });
+
+  test("the latest launcher is the registry's, and null when it cannot be had", async () => {
+    const asked: string[] = [];
+    expect(
+      await latestLauncherVersion((url) => {
+        asked.push(url);
+        return Promise.resolve('{"version":"0.14.1"}');
+      }),
+    ).toBe("0.14.1");
+    expect(asked).toEqual(["https://registry.npmjs.org/phoebe-agent/latest"]);
+    expect(await latestLauncherVersion(() => Promise.reject(new Error("offline")))).toBeNull();
   });
 });
 
@@ -210,6 +265,12 @@ describe("what the container answered", () => {
     ).toEqual({ cursor: "2026.07.23-e383d2b", claude: "2.1.269", codex: "0.154.0" });
   });
 
+  test("the launcher's version is read off the same output", () => {
+    expect(parseLauncherVersion("agent|1.2.3\nphoebe-agent|0.13.0\n")).toBe("0.13.0");
+    expect(parseLauncherVersion("agent|1.2.3\nphoebe-agent|\n")).toBeNull();
+    expect(parseLauncherVersion("agent|1.2.3\n")).toBeNull();
+  });
+
   test("a CLI the container lacks, or one that printed nothing, is null", () => {
     expect(parseVersions("agent|\nclaude|\n")).toEqual({ cursor: null, claude: null, codex: null });
   });
@@ -261,7 +322,8 @@ describe("the check and the update", () => {
       ran.push(spec.args);
       return Promise.resolve({
         code: 0,
-        stdout: "agent|2026.07.23-e383d2b\nclaude|2.1.228 (Claude Code)\ncodex|\n",
+        stdout:
+          "agent|2026.07.23-e383d2b\nclaude|2.1.228 (Claude Code)\ncodex|\nphoebe-agent|0.13.0\n",
         stderr: "",
       });
     };
@@ -272,6 +334,7 @@ describe("the check and the update", () => {
       runnerFor: () => runner,
       fetchText: (url) => {
         fetched.push(url);
+        if (url.includes("phoebe-agent")) return Promise.resolve('{"version":"0.14.1"}');
         if (url.includes("claude-code")) return Promise.resolve('{"version":"2.1.287"}');
         if (url.includes("codex")) return Promise.resolve('{"version":"0.160.0"}');
         return Promise.resolve("https://downloads.cursor.com/lab/2026.10.01-e373342/linux/x64/");
@@ -293,6 +356,13 @@ describe("the check and the update", () => {
     expect(fetched).toEqual([]);
     expect(ran).toHaveLength(1);
     expect(report).toMatchObject({ dockerfile: DOCKERFILE, containerAsked: true, latestAt: null });
+    // The launcher is read beside them: what the file pins, what the container has.
+    expect(report.launcher).toEqual({
+      pin: { kind: "pinned", version: "0.13.2" },
+      running: "0.13.0",
+      latest: null,
+      behind: null,
+    });
     expect(report.harnesses).toEqual([
       {
         harness: "cursor",
@@ -318,8 +388,15 @@ describe("the check and the update", () => {
     const looked = await harness.check({ dir: DIR, running: false, lookUp: true });
     const after = await harness.check({ dir: DIR, running: false, lookUp: false });
 
-    expect(fetched).toHaveLength(3);
+    expect(fetched).toHaveLength(4);
     expect(looked.latestAt).toBe("2026-10-01T12:00:00.000Z");
+    expect(looked.launcher).toEqual({
+      pin: { kind: "pinned", version: "0.13.2" },
+      running: null,
+      latest: "0.14.1",
+      behind: true,
+    });
+    expect(after.launcher.latest).toBe("0.14.1");
     expect(looked.harnesses.map((row) => [row.latest, row.behind])).toEqual([
       ["2026.10.01-e373342", true],
       ["2.1.287", true],
