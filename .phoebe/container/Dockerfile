@@ -90,7 +90,12 @@ RUN set -eux; \
 # -g` bakes an unrecorded version into the image. npm resolves the tarball
 # through the registry with an integrity hash from the lock metadata, so there
 # is no separate digest to carry here — the version pin is the whole control.
-ARG CLAUDE_CODE_VERSION=2.1.228
+#
+# The pin is also a floor set by the model policy: the CLI refuses a model it
+# was released before ("Claude Code <v> does not support this model"), and
+# claude-opus-5-5 / claude-sonnet-5-5 (phoebe.config.ts) need 2.1.280 or newer.
+# Move this pin in the same change as any model bump there.
+ARG CLAUDE_CODE_VERSION=2.1.287
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
 
 # DOGFOOD DEVIATION (consequence of the line above): the image's own `node`

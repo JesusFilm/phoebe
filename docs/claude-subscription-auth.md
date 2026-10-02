@@ -91,6 +91,13 @@ token is already in your environment.
    RUN npm install -g @anthropic-ai/claude-code@<version>
    ```
 
+   The version has to be new enough for the model you run. The CLI rejects a
+   model released after it with a `does not support this model` error, and the
+   unit ends with `Agent exited with code 1`. The current models
+   (`claude-opus-5-5`, `claude-sonnet-5-5`) need 2.1.280 or newer. An unpinned
+   install is frozen at whatever was current when the image was built, so after
+   a model bump rebuild with `docker compose build --no-cache`.
+
 5. **Rebuild and restart** the container so the new image and env-file take
    effect.
 
