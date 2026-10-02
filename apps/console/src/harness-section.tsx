@@ -333,13 +333,13 @@ export function PhoebePanel({
         </p>
       ) : null}
       {upgrading ? (
-        <p className="muted">Upgrading. The output below has the run.</p>
+        <p className="muted">Upgrading. The console&apos;s cli tab has the run.</p>
       ) : said !== null ? (
         <p className={said.ok ? "receipt written" : "refusal"} role="status">
           {said.text}
         </p>
       ) : failed ? (
-        <p className="refusal">The upgrade did not finish. The output below says why.</p>
+        <p className="refusal">The upgrade did not finish. The console&apos;s cli tab says why.</p>
       ) : null}
     </section>
   );

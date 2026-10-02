@@ -2103,7 +2103,8 @@ details.why > summary::marker {
 
 .update-alerts {
   position: absolute;
-  bottom: 14px;
+  /* Clear of the one-line status a console draws at its foot. */
+  bottom: 38px;
   left: 50%;
   z-index: 20;
   display: flex;
@@ -2229,4 +2230,37 @@ details.why > summary::marker {
   font-size: 11px;
   font-weight: 600;
   vertical-align: middle;
+}
+
+/* ── the console's cli tab: what phoebe printed on this machine ────────── */
+
+/* One run after another, with a line of air between them. */
+.cli-run + .cli-run::before {
+  content: "\A";
+  white-space: pre;
+}
+
+.cli-stderr .log-line {
+  color: var(--console-tag-stderr);
+}
+
+.console-cli {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.console-cli.failed {
+  color: var(--console-fail);
+}
+
+.console-cancel {
+  margin-left: auto;
+  padding: 0 8px;
+  border: 1px solid color-mix(in srgb, var(--console-dim) 45%, transparent);
+  border-radius: 4px;
+  background: none;
+  color: var(--console-fg);
+  font: inherit;
+  cursor: pointer;
 }

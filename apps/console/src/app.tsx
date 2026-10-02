@@ -82,6 +82,7 @@ import { Rail } from "./rail.tsx";
 import { isNotSignedIn, type RelayClient, type RelaySignIn } from "./relay-client.ts";
 import { configOf } from "./report.ts";
 import { ADD_HREF, FLEET_ROUTE, parseRoute, type Route } from "./route.ts";
+import { CLI_CHANNEL } from "./logs-channels.ts";
 import { UpdateAlerts } from "./update-alert.tsx";
 import { exitOf } from "./verb-run.ts";
 
@@ -247,6 +248,8 @@ function Console({
   const [openChild, setOpenChild] = useState<string | null>(null);
   const [openTenant, setOpenTenant] = useState<string | null>(null);
   const [relayUrl, setRelayUrl] = useState<string | null>(null);
+  // The console tab somebody asked for by name: `cli`, to watch a verb run.
+  const [openChannel, setOpenChannel] = useState<string | null>(null);
   // Default on (#524 §8), and read back off `companion.json` the moment main
   // answers. A browser never asks — there is nothing there to notify with.
   const [notifications, setNotifications] = useState(true);
@@ -702,6 +705,7 @@ function Console({
         onSelect={(dir) => {
           setOpenView("console");
           setOpenTenant(null);
+          setOpenChannel(null);
           setOpenInstall(dir);
         }}
         // The brand is home. The route effect closes the install when the
@@ -741,6 +745,7 @@ function Console({
               onChild: (dir: string, child: RailChild) => {
                 setOpenView("console");
                 setOpenTenant(child.slug);
+                setOpenChannel(null);
                 setOpenInstall(dir);
               },
               // A child's gear is that tenant's own config.
@@ -750,10 +755,12 @@ function Console({
                 setOpenTenant(null);
                 setOpenInstall(dir);
               },
-              // The rail's shortcuts. The page opens first so the run's lines
-              // have somewhere to land; a refusal (`busy`, most likely) is
-              // the page's to show from the run it reads on mount.
+              // The rail's shortcuts. The console opens on its cli tab first,
+              // so the run's lines have somewhere to land.
               onAction: (dir: string, action: InstallAction) => {
+                setOpenView("console");
+                setOpenTenant(null);
+                setOpenChannel(CLI_CHANNEL);
                 setOpenInstall(dir);
                 void runAction(dir, action);
               },
@@ -796,9 +803,10 @@ function Console({
         )}
         {open !== null && bridge !== null && openView === "console" ? (
           <ConsoleView
-            key={`${open.dir}#${openTenant ?? ""}`}
+            key={`${open.dir}#${openTenant ?? ""}#${openChannel ?? ""}`}
             bridge={bridge}
             install={open}
+            channel={openChannel}
             host={
               open.wsl === undefined
                 ? platform === null
@@ -831,6 +839,12 @@ function Console({
             }}
             onConsole={() => {
               setOpenTenant(null);
+              setOpenChannel(null);
+              setOpenView("console");
+            }}
+            onCli={() => {
+              setOpenTenant(null);
+              setOpenChannel(CLI_CHANNEL);
               setOpenView("console");
             }}
             report={reports[open.dir] ?? null}

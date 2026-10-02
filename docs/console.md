@@ -108,6 +108,11 @@ wipe or somebody else's deployment, and the relay will not guess which.
 could move the address it is reached at could strand a deployment where nobody
 can find it.
 
+The console's **cli** tab holds what `phoebe` printed when the companion last
+ran a verb on the install (a start, a stop, an upgrade, a doctor, a config
+edit), with the runs it has watched kept above the current one. The install
+tab says which verb ran and how it ended, and links there.
+
 The console's header names each pipeline with a unit in flight and the work it
 is on, and counts the install's errors and warnings; pressing the counts lists
 them. A pipeline's tab pulses while it is working and carries its own counts.
