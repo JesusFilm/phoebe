@@ -50,6 +50,9 @@ itself, on the host: a tenant `.env` the container's unprivileged user cannot
 read. The tenant's page opens on it with a button that grants that user read
 access to the one file.
 
+A right-click on the console's lines offers Copy, Copy line, Copy all lines and
+Select all; on a field, the usual edit menu; on any selected text, Copy.
+
 The console's **cli** tab holds what `phoebe` printed when the companion last
 ran a verb on the install (a start, a stop, an upgrade, a doctor, a config
 edit), with the runs it has watched kept above the current one. The install

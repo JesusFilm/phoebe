@@ -342,6 +342,7 @@ export function bridge(answers: BridgeAnswers = {}): DesktopBridge {
       lines: () => () => undefined,
       exits: () => () => undefined,
     },
+    menu: { show: () => Promise.resolve(null) },
     logs: {
       follow: () => Promise.resolve(answers.logs ?? []),
       stop: () => Promise.resolve(),

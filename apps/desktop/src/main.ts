@@ -20,11 +20,23 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, protocol, shell } from "electron";
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  Menu,
+  nativeTheme,
+  net,
+  protocol,
+  shell,
+} from "electron";
 import electronUpdater from "electron-updater";
 import type {
   CompanionEnvironment,
   CompanionPreferences,
+  ContextMenuChoice,
+  ContextMenuRequest,
   CompanionUpdate,
   LocalInstall,
   LocalReportEvent,
@@ -42,6 +54,7 @@ import type {
   ToolAddOutcome,
 } from "phoebe-agent/contracts";
 import { createCompanionAlerts } from "./alerting.ts";
+import { contextMenuTemplate } from "./context-menu.ts";
 import { answering, BRIDGE_CHANNELS, BridgeRefusal, type BridgeResult } from "./channels.ts";
 import {
   addInstall,
@@ -554,6 +567,27 @@ app.whenReady().then(
 
     ipcMain.handle(BRIDGE_CHANNELS.runCancel, (_event, runId: string) =>
       answering<void>(() => runs.cancel(runId)),
+    );
+
+    ipcMain.handle(BRIDGE_CHANNELS.menuShow, (event, request: ContextMenuRequest) =>
+      answering<ContextMenuChoice | null>(
+        () =>
+          new Promise((resolve) => {
+            // Chosen before the menu closes, answered when it has: the edit set
+            // and a dismissal both close it with nothing chosen.
+            let chosen: ContextMenuChoice | null = null;
+            const menu = Menu.buildFromTemplate(
+              contextMenuTemplate(request, (choice) => {
+                chosen = choice;
+              }),
+            );
+            const window = BrowserWindow.fromWebContents(event.sender);
+            menu.popup({
+              ...(window === null ? {} : { window }),
+              callback: () => resolve(chosen),
+            });
+          }),
+      ),
     );
 
     ipcMain.handle(BRIDGE_CHANNELS.logsFollow, (_event, dir: string) =>

@@ -45,6 +45,18 @@ import type {
 } from "./local-report.ts";
 import type { RunExit, RunLine, VerbRun, VerbRunRequest } from "./verb-run.ts";
 
+/** What was right-clicked, as much as the menu needs to know. */
+export type ContextMenuRequest =
+  /** A field: cut, copy, paste, select all, all the OS's own. */
+  | { kind: "edit"; selection: string }
+  /** Selected text anywhere else: copy. */
+  | { kind: "text"; selection: string }
+  /** The console's lines: copy the selection, the line under the pointer, or every line. */
+  | { kind: "console"; selection: string; line: string | null; lines: number };
+
+/** What the menu chose. The edit set answers nothing: the OS has already done it. */
+export type ContextMenuChoice = "copy" | "copy-line" | "copy-all" | "select-all";
+
 /**
  * The global the preload writes the bridge onto, and the only thing the console
  * bundle looks at to learn which side of the seam it is running on (#522 §4).
@@ -191,6 +203,16 @@ export type DesktopBridge = {
      * `autoCheckUpdates` preference turns on. Returns the unsubscribe.
      */
     reports: (onReport: (event: HarnessReportEvent) => void) => () => void;
+  };
+
+  /**
+   * The right-click menu. The window says what was clicked and main draws the
+   * OS menu for it, answering with what was chosen; the window does the
+   * copying from text it already has. Null when the menu was dismissed, and
+   * for the edit set, which the OS carries out itself.
+   */
+  menu: {
+    show: (request: ContextMenuRequest) => Promise<ContextMenuChoice | null>;
   };
 
   logs: {

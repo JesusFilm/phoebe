@@ -143,6 +143,8 @@ export type {
 } from "./migrate-report.ts";
 export { DESKTOP_BRIDGE_GLOBAL } from "./desktop-bridge.ts";
 export type {
+  ContextMenuChoice,
+  ContextMenuRequest,
   DesktopBridge,
   DesktopBridgeError,
   DesktopBridgeErrorCode,

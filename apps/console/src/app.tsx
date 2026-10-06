@@ -54,6 +54,7 @@ import {
 import { createNotifier, type AlertSubject, type Notifiable } from "./notifications.ts";
 import { Rail } from "./rail.tsx";
 import { ADD_HREF, HOME_ROUTE, parseRoute, type Route } from "./route.ts";
+import { readContext, textToCopy } from "./context-menu.ts";
 import { CLI_CHANNEL } from "./logs-channels.ts";
 import { UpdateAlerts } from "./update-alert.tsx";
 import { exitOf } from "./verb-run.ts";
@@ -254,6 +255,33 @@ export function App({
       );
     }
   }, [installs, updatesByInstall, notifier]);
+
+  // The right-click menu (context-menu.ts). Electron draws none by itself; the
+  // page says what was clicked and main draws the OS's, then the page copies.
+  useEffect(() => {
+    if (bridge === null || typeof document === "undefined") return;
+    const onContextMenu = (event: MouseEvent): void => {
+      const read = readContext(
+        event.target instanceof Element ? event.target : null,
+        document.getSelection()?.toString() ?? "",
+      );
+      if (read === null) return;
+      event.preventDefault();
+      void bridge.menu.show(read.request).then((choice) => {
+        const text = textToCopy(choice, read);
+        if (text !== null) void navigator.clipboard.writeText(text).catch(ignore);
+        if (choice === "select-all" && read.box instanceof Element) {
+          const range = document.createRange();
+          range.selectNodeContents(read.box);
+          const selection = document.getSelection();
+          selection?.removeAllRanges();
+          selection?.addRange(range);
+        }
+      }, ignore);
+    };
+    document.addEventListener("contextmenu", onContextMenu);
+    return () => document.removeEventListener("contextmenu", onContextMenu);
+  }, [bridge]);
 
   // The installs. One read, then main's `installs:changed` does the updating:
   // the page holds no copy it has to reconcile, and every fact on screen was derived by the
