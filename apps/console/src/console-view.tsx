@@ -59,6 +59,7 @@ export function ConsoleView({
   install,
   host,
   report = null,
+  problems: ofInstall = [],
   tenant = null,
   channel: wanted = null,
   theme = SYSTEM_CONSOLE_THEME,
@@ -70,6 +71,8 @@ export function ConsoleView({
   report?: LocalReportEvent | null;
   /** Where the install runs, for the header's mark; null while unknown. */
   host: HostPlatform | null;
+  /** What is wrong with the install itself: a container running as root (harness.ts). */
+  problems?: readonly RailProblem[];
   /** A workspace child's slug, when the rail opened this from one: its lines first. */
   tenant?: string | null;
   /** The tab to open on, when something asked for one: `cli`, to watch a run. */
@@ -126,10 +129,13 @@ export function ConsoleView({
   }, [run?.runId, run?.exit]);
   const reading = installReading(install);
   // What the report says is happening now, beside what the lines say happened.
-  const status = consoleStatus(install, report);
+  const status = consoleStatus(install, report, ofInstall);
   // The header speaks for what the console is showing: one tenant's, when the
   // rail opened it from a child, and the whole install's otherwise.
-  const header = channelStatus(status, scope ?? ALL_CHANNEL);
+  const scoped = channelStatus(status, scope ?? ALL_CHANNEL);
+  // The install's own trouble is every tenant's, so a tenant's header has it too.
+  const header =
+    scope === null ? scoped : { ...scoped, problems: [...ofInstall, ...scoped.problems] };
   const working =
     scope === null
       ? status.working

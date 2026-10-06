@@ -59,6 +59,8 @@ export type ConsoleStatus = {
 export function consoleStatus(
   install: LocalInstall,
   event: LocalReportEvent | null,
+  /** What is wrong with the install itself rather than with a tenant of it: its container, its image. */
+  ofInstall: readonly RailProblem[] = [],
 ): ConsoleStatus {
   const reading = readReport(renderableReport(install, event));
   const report = reading.kind === "read" ? reading.report : null;
@@ -126,6 +128,9 @@ export function consoleStatus(
     problems.push(...soloWarnings);
   }
 
+  // The install's own first: a container that cannot run a unit at all is the
+  // cause under whatever each tenant goes on to report.
+  problems.unshift(...ofInstall);
   // Errors ahead of warnings across the whole install, each level in the order found.
   const errors = problems.filter((problem) => problem.level === "error");
   const warnings = problems.filter((problem) => problem.level !== "error");

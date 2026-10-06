@@ -313,7 +313,9 @@ const VERSIONS_SCRIPT =
   'else printf "%s|\\n" "$c"; fi; done; ' +
   // The launcher has no flag to ask; its installed package.json says.
   `printf "${LAUNCHER_PACKAGE}|%s\\n" "$(sed -n 's/.*"version": *"\\([^"]*\\)".*/\\1/p' ` +
-  `"$(npm root -g 2>/dev/null)/${LAUNCHER_PACKAGE}/package.json" 2>/dev/null | head -n 1)"`;
+  `"$(npm root -g 2>/dev/null)/${LAUNCHER_PACKAGE}/package.json" 2>/dev/null | head -n 1)"; ` +
+  // Who this exec is, which is who the engine and every agent under it are.
+  'printf "uid|%s\\n" "$(id -u)"';
 
 export const VERSIONS_ARGV: readonly string[] = [
   "exec",
@@ -334,6 +336,36 @@ export function parseVersions(stdout: string): Record<HarnessName, string | null
     versions[harness] = /\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?/.exec(said)?.[0] ?? null;
   }
   return versions;
+}
+
+/** The uid the container runs as, off the same output, or null when it did not say. */
+export function parseUid(stdout: string): number | null {
+  for (const line of stdout.split("\n")) {
+    const [name, said] = line.trim().split("|");
+    if (name === "uid" && said !== undefined && /^\d+$/.test(said)) return Number(said);
+  }
+  return null;
+}
+
+/** Whether a `USER` value, a Dockerfile's or an image's, is root. No user at all is root. */
+export function isRootUser(user: string): boolean {
+  const name = user.trim().split(":")[0] ?? "";
+  return name === "" || name === "root" || name === "0";
+}
+
+/**
+ * Whether a Dockerfile ends on a non-root `USER`. The last live one decides,
+ * as it does for the image: a `USER root` for an install step followed by a
+ * drop is a drop, and a Dockerfile with none runs as root.
+ */
+export function dockerfileDropsPrivileges(content: string): boolean {
+  let last: string | null = null;
+  for (const line of content.split(/\r?\n/)) {
+    if (isComment(line)) continue;
+    const match = /^USER[ \t]+(\S+)/.exec(line);
+    if (match !== null) last = match[1]!;
+  }
+  return last !== null && !isRootUser(last);
 }
 
 /** The launcher's version off the same output, or null when the container installs none. */
@@ -575,7 +607,9 @@ export function createHarness(deps: HarnessDeps = {}) {
 
   async function runningVersions(
     dir: string,
-  ): Promise<(Record<HarnessName, string | null> & { launcher: string | null }) | null> {
+  ): Promise<
+    (Record<HarnessName, string | null> & { launcher: string | null; uid: number | null }) | null
+  > {
     const deployment = resolveDeploymentCompose(deploymentDirOf(dir, exists).dir, exists);
     if ("kind" in deployment) return null;
     try {
@@ -585,8 +619,37 @@ export function createHarness(deps: HarnessDeps = {}) {
         runner: runnerFor(dir),
       });
       return result.code === 0
-        ? { ...parseVersions(result.stdout), launcher: parseLauncherVersion(result.stdout) }
+        ? {
+            ...parseVersions(result.stdout),
+            launcher: parseLauncherVersion(result.stdout),
+            uid: parseUid(result.stdout),
+          }
         : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Whether the image a stopped install would start from runs as root: the
+   * image its compose file names, as Docker holds it. Null when there is no
+   * such image yet, or Docker could not be asked.
+   */
+  async function imageRunsAsRoot(dir: string): Promise<boolean | null> {
+    const deployment = resolveDeploymentCompose(deploymentDirOf(dir, exists).dir, exists);
+    if ("kind" in deployment) return null;
+    const runner = runnerFor(dir);
+    try {
+      const named = await runCompose({ deployment, args: ["config", "--images"], runner });
+      const image = named.code === 0 ? named.stdout.trim().split("\n")[0]?.trim() : undefined;
+      if (image === undefined || image === "") return null;
+      const inspected = await runner({
+        file: "docker",
+        args: ["image", "inspect", "--format", "{{.Config.User}}|", image],
+      });
+      // The bar is what tells an image with no user from an answer that never came.
+      if (inspected.code !== 0 || !inspected.stdout.includes("|")) return null;
+      return isRootUser(inspected.stdout.trim().split("|")[0] ?? "");
     } catch {
       return null;
     }
@@ -601,8 +664,10 @@ export function createHarness(deps: HarnessDeps = {}) {
     async check(opts: { dir: string; running: boolean; lookUp: boolean }): Promise<HarnessReport> {
       const { file, content } = dockerfileText(opts.dir);
       const pins = content === null ? null : readHarnessPins(content);
-      const [inContainer] = await Promise.all([
+      const [inContainer, imageRoot] = await Promise.all([
         opts.running ? runningVersions(opts.dir) : Promise.resolve(null),
+        // A stopped install has no container to ask, so its image is asked.
+        opts.running || content === null ? Promise.resolve(null) : imageRunsAsRoot(opts.dir),
         opts.lookUp
           ? Promise.all([
               ...HARNESS_NAMES.map(async (harness) => {
@@ -644,6 +709,11 @@ export function createHarness(deps: HarnessDeps = {}) {
                 : null,
             latestLauncher,
           ),
+        },
+        user: {
+          root:
+            inContainer !== null && inContainer.uid !== null ? inContainer.uid === 0 : imageRoot,
+          dockerfileDrops: content !== null && dockerfileDropsPrivileges(content),
         },
         containerAsked: inContainer !== null,
         latestAt,

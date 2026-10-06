@@ -47,12 +47,33 @@ export type HarnessFacts = {
  */
 export type LauncherFacts = Omit<HarnessFacts, "harness">;
 
+/**
+ * Who the install's container runs as, against who its Dockerfile says it
+ * should. A container is made from an image, and an image is whatever the
+ * Dockerfile said on the day it was built: a folder scaffolded since, or a
+ * Dockerfile edited since, changes nothing until a rebuild. The case that
+ * matters is root. Claude Code refuses to run unattended as root, so a
+ * container still on an image from before the Dockerfile dropped privileges
+ * fails every unit on that provider, and says so only as one line in a log.
+ */
+export type ContainerUserFacts = {
+  /**
+   * Whether the container runs as root: asked of the running container, or of
+   * the image it would start from when it is stopped. Null when neither could
+   * be asked.
+   */
+  root: boolean | null;
+  /** Whether the Dockerfile ends on a non-root `USER`, so an image built from it would not be root. */
+  dockerfileDrops: boolean;
+};
+
 /** Every harness on one install, as the last check found them. */
 export type HarnessReport = {
   /** The Dockerfile that was read, or null when the install has none. */
   dockerfile: string | null;
   harnesses: HarnessFacts[];
   launcher: LauncherFacts;
+  user: ContainerUserFacts;
   /** Whether a running container answered. False for a stopped install. */
   containerAsked: boolean;
   /** When `latest` was last looked up, ISO-8601. Null before the first lookup. */
