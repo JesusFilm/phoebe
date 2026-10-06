@@ -5,6 +5,7 @@ import {
   createHarness,
   cursorDigestsOf,
   dockerfileDropsPrivileges,
+  dockerfileUser,
   isRootUser,
   cursorTarball,
   isBehind,
@@ -13,6 +14,7 @@ import {
   needsCursorDigests,
   parseLauncherVersion,
   parseUid,
+  parseUnwritable,
   parseVersions,
   readHarnessPins,
   readLauncherPin,
@@ -116,6 +118,19 @@ describe("who a container runs as", () => {
   test("root is root by name, by number, with a group, or by having no user", () => {
     for (const user of ["", "root", "0", "0:0", "root:root"]) expect(isRootUser(user)).toBe(true);
     for (const user of ["phoebe", "10001", "10001:10001"]) expect(isRootUser(user)).toBe(false);
+  });
+
+  test("the mount points it cannot write are read off the same output", () => {
+    expect(parseUnwritable("uid|10001\nunwritable|/data/engine\nunwritable|/data/repos\n")).toEqual(
+      ["/data/engine", "/data/repos"],
+    );
+    expect(parseUnwritable("uid|10001\n")).toEqual([]);
+  });
+
+  test("the Dockerfile's user is its last USER, without the group", () => {
+    expect(dockerfileUser(TEMPLATE)).toBe("phoebe");
+    expect(dockerfileUser("FROM node:24\nUSER 10001:10001\n")).toBe("10001");
+    expect(dockerfileUser("FROM node:24\n")).toBeNull();
   });
 
   test("the uid is read off the probe's own line", () => {
@@ -343,7 +358,12 @@ describe("the check and the update", () => {
   const COMPOSE = path.join(DIR, "container", "compose.yml");
   const WITH_CLAUDE = `${TEMPLATE}ARG CLAUDE_CODE_VERSION=2.1.228\nRUN npm install -g "@anthropic-ai/claude-code@\${CLAUDE_CODE_VERSION}"\n`;
 
-  function setup(content: string | null = WITH_CLAUDE, uid = 10001, imageUser = "phoebe") {
+  function setup(
+    content: string | null = WITH_CLAUDE,
+    uid = 10001,
+    imageUser = "phoebe",
+    unwritable: string[] = [],
+  ) {
     const files = new Map<string, string>([[COMPOSE, "services: {}\n"]]);
     if (content !== null) files.set(DOCKERFILE, content);
     const fetched: string[] = [];
@@ -365,7 +385,13 @@ describe("the check and the update", () => {
             ? "phoebe-runtime:latest\n"
             : spec.args.includes("inspect")
               ? `${imageUser}|\n`
-              : `agent|2026.07.23-e383d2b\nclaude|2.1.228 (Claude Code)\ncodex|\nphoebe-agent|0.13.0\nuid|${uid}\n`),
+              : spec.args.includes("-aq")
+                ? "bd430af485a9\n"
+                : spec.args.includes("--user")
+                  ? "done\n"
+                  : spec.args.includes("run")
+                    ? unwritable.map((dir) => `unwritable|${dir}\n`).join("")
+                    : `agent|2026.07.23-e383d2b\nclaude|2.1.228 (Claude Code)\ncodex|\nphoebe-agent|0.13.0\nuid|${uid}\n`),
         stderr: "",
       });
     };
@@ -433,22 +459,73 @@ describe("the check and the update", () => {
     const dropped = await setup().harness.check({ dir: DIR, running: true, lookUp: false });
 
     // Root in a container whose Dockerfile drops privileges: the image is older than the file.
-    expect(asRoot.user).toEqual({ root: true, dockerfileDrops: true });
-    expect(dropped.user).toEqual({ root: false, dockerfileDrops: true });
+    expect(asRoot.user).toEqual({ root: true, dockerfileDrops: true, unwritable: [] });
+    expect(dropped.user).toEqual({ root: false, dockerfileDrops: true, unwritable: [] });
   });
 
   test("a stopped install is answered by the image it would start from", async () => {
     const stale = setup(WITH_CLAUDE, 10001, "");
     const report = await stale.harness.check({ dir: DIR, running: false, lookUp: false });
 
-    expect(report.user).toEqual({ root: true, dockerfileDrops: true });
+    expect(report.user).toEqual({ root: true, dockerfileDrops: true, unwritable: [] });
     // The compose file is asked which image, and Docker is asked about that one.
+    // A root image owns whatever it mounts, so nothing more is asked of it.
     expect(stale.ran.map((args) => args.slice(-2).join(" "))).toEqual([
       "config --images",
       "{{.Config.User}}| phoebe-runtime:latest",
     ]);
     const fine = await setup().harness.check({ dir: DIR, running: false, lookUp: false });
     expect(fine.user.root).toBe(false);
+  });
+
+  test("a stopped unprivileged install is asked what it cannot write, in a one-off container", async () => {
+    const locked = setup(WITH_CLAUDE, 10001, "phoebe", ["/data/engine", "/data/repos"]);
+
+    const report = await locked.harness.check({ dir: DIR, running: false, lookUp: false });
+
+    expect(report.user).toEqual({
+      root: false,
+      dockerfileDrops: true,
+      unwritable: ["/data/engine", "/data/repos"],
+    });
+    // Only an install that has been started before: a one-off container would
+    // otherwise be the thing that created its volumes.
+    const asked = locked.ran.map((args) => args.join(" "));
+    expect(asked.some((line) => line.includes("ps -aq phoebe"))).toBe(true);
+    expect(
+      asked.some((line) => line.includes("run --rm -T --no-deps --entrypoint sh phoebe")),
+    ).toBe(true);
+  });
+
+  test("handing the volumes over runs chown as root for the Dockerfile's user", async () => {
+    const { harness, ran } = setup();
+
+    const outcome = await harness.ownVolumes(DIR);
+
+    expect(outcome.fixed).toBe(true);
+    expect(outcome.detail).toContain("now belongs to phoebe");
+    const argv = ran[0]!;
+    expect(argv.slice(argv.indexOf("run"), argv.indexOf("run") + 9)).toEqual([
+      "run",
+      "--rm",
+      "-T",
+      "--no-deps",
+      "--user",
+      "root",
+      "--entrypoint",
+      "sh",
+      "phoebe",
+    ]);
+    // The user goes in as an argument, not as script.
+    expect(argv.at(-1)).toBe("phoebe");
+    expect(argv[argv.indexOf("-c") + 1]).toContain('chown -R "$u:$g" /data');
+  });
+
+  test("a Dockerfile with no unprivileged user has nobody to hand them to", async () => {
+    const { harness, ran } = setup("FROM node:24\n");
+
+    expect(await harness.ownVolumes(DIR)).toMatchObject({ fixed: false });
+    expect(ran).toEqual([]);
   });
 
   test("a look-up fills in the latest, and the next check still has it", async () => {

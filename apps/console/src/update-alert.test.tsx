@@ -12,6 +12,8 @@ import {
   harnessRows,
   rootProblem,
   rootReading,
+  volumesProblem,
+  volumesReading,
   takenReading,
   updateArrow,
   updatesReading,
@@ -62,7 +64,7 @@ function report(overrides: Partial<HarnessReport> = {}): HarnessReport {
     dockerfile: "/repos/one/container/Dockerfile",
     containerAsked: true,
     latestAt: "2026-10-02T12:00:00.000Z",
-    user: { root: false, dockerfileDrops: true },
+    user: { root: false, dockerfileDrops: true, unwritable: [] },
     launcher: {
       pin: { kind: "pinned", version: "0.13.2" },
       running: "0.13.2",
@@ -573,7 +575,7 @@ describe("the notification for updates", () => {
 
 describe("a container that runs as root", () => {
   const noop = (): void => undefined;
-  const asRoot = report({ user: { root: true, dockerfileDrops: true } });
+  const asRoot = report({ user: { root: true, dockerfileDrops: true, unwritable: [] } });
 
   test("is an error where a config runs claude, and says a rebuild fixes it", () => {
     expect(rootReading(solo, event(), asRoot)).toMatchObject({ level: "error", rebuild: true });
@@ -598,7 +600,7 @@ describe("a container that runs as root", () => {
   });
 
   test("a Dockerfile that never drops privileges is not fixed by a rebuild", () => {
-    const never = report({ user: { root: true, dockerfileDrops: false } });
+    const never = report({ user: { root: true, dockerfileDrops: false, unwritable: [] } });
 
     expect(rootReading(solo, event(), never)).toMatchObject({ rebuild: false });
     expect(rootReading(solo, event(), never)!.text).toContain("has no USER line");
@@ -607,7 +609,11 @@ describe("a container that runs as root", () => {
   test("an unprivileged container, an unanswered question and no report say nothing", () => {
     expect(rootReading(solo, event(), report())).toBeNull();
     expect(
-      rootReading(solo, event(), report({ user: { root: null, dockerfileDrops: true } })),
+      rootReading(
+        solo,
+        event(),
+        report({ user: { root: null, dockerfileDrops: true, unwritable: [] } }),
+      ),
     ).toBeNull();
     expect(rootProblem(solo, event(), null)).toEqual([]);
   });
@@ -633,5 +639,38 @@ describe("a container that runs as root", () => {
 
     const status = consoleStatus(solo, event(), problems);
     expect(status.problems[0]).toEqual(problems[0]);
+  });
+});
+
+describe("volumes the container cannot write", () => {
+  const locked = report({
+    user: { root: false, dockerfileDrops: true, unwritable: ["/data/engine", "/data/repos"] },
+  });
+
+  test("is said with the cause and that the fix removes nothing", () => {
+    const reading = volumesReading(locked)!;
+
+    expect(reading).toContain("The container cannot write /data/engine and /data/repos.");
+    expect(reading).toContain("created while this install's image still ran as root");
+    expect(reading).toContain("removes nothing");
+  });
+
+  test("is an error on the rail and in the console's header", () => {
+    expect(volumesProblem(locked)).toEqual([
+      {
+        level: "error",
+        text: "its container cannot write /data/engine and /data/repos: the volumes are still root's",
+      },
+    ]);
+  });
+
+  test("one volume is one volume, and writable ones say nothing", () => {
+    const one = report({
+      user: { root: false, dockerfileDrops: true, unwritable: ["/data/engine"] },
+    });
+
+    expect(volumesReading(one)).toContain("That volume was");
+    expect(volumesReading(report())).toBeNull();
+    expect(volumesProblem(null)).toEqual([]);
   });
 });

@@ -128,7 +128,9 @@ old one, so a unit in flight finishes on what it started with.
 A container that runs as root is flagged on the rail, in the console's header
 and at the top of the install tab, with **Rebuild and restart**: Claude Code
 refuses to run as root, and a container is root when its image is older than
-the Dockerfile that drops privileges.
+the Dockerfile that drops privileges. After that rebuild its volumes are still
+root's, so the same places flag what the container cannot write under `/data`,
+with **Give them to the container's user**.
 
 The install tab's **Phoebe** section lists the launcher (`phoebe-agent`, pinned
 in `container/Dockerfile`) and the engine (`engine.ref` in the config), each

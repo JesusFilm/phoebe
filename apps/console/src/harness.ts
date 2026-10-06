@@ -495,7 +495,7 @@ export function rootReading(
   return {
     level: claude ? "error" : "warning",
     text: report.user.dockerfileDrops
-      ? `${consequence} Its image was built before container/Dockerfile dropped to an unprivileged user, and a start does not rebuild an image that is already there. Rebuild it.`
+      ? `${consequence} Its image was built before container/Dockerfile dropped to an unprivileged user, and a start does not rebuild an image that is already there. Rebuild it. Its volumes will still be root's afterwards, and this page will offer to hand them over.`
       : `${consequence} Its Dockerfile has no USER line, so a rebuild will not change that: compare it with a freshly scaffolded container/Dockerfile.`,
     rebuild: report.user.dockerfileDrops,
   };
@@ -515,6 +515,39 @@ export function rootProblem(
       text: reading.rebuild
         ? "its container runs as root, which Claude Code refuses: its image predates its Dockerfile, so rebuild"
         : "its container runs as root, which Claude Code refuses: its Dockerfile has no USER line",
+    },
+  ];
+}
+
+// ── volumes the container cannot write ────────────────────────────────────
+
+/**
+ * What it means that the container cannot write its volumes, or null when it
+ * can. The other half of leaving a root image behind: Docker gives a volume
+ * its owner once, when it creates it, so the volumes a root container made are
+ * still root's after the rebuild, and the unprivileged container dies on its
+ * first write with `EACCES`. Handing them to the container's user fixes it and
+ * loses nothing (docs/upgrading.md).
+ */
+export function volumesReading(report: HarnessReport | null): string | null {
+  if (report === null || report.user.unwritable.length === 0) return null;
+  const paths = report.user.unwritable;
+  return (
+    `The container cannot write ${listed(paths)}. ` +
+    (paths.length === 1 ? "That volume was" : "Those volumes were") +
+    " created while this install's image still ran as root, and Docker sets a volume's owner only when it creates it. " +
+    "The container now runs unprivileged, so it exits on its first write with EACCES. " +
+    "Giving them to the container's user fixes it and removes nothing."
+  );
+}
+
+/** The same, as the one line a rail badge and the console's header carry. */
+export function volumesProblem(report: HarnessReport | null): RailProblem[] {
+  if (report === null || report.user.unwritable.length === 0) return [];
+  return [
+    {
+      level: "error",
+      text: `its container cannot write ${listed(report.user.unwritable)}: the volumes are still root's`,
     },
   ];
 }

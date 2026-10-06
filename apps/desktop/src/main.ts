@@ -622,6 +622,16 @@ app.whenReady().then(
     ipcMain.handle(BRIDGE_CHANNELS.installsRepair, (_event, dir: string, repair: InstallRepair) =>
       answering<RepairOutcome>(async () => {
         const install = await factsFor(dir);
+        if (repair.kind === "volume-ownership") {
+          await heldInstall(dir);
+          const outcome = await harness.ownVolumes(dir);
+          // Every window hears what the install is like now.
+          const report = await harness
+            .check({ dir, running: install?.state === "running", lookUp: false })
+            .catch(() => null);
+          if (report !== null) broadcast(BRIDGE_CHANNELS.harnessReport, { install: dir, report });
+          return outcome;
+        }
         // Only a folder this install lists as its child: the repair changes a
         // file's permissions, and it does that for nothing outside the install.
         const child = install?.workspace?.children.find(

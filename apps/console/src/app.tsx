@@ -62,6 +62,7 @@ import {
   availableUpdates,
   rootProblem,
   updatesReading,
+  volumesProblem,
   updatesSignature,
   type AvailableUpdate,
 } from "./harness.ts";
@@ -381,15 +382,14 @@ function Console({
   }, [bridge]);
 
   // What is wrong with each install itself, off the same reports: a container
-  // that runs as root. The rail's badge and the console's header both read it.
+  // that runs as root, or one that cannot write its volumes. The rail's badge and the console's header both read it.
   const installProblems = useMemo(() => {
     const found: Record<string, RailProblem[]> = {};
     for (const install of installs) {
-      const problems = rootProblem(
-        install,
-        reports[install.dir] ?? null,
-        harnessReports[install.dir] ?? null,
-      );
+      const problems = [
+        ...rootProblem(install, reports[install.dir] ?? null, harnessReports[install.dir] ?? null),
+        ...volumesProblem(harnessReports[install.dir] ?? null),
+      ];
       if (problems.length > 0) found[install.dir] = problems;
     }
     return found;

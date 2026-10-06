@@ -157,12 +157,19 @@ export type TenantEnvFacts = {
 };
 
 /** Something the companion can put right on an install, by the operator's say-so. */
-export type InstallRepair = {
-  /** Let the container's user read one tenant's `.env`. */
-  kind: "env-access";
-  /** The tenant's folder. */
-  tenant: string;
-};
+export type InstallRepair =
+  | {
+      /** Let the container's user read one tenant's `.env`. */
+      kind: "env-access";
+      /** The tenant's folder. */
+      tenant: string;
+    }
+  /**
+   * Give the install's volumes to the user its container runs as: the one-time
+   * step after an image that ran as root is rebuilt to run unprivileged
+   * (docs/upgrading.md). Nothing in the volumes is lost.
+   */
+  | { kind: "volume-ownership" };
 
 /** What a repair came to, as a sentence, and whether it worked. */
 export type RepairOutcome = { fixed: boolean; detail: string };
