@@ -236,7 +236,7 @@ export function valueOfDraft(
   }
 }
 
-function ConfigFieldRow({
+export function ConfigFieldRow({
   field,
   running,
   onSave,

@@ -12,11 +12,12 @@
 // tenants there are. A tenant's page shows the harness its own config runs and
 // moves the same pin the workspace's page does.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import type {
   DesktopBridge,
   HarnessApplyOutcome,
   HarnessName,
+  HarnessRemoveOutcome,
   HarnessReport,
   HarnessUpdateOutcome,
   LocalInstall,
@@ -35,11 +36,15 @@ import {
   harnessReading,
   harnessRows,
   harnessStanding,
+  harnessSettings,
   harnessUsers,
+  HARNESS_LABEL,
   launcherStanding,
   launcherVersionOf,
   needsRebuild,
   phoebeVersions,
+  providerOf,
+  removeReading,
   rootReading,
   updateReading,
   volumesReading,
@@ -48,7 +53,9 @@ import {
   type HarnessRow,
   type PhoebeVersions,
 } from "./harness.ts";
-import { refusalText } from "./verb-run.ts";
+import { ConfigFieldRow, saveRequest } from "./config-form.tsx";
+import { receiptReading } from "./local-install.ts";
+import { receiptOfRun, refusalText } from "./verb-run.ts";
 
 export function HarnessSection({
   install,
@@ -59,6 +66,7 @@ export function HarnessSection({
   onRebuild,
   run = null,
   onStart,
+  onTenant,
 }: {
   /** The install whose container it is: the workspace, on a tenant's page. */
   install: LocalInstall;
@@ -74,10 +82,12 @@ export function HarnessSection({
   /** The install's current or last run: an upgrade's outcome is read off it. */
   run?: VerbRun | null;
   /**
-   * Start a run on the install. Given on the install's own page, where Phoebe's
-   * launcher and engine are listed above the harnesses and moved by `upgrade`.
+   * Start a run on the install: `upgrade` for Phoebe's own versions on the
+   * install's page, `config set` for what a config runs on either page.
    */
   onStart?: (request: VerbRunRequest) => void;
+  /** Open a tenant's own page, where its provider, model and effort are set. */
+  onTenant?: (dir: string) => void;
 }) {
   const [report, setReport] = useState<HarnessReport | null>(null);
   const [lookingUp, setLookingUp] = useState(false);
@@ -88,6 +98,8 @@ export function HarnessSection({
   const [owned, setOwned] = useState<RepairOutcome | null>(null);
   const [applying, setApplying] = useState<HarnessName | null>(null);
   const [applied, setApplied] = useState<HarnessApplyOutcome | null>(null);
+  const [removing, setRemoving] = useState<HarnessName | null>(null);
+  const [removed, setRemoved] = useState<HarnessRemoveOutcome | null>(null);
 
   const check = useCallback(
     (lookUp: boolean) => {
@@ -136,12 +148,30 @@ export function HarnessSection({
   );
 
   const running = install.state === "running";
-  const update = (harness: HarnessName, version: string): void => {
+  const update = (harness: HarnessName, typed: string): void => {
     setUpdating(harness);
     setOutcome(null);
     setApplied(null);
-    bridge.harness
-      .update(install.dir, { harness, version })
+    setRemoved(null);
+    // Nothing typed means the newest: looked up now if it has not been.
+    const version =
+      typed !== ""
+        ? Promise.resolve(typed)
+        : bridge.harness.check(install.dir, { lookUp: true }).then((found) => {
+            setReport(found);
+            return found.harnesses.find((row) => row.harness === harness)?.latest ?? null;
+          });
+    version
+      .then((wanted) =>
+        wanted === null
+          ? Promise.resolve<HarnessUpdateOutcome>({
+              kind: "refused",
+              harness,
+              why: "the newest version could not be looked up",
+              instruction: null,
+            })
+          : bridge.harness.update(install.dir, { harness, version: wanted }),
+      )
       .then(
         (moved) => {
           setOutcome(moved);
@@ -155,10 +185,25 @@ export function HarnessSection({
       .finally(() => setUpdating(null));
   };
 
+  const remove = (harness: HarnessName): void => {
+    setRemoving(harness);
+    setOutcome(null);
+    setApplied(null);
+    setRemoved(null);
+    bridge.harness
+      .remove(install.dir, harness)
+      .then(setRemoved, (error: unknown) =>
+        setRemoved({ kind: "refused", harness, why: refusalText(error) }),
+      )
+      .finally(() => setRemoving(null));
+  };
+
   const users = harnessUsers(install, event);
   const only =
     tenant === undefined ? null : (users.find((user) => user.dir === tenant)?.harness ?? null);
-  const rows = harnessRows(report, event, users, only);
+  // The install's own page lists every harness there is, installed or not, so
+  // one can be added; a tenant's page lists the one it runs.
+  const rows = harnessRows(report, event, users, only, tenant === undefined);
   // No Dockerfile, no section: a tenant's folder added on its own, or a folder
   // not initialised yet, has no container of its own to speak of.
   if (
@@ -253,12 +298,34 @@ export function HarnessSection({
         outcome={outcome}
         applying={applying}
         applied={applied}
+        removing={removing}
+        removed={removed}
         trouble={trouble}
         busy={busy}
         onLookUp={() => void check(true)}
         onUpdate={update}
+        onRemove={remove}
         onApply={(harnesses) => void apply(harnesses)}
         onRebuild={onRebuild}
+        settings={
+          // A tenant's page has its whole config form above this section, with
+          // these three as its first rows, so they are not drawn a second time.
+          tenant !== undefined ? (
+            <p className="muted">
+              Which provider this tenant spawns, and the model and effort, are the first rows of its
+              config above.
+            </p>
+          ) : onStart === undefined ? null : (
+            <HarnessSettings
+              install={install}
+              event={event}
+              run={run}
+              busy={busy}
+              onStart={onStart}
+              {...(onTenant === undefined ? {} : { onTenant })}
+            />
+          )
+        }
       />
     </>
   );
@@ -467,12 +534,16 @@ export function HarnessPanel({
   outcome,
   applying = null,
   applied = null,
+  removing = null,
+  removed = null,
   trouble,
   busy,
   onLookUp,
   onUpdate,
+  onRemove,
   onApply,
   onRebuild,
+  settings = null,
 }: {
   install: LocalInstall;
   rows: HarnessRow[];
@@ -487,13 +558,21 @@ export function HarnessPanel({
   applying?: HarnessName | null;
   /** What the last such apply came to. */
   applied?: HarnessApplyOutcome | null;
+  /** The harness being taken out of the Dockerfile right now, and what the last removal came to. */
+  removing?: HarnessName | null;
+  removed?: HarnessRemoveOutcome | null;
   trouble: string | null;
   busy: boolean;
   onLookUp: () => void;
+  /** Move a pin, or add the harness. An empty version means the newest. */
   onUpdate: (harness: HarnessName, version: string) => void;
+  /** Take a harness out of the Dockerfile. Absent, rows cannot be removed. */
+  onRemove?: (harness: HarnessName) => void;
   /** Put the pinned versions of these into the running container. */
   onApply?: (harnesses: HarnessName[]) => void;
   onRebuild: () => void;
+  /** What runs on the harnesses (HarnessSettings), drawn under the list. */
+  settings?: ReactNode;
 }) {
   const stale = awaitingRebuild(rows);
   // The move just made says the same thing in its own sentence, so its harness
@@ -535,8 +614,10 @@ export function HarnessPanel({
               shared={shared}
               containerAsked={containerAsked}
               updating={updating}
+              removing={removing}
               busy={busy}
               onUpdate={onUpdate}
+              {...(onRemove === undefined ? {} : { onRemove })}
             />
           ))}
         </ul>
@@ -554,7 +635,7 @@ export function HarnessPanel({
             {applying === null ? "Apply to the running container" : "Applying…"}
           </Button>
         )}
-        {stale.length === 0 && outcome?.kind !== "moved" ? null : (
+        {stale.length === 0 && outcome?.kind !== "moved" && removed?.kind !== "removed" ? null : (
           <Button size="sm" variant="outline" disabled={busy} onClick={onRebuild}>
             {running ? "Rebuild and restart" : "Rebuild and start"}
           </Button>
@@ -599,6 +680,12 @@ export function HarnessPanel({
           {applyReading(applied)}
         </p>
       )}
+      {removed === null ? null : (
+        <p className={removed.kind === "removed" ? "receipt written" : "refusal"} role="status">
+          {removeReading(removed)}
+        </p>
+      )}
+      {settings}
       {trouble === null ? null : <p className="refusal">{trouble}</p>}
     </section>
   );
@@ -609,22 +696,30 @@ function HarnessItem({
   shared,
   containerAsked,
   updating,
+  removing = null,
   busy,
   onUpdate,
+  onRemove,
 }: {
   row: HarnessRow;
   shared: boolean;
   containerAsked: boolean;
   updating: HarnessName | null;
+  removing?: HarnessName | null;
   busy: boolean;
   onUpdate: (harness: HarnessName, version: string) => void;
+  onRemove?: (harness: HarnessName) => void;
 }) {
   // What is typed wins; until something is, the field offers the latest known.
   const [typed, setTyped] = useState<string | null>(null);
+  // Remove asks first: a harness gone from the file is gone from the next image.
+  const [confirming, setConfirming] = useState(false);
   const draft = typed ?? row.latest ?? "";
   const standing = harnessStanding(row);
   const pinned = row.pin.kind === "pinned" ? row.pin.version : null;
   const version = draft.trim();
+  const settled = busy || updating !== null || removing !== null;
+  const verb = updateVerb(row.pin);
 
   return (
     <li className="harness-row">
@@ -658,19 +753,171 @@ function HarnessItem({
           size="sm"
           className="harness-version mono"
           aria-label={`Version of ${row.label}`}
-          placeholder="version"
+          placeholder="latest"
           value={draft}
           onChange={(event) => setTyped(event.target.value)}
         />
         <Button
           size="sm"
           variant="outline"
-          disabled={busy || updating !== null || version === "" || version === pinned}
+          disabled={settled || (version !== "" && version === pinned)}
+          title={version === "" ? `${verb} the newest version` : `${verb} ${version}`}
           onClick={() => onUpdate(row.harness, version)}
         >
-          {updating === row.harness ? "Moving…" : updateVerb(row.pin)}
+          {updating === row.harness ? "Moving…" : version === "" ? `${verb} latest` : verb}
         </Button>
+        {onRemove === undefined || row.pin.kind === "absent" ? null : confirming ? (
+          <span className="harness-confirm" role="alert">
+            {row.usedBy.length === 0
+              ? "Take it out of the Dockerfile?"
+              : `${row.usedBy.join(", ")} ${row.usedBy.length === 1 ? "runs" : "run"} on it. Take it out anyway?`}{" "}
+            <Button
+              size="sm"
+              variant="destructive"
+              disabled={settled}
+              onClick={() => {
+                setConfirming(false);
+                onRemove(row.harness);
+              }}
+            >
+              Remove
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setConfirming(false)}>
+              Keep
+            </Button>
+          </span>
+        ) : (
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={settled}
+            title={`Take ${row.label} out of the Dockerfile`}
+            onClick={() => setConfirming(true)}
+          >
+            {removing === row.harness ? "Removing…" : "Remove"}
+          </Button>
+        )}
       </div>
     </li>
+  );
+}
+
+/**
+ * What runs on the harnesses: the provider a config names, and the model and
+ * effort it runs that provider at. The same three rows the config form draws
+ * (config-form.tsx), saved the same way, here because this is where somebody
+ * choosing a harness is looking and the config form is a tab away. A solo
+ * install's sets its one config's; a workspace's lists its tenants and sends
+ * each to its page, where the config form has the rows.
+ */
+export function HarnessSettings({
+  install,
+  event,
+  run,
+  tenant,
+  busy,
+  onStart,
+  onTenant,
+}: {
+  install: LocalInstall;
+  event: LocalReportEvent | null;
+  run: VerbRun | null;
+  tenant?: string;
+  busy: boolean;
+  onStart: (request: VerbRunRequest) => void;
+  onTenant?: (dir: string) => void;
+}) {
+  if (event === null) return null;
+  const workspace = install.workspace !== undefined;
+
+  if (workspace && tenant === undefined) {
+    const tenants = event.directory.tenants ?? [];
+    if (tenants.length === 0) return null;
+    return (
+      <div className="harness-settings">
+        <h3>What runs on them</h3>
+        <p className="muted">
+          Each tenant names its provider, and the model and effort it runs it at, in its own config.
+        </p>
+        <ul className="harness-users">
+          {tenants.map((one) => {
+            const provider = providerOf(one.configFields);
+            return (
+              <li key={one.dir}>
+                <span>
+                  <strong>{one.slug ?? one.name}</strong>
+                  <span className="muted">
+                    {" "}
+                    {provider === null ? "no provider read" : `runs ${HARNESS_LABEL[provider]}`}
+                  </span>
+                </span>
+                {onTenant === undefined ? null : (
+                  <Button size="sm" variant="ghost" onClick={() => onTenant(one.dir)}>
+                    Configure
+                  </Button>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    );
+  }
+
+  // The one config: the tenant's, or the solo install's own.
+  const own =
+    tenant === undefined
+      ? {
+          fields: event.directory.configFields,
+          fingerprint: event.directory.configFingerprint,
+          path: event.directory.configPath,
+        }
+      : (() => {
+          const found = event.directory.tenants?.find((one) => one.dir === tenant);
+          return found === undefined
+            ? null
+            : {
+                fields: found.configFields,
+                fingerprint: found.configFingerprint,
+                path: found.configPath,
+              };
+        })();
+  if (own === null || own.fingerprint === null) return null;
+  const fields = harnessSettings(own.fields);
+  if (fields.length === 0) return null;
+  const { fingerprint, path } = own;
+  const receipt = receiptOfRun(run, path);
+
+  return (
+    <div className="harness-settings">
+      <h3>What runs on it</h3>
+      <p className="muted">
+        Which provider {tenant === undefined ? "this install" : "this tenant"} spawns, and the model
+        and effort it asks for. Saved into its config as the config form saves them.
+      </p>
+      {fields.map((field) => (
+        <ConfigFieldRow
+          key={field.path}
+          field={field}
+          running={busy}
+          onSave={(value) =>
+            onStart(
+              saveRequest({
+                install: install.dir,
+                field,
+                value,
+                fingerprint,
+                ...(tenant === undefined ? {} : { tenant }),
+              }),
+            )
+          }
+        />
+      ))}
+      {receipt === null ? null : (
+        <p className={receipt.state === "written" ? "receipt written" : "refusal"} role="status">
+          {receiptReading(receipt)}
+        </p>
+      )}
+    </div>
   );
 }

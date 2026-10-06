@@ -175,6 +175,7 @@ export type {
   HarnessFacts,
   HarnessName,
   HarnessPin,
+  HarnessRemoveOutcome,
   HarnessReport,
   HarnessReportEvent,
   HarnessUpdate,

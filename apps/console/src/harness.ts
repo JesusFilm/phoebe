@@ -15,6 +15,7 @@ import type {
   HarnessFacts,
   HarnessName,
   HarnessPin,
+  HarnessRemoveOutcome,
   HarnessReport,
   HarnessUpdateOutcome,
   LauncherFacts,
@@ -87,6 +88,8 @@ export function harnessRows(
   event: LocalReportEvent | null,
   users: readonly HarnessUser[],
   only: HarnessName | null = null,
+  /** List the harnesses nothing installs and nobody runs too: the ones there are to add. */
+  everything = false,
 ): HarnessRow[] {
   const facts: HarnessFacts[] =
     report !== null && report.dockerfile !== null
@@ -102,7 +105,11 @@ export function harnessRows(
     const row = facts.find((candidate) => candidate.harness === harness);
     if (row === undefined) return [];
     const usedBy = users.filter((user) => user.harness === harness).map((user) => user.label);
-    if (only !== null ? harness !== only : row.pin.kind === "absent" && usedBy.length === 0) {
+    if (
+      only !== null
+        ? harness !== only
+        : !everything && row.pin.kind === "absent" && usedBy.length === 0
+    ) {
       return [];
     }
     return [{ ...row, label: HARNESS_LABEL[harness], usedBy }];
@@ -155,8 +162,29 @@ export function harnessStanding(
 }
 
 /** What the button that moves a pin is called. */
-export function updateVerb(pin: HarnessPin): "Update" | "Pin" | "Install" {
-  return pin.kind === "pinned" ? "Update" : pin.kind === "unpinned" ? "Pin" : "Install";
+export function updateVerb(pin: HarnessPin): "Update" | "Pin" | "Add" {
+  return pin.kind === "pinned" ? "Update" : pin.kind === "unpinned" ? "Pin" : "Add";
+}
+
+/** The settings that say what runs on a harness: the provider, and its model and effort. */
+export const HARNESS_SETTINGS: readonly string[] = ["defaultProvider", "model", "effort"];
+
+/** Those three rows of a config's field facts, in that order, as far as it has them. */
+export function harnessSettings(
+  fields: readonly ConfigFieldFacts[] | undefined,
+): ConfigFieldFacts[] {
+  return HARNESS_SETTINGS.flatMap((path) => {
+    const field = fields?.find((candidate) => candidate.path === path);
+    return field === undefined ? [] : [field];
+  });
+}
+
+/** What taking a harness out came to, as a sentence. */
+export function removeReading(outcome: HarnessRemoveOutcome): string {
+  const label = HARNESS_LABEL[outcome.harness];
+  return outcome.kind === "removed"
+    ? `The Dockerfile no longer installs ${label}. The container keeps it until the image is rebuilt.`
+    : `${label} was not removed: ${outcome.why}.`;
 }
 
 /**

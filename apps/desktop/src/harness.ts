@@ -23,6 +23,7 @@ import path from "node:path";
 import type {
   HarnessApplyOutcome,
   HarnessFacts,
+  HarnessRemoveOutcome,
   HarnessName,
   HarnessPin,
   HarnessReport,
@@ -223,6 +224,25 @@ export function rewriteHarnessPin(
   const { package: pkg, arg } = HARNESSES[harness];
 
   if (pkg === null) {
+    if (before.kind === "absent") {
+      // Not a line but the scaffold's whole block: the tarball, the digest
+      // check, the vendored node made execute-only, both command names.
+      if (digests === undefined) {
+        return { ok: false, why: "the tarball digests were not computed", instruction: null };
+      }
+      const at = insertionPoint(lines);
+      if (at === null) {
+        return {
+          ok: false,
+          why: "this Dockerfile has no global npm install or USER line to put the install beside",
+          instruction:
+            "Copy the Cursor agent block from a freshly scaffolded container/Dockerfile.",
+        };
+      }
+      const block = cursorBlock(version, digests);
+      lines.splice(at.index, 0, ...(at.after ? ["", ...block] : [...block, ""]));
+      return { ok: true, content: lines.join(newline), from };
+    }
     if (!setArg(lines, arg, version)) {
       return {
         ok: false,
@@ -276,6 +296,165 @@ export function rewriteHarnessPin(
     lines[index] = lines[index]!.replace(packageSpec(pkg), `${pkg}@${version}`);
   }
   return { ok: true, content: lines.join(newline), from };
+}
+
+/**
+ * The scaffold's Cursor block (templates/container/Dockerfile), for a Dockerfile
+ * that lacks one. The same lines, so a Dockerfile this writes reads like one
+ * `phoebe init` wrote.
+ */
+function cursorBlock(version: string, digests: { x64: string; arm64: string }): string[] {
+  return [
+    '# Cursor\'s agent CLI, which the "cursor" provider spawns as `agent`. A versioned',
+    "# tarball checked against a digest per architecture, as the scaffold installs it;",
+    "# the vendored node is made execute-only so a sibling tenant cannot read its",
+    "# environment. Pinned, so a rebuild gets the same one.",
+    `ARG ${HARNESSES.cursor.arg}=${version}`,
+    `ARG ${CURSOR_SHA_ARGS.x64}=${digests.x64}`,
+    `ARG ${CURSOR_SHA_ARGS.arm64}=${digests.arm64}`,
+    "ARG TARGETARCH",
+    "RUN set -eux; \\",
+    '    case "${TARGETARCH:-$(dpkg --print-architecture)}" in \\',
+    `      amd64) cursor_arch=x64;   cursor_sha="\${${CURSOR_SHA_ARGS.x64}}" ;; \\`,
+    `      arm64) cursor_arch=arm64; cursor_sha="\${${CURSOR_SHA_ARGS.arm64}}" ;; \\`,
+    '      *) echo "cursor-agent publishes no build for ${TARGETARCH}" >&2; exit 1 ;; \\',
+    "    esac; \\",
+    "    curl -fsSL -o /tmp/cursor-agent.tar.gz \\",
+    `      "https://${CURSOR_DOWNLOADS}/lab/\${${HARNESSES.cursor.arg}}/linux/\${cursor_arch}/agent-cli-package.tar.gz"; \\`,
+    '    echo "${cursor_sha}  /tmp/cursor-agent.tar.gz" | sha256sum -c -; \\',
+    "    mkdir -p /opt/cursor-agent; \\",
+    "    tar --strip-components=1 -xzf /tmp/cursor-agent.tar.gz -C /opt/cursor-agent; \\",
+    "    chmod 0711 /opt/cursor-agent/node; \\",
+    "    rm /tmp/cursor-agent.tar.gz; \\",
+    "    ln -s /opt/cursor-agent/cursor-agent /usr/local/bin/agent; \\",
+    "    ln -s /opt/cursor-agent/cursor-agent /usr/local/bin/cursor-agent",
+  ];
+}
+
+/** Whether a line continues onto the next: a trailing backslash. */
+const continues = (line: string): boolean => /\\\s*$/.test(line);
+
+/** The lines of the instruction that begins at `start`, through its continuations. */
+function instructionEnd(lines: readonly string[], start: number): number {
+  let end = start;
+  while (end < lines.length - 1 && continues(lines[end]!)) end += 1;
+  return end;
+}
+
+export type Removal = { ok: true; content: string } | { ok: false; why: string };
+
+/**
+ * The Dockerfile without one harness.
+ *
+ * An npm harness comes off the line that installs it. A line left installing
+ * nothing goes, and so does the ARG only it used and the comment this file
+ * wrote above it. Cursor's block goes whole: its ARGs and the RUN that fetches
+ * the tarball, through its continuations. The scaffold's own comments stay;
+ * they describe the choice, not the line, and nothing here is the author of them.
+ */
+export function removeHarness(content: string, harness: HarnessName): Removal {
+  const newline = content.includes("\r\n") ? "\r\n" : "\n";
+  const lines = content.split(/\r?\n/);
+  const before = readHarnessPins(content)[harness];
+  if (before.kind === "absent") return { ok: false, why: "the Dockerfile does not install it" };
+  const { package: pkg } = HARNESSES[harness];
+  const gone = new Set<number>();
+  // An instruction goes with the comment this file wrote above it, and with no
+  // other: the scaffold's comments describe the choice, not the line.
+  const drop = (index: number): void => {
+    gone.add(index);
+    let top = index;
+    while (top > 0 && isComment(lines[top - 1]!)) top -= 1;
+    if (top < index && /^# (The CLI the "|Cursor's agent CLI)/.test(lines[top]!)) {
+      for (let at = top; at < index; at += 1) gone.add(at);
+    }
+  };
+
+  if (pkg === null) {
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index]!;
+      if (isComment(line) || gone.has(index)) continue;
+      if (
+        /^ARG[ \t]+(CURSOR_AGENT_VERSION|CURSOR_AGENT_SHA256_X64|CURSOR_AGENT_SHA256_ARM64)=/.test(
+          line,
+        )
+      ) {
+        drop(index);
+        continue;
+      }
+      if (/^RUN\b/.test(line)) {
+        const end = instructionEnd(lines, index);
+        const whole = lines.slice(index, end + 1).join("\n");
+        if (whole.includes(CURSOR_DOWNLOADS) || whole.includes("cursor.com/install")) {
+          drop(index);
+          for (let more = index + 1; more <= end; more += 1) gone.add(more);
+          index = end;
+        }
+      }
+    }
+    // The build architecture was declared for the tarball's sake; with nothing
+    // left reading it, it goes too.
+    const archUsed = lines.some(
+      (line, index) =>
+        !gone.has(index) && !isComment(line) && !/^ARG\b/.test(line) && line.includes("TARGETARCH"),
+    );
+    if (!archUsed) {
+      lines.forEach((line, index) => {
+        if (!isComment(line) && /^ARG[ \t]+TARGETARCH\s*$/.test(line)) gone.add(index);
+      });
+    }
+  } else {
+    let variable: string | null = null;
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index]!;
+      if (isComment(line)) continue;
+      const match = packageSpec(pkg).exec(line);
+      if (match === null) continue;
+      if (match[1] !== undefined) variable = variableOf(match[1]) ?? variable;
+      const without = line
+        .replace(packageSpec(pkg), "")
+        // The quotes that were around it, now around nothing.
+        .replace(/[ \t]*(""|'')/g, "")
+        .replace(/[ \t]{2,}/g, " ")
+        .trimEnd();
+      // A RUN left installing nothing goes; one still installing others stays, shorter.
+      if (/^RUN\s+(sudo\s+)?npm\s+(install|i)\s+(-g|--global)(\s+-[-\w]+)*\s*\\?$/.test(without)) {
+        const end = instructionEnd(lines, index);
+        const continued = lines
+          .slice(index + 1, end + 1)
+          .some((rest) => rest.trim() !== "" && rest.trim() !== "\\");
+        if (!continued) {
+          drop(index);
+          for (let more = index + 1; more <= end; more += 1) gone.add(more);
+          index = end;
+          continue;
+        }
+      }
+      lines[index] = without;
+    }
+    if (variable !== null) {
+      // The ARG only the removed line used.
+      const stillUsed = lines.some(
+        (line, index) =>
+          !gone.has(index) &&
+          !isComment(line) &&
+          !/^ARG\b/.test(line) &&
+          line.includes(`\${${variable}}`),
+      );
+      if (!stillUsed) {
+        lines.forEach((line, index) => {
+          if (!isComment(line) && new RegExp(`^ARG[ \\t]+${variable}=`).test(line)) drop(index);
+        });
+      }
+    }
+  }
+
+  const kept = lines.filter((_, index) => !gone.has(index));
+  // Two blank lines where one install used to be are one.
+  const tidy = kept.filter(
+    (line, index) => !(line.trim() === "" && index > 0 && kept[index - 1]!.trim() === ""),
+  );
+  return { ok: true, content: tidy.join(newline) };
 }
 
 // ── comparing versions ─────────────────────────────────────────────────────
@@ -890,6 +1069,24 @@ export function createHarness(deps: HarnessDeps = {}) {
           );
     },
 
+    /** Take one harness out of the install's Dockerfile. Never rebuilds anything. */
+    remove(dir: string, harness: HarnessName): HarnessRemoveOutcome {
+      const refused = (why: string): HarnessRemoveOutcome => ({ kind: "refused", harness, why });
+      if (!HARNESS_NAMES.includes(harness)) return refused(`${String(harness)} is not a harness`);
+      const { file, content } = dockerfileText(dir);
+      if (content === null) return refused(`there is no Dockerfile at ${file}`);
+      const removal = removeHarness(content, harness);
+      if (!removal.ok) return refused(removal.why);
+      try {
+        write(file, removal.content);
+      } catch (error) {
+        return refused(
+          `${file} could not be written: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      return { kind: "removed", harness, file };
+    },
+
     /** Pin one harness in the install's Dockerfile. Never rebuilds anything. */
     async update(dir: string, update: HarnessUpdate): Promise<HarnessUpdateOutcome> {
       const { harness, version } = update;
@@ -911,7 +1108,7 @@ export function createHarness(deps: HarnessDeps = {}) {
       }
 
       let digests: { x64: string; arm64: string } | undefined;
-      if (harness === "cursor" && needsCursorDigests(content)) {
+      if (harness === "cursor" && (before.kind === "absent" || needsCursorDigests(content))) {
         try {
           const [x64, arm64] = await Promise.all([
             digest(cursorTarball(version, "x64")),
