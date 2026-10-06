@@ -28,6 +28,7 @@ export const BRIDGE_CHANNELS = {
   runCancel: "phoebe:runs/cancel",
   runLine: "phoebe:runs/line",
   runExit: "phoebe:runs/exit",
+  menuShow: "phoebe:menu/show",
   logsFollow: "phoebe:logs/follow",
   logsStop: "phoebe:logs/stop",
   logsLine: "phoebe:logs/line",

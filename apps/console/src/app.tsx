@@ -90,6 +90,7 @@ import { Rail } from "./rail.tsx";
 import { isNotSignedIn, type RelayClient, type RelaySignIn } from "./relay-client.ts";
 import { configOf } from "./report.ts";
 import { ADD_HREF, FLEET_ROUTE, parseRoute, type Route } from "./route.ts";
+import { readContext, textToCopy } from "./context-menu.ts";
 import { CLI_CHANNEL } from "./logs-channels.ts";
 import { UpdateAlerts } from "./update-alert.tsx";
 import { exitOf } from "./verb-run.ts";
@@ -439,6 +440,33 @@ function Console({
       );
     }
   }, [installs, updatesByInstall, notifier]);
+
+  // The right-click menu (context-menu.ts). Electron draws none by itself; the
+  // page says what was clicked and main draws the OS's, then the page copies.
+  useEffect(() => {
+    if (bridge === null || typeof document === "undefined") return;
+    const onContextMenu = (event: MouseEvent): void => {
+      const read = readContext(
+        event.target instanceof Element ? event.target : null,
+        document.getSelection()?.toString() ?? "",
+      );
+      if (read === null) return;
+      event.preventDefault();
+      void bridge.menu.show(read.request).then((choice) => {
+        const text = textToCopy(choice, read);
+        if (text !== null) void navigator.clipboard.writeText(text).catch(ignore);
+        if (choice === "select-all" && read.box instanceof Element) {
+          const range = document.createRange();
+          range.selectNodeContents(read.box);
+          const selection = document.getSelection();
+          selection?.removeAllRanges();
+          selection?.addRange(range);
+        }
+      }, ignore);
+    };
+    document.addEventListener("contextmenu", onContextMenu);
+    return () => document.removeEventListener("contextmenu", onContextMenu);
+  }, [bridge]);
 
   // The local arm. One read, then main's `installs:changed` does the updating —
   // the same shape as the relay's stream, for the same reason: the page holds

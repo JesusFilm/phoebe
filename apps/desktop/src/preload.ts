@@ -79,6 +79,9 @@ const bridge: DesktopBridge = {
     lines: (onLine) => subscribe<RunLine>(BRIDGE_CHANNELS.runLine, onLine),
     exits: (onExit) => subscribe<RunExit>(BRIDGE_CHANNELS.runExit, onExit),
   },
+  menu: {
+    show: (request) => call(BRIDGE_CHANNELS.menuShow, request),
+  },
   logs: {
     follow: (install) => call(BRIDGE_CHANNELS.logsFollow, install),
     stop: (install) => call(BRIDGE_CHANNELS.logsStop, install),
