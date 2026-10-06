@@ -60,12 +60,18 @@ import { SettingsPage } from "./settings-page.tsx";
 import { hostOfProcessPlatform } from "./host-icon.tsx";
 import {
   availableUpdates,
+  rootProblem,
   updatesReading,
   updatesSignature,
   type AvailableUpdate,
 } from "./harness.ts";
 import { InstallPage } from "./install-page.tsx";
-import { pairedInstalls, type InstallAction, type RailChild } from "./local-install.ts";
+import {
+  pairedInstalls,
+  type InstallAction,
+  type RailChild,
+  type RailProblem,
+} from "./local-install.ts";
 import { TenantPage } from "./tenant-page.tsx";
 import {
   busyInstalls,
@@ -373,6 +379,37 @@ function Console({
       setHarnessReports((held) => ({ ...held, [install]: report }));
     });
   }, [bridge]);
+
+  // What is wrong with each install itself, off the same reports: a container
+  // that runs as root. The rail's badge and the console's header both read it.
+  const installProblems = useMemo(() => {
+    const found: Record<string, RailProblem[]> = {};
+    for (const install of installs) {
+      const problems = rootProblem(
+        install,
+        reports[install.dir] ?? null,
+        harnessReports[install.dir] ?? null,
+      );
+      if (problems.length > 0) found[install.dir] = problems;
+    }
+    return found;
+  }, [installs, reports, harnessReports]);
+
+  // Each install is read once per state it is in, with nothing asked of the
+  // network: a file and a container, or an image when it is stopped. Without
+  // this the rail would know about a root container only after somebody had
+  // opened the install's page.
+  const readLocally = useRef<Record<string, string>>({});
+  useEffect(() => {
+    if (bridge === null) return;
+    for (const install of installs) {
+      if (install.state === "not-initialised") continue;
+      const standing = `${install.state}:${install.containerVersion ?? ""}`;
+      if (readLocally.current[install.dir] === standing) continue;
+      readLocally.current[install.dir] = standing;
+      void bridge.harness.check(install.dir, { lookUp: false }).catch(ignore);
+    }
+  }, [bridge, installs]);
 
   // One notification per set of updates: what was said is not said again until
   // what is on offer changes.
@@ -716,6 +753,7 @@ function Console({
         updates={Object.fromEntries(
           Object.entries(updatesByInstall).map(([dir, updates]) => [dir, updates.length]),
         )}
+        problems={installProblems}
         {...(platform === null ? {} : { platform })}
         update={update}
         {...(bridge === null
@@ -815,6 +853,7 @@ function Console({
                 : "wsl"
             }
             report={reports[open.dir] ?? null}
+            problems={installProblems[open.dir] ?? []}
             tenant={openTenant}
             theme={consoleTheme}
             onSettings={() => setOpenView("settings")}

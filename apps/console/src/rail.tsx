@@ -101,6 +101,7 @@ export function Rail({
   busy,
   reports,
   updates,
+  problems,
   platform,
   defaultExpanded,
   onSelect,
@@ -141,6 +142,8 @@ export function Rail({
   reports?: Readonly<Record<string, LocalReportEvent>>;
   /** How many updates are on offer per install, by directory (update-alert.tsx). */
   updates?: Readonly<Record<string, number>>;
+  /** What is wrong with each install itself, by directory: a container running as root. */
+  problems?: Readonly<Record<string, readonly RailProblem[]>>;
   /** The companion's `process.platform`: which host a local install runs on. */
   platform?: string;
   /** The workspaces opened out to their children to begin with, by directory. */
@@ -235,6 +238,7 @@ export function Rail({
               paired={paired?.has(install.dir) ?? false}
               busy={busy?.has(install.dir) ?? false}
               updates={updates?.[install.dir] ?? 0}
+              problems={problems?.[install.dir] ?? NO_PROBLEMS}
               host={install.wsl === undefined ? companionHost : "wsl"}
               children={workspaceChildren(install, reports?.[install.dir] ?? null)}
               expanded={expanded.has(install.dir)}
@@ -360,6 +364,7 @@ function InstallEntry({
   paired,
   busy,
   updates = 0,
+  problems = NO_PROBLEMS,
   host,
   children,
   expanded,
@@ -379,6 +384,8 @@ function InstallEntry({
   busy: boolean;
   /** How many updates the last check found on offer. */
   updates?: number;
+  /** What is wrong with the install itself, as the entry's own badges. */
+  problems?: readonly RailProblem[];
   /** Where it runs: this machine's host, or a WSL distro. Null while the host is unknown. */
   host: HostPlatform | null;
   /** A workspace's children, read against its report; empty for a solo install. */
@@ -446,6 +453,10 @@ function InstallEntry({
         </div>
         <div className="sub">
           {reading.text}
+          <ProblemBadges
+            {...problemCounts(problems)}
+            title={problems.map(problemLine).join("\n")}
+          />
           {updates === 0 ? null : (
             <span
               className="rail-updates"
@@ -565,6 +576,8 @@ function InstallEntry({
     </div>
   );
 }
+
+const NO_PROBLEMS: readonly RailProblem[] = [];
 
 /** One problem as a line of hover text. */
 function problemLine(problem: RailProblem): string {

@@ -39,6 +39,7 @@ import {
   launcherVersionOf,
   needsRebuild,
   phoebeVersions,
+  rootReading,
   updateReading,
   updateVerb,
   upgradeReading,
@@ -163,8 +164,20 @@ export function HarnessSection({
     return null;
   }
 
+  const root = rootReading(install, event, report);
   return (
     <>
+      {root === null ? null : (
+        <section className="fixable" aria-label="The container runs as root">
+          <h2>The container runs as root</h2>
+          <p>{root.text}</p>
+          {root.rebuild ? (
+            <Button size="sm" disabled={busy} onClick={onRebuild}>
+              {install.state === "running" ? "Rebuild and restart" : "Rebuild and start"}
+            </Button>
+          ) : null}
+        </section>
+      )}
       {onStart === undefined || tenant !== undefined ? null : (
         <PhoebePanel
           install={install}

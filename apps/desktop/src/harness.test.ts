@@ -4,12 +4,15 @@ import type { CommandRunner } from "../../../src/deployment-compose.ts";
 import {
   createHarness,
   cursorDigestsOf,
+  dockerfileDropsPrivileges,
+  isRootUser,
   cursorTarball,
   isBehind,
   latestLauncherVersion,
   latestVersion,
   needsCursorDigests,
   parseLauncherVersion,
+  parseUid,
   parseVersions,
   readHarnessPins,
   readLauncherPin,
@@ -92,6 +95,33 @@ describe("what a Dockerfile says about the launcher", () => {
         "# no `npm install -g phoebe-agent` here\nENV PHOEBE_ENGINE_DIR=/data/phoebe-agent\nCOPY . /opt/phoebe-agent\n",
       ),
     ).toEqual({ kind: "absent" });
+  });
+});
+
+describe("who a container runs as", () => {
+  test("the template's Dockerfile ends on its unprivileged user", () => {
+    expect(dockerfileDropsPrivileges(TEMPLATE)).toBe(true);
+  });
+
+  test("the last USER decides, and none at all is root", () => {
+    expect(dockerfileDropsPrivileges("FROM node:24\nRUN true\n")).toBe(false);
+    expect(dockerfileDropsPrivileges("FROM node:24\nUSER phoebe\nUSER root\n")).toBe(false);
+    expect(dockerfileDropsPrivileges("FROM node:24\nUSER root\nRUN true\nUSER 10001:10001\n")).toBe(
+      true,
+    );
+    // A commented line is not an instruction.
+    expect(dockerfileDropsPrivileges("FROM node:24\n# USER phoebe\n")).toBe(false);
+  });
+
+  test("root is root by name, by number, with a group, or by having no user", () => {
+    for (const user of ["", "root", "0", "0:0", "root:root"]) expect(isRootUser(user)).toBe(true);
+    for (const user of ["phoebe", "10001", "10001:10001"]) expect(isRootUser(user)).toBe(false);
+  });
+
+  test("the uid is read off the probe's own line", () => {
+    expect(parseUid("agent|1.2.3\nuid|0\n")).toBe(0);
+    expect(parseUid("uid|10001\n")).toBe(10001);
+    expect(parseUid("agent|1.2.3\n")).toBeNull();
   });
 });
 
@@ -313,7 +343,7 @@ describe("the check and the update", () => {
   const COMPOSE = path.join(DIR, "container", "compose.yml");
   const WITH_CLAUDE = `${TEMPLATE}ARG CLAUDE_CODE_VERSION=2.1.228\nRUN npm install -g "@anthropic-ai/claude-code@\${CLAUDE_CODE_VERSION}"\n`;
 
-  function setup(content: string | null = WITH_CLAUDE) {
+  function setup(content: string | null = WITH_CLAUDE, uid = 10001, imageUser = "phoebe") {
     const files = new Map<string, string>([[COMPOSE, "services: {}\n"]]);
     if (content !== null) files.set(DOCKERFILE, content);
     const fetched: string[] = [];
@@ -331,7 +361,11 @@ describe("the check and the update", () => {
         code: 0,
         stdout:
           applied ??
-          "agent|2026.07.23-e383d2b\nclaude|2.1.228 (Claude Code)\ncodex|\nphoebe-agent|0.13.0\n",
+          (spec.args.includes("--images")
+            ? "phoebe-runtime:latest\n"
+            : spec.args.includes("inspect")
+              ? `${imageUser}|\n`
+              : `agent|2026.07.23-e383d2b\nclaude|2.1.228 (Claude Code)\ncodex|\nphoebe-agent|0.13.0\nuid|${uid}\n`),
         stderr: "",
       });
     };
@@ -388,6 +422,33 @@ describe("the check and the update", () => {
       },
       { harness: "codex", pin: { kind: "absent" }, running: null, latest: null, behind: null },
     ]);
+  });
+
+  test("a running container is asked who it is", async () => {
+    const asRoot = await setup(WITH_CLAUDE, 0).harness.check({
+      dir: DIR,
+      running: true,
+      lookUp: false,
+    });
+    const dropped = await setup().harness.check({ dir: DIR, running: true, lookUp: false });
+
+    // Root in a container whose Dockerfile drops privileges: the image is older than the file.
+    expect(asRoot.user).toEqual({ root: true, dockerfileDrops: true });
+    expect(dropped.user).toEqual({ root: false, dockerfileDrops: true });
+  });
+
+  test("a stopped install is answered by the image it would start from", async () => {
+    const stale = setup(WITH_CLAUDE, 10001, "");
+    const report = await stale.harness.check({ dir: DIR, running: false, lookUp: false });
+
+    expect(report.user).toEqual({ root: true, dockerfileDrops: true });
+    // The compose file is asked which image, and Docker is asked about that one.
+    expect(stale.ran.map((args) => args.slice(-2).join(" "))).toEqual([
+      "config --images",
+      "{{.Config.User}}| phoebe-runtime:latest",
+    ]);
+    const fine = await setup().harness.check({ dir: DIR, running: false, lookUp: false });
+    expect(fine.user.root).toBe(false);
   });
 
   test("a look-up fills in the latest, and the next check still has it", async () => {

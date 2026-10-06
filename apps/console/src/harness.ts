@@ -22,6 +22,7 @@ import type {
   LocalReportEvent,
   UpgradeOutcome,
 } from "phoebe-agent/contracts";
+import type { RailProblem } from "./local-install.ts";
 
 /** Each harness by the name its vendor gives it, not the provider's short one. */
 export const HARNESS_LABEL: Record<HarnessName, string> = {
@@ -465,4 +466,55 @@ export function takenReading(results: readonly TakenUpdate[], running: boolean):
   }
   for (const result of failed) parts.push(`${result.label}: ${result.why}.`);
   return parts.join(" ");
+}
+
+// ── a container that runs as root ─────────────────────────────────────────
+
+/**
+ * What it means that an install's container runs as root, or null when it does
+ * not, or nothing could be asked.
+ *
+ * Claude Code refuses `--dangerously-skip-permissions` under uid 0, and the
+ * engine always passes it, so a root container fails every unit on that
+ * provider. It gets there by being started from an image built before the
+ * Dockerfile dropped privileges: `start` does not rebuild an image that is
+ * already there, however old. So this is an error where a config runs claude
+ * and a warning where none does, and the remedy is a rebuild when the
+ * Dockerfile would produce something else.
+ */
+export function rootReading(
+  install: LocalInstall,
+  event: LocalReportEvent | null,
+  report: HarnessReport | null,
+): { level: "error" | "warning"; text: string; rebuild: boolean } | null {
+  if (report === null || report.user.root !== true) return null;
+  const claude = harnessUsers(install, event).some((user) => user.harness === "claude");
+  const consequence = claude
+    ? "Claude Code refuses to run as root, so every unit on the claude provider fails."
+    : "Claude Code refuses to run as root, so no unit could run on that provider.";
+  return {
+    level: claude ? "error" : "warning",
+    text: report.user.dockerfileDrops
+      ? `${consequence} Its image was built before container/Dockerfile dropped to an unprivileged user, and a start does not rebuild an image that is already there. Rebuild it.`
+      : `${consequence} Its Dockerfile has no USER line, so a rebuild will not change that: compare it with a freshly scaffolded container/Dockerfile.`,
+    rebuild: report.user.dockerfileDrops,
+  };
+}
+
+/** The same, as the one line a rail badge and the console's header carry. */
+export function rootProblem(
+  install: LocalInstall,
+  event: LocalReportEvent | null,
+  report: HarnessReport | null,
+): RailProblem[] {
+  const reading = rootReading(install, event, report);
+  if (reading === null) return [];
+  return [
+    {
+      level: reading.level,
+      text: reading.rebuild
+        ? "its container runs as root, which Claude Code refuses: its image predates its Dockerfile, so rebuild"
+        : "its container runs as root, which Claude Code refuses: its Dockerfile has no USER line",
+    },
+  ];
 }

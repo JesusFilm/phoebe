@@ -10,12 +10,15 @@ import {
   applyReading,
   availableUpdates,
   harnessRows,
+  rootProblem,
+  rootReading,
   takenReading,
   updateArrow,
   updatesReading,
   updatesSignature,
   type AvailableUpdate,
 } from "./harness.ts";
+import { consoleStatus } from "./console-status.ts";
 import { HarnessPanel } from "./harness-section.tsx";
 import { createNotifier, type Notifiable } from "./notifications.ts";
 import { Rail } from "./rail.tsx";
@@ -59,6 +62,7 @@ function report(overrides: Partial<HarnessReport> = {}): HarnessReport {
     dockerfile: "/repos/one/container/Dockerfile",
     containerAsked: true,
     latestAt: "2026-10-02T12:00:00.000Z",
+    user: { root: false, dockerfileDrops: true },
     launcher: {
       pin: { kind: "pinned", version: "0.13.2" },
       running: "0.13.2",
@@ -564,5 +568,70 @@ describe("the notification for updates", () => {
     expect(made.raise(notifiable, { enabled: false, focused: false })).toBe(false);
     expect(made.raise(notifiable, { enabled: true, focused: true })).toBe(false);
     expect(shown).toEqual([]);
+  });
+});
+
+describe("a container that runs as root", () => {
+  const noop = (): void => undefined;
+  const asRoot = report({ user: { root: true, dockerfileDrops: true } });
+
+  test("is an error where a config runs claude, and says a rebuild fixes it", () => {
+    expect(rootReading(solo, event(), asRoot)).toMatchObject({ level: "error", rebuild: true });
+    expect(rootReading(solo, event(), asRoot)!.text).toContain(
+      "Claude Code refuses to run as root, so every unit on the claude provider fails.",
+    );
+    expect(rootProblem(solo, event(), asRoot)).toEqual([
+      {
+        level: "error",
+        text: "its container runs as root, which Claude Code refuses: its image predates its Dockerfile, so rebuild",
+      },
+    ]);
+  });
+
+  test("is a warning where nothing runs claude", () => {
+    const cursor = localReport({
+      facts: solo,
+      directory: directory({ configFields: fields("v0.13.2", "cursor") }),
+    });
+
+    expect(rootReading(solo, cursor, asRoot)).toMatchObject({ level: "warning", rebuild: true });
+  });
+
+  test("a Dockerfile that never drops privileges is not fixed by a rebuild", () => {
+    const never = report({ user: { root: true, dockerfileDrops: false } });
+
+    expect(rootReading(solo, event(), never)).toMatchObject({ rebuild: false });
+    expect(rootReading(solo, event(), never)!.text).toContain("has no USER line");
+  });
+
+  test("an unprivileged container, an unanswered question and no report say nothing", () => {
+    expect(rootReading(solo, event(), report())).toBeNull();
+    expect(
+      rootReading(solo, event(), report({ user: { root: null, dockerfileDrops: true } })),
+    ).toBeNull();
+    expect(rootProblem(solo, event(), null)).toEqual([]);
+  });
+
+  test("the rail badges the install, and the console's header counts it", () => {
+    const problems = rootProblem(solo, event(), asRoot);
+    const rail = renderToStaticMarkup(
+      <Rail
+        surface="companion"
+        facts={[]}
+        now={new Date()}
+        signedIn={false}
+        signIn={null}
+        onSignedIn={() => undefined}
+        installs={[solo]}
+        problems={{ [solo.dir]: problems }}
+        onSettings={noop}
+      />,
+    );
+
+    expect(rail).toMatch(/class="rail-problem error" aria-label="1 error"/);
+    expect(rail).toContain("Error — its container runs as root");
+
+    const status = consoleStatus(solo, event(), problems);
+    expect(status.problems[0]).toEqual(problems[0]);
   });
 });

@@ -125,6 +125,11 @@ set of versions. It never updates by itself. **Update** moves each harness pin
 and, on a running install, puts the new version into the container beside the
 old one, so a unit in flight finishes on what it started with.
 
+A container that runs as root is flagged on the rail, in the console's header
+and at the top of the install tab, with **Rebuild and restart**: Claude Code
+refuses to run as root, and a container is root when its image is older than
+the Dockerfile that drops privileges.
+
 The install tab's **Phoebe** section lists the launcher (`phoebe-agent`, pinned
 in `container/Dockerfile`) and the engine (`engine.ref` in the config), each
 with a field and a button that runs `upgrade` for that half.
