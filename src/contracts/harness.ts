@@ -76,10 +76,10 @@ export type ContainerUserFacts = {
 };
 
 /**
- * One tool a config's commands may start with (`vp`, `pnpm`, `yarn`, `bun`),
+ * One tool a config's commands may start with (a package manager, a task runner),
  * and whether the install has it. The engine runs a tenant's install, check,
  * test and ready commands inside the container, so a command that starts with
- * a tool the image lacks fails every unit with `sh: vp: not found`, which is a
+ * a tool the image lacks fails every unit with `sh: <tool>: not found`, which is a
  * line in a log and nothing else.
  */
 export type ToolFacts = {
