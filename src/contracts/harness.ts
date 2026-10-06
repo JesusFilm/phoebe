@@ -65,6 +65,14 @@ export type ContainerUserFacts = {
   root: boolean | null;
   /** Whether the Dockerfile ends on a non-root `USER`, so an image built from it would not be root. */
   dockerfileDrops: boolean;
+  /**
+   * The volume mount points under `/data` the container's user cannot write.
+   * Docker gives a named volume its owner once, when it creates it, so volumes
+   * a root container made stay root's through every rebuild. A container that
+   * has since dropped privileges starts and dies on its first write to one.
+   * Empty when all are writable, and when nothing could be asked.
+   */
+  unwritable: string[];
 };
 
 /** Every harness on one install, as the last check found them. */

@@ -303,6 +303,51 @@ export function isBehind(current: string | null, latest: string | null): boolean
 // ── asking the container ───────────────────────────────────────────────────
 
 /**
+ * One line per volume mount point under `/data` that whoever runs this cannot
+ * write: `unwritable|<path>`. The engine's checkout, its clones and its stores
+ * all live there, so one such line is a container that cannot start.
+ */
+const UNWRITABLE_SCRIPT =
+  'for d in /data/*; do if [ -d "$d" ] && [ ! -w "$d" ]; then printf "unwritable|%s\\n" "$d"; fi; done';
+
+/** The same question asked of a one-off container, for an install that is not running. */
+export const UNWRITABLE_ARGV: readonly string[] = [
+  "run",
+  "--rm",
+  "-T",
+  "--no-deps",
+  "--entrypoint",
+  "sh",
+  PHOEBE_SERVICE,
+  "-c",
+  UNWRITABLE_SCRIPT,
+];
+
+/**
+ * Give everything under `/data` to the user in `$1`, as root, in a one-off
+ * container with the install's own volumes mounted. What the docs give as the
+ * one-time step after the move to an unprivileged image (docs/upgrading.md).
+ */
+export function chownArgv(user: string): readonly string[] {
+  return [
+    "run",
+    "--rm",
+    "-T",
+    "--no-deps",
+    "--user",
+    "root",
+    "--entrypoint",
+    "sh",
+    PHOEBE_SERVICE,
+    "-c",
+    // The user's own group, or the same number when the image has no such name.
+    'u="$1"; g=$(id -g "$u" 2>/dev/null || echo "$u"); chown -R "$u:$g" /data && echo done',
+    "sh",
+    user,
+  ];
+}
+
+/**
  * One line per command, `<command>|<what --version printed>`, blank after the
  * bar when the container does not have it. `timeout` because a CLI that waits
  * on a network before printing its version should not hold the page.
@@ -315,7 +360,7 @@ const VERSIONS_SCRIPT =
   `printf "${LAUNCHER_PACKAGE}|%s\\n" "$(sed -n 's/.*"version": *"\\([^"]*\\)".*/\\1/p' ` +
   `"$(npm root -g 2>/dev/null)/${LAUNCHER_PACKAGE}/package.json" 2>/dev/null | head -n 1)"; ` +
   // Who this exec is, which is who the engine and every agent under it are.
-  'printf "uid|%s\\n" "$(id -u)"';
+  `printf "uid|%s\\n" "$(id -u)"; ${UNWRITABLE_SCRIPT}`;
 
 export const VERSIONS_ARGV: readonly string[] = [
   "exec",
@@ -347,6 +392,27 @@ export function parseUid(stdout: string): number | null {
   return null;
 }
 
+/** The mount points the probe could not write, off its output. */
+export function parseUnwritable(stdout: string): string[] {
+  const paths: string[] = [];
+  for (const line of stdout.split("\n")) {
+    const [name, said] = line.trim().split("|");
+    if (name === "unwritable" && said !== undefined && said.startsWith("/")) paths.push(said);
+  }
+  return paths;
+}
+
+/** The user a Dockerfile's last live `USER` names, without its group; null when it has none. */
+export function dockerfileUser(content: string): string | null {
+  let last: string | null = null;
+  for (const line of content.split(/\r?\n/)) {
+    if (isComment(line)) continue;
+    const match = /^USER[ \t]+(\S+)/.exec(line);
+    if (match !== null) last = match[1]!.split(":")[0] ?? null;
+  }
+  return last;
+}
+
 /** Whether a `USER` value, a Dockerfile's or an image's, is root. No user at all is root. */
 export function isRootUser(user: string): boolean {
   const name = user.trim().split(":")[0] ?? "";
@@ -359,13 +425,8 @@ export function isRootUser(user: string): boolean {
  * drop is a drop, and a Dockerfile with none runs as root.
  */
 export function dockerfileDropsPrivileges(content: string): boolean {
-  let last: string | null = null;
-  for (const line of content.split(/\r?\n/)) {
-    if (isComment(line)) continue;
-    const match = /^USER[ \t]+(\S+)/.exec(line);
-    if (match !== null) last = match[1]!;
-  }
-  return last !== null && !isRootUser(last);
+  const user = dockerfileUser(content);
+  return user !== null && !isRootUser(user);
 }
 
 /** The launcher's version off the same output, or null when the container installs none. */
@@ -605,10 +666,13 @@ export function createHarness(deps: HarnessDeps = {}) {
     }
   }
 
-  async function runningVersions(
-    dir: string,
-  ): Promise<
-    (Record<HarnessName, string | null> & { launcher: string | null; uid: number | null }) | null
+  async function runningVersions(dir: string): Promise<
+    | (Record<HarnessName, string | null> & {
+        launcher: string | null;
+        uid: number | null;
+        unwritable: string[];
+      })
+    | null
   > {
     const deployment = resolveDeploymentCompose(deploymentDirOf(dir, exists).dir, exists);
     if ("kind" in deployment) return null;
@@ -623,6 +687,7 @@ export function createHarness(deps: HarnessDeps = {}) {
             ...parseVersions(result.stdout),
             launcher: parseLauncherVersion(result.stdout),
             uid: parseUid(result.stdout),
+            unwritable: parseUnwritable(result.stdout),
           }
         : null;
     } catch {
@@ -655,7 +720,69 @@ export function createHarness(deps: HarnessDeps = {}) {
     }
   }
 
+  /**
+   * A stopped install: who its image would run as, and, when that is not root
+   * and the install has been started before, what a one-off container of it
+   * cannot write. Never started is never asked: a one-off container would
+   * create the volumes, and a read does not make things.
+   */
+  async function stoppedContainer(
+    dir: string,
+  ): Promise<{ root: boolean | null; unwritable: string[] }> {
+    const root = await imageRunsAsRoot(dir);
+    if (root !== false) return { root, unwritable: [] };
+    const deployment = resolveDeploymentCompose(deploymentDirOf(dir, exists).dir, exists);
+    if ("kind" in deployment) return { root, unwritable: [] };
+    const runner = runnerFor(dir);
+    try {
+      const made = await runCompose({ deployment, args: ["ps", "-aq", PHOEBE_SERVICE], runner });
+      if (made.code !== 0 || made.stdout.trim() === "") return { root, unwritable: [] };
+      const probed = await runCompose({ deployment, args: UNWRITABLE_ARGV, runner });
+      return { root, unwritable: probed.code === 0 ? parseUnwritable(probed.stdout) : [] };
+    } catch {
+      return { root, unwritable: [] };
+    }
+  }
+
   return {
+    /**
+     * Give the install's volumes to the user its Dockerfile runs the container
+     * as ({@link chownArgv}). Only for a Dockerfile that names one: with no
+     * `USER` the container is root and already owns them.
+     */
+    async ownVolumes(dir: string): Promise<{ fixed: boolean; detail: string }> {
+      const { content } = dockerfileText(dir);
+      const user = content === null ? null : dockerfileUser(content);
+      if (user === null || isRootUser(user) || !/^[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(user)) {
+        return {
+          fixed: false,
+          detail: "The Dockerfile names no unprivileged user to give the volumes to.",
+        };
+      }
+      const deployment = resolveDeploymentCompose(deploymentDirOf(dir, exists).dir, exists);
+      if ("kind" in deployment) return { fixed: false, detail: "This install has no container." };
+      try {
+        const result = await runCompose({
+          deployment,
+          args: chownArgv(user),
+          runner: runnerFor(dir),
+        });
+        return result.code === 0 && result.stdout.includes("done")
+          ? {
+              fixed: true,
+              detail: `Everything under /data now belongs to ${user}, the user the container runs as. Nothing in the volumes was removed.`,
+            }
+          : {
+              fixed: false,
+              detail:
+                (result.stderr || result.stdout).trim().split("\n").pop() ||
+                "The volumes could not be handed over.",
+            };
+      } catch (error) {
+        return { fixed: false, detail: error instanceof Error ? error.message : String(error) };
+      }
+    },
+
     /**
      * Every harness on one install. The network is asked only when `lookUp` is
      * set: opening a page reads a file and asks a container, and nothing leaves
@@ -664,10 +791,10 @@ export function createHarness(deps: HarnessDeps = {}) {
     async check(opts: { dir: string; running: boolean; lookUp: boolean }): Promise<HarnessReport> {
       const { file, content } = dockerfileText(opts.dir);
       const pins = content === null ? null : readHarnessPins(content);
-      const [inContainer, imageRoot] = await Promise.all([
+      const [inContainer, stopped] = await Promise.all([
         opts.running ? runningVersions(opts.dir) : Promise.resolve(null),
         // A stopped install has no container to ask, so its image is asked.
-        opts.running || content === null ? Promise.resolve(null) : imageRunsAsRoot(opts.dir),
+        opts.running || content === null ? Promise.resolve(null) : stoppedContainer(opts.dir),
         opts.lookUp
           ? Promise.all([
               ...HARNESS_NAMES.map(async (harness) => {
@@ -712,8 +839,11 @@ export function createHarness(deps: HarnessDeps = {}) {
         },
         user: {
           root:
-            inContainer !== null && inContainer.uid !== null ? inContainer.uid === 0 : imageRoot,
+            inContainer !== null && inContainer.uid !== null
+              ? inContainer.uid === 0
+              : (stopped?.root ?? null),
           dockerfileDrops: content !== null && dockerfileDropsPrivileges(content),
+          unwritable: inContainer?.unwritable ?? stopped?.unwritable ?? [],
         },
         containerAsked: inContainer !== null,
         latestAt,

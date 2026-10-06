@@ -102,7 +102,7 @@ function report(overrides: Partial<HarnessReport> = {}): HarnessReport {
     dockerfile: "/repos/ws/container/Dockerfile",
     containerAsked: true,
     latestAt: "2026-10-01T12:00:00.000Z",
-    user: { root: false, dockerfileDrops: true },
+    user: { root: false, dockerfileDrops: true, unwritable: [] },
     launcher: {
       pin: { kind: "pinned", version: "0.13.2" },
       running: "0.13.0",

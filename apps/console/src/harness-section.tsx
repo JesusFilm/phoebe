@@ -21,6 +21,7 @@ import type {
   HarnessUpdateOutcome,
   LocalInstall,
   LocalReportEvent,
+  RepairOutcome,
   VerbRun,
   VerbRunRequest,
 } from "phoebe-agent/contracts";
@@ -41,6 +42,7 @@ import {
   phoebeVersions,
   rootReading,
   updateReading,
+  volumesReading,
   updateVerb,
   upgradeReading,
   type HarnessRow,
@@ -82,6 +84,8 @@ export function HarnessSection({
   const [updating, setUpdating] = useState<HarnessName | null>(null);
   const [outcome, setOutcome] = useState<HarnessUpdateOutcome | null>(null);
   const [trouble, setTrouble] = useState<string | null>(null);
+  const [owning, setOwning] = useState(false);
+  const [owned, setOwned] = useState<RepairOutcome | null>(null);
   const [applying, setApplying] = useState<HarnessName | null>(null);
   const [applied, setApplied] = useState<HarnessApplyOutcome | null>(null);
 
@@ -165,8 +169,53 @@ export function HarnessSection({
   }
 
   const root = rootReading(install, event, report);
+  const volumes = volumesReading(report);
+  const own = (): void => {
+    setOwning(true);
+    setOwned(null);
+    bridge.installs
+      .repair(install.dir, { kind: "volume-ownership" })
+      .then(setOwned, (error: unknown) => setOwned({ fixed: false, detail: refusalText(error) }))
+      .finally(() => {
+        setOwning(false);
+        void check(false);
+      });
+  };
   return (
     <>
+      {volumes === null && owned === null ? null : (
+        <section className="fixable" aria-label="The container cannot write its volumes">
+          {/* Once they are handed over the heading says so, not what was wrong. */}
+          <h2>
+            {volumes === null
+              ? "The volumes were handed over"
+              : "The container cannot write its volumes"}
+          </h2>
+          {volumes === null ? null : (
+            <>
+              <p>{volumes}</p>
+              <Button size="sm" disabled={busy || owning} onClick={own}>
+                {owning ? "Handing them over…" : "Give them to the container's user"}
+              </Button>
+            </>
+          )}
+          {owned === null ? null : (
+            <p className={owned.fixed ? "receipt written" : "refusal"} role="status">
+              {owned.detail}
+              {owned.fixed && install.state !== "running" ? " Start the install." : null}
+            </p>
+          )}
+          {owned?.fixed === true && install.state !== "running" && onStart !== undefined ? (
+            <Button
+              size="sm"
+              disabled={busy}
+              onClick={() => onStart({ install: install.dir, verb: "start" })}
+            >
+              Start
+            </Button>
+          ) : null}
+        </section>
+      )}
       {root === null ? null : (
         <section className="fixable" aria-label="The container runs as root">
           <h2>The container runs as root</h2>
