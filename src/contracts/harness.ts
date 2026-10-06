@@ -75,6 +75,26 @@ export type ContainerUserFacts = {
   unwritable: string[];
 };
 
+/**
+ * One tool a config's commands may start with (`vp`, `pnpm`, `yarn`, `bun`),
+ * and whether the install has it. The engine runs a tenant's install, check,
+ * test and ready commands inside the container, so a command that starts with
+ * a tool the image lacks fails every unit with `sh: vp: not found`, which is a
+ * line in a log and nothing else.
+ */
+export type ToolFacts = {
+  tool: string;
+  /** Whether the Dockerfile installs it, by reading the file. */
+  inDockerfile: boolean;
+  /** Whether the container has it on its PATH. Null when no container could be asked. */
+  inContainer: boolean | null;
+};
+
+/** What came of writing a tool's install into the Dockerfile. */
+export type ToolAddOutcome =
+  | { kind: "added"; tool: string; file: string }
+  | { kind: "refused"; tool: string; why: string };
+
 /** Every harness on one install, as the last check found them. */
 export type HarnessReport = {
   /** The Dockerfile that was read, or null when the install has none. */
@@ -82,6 +102,8 @@ export type HarnessReport = {
   harnesses: HarnessFacts[];
   launcher: LauncherFacts;
   user: ContainerUserFacts;
+  /** The tools a config's commands might need, as far as the install has them. */
+  tools: ToolFacts[];
   /** Whether a running container answered. False for a stopped install. */
   containerAsked: boolean;
   /** When `latest` was last looked up, ISO-8601. Null before the first lookup. */

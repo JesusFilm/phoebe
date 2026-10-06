@@ -61,6 +61,7 @@ import { hostOfProcessPlatform } from "./host-icon.tsx";
 import {
   availableUpdates,
   rootProblem,
+  toolsProblem,
   updatesReading,
   volumesProblem,
   updatesSignature,
@@ -382,13 +383,15 @@ function Console({
   }, [bridge]);
 
   // What is wrong with each install itself, off the same reports: a container
-  // that runs as root, or one that cannot write its volumes. The rail's badge and the console's header both read it.
+  // that runs as root, one that cannot write its volumes, a tool its commands
+  // need and the container lacks. The rail's badge and the console's header both read it.
   const installProblems = useMemo(() => {
     const found: Record<string, RailProblem[]> = {};
     for (const install of installs) {
       const problems = [
         ...rootProblem(install, reports[install.dir] ?? null, harnessReports[install.dir] ?? null),
         ...volumesProblem(harnessReports[install.dir] ?? null),
+        ...toolsProblem(install, reports[install.dir] ?? null, harnessReports[install.dir] ?? null),
       ];
       if (problems.length > 0) found[install.dir] = problems;
     }

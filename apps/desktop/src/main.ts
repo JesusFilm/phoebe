@@ -64,6 +64,7 @@ import type {
   HarnessReport,
   HarnessUpdate,
   HarnessUpdateOutcome,
+  ToolAddOutcome,
 } from "phoebe-agent/contracts";
 import { createCompanionAlerts } from "./alerting.ts";
 import { authCodeIn, authCodeInArgv } from "./auth-link.ts";
@@ -686,6 +687,20 @@ app.whenReady().then(
         const outcome = harness.remove(dir, name);
         // The pins ride on the install's read, so the rail and the page redraw.
         if (outcome.kind === "removed") await reads.refresh(dir).catch(() => undefined);
+        return outcome;
+      }),
+    );
+
+    ipcMain.handle(BRIDGE_CHANNELS.harnessAddTool, (_event, dir: string, tool: string) =>
+      answering<ToolAddOutcome>(async () => {
+        const install = await heldInstall(dir);
+        const outcome = harness.addTool(dir, tool);
+        if (outcome.kind === "added") {
+          const report = await harness
+            .check({ dir, running: install.state === "running", lookUp: false })
+            .catch(() => null);
+          if (report !== null) broadcast(BRIDGE_CHANNELS.harnessReport, { install: dir, report });
+        }
         return outcome;
       }),
     );
