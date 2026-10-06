@@ -35,6 +35,7 @@ import type {
   HarnessReportEvent,
   HarnessUpdate,
   HarnessUpdateOutcome,
+  ToolAddOutcome,
 } from "./harness.ts";
 import type {
   InstallRepair,
@@ -178,6 +179,8 @@ export type DesktopBridge = {
     update: (dir: string, update: HarnessUpdate) => Promise<HarnessUpdateOutcome>;
     /** Take one harness out of the Dockerfile. Rebuilds nothing; the container keeps it until then. */
     remove: (dir: string, harness: HarnessName) => Promise<HarnessRemoveOutcome>;
+    /** Write a tool's install into the Dockerfile: `vp`, `pnpm`, `yarn` or `bun`. Rebuilds nothing. */
+    addTool: (dir: string, tool: string) => Promise<ToolAddOutcome>;
     /**
      * Put the version the Dockerfile pins into the running container, without
      * a rebuild and without touching a unit in flight.

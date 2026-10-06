@@ -72,7 +72,9 @@ and at the top of the install tab, with **Rebuild and restart**: Claude Code
 refuses to run as root, and a container is root when its image is older than
 the Dockerfile that drops privileges. After that rebuild its volumes are still
 root's, so the same places flag what the container cannot write under `/data`,
-with **Give them to the container's user**.
+with **Give them to the container's user**. A tool a config's commands start
+with (`vp`, `pnpm`, `yarn`, `bun`) that the container lacks is flagged the same
+way, with a button that writes its install into the Dockerfile.
 
 The install tab's **Phoebe** section lists the launcher (`phoebe-agent`, pinned
 in `container/Dockerfile`) and the engine (`engine.ref` in the config), each

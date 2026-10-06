@@ -17,6 +17,9 @@ import {
   parseUnwritable,
   parseVersions,
   readHarnessPins,
+  addToolLines,
+  parseTools,
+  readDockerfileTools,
   readLauncherPin,
   registryNpm,
   removeHarness,
@@ -387,6 +390,34 @@ describe("adding Cursor where there is none, and taking a harness out", () => {
   });
 });
 
+describe("the tools a config's commands start with", () => {
+  test("are read off the probe's lines", () => {
+    expect(parseTools("uid|10001\ntool|vp\ntool|pnpm\n")).toEqual(["vp", "pnpm"]);
+    expect(parseTools("uid|10001\ntool|make\n")).toEqual([]);
+  });
+
+  test("the Dockerfile says which it installs", () => {
+    expect(readDockerfileTools(TEMPLATE)).toEqual([]);
+    expect(
+      readDockerfileTools(`${TEMPLATE}RUN corepack enable\nRUN npm install -g vite-plus\n`),
+    ).toEqual(["vp", "pnpm", "yarn"]);
+    // A comment that names one is not an install.
+    expect(readDockerfileTools("# RUN npm install -g vite-plus\n")).toEqual([]);
+  });
+
+  test("a tool's install goes in beside the global installs, once", () => {
+    const added = addToolLines(TEMPLATE, "vp");
+
+    expect(added.ok).toBe(true);
+    if (!added.ok) return;
+    expect(added.content).toContain("RUN npm install -g vite-plus");
+    expect(added.content.indexOf("vite-plus")).toBeLessThan(added.content.indexOf("USER phoebe"));
+    expect(readDockerfileTools(added.content)).toEqual(["vp"]);
+    expect(addToolLines(added.content, "vp")).toMatchObject({ ok: false });
+    expect(addToolLines(TEMPLATE, "make")).toMatchObject({ ok: false });
+  });
+});
+
 describe("behind or not", () => {
   test("compares the numbers, for npm versions and Cursor's dated builds alike", () => {
     expect(isBehind("2.1.228", "2.1.287")).toBe(true);
@@ -472,6 +503,7 @@ describe("the check and the update", () => {
     uid = 10001,
     imageUser = "phoebe",
     unwritable: string[] = [],
+    started = true,
   ) {
     const files = new Map<string, string>([[COMPOSE, "services: {}\n"]]);
     if (content !== null) files.set(DOCKERFILE, content);
@@ -495,7 +527,9 @@ describe("the check and the update", () => {
             : spec.args.includes("inspect")
               ? `${imageUser}|\n`
               : spec.args.includes("-aq")
-                ? "bd430af485a9\n"
+                ? started
+                  ? "bd430af485a9\n"
+                  : ""
                 : spec.args.includes("--user")
                   ? "done\n"
                   : spec.args.includes("run")
@@ -762,6 +796,34 @@ describe("the check and the update", () => {
     expect(await harness.apply(DIR, "claude")).toMatchObject({ kind: "refused" });
     expect(await harness.apply(DIR, "codex")).toMatchObject({ kind: "refused" });
     expect(ran).toEqual([]);
+  });
+
+  test("the check says which tools the Dockerfile and the container have", async () => {
+    const { harness } = setup(`${WITH_CLAUDE}RUN npm install -g vite-plus\n`);
+
+    const report = await harness.check({ dir: DIR, running: true, lookUp: false });
+
+    expect(report.tools.find((tool) => tool.tool === "vp")).toEqual({
+      tool: "vp",
+      inDockerfile: true,
+      inContainer: false,
+    });
+    // A stopped install that has never been started cannot be asked.
+    const never = setup(WITH_CLAUDE, 10001, "phoebe", [], false);
+    const quiet = await never.harness.check({ dir: DIR, running: false, lookUp: false });
+    expect(quiet.tools.find((tool) => tool.tool === "vp")).toEqual({
+      tool: "vp",
+      inDockerfile: false,
+      inContainer: null,
+    });
+  });
+
+  test("adding a tool writes its install and says so", async () => {
+    const { harness, files } = setup();
+
+    expect(harness.addTool(DIR, "pnpm")).toEqual({ kind: "added", tool: "pnpm", file: DOCKERFILE });
+    expect(files.get(DOCKERFILE)).toContain("RUN corepack enable");
+    expect(harness.addTool(DIR, "pnpm")).toMatchObject({ kind: "refused" });
   });
 
   test("removing writes the Dockerfile without it and says so", async () => {

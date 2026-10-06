@@ -29,6 +29,7 @@ import type {
   HarnessReport,
   HarnessUpdate,
   HarnessUpdateOutcome,
+  ToolAddOutcome,
 } from "phoebe-agent/contracts";
 import {
   defaultCommandRunner,
@@ -489,7 +490,45 @@ export function isBehind(current: string | null, latest: string | null): boolean
 const UNWRITABLE_SCRIPT =
   'for d in /data/*; do if [ -d "$d" ] && [ ! -w "$d" ]; then printf "unwritable|%s\\n" "$d"; fi; done';
 
-/** The same question asked of a one-off container, for an install that is not running. */
+/**
+ * The tools a config's commands may start with, each with how a Dockerfile
+ * installs it and how to tell that it does. Node's own `npm` and `npx` are in
+ * every image and are not listed. The engine runs the four commands with `sh`,
+ * so the first word is what has to be on the PATH.
+ */
+export const TOOLS: Record<string, { label: string; lines: string[]; installed: RegExp }> = {
+  vp: {
+    label: "vite-plus",
+    lines: [
+      "# vite-plus, which the tenant's commands run as `vp`.",
+      "RUN npm install -g vite-plus",
+    ],
+    installed: /vite-plus/,
+  },
+  pnpm: {
+    label: "pnpm",
+    lines: [
+      "# pnpm, through corepack, which ships with Node and fetches the version each repo pins.",
+      "RUN corepack enable",
+    ],
+    installed: /corepack enable|install -g pnpm|pnpm@/,
+  },
+  yarn: {
+    label: "yarn",
+    lines: ["# yarn, through corepack, which ships with Node.", "RUN corepack enable"],
+    installed: /corepack enable|install -g yarn/,
+  },
+  bun: {
+    label: "bun",
+    lines: ["# bun, which the tenant's commands run.", "RUN npm install -g bun"],
+    installed: /install -g bun|oven\/bun/,
+  },
+};
+
+/** One line per tool on the PATH: `tool|<name>`. */
+const TOOLS_SCRIPT = `for t in ${Object.keys(TOOLS).join(" ")}; do if command -v "$t" >/dev/null 2>&1; then printf "tool|%s\\n" "$t"; fi; done`;
+
+/** The same questions asked of a one-off container, for an install that is not running. */
 export const UNWRITABLE_ARGV: readonly string[] = [
   "run",
   "--rm",
@@ -499,8 +538,51 @@ export const UNWRITABLE_ARGV: readonly string[] = [
   "sh",
   PHOEBE_SERVICE,
   "-c",
-  UNWRITABLE_SCRIPT,
+  `${UNWRITABLE_SCRIPT}; ${TOOLS_SCRIPT}`,
 ];
+
+/** The tools on the container's PATH, off the probe's output. */
+export function parseTools(stdout: string): string[] {
+  const tools: string[] = [];
+  for (const line of stdout.split("\n")) {
+    const [name, said] = line.trim().split("|");
+    if (name === "tool" && said !== undefined && said in TOOLS) tools.push(said);
+  }
+  return tools;
+}
+
+/** The tools a Dockerfile installs, by reading its live lines. */
+export function readDockerfileTools(content: string): string[] {
+  const live = content.split(/\r?\n/).filter((line) => !isComment(line));
+  return Object.entries(TOOLS)
+    .filter(([, tool]) => live.some((line) => tool.installed.test(line)))
+    .map(([name]) => name);
+}
+
+/**
+ * The Dockerfile with one tool's install written in, beside the global installs
+ * already there ({@link insertionPoint}). One the file already installs is
+ * left as it is.
+ */
+export function addToolLines(content: string, tool: string): Removal {
+  const known = TOOLS[tool];
+  if (known === undefined)
+    return { ok: false, why: `${tool} is not a tool this knows how to install` };
+  if (readDockerfileTools(content).includes(tool)) {
+    return { ok: false, why: `the Dockerfile already installs ${known.label}` };
+  }
+  const newline = content.includes("\r\n") ? "\r\n" : "\n";
+  const lines = content.split(/\r?\n/);
+  const at = insertionPoint(lines);
+  if (at === null) {
+    return {
+      ok: false,
+      why: "this Dockerfile has no global npm install or USER line to put it beside",
+    };
+  }
+  lines.splice(at.index, 0, ...(at.after ? ["", ...known.lines] : [...known.lines, ""]));
+  return { ok: true, content: lines.join(newline) };
+}
 
 /**
  * Give everything under `/data` to the user in `$1`, as root, in a one-off
@@ -539,7 +621,7 @@ const VERSIONS_SCRIPT =
   `printf "${LAUNCHER_PACKAGE}|%s\\n" "$(sed -n 's/.*"version": *"\\([^"]*\\)".*/\\1/p' ` +
   `"$(npm root -g 2>/dev/null)/${LAUNCHER_PACKAGE}/package.json" 2>/dev/null | head -n 1)"; ` +
   // Who this exec is, which is who the engine and every agent under it are.
-  `printf "uid|%s\\n" "$(id -u)"; ${UNWRITABLE_SCRIPT}`;
+  `printf "uid|%s\\n" "$(id -u)"; ${UNWRITABLE_SCRIPT}; ${TOOLS_SCRIPT}`;
 
 export const VERSIONS_ARGV: readonly string[] = [
   "exec",
@@ -850,6 +932,7 @@ export function createHarness(deps: HarnessDeps = {}) {
         launcher: string | null;
         uid: number | null;
         unwritable: string[];
+        tools: string[];
       })
     | null
   > {
@@ -867,6 +950,7 @@ export function createHarness(deps: HarnessDeps = {}) {
             launcher: parseLauncherVersion(result.stdout),
             uid: parseUid(result.stdout),
             unwritable: parseUnwritable(result.stdout),
+            tools: parseTools(result.stdout),
           }
         : null;
     } catch {
@@ -907,19 +991,21 @@ export function createHarness(deps: HarnessDeps = {}) {
    */
   async function stoppedContainer(
     dir: string,
-  ): Promise<{ root: boolean | null; unwritable: string[] }> {
+  ): Promise<{ root: boolean | null; unwritable: string[]; tools: string[] | null }> {
+    const nothing = { unwritable: [], tools: null };
     const root = await imageRunsAsRoot(dir);
-    if (root !== false) return { root, unwritable: [] };
+    if (root !== false) return { root, ...nothing };
     const deployment = resolveDeploymentCompose(deploymentDirOf(dir, exists).dir, exists);
-    if ("kind" in deployment) return { root, unwritable: [] };
+    if ("kind" in deployment) return { root, ...nothing };
     const runner = runnerFor(dir);
     try {
       const made = await runCompose({ deployment, args: ["ps", "-aq", PHOEBE_SERVICE], runner });
-      if (made.code !== 0 || made.stdout.trim() === "") return { root, unwritable: [] };
+      if (made.code !== 0 || made.stdout.trim() === "") return { root, ...nothing };
       const probed = await runCompose({ deployment, args: UNWRITABLE_ARGV, runner });
-      return { root, unwritable: probed.code === 0 ? parseUnwritable(probed.stdout) : [] };
+      if (probed.code !== 0) return { root, ...nothing };
+      return { root, unwritable: parseUnwritable(probed.stdout), tools: parseTools(probed.stdout) };
     } catch {
-      return { root, unwritable: [] };
+      return { root, ...nothing };
     }
   }
 
@@ -1024,6 +1110,14 @@ export function createHarness(deps: HarnessDeps = {}) {
           dockerfileDrops: content !== null && dockerfileDropsPrivileges(content),
           unwritable: inContainer?.unwritable ?? stopped?.unwritable ?? [],
         },
+        tools: Object.keys(TOOLS).map((tool) => {
+          const has = inContainer?.tools ?? stopped?.tools ?? null;
+          return {
+            tool,
+            inDockerfile: content !== null && readDockerfileTools(content).includes(tool),
+            inContainer: has === null ? null : has.includes(tool),
+          };
+        }),
         containerAsked: inContainer !== null,
         latestAt,
       };
@@ -1067,6 +1161,23 @@ export function createHarness(deps: HarnessDeps = {}) {
         : refused(
             `the container's ${HARNESSES[harness].command} answers ${now ?? "nothing"} after the switch`,
           );
+    },
+
+    /** Write a tool's install into the install's Dockerfile. Never rebuilds anything. */
+    addTool(dir: string, tool: string): ToolAddOutcome {
+      const refused = (why: string): ToolAddOutcome => ({ kind: "refused", tool, why });
+      const { file, content } = dockerfileText(dir);
+      if (content === null) return refused(`there is no Dockerfile at ${file}`);
+      const added = addToolLines(content, tool);
+      if (!added.ok) return refused(added.why);
+      try {
+        write(file, added.content);
+      } catch (error) {
+        return refused(
+          `${file} could not be written: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      return { kind: "added", tool, file };
     },
 
     /** Take one harness out of the install's Dockerfile. Never rebuilds anything. */

@@ -23,6 +23,7 @@ import type {
   LocalInstall,
   LocalReportEvent,
   RepairOutcome,
+  ToolAddOutcome,
   VerbRun,
   VerbRunRequest,
 } from "phoebe-agent/contracts";
@@ -46,6 +47,8 @@ import {
   providerOf,
   removeReading,
   rootReading,
+  toolAddReading,
+  toolsReading,
   updateReading,
   volumesReading,
   updateVerb,
@@ -99,6 +102,8 @@ export function HarnessSection({
   const [applying, setApplying] = useState<HarnessName | null>(null);
   const [applied, setApplied] = useState<HarnessApplyOutcome | null>(null);
   const [removing, setRemoving] = useState<HarnessName | null>(null);
+  const [addingTool, setAddingTool] = useState<string | null>(null);
+  const [toolAdded, setToolAdded] = useState<ToolAddOutcome | null>(null);
   const [removed, setRemoved] = useState<HarnessRemoveOutcome | null>(null);
 
   const check = useCallback(
@@ -215,6 +220,20 @@ export function HarnessSection({
 
   const root = rootReading(install, event, report);
   const volumes = volumesReading(report);
+  const tools = toolsReading(install, event, report);
+  const addTool = (tool: string): void => {
+    setAddingTool(tool);
+    setToolAdded(null);
+    bridge.harness
+      .addTool(install.dir, tool)
+      .then(setToolAdded, (error: unknown) =>
+        setToolAdded({ kind: "refused", tool, why: refusalText(error) }),
+      )
+      .finally(() => {
+        setAddingTool(null);
+        void check(false);
+      });
+  };
   const own = (): void => {
     setOwning(true);
     setOwned(null);
@@ -266,6 +285,41 @@ export function HarnessSection({
           <h2>The container runs as root</h2>
           <p>{root.text}</p>
           {root.rebuild ? (
+            <Button size="sm" disabled={busy} onClick={onRebuild}>
+              {install.state === "running" ? "Rebuild and restart" : "Rebuild and start"}
+            </Button>
+          ) : null}
+        </section>
+      )}
+      {tools.length === 0 && toolAdded === null ? null : (
+        <section className="fixable" aria-label="Tooling the commands need">
+          <h2>Tooling the commands need</h2>
+          {tools.map((reading) => (
+            <div key={reading.tool} className="tool-need">
+              <p>{reading.text}</p>
+              {reading.remedy === "add" ? (
+                <Button
+                  size="sm"
+                  disabled={busy || addingTool !== null}
+                  onClick={() => addTool(reading.tool)}
+                >
+                  {addingTool === reading.tool
+                    ? "Adding…"
+                    : `Add ${reading.tool} to the Dockerfile`}
+                </Button>
+              ) : (
+                <Button size="sm" disabled={busy} onClick={onRebuild}>
+                  {install.state === "running" ? "Rebuild and restart" : "Rebuild and start"}
+                </Button>
+              )}
+            </div>
+          ))}
+          {toolAdded === null ? null : (
+            <p className={toolAdded.kind === "added" ? "receipt written" : "refusal"} role="status">
+              {toolAddReading(toolAdded)}
+            </p>
+          )}
+          {toolAdded?.kind === "added" && tools.every((reading) => reading.remedy !== "rebuild") ? (
             <Button size="sm" disabled={busy} onClick={onRebuild}>
               {install.state === "running" ? "Rebuild and restart" : "Rebuild and start"}
             </Button>

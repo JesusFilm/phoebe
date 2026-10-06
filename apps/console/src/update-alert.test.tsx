@@ -10,8 +10,12 @@ import {
   applyReading,
   availableUpdates,
   harnessRows,
+  neededTools,
   rootProblem,
   rootReading,
+  toolAddReading,
+  toolsProblem,
+  toolsReading,
   volumesProblem,
   volumesReading,
   takenReading,
@@ -65,6 +69,7 @@ function report(overrides: Partial<HarnessReport> = {}): HarnessReport {
     containerAsked: true,
     latestAt: "2026-10-02T12:00:00.000Z",
     user: { root: false, dockerfileDrops: true, unwritable: [] },
+    tools: [],
     launcher: {
       pin: { kind: "pinned", version: "0.13.2" },
       running: "0.13.2",
@@ -646,5 +651,71 @@ describe("volumes the container cannot write", () => {
     expect(volumesReading(one)).toContain("That volume was");
     expect(volumesReading(report())).toBeNull();
     expect(volumesProblem(null)).toEqual([]);
+  });
+});
+
+describe("tooling the commands need", () => {
+  const vpEvent = localReport({
+    facts: solo,
+    directory: directory({
+      configFields: [
+        ...fields("v0.13.2", "claude"),
+        {
+          path: "installCommand",
+          scope: "tenant",
+          type: "string",
+          state: "set",
+          value: "vp install --ignore-scripts",
+        },
+        { path: "checkCommand", scope: "tenant", type: "string", state: "set", value: "vp check" },
+        { path: "testCommand", scope: "tenant", type: "string", state: "set", value: "npm test" },
+      ],
+    }),
+  });
+  const tools = (vp: { inDockerfile: boolean; inContainer: boolean | null }) =>
+    report({
+      tools: [
+        { tool: "vp", ...vp },
+        { tool: "pnpm", inDockerfile: false, inContainer: false },
+      ],
+    });
+
+  test("the tools are the first words of the four commands, the known ones", () => {
+    expect(neededTools(solo, vpEvent)).toEqual([{ tool: "vp", whose: ["one"] }]);
+    expect(neededTools(solo, null)).toEqual([]);
+  });
+
+  test("a tool the Dockerfile does not install is added; one it installs but the image lacks is rebuilt", () => {
+    expect(
+      toolsReading(solo, vpEvent, tools({ inDockerfile: false, inContainer: false })),
+    ).toMatchObject([{ tool: "vp", remedy: "add" }]);
+    expect(
+      toolsReading(solo, vpEvent, tools({ inDockerfile: true, inContainer: false })),
+    ).toMatchObject([{ tool: "vp", remedy: "rebuild" }]);
+    expect(
+      toolsReading(solo, vpEvent, tools({ inDockerfile: false, inContainer: false }))[0]!.text,
+    ).toContain('every unit fails with "vp: not found"');
+  });
+
+  test("a tool the container has, or one unasked but installed, says nothing", () => {
+    expect(toolsReading(solo, vpEvent, tools({ inDockerfile: true, inContainer: true }))).toEqual(
+      [],
+    );
+    expect(toolsReading(solo, vpEvent, tools({ inDockerfile: true, inContainer: null }))).toEqual(
+      [],
+    );
+    // Nobody runs pnpm here, so its absence is nothing.
+    expect(
+      toolsReading(solo, vpEvent, tools({ inDockerfile: true, inContainer: true })).length,
+    ).toBe(0);
+  });
+
+  test("is an error on the rail, and the add has a sentence", () => {
+    expect(toolsProblem(solo, vpEvent, tools({ inDockerfile: false, inContainer: false }))).toEqual(
+      [{ level: "error", text: "its commands run `vp`, which the Dockerfile does not install" }],
+    );
+    expect(toolAddReading({ kind: "added", tool: "vp", file: "f" })).toBe(
+      "The Dockerfile now installs vp. Rebuild to put it in the container.",
+    );
   });
 });

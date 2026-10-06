@@ -304,6 +304,10 @@ export function bridge(answers: BridgeAnswers = {}): DesktopBridge {
           ? Promise.reject(notAnInstall(dir))
           : Promise.resolve(answers.harness);
       },
+      addTool: (dir, tool) => {
+        answers.toolAdds?.push({ dir, tool });
+        return Promise.resolve({ kind: "added", tool, file: `${dir}/container/Dockerfile` });
+      },
       remove: (dir, harness) => {
         answers.harnessRemovals?.push({ dir, harness });
         return Promise.resolve({ kind: "removed", harness, file: `${dir}/container/Dockerfile` });
@@ -378,6 +382,7 @@ export type BridgeAnswers = {
   harnessApply?: HarnessApplyOutcome;
   harnessApplies?: { dir: string; harness: HarnessName }[];
   harnessRemovals?: { dir: string; harness: HarnessName }[];
+  toolAdds?: { dir: string; tool: string }[];
   /** What a repair answers with, and where each one asked for is recorded. */
   repair?: RepairOutcome;
   repaired?: { dir: string; repair: InstallRepair }[];

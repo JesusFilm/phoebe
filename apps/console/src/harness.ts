@@ -21,6 +21,7 @@ import type {
   LauncherFacts,
   LocalInstall,
   LocalReportEvent,
+  ToolAddOutcome,
   UpgradeOutcome,
 } from "phoebe-agent/contracts";
 import type { RailProblem } from "./local-install.ts";
@@ -578,4 +579,112 @@ export function volumesProblem(report: HarnessReport | null): RailProblem[] {
       text: `its container cannot write ${listed(report.user.unwritable)}: the volumes are still root's`,
     },
   ];
+}
+
+// ── the tools a config's commands start with ──────────────────────────────
+
+/** The four commands the engine runs inside the container for a tenant. */
+const COMMAND_SETTINGS = ["installCommand", "checkCommand", "testCommand", "readyCommand"];
+
+/** One tool some config's commands start with, and whose commands they are. */
+export type NeededTool = { tool: string; whose: string[] };
+
+/**
+ * The tools the install's configs run, by the first word of each command: the
+ * tenants' on a workspace, the one config's on a solo install. Only the tools
+ * the companion knows how to install are named; `npm` is in every image.
+ */
+export function neededTools(install: LocalInstall, event: LocalReportEvent | null): NeededTool[] {
+  if (event === null) return [];
+  const configs =
+    install.workspace === undefined
+      ? [{ label: install.name, fields: event.directory.configFields }]
+      : (event.directory.tenants ?? []).map((tenant) => ({
+          label: tenant.slug ?? tenant.name,
+          fields: tenant.configFields,
+        }));
+  const found = new Map<string, string[]>();
+  for (const config of configs) {
+    for (const field of config.fields ?? []) {
+      if (!COMMAND_SETTINGS.includes(field.path) || field.state !== "set") continue;
+      if (typeof field.value !== "string") continue;
+      const first = field.value.trim().split(/\s+/)[0] ?? "";
+      if (!["vp", "pnpm", "yarn", "bun"].includes(first)) continue;
+      const whose = found.get(first) ?? [];
+      if (!whose.includes(config.label)) whose.push(config.label);
+      found.set(first, whose);
+    }
+  }
+  return [...found].map(([tool, whose]) => ({ tool, whose }));
+}
+
+/** What a tool the commands need and the install lacks means, and what fixes it. */
+export type ToolReading = {
+  tool: string;
+  whose: string[];
+  /** Write its install into the Dockerfile, or rebuild an image that predates it. */
+  remedy: "add" | "rebuild";
+  text: string;
+};
+
+/**
+ * The tools the commands need that the container does not have: those the
+ * Dockerfile does not install, and those it installs but the image predates.
+ * A tool the container has, or that could not be asked about while the
+ * Dockerfile installs it, is fine.
+ */
+export function toolsReading(
+  install: LocalInstall,
+  event: LocalReportEvent | null,
+  report: HarnessReport | null,
+): ToolReading[] {
+  if (report === null) return [];
+  return neededTools(install, event).flatMap(({ tool, whose }): ToolReading[] => {
+    const facts = report.tools.find((candidate) => candidate.tool === tool);
+    if (facts === undefined) return [];
+    const runs = `${listed(whose)} ${whose.length === 1 ? "runs" : "run"} commands that start with \`${tool}\``;
+    if (!facts.inDockerfile) {
+      return [
+        {
+          tool,
+          whose,
+          remedy: "add" as const,
+          text: `${runs}, and the Dockerfile does not install it, so every unit fails with "${tool}: not found". Add it to the Dockerfile, then rebuild.`,
+        },
+      ];
+    }
+    if (facts.inContainer === false) {
+      return [
+        {
+          tool,
+          whose,
+          remedy: "rebuild" as const,
+          text: `${runs}. The Dockerfile installs it and the container does not have it: the image predates that line. Rebuild.`,
+        },
+      ];
+    }
+    return [];
+  });
+}
+
+/** The same, as the lines a rail badge and the console's header carry. */
+export function toolsProblem(
+  install: LocalInstall,
+  event: LocalReportEvent | null,
+  report: HarnessReport | null,
+): RailProblem[] {
+  return toolsReading(install, event, report).map((reading) => ({
+    level: "error",
+    text:
+      reading.remedy === "add"
+        ? `its commands run \`${reading.tool}\`, which the Dockerfile does not install`
+        : `its commands run \`${reading.tool}\`, which the container does not have: rebuild`,
+  }));
+}
+
+/** What writing a tool's install came to, as a sentence. */
+export function toolAddReading(outcome: ToolAddOutcome): string {
+  return outcome.kind === "added"
+    ? `The Dockerfile now installs ${outcome.tool}. Rebuild to put it in the container.`
+    : `${outcome.tool} was not added: ${outcome.why}.`;
 }

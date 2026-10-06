@@ -66,6 +66,7 @@ const bridge: DesktopBridge = {
     check: (dir, opts) => call(BRIDGE_CHANNELS.harnessCheck, dir, opts),
     update: (dir, update) => call(BRIDGE_CHANNELS.harnessUpdate, dir, update),
     remove: (dir, harness) => call(BRIDGE_CHANNELS.harnessRemove, dir, harness),
+    addTool: (dir, tool) => call(BRIDGE_CHANNELS.harnessAddTool, dir, tool),
     apply: (dir, harness) => call(BRIDGE_CHANNELS.harnessApply, dir, harness),
     reports: (onReport) => subscribe<HarnessReportEvent>(BRIDGE_CHANNELS.harnessReport, onReport),
   },
