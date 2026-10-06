@@ -60,6 +60,7 @@ import type {
   RepairOutcome,
   HarnessApplyOutcome,
   HarnessName,
+  HarnessRemoveOutcome,
   HarnessReport,
   HarnessUpdate,
   HarnessUpdateOutcome,
@@ -676,6 +677,16 @@ app.whenReady().then(
         // Every window hears it, so the alert and the rail agree with the page.
         broadcast(BRIDGE_CHANNELS.harnessReport, { install: dir, report });
         return report;
+      }),
+    );
+
+    ipcMain.handle(BRIDGE_CHANNELS.harnessRemove, (_event, dir: string, name: HarnessName) =>
+      answering<HarnessRemoveOutcome>(async () => {
+        await heldInstall(dir);
+        const outcome = harness.remove(dir, name);
+        // The pins ride on the install's read, so the rail and the page redraw.
+        if (outcome.kind === "removed") await reads.refresh(dir).catch(() => undefined);
+        return outcome;
       }),
     );
 

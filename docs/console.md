@@ -136,11 +136,13 @@ The install tab's **Phoebe** section lists the launcher (`phoebe-agent`, pinned
 in `container/Dockerfile`) and the engine (`engine.ref` in the config), each
 with a field and a button that runs `upgrade` for that half.
 
-The install tab's **AI harness** section lists the agent CLIs the container
-carries (Cursor's `agent`, Claude Code, Codex): the version
+The install tab's **AI harness** section lists every agent CLI the container
+could carry (Cursor's `agent`, Claude Code, Codex): the version
 `container/Dockerfile` pins, the one the running container has, and, after
 **Check for updates**, the newest published. Each row can pin a version in the
-Dockerfile, and **Rebuild and restart** puts it in the container. A tenant's
+Dockerfile, add the harness when the Dockerfile lacks it, or remove it, and
+**Rebuild and restart** puts the result in the container. Under the list, the
+provider, model and effort a config runs are set as the config form sets them. A tenant's
 page shows the same for the one harness its provider runs. The container is the
 workspace's, so the pin it moves is shared by every tenant.
 

@@ -17,17 +17,19 @@ import {
   engineStanding,
   harnessReading,
   harnessRows,
+  harnessSettings,
   harnessStanding,
   harnessUsers,
   launcherStanding,
   launcherVersionOf,
   phoebeVersions,
   providerOf,
+  removeReading,
   updateReading,
   updateVerb,
   upgradeReading,
 } from "./harness.ts";
-import { HarnessPanel, HarnessSection, PhoebePanel } from "./harness-section.tsx";
+import { HarnessPanel, HarnessSection, HarnessSettings, PhoebePanel } from "./harness-section.tsx";
 import { workspaceChildren } from "./local-install.ts";
 import { ago, bridge, directory, install, localReport } from "./test-fixture.ts";
 import { rebuildRequests, runInSequence } from "./verb-run.ts";
@@ -224,7 +226,7 @@ describe("the rows a page draws", () => {
   test("the button is named for what it would do", () => {
     expect(updateVerb({ kind: "pinned", version: "1.0.0" })).toBe("Update");
     expect(updateVerb({ kind: "unpinned" })).toBe("Pin");
-    expect(updateVerb({ kind: "absent" })).toBe("Install");
+    expect(updateVerb({ kind: "absent" })).toBe("Add");
   });
 
   test("an update's outcome is a sentence", () => {
@@ -332,7 +334,105 @@ describe("the section on screen", () => {
     const markup = panel({ rows: harnessRows(null, event({ kind: "absent" }), users) });
 
     expect(markup).toContain("acme/a, acme/c run on it, and the container has no such CLI");
-    expect(markup).toContain(">Install<");
+    // In the test's rows there is no latest yet, so the button adds the newest.
+    expect(markup).toContain(">Add latest<");
+  });
+
+  test("the install's page lists every harness there is, so one can be added", () => {
+    const all = harnessRows(null, event(), users, null, true);
+
+    expect(all.map((row) => row.harness)).toEqual(["cursor", "claude", "codex"]);
+    expect(all[2]).toMatchObject({ pin: { kind: "absent" }, usedBy: [] });
+    // Nobody runs Codex and nothing installs it, so without the ask it is not a row.
+    expect(harnessRows(null, event(), users).map((row) => row.harness)).toEqual([
+      "cursor",
+      "claude",
+    ]);
+  });
+
+  test("an installed harness can be removed, and asks first", () => {
+    const markup = panel({ onRemove: () => undefined });
+
+    expect(markup).toContain('title="Take Cursor agent out of the Dockerfile"');
+    // Nothing is removed without the question; the question is not asked of a harness that is not there.
+    expect(markup).not.toContain("harness-confirm");
+    const absent = panel({
+      rows: harnessRows(null, event({ kind: "absent" }), users),
+      onRemove: () => undefined,
+    });
+    expect(absent).not.toContain("Take Claude Code out");
+  });
+
+  test("what a removal came to is a sentence", () => {
+    expect(removeReading({ kind: "removed", harness: "codex", file: "f" })).toBe(
+      "The Dockerfile no longer installs Codex. The container keeps it until the image is rebuilt.",
+    );
+    expect(removeReading({ kind: "refused", harness: "codex", why: "it is not there" })).toBe(
+      "Codex was not removed: it is not there.",
+    );
+  });
+
+  test("what runs on a harness is three settings of a config, in order", () => {
+    const fields: ConfigFieldFacts[] = [
+      ...provider("claude"),
+      { path: "effort", scope: "tenant", type: "string", state: "unset", default: "medium" },
+      { path: "repoSlug", scope: "tenant", type: "string", state: "set", value: "acme/a" },
+      { path: "model", scope: "tenant", type: "string", state: "set", value: "opus" },
+    ];
+
+    expect(harnessSettings(fields).map((field) => field.path)).toEqual([
+      "defaultProvider",
+      "model",
+      "effort",
+    ]);
+    expect(harnessSettings(undefined)).toEqual([]);
+  });
+
+  test("a tenant's page draws those settings for its own config", () => {
+    const markup = renderToStaticMarkup(
+      <HarnessSettings
+        install={workspace}
+        event={localReport({
+          facts: workspace,
+          directory: directory({
+            bootstrapperRunning: false,
+            tenants: [
+              tenant("a", [
+                ...provider("claude"),
+                { path: "model", scope: "tenant", type: "string", state: "set", value: "opus" },
+              ]),
+            ],
+          }),
+        })}
+        run={null}
+        tenant="/repos/ws/a"
+        busy={false}
+        onStart={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain("What runs on it");
+    expect(markup).toContain('aria-label="defaultProvider"');
+    expect(markup).toMatch(/aria-label="model"[^>]*value="opus"/);
+  });
+
+  test("a workspace's page lists its tenants and sends each to its page", () => {
+    const markup = renderToStaticMarkup(
+      <HarnessSettings
+        install={workspace}
+        event={event()}
+        run={null}
+        busy={false}
+        onStart={() => undefined}
+        onTenant={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain("What runs on them");
+    expect(markup).toContain("<strong>acme/a</strong>");
+    expect(markup).toContain("runs Claude Code");
+    expect(markup).toContain("runs Cursor agent");
+    expect(markup).toContain(">Configure<");
   });
 
   test("on a tenant's page it says the container is shared", () => {

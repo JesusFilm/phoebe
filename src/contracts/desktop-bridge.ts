@@ -30,6 +30,7 @@ import type {
 import type {
   HarnessApplyOutcome,
   HarnessName,
+  HarnessRemoveOutcome,
   HarnessReport,
   HarnessReportEvent,
   HarnessUpdate,
@@ -210,6 +211,8 @@ export type DesktopBridge = {
   harness: {
     check: (dir: string, opts: { lookUp: boolean }) => Promise<HarnessReport>;
     update: (dir: string, update: HarnessUpdate) => Promise<HarnessUpdateOutcome>;
+    /** Take one harness out of the Dockerfile. Rebuilds nothing; the container keeps it until then. */
+    remove: (dir: string, harness: HarnessName) => Promise<HarnessRemoveOutcome>;
     /**
      * Put the version the Dockerfile pins into the running container, without
      * a rebuild and without touching a unit in flight.

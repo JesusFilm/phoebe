@@ -118,6 +118,8 @@ export function TenantPage({
           tenant={tenant}
           busy={running}
           onRebuild={() => rebuild(install.state === "running")}
+          run={run}
+          onStart={start}
         />
       </div>
     </main>

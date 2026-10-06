@@ -116,6 +116,15 @@ export type HarnessUpdateOutcome =
     };
 
 /**
+ * What came of taking a harness out of the Dockerfile. The container keeps the
+ * CLI until the image is rebuilt; a config that still names the provider will
+ * have nothing to spawn after that, which the rail says.
+ */
+export type HarnessRemoveOutcome =
+  | { kind: "removed"; harness: HarnessName; file: string }
+  | { kind: "refused"; harness: HarnessName; why: string };
+
+/**
  * What came of putting a pinned harness into a running container.
  *
  * The version the Dockerfile pins is installed beside the one the container

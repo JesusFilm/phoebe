@@ -19,6 +19,7 @@ import {
   readHarnessPins,
   readLauncherPin,
   registryNpm,
+  removeHarness,
   rewriteHarnessPin,
 } from "./harness.ts";
 
@@ -285,6 +286,107 @@ describe("pinning a harness", () => {
   });
 });
 
+describe("adding Cursor where there is none, and taking a harness out", () => {
+  const BARE = [
+    "FROM node:24-bookworm-slim",
+    "ARG PHOEBE_AGENT_VERSION=0.13.2",
+    "RUN npm install -g phoebe-agent@${PHOEBE_AGENT_VERSION}",
+    "",
+    "ENV HOME=/home/phoebe",
+    "USER phoebe",
+    "",
+  ].join("\n");
+
+  test("Cursor is added as the scaffold's whole block, digests and all", () => {
+    const out = rewriteHarnessPin(BARE, "cursor", "2026.10.01-e373342", {
+      x64: "1111",
+      arm64: "2222",
+    });
+
+    expect(out).toMatchObject({ ok: true, from: null });
+    if (!out.ok) return;
+    expect(out.content).toContain("ARG CURSOR_AGENT_VERSION=2026.10.01-e373342");
+    expect(out.content).toContain("ARG CURSOR_AGENT_SHA256_X64=1111");
+    expect(out.content).toContain("ARG CURSOR_AGENT_SHA256_ARM64=2222");
+    expect(out.content).toContain("sha256sum -c -");
+    expect(out.content).toContain("chmod 0711 /opt/cursor-agent/node");
+    expect(out.content).toContain("ln -s /opt/cursor-agent/cursor-agent /usr/local/bin/agent");
+    expect(readHarnessPins(out.content).cursor).toEqual({
+      kind: "pinned",
+      version: "2026.10.01-e373342",
+    });
+    // Before the image drops to its user.
+    expect(out.content.indexOf("cursor-agent")).toBeLessThan(out.content.indexOf("USER phoebe"));
+    // And without its digests it cannot be added at all.
+    expect(rewriteHarnessPin(BARE, "cursor", "2026.10.01-e373342")).toMatchObject({ ok: false });
+  });
+
+  test("an npm harness this file added comes out whole, leaving the file as it was", () => {
+    const added = rewriteHarnessPin(BARE, "claude", "2.1.292");
+    if (!added.ok) throw new Error("not added");
+
+    const removed = removeHarness(added.content, "claude");
+
+    expect(removed).toEqual({ ok: true, content: BARE });
+  });
+
+  test("Cursor this file added comes out whole too", () => {
+    const added = rewriteHarnessPin(BARE, "cursor", "2026.10.01-e373342", { x64: "1", arm64: "2" });
+    if (!added.ok) throw new Error("not added");
+
+    const removed = removeHarness(added.content, "cursor");
+
+    expect(removed).toEqual({ ok: true, content: BARE });
+  });
+
+  test("the scaffold's own Cursor block comes out, and its comments stay", () => {
+    const removed = removeHarness(TEMPLATE, "cursor");
+
+    expect(removed.ok).toBe(true);
+    if (!removed.ok) return;
+    expect(readHarnessPins(removed.content).cursor).toEqual({ kind: "absent" });
+    expect(removed.content).not.toContain("CURSOR_AGENT");
+    expect(removed.content).not.toContain("downloads.cursor.com");
+    // The scaffold's comment describes the choice and is not this file's to take.
+    expect(removed.content).toContain("# Provider agent CLI.");
+    // Everything else is where it was.
+    expect(removed.content).toContain("RUN npm install -g phoebe-agent@${PHOEBE_AGENT_VERSION}");
+    expect(removed.content).toContain("USER phoebe");
+  });
+
+  test("a package on a line with others comes off the line, and the line stays", () => {
+    const removed = removeHarness(
+      `${BARE}RUN npm install -g @anthropic-ai/claude-code @openai/codex@0.160.0\n`,
+      "claude",
+    );
+
+    expect(removed.ok).toBe(true);
+    if (removed.ok) {
+      expect(removed.content).toContain("RUN npm install -g @openai/codex@0.160.0\n");
+      expect(readHarnessPins(removed.content)).toMatchObject({
+        claude: { kind: "absent" },
+        codex: { kind: "pinned", version: "0.160.0" },
+      });
+    }
+  });
+
+  test("a package the Dockerfile does not install cannot be removed", () => {
+    expect(removeHarness(BARE, "codex")).toEqual({
+      ok: false,
+      why: "the Dockerfile does not install it",
+    });
+  });
+
+  test("an ARG another line still uses stays", () => {
+    const shared = `${BARE}ARG V=1.0.0\nRUN npm install -g @openai/codex@\${V}\nRUN echo \${V}\n`;
+
+    const removed = removeHarness(shared, "codex");
+
+    expect(removed.ok && removed.content).toContain("ARG V=1.0.0");
+    expect(removed.ok && removed.content).not.toContain("@openai/codex");
+  });
+});
+
 describe("behind or not", () => {
   test("compares the numbers, for npm versions and Cursor's dated builds alike", () => {
     expect(isBehind("2.1.228", "2.1.287")).toBe(true);
@@ -351,6 +453,13 @@ describe("the newest published version", () => {
     ).toBeNull();
   });
 });
+
+/** The template with its Cursor block taken out, as a Dockerfile that never had one. */
+const TEMPLATE_WITHOUT_CURSOR = (() => {
+  const removed = removeHarness(TEMPLATE, "cursor");
+  if (!removed.ok) throw new Error(removed.why);
+  return removed.content;
+})();
 
 describe("the check and the update", () => {
   const DIR = path.resolve("/repos/ws");
@@ -653,6 +762,31 @@ describe("the check and the update", () => {
     expect(await harness.apply(DIR, "claude")).toMatchObject({ kind: "refused" });
     expect(await harness.apply(DIR, "codex")).toMatchObject({ kind: "refused" });
     expect(ran).toEqual([]);
+  });
+
+  test("removing writes the Dockerfile without it and says so", async () => {
+    const { harness, files } = setup();
+
+    expect(harness.remove(DIR, "claude")).toEqual({
+      kind: "removed",
+      harness: "claude",
+      file: DOCKERFILE,
+    });
+    expect(readHarnessPins(files.get(DOCKERFILE)!).claude).toEqual({ kind: "absent" });
+    expect(harness.remove(DIR, "codex")).toMatchObject({ kind: "refused" });
+  });
+
+  test("adding Cursor to a Dockerfile without it fetches its digests first", async () => {
+    const { harness, digested, files } = setup(`${TEMPLATE_WITHOUT_CURSOR}`);
+
+    const outcome = await harness.update(DIR, { harness: "cursor", version: "2026.10.01-e373342" });
+
+    expect(outcome).toMatchObject({ kind: "moved", from: null, to: "2026.10.01-e373342" });
+    expect(digested).toHaveLength(2);
+    expect(readHarnessPins(files.get(DOCKERFILE)!).cursor).toEqual({
+      kind: "pinned",
+      version: "2026.10.01-e373342",
+    });
   });
 
   test("the version already pinned is left alone", async () => {

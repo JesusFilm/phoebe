@@ -218,6 +218,7 @@ export function InstallPage({
                 onRebuild={() => rebuild(install.state === "running")}
                 run={run}
                 onStart={start}
+                {...(onTenant === undefined ? {} : { onTenant })}
               />
             }
           />
