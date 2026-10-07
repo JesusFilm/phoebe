@@ -29,6 +29,7 @@
 // `process.chdir` would make two installs running in parallel into a race.
 
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { app } from "electron";
 import type { InstallState, VerbIo } from "phoebe-agent/contracts";
@@ -180,10 +181,14 @@ export function createDispatchVerb(deps: DispatchDeps): Dispatch {
         // The fingerprint the window was shown rides in the request (#527 §11), so
         // an edit composed against a config a terminal has since changed is
         // refused `stale` here exactly as it would be over a relay.
-        io.stdout(`[phoebe] config set ${request.path} in ${configPath}`);
+        // On a workspace the edit may name a child; the child's folder has to
+        // be under the install, or the request is not this install's to make.
+        const target =
+          request.tenant === undefined ? configPath : tenantConfigPath(install, request.tenant);
+        io.stdout(`[phoebe] config set ${request.path} in ${target}`);
         const outcome = await runConfigSet(
           {
-            configPath,
+            configPath: target,
             path: request.path,
             value: request.value,
             fingerprint: request.fingerprint,
@@ -317,4 +322,20 @@ function emitLines(buffered: string, emit: (line: string) => void): string {
   const rest = pieces.pop() ?? "";
   for (const piece of pieces) emit(piece.replace(/\r$/, ""));
   return rest;
+}
+
+/**
+ * A workspace child's config, for a `config set` that names the child. The
+ * folder has to sit under the install and carry a config: a path that walks
+ * out of the install, or names a folder with nothing to edit, is refused
+ * before anything is read.
+ */
+function tenantConfigPath(install: string, tenant: string): string {
+  const inside = path.relative(install, tenant);
+  if (inside === "" || inside.startsWith("..") || path.isAbsolute(inside)) {
+    throw new Error(`${tenant} is not a child of ${install}.`);
+  }
+  const file = path.join(tenant, CONFIG_FILE);
+  if (!existsSync(file)) throw new Error(`${tenant} has no ${CONFIG_FILE} to change.`);
+  return file;
 }

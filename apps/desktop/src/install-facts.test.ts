@@ -188,6 +188,45 @@ describe("what the folder says with no container", () => {
     expect(facts.envPresent).toBe(true);
   });
 
+  test("a workspace's children each bring their config, read the same way", () => {
+    const a = path.join(DIR, "a");
+    const b = path.join(DIR, "b");
+    const texts = new Map([
+      [path.join(DIR, "phoebe.config.ts"), "export default defineConfig({ workspace: {} })\n"],
+      [path.join(a, "phoebe.config.ts"), 'export default defineConfig({ repoSlug: "acme/a" })\n'],
+    ]);
+    const facts = directoryFacts(
+      {
+        ...RUNNING,
+        workspace: {
+          children: [
+            { dir: a, name: "a", slug: "acme/a" },
+            { dir: b, name: "b", slug: null },
+          ],
+        },
+      },
+      { exists: (file) => texts.has(file) || file === DIR, read: (file) => texts.get(file) ?? "" },
+    );
+
+    expect(facts.tenants).toHaveLength(2);
+    expect(facts.tenants?.[0]).toMatchObject({
+      dir: a,
+      name: "a",
+      slug: "acme/a",
+      configPath: path.join(a, "phoebe.config.ts"),
+      configText: 'export default defineConfig({ repoSlug: "acme/a" })\n',
+    });
+    expect(facts.tenants?.[0]?.configFingerprint).toMatch(/^sha256:[0-9a-f]{64}$/);
+    // A child with no config yet is listed with nothing to show, not dropped.
+    expect(facts.tenants?.[1]).toMatchObject({ dir: b, configText: null, configFingerprint: null });
+  });
+
+  test("a solo install has no tenants field at all", () => {
+    const facts = directoryFacts(RUNNING, { exists: folder("phoebe.config.ts"), read: () => "x" });
+
+    expect(facts.tenants).toBeUndefined();
+  });
+
   test("the same text fingerprints the same, and an edit moves it", () => {
     const read = (text: string) => () => text;
     const before = directoryFacts(RUNNING, { exists: folder("phoebe.config.ts"), read: read("a") });

@@ -57,6 +57,26 @@ export type InstallDirectoryFacts = {
    * the five tabs have nothing to draw when it is false.
    */
   bootstrapperRunning: boolean;
+  /**
+   * On a workspace, each child's own config, read the same way as the root's
+   * (#503 keeps tenant configs the operator's; a companion on the same disk
+   * is the operator's hand). Absent on a solo install and from a companion
+   * older than the field.
+   */
+  tenants?: TenantConfigFacts[];
+};
+
+/** One workspace child's config, as its folder holds it. */
+export type TenantConfigFacts = {
+  /** The child's folder, the key a `config set` on it names as `tenant`. */
+  dir: string;
+  /** The folder's name. */
+  name: string;
+  /** The config's `repoSlug`, when it states one. */
+  slug: string | null;
+  configPath: string;
+  configText: string | null;
+  configFingerprint: string | null;
 };
 
 /**
