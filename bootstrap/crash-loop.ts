@@ -284,6 +284,13 @@ export type CrashGuard = {
    */
   noteAlive: (sha: string, elapsedMs: number) => void;
   /**
+   * The record as it stands. The deployment report publishes it (#532) —
+   * `lastGoodSha`, `failingSha` and `failureCount` are how a console says a
+   * deployment is quietly running older code than its config asks for — and it
+   * is read at publish time rather than tracked by a mirror that could drift.
+   */
+  state: () => CrashLoopState;
+  /**
    * Is relaunching after this run worth it? Only for a crash, and only when a
    * *different* known-good commit exists to end up on — otherwise boot lets the
    * container exit rather than loop on the same broken commit forever. The
@@ -381,6 +388,10 @@ export function createCrashGuard(deps: {
       if (elapsedMs < healthyMs || state.lastGoodSha === sha) return;
       persist(recordRun(state, { sha, exitCode: null, elapsedMs, requestedStop: false }, options));
       emit({ kind: "last-good", sha });
+    },
+
+    state() {
+      return state;
     },
 
     shouldRetry(run) {

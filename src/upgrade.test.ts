@@ -7,7 +7,7 @@
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, test } from "vite-plus/test";
+import { describe, expect, test } from "vite-plus/test";
 import {
   buildCheckReport,
   classifyRef,
@@ -397,13 +397,7 @@ function makeIo(overrides: {
 }
 
 describe("upgradeEngineHalf migration ordering", () => {
-  let savedExitCode: number | undefined;
-  afterEach(() => {
-    process.exitCode = savedExitCode;
-  });
-
   test("no migrations index (runMigrations returns null) — flip proceeds", () => {
-    savedExitCode = process.exitCode as number | undefined;
     const configPath = makeTempConfig();
     const io = makeIo({ runMigrations: () => null });
     const moved = upgradeEngineHalf({
@@ -414,12 +408,11 @@ describe("upgradeEngineHalf migration ordering", () => {
       token: undefined,
       io,
     });
-    expect(moved).toBe(true);
+    expect(moved).toEqual({ kind: "moved", from: "v0.3.1", to: "v0.3.2" });
     expect(readFileSync(configPath, "utf8")).toContain('ref: "v0.3.2"');
   });
 
   test("migrations exit 0 — flip proceeds", () => {
-    savedExitCode = process.exitCode as number | undefined;
     const configPath = makeTempConfig();
     const io = makeIo({ runMigrations: () => 0 });
     const moved = upgradeEngineHalf({
@@ -430,12 +423,11 @@ describe("upgradeEngineHalf migration ordering", () => {
       token: undefined,
       io,
     });
-    expect(moved).toBe(true);
+    expect(moved).toEqual({ kind: "moved", from: "v0.3.1", to: "v0.3.2" });
     expect(readFileSync(configPath, "utf8")).toContain('ref: "v0.3.2"');
   });
 
   test("migrations exit nonzero — flip aborted, engine.ref unchanged", () => {
-    savedExitCode = process.exitCode as number | undefined;
     const configPath = makeTempConfig();
     const originalContent = readFileSync(configPath, "utf8");
     const io = makeIo({ runMigrations: () => 1 });
@@ -447,8 +439,9 @@ describe("upgradeEngineHalf migration ordering", () => {
       token: undefined,
       io,
     });
-    expect(moved).toBe(false);
-    expect(process.exitCode).toBe(1);
+    // A refusal is a value the CLI turns into exit 1, not an exit code the
+    // half sets behind its caller's back (#552).
+    expect(moved).toEqual({ kind: "refused", stage: "migrate" });
     expect(readFileSync(configPath, "utf8")).toBe(originalContent);
     expect(io._stderr.some((line) => line.includes("migrations failed"))).toBe(true);
     // Reported by stage rather than by throw (#474): the command exits 1.
@@ -456,7 +449,6 @@ describe("upgradeEngineHalf migration ordering", () => {
   });
 
   test("migrations run the target ref's checkout, not the current pin", () => {
-    savedExitCode = process.exitCode as number | undefined;
     const configPath = makeTempConfig();
     let migratedRef: string | null = null;
     const io = makeIo({
@@ -477,7 +469,6 @@ describe("upgradeEngineHalf migration ordering", () => {
   });
 
   test("migrations are called before the pin moves", () => {
-    savedExitCode = process.exitCode as number | undefined;
     const configPath = makeTempConfig();
     let contentAtMigrateTime: string | null = null;
     const io = makeIo({
@@ -645,39 +636,33 @@ function makeCliIo(overrides: {
 }
 
 describe("upgradeCliHalf — container deployment", () => {
-  let savedExitCode: number | undefined;
-  afterEach(() => {
-    process.exitCode = savedExitCode;
-  });
-
   test("rewrites the Dockerfile pin and prints the rebuild step", () => {
-    savedExitCode = process.exitCode as number | undefined;
     const written = { value: null as string | null };
     const io = makeCliIo({ dockerfileContent: DOCKERFILE_PINNED, writtenContent: written });
-    upgradeCliHalf({ releaseTag: "v0.7.2", io });
+    const outcome = upgradeCliHalf({ releaseTag: "v0.7.2", io });
+    expect(outcome).toEqual({ kind: "moved", from: "0.7.1", to: "0.7.2" });
     expect(written.value).toContain("ARG PHOEBE_AGENT_VERSION=0.7.2");
     expect(io._stdout.some((l) => l.includes("0.7.1") && l.includes("0.7.2"))).toBe(true);
     expect(io._stdout.some((l) => l.includes("phoebe start --build"))).toBe(true);
   });
 
   test("already at desired version — nothing to do", () => {
-    savedExitCode = process.exitCode as number | undefined;
     const written = { value: null as string | null };
     const io = makeCliIo({ dockerfileContent: DOCKERFILE_PINNED, writtenContent: written });
-    upgradeCliHalf({ releaseTag: "v0.7.1", io });
+    const outcome = upgradeCliHalf({ releaseTag: "v0.7.1", io });
+    expect(outcome).toEqual({ kind: "unchanged", reason: "already-current" });
     expect(written.value).toBeNull();
     expect(io._stdout.some((l) => l.includes("nothing to do"))).toBe(true);
   });
 
   test("unpinned Dockerfile — reports nothing to move", () => {
-    savedExitCode = process.exitCode as number | undefined;
     const io = makeCliIo({ dockerfileContent: DOCKERFILE_UNPINNED });
-    upgradeCliHalf({ releaseTag: "v0.7.2", io });
+    const outcome = upgradeCliHalf({ releaseTag: "v0.7.2", io });
+    expect(outcome).toEqual({ kind: "unchanged", reason: "nothing-pinned" });
     expect(io._stdout.some((l) => l.includes("Nothing to move"))).toBe(true);
   });
 
   test("no container/Dockerfile — falls through to npm install", () => {
-    savedExitCode = process.exitCode as number | undefined;
     const npmCalls: string[][] = [];
     const io = makeCliIo({
       dockerfileContent: null,

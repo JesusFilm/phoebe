@@ -366,6 +366,24 @@ export function editConfigGetField(source: string, key: string): GetFieldResult 
 }
 
 /**
+ * Read the field at `path`, however deep. The same answer
+ * {@link editConfigGetField} gives for a top-level key; a block along the way
+ * that is not a plain object literal is a refusal, as it is for a write.
+ */
+export function editConfigGetFieldAt(source: string, path: readonly string[]): GetFieldResult {
+  const resolved = resolveConfigObject(source);
+  if (!resolved.ok) return resolved;
+
+  const located = locatePath(source, resolved.configObj, path);
+  if (!located.ok) return located;
+  if (!located.found) return { ok: true, found: false };
+
+  const valueNode: BNode = located.prop.value;
+  const raw = source.slice(valueNode.start as number, valueNode.end as number);
+  return { ok: true, found: true, raw, literal: extractLiteral(valueNode) };
+}
+
+/**
  * Set a top-level scalar field in the config object. Creates the field if
  * absent. Refuses when the existing value is non-literal (template literal,
  * call expression, identifier, etc.) so a hand-authored override is never
@@ -763,6 +781,58 @@ export function editConfigMoveField(
   const without = removeProp(source, located.parent, located.prop);
 
   return insertAtPath(without, to, valueSource, originIndent);
+}
+
+/**
+ * Set the field at `path`, at any depth, to a literal value — the nested
+ * sibling of {@link editConfigSetField}, and the substrate under
+ * `phoebe config set` (#503, #536).
+ *
+ * Strict-literal in both directions. The value written is `JSON.stringify` of a
+ * scalar, so a splice can never introduce an expression; and an existing value
+ * that is not already a plain literal is refused rather than overwritten,
+ * because a config that computes its own field has an author whose intent a
+ * splice cannot read. Object literals the path names but the config does not
+ * have yet are created around the leaf, which is what makes an absent setting
+ * insertable without the operator first writing an empty block by hand.
+ */
+export function editConfigSetFieldAt(
+  source: string,
+  path: readonly string[],
+  value: string | number | boolean | null,
+): ConfigEditResult {
+  if (path.length === 0) return { ok: false, reason: "set needs a path" };
+  const resolved = resolveConfigObject(source);
+  if (!resolved.ok) return resolved;
+
+  const label = `\`${path.join(".")}\``;
+  const located = locatePath(source, resolved.configObj, path);
+  if (!located.ok) return located;
+
+  const serialized = JSON.stringify(value);
+  if (!located.found) return insertAtPath(source, path, serialized, "");
+
+  if (located.prop.shorthand as boolean) {
+    return { ok: false, reason: `${label} is a shorthand property — cannot overwrite` };
+  }
+  const valueNode: BNode = unwrapTs(located.prop.value);
+  if (extractLiteral(valueNode) === undefined) {
+    return {
+      ok: false,
+      reason:
+        `${label} is not a plain literal ` +
+        `(\`${excerpt(source.slice(valueNode.start as number, valueNode.end as number))}\`)`,
+    };
+  }
+  // Splice over the annotated node, not the bare literal: `"x" as const` is one
+  // value, and replacing only its literal half would leave the assertion behind
+  // attached to the new value.
+  const outer: BNode = located.prop.value;
+  return {
+    ok: true,
+    content:
+      source.slice(0, outer.start as number) + serialized + source.slice(outer.end as number),
+  };
 }
 
 /**

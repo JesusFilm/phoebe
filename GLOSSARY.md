@@ -6,7 +6,8 @@ repository, does it in a container, and pushes the result as a pull request.
 This file is the glossary. For how the pieces fit together see
 [`docs/architecture.md`](docs/architecture.md); for the mechanics of each kind of work see
 [`docs/work-kinds.md`](docs/work-kinds.md); for running more than one stream of work in a
-tenant see [`docs/pipelines.md`](docs/pipelines.md).
+tenant see [`docs/pipelines.md`](docs/pipelines.md); for the console, the relay and the
+companion see [`docs/console.md`](docs/console.md).
 
 ## Language
 
@@ -44,6 +45,84 @@ _Avoid_: daemon, worker, runner
 The container's main process. It materializes the engine at the named ref, parents it,
 hands it credentials and slots, and relaunches it when the config or the ref moves.
 _Avoid_: supervisor, launcher, wrapper
+
+**Deployment report**:
+The whole object one deployment hands a console: identity, what the bootstrapper is doing,
+the fleet matrix with each pipeline's state derived, and the last doctor run with its age.
+One fixed-size file, `state/deployment.json`, rewritten when something moves: read locally,
+and shipped as-is to a relay. A consumer renders it and derives nothing of its own.
+_Avoid_: snapshot (that is `status.json`), state (that is the directory), status (that is
+the CLI verb), manifest
+
+**Pass**:
+One turn of an engine's loop: poll, select, admit what it can, then wait. A supervised
+engine reports each completed pass to its bootstrapper, which is the only evidence that a
+loop with nothing to do is still turning.
+_Avoid_: tick, cycle (that is the whole life of a work unit), iteration
+
+**Doctor run**:
+One pass of the health checks over a deployment, spawned by the bootstrapper at boot,
+after a reconcile, on request or on the six-hour schedule. Its report is a section of the
+deployment report; a manual `phoebe doctor` prints one and stores nothing.
+_Avoid_: health check (that is one check inside a run), scan, audit
+
+**Settings catalogue**:
+The single registry of every setting Phoebe reads from the environment: config path, env
+name, reader, permanent aliases. Both the readers and the configuration reference are
+generated from it, so neither can drift from the other.
+_Avoid_: overlay table, toggle list
+
+**Precedence rule**:
+Env beats file at a path; a more specific path beats what it would inherit. The only rule
+settings resolve by — the per-kind ladders are that sentence read at one kind depth.
+_Avoid_: overlay, toggle, override order
+
+**Effective config**:
+Every setting that changes a deployment's behaviour, each with its value and the source
+that supplied it — the annotated object `phoebe config` prints and the deployment report
+embeds. `resolveConfig` is the narrower engine-facing step beneath it: defaults filled,
+bootstrapper fields dropped, nothing annotated.
+_Avoid_: resolved config, explained config
+
+**Source** (of a setting):
+Where a setting's winning value came from: `default`, `file`, `alias` (a permanent older
+name), `overlay` (a `PHOEBE_*` variable), `derived`, or `inherited` from a shallower
+path. One of exactly six; values that lost ride along as **shadowed**.
+_Avoid_: origin, provenance, toggle
+
+**Config edit**:
+One field patch to a config file — `{ path, value }` against a fingerprint — applied in
+place by the splice substrate, at a shell or through the relay. Never a whole file, and
+never more than one leaf.
+_Avoid_: change, update, patch (that is the wire shape, not the act)
+
+**Edit receipt**:
+The deployment's answer to a config edit: `written`, or `refused` with the reason and the
+exact manual edit. It ends there — what the reconcile it set going did is the deployment
+report's news.
+_Avoid_: ack, response
+
+**Edit ledger**:
+The on-volume record of the edits this deployment applied and who asked for them,
+`state/config-edits.json`. It answers a redelivered edit with its original receipt, and
+rolls off whole once the file moves by a hand other than the writer's.
+_Avoid_: audit log, history
+**Secret store**:
+The bootstrapper-owned, per-tenant file of console-set secret values on the data volume,
+`state/secrets.json` at mode `0600`. The tier above the tenant's `.env`, and the only
+channel a deployment has for a secret nobody can reach a file to edit.
+_Avoid_: vault, keyring, secrets file (ambiguous with `.env`)
+
+**Tenant-scope / deployment-scope secret**:
+Whether a secret belongs to one tenant's engine child or to the deployment as a whole.
+The line the secret store never crosses: the App key and the engine-clone token stay
+deployment scope, in the env-file, reached by editing it.
+_Avoid_: local/global, child/root
+
+**Clear** (a secret):
+Removing a key from the secret store so the `.env` or ambient value governs again. Not a
+tombstone and not a revocation — revoking a secret is rotating it.
+_Avoid_: unset, delete, revoke
 
 **Arm**:
 One of a mutually exclusive pair of shapes a deployment takes, resolved rather than
@@ -172,8 +251,9 @@ drain-and-relaunch that follows one.
 _Avoid_: refresh, sync, poll
 
 **Credential lease**:
-A GitHub token the bootstrapper hands the engine for a bounded period, re-read or re-minted
-rather than baked into the process.
+A GitHub token the bootstrapper hands a process it spawned for a bounded period, re-read or
+re-minted rather than baked into the process. An engine child holds one per tenant; a
+doctor run is handed the ones the fleet is already using.
 _Avoid_: credential handoff, token grant
 
 **Engine log tag**:
@@ -211,7 +291,10 @@ _Avoid_: kind secret, scoped credential
 
 **Wedged**:
 A pipeline whose oldest in-flight unit has outlived its own run budget plus one poll
-interval. A question `phoebe list` raises, never a state the engine records.
+interval, or which has completed no loop pass in three poll intervals while not waiting for
+a slot. A question the reader derives — `phoebe list` from the snapshot alone, the
+deployment report from that plus the pass clock the bootstrapper holds — never a state the
+engine records.
 _Avoid_: hung, stuck, frozen
 
 **Stale**:
@@ -229,3 +312,72 @@ One of Phoebe's own install or upgrade faults, sent to a Sentry project under th
 crash-loop quarantine, an operator command throwing. Never a tenant's failure and never
 anything from the work loop.
 _Avoid_: telemetry, error tracking (that is what the `sentry` kind reads), analytics
+
+### Console
+
+**Console**:
+The operator's view of every deployment's report: one React bundle the companion loads
+from disk over a scheme of its own. `phoebe status` is that report read on the host, not
+a second console. See [`docs/console.md`](docs/console.md).
+_Avoid_: dashboard, UI, web app, local console
+
+**Companion**:
+The desktop app: installer and configurator for local installs.
+_Avoid_: desktop console, dashboard, Phoebe app
+
+**Local install**:
+A repository folder on this machine the companion drives through Docker Compose. Its
+states are running, stopped and not initialised, answered by Compose directly. A folder
+inside a WSL distro
+is one too; the companion reaches its Docker through `wsl.exe`, so the distro's own
+containers are the ones it drives.
+_Avoid_: local deployment, local console, WSL workspace
+
+**Desktop bridge**:
+The preload-exposed surface through which the console bundle reaches main's host verbs and
+local reads. Its presence is how the bundle knows it is in the companion, and its absence
+is how it knows it is in a browser.
+_Avoid_: IPC API, RPC, electron API
+
+**Verb run**:
+One invocation of a host verb by the companion, with its lines streamed and an exit
+carrying the verb's typed outcome. One per install at a time, parallel across installs.
+_Avoid_: job, task, command
+
+**Device notification**:
+The OS notification the companion raises from an alert. A rendering of the alert, never
+its own record: it carries no state the fleet row does not already have, there is no list
+of them and no acknowledging one. Tagged by (deployment, condition), so a clear replaces
+the raise it is about rather than piling up beside it.
+_Avoid_: push (rejected on desktop, undecided on mobile), toast, banner
+
+**Badge**:
+The count on the companion's dock or taskbar icon: how many local installs are in a raised
+condition right now. Subjects, not edges — three wedged pipelines on one install are one. Zero clears it, and there is no tray item beside it.
+_Avoid_: counter, indicator, unread count
+
+**Local read loop**:
+Main's per-install pair of clocks that produces deployment reports for a local install:
+Compose's event stream for the moment a container moves, and a `status --json` exec every
+15 s while it is up. What comes out is a `report` event, which is all a page renders.
+_Avoid_: watcher, sync, poller
+
+**Secret writer**:
+Which of the two places a local `secret set` puts a value: through the running container
+into the tenant secret store, or into the deployment `.env` on this machine when there is
+no container to reach. Read off the install's state rather than chosen, and named in the
+outcome, because the two are not interchangeable.
+_Avoid_: backend, target, sink
+
+**Run argument**:
+A value the companion hands a verb run over the bridge and holds for that run only — the
+secret value, and nothing else today. Never persisted, never logged, and never echoed in a
+`run:line`.
+_Avoid_: parameter, payload, input
+
+**Alert**:
+What the companion raises when a local install or one of its pipelines crosses into or out
+of a named condition: `wedged`, `crash-looping`, `doctor-fail`. Every raise has a matching
+clear, and the edge rule that decides is one pure function. It is a transition, never a
+record.
+_Avoid_: incident, page

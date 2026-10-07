@@ -1,0 +1,608 @@
+// The three states a local install can be in, and where each one comes from.
+
+import path from "node:path";
+import { describe, expect, test } from "vite-plus/test";
+import type { CommandRunner } from "../../../src/deployment-compose.ts";
+import {
+  allInstallFacts,
+  directoryFacts,
+  directoryFactsWithAccess,
+  installFacts,
+} from "./install-facts.ts";
+
+const DIR = "/repos/youtube-studio";
+const STORED = { dir: DIR, addedAt: "2026-09-18T09:00:00.000Z" };
+
+/** A folder holding whatever files the test names, and nothing else. */
+function folder(...files: string[]): (file: string) => boolean {
+  const present = new Set([DIR, ...files.map((file) => path.join(DIR, file))]);
+  return (file) => present.has(file);
+}
+
+const INITIALISED = folder("phoebe.config.ts", path.join("container", "compose.yml"));
+
+/** A Dockerfile carrying the pin `upgrade` writes and reads (src/upgrade.ts). */
+function dockerfile(version: string | null): (file: string) => string {
+  const pin = version === null ? "" : `ARG PHOEBE_AGENT_VERSION=${version}\n`;
+  return () => `FROM node:24-bookworm-slim\n${pin}RUN npm i -g phoebe-agent\n`;
+}
+
+/** A Compose that answers `ps` with the rows given. */
+function compose(rows: unknown[], code = 0): CommandRunner {
+  return () => Promise.resolve({ code, stdout: JSON.stringify(rows), stderr: "" });
+}
+
+describe("what a folder is", () => {
+  test("a folder with no compose file is not initialised, which is what init is for", async () => {
+    const facts = await installFacts(STORED, { exists: folder() });
+
+    expect(facts.state).toBe("not-initialised");
+    expect(facts.detail).toBe("no container/compose.yml yet");
+  });
+
+  test("a workspace child says so rather than offering to init over the top of it", async () => {
+    const facts = await installFacts(STORED, { exists: folder("phoebe.config.ts") });
+
+    expect(facts.state).toBe("not-initialised");
+    expect(facts.detail).toContain("workspace child");
+    // Said as a fact too, so the install tab can offer the deployment beside it.
+    expect(facts.tenantOnly).toBe(true);
+    const bare = await installFacts(STORED, { exists: folder() });
+    expect(bare.tenantOnly).toBeUndefined();
+  });
+
+  test("a folder that is gone is named as gone, not as a folder waiting for init", async () => {
+    const facts = await installFacts(STORED, { exists: () => false });
+
+    expect(facts.state).toBe("not-initialised");
+    expect(facts.detail).toContain("not on disk");
+  });
+
+  test("carries the folder's own name, because the rail has no room for the path", async () => {
+    const facts = await installFacts(STORED, { exists: INITIALISED, dockerPresent: false });
+
+    expect(facts.name).toBe("youtube-studio");
+    expect(facts.dir).toBe(DIR);
+    expect(facts.addedAt).toBe(STORED.addedAt);
+  });
+});
+
+describe("what Compose says", () => {
+  test("a running phoebe service is a running install", async () => {
+    const facts = await installFacts(STORED, {
+      exists: INITIALISED,
+      runner: compose([{ Service: "phoebe", State: "running" }]),
+    });
+
+    expect(facts).toEqual({
+      ...STORED,
+      name: "youtube-studio",
+      state: "running",
+      containerVersion: null,
+    });
+  });
+
+  test("an exited container is stopped, with nothing to explain", async () => {
+    const facts = await installFacts(STORED, {
+      exists: INITIALISED,
+      runner: compose([{ Service: "phoebe", State: "exited", ExitCode: 0 }]),
+    });
+
+    expect(facts.state).toBe("stopped");
+    expect(facts.detail).toBeUndefined();
+  });
+
+  test("a container that was never created is stopped too", async () => {
+    const facts = await installFacts(STORED, { exists: INITIALISED, runner: compose([]) });
+
+    expect(facts.state).toBe("stopped");
+  });
+
+  test("restarting counts as running — it is not a state the rail has a word for", async () => {
+    const facts = await installFacts(STORED, {
+      exists: INITIALISED,
+      runner: compose([{ Service: "phoebe", State: "restarting" }]),
+    });
+
+    expect(facts.state).toBe("running");
+  });
+});
+
+describe("when Docker cannot be asked", () => {
+  test("no docker on PATH means nothing is running, and says which", async () => {
+    const facts = await installFacts(STORED, { exists: INITIALISED, dockerPresent: false });
+
+    expect(facts.state).toBe("stopped");
+    expect(facts.detail).toContain("not on PATH");
+  });
+
+  test("a daemon that is down is one line, not a stack", async () => {
+    const facts = await installFacts(STORED, {
+      exists: INITIALISED,
+      runner: () =>
+        Promise.resolve({
+          code: 1,
+          stdout: "",
+          stderr: "Cannot connect to the Docker daemon at unix:///var/run/docker.sock.\n  at x\n",
+        }),
+    });
+
+    expect(facts.state).toBe("stopped");
+    expect(facts.detail).toBe(
+      "Cannot connect to the Docker daemon at unix:///var/run/docker.sock.",
+    );
+  });
+
+  test("a probe that throws is a fact about the machine, not a broken list", async () => {
+    const facts = await installFacts(STORED, {
+      exists: INITIALISED,
+      runner: () => Promise.reject(new Error("spawn docker ENOENT")),
+    });
+
+    expect(facts.state).toBe("stopped");
+    expect(facts.detail).toBe("spawn docker ENOENT");
+  });
+
+  test("never invents a fourth state", async () => {
+    // Three states and no fourth (#522 §7). Every path above lands on one of
+    // them, which is what lets the rail draw an install with three words.
+    for (const deps of [
+      { exists: folder() },
+      { exists: INITIALISED, dockerPresent: false },
+      { exists: INITIALISED, runner: compose([{ Service: "phoebe", State: "running" }]) },
+    ]) {
+      const facts = await installFacts(STORED, deps);
+      expect(["running", "stopped", "not-initialised"]).toContain(facts.state);
+    }
+  });
+});
+
+describe("the whole list", () => {
+  test("keeps the stored order, so the rail does not reshuffle between reads", async () => {
+    const stored = ["/repos/c", "/repos/a", "/repos/b"].map((dir) => ({
+      dir,
+      addedAt: "2026-09-18T09:00:00.000Z",
+    }));
+
+    const facts = await allInstallFacts(stored, { exists: () => false });
+
+    expect(facts.map((install) => install.name)).toEqual(["c", "a", "b"]);
+  });
+});
+
+describe("what the folder says with no container", () => {
+  const RUNNING = {
+    dir: DIR,
+    name: "youtube-studio",
+    addedAt: STORED.addedAt,
+    state: "running" as const,
+    containerVersion: null,
+  };
+
+  test("carries the config's text and a fingerprint of it", () => {
+    const facts = directoryFacts(RUNNING, {
+      exists: folder("phoebe.config.ts", ".env"),
+      read: () => "export default defineConfig({})\n",
+    });
+
+    expect(facts.configPath).toBe(path.join(DIR, "phoebe.config.ts"));
+    expect(facts.configText).toBe("export default defineConfig({})\n");
+    // The writer's own format, so the fingerprint a window was shown is the
+    // one `config set` checks itself against (#503, #527 §11).
+    expect(facts.configFingerprint).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(facts.envPresent).toBe(true);
+  });
+
+  test("a workspace's children each bring their config, read the same way", () => {
+    const a = path.join(DIR, "a");
+    const b = path.join(DIR, "b");
+    const texts = new Map([
+      [path.join(DIR, "phoebe.config.ts"), "export default defineConfig({ workspace: {} })\n"],
+      [path.join(a, "phoebe.config.ts"), 'export default defineConfig({ repoSlug: "acme/a" })\n'],
+    ]);
+    const facts = directoryFacts(
+      {
+        ...RUNNING,
+        workspace: {
+          children: [
+            { dir: a, name: "a", slug: "acme/a" },
+            { dir: b, name: "b", slug: null },
+          ],
+        },
+      },
+      { exists: (file) => texts.has(file) || file === DIR, read: (file) => texts.get(file) ?? "" },
+    );
+
+    expect(facts.tenants).toHaveLength(2);
+    expect(facts.tenants?.[0]).toMatchObject({
+      dir: a,
+      name: "a",
+      slug: "acme/a",
+      configPath: path.join(a, "phoebe.config.ts"),
+      configText: 'export default defineConfig({ repoSlug: "acme/a" })\n',
+    });
+    expect(facts.tenants?.[0]?.configFingerprint).toMatch(/^sha256:[0-9a-f]{64}$/);
+    // A child with no config yet is listed with nothing to show, not dropped.
+    expect(facts.tenants?.[1]).toMatchObject({ dir: b, configText: null, configFingerprint: null });
+  });
+
+  test("each tenant carries what the host says about its .env, where the host says anything", async () => {
+    const a = path.join(DIR, "a");
+    const b = path.join(DIR, "b");
+    const texts = new Map([
+      [path.join(DIR, "phoebe.config.ts"), "export default defineConfig({ workspace: {} })\n"],
+      [path.join(a, "phoebe.config.ts"), 'export default defineConfig({ configDir: ".phoebe" })\n'],
+    ]);
+    const workspace = {
+      ...RUNNING,
+      workspace: {
+        children: [
+          { dir: a, name: "a", slug: "acme/a" },
+          { dir: b, name: "b", slug: null },
+        ],
+      },
+    };
+    const asked: (readonly string[])[] = [];
+    const deps = {
+      exists: (file: string) => texts.has(file) || file === DIR,
+      read: (file: string) => texts.get(file) ?? "",
+      platform: "linux",
+      runner: (spec: { args: readonly string[] }) => {
+        asked.push(spec.args);
+        // The first is its owner's alone; the probe has nothing to say of the second.
+        return Promise.resolve({ code: 0, stdout: "0|1000 1000 600|0\n", stderr: "" });
+      },
+    };
+
+    const facts = await directoryFactsWithAccess(workspace, deps);
+
+    // One child for the whole workspace, each file where its config puts it.
+    expect(asked).toHaveLength(1);
+    expect(asked[0]!.slice(-2)).toEqual([path.join(a, ".phoebe", ".env"), path.join(b, ".env")]);
+    expect(facts.tenants?.[0]?.env).toEqual({
+      path: path.join(a, ".phoebe", ".env"),
+      access: "unreadable",
+    });
+    expect(facts.tenants?.[1]?.env).toBeUndefined();
+    // A solo install is not asked about at all.
+    const solo = await directoryFactsWithAccess(RUNNING, { ...deps, exists: folder() });
+    expect(solo.tenants).toBeUndefined();
+    expect(asked).toHaveLength(1);
+  });
+
+  test("carries what the Dockerfile says about each agent CLI, when there is a Dockerfile", () => {
+    const dockerfile = path.join(DIR, "container", "Dockerfile");
+    const texts = new Map([
+      [path.join(DIR, "phoebe.config.ts"), "export default defineConfig({})\n"],
+      [
+        dockerfile,
+        "ARG CLAUDE_CODE_VERSION=2.1.228\nRUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}\n",
+      ],
+    ]);
+    const facts = directoryFacts(RUNNING, {
+      exists: (file) => texts.has(file),
+      read: (file) => texts.get(file) ?? "",
+    });
+
+    expect(facts.harnessPins).toEqual([
+      { harness: "cursor", pin: { kind: "absent" } },
+      { harness: "claude", pin: { kind: "pinned", version: "2.1.228" } },
+      { harness: "codex", pin: { kind: "absent" } },
+    ]);
+    // No Dockerfile is no field, which is how a page knows not to draw the section.
+    expect(
+      directoryFacts(RUNNING, { exists: folder("phoebe.config.ts"), read: () => "x" }).harnessPins,
+    ).toBeUndefined();
+  });
+
+  test("a solo install has no tenants field at all", () => {
+    const facts = directoryFacts(RUNNING, { exists: folder("phoebe.config.ts"), read: () => "x" });
+
+    expect(facts.tenants).toBeUndefined();
+  });
+
+  test("the same text fingerprints the same, and an edit moves it", () => {
+    const read = (text: string) => () => text;
+    const before = directoryFacts(RUNNING, { exists: folder("phoebe.config.ts"), read: read("a") });
+    const same = directoryFacts(RUNNING, { exists: folder("phoebe.config.ts"), read: read("a") });
+    const after = directoryFacts(RUNNING, { exists: folder("phoebe.config.ts"), read: read("b") });
+
+    expect(same.configFingerprint).toBe(before.configFingerprint);
+    expect(after.configFingerprint).not.toBe(before.configFingerprint);
+  });
+
+  test("no config is no text and no fingerprint, rather than an empty one", () => {
+    const facts = directoryFacts(RUNNING, { exists: folder() });
+
+    expect(facts.configText).toBeNull();
+    expect(facts.configFingerprint).toBeNull();
+    expect(facts.envPresent).toBe(false);
+  });
+
+  test("a config that cannot be read reads as one that is not there", () => {
+    const facts = directoryFacts(RUNNING, {
+      exists: folder("phoebe.config.ts"),
+      read: () => {
+        throw new Error("EACCES");
+      },
+    });
+
+    expect(facts.configText).toBeNull();
+  });
+
+  test("the bootstrapper is running exactly when the container is", () => {
+    const exists = folder("phoebe.config.ts");
+
+    expect(directoryFacts(RUNNING, { exists }).bootstrapperRunning).toBe(true);
+    expect(directoryFacts({ ...RUNNING, state: "stopped" }, { exists }).bootstrapperRunning).toBe(
+      false,
+    );
+  });
+});
+
+describe("which phoebe-agent the container is on", () => {
+  test("is the Dockerfile's pin — what the image is built from, and what upgrade moves", async () => {
+    const facts = await installFacts(STORED, {
+      exists: INITIALISED,
+      dockerPresent: false,
+      readFile: dockerfile("0.12.1"),
+    });
+
+    expect(facts.containerVersion).toBe("0.12.1");
+  });
+
+  test("is read for a stopped install too — that is exactly when it is asked for", async () => {
+    const facts = await installFacts(STORED, {
+      exists: INITIALISED,
+      runner: compose([{ Service: "phoebe", State: "exited", ExitCode: 0 }]),
+      readFile: dockerfile("0.12.1"),
+    });
+
+    expect(facts.state).toBe("stopped");
+    expect(facts.containerVersion).toBe("0.12.1");
+  });
+
+  test("an unpinned Dockerfile has no version to state", async () => {
+    // The build takes whatever npm published last; there is no number here.
+    const facts = await installFacts(STORED, {
+      exists: INITIALISED,
+      dockerPresent: false,
+      readFile: dockerfile(null),
+    });
+
+    expect(facts.containerVersion).toBeNull();
+  });
+
+  test("a Dockerfile that cannot be read is null, and the install is still listed", async () => {
+    const facts = await installFacts(STORED, {
+      exists: INITIALISED,
+      dockerPresent: false,
+      readFile: () => {
+        throw new Error("EACCES");
+      },
+    });
+
+    expect(facts.containerVersion).toBeNull();
+    expect(facts.state).toBe("stopped");
+  });
+
+  test("a folder with no container has none either, and nothing threw looking", async () => {
+    const facts = await installFacts(STORED, {
+      exists: folder("phoebe.config.ts"),
+      readFile: () => {
+        throw new Error("nothing should have been read");
+      },
+    });
+
+    expect(facts.containerVersion).toBeNull();
+    expect(facts.state).toBe("not-initialised");
+  });
+});
+
+describe("a repo that is a workspace child at its root and a deployment in .phoebe/", () => {
+  const NESTED = folder(
+    "phoebe.config.ts",
+    path.join(".phoebe", "phoebe.config.ts"),
+    path.join(".phoebe", ".env"),
+    path.join(".phoebe", "container", "compose.yml"),
+  );
+  // Two configs: the tenant entry at the root, and the deployment's own below.
+  const configs = (file: string): string =>
+    file === path.join(DIR, ".phoebe", "phoebe.config.ts")
+      ? 'const config = {\n  repoSlug: "acme/solo",\n};\nexport default config;\n'
+      : 'const config = {\n  repoSlug: "acme/child",\n};\nexport default config;\n';
+
+  test("is driven from .phoebe/, and says so", async () => {
+    const seen: { args: readonly string[]; cwd?: string | undefined }[] = [];
+    const runner: CommandRunner = (spec) => {
+      seen.push(spec);
+      return Promise.resolve({
+        code: 0,
+        stdout: JSON.stringify([{ Service: "phoebe", State: "running" }]),
+        stderr: "",
+      });
+    };
+
+    const facts = await installFacts(STORED, {
+      exists: NESTED,
+      read: configs,
+      readFile: dockerfile("0.13.0"),
+      runner,
+    });
+
+    expect(facts.state).toBe("running");
+    expect(facts.deploymentDir).toBe(".phoebe");
+    expect(facts.containerVersion).toBe("0.13.0");
+    expect(seen[0]?.cwd).toBe(path.join(path.resolve(DIR), ".phoebe", "container"));
+  });
+
+  test("the directory facts read the deployment's config and .env", () => {
+    const facts = directoryFacts(
+      {
+        dir: DIR,
+        name: "youtube-studio",
+        addedAt: STORED.addedAt,
+        state: "stopped",
+        containerVersion: null,
+        deploymentDir: ".phoebe",
+      },
+      { exists: NESTED, read: configs },
+    );
+
+    expect(facts.configPath).toBe(path.join(DIR, ".phoebe", "phoebe.config.ts"));
+    expect(facts.configText).toContain("acme/solo");
+    expect(facts.envPresent).toBe(true);
+  });
+
+  test("a stock layout carries no deploymentDir, because there is nothing to say", async () => {
+    const facts = await installFacts(STORED, { exists: INITIALISED, dockerPresent: false });
+
+    expect(facts.deploymentDir).toBeUndefined();
+  });
+});
+
+describe("what the rail calls it", () => {
+  test("the operator's label when there is one, else the folder's name", async () => {
+    const exists = () => false;
+    const plain = await installFacts(
+      { dir: "/repos/youtube-studio", addedAt: "2026-09-18T09:00:00.000Z" },
+      { exists },
+    );
+    expect(plain.name).toBe("youtube-studio");
+    expect(plain.label).toBeUndefined();
+    const named = await installFacts(
+      { dir: "/repos/youtube-studio", addedAt: "2026-09-18T09:00:00.000Z", name: "Studio" },
+      { exists },
+    );
+    expect(named.name).toBe("Studio");
+    expect(named.label).toBe("Studio");
+  });
+});
+
+describe("a workspace root", () => {
+  const WORKSPACE =
+    'const config = {\n  engine: { ref: "main" },\n  workspace: { depth: 1 },\n};\nexport default config;\n';
+  const CHILD = (slug: string) =>
+    `const config = {\n  repoSlug: "${slug}",\n};\nexport default config;\n`;
+  const present = new Set([
+    DIR,
+    path.join(DIR, "phoebe.config.ts"),
+    path.join(DIR, "container", "compose.yml"),
+    path.join(DIR, "widget", "phoebe.config.ts"),
+    path.join(DIR, "api", "phoebe.config.ts"),
+  ]);
+  const sources: Record<string, string> = {
+    [path.join(DIR, "phoebe.config.ts")]: WORKSPACE,
+    [path.join(DIR, "widget", "phoebe.config.ts")]: CHILD("acme/widget"),
+    [path.join(DIR, "api", "phoebe.config.ts")]: CHILD("acme/api"),
+  };
+  const deps = {
+    exists: (file: string) => present.has(file),
+    read: (file: string) => {
+      const source = sources[file];
+      if (source === undefined) throw new Error(`no ${file}`);
+      return source;
+    },
+    listDirs: (dir: string) => (dir === DIR ? ["widget", "node_modules", "api", ".git"] : []),
+    dockerPresent: false,
+  };
+
+  test("lists its children as the bootstrapper would find them, by slug", async () => {
+    const facts = await installFacts(STORED, deps);
+
+    expect(facts.workspace?.children.map((child) => child.slug)).toEqual([
+      "acme/api",
+      "acme/widget",
+    ]);
+    expect(facts.workspace?.children[0]?.dir).toBe(path.join(DIR, "api"));
+  });
+
+  test("a solo install has no children to list", async () => {
+    const facts = await installFacts(STORED, {
+      exists: INITIALISED,
+      read: () => CHILD("acme/solo"),
+      dockerPresent: false,
+    });
+
+    expect(facts.workspace).toBeUndefined();
+  });
+});
+
+describe("an install inside a WSL distro", () => {
+  const B = "\\";
+  const WSL_DIR = `${B}${B}wsl.localhost${B}archlinux${B}home${B}mike${B}development`;
+  const WSL_STORED = { dir: WSL_DIR, addedAt: "2026-09-22T09:00:00.000Z" };
+
+  // The folder as Windows shows it, and as the resolver re-spells it — the same
+  // set on Windows, two spellings on a POSIX test runner, where `resolve` treats
+  // the UNC path as relative. Both are answered so the test holds on either.
+  function wslFolder(...files: string[]): (file: string) => boolean {
+    const roots = [WSL_DIR, path.resolve(WSL_DIR)];
+    const present = new Set(
+      roots.flatMap((root) => [root, ...files.map((f) => path.join(root, f))]),
+    );
+    return (file) => present.has(file);
+  }
+  const WSL_INITIALISED = wslFolder("phoebe.config.ts", path.join("container", "compose.yml"));
+
+  /** A Compose that records what it was asked to run and answers `ps` with `rows`. */
+  function recording(rows: unknown[]): {
+    runner: CommandRunner;
+    seen: { file: string; args: readonly string[] }[];
+  } {
+    const seen: { file: string; args: readonly string[] }[] = [];
+    const runner: CommandRunner = (spec) => {
+      seen.push(spec);
+      return Promise.resolve({ code: 0, stdout: JSON.stringify(rows), stderr: "" });
+    };
+    return { runner, seen };
+  }
+
+  test("says which distro it is in and where, beside the path Windows shows", async () => {
+    const facts = await installFacts(WSL_STORED, { exists: wslFolder(), dockerPresent: false });
+
+    expect(facts.dir).toBe(WSL_DIR);
+    expect(facts.name).toBe("development");
+    expect(facts.wsl).toEqual({ distro: "archlinux", dir: "/home/mike/development" });
+  });
+
+  test("a folder on this machine carries no distro", async () => {
+    const facts = await installFacts(STORED, { exists: folder(), dockerPresent: false });
+
+    expect(facts.wsl).toBeUndefined();
+  });
+
+  test("asks the distro's Compose through wsl.exe, and reads the state it answers", async () => {
+    const { runner, seen } = recording([{ Service: "phoebe", State: "running" }]);
+
+    const facts = await installFacts(WSL_STORED, {
+      exists: WSL_INITIALISED,
+      readFile: dockerfile("0.13.0"),
+      runner,
+    });
+
+    // The path translation itself is wsl.test.ts's: on a POSIX test runner
+    // `resolve` re-spells the UNC path into something no distro has a name for.
+    expect(facts.state).toBe("running");
+    expect(seen[0]?.file).toBe("wsl.exe");
+    expect(seen[0]?.args.slice(0, 2)).toEqual(["-d", "archlinux"]);
+    expect(seen[0]?.args).toContain("--exec");
+    expect(seen[0]?.args).toContain("docker");
+    expect(seen[0]?.args).toContain("compose");
+  });
+
+  test("this machine having no docker is not a verdict on the distro", async () => {
+    const { runner, seen } = recording([]);
+
+    const facts = await installFacts(WSL_STORED, {
+      exists: WSL_INITIALISED,
+      readFile: dockerfile("0.13.0"),
+      dockerPresent: false,
+      runner,
+    });
+
+    expect(seen).toHaveLength(1);
+    expect(facts.state).toBe("stopped");
+    expect(facts.detail).toBeUndefined();
+  });
+});

@@ -574,11 +574,18 @@ async function listWorkspaceTenants(opts: {
 }
 
 /**
- * Enumerate tenants with health signals for `phoebe list` (#95).
+ * Enumerate tenants with health signals off disk (#95).
  *
  * Detection ladder matches boot (#83): root config has a `workspace` block →
  * walk the workspace tree (same walk as #91); else empty (solo has nothing to
  * list beyond "no tenants").
+ *
+ * No CLI verb calls this since #533: `phoebe status` and its `list` alias render
+ * the deployment report instead, so that a console and the CLI cannot disagree
+ * about the fleet (#501). It stays because two facts it produces have no home in
+ * the report yet — the declared-vs-live count, and `undeclared`, the
+ * config-carrying directories the fleet declaration leaves out. Whichever lands
+ * first, that is where these go.
  */
 export async function listTenants(
   opts: TenantDiscoverySeams & { configDir: string; dataBase: string },

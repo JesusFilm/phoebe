@@ -18,7 +18,9 @@
 // follow-up; today the budget covers the agent phase, where real hangs happen.
 
 import { workKindOverride, type WorkKindsField } from "./config-schema.ts";
-import { workKindEnvVar } from "./provider-selection.ts";
+import { envNames, kindEnvNames, readNumber, settingAt } from "./settings-catalogue.ts";
+
+const RUN_TIMEOUT_SETTING = settingAt("runTimeoutMs");
 
 /** 45 minutes — the shipped default whole-unit budget (config `runTimeoutMs`). */
 export const DEFAULT_RUN_TIMEOUT_MS = 2_700_000;
@@ -34,16 +36,16 @@ export class RunTimeoutError extends Error {
 }
 
 /**
- * Resolve the run timeout: `PHOEBE_RUN_TIMEOUT_MS` (a positive integer) wins,
- * else the config field, else the shipped default. Mirrors how the engine reads
- * `PHOEBE_POLL_INTERVAL_MS` — a direct env read, not the config overlay.
+ * Resolve the run timeout: `PHOEBE_RUN_TIMEOUT_MS` (a positive number) wins,
+ * else the config field, else the shipped default — env beats file at the
+ * `runTimeoutMs` path, which is the catalogue's one rule at its shallowest.
  */
 export function resolveRunTimeoutMs(
   env: NodeJS.ProcessEnv,
   configValue: number = DEFAULT_RUN_TIMEOUT_MS,
 ): number {
-  const raw = Number(env["PHOEBE_RUN_TIMEOUT_MS"]);
-  if (Number.isFinite(raw) && raw > 0) return raw;
+  const fromEnv = readNumber(env, envNames(RUN_TIMEOUT_SETTING));
+  if (fromEnv !== undefined) return fromEnv;
   return configValue > 0 ? configValue : DEFAULT_RUN_TIMEOUT_MS;
 }
 
@@ -67,8 +69,8 @@ export function resolveRunTimeoutMsForKind(opts: {
   configValue?: number;
 }): number {
   const { kind, env, workKinds } = opts;
-  const perKind = Number(env[workKindEnvVar(kind, "RUN_TIMEOUT_MS")]);
-  if (Number.isFinite(perKind) && perKind > 0) return perKind;
+  const perKind = readNumber(env, kindEnvNames(RUN_TIMEOUT_SETTING, kind));
+  if (perKind !== undefined) return perKind;
   const declared = workKindOverride(workKinds, kind)?.runTimeoutMs;
   if (declared !== undefined && declared > 0) return declared;
   return resolveRunTimeoutMs(env, opts.configValue);
