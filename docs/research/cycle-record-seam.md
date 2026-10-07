@@ -87,7 +87,7 @@ instead of twice from a flag the engine loop threads separately.
 
 `fetchConflictWorkData` calls `fetchOrigin()` (a `git fetch origin` against the engine's
 private clone) and reads the resulting `origin/<defaultBranchRef>` head SHA. These are two
-operations on one thing: the origin hub, which CONTEXT.md already defines and which already
+operations on one thing: the origin hub, which GLOSSARY.md already defines and which already
 exists unnamed as a pair of locals (`repoDir` and `defaultBranchRef`). Naming the
 collaborator once in the work source's constructor makes the dependency visible and makes the
 work source substitutable in tests without touching git paths directly.
